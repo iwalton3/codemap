@@ -16,7 +16,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Anchor, Review } from "./schema.js";
 import { indexRepo, indexFile, indexBlob } from "./repo.js";
-import { readSnapshot, readAnchorStore, loadNodes, loadNodeVersions, winningVersionAt, readGraph, readReviews } from "./store.js";
+import { readSnapshot, readAnchorStore, loadNodes, loadNodeVersions, winningVersionAt, readGraph, readReviews, readBugs } from "./store.js";
 import { reviewStatesFor } from "./reviews.js";
 import { revParse, headCommit, currentBranch, showFile } from "./git.js";
 import { grammarForPath } from "./grammars.js";
@@ -38,6 +38,7 @@ export interface DiffResult {
     nodes: { id: string; title: string; type: string; summary: string; anchors: string[]; status: string; versionCount: number; review: { logical: string; code: string } }[];
     flows: { id: string; title: string; steps: { id: string; title: string; anchors: string[] }[] }[];
     reviews: { id: string; target: { kind: string; id: string }; level: string; anchors: string[] }[];
+    bugs: { id: string; title: string; status: string; severity: string; anchors: string[]; removed: boolean; possiblyFixed: boolean }[];
   };
 }
 
@@ -136,13 +137,26 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
     .filter((x) => x.hit.length > 0)
     .map(({ r, hit }) => ({ id: r.id, target: r.target, level: r.level, anchors: hit }));
 
+  // Bugs whose cited code moved in this diff: an open bug on changed code may be
+  // *fixed* by the change (verify), and any bug on removed code lost its anchor.
+  // This is the "does this change touch known-broken code" context a raw diff hides.
+  const removedIds = new Set(removed.map((b) => b.id));
+  const bugImpact = (await readBugs(root)).bugs
+    .map((bug) => ({ bug, hit: bug.anchors.filter((id) => impacted.has(id)) }))
+    .filter((x) => x.hit.length > 0)
+    .map(({ bug, hit }) => ({
+      id: bug.id, title: bug.title, status: bug.status, severity: bug.severity, anchors: hit,
+      removed: hit.some((id) => removedIds.has(id)),
+      possiblyFixed: bug.status === "open",
+    }));
+
   return {
     base: { ref: baseRef, sha: base.sha, label: baseRef, anchors: base.anchors.length },
     head: headSide,
     added,
     removed,
     changed,
-    impact: { nodes: impactedNodes, flows, reviews: reviewImpact },
+    impact: { nodes: impactedNodes, flows, reviews: reviewImpact, bugs: bugImpact },
   };
 }
 

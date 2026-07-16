@@ -973,6 +973,21 @@ class DiffPage extends Component {
     return [...m.values()].sort((a, z) => a.file.localeCompare(z.file));
   }
   docsFor(id) { return (this.state.diff.impact.nodes || []).filter(n => (n.anchors || []).includes(id)); }
+  bugsFor(id) { return (this.state.diff.impact.bugs || []).filter(bug => (bug.anchors || []).includes(id)); }
+  // A bug rolled into the diff impact: click through to triage it in the bugs tab.
+  bugRow(bug) {
+    const u = this.props.params.universe, bi = this.briefIndex();
+    return html`<div class="dbug ${bug.possiblyFixed ? 'poss' : ''}">
+      <div class="dbugh" on-click="${() => go(bugsUrl(u), { bug: bug.id })}">
+        <span class="sevdot" style="background:${SEV_COLOR[bug.severity] || SEV_COLOR.medium}" title="severity: ${bug.severity}"></span>
+        <span class="dbugt">${bug.title}</span>
+        ${when(bug.possiblyFixed, () => html`<span class="bchip poss" title="open bug on code that changed — this diff may fix it">possibly fixed</span>`)}
+        ${when(bug.removed, () => html`<span class="bchip changed" title="cited code was removed in this diff">code removed</span>`)}
+        <span class="bchip ${bug.status}">${bug.status}</span>
+      </div>
+      <div class="chips">${each(bug.anchors, aid => { const b = bi.get(aid); const s = this.state.sel && this.state.sel.id === aid; return html`<span class="chip mini ${s ? 'sel' : ''}" on-click="${() => this.openCodeById(aid)}">${b ? b.symbol : aid.slice(0, 10)}</span>`; }, aid => aid)}</div>
+    </div>`;
+  }
 
   symRow(b) {
     const sel = this.state.sel && this.state.sel.id === b.id;
@@ -1016,6 +1031,8 @@ class DiffPage extends Component {
           <div class="ddoch"><span class="ddoct" on-click="${() => this.pickSel('doc', n.id)}">${n.title || n.id}</span>${this.docActions(n)}</div>
           <md-content text="${n.summary}"></md-content>
         </div>`, n => n.id)}`)}
+      ${when(this.bugsFor(b.id).length, () => html`<div class="sec">bugs on this symbol (${this.bugsFor(b.id).length})</div>
+        ${each(this.bugsFor(b.id), bug => this.bugRow(bug), bug => bug.id)}`)}
     </div>`;
   }
 
@@ -1058,6 +1075,9 @@ class DiffPage extends Component {
                   <span class="chips">${each(s.anchors, aid => html`<span class="chip mini" on-click="${() => this.openCodeById(aid)}">${aid.slice(0, 10)}</span>`, aid => aid)}</span>
                 </div>`, s => s.id)}
               </div>`, f => f.id)}`)}
+
+            ${when(d.impact.bugs && d.impact.bugs.length, () => html`<div class="sec">bugs on changed code (${d.impact.bugs.length})</div>
+              ${each(d.impact.bugs, bug => this.bugRow(bug), bug => bug.id)}`)}
 
             <div class="dtoggle"><span class="dim">changes</span>
               <button class="${this.state.view === 'doc' ? 'on' : ''}" on-click="${() => this.setView('doc')}">by doc (${d.impact.nodes.length})</button>
