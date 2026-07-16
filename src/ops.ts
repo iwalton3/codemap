@@ -26,7 +26,7 @@ import {
   writeSnapshot, listSnapshots, deleteNode as storeDeleteNode, confirmNode, ackHole as storeAckHole, loadNodeVersions,
 } from "./store.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
-import { computeDiff, anchorCodeDiff } from "./diff.js";
+import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "./diff.js";
 import { resolveCoverage, selectAnchors, docPct as computeDocPct, type CoverageResult } from "./coverage.js";
 import { resolveAnchorRefs } from "./refs.js";
 import { refreshAnalyzers } from "./analyzers/run.js";
@@ -261,6 +261,11 @@ export async function snapshots(root: string) {
  */
 export async function diff(root: string, base: string, head?: string) {
   return computeDiff(root, base, head);
+}
+
+/** Diff a doc's prose between the versions that win on base vs head (grounds the code diff). */
+export async function docDiff(root: string, base: string, head: string | undefined, id: string) {
+  return computeDocDiff(root, base, head, id);
 }
 
 /** Before/after source for one anchor between two refs (the code drill-down) + its review state. */

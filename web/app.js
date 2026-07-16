@@ -708,11 +708,11 @@ const DTAG = { '+': 'added', '-': 'removed', '~': 'changed' };
 
 class DiffPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { snaps: null, diff: null, sel: null, selCode: null, codePending: false, view: 'doc' }; }
+  constructor(props) { super(props); this.state = { snaps: null, diff: null, sel: null, selCode: null, codePending: false, view: 'doc', selDoc: null, docDiff: null }; }
   load = this.createTask(async () => {
     const u = this.props.params.universe; nav.current = u;
     if (!this.state.snaps) this.state.snaps = (await api('/api/snapshots', { u })).snapshots;
-    this.state.sel = null; this.state.selCode = null;
+    this.state.sel = null; this.state.selCode = null; this.state.selDoc = null; this.state.docDiff = null;
     const base = this.props.query.base;
     this.state.diff = base ? await api('/api/diff', { u, base, head: this.props.query.head || '' }) : null;
   });
@@ -726,10 +726,17 @@ class DiffPage extends Component {
   }
   async openCode(b) {
     const u = this.props.params.universe;
-    this.state.sel = b; this.state.selCode = null; this.state.codePending = true;
+    this.state.selDoc = null; this.state.sel = b; this.state.selCode = null; this.state.codePending = true;
     try {
       this.state.selCode = await api('/api/diff/code', { u, base: this.props.query.base, head: this.props.query.head || '', id: b.id, file: b.file });
     } finally { this.state.codePending = false; }
+  }
+  async openDoc(n) {
+    const u = this.props.params.universe;
+    this.state.sel = null; this.state.selDoc = n; this.state.docDiff = null; this.state.docPending = true;
+    try {
+      this.state.docDiff = await api('/api/diff/doc', { u, base: this.props.query.base, head: this.props.query.head || '', id: n.id });
+    } finally { this.state.docPending = false; }
   }
   async reloadDiff() {
     const u = this.props.params.universe, base = this.props.query.base;
@@ -767,9 +774,24 @@ class DiffPage extends Component {
     </div>`;
   }
 
+  docDetail() {
+    const u = this.props.params.universe, n = this.state.selDoc, dd = this.state.docDiff;
+    return html`<div class="ddetail">
+      <div class="dsymhead">📄 <b>${n.title || n.id}</b> ${statusChip(n.status)}${when(n.versionCount > 1, () => html`<span class="vfork">⑂${n.versionCount}</span>`)}</div>
+      <div class="meta"><span class="viewlink" on-click="${() => go(nodeUrl(u, n.id))}">open doc ›</span></div>
+      <div class="drev">${this.docActions(n)}</div>
+      ${when(this.state.docPending, () => html`<div class="loading">loading…</div>`)}
+      ${when(dd && dd.forked, () => html`<div class="sec">doc changes · ${dd.base.branch || 'base'} → ${dd.head.branch || 'head'}</div>
+        <pre class="hljs cdiff docdiff">${each(dd.lines, ln => html`<div class="cl ${DTAG[ln.tag] || 'ctx'}"><span class="g">${ln.tag}</span><code>${ln.text || ' '}</code></div>`)}</pre>`)}
+      ${when(dd && !dd.forked, () => html`<div class="dim" style="padding:8px 2px">${dd.error || dd.note || 'this doc is identical on both branches — no prose change'}</div>`)}
+      <div class="sec">changed code it cites</div>
+      <div class="chips">${each(n.anchors, aid => { const b = this.briefIndex().get(aid); return html`<span class="chip mini" on-click="${() => this.openCodeById(aid)}">${b ? b.symbol : aid.slice(0, 10)}</span>`; }, aid => aid)}</div>
+    </div>`;
+  }
   detail() {
+    if (this.state.selDoc) return this.docDetail();
     const u = this.props.params.universe, b = this.state.sel, c = this.state.selCode;
-    if (!b) return html`<div class="empty" style="padding:40px">select a changed symbol to see its code & docs</div>`;
+    if (!b) return html`<div class="empty" style="padding:40px">select a doc or changed symbol on the left</div>`;
     const docs = this.docsFor(b.id);
     return html`<div class="ddetail">
       <div class="dsymhead"><span class="dt ${DTAG[b.tag]}">${b.tag}</span> <b>${b.symbol}</b> <span class="dk">${b.kind}</span></div>
@@ -782,7 +804,7 @@ class DiffPage extends Component {
       ${when(c, () => html`<pre class="hljs cdiff">${each(c.lines, ln => html`<div class="cl ${DTAG[ln.tag] || 'ctx'}"><span class="g">${ln.tag}</span><code>${raw(highlight(ln.text || ' ', c.lang))}</code></div>`)}</pre>`)}
       ${when(docs.length, () => html`<div class="sec">affected docs (${docs.length})</div>
         ${each(docs, n => html`<div class="ddoc">
-          <div class="ddoch"><span class="ddoct" on-click="${() => go(nodeUrl(u, n.id))}">${n.title || n.id}</span>${this.docActions(n)}</div>
+          <div class="ddoch"><span class="ddoct" on-click="${() => this.openDoc(n)}">${n.title || n.id}</span>${this.docActions(n)}</div>
           <md-content text="${n.summary}"></md-content>
         </div>`, n => n.id)}`)}
     </div>`;
@@ -852,8 +874,8 @@ class DiffPage extends Component {
     const order = { dangling: 0, stale: 1, removed: 2, fresh: 3, generated: 4 };
     const docs = [...d.impact.nodes].sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9) || a.title.localeCompare(b.title));
     if (!docs.length) return html`<div class="dim" style="padding:8px 2px">no documented code changed in this diff</div>`;
-    return html`${each(docs, n => html`<div class="dfdoc ${n.status}">
-      <div class="dfdh"><span class="dfdt" on-click="${() => go(nodeUrl(u, n.id))}">${n.title || n.id}</span>${this.docActions(n)}</div>
+    return html`${each(docs, n => html`<div class="dfdoc ${n.status} ${this.state.selDoc && this.state.selDoc.id === n.id ? 'sel' : ''}">
+      <div class="dfdh"><span class="dfdt" on-click="${() => this.openDoc(n)}">${n.title || n.id}</span>${this.docActions(n)}</div>
       <div class="chips">${each(n.anchors, aid => { const b = bi.get(aid); const s = this.state.sel && this.state.sel.id === aid; return html`<span class="chip mini ${s ? 'sel' : ''}" on-click="${() => this.openCodeById(aid)}">${b ? b.symbol : aid.slice(0, 10)}</span>`; }, aid => aid)}</div>
     </div>`, n => n.id)}`;
   }

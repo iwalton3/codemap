@@ -239,6 +239,11 @@ export async function loadNodeVersions(root: string, nodeId: string): Promise<No
   return versionsOf(db(root), nodeId);
 }
 
+/** The version that wins against a given anchor-hash map (e.g. a base/head snapshot). */
+export function winningVersionAt(versions: NodeVersion[], hashes: Map<string, string>): NodeVersion | undefined {
+  return versions.length ? selectWinner(versions, hashes).v : undefined;
+}
+
 // A conservative id-safe slug (kept: node ids are still human-facing).
 export function slug(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "node";

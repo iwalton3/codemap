@@ -295,6 +295,10 @@
     .cl code { background: none; padding: 0; font-family: var(--mono); font-size: 12.5px; }
     .cl.added { background: rgba(126, 231, 135, 0.10); }
     .cl.removed { background: rgba(242, 123, 123, 0.10); }
+    /* doc prose diff: wrap long summary/body lines instead of scrolling */
+    pre.docdiff { white-space: normal; }
+    .docdiff .cl { white-space: pre-wrap; word-break: break-word; min-width: 0; width: auto; }
+    .dfdoc.sel { background: var(--panel); box-shadow: inset 0 0 0 1px var(--accent); }
   </style>
   <!-- Absolute paths so deep-linked routes (e.g. /u/x/diff/?base=…) still resolve assets. -->
   <link rel="stylesheet" href="/vendor/github-dark.min.css">

@@ -145,6 +145,12 @@ const tools: Tool[] = [
     handler: (_a, c) => ops.snapshots(c.universe.path),
   },
   {
+    name: "diff_doc",
+    description: "Diff a doc's PROSE across a branch diff: resolves which version of node `id` wins on `base` vs `head` and, if they differ (a fork), line-diffs their title/summary/body. Shows how the DOCUMENTATION changed between branches — grounds a code diff in the human-readable intent. Omit head to compare base against the working tree.",
+    inputSchema: obj({ base: { type: "string" }, head: { type: "string" }, id: { type: "string" } }, ["base", "id"]),
+    handler: (a, c) => ops.docDiff(c.universe.path, a.base, a.head, a.id),
+  },
+  {
     name: "diff",
     description: "Diff two anchor snapshots for reviewing a branch/PR: added/removed/changed symbols plus the impact on the docs, flows, and reviews that cite them. `base` is a cached snapshot (branch/tag/sha — cache it first with `init`/`snapshot`). Omit `head` to diff against a fresh index of the CURRENT working tree (the usual PR-review path: you've checked out the branch under review); or pass a second cached ref for a pure historical set-op.",
     inputSchema: obj({ base: { type: "string" }, head: { type: "string" } }, ["base"]),

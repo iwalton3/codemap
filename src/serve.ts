@@ -90,6 +90,8 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return ops.diff(root, q.get("base") ?? "", q.get("head") || undefined);
     case "/api/diff/code":
       return ops.diffCode(root, q.get("base") ?? "", q.get("head") || undefined, q.get("id") ?? "", q.get("file") ?? "");
+    case "/api/diff/doc":
+      return ops.docDiff(root, q.get("base") ?? "", q.get("head") || undefined, q.get("id") ?? "");
     default:
       return null;
   }

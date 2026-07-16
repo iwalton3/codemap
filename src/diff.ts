@@ -16,7 +16,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Anchor, Review } from "./schema.js";
 import { indexRepo, indexFile, indexBlob } from "./repo.js";
-import { readSnapshot, loadNodes, readGraph, readReviews } from "./store.js";
+import { readSnapshot, readAnchorStore, loadNodes, loadNodeVersions, winningVersionAt, readGraph, readReviews } from "./store.js";
 import { reviewStatesFor } from "./reviews.js";
 import { revParse, headCommit, currentBranch, showFile } from "./git.js";
 import { grammarForPath } from "./grammars.js";
@@ -213,6 +213,43 @@ export interface AnchorCodeDiff {
   hasBase: boolean;
   hasHead: boolean;
   lines: DiffLine[];
+}
+
+/** Anchor-hash map for a ref: a cached snapshot's hashes, or @work for the working tree. */
+async function hashesAt(root: string, ref: string | undefined): Promise<Map<string, string> | null> {
+  if (!ref) return new Map((await readAnchorStore(root).catch(() => ({ anchors: [] as Anchor[] }))).anchors.map((a) => [a.id, a.bodyHash]));
+  const anchors = await readSnapshot(root, revParse(root, ref) ?? ref);
+  return anchors ? new Map(anchors.map((a) => [a.id, a.bodyHash])) : null;
+}
+
+export interface DocDiff {
+  forked: boolean;
+  base?: { versionId: string; branch: string | null; commit: string | null; title: string; removed: boolean };
+  head?: { versionId: string; branch: string | null; commit: string | null; title: string; removed: boolean };
+  lines?: DiffLine[];
+  note?: string;
+  error?: string;
+}
+
+/**
+ * Diff a doc's PROSE across a branch diff: resolve which version wins on the base
+ * snapshot vs the head, and if they differ, line-diff their text (title/summary/
+ * body). Lets a reviewer read *how the documentation changed* alongside the code.
+ */
+export async function docDiff(root: string, baseRef: string, headRef: string | undefined, nodeId: string): Promise<DocDiff> {
+  const versions = await loadNodeVersions(root, nodeId);
+  if (!versions.length) return { forked: false, error: `no node "${nodeId}"` };
+  const baseHashes = await hashesAt(root, baseRef);
+  if (!baseHashes) return { forked: false, error: `no cached snapshot for base "${baseRef}"` };
+  const headHashes = await hashesAt(root, headRef);
+  if (!headHashes) return { forked: false, error: `no cached snapshot for head "${headRef}"` };
+  const bv = winningVersionAt(versions, baseHashes);
+  const hv = winningVersionAt(versions, headHashes);
+  if (!bv || !hv) return { forked: false, note: "not resolvable on both sides" };
+  if (bv.versionId === hv.versionId) return { forked: false, note: "same version on both branches" };
+  const text = (v: typeof bv) => (v.removed ? "(removed)" : `# ${v.title}\n\n${v.summary}\n\n${v.body}`.replace(/\r/g, ""));
+  const side = (v: typeof bv) => ({ versionId: v.versionId, branch: v.createdBranch, commit: v.createdCommit, title: v.title, removed: !!v.removed });
+  return { forked: true, base: side(bv), head: side(hv), lines: lineDiff(text(bv), text(hv)) };
 }
 
 /**
