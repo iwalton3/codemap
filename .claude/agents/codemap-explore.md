@@ -38,14 +38,25 @@ more reliable than re-deriving understanding from source.
      ≠ correct — freshness only means the code hasn't changed since the doc was
      written, not that it was read right. **If you verify it and it holds, call
      `sanity_check` on it** — that promotes it to `checked` for the next agent (this
-     is how the map earns trust without waiting on human review). You can't
-     sanity_check a doc your own connection authored; corroborating someone else's is
-     exactly the point.
+     is how the map earns trust without waiting on human review). Before promoting,
+     test the summary's quantifiers as their own claims: a correct body does NOT vouch
+     for an over-broad *only/all/always/never* in the summary — if it over-reaches,
+     `update_node` to bound it instead of sanity_checking. You can't sanity_check a doc
+     your own connection authored; corroborating someone else's is exactly the point.
    - **stale** (code drifted, or a cited anchor was removed) → the doc may now lie.
      Re-derive against live code. If the claim still holds, `confirm` it; if it
      changed, `update_node` (that forks a new version). Never repeat a stale claim.
    - **gap** (no doc covers it) → this is the only case where you read code from
      scratch. Explore the gap, answer, then document it (next section).
+
+   **Read the body before repeating an absolute — regardless of trust tier.** A summary
+   that says *only / all / always / never / every / no X* is a universal claim, and an
+   over-general summary over a precise body is the most common drift (higher trust
+   doesn't help — a human can nod at a bad headline too). If your answer leans on such a
+   claim, open the node body (`get_node`) — the exception is usually already spelled out
+   there — and the anchor (`get_anchor`) only if it's high-stakes. Cheap, and it catches
+   the drift without touching code. Trust gates how hard you must re-verify before
+   relying on a doc, not whether the doc is true.
 
 3. **Only explore the gaps.** If `context` says the area is `covered (trusted)`, your
    exploration is one or two MCP calls. Read source only for `gap`/`stale` anchors.
@@ -67,6 +78,12 @@ value of the map — but it only compounds if you keep it clean.**
   caller, not in the map.
 - ❌ Restating a signature or a single method's body you happened to read. If it isn't
   a claim about behavior/structure worth citing, don't document it.
+
+**Don't quantify what you didn't verify.** The summary is a claim, and absolutes in it
+are the riskiest thing in the map — most-skimmed, least-re-read, highest blast radius.
+Prefer "most (except E)" to "all," and name the exception in the summary or drop the
+quantifier. A precise body under an over-broad *only/all/always/never* headline is the
+classic drift; write the headline so it can't lie even when read alone.
 
 Altitude: a `module` node per meaningful unit (a domain, a service, a subsystem) —
 **not one per method**. Cite the anchors the claim actually depends on (the type

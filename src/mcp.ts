@@ -118,6 +118,12 @@ const tools: Tool[] = [
     handler: (a, c) => ops.context(c.universe.path, a.refs),
   },
   {
+    name: "lint_summaries",
+    description: "Zero-cost drift check (no code read): nodes whose SUMMARY makes an absolute claim (only/all/always/never/…) while the BODY carries a qualifier (except/unless/…) — a summary/body self-contradiction, the most common doc drift. Review candidates: verify each (usually just re-read the body) and `update_node` to bound the summary, or dismiss.",
+    inputSchema: obj({}),
+    handler: (a, c) => ops.lintSummaries(c.universe.path),
+  },
+  {
     name: "cover",
     description: "Mark selected anchors so they stop polluting `find_gaps`. `as`: covered (claimed by a node, not load-bearing) | trivial (never document — getters, Apply overloads) | deferred (a subtree not documented here) | owned (documented in another universe — pass `owner`). The selector is stored and re-applied, so anchors added later inherit the state. Select by pathPrefix / file / kind / symbol-glob (e.g. \"Apply*\").",
     inputSchema: obj({

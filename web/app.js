@@ -172,11 +172,11 @@ defineComponent('home-page', HomePage);
 // --- universe dashboard: the "needs attention" landing page -------------------
 class DashboardPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { d: null, q: null }; }
+  constructor(props) { super(props); this.state = { d: null, q: null, lint: null }; }
   load = this.createTask(async () => {
     const u = this.props.params.universe; nav.current = u;
-    const [d, q] = await Promise.all([api('/api/dashboard', { u }), api('/api/questions', { u })]);
-    this.state.d = d; this.state.q = q;
+    const [d, q, lint] = await Promise.all([api('/api/dashboard', { u }), api('/api/questions', { u }), api('/api/lint', { u })]);
+    this.state.d = d; this.state.q = q; this.state.lint = lint;
   });
   mounted() { this.load.run(); }
   propsChanged() { this.load.run(); }
@@ -247,6 +247,12 @@ class DashboardPage extends Component {
             <button class="annores" on-click="${() => this.resolveQ(qn.id)}">${qn.resolved ? 'reopen' : 'resolve'}</button></div>
           <md-content text="${qn.text}"></md-content>
         </div>`, qn => qn.id)}`)}
+
+      ${when(this.state.lint && this.state.lint.count, () => html`<div class="sec">summary-drift candidates (${this.state.lint.count}) <span class="dim">— summary asserts an absolute the body qualifies; re-read the body, bound the summary if it over-reaches</span></div>
+        ${each(this.state.lint.candidates, ln => html`<div class="dq drift">
+          <div class="dqh"><span class="qbadge drift" title="summary says “${ln.absolute}”, body says “${ln.qualifier}”">“${ln.absolute}” vs “${ln.qualifier}”</span> <span class="dqt" on-click="${() => go(nodeUrl(u, ln.id))}">${ln.title}</span></div>
+          <div class="dim" style="font-size:12.5px">${ln.summary}</div>
+        </div>`, ln => ln.id)}`)}
 
       <div class="sec">explore</div>
       <div class="dnav">${each(nav2, x => html`<button on-click="${x[1]}">${x[0]}</button>`, x => x[0])}</div>

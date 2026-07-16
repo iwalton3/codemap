@@ -84,6 +84,8 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return ops.findGaps(root, { pathPrefix: q.get("prefix") ?? undefined, kind: q.get("kind") ?? undefined });
     case "/api/context":
       return ops.context(root, (q.get("refs") ?? "").split(",").map((s) => s.trim()).filter(Boolean));
+    case "/api/lint":
+      return ops.lintSummaries(root);
     case "/api/bugs":
       return ops.listBugs(root, { status: (q.get("status") as any) ?? undefined });
     case "/api/bug":

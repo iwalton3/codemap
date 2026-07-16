@@ -21,8 +21,12 @@ list or read everything.
 ## Answer first — the map is a knowledgebase, not just a to-do list
 Before you read code to answer a question, ASK codemap. \`context\` (pass the
 files/symbols you're about to work in) returns a \`verdict\` and the covering docs
-with a **trust** level; \`search\` node hits carry the same. The trust ladder, from
-freshness (does the cited code still match) × who confirmed the claim:
+with a **trust** level; \`search\` node hits carry the same. **Trust gates how hard you
+must re-verify before relying on a doc — not whether the doc is true.** A \`verified\`
+doc can still be wrong (a human can nod at a bad summary); a fresh \`unverified\` one can
+be exactly right (a just-corrected doc lands here — "awaiting a second pair of eyes,"
+not "suspect"). Higher trust just means someone already did the checking. The ladder,
+from freshness (does the cited code still match) × who confirmed the claim:
 - **verified** (fresh + a human reviewed) — rely on it; don't re-read the code.
 - **checked** (fresh + an agent read the code and confirmed the claims) — solid;
   spot-check only if it's critical.
@@ -36,6 +40,15 @@ When you read the code behind an \`unverified\` doc and its claims hold, run
 sanity_check a doc your OWN connection authored — a different session must
 corroborate.) Only explore the \`gaps\` \`context\` reports. When you fill one, document
 the **reusable** claim — keep the map current; do NOT record task-specific findings.
+
+**Summaries are claims, and absolutes in them are the riskiest.** Every *only / all /
+always / never / every / no X* in a summary is a universal claim — verify it by looking
+for one counterexample, separately from the body. The classic drift is a precise,
+correct body under an over-broad summary; a right body does not make a wrong headline
+right. When writing, don't quantify what you didn't verify: prefer "most (except E)" to
+"all," and name the exception in the summary or drop the quantifier. When reading, an
+absolute in a summary is a re-read trigger — and the re-read is usually just the body
+(\`get_node\`), not the code.
 
 ## Document (one meaningful unit at a time)
 - READ FIRST: \`get_anchor\` returns the live code. Never document code you have

@@ -181,6 +181,32 @@ export async function dashboard(root: string) {
   };
 }
 
+// Absolutes in a summary are universal claims (highest blast radius, least re-read);
+// a qualifier in the body means the exception is documented but the headline
+// over-reached — the classic "precise body, over-broad summary" drift.
+const SUMMARY_ABSOLUTE = /\b(only|all|always|never|every|no|none|any|entirely|exclusively)\b/i;
+const BODY_QUALIFIER = /(\bexcept\b|\bunless\b|\bbut\b|\bhowever\b|\balone\b|only when|other than|aside from|as long as|provided that)/i;
+
+/**
+ * Zero-cost summary lint (no code read): flag nodes whose SUMMARY makes an absolute
+ * claim (only/all/always/never/…) while the BODY carries a qualifier (except/unless/…)
+ * — a summary/body self-contradiction that's the most common documentation drift.
+ * Returns REVIEW CANDIDATES to verify (like analyzer findings), never auto-filed.
+ */
+export async function lintSummaries(root: string) {
+  const nodes = await loadNodes(root);
+  const candidates = [] as { id: string; title: string; absolute: string; qualifier: string; summary: string }[];
+  for (const n of nodes) {
+    if (n.generatedBy) continue; // analyzer prose isn't hand-authored
+    const abs = SUMMARY_ABSOLUTE.exec(n.summary || "");
+    if (!abs) continue;
+    const qual = BODY_QUALIFIER.exec(n.body || "");
+    if (!qual) continue;
+    candidates.push({ id: n.id, title: n.title, absolute: abs[0].toLowerCase(), qualifier: qual[0].toLowerCase(), summary: n.summary });
+  }
+  return { count: candidates.length, candidates };
+}
+
 /** The documentation work queue: only `open` anchors, ranked by likely value. */
 export async function findGaps(
   root: string,
