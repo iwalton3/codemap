@@ -709,33 +709,62 @@ const DTAG = { '+': 'added', '-': 'removed', '~': 'changed' };
 class DiffPage extends Component {
   static props = { params: {}, query: {} };
   constructor(props) { super(props); this.state = { snaps: null, diff: null, sel: null, selCode: null, codePending: false, view: 'doc', selDoc: null, docDiff: null, modal: false }; }
+  // The base/head/sel selection lives entirely in the URL query, so the browser
+  // back/forward buttons walk the review history and any drill-down is deep-linkable.
+  // `load` (re)fetches the diff when base/head change; a sel-only change just
+  // re-resolves the right-hand detail via applySel().
   load = this.createTask(async () => {
     const u = this.props.params.universe; nav.current = u;
     if (!this.state.snaps) this.state.snaps = (await api('/api/snapshots', { u })).snapshots;
     this.state.sel = null; this.state.selCode = null; this.state.selDoc = null; this.state.docDiff = null;
     const base = this.props.query.base;
     this.state.diff = base ? await api('/api/diff', { u, base, head: this.props.query.head || '' }) : null;
+    await this.applySel();
   });
-  mounted() { this.load.run(); }
-  propsChanged() { this.load.run(); }
+  mounted() { this._q = { ...this.props.query }; this._u = this.props.params.universe; this.load.run(); }
+  propsChanged(name) {
+    if (name !== 'query' && name !== 'params') return;
+    const q = this.props.query, prev = this._q || {}, u = this.props.params.universe;
+    this._q = { ...q };
+    if (u !== this._u || q.base !== prev.base || q.head !== prev.head) { this._u = u; this.load.run(); }
+    else if (q.sel !== prev.sel) this.applySel();
+  }
 
   pick(kind, val) {
+    // Changing base/head invalidates any drill-down, so `sel` is intentionally dropped.
     const q = { base: this.props.query.base, head: this.props.query.head };
     q[kind] = val;
     go(diffUrl(this.props.params.universe), q);
   }
-  async openCode(b) {
-    const u = this.props.params.universe;
-    this.state.selDoc = null; this.state.sel = b; this.state.selCode = null; this.state.codePending = true;
+  // Navigate to a drill-down (pushes browser history). `type` is 'doc' | 'sym'.
+  pickSel(type, id) {
+    go(diffUrl(this.props.params.universe), { base: this.props.query.base, head: this.props.query.head, sel: type + ':' + id });
+  }
+  // Resolve the right-hand detail from the `sel` query param against the loaded diff.
+  async applySel() {
+    const sel = this.props.query.sel || '', i = sel.indexOf(':');
+    const type = i === -1 ? '' : sel.slice(0, i), id = i === -1 ? '' : sel.slice(i + 1);
+    if (!type || !id || !this.state.diff || this.state.diff.error) {
+      this.state.sel = null; this.state.selCode = null; this.state.selDoc = null; this.state.docDiff = null;
+      return;
+    }
+    if (type === 'doc') await this.loadDoc(id);
+    else if (type === 'sym') await this.loadCode(id);
+  }
+  async loadCode(id) {
+    const u = this.props.params.universe, d = this.state.diff;
+    const b = [...d.changed, ...d.removed, ...d.added].find(x => x.id === id) || { id, symbol: id.slice(0, 10), file: '', kind: '', tag: '~' };
+    this.state.selDoc = null; this.state.docDiff = null; this.state.sel = b; this.state.selCode = null; this.state.codePending = true;
     try {
       this.state.selCode = await api('/api/diff/code', { u, base: this.props.query.base, head: this.props.query.head || '', id: b.id, file: b.file });
     } finally { this.state.codePending = false; }
   }
-  async openDoc(n) {
+  async loadDoc(id) {
     const u = this.props.params.universe;
-    this.state.sel = null; this.state.selDoc = n; this.state.docDiff = null; this.state.docPending = true;
+    const n = (this.state.diff.impact.nodes || []).find(x => x.id === id) || { id, title: id, status: 'removed', anchors: [], review: {} };
+    this.state.sel = null; this.state.selCode = null; this.state.selDoc = n; this.state.docDiff = null; this.state.docPending = true;
     try {
-      this.state.docDiff = await api('/api/diff/doc', { u, base: this.props.query.base, head: this.props.query.head || '', id: n.id });
+      this.state.docDiff = await api('/api/diff/doc', { u, base: this.props.query.base, head: this.props.query.head || '', id });
     } finally { this.state.docPending = false; }
   }
   openModal() {
@@ -775,7 +804,7 @@ class DiffPage extends Component {
 
   symRow(b) {
     const sel = this.state.sel && this.state.sel.id === b.id;
-    return html`<div class="drow ${DTAG[b.tag]} ${sel ? 'sel' : ''}" on-click="${() => this.openCode(b)}">
+    return html`<div class="drow ${DTAG[b.tag]} ${sel ? 'sel' : ''}" on-click="${() => this.pickSel('sym', b.id)}">
       <span class="dt ${DTAG[b.tag]}">${b.tag}</span><span class="dsym">${b.symbol}</span><span class="dk">${b.kind}</span>
     </div>`;
   }
@@ -789,7 +818,9 @@ class DiffPage extends Component {
       ${when(this.state.docPending, () => html`<div class="loading">loading…</div>`)}
       ${when(dd && dd.forked, () => html`<div class="sec">doc changes · ${dd.base.branch || 'base'} → ${dd.head.branch || 'head'} <span class="viewlink" on-click="${() => this.openModal()}">⛶ side-by-side</span></div>
         <pre class="hljs cdiff docdiff">${each(dd.lines, ln => html`<div class="cl ${DTAG[ln.tag] || 'ctx'}"><span class="g">${ln.tag}</span><code>${ln.text || ' '}</code></div>`)}</pre>`)}
-      ${when(dd && !dd.forked, () => html`<div class="dim" style="padding:8px 2px">${dd.error || dd.note || 'this doc is identical on both branches — no prose change'}</div>`)}
+      ${when(dd && !dd.forked && dd.doc, () => html`<div class="sec">document <span class="dim">· unchanged across this diff</span></div>
+        <md-content text="${((dd.doc.summary || '') + (dd.doc.body ? '\n\n' + dd.doc.body : '')) || '_(empty)_'}"></md-content>`)}
+      ${when(dd && !dd.forked && !dd.doc, () => html`<div class="dim" style="padding:8px 2px">${dd.error || dd.note || 'this doc is identical on both branches — no prose change'}</div>`)}
       <div class="sec">changed code it cites</div>
       <div class="chips">${each(n.anchors, aid => { const b = this.briefIndex().get(aid); return html`<span class="chip mini" on-click="${() => this.openCodeById(aid)}">${b ? b.symbol : aid.slice(0, 10)}</span>`; }, aid => aid)}</div>
     </div>`;
@@ -804,13 +835,13 @@ class DiffPage extends Component {
       <div class="meta">${b.file}${c ? ' · ' + (c.hasBase ? 'base' : '∅') + ' → ' + (c.hasHead ? 'head' : '∅') : ''}
         <span class="viewlink" on-click="${() => go(anchorUrl(u, b.id))}">open anchor ›</span></div>
       ${when(c && c.review, () => html`<div class="drev"><span class="dim">mark this change reviewed:</span>
-        <span class="rev">${this.revBtn('anchor', b.id, 'logical', c.review.logical, () => this.openCode(this.state.sel))}${this.revBtn('anchor', b.id, 'code', c.review.code, () => this.openCode(this.state.sel))}</span></div>`)}
+        <span class="rev">${this.revBtn('anchor', b.id, 'logical', c.review.logical, () => this.loadCode(b.id))}${this.revBtn('anchor', b.id, 'code', c.review.code, () => this.loadCode(b.id))}</span></div>`)}
       <div class="sec">code diff</div>
       ${when(this.state.codePending, () => html`<div class="loading">loading code…</div>`)}
       ${when(c, () => html`<pre class="hljs cdiff">${each(c.lines, ln => html`<div class="cl ${DTAG[ln.tag] || 'ctx'}"><span class="g">${ln.tag}</span><code>${raw(highlight(ln.text || ' ', c.lang))}</code></div>`)}</pre>`)}
       ${when(docs.length, () => html`<div class="sec">affected docs (${docs.length})</div>
         ${each(docs, n => html`<div class="ddoc">
-          <div class="ddoch"><span class="ddoct" on-click="${() => this.openDoc(n)}">${n.title || n.id}</span>${this.docActions(n)}</div>
+          <div class="ddoch"><span class="ddoct" on-click="${() => this.pickSel('doc', n.id)}">${n.title || n.id}</span>${this.docActions(n)}</div>
           <md-content text="${n.summary}"></md-content>
         </div>`, n => n.id)}`)}
     </div>`;
@@ -876,12 +907,8 @@ class DiffPage extends Component {
     </main>`;
   }
 
-  // Open code for an anchor id referenced by a flow step (look up its brief from the diff).
-  openCodeById(id) {
-    const d = this.state.diff;
-    const b = [...d.changed, ...d.removed, ...d.added].find(x => x.id === id);
-    if (b) this.openCode(b);
-  }
+  // Open code for an anchor id referenced by a flow step (navigate → deep-linkable).
+  openCodeById(id) { this.pickSel('sym', id); }
   // Doc-forward: the affected docs (broad view) with per-doc status/actions and the
   // changed symbols each cites (click a symbol to drill into its code diff).
   docForward() {
@@ -890,7 +917,7 @@ class DiffPage extends Component {
     const docs = [...d.impact.nodes].sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9) || a.title.localeCompare(b.title));
     if (!docs.length) return html`<div class="dim" style="padding:8px 2px">no documented code changed in this diff</div>`;
     return html`${each(docs, n => html`<div class="dfdoc ${n.status} ${this.state.selDoc && this.state.selDoc.id === n.id ? 'sel' : ''}">
-      <div class="dfdh"><span class="dfdt" on-click="${() => this.openDoc(n)}">${n.title || n.id}</span>${this.docActions(n)}</div>
+      <div class="dfdh"><span class="dfdt" on-click="${() => this.pickSel('doc', n.id)}">${n.title || n.id}</span>${this.docActions(n)}</div>
       <div class="chips">${each(n.anchors, aid => { const b = bi.get(aid); const s = this.state.sel && this.state.sel.id === aid; return html`<span class="chip mini ${s ? 'sel' : ''}" on-click="${() => this.openCodeById(aid)}">${b ? b.symbol : aid.slice(0, 10)}</span>`; }, aid => aid)}</div>
     </div>`, n => n.id)}`;
   }

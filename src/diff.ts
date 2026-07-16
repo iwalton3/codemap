@@ -231,6 +231,8 @@ export interface DocDiff {
   base?: DocSide;
   head?: DocSide;
   lines?: DiffLine[];
+  /** The single winning version when it's identical on both branches (forked=false). */
+  doc?: DocSide;
   note?: string;
   error?: string;
 }
@@ -250,9 +252,11 @@ export async function docDiff(root: string, baseRef: string, headRef: string | u
   const bv = winningVersionAt(versions, baseHashes);
   const hv = winningVersionAt(versions, headHashes);
   if (!bv || !hv) return { forked: false, note: "not resolvable on both sides" };
-  if (bv.versionId === hv.versionId) return { forked: false, note: "same version on both branches" };
   const text = (v: typeof bv) => (v.removed ? "(removed)" : `# ${v.title}\n\n${v.summary}\n\n${v.body}`.replace(/\r/g, ""));
   const side = (v: typeof bv): DocSide => ({ versionId: v.versionId, branch: v.createdBranch, commit: v.createdCommit, title: v.title, summary: v.summary, body: v.body, removed: !!v.removed });
+  // Same version on both branches: the doc's prose is unchanged, so ship the
+  // single winning version for the UI to render inline (no diff to show).
+  if (bv.versionId === hv.versionId) return { forked: false, note: "same version on both branches", doc: side(bv) };
   return { forked: true, base: side(bv), head: side(hv), lines: lineDiff(text(bv), text(hv)) };
 }
 
