@@ -14,7 +14,7 @@ import { join } from "node:path";
 import {
   type Anchor, type LogicalNode, type LogicalNodeType, type EdgeType, type State,
   type Bug, type BugStatus, type BugSeverity, type Annotation,
-  type AnchorSelector, type CoverageMark, type CoverageState, type Edge,
+  type AnchorSelector, type CoverageMark, type CoverageState, type Edge, type ReviewLevel, type Importance, type TriageSource,
   SCHEMA_VERSION,
 } from "./schema.js";
 import { indexFile, indexRepo } from "./repo.js";
@@ -32,7 +32,8 @@ import { resolveAnchorRefs } from "./refs.js";
 import { refreshAnalyzers } from "./analyzers/run.js";
 import { applyIndexUpdate } from "./sync.js";
 import { grammarForPath } from "./grammars.js";
-import { reviewStatus, reviewStatesFor, anchorReviewMap } from "./reviews.js";
+import { reviewStatus, reviewStatesFor, anchorReviewMap, changedSince as reviewsChangedSince, type Attestation, type ReviewPair } from "./reviews.js";
+import { setTriage as triageSet, clearTriage as triageClear, triageStatus, reviewTriageFor } from "./triage.js";
 
 const HL_LANG: Record<string, string> = { c_sharp: "csharp", python: "python", javascript: "javascript", typescript: "typescript", tsx: "typescript" };
 const langFor = (file: string) => HL_LANG[grammarForPath(file) ?? ""] ?? "plaintext";
@@ -374,11 +375,19 @@ export async function docDiff(root: string, base: string, head: string | undefin
 /** Before/after source for one anchor between two refs (the code drill-down) + its review state. */
 export async function diffCode(root: string, base: string, head: string | undefined, id: string, file: string) {
   const code = await anchorCodeDiff(root, base, head, id, file);
-  let rp: { logical: { state: string; actor?: string }; code: { state: string; actor?: string } } | undefined;
+  let e: Awaited<ReturnType<typeof reviewTriageFor>> extends Map<string, infer V> ? V | undefined : never;
   try {
-    rp = (await reviewStatesFor(root, [{ kind: "anchor", id }])).get(`anchor:${id}`);
+    e = (await reviewTriageFor(root, [{ kind: "anchor", id }])).get(`anchor:${id}`);
   } catch { /* review state best-effort */ }
-  return { ...code, review: { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" }, reviewBy: { logical: rp?.logical.actor ?? null, code: rp?.code.actor ?? null } };
+  const rp = e?.review;
+  return {
+    ...code,
+    review: { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" },
+    reviewBy: { logical: rp?.logical.actor ?? null, code: rp?.code.actor ?? null },
+    viewed: { logical: e?.viewed.logical.state ?? "unreviewed", code: e?.viewed.code.state ?? "unreviewed" },
+    triage: e?.triage,
+    severity: e?.triage.severity ?? "untriaged",
+  };
 }
 
 /** Collapse a namespace to a browsable domain (e.g. Acme.Settlement.Cards.Handlers → Settlement.Cards). */
@@ -414,10 +423,11 @@ export async function nodeCatalog(root: string) {
     outC.set(e.from, (outC.get(e.from) ?? 0) + 1);
     inC.set(e.to, (inC.get(e.to) ?? 0) + 1);
   }
-  const reviews = await reviewStatesFor(root, nodes.map((n) => ({ kind: "node" as const, id: n.id })));
+  const rt = await reviewTriageFor(root, nodes.map((n) => ({ kind: "node" as const, id: n.id })));
   const out = nodes.map((n) => {
     const topNs = topNamespace(n.anchors, nsById);
-    const rp = reviews.get(`node:${n.id}`);
+    const e = rt.get(`node:${n.id}`);
+    const rp = e?.review;
     return {
       id: n.id,
       type: n.type,
@@ -434,10 +444,13 @@ export async function nodeCatalog(root: string) {
       versionCount: n.versionCount ?? 1,
       review: { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" },
       reviewBy: { logical: rp?.logical.actor ?? null, code: rp?.code.actor ?? null },
+      viewed: { logical: e?.viewed.logical.state ?? "unreviewed", code: e?.viewed.code.state ?? "unreviewed" },
       trust: trustOf(n.status, rp),
+      triage: e?.triage,
+      severity: e?.triage.severity ?? "untriaged",
     };
   });
-  const tally = (arr: typeof out, k: "type" | "domain" | "status") =>
+  const tally = (arr: typeof out, k: "type" | "domain" | "status" | "severity") =>
     arr.reduce<Record<string, number>>((m, x) => ((m[x[k] ?? "(none)"] = (m[x[k] ?? "(none)"] ?? 0) + 1), m), {});
   const reviewed = out.filter((n) => n.review.logical !== "unreviewed" || n.review.code !== "unreviewed").length;
   return {
@@ -446,6 +459,7 @@ export async function nodeCatalog(root: string) {
     byType: tally(out, "type"),
     byDomain: tally(out, "domain"),
     byStatus: tally(out, "status"),
+    bySeverity: tally(out, "severity"),
     nodes: out,
   };
 }
@@ -725,14 +739,26 @@ export async function getNode(root: string, id: string) {
   const node = nodes.find((n) => n.id === id);
   if (!node) return { error: `no node "${id}"` };
   const byId = new Map(store.anchors.map((a) => [a.id, a]));
-  const review = await reviewStatus(root, { kind: "node", id });
+  // One batch for the node and all its anchors → review (vouch) + viewed + severity.
+  const rt = await reviewTriageFor(root, [
+    { kind: "node", id },
+    ...node.anchors.map((aid) => ({ kind: "anchor" as const, id: aid })),
+  ]);
+  const nodeRt = rt.get(`node:${id}`)!;
   return {
     ...node,
-    resolvedAnchors: node.anchors.map((aid) => (byId.get(aid) ? anchorBrief(byId.get(aid)!) : { id: aid, missing: true })),
+    resolvedAnchors: node.anchors.map((aid) => {
+      const e = rt.get(`anchor:${aid}`);
+      const brief = byId.get(aid) ? anchorBrief(byId.get(aid)!) : { id: aid, missing: true };
+      return { ...brief, review: e?.review, viewed: e?.viewed, severity: e?.triage.severity ?? "untriaged", triage: e?.triage };
+    }),
     edges: graph.edges.filter((e) => e.from === id || e.to === id),
     annotations: annStore.annotations.filter((a) => a.target.kind === "node" && a.target.id === id),
-    review,
-    trust: trustOf(node.status, review),
+    review: nodeRt.review,
+    viewed: nodeRt.viewed,
+    triage: nodeRt.triage,
+    severity: nodeRt.triage.severity,
+    trust: trustOf(node.status, nodeRt.review),
   };
 }
 
@@ -937,11 +963,20 @@ export async function flow(root: string, id: string) {
     .filter((n): n is LogicalNode => Boolean(n));
 
   const allAnchorIds = [...new Set(stepNodes.flatMap((s) => s.anchors))];
-  const rev = await reviewStatesFor(root, [
-    { kind: "node", id },
+  const revTargets = [
+    { kind: "node" as const, id },
     ...stepNodes.map((s) => ({ kind: "node" as const, id: s.id })),
     ...allAnchorIds.map((aid) => ({ kind: "anchor" as const, id: aid })),
+  ];
+  // Two passes: the vouch (`signed`/`checked`) and the `viewed` exposure marks. The
+  // flow-level targeted diff is the roll-up of *stale* marks — steps you'd reviewed
+  // whose code has since drifted (never-reviewed steps are a first-look bucket, not
+  // "changed since you looked"), so a re-review targets only the delta.
+  const [rev, revView] = await Promise.all([
+    reviewStatesFor(root, revTargets),
+    reviewStatesFor(root, revTargets, { viewed: true }),
   ]);
+  const isStale = (p?: ReviewPair) => Boolean(p && (p.code.state === "stale" || p.logical.state === "stale"));
   const touchesByStep = new Map<string, string[]>();
   for (const e of graph.edges) {
     if (e.type !== "touches") continue;
@@ -970,22 +1005,37 @@ export async function flow(root: string, id: string) {
   };
 
   const steps = [];
+  const changedSigned: string[] = [];
+  const changedViewed: string[] = [];
   let order = 0;
   for (const s of stepNodes) {
     const anchors = [];
     for (const aid of s.anchors) {
       const a = anchorById.get(aid);
       if (!a) { anchors.push({ id: aid, missing: true }); continue; }
-      anchors.push({ id: a.id, symbol: a.symbolPath.join(" › "), file: a.file, lines: a.loc ? `${a.loc.startLine}-${a.loc.endLine}` : undefined, kind: a.kind, lang: langFor(a.file), code: await codeFor(a), review: rev.get("anchor:" + a.id) });
+      anchors.push({ id: a.id, symbol: a.symbolPath.join(" › "), file: a.file, lines: a.loc ? `${a.loc.startLine}-${a.loc.endLine}` : undefined, kind: a.kind, lang: langFor(a.file), code: await codeFor(a), review: rev.get("anchor:" + a.id), viewed: revView.get("anchor:" + a.id) });
     }
+    // A step "changed since signed/viewed" iff its own mark or any of its anchors'
+    // marks went stale under that attestation.
+    const stepSigned = isStale(rev.get("node:" + s.id)) || anchors.some((a) => isStale((a as { review?: ReviewPair }).review));
+    const stepViewed = isStale(revView.get("node:" + s.id)) || anchors.some((a) => isStale((a as { viewed?: ReviewPair }).viewed));
+    if (stepSigned) changedSigned.push(s.id);
+    if (stepViewed) changedViewed.push(s.id);
     steps.push({
       id: s.id, title: s.title, summary: s.summary, body: s.body, order: order++,
-      review: rev.get("node:" + s.id),
+      review: rev.get("node:" + s.id), viewed: revView.get("node:" + s.id),
+      changed: { signed: stepSigned, viewed: stepViewed },
       touches: (touchesByStep.get(s.id) ?? []).map((tid) => ({ id: tid, title: byId.get(tid)?.title ?? tid })),
       anchors,
     });
   }
-  return { id, title: proc.title, summary: proc.summary, body: proc.body, review: rev.get("node:" + id), steps };
+  return {
+    id, title: proc.title, summary: proc.summary, body: proc.body,
+    review: rev.get("node:" + id), viewed: revView.get("node:" + id),
+    // The targeted diff: step ids that have drifted under each mark since you reviewed.
+    changed: { signed: changedSigned, viewed: changedViewed },
+    steps,
+  };
 }
 
 export async function getAnchor(root: string, id: string) {
@@ -1024,7 +1074,36 @@ export async function getAnchor(root: string, id: string) {
     annotations: annStore.annotations.filter((a) => a.target.kind === "anchor" && a.target.id === id),
     lang: langFor(anchor.file),
     review: await reviewStatus(root, { kind: "anchor", id }),
+    // The `viewed` exposure marks, separate from the vouch above, so the UI can show
+    // "looked at" distinctly from "signed off" (and each with its own staleness).
+    viewed: await reviewStatus(root, { kind: "anchor", id }, { viewed: true }),
+    // Stakes + resulting severity (stakes × attestation gap). See docs/triage.md.
+    triage: await triageStatus(root, { kind: "anchor", id }),
   };
+}
+
+/** Set/raise stakes on a target (ratchet-enforced). See docs/triage.md. */
+export async function setTriage(
+  root: string,
+  input: { targetKind: "node" | "anchor"; targetId: string; importance: Importance; source: TriageSource; reason?: string; tripwire?: boolean },
+) {
+  return triageSet(root, input);
+}
+
+/** Clear a target's stakes (back to untriaged). */
+export async function clearTriage(root: string, input: { targetKind: "node" | "anchor"; targetId: string }) {
+  return triageClear(root, input);
+}
+
+/**
+ * Targeted diff — which anchors covered by a target have moved since the human last
+ * `viewed` / `signed` it. The read behind "what changed since I last looked?".
+ */
+export async function changedSince(
+  root: string,
+  input: { targetKind: "node" | "anchor"; targetId: string; level: ReviewLevel; attestation: Attestation },
+) {
+  return reviewsChangedSince(root, { kind: input.targetKind, id: input.targetId }, { level: input.level, attestation: input.attestation });
 }
 
 // ---------------------------------------------------------------------------

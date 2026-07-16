@@ -392,6 +392,16 @@ export interface Review {
    * read, not a human blessing). Absent = legacy human review. See `trustOf`.
    */
   actor?: "human" | "agent";
+  /**
+   * Sub-splits the *human* act into two independent, separately witness-hashed marks:
+   *   "viewed" = exposure — "I've laid eyes on this, intuition didn't fire" (does NOT
+   *              vouch; it's the pass that elicits questions).
+   *   "signed" = ownership — the liability-bearing sign-off (this is `verified`).
+   * A human can be `signed` on an old hash yet not have re-`viewed` the new one, so the
+   * two are separate rows. Absent on an agent review = `checked`; absent on a legacy
+   * human review = `signed` (see `effectiveAttestation`).
+   */
+  attestation?: "viewed" | "signed";
   at: string; // ISO timestamp
   reviewedCommit: string | null;
   /** Hashes of the covered anchors at review time; a mismatch later = `stale`. */
@@ -401,4 +411,35 @@ export interface Review {
 export interface ReviewStore {
   schemaVersion: number;
   reviews: Review[];
+}
+
+// ---------------------------------------------------------------------------
+// Triage — the stakes of an anchor/node (blast radius if wrong), which sets how
+// much review it demands. Combined with the review attestation (viewed/signed),
+// it yields a severity (see docs/triage.md). Absent = untriaged (escalates until
+// looked at). Agents/graph may only *raise* stakes (`likely`); a human owns lowering.
+// ---------------------------------------------------------------------------
+
+export type Importance = "business-critical" | "important" | "mechanical";
+export type TriageSource = "graph" | "agent" | "human";
+
+export interface Triage {
+  target: { kind: "node" | "anchor"; id: string };
+  importance: Importance;
+  /** Agent/graph proposal, not yet confirmed by a human. A human mark is never `likely`. */
+  likely: boolean;
+  /** Alert-on-change, independent of the review bar (see docs/triage.md). */
+  tripwire?: boolean;
+  source: TriageSource;
+  /** Provenance when graph/agent-derived (re-emit safe), mirrors node `generatedBy`. */
+  generatedBy?: string;
+  reason?: string;
+  at: string; // ISO timestamp
+  /** Anchor hashes at triage time — a mismatch later triggers re-triage (Phase 4). */
+  witnesses: BugWitness[];
+}
+
+export interface TriageStore {
+  schemaVersion: number;
+  triage: Triage[];
 }

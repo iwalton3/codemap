@@ -266,6 +266,17 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "triage",
+    description: "Propose the STAKES of a node/anchor (blast radius if wrong): 'business-critical' (moves money / gates a business process / authz boundary), 'important' (real business logic, recoverable), or 'mechanical' (plumbing, no business logic). Recorded as an AGENT proposal (`likely`) — a human confirms or lowers it. RATCHET: you may only RAISE an existing tier, never lower it. Stakes × review attestation → a severity that routes human attention (see docs/triage.md). Judge from the graph where you can (emits a business event, touches money, gates a command) — don't guess mechanical for code you haven't traced.",
+    inputSchema: obj({
+      targetKind: { type: "string", enum: ["node", "anchor"] },
+      targetId: { type: "string" },
+      importance: { type: "string", enum: ["business-critical", "important", "mechanical"] },
+      reason: { type: "string" },
+    }, ["targetKind", "targetId", "importance"]),
+    handler: async (a, c) => ops.setTriage(c.universe.path, { targetKind: a.targetKind, targetId: a.targetId, importance: a.importance, source: "agent", reason: a.reason }),
+  },
+  {
     name: "sanity_check",
     description: "Record that YOU (an agent) read the current code and a doc's claims hold — promotes it from `unverified` to `checked` trust. Witnessed, so it reverts to `stale` when the code changes. GUARDED: the connection that authored the doc can't check it — a different session must corroborate (no self-vouching). Use after verifying a doc during exploration.",
     inputSchema: obj({ id: { type: "string" }, reviewer: { type: "string" } }, ["id"]),

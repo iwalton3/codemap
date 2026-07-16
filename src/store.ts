@@ -22,7 +22,7 @@ import {
   type Anchor, type AnchorStore, type State, type LogicalNode, type LogicalNodeType,
   type NodeVersion, type NodeCitation, type NodeStatus,
   type Graph, type Edge, type Bug, type BugStore, type Annotation, type AnnotationStore,
-  type CoverageRule, type CoverageStore, type AnalyzerConfig, type Review, type ReviewStore,
+  type CoverageRule, type CoverageStore, type AnalyzerConfig, type Review, type ReviewStore, type Triage, type TriageStore,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -428,4 +428,12 @@ export async function readReviews(root: string): Promise<ReviewStore> {
 
 export async function writeReviews(root: string, reviews: Review[]): Promise<void> {
   setMeta(db(root), "reviews", { schemaVersion: SCHEMA_VERSION, reviews });
+}
+
+export async function readTriage(root: string): Promise<TriageStore> {
+  return getMeta<TriageStore>(db(root), "triage") ?? { schemaVersion: SCHEMA_VERSION, triage: [] };
+}
+
+export async function writeTriage(root: string, triage: Triage[]): Promise<void> {
+  setMeta(db(root), "triage", { schemaVersion: SCHEMA_VERSION, triage });
 }

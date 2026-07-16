@@ -6,10 +6,26 @@
 
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { type Review, type ReviewLevel, type ReviewState } from "./schema.js";
+import { type Review, type ReviewLevel, type ReviewState, type BugWitness } from "./schema.js";
 import { readReviews, writeReviews, readAnchorStore, loadNodes } from "./store.js";
 import { indexFile } from "./repo.js";
 import { headCommit } from "./git.js";
+
+/** The human review acts: exposure (`viewed`) vs liability-bearing sign-off (`signed`). */
+export type Attestation = "viewed" | "signed";
+
+/**
+ * What a review row effectively attests, resolving the two legacy defaults:
+ * an agent review with no `attestation` reads as `checked`; a legacy human review
+ * (actor human, no attestation) reads as `signed` — it predates the viewed/signed split.
+ */
+export function effectiveAttestation(r: Review): Attestation | "checked" {
+  if (r.attestation) return r.attestation;
+  return (r.actor ?? "agent") === "human" ? "signed" : "checked";
+}
+
+/** A `viewed` row records exposure only; every other row is a vouch (`signed`/`checked`). */
+const isViewedRow = (r: Review) => r.attestation === "viewed";
 
 export interface ReviewInfo {
   state: ReviewState;
@@ -53,42 +69,81 @@ async function liveHashes(root: string, anchorIds: Iterable<string>): Promise<Ma
   return live;
 }
 
+/** Witnesses (anchor id + current live hash) covering a target — the staleness snapshot. */
+export async function witnessesFor(root: string, target: Target): Promise<BugWitness[]> {
+  const anchorIds = await coveredAnchorIds(root, target);
+  const live = await liveHashes(root, anchorIds);
+  return anchorIds.map((id) => ({ anchorId: id, bodyHash: live.get(id) ?? "sha256:absent" }));
+}
+
 export async function markReviewed(
   root: string,
-  input: { targetKind: "node" | "anchor"; targetId: string; level: ReviewLevel; reviewer?: string; actor?: "human" | "agent" },
+  input: { targetKind: "node" | "anchor"; targetId: string; level: ReviewLevel; reviewer?: string; actor?: "human" | "agent"; attestation?: Attestation },
 ) {
   const target: Target = { kind: input.targetKind, id: input.targetId };
   const anchorIds = await coveredAnchorIds(root, target);
   const live = await liveHashes(root, anchorIds);
   const witnesses = anchorIds.map((id) => ({ anchorId: id, bodyHash: live.get(id) ?? "sha256:absent" }));
+  // Default to "agent": only an explicit human action (the web UI) grants a human
+  // review. A human act with no attestation is a `signed` sign-off (the old `verified`).
+  const actor = input.actor ?? "agent";
+  const attestation: Attestation | undefined = input.attestation ?? (actor === "human" ? "signed" : undefined);
+  const viewed = attestation === "viewed";
   const rs = await readReviews(root);
-  rs.reviews = rs.reviews.filter((r) => !(r.target.kind === target.kind && r.target.id === target.id && r.level === input.level));
+  // `viewed` and vouches (`signed`/`checked`) are independent marks: a new vouch
+  // replaces the prior vouch at this level (human `signed` supersedes agent `checked`,
+  // as before), while a new `viewed` replaces only the prior `viewed` — never a sign-off.
+  rs.reviews = rs.reviews.filter(
+    (r) => !(r.target.kind === target.kind && r.target.id === target.id && r.level === input.level && isViewedRow(r) === viewed),
+  );
   rs.reviews.push({
     id: "rev_" + randomBytes(6).toString("hex"),
     target,
     level: input.level,
     reviewer: input.reviewer || "me",
-    // Default to "agent": only an explicit human action (the web UI) grants
-    // "human"/verified. Legacy reviews (no actor) likewise read as agent-`checked`.
-    actor: input.actor ?? "agent",
+    actor,
+    attestation,
     at: new Date().toISOString(),
     reviewedCommit: headCommit(root),
     witnesses,
   });
   await writeReviews(root, rs.reviews);
-  return { ok: true, level: input.level, anchors: anchorIds.length };
+  return { ok: true, level: input.level, attestation: attestation ?? "checked", anchors: anchorIds.length };
 }
 
-export async function unmarkReviewed(root: string, input: { targetKind: "node" | "anchor"; targetId: string; level: ReviewLevel }) {
+export async function unmarkReviewed(
+  root: string,
+  input: { targetKind: "node" | "anchor"; targetId: string; level: ReviewLevel; attestation?: Attestation },
+) {
   const rs = await readReviews(root);
   const before = rs.reviews.length;
-  rs.reviews = rs.reviews.filter((r) => !(r.target.kind === input.targetKind && r.target.id === input.targetId && r.level === input.level));
+  // No attestation → clear the whole level (both marks). `viewed` → drop only the
+  // exposure row; `signed` → drop only the vouch, leaving any `viewed` intact.
+  const dropViewed = input.attestation === undefined || input.attestation === "viewed";
+  const dropVouch = input.attestation === undefined || input.attestation === "signed";
+  rs.reviews = rs.reviews.filter(
+    (r) =>
+      !(
+        r.target.kind === input.targetKind &&
+        r.target.id === input.targetId &&
+        r.level === input.level &&
+        (isViewedRow(r) ? dropViewed : dropVouch)
+      ),
+  );
   await writeReviews(root, rs.reviews);
   return { ok: true, removed: before - rs.reviews.length };
 }
 
-/** Review state for many targets at once — batches the live re-index over all covered files. */
-export async function reviewStatesFor(root: string, targets: Target[]): Promise<Map<string, ReviewPair>> {
+/**
+ * Review state for many targets at once — batches the live re-index over all covered
+ * files. By default reflects the *vouch* (`signed`/`checked`); pass `{ viewed: true }`
+ * to read the `viewed` exposure marks instead (same shape, so callers render either).
+ */
+export async function reviewStatesFor(
+  root: string,
+  targets: Target[],
+  opts?: { viewed?: boolean },
+): Promise<Map<string, ReviewPair>> {
   const rs = await readReviews(root);
   const nodes = await loadNodes(root);
   const nodeAnchors = new Map(nodes.map((n) => [n.id, n.anchors]));
@@ -101,8 +156,11 @@ export async function reviewStatesFor(root: string, targets: Target[]): Promise<
   }
   const live = await liveHashes(root, all);
   const out = new Map<string, ReviewPair>();
+  const wantViewed = opts?.viewed ?? false;
   const forLevel = (t: Target, level: ReviewLevel): ReviewInfo => {
-    const r = rs.reviews.find((x) => x.target.kind === t.kind && x.target.id === t.id && x.level === level);
+    // Default: only vouches (`signed`/`checked`) set the reviewed state — a `viewed`
+    // row is exposure, not a blessing. With `{viewed:true}` we read exactly those rows.
+    const r = rs.reviews.find((x) => x.target.kind === t.kind && x.target.id === t.id && x.level === level && isViewedRow(x) === wantViewed);
     if (!r) return { state: "unreviewed" };
     const stale = r.witnesses.some((w) => live.get(w.anchorId) !== w.bodyHash);
     return { state: stale ? "stale" : "reviewed", by: r.reviewer, actor: r.actor ?? "agent", at: r.at };
@@ -111,8 +169,44 @@ export async function reviewStatesFor(root: string, targets: Target[]): Promise<
   return out;
 }
 
-export async function reviewStatus(root: string, target: Target): Promise<ReviewPair> {
-  return (await reviewStatesFor(root, [target])).get(key(target))!;
+export async function reviewStatus(root: string, target: Target, opts?: { viewed?: boolean }): Promise<ReviewPair> {
+  return (await reviewStatesFor(root, [target], opts)).get(key(target))!;
+}
+
+export interface AnchorChange { anchorId: string; was: string; now: string }
+
+/** Which of a mark's frozen witnesses no longer match the current live hashes. */
+export function witnessDrift(witnesses: BugWitness[], live: Map<string, string>): AnchorChange[] {
+  const out: AnchorChange[] = [];
+  for (const w of witnesses) {
+    const now = live.get(w.anchorId) ?? "sha256:absent";
+    if (now !== w.bodyHash) out.push({ anchorId: w.anchorId, was: w.bodyHash, now });
+  }
+  return out;
+}
+
+/**
+ * Targeted diff — which anchors covered by `target` have moved since the human last
+ * `viewed` / `signed` it. Powers "what changed since I last looked?" so a re-review of
+ * a big change reads only the delta under the last mark, never the whole flow again.
+ * `found:false` = no such mark yet (never viewed / never signed).
+ */
+export async function changedSince(
+  root: string,
+  target: Target,
+  opts: { level: ReviewLevel; attestation: Attestation },
+): Promise<{ found: boolean; at?: string; reviewedCommit?: string | null; changed: AnchorChange[] }> {
+  const rs = await readReviews(root);
+  const r = rs.reviews.find(
+    (x) =>
+      x.target.kind === target.kind &&
+      x.target.id === target.id &&
+      x.level === opts.level &&
+      effectiveAttestation(x) === opts.attestation,
+  );
+  if (!r) return { found: false, changed: [] };
+  const live = await liveHashes(root, r.witnesses.map((w) => w.anchorId));
+  return { found: true, at: r.at, reviewedCommit: r.reviewedCommit, changed: witnessDrift(r.witnesses, live) };
 }
 
 /**

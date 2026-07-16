@@ -18,6 +18,7 @@ import type { Anchor, Review } from "./schema.js";
 import { indexRepo, indexFile, indexBlob } from "./repo.js";
 import { readSnapshot, readAnchorStore, loadNodes, loadNodeVersions, winningVersionAt, readGraph, readReviews, readBugs } from "./store.js";
 import { reviewStatesFor } from "./reviews.js";
+import { reviewTriageFor } from "./triage.js";
 import { revParse, headCommit, currentBranch, showFile } from "./git.js";
 import { grammarForPath } from "./grammars.js";
 
@@ -35,7 +36,7 @@ export interface DiffResult {
   removed: Brief[];
   changed: Brief[];
   impact: {
-    nodes: { id: string; title: string; type: string; summary: string; anchors: string[]; status: string; versionCount: number; review: { logical: string; code: string }; reviewBy: { logical: string | null; code: string | null } }[];
+    nodes: { id: string; title: string; type: string; summary: string; anchors: string[]; status: string; versionCount: number; review: { logical: string; code: string }; reviewBy: { logical: string | null; code: string | null }; viewed: { logical: string; code: string }; severity: string }[];
     flows: { id: string; title: string; steps: { id: string; title: string; anchors: string[] }[] }[];
     reviews: { id: string; target: { kind: string; id: string }; level: string; anchors: string[] }[];
     bugs: { id: string; title: string; status: string; severity: string; anchors: string[]; removed: boolean; possiblyFixed: boolean }[];
@@ -95,14 +96,15 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
     .map((n) => ({ n, hit: n.anchors.filter((id) => impacted.has(id)) }))
     .filter((x) => x.hit.length > 0);
 
-  // Review state is best-effort — never let it break the diff (e.g. no @work index).
-  let nodeReviews: Awaited<ReturnType<typeof reviewStatesFor>> = new Map();
+  // Review + viewed + severity, best-effort — never let it break the diff (e.g. no @work index).
+  let nodeRt: Awaited<ReturnType<typeof reviewTriageFor>> = new Map();
   try {
-    nodeReviews = await reviewStatesFor(root, nodeImpact.map(({ n }) => ({ kind: "node" as const, id: n.id })));
+    nodeRt = await reviewTriageFor(root, nodeImpact.map(({ n }) => ({ kind: "node" as const, id: n.id })));
   } catch { /* leave unreviewed */ }
   const impactedNodes = nodeImpact.map(({ n, hit }) => {
-    const rp = nodeReviews.get(`node:${n.id}`);
-    return { id: n.id, title: n.title, type: n.type, summary: n.summary, anchors: hit, status: n.status ?? "fresh", versionCount: n.versionCount ?? 1, review: { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" }, reviewBy: { logical: rp?.logical.actor ?? null, code: rp?.code.actor ?? null } };
+    const e = nodeRt.get(`node:${n.id}`);
+    const rp = e?.review;
+    return { id: n.id, title: n.title, type: n.type, summary: n.summary, anchors: hit, status: n.status ?? "fresh", versionCount: n.versionCount ?? 1, review: { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" }, reviewBy: { logical: rp?.logical.actor ?? null, code: rp?.code.actor ?? null }, viewed: { logical: e?.viewed.logical.state ?? "unreviewed", code: e?.viewed.code.state ?? "unreviewed" }, severity: e?.triage.severity ?? "untriaged" };
   });
 
   // Flows: process nodes whose steps (via step_of) or self touch impacted anchors.

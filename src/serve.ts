@@ -102,6 +102,13 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return ops.diffCode(root, q.get("base") ?? "", q.get("head") || undefined, q.get("id") ?? "", q.get("file") ?? "");
     case "/api/diff/doc":
       return ops.docDiff(root, q.get("base") ?? "", q.get("head") || undefined, q.get("id") ?? "");
+    case "/api/changed_since":
+      return ops.changedSince(root, {
+        targetKind: (q.get("targetKind") as "node" | "anchor") ?? "node",
+        targetId: q.get("targetId") ?? "",
+        level: (q.get("level") as "logical" | "code") ?? "code",
+        attestation: q.get("attestation") === "viewed" ? "viewed" : "signed",
+      });
     default:
       return null;
   }
@@ -131,10 +138,29 @@ const server = createServer(async (req, res) => {
       for await (const c of req) chunks.push(c as Buffer);
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
       const root = rootFor(body.u ?? null);
+      // A web review is always a human act; `attestation` picks which human mark —
+      // "viewed" (exposure) or "signed" (sign-off). Absent → "signed" (legacy behavior).
+      const attestation = body.attestation === "viewed" ? "viewed" : "signed";
       const out = await withLock<unknown>(root, () =>
         body.unmark
-          ? unmarkReviewed(root, { targetKind: body.targetKind, targetId: body.targetId, level: body.level })
-          : markReviewed(root, { targetKind: body.targetKind, targetId: body.targetId, level: body.level, reviewer: body.reviewer, actor: "human" }),
+          ? unmarkReviewed(root, { targetKind: body.targetKind, targetId: body.targetId, level: body.level, attestation })
+          : markReviewed(root, { targetKind: body.targetKind, targetId: body.targetId, level: body.level, reviewer: body.reviewer, actor: "human", attestation }),
+      );
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(out));
+      return;
+    }
+
+    // Stakes triage from the UI (a human source → confirmed tier; can raise or lower).
+    if (req.method === "POST" && url.pathname === "/api/triage") {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      const root = rootFor(body.u ?? null);
+      const out = await withLock<unknown>(root, () =>
+        body.clear
+          ? ops.clearTriage(root, { targetKind: body.targetKind, targetId: body.targetId })
+          : ops.setTriage(root, { targetKind: body.targetKind, targetId: body.targetId, importance: body.importance, source: "human", reason: body.reason, tripwire: body.tripwire }),
       );
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(out));

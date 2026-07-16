@@ -47,7 +47,7 @@ const EDGE_COLORS = {
 };
 const edgeColor = (t) => EDGE_COLORS[t] ?? '#6b7684';
 const bugsUrl = (u) => `/u/${u}/bugs/`;
-const SEV_COLOR = { low: '#8b95a3', medium: '#58a6ff', high: '#f0a35e', critical: '#f27b7b' };
+const SEV_COLOR = { low: '#8b95a3', medium: '#58a6ff', high: '#f0a35e', critical: '#f27b7b', complete: '#7ee787', untriaged: '#58a6ff' };
 const flowsUrl = (u) => `/u/${u}/flows/`;
 const flowUrl = (u, id) => `/u/${u}/flow/${id}/`;
 const nodesUrl = (u) => `/u/${u}/nodes/`;
@@ -77,8 +77,42 @@ const trustChip = (t, onClick) => {
 };
 const postConfirm = (u, id) => fetch('/api/confirm', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id }) });
 const postAckHole = (u, id) => fetch('/api/ack_hole', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id }) });
-const postReview = (u, targetKind, targetId, level, unmark) =>
-  fetch('/api/review', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, targetKind, targetId, level, unmark }) });
+// attestation: 'viewed' (exposure) | 'signed' (sign-off) | undefined (server → signed).
+const postReview = (u, targetKind, targetId, level, unmark, attestation) =>
+  fetch('/api/review', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, targetKind, targetId, level, unmark, attestation }) });
+// Stakes triage (human source → confirmed tier). `body` = { importance } or { clear:true }.
+const postTriage = (u, targetKind, targetId, body) =>
+  fetch('/api/triage', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, targetKind, targetId, ...body }) });
+// Severity = stakes × review-gap (docs/triage.md). Chip labels the worst outstanding gap.
+const sevChip = (t) => {
+  if (!t) return html``;
+  const sev = t.severity;
+  const label = sev === 'complete' ? 'review-complete' : sev === 'untriaged' ? 'needs triage' : `${sev}${t.bar ? ' · needs ' + t.bar : ''}`;
+  const imp = t.importance ? t.importance + (t.likely ? ' (likely)' : '') : 'untriaged';
+  return html`<span class="tchip" style="background:${SEV_COLOR[sev] || '#3a4250'};color:#0d1117;font-weight:600" title="stakes: ${imp} · severity: ${sev}${t.reason ? ' · ' + t.reason : ''}">${label}</span>`;
+};
+// A small severity dot for dense lists (catalog rows, anchor chips) where a chip is too big.
+const sevDot = (sev) => sev && sev !== 'untriaged' && sev !== 'complete'
+  ? html`<span class="sevdot" style="background:${SEV_COLOR[sev] || '#3a4250'}" title="severity: ${sev}"></span>` : html``;
+// Shared review/triage renderers so every surface (anchor, node, flow, diff) reads the
+// same: `viewed` (blue) + `signed` (green) marks, then the stakes buttons + severity chip.
+const markBtnEl = (attestation, info, onMark) => {
+  const st = (info && info.state) || 'unreviewed';
+  const on = attestation === 'signed';
+  const cls = st === 'reviewed' ? (on ? 'on' : 'checked') : st === 'stale' ? 'stale' : '';
+  const mk = st === 'reviewed' ? ' ✓' : st === 'stale' ? ' ⚠' : '';
+  const tip = `${attestation}: ${st}${st === 'stale' ? ' — code changed, click to re-approve at the live hash' : st === 'unreviewed' ? ' — click to mark' : ' — click to clear'}`;
+  return html`<button class="${cls}" title="${tip}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onMark(attestation, st); }}">${attestation}${mk}</button>`;
+};
+const reviewRowEl = (review, viewed, onMark) => {
+  const sign = review && review.code, view = viewed && viewed.code;
+  return html`<span class="rev">${markBtnEl('viewed', view, onMark)}${markBtnEl('signed', sign, onMark)}${when(sign && sign.state === 'stale', () => html`<span class="hint" style="margin-left:6px;color:#f0a35e">⚠ sign-off stale</span>`)}</span>`;
+};
+const triageRowEl = (triage, onSet) => {
+  const cur = triage && triage.importance;
+  const btn = (imp, label) => html`<button class="${cur === imp ? 'on' : ''}" title="set stakes: ${imp}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onSet(imp); }}">${label}</button>`;
+  return html`<span class="rev" style="align-items:center"><span style="margin-right:4px;color:#8b949e">stakes:</span>${btn('business-critical', 'business-critical')}${btn('important', 'important')}${btn('mechanical', 'mechanical')}${when(cur, () => html`<button title="clear stakes" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onSet(null); }}">✕</button>`)}${sevChip(triage)}${when(triage && triage.likely, () => html`<span style="color:#58a6ff;font-size:12px" title="agent proposal — click a tier to confirm">· likely</span>`)}</span>`;
+};
 const postAnnotate = (u, targetKind, targetId, text, kind) =>
   fetch('/api/annotate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, targetKind, targetId, text, kind, author: 'human' }) });
 const postResolveAnnotation = (u, id, resolved) =>
@@ -350,6 +384,18 @@ class AnchorPage extends Component {
   load = this.createTask(async () => { nav.current = this.props.params.universe; this.state.a = await api('/api/anchor', { u: this.props.params.universe, id: this.props.params.id }); });
   mounted() { this.load.run(); }
   propsChanged() { this.load.run(); }
+  // Two independent human marks on the source: `viewed` (I've laid eyes on it — blue)
+  // and `signed` (I own it — green). A stale sign-off returns to the worklist and can
+  // only be cleared by re-signing; clicking a stale mark re-approves at the live hash.
+  async mark(attestation, state) {
+    await postReview(this.props.params.universe, 'anchor', this.state.a.id, 'code', state === 'reviewed', attestation);
+    this.load.run();
+  }
+  // Human triage: sets a *confirmed* tier (raise or lower — a person owns lowering).
+  async triage(importance) {
+    await postTriage(this.props.params.universe, 'anchor', this.state.a.id, importance ? { importance } : { clear: true });
+    this.load.run();
+  }
   template() {
     const u = this.props.params.universe, a = this.state.a;
     if (!a || this.load.pending) return html`<main><div class="loading">loading…</div></main>`;
@@ -358,6 +404,8 @@ class AnchorPage extends Component {
       <div class="back" on-click="${() => goTree(u, a.file)}">← ${a.file}</div>
       <h2>${a.symbol}</h2>
       <div class="meta">${a.kind} · ${a.file}:${a.lines} · ${a.present ? 'present' : 'not found (lost)'}</div>
+      <div style="margin:8px 0">${reviewRowEl(a.review, a.viewed, (att, st) => this.mark(att, st))}</div>
+      <div style="margin:8px 0">${triageRowEl(a.triage, (imp) => this.triage(imp))}</div>
       ${when(a.citedBy && a.citedBy.length, () => html`<div class="sec">documented by</div><div class="chips">${each(a.citedBy, n => html`<span class="chip" on-click="${() => go(nodeUrl(u, n.id))}">${n.title || n.id}</span>`)}</div>`)}
       ${when(a.bugs && a.bugs.length, () => html`<div class="sec">bugs</div><div class="chips">${each(a.bugs, b => html`<span class="chip">${b.status} · ${b.title}</span>`)}</div>`)}
       ${annoThread(this, u, 'anchor', a.id, a.annotations)}
@@ -379,6 +427,8 @@ class NodePage extends Component {
   mounted() { this.load.run(); }
   propsChanged() { this.load.run(); }
   async verify(act) { await postReview(this.props.params.universe, 'node', this.props.params.id, 'logical', act === 'unverify'); this.load.run(); }
+  async markNode(attestation, state) { await postReview(this.props.params.universe, 'node', this.props.params.id, 'code', state === 'reviewed', attestation); this.load.run(); }
+  async triageNode(importance) { await postTriage(this.props.params.universe, 'node', this.props.params.id, importance ? { importance } : { clear: true }); this.load.run(); }
   async confirm() { await postConfirm(this.props.params.universe, this.props.params.id); this.load.run(); }
   async ackHole() { await postAckHole(this.props.params.universe, this.props.params.id); this.load.run(); }
   template() {
@@ -386,14 +436,16 @@ class NodePage extends Component {
     if (!n || this.load.pending) return html`<main><div class="loading">loading…</div></main>`;
     if (n.error) return html`<main><div class="empty">${n.error}</div></main>`;
     return html`<main><div class="detail">
-      <div class="meta">${n.type}${n.universe ? ' · ' + n.universe : ''} · ${n.id} ${statusChip(n.status)}${trustChip(n.trust, (act) => this.verify(act))}<span class="viewlink" on-click="${() => go(graphUrl(u, n.id))}">◆ graph</span></div>
+      <div class="meta">${n.type}${n.universe ? ' · ' + n.universe : ''} · ${n.id} ${statusChip(n.status)}${trustChip(n.trust, (act) => this.verify(act))}${sevChip(n.triage)}<span class="viewlink" on-click="${() => go(graphUrl(u, n.id))}">◆ graph</span></div>
       <h2>${n.title}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions (forked across branches)">⑂${n.versionCount}</span>`)}</h2>
+      <div style="margin:6px 0">${reviewRowEl(n.review, n.viewed, (att, st) => this.markNode(att, st))}</div>
+      <div style="margin:6px 0">${triageRowEl(n.triage, (imp) => this.triageNode(imp))}</div>
       ${when(n.status === 'stale', () => html`<div class="vaction"><span>This doc cites code that changed since it was written.</span> <button on-click="${() => this.confirm()}">confirm still accurate</button> <span class="dim">— or edit it (forks a new version).</span></div>`)}
       ${when(n.status === 'dangling', () => html`<div class="vaction bad"><span>Cited code was removed here (${(n.danglingAnchors || []).length} anchor${(n.danglingAnchors || []).length === 1 ? '' : 's'}).</span> <button on-click="${() => this.ackHole()}">ack — remove doc here</button> <span class="dim">(kept on branches where the code exists).</span></div>`)}
       <md-content text="${n.summary}"></md-content>
       ${when(n.body && n.body.trim(), () => html`<md-content text="${n.body}"></md-content>`)}
       <div class="sec">anchors</div>
-      <div class="chips">${each(n.resolvedAnchors ?? [], a => html`<span class="chip" on-click="${() => a.id && go(anchorUrl(u, a.id))}">${a.symbol ?? a.id}</span>`)}</div>
+      <div class="chips">${each(n.resolvedAnchors ?? [], a => html`<span class="chip" on-click="${() => a.id && go(anchorUrl(u, a.id))}">${sevDot(a.severity)}${a.symbol ?? a.id}</span>`)}</div>
       ${when(n.edges && n.edges.length, () => html`<div class="sec">edges</div><div class="chips">${each(n.edges, e => html`<span class="chip" on-click="${() => e.toRef && go(nodeUrl(e.toRef.universe, e.toRef.id))}">${e.type}: ${e.toRef ? e.toRef.universe + '::' + (e.toRef.title || e.toRef.id) : e.to}</span>`)}</div>`)}
       ${when(n.inboundCrossUniverse && n.inboundCrossUniverse.length, () => html`<div class="sec">called by (other universes)</div><div class="chips">${each(n.inboundCrossUniverse, i => html`<span class="chip" on-click="${() => go(nodeUrl(i.fromUniverse, i.from))}">${i.fromUniverse}::${i.from} (${i.type})</span>`)}</div>`)}
       ${when(versions && versions.length > 1, () => html`<div class="sec">versions (${versions.length}) — the one matching this branch wins</div>
@@ -646,19 +698,28 @@ defineComponent('flows-page', FlowsPage);
 
 class FlowPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { data: null }; }
+  constructor(props) { super(props); this.state = { data: null, onlyChanged: false }; }
   load = this.createTask(async () => { nav.current = this.props.params.universe; this.state.data = await api('/api/flow', { u: this.props.params.universe, id: this.props.params.id }); });
   mounted() { this.load.run(); }
   propsChanged() { this.load.run(); }
-  async toggle(kind, id, level, state) { await postReview(this.props.params.universe, kind, id, level, state === 'reviewed'); this.load.run(); }
+  setOnlyChanged(v) { this.state.onlyChanged = v; }
+  async toggle(kind, id, level, state, attestation) { await postReview(this.props.params.universe, kind, id, level, state === 'reviewed', attestation); this.load.run(); }
   revBtn(kind, id, level, info) {
     const st = (info && info.state) || 'unreviewed', actor = info && info.actor;
     const cls = revCls(st, actor);
     const tip = `${level} ${st}${st === 'reviewed' && actor === 'agent' ? ' (agent-checked)' : ''}${info && info.by ? ' · by ' + info.by : ''}`;
     return html`<button class="${cls}" title="${tip}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.toggle(kind, id, level, st); }}">${level}${revMark(st, actor)}</button>`;
   }
-  revBtns(kind, id, review) {
-    return html`<span class="rev">${each(['logical', 'code'], (lvl) => this.revBtn(kind, id, lvl, review && review[lvl]), (lvl) => lvl)}</span>`;
+  // `viewed` exposure toggle (code level) alongside the signed-vouch level buttons.
+  viewBtn(kind, id, info) {
+    const st = (info && info.state) || 'unreviewed';
+    const cls = st === 'reviewed' ? 'checked' : st === 'stale' ? 'stale' : '';
+    const mark = st === 'reviewed' ? ' ✓' : st === 'stale' ? ' ⚠' : '';
+    const tip = `viewed: ${st}${st === 'stale' ? ' — changed since you looked' : st === 'unreviewed' ? ' — click to mark looked-at' : ''}`;
+    return html`<button class="${cls}" title="${tip}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.toggle(kind, id, 'code', st, 'viewed'); }}">view${mark}</button>`;
+  }
+  revBtns(kind, id, review, viewed) {
+    return html`<span class="rev">${each(['logical', 'code'], (lvl) => this.revBtn(kind, id, lvl, review && review[lvl]), (lvl) => lvl)}${this.viewBtn(kind, id, viewed && viewed.code)}</span>`;
   }
   codeBlock(a) {
     if (a.missing) return html`<div class="anchor-code"><div class="sym">${a.id} — anchor missing (renamed/removed?)</div></div>`;
@@ -672,14 +733,23 @@ class FlowPage extends Component {
     const u = this.props.params.universe, d = this.state.data;
     if (!d || this.load.pending) return html`<main><div class="loading">loading…</div></main>`;
     if (d.error) return html`<main><div class="empty">${d.error}</div></main>`;
+    const ch = d.changed || { signed: [], viewed: [] };
+    const nChanged = new Set([...ch.signed, ...ch.viewed]).size;
+    // Targeted diff: only steps that drifted under a mark you'd made. Never-reviewed
+    // steps aren't "changed since you looked", so the filter leaves them out.
+    const steps = this.state.onlyChanged ? d.steps.filter((s) => s.changed && (s.changed.signed || s.changed.viewed)) : d.steps;
     return html`<main>
       <div class="crumbs"><a on-click="${() => go(flowsUrl(u))}">← flows</a> <span class="sep">·</span> ${d.title}</div>
+      ${when(nChanged > 0, () => html`<div class="diff-banner" style="margin:10px 0;padding:8px 12px;border-left:3px solid #f0a35e;background:#2a2016;border-radius:4px">
+        ⟳ <b>${ch.signed.length}</b> step${ch.signed.length === 1 ? '' : 's'} changed since you signed${when(ch.viewed.length > 0, () => html` · <b>${ch.viewed.length}</b> since you viewed`)} — re-review just these.
+        <button style="margin-left:10px" on-click="${() => this.setOnlyChanged(!this.state.onlyChanged)}">${this.state.onlyChanged ? 'show all steps' : 'show only changed'}</button>
+      </div>`)}
       <div class="detail">
-        <div style="display:flex;align-items:center;gap:12px"><h2 style="margin:0">${d.title}</h2>${this.revBtns('node', d.id, d.review)}</div>
+        <div style="display:flex;align-items:center;gap:12px"><h2 style="margin:0">${d.title}</h2>${this.revBtns('node', d.id, d.review, d.viewed)}</div>
         <md-content text="${d.summary}"></md-content>
       </div>
-      ${each(d.steps, (s) => html`<div class="flow-step">
-        <div class="shead"><span class="num">${s.order + 1}</span><span class="stitle">${s.title}</span>${this.revBtns('node', s.id, s.review)}</div>
+      ${each(steps, (s) => html`<div class="flow-step" style="${s.changed && (s.changed.signed || s.changed.viewed) ? 'border-left:3px solid #f0a35e;padding-left:9px' : ''}">
+        <div class="shead"><span class="num">${s.order + 1}</span><span class="stitle">${s.title}</span>${when(s.changed && s.changed.signed, () => html`<span class="badge" title="a mark you signed here went stale" style="color:#f0a35e;font-size:12px">⚠ changed since signed</span>`)}${when(s.changed && !s.changed.signed && s.changed.viewed, () => html`<span class="badge" title="a mark you viewed here went stale" style="color:#f0a35e;font-size:12px">⚠ changed since viewed</span>`)}${this.revBtns('node', s.id, s.review, s.viewed)}</div>
         <div class="sbody">
           <md-content text="${s.summary}"></md-content>
           ${when(s.touches && s.touches.length, () => html`<div class="chips">${each(s.touches, (t) => html`<span class="chip" on-click="${() => go(nodeUrl(u, t.id))}">↳ ${t.title}</span>`, (t) => t.id)}</div>`)}
@@ -694,7 +764,7 @@ defineComponent('flow-page', FlowPage);
 // --- node catalog: browse/filter/mark-reviewed every logical node -------------
 class NodeCatalogPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { data: null, f: { q: '', type: '', domain: '', gen: '', review: '' }, group: 'type' }; }
+  constructor(props) { super(props); this.state = { data: null, f: { q: '', type: '', domain: '', gen: '', review: '', severity: '' }, group: 'type' }; }
   load = this.createTask(async () => { nav.current = this.props.params.universe; this.state.data = await api('/api/nodes', { u: this.props.params.universe }); });
   mounted() { this.load.run(); }
   propsChanged() { this.load.run(); }
@@ -718,6 +788,7 @@ class NodeCatalogPage extends Component {
       (!f.domain || n.domain === f.domain) &&
       (!f.gen || (f.gen === 'human' ? !n.generatedBy : n.generatedBy === f.gen)) &&
       (!f.status || n.status === f.status) &&
+      (!f.severity || n.severity === f.severity) &&
       (!f.review ||
         (f.review === 'unreviewed' ? (n.review.logical === 'unreviewed' && n.review.code === 'unreviewed')
           : f.review === 'reviewed' ? (n.review.logical === 'reviewed' || n.review.code === 'reviewed')
@@ -744,6 +815,7 @@ class NodeCatalogPage extends Component {
         <select on-change="${(e) => this.set('status', e.target.value)}"><option value="">any status</option>${each(opts(d.byStatus || {}), o => html`<option value="${o.k}">${o.k} (${o.v})</option>`, o => o.k)}</select>
         <select on-change="${(e) => this.set('gen', e.target.value)}"><option value="">any source</option><option value="human">human</option><option value="marten">marten</option></select>
         <select on-change="${(e) => this.set('review', e.target.value)}"><option value="">any review</option><option value="unreviewed">unreviewed</option><option value="reviewed">reviewed</option><option value="stale">stale</option></select>
+        <select on-change="${(e) => this.set('severity', e.target.value)}"><option value="">any severity</option>${each(opts(d.bySeverity || {}), o => html`<option value="${o.k}">${o.k} (${o.v})</option>`, o => o.k)}</select>
         <select on-change="${(e) => this.setGroup(e.target.value)}"><option value="type">group: type</option><option value="domain">group: domain</option><option value="none">group: none</option></select>
       </div>
       <div class="ncount">${list.length} shown</div>
@@ -752,7 +824,7 @@ class NodeCatalogPage extends Component {
         ${each(g[1], n => html`<div class="nrow" on-click="${() => go(nodeUrl(u, n.id))}">
           <span class="nt" style="border-color:${nodeColor(n.type)}">${n.type}</span>
           <span class="ntitle">${n.title || n.id}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions (forked)">⑂${n.versionCount}</span>`)}</span>
-          ${statusChip(n.status)}${trustChip(n.trust, (act) => this.verify(n.id, act))}
+          ${statusChip(n.status)}${trustChip(n.trust, (act) => this.verify(n.id, act))}${sevChip(n.triage)}
           <span class="ndom">${n.domain}</span>
           <span class="nmeta">${n.anchors}a · ${n.edgesIn}↓${n.edgesOut}↑</span>
           ${when(n.generatedBy, () => html`<span class="gen">${n.generatedBy}</span>`)}
@@ -1080,7 +1152,7 @@ class DiffPage extends Component {
   setView(v) { this.state.view = v; }
   briefIndex() { const d = this.state.diff, m = new Map(); for (const b of [...d.changed, ...d.removed, ...d.added]) m.set(b.id, b); return m; }
   docActions(n) {
-    return html`${statusChip(n.status)}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions">⑂${n.versionCount}</span>`)}<span class="ddacts">
+    return html`${statusChip(n.status)}${sevChip(n.triage || { severity: n.severity, importance: null })}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions">⑂${n.versionCount}</span>`)}<span class="ddacts">
       ${when(n.status === 'stale', () => html`<button title="confirm the doc still holds at this code" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.confirmDoc(n.id); }}">confirm</button>`)}
       ${when(n.status === 'dangling', () => html`<button class="bad" title="cited code was removed here — ack" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.ackDoc(n.id); }}">ack-hole</button>`)}
       <span class="rev">${this.revBtn('node', n.id, 'logical', n.review.logical, () => this.reloadDiff(), n.reviewBy && n.reviewBy.logical)}</span></span>`;
