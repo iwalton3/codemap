@@ -62,6 +62,8 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return ops.neighborhood(root, q.get("id") ?? "");
     case "/api/nodes":
       return ops.nodeCatalog(root);
+    case "/api/matrix":
+      return ops.eventMatrix(root);
     case "/api/flows":
       return ops.flows(root);
     case "/api/flow":

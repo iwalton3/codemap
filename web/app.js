@@ -43,6 +43,7 @@ const nodeColor = (t) => NODE_COLORS[t] ?? NODE_COLORS.unknown;
 const flowsUrl = (u) => `/u/${u}/flows/`;
 const flowUrl = (u, id) => `/u/${u}/flow/${id}/`;
 const nodesUrl = (u) => `/u/${u}/nodes/`;
+const matrixUrl = (u) => `/u/${u}/matrix/`;
 const REV_COLOR = { reviewed: '#7ee787', stale: '#f0a35e', unreviewed: '#3a4250' };
 const postReview = (u, targetKind, targetId, level, unmark) =>
   fetch('/api/review', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, targetKind, targetId, level, unmark }) });
@@ -93,6 +94,7 @@ class CodemapHeader extends Component {
       <div class="brand" on-click="${() => go('/')}">codemap<span> · map browser</span></div>
       <div class="uni">${each(n.universes, u => html`<button class="${u.id === n.current ? 'active' : ''}" on-click="${() => goTree(u.id, '')}">${u.id}<span class="n">${u.anchors ?? '–'}</span></button>`)}</div>
       <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(nodesUrl(u)); }}">nodes</a>
+      <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(matrixUrl(u)); }}">matrix</a>
       <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(flowsUrl(u)); }}">flows</a>
       <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(diffUrl(u)); }}">diff</a>
       <div class="search"><input placeholder="search symbols & docs…" on-change="${(e, v) => this.search(e, v)}"></div>
@@ -415,6 +417,55 @@ class NodeCatalogPage extends Component {
 }
 defineComponent('node-catalog-page', NodeCatalogPage);
 
+// --- event wiring matrix: events × aggregates/projections, orphans surfaced ---
+class MatrixPage extends Component {
+  static props = { params: {}, query: {} };
+  constructor(props) { super(props); this.state = { data: null, f: { q: '', domain: '', orphan: false } }; }
+  load = this.createTask(async () => { nav.current = this.props.params.universe; this.state.data = await api('/api/matrix', { u: this.props.params.universe }); });
+  mounted() { this.load.run(); }
+  propsChanged() { this.load.run(); }
+  set(k, v) { this.state.f = { ...this.state.f, [k]: v }; }
+  async toggle(id, level, state) { await postReview(this.props.params.universe, 'node', id, level, state === 'reviewed'); this.load.run(); }
+  revBtn(id, level, state) {
+    const cls = state === 'reviewed' ? 'on' : state === 'stale' ? 'stale' : '';
+    const mark = state === 'reviewed' ? '✓' : state === 'stale' ? '⚠' : '';
+    return html`<button class="${cls}" title="${level}: ${state}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.toggle(id, level, state); }}">${level[0].toUpperCase()}${mark}</button>`;
+  }
+  filtered() {
+    const f = this.state.f, q = f.q.toLowerCase();
+    return this.state.data.events.filter((e) =>
+      (!q || e.title.toLowerCase().includes(q)) && (!f.domain || e.domain === f.domain) && (!f.orphan || e.orphan));
+  }
+  template() {
+    const u = this.props.params.universe, d = this.state.data;
+    if (!d || this.load.pending) return html`<main><div class="loading">loading…</div></main>`;
+    const rows = this.filtered();
+    const domains = [...new Set(d.events.map((e) => e.domain))].sort();
+    return html`<main>
+      <div class="crumbs">${u} <span class="sep">·</span> event matrix</div>
+      <div class="mstats">${d.stats.events} events · ${d.stats.aggregates} aggregate${d.stats.aggregates === 1 ? '' : 's'} · ${d.stats.projections} projection${d.stats.projections === 1 ? '' : 's'} · <b class="${d.stats.orphans ? 'bad' : 'ok'}">${d.stats.orphans} orphan${d.stats.orphans === 1 ? '' : 's'}</b> <span class="mlegend"><i class="cdot folds"></i> folds → aggregate &nbsp; <i class="cdot projects"></i> projects → read-model</span></div>
+      <div class="nfilters">
+        <input placeholder="filter event…" on-input="${(e) => this.set('q', e.target.value)}">
+        <select on-change="${(e) => this.set('domain', e.target.value)}"><option value="">all domains</option>${each(domains, dm => html`<option value="${dm}">${dm}</option>`, dm => dm)}</select>
+        <label class="mchk"><input type="checkbox" on-change="${(e) => this.set('orphan', e.target.checked)}"> orphans only</label>
+      </div>
+      <div class="mwrap">
+        <div class="mhead">
+          <span class="mev">event <em>· domain · emitters↑</em></span>
+          ${each(d.sinks, s => html`<span class="msink ${s.type}" on-click="${() => go(nodeUrl(u, s.id))}" title="${s.title} (${s.type})">${s.title}</span>`, s => s.id)}
+          <span class="mrevh">review</span>
+        </div>
+        ${each(rows, e => html`<div class="mrow ${e.orphan ? 'orphan' : ''}">
+          <span class="mev" on-click="${() => go(nodeUrl(u, e.id))}"><b>${e.title}</b><small>${e.domain} · ${e.emitters}↑</small></span>
+          ${each(d.sinks, s => html`<span class="mcell">${when(e.cells[s.id], () => html`<i class="cdot ${e.cells[s.id]}" title="${e.cells[s.id]}"></i>`)}</span>`, s => s.id)}
+          <span class="mrevh"><span class="nrev">${this.revBtn(e.id, 'logical', e.review.logical)}${this.revBtn(e.id, 'code', e.review.code)}</span></span>
+        </div>`, e => e.id)}
+      </div>
+    </main>`;
+  }
+}
+defineComponent('matrix-page', MatrixPage);
+
 const diffUrl = (u) => `/u/${u}/diff/`;
 const DTAG = { '+': 'added', '-': 'removed', '~': 'changed' };
 
@@ -549,6 +600,7 @@ router = enableRouting(document.querySelector('router-outlet'), {
   '/u/:universe/flows/': { component: 'flows-page' },
   '/u/:universe/flow/:id/': { component: 'flow-page' },
   '/u/:universe/nodes/': { component: 'node-catalog-page' },
+  '/u/:universe/matrix/': { component: 'matrix-page' },
   '/u/:universe/diff/': { component: 'diff-page' },
   '/u/:universe/search/': { component: 'search-page' },
 });

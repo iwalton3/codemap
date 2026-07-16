@@ -266,6 +266,16 @@ function domainOf(ns: string | undefined): string {
   return p.slice(0, 2).join(".") || ns;
 }
 
+/** The dominant namespace among a node's cited anchors (for domain grouping). */
+function topNamespace(anchorIds: string[], nsById: Map<string, string | undefined>): string | undefined {
+  const tally = new Map<string, number>();
+  for (const id of anchorIds) {
+    const ns = nsById.get(id);
+    if (ns) tally.set(ns, (tally.get(ns) ?? 0) + 1);
+  }
+  return [...tally.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+}
+
 /**
  * The node catalog: every logical node with its domain, edge degree, provenance,
  * and review state — the node-first surface (browse/filter/mark-reviewed) that
@@ -283,12 +293,7 @@ export async function nodeCatalog(root: string) {
   }
   const reviews = await reviewStatesFor(root, nodes.map((n) => ({ kind: "node" as const, id: n.id })));
   const out = nodes.map((n) => {
-    const nsTally = new Map<string, number>();
-    for (const aid of n.anchors) {
-      const ns = nsById.get(aid);
-      if (ns) nsTally.set(ns, (nsTally.get(ns) ?? 0) + 1);
-    }
-    const topNs = [...nsTally.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+    const topNs = topNamespace(n.anchors, nsById);
     const rp = reviews.get(`node:${n.id}`);
     return {
       id: n.id,
@@ -314,6 +319,71 @@ export async function nodeCatalog(root: string) {
     byType: tally(out, "type"),
     byDomain: tally(out, "domain"),
     nodes: out,
+  };
+}
+
+/**
+ * Event wiring matrix — events as rows, the aggregates/projections they feed as
+ * columns, cells = folds (into an aggregate) or projects (to a projection). This
+ * is the audit view for an event-sourced graph: a high-degree sink (e.g. a
+ * projection that consumes every event) is one dense column instead of a 50-spoke
+ * wheel, and an **orphan** event (folded/projected by nothing) is a blank row.
+ * Per-row it also carries the emitter count (handlers that raise it) and review
+ * state, so events can be reviewed straight from the matrix.
+ */
+export async function eventMatrix(root: string) {
+  const [nodes, graph, store] = await Promise.all([loadNodes(root), readGraph(root), readAnchorStore(root)]);
+  const nsById = new Map(store.anchors.map((a) => [a.id, a.symbolPath[0]]));
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const events = nodes.filter((n) => n.type === "event_family");
+
+  const foldProject = graph.edges.filter((e) => (e.type === "folds" || e.type === "projects") && byId.get(e.from)?.type === "event_family");
+  // Columns = the aggregates/projections events actually feed. Aggregates first.
+  const sinkIds = [...new Set(foldProject.map((e) => e.to))].filter((id) => byId.has(id));
+  const sinks = sinkIds
+    .map((id) => ({ id, title: byId.get(id)!.title, type: byId.get(id)!.type }))
+    .sort((a, b) => (a.type === b.type ? a.title.localeCompare(b.title) : a.type === "aggregate" ? -1 : 1));
+
+  const emitsInto = new Map<string, number>();
+  for (const e of graph.edges) if (e.type === "emits") emitsInto.set(e.to, (emitsInto.get(e.to) ?? 0) + 1);
+
+  const cellsByEvent = new Map<string, Record<string, string>>();
+  for (const e of foldProject) {
+    let m = cellsByEvent.get(e.from);
+    if (!m) { m = {}; cellsByEvent.set(e.from, m); }
+    m[e.to] = e.type; // "folds" | "projects"
+  }
+
+  const reviews = await reviewStatesFor(root, events.map((n) => ({ kind: "node" as const, id: n.id })));
+  const rows = events
+    .map((n) => {
+      const cells = cellsByEvent.get(n.id) ?? {};
+      const folds = Object.values(cells).filter((v) => v === "folds").length;
+      const projects = Object.values(cells).filter((v) => v === "projects").length;
+      const rp = reviews.get(`node:${n.id}`);
+      return {
+        id: n.id,
+        title: n.title,
+        domain: domainOf(topNamespace(n.anchors, nsById)),
+        emitters: emitsInto.get(n.id) ?? 0,
+        cells,
+        folds,
+        projects,
+        orphan: folds === 0 && projects === 0,
+        review: { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" },
+      };
+    })
+    .sort((a, b) => a.domain.localeCompare(b.domain) || a.title.localeCompare(b.title));
+
+  return {
+    sinks,
+    events: rows,
+    stats: {
+      events: rows.length,
+      orphans: rows.filter((r) => r.orphan).length,
+      aggregates: sinks.filter((s) => s.type === "aggregate").length,
+      projections: sinks.filter((s) => s.type === "projection").length,
+    },
   };
 }
 

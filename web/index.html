@@ -144,6 +144,30 @@
     .nrev button.stale { border-color: var(--warn); color: var(--warn); background: rgba(240,163,94,0.08); }
     @media (max-width: 720px) { .ndom, .nmeta, .gen { display: none; } }
 
+    /* --- event matrix --- */
+    .mstats { color: var(--dim); font-size: 12.5px; margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .mstats .bad { color: var(--bad); } .mstats .ok { color: var(--accent2); }
+    .mlegend { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; font-size: 11.5px; }
+    .mchk { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--dim); }
+    .mwrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+    .mhead, .mrow { display: flex; align-items: stretch; border-top: 1px solid var(--border); min-width: max-content; }
+    .mhead { position: sticky; top: 0; background: var(--panel); border-top: none; z-index: 1; }
+    .mrow:hover { background: var(--panel); }
+    .mrow.orphan { background: rgba(242,123,123,0.07); box-shadow: inset 3px 0 0 var(--bad); }
+    .mev { width: 280px; flex: none; padding: 7px 12px; display: flex; flex-direction: column; gap: 1px; cursor: pointer; overflow: hidden; }
+    .mev b { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .mev small { color: var(--dim); font-size: 11px; font-family: var(--mono); }
+    .mhead .mev { justify-content: flex-end; font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.4px; cursor: default; }
+    .mhead .mev em { font-style: normal; text-transform: none; letter-spacing: 0; }
+    .msink { width: 54px; flex: none; padding: 8px 4px; border-left: 1px solid var(--border); cursor: pointer; font-family: var(--mono); font-size: 12px; writing-mode: vertical-rl; transform: rotate(180deg); white-space: nowrap; display: flex; align-items: center; justify-content: flex-start; }
+    .msink.aggregate { color: var(--accent2); } .msink.projection { color: var(--accent); }
+    .msink:hover { background: var(--panel2); }
+    .mcell { width: 54px; flex: none; display: flex; align-items: center; justify-content: center; border-left: 1px solid var(--border); }
+    .cdot { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+    .cdot.folds { background: var(--accent2); } .cdot.projects { background: var(--accent); }
+    .mrevh { width: 112px; flex: none; display: flex; align-items: center; justify-content: center; border-left: 1px solid var(--border); }
+    .mhead .mrevh { font-size: 11px; color: var(--dim); text-transform: uppercase; }
+
     /* --- branch diff viewer --- */
     .dim { color: var(--dim); font-size: 12.5px; }
     .dpick { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 14px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 12px; }

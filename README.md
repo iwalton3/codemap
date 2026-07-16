@@ -228,6 +228,15 @@ or domain, and **mark any node reviewed inline** (logical/code, same witness-has
 review as the flow-walker). Built to browse and review a large graph systematically —
 e.g. settlement's 220 nodes (66 commands, 66 handlers, 50 event families, …).
 
+**Event wiring matrix** (`/#/u/:u/matrix/`, `matrix-page`, `/api/matrix`, MCP
+`event_matrix`, `ops.eventMatrix`) — the audit view for an event-sourced graph:
+events as rows, the aggregates/projections they feed as columns (green = folds into
+an aggregate, blue = projects to a read-model), plus per-event emitter count and
+inline review. A high-degree sink (a projection that consumes every event) becomes
+one dense column instead of a 50-spoke wheel, and an **orphan** event (folded /
+projected by nothing) is a red-highlighted blank row. On settlement: 50 events × 2
+aggregates + 1 projection, 0 orphans.
+
 **Review heatmap on the outline** — each dir/file row carries a two-track review
 bar (top: logical, bottom: code; green reviewed / amber stale) rolled up over its
 in-scope anchors, and each file symbol shows logical/code review dots. Staleness is

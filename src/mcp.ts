@@ -196,6 +196,12 @@ const tools: Tool[] = [
     handler: (_a, c) => ops.nodeCatalog(c.universe.path),
   },
   {
+    name: "event_matrix",
+    description: "Event wiring matrix for an event-sourced graph: events as rows, the aggregates/projections they feed as columns (cells = folds/projects), plus per-event emitter count and review state. Surfaces ORPHAN events (folded/projected by nothing) as blank rows — the audit view for checking every event is wired into an aggregate + read model.",
+    inputSchema: obj({}),
+    handler: (_a, c) => ops.eventMatrix(c.universe.path),
+  },
+  {
     name: "flow",
     description: "One flow: its ordered steps, each with touched modules and the live source of its anchors, plus per-step review state. For stepping through a process and reviewing the code.",
     inputSchema: obj({ id: { type: "string" } }, ["id"]),
