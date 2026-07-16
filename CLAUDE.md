@@ -1,0 +1,124 @@
+# CLAUDE.md — codemap
+
+A codebase-agnostic **semantic map**: it anchors documented claims to hashed code
+(tree-sitter, per-symbol normalized hashes) so documentation / bug / review
+staleness becomes *visible* instead of silent. Maps C#/.NET, Python, JS/TS.
+Consumed by both a human (web UI) and AI agents (MCP server), from one store.
+
+## Golden rule: dependency frugality
+
+Supply-chain rot is the primary risk this project is designed against. The
+runtime footprint is deliberately tiny:
+
+- **`web-tree-sitter`** + four **vendored** `.wasm` grammar blobs (`grammars/`).
+- Everything else is Node stdlib: `node:crypto`, `node:sqlite`, `node:http`,
+  `node:child_process` (→ `git`), `node:test`, `node:util`.
+- The MCP server is **hand-rolled** (newline-delimited JSON-RPC 2.0 over stdio),
+  not the official SDK. The web UI vendors vdx-web, marked, and highlight.js
+  (`web/vendor/`). Grammars/vendor blobs are committed on purpose — no fetch, no
+  build toolchain to rot.
+
+**Do not add a runtime dependency without discussing it first.** A few hundred
+lines we own beats another thing that can become a worm/rugpull vector.
+
+## Build & test
+
+```sh
+npm test        # tsc build + node --test over dist/**/*.test.js
+npm run build   # emit dist/
+node dist/serve.js <repo|workspace.json> [port]   # web UI (default :4310)
+```
+
+Requires **Node ≥ 23.4** — the store uses `node:sqlite` (`DatabaseSync`)
+unflagged, which lands there (emits an ExperimentalWarning; harmless).
+
+## Architecture (the layering — respect the seams)
+
+```
+schema.ts            the data model (single source of truth for the store)
+  ↑
+indexer/repo/normalize/grammars   tree-sitter → deterministic anchors + hashes
+  ↑
+db.ts + store.ts     SQLite persistence (store.ts is the abstraction SEAM)
+  ↑
+ops.ts               plain async API — all real logic; protocol-free
+  ↑
+mcp.ts   serve.ts+web/   two co-equal front-ends over ops (+ multi.ts for workspaces)
+analyzers/*          OPT-IN framework plugins (Marten) — never in the agnostic core
+```
+
+- **`store.ts` is the seam.** Everything above it calls store functions; keep
+  their signatures stable so storage changes stay contained (that's how the
+  JSON→SQLite migration touched nothing above it).
+- **`ops.ts` holds the logic.** MCP tools and the HTTP API are thin wrappers —
+  add behavior in ops, expose it in both.
+
+## Core invariants (don't break these)
+
+- **No floating claims.** A logical node must cite anchors; write ops validate
+  that the anchors exist. That invariant is what makes staleness detectable.
+- **Deterministic anchor id** = `a_ + sha256(file \0 symbolPath \0 disambiguator)`
+  — stable across branches/line-moves; only a file/symbol rename changes it.
+- **Witness-hash staleness.** Bugs and reviews snapshot the covered code's
+  normalized hashes; a later mismatch = `possiblyFixed` / `stale`. Judge review
+  staleness against **live** hashes, never the frozen stored ones.
+- **Normalized hashing** (comment-stripped, length-prefixed tokens) so cosmetic
+  edits don't flip a hash.
+- **`generatedBy` provenance.** Analyzer-emitted nodes/edges carry it; a re-emit
+  clears+rewrites only generated content and leaves human docs untouched.
+
+## Storage & git-awareness
+
+- One **SQLite DB per universe at `.codemap/codemap.db`**, gitignored (the DB
+  auto-writes `.codemap/.gitignore`). Out of git so it never pollutes a branch/PR
+  diff and a checkout never drags a stale map in. On first open of a legacy JSON
+  `.codemap/`, it **auto-imports** it (guarded so it never double-imports).
+- Anchors live under `ref = @work` (live index). `init` and the `snapshot` op
+  cache the current commit's anchors under `ref = <sha>` (immutable) — a commit
+  maps to a cached index, other-branch data is never lost.
+- **Diff** (`diff.ts`, `codemap diff <base> [head]`, MCP `diff`, web
+  `/#/u/:u/diff/`) is a logical set-op over two snapshots (added/removed by id,
+  changed by hash) with impact rolled up to nodes/flows/reviews. Base code for the
+  drill-down comes from `git show <sha>:file` — no checkout, no contamination.
+
+## Web UI — vdx gotchas (these have bitten repeatedly)
+
+- The vdx router is **HASH mode** (no `<base href>`). Deep links are `/#/u/...`,
+  **not** `/u/...` — a path-form deep link falls back to home→outline. Test with
+  the `#` URL.
+- In `html` slots use **`each(list, fn, keyFn)`**, never bare `.map()` (it throws
+  a guard).
+- Boolean attributes (`selected`, `checked`, `disabled`) bind as
+  `attr="${bool}"`, **not** `${cond ? 'attr' : ''}` string-injection.
+- Dynamic SVG children and the `:path*` wildcard had upstream vdx bugs; both are
+  **fixed and re-vendored** — don't reintroduce the old workarounds (`?p=` query
+  param, innerHTML-after-nextRender). SVG builds straight from templates via
+  `each()`.
+- `index.html` asset paths are **absolute** (`/app.js`, `/vendor/*`) for
+  deep-link robustness.
+
+## Analyzers (opt-in only)
+
+- Framework analyzers (currently Marten/Wolverine) live in `analyzers/` and are
+  never baked into the agnostic core. `analyze marten --emit` registers the
+  analyzer; `check` then auto-refreshes the generated graph when code changes.
+- **Always adversarially verify analyzer findings before presenting them.** The
+  first Marten pass had 138 false positives; it took ~5 rounds to get to 4 genuine.
+
+## Operational constraints
+
+- **The `/working/Acme.*` universes are LIVE and edited by another agent — do not
+  write to them.** Validate on isolated scratch copies. `Acme.API` is the real
+  motivating target; work out of it (it's the hub where system knowledge lives).
+- Use the **`gh` CLI** for GitHub, not raw URL fetches.
+- **Don't `pkill -f serve.js`** — it self-kills the shell (exit 144). Kill scratch
+  servers by pid. Never kill the user's `/working/codemap.workspace.json` server.
+- Puppeteer for headless UI checks lives at
+  `/working/vdx-web/tests/e2e/node_modules` (createRequire from there;
+  `executablePath: /usr/bin/chromium`). Manage the serve child in-process; avoid
+  lingering background jobs.
+
+## Guinea-pig repos
+
+`cl-pprint` (primary; py+js, git), `FakeBankSimulator` (C# hard cases),
+`mrepo-web` (scale, gitless), `Acme.Settlement` / `Acme.API` (the real C# targets).

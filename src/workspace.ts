@@ -1,0 +1,69 @@
+/**
+ * Workspaces: several "universes" (each a repo with its own `.codemap/`) served
+ * together, with cross-universe references at API boundaries.
+ *
+ * A reference is a string. Bare (`refunds-flow`) means "this universe"; qualified
+ * (`api::submit-refund-handler`) reaches another universe. Existing single-repo
+ * data is all bare ids — this is backward compatible.
+ */
+
+import { resolve, dirname, isAbsolute, basename } from "node:path";
+import { stat, readFile } from "node:fs/promises";
+
+export interface Universe {
+  id: string;
+  path: string;
+  primary: boolean;
+}
+
+export interface Workspace {
+  universes: Universe[];
+  primary: Universe;
+  byId: Map<string, Universe>;
+  manifestPath?: string;
+}
+
+export function parseRef(ref: string): { universe?: string; id: string } {
+  const i = ref.indexOf("::");
+  return i === -1 ? { id: ref } : { universe: ref.slice(0, i), id: ref.slice(i + 2) };
+}
+
+export function qualify(universe: string, id: string): string {
+  return `${universe}::${id}`;
+}
+
+/**
+ * Load a workspace. `arg` may be a `codemap.workspace.json` manifest (multi
+ * universe) or a plain repo directory (a single-universe workspace, so the MCP
+ * server's single-repo launch keeps working unchanged).
+ */
+export async function loadWorkspace(arg: string): Promise<Workspace> {
+  const abs = resolve(arg);
+  const st = await stat(abs);
+  let universes: Universe[];
+  let manifestPath: string | undefined;
+
+  if (st.isFile()) {
+    manifestPath = abs;
+    const manifest = JSON.parse(await readFile(abs, "utf8"));
+    const baseDir = dirname(abs);
+    universes = (manifest.universes ?? []).map((u: any, i: number) => ({
+      id: String(u.id ?? `u${i}`),
+      path: isAbsolute(u.path) ? u.path : resolve(baseDir, u.path),
+      primary: Boolean(u.primary),
+    }));
+    if (!universes.length) throw new Error("workspace manifest has no universes");
+    const ids = new Set<string>();
+    for (const u of universes) {
+      if (ids.has(u.id)) throw new Error(`duplicate universe id "${u.id}"`);
+      ids.add(u.id);
+    }
+    if (!universes.some((u) => u.primary)) universes[0]!.primary = true;
+  } else {
+    universes = [{ id: basename(abs) || "default", path: abs, primary: true }];
+  }
+
+  const byId = new Map(universes.map((u) => [u.id, u]));
+  const primary = universes.find((u) => u.primary)!;
+  return { universes, primary, byId, manifestPath };
+}
