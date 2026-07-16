@@ -208,6 +208,12 @@ const tools: Tool[] = [
     handler: (a, c) => ops.pipelineGraph(c.universe.path, { domain: a.domain }),
   },
   {
+    name: "subgraph",
+    description: "Induced subgraph for incremental graph exploration: pass `ids` (the current node set) and optionally `expand` (one node id) to pull in that node's neighbors. Returns the nodes (each with full-graph degree and how many neighbors are still hidden) plus every edge among them. Grow the view one node at a time.",
+    inputSchema: obj({ ids: { type: "array", items: { type: "string" } }, expand: { type: "string" } }, ["ids"]),
+    handler: (a, c) => ops.subgraph(c.universe.path, a.ids ?? [], a.expand),
+  },
+  {
     name: "flow",
     description: "One flow: its ordered steps, each with touched modules and the live source of its anchors, plus per-step review state. For stepping through a process and reviewing the code.",
     inputSchema: obj({ id: { type: "string" } }, ["id"]),

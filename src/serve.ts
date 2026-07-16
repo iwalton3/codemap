@@ -60,6 +60,8 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return multi.getNodeEnriched(ws, u ?? ws.primary.id, q.get("id") ?? "");
     case "/api/neighborhood":
       return ops.neighborhood(root, q.get("id") ?? "");
+    case "/api/subgraph":
+      return ops.subgraph(root, (q.get("ids") ?? "").split(",").filter(Boolean), q.get("expand") || undefined);
     case "/api/nodes":
       return ops.nodeCatalog(root);
     case "/api/matrix":

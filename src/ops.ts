@@ -525,6 +525,53 @@ export async function neighborhood(root: string, id: string) {
   return { id, title: node.title, type: node.type, neighbors: [...seen.values()] };
 }
 
+/**
+ * Induced subgraph for the force-directed explorer: the nodes in `ids`, plus (if
+ * `expand` is given) the neighbors of that one node, with every edge among the
+ * resulting set. Each node carries its full-graph degree vs how much is shown, so
+ * the UI can flag which nodes still have hidden neighbors to expand into. This is
+ * the incremental-exploration primitive — grow the view one node at a time
+ * instead of dumping a whole neighborhood at once.
+ */
+export async function subgraph(root: string, ids: string[], expand?: string) {
+  const [nodes, graph] = await Promise.all([loadNodes(root), readGraph(root)]);
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const set = new Set(ids.filter((id) => byId.has(id)));
+  if (expand && byId.has(expand)) {
+    set.add(expand);
+    for (const e of graph.edges) {
+      if (e.from === expand && byId.has(e.to)) set.add(e.to);
+      if (e.to === expand && byId.has(e.from)) set.add(e.from);
+    }
+  }
+  const totalDeg = new Map<string, number>();
+  for (const e of graph.edges) {
+    if (byId.has(e.from)) totalDeg.set(e.from, (totalDeg.get(e.from) ?? 0) + 1);
+    if (byId.has(e.to)) totalDeg.set(e.to, (totalDeg.get(e.to) ?? 0) + 1);
+  }
+  const edges = graph.edges.filter((e) => set.has(e.from) && set.has(e.to)).map((e) => ({ from: e.from, to: e.to, type: e.type }));
+  const shownDeg = new Map<string, number>();
+  for (const e of edges) { shownDeg.set(e.from, (shownDeg.get(e.from) ?? 0) + 1); shownDeg.set(e.to, (shownDeg.get(e.to) ?? 0) + 1); }
+  const reviews = await reviewStatesFor(root, [...set].map((id) => ({ kind: "node" as const, id })));
+  const outNodes = [...set].map((id) => {
+    const n = byId.get(id)!;
+    const rp = reviews.get(`node:${id}`);
+    return {
+      id, title: n.title, type: n.type,
+      degree: totalDeg.get(id) ?? 0,
+      hidden: (totalDeg.get(id) ?? 0) - (shownDeg.get(id) ?? 0),
+      review: { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" },
+    };
+  });
+  return {
+    nodes: outNodes,
+    edges,
+    edgeTypes: [...new Set(edges.map((e) => e.type))].sort(),
+    nodeTypes: [...new Set(outNodes.map((n) => n.type))].sort(),
+    seed: expand ?? ids[0] ?? null,
+  };
+}
+
 /** All process nodes (flows) with step counts + review rollup — the bird's-eye view. */
 export async function flows(root: string) {
   const [nodes, graph] = await Promise.all([loadNodes(root), readGraph(root)]);
