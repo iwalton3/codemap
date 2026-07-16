@@ -188,14 +188,17 @@ function lineDiff(a: string, b: string): DiffLine[] {
  * The source of an anchor at a cached commit. We `git show` the blob and
  * RE-PARSE it to locate the symbol — the snapshot's stored `loc` came from the
  * working tree at snapshot time (possibly dirty, or different line endings) and
- * won't align with the committed blob. Slice the Buffer (loc are byte offsets).
+ * won't align with the committed blob. loc offsets index the parsed STRING
+ * (UTF-16 code units, per web-tree-sitter — matching node.text), so slice the
+ * decoded blob, not the raw buffer (which multi-byte chars would misalign).
  */
 async function codeAtSnapshot(root: string, sha: string, id: string, file: string): Promise<string | null> {
   const buf = showFile(root, sha, file);
   if (!buf) return null;
   try {
-    const a = (await indexBlob(buf.toString("utf8"), file)).find((x) => x.id === id);
-    return a?.loc ? buf.subarray(a.loc.startByte, a.loc.endByte).toString("utf8") : null;
+    const src = buf.toString("utf8");
+    const a = (await indexBlob(src, file)).find((x) => x.id === id);
+    return a?.loc ? src.slice(a.loc.startByte, a.loc.endByte) : null;
   } catch {
     return null;
   }
@@ -207,11 +210,11 @@ async function codeAtHead(root: string, headRef: string | undefined, id: string,
     const sha = revParse(root, headRef) ?? headRef;
     return codeAtSnapshot(root, sha, id, file);
   }
-  // working tree: read the file live and re-resolve the anchor's exact bytes.
+  // working tree: read the file live and re-resolve the anchor's exact slice.
   try {
-    const buf = await readFile(join(root, file)); // Buffer — loc are byte offsets
+    const src = await readFile(join(root, file), "utf8"); // loc index the parsed string, not raw bytes
     const a = (await indexFile(join(root, file), file)).find((x) => x.id === id);
-    return a?.loc ? buf.subarray(a.loc.startByte, a.loc.endByte).toString("utf8") : null;
+    return a?.loc ? src.slice(a.loc.startByte, a.loc.endByte) : null;
   } catch {
     return null;
   }

@@ -106,7 +106,39 @@ function annoThread(c, u, targetKind, targetId, items) {
 }
 const highlight = (code, lang) => {
   if (window.hljs && lang && lang !== 'plaintext') { try { return window.hljs.highlight(code, { language: lang, ignoreIllegals: true }).value; } catch {} }
-  return String(code).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  return String(code).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+};
+// Highlight a whole block, then slice into per-line HTML. hljs lexes multi-line
+// constructs (block/`/** */` doc comments, verbatim & interpolated strings) as a
+// unit; highlighting a line in isolation loses that context, so an apostrophe in
+// a comment opens a phantom string and swallows the rest of the line (incl. XML
+// `<summary>` tags). We highlight once with full context, then re-open any spans
+// still open at each newline so every line stays independently well-formed.
+const highlightLines = (code, lang) => {
+  const src = highlight(code, lang);
+  const out = [], open = []; let cur = '';
+  const re = /<span\b[^>]*>|<\/span>|\n|[^<\n]+|</g; let m;
+  while ((m = re.exec(src))) {
+    const tok = m[0];
+    if (tok === '\n') { out.push(cur + '</span>'.repeat(open.length)); cur = open.join(''); }
+    else if (tok === '</span>') { open.pop(); cur += tok; }
+    else if (tok.slice(0, 5) === '<span') { open.push(tok); cur += tok; }
+    else cur += tok; // text, entities, or a stray '<'
+  }
+  out.push(cur);
+  return out;
+};
+// Map a code diff's lines to full-context highlighted HTML: reconstruct each side
+// (removed+context = base, added+context = head), highlight each as one block, and
+// slice back per line so continuation lines keep their lexical context.
+const diffCodeRows = (lines, lang) => {
+  const baseHL = highlightLines(lines.filter(l => l.tag !== '+').map(l => l.text).join('\n'), lang);
+  const headHL = highlightLines(lines.filter(l => l.tag !== '-').map(l => l.text).join('\n'), lang);
+  let bi = 0, hi = 0;
+  return lines.map(l => {
+    const html = l.tag === '-' ? baseHL[bi++] : l.tag === '+' ? headHL[hi++] : (bi++, headHL[hi++]);
+    return { tag: l.tag, html };
+  });
 };
 const reviewHeat = (rev) => {
   if (!rev || !rev.total) return html`<span class="rheat empty"></span>`;
@@ -1119,7 +1151,7 @@ class DiffPage extends Component {
         <span class="rev">${this.revBtn('anchor', b.id, 'logical', c.review.logical, () => this.loadCode(b.id), c.reviewBy && c.reviewBy.logical)}${this.revBtn('anchor', b.id, 'code', c.review.code, () => this.loadCode(b.id), c.reviewBy && c.reviewBy.code)}</span></div>`)}
       <div class="sec">code diff</div>
       ${when(this.state.codePending, () => html`<div class="loading">loading code…</div>`)}
-      ${when(c, () => html`<pre class="hljs cdiff">${each(c.lines, ln => html`<div class="cl ${DTAG[ln.tag] || 'ctx'}"><span class="g">${ln.tag}</span><code>${raw(highlight(ln.text || ' ', c.lang))}</code></div>`)}</pre>`)}
+      ${when(c, () => html`<pre class="hljs cdiff">${each(diffCodeRows(c.lines, c.lang), row => html`<div class="cl ${DTAG[row.tag] || 'ctx'}"><span class="g">${row.tag}</span><code>${raw(row.html || ' ')}</code></div>`, (row, i) => i)}</pre>`)}
       ${when(docs.length, () => html`<div class="sec">affected docs (${docs.length})</div>
         ${each(docs, n => html`<div class="ddoc">
           <div class="ddoch"><span class="ddoct" on-click="${() => this.pickSel('doc', n.id)}">${n.title || n.id}</span>${this.docActions(n)}</div>

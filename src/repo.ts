@@ -22,7 +22,9 @@ export async function indexFile(absPath: string, relPath: string): Promise<Ancho
  * Index provided source text (grammar chosen by `relPath`'s extension) — for
  * indexing a git blob without touching the filesystem. Anchor ids match
  * `indexFile` on the same relPath, so an anchor can be looked up by id and its
- * fresh `loc` used to slice the same blob (byte offsets, so slice a Buffer).
+ * fresh `loc` used to slice the same decoded blob. `loc` offsets are UTF-16
+ * code-unit indices into the parsed string (matching node.text) — slice the
+ * string, not the raw buffer, or multi-byte chars will misalign the window.
  */
 export async function indexBlob(source: string, relPath: string): Promise<Anchor[]> {
   const handle = await parserForPath(relPath);

@@ -43,3 +43,27 @@ test("TS: editing an anchored config object flips its hash", async () => {
   const hb = b.find((x) => x.symbolPath.join(".") === "cfg")!.bodyHash;
   assert.notEqual(ha, hb, "a config change should change the anchor hash");
 });
+
+// `loc` offsets are UTF-16 code-unit indices into the parsed source STRING
+// (matching node.text), NOT UTF-8 byte offsets. A multi-byte char (em dash, §)
+// before an anchor makes the true byte position > the code-unit index, so
+// slicing a raw Buffer with `loc` shifts the window left and leaks the tail of
+// the preceding line (the `summary>` bug in the flows/diff/anchor code views).
+// Guards the string-slice contract at codeFor / codeAt* (ops.ts, diff.ts).
+test("loc slices the parsed string, not raw UTF-8 bytes (multi-byte safe)", async () => {
+  const src = [
+    "/// <summary>",
+    "/// NACHA builder — em dash and § before the class (design doc §4).",
+    "/// </summary>",
+    "public class NachaFileBuilder { }",
+  ].join("\n");
+  const a = (await indexBlob(src, "N.cs")).find((x) => x.symbolPath.join(".").endsWith("NachaFileBuilder"));
+  assert.ok(a?.loc, "class anchor should have a loc");
+
+  const strSlice = src.slice(a!.loc!.startByte, a!.loc!.endByte);
+  assert.ok(strSlice.startsWith("public class NachaFileBuilder"), `string slice starts at the class, got: ${JSON.stringify(strSlice.slice(0, 20))}`);
+
+  // The raw-buffer slice (the old bug) drifts by the multi-byte overhead and does NOT.
+  const bufSlice = Buffer.from(src, "utf8").subarray(a!.loc!.startByte, a!.loc!.endByte).toString("utf8");
+  assert.ok(!bufSlice.startsWith("public class"), "raw-buffer slice must drift here — proves the string slice is load-bearing");
+});

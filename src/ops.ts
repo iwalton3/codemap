@@ -949,21 +949,24 @@ export async function flow(root: string, id: string) {
   }
 
   // Cache live-indexed files so a step's several anchors in one file re-index once.
-  // Slice the Buffer (loc are byte offsets — string.slice misaligns multi-byte files).
-  const fileCache = new Map<string, { src: Buffer; byId: Map<string, Anchor> }>();
+  // loc offsets index the parsed source STRING — web-tree-sitter returns UTF-16
+  // code-unit indices (matching node.text), NOT UTF-8 byte offsets. Slice the
+  // decoded string; slicing the raw buffer shifts the window left by the extra
+  // UTF-8 bytes of any multi-byte char (em dash, §, …) before the anchor.
+  const fileCache = new Map<string, { src: string; byId: Map<string, Anchor> }>();
   const codeFor = async (a: Anchor): Promise<string | null> => {
     let fc = fileCache.get(a.file);
     if (!fc) {
       try {
-        const src = await readFile(join(root, a.file));
+        const src = await readFile(join(root, a.file), "utf8");
         fc = { src, byId: new Map((await indexFile(join(root, a.file), a.file)).map((x) => [x.id, x])) };
       } catch {
-        fc = { src: Buffer.alloc(0), byId: new Map() };
+        fc = { src: "", byId: new Map() };
       }
       fileCache.set(a.file, fc);
     }
     const live = fc.byId.get(a.id);
-    return live?.loc ? fc.src.subarray(live.loc.startByte, live.loc.endByte).toString("utf8") : null;
+    return live?.loc ? fc.src.slice(live.loc.startByte, live.loc.endByte) : null;
   };
 
   const steps = [];
@@ -995,11 +998,11 @@ export async function getAnchor(root: string, id: string) {
   let code: string | null = null;
   let present = false;
   try {
-    const src = await readFile(join(root, anchor.file)); // Buffer — loc are byte offsets
+    const src = await readFile(join(root, anchor.file), "utf8"); // loc index the parsed string, not raw bytes
     const fresh = await indexFile(join(root, anchor.file), anchor.file);
     const live = fresh.find((a) => a.id === id);
     if (live?.loc) {
-      code = src.subarray(live.loc.startByte, live.loc.endByte).toString("utf8");
+      code = src.slice(live.loc.startByte, live.loc.endByte);
       present = true;
     }
   } catch {

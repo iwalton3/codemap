@@ -74,7 +74,10 @@ export interface Anchor {
   /**
    * Advisory source location, refreshed on every index. NOT part of the id or
    * hash — line numbers drift constantly. For jump-to-code in the UI/agent;
-   * always re-resolve live for exactness.
+   * always re-resolve live for exactness. NOTE: `startByte`/`endByte` are a
+   * historical misnomer — they are UTF-16 code-unit indices into the parsed
+   * source string (what web-tree-sitter returns, matching node.text), NOT UTF-8
+   * byte offsets. Slice the decoded STRING with them, never a raw Buffer.
    */
   loc?: { startByte: number; endByte: number; startLine: number; endLine: number };
 }
