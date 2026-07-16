@@ -104,6 +104,51 @@ export async function status(root: string) {
   };
 }
 
+/**
+ * "Needs attention" rollup for the universe landing page. Composes the cheap,
+ * side-effect-free signals the whole system computes — coverage, doc-version
+ * status (stored on the node, so no check_stale run here), and bug re-validation
+ * — into one work-queue summary. `attention` is the count a human should clear.
+ */
+export async function dashboard(root: string) {
+  const [{ store, nodes, result }, graph, bugStore, annStore] = await Promise.all([
+    coverageFor(root), readGraph(root), readBugs(root), readAnnotations(root),
+  ]);
+  let commit: string | null = null;
+  try { commit = (await readState(root)).lastVerifiedCommit; } catch { /* not initialized */ }
+
+  // Doc staleness via the SAME read-only engine check_stale uses, so the banner
+  // agrees with the MCP tool (applyIndexUpdate freezes @work hashes, so a stored
+  // node.status wouldn't reflect an un-reindexed code change — this does).
+  const stale = await computeStaleness(root, store, nodes, commit);
+  const anchorIds = new Set(store.anchors.map((a) => a.id));
+  const danglingIds = new Set(nodes.filter((n) => n.anchors.some((a) => !anchorIds.has(a))).map((n) => n.id));
+  const staleIds = new Set(stale.flaggedNodes.map((f) => f.node.id));
+  const danglingDocs = danglingIds.size;
+  const staleDocs = [...staleIds].filter((id) => !danglingIds.has(id)).length;
+
+  // Bug re-validation: live re-index of bug-cited files vs each bug's witness.
+  const bugFiles = new Set<string>();
+  for (const b of bugStore.bugs) for (const id of b.anchors) { const a = store.anchors.find((x) => x.id === id); if (a) bugFiles.add(a.file); }
+  const live = await liveAnchors(root, bugFiles);
+  const bugCounts: Record<string, number> = {};
+  let openBugs = 0, possiblyFixed = 0;
+  for (const b of bugStore.bugs) {
+    bugCounts[b.status] = (bugCounts[b.status] ?? 0) + 1;
+    if (b.status === "open") { openBugs++; if (b.witnesses.some((w) => live.get(w.anchorId)?.bodyHash !== w.bodyHash)) possiblyFixed++; }
+  }
+
+  return {
+    coverage: { docPct: computeDocPct(result.breakdown), open: result.breakdown.open, anchors: store.anchors.length, nodes: nodes.length, edges: graph.edges.length, breakdown: result.breakdown },
+    docs: { total: nodes.length, stale: staleDocs, dangling: danglingDocs, fresh: nodes.length - staleDocs - danglingDocs },
+    bugs: { total: bugStore.bugs.length, open: openBugs, possiblyFixed, byStatus: bugCounts },
+    annotations: annStore.annotations.length,
+    baselineCommit: commit,
+    // The single number a reviewer should drive to zero.
+    attention: staleDocs + danglingDocs + possiblyFixed,
+  };
+}
+
 /** The documentation work queue: only `open` anchors, ranked by likely value. */
 export async function findGaps(
   root: string,

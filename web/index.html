@@ -312,6 +312,29 @@
     .sxs-col:last-child { border-right: none; }
     .sxs-h { position: sticky; top: -16px; background: var(--bg); margin: -16px -20px 12px; padding: 8px 20px; border-bottom: 1px solid var(--border); font-family: var(--mono); font-size: 12.5px; color: var(--accent); z-index: 1; }
 
+    /* --- dashboard --- */
+    .attn-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 16px; border: 1px solid var(--warn); border-radius: 10px; background: rgba(240,163,94,0.08); margin-bottom: 16px; }
+    .attn-banner.ok { border-color: var(--border); background: var(--panel); color: var(--dim); }
+    .attn-n { font-weight: 700; color: var(--warn); font-size: 16px; }
+    .attn-banner.ok .attn-n { color: var(--accent2); }
+    .attn-pill { font-size: 12px; padding: 3px 10px; border-radius: 12px; background: var(--panel2); border: 1px solid var(--warn); color: var(--warn); cursor: pointer; }
+    .attn-pill.bad { border-color: var(--bad); color: var(--bad); }
+    .attn-pill:hover { background: rgba(240,163,94,0.15); }
+    .attn-hint { color: var(--dim); font-size: 12px; margin-left: auto; }
+    .dcards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+    .dcard { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); padding: 14px 16px; }
+    .dch { font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--dim); margin-bottom: 10px; }
+    .dstats { display: flex; gap: 18px; }
+    .dstat { min-width: 0; }
+    .dsv { font-size: 22px; font-weight: 700; font-family: var(--mono); }
+    .dsl { font-size: 11.5px; color: var(--dim); }
+    .dsx { font-size: 10.5px; color: var(--warn); margin-top: 1px; }
+    .dclink { margin-top: 12px; color: var(--accent); cursor: pointer; font-size: 13px; }
+    .dclink.dim { color: var(--dim); cursor: default; font-family: var(--mono); font-size: 11.5px; }
+    .dnav { display: flex; flex-wrap: wrap; gap: 8px; }
+    .dnav button { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
+    .dnav button:hover { border-color: var(--accent); }
+
     /* --- bugs --- */
     .bugfilter button .n { color: var(--dim); font-size: 11px; margin-left: 4px; }
     .brow { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: 8px; margin: 6px 0; cursor: pointer; }

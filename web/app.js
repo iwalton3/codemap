@@ -28,6 +28,7 @@ const nav = new NavStore();
 
 let router;
 const go = (path, query) => router.navigate(path, query);
+const dashUrl = (u) => `/u/${u}/`;
 const goTree = (u, prefix) => router.navigate(`/u/${u}/tree/` + (prefix ? prefix + '/' : ''));
 const anchorUrl = (u, id) => `/u/${u}/anchor/${id}/`;
 const nodeUrl = (u, id) => `/u/${u}/node/${id}/`;
@@ -105,7 +106,7 @@ class CodemapHeader extends Component {
     const n = this.stores.nav;
     return html`<header>
       <div class="brand" on-click="${() => go('/')}">codemap<span> · map browser</span></div>
-      <div class="uni">${each(n.universes, u => html`<button class="${u.id === n.current ? 'active' : ''}" on-click="${() => goTree(u.id, '')}">${u.id}<span class="n">${u.anchors ?? '–'}</span></button>`)}</div>
+      <div class="uni">${each(n.universes, u => html`<button class="${u.id === n.current ? 'active' : ''}" on-click="${() => go(dashUrl(u.id))}">${u.id}<span class="n">${u.anchors ?? '–'}</span></button>`)}</div>
       <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(nodesUrl(u)); }}">nodes</a>
       <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(matrixUrl(u)); }}">matrix</a>
       <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(pipelineUrl(u)); }}">pipeline</a>
@@ -123,11 +124,83 @@ class HomePage extends Component {
   async mounted() {
     await nav.load();
     const p = nav.state.universes.find(u => u.primary) || nav.state.universes[0];
-    if (p) goTree(p.id, '');
+    if (p) go(dashUrl(p.id));
   }
   template() { return html`<main><div class="loading">loading…</div></main>`; }
 }
 defineComponent('home-page', HomePage);
+
+// --- universe dashboard: the "needs attention" landing page -------------------
+class DashboardPage extends Component {
+  static props = { params: {}, query: {} };
+  constructor(props) { super(props); this.state = { d: null }; }
+  load = this.createTask(async () => { nav.current = this.props.params.universe; this.state.d = await api('/api/dashboard', { u: this.props.params.universe }); });
+  mounted() { this.load.run(); }
+  propsChanged() { this.load.run(); }
+  stat(label, value, extra) { return html`<div class="dstat"><div class="dsv">${value}</div><div class="dsl">${label}</div>${when(extra, () => html`<div class="dsx">${extra}</div>`)}</div>`; }
+  template() {
+    const u = this.props.params.universe, d = this.state.d;
+    if (!d || this.load.pending) return html`<main><div class="loading">loading…</div></main>`;
+    if (d.error) return html`<main><div class="empty">${d.error}</div></main>`;
+    const nav2 = [
+      ['nodes', () => go(nodesUrl(u))], ['matrix', () => go(matrixUrl(u))], ['pipeline', () => go(pipelineUrl(u))],
+      ['flows', () => go(flowsUrl(u))], ['bugs', () => go(bugsUrl(u))], ['diff', () => go(diffUrl(u))], ['browse files', () => goTree(u, '')],
+    ];
+    return html`<main>
+      <div class="crumbs"><b>${u}</b> <span class="sep">·</span> overview</div>
+      ${when(d.attention > 0, () => html`<div class="attn-banner">
+        <span class="attn-n">⚠ ${d.attention}</span>
+        <span>item${d.attention === 1 ? '' : 's'} need attention:</span>
+        ${when(d.docs.stale, () => html`<span class="attn-pill" on-click="${() => go(nodesUrl(u))}">${d.docs.stale} stale doc${d.docs.stale === 1 ? '' : 's'}</span>`)}
+        ${when(d.docs.dangling, () => html`<span class="attn-pill bad" on-click="${() => go(nodesUrl(u))}">${d.docs.dangling} dangling</span>`)}
+        ${when(d.bugs.possiblyFixed, () => html`<span class="attn-pill" on-click="${() => go(bugsUrl(u), { status: 'open' })}">${d.bugs.possiblyFixed} bug${d.bugs.possiblyFixed === 1 ? '' : 's'} possibly fixed</span>`)}
+        <span class="attn-hint">re-validate via <code>check_stale</code> / the bugs tab</span>
+      </div>`, () => html`<div class="attn-banner ok"><span class="attn-n">✓</span> <span>nothing stale — docs and bugs are current with the code</span></div>`)}
+
+      <div class="dcards">
+        <div class="dcard">
+          <div class="dch">documentation</div>
+          <div class="dstats">
+            ${this.stat('documented', d.coverage.docPct + '%')}
+            ${this.stat('open anchors', d.coverage.open, 'the work queue')}
+            ${this.stat('doc nodes', d.coverage.nodes)}
+          </div>
+          <div class="dclink" on-click="${() => go(nodesUrl(u))}">browse nodes ›</div>
+        </div>
+        <div class="dcard">
+          <div class="dch">docs health</div>
+          <div class="dstats">
+            ${this.stat('fresh', d.docs.fresh)}
+            ${this.stat('stale', d.docs.stale, d.docs.stale ? 'code changed' : '')}
+            ${this.stat('dangling', d.docs.dangling, d.docs.dangling ? 'code removed' : '')}
+          </div>
+        </div>
+        <div class="dcard">
+          <div class="dch">bugs</div>
+          <div class="dstats">
+            ${this.stat('open', d.bugs.open)}
+            ${this.stat('possibly fixed', d.bugs.possiblyFixed, d.bugs.possiblyFixed ? 're-validate' : '')}
+            ${this.stat('total', d.bugs.total)}
+          </div>
+          <div class="dclink" on-click="${() => go(bugsUrl(u))}">triage bugs ›</div>
+        </div>
+        <div class="dcard">
+          <div class="dch">map</div>
+          <div class="dstats">
+            ${this.stat('anchors', d.coverage.anchors)}
+            ${this.stat('edges', d.coverage.edges)}
+            ${this.stat('notes', d.annotations)}
+          </div>
+          <div class="dclink dim">baseline ${d.baselineCommit ? d.baselineCommit.slice(0, 8) : '—'}</div>
+        </div>
+      </div>
+
+      <div class="sec">explore</div>
+      <div class="dnav">${each(nav2, x => html`<button on-click="${x[1]}">${x[0]}</button>`, x => x[0])}</div>
+    </main>`;
+  }
+}
+defineComponent('dashboard-page', DashboardPage);
 
 class OutlinePage extends Component {
   static props = { params: {}, query: {} };
@@ -1033,6 +1106,7 @@ defineComponent('diff-page', DiffPage);
 
 router = enableRouting(document.querySelector('router-outlet'), {
   '/': { component: 'home-page' },
+  '/u/:universe/': { component: 'dashboard-page' },
   '/u/:universe/tree/': { component: 'outline-page' },
   '/u/:universe/tree/:path*/': { component: 'outline-page' },
   '/u/:universe/anchor/:id/': { component: 'anchor-page' },

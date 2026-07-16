@@ -52,6 +52,8 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return multi.listUniverses(ws);
     case "/api/guide":
       return { methodology: METHODOLOGY };
+    case "/api/dashboard":
+      return ops.dashboard(root);
     case "/api/outline":
       return ops.outline(root, q.get("prefix") ?? "");
     case "/api/anchor":
