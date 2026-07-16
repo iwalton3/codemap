@@ -7,7 +7,7 @@
 
 import { randomBytes } from "node:crypto";
 import { type Importance, type TriageSource, type Triage, type BugSeverity } from "./schema.js";
-import { readTriage, writeTriage } from "./store.js";
+import { readTriage, writeTriage, loadNodes, readGraph, readAnchorStore } from "./store.js";
 import { reviewStatesFor, witnessesFor, type Target, type ReviewPair } from "./reviews.js";
 
 export const IMPORTANCE_RANK: Record<Importance, number> = { mechanical: 0, important: 1, "business-critical": 2 };
@@ -56,9 +56,16 @@ export async function setTriage(
   const ts = await readTriage(root);
   const existing = ts.triage.find((t) => sameTarget(t, input.targetKind, input.targetId));
   const human = input.source === "human";
-  if (existing && !human && IMPORTANCE_RANK[input.importance] <= IMPORTANCE_RANK[existing.importance]) {
-    // Ratchet: a non-human source can only *raise* stakes, never lower or equal-downgrade.
-    return { ok: false, importance: existing.importance, reason: "ratchet: agents/graph may only raise stakes; a human must lower" };
+  if (existing && !human) {
+    // A human mark is authoritative — agents/graph can neither raise nor lower it (a
+    // person's deliberate call, incl. a lowering, is sticky). Over a non-human mark,
+    // the ratchet still holds: only raise, never lower or equal-downgrade.
+    if (existing.source === "human") {
+      return { ok: false, importance: existing.importance, reason: "human-owned — agents/graph cannot override a person's triage" };
+    }
+    if (IMPORTANCE_RANK[input.importance] <= IMPORTANCE_RANK[existing.importance]) {
+      return { ok: false, importance: existing.importance, reason: "ratchet: agents/graph may only raise stakes" };
+    }
   }
   const target: Target = { kind: input.targetKind, id: input.targetId };
   const rec: Triage = {
@@ -156,4 +163,110 @@ export async function triageFor(root: string, targets: Target[]): Promise<Map<st
 
 export async function triageStatus(root: string, target: Target): Promise<TriageInfo> {
   return (await triageFor(root, [target])).get(`${target.kind}:${target.id}`)!;
+}
+
+// ---------------------------------------------------------------------------
+// Graph-derived stakes (Phase 2). The pipeline/event graph is a blast-radius
+// oracle: what a node emits/is tells you its stakes far more reliably than an
+// LLM guess. Everything derived is a `likely` proposal (source `graph`) a human
+// confirms or overrides; the pass is regenerable (clears prior graph marks,
+// leaves human/agent marks) — the same discipline as analyzer-generated nodes.
+// ---------------------------------------------------------------------------
+
+// Money/value signal — a strong business-critical cue that's codebase-agnostic. Word
+// boundaries so "feel" ≠ "fee". Recorded as the reason, so it's auditable/confirmable.
+const MONEY_RX = /\b(amount|currenc|balance|payment|payout|settle|settlement|debit|credit|fee|fees|transfer|price|total|money|refund|charge|invoice|ledger|remit|disburse|wallet|deposit|withdraw)\w*/i;
+
+const key = (kind: "node" | "anchor", id: string) => `${kind}:${id}`;
+
+/**
+ * Structural stakes for one node from the graph alone (no name heuristics):
+ * emitting a domain event or being a command/handler/aggregate/event is the
+ * business-logic spine (`important`); a projection is a read-model (`mechanical`).
+ */
+function structuralImportance(type: string, emitsEvent: boolean): { importance: Importance; reason: string } | null {
+  if (emitsEvent) return { importance: "important", reason: "emits a domain event" };
+  if (type === "command" || type === "handler" || type === "aggregate" || type === "event_family")
+    return { importance: "important", reason: `${type} — domain core` };
+  if (type === "projection") return { importance: "mechanical", reason: "projection (read model)" };
+  return null;
+}
+
+/**
+ * Derive `likely` stakes across the graph. Money-name → business-critical; structural
+ * spine → important; projection → mechanical; then proximity (an untriaged node sharing
+ * a top-namespace with a derived important/BC node inherits `important`); then anchors
+ * inherit the max stakes of their citing nodes. Never overrides a human mark, only
+ * raises over an existing agent mark.
+ */
+export async function deriveTriage(root: string): Promise<{ derived: number; byImportance: Record<string, number> }> {
+  const [nodes, graph, store, ts] = await Promise.all([loadNodes(root), readGraph(root), readAnchorStore(root), readTriage(root)]);
+  const nsById = new Map(store.anchors.map((a) => [a.id, a.symbolPath[0]]));
+  const symById = new Map(store.anchors.map((a) => [a.id, a.symbolPath.join(".")]));
+  const emitters = new Set<string>();
+  for (const e of graph.edges) if (e.type === "emits") emitters.add(e.from);
+
+  // Start from the marks we keep (human + agent proposals); graph marks are regenerated.
+  const result = new Map<string, Triage>();
+  for (const t of ts.triage) if (t.source !== "graph") result.set(key(t.target.kind, t.target.id), t);
+
+  const at = new Date().toISOString();
+  const graphMark = (kind: "node" | "anchor", id: string, importance: Importance, reason: string) => {
+    const k = key(kind, id);
+    const ex = result.get(k);
+    if (ex) {
+      if (ex.source === "human") return; // authoritative — never override a person
+      if (IMPORTANCE_RANK[importance] <= IMPORTANCE_RANK[ex.importance]) return; // ratchet
+    }
+    result.set(k, { target: { kind, id }, importance, likely: true, source: "graph", reason, at, witnesses: [] });
+  };
+
+  const nodeMoney = (n: { title: string; summary?: string; anchors: string[] }) =>
+    MONEY_RX.test(`${n.title} ${n.summary ?? ""} ${n.anchors.map((a) => symById.get(a) ?? "").join(" ")}`);
+
+  // Pass 1: per-node money + structural signals.
+  for (const n of nodes) {
+    if (nodeMoney(n)) graphMark("node", n.id, "business-critical", "handles money/value");
+    else {
+      const s = structuralImportance(n.type, emitters.has(n.id));
+      if (s) graphMark("node", n.id, s.importance, s.reason);
+    }
+  }
+
+  // Pass 2: proximity — a node's dominant top-namespace; if that namespace holds any
+  // derived important/BC node, untriaged nodes there inherit `important` (guilty by
+  // neighborhood until read). Never raises above what pass 1 set.
+  const nodeNs = (n: { anchors: string[] }): string | undefined => {
+    const tally = new Map<string, number>();
+    for (const a of n.anchors) { const ns = nsById.get(a); if (ns) tally.set(ns, (tally.get(ns) ?? 0) + 1); }
+    return [...tally.entries()].sort((x, y) => y[1] - x[1])[0]?.[0];
+  };
+  const hotNs = new Set<string>();
+  for (const n of nodes) {
+    const imp = result.get(key("node", n.id))?.importance;
+    if (imp && imp !== "mechanical") { const ns = nodeNs(n); if (ns) hotNs.add(ns); }
+  }
+  for (const n of nodes) {
+    if (result.has(key("node", n.id))) continue; // already has a stake
+    const ns = nodeNs(n);
+    if (ns && hotNs.has(ns)) graphMark("node", n.id, "important", "in a high-stakes module");
+  }
+
+  // Pass 3: anchors inherit the max stakes among their citing nodes.
+  const citingImp = new Map<string, Importance>();
+  for (const n of nodes) {
+    const imp = result.get(key("node", n.id))?.importance;
+    if (!imp) continue;
+    for (const aid of n.anchors) {
+      const cur = citingImp.get(aid);
+      if (!cur || IMPORTANCE_RANK[imp] > IMPORTANCE_RANK[cur]) citingImp.set(aid, imp);
+    }
+  }
+  for (const [aid, imp] of citingImp) graphMark("anchor", aid, imp, "inherited from a citing node");
+
+  const triage = [...result.values()];
+  await writeTriage(root, triage);
+  const byImportance = triage.reduce<Record<string, number>>((m, t) => ((m[t.importance] = (m[t.importance] ?? 0) + 1), m), {});
+  const derived = triage.filter((t) => t.source === "graph").length;
+  return { derived, byImportance };
 }

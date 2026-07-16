@@ -33,7 +33,7 @@ import { refreshAnalyzers } from "./analyzers/run.js";
 import { applyIndexUpdate } from "./sync.js";
 import { grammarForPath } from "./grammars.js";
 import { reviewStatus, reviewStatesFor, anchorReviewMap, changedSince as reviewsChangedSince, type Attestation, type ReviewPair } from "./reviews.js";
-import { setTriage as triageSet, clearTriage as triageClear, triageStatus, reviewTriageFor } from "./triage.js";
+import { setTriage as triageSet, clearTriage as triageClear, triageStatus, reviewTriageFor, deriveTriage as triageDerive } from "./triage.js";
 
 const HL_LANG: Record<string, string> = { c_sharp: "csharp", python: "python", javascript: "javascript", typescript: "typescript", tsx: "typescript" };
 const langFor = (file: string) => HL_LANG[grammarForPath(file) ?? ""] ?? "plaintext";
@@ -1093,6 +1093,11 @@ export async function setTriage(
 /** Clear a target's stakes (back to untriaged). */
 export async function clearTriage(root: string, input: { targetKind: "node" | "anchor"; targetId: string }) {
   return triageClear(root, input);
+}
+
+/** Graph-derive `likely` stakes across the whole map (regenerable). See docs/triage.md Phase 2. */
+export async function deriveTriage(root: string) {
+  return triageDerive(root);
 }
 
 /**

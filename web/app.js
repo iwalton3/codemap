@@ -772,6 +772,7 @@ class NodeCatalogPage extends Component {
   setGroup(v) { this.state.group = v; }
   async verify(id, act) { await postReview(this.props.params.universe, 'node', id, 'logical', act === 'unverify'); this.load.run(); }
   async toggle(id, level, state) { await postReview(this.props.params.universe, 'node', id, level, state === 'reviewed'); this.load.run(); }
+  async deriveStakes() { await postTriage(this.props.params.universe, null, null, { derive: true }); this.load.run(); }
   // Human review = green (`on`); an agent `checked` review = blue, so it never reads
   // as fully-verified. A web toggle always records a human review.
   revBtn(id, level, state, actor) {
@@ -818,7 +819,7 @@ class NodeCatalogPage extends Component {
         <select on-change="${(e) => this.set('severity', e.target.value)}"><option value="">any severity</option>${each(opts(d.bySeverity || {}), o => html`<option value="${o.k}">${o.k} (${o.v})</option>`, o => o.k)}</select>
         <select on-change="${(e) => this.setGroup(e.target.value)}"><option value="type">group: type</option><option value="domain">group: domain</option><option value="none">group: none</option></select>
       </div>
-      <div class="ncount">${list.length} shown</div>
+      <div class="ncount">${list.length} shown <button style="margin-left:10px" title="graph-derive likely stakes across the map (safe: only proposals a human confirms)" on-click="${() => this.deriveStakes()}">⚙ derive stakes</button></div>
       ${each(this.groups(list), g => html`<div class="ngroup">
         <div class="ngh"><span class="gdot" style="background:${nodeColor(g[0])}"></span>${g[0]} <span class="n">${g[1].length}</span></div>
         ${each(g[1], n => html`<div class="nrow" on-click="${() => go(nodeUrl(u, n.id))}">

@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writeStore, readTriage } from "./store.js";
-import { setTriage, clearTriage, triageStatus, triageSeverity } from "./triage.js";
+import { writeStore, readTriage, writeAnchorStore, writeNode, readGraph, writeGraph } from "./store.js";
+import type { Anchor } from "./schema.js";
+import { setTriage, clearTriage, triageStatus, triageSeverity, deriveTriage } from "./triage.js";
 
 const initRoot = () => {
   const root = mkdtempSync(join(tmpdir(), "codemap-triage-"));
@@ -44,6 +45,41 @@ test("the ratchet: agents may only raise; a human may lower or confirm", async (
     r = await setTriage(root, { ...t, importance: "mechanical", source: "human" });
     assert.equal(r.ok, true); assert.equal(r.likely, false);
     assert.equal((await readTriage(root)).triage[0]!.importance, "mechanical");
+    // A human mark is authoritative — an agent may NOT re-raise it (sticky lowering).
+    r = await setTriage(root, { ...t, importance: "business-critical", source: "agent" });
+    assert.equal(r.ok, false);
+    assert.equal((await readTriage(root)).triage[0]!.importance, "mechanical");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("deriveTriage: graph signals → likely stakes; human marks are preserved", async () => {
+  const root = initRoot();
+  try {
+    await init(root);
+    const anchor: Anchor = { id: "a1", file: "src/pay.ts", symbolPath: ["Payments", "charge"], kind: "function", bodyHash: "h", lastVerifiedCommit: null };
+    await writeAnchorStore(root, [anchor]);
+    await writeNode(root, { id: "pay", type: "command", title: "Charge card", summary: "", anchors: ["a1"], body: "" });
+    await writeNode(root, { id: "proj", type: "projection", title: "Order list view", summary: "", anchors: [], body: "" });
+    await writeNode(root, { id: "h1", type: "handler", title: "Submit order", summary: "", anchors: [], body: "" });
+    const g = await readGraph(root); g.edges.push({ from: "h1", to: "evt", type: "emits" }); await writeGraph(root, g);
+    // A human mark that derivation must not clobber (even though structural = mechanical).
+    await setTriage(root, { targetKind: "node", targetId: "proj", importance: "business-critical", source: "human" });
+
+    const r = await deriveTriage(root);
+    assert.ok(r.derived >= 2);
+    const imp = async (kind: "node" | "anchor", id: string) => (await triageStatus(root, { kind, id })).importance;
+    assert.equal(await imp("node", "pay"), "business-critical"); // "Charge" money name
+    assert.equal(await imp("node", "h1"), "important"); // emits a domain event
+    assert.equal(await imp("node", "proj"), "business-critical"); // human mark preserved
+    assert.equal(await imp("anchor", "a1"), "business-critical"); // inherited from citing node "pay"
+
+    // Re-running is idempotent (regenerates graph marks, still doesn't touch the human one).
+    await deriveTriage(root);
+    assert.equal(await imp("node", "proj"), "business-critical");
+    const projRow = (await readTriage(root)).triage.find((t) => t.target.id === "proj")!;
+    assert.equal(projRow.source, "human");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

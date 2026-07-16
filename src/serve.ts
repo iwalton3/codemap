@@ -158,9 +158,11 @@ const server = createServer(async (req, res) => {
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
       const root = rootFor(body.u ?? null);
       const out = await withLock<unknown>(root, () =>
-        body.clear
-          ? ops.clearTriage(root, { targetKind: body.targetKind, targetId: body.targetId })
-          : ops.setTriage(root, { targetKind: body.targetKind, targetId: body.targetId, importance: body.importance, source: "human", reason: body.reason, tripwire: body.tripwire }),
+        body.derive
+          ? ops.deriveTriage(root)
+          : body.clear
+            ? ops.clearTriage(root, { targetKind: body.targetKind, targetId: body.targetId })
+            : ops.setTriage(root, { targetKind: body.targetKind, targetId: body.targetId, importance: body.importance, source: "human", reason: body.reason, tripwire: body.tripwire }),
       );
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(out));

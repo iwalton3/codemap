@@ -269,13 +269,35 @@ per-anchor click.
    distinction; open whether `uncertain` is a stored flag on the triage record or
    inferred from `source === "agent" && !importance`.
 
-## Staging (proposed)
+## Agent workflow (MCP)
 
-- **Prereq (done):** `viewed`/`signed` split + `changedSince` targeted diff.
-- **Phase 1:** the `Triage` record + write op with the ratchet; manual/agent tier
-  assignment; the severity function + per-anchor readout. No graph derivation yet.
-- **Phase 2:** graph-derived importance (emit-reachability, money-typed reachability)
-  + `unknown` escalation.
+Triage is designed to be agent-drivable — an agent does the first cut, a human
+confirms. The methodology (`guide` tool) documents it; the tools:
+
+- **`triage_derive`** (no args) — the honest first pass over the whole graph:
+  money-name → business-critical; emits-a-domain-event / command / handler /
+  aggregate / event → important; projection → mechanical; proximity elevates
+  untriaged neighbors of high-stakes modules; anchors inherit their citing nodes'
+  max stakes. Regenerable (clears prior graph marks), never touches human/agent marks.
+- **`triage`** (`targetKind`, `targetId`, `importance`, `reason`) — an agent raises
+  the stakes of a node/anchor the graph couldn't judge. Always a `likely` proposal,
+  **raise-only** (the ratchet). A human confirms/lowers via the web UI and owns the
+  final call; agents can never override a human mark.
+
+The intended loop: agent runs `triage_derive`, then `triage`s the judgment calls it
+can trace, leaving the rest untriaged (escalates) for a human to confirm.
+
+## Staging
+
+- **Prereq (DONE):** `viewed`/`signed` split + `changedSince` targeted diff.
+- **Phase 1 (DONE):** the `Triage` record + ratchet write op; manual/agent tier
+  assignment; severity function + per-anchor readout; consistency across all surfaces.
+- **Phase 2 (DONE):** graph-derived importance (`deriveTriage` / `triage_derive` /
+  node-catalog "derive stakes"): money-name + emit-reachability + node-type priors +
+  proximity inheritance + anchor inheritance. Ratchet hardened so a human mark is
+  authoritative (agents can't re-raise a deliberate lowering). `unknown` = untriaged,
+  escalates. Witnesses are stored empty for now — re-triage-on-change is Phase 4.
 - **Phase 3:** coverage rollups per module/flow/universe; the review-complete metric
   on the diff/PR view.
-- **Phase 4:** tripwire arming + delivery; re-triage-on-change promotion.
+- **Phase 4:** tripwire arming + delivery; re-triage-on-change promotion (witness the
+  derived marks, re-derive on drift, escalate a mechanical anchor that grew teeth).

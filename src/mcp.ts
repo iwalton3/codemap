@@ -277,6 +277,12 @@ const tools: Tool[] = [
     handler: async (a, c) => ops.setTriage(c.universe.path, { targetKind: a.targetKind, targetId: a.targetId, importance: a.importance, source: "agent", reason: a.reason }),
   },
   {
+    name: "triage_derive",
+    description: "Graph-derive `likely` stakes across the whole map in one pass (the honest first cut): money/value names → business-critical; emitting a domain event or being a command/handler/aggregate/event → important; projection → mechanical; proximity elevates untriaged neighbors of high-stakes modules; anchors inherit their citing nodes' max stakes. Regenerable — clears prior graph marks, never touches human or agent marks. Run this FIRST, then use `triage` to raise the anchors the graph couldn't judge (you have context the graph doesn't), and leave the rest for a human to confirm.",
+    inputSchema: obj({}, []),
+    handler: async (_a, c) => ops.deriveTriage(c.universe.path),
+  },
+  {
     name: "sanity_check",
     description: "Record that YOU (an agent) read the current code and a doc's claims hold — promotes it from `unverified` to `checked` trust. Witnessed, so it reverts to `stale` when the code changes. GUARDED: the connection that authored the doc can't check it — a different session must corroborate (no self-vouching). Use after verifying a doc during exploration.",
     inputSchema: obj({ id: { type: "string" }, reviewer: { type: "string" } }, ["id"]),

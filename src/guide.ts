@@ -104,6 +104,31 @@ impacted docs — and for EACH, read the current code (\`get_anchor\`) and its d
 Never leave an affected doc un-actioned — a \`stale\`/\`dangling\` doc that nobody
 touched is exactly the silent-rot the map exists to prevent.
 
+## Triage — route the human's scarce attention to the code that earns it
+A review isn't one thing: an agent is great at bugs and spec-vs-code, but only a
+human can accept liability and judge business-sense with a year of context you don't
+have. Triage grades each node/anchor by **stakes** — the blast radius if it's wrong,
+NOT how complex it is (a one-line currency check outranks a 200-line CRUD scaffold) —
+so the worst-and-least-reviewed code sorts to the top of the human's queue.
+
+- Tiers: **business-critical** (moves money, gates a business process, an authz
+  boundary — an error is unrecoverable), **important** (real business logic, but
+  recoverable), **mechanical** (plumbing — no business logic to get wrong, only to
+  wire; needs a read, never a sign-off).
+- **Start with \`triage_derive\`** — it reads the graph (emits a domain event, is a
+  command/handler/aggregate, money-named, sits in a high-stakes module) and proposes
+  \`likely\` stakes for the whole map in one honest pass. It never touches human marks.
+- Then use \`triage\` on the anchors the graph couldn't judge — you can trace a call
+  and see stakes structure can't. Prefer graph evidence ("emits SettlementCompleted",
+  "sums decimals") over vibes; put it in \`reason\`. When you can't tell, leave it
+  untriaged (it escalates) rather than guessing \`mechanical\` — a wrong "mechanical"
+  hides real risk.
+- **The ratchet:** your marks are always \`likely\` and you may only RAISE stakes — a
+  human confirms or lowers them (and their mark you cannot override). So over-proposing
+  is safe; under-proposing hides risk. Bias toward raising.
+- Severity = stakes × the review gap (whether it's been \`viewed\`/\`signed\`), so your
+  triage directly decides where a human spends their next golden window.
+
 ## Find & fix
 - \`check_stale\` — docs whose anchored code changed (candidate_stale) or vanished
   (lost/dangling); run the post-change loop above on them.
