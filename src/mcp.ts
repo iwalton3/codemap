@@ -23,7 +23,7 @@ import { withLock } from "./lock.js";
 
 // Tools that write to a universe's .codemap/ — held under the write lock so a
 // concurrent CLI run or second agent can't clobber a read-modify-write.
-const MUTATING = new Set(["document", "connect", "update_node", "cover", "report_bug", "update_bug", "annotate", "link", "check_stale", "analyze", "review", "snapshot", "reindex"]);
+const MUTATING = new Set(["document", "connect", "update_node", "delete_node", "cover", "report_bug", "update_bug", "annotate", "link", "check_stale", "analyze", "review", "snapshot", "reindex"]);
 
 const PROTOCOL_VERSION = "2024-11-05";
 
@@ -285,6 +285,12 @@ const tools: Tool[] = [
       },
     }),
     handler: (a, c) => ops.connect(c.universe.path, a),
+  },
+  {
+    name: "delete_node",
+    description: "Delete a logical node outright and any edges touching it — for obsolete/tombstoned docs (e.g. a module documenting code that was removed). To instead drop a single vanished anchor ref from a node while keeping it, use update_node with removeAnchors: [\"a_<id>\"] (raw ids are removed even when they no longer resolve).",
+    inputSchema: obj({ id: { type: "string" } }, ["id"]),
+    handler: (a, c) => ops.removeNode(c.universe.path, a.id),
   },
   {
     name: "update_node",

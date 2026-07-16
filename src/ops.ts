@@ -23,7 +23,7 @@ import { computeStaleness } from "./stale.js";
 import {
   readAnchorStore, readState, writeState, writeStore, loadNodes, readGraph, writeGraph, writeNode, slug,
   readBugs, writeBugs, readAnnotations, writeAnnotations, readCoverage, writeCoverage, readReviews,
-  writeSnapshot, listSnapshots,
+  writeSnapshot, listSnapshots, deleteNode as storeDeleteNode,
 } from "./store.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { computeDiff, anchorCodeDiff } from "./diff.js";
@@ -205,6 +205,15 @@ export async function checkStale(root: string) {
   const r = await computeStaleness(root, store, nodes, commit);
   const byId = new Map(store.anchors.map((a) => [a.id, a]));
   const changed = r.checks.length > 0 || r.addedAnchorIds.length > 0;
+  // Dangling citations: nodes citing anchors ABSENT from the current index (code
+  // deleted/renamed so the anchor never made it into @work). computeStaleness
+  // only inspects anchors that ARE in @work, so these otherwise stay hidden —
+  // the doc looks "clean" while pointing at code that no longer exists.
+  const anchorIds = new Set(store.anchors.map((a) => a.id));
+  const danglingDocs = nodes
+    .map((n) => ({ n, missing: n.anchors.filter((a) => !anchorIds.has(a)) }))
+    .filter((x) => x.missing.length > 0)
+    .map(({ n, missing }) => ({ node: n.id, title: n.title, missingAnchors: missing }));
   // Bring the anchor store up to date (new anchors resolve; moved locs refreshed),
   // then keep any analyzer-covered graph current.
   const indexUpdate = await applyIndexUpdate(root);
@@ -221,6 +230,7 @@ export async function checkStale(root: string) {
     ...(indexUpdate.added || indexUpdate.movedLoc ? { indexUpdate } : {}),
     ...(refreshed.length ? { refreshedAnalyzers: refreshed } : {}),
     ...(rebaseline ? { rebaselined: rebaseline } : {}),
+    ...(danglingDocs.length ? { danglingDocs } : {}),
   };
 }
 
@@ -907,9 +917,15 @@ export async function updateNode(
     for (const a of r.ids!) if (!node.anchors.includes(a)) node.anchors.push(a);
   }
   if (input.removeAnchors?.length) {
-    const r = await resolveRefs(root, input.removeAnchors);
-    if (r.error) return { error: r.error };
-    const rm = new Set(r.ids!);
+    // Raw ids (a_…) are removed literally so a vanished/orphaned anchor ref can be
+    // dropped even when it no longer resolves; other refs are resolved normally.
+    const rm = new Set(input.removeAnchors.filter((r) => /^a_[0-9a-f]+$/.test(r)));
+    const refs = input.removeAnchors.filter((r) => !/^a_[0-9a-f]+$/.test(r));
+    if (refs.length) {
+      const r = await resolveRefs(root, refs);
+      if (r.error) return { error: r.error };
+      r.ids!.forEach((id) => rm.add(id));
+    }
     node.anchors = node.anchors.filter((a) => !rm.has(a));
   }
   if (!node.anchors.length) return { error: "a node must keep ≥1 anchor (no floating claims)" };
@@ -917,6 +933,17 @@ export async function updateNode(
   const known = new Set(nodes.map((n) => n.id));
   const dangling = [...new Set(extractLinks(node.summary + "\n" + node.body))].filter((l) => !known.has(l));
   return { ok: true, id: node.id, anchors: node.anchors.length, ...(dangling.length ? { danglingLinks: dangling } : {}) };
+}
+
+/** Delete a logical node outright (and any edges touching it) — for obsolete/tombstoned docs. */
+export async function removeNode(root: string, id: string) {
+  const nodes = await loadNodes(root);
+  if (!nodes.some((n) => n.id === id)) return { error: `no node "${id}"` };
+  await storeDeleteNode(root, id);
+  const graph = await readGraph(root);
+  const kept = graph.edges.filter((e) => e.from !== id && e.to !== id);
+  if (kept.length !== graph.edges.length) await writeGraph(root, { edges: kept });
+  return { ok: true, deleted: id, removedEdges: graph.edges.length - kept.length };
 }
 
 /** P1.4 — every dangling [[link]] across the universe. */
