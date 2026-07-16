@@ -62,6 +62,15 @@ const revDot = (state) => html`<span class="rd ${state === 'reviewed' ? 'done' :
 // Content is authored by the documenting agent / developers (internal, trusted).
 class MdContent extends Component {
   static props = { text: '' };
+  // Syntax-highlight any fenced code blocks marked produced (it doesn't itself).
+  hl() {
+    if (!window.hljs) return;
+    this.querySelectorAll('pre code').forEach((el) => {
+      if (!el.dataset.highlighted) { try { window.hljs.highlightElement(el); } catch {} }
+    });
+  }
+  afterRender() { this.hl(); }
+  async propsChanged() { await this.nextRender(); this.hl(); }
   template() {
     const t = this.props.text || '';
     return html`<div class="md">${raw(window.marked ? window.marked.parse(t) : t)}</div>`;
@@ -166,7 +175,7 @@ class AnchorPage extends Component {
       ${when(a.bugs && a.bugs.length, () => html`<div class="sec">bugs</div><div class="chips">${each(a.bugs, b => html`<span class="chip">${b.status} · ${b.title}</span>`)}</div>`)}
       ${when(a.annotations && a.annotations.length, () => html`<div class="sec">notes</div>${each(a.annotations, an => html`<md-content text="${an.text}"></md-content>`)}`)}
       <div class="sec">source</div>
-      <pre class="code">${a.code ?? '(unavailable)'}</pre>
+      ${when(a.code, () => html`<pre class="hljs"><code>${raw(highlight(a.code, a.lang))}</code></pre>`, () => html`<pre class="code">(unavailable)</pre>`)}
     </div></main>`;
   }
 }
