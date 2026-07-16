@@ -112,21 +112,65 @@ export function anchorId(
 export type LogicalNodeType = "module" | "process" | "step" | "event_family" | "aggregate" | "projection" | "command" | "handler" | (string & {});
 
 /**
- * The parsed form of a `nodes/<id>.md` file: YAML frontmatter fields plus the
- * markdown body. `anchors` is the load-bearing field — it is what a staleness
- * pass follows to decide which nodes a code change invalidates.
+ * A doc is a *set of versions* (see docs/doc-versioning.md). Each version records
+ * the anchors it cites WITH the hashes it was written against ("accepted hashes",
+ * a set so one version can be valid on several branches). Resolution picks the
+ * version whose accepted hashes match the current branch's live anchors — so each
+ * branch resolves to its own version, by hash-match, without branch tags.
+ */
+export interface NodeCitation {
+  anchorId: string;
+  /** bodyHashes this version is known-valid against (one per branch confirmed). */
+  acceptedHashes: string[];
+}
+
+export type NodeStatus =
+  | "fresh" // every cited anchor exists and its live hash is accepted here
+  | "stale" // a cited anchor exists but its live hash isn't accepted (code drifted)
+  | "dangling" // a cited anchor is absent from @work (code removed/renamed) — a hole
+  | "generated"; // analyzer-emitted; not versioned (regenerated per branch)
+
+export interface NodeVersion {
+  versionId: string;
+  nodeId: string;
+  type: LogicalNodeType;
+  title: string;
+  summary: string;
+  body: string;
+  citations: NodeCitation[];
+  /** Analyzer that generated this node (e.g. "marten"); absent = human-authored. */
+  generatedBy?: string;
+  /** Commit this version was written against — load-bearing for git-aware tiebreak. */
+  createdCommit: string | null;
+  createdBranch: string | null;
+  createdAt: string;
+}
+
+/**
+ * The RESOLVED view of a node on the current branch: the winning version's content
+ * plus derived status. Kept shape-compatible with the old single-version node
+ * (`anchors` = the winning version's cited anchor ids) so consumers don't change.
  */
 export interface LogicalNode {
   id: string;
   type: LogicalNodeType;
   title: string;
   summary: string;
-  /** Anchor ids this node's claims depend on. Empty = a floating claim. */
+  /** Anchor ids this node's (winning version's) claims depend on. */
   anchors: string[];
-  /** Free-form markdown body (everything after the frontmatter). */
+  /** Free-form markdown body. */
   body: string;
   /** Analyzer that generated this node (e.g. "marten"); absent = human-authored. */
   generatedBy?: string;
+  // --- resolution metadata (absent on legacy reads) ---
+  versionId?: string;
+  status?: NodeStatus;
+  /** Cited anchors whose live hash isn't accepted by the winning version. */
+  staleAnchors?: string[];
+  /** Cited anchors absent from @work (holes). */
+  danglingAnchors?: string[];
+  /** How many versions this node has (>1 = forked). */
+  versionCount?: number;
 }
 
 export type EdgeType =

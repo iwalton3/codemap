@@ -13,6 +13,7 @@ import { DatabaseSync } from "node:sqlite";
 import { readFileSync, readdirSync, existsSync, writeFileSync } from "node:fs";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 
 export const WORK_REF = "@work";
 
@@ -30,8 +31,36 @@ export function db(root: string): DatabaseSync {
   d.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;");
   migrate(d);
   importLegacy(root, d);
+  migrateNodesToVersions(d);
   cache.set(root, d);
   return d;
+}
+
+/**
+ * One-time: fold the legacy single-version `nodes` table into `node_versions`
+ * (v1 each), seeding each citation's accepted hash from the current @work anchor
+ * hash. The old `nodes` table is kept as a backup but is no longer authoritative.
+ */
+function migrateNodesToVersions(d: DatabaseSync): void {
+  const nvCount = (d.prepare("SELECT COUNT(*) c FROM node_versions").get() as any).c;
+  const nCount = (d.prepare("SELECT COUNT(*) c FROM nodes").get() as any).c;
+  if (nvCount || !nCount) return;
+  const work = new Map<string, string>();
+  for (const r of d.prepare("SELECT id, body_hash FROM anchors WHERE ref = '@work'").all() as any[]) work.set(r.id, r.body_hash);
+  const ins = d.prepare("INSERT INTO node_versions(version_id,node_id,type,title,summary,body,generated_by,created_commit,created_branch,created_at,citations) VALUES(?,?,?,?,?,?,?,?,?,?,?)");
+  const at = new Date().toISOString();
+  d.exec("BEGIN");
+  try {
+    for (const n of d.prepare("SELECT * FROM nodes").all() as any[]) {
+      const anchors: string[] = JSON.parse(n.anchors ?? "[]");
+      const citations = anchors.map((id) => ({ anchorId: id, acceptedHashes: work.has(id) ? [work.get(id)!] : [] }));
+      ins.run("nv_" + randomBytes(6).toString("hex"), n.id, n.type, n.title, n.summary, n.body, n.generated_by, null, null, at, JSON.stringify(citations));
+    }
+    d.exec("COMMIT");
+  } catch (e) {
+    d.exec("ROLLBACK");
+    throw e;
+  }
 }
 
 function migrate(d: DatabaseSync): void {
@@ -47,6 +76,15 @@ function migrate(d: DatabaseSync): void {
       id TEXT PRIMARY KEY, type TEXT, title TEXT, summary TEXT, body TEXT,
       anchors TEXT, generated_by TEXT
     );
+    -- Versioned docs (see docs/doc-versioning.md): a node id has 1+ versions, each
+    -- capturing the anchor hashes it was written against (citations JSON).
+    CREATE TABLE IF NOT EXISTS node_versions (
+      version_id TEXT PRIMARY KEY, node_id TEXT NOT NULL,
+      type TEXT, title TEXT, summary TEXT, body TEXT, generated_by TEXT,
+      created_commit TEXT, created_branch TEXT, created_at TEXT,
+      citations TEXT
+    );
+    CREATE INDEX IF NOT EXISTS ix_nv_node ON node_versions(node_id);
     CREATE TABLE IF NOT EXISTS edges (
       rowid INTEGER PRIMARY KEY, from_id TEXT, to_id TEXT, type TEXT, ord INTEGER, generated_by TEXT
     );

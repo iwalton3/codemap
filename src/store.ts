@@ -15,9 +15,12 @@
  */
 
 import type { DatabaseSync } from "node:sqlite";
+import { randomBytes } from "node:crypto";
 import { db, WORK_REF } from "./db.js";
+import { headCommit, currentBranch } from "./git.js";
 import {
   type Anchor, type AnchorStore, type State, type LogicalNode, type LogicalNodeType,
+  type NodeVersion, type NodeCitation, type NodeStatus,
   type Graph, type Edge, type Bug, type BugStore, type Annotation, type AnnotationStore,
   type CoverageRule, type CoverageStore, type AnalyzerConfig, type Review, type ReviewStore,
   SCHEMA_VERSION,
@@ -148,28 +151,83 @@ export async function writeState(root: string, state: State): Promise<void> {
   setMeta(db(root), "state", state);
 }
 
-// --- logical nodes -----------------------------------------------------------
+// --- logical nodes (versioned — see docs/doc-versioning.md) -------------------
 
-interface NodeRow {
-  id: string; type: string; title: string; summary: string; body: string;
-  anchors: string; generated_by: string | null;
+interface VersionRow {
+  version_id: string; node_id: string; type: string; title: string; summary: string; body: string;
+  generated_by: string | null; created_commit: string | null; created_branch: string | null;
+  created_at: string; citations: string;
 }
 
-function rowToNode(r: NodeRow): LogicalNode {
+function rowToVersion(r: VersionRow): NodeVersion {
   return {
-    id: r.id,
-    type: (r.type ?? "module") as LogicalNodeType,
-    title: r.title ?? "",
-    summary: r.summary ?? "",
-    anchors: JSON.parse(r.anchors ?? "[]"),
-    body: r.body ?? "",
+    versionId: r.version_id, nodeId: r.node_id, type: (r.type ?? "module") as LogicalNodeType,
+    title: r.title ?? "", summary: r.summary ?? "", body: r.body ?? "",
+    citations: JSON.parse(r.citations ?? "[]"),
     ...(r.generated_by ? { generatedBy: r.generated_by } : {}),
+    createdCommit: r.created_commit, createdBranch: r.created_branch, createdAt: r.created_at,
+  };
+}
+
+function versionsOf(d: DatabaseSync, nodeId: string): NodeVersion[] {
+  return (d.prepare("SELECT * FROM node_versions WHERE node_id = ?").all(nodeId) as unknown as VersionRow[]).map(rowToVersion);
+}
+
+function workHashes(d: DatabaseSync): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const r of d.prepare("SELECT id, body_hash FROM anchors WHERE ref = ?").all(WORK_REF) as any[]) m.set(r.id, r.body_hash);
+  return m;
+}
+
+/** Status of a version against the live @work anchors (fresh / stale / dangling). */
+function evalVersion(v: NodeVersion, work: Map<string, string>) {
+  if (v.generatedBy) return { status: "generated" as NodeStatus, stale: [] as string[], dangling: [] as string[], badness: 0 };
+  const stale: string[] = [], dangling: string[] = [];
+  for (const c of v.citations) {
+    const live = work.get(c.anchorId);
+    if (live === undefined) dangling.push(c.anchorId);
+    else if (!c.acceptedHashes.includes(live)) stale.push(c.anchorId);
+  }
+  const status: NodeStatus = dangling.length ? "dangling" : stale.length ? "stale" : "fresh";
+  return { status, stale, dangling, badness: stale.length + dangling.length };
+}
+
+/** The version that best fits the current branch: fewest problems, then most recent. */
+function selectWinner(versions: NodeVersion[], work: Map<string, string>): { v: NodeVersion; e: ReturnType<typeof evalVersion> } {
+  let best = versions[0]!, bestE = evalVersion(best, work);
+  for (const v of versions.slice(1)) {
+    const e = evalVersion(v, work);
+    // TODO: git-aware tiebreak (created_commit ancestry) — rare; most-recent for now.
+    if (e.badness < bestE.badness || (e.badness === bestE.badness && v.createdAt > best.createdAt)) { best = v; bestE = e; }
+  }
+  return { v: best, e: bestE };
+}
+
+function resolve(versions: NodeVersion[], work: Map<string, string>): LogicalNode {
+  const { v, e } = selectWinner(versions, work);
+  return {
+    id: v.nodeId, type: v.type, title: v.title, summary: v.summary, body: v.body,
+    anchors: v.citations.map((c) => c.anchorId),
+    ...(v.generatedBy ? { generatedBy: v.generatedBy } : {}),
+    versionId: v.versionId, status: e.status, staleAnchors: e.stale, danglingAnchors: e.dangling,
+    versionCount: versions.length,
   };
 }
 
 export async function loadNodes(root: string): Promise<LogicalNode[]> {
-  const rows = db(root).prepare("SELECT * FROM nodes").all() as unknown as NodeRow[];
-  return rows.map(rowToNode);
+  const d = db(root);
+  const work = workHashes(d);
+  const byNode = new Map<string, NodeVersion[]>();
+  for (const r of d.prepare("SELECT * FROM node_versions").all() as unknown as VersionRow[]) {
+    const v = rowToVersion(r);
+    (byNode.get(v.nodeId) ?? byNode.set(v.nodeId, []).get(v.nodeId)!).push(v);
+  }
+  return [...byNode.values()].map((vs) => resolve(vs, work));
+}
+
+/** All versions of one node (for the version-aware UI / confirm / fork ops). */
+export async function loadNodeVersions(root: string, nodeId: string): Promise<NodeVersion[]> {
+  return versionsOf(db(root), nodeId);
 }
 
 // A conservative id-safe slug (kept: node ids are still human-facing).
@@ -177,15 +235,64 @@ export function slug(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "node";
 }
 
-/** Upsert one logical node. */
+const INS_VERSION = "INSERT INTO node_versions(version_id,node_id,type,title,summary,body,generated_by,created_commit,created_branch,created_at,citations) VALUES(?,?,?,?,?,?,?,?,?,?,?)";
+const vid = () => "nv_" + randomBytes(6).toString("hex");
+const nowISO = () => new Date().toISOString();
+
+/**
+ * Upsert a logical node, applying the versioning rules:
+ * - generated (analyzer) nodes: one un-versioned record, replaced idempotently.
+ * - human nodes: if the winning version is FRESH, edit it in place and merge the
+ *   current @work hashes into its citations (a confirm); if it's STALE/DANGLING
+ *   (you're editing against drifted/removed code), FORK a new version so the old
+ *   branch's version is preserved.
+ */
 export async function writeNode(root: string, node: LogicalNode): Promise<void> {
-  db(root).prepare(
-    "INSERT OR REPLACE INTO nodes(id,type,title,summary,body,anchors,generated_by) VALUES(?,?,?,?,?,?,?)",
-  ).run(node.id, node.type, node.title, node.summary, node.body, JSON.stringify(node.anchors), node.generatedBy ?? null);
+  const d = db(root);
+  const existing = versionsOf(d, node.id);
+
+  if (node.generatedBy) {
+    const cites: NodeCitation[] = node.anchors.map((id) => ({ anchorId: id, acceptedHashes: [] }));
+    if (existing.length === 1 && existing[0]!.title === node.title && existing[0]!.summary === node.summary &&
+        existing[0]!.body === node.body && JSON.stringify(existing[0]!.citations.map((c) => c.anchorId)) === JSON.stringify(node.anchors)) {
+      return; // identical re-emit — reuse (no churn)
+    }
+    d.exec("BEGIN");
+    try {
+      d.prepare("DELETE FROM node_versions WHERE node_id = ?").run(node.id);
+      d.prepare(INS_VERSION).run(vid(), node.id, node.type, node.title, node.summary, node.body, node.generatedBy, null, null, nowISO(), JSON.stringify(cites));
+      d.exec("COMMIT");
+    } catch (e) { d.exec("ROLLBACK"); throw e; }
+    return;
+  }
+
+  const work = workHashes(d);
+  const commit = headCommit(root), branch = currentBranch(root);
+  const capture = (ids: string[]): NodeCitation[] => ids.map((id) => ({ anchorId: id, acceptedHashes: work.has(id) ? [work.get(id)!] : [] }));
+  const insert = (cites: NodeCitation[]) =>
+    d.prepare(INS_VERSION).run(vid(), node.id, node.type, node.title, node.summary, node.body, null, commit, branch, nowISO(), JSON.stringify(cites));
+
+  if (!existing.length) { insert(capture(node.anchors)); return; }
+
+  const { v: winner, e } = selectWinner(existing, work);
+  if (e.status === "fresh") {
+    // Edit in place + confirm: merge current @work hashes into the citation sets.
+    const prev = new Map(winner.citations.map((c) => [c.anchorId, new Set(c.acceptedHashes)]));
+    const cites: NodeCitation[] = node.anchors.map((id) => {
+      const set = prev.get(id) ?? new Set<string>();
+      if (work.has(id)) set.add(work.get(id)!);
+      return { anchorId: id, acceptedHashes: [...set] };
+    });
+    d.prepare("UPDATE node_versions SET type=?,title=?,summary=?,body=?,citations=? WHERE version_id=?")
+      .run(node.type, node.title, node.summary, node.body, JSON.stringify(cites), winner.versionId);
+  } else {
+    // Editing against drifted/removed code → fork; the old version stays for its branch.
+    insert(capture(node.anchors));
+  }
 }
 
 export async function deleteNode(root: string, id: string): Promise<void> {
-  db(root).prepare("DELETE FROM nodes WHERE id = ?").run(id);
+  db(root).prepare("DELETE FROM node_versions WHERE node_id = ?").run(id);
 }
 
 // --- graph (edges) -----------------------------------------------------------
