@@ -140,32 +140,55 @@ interface Item {
 
 const kindFor = (type: string): AnchorKind => KIND_BY_TYPE[type] ?? "function";
 
+// Exported-const initializers worth anchoring as a `variable`: config object/array
+// literals, singleton `new X()` instances, and factory calls (e.g. TanStack's
+// `createFileRoute(...)({...})`, `createRouter(...)`, zustand `create(...)`). These
+// carry structure/behavior a doc wants to cite but aren't functions. Scalars,
+// identifiers, and member accesses are skipped as trivial.
+const SIGNIFICANT_INIT = s("object", "array", "new_expression", "call_expression");
+function isSignificantInitializer(val: Node): boolean {
+  let v: Node | null = val;
+  // Unwrap `... as const` / `... satisfies T` to the underlying expression.
+  while (v && (v.type === "as_expression" || v.type === "satisfies_expression")) {
+    const inner = v.namedChild(0);
+    if (!inner || inner === v) break;
+    v = inner;
+  }
+  return !!v && SIGNIFICANT_INIT.has(v.type);
+}
+
 /** Turn one member node into 0..n indexable items, unwrapping wrappers. */
-function classify(node: Node, cfg: LangConfig): Item[] {
+function classify(node: Node, cfg: LangConfig, exported = false): Item[] {
   const t = node.type;
 
-  // `export ...` (JS/TS) — index the inner declaration.
+  // `export ...` (JS/TS) — index the inner declaration (and remember it's exported).
   if (t === "export_statement") {
     const decl = node.childForFieldName("declaration");
-    return decl ? classify(decl, cfg) : [];
+    return decl ? classify(decl, cfg, true) : [];
   }
 
   // `@decorator def ...` (Python) — hash the whole thing so decorators count.
   if (t === "decorated_definition") {
     const inner = node.childForFieldName("definition") ?? node.namedChildren.at(-1);
     if (!inner) return [];
-    return classify(inner, cfg).map((it) => ({ ...it, hashNode: node }));
+    return classify(inner, cfg, exported).map((it) => ({ ...it, hashNode: node }));
   }
 
-  // `const f = () => {}` / `const f = function () {}` (JS/TS).
+  // `const f = () => {}` / `const f = function () {}` (JS/TS) — always anchored.
+  // Additionally, an EXPORTED `const x = {…} | [...] | new X() | factory(…)` is
+  // anchored as a `variable` (config objects, singletons, route consts) — hashing
+  // its whole initializer, no recursion (so nested arrows don't spawn sub-anchors).
   if (t === "lexical_declaration" || t === "variable_declaration") {
     const out: Item[] = [];
     for (const d of node.namedChildren) {
       if (d.type !== "variable_declarator") continue;
+      const name = d.childForFieldName("name")?.text;
+      if (!name) continue;
       const val = d.childForFieldName("value");
       if (val && (val.type === "arrow_function" || val.type === "function_expression")) {
-        const name = d.childForFieldName("name")?.text;
-        if (name) out.push({ name, kind: "callable", anchorKind: "function", defNode: d, hashNode: d });
+        out.push({ name, kind: "callable", anchorKind: "function", defNode: d, hashNode: d });
+      } else if (exported && val && isSignificantInitializer(val)) {
+        out.push({ name, kind: "callable", anchorKind: "variable", defNode: d, hashNode: d });
       }
     }
     return out;

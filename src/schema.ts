@@ -46,7 +46,8 @@ export type AnchorKind =
   | "method"
   | "constructor"
   | "function"
-  | "property";
+  | "property"
+  | "variable";
 
 export interface Anchor {
   /** Deterministic id derived from (file, symbolPath, disambiguator). */
