@@ -87,7 +87,7 @@ function trustOf(status: string | undefined, review?: { logical: ReviewLite; cod
   if (!review) return "unverified";
   const { logical: L, code: C } = review;
   if (L.state === "stale" || C.state === "stale") return "stale";
-  const humanOK = (L.state === "reviewed" && (L.actor ?? "human") === "human") || (C.state === "reviewed" && (C.actor ?? "human") === "human");
+  const humanOK = (L.state === "reviewed" && L.actor === "human") || (C.state === "reviewed" && C.actor === "human");
   if (humanOK) return "verified";
   if (L.state === "reviewed" || C.state === "reviewed") return "checked"; // agent-confirmed
   return "unverified";
@@ -528,7 +528,7 @@ export async function outline(root: string, prefix = "") {
   const byId = new Map(store.anchors.map((a) => [a.id, a]));
   const state = (id: string) => result.state.get(id) ?? "open";
   const reviews = await anchorReviewMap(root, store.anchors, nodes, reviewStore.reviews);
-  const rv = (id: string) => reviews.get(id) ?? { code: "unreviewed" as const, logical: "unreviewed" as const };
+  const rv = (id: string) => reviews.get(id) ?? { code: "unreviewed" as const, logical: "unreviewed" as const, codeActor: null, logicalActor: null };
   const inScope = (id: string) => { const s = state(id); return s === "open" || s === "cited" || s === "covered"; };
 
   // A file prefix → list that file's symbols.
@@ -793,6 +793,7 @@ export async function subgraph(root: string, ids: string[], expand?: string) {
       degree: totalDeg.get(id) ?? 0,
       hidden: (totalDeg.get(id) ?? 0) - (shownDeg.get(id) ?? 0),
       review: { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" },
+      reviewBy: { logical: rp?.logical.actor ?? null, code: rp?.code.actor ?? null },
     };
   });
   return {
@@ -906,6 +907,7 @@ export async function pipelineGraph(root: string, opts: { domain?: string } = {}
         id: n.id, title: n.title, type: n.type, domain: domOf(n), layer: li, row,
         degree: (adj.get(n.id) ?? []).length,
         review: { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" },
+        reviewBy: { logical: rp?.logical.actor ?? null, code: rp?.code.actor ?? null },
       });
     }),
   );

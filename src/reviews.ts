@@ -68,7 +68,9 @@ export async function markReviewed(
     target,
     level: input.level,
     reviewer: input.reviewer || "me",
-    actor: input.actor ?? "human",
+    // Default to "agent": only an explicit human action (the web UI) grants
+    // "human"/verified. Legacy reviews (no actor) likewise read as agent-`checked`.
+    actor: input.actor ?? "agent",
     at: new Date().toISOString(),
     reviewedCommit: headCommit(root),
     witnesses,
@@ -103,7 +105,7 @@ export async function reviewStatesFor(root: string, targets: Target[]): Promise<
     const r = rs.reviews.find((x) => x.target.kind === t.kind && x.target.id === t.id && x.level === level);
     if (!r) return { state: "unreviewed" };
     const stale = r.witnesses.some((w) => live.get(w.anchorId) !== w.bodyHash);
-    return { state: stale ? "stale" : "reviewed", by: r.reviewer, actor: r.actor ?? "human", at: r.at };
+    return { state: stale ? "stale" : "reviewed", by: r.reviewer, actor: r.actor ?? "agent", at: r.at };
   };
   for (const t of targets) out.set(key(t), { logical: forLevel(t, "logical"), code: forLevel(t, "code") });
   return out;
@@ -120,12 +122,14 @@ export async function reviewStatus(root: string, target: Target): Promise<Review
  * outline heatmap. A node review propagates to the anchors it cites. Precedence:
  * reviewed > stale > unreviewed.
  */
+export interface AnchorReview { code: ReviewState; logical: ReviewState; codeActor: "human" | "agent" | null; logicalActor: "human" | "agent" | null }
+
 export async function anchorReviewMap(
   root: string,
   anchors: { id: string }[],
   nodes: { id: string; anchors: string[] }[],
   reviews: Review[],
-): Promise<Map<string, { code: ReviewState; logical: ReviewState }>> {
+): Promise<Map<string, AnchorReview>> {
   const nodeAnchors = new Map(nodes.map((n) => [n.id, n.anchors]));
   const reviewedAnchorIds = new Set<string>();
   for (const r of reviews) {
@@ -134,20 +138,32 @@ export async function anchorReviewMap(
   }
   const live = await liveHashes(root, reviewedAnchorIds);
   const isStale = (r: Review) => r.witnesses.some((w) => live.get(w.anchorId) !== w.bodyHash);
-  const code = new Map<string, ReviewState>();
-  const logical = new Map<string, ReviewState>();
-  const bump = (m: Map<string, ReviewState>, id: string, state: ReviewState) => {
+  type Cell = { state: ReviewState; actor: "human" | "agent" };
+  const rank: Record<ReviewState, number> = { reviewed: 2, stale: 1, unreviewed: 0 };
+  const code = new Map<string, Cell>();
+  const logical = new Map<string, Cell>();
+  // Higher-precedence state wins (reviewed > stale); among reviewed, a human review
+  // beats an agent one (verified > checked), so the anchor reads at the best trust.
+  const bump = (m: Map<string, Cell>, id: string, state: ReviewState, actor: "human" | "agent") => {
     const c = m.get(id);
-    if (c === "reviewed") return;
-    if (state === "reviewed" || !c) m.set(id, state);
+    if (!c) { m.set(id, { state, actor }); return; }
+    if (rank[state] > rank[c.state]) { c.state = state; c.actor = actor; }
+    else if (state === c.state && state === "reviewed" && actor === "human") c.actor = "human";
   };
   for (const r of reviews) {
     const state: ReviewState = isStale(r) ? "stale" : "reviewed";
+    const actor = r.actor ?? "agent"; // migration: legacy reviews read as agent-checked
     const m = r.level === "code" ? code : logical;
-    if (r.target.kind === "anchor") bump(m, r.target.id, state);
-    else for (const aid of nodeAnchors.get(r.target.id) ?? []) bump(m, aid, state);
+    if (r.target.kind === "anchor") bump(m, r.target.id, state, actor);
+    else for (const aid of nodeAnchors.get(r.target.id) ?? []) bump(m, aid, state, actor);
   }
-  const out = new Map<string, { code: ReviewState; logical: ReviewState }>();
-  for (const a of anchors) out.set(a.id, { code: code.get(a.id) ?? "unreviewed", logical: logical.get(a.id) ?? "unreviewed" });
+  const out = new Map<string, AnchorReview>();
+  for (const a of anchors) {
+    const c = code.get(a.id), l = logical.get(a.id);
+    out.set(a.id, {
+      code: c?.state ?? "unreviewed", logical: l?.state ?? "unreviewed",
+      codeActor: c?.state === "reviewed" ? c.actor : null, logicalActor: l?.state === "reviewed" ? l.actor : null,
+    });
+  }
   return out;
 }

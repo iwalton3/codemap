@@ -115,7 +115,7 @@ const reviewHeat = (rev) => {
   const tip = `logical ${rev.logical}/${rev.total}${rev.logicalStale ? ' (' + rev.logicalStale + ' stale)' : ''} · code ${rev.code}/${rev.total}${rev.codeStale ? ' (' + rev.codeStale + ' stale)' : ''}`;
   return html`<span class="rheat" title="${tip}">${track(rev.logical, rev.logicalStale)}${track(rev.code, rev.codeStale)}</span>`;
 };
-const revDot = (state) => html`<span class="rd ${state === 'reviewed' ? 'done' : state === 'stale' ? 'stale' : ''}"></span>`;
+const revDot = (state, actor) => html`<span class="rd ${state === 'reviewed' ? (actor === 'agent' ? 'checked' : 'done') : state === 'stale' ? 'stale' : ''}"></span>`;
 
 // --- markdown ----------------------------------------------------------------
 // Content is authored by the documenting agent / developers (internal, trusted).
@@ -286,7 +286,7 @@ class OutlinePage extends Component {
     if (d.kind === 'file') {
       return html`<div class="rows">${each(d.symbols, s => html`
         <div class="sym" on-click="${() => go(anchorUrl(u, s.id))}"><span class="k">${s.kind}</span>
-          <span><span class="dot ${(s.coverage === 'cited' || s.coverage === 'covered') ? 'on' : ''}" title="coverage: ${s.coverage}"></span>${s.symbol}${when(s.review, () => html`<span class="rdots" title="logical ${s.review.logical} · code ${s.review.code}">${revDot(s.review.logical)}${revDot(s.review.code)}</span>`)}</span><span class="muted">${s.lines ?? ''}</span></div>`)}</div>`;
+          <span><span class="dot ${(s.coverage === 'cited' || s.coverage === 'covered') ? 'on' : ''}" title="coverage: ${s.coverage}"></span>${s.symbol}${when(s.review, () => html`<span class="rdots" title="logical ${s.review.logical} · code ${s.review.code}">${revDot(s.review.logical, s.review.logicalActor)}${revDot(s.review.code, s.review.codeActor)}</span>`)}</span><span class="muted">${s.lines ?? ''}</span></div>`)}</div>`;
     }
     if (!d.children || !d.children.length) return html`<div class="empty">no anchors here</div>`;
     return html`<div>
@@ -849,8 +849,11 @@ class PipelinePage extends Component {
     if (this.state.loading || !d) return html`<main><div class="loading">loading…</div></main>`;
     const pos = this.pos();
     const edge = (e) => { const a = pos.get(e.from), b = pos.get(e.to); const sx = a.x + PIPE.NODEW, sy = a.y + PIPE.NODEH / 2, tx = b.x, ty = b.y + PIPE.NODEH / 2, c = PIPE.COLW * 0.4; return html`<path class="pe ${e.type}" data-from="${e.from}" data-to="${e.to}" d="M${sx},${sy} C${sx + c},${sy} ${tx - c},${ty} ${tx},${ty}"></path>`; };
-    const node = (n) => { const p = pos.get(n.id); const t = n.title.length > 34 ? n.title.slice(0, 33) + '…' : n.title; const rev = n.review.code === 'reviewed' || n.review.logical === 'reviewed'; return html`<g class="pn ${n.type} ${rev ? 'rev' : ''}" data-id="${n.id}" transform="translate(${p.x},${p.y})">
-      <rect width="${PIPE.NODEW}" height="${PIPE.NODEH}" rx="3"></rect><text x="6" y="11">${t}</text>${when(rev, () => html`<circle class="revdot" cx="${PIPE.NODEW - 7}" cy="8" r="3"></circle>`)}
+    const node = (n) => { const p = pos.get(n.id); const t = n.title.length > 34 ? n.title.slice(0, 33) + '…' : n.title;
+      const rev = n.review.code === 'reviewed' || n.review.logical === 'reviewed';
+      const human = (n.review.logical === 'reviewed' && n.reviewBy && n.reviewBy.logical === 'human') || (n.review.code === 'reviewed' && n.reviewBy && n.reviewBy.code === 'human');
+      return html`<g class="pn ${n.type} ${rev ? 'rev' : ''}" data-id="${n.id}" transform="translate(${p.x},${p.y})">
+      <rect width="${PIPE.NODEW}" height="${PIPE.NODEH}" rx="3"></rect><text x="6" y="11">${t}</text>${when(rev, () => html`<circle class="revdot ${human ? '' : 'checked'}" cx="${PIPE.NODEW - 7}" cy="8" r="3"></circle>`)}
     </g>`; };
     return html`<main class="wide">
       <div class="crumbs">${u} <span class="sep">·</span> event pipeline</div>
