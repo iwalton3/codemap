@@ -51,6 +51,11 @@ const nodesUrl = (u) => `/u/${u}/nodes/`;
 const matrixUrl = (u) => `/u/${u}/matrix/`;
 const pipelineUrl = (u) => `/u/${u}/pipeline/`;
 const REV_COLOR = { reviewed: '#7ee787', stale: '#f0a35e', unreviewed: '#3a4250' };
+// Doc-version status (see docs/doc-versioning.md).
+const STATUS = { fresh: '#7ee787', stale: '#f0a35e', dangling: '#f27b7b', removed: '#8b95a3', generated: '#6b7684' };
+const statusChip = (s, extra) => s && s !== 'generated' ? html`<span class="stchip ${s}" title="doc version: ${s}${extra || ''}">${s}</span>` : html``;
+const postConfirm = (u, id) => fetch('/api/confirm', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id }) });
+const postAckHole = (u, id) => fetch('/api/ack_hole', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id }) });
 const postReview = (u, targetKind, targetId, level, unmark) =>
   fetch('/api/review', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, targetKind, targetId, level, unmark }) });
 const highlight = (code, lang) => {
@@ -194,23 +199,33 @@ defineComponent('anchor-page', AnchorPage);
 
 class NodePage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { n: null }; }
-  load = this.createTask(async () => { nav.current = this.props.params.universe; this.state.n = await api('/api/node', { u: this.props.params.universe, id: this.props.params.id }); });
+  constructor(props) { super(props); this.state = { n: null, versions: null }; }
+  load = this.createTask(async () => {
+    const u = this.props.params.universe, id = this.props.params.id; nav.current = u;
+    this.state.n = await api('/api/node', { u, id });
+    this.state.versions = this.state.n && !this.state.n.error ? (await api('/api/node_versions', { u, id })).versions : null;
+  });
   mounted() { this.load.run(); }
   propsChanged() { this.load.run(); }
+  async confirm() { await postConfirm(this.props.params.universe, this.props.params.id); this.load.run(); }
+  async ackHole() { await postAckHole(this.props.params.universe, this.props.params.id); this.load.run(); }
   template() {
-    const u = this.props.params.universe, n = this.state.n;
+    const u = this.props.params.universe, n = this.state.n, versions = this.state.versions;
     if (!n || this.load.pending) return html`<main><div class="loading">loading…</div></main>`;
     if (n.error) return html`<main><div class="empty">${n.error}</div></main>`;
     return html`<main><div class="detail">
-      <div class="meta">${n.type}${n.universe ? ' · ' + n.universe : ''} · ${n.id}<span class="viewlink" on-click="${() => go(graphUrl(u, n.id))}">◆ graph</span></div>
-      <h2>${n.title}</h2>
+      <div class="meta">${n.type}${n.universe ? ' · ' + n.universe : ''} · ${n.id} ${statusChip(n.status)}<span class="viewlink" on-click="${() => go(graphUrl(u, n.id))}">◆ graph</span></div>
+      <h2>${n.title}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions (forked across branches)">⑂${n.versionCount}</span>`)}</h2>
+      ${when(n.status === 'stale', () => html`<div class="vaction"><span>This doc cites code that changed since it was written.</span> <button on-click="${() => this.confirm()}">confirm still accurate</button> <span class="dim">— or edit it (forks a new version).</span></div>`)}
+      ${when(n.status === 'dangling', () => html`<div class="vaction bad"><span>Cited code was removed here (${(n.danglingAnchors || []).length} anchor${(n.danglingAnchors || []).length === 1 ? '' : 's'}).</span> <button on-click="${() => this.ackHole()}">ack — remove doc here</button> <span class="dim">(kept on branches where the code exists).</span></div>`)}
       <md-content text="${n.summary}"></md-content>
       ${when(n.body && n.body.trim(), () => html`<md-content text="${n.body}"></md-content>`)}
       <div class="sec">anchors</div>
       <div class="chips">${each(n.resolvedAnchors ?? [], a => html`<span class="chip" on-click="${() => a.id && go(anchorUrl(u, a.id))}">${a.symbol ?? a.id}</span>`)}</div>
       ${when(n.edges && n.edges.length, () => html`<div class="sec">edges</div><div class="chips">${each(n.edges, e => html`<span class="chip" on-click="${() => e.toRef && go(nodeUrl(e.toRef.universe, e.toRef.id))}">${e.type}: ${e.toRef ? e.toRef.universe + '::' + (e.toRef.title || e.toRef.id) : e.to}</span>`)}</div>`)}
       ${when(n.inboundCrossUniverse && n.inboundCrossUniverse.length, () => html`<div class="sec">called by (other universes)</div><div class="chips">${each(n.inboundCrossUniverse, i => html`<span class="chip" on-click="${() => go(nodeUrl(i.fromUniverse, i.from))}">${i.fromUniverse}::${i.from} (${i.type})</span>`)}</div>`)}
+      ${when(versions && versions.length > 1, () => html`<div class="sec">versions (${versions.length}) — the one matching this branch wins</div>
+        ${each(versions, v => html`<div class="nver ${v.status}"><span class="stchip ${v.status}">${v.status}</span> <span class="nvbranch">${v.createdBranch || '(?)'} @ ${(v.createdCommit || '').slice(0, 8) || '—'}</span> <span class="dim">${v.removed ? '(tombstone)' : v.title}</span></div>`, v => v.versionId)}`)}
       ${when(n.annotations && n.annotations.length, () => html`<div class="sec">notes</div>${each(n.annotations, an => html`<md-content text="${an.text}"></md-content>`)}`)}
     </div></main>`;
   }
@@ -506,6 +521,7 @@ class NodeCatalogPage extends Component {
       (!f.type || n.type === f.type) &&
       (!f.domain || n.domain === f.domain) &&
       (!f.gen || (f.gen === 'human' ? !n.generatedBy : n.generatedBy === f.gen)) &&
+      (!f.status || n.status === f.status) &&
       (!f.review ||
         (f.review === 'unreviewed' ? (n.review.logical === 'unreviewed' && n.review.code === 'unreviewed')
           : f.review === 'reviewed' ? (n.review.logical === 'reviewed' || n.review.code === 'reviewed')
@@ -524,11 +540,12 @@ class NodeCatalogPage extends Component {
     const list = this.filtered();
     const opts = (o) => Object.entries(o).sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ k, v }));
     return html`<main>
-      <div class="crumbs">${u} <span class="sep">·</span> nodes (${d.total}) <span class="sep">·</span> ${d.reviewed} reviewed</div>
+      <div class="crumbs">${u} <span class="sep">·</span> nodes (${d.total}) <span class="sep">·</span> ${d.reviewed} reviewed${when(d.byStatus && (d.byStatus.stale || d.byStatus.dangling), () => html` <span class="sep">·</span> <b class="bad">${(d.byStatus.stale || 0) + (d.byStatus.dangling || 0)} need review</b>`)}</div>
       <div class="nfilters">
         <input placeholder="filter title…" on-input="${(e) => this.set('q', e.target.value)}">
         <select on-change="${(e) => this.set('type', e.target.value)}"><option value="">all types</option>${each(opts(d.byType), o => html`<option value="${o.k}">${o.k} (${o.v})</option>`, o => o.k)}</select>
         <select on-change="${(e) => this.set('domain', e.target.value)}"><option value="">all domains</option>${each(opts(d.byDomain), o => html`<option value="${o.k}">${o.k} (${o.v})</option>`, o => o.k)}</select>
+        <select on-change="${(e) => this.set('status', e.target.value)}"><option value="">any status</option>${each(opts(d.byStatus || {}), o => html`<option value="${o.k}">${o.k} (${o.v})</option>`, o => o.k)}</select>
         <select on-change="${(e) => this.set('gen', e.target.value)}"><option value="">any source</option><option value="human">human</option><option value="marten">marten</option></select>
         <select on-change="${(e) => this.set('review', e.target.value)}"><option value="">any review</option><option value="unreviewed">unreviewed</option><option value="reviewed">reviewed</option><option value="stale">stale</option></select>
         <select on-change="${(e) => this.setGroup(e.target.value)}"><option value="type">group: type</option><option value="domain">group: domain</option><option value="none">group: none</option></select>
@@ -538,7 +555,8 @@ class NodeCatalogPage extends Component {
         <div class="ngh"><span class="gdot" style="background:${nodeColor(g[0])}"></span>${g[0]} <span class="n">${g[1].length}</span></div>
         ${each(g[1], n => html`<div class="nrow" on-click="${() => go(nodeUrl(u, n.id))}">
           <span class="nt" style="border-color:${nodeColor(n.type)}">${n.type}</span>
-          <span class="ntitle">${n.title || n.id}</span>
+          <span class="ntitle">${n.title || n.id}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions (forked)">⑂${n.versionCount}</span>`)}</span>
+          ${statusChip(n.status)}
           <span class="ndom">${n.domain}</span>
           <span class="nmeta">${n.anchors}a · ${n.edgesIn}↓${n.edgesOut}↑</span>
           ${when(n.generatedBy, () => html`<span class="gen">${n.generatedBy}</span>`)}

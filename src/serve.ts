@@ -64,6 +64,8 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return ops.subgraph(root, (q.get("ids") ?? "").split(",").filter(Boolean), q.get("expand") || undefined);
     case "/api/nodes":
       return ops.nodeCatalog(root);
+    case "/api/node_versions":
+      return ops.nodeVersions(root, q.get("id") ?? "");
     case "/api/matrix":
       return ops.eventMatrix(root);
     case "/api/pipeline":
@@ -122,6 +124,19 @@ const server = createServer(async (req, res) => {
           ? unmarkReviewed(root, { targetKind: body.targetKind, targetId: body.targetId, level: body.level })
           : markReviewed(root, { targetKind: body.targetKind, targetId: body.targetId, level: body.level, reviewer: body.reviewer }),
       );
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(out));
+      return;
+    }
+
+    // Doc-versioning write paths from the UI (under the write lock).
+    if (req.method === "POST" && (url.pathname === "/api/confirm" || url.pathname === "/api/ack_hole")) {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      const root = rootFor(body.u ?? null);
+      const fn = url.pathname === "/api/confirm" ? ops.confirm : ops.ackHole;
+      const out = await withLock<unknown>(root, () => fn(root, body.id));
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(out));
       return;

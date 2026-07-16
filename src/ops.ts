@@ -322,10 +322,12 @@ export async function nodeCatalog(root: string) {
       edgesOut: outC.get(n.id) ?? 0,
       degree: (inC.get(n.id) ?? 0) + (outC.get(n.id) ?? 0),
       generatedBy: n.generatedBy ?? null,
+      status: n.status ?? "fresh",
+      versionCount: n.versionCount ?? 1,
       review: { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" },
     };
   });
-  const tally = (arr: typeof out, k: "type" | "domain") =>
+  const tally = (arr: typeof out, k: "type" | "domain" | "status") =>
     arr.reduce<Record<string, number>>((m, x) => ((m[x[k] ?? "(none)"] = (m[x[k] ?? "(none)"] ?? 0) + 1), m), {});
   const reviewed = out.filter((n) => n.review.logical !== "unreviewed" || n.review.code !== "unreviewed").length;
   return {
@@ -333,6 +335,7 @@ export async function nodeCatalog(root: string) {
     reviewed,
     byType: tally(out, "type"),
     byDomain: tally(out, "domain"),
+    byStatus: tally(out, "status"),
     nodes: out,
   };
 }

@@ -146,6 +146,21 @@
     .nrev button.stale { border-color: var(--warn); color: var(--warn); background: rgba(240,163,94,0.08); }
     @media (max-width: 720px) { .ndom, .nmeta, .gen { display: none; } }
 
+    /* --- doc version status --- */
+    .stchip { font-size: 10px; font-family: var(--mono); padding: 1px 6px; border-radius: 10px; border: 1px solid; text-transform: lowercase; flex: none; }
+    .stchip.fresh { color: var(--accent2); border-color: var(--accent2); }
+    .stchip.stale { color: var(--warn); border-color: var(--warn); }
+    .stchip.dangling, .stchip.removed { color: var(--bad); border-color: var(--bad); }
+    .stchip.generated { display: none; }
+    .vfork { font-size: 12px; color: var(--accent); margin-left: 8px; font-family: var(--mono); font-weight: 400; }
+    .vaction { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0; padding: 8px 12px; border: 1px solid var(--warn); border-radius: 8px; background: rgba(240,163,94,0.07); font-size: 13px; }
+    .vaction.bad { border-color: var(--bad); background: rgba(242,123,123,0.07); }
+    .vaction button { background: var(--panel2); border: 1px solid var(--accent2); color: var(--accent2); border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+    .vaction.bad button { border-color: var(--bad); color: var(--bad); }
+    .nver { display: flex; align-items: center; gap: 10px; padding: 5px 10px; border: 1px solid var(--border); border-radius: 6px; margin: 4px 0; font-size: 12.5px; }
+    .nvbranch { font-family: var(--mono); font-size: 12px; }
+    b.bad, .bad { color: var(--bad); }
+
     /* --- event matrix --- */
     .mstats { color: var(--dim); font-size: 12.5px; margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
     .mstats .bad { color: var(--bad); } .mstats .ok { color: var(--accent2); }
