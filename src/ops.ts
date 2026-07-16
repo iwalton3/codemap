@@ -407,6 +407,7 @@ export async function nodeCatalog(root: string) {
       status: n.status ?? "fresh",
       versionCount: n.versionCount ?? 1,
       review: { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" },
+      reviewBy: { logical: rp?.logical.actor ?? null, code: rp?.code.actor ?? null },
       trust: trustOf(n.status, rp),
     };
   });
@@ -472,6 +473,7 @@ export async function eventMatrix(root: string) {
         projects,
         orphan: folds === 0 && projects === 0,
         review: { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" },
+        reviewBy: { logical: rp?.logical.actor ?? null, code: rp?.code.actor ?? null },
       };
     })
     .sort((a, b) => a.domain.localeCompare(b.domain) || a.title.localeCompare(b.title));

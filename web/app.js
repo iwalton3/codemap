@@ -60,7 +60,17 @@ const statusChip = (s, extra) => s && s !== 'generated' ? html`<span class="stch
 // Trust tier (freshness × who confirmed): verified (human) / checked (agent) / stale.
 // unverified + generated are the baseline — not chipped, to keep lists quiet.
 const TRUST_TIP = { verified: 'human-reviewed — rely on it', checked: 'agent-checked against code — solid, spot-check if critical', stale: 'code changed — needs re-validation' };
-const trustChip = (t) => TRUST_TIP[t] ? html`<span class="tchip ${t}" title="trust: ${t} — ${TRUST_TIP[t]}">${t}</span>` : html``;
+// A clickable chip when `onClick` is given: click a `checked`/`unverified` doc to
+// promote it to human-`verified`; click `verified` to drop the human mark. Baseline
+// `unverified` only chips when actionable (keeps read-only lists quiet).
+const trustChip = (t, onClick) => {
+  if (!TRUST_TIP[t] && t !== 'unverified') return html``;
+  if (t === 'unverified' && !onClick) return html``;
+  const can = onClick && t !== 'stale';
+  const act = t === 'verified' ? 'unverify' : 'verify';
+  const tip = `trust: ${t}${TRUST_TIP[t] ? ' — ' + TRUST_TIP[t] : ''}${can ? ' · click to ' + act : ''}`;
+  return html`<span class="tchip ${t} ${can ? 'clickable' : ''}" title="${tip}" on-click="${can ? (e) => { if (e.stopPropagation) e.stopPropagation(); onClick(act); } : null}">${t}</span>`;
+};
 const postConfirm = (u, id) => fetch('/api/confirm', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id }) });
 const postAckHole = (u, id) => fetch('/api/ack_hole', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id }) });
 const postReview = (u, targetKind, targetId, level, unmark) =>
@@ -326,6 +336,7 @@ class NodePage extends Component {
   });
   mounted() { this.load.run(); }
   propsChanged() { this.load.run(); }
+  async verify(act) { await postReview(this.props.params.universe, 'node', this.props.params.id, 'logical', act === 'unverify'); this.load.run(); }
   async confirm() { await postConfirm(this.props.params.universe, this.props.params.id); this.load.run(); }
   async ackHole() { await postAckHole(this.props.params.universe, this.props.params.id); this.load.run(); }
   template() {
@@ -333,7 +344,7 @@ class NodePage extends Component {
     if (!n || this.load.pending) return html`<main><div class="loading">loading…</div></main>`;
     if (n.error) return html`<main><div class="empty">${n.error}</div></main>`;
     return html`<main><div class="detail">
-      <div class="meta">${n.type}${n.universe ? ' · ' + n.universe : ''} · ${n.id} ${statusChip(n.status)}${trustChip(n.trust)}<span class="viewlink" on-click="${() => go(graphUrl(u, n.id))}">◆ graph</span></div>
+      <div class="meta">${n.type}${n.universe ? ' · ' + n.universe : ''} · ${n.id} ${statusChip(n.status)}${trustChip(n.trust, (act) => this.verify(act))}<span class="viewlink" on-click="${() => go(graphUrl(u, n.id))}">◆ graph</span></div>
       <h2>${n.title}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions (forked across branches)">⑂${n.versionCount}</span>`)}</h2>
       ${when(n.status === 'stale', () => html`<div class="vaction"><span>This doc cites code that changed since it was written.</span> <button on-click="${() => this.confirm()}">confirm still accurate</button> <span class="dim">— or edit it (forks a new version).</span></div>`)}
       ${when(n.status === 'dangling', () => html`<div class="vaction bad"><span>Cited code was removed here (${(n.danglingAnchors || []).length} anchor${(n.danglingAnchors || []).length === 1 ? '' : 's'}).</span> <button on-click="${() => this.ackHole()}">ack — remove doc here</button> <span class="dim">(kept on branches where the code exists).</span></div>`)}
@@ -648,11 +659,15 @@ class NodeCatalogPage extends Component {
   propsChanged() { this.load.run(); }
   set(k, v) { this.state.f = { ...this.state.f, [k]: v }; }
   setGroup(v) { this.state.group = v; }
+  async verify(id, act) { await postReview(this.props.params.universe, 'node', id, 'logical', act === 'unverify'); this.load.run(); }
   async toggle(id, level, state) { await postReview(this.props.params.universe, 'node', id, level, state === 'reviewed'); this.load.run(); }
-  revBtn(id, level, state) {
-    const cls = state === 'reviewed' ? 'on' : state === 'stale' ? 'stale' : '';
-    const mark = state === 'reviewed' ? '✓' : state === 'stale' ? '⚠' : '';
-    return html`<button class="${cls}" title="${level}: ${state}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.toggle(id, level, state); }}">${level[0].toUpperCase()}${mark}</button>`;
+  // Human review = green (`on`); an agent `checked` review = blue, so it never reads
+  // as fully-verified. A web toggle always records a human review.
+  revBtn(id, level, state, actor) {
+    const agent = state === 'reviewed' && actor === 'agent';
+    const cls = state === 'reviewed' ? (agent ? 'checked' : 'on') : state === 'stale' ? 'stale' : '';
+    const mark = state === 'reviewed' ? (agent ? '·' : '✓') : state === 'stale' ? '⚠' : '';
+    return html`<button class="${cls}" title="${level}: ${state}${agent ? ' (agent-checked — click to verify)' : ''}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.toggle(id, level, state); }}">${level[0].toUpperCase()}${mark}</button>`;
   }
   filtered() {
     const f = this.state.f, q = f.q.toLowerCase();
@@ -696,11 +711,11 @@ class NodeCatalogPage extends Component {
         ${each(g[1], n => html`<div class="nrow" on-click="${() => go(nodeUrl(u, n.id))}">
           <span class="nt" style="border-color:${nodeColor(n.type)}">${n.type}</span>
           <span class="ntitle">${n.title || n.id}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions (forked)">⑂${n.versionCount}</span>`)}</span>
-          ${statusChip(n.status)}${trustChip(n.trust)}
+          ${statusChip(n.status)}${trustChip(n.trust, (act) => this.verify(n.id, act))}
           <span class="ndom">${n.domain}</span>
           <span class="nmeta">${n.anchors}a · ${n.edgesIn}↓${n.edgesOut}↑</span>
           ${when(n.generatedBy, () => html`<span class="gen">${n.generatedBy}</span>`)}
-          <span class="nrev">${this.revBtn(n.id, 'logical', n.review.logical)}${this.revBtn(n.id, 'code', n.review.code)}</span>
+          <span class="nrev">${this.revBtn(n.id, 'logical', n.review.logical, n.reviewBy && n.reviewBy.logical)}${this.revBtn(n.id, 'code', n.review.code, n.reviewBy && n.reviewBy.code)}</span>
         </div>`, n => n.id)}
       </div>`, g => g[0])}
     </main>`;
@@ -717,10 +732,13 @@ class MatrixPage extends Component {
   propsChanged() { this.load.run(); }
   set(k, v) { this.state.f = { ...this.state.f, [k]: v }; }
   async toggle(id, level, state) { await postReview(this.props.params.universe, 'node', id, level, state === 'reviewed'); this.load.run(); }
-  revBtn(id, level, state) {
-    const cls = state === 'reviewed' ? 'on' : state === 'stale' ? 'stale' : '';
-    const mark = state === 'reviewed' ? '✓' : state === 'stale' ? '⚠' : '';
-    return html`<button class="${cls}" title="${level}: ${state}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.toggle(id, level, state); }}">${level[0].toUpperCase()}${mark}</button>`;
+  // Human review = green (`on`); an agent `checked` review = blue, so it never reads
+  // as fully-verified. A web toggle always records a human review.
+  revBtn(id, level, state, actor) {
+    const agent = state === 'reviewed' && actor === 'agent';
+    const cls = state === 'reviewed' ? (agent ? 'checked' : 'on') : state === 'stale' ? 'stale' : '';
+    const mark = state === 'reviewed' ? (agent ? '·' : '✓') : state === 'stale' ? '⚠' : '';
+    return html`<button class="${cls}" title="${level}: ${state}${agent ? ' (agent-checked — click to verify)' : ''}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.toggle(id, level, state); }}">${level[0].toUpperCase()}${mark}</button>`;
   }
   filtered() {
     const f = this.state.f, q = f.q.toLowerCase();
@@ -749,7 +767,7 @@ class MatrixPage extends Component {
         ${each(rows, e => html`<div class="mrow ${e.orphan ? 'orphan' : ''}">
           <span class="mev" on-click="${() => go(nodeUrl(u, e.id))}"><b>${e.title}</b><small>${e.domain} · ${e.emitters}↑</small></span>
           ${each(d.sinks, s => html`<span class="mcell">${when(e.cells[s.id], () => html`<i class="cdot ${e.cells[s.id]}" title="${e.cells[s.id]}"></i>`)}</span>`, s => s.id)}
-          <span class="mrevh"><span class="nrev">${this.revBtn(e.id, 'logical', e.review.logical)}${this.revBtn(e.id, 'code', e.review.code)}</span></span>
+          <span class="mrevh"><span class="nrev">${this.revBtn(e.id, 'logical', e.review.logical, e.reviewBy && e.reviewBy.logical)}${this.revBtn(e.id, 'code', e.review.code, e.reviewBy && e.reviewBy.code)}</span></span>
         </div>`, e => e.id)}
       </div>
     </main>`;
