@@ -123,9 +123,12 @@ so the worst-and-least-reviewed code sorts to the top of the human's queue.
   "sums decimals") over vibes; put it in \`reason\`. When you can't tell, leave it
   untriaged (it escalates) rather than guessing \`mechanical\` — a wrong "mechanical"
   hides real risk.
-- **The ratchet:** your marks are always \`likely\` and you may only RAISE stakes — a
-  human confirms or lowers them (and their mark you cannot override). So over-proposing
-  is safe; under-proposing hides risk. Bias toward raising.
+- **The ratchet:** your marks are always \`likely\` and you may only RAISE stakes; a
+  human confirms or lowers. Escalation is ALWAYS allowed — raising only adds scrutiny,
+  so if a human mis-flagged something as low, or code changed so a once-mechanical part
+  now handles money/emits an event, \`triage\` it higher and it re-enters their confirm
+  queue. You can never LOWER (that hides risk — human-only). So over-proposing is safe;
+  under-proposing hides risk. Bias toward raising.
 - Severity = stakes × the review gap (whether it's been \`viewed\`/\`signed\`), so your
   triage directly decides where a human spends their next golden window.
 

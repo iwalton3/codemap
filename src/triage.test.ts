@@ -27,7 +27,7 @@ test("triageSeverity implements the docs/triage.md matrix", () => {
   assert.equal(triageSeverity("mechanical", { read: true, signed: false }), "complete");
 });
 
-test("the ratchet: agents may only raise; a human may lower or confirm", async () => {
+test("the ratchet: escalation always allowed, lowering human-only, graph respects humans", async () => {
   const root = initRoot();
   try {
     await init(root);
@@ -44,9 +44,13 @@ test("the ratchet: agents may only raise; a human may lower or confirm", async (
     // A human MAY lower, and their mark is confirmed (not likely).
     r = await setTriage(root, { ...t, importance: "mechanical", source: "human" });
     assert.equal(r.ok, true); assert.equal(r.likely, false);
-    assert.equal((await readTriage(root)).triage[0]!.importance, "mechanical");
-    // A human mark is authoritative — an agent may NOT re-raise it (sticky lowering).
+    // An agent MAY escalate a human mark (mis-flag / code grew teeth) — as a `likely` proposal.
     r = await setTriage(root, { ...t, importance: "business-critical", source: "agent" });
+    assert.equal(r.ok, true); assert.equal(r.likely, true);
+    assert.equal((await readTriage(root)).triage[0]!.importance, "business-critical");
+    // ...but the blind graph batch will NOT override a human mark.
+    await setTriage(root, { ...t, importance: "mechanical", source: "human" });
+    r = await setTriage(root, { ...t, importance: "business-critical", source: "graph" });
     assert.equal(r.ok, false);
     assert.equal((await readTriage(root)).triage[0]!.importance, "mechanical");
   } finally {

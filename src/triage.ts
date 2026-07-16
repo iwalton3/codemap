@@ -57,14 +57,21 @@ export async function setTriage(
   const existing = ts.triage.find((t) => sameTarget(t, input.targetKind, input.targetId));
   const human = input.source === "human";
   if (existing && !human) {
-    // A human mark is authoritative — agents/graph can neither raise nor lower it (a
-    // person's deliberate call, incl. a lowering, is sticky). Over a non-human mark,
-    // the ratchet still holds: only raise, never lower or equal-downgrade.
-    if (existing.source === "human") {
-      return { ok: false, importance: existing.importance, reason: "human-owned — agents/graph cannot override a person's triage" };
+    const raises = IMPORTANCE_RANK[input.importance] > IMPORTANCE_RANK[existing.importance];
+    // Lowering is human-only — a demotion hides risk, so no automated source may do it.
+    if (!raises) {
+      return {
+        ok: false,
+        importance: existing.importance,
+        reason: existing.source === "human" ? "human-owned — agents may only ESCALATE it, never lower" : "ratchet: agents/graph may only raise stakes",
+      };
     }
-    if (IMPORTANCE_RANK[input.importance] <= IMPORTANCE_RANK[existing.importance]) {
-      return { ok: false, importance: existing.importance, reason: "ratchet: agents/graph may only raise stakes" };
+    // Escalation only ever ADDS scrutiny, so it's allowed — an agent that finds a mis-flag
+    // or code that grew teeth SHOULD propose higher (as a `likely` mark you re-confirm).
+    // Exception: the *blind graph batch* respects a human mark (no new evidence, so it
+    // won't nag); a code-change-driven re-escalation is the witnessed Phase-4 path.
+    if (existing.source === "human" && input.source === "graph") {
+      return { ok: false, importance: existing.importance, reason: "graph derivation won't override a human mark — an agent with evidence can escalate via `triage`" };
     }
   }
   const target: Target = { kind: input.targetKind, id: input.targetId };

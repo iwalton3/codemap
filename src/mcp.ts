@@ -267,7 +267,7 @@ const tools: Tool[] = [
   },
   {
     name: "triage",
-    description: "Propose the STAKES of a node/anchor (blast radius if wrong): 'business-critical' (moves money / gates a business process / authz boundary), 'important' (real business logic, recoverable), or 'mechanical' (plumbing, no business logic). Recorded as an AGENT proposal (`likely`) — a human confirms or lowers it. RATCHET: you may only RAISE an existing tier, never lower it. Stakes × review attestation → a severity that routes human attention (see docs/triage.md). Judge from the graph where you can (emits a business event, touches money, gates a command) — don't guess mechanical for code you haven't traced.",
+    description: "Propose the STAKES of a node/anchor (blast radius if wrong): 'business-critical' (moves money / gates a business process / authz boundary), 'important' (real business logic, recoverable), or 'mechanical' (plumbing, no business logic). Recorded as an AGENT proposal (`likely`) — a human confirms or lowers it. RATCHET: you may only RAISE (escalate), never lower. Escalation is always allowed — if a human mis-flagged something as low, or code changed so a once-mechanical part now handles money/emits an event, propose the higher tier and it re-enters the human's confirm queue. Stakes × review attestation → a severity that routes human attention (see docs/triage.md). Judge from the graph (emits a business event, touches money, gates a command) — don't guess mechanical for code you haven't traced.",
     inputSchema: obj({
       targetKind: { type: "string", enum: ["node", "anchor"] },
       targetId: { type: "string" },

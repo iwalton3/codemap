@@ -53,13 +53,17 @@ Two qualifiers ride on top of the tier:
   *unchecked* → run an agent triage pass; *uncertain* → needs a human. The flag is
   worth carrying precisely so the worklist knows which of the two will help.
 
-**Permission ratchet (the accountability rule).** Agents may only *raise* stakes or
-post a `likely` guess; **only a human lowers a tier.** This is the same
-agent-proposes / human-owns pawl as everywhere else: an agent that could silently
-demote business-critical code to mechanical would be making an accountability-bearing
-call — the exact hole `signed` exists to close. So `Business Critical` and
-`Important` are human-owned floors an agent can propose but not retract; `Mechanical`
-is where an agent's `likely` demotion becomes real *only on human confirmation*.
+**Permission ratchet (the accountability rule).** Agents may only *raise* stakes (as a
+`likely` proposal); **only a human lowers a tier.** Escalation only ever *adds*
+scrutiny, so it's always safe — an agent may raise even over a **human** mark when it
+finds a mis-flag or code that grew teeth (a once-mechanical part that now sums currency
+or emits an event); the escalation re-enters the human's confirm queue rather than
+silently overwriting. What no automated source may ever do is *lower*: a silent demotion
+of business-critical to mechanical would be the accountability-bearing call — the exact
+hole `signed` exists to close. One nuance: the **blind graph batch** (`triage_derive`)
+respects a human mark (no new evidence, so re-runs don't nag) — a *deliberate* agent with
+evidence escalates via `triage`, and code-change-driven re-escalation is the witnessed
+Phase-4 path.
 
 ### The severity matrix
 
