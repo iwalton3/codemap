@@ -23,7 +23,7 @@ import { withLock } from "./lock.js";
 
 // Tools that write to a universe's .codemap/ — held under the write lock so a
 // concurrent CLI run or second agent can't clobber a read-modify-write.
-const MUTATING = new Set(["document", "connect", "update_node", "cover", "report_bug", "update_bug", "annotate", "link", "check_stale", "analyze", "review", "snapshot"]);
+const MUTATING = new Set(["document", "connect", "update_node", "cover", "report_bug", "update_bug", "annotate", "link", "check_stale", "analyze", "review", "snapshot", "reindex"]);
 
 const PROTOCOL_VERSION = "2024-11-05";
 
@@ -122,9 +122,15 @@ const tools: Tool[] = [
   },
   {
     name: "check_stale",
-    description: "Staleness pass for a universe: which anchors changed/vanished since baseline and which docs they flag.",
+    description: "Staleness pass for a universe: which anchors changed/vanished since baseline and which docs they flag. Also auto re-inits the anchor index if the checked-out branch changed since it was baselined (a branch switch = different code) — the result then includes `rebaselined`.",
     inputSchema: obj({}),
     handler: (_a, c) => ops.checkStale(c.universe.path),
+  },
+  {
+    name: "reindex",
+    description: "Force a full re-baseline: re-index the whole repo at the CURRENT HEAD and replace the live anchor index, advancing the baseline commit/branch. Use when the index is pinned to an old commit and newly-added files/symbols aren't resolving (e.g. a subsystem added after the last init). NON-DESTRUCTIVE to the map — nodes, edges, reviews, coverage, bugs, and annotations are untouched; only anchors + baseline move (and the commit is cached as a diff snapshot). `check_stale` does this automatically on a branch change; call `reindex` to refresh same-branch drift on demand.",
+    inputSchema: obj({}),
+    handler: (_a, c) => ops.reindex(c.universe.path),
   },
   {
     name: "snapshot",

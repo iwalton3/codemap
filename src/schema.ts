@@ -165,6 +165,13 @@ export interface State {
   schemaVersion: number;
   /** Commit the index was last brought in sync with; null if never / no git. */
   lastVerifiedCommit: string | null;
+  /**
+   * Branch the live index was last baselined on. When the checked-out branch
+   * differs from this, `check` re-inits the anchor index to the new branch's
+   * HEAD (a branch switch means "I'm looking at different code now"). Absent on
+   * indexes built before this field existed — recorded on first `check`.
+   */
+  branch?: string | null;
   /** grammar name -> vendored grammar version, for reproducibility. */
   grammarVersions: Record<string, string>;
 }

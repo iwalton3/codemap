@@ -4,12 +4,9 @@
 
 import { parseArgs } from "node:util";
 import { resolve } from "node:path";
-import { type State, SCHEMA_VERSION } from "./schema.js";
-import { indexRepo } from "./repo.js";
-import { headCommit, currentBranch } from "./git.js";
-import { writeStore, readAnchorStore, readState, loadNodes, writeSnapshot } from "./store.js";
+import { currentBranch } from "./git.js";
+import { readAnchorStore, readState, writeState, loadNodes } from "./store.js";
 import { computeStaleness } from "./stale.js";
-import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { analyzeMarten } from "./analyzers/marten.js";
 import { enableAnalyzer, refreshAnalyzers } from "./analyzers/run.js";
 import { applyIndexUpdate } from "./sync.js";
@@ -40,20 +37,10 @@ async function cmdAnalyze(analyzer: string, root: string, verbose: boolean, emit
 }
 
 async function cmdInit(root: string): Promise<void> {
-  const anchors = await indexRepo(root);
-  const commit = headCommit(root);
-  for (const a of anchors) a.lastVerifiedCommit = commit;
-  const state: State = {
-    schemaVersion: SCHEMA_VERSION,
-    lastVerifiedCommit: commit,
-    grammarVersions: GRAMMAR_VERSIONS,
-  };
-  await writeStore(root, anchors, state);
-  // Cache this commit as a snapshot too, so it can be branch-diffed later.
-  if (commit) await writeSnapshot(root, commit, currentBranch(root), anchors, new Date().toISOString());
-  const files = new Set(anchors.map((a) => a.file)).size;
-  console.log(`indexed ${anchors.length} anchors across ${files} files`);
-  console.log(`baseline commit: ${commit ?? "(no git)"}${commit ? " (snapshotted)" : ""}`);
+  // init and reindex are the same operation (full re-baseline); share it.
+  const r = await ops.reindex(root);
+  console.log(`indexed ${r.anchors} anchors across ${r.files} files`);
+  console.log(`baseline commit: ${r.commit ?? "(no git)"}${r.commit ? ` (snapshotted, branch ${r.branch ?? "?"})` : ""}`);
 }
 
 async function cmdSnapshot(root: string): Promise<void> {
@@ -95,6 +82,15 @@ async function cmdDiff(root: string, base: string, head?: string): Promise<void>
 }
 
 async function cmdCheck(root: string): Promise<void> {
+  // Branch switch → re-baseline first (same detection the MCP check_stale uses).
+  const before = await readState(root);
+  const cur = currentBranch(root);
+  if (cur && before.branch != null && cur !== before.branch) {
+    const r = await ops.reindex(root);
+    console.log(`branch changed ${before.branch} → ${cur}: re-indexed ${r.anchors} anchors at ${r.commit?.slice(0, 8) ?? "?"}`);
+  } else if (cur && before.branch == null) {
+    await writeState(root, { ...before, branch: cur }); // start tracking
+  }
   const store = await readAnchorStore(root);
   const state = await readState(root);
   const nodes = await loadNodes(root);

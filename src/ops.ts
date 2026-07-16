@@ -12,18 +12,20 @@ import { readFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import {
-  type Anchor, type LogicalNode, type LogicalNodeType, type EdgeType,
+  type Anchor, type LogicalNode, type LogicalNodeType, type EdgeType, type State,
   type Bug, type BugStatus, type BugSeverity, type Annotation,
   type AnchorSelector, type CoverageMark, type CoverageState, type Edge,
+  SCHEMA_VERSION,
 } from "./schema.js";
 import { indexFile, indexRepo } from "./repo.js";
 import { headCommit, currentBranch, isDirty } from "./git.js";
 import { computeStaleness } from "./stale.js";
 import {
-  readAnchorStore, readState, loadNodes, readGraph, writeGraph, writeNode, slug,
+  readAnchorStore, readState, writeState, writeStore, loadNodes, readGraph, writeGraph, writeNode, slug,
   readBugs, writeBugs, readAnnotations, writeAnnotations, readCoverage, writeCoverage, readReviews,
   writeSnapshot, listSnapshots,
 } from "./store.js";
+import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { computeDiff, anchorCodeDiff } from "./diff.js";
 import { resolveCoverage, selectAnchors, docPct as computeDocPct, type CoverageResult } from "./coverage.js";
 import { resolveAnchorRefs } from "./refs.js";
@@ -143,8 +145,56 @@ export async function cover(
   return { ok: true, as: input.as, matched: matched.length, sample: matched.slice(0, 5).map((a) => a.symbolPath.join(".")) };
 }
 
+/**
+ * Full re-baseline: re-index the whole repo at the current HEAD and replace the
+ * live (`@work`) anchor set, advancing the baseline commit + branch. Non-
+ * destructive to the map — nodes, edges, reviews, coverage, bugs, and
+ * annotations are separate stores and are untouched; only anchors + state move.
+ * Also caches the commit as a diff snapshot. This is `init` re-run on demand.
+ */
+export async function reindex(root: string) {
+  const anchors = await indexRepo(root);
+  const commit = headCommit(root);
+  const branch = currentBranch(root);
+  for (const a of anchors) a.lastVerifiedCommit = commit;
+  const state: State = { schemaVersion: SCHEMA_VERSION, lastVerifiedCommit: commit, branch, grammarVersions: GRAMMAR_VERSIONS };
+  await writeStore(root, anchors, state);
+  if (commit) await writeSnapshot(root, commit, branch, anchors, new Date().toISOString());
+  const files = new Set(anchors.map((a) => a.file)).size;
+  return { ok: true, anchors: anchors.length, files, commit, branch };
+}
+
+/**
+ * If the checked-out branch differs from the one the index was baselined on,
+ * re-init to the new branch's HEAD and return a note. First-ever call just
+ * records the current branch (older indexes predate the field) without the
+ * expensive re-index. Returns null when nothing was done. Caller must hold the
+ * write lock (this can write).
+ */
+async function maybeReindexOnBranchChange(root: string) {
+  let state: State;
+  try {
+    state = await readState(root);
+  } catch {
+    return null; // not initialized
+  }
+  const cur = currentBranch(root);
+  if (cur == null) return null; // detached / no git — nothing to track
+  if (state.branch === undefined || state.branch === null) {
+    await writeState(root, { ...state, branch: cur }); // start tracking, no re-index
+    return null;
+  }
+  if (cur !== state.branch) {
+    const r = await reindex(root);
+    return { rebaselined: true, from: state.branch, to: cur, anchors: r.anchors, commit: r.commit };
+  }
+  return null;
+}
+
 /** Run the staleness pass — which docs are flagged by changed/lost code. */
 export async function checkStale(root: string) {
+  // A branch switch means "different code now" — re-baseline before checking.
+  const rebaseline = await maybeReindexOnBranchChange(root);
   const [store, nodes] = await Promise.all([readAnchorStore(root), loadNodes(root)]);
   let commit: string | null = null;
   try {
@@ -170,6 +220,7 @@ export async function checkStale(root: string) {
     })),
     ...(indexUpdate.added || indexUpdate.movedLoc ? { indexUpdate } : {}),
     ...(refreshed.length ? { refreshedAnalyzers: refreshed } : {}),
+    ...(rebaseline ? { rebaselined: rebaseline } : {}),
   };
 }
 

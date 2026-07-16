@@ -143,6 +143,11 @@ export async function readState(root: string): Promise<State> {
   return s;
 }
 
+/** Update just the state record (leaves anchors untouched). */
+export async function writeState(root: string, state: State): Promise<void> {
+  setMeta(db(root), "state", state);
+}
+
 // --- logical nodes -----------------------------------------------------------
 
 interface NodeRow {
