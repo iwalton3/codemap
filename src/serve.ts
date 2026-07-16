@@ -132,7 +132,7 @@ const server = createServer(async (req, res) => {
       const out = await withLock<unknown>(root, () =>
         body.unmark
           ? unmarkReviewed(root, { targetKind: body.targetKind, targetId: body.targetId, level: body.level })
-          : markReviewed(root, { targetKind: body.targetKind, targetId: body.targetId, level: body.level, reviewer: body.reviewer }),
+          : markReviewed(root, { targetKind: body.targetKind, targetId: body.targetId, level: body.level, reviewer: body.reviewer, actor: "human" }),
       );
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(out));

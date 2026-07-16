@@ -23,7 +23,18 @@ import { withLock } from "./lock.js";
 
 // Tools that write to a universe's .codemap/ — held under the write lock so a
 // concurrent CLI run or second agent can't clobber a read-modify-write.
-const MUTATING = new Set(["document", "connect", "update_node", "delete_node", "confirm", "ack_hole", "cover", "report_bug", "update_bug", "annotate", "resolve_question", "link", "check_stale", "analyze", "review", "snapshot", "reindex"]);
+const MUTATING = new Set(["document", "connect", "update_node", "delete_node", "confirm", "ack_hole", "cover", "report_bug", "update_bug", "annotate", "resolve_question", "link", "check_stale", "analyze", "review", "sanity_check", "snapshot", "reindex"]);
+
+// Anti-self-vouching guard: node ids this MCP CONNECTION authored/edited this
+// session. An agent can't `sanity_check` (or agent-review) a doc its own
+// connection wrote — the `checked` tier only means it, only means a *different*
+// session corroborated. A later connection starts fresh, so it may check.
+const authoredHere = new Set<string>();
+const trackAuthored = (r: any) => { if (r && r.ok && r.id) authoredHere.add(r.id); return r; };
+const guardSelfCheck = (u: string, targetKind: string, targetId: string) =>
+  targetKind === "node" && authoredHere.has(targetId)
+    ? { error: `this connection authored "${targetId}" — a different session must sanity-check it (no self-vouching)` }
+    : null;
 
 const PROTOCOL_VERSION = "2024-11-05";
 
@@ -233,7 +244,7 @@ const tools: Tool[] = [
   },
   {
     name: "review",
-    description: "Mark (or unmark: unmark:true) a node or anchor as reviewed. level 'logical' = the doc is accurate; 'code' = the source was read. Staleness-aware: a review goes stale when the reviewed code changes.",
+    description: "Mark (or unmark: unmark:true) a node or anchor as reviewed. level 'logical' = the doc is accurate; 'code' = the source was read. Recorded as an AGENT review → `checked` trust (only a human via the web UI grants `verified`). Staleness-aware: reverts to stale when the reviewed code changes.",
     inputSchema: obj({
       targetKind: { type: "string", enum: ["node", "anchor"] },
       targetId: { type: "string" },
@@ -241,7 +252,22 @@ const tools: Tool[] = [
       unmark: { type: "boolean" },
       reviewer: { type: "string" },
     }, ["targetKind", "targetId", "level"]),
-    handler: (a, c) => (a.unmark ? unmarkReviewed(c.universe.path, a) : markReviewed(c.universe.path, a)),
+    handler: async (a, c) => {
+      if (a.unmark) return unmarkReviewed(c.universe.path, a);
+      const g = guardSelfCheck(c.universe.id, a.targetKind, a.targetId);
+      if (g) return g;
+      return markReviewed(c.universe.path, { ...a, actor: "agent" });
+    },
+  },
+  {
+    name: "sanity_check",
+    description: "Record that YOU (an agent) read the current code and a doc's claims hold — promotes it from `unverified` to `checked` trust. Witnessed, so it reverts to `stale` when the code changes. GUARDED: the connection that authored the doc can't check it — a different session must corroborate (no self-vouching). Use after verifying a doc during exploration.",
+    inputSchema: obj({ id: { type: "string" }, reviewer: { type: "string" } }, ["id"]),
+    handler: async (a, c) => {
+      const g = guardSelfCheck(c.universe.id, "node", a.id);
+      if (g) return g;
+      return markReviewed(c.universe.path, { targetKind: "node", targetId: a.id, level: "logical", reviewer: a.reviewer || "agent", actor: "agent" });
+    },
   },
   {
     name: "document",
@@ -271,7 +297,7 @@ const tools: Tool[] = [
         },
       },
     }, ["type", "title", "summary", "anchors"]),
-    handler: (a, c) => ops.document(c.universe.path, a),
+    handler: async (a, c) => trackAuthored(await ops.document(c.universe.path, a)),
   },
   {
     name: "connect",
@@ -333,7 +359,7 @@ const tools: Tool[] = [
       addAnchors: { type: "array", items: { type: "string" } },
       removeAnchors: { type: "array", items: { type: "string" } },
     }, ["id"]),
-    handler: (a, c) => ops.updateNode(c.universe.path, a),
+    handler: async (a, c) => trackAuthored(await ops.updateNode(c.universe.path, a)),
   },
   {
     name: "links",

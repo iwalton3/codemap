@@ -14,6 +14,8 @@ import { headCommit } from "./git.js";
 export interface ReviewInfo {
   state: ReviewState;
   by?: string;
+  /** "human" (verified) or "agent" (checked); absent legacy reviews are treated as human. */
+  actor?: "human" | "agent";
   at?: string;
 }
 export interface ReviewPair {
@@ -53,7 +55,7 @@ async function liveHashes(root: string, anchorIds: Iterable<string>): Promise<Ma
 
 export async function markReviewed(
   root: string,
-  input: { targetKind: "node" | "anchor"; targetId: string; level: ReviewLevel; reviewer?: string },
+  input: { targetKind: "node" | "anchor"; targetId: string; level: ReviewLevel; reviewer?: string; actor?: "human" | "agent" },
 ) {
   const target: Target = { kind: input.targetKind, id: input.targetId };
   const anchorIds = await coveredAnchorIds(root, target);
@@ -66,6 +68,7 @@ export async function markReviewed(
     target,
     level: input.level,
     reviewer: input.reviewer || "me",
+    actor: input.actor ?? "human",
     at: new Date().toISOString(),
     reviewedCommit: headCommit(root),
     witnesses,
@@ -100,7 +103,7 @@ export async function reviewStatesFor(root: string, targets: Target[]): Promise<
     const r = rs.reviews.find((x) => x.target.kind === t.kind && x.target.id === t.id && x.level === level);
     if (!r) return { state: "unreviewed" };
     const stale = r.witnesses.some((w) => live.get(w.anchorId) !== w.bodyHash);
-    return { state: stale ? "stale" : "reviewed", by: r.reviewer, at: r.at };
+    return { state: stale ? "stale" : "reviewed", by: r.reviewer, actor: r.actor ?? "human", at: r.at };
   };
   for (const t of targets) out.set(key(t), { logical: forLevel(t, "logical"), code: forLevel(t, "code") });
   return out;

@@ -64,22 +64,32 @@ function anchorBrief(a: Anchor) {
   };
 }
 
+type ReviewLite = { state: string; actor?: "human" | "agent" };
+export type Trust = "verified" | "checked" | "unverified" | "stale" | "generated";
+
 /**
  * The trust ladder a codemap-aware agent should key on, from freshness (does the
- * cited code still match) × review state (did a human/agent verify the claim):
- *   trusted    — fresh AND reviewed → rely on it without re-reading the code.
- *   unverified — fresh but unreviewed (agent-authored) → a hypothesis; use, but
- *                be ready to verify against live code.
+ * cited code still match) × who confirmed the claim. Three tiers:
+ *   verified   — fresh AND a HUMAN reviewed it → rely on it.
+ *   checked    — fresh AND an AGENT read the code and confirmed the claims hold
+ *                (a corroborating read, not a human blessing) → solid; spot-check
+ *                if critical.
+ *   unverified — fresh but nobody has confirmed it (just authored) → a hypothesis;
+ *                use, but verify against live code before depending on it.
  *   stale      — code drifted or was removed → re-derive, then confirm/refork.
  *   generated  — analyzer-emitted graph; structural, not a prose claim.
  * (fresh ≠ correct: freshness only proves the code hasn't changed, not that the
  * doc read it right — hence the review dimension.)
  */
-function trustOf(status: string | undefined, review?: { logical: { state: string }; code: { state: string } }): "trusted" | "unverified" | "stale" | "generated" {
+function trustOf(status: string | undefined, review?: { logical: ReviewLite; code: ReviewLite }): Trust {
   if (status === "generated") return "generated";
   if (status === "stale" || status === "dangling" || status === "removed") return "stale";
-  if (review && (review.logical.state === "stale" || review.code.state === "stale")) return "stale";
-  if (review && (review.logical.state === "reviewed" || review.code.state === "reviewed")) return "trusted";
+  if (!review) return "unverified";
+  const { logical: L, code: C } = review;
+  if (L.state === "stale" || C.state === "stale") return "stale";
+  const humanOK = (L.state === "reviewed" && (L.actor ?? "human") === "human") || (C.state === "reviewed" && (C.actor ?? "human") === "human");
+  if (humanOK) return "verified";
+  if (L.state === "reviewed" || C.state === "reviewed") return "checked"; // agent-confirmed
   return "unverified";
 }
 
@@ -397,6 +407,7 @@ export async function nodeCatalog(root: string) {
       status: n.status ?? "fresh",
       versionCount: n.versionCount ?? 1,
       review: { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" },
+      trust: trustOf(n.status, rp),
     };
   });
   const tally = (arr: typeof out, k: "type" | "domain" | "status") =>
@@ -634,7 +645,7 @@ export async function context(root: string, refs: string[]) {
   const flowNodes = nodes.filter((n) => n.type === "process" &&
     (n.anchors.some((id) => scope.has(id)) || (stepsOf.get(n.id) ?? []).some((sid) => (nodeById.get(sid)?.anchors ?? []).some((id) => scope.has(id)))));
 
-  const rank = { trusted: 0, unverified: 1, stale: 2, generated: 3 };
+  const rank: Record<Trust, number> = { verified: 0, checked: 1, unverified: 2, stale: 3, generated: 4 };
   const reviewed = await reviewStatesFor(root, [...covering, ...flowNodes].map((n) => ({ kind: "node" as const, id: n.id })));
   const view = (n: LogicalNode) => {
     const rp = reviewed.get(`node:${n.id}`);
@@ -669,8 +680,9 @@ export async function context(root: string, refs: string[]) {
     bugs,
     // A one-line read for the agent: is this area answered by something, and how much to trust it?
     verdict: !scopeIds.length ? "empty scope"
-      : docs.some((d) => d.trust === "trusted") ? "covered — trusted docs exist; read them before exploring"
-      : docs.some((d) => d.trust === "unverified") ? "partial — docs exist but unverified; use as hypotheses, verify against code"
+      : docs.some((d) => d.trust === "verified") ? "covered — human-verified docs exist; rely on them"
+      : docs.some((d) => d.trust === "checked") ? "covered — agent-checked docs exist; solid, spot-check if critical"
+      : docs.some((d) => d.trust === "unverified") ? "partial — docs exist but unchecked; use as hypotheses, verify against code (and sanity_check what holds)"
       : docs.some((d) => d.trust === "stale") ? "stale — docs here need re-validation against current code"
       : gaps.length ? "gap — no docs cover this code; explore, then document the reusable claims"
       : "no docs and no open gaps (this code may be intentionally deferred/trivial)",
@@ -685,12 +697,14 @@ export async function getNode(root: string, id: string) {
   const node = nodes.find((n) => n.id === id);
   if (!node) return { error: `no node "${id}"` };
   const byId = new Map(store.anchors.map((a) => [a.id, a]));
+  const review = await reviewStatus(root, { kind: "node", id });
   return {
     ...node,
     resolvedAnchors: node.anchors.map((aid) => (byId.get(aid) ? anchorBrief(byId.get(aid)!) : { id: aid, missing: true })),
     edges: graph.edges.filter((e) => e.from === id || e.to === id),
     annotations: annStore.annotations.filter((a) => a.target.kind === "node" && a.target.id === id),
-    review: await reviewStatus(root, { kind: "node", id }),
+    review,
+    trust: trustOf(node.status, review),
   };
 }
 

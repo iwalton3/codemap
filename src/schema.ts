@@ -383,6 +383,12 @@ export interface Review {
   target: { kind: "node" | "anchor"; id: string };
   level: ReviewLevel;
   reviewer: string;
+  /**
+   * Who vouched. "human" = a person reviewed it (top trust: `verified`). "agent"
+   * = an agent read the code and confirmed the claims hold (`checked` — a corroborating
+   * read, not a human blessing). Absent = legacy human review. See `trustOf`.
+   */
+  actor?: "human" | "agent";
   at: string; // ISO timestamp
   reviewedCommit: string | null;
   /** Hashes of the covered anchors at review time; a mismatch later = `stale`. */

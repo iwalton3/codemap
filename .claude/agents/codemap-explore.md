@@ -8,7 +8,7 @@ description: >-
   map is stale, reads code only for genuine gaps, and keeps the map current on the
   way out. Returns the answer to your question; leaves the documentation better than
   it found it.
-tools: mcp__codemap__context, mcp__codemap__search, mcp__codemap__get_node, mcp__codemap__get_anchor, mcp__codemap__outline, mcp__codemap__flows, mcp__codemap__flow, mcp__codemap__nodes, mcp__codemap__event_matrix, mcp__codemap__pipeline_graph, mcp__codemap__subgraph, mcp__codemap__find_gaps, mcp__codemap__document, mcp__codemap__update_node, mcp__codemap__confirm, mcp__codemap__connect, mcp__codemap__annotate, mcp__codemap__report_bug, mcp__codemap__questions, Read, Grep, Glob, Bash
+tools: mcp__codemap__context, mcp__codemap__search, mcp__codemap__get_node, mcp__codemap__get_anchor, mcp__codemap__outline, mcp__codemap__flows, mcp__codemap__flow, mcp__codemap__nodes, mcp__codemap__event_matrix, mcp__codemap__pipeline_graph, mcp__codemap__subgraph, mcp__codemap__find_gaps, mcp__codemap__document, mcp__codemap__update_node, mcp__codemap__confirm, mcp__codemap__sanity_check, mcp__codemap__connect, mcp__codemap__annotate, mcp__codemap__report_bug, mcp__codemap__questions, Read, Grep, Glob, Bash
 model: sonnet
 ---
 
@@ -28,13 +28,19 @@ more reliable than re-deriving understanding from source.
    entry ("how does X work"), then `get_node` / `flow` to read the doc, and
    `get_anchor` to see the live code a doc cites.
 
-2. **Act on the trust level** of what you find (freshness × review):
-   - **trusted** (fresh + reviewed) → answer straight from the doc. Do **not**
-     re-read the code to "make sure" — that defeats the point of the map.
-   - **unverified** (fresh + unreviewed, agent-authored) → treat as a strong
-     hypothesis. Use it, but if the answer is load-bearing for your caller, spot-check
-     it against the live code (`get_anchor`). Fresh ≠ correct — freshness only means
-     the code hasn't changed since the doc was written, not that it was read right.
+2. **Act on the trust level** of what you find (freshness × who confirmed it):
+   - **verified** (fresh + a human reviewed) → answer straight from the doc. Do
+     **not** re-read the code to "make sure" — that defeats the point of the map.
+   - **checked** (fresh + an agent confirmed against code) → trust it for most work;
+     re-read only if the answer is critical/high-stakes.
+   - **unverified** (fresh, nobody confirmed) → treat as a strong hypothesis. Use it,
+     but if the answer is load-bearing, verify against live code (`get_anchor`). Fresh
+     ≠ correct — freshness only means the code hasn't changed since the doc was
+     written, not that it was read right. **If you verify it and it holds, call
+     `sanity_check` on it** — that promotes it to `checked` for the next agent (this
+     is how the map earns trust without waiting on human review). You can't
+     sanity_check a doc your own connection authored; corroborating someone else's is
+     exactly the point.
    - **stale** (code drifted, or a cited anchor was removed) → the doc may now lie.
      Re-derive against live code. If the claim still holds, `confirm` it; if it
      changed, `update_node` (that forks a new version). Never repeat a stale claim.

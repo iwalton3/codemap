@@ -57,6 +57,10 @@ const REV_COLOR = { reviewed: '#7ee787', stale: '#f0a35e', unreviewed: '#3a4250'
 // Doc-version status (see docs/doc-versioning.md).
 const STATUS = { fresh: '#7ee787', stale: '#f0a35e', dangling: '#f27b7b', removed: '#8b95a3', generated: '#6b7684' };
 const statusChip = (s, extra) => s && s !== 'generated' ? html`<span class="stchip ${s}" title="doc version: ${s}${extra || ''}">${s}</span>` : html``;
+// Trust tier (freshness × who confirmed): verified (human) / checked (agent) / stale.
+// unverified + generated are the baseline — not chipped, to keep lists quiet.
+const TRUST_TIP = { verified: 'human-reviewed — rely on it', checked: 'agent-checked against code — solid, spot-check if critical', stale: 'code changed — needs re-validation' };
+const trustChip = (t) => TRUST_TIP[t] ? html`<span class="tchip ${t}" title="trust: ${t} — ${TRUST_TIP[t]}">${t}</span>` : html``;
 const postConfirm = (u, id) => fetch('/api/confirm', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id }) });
 const postAckHole = (u, id) => fetch('/api/ack_hole', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id }) });
 const postReview = (u, targetKind, targetId, level, unmark) =>
@@ -329,7 +333,7 @@ class NodePage extends Component {
     if (!n || this.load.pending) return html`<main><div class="loading">loading…</div></main>`;
     if (n.error) return html`<main><div class="empty">${n.error}</div></main>`;
     return html`<main><div class="detail">
-      <div class="meta">${n.type}${n.universe ? ' · ' + n.universe : ''} · ${n.id} ${statusChip(n.status)}<span class="viewlink" on-click="${() => go(graphUrl(u, n.id))}">◆ graph</span></div>
+      <div class="meta">${n.type}${n.universe ? ' · ' + n.universe : ''} · ${n.id} ${statusChip(n.status)}${trustChip(n.trust)}<span class="viewlink" on-click="${() => go(graphUrl(u, n.id))}">◆ graph</span></div>
       <h2>${n.title}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions (forked across branches)">⑂${n.versionCount}</span>`)}</h2>
       ${when(n.status === 'stale', () => html`<div class="vaction"><span>This doc cites code that changed since it was written.</span> <button on-click="${() => this.confirm()}">confirm still accurate</button> <span class="dim">— or edit it (forks a new version).</span></div>`)}
       ${when(n.status === 'dangling', () => html`<div class="vaction bad"><span>Cited code was removed here (${(n.danglingAnchors || []).length} anchor${(n.danglingAnchors || []).length === 1 ? '' : 's'}).</span> <button on-click="${() => this.ackHole()}">ack — remove doc here</button> <span class="dim">(kept on branches where the code exists).</span></div>`)}
@@ -692,7 +696,7 @@ class NodeCatalogPage extends Component {
         ${each(g[1], n => html`<div class="nrow" on-click="${() => go(nodeUrl(u, n.id))}">
           <span class="nt" style="border-color:${nodeColor(n.type)}">${n.type}</span>
           <span class="ntitle">${n.title || n.id}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions (forked)">⑂${n.versionCount}</span>`)}</span>
-          ${statusChip(n.status)}
+          ${statusChip(n.status)}${trustChip(n.trust)}
           <span class="ndom">${n.domain}</span>
           <span class="nmeta">${n.anchors}a · ${n.edgesIn}↓${n.edgesOut}↑</span>
           ${when(n.generatedBy, () => html`<span class="gen">${n.generatedBy}</span>`)}

@@ -22,15 +22,20 @@ list or read everything.
 Before you read code to answer a question, ASK codemap. \`context\` (pass the
 files/symbols you're about to work in) returns a \`verdict\` and the covering docs
 with a **trust** level; \`search\` node hits carry the same. The trust ladder, from
-freshness (does the cited code still match) × review (did someone verify the claim):
-- **trusted** (fresh + reviewed) — rely on it; don't re-read the code.
-- **unverified** (fresh + unreviewed) — a hypothesis; use it, but confirm against
-  live code before you depend on it. (Fresh ≠ correct: freshness only says the code
-  hasn't changed, not that the doc read it right.)
+freshness (does the cited code still match) × who confirmed the claim:
+- **verified** (fresh + a human reviewed) — rely on it; don't re-read the code.
+- **checked** (fresh + an agent read the code and confirmed the claims) — solid;
+  spot-check only if it's critical.
+- **unverified** (fresh, nobody confirmed) — a hypothesis; use it, but confirm
+  against live code before you depend on it. (Fresh ≠ correct: freshness only says
+  the code hasn't changed, not that the doc read it right.)
 - **stale** (code drifted/removed) — re-derive against live code, then
   \`confirm\` (still accurate) or edit (forks a new version).
-Only explore the \`gaps\` \`context\` reports. When you fill one, document the
-**reusable** claim — keep the map current; do NOT record task-specific findings.
+When you read the code behind an \`unverified\` doc and its claims hold, run
+\`sanity_check\` on it — that promotes it to \`checked\` for the next agent. (You can't
+sanity_check a doc your OWN connection authored — a different session must
+corroborate.) Only explore the \`gaps\` \`context\` reports. When you fill one, document
+the **reusable** claim — keep the map current; do NOT record task-specific findings.
 
 ## Document (one meaningful unit at a time)
 - READ FIRST: \`get_anchor\` returns the live code. Never document code you have
