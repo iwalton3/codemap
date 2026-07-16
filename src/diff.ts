@@ -222,10 +222,14 @@ async function hashesAt(root: string, ref: string | undefined): Promise<Map<stri
   return anchors ? new Map(anchors.map((a) => [a.id, a.bodyHash])) : null;
 }
 
+export interface DocSide {
+  versionId: string; branch: string | null; commit: string | null;
+  title: string; summary: string; body: string; removed: boolean;
+}
 export interface DocDiff {
   forked: boolean;
-  base?: { versionId: string; branch: string | null; commit: string | null; title: string; removed: boolean };
-  head?: { versionId: string; branch: string | null; commit: string | null; title: string; removed: boolean };
+  base?: DocSide;
+  head?: DocSide;
   lines?: DiffLine[];
   note?: string;
   error?: string;
@@ -248,7 +252,7 @@ export async function docDiff(root: string, baseRef: string, headRef: string | u
   if (!bv || !hv) return { forked: false, note: "not resolvable on both sides" };
   if (bv.versionId === hv.versionId) return { forked: false, note: "same version on both branches" };
   const text = (v: typeof bv) => (v.removed ? "(removed)" : `# ${v.title}\n\n${v.summary}\n\n${v.body}`.replace(/\r/g, ""));
-  const side = (v: typeof bv) => ({ versionId: v.versionId, branch: v.createdBranch, commit: v.createdCommit, title: v.title, removed: !!v.removed });
+  const side = (v: typeof bv): DocSide => ({ versionId: v.versionId, branch: v.createdBranch, commit: v.createdCommit, title: v.title, summary: v.summary, body: v.body, removed: !!v.removed });
   return { forked: true, base: side(bv), head: side(hv), lines: lineDiff(text(bv), text(hv)) };
 }
 

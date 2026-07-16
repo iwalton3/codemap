@@ -708,7 +708,7 @@ const DTAG = { '+': 'added', '-': 'removed', '~': 'changed' };
 
 class DiffPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { snaps: null, diff: null, sel: null, selCode: null, codePending: false, view: 'doc', selDoc: null, docDiff: null }; }
+  constructor(props) { super(props); this.state = { snaps: null, diff: null, sel: null, selCode: null, codePending: false, view: 'doc', selDoc: null, docDiff: null, modal: false }; }
   load = this.createTask(async () => {
     const u = this.props.params.universe; nav.current = u;
     if (!this.state.snaps) this.state.snaps = (await api('/api/snapshots', { u })).snapshots;
@@ -738,6 +738,12 @@ class DiffPage extends Component {
       this.state.docDiff = await api('/api/diff/doc', { u, base: this.props.query.base, head: this.props.query.head || '', id: n.id });
     } finally { this.state.docPending = false; }
   }
+  openModal() {
+    this.state.modal = true;
+    if (!this._escWired) { this._escWired = true; window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && this.state.modal) this.closeModal(); }); }
+  }
+  closeModal() { this.state.modal = false; }
+  docText(s) { return s.removed ? '_(removed on this branch)_' : `# ${s.title}\n\n${s.summary || ''}\n\n${s.body || ''}`; }
   async reloadDiff() {
     const u = this.props.params.universe, base = this.props.query.base;
     if (base) this.state.diff = await api('/api/diff', { u, base, head: this.props.query.head || '' });
@@ -781,7 +787,7 @@ class DiffPage extends Component {
       <div class="meta"><span class="viewlink" on-click="${() => go(nodeUrl(u, n.id))}">open doc ›</span></div>
       <div class="drev">${this.docActions(n)}</div>
       ${when(this.state.docPending, () => html`<div class="loading">loading…</div>`)}
-      ${when(dd && dd.forked, () => html`<div class="sec">doc changes · ${dd.base.branch || 'base'} → ${dd.head.branch || 'head'}</div>
+      ${when(dd && dd.forked, () => html`<div class="sec">doc changes · ${dd.base.branch || 'base'} → ${dd.head.branch || 'head'} <span class="viewlink" on-click="${() => this.openModal()}">⛶ side-by-side</span></div>
         <pre class="hljs cdiff docdiff">${each(dd.lines, ln => html`<div class="cl ${DTAG[ln.tag] || 'ctx'}"><span class="g">${ln.tag}</span><code>${ln.text || ' '}</code></div>`)}</pre>`)}
       ${when(dd && !dd.forked, () => html`<div class="dim" style="padding:8px 2px">${dd.error || dd.note || 'this doc is identical on both branches — no prose change'}</div>`)}
       <div class="sec">changed code it cites</div>
@@ -858,6 +864,15 @@ class DiffPage extends Component {
           </div>
           <div class="dright">${this.detail()}</div>
         </div>`)}
+      ${when(this.state.modal && this.state.docDiff && this.state.docDiff.forked, () => { const dd = this.state.docDiff; return html`<div class="modal-bg" on-click="${(e) => { if (e.target.classList.contains('modal-bg')) this.closeModal(); }}">
+        <div class="modal">
+          <div class="modal-head"><b>${this.state.selDoc.title || this.state.selDoc.id}</b> <span class="dim">— doc versions side by side</span><button class="modal-x" on-click="${() => this.closeModal()}">✕</button></div>
+          <div class="modal-body sxs">
+            <div class="sxs-col"><div class="sxs-h">${dd.base.branch || 'base'} <span class="dim">@ ${(dd.base.commit || '').slice(0, 8) || '—'}</span></div><md-content text="${this.docText(dd.base)}"></md-content></div>
+            <div class="sxs-col"><div class="sxs-h">${dd.head.branch || 'head'} <span class="dim">@ ${(dd.head.commit || '').slice(0, 8) || '—'}</span></div><md-content text="${this.docText(dd.head)}"></md-content></div>
+          </div>
+        </div>
+      </div>`; })}
     </main>`;
   }
 
