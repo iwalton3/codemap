@@ -18,6 +18,20 @@ export async function indexFile(absPath: string, relPath: string): Promise<Ancho
   return indexSource(source, relPath, handle.grammar, tree.rootNode);
 }
 
+/**
+ * Index provided source text (grammar chosen by `relPath`'s extension) — for
+ * indexing a git blob without touching the filesystem. Anchor ids match
+ * `indexFile` on the same relPath, so an anchor can be looked up by id and its
+ * fresh `loc` used to slice the same blob (byte offsets, so slice a Buffer).
+ */
+export async function indexBlob(source: string, relPath: string): Promise<Anchor[]> {
+  const handle = await parserForPath(relPath);
+  if (!handle) return [];
+  const tree = handle.parser.parse(source);
+  if (!tree) return [];
+  return indexSource(source, relPath, handle.grammar, tree.rootNode);
+}
+
 export async function indexRepo(root: string): Promise<Anchor[]> {
   const files = await listSupportedFiles(root);
   const anchors: Anchor[] = [];

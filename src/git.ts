@@ -40,13 +40,15 @@ export function isDirty(root: string): boolean {
 }
 
 /**
- * The contents of a repo-relative file at a commit (`git show <sha>:<path>`),
+ * The raw bytes of a repo-relative file at a commit (`git show <sha>:<path>`),
  * or null when it doesn't exist there. Read-only — never touches the working
  * tree, so it's safe for showing a base branch's code without a checkout.
+ * Returns a Buffer because anchor `loc` are byte offsets (slice the Buffer, not
+ * a decoded string, or multi-byte files misalign).
  */
-export function showFile(root: string, sha: string, path: string): string | null {
-  const r = git(root, ["show", `${sha}:${path}`]);
-  return r.ok ? r.out : null;
+export function showFile(root: string, sha: string, path: string): Buffer | null {
+  const r = spawnSync("git", ["show", `${sha}:${path}`], { cwd: root, maxBuffer: 256 * 1024 * 1024 });
+  return r.status === 0 ? r.stdout : null;
 }
 
 /**

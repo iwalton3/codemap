@@ -15,8 +15,9 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Anchor, Review } from "./schema.js";
-import { indexRepo, indexFile } from "./repo.js";
+import { indexRepo, indexFile, indexBlob } from "./repo.js";
 import { readSnapshot, loadNodes, readGraph, readReviews } from "./store.js";
+import { reviewStatesFor } from "./reviews.js";
 import { revParse, headCommit, currentBranch, showFile } from "./git.js";
 import { grammarForPath } from "./grammars.js";
 
@@ -34,7 +35,7 @@ export interface DiffResult {
   removed: Brief[];
   changed: Brief[];
   impact: {
-    nodes: { id: string; title: string; type: string; anchors: string[] }[];
+    nodes: { id: string; title: string; type: string; summary: string; anchors: string[]; review: { logical: string; code: string } }[];
     flows: { id: string; title: string; steps: { id: string; title: string; anchors: string[] }[] }[];
     reviews: { id: string; target: { kind: string; id: string }; level: string; anchors: string[] }[];
   };
@@ -93,7 +94,15 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
     .map((n) => ({ n, hit: n.anchors.filter((id) => impacted.has(id)) }))
     .filter((x) => x.hit.length > 0);
 
-  const impactedNodes = nodeImpact.map(({ n, hit }) => ({ id: n.id, title: n.title, type: n.type, anchors: hit }));
+  // Review state is best-effort — never let it break the diff (e.g. no @work index).
+  let nodeReviews: Awaited<ReturnType<typeof reviewStatesFor>> = new Map();
+  try {
+    nodeReviews = await reviewStatesFor(root, nodeImpact.map(({ n }) => ({ kind: "node" as const, id: n.id })));
+  } catch { /* leave unreviewed */ }
+  const impactedNodes = nodeImpact.map(({ n, hit }) => {
+    const rp = nodeReviews.get(`node:${n.id}`);
+    return { id: n.id, title: n.title, type: n.type, summary: n.summary, anchors: hit, review: { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" } };
+  });
 
   // Flows: process nodes whose steps (via step_of) or self touch impacted anchors.
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
@@ -161,13 +170,21 @@ function lineDiff(a: string, b: string): DiffLine[] {
   return out;
 }
 
-/** The base source of an anchor at a cached commit (git show — no checkout). */
+/**
+ * The source of an anchor at a cached commit. We `git show` the blob and
+ * RE-PARSE it to locate the symbol — the snapshot's stored `loc` came from the
+ * working tree at snapshot time (possibly dirty, or different line endings) and
+ * won't align with the committed blob. Slice the Buffer (loc are byte offsets).
+ */
 async function codeAtSnapshot(root: string, sha: string, id: string, file: string): Promise<string | null> {
-  const anchors = await readSnapshot(root, sha);
-  const a = anchors?.find((x) => x.id === id);
-  if (!a?.loc) return null;
-  const txt = showFile(root, sha, file);
-  return txt == null ? null : txt.slice(a.loc.startByte, a.loc.endByte);
+  const buf = showFile(root, sha, file);
+  if (!buf) return null;
+  try {
+    const a = (await indexBlob(buf.toString("utf8"), file)).find((x) => x.id === id);
+    return a?.loc ? buf.subarray(a.loc.startByte, a.loc.endByte).toString("utf8") : null;
+  } catch {
+    return null;
+  }
 }
 
 /** The head source of an anchor: from the working tree (live) or a cached commit. */
@@ -178,14 +195,16 @@ async function codeAtHead(root: string, headRef: string | undefined, id: string,
   }
   // working tree: read the file live and re-resolve the anchor's exact bytes.
   try {
-    const src = await readFile(join(root, file), "utf8");
-    const fresh = await indexFile(join(root, file), file);
-    const a = fresh.find((x) => x.id === id);
-    return a?.loc ? src.slice(a.loc.startByte, a.loc.endByte) : null;
+    const buf = await readFile(join(root, file)); // Buffer — loc are byte offsets
+    const a = (await indexFile(join(root, file), file)).find((x) => x.id === id);
+    return a?.loc ? buf.subarray(a.loc.startByte, a.loc.endByte).toString("utf8") : null;
   } catch {
     return null;
   }
 }
+
+/** Strip CR so CRLF-vs-LF differences don't turn a real diff into full replacement. */
+const stripCR = (s: string | null): string | null => (s == null ? null : s.replace(/\r/g, ""));
 
 export interface AnchorCodeDiff {
   id: string;
@@ -203,8 +222,8 @@ export interface AnchorCodeDiff {
  */
 export async function anchorCodeDiff(root: string, baseRef: string, headRef: string | undefined, id: string, file: string): Promise<AnchorCodeDiff> {
   const baseSha = revParse(root, baseRef) ?? baseRef;
-  const baseCode = await codeAtSnapshot(root, baseSha, id, file);
-  const headCode = await codeAtHead(root, headRef, id, file);
+  const baseCode = stripCR(await codeAtSnapshot(root, baseSha, id, file));
+  const headCode = stripCR(await codeAtHead(root, headRef, id, file));
   let lines: DiffLine[];
   if (baseCode == null && headCode != null) lines = headCode.split("\n").map((text) => ({ tag: "+" as const, text }));
   else if (headCode == null && baseCode != null) lines = baseCode.split("\n").map((text) => ({ tag: "-" as const, text }));

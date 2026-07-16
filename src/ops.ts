@@ -253,9 +253,14 @@ export async function diff(root: string, base: string, head?: string) {
   return computeDiff(root, base, head);
 }
 
-/** Before/after source for one anchor between two refs (the code drill-down). */
+/** Before/after source for one anchor between two refs (the code drill-down) + its review state. */
 export async function diffCode(root: string, base: string, head: string | undefined, id: string, file: string) {
-  return anchorCodeDiff(root, base, head, id, file);
+  const code = await anchorCodeDiff(root, base, head, id, file);
+  let rp: { logical: { state: string }; code: { state: string } } | undefined;
+  try {
+    rp = (await reviewStatesFor(root, [{ kind: "anchor", id }])).get(`anchor:${id}`);
+  } catch { /* review state best-effort */ }
+  return { ...code, review: { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" } };
 }
 
 /** Collapse a namespace to a browsable domain (e.g. Acme.Settlement.Cards.Handlers → Settlement.Cards). */
@@ -715,20 +720,21 @@ export async function flow(root: string, id: string) {
   }
 
   // Cache live-indexed files so a step's several anchors in one file re-index once.
-  const fileCache = new Map<string, { src: string; byId: Map<string, Anchor> }>();
+  // Slice the Buffer (loc are byte offsets — string.slice misaligns multi-byte files).
+  const fileCache = new Map<string, { src: Buffer; byId: Map<string, Anchor> }>();
   const codeFor = async (a: Anchor): Promise<string | null> => {
     let fc = fileCache.get(a.file);
     if (!fc) {
       try {
-        const src = await readFile(join(root, a.file), "utf8");
+        const src = await readFile(join(root, a.file));
         fc = { src, byId: new Map((await indexFile(join(root, a.file), a.file)).map((x) => [x.id, x])) };
       } catch {
-        fc = { src: "", byId: new Map() };
+        fc = { src: Buffer.alloc(0), byId: new Map() };
       }
       fileCache.set(a.file, fc);
     }
     const live = fc.byId.get(a.id);
-    return live?.loc ? fc.src.slice(live.loc.startByte, live.loc.endByte) : null;
+    return live?.loc ? fc.src.subarray(live.loc.startByte, live.loc.endByte).toString("utf8") : null;
   };
 
   const steps = [];
@@ -760,11 +766,11 @@ export async function getAnchor(root: string, id: string) {
   let code: string | null = null;
   let present = false;
   try {
-    const src = await readFile(join(root, anchor.file), "utf8");
+    const src = await readFile(join(root, anchor.file)); // Buffer — loc are byte offsets
     const fresh = await indexFile(join(root, anchor.file), anchor.file);
     const live = fresh.find((a) => a.id === id);
     if (live?.loc) {
-      code = src.slice(live.loc.startByte, live.loc.endByte);
+      code = src.subarray(live.loc.startByte, live.loc.endByte).toString("utf8");
       present = true;
     }
   } catch {
