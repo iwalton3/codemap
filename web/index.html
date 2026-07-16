@@ -168,6 +168,22 @@
     .mrevh { width: 112px; flex: none; display: flex; align-items: center; justify-content: center; border-left: 1px solid var(--border); }
     .mhead .mrevh { font-size: 11px; color: var(--dim); text-transform: uppercase; }
 
+    /* --- layered event pipeline --- */
+    svg.pipeline { width: 100%; height: 660px; background: #0b0e13; border: 1px solid var(--border); border-radius: 8px; cursor: grab; display: block; }
+    svg.pipeline.grabbing { cursor: grabbing; }
+    .pn { cursor: pointer; }
+    .pn rect { fill: #161b22; stroke: #3a4250; stroke-width: 1; }
+    .pn text { fill: #c9d4e2; font-size: 10px; font-family: var(--mono); pointer-events: none; }
+    .pn.command rect { stroke: #d2a8ff; } .pn.handler rect { stroke: #79c0ff; }
+    .pn.event_family rect { stroke: #7ee787; } .pn.aggregate rect { stroke: #58a6ff; } .pn.projection rect { stroke: #f0a35e; }
+    .pn .revdot { fill: var(--accent2); }
+    .pe { fill: none; stroke: #2a313c; stroke-width: 1; }
+    .plabel { fill: var(--dim); font-size: 11px; font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.5px; }
+    svg.pipeline.hovering .pn:not(.hl) { opacity: 0.16; }
+    svg.pipeline.hovering .pe:not(.hl) { opacity: 0.04; }
+    .pe.hl { stroke: var(--accent2); stroke-width: 1.6; }
+    .pn.hl rect { stroke-width: 2; }
+
     /* --- branch diff viewer --- */
     .dim { color: var(--dim); font-size: 12.5px; }
     .dpick { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 14px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 12px; }

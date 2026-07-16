@@ -237,6 +237,15 @@ one dense column instead of a 50-spoke wheel, and an **orphan** event (folded /
 projected by nothing) is a red-highlighted blank row. On settlement: 50 events × 2
 aggregates + 1 projection, 0 orphans.
 
+**Layered event-pipeline graph** (`/#/u/:u/pipeline/`, `pipeline-page`,
+`/api/pipeline`, MCP `pipeline_graph`, `ops.pipelineGraph`) — the whole-application
+graph view: the chain `command → handler → event → aggregate → projection` laid out
+left-to-right, one column per role, nodes ordered within columns by barycenter (a
+couple of Sugiyama sweeps) to cut edge crossings. Pan/zoom, a domain filter to focus
+one subsystem, and **hover a node to trace its wiring** (dims everything except the
+node and its neighbors). This is where the radial ego-graph's crowding is answered —
+settlement's 185 nodes / 221 edges read as five aligned columns instead of a hairball.
+
 **Review heatmap on the outline** — each dir/file row carries a two-track review
 bar (top: logical, bottom: code; green reviewed / amber stale) rolled up over its
 in-scope anchors, and each file symbol shows logical/code review dots. Staleness is

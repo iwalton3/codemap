@@ -560,6 +560,87 @@ export async function flows(root: string) {
   };
 }
 
+/**
+ * Layered event-pipeline graph: the Marten chain command → handler → event →
+ * aggregate → projection laid out left-to-right, one column per role. Nodes are
+ * ordered within each column by barycenter (a couple of Sugiyama sweeps) to pull
+ * connected chains together and cut edge crossings. The whole-application graph
+ * view — the client just maps layer→x and row→y; the ordering is done here.
+ * Optional `domain` narrows the left columns to one subsystem (aggregates /
+ * projections its events feed are kept so chains stay whole).
+ */
+const PIPELINE_LAYER: Record<string, number> = { command: 0, handler: 1, event_family: 2, aggregate: 3, projection: 4 };
+
+export async function pipelineGraph(root: string, opts: { domain?: string } = {}) {
+  const [nodes, graph, store] = await Promise.all([loadNodes(root), readGraph(root), readAnchorStore(root)]);
+  const nsById = new Map(store.anchors.map((a) => [a.id, a.symbolPath[0]]));
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const inLayer = (n: LogicalNode) => PIPELINE_LAYER[n.type] !== undefined;
+  const domOf = (n: LogicalNode) => domainOf(topNamespace(n.anchors, nsById));
+
+  const relTypes = new Set(["handles", "emits", "folds", "projects"]);
+  const rel = graph.edges.filter((e) => relTypes.has(e.type) && byId.has(e.from) && byId.has(e.to));
+
+  // Which nodes are in scope (optionally narrowed to a domain, keeping sinks).
+  let sel: Set<string>;
+  if (opts.domain) {
+    sel = new Set(nodes.filter((n) => inLayer(n) && PIPELINE_LAYER[n.type]! <= 2 && domOf(n) === opts.domain).map((n) => n.id));
+    for (const e of rel) if ((e.type === "folds" || e.type === "projects") && sel.has(e.from)) sel.add(e.to);
+  } else {
+    sel = new Set(nodes.filter(inLayer).map((n) => n.id));
+  }
+  const edges = rel.filter((e) => sel.has(e.from) && sel.has(e.to));
+
+  const layers: LogicalNode[][] = [[], [], [], [], []];
+  for (const id of sel) { const n = byId.get(id)!; layers[PIPELINE_LAYER[n.type]!]!.push(n); }
+  for (const L of layers) L.sort((a, b) => domOf(a).localeCompare(domOf(b)) || a.title.localeCompare(b.title));
+
+  // Barycenter ordering over the undirected adjacency in adjacent layers.
+  const adj = new Map<string, string[]>();
+  const link = (a: string, b: string) => { let l = adj.get(a); if (!l) { l = []; adj.set(a, l); } l.push(b); };
+  for (const e of edges) { link(e.from, e.to); link(e.to, e.from); }
+  const layerIndex = new Map<string, number>();
+  layers.forEach((L, li) => L.forEach((n) => layerIndex.set(n.id, li)));
+  const pos = new Map<string, number>();
+  const setPos = () => layers.forEach((L) => L.forEach((n, i) => pos.set(n.id, i)));
+  setPos();
+  const sweep = (order: number[]) => {
+    for (const li of order) {
+      const L = layers[li]!;
+      const bary = new Map<string, number>();
+      for (const n of L) {
+        const neigh = (adj.get(n.id) ?? []).filter((m) => Math.abs(layerIndex.get(m)! - li) === 1);
+        bary.set(n.id, neigh.length ? neigh.reduce((s, m) => s + pos.get(m)!, 0) / neigh.length : pos.get(n.id)!);
+      }
+      L.sort((a, b) => bary.get(a.id)! - bary.get(b.id)!);
+      setPos();
+    }
+  };
+  for (let k = 0; k < 4; k++) { sweep([1, 2, 3, 4]); sweep([3, 2, 1, 0]); }
+
+  const reviews = await reviewStatesFor(root, [...sel].map((id) => ({ kind: "node" as const, id })));
+  const outNodes: any[] = [];
+  layers.forEach((L, li) =>
+    L.forEach((n, row) => {
+      const rp = reviews.get(`node:${n.id}`);
+      outNodes.push({
+        id: n.id, title: n.title, type: n.type, domain: domOf(n), layer: li, row,
+        degree: (adj.get(n.id) ?? []).length,
+        review: { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" },
+      });
+    }),
+  );
+  const domains = [...new Set(nodes.filter((n) => inLayer(n) && PIPELINE_LAYER[n.type]! <= 2).map(domOf))].sort();
+  return {
+    layerNames: ["command", "handler", "event", "aggregate", "projection"],
+    layerCounts: layers.map((L) => L.length),
+    nodes: outNodes,
+    edges: edges.map((e) => ({ from: e.from, to: e.to, type: e.type })),
+    domains,
+    domain: opts.domain ?? null,
+  };
+}
+
 /** One flow: its ordered steps, each with touched modules + the live source of its anchors. */
 export async function flow(root: string, id: string) {
   const [nodes, graph, store] = await Promise.all([loadNodes(root), readGraph(root), readAnchorStore(root)]);

@@ -44,6 +44,7 @@ const flowsUrl = (u) => `/u/${u}/flows/`;
 const flowUrl = (u, id) => `/u/${u}/flow/${id}/`;
 const nodesUrl = (u) => `/u/${u}/nodes/`;
 const matrixUrl = (u) => `/u/${u}/matrix/`;
+const pipelineUrl = (u) => `/u/${u}/pipeline/`;
 const REV_COLOR = { reviewed: '#7ee787', stale: '#f0a35e', unreviewed: '#3a4250' };
 const postReview = (u, targetKind, targetId, level, unmark) =>
   fetch('/api/review', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, targetKind, targetId, level, unmark }) });
@@ -95,6 +96,7 @@ class CodemapHeader extends Component {
       <div class="uni">${each(n.universes, u => html`<button class="${u.id === n.current ? 'active' : ''}" on-click="${() => goTree(u.id, '')}">${u.id}<span class="n">${u.anchors ?? '–'}</span></button>`)}</div>
       <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(nodesUrl(u)); }}">nodes</a>
       <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(matrixUrl(u)); }}">matrix</a>
+      <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(pipelineUrl(u)); }}">pipeline</a>
       <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(flowsUrl(u)); }}">flows</a>
       <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(diffUrl(u)); }}">diff</a>
       <div class="search"><input placeholder="search symbols & docs…" on-change="${(e, v) => this.search(e, v)}"></div>
@@ -466,6 +468,88 @@ class MatrixPage extends Component {
 }
 defineComponent('matrix-page', MatrixPage);
 
+// --- layered event pipeline: command→handler→event→aggregate→projection -------
+const PIPE = { COLW: 210, NODEW: 168, ROWH: 22, NODEH: 16 };
+class PipelinePage extends Component {
+  static props = { params: {}, query: {} };
+  constructor(props) { super(props); this.state = { data: null, loading: true, domain: '' }; this._view = { x: 10, y: 36, s: 1 }; }
+  async fetchData() {
+    this.state.loading = true; this._adj = null;
+    nav.current = this.props.params.universe;
+    this.state.data = await api('/api/pipeline', { u: this.props.params.universe, domain: this.state.domain || '' });
+    this.state.loading = false;
+    await this.nextRender();
+    this.setup();
+  }
+  mounted() { this.fetchData(); }
+  propsChanged() { this.fetchData(); }
+  setDomain(v) { this.state.domain = v; this.fetchData(); }
+
+  pos() { const m = new Map(); for (const n of this.state.data.nodes) m.set(n.id, { x: n.layer * PIPE.COLW, y: n.row * PIPE.ROWH }); return m; }
+  applyTransform() { const g = this.querySelector('.vp'); if (g) { const v = this._view; g.setAttribute('transform', `translate(${v.x},${v.y}) scale(${v.s})`); } }
+  fit() {
+    const svg = this.querySelector('svg.pipeline'); if (!svg || !this.state.data) return;
+    const cw = svg.clientWidth || 960, ch = svg.clientHeight || 640;
+    const contentW = (this.state.data.layerCounts.length - 1) * PIPE.COLW + PIPE.NODEW;
+    const maxRows = Math.max(1, ...this.state.data.layerCounts);
+    const contentH = maxRows * PIPE.ROWH + PIPE.NODEH;
+    const s = Math.min(cw / (contentW + 40), ch / (contentH + 60), 1.2);
+    this._view = { s, x: Math.max(10, (cw - contentW * s) / 2), y: 40 };
+    this.applyTransform();
+  }
+  adjacency() {
+    if (this._adj) return this._adj;
+    const m = new Map(); const add = (a, b) => { let s = m.get(a); if (!s) { s = new Set(); m.set(a, s); } s.add(b); };
+    for (const e of this.state.data.edges) { add(e.from, e.to); add(e.to, e.from); }
+    this._adj = m; return m;
+  }
+  hover(id) {
+    const svg = this.querySelector('svg.pipeline'); if (!svg) return;
+    if (!id) { svg.classList.remove('hovering'); svg.querySelectorAll('.hl').forEach((el) => el.classList.remove('hl')); return; }
+    const near = this.adjacency().get(id) || new Set();
+    svg.classList.add('hovering');
+    svg.querySelectorAll('.pn').forEach((el) => el.classList.toggle('hl', el.getAttribute('data-id') === id || near.has(el.getAttribute('data-id'))));
+    svg.querySelectorAll('.pe').forEach((el) => el.classList.toggle('hl', el.getAttribute('data-from') === id || el.getAttribute('data-to') === id));
+  }
+  setup() {
+    const svg = this.querySelector('svg.pipeline'); if (!svg) return;
+    this.fit();
+    if (this._wired) return; this._wired = true;
+    let drag = null;
+    svg.addEventListener('mousedown', (e) => { if (e.target.closest('.pn')) return; drag = { sx: e.clientX, sy: e.clientY, ox: this._view.x, oy: this._view.y, moved: false }; svg.classList.add('grabbing'); });
+    window.addEventListener('mousemove', (e) => { if (!drag) return; if (Math.abs(e.clientX - drag.sx) + Math.abs(e.clientY - drag.sy) > 3) drag.moved = true; this._view.x = drag.ox + (e.clientX - drag.sx); this._view.y = drag.oy + (e.clientY - drag.sy); this.applyTransform(); });
+    window.addEventListener('mouseup', () => { if (drag && drag.moved) { this._panned = true; setTimeout(() => { this._panned = false; }, 0); } drag = null; svg.classList.remove('grabbing'); });
+    svg.addEventListener('wheel', (e) => { e.preventDefault(); const r = svg.getBoundingClientRect(); const mx = e.clientX - r.left, my = e.clientY - r.top; const f = e.deltaY < 0 ? 1.12 : 0.89; const v = this._view; const ns = Math.max(0.15, Math.min(3, v.s * f)); v.x = mx - (mx - v.x) * (ns / v.s); v.y = my - (my - v.y) * (ns / v.s); v.s = ns; this.applyTransform(); }, { passive: false });
+    svg.addEventListener('mouseover', (e) => { const g = e.target.closest('.pn'); if (g) this.hover(g.getAttribute('data-id')); });
+    svg.addEventListener('mouseout', (e) => { const g = e.target.closest('.pn'); if (g) this.hover(null); });
+  }
+  onClick(e) { if (this._panned) return; const g = e.target.closest('.pn'); if (g) go(nodeUrl(this.props.params.universe, g.getAttribute('data-id'))); }
+  template() {
+    const u = this.props.params.universe, d = this.state.data;
+    if (this.state.loading || !d) return html`<main><div class="loading">loading…</div></main>`;
+    const pos = this.pos();
+    const edge = (e) => { const a = pos.get(e.from), b = pos.get(e.to); const sx = a.x + PIPE.NODEW, sy = a.y + PIPE.NODEH / 2, tx = b.x, ty = b.y + PIPE.NODEH / 2, c = PIPE.COLW * 0.4; return html`<path class="pe ${e.type}" data-from="${e.from}" data-to="${e.to}" d="M${sx},${sy} C${sx + c},${sy} ${tx - c},${ty} ${tx},${ty}"></path>`; };
+    const node = (n) => { const p = pos.get(n.id); const t = n.title.length > 24 ? n.title.slice(0, 23) + '…' : n.title; const rev = n.review.code === 'reviewed' || n.review.logical === 'reviewed'; return html`<g class="pn ${n.type} ${rev ? 'rev' : ''}" data-id="${n.id}" transform="translate(${p.x},${p.y})">
+      <rect width="${PIPE.NODEW}" height="${PIPE.NODEH}" rx="3"></rect><text x="6" y="11">${t}</text>${when(rev, () => html`<circle class="revdot" cx="${PIPE.NODEW - 7}" cy="8" r="3"></circle>`)}
+    </g>`; };
+    return html`<main>
+      <div class="crumbs">${u} <span class="sep">·</span> event pipeline</div>
+      <div class="nfilters">
+        <select on-change="${(e) => this.setDomain(e.target.value)}"><option value="">all domains (${d.nodes.length} nodes)</option>${each(d.domains, dm => html`<option value="${dm}">${dm}</option>`, dm => dm)}</select>
+        <span class="dim">drag to pan · scroll to zoom · hover a node to trace its wiring · click to open</span>
+      </div>
+      <svg class="pipeline" on-click="${(e) => this.onClick(e)}">
+        <g class="vp" transform="translate(10,40)">
+          ${each(d.layerNames.map((nm, i) => ({ nm, i, c: d.layerCounts[i] })), h => html`<text class="plabel" x="${h.i * PIPE.COLW}" y="-16">${h.nm} · ${h.c}</text>`, h => h.nm)}
+          ${each(d.edges, edge, e => e.from + '~' + e.type + '~' + e.to)}
+          ${each(d.nodes, node, n => n.id)}
+        </g>
+      </svg>
+    </main>`;
+  }
+}
+defineComponent('pipeline-page', PipelinePage);
+
 const diffUrl = (u) => `/u/${u}/diff/`;
 const DTAG = { '+': 'added', '-': 'removed', '~': 'changed' };
 
@@ -601,6 +685,7 @@ router = enableRouting(document.querySelector('router-outlet'), {
   '/u/:universe/flow/:id/': { component: 'flow-page' },
   '/u/:universe/nodes/': { component: 'node-catalog-page' },
   '/u/:universe/matrix/': { component: 'matrix-page' },
+  '/u/:universe/pipeline/': { component: 'pipeline-page' },
   '/u/:universe/diff/': { component: 'diff-page' },
   '/u/:universe/search/': { component: 'search-page' },
 });

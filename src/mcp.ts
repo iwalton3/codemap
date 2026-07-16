@@ -202,6 +202,12 @@ const tools: Tool[] = [
     handler: (_a, c) => ops.eventMatrix(c.universe.path),
   },
   {
+    name: "pipeline_graph",
+    description: "Layered event-pipeline graph: the chain command → handler → event → aggregate → projection, one column per role, nodes ordered within columns (barycenter) to reduce edge crossings. The whole-application graph view. Optional `domain` narrows the left columns to one subsystem. Returns nodes with {layer,row} coordinates + edges.",
+    inputSchema: obj({ domain: { type: "string" } }),
+    handler: (a, c) => ops.pipelineGraph(c.universe.path, { domain: a.domain }),
+  },
+  {
     name: "flow",
     description: "One flow: its ordered steps, each with touched modules and the live source of its anchors, plus per-step review state. For stepping through a process and reviewing the code.",
     inputSchema: obj({ id: { type: "string" } }, ["id"]),
