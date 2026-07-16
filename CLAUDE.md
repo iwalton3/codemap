@@ -5,6 +5,27 @@ A codebase-agnostic **semantic map**: it anchors documented claims to hashed cod
 staleness becomes *visible* instead of silent. Maps C#/.NET, Python, JS/TS.
 Consumed by both a human (web UI) and AI agents (MCP server), from one store.
 
+## Why this exists — meaningful review of large, event-sourced changes
+
+The north star: make code review of big changes **meaningful** instead of
+rubber-stamping a 20k-line diff with "nothing jumps out" because the context
+wasn't there. Event sourcing is a worst case — a single behavior is scattered
+across `command → handler → event → aggregate → projection`, so a raw file diff
+hides *what actually changed about the system*. codemap's job is to give the
+reviewer that context and a way to work through it deliberately:
+
+- **Branch diff** (`/diff`) — not a file diff: it rolls each changed symbol up to
+  the **flows, docs, and reviews** it affects, and lets you review a change
+  (anchor) and read the doc it may have staled, side by side with the code.
+- **Flow-walker** — step through a process and review the live source of each step.
+- **Node catalog / event matrix / pipeline graph** — see the wiring a diff can't:
+  which events an aggregate folds, which handler emits what, what's orphaned.
+- **Review marks are witness-hashed** — a green check goes `stale` when the code it
+  covered changes, so "reviewed" never silently lies.
+
+When adding features, bias toward **reducing the reviewer's cognitive load and
+surfacing the context a raw diff hides** — that is the product, not incidental.
+
 ## Golden rule: dependency frugality
 
 Supply-chain rot is the primary risk this project is designed against. The
