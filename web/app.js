@@ -713,6 +713,15 @@ class DiffPage extends Component {
       this.state.selCode = await api('/api/diff/code', { u, base: this.props.query.base, head: this.props.query.head || '', id: b.id, file: b.file });
     } finally { this.state.codePending = false; }
   }
+  async reloadDiff() {
+    const u = this.props.params.universe, base = this.props.query.base;
+    if (base) this.state.diff = await api('/api/diff', { u, base, head: this.props.query.head || '' });
+  }
+  revBtn(kind, id, level, state, after) {
+    const cls = state === 'reviewed' ? 'on' : state === 'stale' ? 'stale' : '';
+    const mk = state === 'reviewed' ? ' ✓' : state === 'stale' ? ' ⚠' : '';
+    return html`<button class="${cls}" title="${level}: ${state}" on-click="${async (e) => { if (e.stopPropagation) e.stopPropagation(); await postReview(this.props.params.universe, kind, id, level, state === 'reviewed'); await after(); }}">${level}${mk}</button>`;
+  }
 
   // Group the raw symbol changes by file for the structural view.
   byFile(d) {
@@ -738,11 +747,17 @@ class DiffPage extends Component {
       <div class="dsymhead"><span class="dt ${DTAG[b.tag]}">${b.tag}</span> <b>${b.symbol}</b> <span class="dk">${b.kind}</span></div>
       <div class="meta">${b.file}${c ? ' · ' + (c.hasBase ? 'base' : '∅') + ' → ' + (c.hasHead ? 'head' : '∅') : ''}
         <span class="viewlink" on-click="${() => go(anchorUrl(u, b.id))}">open anchor ›</span></div>
-      ${when(docs.length, () => html`<div class="sec">documented by (docs this change may stale)</div>
-        <div class="chips">${each(docs, n => html`<span class="chip" on-click="${() => go(nodeUrl(u, n.id))}">${n.title || n.id}</span>`, n => n.id)}</div>`)}
+      ${when(c && c.review, () => html`<div class="drev"><span class="dim">mark this change reviewed:</span>
+        <span class="rev">${this.revBtn('anchor', b.id, 'logical', c.review.logical, () => this.openCode(this.state.sel))}${this.revBtn('anchor', b.id, 'code', c.review.code, () => this.openCode(this.state.sel))}</span></div>`)}
       <div class="sec">code diff</div>
       ${when(this.state.codePending, () => html`<div class="loading">loading code…</div>`)}
       ${when(c, () => html`<pre class="hljs cdiff">${each(c.lines, ln => html`<div class="cl ${DTAG[ln.tag] || 'ctx'}"><span class="g">${ln.tag}</span><code>${raw(highlight(ln.text || ' ', c.lang))}</code></div>`)}</pre>`)}
+      ${when(docs.length, () => html`<div class="sec">docs this change may stale (${docs.length})</div>
+        ${each(docs, n => html`<div class="ddoc">
+          <div class="ddoch"><span class="ddoct" on-click="${() => go(nodeUrl(u, n.id))}">${n.title || n.id} <span class="dk">${n.type}</span></span>
+            <span class="rev">${this.revBtn('node', n.id, 'logical', n.review.logical, () => this.reloadDiff())}</span></div>
+          <md-content text="${n.summary}"></md-content>
+        </div>`, n => n.id)}`)}
     </div>`;
   }
 
@@ -750,7 +765,7 @@ class DiffPage extends Component {
     const u = this.props.params.universe, d = this.state.diff, snaps = this.state.snaps || [];
     const base = this.props.query.base || '', head = this.props.query.head || '';
     const opt = (s, val) => html`<option value="${s.ref}" selected="${s.ref === val}">${(s.branch || '(detached)')} · ${s.ref.slice(0, 8)} (${s.count})</option>`;
-    return html`<main>
+    return html`<main class="wide">
       <div class="crumbs">${u} <span class="sep">·</span> branch diff</div>
       <div class="dpick">
         <label>base
