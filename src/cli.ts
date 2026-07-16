@@ -14,7 +14,7 @@ import { withLock } from "./lock.js";
 import * as ops from "./ops.js";
 
 function usage(): never {
-  console.error("Usage:\n  codemap init     [repo]\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap analyze marten [repo] [--verbose] [--emit]");
+  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap analyze marten [repo] [--verbose] [--emit]");
   process.exit(2);
 }
 
@@ -137,7 +137,7 @@ if (positionals[0] === "analyze") {
   } else {
     const [cmd, repoArg] = positionals;
     const root = resolve(repoArg ?? ".");
-    if (cmd === "init") await withLock(root, () => cmdInit(root));
+    if (cmd === "init" || cmd === "reindex") await withLock(root, () => cmdInit(root));
     else if (cmd === "check") await withLock(root, () => cmdCheck(root));
     else if (cmd === "snapshot") await withLock(root, () => cmdSnapshot(root));
     else usage();

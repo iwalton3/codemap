@@ -708,7 +708,7 @@ const DTAG = { '+': 'added', '-': 'removed', '~': 'changed' };
 
 class DiffPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { snaps: null, diff: null, sel: null, selCode: null, codePending: false }; }
+  constructor(props) { super(props); this.state = { snaps: null, diff: null, sel: null, selCode: null, codePending: false, view: 'doc' }; }
   load = this.createTask(async () => {
     const u = this.props.params.universe; nav.current = u;
     if (!this.state.snaps) this.state.snaps = (await api('/api/snapshots', { u })).snapshots;
@@ -734,6 +734,16 @@ class DiffPage extends Component {
   async reloadDiff() {
     const u = this.props.params.universe, base = this.props.query.base;
     if (base) this.state.diff = await api('/api/diff', { u, base, head: this.props.query.head || '' });
+  }
+  async confirmDoc(id) { await postConfirm(this.props.params.universe, id); await this.reloadDiff(); }
+  async ackDoc(id) { await postAckHole(this.props.params.universe, id); await this.reloadDiff(); }
+  setView(v) { this.state.view = v; }
+  briefIndex() { const d = this.state.diff, m = new Map(); for (const b of [...d.changed, ...d.removed, ...d.added]) m.set(b.id, b); return m; }
+  docActions(n) {
+    return html`${statusChip(n.status)}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions">⑂${n.versionCount}</span>`)}<span class="ddacts">
+      ${when(n.status === 'stale', () => html`<button title="confirm the doc still holds at this code" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.confirmDoc(n.id); }}">confirm</button>`)}
+      ${when(n.status === 'dangling', () => html`<button class="bad" title="cited code was removed here — ack" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.ackDoc(n.id); }}">ack-hole</button>`)}
+      <span class="rev">${this.revBtn('node', n.id, 'logical', n.review.logical, () => this.reloadDiff())}</span></span>`;
   }
   revBtn(kind, id, level, state, after) {
     const cls = state === 'reviewed' ? 'on' : state === 'stale' ? 'stale' : '';
@@ -770,10 +780,9 @@ class DiffPage extends Component {
       <div class="sec">code diff</div>
       ${when(this.state.codePending, () => html`<div class="loading">loading code…</div>`)}
       ${when(c, () => html`<pre class="hljs cdiff">${each(c.lines, ln => html`<div class="cl ${DTAG[ln.tag] || 'ctx'}"><span class="g">${ln.tag}</span><code>${raw(highlight(ln.text || ' ', c.lang))}</code></div>`)}</pre>`)}
-      ${when(docs.length, () => html`<div class="sec">docs this change may stale (${docs.length})</div>
+      ${when(docs.length, () => html`<div class="sec">affected docs (${docs.length})</div>
         ${each(docs, n => html`<div class="ddoc">
-          <div class="ddoch"><span class="ddoct" on-click="${() => go(nodeUrl(u, n.id))}">${n.title || n.id} <span class="dk">${n.type}</span></span>
-            <span class="rev">${this.revBtn('node', n.id, 'logical', n.review.logical, () => this.reloadDiff())}</span></div>
+          <div class="ddoch"><span class="ddoct" on-click="${() => go(nodeUrl(u, n.id))}">${n.title || n.id}</span>${this.docActions(n)}</div>
           <md-content text="${n.summary}"></md-content>
         </div>`, n => n.id)}`)}
     </div>`;
@@ -818,15 +827,12 @@ class DiffPage extends Component {
                   <span class="chips">${each(s.anchors, aid => html`<span class="chip mini" on-click="${() => this.openCodeById(aid)}">${aid.slice(0, 10)}</span>`, aid => aid)}</span>
                 </div>`, s => s.id)}
               </div>`, f => f.id)}`)}
-            ${when(d.impact.reviews.length, () => html`<div class="sec">reviews impacted (${d.impact.reviews.length})</div>
-              <div class="chips">${each(d.impact.reviews, r => html`<span class="chip warn">${r.level} · ${r.target.kind} ${r.target.id}</span>`, r => r.id)}</div>`)}
 
-            <div class="sec">structural changes</div>
-            ${when(!this.byFile(d).length, () => html`<div class="dim" style="padding:8px 2px">no symbol-level changes</div>`)}
-            ${each(this.byFile(d), g => html`<div class="dfile">
-              <div class="dfileh" on-click="${() => goTree(u, g.file)}">${g.file} <span class="dim">${g.items.length}</span></div>
-              ${each(g.items, b => this.symRow(b), b => b.id + b.tag)}
-            </div>`, g => g.file)}
+            <div class="dtoggle"><span class="dim">changes</span>
+              <button class="${this.state.view === 'doc' ? 'on' : ''}" on-click="${() => this.setView('doc')}">by doc (${d.impact.nodes.length})</button>
+              <button class="${this.state.view === 'file' ? 'on' : ''}" on-click="${() => this.setView('file')}">by file</button>
+            </div>
+            ${when(this.state.view === 'doc', () => this.docForward(), () => this.byFileView())}
           </div>
           <div class="dright">${this.detail()}</div>
         </div>`)}
@@ -838,6 +844,26 @@ class DiffPage extends Component {
     const d = this.state.diff;
     const b = [...d.changed, ...d.removed, ...d.added].find(x => x.id === id);
     if (b) this.openCode(b);
+  }
+  // Doc-forward: the affected docs (broad view) with per-doc status/actions and the
+  // changed symbols each cites (click a symbol to drill into its code diff).
+  docForward() {
+    const u = this.props.params.universe, d = this.state.diff, bi = this.briefIndex();
+    const order = { dangling: 0, stale: 1, removed: 2, fresh: 3, generated: 4 };
+    const docs = [...d.impact.nodes].sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9) || a.title.localeCompare(b.title));
+    if (!docs.length) return html`<div class="dim" style="padding:8px 2px">no documented code changed in this diff</div>`;
+    return html`${each(docs, n => html`<div class="dfdoc ${n.status}">
+      <div class="dfdh"><span class="dfdt" on-click="${() => go(nodeUrl(u, n.id))}">${n.title || n.id}</span>${this.docActions(n)}</div>
+      <div class="chips">${each(n.anchors, aid => { const b = bi.get(aid); const s = this.state.sel && this.state.sel.id === aid; return html`<span class="chip mini ${s ? 'sel' : ''}" on-click="${() => this.openCodeById(aid)}">${b ? b.symbol : aid.slice(0, 10)}</span>`; }, aid => aid)}</div>
+    </div>`, n => n.id)}`;
+  }
+  byFileView() {
+    const u = this.props.params.universe, d = this.state.diff, bf = this.byFile(d);
+    if (!bf.length) return html`<div class="dim" style="padding:8px 2px">no symbol-level changes</div>`;
+    return html`${each(bf, g => html`<div class="dfile">
+      <div class="dfileh" on-click="${() => goTree(u, g.file)}">${g.file} <span class="dim">${g.items.length}</span></div>
+      ${each(g.items, b => this.symRow(b), b => b.id + b.tag)}
+    </div>`, g => g.file)}`;
   }
 }
 defineComponent('diff-page', DiffPage);
