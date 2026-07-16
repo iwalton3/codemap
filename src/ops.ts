@@ -617,40 +617,63 @@ export async function context(root: string, refs: string[]) {
   }
   const scopeIds = [...scope];
 
-  const covering = nodes.filter((n) => n.anchors.some((id) => scope.has(id)));
-  const nodeReviews = await reviewStatesFor(root, covering.map((n) => ({ kind: "node" as const, id: n.id })));
-  const rank = { trusted: 0, unverified: 1, stale: 2, generated: 3 };
-  const docs = covering
-    .map((n) => {
-      const rp = nodeReviews.get(`node:${n.id}`);
-      const review = { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" };
-      return {
-        id: n.id, title: n.title, type: n.type, summary: n.summary,
-        status: n.status ?? "fresh", review, trust: trustOf(n.status, rp),
-        coversInScope: n.anchors.filter((id) => scope.has(id)).length,
-      };
-    })
-    .sort((a, b) => (rank[a.trust] - rank[b.trust]) || b.coversInScope - a.coversInScope);
+  const fileOf = (id: string) => anchorsById.get(id)?.file;
+  const scopeFiles = new Set(scopeIds.map((id) => fileOf(id)).filter(Boolean) as string[]);
 
-  const gaps = scopeIds.filter((id) => result.state.get(id) === "open").map((id) => anchorBrief(anchorsById.get(id)!));
-  const flows = docs.filter((d) => d.type === "process");
+  // A doc "covers" the scope if it cites any anchor in a SCOPE FILE — file-level, so a
+  // module doc for the file surfaces even when it doesn't cite the exact member asked
+  // about (the dry-run's RatingProfile.cs case). Exact-anchor overlap still ranks first.
+  const covering = nodes.filter((n) => n.anchors.some((id) => scopeFiles.has(fileOf(id) ?? "")));
+
+  // Flows whose OWN anchors or any of their STEPS' anchors touch the scope — a raw
+  // `type === 'process'` filter missed the flow that actually answers the question,
+  // because a process node cites its steps by edge, not the code directly.
+  const stepsOf = new Map<string, string[]>();
+  for (const e of graph.edges) if (e.type === "step_of") { const a = stepsOf.get(e.to) ?? []; a.push(e.from); stepsOf.set(e.to, a); }
+  const nodeById = new Map(nodes.map((n) => [n.id, n]));
+  const flowNodes = nodes.filter((n) => n.type === "process" &&
+    (n.anchors.some((id) => scope.has(id)) || (stepsOf.get(n.id) ?? []).some((sid) => (nodeById.get(sid)?.anchors ?? []).some((id) => scope.has(id)))));
+
+  const rank = { trusted: 0, unverified: 1, stale: 2, generated: 3 };
+  const reviewed = await reviewStatesFor(root, [...covering, ...flowNodes].map((n) => ({ kind: "node" as const, id: n.id })));
+  const view = (n: LogicalNode) => {
+    const rp = reviewed.get(`node:${n.id}`);
+    return { id: n.id, title: n.title, type: n.type, summary: n.summary, status: n.status ?? "fresh",
+      review: { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" }, trust: trustOf(n.status, rp) };
+  };
+  const docs = covering.map((n) => ({ ...view(n), coversInScope: n.anchors.filter((id) => scope.has(id)).length }))
+    .sort((a, b) => (rank[a.trust] - rank[b.trust]) || b.coversInScope - a.coversInScope);
+  const flows = flowNodes.map((n) => ({ ...view(n), steps: (stepsOf.get(n.id) ?? []).length }));
+
+  // Files that DO have a readable doc (some node cites an anchor in them).
+  const docFiles = new Set(covering.flatMap((n) => n.anchors.map(fileOf)).filter(Boolean) as string[]);
+  // Gaps = scope anchors with no readable doc that aren't intentionally excluded:
+  // `open`, or `covered`-by-a-rule but no doc actually cites anything in the file.
+  // (`cited`/`trivial`/`deferred`/`owned` are not gaps.)
+  const gaps = scopeIds.filter((id) => {
+    const st = result.state.get(id);
+    return st === "open" || (st === "covered" && !docFiles.has(fileOf(id) ?? ""));
+  }).map((id) => anchorBrief(anchorsById.get(id)!));
+  const withDoc = scopeIds.filter((id) => covering.some((n) => n.anchors.includes(id))).length;
+
   const bugs = bugStore.bugs
     .filter((b) => b.status === "open" && b.anchors.some((id) => scope.has(id)))
     .map((b) => ({ id: b.id, title: b.title, severity: b.severity }));
 
   return {
     scopeAnchors: scopeIds.length,
-    documented: scopeIds.length - gaps.length,
-    gaps,
+    withDoc,           // scope anchors a doc directly cites
+    gaps,              // scope anchors with no readable doc (the explore-then-document list)
     docs,
     flows,
     bugs,
-    // A one-line read for the agent: is this area covered by something trustworthy?
+    // A one-line read for the agent: is this area answered by something, and how much to trust it?
     verdict: !scopeIds.length ? "empty scope"
-      : docs.some((d) => d.trust === "trusted") ? "covered (trusted docs exist — read them before exploring)"
-      : docs.some((d) => d.trust === "unverified") ? "partial (unverified docs — use as hypotheses, verify against code)"
-      : docs.some((d) => d.trust === "stale") ? "stale (docs here need re-validation)"
-      : "gap (no docs cover this code — explore, then document the reusable claims)",
+      : docs.some((d) => d.trust === "trusted") ? "covered — trusted docs exist; read them before exploring"
+      : docs.some((d) => d.trust === "unverified") ? "partial — docs exist but unverified; use as hypotheses, verify against code"
+      : docs.some((d) => d.trust === "stale") ? "stale — docs here need re-validation against current code"
+      : gaps.length ? "gap — no docs cover this code; explore, then document the reusable claims"
+      : "no docs and no open gaps (this code may be intentionally deferred/trivial)",
     ...(errors.length ? { errors } : {}),
   };
 }
