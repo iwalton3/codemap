@@ -349,22 +349,43 @@ defineComponent('node-page', NodePage);
 
 class SearchPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { r: null }; }
+  static stores = { nav };
+  constructor(props) { super(props); this.state = { groups: null }; }
+  // scope: "all" universes (default) or "one" (the current universe). In the URL
+  // so back/forward and deep-links carry it.
+  scope() { return this.props.query.scope === 'one' ? 'one' : 'all'; }
   load = this.createTask(async () => {
     nav.current = this.props.params.universe;
     const q = this.props.query.q || '';
-    this.state.r = q ? await api('/api/search', { u: this.props.params.universe, q }) : null;
+    if (!q) { this.state.groups = null; return; }
+    if (this.scope() === 'all') {
+      this.state.groups = (await api('/api/search', { u: this.props.params.universe, q, all: 1 })).results || [];
+    } else {
+      const r = await api('/api/search', { u: this.props.params.universe, q });
+      this.state.groups = [{ universe: this.props.params.universe, ...r }];
+    }
   });
-  mounted() { this.load.run(); }
+  mounted() { nav.load(); this.load.run(); }
   propsChanged() { this.load.run(); }
+  setScope(s) { go(`/u/${this.props.params.universe}/search/`, { q: this.props.query.q || '', scope: s }); }
+  group(g) {
+    const u = g.universe, hits = (g.nodes?.length || 0) + (g.anchors?.length || 0);
+    return html`<div class="detail" style="margin-bottom:12px">
+      <div class="dch"><span class="uref" on-click="${() => go(dashUrl(u))}">${u}</span> <span class="dim">· ${hits} hit${hits === 1 ? '' : 's'}</span></div>
+      ${when(g.nodes && g.nodes.length, () => html`<div class="sec">nodes</div><div class="chips">${each(g.nodes, n => html`<span class="chip" on-click="${() => go(nodeUrl(u, n.id))}">${n.title || n.id}</span>`, n => n.id)}</div>`)}
+      ${when(g.anchors && g.anchors.length, () => html`<div class="sec">anchors</div><div class="rows">${each(g.anchors, a => html`<div class="sym" on-click="${() => go(anchorUrl(u, a.id))}"><span class="k">${a.kind}</span><span>${a.symbol}</span><span class="muted">${a.file}</span></div>`, a => a.id)}</div>`)}
+      ${when(!hits, () => html`<div class="dim" style="padding:4px 0">no matches</div>`)}
+    </div>`;
+  }
   template() {
-    const u = this.props.params.universe, r = this.state.r;
+    const u = this.props.params.universe, groups = this.state.groups, multi = (this.stores.nav.universes || []).length > 1;
     return html`<main>
-      <div class="crumbs"><a on-click="${() => goTree(u, '')}">${u}</a> <span class="sep">/</span> search: ${this.props.query.q || ''}</div>
-      ${when(!r, () => html`<div class="empty">type a query…</div>`, () => html`<div class="detail">
-        <div class="sec">nodes</div><div class="chips">${each(r.nodes ?? [], n => html`<span class="chip" on-click="${() => go(nodeUrl(u, n.id))}">${n.title || n.id}</span>`)}</div>
-        <div class="sec">anchors</div><div class="rows">${each(r.anchors ?? [], a => html`<div class="sym" on-click="${() => go(anchorUrl(u, a.id))}"><span class="k">${a.kind}</span><span>${a.symbol}</span><span class="muted">${a.file}</span></div>`)}</div>
+      <div class="crumbs"><a on-click="${() => go(dashUrl(u))}">${u}</a> <span class="sep">/</span> search: ${this.props.query.q || ''}</div>
+      ${when(multi, () => html`<div class="dtoggle"><span class="dim">scope</span>
+        <button class="${this.scope() === 'all' ? 'on' : ''}" on-click="${() => this.setScope('all')}">all universes</button>
+        <button class="${this.scope() === 'one' ? 'on' : ''}" on-click="${() => this.setScope('one')}">${u} only</button>
       </div>`)}
+      ${when(!groups, () => html`<div class="empty">type a query…</div>`, () => html`${each(groups, g => this.group(g), g => g.universe)}`)}
     </main>`;
   }
 }
