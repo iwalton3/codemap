@@ -172,6 +172,39 @@ export async function triageStatus(root: string, target: Target): Promise<Triage
   return (await triageFor(root, [target])).get(`${target.kind}:${target.id}`)!;
 }
 
+// Attention rank for "what's the worst thing outstanding." Untriaged escalates to
+// BC-until-looked-at, so it sits just under confirmed-critical; complete is 0.
+const SEV_RANK: Record<Severity, number> = { complete: 0, low: 1, medium: 2, high: 3, untriaged: 4, critical: 5 };
+
+export interface Coverage {
+  total: number;
+  complete: number; // severity === "complete" — meets its tier's bar
+  outstanding: number; // total − complete — the review still owed
+  completePct: number; // 0–100, 100 when total === 0
+  bySeverity: Record<string, number>; // full distribution incl. complete + untriaged
+  worst: Severity | null; // worst non-complete severity present (drives the headline)
+}
+
+/** Roll a set of triage infos into a coverage summary — the "am I done here?" number. */
+export function rollupCoverage(infos: Iterable<TriageInfo>): Coverage {
+  const bySeverity: Record<string, number> = {};
+  let total = 0, complete = 0, worst: Severity | null = null;
+  for (const t of infos) {
+    total++;
+    const sev = t.severity;
+    bySeverity[sev] = (bySeverity[sev] ?? 0) + 1;
+    if (sev === "complete") complete++;
+    else if (!worst || SEV_RANK[sev] > SEV_RANK[worst]) worst = sev;
+  }
+  return { total, complete, outstanding: total - complete, completePct: total === 0 ? 100 : Math.round((complete / total) * 100), bySeverity, worst };
+}
+
+/** Coverage over a set of targets (their live severity), rolled up. */
+export async function coverageFor(root: string, targets: Target[]): Promise<Coverage> {
+  const m = await triageFor(root, targets);
+  return rollupCoverage(m.values());
+}
+
 // ---------------------------------------------------------------------------
 // Graph-derived stakes (Phase 2). The pipeline/event graph is a blast-radius
 // oracle: what a node emits/is tells you its stakes far more reliably than an

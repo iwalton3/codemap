@@ -94,6 +94,18 @@ const sevChip = (t) => {
 // A small severity dot for dense lists (catalog rows, anchor chips) where a chip is too big.
 const sevDot = (sev) => sev && sev !== 'untriaged' && sev !== 'complete'
   ? html`<span class="sevdot" style="background:${SEV_COLOR[sev] || '#3a4250'}" title="severity: ${sev}"></span>` : html``;
+// Review-complete rollup (Phase 3): "% complete" + a stacked severity bar + what's outstanding.
+// The "am I done reviewing this?" readout — stakes-relative, so plumbing never blocks it.
+const COV_ORDER = ['complete', 'low', 'medium', 'high', 'untriaged', 'critical'];
+const coverageBar = (cov) => {
+  if (!cov || !cov.total) return html``;
+  const seg = (sev) => { const n = cov.bySeverity[sev] || 0; return n ? html`<span title="${sev}: ${n}" style="display:inline-block;height:9px;width:${Math.max(3, Math.round(n / cov.total * 140))}px;background:${SEV_COLOR[sev] || '#3a4250'}"></span>` : html``; };
+  return html`<span class="cov" style="display:inline-flex;align-items:center;gap:6px" title="${cov.complete}/${cov.total} anchors review-complete">
+    <b>${cov.completePct}%</b><span style="color:#8b949e">review-complete</span>
+    <span style="display:inline-flex;gap:1px;border-radius:2px;overflow:hidden">${each(COV_ORDER, s => seg(s), s => s)}</span>
+    ${when(cov.outstanding, () => html`<span style="color:#8b949e">${cov.outstanding} left${cov.worst ? ' · worst ' + cov.worst : ''}</span>`)}
+  </span>`;
+};
 // Shared review/triage renderers so every surface (anchor, node, flow, diff) reads the
 // same: `viewed` (blue) + `signed` (green) marks, then the stakes buttons + severity chip.
 const markBtnEl = (attestation, info, onMark) => {
@@ -746,6 +758,7 @@ class FlowPage extends Component {
       </div>`)}
       <div class="detail">
         <div style="display:flex;align-items:center;gap:12px"><h2 style="margin:0">${d.title}</h2>${this.revBtns('node', d.id, d.review, d.viewed)}</div>
+        ${when(d.coverage, () => html`<div style="margin:6px 0">${coverageBar(d.coverage)}</div>`)}
         <md-content text="${d.summary}"></md-content>
       </div>
       ${each(steps, (s) => html`<div class="flow-step" style="${s.changed && (s.changed.signed || s.changed.viewed) ? 'border-left:3px solid #f0a35e;padding-left:9px' : ''}">
@@ -819,6 +832,7 @@ class NodeCatalogPage extends Component {
         <select on-change="${(e) => this.set('severity', e.target.value)}"><option value="">any severity</option>${each(opts(d.bySeverity || {}), o => html`<option value="${o.k}">${o.k} (${o.v})</option>`, o => o.k)}</select>
         <select on-change="${(e) => this.setGroup(e.target.value)}"><option value="type">group: type</option><option value="domain">group: domain</option><option value="none">group: none</option></select>
       </div>
+      ${when(d.coverage, () => html`<div style="margin:4px 0 8px">${coverageBar(d.coverage)}</div>`)}
       <div class="ncount">${list.length} shown <button style="margin-left:10px" title="graph-derive likely stakes across the map (safe: only proposals a human confirms)" on-click="${() => this.deriveStakes()}">⚙ derive stakes</button></div>
       ${each(this.groups(list), g => html`<div class="ngroup">
         <div class="ngh"><span class="gdot" style="background:${nodeColor(g[0])}"></span>${g[0]} <span class="n">${g[1].length}</span></div>
@@ -1264,6 +1278,7 @@ class DiffPage extends Component {
           <span><b>${d.head.label}</b></span>
           <span class="dcounts"><i class="added">+${d.added.length}</i> <i class="removed">−${d.removed.length}</i> <i class="changed">~${d.changed.length}</i></span>
         </div>
+        ${when(d.coverage && d.coverage.total, () => html`<div class="dsummary" style="border-top:1px solid #222;padding-top:6px">${coverageBar(d.coverage)}</div>`)}
 
         <div class="dgrid">
           <div class="dleft">

@@ -18,7 +18,7 @@ import type { Anchor, Review } from "./schema.js";
 import { indexRepo, indexFile, indexBlob } from "./repo.js";
 import { readSnapshot, readAnchorStore, loadNodes, loadNodeVersions, winningVersionAt, readGraph, readReviews, readBugs } from "./store.js";
 import { reviewStatesFor } from "./reviews.js";
-import { reviewTriageFor } from "./triage.js";
+import { reviewTriageFor, coverageFor, type Coverage } from "./triage.js";
 import { revParse, headCommit, currentBranch, showFile } from "./git.js";
 import { grammarForPath } from "./grammars.js";
 
@@ -41,6 +41,8 @@ export interface DiffResult {
     reviews: { id: string; target: { kind: string; id: string }; level: string; anchors: string[] }[];
     bugs: { id: string; title: string; status: string; severity: string; anchors: string[]; removed: boolean; possiblyFixed: boolean }[];
   };
+  /** Review-complete rollup over the changed+added anchors — "am I done reviewing this?" */
+  coverage: Coverage;
 }
 
 /** Resolve a ref to (sha, cached anchors). Accepts a branch/tag/sha; null anchors when uncached. */
@@ -152,6 +154,14 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
       possiblyFixed: bug.status === "open",
     }));
 
+  // Review-complete over the anchors this diff changed or added (removed ones need no
+  // review). The number that answers "am I actually done reviewing this change?" —
+  // stakes-relative, so it never demands a golden-window sign-off on plumbing.
+  let coverage: Coverage = { total: 0, complete: 0, outstanding: 0, completePct: 100, bySeverity: {}, worst: null };
+  try {
+    coverage = await coverageFor(root, [...added, ...changed].map((b) => ({ kind: "anchor" as const, id: b.id })));
+  } catch { /* best-effort — never break the diff */ }
+
   return {
     base: { ref: baseRef, sha: base.sha, label: baseRef, anchors: base.anchors.length },
     head: headSide,
@@ -159,6 +169,7 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
     removed,
     changed,
     impact: { nodes: impactedNodes, flows, reviews: reviewImpact, bugs: bugImpact },
+    coverage,
   };
 }
 

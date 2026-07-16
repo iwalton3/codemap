@@ -33,7 +33,7 @@ import { refreshAnalyzers } from "./analyzers/run.js";
 import { applyIndexUpdate } from "./sync.js";
 import { grammarForPath } from "./grammars.js";
 import { reviewStatus, reviewStatesFor, anchorReviewMap, changedSince as reviewsChangedSince, type Attestation, type ReviewPair } from "./reviews.js";
-import { setTriage as triageSet, clearTriage as triageClear, triageStatus, reviewTriageFor, deriveTriage as triageDerive } from "./triage.js";
+import { setTriage as triageSet, clearTriage as triageClear, triageStatus, reviewTriageFor, deriveTriage as triageDerive, coverageFor as triageCoverageFor, rollupCoverage } from "./triage.js";
 
 const HL_LANG: Record<string, string> = { c_sharp: "csharp", python: "python", javascript: "javascript", typescript: "typescript", tsx: "typescript" };
 const langFor = (file: string) => HL_LANG[grammarForPath(file) ?? ""] ?? "plaintext";
@@ -460,6 +460,7 @@ export async function nodeCatalog(root: string) {
     byDomain: tally(out, "domain"),
     byStatus: tally(out, "status"),
     bySeverity: tally(out, "severity"),
+    coverage: rollupCoverage([...rt.values()].map((v) => v.triage)),
     nodes: out,
   };
 }
@@ -1034,6 +1035,8 @@ export async function flow(root: string, id: string) {
     review: rev.get("node:" + id), viewed: revView.get("node:" + id),
     // The targeted diff: step ids that have drifted under each mark since you reviewed.
     changed: { signed: changedSigned, viewed: changedViewed },
+    // Review-complete rollup over the flow's step anchors ("am I done with this flow?").
+    coverage: await triageCoverageFor(root, allAnchorIds.map((aid) => ({ kind: "anchor" as const, id: aid }))),
     steps,
   };
 }

@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeStore, readTriage, writeAnchorStore, writeNode, readGraph, writeGraph } from "./store.js";
 import type { Anchor } from "./schema.js";
-import { setTriage, clearTriage, triageStatus, triageSeverity, deriveTriage } from "./triage.js";
+import { setTriage, clearTriage, triageStatus, triageSeverity, deriveTriage, rollupCoverage } from "./triage.js";
+import type { TriageInfo } from "./triage.js";
 
 const initRoot = () => {
   const root = mkdtempSync(join(tmpdir(), "codemap-triage-"));
@@ -56,6 +57,21 @@ test("the ratchet: escalation always allowed, lowering human-only, graph respect
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("rollupCoverage summarizes a set of severities into the review-complete number", () => {
+  const info = (severity: string): TriageInfo => ({ importance: null, likely: false, severity: severity as TriageInfo["severity"], bar: null });
+  const cov = rollupCoverage([info("complete"), info("complete"), info("critical"), info("low"), info("untriaged")]);
+  assert.equal(cov.total, 5);
+  assert.equal(cov.complete, 2);
+  assert.equal(cov.outstanding, 3);
+  assert.equal(cov.completePct, 40);
+  assert.equal(cov.worst, "critical"); // critical outranks untriaged/low
+  assert.equal(cov.bySeverity.complete, 2);
+  // Empty set is vacuously 100% complete (nothing owed).
+  const empty = rollupCoverage([]);
+  assert.equal(empty.completePct, 100);
+  assert.equal(empty.worst, null);
 });
 
 test("deriveTriage: graph signals → likely stakes; human marks are preserved", async () => {
