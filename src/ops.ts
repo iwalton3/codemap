@@ -64,6 +64,25 @@ function anchorBrief(a: Anchor) {
   };
 }
 
+/**
+ * The trust ladder a codemap-aware agent should key on, from freshness (does the
+ * cited code still match) × review state (did a human/agent verify the claim):
+ *   trusted    — fresh AND reviewed → rely on it without re-reading the code.
+ *   unverified — fresh but unreviewed (agent-authored) → a hypothesis; use, but
+ *                be ready to verify against live code.
+ *   stale      — code drifted or was removed → re-derive, then confirm/refork.
+ *   generated  — analyzer-emitted graph; structural, not a prose claim.
+ * (fresh ≠ correct: freshness only proves the code hasn't changed, not that the
+ * doc read it right — hence the review dimension.)
+ */
+function trustOf(status: string | undefined, review?: { logical: { state: string }; code: { state: string } }): "trusted" | "unverified" | "stale" | "generated" {
+  if (status === "generated") return "generated";
+  if (status === "stale" || status === "dangling" || status === "removed") return "stale";
+  if (review && (review.logical.state === "stale" || review.code.state === "stale")) return "stale";
+  if (review && (review.logical.state === "reviewed" || review.code.state === "reviewed")) return "trusted";
+  return "unverified";
+}
+
 // ---------------------------------------------------------------------------
 // Discovery
 // ---------------------------------------------------------------------------
@@ -547,16 +566,93 @@ export async function search(root: string, query: string, limit = 30) {
     .filter((a) => a.symbolPath.join(".").toLowerCase().includes(q) || a.file.toLowerCase().includes(q))
     .slice(0, limit)
     .map(anchorBrief);
-  const nodeHits = nodes
+  const matched = nodes
     .filter((n) =>
       n.id.toLowerCase().includes(q) ||
       n.title.toLowerCase().includes(q) ||
       n.summary.toLowerCase().includes(q) ||
       n.body.toLowerCase().includes(q),
     )
-    .slice(0, limit)
-    .map((n) => ({ id: n.id, type: n.type, title: n.title, summary: n.summary }));
+    .slice(0, limit);
+  // Surface the trust ladder inline so a searching agent can tell a trusted answer
+  // from a stale guess without a second round-trip.
+  const reviews = await reviewStatesFor(root, matched.map((n) => ({ kind: "node" as const, id: n.id })));
+  const nodeHits = matched.map((n) => {
+    const rp = reviews.get(`node:${n.id}`);
+    const review = { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" };
+    return { id: n.id, type: n.type, title: n.title, summary: n.summary, status: n.status ?? "fresh", review, trust: trustOf(n.status, rp) };
+  });
   return { anchors, nodes: nodeHits };
+}
+
+/**
+ * "What does codemap already know about this code, and can I trust it?" — the
+ * answer-first entry point for a codemap-aware Explore agent. Given refs (files,
+ * dirs, `file#Symbol`, `file:line`, or anchor ids), returns the covering docs with
+ * their trust level, the flows/bugs on that code, and the still-undocumented
+ * anchors (the gaps to fill). Lets the agent skip re-exploration when a trusted
+ * doc already answers, and focus its reading on the gaps when it doesn't.
+ */
+export async function context(root: string, refs: string[]) {
+  const { store, nodes, result } = await coverageFor(root);
+  const [graph, bugStore] = await Promise.all([readGraph(root), readBugs(root)]);
+  const anchorsById = new Map(store.anchors.map((a) => [a.id, a]));
+
+  // Resolve each ref → anchor ids. Precise refs (id / file#Symbol / file:line) go
+  // through resolveAnchorRefs; a bare path is treated as a file or directory scope.
+  const scope = new Set<string>();
+  const errors: string[] = [];
+  for (const ref of refs) {
+    if (anchorsById.has(ref)) { scope.add(ref); continue; }
+    if (ref.includes("#") || /:\d+$/.test(ref)) {
+      const r = resolveAnchorRefs(store.anchors, [ref]);
+      r.ids.forEach((id) => scope.add(id));
+      errors.push(...r.errors);
+      continue;
+    }
+    const pref = ref.replace(/\/+$/, "");
+    const hits = store.anchors.filter((a) => a.file === pref || a.file.startsWith(pref + "/") || a.file.endsWith("/" + pref));
+    if (hits.length) hits.forEach((a) => scope.add(a.id));
+    else errors.push(`no anchors for "${ref}"`);
+  }
+  const scopeIds = [...scope];
+
+  const covering = nodes.filter((n) => n.anchors.some((id) => scope.has(id)));
+  const nodeReviews = await reviewStatesFor(root, covering.map((n) => ({ kind: "node" as const, id: n.id })));
+  const rank = { trusted: 0, unverified: 1, stale: 2, generated: 3 };
+  const docs = covering
+    .map((n) => {
+      const rp = nodeReviews.get(`node:${n.id}`);
+      const review = { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" };
+      return {
+        id: n.id, title: n.title, type: n.type, summary: n.summary,
+        status: n.status ?? "fresh", review, trust: trustOf(n.status, rp),
+        coversInScope: n.anchors.filter((id) => scope.has(id)).length,
+      };
+    })
+    .sort((a, b) => (rank[a.trust] - rank[b.trust]) || b.coversInScope - a.coversInScope);
+
+  const gaps = scopeIds.filter((id) => result.state.get(id) === "open").map((id) => anchorBrief(anchorsById.get(id)!));
+  const flows = docs.filter((d) => d.type === "process");
+  const bugs = bugStore.bugs
+    .filter((b) => b.status === "open" && b.anchors.some((id) => scope.has(id)))
+    .map((b) => ({ id: b.id, title: b.title, severity: b.severity }));
+
+  return {
+    scopeAnchors: scopeIds.length,
+    documented: scopeIds.length - gaps.length,
+    gaps,
+    docs,
+    flows,
+    bugs,
+    // A one-line read for the agent: is this area covered by something trustworthy?
+    verdict: !scopeIds.length ? "empty scope"
+      : docs.some((d) => d.trust === "trusted") ? "covered (trusted docs exist — read them before exploring)"
+      : docs.some((d) => d.trust === "unverified") ? "partial (unverified docs — use as hypotheses, verify against code)"
+      : docs.some((d) => d.trust === "stale") ? "stale (docs here need re-validation)"
+      : "gap (no docs cover this code — explore, then document the reusable claims)",
+    ...(errors.length ? { errors } : {}),
+  };
 }
 
 export async function getNode(root: string, id: string) {
@@ -842,11 +938,18 @@ export async function getAnchor(root: string, id: string) {
   } catch {
     /* file gone */
   }
+  const citing = nodes.filter((n) => n.anchors.includes(id));
+  const citeReviews = await reviewStatesFor(root, citing.map((n) => ({ kind: "node" as const, id: n.id })));
   return {
     ...anchorBrief(anchor),
     present,
     code,
-    citedBy: nodes.filter((n) => n.anchors.includes(id)).map((n) => ({ id: n.id, title: n.title })),
+    // citedBy carries the trust ladder so "what documents this code, and can I
+    // trust it?" is answerable from the anchor alone.
+    citedBy: citing.map((n) => {
+      const rp = citeReviews.get(`node:${n.id}`);
+      return { id: n.id, title: n.title, status: n.status ?? "fresh", trust: trustOf(n.status, rp) };
+    }),
     bugs: bugStore.bugs.filter((b) => b.anchors.includes(id)).map((b) => ({ id: b.id, title: b.title, status: b.status })),
     annotations: annStore.annotations.filter((a) => a.target.kind === "anchor" && a.target.id === id),
     lang: langFor(anchor.file),

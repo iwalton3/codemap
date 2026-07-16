@@ -18,6 +18,20 @@ list or read everything.
    its subtree). \`status\` gives the headline counts; \`find_gaps\` lists the
    highest-value undocumented anchors when you want a work queue.
 
+## Answer first — the map is a knowledgebase, not just a to-do list
+Before you read code to answer a question, ASK codemap. \`context\` (pass the
+files/symbols you're about to work in) returns a \`verdict\` and the covering docs
+with a **trust** level; \`search\` node hits carry the same. The trust ladder, from
+freshness (does the cited code still match) × review (did someone verify the claim):
+- **trusted** (fresh + reviewed) — rely on it; don't re-read the code.
+- **unverified** (fresh + unreviewed) — a hypothesis; use it, but confirm against
+  live code before you depend on it. (Fresh ≠ correct: freshness only says the code
+  hasn't changed, not that the doc read it right.)
+- **stale** (code drifted/removed) — re-derive against live code, then
+  \`confirm\` (still accurate) or edit (forks a new version).
+Only explore the \`gaps\` \`context\` reports. When you fill one, document the
+**reusable** claim — keep the map current; do NOT record task-specific findings.
+
 ## Document (one meaningful unit at a time)
 - READ FIRST: \`get_anchor\` returns the live code. Never document code you have
   not read.

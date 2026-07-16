@@ -101,6 +101,12 @@ const tools: Tool[] = [
     handler: (a, c) => ops.findGaps(c.universe.path, a),
   },
   {
+    name: "context",
+    description: "ANSWER-FIRST: before exploring code, ask what codemap already knows about it. Given refs (files, dirs, `file#Symbol`, `file:line`, or anchor ids), returns a `verdict` (covered/partial/stale/gap), the covering docs with trust level, flows/open-bugs on that code, and the still-undocumented `gaps`. Read `trusted` docs instead of re-reading the code; explore only the gaps.",
+    inputSchema: obj({ refs: { type: "array", items: { type: "string" }, description: "Files, dirs, file#Symbol, file:line, or anchor ids — the code you're about to work in." } }, ["refs"]),
+    handler: (a, c) => ops.context(c.universe.path, a.refs),
+  },
+  {
     name: "cover",
     description: "Mark selected anchors so they stop polluting `find_gaps`. `as`: covered (claimed by a node, not load-bearing) | trivial (never document — getters, Apply overloads) | deferred (a subtree not documented here) | owned (documented in another universe — pass `owner`). The selector is stored and re-applied, so anchors added later inherit the state. Select by pathPrefix / file / kind / symbol-glob (e.g. \"Apply*\").",
     inputSchema: obj({
@@ -173,7 +179,7 @@ const tools: Tool[] = [
   },
   {
     name: "search",
-    description: "Search anchors and nodes for a substring. Set allUniverses:true to search every universe (useful to find a link target in another project).",
+    description: "Search anchors and nodes for a substring. Node hits carry a trust level (trusted / unverified / stale) from freshness × review — prefer a `trusted` doc over re-reading code. Set allUniverses:true to search every universe.",
     inputSchema: obj({ query: { type: "string" }, limit: { type: "number" }, allUniverses: { type: "boolean" } }, ["query"]),
     handler: (a, c) => (a.allUniverses ? multi.searchAll(ws, a.query, a.limit) : ops.search(c.universe.path, a.query, a.limit)),
   },
