@@ -374,11 +374,11 @@ export async function docDiff(root: string, base: string, head: string | undefin
 /** Before/after source for one anchor between two refs (the code drill-down) + its review state. */
 export async function diffCode(root: string, base: string, head: string | undefined, id: string, file: string) {
   const code = await anchorCodeDiff(root, base, head, id, file);
-  let rp: { logical: { state: string }; code: { state: string } } | undefined;
+  let rp: { logical: { state: string; actor?: string }; code: { state: string; actor?: string } } | undefined;
   try {
     rp = (await reviewStatesFor(root, [{ kind: "anchor", id }])).get(`anchor:${id}`);
   } catch { /* review state best-effort */ }
-  return { ...code, review: { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" } };
+  return { ...code, review: { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" }, reviewBy: { logical: rp?.logical.actor ?? null, code: rp?.code.actor ?? null } };
 }
 
 /** Collapse a namespace to a browsable domain (e.g. Acme.Settlement.Cards.Handlers → Settlement.Cards). */

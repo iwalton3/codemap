@@ -35,7 +35,7 @@ export interface DiffResult {
   removed: Brief[];
   changed: Brief[];
   impact: {
-    nodes: { id: string; title: string; type: string; summary: string; anchors: string[]; status: string; versionCount: number; review: { logical: string; code: string } }[];
+    nodes: { id: string; title: string; type: string; summary: string; anchors: string[]; status: string; versionCount: number; review: { logical: string; code: string }; reviewBy: { logical: string | null; code: string | null } }[];
     flows: { id: string; title: string; steps: { id: string; title: string; anchors: string[] }[] }[];
     reviews: { id: string; target: { kind: string; id: string }; level: string; anchors: string[] }[];
     bugs: { id: string; title: string; status: string; severity: string; anchors: string[]; removed: boolean; possiblyFixed: boolean }[];
@@ -102,7 +102,7 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
   } catch { /* leave unreviewed */ }
   const impactedNodes = nodeImpact.map(({ n, hit }) => {
     const rp = nodeReviews.get(`node:${n.id}`);
-    return { id: n.id, title: n.title, type: n.type, summary: n.summary, anchors: hit, status: n.status ?? "fresh", versionCount: n.versionCount ?? 1, review: { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" } };
+    return { id: n.id, title: n.title, type: n.type, summary: n.summary, anchors: hit, status: n.status ?? "fresh", versionCount: n.versionCount ?? 1, review: { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" }, reviewBy: { logical: rp?.logical.actor ?? null, code: rp?.code.actor ?? null } };
   });
 
   // Flows: process nodes whose steps (via step_of) or self touch impacted anchors.

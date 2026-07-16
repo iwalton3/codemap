@@ -54,6 +54,10 @@ const nodesUrl = (u) => `/u/${u}/nodes/`;
 const matrixUrl = (u) => `/u/${u}/matrix/`;
 const pipelineUrl = (u) => `/u/${u}/pipeline/`;
 const REV_COLOR = { reviewed: '#7ee787', stale: '#f0a35e', unreviewed: '#3a4250' };
+// Actor-aware review rendering: human review = green (`on`), agent `checked` = blue.
+const revCls = (state, actor) => state === 'reviewed' ? (actor === 'agent' ? 'checked' : 'on') : state === 'stale' ? 'stale' : '';
+const revColorA = (info) => { const s = info && info.state, a = info && info.actor; return s === 'reviewed' ? (a === 'agent' ? '#58a6ff' : '#7ee787') : s === 'stale' ? '#f0a35e' : '#3a4250'; };
+const revMark = (state, actor) => state === 'reviewed' ? (actor === 'agent' ? ' ·' : ' ✓') : state === 'stale' ? ' ⚠' : '';
 // Doc-version status (see docs/doc-versioning.md).
 const STATUS = { fresh: '#7ee787', stale: '#f0a35e', dangling: '#f27b7b', removed: '#8b95a3', generated: '#6b7684' };
 const statusChip = (s, extra) => s && s !== 'generated' ? html`<span class="stchip ${s}" title="doc version: ${s}${extra || ''}">${s}</span>` : html``;
@@ -598,8 +602,8 @@ class FlowsPage extends Component {
         <div class="ft">${f.title} <span class="n">${f.steps} step${f.steps === 1 ? '' : 's'}</span></div>
         <div class="fs">${f.summary}</div>
         <div class="progress">
-          <span><span class="rev-dot" style="background:${REV_COLOR[(f.review && f.review.logical.state) || 'unreviewed']}"></span>logical</span>
-          <span><span class="rev-dot" style="background:${REV_COLOR[(f.review && f.review.code.state) || 'unreviewed']}"></span>code</span>
+          <span><span class="rev-dot" style="background:${revColorA(f.review && f.review.logical)}"></span>logical</span>
+          <span><span class="rev-dot" style="background:${revColorA(f.review && f.review.code)}"></span>code</span>
           <span>steps: ${f.stepReview.logical}/${f.stepReview.total} logical · ${f.stepReview.code}/${f.stepReview.total} code${f.stepReview.stale ? ' · ' + f.stepReview.stale + ' ⚠' : ''}</span>
         </div>
       </div>`, (f) => f.id)}
@@ -616,11 +620,10 @@ class FlowPage extends Component {
   propsChanged() { this.load.run(); }
   async toggle(kind, id, level, state) { await postReview(this.props.params.universe, kind, id, level, state === 'reviewed'); this.load.run(); }
   revBtn(kind, id, level, info) {
-    const st = (info && info.state) || 'unreviewed';
-    const cls = st === 'reviewed' ? 'on' : st === 'stale' ? 'stale' : '';
-    const mark = st === 'reviewed' ? ' ✓' : st === 'stale' ? ' ⚠' : '';
-    const tip = `${level} ${st}${info && info.by ? ' · by ' + info.by : ''}`;
-    return html`<button class="${cls}" title="${tip}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.toggle(kind, id, level, st); }}">${level}${mark}</button>`;
+    const st = (info && info.state) || 'unreviewed', actor = info && info.actor;
+    const cls = revCls(st, actor);
+    const tip = `${level} ${st}${st === 'reviewed' && actor === 'agent' ? ' (agent-checked)' : ''}${info && info.by ? ' · by ' + info.by : ''}`;
+    return html`<button class="${cls}" title="${tip}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.toggle(kind, id, level, st); }}">${level}${revMark(st, actor)}</button>`;
   }
   revBtns(kind, id, review) {
     return html`<span class="rev">${each(['logical', 'code'], (lvl) => this.revBtn(kind, id, lvl, review && review[lvl]), (lvl) => lvl)}</span>`;
@@ -1045,12 +1048,12 @@ class DiffPage extends Component {
     return html`${statusChip(n.status)}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions">⑂${n.versionCount}</span>`)}<span class="ddacts">
       ${when(n.status === 'stale', () => html`<button title="confirm the doc still holds at this code" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.confirmDoc(n.id); }}">confirm</button>`)}
       ${when(n.status === 'dangling', () => html`<button class="bad" title="cited code was removed here — ack" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.ackDoc(n.id); }}">ack-hole</button>`)}
-      <span class="rev">${this.revBtn('node', n.id, 'logical', n.review.logical, () => this.reloadDiff())}</span></span>`;
+      <span class="rev">${this.revBtn('node', n.id, 'logical', n.review.logical, () => this.reloadDiff(), n.reviewBy && n.reviewBy.logical)}</span></span>`;
   }
-  revBtn(kind, id, level, state, after) {
-    const cls = state === 'reviewed' ? 'on' : state === 'stale' ? 'stale' : '';
-    const mk = state === 'reviewed' ? ' ✓' : state === 'stale' ? ' ⚠' : '';
-    return html`<button class="${cls}" title="${level}: ${state}" on-click="${async (e) => { if (e.stopPropagation) e.stopPropagation(); await postReview(this.props.params.universe, kind, id, level, state === 'reviewed'); await after(); }}">${level}${mk}</button>`;
+  revBtn(kind, id, level, state, after, actor) {
+    const cls = revCls(state, actor);
+    const tip = `${level}: ${state}${state === 'reviewed' && actor === 'agent' ? ' (agent-checked)' : ''}`;
+    return html`<button class="${cls}" title="${tip}" on-click="${async (e) => { if (e.stopPropagation) e.stopPropagation(); await postReview(this.props.params.universe, kind, id, level, state === 'reviewed'); await after(); }}">${level}${revMark(state, actor)}</button>`;
   }
 
   // Group the raw symbol changes by file for the structural view.
@@ -1110,7 +1113,7 @@ class DiffPage extends Component {
       <div class="meta">${b.file}${c ? ' · ' + (c.hasBase ? 'base' : '∅') + ' → ' + (c.hasHead ? 'head' : '∅') : ''}
         <span class="viewlink" on-click="${() => go(anchorUrl(u, b.id))}">open anchor ›</span></div>
       ${when(c && c.review, () => html`<div class="drev"><span class="dim">mark this change reviewed:</span>
-        <span class="rev">${this.revBtn('anchor', b.id, 'logical', c.review.logical, () => this.loadCode(b.id))}${this.revBtn('anchor', b.id, 'code', c.review.code, () => this.loadCode(b.id))}</span></div>`)}
+        <span class="rev">${this.revBtn('anchor', b.id, 'logical', c.review.logical, () => this.loadCode(b.id), c.reviewBy && c.reviewBy.logical)}${this.revBtn('anchor', b.id, 'code', c.review.code, () => this.loadCode(b.id), c.reviewBy && c.reviewBy.code)}</span></div>`)}
       <div class="sec">code diff</div>
       ${when(this.state.codePending, () => html`<div class="loading">loading code…</div>`)}
       ${when(c, () => html`<pre class="hljs cdiff">${each(c.lines, ln => html`<div class="cl ${DTAG[ln.tag] || 'ctx'}"><span class="g">${ln.tag}</span><code>${raw(highlight(ln.text || ' ', c.lang))}</code></div>`)}</pre>`)}
