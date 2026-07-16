@@ -50,7 +50,7 @@ async function coveredAnchorIds(root: string, target: Target, nodeAnchors?: Map<
 }
 
 /** Current live hashes for a set of anchor ids (re-indexes their files once). */
-async function liveHashes(root: string, anchorIds: Iterable<string>): Promise<Map<string, string>> {
+export async function liveHashes(root: string, anchorIds: Iterable<string>): Promise<Map<string, string>> {
   const store = await readAnchorStore(root);
   const byId = new Map(store.anchors.map((a) => [a.id, a]));
   const files = new Set<string>();

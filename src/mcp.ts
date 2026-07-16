@@ -283,6 +283,12 @@ const tools: Tool[] = [
     handler: async (_a, c) => ops.deriveTriage(c.universe.path),
   },
   {
+    name: "triage_drift",
+    description: "Stakes marks whose witnessed code has DRIFTED since triage — the re-triage worklist. A `mechanical` anchor that changed may have grown teeth (now sums money / emits an event); re-run `triage_derive` (auto-escalates drifted human marks) or `triage` it higher. `tripwire:true` entries have FIRED — business-critical code someone asked to be alerted on has moved.",
+    inputSchema: obj({}, []),
+    handler: async (_a, c) => ops.triageDriftList(c.universe.path),
+  },
+  {
     name: "sanity_check",
     description: "Record that YOU (an agent) read the current code and a doc's claims hold — promotes it from `unverified` to `checked` trust. Witnessed, so it reverts to `stale` when the code changes. GUARDED: the connection that authored the doc can't check it — a different session must corroborate (no self-vouching). Use after verifying a doc during exploration.",
     inputSchema: obj({ id: { type: "string" }, reviewer: { type: "string" } }, ["id"]),

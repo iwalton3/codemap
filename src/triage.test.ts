@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writeStore, readTriage, writeAnchorStore, writeNode, readGraph, writeGraph } from "./store.js";
-import type { Anchor } from "./schema.js";
-import { setTriage, clearTriage, triageStatus, triageSeverity, deriveTriage, rollupCoverage } from "./triage.js";
+import { writeStore, readTriage, writeTriage, writeAnchorStore, writeNode, readGraph, writeGraph } from "./store.js";
+import type { Anchor, Triage } from "./schema.js";
+import { setTriage, clearTriage, triageStatus, triageSeverity, deriveTriage, rollupCoverage, triageDrift, tripwires } from "./triage.js";
 import type { TriageInfo } from "./triage.js";
 
 const initRoot = () => {
@@ -100,6 +100,67 @@ test("deriveTriage: graph signals → likely stakes; human marks are preserved",
     assert.equal(await imp("node", "proj"), "business-critical");
     const projRow = (await readTriage(root)).triage.find((t) => t.target.id === "proj")!;
     assert.equal(projRow.source, "human");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A triage mark whose stored witness hash won't match live (the anchor has no file, so
+// live reads "absent") — i.e. code that has drifted since the mark was set.
+const staleMark = (over: Partial<Triage>): Triage => ({
+  target: { kind: "anchor", id: "a_x" }, importance: "business-critical", likely: false,
+  source: "human", at: "2026-07-16T00:00:00Z", witnesses: [{ anchorId: "a_x", bodyHash: "sha256:OLD" }], ...over,
+});
+
+test("triageDrift + tripwires surface marks whose witnessed code moved", async () => {
+  const root = initRoot();
+  try {
+    await init(root);
+    await writeTriage(root, [
+      staleMark({ target: { kind: "anchor", id: "a_moved" }, tripwire: true, witnesses: [{ anchorId: "a_moved", bodyHash: "sha256:OLD" }] }),
+      staleMark({ target: { kind: "anchor", id: "a_watch_only" }, tripwire: false, witnesses: [{ anchorId: "a_watch_only", bodyHash: "sha256:OLD" }] }),
+    ]);
+    const drift = await triageDrift(root);
+    assert.equal(drift.length, 2); // both drifted (their witnessed hashes ≠ live)
+    const tw = await tripwires(root);
+    assert.equal(tw.armedCount, 1); // only one is armed
+    assert.equal(tw.fired.length, 1); // and it has fired (its code moved)
+    assert.equal(tw.fired[0]!.target.id, "a_moved");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("re-triage on drift: a human mark escalates when its code changed AND stakes rose", async () => {
+  const root = initRoot();
+  try {
+    await init(root);
+    await writeNode(root, { id: "pay", type: "command", title: "Charge card", summary: "", anchors: ["a_p"], body: "" });
+    // Human deliberately set `pay` mechanical — but its witnessed code has since drifted.
+    await writeTriage(root, [staleMark({ target: { kind: "node", id: "pay" }, importance: "mechanical", witnesses: [{ anchorId: "a_p", bodyHash: "sha256:OLD" }] })]);
+
+    const r = await deriveTriage(root);
+    // The graph now derives business-critical (money name) > the human's mechanical, and
+    // because the code drifted this is a legitimate re-escalation (not blind override).
+    assert.ok(r.escalated >= 1);
+    const info = await triageStatus(root, { kind: "node", id: "pay" });
+    assert.equal(info.importance, "business-critical");
+    assert.equal(info.likely, true); // re-enters the confirm queue, not silently owned
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("no drift → a human mark is NOT re-escalated (blind graph respects it)", async () => {
+  const root = initRoot();
+  try {
+    await init(root);
+    await writeNode(root, { id: "pay2", type: "command", title: "Charge card", summary: "", anchors: [], body: "" });
+    // Human set mechanical with NO witnesses → nothing drifted; graph must respect it.
+    await writeTriage(root, [{ target: { kind: "node", id: "pay2" }, importance: "mechanical", likely: false, source: "human", at: "2026-07-16T00:00:00Z", witnesses: [] }]);
+    const r = await deriveTriage(root);
+    assert.equal(r.escalated, 0);
+    assert.equal((await triageStatus(root, { kind: "node", id: "pay2" })).importance, "mechanical");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

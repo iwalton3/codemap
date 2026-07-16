@@ -102,6 +102,10 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return ops.diffCode(root, q.get("base") ?? "", q.get("head") || undefined, q.get("id") ?? "", q.get("file") ?? "");
     case "/api/diff/doc":
       return ops.docDiff(root, q.get("base") ?? "", q.get("head") || undefined, q.get("id") ?? "");
+    case "/api/tripwires":
+      return ops.tripwires(root);
+    case "/api/triage_drift":
+      return ops.triageDriftList(root);
     case "/api/changed_since":
       return ops.changedSince(root, {
         targetKind: (q.get("targetKind") as "node" | "anchor") ?? "node",

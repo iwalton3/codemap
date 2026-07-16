@@ -8,7 +8,7 @@
 import { randomBytes } from "node:crypto";
 import { type Importance, type TriageSource, type Triage, type BugSeverity } from "./schema.js";
 import { readTriage, writeTriage, loadNodes, readGraph, readAnchorStore } from "./store.js";
-import { reviewStatesFor, witnessesFor, type Target, type ReviewPair } from "./reviews.js";
+import { reviewStatesFor, witnessesFor, liveHashes, witnessDrift, type Target, type ReviewPair, type AnchorChange } from "./reviews.js";
 
 export const IMPORTANCE_RANK: Record<Importance, number> = { mechanical: 0, important: 1, "business-critical": 2 };
 
@@ -239,26 +239,44 @@ function structuralImportance(type: string, emitsEvent: boolean): { importance: 
  * inherit the max stakes of their citing nodes. Never overrides a human mark, only
  * raises over an existing agent mark.
  */
-export async function deriveTriage(root: string): Promise<{ derived: number; byImportance: Record<string, number> }> {
+export async function deriveTriage(root: string): Promise<{ derived: number; byImportance: Record<string, number>; escalated: number }> {
   const [nodes, graph, store, ts] = await Promise.all([loadNodes(root), readGraph(root), readAnchorStore(root), readTriage(root)]);
   const nsById = new Map(store.anchors.map((a) => [a.id, a.symbolPath[0]]));
   const symById = new Map(store.anchors.map((a) => [a.id, a.symbolPath.join(".")]));
+  const nodeAnchors = new Map(nodes.map((n) => [n.id, n.anchors]));
   const emitters = new Set<string>();
   for (const e of graph.edges) if (e.type === "emits") emitters.add(e.from);
+
+  // Live hashes for every anchor → witness the derived marks (re-triage-on-change) and
+  // detect which existing HUMAN marks cover code that has since drifted.
+  const live = await liveHashes(root, store.anchors.map((a) => a.id));
+  const witnessesOf = (kind: "node" | "anchor", id: string) =>
+    (kind === "anchor" ? [id] : nodeAnchors.get(id) ?? []).map((aid) => ({ anchorId: aid, bodyHash: live.get(aid) ?? "sha256:absent" }));
+  const humanDrifted = new Set<string>();
+  for (const t of ts.triage) if (t.source === "human" && witnessDrift(t.witnesses, live).length) humanDrifted.add(key(t.target.kind, t.target.id));
 
   // Start from the marks we keep (human + agent proposals); graph marks are regenerated.
   const result = new Map<string, Triage>();
   for (const t of ts.triage) if (t.source !== "graph") result.set(key(t.target.kind, t.target.id), t);
 
   const at = new Date().toISOString();
+  let escalated = 0;
   const graphMark = (kind: "node" | "anchor", id: string, importance: Importance, reason: string) => {
     const k = key(kind, id);
     const ex = result.get(k);
+    let note = reason;
     if (ex) {
-      if (ex.source === "human") return; // authoritative — never override a person
-      if (IMPORTANCE_RANK[importance] <= IMPORTANCE_RANK[ex.importance]) return; // ratchet
+      if (IMPORTANCE_RANK[importance] <= IMPORTANCE_RANK[ex.importance]) return; // ratchet: raise-only
+      if (ex.source === "human") {
+        // A human mark is authoritative UNLESS its code drifted since they set it —
+        // then a higher derivation is a legitimate re-escalation ("grew teeth"): it
+        // re-enters the confirm queue rather than silently overriding their judgement.
+        if (!humanDrifted.has(k)) return;
+        note = `${reason} (code changed since you triaged — re-confirm)`;
+        escalated++;
+      }
     }
-    result.set(k, { target: { kind, id }, importance, likely: true, source: "graph", reason, at, witnesses: [] });
+    result.set(k, { target: { kind, id }, importance, likely: true, source: "graph", reason: note, at, witnesses: witnessesOf(kind, id) });
   };
 
   const nodeMoney = (n: { title: string; summary?: string; anchors: string[] }) =>
@@ -308,5 +326,46 @@ export async function deriveTriage(root: string): Promise<{ derived: number; byI
   await writeTriage(root, triage);
   const byImportance = triage.reduce<Record<string, number>>((m, t) => ((m[t.importance] = (m[t.importance] ?? 0) + 1), m), {});
   const derived = triage.filter((t) => t.source === "graph").length;
-  return { derived, byImportance };
+  return { derived, byImportance, escalated };
+}
+
+// ---------------------------------------------------------------------------
+// Tripwire + re-triage-on-change (Phase 4). Every triage mark witnesses the code
+// it covered; when that code drifts the mark is a re-triage candidate, and if the
+// mark is a tripwire it has *fired* — "tell me the instant this moves."
+// ---------------------------------------------------------------------------
+
+export interface TriageDrift {
+  target: { kind: "node" | "anchor"; id: string };
+  importance: Importance;
+  source: TriageSource;
+  tripwire: boolean;
+  reason?: string;
+  drift: AnchorChange[]; // which covered anchors moved since the mark was set
+}
+
+/** Triage marks whose witnessed code has drifted — candidates for re-triage. */
+export async function triageDrift(root: string): Promise<TriageDrift[]> {
+  const ts = await readTriage(root);
+  const ids = new Set<string>();
+  for (const t of ts.triage) for (const w of t.witnesses) ids.add(w.anchorId);
+  const live = await liveHashes(root, ids);
+  const out: TriageDrift[] = [];
+  for (const t of ts.triage) {
+    const drift = witnessDrift(t.witnesses, live);
+    if (drift.length) out.push({ target: t.target, importance: t.importance, source: t.source, tripwire: !!t.tripwire, reason: t.reason, drift });
+  }
+  return out;
+}
+
+/**
+ * Tripwires: marks armed with `tripwire`. `fired` = its code has moved since arming
+ * ("tell me it changed"); `armed` = the full watch list. The alert surface behind
+ * "page me the instant this business-critical code moves, even after I've signed it."
+ */
+export async function tripwires(root: string): Promise<{ fired: TriageDrift[]; armedCount: number }> {
+  const ts = await readTriage(root);
+  const armedCount = ts.triage.filter((t) => t.tripwire).length;
+  const drift = await triageDrift(root);
+  return { fired: drift.filter((d) => d.tripwire), armedCount };
 }

@@ -120,10 +120,10 @@ const reviewRowEl = (review, viewed, onMark) => {
   const sign = review && review.code, view = viewed && viewed.code;
   return html`<span class="rev">${markBtnEl('viewed', view, onMark)}${markBtnEl('signed', sign, onMark)}${when(sign && sign.state === 'stale', () => html`<span class="hint" style="margin-left:6px;color:#f0a35e">⚠ sign-off stale</span>`)}</span>`;
 };
-const triageRowEl = (triage, onSet) => {
+const triageRowEl = (triage, onSet, onTripwire) => {
   const cur = triage && triage.importance;
   const btn = (imp, label) => html`<button class="${cur === imp ? 'on' : ''}" title="set stakes: ${imp}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onSet(imp); }}">${label}</button>`;
-  return html`<span class="rev" style="align-items:center"><span style="margin-right:4px;color:#8b949e">stakes:</span>${btn('business-critical', 'business-critical')}${btn('important', 'important')}${btn('mechanical', 'mechanical')}${when(cur, () => html`<button title="clear stakes" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onSet(null); }}">✕</button>`)}${sevChip(triage)}${when(triage && triage.likely, () => html`<span style="color:#58a6ff;font-size:12px" title="agent proposal — click a tier to confirm">· likely</span>`)}</span>`;
+  return html`<span class="rev" style="align-items:center"><span style="margin-right:4px;color:#8b949e">stakes:</span>${btn('business-critical', 'business-critical')}${btn('important', 'important')}${btn('mechanical', 'mechanical')}${when(cur, () => html`<button title="clear stakes" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onSet(null); }}">✕</button>`)}${sevChip(triage)}${when(cur && onTripwire, () => html`<button class="${triage.tripwire ? 'checked' : ''}" title="${triage.tripwire ? 'tripwire armed — alert if this code changes (click to disarm)' : 'arm tripwire — alert me the instant this code changes'}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onTripwire(!triage.tripwire); }}">🔔</button>`)}${when(triage && triage.likely, () => html`<span style="color:#58a6ff;font-size:12px" title="agent proposal — click a tier to confirm">· likely</span>`)}</span>`;
 };
 const postAnnotate = (u, targetKind, targetId, text, kind) =>
   fetch('/api/annotate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, targetKind, targetId, text, kind, author: 'human' }) });
@@ -408,6 +408,10 @@ class AnchorPage extends Component {
     await postTriage(this.props.params.universe, 'anchor', this.state.a.id, importance ? { importance } : { clear: true });
     this.load.run();
   }
+  async armTripwire(on) {
+    await postTriage(this.props.params.universe, 'anchor', this.state.a.id, { importance: this.state.a.triage.importance, tripwire: on });
+    this.load.run();
+  }
   template() {
     const u = this.props.params.universe, a = this.state.a;
     if (!a || this.load.pending) return html`<main><div class="loading">loading…</div></main>`;
@@ -417,7 +421,7 @@ class AnchorPage extends Component {
       <h2>${a.symbol}</h2>
       <div class="meta">${a.kind} · ${a.file}:${a.lines} · ${a.present ? 'present' : 'not found (lost)'}</div>
       <div style="margin:8px 0">${reviewRowEl(a.review, a.viewed, (att, st) => this.mark(att, st))}</div>
-      <div style="margin:8px 0">${triageRowEl(a.triage, (imp) => this.triage(imp))}</div>
+      <div style="margin:8px 0">${triageRowEl(a.triage, (imp) => this.triage(imp), (on) => this.armTripwire(on))}</div>
       ${when(a.citedBy && a.citedBy.length, () => html`<div class="sec">documented by</div><div class="chips">${each(a.citedBy, n => html`<span class="chip" on-click="${() => go(nodeUrl(u, n.id))}">${n.title || n.id}</span>`)}</div>`)}
       ${when(a.bugs && a.bugs.length, () => html`<div class="sec">bugs</div><div class="chips">${each(a.bugs, b => html`<span class="chip">${b.status} · ${b.title}</span>`)}</div>`)}
       ${annoThread(this, u, 'anchor', a.id, a.annotations)}
@@ -441,6 +445,7 @@ class NodePage extends Component {
   async verify(act) { await postReview(this.props.params.universe, 'node', this.props.params.id, 'logical', act === 'unverify'); this.load.run(); }
   async markNode(attestation, state) { await postReview(this.props.params.universe, 'node', this.props.params.id, 'code', state === 'reviewed', attestation); this.load.run(); }
   async triageNode(importance) { await postTriage(this.props.params.universe, 'node', this.props.params.id, importance ? { importance } : { clear: true }); this.load.run(); }
+  async armTripwireNode(on) { await postTriage(this.props.params.universe, 'node', this.props.params.id, { importance: this.state.n.triage.importance, tripwire: on }); this.load.run(); }
   async confirm() { await postConfirm(this.props.params.universe, this.props.params.id); this.load.run(); }
   async ackHole() { await postAckHole(this.props.params.universe, this.props.params.id); this.load.run(); }
   template() {
@@ -451,7 +456,7 @@ class NodePage extends Component {
       <div class="meta">${n.type}${n.universe ? ' · ' + n.universe : ''} · ${n.id} ${statusChip(n.status)}${trustChip(n.trust, (act) => this.verify(act))}${sevChip(n.triage)}<span class="viewlink" on-click="${() => go(graphUrl(u, n.id))}">◆ graph</span></div>
       <h2>${n.title}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions (forked across branches)">⑂${n.versionCount}</span>`)}</h2>
       <div style="margin:6px 0">${reviewRowEl(n.review, n.viewed, (att, st) => this.markNode(att, st))}</div>
-      <div style="margin:6px 0">${triageRowEl(n.triage, (imp) => this.triageNode(imp))}</div>
+      <div style="margin:6px 0">${triageRowEl(n.triage, (imp) => this.triageNode(imp), (on) => this.armTripwireNode(on))}</div>
       ${when(n.status === 'stale', () => html`<div class="vaction"><span>This doc cites code that changed since it was written.</span> <button on-click="${() => this.confirm()}">confirm still accurate</button> <span class="dim">— or edit it (forks a new version).</span></div>`)}
       ${when(n.status === 'dangling', () => html`<div class="vaction bad"><span>Cited code was removed here (${(n.danglingAnchors || []).length} anchor${(n.danglingAnchors || []).length === 1 ? '' : 's'}).</span> <button on-click="${() => this.ackHole()}">ack — remove doc here</button> <span class="dim">(kept on branches where the code exists).</span></div>`)}
       <md-content text="${n.summary}"></md-content>
@@ -777,8 +782,8 @@ defineComponent('flow-page', FlowPage);
 // --- node catalog: browse/filter/mark-reviewed every logical node -------------
 class NodeCatalogPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { data: null, f: { q: '', type: '', domain: '', gen: '', review: '', severity: '' }, group: 'type' }; }
-  load = this.createTask(async () => { nav.current = this.props.params.universe; this.state.data = await api('/api/nodes', { u: this.props.params.universe }); });
+  constructor(props) { super(props); this.state = { data: null, tw: null, f: { q: '', type: '', domain: '', gen: '', review: '', severity: '' }, group: 'type' }; }
+  load = this.createTask(async () => { nav.current = this.props.params.universe; const u = this.props.params.universe; this.state.data = await api('/api/nodes', { u }); this.state.tw = await api('/api/tripwires', { u }); });
   mounted() { this.load.run(); }
   propsChanged() { this.load.run(); }
   set(k, v) { this.state.f = { ...this.state.f, [k]: v }; }
@@ -833,6 +838,10 @@ class NodeCatalogPage extends Component {
         <select on-change="${(e) => this.setGroup(e.target.value)}"><option value="type">group: type</option><option value="domain">group: domain</option><option value="none">group: none</option></select>
       </div>
       ${when(d.coverage, () => html`<div style="margin:4px 0 8px">${coverageBar(d.coverage)}</div>`)}
+      ${when(this.state.tw && this.state.tw.fired && this.state.tw.fired.length, () => html`<div class="diff-banner" style="margin:6px 0;padding:8px 12px;border-left:3px solid #f85149;background:#2a1618;border-radius:4px">
+        🔔 <b>${this.state.tw.fired.length}</b> tripwire${this.state.tw.fired.length === 1 ? '' : 's'} fired — business-critical code you're watching has changed:
+        ${each(this.state.tw.fired, f => html` <span class="chip" on-click="${() => go(f.target.kind === 'anchor' ? anchorUrl(u, f.target.id) : nodeUrl(u, f.target.id))}">${f.target.id.slice(0, 14)}</span>`, f => f.target.kind + f.target.id)}
+      </div>`)}
       <div class="ncount">${list.length} shown <button style="margin-left:10px" title="graph-derive likely stakes across the map (safe: only proposals a human confirms)" on-click="${() => this.deriveStakes()}">⚙ derive stakes</button></div>
       ${each(this.groups(list), g => html`<div class="ngroup">
         <div class="ngh"><span class="gdot" style="background:${nodeColor(g[0])}"></span>${g[0]} <span class="n">${g[1].length}</span></div>

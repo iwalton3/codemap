@@ -33,7 +33,7 @@ import { refreshAnalyzers } from "./analyzers/run.js";
 import { applyIndexUpdate } from "./sync.js";
 import { grammarForPath } from "./grammars.js";
 import { reviewStatus, reviewStatesFor, anchorReviewMap, changedSince as reviewsChangedSince, type Attestation, type ReviewPair } from "./reviews.js";
-import { setTriage as triageSet, clearTriage as triageClear, triageStatus, reviewTriageFor, deriveTriage as triageDerive, coverageFor as triageCoverageFor, rollupCoverage } from "./triage.js";
+import { setTriage as triageSet, clearTriage as triageClear, triageStatus, reviewTriageFor, deriveTriage as triageDerive, coverageFor as triageCoverageFor, rollupCoverage, tripwires as triageTripwires, triageDrift } from "./triage.js";
 
 const HL_LANG: Record<string, string> = { c_sharp: "csharp", python: "python", javascript: "javascript", typescript: "typescript", tsx: "typescript" };
 const langFor = (file: string) => HL_LANG[grammarForPath(file) ?? ""] ?? "plaintext";
@@ -1101,6 +1101,16 @@ export async function clearTriage(root: string, input: { targetKind: "node" | "a
 /** Graph-derive `likely` stakes across the whole map (regenerable). See docs/triage.md Phase 2. */
 export async function deriveTriage(root: string) {
   return triageDerive(root);
+}
+
+/** Tripwires: armed watch-marks whose code has moved (`fired`) + the armed count. */
+export async function tripwires(root: string) {
+  return triageTripwires(root);
+}
+
+/** Triage marks whose witnessed code drifted — re-triage candidates. */
+export async function triageDriftList(root: string) {
+  return triageDrift(root);
 }
 
 /**

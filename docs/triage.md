@@ -301,7 +301,12 @@ can trace, leaving the rest untriaged (escalates) for a human to confirm.
   proximity inheritance + anchor inheritance. Ratchet hardened so a human mark is
   authoritative (agents can't re-raise a deliberate lowering). `unknown` = untriaged,
   escalates. Witnesses are stored empty for now — re-triage-on-change is Phase 4.
-- **Phase 3:** coverage rollups per module/flow/universe; the review-complete metric
-  on the diff/PR view.
-- **Phase 4:** tripwire arming + delivery; re-triage-on-change promotion (witness the
-  derived marks, re-derive on drift, escalate a mechanical anchor that grew teeth).
+- **Phase 3 (DONE):** `rollupCoverage` — % review-complete + outstanding + worst, on
+  the flow, node-catalog, and `/diff` (over changed+added anchors: "am I done reviewing
+  this PR?"). Shared `coverageBar` renderer.
+- **Phase 4 (DONE):** every triage mark is witnessed. `triageDrift` = marks whose code
+  moved; `tripwires` = armed marks that have *fired*. `deriveTriage` now re-escalates a
+  **human** mark when its code drifted AND stakes rose (the witnessed exception to
+  "graph respects humans" — a mechanical anchor that grew teeth re-enters the confirm
+  queue). Surfaces: MCP `triage_drift`, `/api/tripwires`, `/api/triage_drift`, a 🔔
+  arm/disarm toggle, and a fired-tripwire banner on the node catalog.
