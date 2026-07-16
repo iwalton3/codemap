@@ -339,6 +339,29 @@ function send(msg: unknown): void {
   process.stdout.write(JSON.stringify(msg) + "\n");
 }
 
+/**
+ * On connect, bring every universe's index up to date in the background:
+ * `check_stale` picks up drift and (via the branch-change guard) re-baselines
+ * if the checkout moved to a different branch. Fire-and-forget so the handshake
+ * stays fast; each runs under the universe's write lock, so a subsequent tool
+ * call just waits on the lock and then sees the fresh index. Runs once.
+ */
+let connectRefreshed = false;
+async function refreshOnConnect(): Promise<void> {
+  if (connectRefreshed) return;
+  connectRefreshed = true;
+  for (const u of ws.universes) {
+    try {
+      const r: any = await withLock(u.path, () => ops.checkStale(u.path));
+      const reb = r?.rebaselined ? ` rebaselined ${r.rebaselined.from}→${r.rebaselined.to} (${r.rebaselined.anchors} anchors)` : "";
+      const add = r?.indexUpdate ? ` +${r.indexUpdate.added} anchors` : "";
+      process.stderr.write(`codemap-mcp: check_stale on connect [${u.id}]: ok=${r?.ok ?? "?"}${reb}${add}\n`);
+    } catch (e: any) {
+      process.stderr.write(`codemap-mcp: check_stale on connect [${u.id}] skipped: ${e?.message ?? e}\n`);
+    }
+  }
+}
+
 async function handle(msg: any): Promise<void> {
   const { id, method, params } = msg;
   const isRequest = id !== undefined && id !== null;
@@ -355,6 +378,7 @@ async function handle(msg: any): Promise<void> {
           instructions: METHODOLOGY,
         },
       });
+      void refreshOnConnect(); // background: freshen indexes / re-baseline on branch change
       return;
     case "ping":
       send({ jsonrpc: "2.0", id, result: {} });
