@@ -159,12 +159,15 @@ different code, so the index follows it. The MCP server also runs `check_stale`
 across every universe **on connect** (background, under the lock), so an agent starts
 against a fresh, correctly-branched index without having to remember to sync.
 
-**Graph viewer** (web `graph-page`, `/api/neighborhood`) — a clickable SVG ego-graph
-of a node's immediate neighborhood, color-coded by type with direction+type edge
-labels; click a neighbor to re-center. Reached via the ◆ graph link on a node.
-Built as data-driven SVG straight from the template with `each()`. (Routing uses the
-`:path*` wildcard again, and the graph builds SVG from templates — the two vdx bugs
-this hit were fixed upstream and re-vendored; see BUG-REPORT-from-codemap.RESPONSE.md.)
+**Graph explorer** (web `graph-page`, `/api/subgraph`, MCP `subgraph`, `ops.subgraph`) —
+a **force-directed** graph you grow by exploration: start from a node (the ◆ graph link
+on a node), **click any node to expand its neighbors** into the view (nodes flag how
+many neighbors are still hidden), with **pan/zoom**, **hover-to-trace-wiring**, and
+**edge/node-type filter chips**. The layout is a hand-rolled Fruchterman-Reingold
+simulation (zero-dep) that animates to a settled position and auto-frames; interactions
+run on direct DOM updates so it stays smooth. This replaces the old fixed radial
+ego-graph, which crowded past ~15 neighbors. `ops.subgraph(ids, expand?)` returns the
+induced subgraph so growth is incremental, one node at a time.
 
 **SQLite storage — out of git, no merge conflicts** (`src/db.ts`) — the store is a
 per-universe **`node:sqlite`** DB at `.codemap/codemap.db` (stdlib, zero new deps),

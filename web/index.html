@@ -25,6 +25,8 @@
     .search input { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 5px 10px; width: 240px; font-size: 13px; }
 
     main { padding: 16px 18px; max-width: 1100px; margin: 0 auto; }
+    /* Graph pages use the full window width + viewport height for legibility. */
+    main.wide { max-width: none; }
     .crumbs { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-bottom: 12px; font-family: var(--mono); font-size: 13px; }
     .crumbs a { color: var(--accent); cursor: pointer; text-decoration: none; }
     .crumbs a:hover { text-decoration: underline; }
@@ -168,8 +170,36 @@
     .mrevh { width: 112px; flex: none; display: flex; align-items: center; justify-content: center; border-left: 1px solid var(--border); }
     .mhead .mrevh { font-size: 11px; color: var(--dim); text-transform: uppercase; }
 
+    /* --- force-directed graph explorer --- */
+    .gtools { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }
+    .gtools .gfl { color: var(--dim); font-size: 11.5px; margin-left: 6px; }
+    .gtools .gfl:first-child { margin-left: 0; }
+    .gchip { font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 12px; border: 1px solid; cursor: pointer; color: var(--text); background: var(--panel2); }
+    .gchip.off { opacity: 0.35; text-decoration: line-through; }
+    svg.explorer { width: 100%; height: calc(100vh - 215px); min-height: 520px; background: #0b0e13; border: 1px solid var(--border); border-radius: 8px; cursor: grab; display: block; }
+    svg.explorer.grabbing { cursor: grabbing; }
+    .gn { cursor: pointer; }
+    .gn rect { fill: #161b22; stroke: #3a4250; stroke-width: 1.2; }
+    .gn text { fill: #d7dde5; font-size: 10px; font-family: var(--mono); text-anchor: middle; pointer-events: none; }
+    .gn.command rect { stroke: #d2a8ff; } .gn.handler rect { stroke: #79c0ff; } .gn.event_family rect { stroke: #7ee787; }
+    .gn.aggregate rect { stroke: #58a6ff; } .gn.projection rect { stroke: #f0a35e; } .gn.process rect { stroke: #f778ba; } .gn.step rect { stroke: #a5d6ff; }
+    .gn.sel rect { stroke-width: 2.4; fill: #1c232d; }
+    .gn .more { fill: var(--accent); } .gn .morec { fill: #0b0e13; font-size: 8px; text-anchor: middle; font-weight: 700; }
+    .gn .revdot { fill: var(--accent2); }
+    .ge { stroke: #6b7684; stroke-width: 1.2; opacity: 0.5; }
+    .ge.folds { stroke: #7ee787; } .ge.projects { stroke: #f0a35e; } .ge.emits { stroke: #79c0ff; } .ge.handles { stroke: #d2a8ff; }
+    .ge.touches { stroke: #f778ba; } .ge.step_of { stroke: #a5d6ff; } .ge.part_of { stroke: #8b95a3; } .ge.depends_on { stroke: #58a6ff; } .ge.calls_api { stroke: #ffab70; }
+    svg.explorer.hovering .gn:not(.hl) { opacity: 0.16; }
+    svg.explorer.hovering .ge:not(.hl) { opacity: 0.05; }
+    .ge.hl { opacity: 1; stroke-width: 2; }
+    .gn.hl rect { stroke-width: 2.2; }
+    .gsel { display: flex; align-items: center; gap: 12px; margin-top: 10px; padding: 8px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+    .gsel .gseltitle { font-family: var(--mono); flex: 1; }
+    .gsel button { background: var(--panel2); border: 1px solid var(--border); color: var(--accent); border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+    .gsel button.greset { color: var(--dim); }
+
     /* --- layered event pipeline --- */
-    svg.pipeline { width: 100%; height: 660px; background: #0b0e13; border: 1px solid var(--border); border-radius: 8px; cursor: grab; display: block; }
+    svg.pipeline { width: 100%; height: calc(100vh - 175px); min-height: 540px; background: #0b0e13; border: 1px solid var(--border); border-radius: 8px; cursor: grab; display: block; }
     svg.pipeline.grabbing { cursor: grabbing; }
     .pn { cursor: pointer; }
     .pn rect { fill: #161b22; stroke: #3a4250; stroke-width: 1; }
@@ -177,11 +207,12 @@
     .pn.command rect { stroke: #d2a8ff; } .pn.handler rect { stroke: #79c0ff; }
     .pn.event_family rect { stroke: #7ee787; } .pn.aggregate rect { stroke: #58a6ff; } .pn.projection rect { stroke: #f0a35e; }
     .pn .revdot { fill: var(--accent2); }
-    .pe { fill: none; stroke: #2a313c; stroke-width: 1; }
+    .pe { fill: none; stroke: #6b7684; stroke-width: 1; opacity: 0.4; }
+    .pe.folds { stroke: #7ee787; } .pe.projects { stroke: #f0a35e; } .pe.emits { stroke: #79c0ff; } .pe.handles { stroke: #d2a8ff; }
     .plabel { fill: var(--dim); font-size: 11px; font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.5px; }
     svg.pipeline.hovering .pn:not(.hl) { opacity: 0.16; }
     svg.pipeline.hovering .pe:not(.hl) { opacity: 0.04; }
-    .pe.hl { stroke: var(--accent2); stroke-width: 1.6; }
+    .pe.hl { opacity: 1; stroke-width: 1.8; }
     .pn.hl rect { stroke-width: 2; }
 
     /* --- branch diff viewer --- */

@@ -40,6 +40,11 @@ const NODE_COLORS = {
   handler: '#79c0ff', module: '#8b95a3', process: '#f778ba', step: '#a5d6ff', unknown: '#3a4250',
 };
 const nodeColor = (t) => NODE_COLORS[t] ?? NODE_COLORS.unknown;
+const EDGE_COLORS = {
+  folds: '#7ee787', projects: '#f0a35e', emits: '#79c0ff', handles: '#d2a8ff',
+  touches: '#f778ba', step_of: '#a5d6ff', part_of: '#8b95a3', depends_on: '#58a6ff', calls_api: '#ffab70',
+};
+const edgeColor = (t) => EDGE_COLORS[t] ?? '#6b7684';
 const flowsUrl = (u) => `/u/${u}/flows/`;
 const flowUrl = (u, id) => `/u/${u}/flow/${id}/`;
 const nodesUrl = (u) => `/u/${u}/nodes/`;
@@ -235,45 +240,171 @@ class SearchPage extends Component {
 }
 defineComponent('search-page', SearchPage);
 
+// Force-directed graph explorer — pan/zoom, hover-trace, type filters, click-to-expand.
 class GraphPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { data: null }; }
-  load = this.createTask(async () => { nav.current = this.props.params.universe; this.state.data = await api('/api/neighborhood', { u: this.props.params.universe, id: this.props.params.id }); });
-  mounted() { this.load.run(); }
-  propsChanged() { this.load.run(); }
-  onClick(e) {
-    const g = e.target.closest('[data-id]');
-    if (g) go(graphUrl(this.props.params.universe, g.getAttribute('data-id')));
+  constructor(props) {
+    super(props);
+    this.state = { data: null, loading: true };
+    this._pos = new Map(); this._view = { x: 0, y: 0, s: 1 };
+    this._hidden = { edge: new Set(), node: new Set() };
+    this._selected = null; this._ids = new Set();
   }
-  gnode(x, y, title, type, center, id, edges) {
-    const w = 158, h = 34, color = nodeColor(type);
-    const t = title.length > 22 ? title.slice(0, 21) + '…' : title;
-    const dir = edges ? edges.map((e) => (e.dir === 'out' ? '▸' : '◂') + e.edgeType).join(' ') : '';
-    return html`<g data-id="${id}">
-      <rect x="${x - w / 2}" y="${y - h / 2}" width="${w}" height="${h}" rx="8" fill="${center ? '#1c232d' : '#161b22'}" stroke="${color}" stroke-width="${center ? 2.4 : 1.4}"></rect>
-      <text x="${x}" y="${y - h / 2 - 5}" fill="${color}" font-size="9.5" text-anchor="middle">${type}</text>
-      <text x="${x}" y="${y + 4}" fill="#d7dde5" font-size="11.5" text-anchor="middle" font-family="ui-monospace,monospace">${t}</text>
-      ${when(dir, () => html`<text x="${x}" y="${y + h / 2 + 12}" fill="#8b95a3" font-size="9" text-anchor="middle">${dir}</text>`)}
-    </g>`;
+  mounted() { const seed = this.props.params.id; this._selected = seed; this.fetchData([seed], seed); }
+  propsChanged() { const seed = this.props.params.id; this._ids = new Set(); this._selected = seed; this.fetchData([seed], seed); }
+  unmounted() { cancelAnimationFrame(this._raf); }
+
+  async fetchData(ids, expand) {
+    nav.current = this.props.params.universe;
+    if (!this.state.data) this.state.loading = true; // keep the graph mounted on expand/reload
+    const d = await api('/api/subgraph', { u: this.props.params.universe, ids: ids.join(','), expand: expand || '' });
+    if (d.error) { this.state.data = d; this.state.loading = false; return; }
+    this._ids = new Set(d.nodes.map((n) => n.id));
+    this.state.data = d; this.state.loading = false;
+    this.ensurePositions(expand);
+    await this.nextRender();
+    this.restore(); this.setup(); this.runSim();
   }
+  ensurePositions(expandId) {
+    const anchor = expandId && this._pos.get(expandId);
+    for (const n of this.state.data.nodes) {
+      if (this._pos.has(n.id)) continue;
+      const a = Math.random() * 6.283, r = 40 + Math.random() * 80;
+      this._pos.set(n.id, { x: (anchor ? anchor.x : 0) + Math.cos(a) * r, y: (anchor ? anchor.y : 0) + Math.sin(a) * r, dx: 0, dy: 0 });
+    }
+  }
+  cacheEls() {
+    const svg = this.querySelector('svg.explorer'); if (!svg) return;
+    this._nodeEls = new Map([...svg.querySelectorAll('.gn')].map((el) => [el.getAttribute('data-id'), el]));
+    this._edgeEls = [...svg.querySelectorAll('.ge')].map((el) => ({ el, from: el.getAttribute('data-from'), to: el.getAttribute('data-to') }));
+  }
+  applyPositions() {
+    if (!this._nodeEls) return;
+    for (const [id, el] of this._nodeEls) { const p = this._pos.get(id); if (p) el.setAttribute('transform', `translate(${p.x},${p.y})`); }
+    for (const e of this._edgeEls) { const a = this._pos.get(e.from), b = this._pos.get(e.to); if (a && b) { e.el.setAttribute('x1', a.x); e.el.setAttribute('y1', a.y); e.el.setAttribute('x2', b.x); e.el.setAttribute('y2', b.y); } }
+  }
+  applyTransform() { const g = this.querySelector('.vp'); if (g) { const v = this._view; g.setAttribute('transform', `translate(${v.x},${v.y}) scale(${v.s})`); } }
+  // Compute the visible subgraph: edges whose type is shown and both endpoints'
+  // types are shown, then only the nodes those edges still connect (so a node
+  // left disconnected by a filter drops out too). Caches _visNodes/_visEdges for
+  // the sim + hover, and hides the rest via display:none.
+  applyFilters() {
+    const svg = this.querySelector('svg.explorer'); if (!svg) return;
+    const data = this.state.data;
+    const typeOf = new Map(data.nodes.map((n) => [n.id, n.type]));
+    const typeShown = (id) => !this._hidden.node.has(typeOf.get(id));
+    const visEdges = data.edges.filter((e) => !this._hidden.edge.has(e.type) && typeShown(e.from) && typeShown(e.to));
+    const connected = new Set();
+    for (const e of visEdges) { connected.add(e.from); connected.add(e.to); }
+    const visNodes = data.nodes.filter((n) => typeShown(n.id) && connected.has(n.id));
+    const visIds = new Set(visNodes.map((n) => n.id));
+    this._visNodes = visNodes; this._visEdges = visEdges; this._visIds = visIds;
+    svg.querySelectorAll('.gn').forEach((el) => { el.style.display = visIds.has(el.getAttribute('data-id')) ? '' : 'none'; });
+    svg.querySelectorAll('.ge').forEach((el) => { el.style.display = (visIds.has(el.getAttribute('data-from')) && visIds.has(el.getAttribute('data-to')) && !this._hidden.edge.has(el.getAttribute('data-type'))) ? '' : 'none'; });
+  }
+  showSel() {
+    const panel = this.querySelector('.gsel'); if (!panel) return;
+    const n = this.state.data.nodes.find((x) => x.id === this._selected);
+    if (!n) { panel.style.display = 'none'; return; }
+    panel.style.display = '';
+    panel.querySelector('.gseltitle').textContent = `${n.title} · ${n.type}` + (n.hidden ? ` · ${n.hidden} more` : ' · fully expanded');
+  }
+  restore() { this.cacheEls(); this.fit(); this.applyFilters(); this.applyPositions(); this.showSel(); }
+  fit() {
+    const svg = this.querySelector('svg.explorer'); if (!svg) return;
+    const cw = svg.clientWidth || 900, ch = svg.clientHeight || 620;
+    if (!this._view.set) { this._view = { x: cw / 2, y: ch / 2, s: 1, set: true }; }
+    this.applyTransform();
+  }
+  fitBounds() {
+    const svg = this.querySelector('svg.explorer'); if (!svg) return;
+    const nodes = this._visNodes && this._visNodes.length ? this._visNodes : this.state.data.nodes;
+    if (!nodes.length) return;
+    let mnx = 1e9, mny = 1e9, mxx = -1e9, mxy = -1e9;
+    for (const n of nodes) { const p = this._pos.get(n.id); mnx = Math.min(mnx, p.x); mny = Math.min(mny, p.y); mxx = Math.max(mxx, p.x); mxy = Math.max(mxy, p.y); }
+    const cw = svg.clientWidth || 900, ch = svg.clientHeight || 620, pad = 90;
+    const s = Math.max(0.2, Math.min(1.4, Math.min(cw / (mxx - mnx + pad), ch / (mxy - mny + pad))));
+    this._view = { x: cw / 2 - ((mnx + mxx) / 2) * s, y: ch / 2 - ((mny + mxy) / 2) * s, s, set: true };
+    this.applyTransform();
+  }
+  adjacency() { const m = new Map(); const add = (a, b) => { let s = m.get(a); if (!s) { s = new Set(); m.set(a, s); } s.add(b); }; for (const e of (this._visEdges || this.state.data.edges)) { add(e.from, e.to); add(e.to, e.from); } return m; }
+  hover(id) {
+    const svg = this.querySelector('svg.explorer'); if (!svg) return;
+    if (!id) { svg.classList.remove('hovering'); svg.querySelectorAll('.hl').forEach((el) => el.classList.remove('hl')); return; }
+    const near = this.adjacency().get(id) || new Set();
+    svg.classList.add('hovering');
+    svg.querySelectorAll('.gn').forEach((el) => el.classList.toggle('hl', el.getAttribute('data-id') === id || near.has(el.getAttribute('data-id'))));
+    svg.querySelectorAll('.ge').forEach((el) => el.classList.toggle('hl', el.getAttribute('data-from') === id || el.getAttribute('data-to') === id));
+  }
+  runSim() {
+    cancelAnimationFrame(this._raf);
+    // Lay out only what's visible, so filtered-out nodes don't distort the graph.
+    const nodes = this._visNodes && this._visNodes.length ? this._visNodes : this.state.data.nodes;
+    const edges = this._visEdges || this.state.data.edges, pos = this._pos, N = nodes.length;
+    if (!N) { this.applyPositions(); return; }
+    const k = Math.sqrt((900 * 620) / Math.max(N, 1)) * 0.85;
+    let temp = 70, iter = 0;
+    const tick = () => {
+      for (const n of nodes) { const p = pos.get(n.id); p.dx = 0; p.dy = 0; }
+      for (let i = 0; i < N; i++) { const a = pos.get(nodes[i].id);
+        for (let j = i + 1; j < N; j++) { const b = pos.get(nodes[j].id);
+          let dx = a.x - b.x, dy = a.y - b.y, dist = Math.hypot(dx, dy) || 0.01, f = (k * k) / dist, ux = dx / dist, uy = dy / dist;
+          a.dx += ux * f; a.dy += uy * f; b.dx -= ux * f; b.dy -= uy * f; } }
+      for (const e of edges) { const a = pos.get(e.from), b = pos.get(e.to); if (!a || !b) continue;
+        let dx = a.x - b.x, dy = a.y - b.y, dist = Math.hypot(dx, dy) || 0.01, f = (dist * dist) / k, ux = dx / dist, uy = dy / dist;
+        a.dx -= ux * f; a.dy -= uy * f; b.dx += ux * f; b.dy += uy * f; }
+      for (const n of nodes) { const p = pos.get(n.id); p.dx += -p.x * 0.012; p.dy += -p.y * 0.012;
+        const d = Math.hypot(p.dx, p.dy) || 0.01, m = Math.min(d, temp); p.x += (p.dx / d) * m; p.y += (p.dy / d) * m; }
+      temp *= 0.965; iter++;
+      this.applyPositions();
+      if (iter < 300 && temp > 0.6) this._raf = requestAnimationFrame(tick); else this.fitBounds();
+    };
+    tick();
+  }
+  setup() {
+    const svg = this.querySelector('svg.explorer'); if (!svg) return;
+    if (!this._winWired) {
+      this._winWired = true;
+      window.addEventListener('mousemove', (e) => { const drag = this._drag; if (!drag) return; if (Math.abs(e.clientX - drag.sx) + Math.abs(e.clientY - drag.sy) > 3) drag.moved = true; this._view.x = drag.ox + (e.clientX - drag.sx); this._view.y = drag.oy + (e.clientY - drag.sy); this.applyTransform(); });
+      window.addEventListener('mouseup', () => { const drag = this._drag; if (drag && drag.moved) { this._panned = true; setTimeout(() => { this._panned = false; }, 0); } this._drag = null; const s = this.querySelector('svg.explorer'); if (s) s.classList.remove('grabbing'); });
+    }
+    if (svg._cmWired) return; svg._cmWired = true;
+    svg.addEventListener('mousedown', (e) => { if (e.target.closest('.gn')) return; this._drag = { sx: e.clientX, sy: e.clientY, ox: this._view.x, oy: this._view.y, moved: false }; svg.classList.add('grabbing'); });
+    svg.addEventListener('wheel', (e) => { e.preventDefault(); const r = svg.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top, f = e.deltaY < 0 ? 1.12 : 0.89, v = this._view, ns = Math.max(0.15, Math.min(3, v.s * f)); v.x = mx - (mx - v.x) * (ns / v.s); v.y = my - (my - v.y) * (ns / v.s); v.s = ns; this.applyTransform(); }, { passive: false });
+    svg.addEventListener('mouseover', (e) => { const g = e.target.closest('.gn'); if (g) this.hover(g.getAttribute('data-id')); });
+    svg.addEventListener('mouseout', (e) => { const g = e.target.closest('.gn'); if (g) this.hover(null); });
+    svg.addEventListener('click', (e) => { if (this._panned) return; const g = e.target.closest('.gn'); if (!g) return; const id = g.getAttribute('data-id'); this._selected = id; this.showSel(); this.fetchData([...this._ids], id); });
+  }
+  toggleFilter(kind, t, e) { const s = this._hidden[kind]; if (s.has(t)) s.delete(t); else s.add(t); if (e && e.currentTarget) e.currentTarget.classList.toggle('off'); this.applyFilters(); this.runSim(); }
   template() {
     const u = this.props.params.universe, d = this.state.data;
-    if (!d || this.load.pending) return html`<main><div class="loading">loading…</div></main>`;
+    if (this.state.loading || !d) return html`<main><div class="loading">loading…</div></main>`;
     if (d.error) return html`<main><div class="empty">${d.error}</div></main>`;
-    const W = 940, H = 560, cx = W / 2, cy = H / 2, R = 200;
-    const shown = d.neighbors.slice(0, 28);
-    const placed = shown.map((n, i) => { const a = -Math.PI / 2 + 2 * Math.PI * i / Math.max(shown.length, 1); return { ...n, x: cx + R * Math.cos(a), y: cy + R * Math.sin(a) }; });
-    const types = [...new Set([d.type, ...shown.map((n) => n.type)])];
-    // Dynamic SVG straight from the template (vdx now namespaces it correctly).
-    return html`<main>
-      <div class="crumbs"><a on-click="${() => go(nodeUrl(u, d.id))}">← ${d.title}</a> <span class="sep">·</span> graph (${d.neighbors.length} neighbor${d.neighbors.length === 1 ? '' : 's'})</div>
-      <svg viewBox="0 0 ${W} ${H}" class="graph" on-click="${(e) => this.onClick(e)}">
-        ${each(placed, (n) => html`<line x1="${cx}" y1="${cy}" x2="${n.x}" y2="${n.y}" stroke="#2a313c" stroke-width="1.5"></line>`, (n) => 'e-' + n.id)}
-        ${each(placed, (n) => this.gnode(n.x, n.y, n.title, n.type, false, n.id, n.edges), (n) => n.id)}
-        ${this.gnode(cx, cy, d.title, d.type, true, d.id)}
+    const node = (n) => {
+      const t = n.title.length > 30 ? n.title.slice(0, 29) + '…' : n.title;
+      const w = Math.max(56, Math.round(t.length * 6.3) + 18), hw = w / 2;
+      const rev = n.review.code === 'reviewed' || n.review.logical === 'reviewed';
+      return html`<g class="gn ${n.type} ${rev ? 'rev' : ''} ${n.id === this._selected ? 'sel' : ''}" data-id="${n.id}" data-type="${n.type}">
+      <rect x="${-hw}" y="-9" width="${w}" height="18" rx="9"></rect><text x="0" y="4">${t}</text>${when(n.hidden > 0, () => html`<circle class="more" cx="${hw}" cy="-9" r="6"></circle><text class="morec" x="${hw}" y="-6">${n.hidden}</text>`)}
+    </g>`; };
+    return html`<main class="wide">
+      <div class="crumbs"><a on-click="${() => go(nodeUrl(u, this.props.params.id))}">← detail</a> <span class="sep">·</span> graph explorer <span class="dim">· ${d.nodes.length} nodes</span></div>
+      <div class="gtools">
+        <span class="gfl">edges:</span>${each(d.edgeTypes, (t) => html`<span class="gchip ${this._hidden.edge.has(t) ? 'off' : ''}" style="border-color:${edgeColor(t)}" on-click="${(e) => this.toggleFilter('edge', t, e)}">${t}</span>`, (t) => 'e' + t)}
+        <span class="gfl">nodes:</span>${each(d.nodeTypes, (t) => html`<span class="gchip ${this._hidden.node.has(t) ? 'off' : ''}" style="border-color:${nodeColor(t)}" on-click="${(e) => this.toggleFilter('node', t, e)}">${t}</span>`, (t) => 'n' + t)}
+        <span class="dim">drag to pan · scroll zoom · click a node to expand · hover to trace</span>
+      </div>
+      <svg class="explorer">
+        <g class="vp">
+          ${each(d.edges, (e) => html`<line class="ge ${e.type}" data-from="${e.from}" data-to="${e.to}" data-type="${e.type}"></line>`, (e) => e.from + '~' + e.type + '~' + e.to)}
+          ${each(d.nodes, node, (n) => n.id)}
+        </g>
       </svg>
-      <div class="legend">${each(types, (t) => html`<span class="k"><span class="sw" style="background:${nodeColor(t)}"></span>${t}</span>`)}</div>
-      ${when(d.neighbors.length > 28, () => html`<div class="empty">showing 28 of ${d.neighbors.length} neighbors</div>`)}
+      <div class="gsel" style="display:none">
+        <span class="gseltitle"></span>
+        <button class="gopen" on-click="${() => this._selected && go(nodeUrl(u, this._selected))}">open detail ›</button>
+        <button class="greset" on-click="${() => { this._ids = new Set(); this.fetchData([this.props.params.id], this.props.params.id); }}">reset</button>
+      </div>
     </main>`;
   }
 }
@@ -469,15 +600,15 @@ class MatrixPage extends Component {
 defineComponent('matrix-page', MatrixPage);
 
 // --- layered event pipeline: command→handler→event→aggregate→projection -------
-const PIPE = { COLW: 210, NODEW: 168, ROWH: 22, NODEH: 16 };
+const PIPE = { COLW: 300, NODEW: 224, ROWH: 22, NODEH: 16 };
 class PipelinePage extends Component {
   static props = { params: {}, query: {} };
   constructor(props) { super(props); this.state = { data: null, loading: true, domain: '' }; this._view = { x: 10, y: 36, s: 1 }; }
   async fetchData() {
-    this.state.loading = true; this._adj = null;
-    nav.current = this.props.params.universe;
-    this.state.data = await api('/api/pipeline', { u: this.props.params.universe, domain: this.state.domain || '' });
-    this.state.loading = false;
+    this._adj = null; nav.current = this.props.params.universe;
+    if (!this.state.data) this.state.loading = true; // don't blank an existing graph on reload
+    const data = await api('/api/pipeline', { u: this.props.params.universe, domain: this.state.domain || '' });
+    this.state.data = data; this.state.loading = false;
     await this.nextRender();
     this.setup();
   }
@@ -514,11 +645,15 @@ class PipelinePage extends Component {
   setup() {
     const svg = this.querySelector('svg.pipeline'); if (!svg) return;
     this.fit();
-    if (this._wired) return; this._wired = true;
-    let drag = null;
-    svg.addEventListener('mousedown', (e) => { if (e.target.closest('.pn')) return; drag = { sx: e.clientX, sy: e.clientY, ox: this._view.x, oy: this._view.y, moved: false }; svg.classList.add('grabbing'); });
-    window.addEventListener('mousemove', (e) => { if (!drag) return; if (Math.abs(e.clientX - drag.sx) + Math.abs(e.clientY - drag.sy) > 3) drag.moved = true; this._view.x = drag.ox + (e.clientX - drag.sx); this._view.y = drag.oy + (e.clientY - drag.sy); this.applyTransform(); });
-    window.addEventListener('mouseup', () => { if (drag && drag.moved) { this._panned = true; setTimeout(() => { this._panned = false; }, 0); } drag = null; svg.classList.remove('grabbing'); });
+    // Window listeners once per component; svg listeners keyed on the element so
+    // they re-attach if the <svg> is ever recreated (drag state is shared).
+    if (!this._winWired) {
+      this._winWired = true;
+      window.addEventListener('mousemove', (e) => { const drag = this._drag; if (!drag) return; if (Math.abs(e.clientX - drag.sx) + Math.abs(e.clientY - drag.sy) > 3) drag.moved = true; this._view.x = drag.ox + (e.clientX - drag.sx); this._view.y = drag.oy + (e.clientY - drag.sy); this.applyTransform(); });
+      window.addEventListener('mouseup', () => { const drag = this._drag; if (drag && drag.moved) { this._panned = true; setTimeout(() => { this._panned = false; }, 0); } this._drag = null; const s = this.querySelector('svg.pipeline'); if (s) s.classList.remove('grabbing'); });
+    }
+    if (svg._cmWired) return; svg._cmWired = true;
+    svg.addEventListener('mousedown', (e) => { if (e.target.closest('.pn')) return; this._drag = { sx: e.clientX, sy: e.clientY, ox: this._view.x, oy: this._view.y, moved: false }; svg.classList.add('grabbing'); });
     svg.addEventListener('wheel', (e) => { e.preventDefault(); const r = svg.getBoundingClientRect(); const mx = e.clientX - r.left, my = e.clientY - r.top; const f = e.deltaY < 0 ? 1.12 : 0.89; const v = this._view; const ns = Math.max(0.15, Math.min(3, v.s * f)); v.x = mx - (mx - v.x) * (ns / v.s); v.y = my - (my - v.y) * (ns / v.s); v.s = ns; this.applyTransform(); }, { passive: false });
     svg.addEventListener('mouseover', (e) => { const g = e.target.closest('.pn'); if (g) this.hover(g.getAttribute('data-id')); });
     svg.addEventListener('mouseout', (e) => { const g = e.target.closest('.pn'); if (g) this.hover(null); });
@@ -529,10 +664,10 @@ class PipelinePage extends Component {
     if (this.state.loading || !d) return html`<main><div class="loading">loading…</div></main>`;
     const pos = this.pos();
     const edge = (e) => { const a = pos.get(e.from), b = pos.get(e.to); const sx = a.x + PIPE.NODEW, sy = a.y + PIPE.NODEH / 2, tx = b.x, ty = b.y + PIPE.NODEH / 2, c = PIPE.COLW * 0.4; return html`<path class="pe ${e.type}" data-from="${e.from}" data-to="${e.to}" d="M${sx},${sy} C${sx + c},${sy} ${tx - c},${ty} ${tx},${ty}"></path>`; };
-    const node = (n) => { const p = pos.get(n.id); const t = n.title.length > 24 ? n.title.slice(0, 23) + '…' : n.title; const rev = n.review.code === 'reviewed' || n.review.logical === 'reviewed'; return html`<g class="pn ${n.type} ${rev ? 'rev' : ''}" data-id="${n.id}" transform="translate(${p.x},${p.y})">
+    const node = (n) => { const p = pos.get(n.id); const t = n.title.length > 34 ? n.title.slice(0, 33) + '…' : n.title; const rev = n.review.code === 'reviewed' || n.review.logical === 'reviewed'; return html`<g class="pn ${n.type} ${rev ? 'rev' : ''}" data-id="${n.id}" transform="translate(${p.x},${p.y})">
       <rect width="${PIPE.NODEW}" height="${PIPE.NODEH}" rx="3"></rect><text x="6" y="11">${t}</text>${when(rev, () => html`<circle class="revdot" cx="${PIPE.NODEW - 7}" cy="8" r="3"></circle>`)}
     </g>`; };
-    return html`<main>
+    return html`<main class="wide">
       <div class="crumbs">${u} <span class="sep">·</span> event pipeline</div>
       <div class="nfilters">
         <select on-change="${(e) => this.setDomain(e.target.value)}"><option value="">all domains (${d.nodes.length} nodes)</option>${each(d.domains, dm => html`<option value="${dm}">${dm}</option>`, dm => dm)}</select>
