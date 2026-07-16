@@ -1050,15 +1050,56 @@ export async function listBugs(root: string, opts: { status?: BugStatus } = {}) 
   }
   const live = await liveAnchors(root, files);
   return {
+    counts: bugStore.bugs.reduce((m, b) => ((m[b.status] = (m[b.status] ?? 0) + 1), m), {} as Record<string, number>),
     bugs: bugs.map((b) => {
       const changed = b.witnesses.filter((w) => live.get(w.anchorId)?.bodyHash !== w.bodyHash).map((w) => w.anchorId);
       return {
         id: b.id, title: b.title, status: b.status, severity: b.severity,
         anchors: b.anchors,
         possiblyFixed: b.status === "open" && changed.length > 0,
+        // Code moved under the bug regardless of status (a closed bug whose code
+        // changed may warrant a fresh look); `possiblyFixed` narrows this to open.
+        codeChanged: changed.length > 0,
         changedAnchors: changed,
       };
     }),
+  };
+}
+
+/**
+ * Full detail for one bug: prose, history, and each cited anchor resolved to its
+ * live symbol/file/lines with a `stale` flag (the anchor's code changed since the
+ * bug's witness was taken — same witness-hash mechanism as doc/review staleness).
+ */
+export async function bugDetail(root: string, id: string) {
+  const [bugStore, store] = await Promise.all([readBugs(root), readAnchorStore(root)]);
+  const bug = bugStore.bugs.find((b) => b.id === id);
+  if (!bug) return { error: `no bug "${id}"` };
+  const byId = new Map(store.anchors.map((a) => [a.id, a]));
+  const files = new Set<string>();
+  for (const aid of bug.anchors) { const a = byId.get(aid); if (a) files.add(a.file); }
+  const live = await liveAnchors(root, files);
+  const witness = new Map(bug.witnesses.map((w) => [w.anchorId, w.bodyHash]));
+  const anchors = bug.anchors.map((aid) => {
+    const a = byId.get(aid);
+    const liveA = live.get(aid);
+    const witHash = witness.get(aid);
+    const loc = liveA?.loc ?? a?.loc;
+    return {
+      id: aid,
+      symbol: a ? a.symbolPath.join(" › ") : aid.slice(0, 12),
+      file: a?.file ?? null,
+      lines: loc ? `${loc.startLine}-${loc.endLine}` : null,
+      present: !!liveA,
+      // stale when we have a witness and the live code no longer matches it.
+      stale: witHash !== undefined && (liveA?.bodyHash ?? "sha256:absent") !== witHash,
+    };
+  });
+  const changed = anchors.filter((a) => a.stale).length;
+  return {
+    id: bug.id, title: bug.title, status: bug.status, severity: bug.severity,
+    description: bug.description, createdCommit: bug.createdCommit, history: bug.history,
+    anchors, staleAnchors: changed, possiblyFixed: bug.status === "open" && changed > 0,
   };
 }
 

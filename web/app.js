@@ -45,6 +45,8 @@ const EDGE_COLORS = {
   touches: '#f778ba', step_of: '#a5d6ff', part_of: '#8b95a3', depends_on: '#58a6ff', calls_api: '#ffab70',
 };
 const edgeColor = (t) => EDGE_COLORS[t] ?? '#6b7684';
+const bugsUrl = (u) => `/u/${u}/bugs/`;
+const SEV_COLOR = { low: '#8b95a3', medium: '#58a6ff', high: '#f0a35e', critical: '#f27b7b' };
 const flowsUrl = (u) => `/u/${u}/flows/`;
 const flowUrl = (u, id) => `/u/${u}/flow/${id}/`;
 const nodesUrl = (u) => `/u/${u}/nodes/`;
@@ -108,6 +110,7 @@ class CodemapHeader extends Component {
       <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(matrixUrl(u)); }}">matrix</a>
       <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(pipelineUrl(u)); }}">pipeline</a>
       <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(flowsUrl(u)); }}">flows</a>
+      <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(bugsUrl(u)); }}">bugs</a>
       <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(diffUrl(u)); }}">diff</a>
       <div class="search"><input placeholder="search symbols & docs…" on-change="${(e, v) => this.search(e, v)}"></div>
     </header>`;
@@ -703,6 +706,102 @@ class PipelinePage extends Component {
 }
 defineComponent('pipeline-page', PipelinePage);
 
+// --- bugs: triage MCP-reported findings, re-validate against live code --------
+const BUG_STATUSES = ['open', 'fixed', 'wontfix', 'invalid'];
+class BugsPage extends Component {
+  static props = { params: {}, query: {} };
+  constructor(props) { super(props); this.state = { data: null, detail: null, detailPending: false }; }
+  // Filter (status) and selection (bug) both live in the URL, so back/forward
+  // walk the triage and any bug is deep-linkable.
+  load = this.createTask(async () => {
+    const u = this.props.params.universe; nav.current = u;
+    this.state.data = await api('/api/bugs', { u, status: this.props.query.status || '' });
+    await this.applySel();
+  });
+  mounted() { this._q = { ...this.props.query }; this._u = this.props.params.universe; this.load.run(); }
+  propsChanged(name) {
+    if (name !== 'query' && name !== 'params') return;
+    const q = this.props.query, prev = this._q || {}, u = this.props.params.universe;
+    this._q = { ...q };
+    if (u !== this._u || q.status !== prev.status) { this._u = u; this.load.run(); }
+    else if (q.bug !== prev.bug) this.applySel();
+  }
+  async applySel() {
+    const id = this.props.query.bug;
+    if (!id) { this.state.detail = null; return; }
+    this.state.detailPending = true;
+    try { this.state.detail = await api('/api/bug', { u: this.props.params.universe, id }); }
+    finally { this.state.detailPending = false; }
+  }
+  pickStatus(s) { go(bugsUrl(this.props.params.universe), s ? { status: s } : {}); }
+  pickBug(id) { go(bugsUrl(this.props.params.universe), { status: this.props.query.status, bug: id }); }
+  async act(patch) {
+    const u = this.props.params.universe, id = this.state.detail && this.state.detail.id;
+    if (!id) return;
+    await fetch('/api/bug/update', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id, ...patch }) });
+    await this.load.run();
+  }
+
+  bugRow(b) {
+    const sel = this.props.query.bug === b.id;
+    return html`<div class="brow ${b.status} ${sel ? 'sel' : ''}" on-click="${() => this.pickBug(b.id)}">
+      <span class="sevdot" style="background:${SEV_COLOR[b.severity] || SEV_COLOR.medium}" title="severity: ${b.severity}"></span>
+      <span class="btitle">${b.title}</span>
+      ${when(b.possiblyFixed, () => html`<span class="bchip poss" title="cited code changed since filing — possibly fixed">possibly fixed</span>`,
+        () => when(b.codeChanged, () => html`<span class="bchip changed" title="cited code changed since filing">code changed</span>`))}
+      <span class="bchip ${b.status}">${b.status}</span>
+      <span class="bmeta">${b.anchors.length}a</span>
+    </div>`;
+  }
+  detail() {
+    const u = this.props.params.universe, b = this.state.detail;
+    if (this.state.detailPending && !b) return html`<div class="loading">loading…</div>`;
+    if (!b) return html`<div class="empty" style="padding:40px">select a bug on the left</div>`;
+    if (b.error) return html`<div class="empty">${b.error}</div>`;
+    const closed = b.status !== 'open';
+    return html`<div class="ddetail">
+      <div class="dsymhead"><span class="sevdot" style="background:${SEV_COLOR[b.severity] || SEV_COLOR.medium}"></span> <b>${b.title}</b> <span class="bchip ${b.status}">${b.status}</span>${when(b.possiblyFixed, () => html`<span class="bchip poss">possibly fixed</span>`)}</div>
+      <div class="meta">${b.severity} · ${b.id}${b.createdCommit ? ' · filed @ ' + b.createdCommit.slice(0, 8) : ''}</div>
+      <div class="drev">
+        <span class="dim">set status:</span>
+        <span class="rev">${each(BUG_STATUSES, s => html`<button class="${b.status === s ? 'on' : ''}" on-click="${() => this.act({ status: s })}">${s}</button>`, s => s)}</span>
+        <button class="bwit" title="re-snapshot the cited code's hashes as the current witness (clears stale)" on-click="${() => this.act({ refreshWitnesses: true })}">refresh witnesses</button>
+      </div>
+      <md-content text="${b.description}"></md-content>
+      <div class="sec">cited code (${b.anchors.length})${when(b.staleAnchors, () => html` · <span class="warn">${b.staleAnchors} stale</span>`)}</div>
+      ${each(b.anchors, a => html`<div class="banchor ${a.stale ? 'stale' : ''} ${a.present ? '' : 'gone'}" on-click="${() => go(anchorUrl(u, a.id))}">
+        <span class="basym">${a.symbol}</span>
+        <span class="bafile">${a.file || '(unresolved)'}${a.lines ? ':' + a.lines : ''}</span>
+        ${when(!a.present, () => html`<span class="bchip changed" title="anchor no longer found (renamed/removed)">lost</span>`,
+          () => when(a.stale, () => html`<span class="bchip changed" title="code changed since the bug's witness — re-validate">stale</span>`))}
+      </div>`, a => a.id)}
+      ${when(b.history && b.history.length, () => html`<div class="sec">history</div>
+        <div class="bhist">${each(b.history, (h, i) => html`<div class="hline">${h}</div>`, (h, i) => i + h)}</div>`)}
+    </div>`;
+  }
+  template() {
+    const u = this.props.params.universe, d = this.state.data;
+    if (!d || (this.load.pending && !d)) return html`<main><div class="loading">loading…</div></main>`;
+    const counts = d.counts || {};
+    const cur = this.props.query.status || '';
+    const chip = (val, label) => html`<button class="${cur === val ? 'on' : ''}" on-click="${() => this.pickStatus(val)}">${label}${when(counts[val] != null, () => html` <span class="n">${counts[val]}</span>`)}</button>`;
+    return html`<main class="wide">
+      <div class="crumbs">${u} <span class="sep">·</span> bugs (${d.bugs.length}${cur ? ' shown' : ''})</div>
+      <div class="dtoggle bugfilter"><span class="dim">status</span>
+        ${chip('', 'all')}${each(BUG_STATUSES, s => chip(s, s), s => s)}
+      </div>
+      <div class="dgrid">
+        <div class="dleft">
+          ${when(!d.bugs.length, () => html`<div class="dim" style="padding:8px 2px">no bugs${cur ? ' with status “' + cur + '”' : ''} — report them via the <code>report_bug</code> MCP tool</div>`)}
+          ${each(d.bugs, b => this.bugRow(b), b => b.id)}
+        </div>
+        <div class="dright">${this.detail()}</div>
+      </div>
+    </main>`;
+  }
+}
+defineComponent('bugs-page', BugsPage);
+
 const diffUrl = (u) => `/u/${u}/diff/`;
 const DTAG = { '+': 'added', '-': 'removed', '~': 'changed' };
 
@@ -944,6 +1043,7 @@ router = enableRouting(document.querySelector('router-outlet'), {
   '/u/:universe/nodes/': { component: 'node-catalog-page' },
   '/u/:universe/matrix/': { component: 'matrix-page' },
   '/u/:universe/pipeline/': { component: 'pipeline-page' },
+  '/u/:universe/bugs/': { component: 'bugs-page' },
   '/u/:universe/diff/': { component: 'diff-page' },
   '/u/:universe/search/': { component: 'search-page' },
 });

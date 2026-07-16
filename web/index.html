@@ -311,6 +311,34 @@
     .sxs-col { min-width: 0; overflow-y: auto; padding: 16px 20px; border-right: 1px solid var(--border); }
     .sxs-col:last-child { border-right: none; }
     .sxs-h { position: sticky; top: -16px; background: var(--bg); margin: -16px -20px 12px; padding: 8px 20px; border-bottom: 1px solid var(--border); font-family: var(--mono); font-size: 12.5px; color: var(--accent); z-index: 1; }
+
+    /* --- bugs --- */
+    .bugfilter button .n { color: var(--dim); font-size: 11px; margin-left: 4px; }
+    .brow { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: 8px; margin: 6px 0; cursor: pointer; }
+    .brow:hover { background: var(--panel); }
+    .brow.open { border-left-color: var(--warn); }
+    .brow.fixed { border-left-color: var(--accent2); }
+    .brow.wontfix, .brow.invalid { border-left-color: var(--dim); }
+    .brow.sel { background: var(--panel); box-shadow: inset 0 0 0 1px var(--accent); }
+    .brow .btitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .brow .bmeta { color: var(--dim); font-size: 11.5px; font-family: var(--mono); flex: none; }
+    .sevdot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+    .bchip { font-size: 10px; font-family: var(--mono); padding: 1px 6px; border-radius: 10px; border: 1px solid var(--border); color: var(--dim); flex: none; text-transform: lowercase; }
+    .bchip.open { color: var(--warn); border-color: var(--warn); }
+    .bchip.fixed { color: var(--accent2); border-color: var(--accent2); }
+    .bchip.poss, .bchip.changed { color: var(--warn); border-color: var(--warn); background: rgba(240,163,94,0.08); }
+    .drev .bwit { background: var(--panel2); border: 1px solid var(--border); color: var(--dim); border-radius: 6px; padding: 3px 9px; cursor: pointer; font-size: 12px; margin-left: 8px; }
+    .drev .bwit:hover { border-color: var(--dim); color: var(--text); }
+    .banchor { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; margin: 5px 0; cursor: pointer; font-family: var(--mono); font-size: 12px; }
+    .banchor:hover { border-color: var(--accent); }
+    .banchor.stale { border-color: var(--warn); }
+    .banchor.gone { opacity: 0.6; }
+    .banchor .basym { color: var(--text); }
+    .banchor .bafile { color: var(--dim); margin-left: auto; }
+    .bhist { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+    .bhist .hline { padding: 5px 10px; border-top: 1px solid var(--border); font-family: var(--mono); font-size: 12px; color: var(--dim); }
+    .bhist .hline:first-child { border-top: none; }
+    .warn { color: var(--warn); }
   </style>
   <!-- Absolute paths so deep-linked routes (e.g. /u/x/diff/?base=…) still resolve assets. -->
   <link rel="stylesheet" href="/vendor/github-dark.min.css">

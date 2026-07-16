@@ -82,6 +82,8 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return ops.findGaps(root, { pathPrefix: q.get("prefix") ?? undefined, kind: q.get("kind") ?? undefined });
     case "/api/bugs":
       return ops.listBugs(root, { status: (q.get("status") as any) ?? undefined });
+    case "/api/bug":
+      return ops.bugDetail(root, q.get("id") ?? "");
     case "/api/stale":
       return ops.checkStale(root);
     case "/api/snapshots":
@@ -125,6 +127,20 @@ const server = createServer(async (req, res) => {
         body.unmark
           ? unmarkReviewed(root, { targetKind: body.targetKind, targetId: body.targetId, level: body.level })
           : markReviewed(root, { targetKind: body.targetKind, targetId: body.targetId, level: body.level, reviewer: body.reviewer }),
+      );
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(out));
+      return;
+    }
+
+    // Bug triage from the UI: change status / append a note / refresh witnesses.
+    if (req.method === "POST" && url.pathname === "/api/bug/update") {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      const root = rootFor(body.u ?? null);
+      const out = await withLock<unknown>(root, () =>
+        ops.updateBug(root, { id: body.id, status: body.status, note: body.note, refreshWitnesses: body.refreshWitnesses }),
       );
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(out));
