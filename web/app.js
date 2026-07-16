@@ -94,6 +94,22 @@ const sevChip = (t) => {
 // A small severity dot for dense lists (catalog rows, anchor chips) where a chip is too big.
 const sevDot = (sev) => sev && sev !== 'untriaged' && sev !== 'complete'
   ? html`<span class="sevdot" style="background:${SEV_COLOR[sev] || '#3a4250'}" title="severity: ${sev}"></span>` : html``;
+// Tripwire "push": a native browser Notification for newly-fired tripwires — no deps.
+// Deduped per universe via localStorage, and self-pruning (a resolved tripwire drops out
+// of `seen`, so it re-notifies if it fires again). No-op unless permission is granted.
+function notifyTripwires(u, fired) {
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  const firedKeys = (fired || []).map(f => f.kind + ':' + f.id);
+  let seen = [];
+  try { seen = JSON.parse(localStorage.getItem('tw_seen_' + u) || '[]'); } catch { seen = []; }
+  const seenSet = new Set(seen);
+  const fresh = firedKeys.filter(k => !seenSet.has(k));
+  if (fresh.length) {
+    const body = (fired || []).filter(f => fresh.includes(f.kind + ':' + f.id)).slice(0, 5).map(f => f.id).join(', ');
+    try { new Notification(`codemap — ${fresh.length} tripwire${fresh.length === 1 ? '' : 's'} fired`, { body: `${u}: business-critical code you're watching changed — ${body}`, tag: 'codemap-tripwire-' + u }); } catch { /* ignore */ }
+  }
+  try { localStorage.setItem('tw_seen_' + u, JSON.stringify(firedKeys)); } catch { /* ignore */ }
+}
 // Review-complete rollup (Phase 3): "% complete" + a stacked severity bar + what's outstanding.
 // The "am I done reviewing this?" readout — stakes-relative, so plumbing never blocks it.
 const COV_ORDER = ['complete', 'low', 'medium', 'high', 'untriaged', 'critical'];
@@ -259,9 +275,12 @@ class DashboardPage extends Component {
     const u = this.props.params.universe; nav.current = u;
     const [d, q, lint] = await Promise.all([api('/api/dashboard', { u }), api('/api/questions', { u }), api('/api/lint', { u })]);
     this.state.d = d; this.state.q = q; this.state.lint = lint;
+    if (d && d.tripwires) notifyTripwires(u, d.tripwires.fired); // push newly-fired tripwires
   });
   mounted() { this.load.run(); }
   propsChanged() { this.load.run(); }
+  canEnableAlerts() { return typeof Notification !== 'undefined' && Notification.permission === 'default'; }
+  async enableAlerts() { try { await Notification.requestPermission(); } catch { /* ignore */ } this.load.run(); }
   async resolveQ(id) { await postResolveAnnotation(this.props.params.universe, id, true); this.load.run(); }
   qTarget(t) { const u = this.props.params.universe; return t.kind === 'node' ? nodeUrl(u, t.id) : anchorUrl(u, t.id); }
   stat(label, value, extra) { return html`<div class="dstat"><div class="dsv">${value}</div><div class="dsl">${label}</div>${when(extra, () => html`<div class="dsx">${extra}</div>`)}</div>`; }
@@ -274,13 +293,14 @@ class DashboardPage extends Component {
       ['flows', () => go(flowsUrl(u))], ['bugs', () => go(bugsUrl(u))], ['diff', () => go(diffUrl(u))], ['browse files', () => goTree(u, '')],
     ];
     return html`<main>
-      <div class="crumbs"><b>${u}</b> <span class="sep">·</span> overview</div>
+      <div class="crumbs"><b>${u}</b> <span class="sep">·</span> overview${when(d.tripwires && d.tripwires.armed && this.canEnableAlerts(), () => html` <span class="sep">·</span> <button title="get a browser notification when a watched tripwire fires" on-click="${() => this.enableAlerts()}">🔔 enable alerts</button>`)}</div>
       ${when(d.attention > 0, () => html`<div class="attn-banner">
         <span class="attn-n">⚠ ${d.attention}</span>
         <span>item${d.attention === 1 ? '' : 's'} need attention:</span>
         ${when(d.docs.stale, () => html`<span class="attn-pill" on-click="${() => go(nodesUrl(u))}">${d.docs.stale} stale doc${d.docs.stale === 1 ? '' : 's'}</span>`)}
         ${when(d.docs.dangling, () => html`<span class="attn-pill bad" on-click="${() => go(nodesUrl(u))}">${d.docs.dangling} dangling</span>`)}
         ${when(d.bugs.possiblyFixed, () => html`<span class="attn-pill" on-click="${() => go(bugsUrl(u), { status: 'open' })}">${d.bugs.possiblyFixed} bug${d.bugs.possiblyFixed === 1 ? '' : 's'} possibly fixed</span>`)}
+        ${when(d.tripwires && d.tripwires.fired.length, () => html`<span class="attn-pill bad" title="business-critical code you're watching changed" on-click="${() => go(nodesUrl(u))}">🔔 ${d.tripwires.fired.length} tripwire${d.tripwires.fired.length === 1 ? '' : 's'} fired</span>`)}
         ${when(d.openQuestions, () => html`<span class="attn-pill q">${d.openQuestions} open question${d.openQuestions === 1 ? '' : 's'}</span>`)}
         <span class="attn-hint">re-validate via <code>check_stale</code> / the bugs tab</span>
       </div>`, () => html`<div class="attn-banner ok"><span class="attn-n">✓</span> <span>nothing stale — docs and bugs are current with the code</span></div>`)}

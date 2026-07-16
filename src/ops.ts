@@ -170,15 +170,20 @@ export async function dashboard(root: string) {
 
   const openQuestions = annStore.annotations.filter((a) => a.kind === "question" && !a.resolved).length;
 
+  // Fired tripwires: business-critical code someone is watching that has since moved.
+  let tw: Awaited<ReturnType<typeof triageTripwires>> = { fired: [], armedCount: 0 };
+  try { tw = await triageTripwires(root); } catch { /* best-effort */ }
+
   return {
     coverage: { docPct: computeDocPct(result.breakdown), open: result.breakdown.open, anchors: store.anchors.length, nodes: nodes.length, edges: graph.edges.length, breakdown: result.breakdown },
     docs: { total: nodes.length, stale: staleDocs, dangling: danglingDocs, fresh: nodes.length - staleDocs - danglingDocs },
     bugs: { total: bugStore.bugs.length, open: openBugs, possiblyFixed, byStatus: bugCounts },
     annotations: annStore.annotations.length,
     openQuestions,
+    tripwires: { fired: tw.fired.map((f) => ({ kind: f.target.kind, id: f.target.id, importance: f.importance, reason: f.reason })), armed: tw.armedCount },
     baselineCommit: commit,
     // The single number a reviewer/agent should drive to zero.
-    attention: staleDocs + danglingDocs + possiblyFixed + openQuestions,
+    attention: staleDocs + danglingDocs + possiblyFixed + openQuestions + tw.fired.length,
   };
 }
 
