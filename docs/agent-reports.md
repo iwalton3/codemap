@@ -186,3 +186,52 @@ all inside the existing seam, zero new deps. Phases 2–3 additive.
    claim is treated as strong?
 6. **Is `touched`/the scraper worth it in v1?** Or defer all frequency to phase 3
    and ship pure push first?
+
+## Appendix: Acme.API demand vs documentation (empirical, 2026-07-16)
+
+Mined the Acme.API Claude Code transcripts (read-only) for Explore/research demand
+and cross-referenced the live codemap. Headline: **184 sessions, ~22.7k tool calls,
+248 Explore/research subagent calls**; the map already holds **490 documented files
+/ 1227 cited anchors**, with the rating domain richly noded (66 rating nodes:
+`RatingTemplate`/`RatingInstance` aggregates, all CRUD commands/events/handlers,
+`RatingContext / field resolution`, a `Rating resolution & engine` flow).
+
+Four things fall out, and they reshape the plan:
+
+1. **Most of the mismatch is *access*, not *absence*.** The Explore prompts show
+   agents grepping and raw-reading (`RatingProfile` ×22 greps, hundreds of Reads of
+   `QuoteEventHandler.cs`/`QuoteRatingService.cs`/`RatingContext.cs`) —
+   files that **are already documented**. They re-derive what the map knows because
+   they never ask the map. → The biggest lever is the behavioral fix already in this
+   branch (**CodemapExplore + answer-first `context`/`search`**), not any new store.
+   A large fraction of those 248 explorations should collapse to one MCP lookup.
+
+2. **Residual absence is shaped like *flows* and *conventions*, not modules.** The
+   recurring FAQs are cross-cutting process questions — *"how do template + instance
+   combine to generate a RatingProfile?"*, *"how is inheritance resolved?"*, *"how
+   does order/quote data map to expression variables?"* — asked ~4 ways each. But
+   Acme.API has only **8 `process` flows / 64 steps** vs 132 modules and ~600
+   analyzer nodes. The demand wants narratives (a `Template→Instance→Profile
+   generation` flow, an `inheritance resolution` flow) that don't exist yet. A
+   second cluster — error handling (`ApiError` vs `ProblemDetails`), validation
+   surfacing (Wolverine/FluentValidation), test setup (ObjectMother) — are
+   **convention** questions with no node home today.
+   → **To match shape, bias new docs toward `process`/`step` nodes for the hot flows
+   and a convention/reference node for the recurring pattern FAQs — not more modules.**
+
+3. **A demand-ranked gap queue is the concrete feeder.** 17 of the top ~36 read
+   files are undocumented; filtered to the api universe the real targets are obvious
+   — `RatingProfile.cs` (model, ~59 reads), `CreateRatingProfileCommand.cs`,
+   `PriceSearchResult.cs`. This is exactly the phase-3 `absorb-sessions` idea:
+   rank `find_gaps` by transcript read-frequency + surface "hot Explore theme with no
+   covering flow." The analysis above *is* that shortlist, produced by hand.
+
+4. **The demand signal must be filtered by universe + worth.** Top reads also
+   include `TestDataScripts/*.py` and `Acme.React/*` — noise for the api universe you
+   would NOT want to auto-document. This validates the CodemapExplore "reusable claim
+   only, never task-specific" rule against real data: raw read-frequency is a
+   candidate generator, not a mandate.
+
+Net: the exploration tax on Acme.API is enormous and the map already covers much of
+it — the win is (a) instrumenting agents to *ask* (this branch), then (b) filling the
+**flow- and convention-shaped** holes the FAQs reveal, ranked by real read-frequency.
