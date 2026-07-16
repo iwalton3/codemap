@@ -149,6 +149,16 @@ add newly-appeared anchors and refresh moved locations in the store, so new code
 resolves without a full re-init. Conservative: never re-hashes an existing anchor
 (preserves the candidate_stale signal) or removes a vanished one (preserves `lost`).
 
+**Re-baseline: `reindex` + branch-aware `check`** (`ops.reindex`, MCP `reindex`) — a
+full re-index at the current HEAD that replaces the live anchor set and advances the
+baseline commit/branch. Non-destructive: nodes, edges, reviews, coverage, bugs, and
+annotations are untouched — only anchors + baseline move (`init` shares this path).
+`State` records the branch it was baselined on, and `check_stale` (CLI `check` too)
+**auto-reindexes when the checked-out branch changed** — a branch switch means
+different code, so the index follows it. The MCP server also runs `check_stale`
+across every universe **on connect** (background, under the lock), so an agent starts
+against a fresh, correctly-branched index without having to remember to sync.
+
 **Graph viewer** (web `graph-page`, `/api/neighborhood`) — a clickable SVG ego-graph
 of a node's immediate neighborhood, color-coded by type with direction+type edge
 labels; click a neighbor to re-center. Reached via the ◆ graph link on a node.
@@ -208,6 +218,15 @@ stolen (pid + timestamp), so a crash never wedges the map.
   or `code` (source read). Captures witness hashes like bugs — a review goes **stale**
   when the reviewed code changes, so a green check never lies. Review state shows in
   get_node/get_anchor too. The UI's first write path — goes through the write lock.
+
+**Node catalog** (`/#/u/:u/nodes/`, `node-catalog-page`, `/api/nodes`, MCP `nodes`,
+`ops.nodeCatalog`) — the node-first surface that complements flows and the file
+outline: every logical node with its type, domain (derived from its anchors'
+namespace), edge degree (in/out), provenance (`generatedBy`), and review state.
+Filter by type / domain / source (human vs analyzer) / review state, group by type
+or domain, and **mark any node reviewed inline** (logical/code, same witness-hashed
+review as the flow-walker). Built to browse and review a large graph systematically —
+e.g. settlement's 220 nodes (66 commands, 66 handlers, 50 event families, …).
 
 **Review heatmap on the outline** — each dir/file row carries a two-track review
 bar (top: logical, bottom: code; green reviewed / amber stale) rolled up over its

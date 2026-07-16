@@ -42,6 +42,7 @@ const NODE_COLORS = {
 const nodeColor = (t) => NODE_COLORS[t] ?? NODE_COLORS.unknown;
 const flowsUrl = (u) => `/u/${u}/flows/`;
 const flowUrl = (u, id) => `/u/${u}/flow/${id}/`;
+const nodesUrl = (u) => `/u/${u}/nodes/`;
 const REV_COLOR = { reviewed: '#7ee787', stale: '#f0a35e', unreviewed: '#3a4250' };
 const postReview = (u, targetKind, targetId, level, unmark) =>
   fetch('/api/review', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, targetKind, targetId, level, unmark }) });
@@ -91,6 +92,7 @@ class CodemapHeader extends Component {
     return html`<header>
       <div class="brand" on-click="${() => go('/')}">codemap<span> · map browser</span></div>
       <div class="uni">${each(n.universes, u => html`<button class="${u.id === n.current ? 'active' : ''}" on-click="${() => goTree(u.id, '')}">${u.id}<span class="n">${u.anchors ?? '–'}</span></button>`)}</div>
+      <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(nodesUrl(u)); }}">nodes</a>
       <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(flowsUrl(u)); }}">flows</a>
       <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(diffUrl(u)); }}">diff</a>
       <div class="search"><input placeholder="search symbols & docs…" on-change="${(e, v) => this.search(e, v)}"></div>
@@ -347,6 +349,72 @@ class FlowPage extends Component {
 }
 defineComponent('flow-page', FlowPage);
 
+// --- node catalog: browse/filter/mark-reviewed every logical node -------------
+class NodeCatalogPage extends Component {
+  static props = { params: {}, query: {} };
+  constructor(props) { super(props); this.state = { data: null, f: { q: '', type: '', domain: '', gen: '', review: '' }, group: 'type' }; }
+  load = this.createTask(async () => { nav.current = this.props.params.universe; this.state.data = await api('/api/nodes', { u: this.props.params.universe }); });
+  mounted() { this.load.run(); }
+  propsChanged() { this.load.run(); }
+  set(k, v) { this.state.f = { ...this.state.f, [k]: v }; }
+  setGroup(v) { this.state.group = v; }
+  async toggle(id, level, state) { await postReview(this.props.params.universe, 'node', id, level, state === 'reviewed'); this.load.run(); }
+  revBtn(id, level, state) {
+    const cls = state === 'reviewed' ? 'on' : state === 'stale' ? 'stale' : '';
+    const mark = state === 'reviewed' ? '✓' : state === 'stale' ? '⚠' : '';
+    return html`<button class="${cls}" title="${level}: ${state}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.toggle(id, level, state); }}">${level[0].toUpperCase()}${mark}</button>`;
+  }
+  filtered() {
+    const f = this.state.f, q = f.q.toLowerCase();
+    return this.state.data.nodes.filter((n) =>
+      (!q || n.title.toLowerCase().includes(q) || (n.summary || '').toLowerCase().includes(q) || n.id.toLowerCase().includes(q)) &&
+      (!f.type || n.type === f.type) &&
+      (!f.domain || n.domain === f.domain) &&
+      (!f.gen || (f.gen === 'human' ? !n.generatedBy : n.generatedBy === f.gen)) &&
+      (!f.review ||
+        (f.review === 'unreviewed' ? (n.review.logical === 'unreviewed' && n.review.code === 'unreviewed')
+          : f.review === 'reviewed' ? (n.review.logical === 'reviewed' || n.review.code === 'reviewed')
+            : f.review === 'stale' ? (n.review.logical === 'stale' || n.review.code === 'stale') : true)));
+  }
+  groups(list) {
+    if (this.state.group === 'none') return [['all', list]];
+    const key = this.state.group;
+    const m = new Map();
+    for (const n of list) { const k = n[key] || '(none)'; let a = m.get(k); if (!a) { a = []; m.set(k, a); } a.push(n); }
+    return [...m.entries()].sort((a, b) => b[1].length - a[1].length);
+  }
+  template() {
+    const u = this.props.params.universe, d = this.state.data;
+    if (!d || this.load.pending) return html`<main><div class="loading">loading…</div></main>`;
+    const list = this.filtered();
+    const opts = (o) => Object.entries(o).sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ k, v }));
+    return html`<main>
+      <div class="crumbs">${u} <span class="sep">·</span> nodes (${d.total}) <span class="sep">·</span> ${d.reviewed} reviewed</div>
+      <div class="nfilters">
+        <input placeholder="filter title…" on-input="${(e) => this.set('q', e.target.value)}">
+        <select on-change="${(e) => this.set('type', e.target.value)}"><option value="">all types</option>${each(opts(d.byType), o => html`<option value="${o.k}">${o.k} (${o.v})</option>`, o => o.k)}</select>
+        <select on-change="${(e) => this.set('domain', e.target.value)}"><option value="">all domains</option>${each(opts(d.byDomain), o => html`<option value="${o.k}">${o.k} (${o.v})</option>`, o => o.k)}</select>
+        <select on-change="${(e) => this.set('gen', e.target.value)}"><option value="">any source</option><option value="human">human</option><option value="marten">marten</option></select>
+        <select on-change="${(e) => this.set('review', e.target.value)}"><option value="">any review</option><option value="unreviewed">unreviewed</option><option value="reviewed">reviewed</option><option value="stale">stale</option></select>
+        <select on-change="${(e) => this.setGroup(e.target.value)}"><option value="type">group: type</option><option value="domain">group: domain</option><option value="none">group: none</option></select>
+      </div>
+      <div class="ncount">${list.length} shown</div>
+      ${each(this.groups(list), g => html`<div class="ngroup">
+        <div class="ngh"><span class="gdot" style="background:${nodeColor(g[0])}"></span>${g[0]} <span class="n">${g[1].length}</span></div>
+        ${each(g[1], n => html`<div class="nrow" on-click="${() => go(nodeUrl(u, n.id))}">
+          <span class="nt" style="border-color:${nodeColor(n.type)}">${n.type}</span>
+          <span class="ntitle">${n.title || n.id}</span>
+          <span class="ndom">${n.domain}</span>
+          <span class="nmeta">${n.anchors}a · ${n.edgesIn}↓${n.edgesOut}↑</span>
+          ${when(n.generatedBy, () => html`<span class="gen">${n.generatedBy}</span>`)}
+          <span class="nrev">${this.revBtn(n.id, 'logical', n.review.logical)}${this.revBtn(n.id, 'code', n.review.code)}</span>
+        </div>`, n => n.id)}
+      </div>`, g => g[0])}
+    </main>`;
+  }
+}
+defineComponent('node-catalog-page', NodeCatalogPage);
+
 const diffUrl = (u) => `/u/${u}/diff/`;
 const DTAG = { '+': 'added', '-': 'removed', '~': 'changed' };
 
@@ -480,6 +548,7 @@ router = enableRouting(document.querySelector('router-outlet'), {
   '/u/:universe/graph/:id/': { component: 'graph-page' },
   '/u/:universe/flows/': { component: 'flows-page' },
   '/u/:universe/flow/:id/': { component: 'flow-page' },
+  '/u/:universe/nodes/': { component: 'node-catalog-page' },
   '/u/:universe/diff/': { component: 'diff-page' },
   '/u/:universe/search/': { component: 'search-page' },
 });

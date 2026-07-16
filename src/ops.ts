@@ -258,6 +258,65 @@ export async function diffCode(root: string, base: string, head: string | undefi
   return anchorCodeDiff(root, base, head, id, file);
 }
 
+/** Collapse a namespace to a browsable domain (e.g. Acme.Settlement.Cards.Handlers → Settlement.Cards). */
+function domainOf(ns: string | undefined): string {
+  if (!ns) return "(none)";
+  const p = ns.split(".");
+  if (p[0] === "Acme" && p[1] && p[2]) return `${p[1]}.${p[2]}`;
+  return p.slice(0, 2).join(".") || ns;
+}
+
+/**
+ * The node catalog: every logical node with its domain, edge degree, provenance,
+ * and review state — the node-first surface (browse/filter/mark-reviewed) that
+ * complements the flow-first and file-first views. Review state is batched
+ * (reviewStatesFor re-indexes only files with reviewed anchors, so it's cheap).
+ */
+export async function nodeCatalog(root: string) {
+  const [nodes, graph, store] = await Promise.all([loadNodes(root), readGraph(root), readAnchorStore(root)]);
+  const nsById = new Map(store.anchors.map((a) => [a.id, a.symbolPath[0]]));
+  const inC = new Map<string, number>();
+  const outC = new Map<string, number>();
+  for (const e of graph.edges) {
+    outC.set(e.from, (outC.get(e.from) ?? 0) + 1);
+    inC.set(e.to, (inC.get(e.to) ?? 0) + 1);
+  }
+  const reviews = await reviewStatesFor(root, nodes.map((n) => ({ kind: "node" as const, id: n.id })));
+  const out = nodes.map((n) => {
+    const nsTally = new Map<string, number>();
+    for (const aid of n.anchors) {
+      const ns = nsById.get(aid);
+      if (ns) nsTally.set(ns, (nsTally.get(ns) ?? 0) + 1);
+    }
+    const topNs = [...nsTally.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+    const rp = reviews.get(`node:${n.id}`);
+    return {
+      id: n.id,
+      type: n.type,
+      title: n.title,
+      summary: n.summary,
+      domain: domainOf(topNs),
+      namespace: topNs ?? null,
+      anchors: n.anchors.length,
+      edgesIn: inC.get(n.id) ?? 0,
+      edgesOut: outC.get(n.id) ?? 0,
+      degree: (inC.get(n.id) ?? 0) + (outC.get(n.id) ?? 0),
+      generatedBy: n.generatedBy ?? null,
+      review: { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" },
+    };
+  });
+  const tally = (arr: typeof out, k: "type" | "domain") =>
+    arr.reduce<Record<string, number>>((m, x) => ((m[x[k] ?? "(none)"] = (m[x[k] ?? "(none)"] ?? 0) + 1), m), {});
+  const reviewed = out.filter((n) => n.review.logical !== "unreviewed" || n.review.code !== "unreviewed").length;
+  return {
+    total: out.length,
+    reviewed,
+    byType: tally(out, "type"),
+    byDomain: tally(out, "domain"),
+    nodes: out,
+  };
+}
+
 /**
  * Drill-down navigation over the structural tree that already lives in the
  * anchor paths — the primitive for understanding a large codebase top-down.

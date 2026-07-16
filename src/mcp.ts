@@ -190,6 +190,12 @@ const tools: Tool[] = [
     handler: (_a, c) => ops.flows(c.universe.path),
   },
   {
+    name: "nodes",
+    description: "The node catalog: every logical node with type, domain, edge degree (in/out), provenance (generatedBy), and review state, plus byType/byDomain rollups. The node-first index for browsing/auditing the whole graph (complements flows and the file outline).",
+    inputSchema: obj({}),
+    handler: (_a, c) => ops.nodeCatalog(c.universe.path),
+  },
+  {
     name: "flow",
     description: "One flow: its ordered steps, each with touched modules and the live source of its anchors, plus per-step review state. For stepping through a process and reviewing the code.",
     inputSchema: obj({ id: { type: "string" } }, ["id"]),
