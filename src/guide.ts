@@ -56,9 +56,25 @@ Selectors match anchors added later too, so the queue doesn't re-pollute.
   resending the whole body. Set an explicit \`id\` on create so you control the
   slug you [[link]] to; run \`links\` to find any dangling [[links]].
 
+## Review docs after a change (the post-change loop)
+Docs are versioned and hash-anchored: each captures the code hashes it was written
+against, so a doc that cites changed code is flagged \`stale\`, and one whose code was
+removed is \`dangling\`. After code changes (or when reviewing a branch via \`diff\`),
+sweep the affected docs — from \`check_stale\` (flaggedDocs/danglingDocs) or the diff's
+impacted docs — and for EACH, read the current code (\`get_anchor\`) and its doc
+(\`get_node\`), then take exactly one action:
+- **still accurate** → \`confirm\` (accepts the new hashes, clears \`stale\`; no fork).
+- **needs rewriting** → \`update_node\`/\`document\` (editing a stale doc FORKS a new
+  version automatically, so the other branch's version is preserved — don't fear it).
+- **code correctly removed here** → \`ack_hole\` (tombstones the doc on THIS branch;
+  it stays live on branches where the code still exists). Use \`delete_node\` only to
+  remove a doc on ALL branches.
+Never leave an affected doc un-actioned — a \`stale\`/\`dangling\` doc that nobody
+touched is exactly the silent-rot the map exists to prevent.
+
 ## Find & fix
 - \`check_stale\` — docs whose anchored code changed (candidate_stale) or vanished
-  (lost); refresh those.
+  (lost/dangling); run the post-change loop above on them.
 - \`report_bug\` — anchor a defect to the exact code. It auto-flags possiblyFixed
   when that code later changes; \`list_bugs\` surfaces those to re-validate, then
   \`update_bug\` to resolve.

@@ -82,7 +82,7 @@ function migrate(d: DatabaseSync): void {
       version_id TEXT PRIMARY KEY, node_id TEXT NOT NULL,
       type TEXT, title TEXT, summary TEXT, body TEXT, generated_by TEXT,
       created_commit TEXT, created_branch TEXT, created_at TEXT,
-      citations TEXT
+      citations TEXT, removed INTEGER DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS ix_nv_node ON node_versions(node_id);
     CREATE TABLE IF NOT EXISTS edges (
@@ -96,6 +96,8 @@ function migrate(d: DatabaseSync): void {
     -- a commit maps to an immutable anchor set, and old-branch data is never lost.
     CREATE TABLE IF NOT EXISTS snapshots (ref TEXT PRIMARY KEY, branch TEXT, at TEXT, count INTEGER);
   `);
+  // node_versions.removed (Phase 2) — add to tables created before it existed.
+  try { d.exec("ALTER TABLE node_versions ADD COLUMN removed INTEGER DEFAULT 0"); } catch { /* already present */ }
 }
 
 // --- one-time migration of a legacy JSON .codemap/ into the DB ---------------

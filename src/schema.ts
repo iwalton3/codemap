@@ -128,6 +128,7 @@ export type NodeStatus =
   | "fresh" // every cited anchor exists and its live hash is accepted here
   | "stale" // a cited anchor exists but its live hash isn't accepted (code drifted)
   | "dangling" // a cited anchor is absent from @work (code removed/renamed) — a hole
+  | "removed" // a tombstone wins here — the doc's subject was intentionally removed
   | "generated"; // analyzer-emitted; not versioned (regenerated per branch)
 
 export interface NodeVersion {
@@ -140,6 +141,13 @@ export interface NodeVersion {
   citations: NodeCitation[];
   /** Analyzer that generated this node (e.g. "marten"); absent = human-authored. */
   generatedBy?: string;
+  /**
+   * A tombstone — the doc's subject was intentionally removed. A tombstone is
+   * "fresh" on a branch where its cited anchors are ABSENT (the removal holds),
+   * and loses to a live content version on branches where they still exist. So
+   * "removed on feat, live on develop" resolves by presence-match, no git needed.
+   */
+  removed?: boolean;
   /** Commit this version was written against — load-bearing for git-aware tiebreak. */
   createdCommit: string | null;
   createdBranch: string | null;

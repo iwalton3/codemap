@@ -23,7 +23,7 @@ import { withLock } from "./lock.js";
 
 // Tools that write to a universe's .codemap/ — held under the write lock so a
 // concurrent CLI run or second agent can't clobber a read-modify-write.
-const MUTATING = new Set(["document", "connect", "update_node", "delete_node", "cover", "report_bug", "update_bug", "annotate", "link", "check_stale", "analyze", "review", "snapshot", "reindex"]);
+const MUTATING = new Set(["document", "connect", "update_node", "delete_node", "confirm", "ack_hole", "cover", "report_bug", "update_bug", "annotate", "link", "check_stale", "analyze", "review", "snapshot", "reindex"]);
 
 const PROTOCOL_VERSION = "2024-11-05";
 
@@ -288,9 +288,27 @@ const tools: Tool[] = [
   },
   {
     name: "delete_node",
-    description: "Delete a logical node outright and any edges touching it — for obsolete/tombstoned docs (e.g. a module documenting code that was removed). To instead drop a single vanished anchor ref from a node while keeping it, use update_node with removeAnchors: [\"a_<id>\"] (raw ids are removed even when they no longer resolve).",
+    description: "Delete a logical node outright and any edges touching it (ALL branches). For removing code on ONE branch while keeping the doc live on another, use `ack_hole` instead. To drop a single vanished anchor ref while keeping the node, use update_node with removeAnchors: [\"a_<id>\"].",
     inputSchema: obj({ id: { type: "string" } }, ["id"]),
     handler: (a, c) => ops.removeNode(c.universe.path, a.id),
+  },
+  {
+    name: "confirm",
+    description: "Confirm a doc is still accurate at the CURRENT code without editing or forking it: accepts the current anchor hashes, clearing a `stale` flag. Use when a change touched code the doc cites but the doc's claims still hold. (Editing a stale doc instead FORKS a new version — confirm is the 'no change needed' path.) Docs versioning: see how a node resolves per branch via get_node/node_versions.",
+    inputSchema: obj({ id: { type: "string" } }, ["id"]),
+    handler: (a, c) => ops.confirm(c.universe.path, a.id),
+  },
+  {
+    name: "ack_hole",
+    description: "Acknowledge a hole: the code a doc cited was removed ON THIS BRANCH and that's correct → tombstone the doc here (it disappears from this branch's map, but its content version still wins on branches where the code exists). Only valid when the doc is `dangling`. This is the branch-scoped 'delete' (vs delete_node which removes it everywhere).",
+    inputSchema: obj({ id: { type: "string" } }, ["id"]),
+    handler: (a, c) => ops.ackHole(c.universe.path, a.id),
+  },
+  {
+    name: "node_versions",
+    description: "List all versions of a node with each version's per-branch status (fresh/stale/dangling/removed), created commit/branch, and cited anchors — for understanding a forked doc.",
+    inputSchema: obj({ id: { type: "string" } }, ["id"]),
+    handler: (a, c) => ops.nodeVersions(c.universe.path, a.id),
   },
   {
     name: "update_node",

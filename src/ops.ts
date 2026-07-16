@@ -23,7 +23,7 @@ import { computeStaleness } from "./stale.js";
 import {
   readAnchorStore, readState, writeState, writeStore, loadNodes, readGraph, writeGraph, writeNode, slug,
   readBugs, writeBugs, readAnnotations, writeAnnotations, readCoverage, writeCoverage, readReviews,
-  writeSnapshot, listSnapshots, deleteNode as storeDeleteNode,
+  writeSnapshot, listSnapshots, deleteNode as storeDeleteNode, confirmNode, ackHole as storeAckHole, loadNodeVersions,
 } from "./store.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { computeDiff, anchorCodeDiff } from "./diff.js";
@@ -933,6 +933,46 @@ export async function updateNode(
   const known = new Set(nodes.map((n) => n.id));
   const dangling = [...new Set(extractLinks(node.summary + "\n" + node.body))].filter((l) => !known.has(l));
   return { ok: true, id: node.id, anchors: node.anchors.length, ...(dangling.length ? { danglingLinks: dangling } : {}) };
+}
+
+/**
+ * Confirm the winning doc version is still accurate at the current code (no edit,
+ * no fork) — clears `stale` by accepting the current hashes. The right move when a
+ * change touched the code a doc cites but the doc's claims still hold.
+ */
+export async function confirm(root: string, id: string) {
+  return confirmNode(root, id);
+}
+
+/**
+ * Ack a hole: the doc's cited code was removed here and that's correct → tombstone
+ * it on this branch (disappears from this branch's map; still live on branches
+ * where the code exists). Only valid when the doc is `dangling`.
+ */
+export async function ackHole(root: string, id: string) {
+  return storeAckHole(root, id);
+}
+
+/** All versions of a node, each with its per-branch status (for the version UI). */
+export async function nodeVersions(root: string, id: string) {
+  const versions = await loadNodeVersions(root, id);
+  const store = await readAnchorStore(root);
+  const work = new Map(store.anchors.map((a) => [a.id, a.bodyHash]));
+  return {
+    id,
+    versions: versions.map((v) => {
+      const stale = v.removed
+        ? v.citations.filter((c) => work.has(c.anchorId)).map((c) => c.anchorId)
+        : v.citations.filter((c) => work.has(c.anchorId) && !c.acceptedHashes.includes(work.get(c.anchorId)!)).map((c) => c.anchorId);
+      const dangling = v.removed ? [] : v.citations.filter((c) => !work.has(c.anchorId)).map((c) => c.anchorId);
+      const status = v.generatedBy ? "generated" : v.removed ? "removed" : dangling.length ? "dangling" : stale.length ? "stale" : "fresh";
+      return {
+        versionId: v.versionId, title: v.title, summary: v.summary, removed: !!v.removed,
+        createdCommit: v.createdCommit, createdBranch: v.createdBranch, createdAt: v.createdAt,
+        anchors: v.citations.map((c) => c.anchorId), status, staleAnchors: stale, danglingAnchors: dangling,
+      };
+    }),
+  };
 }
 
 /** Delete a logical node outright (and any edges touching it) — for obsolete/tombstoned docs. */

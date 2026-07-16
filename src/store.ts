@@ -156,7 +156,7 @@ export async function writeState(root: string, state: State): Promise<void> {
 interface VersionRow {
   version_id: string; node_id: string; type: string; title: string; summary: string; body: string;
   generated_by: string | null; created_commit: string | null; created_branch: string | null;
-  created_at: string; citations: string;
+  created_at: string; citations: string; removed: number | null;
 }
 
 function rowToVersion(r: VersionRow): NodeVersion {
@@ -165,6 +165,7 @@ function rowToVersion(r: VersionRow): NodeVersion {
     title: r.title ?? "", summary: r.summary ?? "", body: r.body ?? "",
     citations: JSON.parse(r.citations ?? "[]"),
     ...(r.generated_by ? { generatedBy: r.generated_by } : {}),
+    ...(r.removed ? { removed: true } : {}),
     createdCommit: r.created_commit, createdBranch: r.created_branch, createdAt: r.created_at,
   };
 }
@@ -179,9 +180,15 @@ function workHashes(d: DatabaseSync): Map<string, string> {
   return m;
 }
 
-/** Status of a version against the live @work anchors (fresh / stale / dangling). */
+/** Status of a version against the live @work anchors (fresh / stale / dangling / removed). */
 function evalVersion(v: NodeVersion, work: Map<string, string>) {
   if (v.generatedBy) return { status: "generated" as NodeStatus, stale: [] as string[], dangling: [] as string[], badness: 0 };
+  if (v.removed) {
+    // A tombstone is fresh where its cited anchors are ABSENT (the removal holds);
+    // if any still exist here, the code came back → it doesn't apply (badness).
+    const present = v.citations.filter((c) => work.has(c.anchorId)).map((c) => c.anchorId);
+    return { status: "removed" as NodeStatus, stale: present, dangling: [] as string[], badness: present.length };
+  }
   const stale: string[] = [], dangling: string[] = [];
   for (const c of v.citations) {
     const live = work.get(c.anchorId);
@@ -222,7 +229,9 @@ export async function loadNodes(root: string): Promise<LogicalNode[]> {
     const v = rowToVersion(r);
     (byNode.get(v.nodeId) ?? byNode.set(v.nodeId, []).get(v.nodeId)!).push(v);
   }
-  return [...byNode.values()].map((vs) => resolve(vs, work));
+  // Tombstoned-here nodes are not live docs on this branch — exclude them (they
+  // still win/show on branches where their content version matches).
+  return [...byNode.values()].map((vs) => resolve(vs, work)).filter((n) => n.status !== "removed");
 }
 
 /** All versions of one node (for the version-aware UI / confirm / fork ops). */
@@ -293,6 +302,52 @@ export async function writeNode(root: string, node: LogicalNode): Promise<void> 
 
 export async function deleteNode(root: string, id: string): Promise<void> {
   db(root).prepare("DELETE FROM node_versions WHERE node_id = ?").run(id);
+}
+
+const INS_VERSION_T = "INSERT INTO node_versions(version_id,node_id,type,title,summary,body,generated_by,created_commit,created_branch,created_at,citations,removed) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)";
+
+/**
+ * Confirm the winning version is still accurate at the current code WITHOUT
+ * forking or editing: merge the current @work hashes into its citations, so a
+ * stale doc becomes fresh (and stays valid on the other branches whose hashes are
+ * still accepted). Dangling citations can't be confirmed (no live hash) — those
+ * need a rewrite or ack-hole.
+ */
+export async function confirmNode(root: string, id: string): Promise<{ ok?: true; status?: NodeStatus; error?: string }> {
+  const d = db(root);
+  const versions = versionsOf(d, id);
+  if (!versions.length) return { error: `no node "${id}"` };
+  const work = workHashes(d);
+  const { v } = selectWinner(versions, work);
+  if (v.generatedBy) return { error: "generated node — regenerated, not confirmable" };
+  if (v.removed) return { error: "node is tombstoned here" };
+  const cites: NodeCitation[] = v.citations.map((c) => {
+    const set = new Set(c.acceptedHashes);
+    const live = work.get(c.anchorId);
+    if (live) set.add(live);
+    return { anchorId: c.anchorId, acceptedHashes: [...set] };
+  });
+  d.prepare("UPDATE node_versions SET citations=? WHERE version_id=?").run(JSON.stringify(cites), v.versionId);
+  return { ok: true, status: evalVersion({ ...v, citations: cites }, work).status };
+}
+
+/**
+ * Ack a hole: the winning version is dangling (cited code removed here) and the
+ * removal is correct → write a TOMBSTONE version that wins where those anchors are
+ * absent, so the doc disappears from this branch's map while its content version
+ * still wins on branches where the code exists.
+ */
+export async function ackHole(root: string, id: string): Promise<{ ok?: true; removedAnchors?: string[]; on?: string | null; error?: string }> {
+  const d = db(root);
+  const versions = versionsOf(d, id);
+  if (!versions.length) return { error: `no node "${id}"` };
+  const work = workHashes(d);
+  const { v, e } = selectWinner(versions, work);
+  if (e.status !== "dangling") return { error: `node "${id}" is not a hole here (status: ${e.status})` };
+  const cites: NodeCitation[] = e.dangling.map((aid) => ({ anchorId: aid, acceptedHashes: [] }));
+  const branch = currentBranch(root);
+  d.prepare(INS_VERSION_T).run(vid(), id, v.type, v.title, v.summary, v.body, null, headCommit(root), branch, nowISO(), JSON.stringify(cites), 1);
+  return { ok: true, removedAnchors: e.dangling, on: branch };
 }
 
 // --- graph (edges) -----------------------------------------------------------
