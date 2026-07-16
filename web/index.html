@@ -339,6 +339,27 @@
     .dnav { display: flex; flex-wrap: wrap; gap: 8px; }
     .dnav button { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
     .dnav button:hover { border-color: var(--accent); }
+    .attn-pill.q { border-color: var(--accent); color: var(--accent); cursor: default; }
+    .dq { border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+    .dq.resolved { border-left-color: var(--border); opacity: 0.6; }
+    .dqh { display: flex; align-items: center; gap: 8px; }
+    .dqt { color: var(--accent); cursor: pointer; font-weight: 600; }
+    .dqt:hover { text-decoration: underline; }
+
+    /* --- notes & questions thread --- */
+    .anno { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin: 6px 0; background: var(--panel2); }
+    .anno.q { border-left: 3px solid var(--accent); }
+    .anno.q.resolved { border-left-color: var(--border); opacity: 0.65; }
+    .annometa { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-bottom: 2px; }
+    .qbadge { font-size: 10px; font-family: var(--mono); padding: 1px 6px; border-radius: 10px; border: 1px solid var(--accent); color: var(--accent); text-transform: lowercase; }
+    .annores { margin-left: auto; background: var(--panel2); border: 1px solid var(--border); color: var(--dim); border-radius: 6px; padding: 2px 9px; cursor: pointer; font-size: 11.5px; }
+    .annores:hover { border-color: var(--accent2); color: var(--accent2); }
+    .annoadd { margin-top: 8px; }
+    .annoadd textarea { width: 100%; min-height: 58px; background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 13px; resize: vertical; }
+    .annobtns { display: flex; gap: 8px; margin-top: 6px; }
+    .annobtns button { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 4px 12px; cursor: pointer; font-size: 12.5px; }
+    .annobtns button.q { border-color: var(--accent); color: var(--accent); }
+    .annobtns button:hover { filter: brightness(1.2); }
 
     /* --- bugs --- */
     .bugfilter button .n { color: var(--dim); font-size: 11px; margin-left: 4px; }

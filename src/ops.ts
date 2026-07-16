@@ -138,14 +138,17 @@ export async function dashboard(root: string) {
     if (b.status === "open") { openBugs++; if (b.witnesses.some((w) => live.get(w.anchorId)?.bodyHash !== w.bodyHash)) possiblyFixed++; }
   }
 
+  const openQuestions = annStore.annotations.filter((a) => a.kind === "question" && !a.resolved).length;
+
   return {
     coverage: { docPct: computeDocPct(result.breakdown), open: result.breakdown.open, anchors: store.anchors.length, nodes: nodes.length, edges: graph.edges.length, breakdown: result.breakdown },
     docs: { total: nodes.length, stale: staleDocs, dangling: danglingDocs, fresh: nodes.length - staleDocs - danglingDocs },
     bugs: { total: bugStore.bugs.length, open: openBugs, possiblyFixed, byStatus: bugCounts },
     annotations: annStore.annotations.length,
+    openQuestions,
     baselineCommit: commit,
-    // The single number a reviewer should drive to zero.
-    attention: staleDocs + danglingDocs + possiblyFixed,
+    // The single number a reviewer/agent should drive to zero.
+    attention: staleDocs + danglingDocs + possiblyFixed + openQuestions,
   };
 }
 
@@ -1182,7 +1185,7 @@ export async function updateBug(
 
 export async function annotate(
   root: string,
-  input: { targetKind: "anchor" | "node"; targetId: string; text: string; author?: string },
+  input: { targetKind: "anchor" | "node"; targetId: string; text: string; author?: string; kind?: "note" | "question" },
 ) {
   // Validate the target exists (anchor targets accept file#Symbol refs too).
   let targetId = input.targetId;
@@ -1198,6 +1201,8 @@ export async function annotate(
     id: genId("note"),
     target: { kind: input.targetKind, id: targetId },
     text: input.text,
+    kind: input.kind === "question" ? "question" : "note",
+    resolved: false,
     author: input.author ?? "agent",
     createdCommit: headCommit(root),
   };
@@ -1205,4 +1210,36 @@ export async function annotate(
   annStore.annotations.push(ann);
   await writeAnnotations(root, annStore.annotations);
   return { ok: true, id: ann.id };
+}
+
+/** Resolve (or re-open) an annotation — used to close out an answered question. */
+export async function resolveAnnotation(root: string, id: string, resolved = true) {
+  const annStore = await readAnnotations(root);
+  const ann = annStore.annotations.find((a) => a.id === id);
+  if (!ann) return { error: `no annotation "${id}"` };
+  ann.resolved = resolved;
+  await writeAnnotations(root, annStore.annotations);
+  return { ok: true, id, resolved };
+}
+
+/**
+ * Open questions a human left for the agent during review — the "answer these to
+ * improve the docs" queue. Each is resolved to its target's title/symbol + a link.
+ */
+export async function listQuestions(root: string, opts: { includeResolved?: boolean } = {}) {
+  const [annStore, nodes, store] = await Promise.all([readAnnotations(root), loadNodes(root), readAnchorStore(root)]);
+  const nodeById = new Map(nodes.map((n) => [n.id, n]));
+  const anchorById = new Map(store.anchors.map((a) => [a.id, a]));
+  const qs = annStore.annotations.filter((a) => a.kind === "question" && (opts.includeResolved || !a.resolved));
+  return {
+    total: qs.length,
+    open: qs.filter((q) => !q.resolved).length,
+    questions: qs.map((q) => {
+      const t = q.target.kind === "node" ? nodeById.get(q.target.id) : anchorById.get(q.target.id);
+      const label = q.target.kind === "node"
+        ? (t as LogicalNode | undefined)?.title ?? q.target.id
+        : (t as Anchor | undefined)?.symbolPath.join(" › ") ?? q.target.id;
+      return { id: q.id, text: q.text, author: q.author, resolved: !!q.resolved, target: q.target, targetLabel: label };
+    }),
+  };
 }

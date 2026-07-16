@@ -91,4 +91,9 @@ touched is exactly the silent-rot the map exists to prevent.
 ## Collaboration
 When a design intent is unclear, ASK the human rather than guessing in a summary.
 Record open questions as annotations, not as confident-sounding prose. The map is
-only useful if its claims are trustworthy.`;
+only useful if its claims are trustworthy.
+
+The human also asks questions back: while reviewing they leave \`kind:"question"\`
+annotations on the doc/anchor they're reading. \`questions\` lists that open queue —
+answer each by improving the cited documentation, then \`resolve_question\` to close
+it. Check \`questions\` at the start of a session and after a review pass.`;

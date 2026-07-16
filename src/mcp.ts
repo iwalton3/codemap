@@ -23,7 +23,7 @@ import { withLock } from "./lock.js";
 
 // Tools that write to a universe's .codemap/ — held under the write lock so a
 // concurrent CLI run or second agent can't clobber a read-modify-write.
-const MUTATING = new Set(["document", "connect", "update_node", "delete_node", "confirm", "ack_hole", "cover", "report_bug", "update_bug", "annotate", "link", "check_stale", "analyze", "review", "snapshot", "reindex"]);
+const MUTATING = new Set(["document", "connect", "update_node", "delete_node", "confirm", "ack_hole", "cover", "report_bug", "update_bug", "annotate", "resolve_question", "link", "check_stale", "analyze", "review", "snapshot", "reindex"]);
 
 const PROTOCOL_VERSION = "2024-11-05";
 
@@ -378,14 +378,27 @@ const tools: Tool[] = [
   },
   {
     name: "annotate",
-    description: "Attach a note to an anchor or node in a universe, visible to agents and human readers.",
+    description: "Attach a note or question to an anchor or node in a universe, visible to agents and human readers. kind:\"question\" leaves an open question in the review queue (see `questions`).",
     inputSchema: obj({
       targetKind: { type: "string", enum: ["anchor", "node"] },
       targetId: { type: "string" },
       text: { type: "string" },
+      kind: { type: "string", enum: ["note", "question"], description: "\"question\" = an ask for the agent to answer; default \"note\"." },
       author: { type: "string" },
     }, ["targetKind", "targetId", "text"]),
     handler: (a, c) => ops.annotate(c.universe.path, a),
+  },
+  {
+    name: "questions",
+    description: "List open questions a human left during review — the 'answer these to improve the docs' queue. Address each (edit the cited doc), then resolve_question.",
+    inputSchema: obj({ includeResolved: { type: "boolean" } }),
+    handler: (a, c) => ops.listQuestions(c.universe.path, a),
+  },
+  {
+    name: "resolve_question",
+    description: "Close out a review question (or re-open with resolved:false) once you've answered it by improving the documentation.",
+    inputSchema: obj({ id: { type: "string" }, resolved: { type: "boolean" } }, ["id"]),
+    handler: (a, c) => ops.resolveAnnotation(c.universe.path, a.id, a.resolved !== false),
   },
 ];
 

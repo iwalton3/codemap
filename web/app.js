@@ -61,6 +61,31 @@ const postConfirm = (u, id) => fetch('/api/confirm', { method: 'POST', headers: 
 const postAckHole = (u, id) => fetch('/api/ack_hole', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id }) });
 const postReview = (u, targetKind, targetId, level, unmark) =>
   fetch('/api/review', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, targetKind, targetId, level, unmark }) });
+const postAnnotate = (u, targetKind, targetId, text, kind) =>
+  fetch('/api/annotate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, targetKind, targetId, text, kind, author: 'human' }) });
+const postResolveAnnotation = (u, id, resolved) =>
+  fetch('/api/annotation_resolve', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id, resolved }) });
+
+// A notes/questions thread for a node or anchor. `c` is the host component (uses
+// c._draft — a NON-reactive field so typing doesn't re-render and drop focus —
+// and c.load.run() to refresh after a write).
+async function submitAnno(c, u, targetKind, targetId, kind) {
+  const text = (c._draft || '').trim(); if (!text) return;
+  await postAnnotate(u, targetKind, targetId, text, kind);
+  c._draft = ''; c.load.run();
+}
+async function resolveAnno(c, u, id, resolved) { await postResolveAnnotation(u, id, resolved); c.load.run(); }
+function annoThread(c, u, targetKind, targetId, items) {
+  return html`<div class="sec">notes & questions</div>
+    ${each(items || [], a => html`<div class="anno ${a.kind === 'question' ? 'q' : ''} ${a.resolved ? 'resolved' : ''}">
+      <div class="annometa">${when(a.kind === 'question', () => html`<span class="qbadge">question${a.resolved ? ' · resolved' : ''}</span>`)}<span class="dim">${a.author || 'agent'}</span>${when(a.kind === 'question', () => html`<button class="annores" on-click="${() => resolveAnno(c, u, a.id, !a.resolved)}">${a.resolved ? 'reopen' : 'resolve'}</button>`)}</div>
+      <md-content text="${a.text}"></md-content>
+    </div>`, (a, i) => a.id || i)}
+    <div class="annoadd">
+      <textarea placeholder="leave a note or ask a question about this ${targetKind}…" on-input="${(e) => { c._draft = e.target.value; }}">${c._draft || ''}</textarea>
+      <div class="annobtns"><button on-click="${() => submitAnno(c, u, targetKind, targetId, 'note')}">add note</button><button class="q" on-click="${() => submitAnno(c, u, targetKind, targetId, 'question')}">ask question</button></div>
+    </div>`;
+}
 const highlight = (code, lang) => {
   if (window.hljs && lang && lang !== 'plaintext') { try { return window.hljs.highlight(code, { language: lang, ignoreIllegals: true }).value; } catch {} }
   return String(code).replace(/&/g, '&amp;').replace(/</g, '&lt;');
@@ -133,10 +158,16 @@ defineComponent('home-page', HomePage);
 // --- universe dashboard: the "needs attention" landing page -------------------
 class DashboardPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { d: null }; }
-  load = this.createTask(async () => { nav.current = this.props.params.universe; this.state.d = await api('/api/dashboard', { u: this.props.params.universe }); });
+  constructor(props) { super(props); this.state = { d: null, q: null }; }
+  load = this.createTask(async () => {
+    const u = this.props.params.universe; nav.current = u;
+    const [d, q] = await Promise.all([api('/api/dashboard', { u }), api('/api/questions', { u })]);
+    this.state.d = d; this.state.q = q;
+  });
   mounted() { this.load.run(); }
   propsChanged() { this.load.run(); }
+  async resolveQ(id) { await postResolveAnnotation(this.props.params.universe, id, true); this.load.run(); }
+  qTarget(t) { const u = this.props.params.universe; return t.kind === 'node' ? nodeUrl(u, t.id) : anchorUrl(u, t.id); }
   stat(label, value, extra) { return html`<div class="dstat"><div class="dsv">${value}</div><div class="dsl">${label}</div>${when(extra, () => html`<div class="dsx">${extra}</div>`)}</div>`; }
   template() {
     const u = this.props.params.universe, d = this.state.d;
@@ -154,6 +185,7 @@ class DashboardPage extends Component {
         ${when(d.docs.stale, () => html`<span class="attn-pill" on-click="${() => go(nodesUrl(u))}">${d.docs.stale} stale doc${d.docs.stale === 1 ? '' : 's'}</span>`)}
         ${when(d.docs.dangling, () => html`<span class="attn-pill bad" on-click="${() => go(nodesUrl(u))}">${d.docs.dangling} dangling</span>`)}
         ${when(d.bugs.possiblyFixed, () => html`<span class="attn-pill" on-click="${() => go(bugsUrl(u), { status: 'open' })}">${d.bugs.possiblyFixed} bug${d.bugs.possiblyFixed === 1 ? '' : 's'} possibly fixed</span>`)}
+        ${when(d.openQuestions, () => html`<span class="attn-pill q">${d.openQuestions} open question${d.openQuestions === 1 ? '' : 's'}</span>`)}
         <span class="attn-hint">re-validate via <code>check_stale</code> / the bugs tab</span>
       </div>`, () => html`<div class="attn-banner ok"><span class="attn-n">✓</span> <span>nothing stale — docs and bugs are current with the code</span></div>`)}
 
@@ -194,6 +226,13 @@ class DashboardPage extends Component {
           <div class="dclink dim">baseline ${d.baselineCommit ? d.baselineCommit.slice(0, 8) : '—'}</div>
         </div>
       </div>
+
+      ${when(this.state.q && this.state.q.questions && this.state.q.questions.length, () => html`<div class="sec">open questions (${this.state.q.open}) <span class="dim">— left during review; answer by improving the doc, then resolve</span></div>
+        ${each(this.state.q.questions, qn => html`<div class="dq ${qn.resolved ? 'resolved' : ''}">
+          <div class="dqh"><span class="qbadge">${qn.target.kind}</span> <span class="dqt" on-click="${() => go(this.qTarget(qn.target))}">${qn.targetLabel}</span> <span class="dim">${qn.author}</span>
+            <button class="annores" on-click="${() => this.resolveQ(qn.id)}">${qn.resolved ? 'reopen' : 'resolve'}</button></div>
+          <md-content text="${qn.text}"></md-content>
+        </div>`, qn => qn.id)}`)}
 
       <div class="sec">explore</div>
       <div class="dnav">${each(nav2, x => html`<button on-click="${x[1]}">${x[0]}</button>`, x => x[0])}</div>
@@ -265,7 +304,7 @@ class AnchorPage extends Component {
       <div class="meta">${a.kind} · ${a.file}:${a.lines} · ${a.present ? 'present' : 'not found (lost)'}</div>
       ${when(a.citedBy && a.citedBy.length, () => html`<div class="sec">documented by</div><div class="chips">${each(a.citedBy, n => html`<span class="chip" on-click="${() => go(nodeUrl(u, n.id))}">${n.title || n.id}</span>`)}</div>`)}
       ${when(a.bugs && a.bugs.length, () => html`<div class="sec">bugs</div><div class="chips">${each(a.bugs, b => html`<span class="chip">${b.status} · ${b.title}</span>`)}</div>`)}
-      ${when(a.annotations && a.annotations.length, () => html`<div class="sec">notes</div>${each(a.annotations, an => html`<md-content text="${an.text}"></md-content>`)}`)}
+      ${annoThread(this, u, 'anchor', a.id, a.annotations)}
       <div class="sec">source</div>
       ${when(a.code, () => html`<pre class="hljs"><code>${raw(highlight(a.code, a.lang))}</code></pre>`, () => html`<pre class="code">(unavailable)</pre>`)}
     </div></main>`;
@@ -302,7 +341,7 @@ class NodePage extends Component {
       ${when(n.inboundCrossUniverse && n.inboundCrossUniverse.length, () => html`<div class="sec">called by (other universes)</div><div class="chips">${each(n.inboundCrossUniverse, i => html`<span class="chip" on-click="${() => go(nodeUrl(i.fromUniverse, i.from))}">${i.fromUniverse}::${i.from} (${i.type})</span>`)}</div>`)}
       ${when(versions && versions.length > 1, () => html`<div class="sec">versions (${versions.length}) — the one matching this branch wins</div>
         ${each(versions, v => html`<div class="nver ${v.status}"><span class="stchip ${v.status}">${v.status}</span> <span class="nvbranch">${v.createdBranch || '(?)'} @ ${(v.createdCommit || '').slice(0, 8) || '—'}</span> <span class="dim">${v.removed ? '(tombstone)' : v.title}</span></div>`, v => v.versionId)}`)}
-      ${when(n.annotations && n.annotations.length, () => html`<div class="sec">notes</div>${each(n.annotations, an => html`<md-content text="${an.text}"></md-content>`)}`)}
+      ${annoThread(this, u, 'node', n.id, n.annotations)}
     </div></main>`;
   }
 }

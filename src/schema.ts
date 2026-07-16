@@ -296,6 +296,13 @@ export interface Annotation {
   id: string;
   target: { kind: "anchor" | "node"; id: string };
   text: string;
+  /**
+   * "note" (default) is a durable remark; "question" is a review-time ask a human
+   * left for the agent to answer (improve the doc) — surfaced as an open-questions
+   * queue until `resolved`.
+   */
+  kind?: "note" | "question";
+  resolved?: boolean;
   /** Who wrote it — an agent label or a person. */
   author: string;
   createdCommit: string | null;
