@@ -14,7 +14,7 @@ import { join } from "node:path";
 import {
   type Anchor, type LogicalNode, type LogicalNodeType, type EdgeType, type State,
   type Bug, type BugStatus, type BugSeverity, type Annotation,
-  type AnchorSelector, type CoverageMark, type CoverageState, type Edge, type ReviewLevel, type Importance, type TriageSource,
+  type AnchorSelector, type CoverageMark, type CoverageState, type Edge, type ReviewLevel, type Importance, type Complexity, type TriageSource,
   SCHEMA_VERSION,
 } from "./schema.js";
 import { indexFile, indexRepo } from "./repo.js";
@@ -1232,7 +1232,7 @@ export async function fileSource(root: string, file: string) {
 /** Set/raise stakes on a target (ratchet-enforced). See docs/triage.md. */
 export async function setTriage(
   root: string,
-  input: { targetKind: "node" | "anchor"; targetId: string; importance: Importance; source: TriageSource; reason?: string; tripwire?: boolean },
+  input: { targetKind: "node" | "anchor"; targetId: string; importance?: Importance; complexity?: Complexity; source: TriageSource; reason?: string; tripwire?: boolean },
 ) {
   return triageSet(root, input);
 }

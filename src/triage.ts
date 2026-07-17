@@ -6,32 +6,79 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { type Importance, type TriageSource, type Triage, type BugSeverity } from "./schema.js";
+import { type Importance, type Complexity, type TriageSource, type Triage, type BugSeverity } from "./schema.js";
 import { readTriage, writeTriage, loadNodes, readGraph, readAnchorStore } from "./store.js";
 import { reviewStatesFor, witnessesFor, liveHashes, witnessDrift, type Target, type ReviewPair, type AnchorChange } from "./reviews.js";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { indexFile } from "./repo.js";
 
-export const IMPORTANCE_RANK: Record<Importance, number> = { mechanical: 0, important: 1, "business-critical": 2 };
+export const IMPORTANCE_RANK: Record<Importance, number> = { low: 0, important: 1, "business-critical": 2 };
+export const COMPLEXITY_RANK: Record<Complexity, number> = { wiring: 0, rote: 1, standard: 2, deep: 3 };
+// Untriaged complexity is treated as `standard` for severity — a code segment is
+// assumed to need a real review until something proves it's just plumbing.
+export const DEFAULT_COMPLEXITY: Complexity = "standard";
+
+/** Legacy stores used "mechanical" for the low-stakes tier — map it to `low`. */
+export function normImportance(i: string | undefined): Importance {
+  return i === "mechanical" ? "low" : (i as Importance);
+}
 
 /** `complete` = meets the tier's bar; `untriaged` = no stakes assigned yet (escalates). */
 export type Severity = BugSeverity | "complete" | "untriaged";
 
+const SEV_ORDER: BugSeverity[] = ["low", "medium", "high", "critical"];
+// docs/triage.md — severity = stakes × complexity × review-gap. Two lookup tables
+// (unread / read-but-unsigned) are the authority; a floor keeps stakes visible.
+const UNREAD: Record<Importance, Record<Complexity, BugSeverity>> = {
+  "business-critical": { deep: "critical", standard: "high", rote: "medium", wiring: "low" },
+  important: { deep: "high", standard: "medium", rote: "low", wiring: "low" },
+  low: { deep: "medium", standard: "low", rote: "low", wiring: "low" },
+};
+const READ_UNSIGNED: Record<Importance, Record<Complexity, BugSeverity>> = {
+  "business-critical": { deep: "high", standard: "medium", rote: "low", wiring: "low" },
+  important: { deep: "medium", standard: "low", rote: "low", wiring: "low" },
+  low: { deep: "low", standard: "low", rote: "low", wiring: "low" },
+};
+
 /**
- * The severity matrix (docs/triage.md). `read` = a live `viewed` OR `signed` mark
- * (signing implies having read); `signed` = a live sign-off. Stale marks are absent.
- *   - Mechanical needs only a read; sign-off is never required.
- *   - Important / Business Critical need a sign-off; unread outranks read-but-unsigned.
+ * Severity from stakes × complexity × review-gap (docs/triage.md). `read` = a live
+ * `viewed` OR `signed` mark (signing implies reading); `signed` = a live sign-off.
+ * Complexity sets the bar — `wiring` clears on a glance (viewed), everything else needs
+ * a sign-off — and weights how much review depth the gap represents. Floor: while any
+ * gap remains, business-critical/important never rank below `medium` (a stake you've
+ * left unreviewed always deserves attention, even if it's quick to clear).
  */
-export function triageSeverity(importance: Importance, live: { read: boolean; signed: boolean }): BugSeverity | "complete" {
-  if (importance === "mechanical") return live.read ? "complete" : "low";
+export function triageSeverity(
+  importance: Importance,
+  complexity: Complexity,
+  live: { read: boolean; signed: boolean },
+): BugSeverity | "complete" {
   if (live.signed) return "complete";
-  const bc = importance === "business-critical";
-  if (live.read) return bc ? "high" : "medium"; // read but unsigned
-  return bc ? "critical" : "high"; // unread — the blind spot
+  if (barFor(complexity) === "viewed" && live.read) return "complete"; // wiring: a glance is enough
+  let sev = (live.read ? READ_UNSIGNED : UNREAD)[importance][complexity];
+  if ((importance === "business-critical" || importance === "important") && SEV_ORDER.indexOf(sev) < SEV_ORDER.indexOf("medium")) {
+    sev = "medium";
+  }
+  return sev;
 }
 
-/** The attestation a target must reach to be review-complete at its tier. */
-export function barFor(importance: Importance): "viewed" | "signed" {
-  return importance === "mechanical" ? "viewed" : "signed";
+/** The attestation a target must reach to be review-complete — driven by complexity. */
+export function barFor(complexity: Complexity): "viewed" | "signed" {
+  return complexity === "wiring" ? "viewed" : "signed";
+}
+
+/** Verification-difficulty from code shape — a cheap cyclomatic-ish proxy (decision
+ * points). Marked `likely`; a human confirms/adjusts. `deep` subtle · `wiring` plumbing. */
+export function complexityOf(code: string): Complexity {
+  if (!code) return DEFAULT_COMPLEXITY;
+  const decisions =
+    (code.match(/\b(if|for|foreach|while|case|catch|switch)\b/gi) || []).length +
+    (code.match(/&&|\|\||\?\?/g) || []).length;
+  if (decisions === 0) return "wiring";
+  if (decisions <= 2) return "rote";
+  if (decisions <= 6) return "standard";
+  return "deep";
 }
 
 const sameTarget = (t: Triage, k: "node" | "anchor", id: string) => t.target.kind === k && t.target.id === id;
@@ -46,38 +93,50 @@ export async function setTriage(
   input: {
     targetKind: "node" | "anchor";
     targetId: string;
-    importance: Importance;
+    importance?: Importance; // omit to set complexity alone (keeps existing stakes)
+    complexity?: Complexity;
     source: TriageSource;
     reason?: string;
     tripwire?: boolean;
     generatedBy?: string;
   },
-): Promise<{ ok: boolean; importance: Importance; likely?: boolean; reason?: string }> {
+): Promise<{ ok: boolean; importance: Importance; complexity?: Complexity; likely?: boolean; reason?: string }> {
   const ts = await readTriage(root);
   const existing = ts.triage.find((t) => sameTarget(t, input.targetKind, input.targetId));
   const human = input.source === "human";
+  const exImp = existing ? normImportance(existing.importance) : undefined;
+  const wantImp = input.importance ? normImportance(input.importance) : undefined;
   if (existing && !human) {
-    const raises = IMPORTANCE_RANK[input.importance] > IMPORTANCE_RANK[existing.importance];
-    // Lowering is human-only — a demotion hides risk, so no automated source may do it.
-    if (!raises) {
+    // The ratchet is per-axis: agents/graph may only RAISE either stakes or complexity.
+    const raisesImp = wantImp !== undefined && (exImp === undefined || IMPORTANCE_RANK[wantImp] > IMPORTANCE_RANK[exImp]);
+    const raisesCx = input.complexity !== undefined && (existing.complexity === undefined || COMPLEXITY_RANK[input.complexity] > COMPLEXITY_RANK[existing.complexity]);
+    if (!raisesImp && !raisesCx) {
       return {
         ok: false,
-        importance: existing.importance,
-        reason: existing.source === "human" ? "human-owned — agents may only ESCALATE it, never lower" : "ratchet: agents/graph may only raise stakes",
+        importance: exImp!,
+        complexity: existing.complexity,
+        reason: existing.source === "human" ? "human-owned — agents may only ESCALATE it, never lower" : "ratchet: agents/graph may only raise stakes/complexity",
       };
     }
-    // Escalation only ever ADDS scrutiny, so it's allowed — an agent that finds a mis-flag
-    // or code that grew teeth SHOULD propose higher (as a `likely` mark you re-confirm).
-    // Exception: the *blind graph batch* respects a human mark (no new evidence, so it
-    // won't nag); a code-change-driven re-escalation is the witnessed Phase-4 path.
+    // The blind graph batch respects a human mark (no new evidence, won't nag); a
+    // deliberate agent with evidence escalates via `triage`.
     if (existing.source === "human" && input.source === "graph") {
-      return { ok: false, importance: existing.importance, reason: "graph derivation won't override a human mark — an agent with evidence can escalate via `triage`" };
+      return { ok: false, importance: exImp!, complexity: existing.complexity, reason: "graph derivation won't override a human mark — an agent with evidence can escalate via `triage`" };
     }
   }
+  // Raise-only merge per axis (agents never lower); a human writes exactly what they set.
+  // An omitted stakes value keeps the existing tier (untriaged → default `important`).
+  const importance: Importance = wantImp === undefined ? (exImp ?? "important")
+    : human || exImp === undefined ? wantImp
+      : IMPORTANCE_RANK[wantImp] > IMPORTANCE_RANK[exImp] ? wantImp : exImp;
+  const complexity = human ? (input.complexity ?? existing?.complexity)
+    : input.complexity === undefined ? existing?.complexity
+      : existing?.complexity === undefined || COMPLEXITY_RANK[input.complexity] > COMPLEXITY_RANK[existing.complexity] ? input.complexity : existing.complexity;
   const target: Target = { kind: input.targetKind, id: input.targetId };
   const rec: Triage = {
     target,
-    importance: input.importance,
+    importance,
+    complexity,
     likely: !human, // a human sets a confirmed tier; agents/graph propose
     tripwire: input.tripwire ?? existing?.tripwire,
     source: input.source,
@@ -88,7 +147,7 @@ export async function setTriage(
   };
   ts.triage = ts.triage.filter((t) => !sameTarget(t, input.targetKind, input.targetId)).concat(rec);
   await writeTriage(root, ts.triage);
-  return { ok: true, importance: rec.importance, likely: rec.likely };
+  return { ok: true, importance: rec.importance, complexity: rec.complexity, likely: rec.likely };
 }
 
 /** Remove a target's triage (back to untriaged). Human-only in practice — it lowers. */
@@ -101,7 +160,8 @@ export async function clearTriage(root: string, input: { targetKind: "node" | "a
 }
 
 export interface TriageInfo {
-  importance: Importance | null; // null = untriaged
+  importance: Importance | null; // null = untriaged (stakes)
+  complexity?: Complexity; // verification difficulty (review depth)
   likely: boolean;
   source?: TriageSource;
   reason?: string;
@@ -146,15 +206,18 @@ export async function reviewTriageFor(root: string, targets: Target[]): Promise<
     if (!tri) {
       triage = { importance: null, likely: false, severity: "untriaged", bar: null };
     } else {
-      const sev = triageSeverity(tri.importance, { read, signed });
+      const importance = normImportance(tri.importance);
+      const complexity = tri.complexity ?? DEFAULT_COMPLEXITY;
+      const sev = triageSeverity(importance, complexity, { read, signed });
       triage = {
-        importance: tri.importance,
+        importance,
+        complexity: tri.complexity,
         likely: tri.likely,
         source: tri.source,
         reason: tri.reason,
         tripwire: tri.tripwire,
         severity: sev,
-        bar: sev === "complete" ? null : barFor(tri.importance),
+        bar: sev === "complete" ? null : barFor(complexity),
       };
     }
     out.set(k, { review: vp, viewed: vw, triage });
@@ -228,16 +291,16 @@ function structuralImportance(type: string, emitsEvent: boolean): { importance: 
   if (emitsEvent) return { importance: "important", reason: "emits a domain event" };
   if (type === "command" || type === "handler" || type === "aggregate" || type === "event_family")
     return { importance: "important", reason: `${type} — domain core` };
-  if (type === "projection") return { importance: "mechanical", reason: "projection (read model)" };
+  if (type === "projection") return { importance: "low", reason: "projection (read model)" };
   return null;
 }
 
 /**
- * Derive `likely` stakes across the graph. Money-name → business-critical; structural
- * spine → important; projection → mechanical; then proximity (an untriaged node sharing
- * a top-namespace with a derived important/BC node inherits `important`); then anchors
- * inherit the max stakes of their citing nodes. Never overrides a human mark, only
- * raises over an existing agent mark.
+ * Derive `likely` stakes AND complexity across the graph. Stakes: money-name →
+ * business-critical; structural spine → important; projection → low; proximity;
+ * anchors inherit the max stakes of citing nodes. Complexity: read off each anchor's
+ * live source (cyclomatic-ish, `complexityOf`) — a node takes its meatiest anchor's.
+ * Raise-only ratchet per axis; never overrides a human mark (unless its code drifted).
  */
 export async function deriveTriage(root: string): Promise<{ derived: number; byImportance: Record<string, number>; escalated: number }> {
   const [nodes, graph, store, ts] = await Promise.all([loadNodes(root), readGraph(root), readAnchorStore(root), readTriage(root)]);
@@ -246,6 +309,23 @@ export async function deriveTriage(root: string): Promise<{ derived: number; byI
   const nodeAnchors = new Map(nodes.map((n) => [n.id, n.anchors]));
   const emitters = new Set<string>();
   for (const e of graph.edges) if (e.type === "emits") emitters.add(e.from);
+
+  // Per-anchor complexity from live source (cyclomatic-ish). Read+index each file once.
+  const anchorCx = new Map<string, Complexity>();
+  const files = [...new Set(store.anchors.map((a) => a.file))];
+  await Promise.all(files.map(async (f) => {
+    try {
+      const src = await readFile(join(root, f), "utf8");
+      for (const a of await indexFile(join(root, f), f)) {
+        if (a.loc) anchorCx.set(a.id, complexityOf(src.slice(a.loc.startByte, a.loc.endByte)));
+      }
+    } catch { /* file gone */ }
+  }));
+  const nodeCx = (anchors: string[]): Complexity | undefined => {
+    let best: Complexity | undefined;
+    for (const aid of anchors) { const c = anchorCx.get(aid); if (c && (best === undefined || COMPLEXITY_RANK[c] > COMPLEXITY_RANK[best])) best = c; }
+    return best;
+  };
 
   // Live hashes for every anchor → witness the derived marks (re-triage-on-change) and
   // detect which existing HUMAN marks cover code that has since drifted.
@@ -261,12 +341,17 @@ export async function deriveTriage(root: string): Promise<{ derived: number; byI
 
   const at = new Date().toISOString();
   let escalated = 0;
-  const graphMark = (kind: "node" | "anchor", id: string, importance: Importance, reason: string) => {
+  // Raise-only on BOTH axes: an escalation is any rise in stakes OR complexity.
+  const graphMark = (kind: "node" | "anchor", id: string, importance: Importance, complexity: Complexity | undefined, reason: string) => {
     const k = key(kind, id);
     const ex = result.get(k);
+    const exImp = ex ? normImportance(ex.importance) : undefined;
     let note = reason;
+    let imp = importance, cx = complexity;
     if (ex) {
-      if (IMPORTANCE_RANK[importance] <= IMPORTANCE_RANK[ex.importance]) return; // ratchet: raise-only
+      const raisesImp = IMPORTANCE_RANK[importance] > IMPORTANCE_RANK[exImp!];
+      const raisesCx = complexity !== undefined && (ex.complexity === undefined || COMPLEXITY_RANK[complexity] > COMPLEXITY_RANK[ex.complexity]);
+      if (!raisesImp && !raisesCx) return; // nothing new to add
       if (ex.source === "human") {
         // A human mark is authoritative UNLESS its code drifted since they set it —
         // then a higher derivation is a legitimate re-escalation ("grew teeth"): it
@@ -275,19 +360,21 @@ export async function deriveTriage(root: string): Promise<{ derived: number; byI
         note = `${reason} (code changed since you triaged — re-confirm)`;
         escalated++;
       }
+      imp = raisesImp ? importance : exImp!; // keep the higher of each axis
+      cx = raisesCx ? complexity : ex.complexity;
     }
-    result.set(k, { target: { kind, id }, importance, likely: true, source: "graph", reason: note, at, witnesses: witnessesOf(kind, id) });
+    result.set(k, { target: { kind, id }, importance: imp, complexity: cx, likely: true, source: "graph", reason: note, at, witnesses: witnessesOf(kind, id) });
   };
 
   const nodeMoney = (n: { title: string; summary?: string; anchors: string[] }) =>
     MONEY_RX.test(`${n.title} ${n.summary ?? ""} ${n.anchors.map((a) => symById.get(a) ?? "").join(" ")}`);
 
-  // Pass 1: per-node money + structural signals.
+  // Pass 1: per-node money + structural signals. Complexity = the node's meatiest anchor.
   for (const n of nodes) {
-    if (nodeMoney(n)) graphMark("node", n.id, "business-critical", "handles money/value");
+    if (nodeMoney(n)) graphMark("node", n.id, "business-critical", nodeCx(n.anchors), "handles money/value");
     else {
       const s = structuralImportance(n.type, emitters.has(n.id));
-      if (s) graphMark("node", n.id, s.importance, s.reason);
+      if (s) graphMark("node", n.id, s.importance, nodeCx(n.anchors), s.reason);
     }
   }
 
@@ -302,29 +389,30 @@ export async function deriveTriage(root: string): Promise<{ derived: number; byI
   const hotNs = new Set<string>();
   for (const n of nodes) {
     const imp = result.get(key("node", n.id))?.importance;
-    if (imp && imp !== "mechanical") { const ns = nodeNs(n); if (ns) hotNs.add(ns); }
+    if (imp && normImportance(imp) !== "low") { const ns = nodeNs(n); if (ns) hotNs.add(ns); }
   }
   for (const n of nodes) {
     if (result.has(key("node", n.id))) continue; // already has a stake
     const ns = nodeNs(n);
-    if (ns && hotNs.has(ns)) graphMark("node", n.id, "important", "in a high-stakes module");
+    if (ns && hotNs.has(ns)) graphMark("node", n.id, "important", nodeCx(n.anchors), "in a high-stakes module");
   }
 
-  // Pass 3: anchors inherit the max stakes among their citing nodes.
+  // Pass 3: anchors inherit the max stakes among their citing nodes; complexity is their own.
   const citingImp = new Map<string, Importance>();
   for (const n of nodes) {
     const imp = result.get(key("node", n.id))?.importance;
     if (!imp) continue;
+    const ni = normImportance(imp);
     for (const aid of n.anchors) {
       const cur = citingImp.get(aid);
-      if (!cur || IMPORTANCE_RANK[imp] > IMPORTANCE_RANK[cur]) citingImp.set(aid, imp);
+      if (!cur || IMPORTANCE_RANK[ni] > IMPORTANCE_RANK[cur]) citingImp.set(aid, ni);
     }
   }
-  for (const [aid, imp] of citingImp) graphMark("anchor", aid, imp, "inherited from a citing node");
+  for (const [aid, imp] of citingImp) graphMark("anchor", aid, imp, anchorCx.get(aid), "inherited from a citing node");
 
   const triage = [...result.values()];
   await writeTriage(root, triage);
-  const byImportance = triage.reduce<Record<string, number>>((m, t) => ((m[t.importance] = (m[t.importance] ?? 0) + 1), m), {});
+  const byImportance = triage.reduce<Record<string, number>>((m, t) => ((m[normImportance(t.importance)] = (m[normImportance(t.importance)] ?? 0) + 1), m), {});
   const derived = triage.filter((t) => t.source === "graph").length;
   return { derived, byImportance, escalated };
 }
@@ -353,7 +441,7 @@ export async function triageDrift(root: string): Promise<TriageDrift[]> {
   const out: TriageDrift[] = [];
   for (const t of ts.triage) {
     const drift = witnessDrift(t.witnesses, live);
-    if (drift.length) out.push({ target: t.target, importance: t.importance, source: t.source, tripwire: !!t.tripwire, reason: t.reason, drift });
+    if (drift.length) out.push({ target: t.target, importance: normImportance(t.importance), source: t.source, tripwire: !!t.tripwire, reason: t.reason, drift });
   }
   return out;
 }

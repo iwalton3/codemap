@@ -170,7 +170,7 @@ const server = createServer(async (req, res) => {
           ? ops.deriveTriage(root)
           : body.clear
             ? ops.clearTriage(root, { targetKind: body.targetKind, targetId: body.targetId })
-            : ops.setTriage(root, { targetKind: body.targetKind, targetId: body.targetId, importance: body.importance, source: "human", reason: body.reason, tripwire: body.tripwire }),
+            : ops.setTriage(root, { targetKind: body.targetKind, targetId: body.targetId, importance: body.importance, complexity: body.complexity, source: "human", reason: body.reason, tripwire: body.tripwire }),
       );
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(out));

@@ -426,12 +426,22 @@ export interface ReviewStore {
 // looked at). Agents/graph may only *raise* stakes (`likely`); a human owns lowering.
 // ---------------------------------------------------------------------------
 
-export type Importance = "business-critical" | "important" | "mechanical";
+// Stakes — blast radius if wrong. NOT how hard it is to verify (that's `Complexity`).
+// Legacy stores may carry "mechanical" here (the old low-stakes tier) → normalized to
+// "low" on read; see triage.ts normImportance.
+export type Importance = "business-critical" | "important" | "low";
+// Complexity — how much careful thought it takes to verify the code is correct,
+// independent of stakes. `deep` subtle logic · `standard` real but tractable ·
+// `rote` a mechanical/checklist verification (e.g. authz: right permission + AuthCheck
+// on the right entity) · `wiring` pure plumbing (DTO map, projection fold).
+export type Complexity = "deep" | "standard" | "rote" | "wiring";
 export type TriageSource = "graph" | "agent" | "human";
 
 export interface Triage {
   target: { kind: "node" | "anchor"; id: string };
-  importance: Importance;
+  importance: Importance; // stakes (blast radius)
+  /** Verification difficulty (review depth), orthogonal to stakes. Absent = untriaged complexity. */
+  complexity?: Complexity;
   /** Agent/graph proposal, not yet confirmed by a human. A human mark is never `likely`. */
   likely: boolean;
   /** Alert-on-change, independent of the review bar (see docs/triage.md). */

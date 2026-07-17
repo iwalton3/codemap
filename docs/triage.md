@@ -21,22 +21,45 @@ triage *needs* the `viewed` state, because the whole severity model turns on the
 gap between *unread* and *read-but-unsigned*. Without `viewed` you can't tell them
 apart, and the matrix below collapses.
 
-## Two axes → severity
+## Three factors → severity
 
-Severity is a function of two independent things:
+Severity is a function of three independent things:
 
-1. **Importance** — the stakes of the anchor (blast radius if wrong).
-2. **Review gap** — how far the *live* attestation falls short of what the tier needs.
+1. **Stakes** (`importance`) — blast radius if wrong.
+2. **Complexity** — how much careful thought it takes to *verify* the code is
+   correct, independent of stakes. (Added after the Settlement finding below.)
+3. **Review gap** — how far the *live* attestation falls short of what the bar needs.
 
-### Importance tiers
+> **Why complexity is its own axis (the Settlement finding).** The original model had
+> one `importance` axis and called it blast-radius — but its `mechanical` tier was
+> really defined by *verification difficulty* ("no logic to get wrong, only to wire"),
+> not stakes. That conflation is invisible until stakes and complexity **diverge**,
+> which is a money-everywhere codebase: a money-touching DTO map is high-blast-radius
+> *and* trivial to verify, but the single axis can only say one thing, so the safe
+> direction (money → business-critical) wins and *everything* becomes `critical`. The
+> signal that routes attention — "this is the meaty part, that's just plumbing" — is
+> exactly what collapsed. Splitting the axes restores it, and the two lean on different
+> strengths: **stakes** is graph-derived (blast-radius oracle), **complexity** is read
+> off code shape (which an agent/AST is actually good at).
 
-Three tiers, each its own rung (Business Critical and Important are **not** merged):
+### Stakes tiers (blast radius)
 
 | tier | meaning | example |
 |---|---|---|
-| **Business Critical** | an error moves money, gates a business process, or is otherwise unrecoverable | summing currency; a settlement gate; an authz boundary |
-| **Important** | real business logic, consequential but recoverable | a projection with branching rules; a validation path |
-| **Mechanical** | plumbing — no business logic to get *wrong*, only to *wire* | copy attributes into a projection; a DTO map; a log formatter |
+| **business-critical** | an error moves money, gates a business process, or is otherwise unrecoverable | summing currency; a settlement gate; an authz boundary |
+| **important** | real business logic, consequential but recoverable | a projection with branching rules; a validation path |
+| **low** | no real business consequence | a log formatter; an internal-only helper |
+
+(Legacy stores used `mechanical` for the low-stakes tier; it is normalized to `low`.)
+
+### Complexity tiers (verification difficulty → review depth)
+
+| tier | meaning | example |
+|---|---|---|
+| **deep** | subtle logic; needs careful thought to verify | fee/proration arithmetic with branching; a state machine |
+| **standard** | real but tractable logic; a normal careful read | a validation path; a branching projection |
+| **rote** | a mechanical/checklist verification | authz: is the permission right + did we AuthCheck the right entity |
+| **wiring** | pure plumbing; a glance confirms it's connected | a DTO map; a projection attribute-fold; a log formatter |
 
 Two qualifiers ride on top of the tier:
 
@@ -65,37 +88,51 @@ respects a human mark (no new evidence, so re-runs don't nag) — a *deliberate*
 evidence escalates via `triage`, and code-change-driven re-escalation is the witnessed
 Phase-4 path.
 
+### The bar (what "review-complete" needs) — driven by complexity
+
+| complexity | bar to be complete |
+|---|---|
+| deep / standard / rote | `signed` (a vouch — you reasoned it through / confirmed the check) |
+| wiring | `viewed` (a glance is enough; sign-off on plumbing is wasted golden-window) |
+
 ### The severity matrix
 
-Reusing `BugSeverity` (`low | medium | high | critical`) so triage severity and bug
-severity read on one scale:
+`severity = stakes × complexity × review-gap`, on the `BugSeverity` scale
+(`low | medium | high | critical`). Two tables (the authority):
 
-| importance | **unread** (no live `viewed`) | **read but unsigned** |
-|---|---|---|
-| **Business Critical** | `critical` | `high` |
-| **Important** | `high` | `medium` |
-| **Mechanical** | `low` | — (sign-off not required) |
+**Unread** (no live `viewed` — the blind spot):
 
-Two principles generate the shape, and the table is the authority where they don't
-fully agree:
+| stakes ↓ \ complexity → | deep | standard | rote | wiring |
+|---|---|---|---|---|
+| **business-critical** | `critical` | `high` | `medium` | `medium`ᶠ |
+| **important** | `high` | `medium` | `medium`ᶠ | `medium`ᶠ |
+| **low** | `medium` | `low` | `low` | `low` |
 
-1. **Unread outranks unsigned, at every tier.** This is the non-obvious core, and it
-   inverts the naive read ("signing is the higher bar, so missing it must be worse").
-   It isn't: a read-but-unsigned anchor has already had human eyes and intuition on
-   it — the danger has been *sampled*. An **unread** anchor is a blind spot. Severity
-   tracks the *exposure* gap, and the emergency is high-stakes code **no human has
-   looked at**. The incident-room test: *"what do you mean you didn't read the code at
-   all"* is the sentence this whole system exists so you never have to hear.
-2. **Higher stakes raise the baseline.** Same gap, more stakes → more severe.
+**Read but unsigned** (eyes were on it — danger sampled → one notch down; where the bar
+is only `viewed`, a read = `complete`):
 
-Consequences worth stating explicitly:
+| stakes ↓ \ complexity → | deep | standard | rote | wiring |
+|---|---|---|---|---|
+| **business-critical** | `high` | `medium` | `medium`ᶠ | ✓ complete |
+| **important** | `medium` | `medium`ᶠ | `medium`ᶠ | ✓ complete |
+| **low** | `low` | `low` | `low` | ✓ complete |
 
-- **Mechanical needs only a read, never a sign-off.** There's nothing complicated to
-  verify; a cheap `viewed` pass clears it (and even that is only `low` if skipped).
-  Sign-off on plumbing is wasted golden-window.
-- **The Business-Critical blind spot is the top of the worklist.** BC + unread =
-  `critical` = drop everything. It's the single state the whole system exists to
-  surface before you ship.
+ᶠ = the **floor**: while any gap remains, business-critical / important never rank below
+`medium` (a stake you've left unreviewed always deserves attention, even if it's quick
+to clear). Signing → `complete` at any complexity.
+
+Principles the tables encode:
+
+1. **Unread outranks unsigned.** A read-but-unsigned anchor has had human eyes on it —
+   the danger was *sampled*; an unread anchor is a blind spot. *"What do you mean you
+   didn't read the code at all"* is the sentence this system exists so you never hear.
+2. **Complexity, not stakes, sets how much depth the gap represents.** Only
+   business-critical **+ deep + unread** reaches `critical` (the meaty money logic no
+   one has read — drop everything). Money code that's just **wiring** is `medium` and a
+   glance clears it: the money-everywhere wall-of-critical collapses to a real ranking.
+3. **Stakes still guards the floor and the tripwire.** High-stakes code never falls out
+   of view while unreviewed, and (below) it can still page you on change regardless of
+   how little review depth it needs.
 
 ### Staleness composes for free
 
@@ -183,13 +220,16 @@ Coverage becomes a **severity distribution**, not a single %:
 - **Universe:** the same rollup at the top ("2 critical, 5 high, 11 medium, …") —
   the dashboard "needs attention" landing already has the shape.
 
-**Review-complete (per anchor)** = live attestation meets the tier's bar:
+**Review-complete (per anchor)** = live attestation meets the bar, which is now set by
+**complexity** (not stakes):
 
-| tier | bar to be complete |
+| complexity | bar to be complete |
 |---|---|
-| Mechanical | `viewed` (agent `checked` + standing invariants also clears the floor) |
-| Important | `signed` |
-| Business Critical | `signed` (+ tripwire armed) |
+| wiring | `viewed` (a glance; agent `checked` + standing invariants also clears the floor) |
+| rote / standard / deep | `signed` |
+
+High-stakes code additionally wants its **tripwire** armed once signed — but that's the
+orthogonal alert job below, not part of the review bar.
 
 A **flow/PR is review-complete** when every anchor it touches is complete. That is the
 number that answers "am I actually done reviewing this 20k-line change?" — which a raw
@@ -203,11 +243,13 @@ Triage is a **classification on the anchor**, not a review level — a property 
 a `Review` row.
 
 ```ts
-export type Importance = "business-critical" | "important" | "mechanical";
+export type Importance = "business-critical" | "important" | "low"; // stakes (blast radius)
+export type Complexity = "deep" | "standard" | "rote" | "wiring";   // verification difficulty
 
 export interface Triage {
   target: { kind: "anchor" | "node"; id: string };
-  importance: Importance;
+  importance: Importance;       // stakes
+  complexity?: Complexity;      // review depth — orthogonal to stakes (raise-only ratchet, per axis)
   likely: boolean;              // agent-proposed, unconfirmed by a human
   tripwire?: boolean;           // alert-on-change, independent of the review bar
   source: "graph" | "agent" | "human";

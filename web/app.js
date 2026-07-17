@@ -98,13 +98,13 @@ const postReview = (u, targetKind, targetId, level, unmark, attestation) =>
 // Stakes triage (human source → confirmed tier). `body` = { importance } or { clear:true }.
 const postTriage = (u, targetKind, targetId, body) =>
   fetch('/api/triage', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, targetKind, targetId, ...body }) });
-// Severity = stakes × review-gap (docs/triage.md). Chip labels the worst outstanding gap.
+// Severity = stakes × complexity × review-gap (docs/triage.md). Chip = worst outstanding gap.
 const sevChip = (t) => {
   if (!t) return html``;
   const sev = t.severity;
   const label = sev === 'complete' ? 'review-complete' : sev === 'untriaged' ? 'needs triage' : `${sev}${t.bar ? ' · needs ' + t.bar : ''}`;
   const imp = t.importance ? t.importance + (t.likely ? ' (likely)' : '') : 'untriaged';
-  return html`<span class="tchip" style="background:${SEV_COLOR[sev] || '#3a4250'};color:#0d1117;font-weight:600" title="stakes: ${imp} · severity: ${sev}${t.reason ? ' · ' + t.reason : ''}">${label}</span>`;
+  return html`<span class="tchip" style="background:${SEV_COLOR[sev] || '#3a4250'};color:#0d1117;font-weight:600" title="stakes: ${imp} · complexity: ${t.complexity || '—'} · severity: ${sev}${t.reason ? ' · ' + t.reason : ''}">${label}</span>`;
 };
 // A small severity dot for dense lists (catalog rows, anchor chips) where a chip is too big.
 const sevDot = (sev) => sev && sev !== 'untriaged' && sev !== 'complete'
@@ -184,10 +184,13 @@ const codeCellBtn = (cr, onOpen) => {
   const cls = st === 'reviewed' ? 'on' : st === 'stale' ? 'stale' : '';
   return html`<button class="${cls}" title="${codeTip(cr)}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onOpen(); }}">${codeMark(cr)}</button>`;
 };
+// Two axes: `stakes` (blast radius) and `complexity` (verification difficulty) — set
+// independently. onSet receives a patch: { importance } | { complexity } | { clear:true }.
 const triageRowEl = (triage, onSet, onTripwire) => {
-  const cur = triage && triage.importance;
-  const btn = (imp, label) => html`<button class="${cur === imp ? 'on' : ''}" title="set stakes: ${imp}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onSet(imp); }}">${label}</button>`;
-  return html`<span class="rev" style="align-items:center"><span style="margin-right:4px;color:#8b949e">stakes:</span>${btn('business-critical', 'business-critical')}${btn('important', 'important')}${btn('mechanical', 'mechanical')}${when(cur, () => html`<button title="clear stakes" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onSet(null); }}">✕</button>`)}${sevChip(triage)}${when(cur && onTripwire, () => html`<button class="${triage.tripwire ? 'checked' : ''}" title="${triage.tripwire ? 'tripwire armed — alert if this code changes (click to disarm)' : 'arm tripwire — alert me the instant this code changes'}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onTripwire(!triage.tripwire); }}">🔔</button>`)}${when(triage && triage.likely, () => html`<span style="color:#58a6ff;font-size:12px" title="agent proposal — click a tier to confirm">· likely</span>`)}</span>`;
+  const cur = triage && triage.importance, ccur = triage && triage.complexity;
+  const sbtn = (imp, label) => html`<button class="${cur === imp ? 'on' : ''}" title="set stakes (blast radius): ${imp}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onSet({ importance: imp }); }}">${label}</button>`;
+  const cbtn = (cx, label, tip) => html`<button class="${ccur === cx ? 'on' : ''}" title="set complexity (review depth): ${cx} — ${tip}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onSet({ complexity: cx }); }}">${label}</button>`;
+  return html`<span class="rev" style="align-items:center;flex-wrap:wrap;gap:6px"><span style="color:#8b949e">stakes:</span>${sbtn('business-critical', 'business-critical')}${sbtn('important', 'important')}${sbtn('low', 'low')}${when(cur, () => html`<button title="clear triage" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onSet({ clear: true }); }}">✕</button>`)}<span style="color:#8b949e;margin-left:6px">complexity:</span>${cbtn('deep', 'deep', 'subtle logic, needs careful thought')}${cbtn('standard', 'standard', 'real but tractable logic')}${cbtn('rote', 'rote', 'a mechanical/checklist verify')}${cbtn('wiring', 'wiring', 'plumbing — a glance clears it')}${sevChip(triage)}${when(cur && onTripwire, () => html`<button class="${triage.tripwire ? 'checked' : ''}" title="${triage.tripwire ? 'tripwire armed — alert if this code changes (click to disarm)' : 'arm tripwire — alert me the instant this code changes'}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onTripwire(!triage.tripwire); }}">🔔</button>`)}${when(triage && triage.likely, () => html`<span style="color:#58a6ff;font-size:12px" title="agent proposal — click a tier to confirm">· likely</span>`)}</span>`;
 };
 const postAnnotate = (u, targetKind, targetId, text, kind, line) =>
   fetch('/api/annotate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, targetKind, targetId, text, kind, line, author: 'human' }) });
@@ -519,8 +522,8 @@ class AnchorPage extends Component {
     this.load.run();
   }
   // Human triage: sets a *confirmed* tier (raise or lower — a person owns lowering).
-  async triage(importance) {
-    await postTriage(this.props.params.universe, 'anchor', this.state.a.id, importance ? { importance } : { clear: true });
+  async triage(patch) {
+    await postTriage(this.props.params.universe, 'anchor', this.state.a.id, patch);
     this.load.run();
   }
   async armTripwire(on) {
@@ -578,7 +581,7 @@ class NodePage extends Component {
       ${when(open, () => !c ? html`<div class="loading" style="padding:6px 0">loading…</div>` : codeReviewLines(this, u, a.id, c.code, c.lang, presetLine, a.annotations))}
     </div>`;
   }
-  async triageNode(importance) { await postTriage(this.props.params.universe, 'node', this.props.params.id, importance ? { importance } : { clear: true }); this.load.run(); }
+  async triageNode(patch) { await postTriage(this.props.params.universe, 'node', this.props.params.id, patch); this.load.run(); }
   async armTripwireNode(on) { await postTriage(this.props.params.universe, 'node', this.props.params.id, { importance: this.state.n.triage.importance, tripwire: on }); this.load.run(); }
   async confirm() { await postConfirm(this.props.params.universe, this.props.params.id); this.load.run(); }
   async ackHole() { await postAckHole(this.props.params.universe, this.props.params.id); this.load.run(); }
