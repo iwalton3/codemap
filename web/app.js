@@ -149,7 +149,10 @@ const markBtnEl = (attestation, info, onMark) => {
 };
 const reviewRowEl = (review, viewed, onMark, level = 'code') => {
   const sign = review && review[level], view = viewed && viewed[level];
-  return html`<span class="rev">${markBtnEl('viewed', view, onMark)}${markBtnEl('signed', sign, onMark)}${when(sign && sign.state === 'stale', () => html`<span class="hint" style="margin-left:6px;color:#f0a35e">⚠ sign-off stale</span>`)}</span>`;
+  // Signing is a stronger act than viewing, so a sign-off implies you viewed it:
+  // once signed, drop the now-redundant viewed button and show only the sign-off.
+  const signed = sign && sign.state === 'reviewed';
+  return html`<span class="rev">${when(!signed, () => markBtnEl('viewed', view, onMark))}${markBtnEl('signed', sign, onMark)}${when(sign && sign.state === 'stale', () => html`<span class="hint" style="margin-left:6px;color:#f0a35e">⚠ sign-off stale</span>`)}</span>`;
 };
 // A node's code review is DERIVED from the code reviews of the segments it cites
 // (server: deriveCodeReview) — a read-only rollup, never a one-click "I signed the
