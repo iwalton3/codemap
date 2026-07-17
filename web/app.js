@@ -20,6 +20,20 @@ async function api(path, params = {}) {
   return r.json();
 }
 
+// One stable <main> literal for every page. vdx tears down and rebuilds a
+// component's whole subtree whenever template()'s top-level literal changes
+// identity (see the framework's isSameCompiled) — so returning a *distinct*
+// `html<main>…` for the loading, error, and loaded states deletes and re-creates
+// the page node on each transition, which resets the window scroll position.
+// Routing every page through this single literal keeps the page node stable and
+// patches content in place instead. The loading placeholder shows only while
+// there is no data yet, so an in-place refetch (mark / verify / triage) never
+// collapses the page and loses scroll; pages null out their data in propsChanged
+// so a genuine navigation still shows loading and starts back at the top.
+const pageShell = (data, error, body) =>
+  html`<main>${when(!data, () => html`<div class="loading">loading…</div>`,
+    () => when(error, () => html`<div class="empty">${error}</div>`, body))}</main>`;
+
 class NavStore extends Store {
   constructor() { super(); this.state = { universes: [], current: null }; }
   async load() { if (this.state.universes.length) return; this.state.universes = (await api('/api/universes')).universes; }
@@ -32,6 +46,7 @@ const dashUrl = (u) => `/u/${u}/`;
 const goTree = (u, prefix) => router.navigate(`/u/${u}/tree/` + (prefix ? prefix + '/' : ''));
 const anchorUrl = (u, id) => `/u/${u}/anchor/${id}/`;
 const nodeUrl = (u, id) => `/u/${u}/node/${id}/`;
+const nodeReviewUrl = (u, id) => `/u/${u}/node/${id}/review/`;
 const graphUrl = (u, id) => `/u/${u}/graph/${id}/`;
 
 const barColor = (pct) => pct === 0 ? '#3a4250' : `hsl(${Math.round(pct * 1.2)}, 55%, 48%)`;
@@ -132,17 +147,47 @@ const markBtnEl = (attestation, info, onMark) => {
   const tip = `${attestation}: ${st}${st === 'stale' ? ' — code changed, click to re-approve at the live hash' : st === 'unreviewed' ? ' — click to mark' : ' — click to clear'}`;
   return html`<button class="${cls}" title="${tip}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onMark(attestation, st); }}">${attestation}${mk}</button>`;
 };
-const reviewRowEl = (review, viewed, onMark) => {
-  const sign = review && review.code, view = viewed && viewed.code;
+const reviewRowEl = (review, viewed, onMark, level = 'code') => {
+  const sign = review && review[level], view = viewed && viewed[level];
   return html`<span class="rev">${markBtnEl('viewed', view, onMark)}${markBtnEl('signed', sign, onMark)}${when(sign && sign.state === 'stale', () => html`<span class="hint" style="margin-left:6px;color:#f0a35e">⚠ sign-off stale</span>`)}</span>`;
+};
+// A node's code review is DERIVED from the code reviews of the segments it cites
+// (server: deriveCodeReview) — a read-only rollup, never a one-click "I signed the
+// node's code". You reach "code reviewed" only by reading & signing each segment.
+const codeRollupEl = (cr) => {
+  if (!cr || !cr.total) return html`<span class="dim" style="font-size:12px">code: no reviewable segments</span>`;
+  const c = cr.state === 'reviewed' ? '#7ee787' : cr.state === 'stale' ? '#f0a35e' : '#8b949e';
+  const label = cr.state === 'reviewed' ? `code reviewed — all ${cr.total} segment${cr.total === 1 ? '' : 's'} signed`
+    : `code: ${cr.signed}/${cr.total} segment${cr.total === 1 ? '' : 's'} signed${cr.stale ? ` · ${cr.stale} stale` : ''}`;
+  return html`<span class="rev" style="align-items:center;gap:6px"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${c}"></span><span style="color:${c}">${label}</span>${when(cr.state !== 'reviewed', () => html`<span class="dim" style="font-size:12px">— read &amp; sign each segment below</span>`)}</span>`;
+};
+// Client-side rollup of a node's cited segments, from the same resolvedAnchors the
+// node page renders below — so the summary can't disagree with the list, and it
+// still works if the server predates the `codeReview` field. Mirrors server
+// deriveCodeReview (reviews.ts). Missing (renamed/removed) anchors are excluded.
+const deriveCode = (anchors) => {
+  const seg = (anchors || []).filter(a => !a.missing && a.review && a.review.code);
+  const total = seg.length;
+  const signed = seg.filter(a => a.review.code.state === 'reviewed').length;
+  const stale = seg.filter(a => a.review.code.state === 'stale').length;
+  return { state: total === 0 ? 'unreviewed' : stale ? 'stale' : signed === total ? 'reviewed' : 'unreviewed', signed, total, stale };
+};
+// Compact derived-code indicator for dense list rows (catalog, matrix). Read-only
+// rollup — code review is per-segment, so it opens the node rather than signing.
+const codeMark = (cr) => (!cr || !cr.total) ? 'C' : cr.state === 'reviewed' ? 'C✓' : cr.state === 'stale' ? 'C⚠' : `C ${cr.signed}/${cr.total}`;
+const codeTip = (cr) => (!cr || !cr.total) ? 'no reviewable code segments' : `code: ${cr.signed}/${cr.total} segment${cr.total === 1 ? '' : 's'} signed${cr.stale ? ' · ' + cr.stale + ' stale' : ''} — open to read & sign each`;
+const codeCellBtn = (cr, onOpen) => {
+  const st = cr ? cr.state : 'unreviewed';
+  const cls = st === 'reviewed' ? 'on' : st === 'stale' ? 'stale' : '';
+  return html`<button class="${cls}" title="${codeTip(cr)}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onOpen(); }}">${codeMark(cr)}</button>`;
 };
 const triageRowEl = (triage, onSet, onTripwire) => {
   const cur = triage && triage.importance;
   const btn = (imp, label) => html`<button class="${cur === imp ? 'on' : ''}" title="set stakes: ${imp}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onSet(imp); }}">${label}</button>`;
   return html`<span class="rev" style="align-items:center"><span style="margin-right:4px;color:#8b949e">stakes:</span>${btn('business-critical', 'business-critical')}${btn('important', 'important')}${btn('mechanical', 'mechanical')}${when(cur, () => html`<button title="clear stakes" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onSet(null); }}">✕</button>`)}${sevChip(triage)}${when(cur && onTripwire, () => html`<button class="${triage.tripwire ? 'checked' : ''}" title="${triage.tripwire ? 'tripwire armed — alert if this code changes (click to disarm)' : 'arm tripwire — alert me the instant this code changes'}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onTripwire(!triage.tripwire); }}">🔔</button>`)}${when(triage && triage.likely, () => html`<span style="color:#58a6ff;font-size:12px" title="agent proposal — click a tier to confirm">· likely</span>`)}</span>`;
 };
-const postAnnotate = (u, targetKind, targetId, text, kind) =>
-  fetch('/api/annotate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, targetKind, targetId, text, kind, author: 'human' }) });
+const postAnnotate = (u, targetKind, targetId, text, kind, line) =>
+  fetch('/api/annotate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, targetKind, targetId, text, kind, line, author: 'human' }) });
 const postResolveAnnotation = (u, id, resolved) =>
   fetch('/api/annotation_resolve', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id, resolved }) });
 
@@ -165,6 +210,55 @@ function annoThread(c, u, targetKind, targetId, items) {
       <textarea placeholder="leave a note or ask a question about this ${targetKind}…" on-input="${(e) => { c._draft = e.target.value; }}">${c._draft || ''}</textarea>
       <div class="annobtns"><button on-click="${() => submitAnno(c, u, targetKind, targetId, 'note')}">add note</button><button class="q" on-click="${() => submitAnno(c, u, targetKind, targetId, 'question')}">ask question</button></div>
     </div>`;
+}
+// Line-pinned findings, shared across every code-review surface (review page, flow
+// snippets, node segments, file modal). A finding = an anchor note (kind 'note') with
+// a line; raising one logs a durable action item and never blocks sign-off. You
+// raise one by hovering a code line and clicking 💬 — no line-number input. The one
+// open form's key is `c.state.finding` = `anchorId#line`; per-line draft text lives
+// in non-reactive `c._fdrafts` (no focus loss with many blocks on a page). Mutations
+// reload the host via `c.load.run()` (+ `refreshFile` if the file modal is open).
+const findingKey = (anchorId, line) => anchorId + '#' + (line ?? '');
+const openFindingForm = (c, anchorId, line) => { c.state.finding = findingKey(anchorId, line); };
+const closeFindingForm = (c) => { c.state.finding = null; };
+const openFindingCount = (annotations) => (annotations || []).filter(a => !a.resolved && (a.kind || 'note') === 'note').length;
+async function raiseFinding(c, u, anchorId, line) {
+  const key = findingKey(anchorId, line);
+  const text = (c._fdrafts?.[key] || '').trim(); if (!text) return;
+  await postAnnotate(u, 'anchor', anchorId, text, 'note', Number.isFinite(line) ? line : undefined);
+  if (c._fdrafts) c._fdrafts[key] = '';
+  c.state.finding = null;
+  await c.load.run(); if (c.refreshFile && c.state.file) await c.refreshFile();
+}
+async function toggleFinding(c, u, id, resolved) { await postResolveAnnotation(u, id, resolved); await c.load.run(); if (c.refreshFile && c.state.file) await c.refreshFile(); }
+const findingItemEl = (c, u, f) => html`<div class="rvfind ${f.resolved ? 'resolved' : ''}"><span class="rvfpin" title="${f.line ? 'line ' + f.line : 'note'}">${f.line ? '↳' + f.line : '✎'}</span><span class="rvftext">${f.text}</span><span class="dim rvfauthor">${f.author || 'agent'}</span><button class="annores" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); toggleFinding(c, u, f.id, !f.resolved); }}">${f.resolved ? 'reopen' : 'resolve'}</button></div>`;
+const findingForm = (c, u, anchorId, line) => {
+  if (!c._fdrafts) c._fdrafts = {};
+  const key = findingKey(anchorId, line);
+  return html`<div class="rvaddf"><span class="rvfpin">${line ? '↳' + line : '✎'}</span><input class="rvftextin" placeholder="finding / action item — sign-off still allowed" value="${c._fdrafts[key] || ''}" on-input="${(e) => { c._fdrafts[key] = e.target.value; }}" on-keydown="${(e) => { if (e.key === 'Enter') raiseFinding(c, u, anchorId, line); else if (e.key === 'Escape') closeFindingForm(c); }}"><button on-click="${() => raiseFinding(c, u, anchorId, line)}">raise</button><button class="ghost" on-click="${() => closeFindingForm(c)}">cancel</button></div>`;
+};
+// Render one anchor's source line-by-line (absolute line numbers from `startLine`)
+// with a hover 💬 per line that raises a finding pinned to that exact line; existing
+// findings render inline under their line, unlocated notes below. `c.load.run()` must
+// refresh the annotations this reads (server carries per-anchor `annotations`).
+function codeReviewLines(c, u, anchorId, code, lang, startLine, annotations) {
+  if (code == null) return html`<pre class="code rvcode">(source unavailable — anchor renamed/removed?)</pre>`;
+  const base = startLine || 1;
+  const byLine = new Map(); const noLine = [];
+  for (const a of (annotations || [])) { if ((a.kind || 'note') !== 'note') continue; if (a.line) { (byLine.get(a.line) || byLine.set(a.line, []).get(a.line)).push(a); } else noLine.push(a); }
+  const lines = highlightLines(code, lang);
+  return html`<div class="rvpre hljs">
+    ${each(lines, (lineHtml, i) => {
+      const n = base + i;
+      const finds = byLine.get(n) || [];
+      return html`<div class="flrow">
+        <div class="fline"><span class="flno">${n}</span><span class="fltext">${raw(lineHtml)}</span><button class="flcomment" title="raise a finding on line ${n}" on-click="${() => openFindingForm(c, anchorId, n)}">💬</button></div>
+        ${each(finds, f => findingItemEl(c, u, f), f => f.id)}
+        ${when(c.state.finding === findingKey(anchorId, n), () => findingForm(c, u, anchorId, n))}
+      </div>`;
+    }, (lineHtml, i) => i)}
+    ${when(noLine.length, () => html`<div class="rvfinds">${each(noLine, f => findingItemEl(c, u, f), f => f.id)}</div>`)}
+  </div>`;
 }
 const highlight = (code, lang) => {
   if (window.hljs && lang && lang !== 'plaintext') { try { return window.hljs.highlight(code, { language: lang, ignoreIllegals: true }).value; } catch {} }
@@ -278,7 +372,7 @@ class DashboardPage extends Component {
     if (d && d.tripwires) notifyTripwires(u, d.tripwires.fired); // push newly-fired tripwires
   });
   mounted() { this.load.run(); }
-  propsChanged() { this.load.run(); }
+  propsChanged() { this.state.d = null; this.load.run(); }
   canEnableAlerts() { return typeof Notification !== 'undefined' && Notification.permission === 'default'; }
   async enableAlerts() { try { await Notification.requestPermission(); } catch { /* ignore */ } this.load.run(); }
   async resolveQ(id) { await postResolveAnnotation(this.props.params.universe, id, true); this.load.run(); }
@@ -286,13 +380,11 @@ class DashboardPage extends Component {
   stat(label, value, extra) { return html`<div class="dstat"><div class="dsv">${value}</div><div class="dsl">${label}</div>${when(extra, () => html`<div class="dsx">${extra}</div>`)}</div>`; }
   template() {
     const u = this.props.params.universe, d = this.state.d;
-    if (!d || this.load.pending) return html`<main><div class="loading">loading…</div></main>`;
-    if (d.error) return html`<main><div class="empty">${d.error}</div></main>`;
     const nav2 = [
       ['nodes', () => go(nodesUrl(u))], ['matrix', () => go(matrixUrl(u))], ['pipeline', () => go(pipelineUrl(u))],
       ['flows', () => go(flowsUrl(u))], ['bugs', () => go(bugsUrl(u))], ['diff', () => go(diffUrl(u))], ['browse files', () => goTree(u, '')],
     ];
-    return html`<main>
+    return pageShell(d, d && d.error, () => html`
       <div class="crumbs"><b>${u}</b> <span class="sep">·</span> overview${when(d.tripwires && d.tripwires.armed && this.canEnableAlerts(), () => html` <span class="sep">·</span> <button title="get a browser notification when a watched tripwire fires" on-click="${() => this.enableAlerts()}">🔔 enable alerts</button>`)}</div>
       ${when(d.attention > 0, () => html`<div class="attn-banner">
         <span class="attn-n">⚠ ${d.attention}</span>
@@ -358,7 +450,7 @@ class DashboardPage extends Component {
 
       <div class="sec">explore</div>
       <div class="dnav">${each(nav2, x => html`<button on-click="${x[1]}">${x[0]}</button>`, x => x[0])}</div>
-    </main>`;
+    `);
   }
 }
 defineComponent('dashboard-page', DashboardPage);
@@ -415,7 +507,7 @@ class AnchorPage extends Component {
   constructor(props) { super(props); this.state = { a: null }; }
   load = this.createTask(async () => { nav.current = this.props.params.universe; this.state.a = await api('/api/anchor', { u: this.props.params.universe, id: this.props.params.id }); });
   mounted() { this.load.run(); }
-  propsChanged() { this.load.run(); }
+  propsChanged() { this.state.a = null; this.load.run(); }
   // Two independent human marks on the source: `viewed` (I've laid eyes on it — blue)
   // and `signed` (I own it — green). A stale sign-off returns to the worklist and can
   // only be cleared by re-signing; clicking a stale mark re-approves at the live hash.
@@ -434,9 +526,7 @@ class AnchorPage extends Component {
   }
   template() {
     const u = this.props.params.universe, a = this.state.a;
-    if (!a || this.load.pending) return html`<main><div class="loading">loading…</div></main>`;
-    if (a.error) return html`<main><div class="empty">${a.error}</div></main>`;
-    return html`<main><div class="detail">
+    return pageShell(a, a && a.error, () => html`<div class="detail">
       <div class="back" on-click="${() => goTree(u, a.file)}">← ${a.file}</div>
       <h2>${a.symbol}</h2>
       <div class="meta">${a.kind} · ${a.file}:${a.lines} · ${a.present ? 'present' : 'not found (lost)'}</div>
@@ -447,51 +537,195 @@ class AnchorPage extends Component {
       ${annoThread(this, u, 'anchor', a.id, a.annotations)}
       <div class="sec">source</div>
       ${when(a.code, () => html`<pre class="hljs"><code>${raw(highlight(a.code, a.lang))}</code></pre>`, () => html`<pre class="code">(unavailable)</pre>`)}
-    </div></main>`;
+    </div>`);
   }
 }
 defineComponent('anchor-page', AnchorPage);
 
 class NodePage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { n: null, versions: null }; }
+  // `open`/`acode`: per-segment expand state + lazily-fetched source, kept OUT of
+  // the node payload so a mark-and-reload never blows away an open code block.
+  constructor(props) { super(props); this.state = { n: null, versions: null, open: {}, acode: {}, finding: null }; }
   load = this.createTask(async () => {
     const u = this.props.params.universe, id = this.props.params.id; nav.current = u;
     this.state.n = await api('/api/node', { u, id });
     this.state.versions = this.state.n && !this.state.n.error ? (await api('/api/node_versions', { u, id })).versions : null;
   });
   mounted() { this.load.run(); }
-  propsChanged() { this.load.run(); }
-  async verify(act) { await postReview(this.props.params.universe, 'node', this.props.params.id, 'logical', act === 'unverify'); this.load.run(); }
-  async markNode(attestation, state) { await postReview(this.props.params.universe, 'node', this.props.params.id, 'code', state === 'reviewed', attestation); this.load.run(); }
+  propsChanged() { this.state.n = null; this.state.versions = null; this.state.open = {}; this.state.acode = {}; this.load.run(); }
+  // Signing the node vouches for the DOC (logical), not its code — code review is
+  // derived from the per-segment signs below.
+  async signNode(attestation, state) { await postReview(this.props.params.universe, 'node', this.props.params.id, 'logical', state === 'reviewed', attestation); this.load.run(); }
+  // Sign an individual referenced code segment; reload recomputes the node's derived code rollup.
+  async markAnchor(id, attestation, state) { await postReview(this.props.params.universe, 'anchor', id, 'code', state === 'reviewed', attestation); this.load.run(); }
+  toggleSeg(id) { this.state.open = { ...this.state.open, [id]: !this.state.open[id] }; if (this.state.open[id] && !this.state.acode[id]) this.loadSeg(id); }
+  async loadSeg(id) { const a = await api('/api/anchor', { u: this.props.params.universe, id }); this.state.acode = { ...this.state.acode, [id]: a }; }
+  // One referenced code segment: expand to read its live source, sign it inline.
+  anchorReviewRow(a, u) {
+    if (a.missing) return html`<div class="anchor-code"><div class="sym">${a.id} <span class="dim">— segment missing (renamed/removed?)</span></div></div>`;
+    const open = !!this.state.open[a.id], c = this.state.acode[a.id];
+    const nf = (a.annotations || []).filter(x => !x.resolved && (x.kind || 'note') === 'note').length;
+    const presetLine = a.lines ? parseInt(String(a.lines).split('-')[0], 10) : undefined;
+    return html`<div class="anchor-code">
+      <div class="sym" on-click="${() => this.toggleSeg(a.id)}">
+        <span style="width:auto">${open ? '▾' : '▸'}</span>${sevDot(a.severity)}<span style="width:auto">${a.symbol ?? a.id}</span><span class="dim" style="width:auto">${a.file ?? ''}${a.lines ? ':' + a.lines : ''}</span>${when(nf, () => html`<span class="rvfbadge" title="${nf} open finding${nf === 1 ? '' : 's'}">⚑ ${nf}</span>`)}
+        <span class="rev">${reviewRowEl(a.review, a.viewed, (att, st) => this.markAnchor(a.id, att, st))}<span class="viewlink" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); go(anchorUrl(u, a.id)); }}" title="open full anchor page">↗</span></span>
+      </div>
+      ${when(open, () => !c ? html`<div class="loading" style="padding:6px 0">loading…</div>` : codeReviewLines(this, u, a.id, c.code, c.lang, presetLine, a.annotations))}
+    </div>`;
+  }
   async triageNode(importance) { await postTriage(this.props.params.universe, 'node', this.props.params.id, importance ? { importance } : { clear: true }); this.load.run(); }
   async armTripwireNode(on) { await postTriage(this.props.params.universe, 'node', this.props.params.id, { importance: this.state.n.triage.importance, tripwire: on }); this.load.run(); }
   async confirm() { await postConfirm(this.props.params.universe, this.props.params.id); this.load.run(); }
   async ackHole() { await postAckHole(this.props.params.universe, this.props.params.id); this.load.run(); }
   template() {
     const u = this.props.params.universe, n = this.state.n, versions = this.state.versions;
-    if (!n || this.load.pending) return html`<main><div class="loading">loading…</div></main>`;
-    if (n.error) return html`<main><div class="empty">${n.error}</div></main>`;
-    return html`<main><div class="detail">
-      <div class="meta">${n.type}${n.universe ? ' · ' + n.universe : ''} · ${n.id} ${statusChip(n.status)}${trustChip(n.trust, (act) => this.verify(act))}${sevChip(n.triage)}<span class="viewlink" on-click="${() => go(graphUrl(u, n.id))}">◆ graph</span></div>
+    return pageShell(n, n && n.error, () => {
+    const cr = deriveCode(n.resolvedAnchors);
+    return html`<div class="detail">
+      <div class="meta">${n.type}${n.universe ? ' · ' + n.universe : ''} · ${n.id} ${statusChip(n.status)}${trustChip(n.trust)}${sevChip(n.triage)}<span class="viewlink" on-click="${() => go(graphUrl(u, n.id))}">◆ graph</span></div>
       <h2>${n.title}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions (forked across branches)">⑂${n.versionCount}</span>`)}</h2>
-      <div style="margin:6px 0">${reviewRowEl(n.review, n.viewed, (att, st) => this.markNode(att, st))}</div>
+      <div style="margin:6px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="dim" style="font-size:12px">doc sign-off:</span>${reviewRowEl(n.review, n.viewed, (att, st) => this.signNode(att, st), 'logical')}<span class="dim" style="font-size:12px">— vouches for the doc, not its code</span></div>
+      <div style="margin:6px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">${codeRollupEl(cr)}${when(cr.total, () => html`<button on-click="${() => go(nodeReviewUrl(u, n.id))}">open code review →</button>`)}</div>
       <div style="margin:6px 0">${triageRowEl(n.triage, (imp) => this.triageNode(imp), (on) => this.armTripwireNode(on))}</div>
       ${when(n.status === 'stale', () => html`<div class="vaction"><span>This doc cites code that changed since it was written.</span> <button on-click="${() => this.confirm()}">confirm still accurate</button> <span class="dim">— or edit it (forks a new version).</span></div>`)}
       ${when(n.status === 'dangling', () => html`<div class="vaction bad"><span>Cited code was removed here (${(n.danglingAnchors || []).length} anchor${(n.danglingAnchors || []).length === 1 ? '' : 's'}).</span> <button on-click="${() => this.ackHole()}">ack — remove doc here</button> <span class="dim">(kept on branches where the code exists).</span></div>`)}
       <md-content text="${n.summary}"></md-content>
       ${when(n.body && n.body.trim(), () => html`<md-content text="${n.body}"></md-content>`)}
-      <div class="sec">anchors</div>
-      <div class="chips">${each(n.resolvedAnchors ?? [], a => html`<span class="chip" on-click="${() => a.id && go(anchorUrl(u, a.id))}">${sevDot(a.severity)}${a.symbol ?? a.id}</span>`)}</div>
+      <div class="sec">referenced code (${(n.resolvedAnchors || []).length})${when(cr.total, () => html` — <span class="dim">${cr.signed}/${cr.total} signed${cr.stale ? ' · ' + cr.stale + ' stale' : ''}</span>`)} <span class="dim" style="font-weight:400">— read &amp; sign each segment to complete the node's code review</span></div>
+      ${each(n.resolvedAnchors ?? [], a => this.anchorReviewRow(a, u), a => a.id)}
       ${when(n.edges && n.edges.length, () => html`<div class="sec">edges</div><div class="chips">${each(n.edges, e => html`<span class="chip" on-click="${() => e.toRef && go(nodeUrl(e.toRef.universe, e.toRef.id))}">${e.type}: ${e.toRef ? e.toRef.universe + '::' + (e.toRef.title || e.toRef.id) : e.to}</span>`)}</div>`)}
       ${when(n.inboundCrossUniverse && n.inboundCrossUniverse.length, () => html`<div class="sec">called by (other universes)</div><div class="chips">${each(n.inboundCrossUniverse, i => html`<span class="chip" on-click="${() => go(nodeUrl(i.fromUniverse, i.from))}">${i.fromUniverse}::${i.from} (${i.type})</span>`)}</div>`)}
       ${when(versions && versions.length > 1, () => html`<div class="sec">versions (${versions.length}) — the one matching this branch wins</div>
         ${each(versions, v => html`<div class="nver ${v.status}"><span class="stchip ${v.status}">${v.status}</span> <span class="nvbranch">${v.createdBranch || '(?)'} @ ${(v.createdCommit || '').slice(0, 8) || '—'}</span> <span class="dim">${v.removed ? '(tombstone)' : v.title}</span></div>`, v => v.versionId)}`)}
       ${annoThread(this, u, 'node', n.id, n.annotations)}
-    </div></main>`;
+    </div>`;
+    });
   }
 }
 defineComponent('node-page', NodePage);
+
+// --- dedicated code-review page for a node: its referenced segments as a queue --
+// Segments come pre-ordered (file, then line) from /api/node_review. Unsigned ones
+// are expanded (the queue); signed ones collapse GitHub-style but stay expandable.
+// "view file" opens the whole file in a modal with the file's anchors markable in a
+// side panel — read a segment in context, then sign it.
+class NodeReviewPage extends Component {
+  static props = { params: {}, query: {} };
+  // `hideSigned` defaults on — the queue is what's left to review; signed segments
+  // stay reachable via the toggle. Findings use the shared per-line helpers
+  // (`c.state.finding` = open form key, `c._fdrafts` = per-line draft text).
+  constructor(props) { super(props); this.state = { d: null, open: {}, hideSigned: true, file: null, filePending: false, activeAnchor: null, finding: null }; }
+  load = this.createTask(async () => { nav.current = this.props.params.universe; this.state.d = await api('/api/node_review', { u: this.props.params.universe, id: this.props.params.id }); });
+  mounted() { this.load.run(); if (!this._escWired) { this._escWired = true; window.addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (this.state.finding) closeFindingForm(this); else if (this.state.file) this.closeFile(); } }); } }
+  propsChanged() { this.state.d = null; this.state.open = {}; this.state.file = null; this.state.activeAnchor = null; this.state.finding = null; this.load.run(); }
+  isDone(s) { return !!(s.review && s.review.code && s.review.code.state === 'reviewed'); }
+  // Effective expand state: signed segments collapse by default, unsigned expand;
+  // an explicit toggle overrides.
+  isOpen(s) { const v = this.state.open[s.id]; return v === undefined ? !this.isDone(s) : v; }
+  toggle(id) { const s = (this.state.d.segments || []).find(x => x.id === id); this.state.open = { ...this.state.open, [id]: !this.isOpen(s) }; }
+  setHide(v) { this.state.hideSigned = v; }
+  async markSeg(id, att, st) { await postReview(this.props.params.universe, 'anchor', id, 'code', st === 'reviewed', att); await this.load.run(); if (this.state.file) await this.refreshFile(); }
+  async openFile(path, anchorId) { this.state.activeAnchor = anchorId || null; this.state.filePending = true; try { this.state.file = await api('/api/file', { u: this.props.params.universe, path }); } finally { this.state.filePending = false; } this.scrollToAnchor(anchorId); }
+  async refreshFile() { if (this.state.file && !this.state.file.error) this.state.file = await api('/api/file', { u: this.props.params.universe, path: this.state.file.file }); }
+  closeFile() { this.state.file = null; this.state.activeAnchor = null; }
+  setActive(id) { this.state.activeAnchor = id; this.scrollToAnchor(id); }
+  scrollToAnchor(id) { if (!id) return; requestAnimationFrame(() => { const el = this.querySelector(`.fline[data-a="${id}"]`); if (el) el.scrollIntoView({ block: 'center' }); }); }
+  jumpNext() {
+    const seg = (this.state.d.segments || []).find(s => !s.missing && !this.isDone(s));
+    if (!seg) return;
+    this.state.open = { ...this.state.open, [seg.id]: true };
+    requestAnimationFrame(() => { const el = this.querySelector(`.rvseg[data-id="${seg.id}"]`); if (el) el.scrollIntoView({ block: 'center' }); });
+  }
+  segCard(s, u) {
+    if (s.missing) return html`<div class="rvseg missing" data-id="${s.id}"><div class="rvhead"><span class="rvsym">${s.id}</span> <span class="dim">— segment missing (renamed/removed?)</span></div></div>`;
+    const done = this.isDone(s), open = this.isOpen(s), nf = openFindingCount(s.annotations);
+    return html`<div class="rvseg ${done ? 'done' : ''}" data-id="${s.id}">
+      <div class="rvhead" on-click="${() => this.toggle(s.id)}">
+        <span class="rvchev">${open ? '▾' : '▸'}</span>
+        <span class="rvstate ${done ? 'ok' : ''}" title="${done ? 'signed' : 'not signed'}">${done ? '✓' : '○'}</span>
+        <span class="rvsym">${s.symbol}</span>
+        <span class="dim rvfile">${s.file}:${s.lines || '?'}</span>
+        ${when(nf, () => html`<span class="rvfbadge" title="${nf} open finding${nf === 1 ? '' : 's'}">⚑ ${nf}</span>`)}
+        <span class="rev" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">${reviewRowEl(s.review, s.viewed, (att, st) => this.markSeg(s.id, att, st))}<button title="read the whole file in context" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.openFile(s.file, s.id); }}">view file</button><span class="viewlink" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); go(anchorUrl(u, s.id)); }}" title="open anchor page">↗</span></span>
+      </div>
+      ${when(open, () => codeReviewLines(this, u, s.id, s.code, s.lang, s.startLine, s.annotations))}
+    </div>`;
+  }
+  fileLines(f) {
+    const u = this.props.params.universe;
+    const active = f.anchors.find(a => a.id === this.state.activeAnchor);
+    const startOf = new Map();
+    for (const a of f.anchors) if (a.startLine && !startOf.has(a.startLine)) startOf.set(a.startLine, a.id);
+    // line → findings pinned there, and line → the anchor whose range covers it
+    // (only lines inside a reviewed segment are commentable).
+    const findsAt = new Map();
+    for (const a of f.anchors) for (const an of (a.annotations || [])) if (an.line && (an.kind || 'note') === 'note') { const arr = findsAt.get(an.line) || findsAt.set(an.line, []).get(an.line); arr.push(an); }
+    const anchorAtLine = (n) => { const a = f.anchors.find(a => a.startLine && a.endLine && n >= a.startLine && n <= a.endLine); return a ? a.id : null; };
+    // Highlight the whole file once (multi-line context intact), then slice per line
+    // so line numbers + the active-segment band stay aligned.
+    const lines = highlightLines(f.code, f.lang);
+    return html`<div class="rvpre hljs">${each(lines, (lineHtml, i) => {
+      const n = i + 1;
+      const inActive = active && active.startLine && n >= active.startLine && n <= active.endLine;
+      const aid = startOf.get(n) || '';
+      const canComment = anchorAtLine(n);
+      const finds = findsAt.get(n) || [];
+      return html`<div class="flrow">
+        <div class="fline ${inActive ? 'fhl' : ''}" data-a="${aid}"><span class="flno">${n}</span><span class="fltext">${raw(lineHtml)}</span>${when(canComment, () => html`<button class="flcomment" title="raise a finding on line ${n}" on-click="${() => openFindingForm(this, canComment, n)}">💬</button>`)}</div>
+        ${each(finds, fn => findingItemEl(this, u, fn), fn => fn.id)}
+        ${when(canComment && this.state.finding === findingKey(canComment, n), () => findingForm(this, u, canComment, n))}
+      </div>`;
+    }, (lineHtml, i) => i)}</div>`;
+  }
+  fileModal() {
+    if (!this.state.file && !this.state.filePending) return html``;
+    const f = this.state.file;
+    return html`<div class="modal-bg" on-click="${(e) => { if (e.target.classList.contains('modal-bg')) this.closeFile(); }}">
+      <div class="modal">
+        <div class="modal-head"><b>${f && !f.error ? f.file : 'file'}</b> <span class="dim">— read in context; sign each segment in the panel →</span><button class="modal-x" on-click="${() => this.closeFile()}">✕</button></div>
+        <div class="modal-body rvfilebody">
+          ${when(!f, () => html`<div class="loading" style="padding:20px">loading…</div>`,
+            () => f.error ? html`<div class="empty" style="padding:20px">${f.error}</div>` : html`
+            <div class="rvfilecode">${this.fileLines(f)}</div>
+            <div class="rvfileside">
+              <div class="sxs-h">segments in this file (${f.anchors.length})</div>
+              ${each(f.anchors, a => { const nf = (a.annotations || []).filter(x => !x.resolved).length; return html`<div class="rvaside ${a.id === this.state.activeAnchor ? 'active' : ''}">
+                <div class="rvasym" on-click="${() => this.setActive(a.id)}">${a.symbol} <span class="dim">${a.startLine ?? '?'}-${a.endLine ?? '?'}</span>${when(nf, () => html`<span class="rvfbadge" title="${nf} open finding${nf === 1 ? '' : 's'}">⚑ ${nf}</span>`)}</div>
+                <div class="rvamarks">${reviewRowEl(a.review, a.viewed, (att, st) => this.markSeg(a.id, att, st))}</div>
+              </div>`; }, a => a.id)}
+            </div>`)}
+        </div>
+      </div>
+    </div>`;
+  }
+  template() {
+    const u = this.props.params.universe, d = this.state.d;
+    return pageShell(d, d && d.error, () => {
+      const cr = d.codeReview || { signed: 0, total: 0, stale: 0 };
+      const segs = d.segments || [];
+      const pending = segs.filter(s => !s.missing && !this.isDone(s));
+      const shown = this.state.hideSigned ? segs.filter(s => s.missing || !this.isDone(s)) : segs;
+      const pct = cr.total ? Math.round(cr.signed / cr.total * 100) : 0;
+      return html`
+        <div class="crumbs"><a on-click="${() => go(nodeUrl(u, d.id))}">← ${d.title}</a> <span class="sep">·</span> code review</div>
+        <div class="rvbar">
+          <b style="color:${cr.stale ? '#f0a35e' : pct === 100 ? '#7ee787' : '#8b949e'}">${codeMark(cr)}</b>
+          <span>${cr.signed}/${cr.total} segment${cr.total === 1 ? '' : 's'} signed${cr.stale ? ` · ${cr.stale} stale` : ''}</span>
+          <span class="rvtrack"><i style="width:${pct}%"></i></span>
+          ${when(d.openFindings, () => html`<span class="rvfcount" title="findings raised across this node's segments">⚑ ${d.openFindings} open finding${d.openFindings === 1 ? '' : 's'}</span>`)}
+          ${when(pending.length, () => html`<button on-click="${() => this.jumpNext()}">next unsigned ↓</button>`)}
+          <label class="mchk"><input type="checkbox" checked="${this.state.hideSigned}" on-change="${(e) => this.setHide(e.target.checked)}"> hide signed</label>
+        </div>
+        ${when(!segs.length, () => html`<div class="empty">this node cites no code segments</div>`)}
+        ${each(shown, s => this.segCard(s, u), s => s.id)}
+        ${this.fileModal()}
+      `;
+    });
+  }
+}
+defineComponent('node-review-page', NodeReviewPage);
 
 class SearchPage extends Component {
   static props = { params: {}, query: {} };
@@ -712,11 +946,10 @@ class FlowsPage extends Component {
   constructor(props) { super(props); this.state = { data: null }; }
   load = this.createTask(async () => { nav.current = this.props.params.universe; this.state.data = await api('/api/flows', { u: this.props.params.universe }); });
   mounted() { this.load.run(); }
-  propsChanged() { this.load.run(); }
+  propsChanged() { this.state.data = null; this.load.run(); }
   template() {
     const u = this.props.params.universe, d = this.state.data;
-    if (!d || this.load.pending) return html`<main><div class="loading">loading…</div></main>`;
-    return html`<main>
+    return pageShell(d, null, () => html`
       <div class="crumbs">${u} <span class="sep">·</span> flows (${d.flows.length})</div>
       ${when(!d.flows.length, () => html`<div class="empty">no flows (process nodes) documented in this universe yet</div>`)}
       ${each(d.flows, (f) => html`<div class="flow-card" on-click="${() => go(flowUrl(u, f.id))}">
@@ -728,17 +961,17 @@ class FlowsPage extends Component {
           <span>steps: ${f.stepReview.logical}/${f.stepReview.total} logical · ${f.stepReview.code}/${f.stepReview.total} code${f.stepReview.stale ? ' · ' + f.stepReview.stale + ' ⚠' : ''}</span>
         </div>
       </div>`, (f) => f.id)}
-    </main>`;
+    `);
   }
 }
 defineComponent('flows-page', FlowsPage);
 
 class FlowPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { data: null, onlyChanged: false }; }
+  constructor(props) { super(props); this.state = { data: null, onlyChanged: false, finding: null }; }
   load = this.createTask(async () => { nav.current = this.props.params.universe; this.state.data = await api('/api/flow', { u: this.props.params.universe, id: this.props.params.id }); });
   mounted() { this.load.run(); }
-  propsChanged() { this.load.run(); }
+  propsChanged() { this.state.data = null; this.load.run(); }
   setOnlyChanged(v) { this.state.onlyChanged = v; }
   async toggle(kind, id, level, state, attestation) { await postReview(this.props.params.universe, kind, id, level, state === 'reviewed', attestation); this.load.run(); }
   revBtn(kind, id, level, info) {
@@ -755,46 +988,54 @@ class FlowPage extends Component {
     const tip = `viewed: ${st}${st === 'stale' ? ' — changed since you looked' : st === 'unreviewed' ? ' — click to mark looked-at' : ''}`;
     return html`<button class="${cls}" title="${tip}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.toggle(kind, id, 'code', st, 'viewed'); }}">view${mark}</button>`;
   }
-  revBtns(kind, id, review, viewed) {
-    return html`<span class="rev">${each(['logical', 'code'], (lvl) => this.revBtn(kind, id, lvl, review && review[lvl]), (lvl) => lvl)}${this.viewBtn(kind, id, viewed && viewed.code)}</span>`;
+  revBtns(kind, id, review, viewed, codeReview) {
+    return html`<span class="rev">${this.revBtn(kind, id, 'logical', review && review.logical)}${this.codeInd(codeReview)}${this.viewBtn(kind, id, viewed && viewed.code)}</span>`;
+  }
+  // Code review is DERIVED from the step's cited segments — the per-anchor code
+  // buttons below are the real sign controls, so this is a read-only rollup.
+  codeInd(cr) {
+    const st = cr ? cr.state : 'unreviewed';
+    const col = st === 'reviewed' ? (cr && cr.actor === 'agent' ? '#58a6ff' : '#7ee787') : st === 'stale' ? '#f0a35e' : '#8b949e';
+    return html`<span title="${codeTip(cr)}" style="border:1px solid ${col}55;color:${col};border-radius:6px;padding:3px 9px;font-size:12px;cursor:default">${codeMark(cr)}</span>`;
   }
   codeBlock(a) {
     if (a.missing) return html`<div class="anchor-code"><div class="sym">${a.id} — anchor missing (renamed/removed?)</div></div>`;
     if (!a.code) return html`<div class="anchor-code"><div class="sym">${a.symbol} — code unavailable</div></div>`;
+    const nf = openFindingCount(a.annotations);
     return html`<div class="anchor-code">
-      <div class="sym">${a.symbol} · ${a.file}:${a.lines}<span class="rev">${this.revBtn('anchor', a.id, 'code', a.review && a.review.code)}</span></div>
-      <pre class="hljs"><code>${raw(highlight(a.code, a.lang))}</code></pre>
+      <div class="sym">${a.symbol} · ${a.file}:${a.lines}${when(nf, () => html`<span class="rvfbadge" title="${nf} open finding${nf === 1 ? '' : 's'}">⚑ ${nf}</span>`)}${reviewRowEl(a.review, a.viewed, (att, st) => this.toggle('anchor', a.id, 'code', st, att))}</div>
+      ${codeReviewLines(this, this.props.params.universe, a.id, a.code, a.lang, a.startLine, a.annotations)}
     </div>`;
   }
   template() {
     const u = this.props.params.universe, d = this.state.data;
-    if (!d || this.load.pending) return html`<main><div class="loading">loading…</div></main>`;
-    if (d.error) return html`<main><div class="empty">${d.error}</div></main>`;
+    return pageShell(d, d && d.error, () => {
     const ch = d.changed || { signed: [], viewed: [] };
     const nChanged = new Set([...ch.signed, ...ch.viewed]).size;
     // Targeted diff: only steps that drifted under a mark you'd made. Never-reviewed
     // steps aren't "changed since you looked", so the filter leaves them out.
     const steps = this.state.onlyChanged ? d.steps.filter((s) => s.changed && (s.changed.signed || s.changed.viewed)) : d.steps;
-    return html`<main>
+    return html`
       <div class="crumbs"><a on-click="${() => go(flowsUrl(u))}">← flows</a> <span class="sep">·</span> ${d.title}</div>
       ${when(nChanged > 0, () => html`<div class="diff-banner" style="margin:10px 0;padding:8px 12px;border-left:3px solid #f0a35e;background:#2a2016;border-radius:4px">
         ⟳ <b>${ch.signed.length}</b> step${ch.signed.length === 1 ? '' : 's'} changed since you signed${when(ch.viewed.length > 0, () => html` · <b>${ch.viewed.length}</b> since you viewed`)} — re-review just these.
         <button style="margin-left:10px" on-click="${() => this.setOnlyChanged(!this.state.onlyChanged)}">${this.state.onlyChanged ? 'show all steps' : 'show only changed'}</button>
       </div>`)}
       <div class="detail">
-        <div style="display:flex;align-items:center;gap:12px"><h2 style="margin:0">${d.title}</h2>${this.revBtns('node', d.id, d.review, d.viewed)}</div>
+        <div style="display:flex;align-items:center;gap:12px"><h2 style="margin:0">${d.title}</h2>${this.revBtns('node', d.id, d.review, d.viewed, d.codeReview)}</div>
         ${when(d.coverage, () => html`<div style="margin:6px 0">${coverageBar(d.coverage)}</div>`)}
         <md-content text="${d.summary}"></md-content>
       </div>
       ${each(steps, (s) => html`<div class="flow-step" style="${s.changed && (s.changed.signed || s.changed.viewed) ? 'border-left:3px solid #f0a35e;padding-left:9px' : ''}">
-        <div class="shead"><span class="num">${s.order + 1}</span><span class="stitle">${s.title}</span>${when(s.changed && s.changed.signed, () => html`<span class="badge" title="a mark you signed here went stale" style="color:#f0a35e;font-size:12px">⚠ changed since signed</span>`)}${when(s.changed && !s.changed.signed && s.changed.viewed, () => html`<span class="badge" title="a mark you viewed here went stale" style="color:#f0a35e;font-size:12px">⚠ changed since viewed</span>`)}${this.revBtns('node', s.id, s.review, s.viewed)}</div>
+        <div class="shead"><span class="num">${s.order + 1}</span><span class="stitle">${s.title}</span>${when(s.changed && s.changed.signed, () => html`<span class="badge" title="a mark you signed here went stale" style="color:#f0a35e;font-size:12px">⚠ changed since signed</span>`)}${when(s.changed && !s.changed.signed && s.changed.viewed, () => html`<span class="badge" title="a mark you viewed here went stale" style="color:#f0a35e;font-size:12px">⚠ changed since viewed</span>`)}${this.revBtns('node', s.id, s.review, s.viewed, s.codeReview)}</div>
         <div class="sbody">
           <md-content text="${s.summary}"></md-content>
           ${when(s.touches && s.touches.length, () => html`<div class="chips">${each(s.touches, (t) => html`<span class="chip" on-click="${() => go(nodeUrl(u, t.id))}">↳ ${t.title}</span>`, (t) => t.id)}</div>`)}
           ${each(s.anchors, (a) => this.codeBlock(a), (a) => a.id)}
         </div>
       </div>`, (s) => s.id)}
-    </main>`;
+    `;
+    });
   }
 }
 defineComponent('flow-page', FlowPage);
@@ -805,7 +1046,7 @@ class NodeCatalogPage extends Component {
   constructor(props) { super(props); this.state = { data: null, tw: null, f: { q: '', type: '', domain: '', gen: '', review: '', severity: '' }, group: 'type' }; }
   load = this.createTask(async () => { nav.current = this.props.params.universe; const u = this.props.params.universe; this.state.data = await api('/api/nodes', { u }); this.state.tw = await api('/api/tripwires', { u }); });
   mounted() { this.load.run(); }
-  propsChanged() { this.load.run(); }
+  propsChanged() { this.state.data = null; this.load.run(); }
   set(k, v) { this.state.f = { ...this.state.f, [k]: v }; }
   setGroup(v) { this.state.group = v; }
   async verify(id, act) { await postReview(this.props.params.universe, 'node', id, 'logical', act === 'unverify'); this.load.run(); }
@@ -819,6 +1060,9 @@ class NodeCatalogPage extends Component {
     const mark = state === 'reviewed' ? (agent ? '·' : '✓') : state === 'stale' ? '⚠' : '';
     return html`<button class="${cls}" title="${level}: ${state}${agent ? ' (agent-checked — click to verify)' : ''}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.toggle(id, level, state); }}">${level[0].toUpperCase()}${mark}</button>`;
   }
+  // Code review is per-segment (derived) — the list can't read code, so this is a
+  // read-only rollup that opens the node to review its referenced segments.
+  codeCell(n) { return codeCellBtn(n.codeReview, () => go(nodeUrl(this.props.params.universe, n.id))); }
   filtered() {
     const f = this.state.f, q = f.q.toLowerCase();
     return this.state.data.nodes.filter((n) =>
@@ -842,10 +1086,10 @@ class NodeCatalogPage extends Component {
   }
   template() {
     const u = this.props.params.universe, d = this.state.data;
-    if (!d || this.load.pending) return html`<main><div class="loading">loading…</div></main>`;
+    return pageShell(d, null, () => {
     const list = this.filtered();
     const opts = (o) => Object.entries(o).sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ k, v }));
-    return html`<main>
+    return html`
       <div class="crumbs">${u} <span class="sep">·</span> nodes (${d.total}) <span class="sep">·</span> ${d.reviewed} reviewed${when(d.byStatus && (d.byStatus.stale || d.byStatus.dangling), () => html` <span class="sep">·</span> <b class="bad">${(d.byStatus.stale || 0) + (d.byStatus.dangling || 0)} need review</b>`)}</div>
       <div class="nfilters">
         <input placeholder="filter title…" on-input="${(e) => this.set('q', e.target.value)}">
@@ -872,10 +1116,11 @@ class NodeCatalogPage extends Component {
           <span class="ndom">${n.domain}</span>
           <span class="nmeta">${n.anchors}a · ${n.edgesIn}↓${n.edgesOut}↑</span>
           ${when(n.generatedBy, () => html`<span class="gen">${n.generatedBy}</span>`)}
-          <span class="nrev">${this.revBtn(n.id, 'logical', n.review.logical, n.reviewBy && n.reviewBy.logical)}${this.revBtn(n.id, 'code', n.review.code, n.reviewBy && n.reviewBy.code)}</span>
+          <span class="nrev">${this.revBtn(n.id, 'logical', n.review.logical, n.reviewBy && n.reviewBy.logical)}${this.codeCell(n)}</span>
         </div>`, n => n.id)}
       </div>`, g => g[0])}
-    </main>`;
+    `;
+    });
   }
 }
 defineComponent('node-catalog-page', NodeCatalogPage);
@@ -886,7 +1131,7 @@ class MatrixPage extends Component {
   constructor(props) { super(props); this.state = { data: null, f: { q: '', domain: '', orphan: false } }; }
   load = this.createTask(async () => { nav.current = this.props.params.universe; this.state.data = await api('/api/matrix', { u: this.props.params.universe }); });
   mounted() { this.load.run(); }
-  propsChanged() { this.load.run(); }
+  propsChanged() { this.state.data = null; this.load.run(); }
   set(k, v) { this.state.f = { ...this.state.f, [k]: v }; }
   async toggle(id, level, state) { await postReview(this.props.params.universe, 'node', id, level, state === 'reviewed'); this.load.run(); }
   // Human review = green (`on`); an agent `checked` review = blue, so it never reads
@@ -904,10 +1149,10 @@ class MatrixPage extends Component {
   }
   template() {
     const u = this.props.params.universe, d = this.state.data;
-    if (!d || this.load.pending) return html`<main><div class="loading">loading…</div></main>`;
+    return pageShell(d, null, () => {
     const rows = this.filtered();
     const domains = [...new Set(d.events.map((e) => e.domain))].sort();
-    return html`<main>
+    return html`
       <div class="crumbs">${u} <span class="sep">·</span> event matrix</div>
       <div class="mstats">${d.stats.events} events · ${d.stats.aggregates} aggregate${d.stats.aggregates === 1 ? '' : 's'} · ${d.stats.projections} projection${d.stats.projections === 1 ? '' : 's'} · <b class="${d.stats.orphans ? 'bad' : 'ok'}">${d.stats.orphans} orphan${d.stats.orphans === 1 ? '' : 's'}</b> <span class="mlegend"><i class="cdot folds"></i> folds → aggregate &nbsp; <i class="cdot projects"></i> projects → read-model</span></div>
       <div class="nfilters">
@@ -924,10 +1169,11 @@ class MatrixPage extends Component {
         ${each(rows, e => html`<div class="mrow ${e.orphan ? 'orphan' : ''}">
           <span class="mev" on-click="${() => go(nodeUrl(u, e.id))}"><b>${e.title}</b><small>${e.domain} · ${e.emitters}↑</small></span>
           ${each(d.sinks, s => html`<span class="mcell">${when(e.cells[s.id], () => html`<i class="cdot ${e.cells[s.id]}" title="${e.cells[s.id]}"></i>`)}</span>`, s => s.id)}
-          <span class="mrevh"><span class="nrev">${this.revBtn(e.id, 'logical', e.review.logical, e.reviewBy && e.reviewBy.logical)}${this.revBtn(e.id, 'code', e.review.code, e.reviewBy && e.reviewBy.code)}</span></span>
+          <span class="mrevh"><span class="nrev">${this.revBtn(e.id, 'logical', e.review.logical, e.reviewBy && e.reviewBy.logical)}${codeCellBtn(e.codeReview, () => go(nodeUrl(u, e.id)))}</span></span>
         </div>`, e => e.id)}
       </div>
-    </main>`;
+    `;
+    });
   }
 }
 defineComponent('matrix-page', MatrixPage);
@@ -1374,6 +1620,7 @@ router = enableRouting(document.querySelector('router-outlet'), {
   '/u/:universe/tree/:path*/': { component: 'outline-page' },
   '/u/:universe/anchor/:id/': { component: 'anchor-page' },
   '/u/:universe/node/:id/': { component: 'node-page' },
+  '/u/:universe/node/:id/review/': { component: 'node-review-page' },
   '/u/:universe/graph/:id/': { component: 'graph-page' },
   '/u/:universe/flows/': { component: 'flows-page' },
   '/u/:universe/flow/:id/': { component: 'flow-page' },

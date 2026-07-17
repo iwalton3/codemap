@@ -307,6 +307,12 @@ export interface Annotation {
    */
   kind?: "note" | "question";
   resolved?: boolean;
+  /**
+   * Optional 1-based line pin (for an anchor target): a finding raised on a
+   * specific line during code review, so you can sign a segment off with the
+   * action item recorded against the exact line.
+   */
+  line?: number;
   /** Who wrote it — an agent label or a person. */
   author: string;
   createdCommit: string | null;

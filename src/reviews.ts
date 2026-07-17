@@ -173,6 +173,33 @@ export async function reviewStatus(root: string, target: Target, opts?: { viewed
   return (await reviewStatesFor(root, [target], opts)).get(key(target))!;
 }
 
+export interface DerivedCodeReview {
+  state: ReviewState;
+  actor: "human" | "agent" | null;
+  signed: number;
+  total: number;
+  stale: number;
+}
+
+/**
+ * A node's code-review state is *derived* from the code reviews of the anchors it
+ * cites — never a single "I signed the node" click that would silently vouch for
+ * code you never opened. Every referenced segment must be signed (at live hashes)
+ * before the node reads code-reviewed; any stale segment poisons it to `stale`;
+ * anything short is `unreviewed` (with `signed/total` so the UI can show progress).
+ * `actor` is `human` when a person signed at least one segment (so trust can reach
+ * `verified`), else `agent` — matching the human/agent split used elsewhere.
+ */
+export function deriveCodeReview(anchorCode: ReviewInfo[]): DerivedCodeReview {
+  const total = anchorCode.length;
+  const signed = anchorCode.filter((a) => a.state === "reviewed").length;
+  const stale = anchorCode.filter((a) => a.state === "stale").length;
+  const state: ReviewState = total === 0 ? "unreviewed" : stale > 0 ? "stale" : signed === total ? "reviewed" : "unreviewed";
+  const actor: "human" | "agent" | null =
+    state === "reviewed" ? (anchorCode.some((a) => a.state === "reviewed" && a.actor === "human") ? "human" : "agent") : null;
+  return { state, actor, signed, total, stale };
+}
+
 export interface AnchorChange { anchorId: string; was: string; now: string }
 
 /** Which of a mark's frozen witnesses no longer match the current live hashes. */

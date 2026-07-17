@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Review, BugWitness } from "./schema.js";
 import { readReviews, writeStore } from "./store.js";
-import { markReviewed, unmarkReviewed, changedSince, reviewStatesFor, witnessDrift, effectiveAttestation } from "./reviews.js";
+import { markReviewed, unmarkReviewed, changedSince, reviewStatesFor, witnessDrift, effectiveAttestation, deriveCodeReview } from "./reviews.js";
 
 const rev = (over: Partial<Review>): Review => ({
   id: "r", target: { kind: "anchor", id: "a" }, level: "code", reviewer: "me",
@@ -110,4 +110,21 @@ test("changedSince finds the mark and reports no drift when code is unchanged", 
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("deriveCodeReview: a node is code-reviewed only when every segment is signed", () => {
+  // no segments → nothing to review
+  assert.deepEqual(deriveCodeReview([]), { state: "unreviewed", actor: null, signed: 0, total: 0, stale: 0 });
+  // partial → unreviewed, but progress is reported
+  assert.deepEqual(deriveCodeReview([{ state: "reviewed", actor: "human" }, { state: "unreviewed" }]),
+    { state: "unreviewed", actor: null, signed: 1, total: 2, stale: 0 });
+  // all signed → reviewed; a human signer promotes the actor (→ trust can reach verified)
+  assert.deepEqual(deriveCodeReview([{ state: "reviewed", actor: "agent" }, { state: "reviewed", actor: "human" }]),
+    { state: "reviewed", actor: "human", signed: 2, total: 2, stale: 0 });
+  // all signed but only agents → agent-checked
+  assert.deepEqual(deriveCodeReview([{ state: "reviewed", actor: "agent" }]),
+    { state: "reviewed", actor: "agent", signed: 1, total: 1, stale: 0 });
+  // any stale segment poisons the whole node, even if the rest are signed
+  assert.deepEqual(deriveCodeReview([{ state: "reviewed", actor: "human" }, { state: "stale" }]),
+    { state: "stale", actor: null, signed: 1, total: 2, stale: 1 });
 });

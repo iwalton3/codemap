@@ -68,6 +68,10 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return ops.nodeCatalog(root);
     case "/api/node_versions":
       return ops.nodeVersions(root, q.get("id") ?? "");
+    case "/api/node_review":
+      return ops.nodeReview(root, q.get("id") ?? "");
+    case "/api/file":
+      return ops.fileSource(root, q.get("path") ?? "");
     case "/api/matrix":
       return ops.eventMatrix(root);
     case "/api/pipeline":
@@ -181,7 +185,7 @@ const server = createServer(async (req, res) => {
       const root = rootFor(body.u ?? null);
       const out = await withLock<unknown>(root, () =>
         url.pathname === "/api/annotate"
-          ? ops.annotate(root, { targetKind: body.targetKind, targetId: body.targetId, text: body.text, kind: body.kind, author: body.author })
+          ? ops.annotate(root, { targetKind: body.targetKind, targetId: body.targetId, text: body.text, kind: body.kind, author: body.author, line: body.line })
           : ops.resolveAnnotation(root, body.id, body.resolved !== false),
       );
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });

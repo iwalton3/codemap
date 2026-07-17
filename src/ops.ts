@@ -32,7 +32,7 @@ import { resolveAnchorRefs } from "./refs.js";
 import { refreshAnalyzers } from "./analyzers/run.js";
 import { applyIndexUpdate } from "./sync.js";
 import { grammarForPath } from "./grammars.js";
-import { reviewStatus, reviewStatesFor, anchorReviewMap, changedSince as reviewsChangedSince, type Attestation, type ReviewPair } from "./reviews.js";
+import { reviewStatus, reviewStatesFor, anchorReviewMap, changedSince as reviewsChangedSince, deriveCodeReview, type Attestation, type ReviewPair, type DerivedCodeReview } from "./reviews.js";
 import { setTriage as triageSet, clearTriage as triageClear, triageStatus, reviewTriageFor, deriveTriage as triageDerive, coverageFor as triageCoverageFor, rollupCoverage, tripwires as triageTripwires, triageDrift } from "./triage.js";
 
 const HL_LANG: Record<string, string> = { c_sharp: "csharp", python: "python", javascript: "javascript", typescript: "typescript", tsx: "typescript" };
@@ -92,6 +92,27 @@ function trustOf(status: string | undefined, review?: { logical: ReviewLite; cod
   if (humanOK) return "verified";
   if (L.state === "reviewed" || C.state === "reviewed") return "checked"; // agent-confirmed
   return "unverified";
+}
+
+/**
+ * Derived code review per node — a node reads code-reviewed only when every code
+ * segment it cites is signed (see deriveCodeReview). One batched anchor query for
+ * the whole set; missing anchors are excluded from the rollup (a lost anchor is a
+ * `dangling` status, not an un-completable review). Used by every node-list surface
+ * (catalog, matrix) so they agree with the node page. The single-flow op derives
+ * inline instead, since it already fetches its anchors' reviews.
+ */
+async function nodeCodeReviews(
+  root: string,
+  nodes: { id: string; anchors: string[] }[],
+  presentIds: Set<string>,
+): Promise<Map<string, DerivedCodeReview>> {
+  const anchorRev = await reviewStatesFor(root, [...new Set(nodes.flatMap((n) => n.anchors))].map((id) => ({ kind: "anchor" as const, id })));
+  const out = new Map<string, DerivedCodeReview>();
+  for (const n of nodes) {
+    out.set(n.id, deriveCodeReview(n.anchors.filter((aid) => presentIds.has(aid)).map((aid) => anchorRev.get(`anchor:${aid}`)!.code)));
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -429,10 +450,15 @@ export async function nodeCatalog(root: string) {
     inC.set(e.to, (inC.get(e.to) ?? 0) + 1);
   }
   const rt = await reviewTriageFor(root, nodes.map((n) => ({ kind: "node" as const, id: n.id })));
+  // Node code review is derived from each cited segment's own code review (see
+  // nodeCodeReviews) so this list agrees with the node page.
+  const codeReviews = await nodeCodeReviews(root, nodes, new Set(store.anchors.map((a) => a.id)));
   const out = nodes.map((n) => {
     const topNs = topNamespace(n.anchors, nsById);
     const e = rt.get(`node:${n.id}`);
     const rp = e?.review;
+    const codeReview = codeReviews.get(n.id)!;
+    const review = { logical: rp?.logical ?? { state: "unreviewed" as const }, code: { state: codeReview.state, actor: codeReview.actor ?? undefined } };
     return {
       id: n.id,
       type: n.type,
@@ -447,10 +473,11 @@ export async function nodeCatalog(root: string) {
       generatedBy: n.generatedBy ?? null,
       status: n.status ?? "fresh",
       versionCount: n.versionCount ?? 1,
-      review: { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" },
-      reviewBy: { logical: rp?.logical.actor ?? null, code: rp?.code.actor ?? null },
+      review: { logical: review.logical.state, code: review.code.state },
+      reviewBy: { logical: rp?.logical.actor ?? null, code: codeReview.actor },
+      codeReview,
       viewed: { logical: e?.viewed.logical.state ?? "unreviewed", code: e?.viewed.code.state ?? "unreviewed" },
-      trust: trustOf(n.status, rp),
+      trust: trustOf(n.status, review),
       triage: e?.triage,
       severity: e?.triage.severity ?? "untriaged",
     };
@@ -503,12 +530,16 @@ export async function eventMatrix(root: string) {
   }
 
   const reviews = await reviewStatesFor(root, events.map((n) => ({ kind: "node" as const, id: n.id })));
+  // Code review derives from each event's cited segments (see nodeCodeReviews) so
+  // the matrix agrees with the node page — the code cell is a read-only rollup.
+  const codeReviews = await nodeCodeReviews(root, events, new Set(store.anchors.map((a) => a.id)));
   const rows = events
     .map((n) => {
       const cells = cellsByEvent.get(n.id) ?? {};
       const folds = Object.values(cells).filter((v) => v === "folds").length;
       const projects = Object.values(cells).filter((v) => v === "projects").length;
       const rp = reviews.get(`node:${n.id}`);
+      const codeReview = codeReviews.get(n.id)!;
       return {
         id: n.id,
         title: n.title,
@@ -518,8 +549,9 @@ export async function eventMatrix(root: string) {
         folds,
         projects,
         orphan: folds === 0 && projects === 0,
-        review: { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" },
-        reviewBy: { logical: rp?.logical.actor ?? null, code: rp?.code.actor ?? null },
+        review: { logical: rp?.logical.state ?? "unreviewed", code: codeReview.state },
+        reviewBy: { logical: rp?.logical.actor ?? null, code: codeReview.actor },
+        codeReview,
       };
     })
     .sort((a, b) => a.domain.localeCompare(b.domain) || a.title.localeCompare(b.title));
@@ -751,20 +783,30 @@ export async function getNode(root: string, id: string) {
     ...node.anchors.map((aid) => ({ kind: "anchor" as const, id: aid })),
   ]);
   const nodeRt = rt.get(`node:${id}`)!;
+  const resolvedAnchors = node.anchors.map((aid) => {
+    const e = rt.get(`anchor:${aid}`);
+    const brief = byId.get(aid) ? anchorBrief(byId.get(aid)!) : { id: aid, missing: true };
+    return { ...brief, review: e?.review, viewed: e?.viewed, severity: e?.triage.severity ?? "untriaged", triage: e?.triage, annotations: annStore.annotations.filter((a) => a.target.kind === "anchor" && a.target.id === aid) };
+  });
+  // A node's code review is *derived* from the code reviews of the segments it
+  // cites — signing the node vouches for the doc (logical), never for code you
+  // haven't opened. Missing anchors are excluded from the denominator (a lost
+  // anchor shows up as `dangling` status, not an un-completable review).
+  const codeReview = deriveCodeReview(
+    resolvedAnchors.filter((a) => a.review && !("missing" in a && a.missing)).map((a) => a.review!.code),
+  );
+  const review = { logical: nodeRt.review.logical, code: { state: codeReview.state, actor: codeReview.actor ?? undefined } };
   return {
     ...node,
-    resolvedAnchors: node.anchors.map((aid) => {
-      const e = rt.get(`anchor:${aid}`);
-      const brief = byId.get(aid) ? anchorBrief(byId.get(aid)!) : { id: aid, missing: true };
-      return { ...brief, review: e?.review, viewed: e?.viewed, severity: e?.triage.severity ?? "untriaged", triage: e?.triage };
-    }),
+    resolvedAnchors,
     edges: graph.edges.filter((e) => e.from === id || e.to === id),
     annotations: annStore.annotations.filter((a) => a.target.kind === "node" && a.target.id === id),
-    review: nodeRt.review,
+    review,
+    codeReview,
     viewed: nodeRt.viewed,
     triage: nodeRt.triage,
     severity: nodeRt.triage.severity,
-    trust: trustOf(node.status, nodeRt.review),
+    trust: trustOf(node.status, review),
   };
 }
 
@@ -839,7 +881,8 @@ export async function subgraph(root: string, ids: string[], expand?: string) {
 
 /** All process nodes (flows) with step counts + review rollup — the bird's-eye view. */
 export async function flows(root: string) {
-  const [nodes, graph] = await Promise.all([loadNodes(root), readGraph(root)]);
+  const [nodes, graph, store] = await Promise.all([loadNodes(root), readGraph(root), readAnchorStore(root)]);
+  const byId = new Map(nodes.map((n) => [n.id, n]));
   const processes = nodes.filter((n) => n.type === "process");
   const stepsByProc = new Map<string, string[]>();
   for (const e of graph.edges) {
@@ -852,13 +895,19 @@ export async function flows(root: string) {
     for (const sid of stepsByProc.get(p.id) ?? []) targets.push({ kind: "node", id: sid });
   }
   const rev = await reviewStatesFor(root, targets);
+  // Code review is derived from each node's cited segments (matches flow detail +
+  // node page), so the rollup counts real per-segment progress, not a node-code click.
+  const involved = [...new Set(targets.map((t) => t.id))].map((id) => byId.get(id)).filter((n): n is LogicalNode => Boolean(n));
+  const codeReviews = await nodeCodeReviews(root, involved, new Set(store.anchors.map((a) => a.id)));
+  const codeState = (id: string) => codeReviews.get(id)?.state ?? "unreviewed";
   const rollup = (ids: string[]) => {
     let logical = 0, code = 0, stale = 0;
     for (const id of ids) {
       const r = rev.get("node:" + id);
+      const cs = codeState(id);
       if (r?.logical.state === "reviewed") logical++;
-      if (r?.code.state === "reviewed") code++;
-      if (r?.logical.state === "stale" || r?.code.state === "stale") stale++;
+      if (cs === "reviewed") code++;
+      if (r?.logical.state === "stale" || cs === "stale") stale++;
     }
     return { logical, code, stale, total: ids.length };
   };
@@ -866,7 +915,8 @@ export async function flows(root: string) {
     flows: processes.map((p) => ({
       id: p.id, title: p.title, summary: p.summary,
       steps: (stepsByProc.get(p.id) ?? []).length,
-      review: rev.get("node:" + p.id),
+      review: { logical: rev.get("node:" + p.id)?.logical ?? { state: "unreviewed" as const }, code: { state: codeState(p.id), actor: codeReviews.get(p.id)?.actor ?? undefined } },
+      codeReview: codeReviews.get(p.id),
       stepReview: rollup(stepsByProc.get(p.id) ?? []),
     })),
   };
@@ -956,9 +1006,10 @@ export async function pipelineGraph(root: string, opts: { domain?: string } = {}
 
 /** One flow: its ordered steps, each with touched modules + the live source of its anchors. */
 export async function flow(root: string, id: string) {
-  const [nodes, graph, store] = await Promise.all([loadNodes(root), readGraph(root), readAnchorStore(root)]);
+  const [nodes, graph, store, annStore] = await Promise.all([loadNodes(root), readGraph(root), readAnchorStore(root), readAnnotations(root)]);
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const anchorById = new Map(store.anchors.map((a) => [a.id, a]));
+  const annFor = (aid: string) => annStore.annotations.filter((a) => a.target.kind === "anchor" && a.target.id === aid);
   const proc = byId.get(id);
   if (!proc) return { error: `no flow "${id}"` };
 
@@ -969,10 +1020,13 @@ export async function flow(root: string, id: string) {
     .filter((n): n is LogicalNode => Boolean(n));
 
   const allAnchorIds = [...new Set(stepNodes.flatMap((s) => s.anchors))];
+  // Include the process node's own anchors so its code review derives too (rare —
+  // most process nodes cite steps, not code — but keeps the flow node consistent).
+  const revAnchorIds = [...new Set([...proc.anchors, ...allAnchorIds])];
   const revTargets = [
     { kind: "node" as const, id },
     ...stepNodes.map((s) => ({ kind: "node" as const, id: s.id })),
-    ...allAnchorIds.map((aid) => ({ kind: "anchor" as const, id: aid })),
+    ...revAnchorIds.map((aid) => ({ kind: "anchor" as const, id: aid })),
   ];
   // Two passes: the vouch (`signed`/`checked`) and the `viewed` exposure marks. The
   // flow-level targeted diff is the roll-up of *stale* marks — steps you'd reviewed
@@ -983,6 +1037,16 @@ export async function flow(root: string, id: string) {
     reviewStatesFor(root, revTargets, { viewed: true }),
   ]);
   const isStale = (p?: ReviewPair) => Boolean(p && (p.code.state === "stale" || p.logical.state === "stale"));
+  // A node's code review is derived from its cited segments (see deriveCodeReview),
+  // never a one-click node-code sign — the per-anchor code buttons below are the
+  // real controls. Reads from the anchor reviews already fetched above.
+  const deriveNodeCode = (anchorIds: string[]) =>
+    deriveCodeReview(anchorIds.filter((aid) => anchorById.has(aid)).map((aid) => rev.get("anchor:" + aid)!.code));
+  const withDerivedCode = (nodeId: string, anchorIds: string[]) => {
+    const codeReview = deriveNodeCode(anchorIds);
+    const rp = rev.get("node:" + nodeId);
+    return { review: { logical: rp?.logical ?? { state: "unreviewed" as const }, code: { state: codeReview.state, actor: codeReview.actor ?? undefined } }, codeReview };
+  };
   const touchesByStep = new Map<string, string[]>();
   for (const e of graph.edges) {
     if (e.type !== "touches") continue;
@@ -1019,7 +1083,7 @@ export async function flow(root: string, id: string) {
     for (const aid of s.anchors) {
       const a = anchorById.get(aid);
       if (!a) { anchors.push({ id: aid, missing: true }); continue; }
-      anchors.push({ id: a.id, symbol: a.symbolPath.join(" › "), file: a.file, lines: a.loc ? `${a.loc.startLine}-${a.loc.endLine}` : undefined, kind: a.kind, lang: langFor(a.file), code: await codeFor(a), review: rev.get("anchor:" + a.id), viewed: revView.get("anchor:" + a.id) });
+      anchors.push({ id: a.id, symbol: a.symbolPath.join(" › "), file: a.file, lines: a.loc ? `${a.loc.startLine}-${a.loc.endLine}` : undefined, startLine: a.loc?.startLine, kind: a.kind, lang: langFor(a.file), code: await codeFor(a), review: rev.get("anchor:" + a.id), viewed: revView.get("anchor:" + a.id), annotations: annFor(a.id) });
     }
     // A step "changed since signed/viewed" iff its own mark or any of its anchors'
     // marks went stale under that attestation.
@@ -1029,7 +1093,7 @@ export async function flow(root: string, id: string) {
     if (stepViewed) changedViewed.push(s.id);
     steps.push({
       id: s.id, title: s.title, summary: s.summary, body: s.body, order: order++,
-      review: rev.get("node:" + s.id), viewed: revView.get("node:" + s.id),
+      ...withDerivedCode(s.id, s.anchors), viewed: revView.get("node:" + s.id),
       changed: { signed: stepSigned, viewed: stepViewed },
       touches: (touchesByStep.get(s.id) ?? []).map((tid) => ({ id: tid, title: byId.get(tid)?.title ?? tid })),
       anchors,
@@ -1037,7 +1101,7 @@ export async function flow(root: string, id: string) {
   }
   return {
     id, title: proc.title, summary: proc.summary, body: proc.body,
-    review: rev.get("node:" + id), viewed: revView.get("node:" + id),
+    ...withDerivedCode(id, proc.anchors), viewed: revView.get("node:" + id),
     // The targeted diff: step ids that have drifted under each mark since you reviewed.
     changed: { signed: changedSigned, viewed: changedViewed },
     // Review-complete rollup over the flow's step anchors ("am I done with this flow?").
@@ -1088,6 +1152,81 @@ export async function getAnchor(root: string, id: string) {
     // Stakes + resulting severity (stakes × attestation gap). See docs/triage.md.
     triage: await triageStatus(root, { kind: "anchor", id }),
   };
+}
+
+/**
+ * A node's referenced code segments as a review queue — each cited anchor with its
+ * live source, code review + viewed marks, ordered by file then position (reading
+ * order). Powers the dedicated code-review page, where you read & sign each segment
+ * in one place instead of hopping to a per-anchor page. `codeReview` is the derived
+ * rollup; `files` lists the distinct files touched (for the file modal).
+ */
+export async function nodeReview(root: string, id: string) {
+  const [nodes, store, annStore] = await Promise.all([loadNodes(root), readAnchorStore(root), readAnnotations(root)]);
+  const node = nodes.find((n) => n.id === id);
+  if (!node) return { error: `no node "${id}"` };
+  const byId = new Map(store.anchors.map((a) => [a.id, a]));
+  const annFor = (aid: string) => annStore.annotations.filter((a) => a.target.kind === "anchor" && a.target.id === aid);
+  const targets = node.anchors.map((aid) => ({ kind: "anchor" as const, id: aid }));
+  const [rev, revView] = await Promise.all([reviewStatesFor(root, targets), reviewStatesFor(root, targets, { viewed: true })]);
+  // Cache live-indexed files so several anchors in one file re-index once. loc
+  // offsets index the parsed source string (UTF-16 units), so slice the string.
+  const fileCache = new Map<string, { src: string; byId: Map<string, Anchor> }>();
+  const load = async (file: string) => {
+    let fc = fileCache.get(file);
+    if (!fc) {
+      try { const src = await readFile(join(root, file), "utf8"); fc = { src, byId: new Map((await indexFile(join(root, file), file)).map((x) => [x.id, x])) }; }
+      catch { fc = { src: "", byId: new Map() }; }
+      fileCache.set(file, fc);
+    }
+    return fc;
+  };
+  const segments = [];
+  for (const aid of node.anchors) {
+    const a = byId.get(aid);
+    if (!a) { segments.push({ id: aid, missing: true as const }); continue; }
+    const fc = await load(a.file);
+    const live = fc.byId.get(aid);
+    segments.push({
+      id: a.id, symbol: a.symbolPath.join(" › "), file: a.file, kind: a.kind, lang: langFor(a.file),
+      startLine: a.loc?.startLine ?? 0, lines: a.loc ? `${a.loc.startLine}-${a.loc.endLine}` : undefined,
+      present: Boolean(live?.loc), code: live?.loc ? fc.src.slice(live.loc.startByte, live.loc.endByte) : null,
+      review: rev.get("anchor:" + aid), viewed: revView.get("anchor:" + aid),
+      annotations: annFor(aid), // line-pinned findings + segment notes
+    });
+  }
+  segments.sort((x, y) => ((x as { file?: string }).file ?? "").localeCompare((y as { file?: string }).file ?? "") || ((x as { startLine?: number }).startLine ?? 0) - ((y as { startLine?: number }).startLine ?? 0));
+  const codeReview = deriveCodeReview(segments.filter((s) => !("missing" in s) && s.review).map((s) => (s as { review: ReviewPair }).review.code));
+  const files = [...new Set(segments.filter((s) => !("missing" in s)).map((s) => (s as { file: string }).file))];
+  const openFindings = annStore.annotations.filter((a) => a.target.kind === "anchor" && node.anchors.includes(a.target.id) && !a.resolved).length;
+  return { id, title: node.title, type: node.type, summary: node.summary, files, segments, codeReview, openFindings };
+}
+
+/**
+ * Whole-file source + the stored anchors within it (line ranges + code review /
+ * viewed marks) — for the review page's file modal, so a segment can be read in
+ * full-file context and signed there.
+ */
+export async function fileSource(root: string, file: string) {
+  const [store, annStore] = await Promise.all([readAnchorStore(root), readAnnotations(root)]);
+  const inFile = store.anchors.filter((a) => a.file === file);
+  let code: string;
+  try { code = await readFile(join(root, file), "utf8"); } catch { return { error: `cannot read "${file}"` }; }
+  const live = new Map((await indexFile(join(root, file), file)).map((x) => [x.id, x]));
+  const targets = inFile.map((a) => ({ kind: "anchor" as const, id: a.id }));
+  const [rev, revView] = await Promise.all([reviewStatesFor(root, targets), reviewStatesFor(root, targets, { viewed: true })]);
+  const anchors = inFile.map((a) => {
+    const lv = live.get(a.id);
+    return {
+      id: a.id, symbol: a.symbolPath.join(" › "), kind: a.kind,
+      startLine: lv?.loc?.startLine ?? a.loc?.startLine ?? null,
+      endLine: lv?.loc?.endLine ?? a.loc?.endLine ?? null,
+      present: Boolean(lv?.loc),
+      review: rev.get("anchor:" + a.id), viewed: revView.get("anchor:" + a.id),
+      annotations: annStore.annotations.filter((an) => an.target.kind === "anchor" && an.target.id === a.id),
+    };
+  }).sort((x, y) => (x.startLine ?? 0) - (y.startLine ?? 0));
+  return { file, lang: langFor(file), code, anchors };
 }
 
 /** Set/raise stakes on a target (ratchet-enforced). See docs/triage.md. */
@@ -1460,7 +1599,7 @@ export async function updateBug(
 
 export async function annotate(
   root: string,
-  input: { targetKind: "anchor" | "node"; targetId: string; text: string; author?: string; kind?: "note" | "question" },
+  input: { targetKind: "anchor" | "node"; targetId: string; text: string; author?: string; kind?: "note" | "question"; line?: number },
 ) {
   // Validate the target exists (anchor targets accept file#Symbol refs too).
   let targetId = input.targetId;
@@ -1472,12 +1611,14 @@ export async function annotate(
     const nodes = await loadNodes(root);
     if (!nodes.some((n) => n.id === input.targetId)) return { error: `unknown node "${input.targetId}"` };
   }
+  const line = Number.isFinite(input.line) && (input.line as number) > 0 ? Math.floor(input.line as number) : undefined;
   const ann: Annotation = {
     id: genId("note"),
     target: { kind: input.targetKind, id: targetId },
     text: input.text,
     kind: input.kind === "question" ? "question" : "note",
     resolved: false,
+    ...(line !== undefined ? { line } : {}),
     author: input.author ?? "agent",
     createdCommit: headCommit(root),
   };
