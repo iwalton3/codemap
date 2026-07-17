@@ -9,6 +9,7 @@
       --bg: #0e1116; --panel: #161b22; --panel2: #1c232d; --border: #2a313c;
       --text: #d7dde5; --dim: #8b95a3; --accent: #58a6ff; --accent2: #7ee787;
       --warn: #f0a35e; --bad: #f27b7b; --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+      --hdr-h: 49px; /* global sticky <header> height — offset for sticky section headers */
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
@@ -112,13 +113,13 @@
     .rev button.checked { border-color: var(--accent); color: var(--accent); background: rgba(88,166,255,0.08); }
     .nrev button.checked { border-color: var(--accent); color: var(--accent); background: rgba(88,166,255,0.08); }
     .rev button.stale { border-color: var(--warn); color: var(--warn); background: rgba(240,163,94,0.08); }
-    .flow-step { border: 1px solid var(--border); border-radius: 10px; margin: 14px 0; overflow: hidden; }
-    .flow-step > .shead { display: flex; align-items: center; gap: 12px; padding: 11px 14px; background: var(--panel); }
+    .flow-step { border: 1px solid var(--border); border-radius: 10px; margin: 14px 0; }
+    .flow-step > .shead { display: flex; align-items: center; gap: 12px; padding: 11px 14px; background: var(--panel); border-radius: 10px 10px 0 0; }
     .flow-step .num { width: 26px; height: 26px; border-radius: 50%; background: var(--panel2); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 13px; color: var(--dim); flex: none; }
     .flow-step .stitle { font-weight: 600; }
     .flow-step .shead .rev { margin-left: auto; }
     .flow-step .sbody { padding: 4px 14px 12px; }
-    .anchor-code .sym { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11.5px; color: var(--dim); margin: 12px 0 4px; }
+    .anchor-code .sym { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11.5px; color: var(--dim); margin: 12px 0 4px; padding: 4px 6px; background: var(--bg); position: sticky; top: var(--hdr-h); z-index: 3; }
     .anchor-code .sym .rev { margin-left: auto; }
     pre.hljs, .hljs { background: #0b0e13 !important; border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-size: 12.5px; line-height: 1.5; overflow-x: auto; margin: 0; font-family: var(--mono); }
     .flow-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin: 8px 0; cursor: pointer; }
@@ -335,9 +336,10 @@
     .rvbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); margin: 10px 0 14px; font-size: 13px; }
     .rvtrack { flex: 1; min-width: 120px; height: 6px; border-radius: 3px; background: #20262f; overflow: hidden; }
     .rvtrack i { display: block; height: 100%; background: var(--accent2); }
-    .rvseg { border: 1px solid var(--border); border-radius: 8px; margin: 8px 0; overflow: hidden; }
+    .rvseg { border: 1px solid var(--border); border-radius: 8px; margin: 8px 0; }
     .rvseg.done { border-color: #24303a; background: rgba(126,231,135,0.02); }
-    .rvhead { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; font-family: var(--mono); font-size: 12.5px; }
+    /* the segment header sticks under the global header so viewed/signed stay reachable while reading a long block */
+    .rvhead { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; font-family: var(--mono); font-size: 12.5px; background: var(--bg); border-radius: 7px 7px 0 0; position: sticky; top: var(--hdr-h); z-index: 3; }
     .rvhead:hover { background: var(--panel); }
     .rvchev { color: var(--dim); width: 12px; }
     .rvstate { color: var(--dim); } .rvstate.ok { color: var(--accent2); }
