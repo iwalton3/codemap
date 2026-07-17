@@ -973,12 +973,15 @@ class FlowPage extends Component {
   mounted() { this.load.run(); }
   propsChanged() { this.state.data = null; this.load.run(); }
   setOnlyChanged(v) { this.state.onlyChanged = v; }
-  async toggle(kind, id, level, state, attestation) { await postReview(this.props.params.universe, kind, id, level, state === 'reviewed', attestation); this.load.run(); }
+  // `actor` is passed only by the logical vouch button: only clear your own human
+  // review — never wipe an agent's check (mark it human instead). Other callers
+  // (viewed exposure, anchor code) leave it undefined → normal toggle.
+  async toggle(kind, id, level, state, attestation, actor) { const unmark = state === 'reviewed' && (actor === undefined || actor === 'human'); await postReview(this.props.params.universe, kind, id, level, unmark, attestation); this.load.run(); }
   revBtn(kind, id, level, info) {
     const st = (info && info.state) || 'unreviewed', actor = info && info.actor;
     const cls = revCls(st, actor);
-    const tip = `${level} ${st}${st === 'reviewed' && actor === 'agent' ? ' (agent-checked)' : ''}${info && info.by ? ' · by ' + info.by : ''}`;
-    return html`<button class="${cls}" title="${tip}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.toggle(kind, id, level, st); }}">${level}${revMark(st, actor)}</button>`;
+    const tip = `${level} ${st}${st === 'reviewed' && actor === 'agent' ? ' (agent-checked — click to confirm as human)' : ''}${info && info.by ? ' · by ' + info.by : ''}`;
+    return html`<button class="${cls}" title="${tip}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.toggle(kind, id, level, st, undefined, actor); }}">${level}${revMark(st, actor)}</button>`;
   }
   // `viewed` exposure toggle (code level) alongside the signed-vouch level buttons.
   viewBtn(kind, id, info) {
@@ -1050,7 +1053,9 @@ class NodeCatalogPage extends Component {
   set(k, v) { this.state.f = { ...this.state.f, [k]: v }; }
   setGroup(v) { this.state.group = v; }
   async verify(id, act) { await postReview(this.props.params.universe, 'node', id, 'logical', act === 'unverify'); this.load.run(); }
-  async toggle(id, level, state) { await postReview(this.props.params.universe, 'node', id, level, state === 'reviewed'); this.load.run(); }
+  // Clicking a review button records a HUMAN vouch. Only clear when it's already
+  // your own human review — never wipe an agent's check; mark it human instead.
+  async toggle(id, level, state, actor) { const unmark = state === 'reviewed' && actor === 'human'; await postReview(this.props.params.universe, 'node', id, level, unmark); this.load.run(); }
   async deriveStakes() { await postTriage(this.props.params.universe, null, null, { derive: true }); this.load.run(); }
   // Human review = green (`on`); an agent `checked` review = blue, so it never reads
   // as fully-verified. A web toggle always records a human review.
@@ -1058,7 +1063,7 @@ class NodeCatalogPage extends Component {
     const agent = state === 'reviewed' && actor === 'agent';
     const cls = state === 'reviewed' ? (agent ? 'checked' : 'on') : state === 'stale' ? 'stale' : '';
     const mark = state === 'reviewed' ? (agent ? '·' : '✓') : state === 'stale' ? '⚠' : '';
-    return html`<button class="${cls}" title="${level}: ${state}${agent ? ' (agent-checked — click to verify)' : ''}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.toggle(id, level, state); }}">${level[0].toUpperCase()}${mark}</button>`;
+    return html`<button class="${cls}" title="${level}: ${state}${agent ? ' (agent-checked — click to confirm as human)' : ''}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.toggle(id, level, state, actor); }}">${level[0].toUpperCase()}${mark}</button>`;
   }
   // Code review is per-segment (derived) — the list can't read code, so this is a
   // read-only rollup that opens the node to review its referenced segments.
@@ -1133,14 +1138,16 @@ class MatrixPage extends Component {
   mounted() { this.load.run(); }
   propsChanged() { this.state.data = null; this.load.run(); }
   set(k, v) { this.state.f = { ...this.state.f, [k]: v }; }
-  async toggle(id, level, state) { await postReview(this.props.params.universe, 'node', id, level, state === 'reviewed'); this.load.run(); }
+  // Clicking a review button records a HUMAN vouch. Only clear when it's already
+  // your own human review — never wipe an agent's check; mark it human instead.
+  async toggle(id, level, state, actor) { const unmark = state === 'reviewed' && actor === 'human'; await postReview(this.props.params.universe, 'node', id, level, unmark); this.load.run(); }
   // Human review = green (`on`); an agent `checked` review = blue, so it never reads
   // as fully-verified. A web toggle always records a human review.
   revBtn(id, level, state, actor) {
     const agent = state === 'reviewed' && actor === 'agent';
     const cls = state === 'reviewed' ? (agent ? 'checked' : 'on') : state === 'stale' ? 'stale' : '';
     const mark = state === 'reviewed' ? (agent ? '·' : '✓') : state === 'stale' ? '⚠' : '';
-    return html`<button class="${cls}" title="${level}: ${state}${agent ? ' (agent-checked — click to verify)' : ''}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.toggle(id, level, state); }}">${level[0].toUpperCase()}${mark}</button>`;
+    return html`<button class="${cls}" title="${level}: ${state}${agent ? ' (agent-checked — click to confirm as human)' : ''}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.toggle(id, level, state, actor); }}">${level[0].toUpperCase()}${mark}</button>`;
   }
   filtered() {
     const f = this.state.f, q = f.q.toLowerCase();
