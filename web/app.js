@@ -63,6 +63,9 @@ const EDGE_COLORS = {
 const edgeColor = (t) => EDGE_COLORS[t] ?? '#6b7684';
 const bugsUrl = (u) => `/u/${u}/bugs/`;
 const SEV_COLOR = { low: '#8b95a3', medium: '#58a6ff', high: '#f0a35e', critical: '#f27b7b', complete: '#7ee787', untriaged: '#58a6ff' };
+// Attention priority (mirrors server SEV_RANK) — drives the worklist sort/grouping.
+const SEV_RANK = { critical: 5, untriaged: 4, high: 3, medium: 2, low: 1, complete: 0 };
+const SEV_ORDER = ['critical', 'untriaged', 'high', 'medium', 'low']; // worklist tiers, top-down (complete excluded)
 const flowsUrl = (u) => `/u/${u}/flows/`;
 const flowUrl = (u, id) => `/u/${u}/flow/${id}/`;
 const nodesUrl = (u) => `/u/${u}/nodes/`;
@@ -1054,8 +1057,12 @@ class NodeCatalogPage extends Component {
   static props = { params: {}, query: {} };
   constructor(props) { super(props); this.state = { data: null, tw: null, f: { q: '', type: '', domain: '', gen: '', review: '', severity: '' }, group: 'type' }; }
   load = this.createTask(async () => { nav.current = this.props.params.universe; const u = this.props.params.universe; this.state.data = await api('/api/nodes', { u }); this.state.tw = await api('/api/tripwires', { u }); });
-  mounted() { this.load.run(); }
-  propsChanged() { this.state.data = null; this.load.run(); }
+  mounted() { this._u = this.props.params.universe; this.load.run(); }
+  // Reload only when the universe changes; the `view` toggle lives in the URL query
+  // (durable on back/forward) and just re-renders — no refetch.
+  propsChanged() { const u = this.props.params.universe; if (u !== this._u) { this._u = u; this.state.data = null; this.load.run(); } }
+  view() { return this.props.query.view === 'todo' ? 'todo' : 'catalog'; }
+  setView(v) { go(nodesUrl(this.props.params.universe), v === 'todo' ? { view: 'todo' } : {}); }
   set(k, v) { this.state.f = { ...this.state.f, [k]: v }; }
   setGroup(v) { this.state.group = v; }
   async verify(id, act) { await postReview(this.props.params.universe, 'node', id, 'logical', act === 'unverify'); this.load.run(); }
@@ -1095,13 +1102,40 @@ class NodeCatalogPage extends Component {
     for (const n of list) { const k = n[key] || '(none)'; let a = m.get(k); if (!a) { a = []; m.set(k, a); } a.push(n); }
     return [...m.entries()].sort((a, b) => b[1].length - a[1].length);
   }
+  // Worklist: outstanding nodes (not review-complete), ranked by severity so you can
+  // attack by priority. Grouped by severity tier, highest first.
+  worklist(list) {
+    const out = list.filter((n) => n.triage && n.triage.severity !== 'complete');
+    const m = new Map();
+    for (const n of out) { const s = n.triage.severity; let a = m.get(s); if (!a) { a = []; m.set(s, a); } a.push(n); }
+    for (const arr of m.values()) arr.sort((a, b) => (a.title || a.id).localeCompare(b.title || b.id));
+    return SEV_ORDER.filter((s) => m.has(s)).map((s) => [s, m.get(s)]);
+  }
+  nodeRow(n, u) {
+    return html`<div class="nrow" on-click="${() => go(nodeUrl(u, n.id))}">
+      <span class="nt" style="border-color:${nodeColor(n.type)}">${n.type}</span>
+      <span class="ntitle">${n.title || n.id}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions (forked)">⑂${n.versionCount}</span>`)}</span>
+      ${statusChip(n.status)}${trustChip(n.trust, (act) => this.verify(n.id, act))}${sevChip(n.triage)}
+      <span class="ndom">${n.domain}</span>
+      <span class="nmeta">${n.anchors}a · ${n.edgesIn}↓${n.edgesOut}↑</span>
+      ${when(n.generatedBy, () => html`<span class="gen">${n.generatedBy}</span>`)}
+      <span class="nrev">${this.revBtn(n.id, 'logical', n.review.logical, n.reviewBy && n.reviewBy.logical)}${this.codeCell(n)}</span>
+    </div>`;
+  }
   template() {
     const u = this.props.params.universe, d = this.state.data;
     return pageShell(d, null, () => {
     const list = this.filtered();
     const opts = (o) => Object.entries(o).sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ k, v }));
+    const todo = this.view() === 'todo';
+    const wl = todo ? this.worklist(list) : null;
+    const outstanding = todo ? wl.reduce((s, g) => s + g[1].length, 0) : 0;
     return html`
       <div class="crumbs">${u} <span class="sep">·</span> nodes (${d.total}) <span class="sep">·</span> ${d.reviewed} reviewed${when(d.byStatus && (d.byStatus.stale || d.byStatus.dangling), () => html` <span class="sep">·</span> <b class="bad">${(d.byStatus.stale || 0) + (d.byStatus.dangling || 0)} need review</b>`)}</div>
+      <div class="dtoggle"><span class="dim">view</span>
+        <button class="${!todo ? 'on' : ''}" on-click="${() => this.setView('catalog')}">catalog</button>
+        <button class="${todo ? 'on' : ''}" on-click="${() => this.setView('todo')}" title="outstanding items ranked by severity — attack by priority">worklist</button>
+      </div>
       <div class="nfilters">
         <input placeholder="filter title…" on-input="${(e) => this.set('q', e.target.value)}">
         <select on-change="${(e) => this.set('type', e.target.value)}"><option value="">all types</option>${each(opts(d.byType), o => html`<option value="${o.k}">${o.k} (${o.v})</option>`, o => o.k)}</select>
@@ -1110,26 +1144,23 @@ class NodeCatalogPage extends Component {
         <select on-change="${(e) => this.set('gen', e.target.value)}"><option value="">any source</option><option value="human">human</option><option value="marten">marten</option></select>
         <select on-change="${(e) => this.set('review', e.target.value)}"><option value="">any review</option><option value="unreviewed">unreviewed</option><option value="reviewed">reviewed</option><option value="stale">stale</option></select>
         <select on-change="${(e) => this.set('severity', e.target.value)}"><option value="">any severity</option>${each(opts(d.bySeverity || {}), o => html`<option value="${o.k}">${o.k} (${o.v})</option>`, o => o.k)}</select>
-        <select on-change="${(e) => this.setGroup(e.target.value)}"><option value="type">group: type</option><option value="domain">group: domain</option><option value="none">group: none</option></select>
+        ${when(!todo, () => html`<select on-change="${(e) => this.setGroup(e.target.value)}"><option value="type">group: type</option><option value="domain">group: domain</option><option value="none">group: none</option></select>`)}
       </div>
       ${when(d.coverage, () => html`<div style="margin:4px 0 8px">${coverageBar(d.coverage)}</div>`)}
       ${when(this.state.tw && this.state.tw.fired && this.state.tw.fired.length, () => html`<div class="diff-banner" style="margin:6px 0;padding:8px 12px;border-left:3px solid #f85149;background:#2a1618;border-radius:4px">
         🔔 <b>${this.state.tw.fired.length}</b> tripwire${this.state.tw.fired.length === 1 ? '' : 's'} fired — business-critical code you're watching has changed:
         ${each(this.state.tw.fired, f => html` <span class="chip" on-click="${() => go(f.target.kind === 'anchor' ? anchorUrl(u, f.target.id) : nodeUrl(u, f.target.id))}">${f.target.id.slice(0, 14)}</span>`, f => f.target.kind + f.target.id)}
       </div>`)}
-      <div class="ncount">${list.length} shown <button style="margin-left:10px" title="graph-derive likely stakes across the map (safe: only proposals a human confirms)" on-click="${() => this.deriveStakes()}">⚙ derive stakes</button></div>
-      ${each(this.groups(list), g => html`<div class="ngroup">
-        <div class="ngh"><span class="gdot" style="background:${nodeColor(g[0])}"></span>${g[0]} <span class="n">${g[1].length}</span></div>
-        ${each(g[1], n => html`<div class="nrow" on-click="${() => go(nodeUrl(u, n.id))}">
-          <span class="nt" style="border-color:${nodeColor(n.type)}">${n.type}</span>
-          <span class="ntitle">${n.title || n.id}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions (forked)">⑂${n.versionCount}</span>`)}</span>
-          ${statusChip(n.status)}${trustChip(n.trust, (act) => this.verify(n.id, act))}${sevChip(n.triage)}
-          <span class="ndom">${n.domain}</span>
-          <span class="nmeta">${n.anchors}a · ${n.edgesIn}↓${n.edgesOut}↑</span>
-          ${when(n.generatedBy, () => html`<span class="gen">${n.generatedBy}</span>`)}
-          <span class="nrev">${this.revBtn(n.id, 'logical', n.review.logical, n.reviewBy && n.reviewBy.logical)}${this.codeCell(n)}</span>
-        </div>`, n => n.id)}
-      </div>`, g => g[0])}
+      <div class="ncount">${todo ? `${outstanding} outstanding, ranked by priority` : `${list.length} shown`} <button style="margin-left:10px" title="graph-derive likely stakes across the map (safe: only proposals a human confirms)" on-click="${() => this.deriveStakes()}">⚙ derive stakes</button></div>
+      ${when(todo,
+        () => html`${when(!outstanding, () => html`<div class="empty">nothing outstanding — everything shown is review-complete 🎉</div>`)}${each(wl, g => html`<div class="ngroup">
+          <div class="ngh"><span class="gdot" style="background:${SEV_COLOR[g[0]] || '#3a4250'}"></span>${g[0] === 'untriaged' ? 'needs triage' : g[0]} <span class="n">${g[1].length}</span></div>
+          ${each(g[1], n => this.nodeRow(n, u), n => n.id)}
+        </div>`, g => g[0])}`,
+        () => html`${each(this.groups(list), g => html`<div class="ngroup">
+          <div class="ngh"><span class="gdot" style="background:${nodeColor(g[0])}"></span>${g[0]} <span class="n">${g[1].length}</span></div>
+          ${each(g[1], n => this.nodeRow(n, u), n => n.id)}
+        </div>`, g => g[0])}`)}
     `;
     });
   }
