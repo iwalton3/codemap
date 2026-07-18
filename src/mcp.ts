@@ -250,7 +250,7 @@ const tools: Tool[] = [
   },
   {
     name: "review",
-    description: "Mark (or unmark: unmark:true) a node or anchor as reviewed. level 'logical' = the doc is accurate; 'code' = the source was read. Recorded as an AGENT review → `checked` trust (only a human via the web UI grants `verified`). Staleness-aware: reverts to stale when the reviewed code changes.",
+    description: "Mark (or unmark: unmark:true) a node or anchor as reviewed — the agent's first-pass 'I read this' mark. level 'logical' = the doc is accurate; 'code' = the source was read (mark ANCHORS at code level — a node's code review is DERIVED from its segments). Recorded as an AGENT review → `checked` trust (blue); only a human via the web UI grants `verified` (green sign-off). Staleness-aware: reverts to stale when the reviewed code changes. Pair with `annotate` (kind:finding/pointer) to leave the human reviewer your findings and watch-outs on the exact lines.",
     inputSchema: obj({
       targetKind: { type: "string", enum: ["node", "anchor"] },
       targetId: { type: "string" },
@@ -440,12 +440,15 @@ const tools: Tool[] = [
   },
   {
     name: "annotate",
-    description: "Attach a note or question to an anchor or node in a universe, visible to agents and human readers. kind:\"question\" leaves an open question in the review queue (see `questions`).",
+    description: "Attach review context to an anchor or node — durable on the map (not a throwaway PR comment), rendered inline for the human reviewer. This is how an agent hands off a code-review pass. `kind`:\n  • \"finding\" — a raised issue/requirement needing attention (a potential bug, a missing check). Set `severity` + `category`; stays open until a human resolves it.\n  • \"pointer\" — a review AID, not a defect: \"when reviewing this block, watch out for X / confirm Y.\" Points the human reviewer at what matters. `category` optional.\n  • \"question\" — an ask a human should answer (open-questions queue, see `questions`).\n  • \"note\" (default) — a durable remark.\nPin to a specific line with `line` (for anchor targets) so it renders against that line. Typical agent review pass: read a segment → `review` it (level:code → `checked`) → `annotate` any findings/pointers on the exact lines. `category` mirrors CI review buckets (Authorization, Logic, Tenant Safety, Performance, Domain Model, Validation, …).",
     inputSchema: obj({
       targetKind: { type: "string", enum: ["anchor", "node"] },
       targetId: { type: "string" },
       text: { type: "string" },
-      kind: { type: "string", enum: ["note", "question"], description: "\"question\" = an ask for the agent to answer; default \"note\"." },
+      kind: { type: "string", enum: ["note", "question", "finding", "pointer"], description: "\"finding\" (issue), \"pointer\" (watch-out for the reviewer), \"question\", or \"note\" (default)." },
+      severity: { type: "string", enum: ["low", "medium", "high", "critical"], description: "For findings: critical=security/auth/data-integrity, high=logic bug, medium=improvement, low=nitpick." },
+      category: { type: "string", description: "Review bucket, e.g. Authorization, Logic, Tenant Safety, Performance, Domain Model, Validation, Separation of Concerns." },
+      line: { type: "number", description: "1-based line to pin to (anchor targets) — the exact line the finding/pointer is about." },
       author: { type: "string" },
     }, ["targetKind", "targetId", "text"]),
     handler: (a, c) => ops.annotate(c.universe.path, a),

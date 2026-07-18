@@ -185,7 +185,7 @@ const server = createServer(async (req, res) => {
       const root = rootFor(body.u ?? null);
       const out = await withLock<unknown>(root, () =>
         url.pathname === "/api/annotate"
-          ? ops.annotate(root, { targetKind: body.targetKind, targetId: body.targetId, text: body.text, kind: body.kind, author: body.author, line: body.line })
+          ? ops.annotate(root, { targetKind: body.targetKind, targetId: body.targetId, text: body.text, kind: body.kind, severity: body.severity, category: body.category, author: body.author, line: body.line })
           : ops.resolveAnnotation(root, body.id, body.resolved !== false),
       );
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });

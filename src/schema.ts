@@ -301,16 +301,24 @@ export interface Annotation {
   target: { kind: "anchor" | "node"; id: string };
   text: string;
   /**
-   * "note" (default) is a durable remark; "question" is a review-time ask a human
-   * left for the agent to answer (improve the doc) — surfaced as an open-questions
-   * queue until `resolved`.
+   * The review-annotation vocabulary (mirrors CI code-review workflows):
+   *   - `note` (default) — a durable remark.
+   *   - `question` — an ask a human/agent should answer; open-questions queue.
+   *   - `finding` — a raised issue/requirement needing attention (a potential bug,
+   *     a missing check). Carries `severity`/`category`. Stays open until `resolved`.
+   *   - `pointer` — a review AID, not a defect: "when reviewing this block, watch
+   *     out for X / confirm Y." Guides the human reviewer to the thing that matters.
    */
-  kind?: "note" | "question";
+  kind?: "note" | "question" | "finding" | "pointer";
+  /** For findings/pointers: how much attention it deserves (reuses the bug/triage scale). */
+  severity?: BugSeverity;
+  /** Freeform review category — "Authorization", "Logic", "Tenant Safety", … (from the CI vocabulary). */
+  category?: string;
   resolved?: boolean;
   /**
-   * Optional 1-based line pin (for an anchor target): a finding raised on a
-   * specific line during code review, so you can sign a segment off with the
-   * action item recorded against the exact line.
+   * Optional 1-based line pin (for an anchor target): a finding/pointer raised on a
+   * specific line during code review, so it renders against the exact line and you
+   * can sign a segment off with the action item recorded.
    */
   line?: number;
   /** Who wrote it — an agent label or a person. */

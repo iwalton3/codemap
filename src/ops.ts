@@ -1198,7 +1198,7 @@ export async function nodeReview(root: string, id: string) {
   segments.sort((x, y) => ((x as { file?: string }).file ?? "").localeCompare((y as { file?: string }).file ?? "") || ((x as { startLine?: number }).startLine ?? 0) - ((y as { startLine?: number }).startLine ?? 0));
   const codeReview = deriveCodeReview(segments.filter((s) => !("missing" in s) && s.review).map((s) => (s as { review: ReviewPair }).review.code));
   const files = [...new Set(segments.filter((s) => !("missing" in s)).map((s) => (s as { file: string }).file))];
-  const openFindings = annStore.annotations.filter((a) => a.target.kind === "anchor" && node.anchors.includes(a.target.id) && !a.resolved).length;
+  const openFindings = annStore.annotations.filter((a) => a.target.kind === "anchor" && node.anchors.includes(a.target.id) && !a.resolved && (a.kind === "finding" || a.kind === "question")).length;
   return { id, title: node.title, type: node.type, summary: node.summary, files, segments, codeReview, openFindings };
 }
 
@@ -1599,7 +1599,7 @@ export async function updateBug(
 
 export async function annotate(
   root: string,
-  input: { targetKind: "anchor" | "node"; targetId: string; text: string; author?: string; kind?: "note" | "question"; line?: number },
+  input: { targetKind: "anchor" | "node"; targetId: string; text: string; author?: string; kind?: Annotation["kind"]; severity?: BugSeverity; category?: string; line?: number },
 ) {
   // Validate the target exists (anchor targets accept file#Symbol refs too).
   let targetId = input.targetId;
@@ -1612,11 +1612,18 @@ export async function annotate(
     if (!nodes.some((n) => n.id === input.targetId)) return { error: `unknown node "${input.targetId}"` };
   }
   const line = Number.isFinite(input.line) && (input.line as number) > 0 ? Math.floor(input.line as number) : undefined;
+  const KINDS = ["note", "question", "finding", "pointer"] as const;
+  const kind = (KINDS as readonly string[]).includes(input.kind ?? "") ? input.kind : "note";
+  const SEV = ["low", "medium", "high", "critical"];
+  const severity = input.severity && SEV.includes(input.severity) ? input.severity : undefined;
+  const category = input.category?.trim() || undefined;
   const ann: Annotation = {
-    id: genId("note"),
+    id: genId(kind || "note"),
     target: { kind: input.targetKind, id: targetId },
     text: input.text,
-    kind: input.kind === "question" ? "question" : "note",
+    kind,
+    ...(severity ? { severity } : {}),
+    ...(category ? { category } : {}),
     resolved: false,
     ...(line !== undefined ? { line } : {}),
     author: input.author ?? "agent",

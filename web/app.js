@@ -144,18 +144,22 @@ const coverageBar = (cov) => {
 // same: `viewed` (blue) + `signed` (green) marks, then the stakes buttons + severity chip.
 const markBtnEl = (attestation, info, onMark) => {
   const st = (info && info.state) || 'unreviewed';
+  const actor = info && info.actor;
+  const agent = st === 'reviewed' && actor === 'agent'; // agent `checked`, not a human vouch
   const on = attestation === 'signed';
-  const cls = st === 'reviewed' ? (on ? 'on' : 'checked') : st === 'stale' ? 'stale' : '';
+  // A human sign-off is green; an agent-checked vouch (or a viewed mark) is blue.
+  const cls = st === 'reviewed' ? (on && !agent ? 'on' : 'checked') : st === 'stale' ? 'stale' : '';
   const mk = st === 'reviewed' ? ' ✓' : st === 'stale' ? ' ⚠' : '';
-  const tip = `${attestation}: ${st}${st === 'stale' ? ' — code changed, click to re-approve at the live hash' : st === 'unreviewed' ? ' — click to mark' : ' — click to clear'}`;
-  return html`<button class="${cls}" title="${tip}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onMark(attestation, st); }}">${attestation}${mk}</button>`;
+  const tip = `${attestation}: ${st}${agent ? ' (agent-checked — click to confirm as human)' : st === 'stale' ? ' — code changed, click to re-approve at the live hash' : st === 'unreviewed' ? ' — click to mark' : ' — click to clear'}`;
+  return html`<button class="${cls}" title="${tip}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onMark(attestation, st, actor); }}">${attestation}${mk}</button>`;
 };
 const reviewRowEl = (review, viewed, onMark, level = 'code') => {
   const sign = review && review[level], view = viewed && viewed[level];
-  // Signing is a stronger act than viewing, so a sign-off implies you viewed it:
-  // once signed, drop the now-redundant viewed button and show only the sign-off.
-  const signed = sign && sign.state === 'reviewed';
-  return html`<span class="rev">${when(!signed, () => markBtnEl('viewed', view, onMark))}${markBtnEl('signed', sign, onMark)}${when(sign && sign.state === 'stale', () => html`<span class="hint" style="margin-left:6px;color:#f0a35e">⚠ sign-off stale</span>`)}</span>`;
+  // Signing is a stronger act than viewing, so a HUMAN sign-off implies you viewed it:
+  // once human-signed, drop the now-redundant viewed button. An agent `checked` vouch
+  // is not a human sign-off — keep viewed available so the human can still mark/sign.
+  const humanSigned = sign && sign.state === 'reviewed' && sign.actor !== 'agent';
+  return html`<span class="rev">${when(!humanSigned, () => markBtnEl('viewed', view, onMark))}${markBtnEl('signed', sign, onMark)}${when(sign && sign.state === 'stale', () => html`<span class="hint" style="margin-left:6px;color:#f0a35e">⚠ sign-off stale</span>`)}</span>`;
 };
 // A node's code review is DERIVED from the code reviews of the segments it cites
 // (server: deriveCodeReview) — a read-only rollup, never a one-click "I signed the
@@ -230,17 +234,21 @@ function annoThread(c, u, targetKind, targetId, items) {
 const findingKey = (anchorId, line) => anchorId + '#' + (line ?? '');
 const openFindingForm = (c, anchorId, line) => { c.state.finding = findingKey(anchorId, line); };
 const closeFindingForm = (c) => { c.state.finding = null; };
-const openFindingCount = (annotations) => (annotations || []).filter(a => !a.resolved && (a.kind || 'note') === 'note').length;
+// Review annotations (mirrors the CI review vocab): finding = an issue, pointer = a
+// watch-out aid for the reviewer, question = an ask, note = a remark. The ⚑ count is
+// action items (findings + questions); pointers/notes render but don't inflate it.
+const ANNO_ICON = { finding: '⚑', pointer: '👁', question: '?', note: '✎' };
+const openFindingCount = (annotations) => (annotations || []).filter(a => !a.resolved && (a.kind === 'finding' || a.kind === 'question')).length;
 async function raiseFinding(c, u, anchorId, line) {
   const key = findingKey(anchorId, line);
   const text = (c._fdrafts?.[key] || '').trim(); if (!text) return;
-  await postAnnotate(u, 'anchor', anchorId, text, 'note', Number.isFinite(line) ? line : undefined);
+  await postAnnotate(u, 'anchor', anchorId, text, 'finding', Number.isFinite(line) ? line : undefined);
   if (c._fdrafts) c._fdrafts[key] = '';
   c.state.finding = null;
   await c.load.run(); if (c.refreshFile && c.state.file) await c.refreshFile();
 }
 async function toggleFinding(c, u, id, resolved) { await postResolveAnnotation(u, id, resolved); await c.load.run(); if (c.refreshFile && c.state.file) await c.refreshFile(); }
-const findingItemEl = (c, u, f) => html`<div class="rvfind ${f.resolved ? 'resolved' : ''}"><span class="rvfpin" title="${f.line ? 'line ' + f.line : 'note'}">${f.line ? '↳' + f.line : '✎'}</span><span class="rvftext">${f.text}</span><span class="dim rvfauthor">${f.author || 'agent'}</span><button class="annores" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); toggleFinding(c, u, f.id, !f.resolved); }}">${f.resolved ? 'reopen' : 'resolve'}</button></div>`;
+const findingItemEl = (c, u, f) => { const k = f.kind || 'note'; return html`<div class="rvfind k-${k} ${f.resolved ? 'resolved' : ''}"><span class="rvfpin" title="${k}${f.line ? ' · line ' + f.line : ''}">${ANNO_ICON[k] || '✎'}${f.line ? ' ' + f.line : ''}</span>${when(f.severity, () => html`<span class="rvfsev" style="background:${SEV_COLOR[f.severity] || '#3a4250'}" title="severity: ${f.severity}"></span>`)}${when(f.category, () => html`<span class="rvfcat">${f.category}</span>`)}<span class="rvftext">${f.text}</span><span class="dim rvfauthor">${f.author || 'agent'}</span><button class="annores" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); toggleFinding(c, u, f.id, !f.resolved); }}">${f.resolved ? 'reopen' : 'resolve'}</button></div>`; };
 const findingForm = (c, u, anchorId, line) => {
   if (!c._fdrafts) c._fdrafts = {};
   const key = findingKey(anchorId, line);
@@ -254,7 +262,7 @@ function codeReviewLines(c, u, anchorId, code, lang, startLine, annotations) {
   if (code == null) return html`<pre class="code rvcode">(source unavailable — anchor renamed/removed?)</pre>`;
   const base = startLine || 1;
   const byLine = new Map(); const noLine = [];
-  for (const a of (annotations || [])) { if ((a.kind || 'note') !== 'note') continue; if (a.line) { (byLine.get(a.line) || byLine.set(a.line, []).get(a.line)).push(a); } else noLine.push(a); }
+  for (const a of (annotations || [])) { if (a.line) { (byLine.get(a.line) || byLine.set(a.line, []).get(a.line)).push(a); } else noLine.push(a); }
   const lines = highlightLines(code, lang);
   return html`<div class="rvpre hljs">
     ${each(lines, (lineHtml, i) => {
@@ -520,8 +528,9 @@ class AnchorPage extends Component {
   // Two independent human marks on the source: `viewed` (I've laid eyes on it — blue)
   // and `signed` (I own it — green). A stale sign-off returns to the worklist and can
   // only be cleared by re-signing; clicking a stale mark re-approves at the live hash.
-  async mark(attestation, state) {
-    await postReview(this.props.params.universe, 'anchor', this.state.a.id, 'code', state === 'reviewed', attestation);
+  async mark(attestation, state, actor) {
+    const unmark = state === 'reviewed' && actor !== 'agent'; // upgrade an agent check to human, never clear it
+    await postReview(this.props.params.universe, 'anchor', this.state.a.id, 'code', unmark, attestation);
     this.load.run();
   }
   // Human triage: sets a *confirmed* tier (raise or lower — a person owns lowering).
@@ -539,7 +548,7 @@ class AnchorPage extends Component {
       <div class="back" on-click="${() => goTree(u, a.file)}">← ${a.file}</div>
       <h2>${a.symbol}</h2>
       <div class="meta">${a.kind} · ${a.file}:${a.lines} · ${a.present ? 'present' : 'not found (lost)'}</div>
-      <div style="margin:8px 0">${reviewRowEl(a.review, a.viewed, (att, st) => this.mark(att, st))}</div>
+      <div style="margin:8px 0">${reviewRowEl(a.review, a.viewed, (att, st, actor) => this.mark(att, st, actor))}</div>
       <div style="margin:8px 0">${triageRowEl(a.triage, (imp) => this.triage(imp), (on) => this.armTripwire(on))}</div>
       ${when(a.citedBy && a.citedBy.length, () => html`<div class="sec">documented by</div><div class="chips">${each(a.citedBy, n => html`<span class="chip" on-click="${() => go(nodeUrl(u, n.id))}">${n.title || n.id}</span>`)}</div>`)}
       ${when(a.bugs && a.bugs.length, () => html`<div class="sec">bugs</div><div class="chips">${each(a.bugs, b => html`<span class="chip">${b.status} · ${b.title}</span>`)}</div>`)}
@@ -565,9 +574,9 @@ class NodePage extends Component {
   propsChanged() { this.state.n = null; this.state.versions = null; this.state.open = {}; this.state.acode = {}; this.load.run(); }
   // Signing the node vouches for the DOC (logical), not its code — code review is
   // derived from the per-segment signs below.
-  async signNode(attestation, state) { await postReview(this.props.params.universe, 'node', this.props.params.id, 'logical', state === 'reviewed', attestation); this.load.run(); }
+  async signNode(attestation, state, actor) { const unmark = state === 'reviewed' && actor !== 'agent'; await postReview(this.props.params.universe, 'node', this.props.params.id, 'logical', unmark, attestation); this.load.run(); }
   // Sign an individual referenced code segment; reload recomputes the node's derived code rollup.
-  async markAnchor(id, attestation, state) { await postReview(this.props.params.universe, 'anchor', id, 'code', state === 'reviewed', attestation); this.load.run(); }
+  async markAnchor(id, attestation, state, actor) { const unmark = state === 'reviewed' && actor !== 'agent'; await postReview(this.props.params.universe, 'anchor', id, 'code', unmark, attestation); this.load.run(); }
   toggleSeg(id) { this.state.open = { ...this.state.open, [id]: !this.state.open[id] }; if (this.state.open[id] && !this.state.acode[id]) this.loadSeg(id); }
   async loadSeg(id) { const a = await api('/api/anchor', { u: this.props.params.universe, id }); this.state.acode = { ...this.state.acode, [id]: a }; }
   // One referenced code segment: expand to read its live source, sign it inline.
@@ -579,7 +588,7 @@ class NodePage extends Component {
     return html`<div class="anchor-code">
       <div class="sym" on-click="${() => this.toggleSeg(a.id)}">
         <span style="width:auto">${open ? '▾' : '▸'}</span>${sevDot(a.severity)}<span style="width:auto">${a.symbol ?? a.id}</span><span class="dim" style="width:auto">${a.file ?? ''}${a.lines ? ':' + a.lines : ''}</span>${when(nf, () => html`<span class="rvfbadge" title="${nf} open finding${nf === 1 ? '' : 's'}">⚑ ${nf}</span>`)}
-        <span class="rev">${reviewRowEl(a.review, a.viewed, (att, st) => this.markAnchor(a.id, att, st))}<span class="viewlink" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); go(anchorUrl(u, a.id)); }}" title="open full anchor page">↗</span></span>
+        <span class="rev">${reviewRowEl(a.review, a.viewed, (att, st, actor) => this.markAnchor(a.id, att, st, actor))}<span class="viewlink" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); go(anchorUrl(u, a.id)); }}" title="open full anchor page">↗</span></span>
       </div>
       ${when(open, () => !c ? html`<div class="loading" style="padding:6px 0">loading…</div>` : codeReviewLines(this, u, a.id, c.code, c.lang, presetLine, a.annotations))}
     </div>`;
@@ -595,7 +604,7 @@ class NodePage extends Component {
     return html`<div class="detail">
       <div class="meta">${n.type}${n.universe ? ' · ' + n.universe : ''} · ${n.id} ${statusChip(n.status)}${trustChip(n.trust)}${sevChip(n.triage)}<span class="viewlink" on-click="${() => go(graphUrl(u, n.id))}">◆ graph</span></div>
       <h2>${n.title}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions (forked across branches)">⑂${n.versionCount}</span>`)}</h2>
-      <div style="margin:6px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="dim" style="font-size:12px">doc sign-off:</span>${reviewRowEl(n.review, n.viewed, (att, st) => this.signNode(att, st), 'logical')}<span class="dim" style="font-size:12px">— vouches for the doc, not its code</span></div>
+      <div style="margin:6px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="dim" style="font-size:12px">doc sign-off:</span>${reviewRowEl(n.review, n.viewed, (att, st, actor) => this.signNode(att, st, actor), 'logical')}<span class="dim" style="font-size:12px">— vouches for the doc, not its code</span></div>
       <div style="margin:6px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">${codeRollupEl(cr)}${when(cr.total, () => html`<button on-click="${() => go(nodeReviewUrl(u, n.id))}">open code review →</button>`)}</div>
       <div style="margin:6px 0">${triageRowEl(n.triage, (imp) => this.triageNode(imp), (on) => this.armTripwireNode(on))}</div>
       ${when(n.status === 'stale', () => html`<div class="vaction"><span>This doc cites code that changed since it was written.</span> <button on-click="${() => this.confirm()}">confirm still accurate</button> <span class="dim">— or edit it (forks a new version).</span></div>`)}
@@ -629,13 +638,17 @@ class NodeReviewPage extends Component {
   load = this.createTask(async () => { nav.current = this.props.params.universe; this.state.d = await api('/api/node_review', { u: this.props.params.universe, id: this.props.params.id }); });
   mounted() { this.load.run(); if (!this._escWired) { this._escWired = true; window.addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (this.state.finding) closeFindingForm(this); else if (this.state.file) this.closeFile(); } }); } }
   propsChanged() { this.state.d = null; this.state.open = {}; this.state.file = null; this.state.activeAnchor = null; this.state.finding = null; this.load.run(); }
-  isDone(s) { return !!(s.review && s.review.code && s.review.code.state === 'reviewed'); }
+  // "done" for the reviewer = a HUMAN sign-off. An agent `checked` mark is a helpful
+  // first pass but still needs the human — it stays in the queue (and never hides).
+  isDone(s) { const c = s.review && s.review.code; return !!(c && c.state === 'reviewed' && c.actor === 'human'); }
+  isChecked(s) { const c = s.review && s.review.code; return !!(c && c.state === 'reviewed' && c.actor === 'agent'); }
   // Effective expand state: signed segments collapse by default, unsigned expand;
   // an explicit toggle overrides.
   isOpen(s) { const v = this.state.open[s.id]; return v === undefined ? !this.isDone(s) : v; }
   toggle(id) { const s = (this.state.d.segments || []).find(x => x.id === id); this.state.open = { ...this.state.open, [id]: !this.isOpen(s) }; }
   setHide(v) { this.state.hideSigned = v; }
-  async markSeg(id, att, st) { await postReview(this.props.params.universe, 'anchor', id, 'code', st === 'reviewed', att); await this.load.run(); if (this.state.file) await this.refreshFile(); }
+  // Only clear your own human vouch; an agent `checked` mark is upgraded to a human sign-off, never wiped.
+  async markSeg(id, att, st, actor) { const unmark = st === 'reviewed' && actor !== 'agent'; await postReview(this.props.params.universe, 'anchor', id, 'code', unmark, att); await this.load.run(); if (this.state.file) await this.refreshFile(); }
   async openFile(path, anchorId) { this.state.activeAnchor = anchorId || null; this.state.filePending = true; try { this.state.file = await api('/api/file', { u: this.props.params.universe, path }); } finally { this.state.filePending = false; } this.scrollToAnchor(anchorId); }
   async refreshFile() { if (this.state.file && !this.state.file.error) this.state.file = await api('/api/file', { u: this.props.params.universe, path: this.state.file.file }); }
   closeFile() { this.state.file = null; this.state.activeAnchor = null; }
@@ -649,15 +662,15 @@ class NodeReviewPage extends Component {
   }
   segCard(s, u) {
     if (s.missing) return html`<div class="rvseg missing" data-id="${s.id}"><div class="rvhead"><span class="rvsym">${s.id}</span> <span class="dim">— segment missing (renamed/removed?)</span></div></div>`;
-    const done = this.isDone(s), open = this.isOpen(s), nf = openFindingCount(s.annotations);
+    const done = this.isDone(s), checked = this.isChecked(s), open = this.isOpen(s), nf = openFindingCount(s.annotations);
     return html`<div class="rvseg ${done ? 'done' : ''}" data-id="${s.id}">
       <div class="rvhead" on-click="${() => this.toggle(s.id)}">
         <span class="rvchev">${open ? '▾' : '▸'}</span>
-        <span class="rvstate ${done ? 'ok' : ''}" title="${done ? 'signed' : 'not signed'}">${done ? '✓' : '○'}</span>
+        <span class="rvstate ${done ? 'ok' : checked ? 'checked' : ''}" title="${done ? 'signed' : checked ? 'agent-checked — your sign-off still needed' : 'not reviewed'}">${done ? '✓' : checked ? '·' : '○'}</span>
         <span class="rvsym">${s.symbol}</span>
         <span class="dim rvfile">${s.file}:${s.lines || '?'}</span>
         ${when(nf, () => html`<span class="rvfbadge" title="${nf} open finding${nf === 1 ? '' : 's'}">⚑ ${nf}</span>`)}
-        <span class="rev" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">${reviewRowEl(s.review, s.viewed, (att, st) => this.markSeg(s.id, att, st))}<button title="read the whole file in context" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.openFile(s.file, s.id); }}">view file</button><span class="viewlink" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); go(anchorUrl(u, s.id)); }}" title="open anchor page">↗</span></span>
+        <span class="rev" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">${reviewRowEl(s.review, s.viewed, (att, st, actor) => this.markSeg(s.id, att, st, actor))}<button title="read the whole file in context" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.openFile(s.file, s.id); }}">view file</button><span class="viewlink" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); go(anchorUrl(u, s.id)); }}" title="open anchor page">↗</span></span>
       </div>
       ${when(open, () => codeReviewLines(this, u, s.id, s.code, s.lang, s.startLine, s.annotations))}
     </div>`;
@@ -670,7 +683,7 @@ class NodeReviewPage extends Component {
     // line → findings pinned there, and line → the anchor whose range covers it
     // (only lines inside a reviewed segment are commentable).
     const findsAt = new Map();
-    for (const a of f.anchors) for (const an of (a.annotations || [])) if (an.line && (an.kind || 'note') === 'note') { const arr = findsAt.get(an.line) || findsAt.set(an.line, []).get(an.line); arr.push(an); }
+    for (const a of f.anchors) for (const an of (a.annotations || [])) if (an.line) { const arr = findsAt.get(an.line) || findsAt.set(an.line, []).get(an.line); arr.push(an); }
     const anchorAtLine = (n) => { const a = f.anchors.find(a => a.startLine && a.endLine && n >= a.startLine && n <= a.endLine); return a ? a.id : null; };
     // Highlight the whole file once (multi-line context intact), then slice per line
     // so line numbers + the active-segment band stay aligned.
@@ -700,9 +713,9 @@ class NodeReviewPage extends Component {
             <div class="rvfilecode">${this.fileLines(f)}</div>
             <div class="rvfileside">
               <div class="sxs-h">segments in this file (${f.anchors.length})</div>
-              ${each(f.anchors, a => { const nf = (a.annotations || []).filter(x => !x.resolved).length; return html`<div class="rvaside ${a.id === this.state.activeAnchor ? 'active' : ''}">
+              ${each(f.anchors, a => { const nf = openFindingCount(a.annotations); return html`<div class="rvaside ${a.id === this.state.activeAnchor ? 'active' : ''}">
                 <div class="rvasym" on-click="${() => this.setActive(a.id)}">${a.symbol} <span class="dim">${a.startLine ?? '?'}-${a.endLine ?? '?'}</span>${when(nf, () => html`<span class="rvfbadge" title="${nf} open finding${nf === 1 ? '' : 's'}">⚑ ${nf}</span>`)}</div>
-                <div class="rvamarks">${reviewRowEl(a.review, a.viewed, (att, st) => this.markSeg(a.id, att, st))}</div>
+                <div class="rvamarks">${reviewRowEl(a.review, a.viewed, (att, st, actor) => this.markSeg(a.id, att, st, actor))}</div>
               </div>`; }, a => a.id)}
             </div>`)}
         </div>
@@ -715,7 +728,9 @@ class NodeReviewPage extends Component {
       const cr = d.codeReview || { signed: 0, total: 0, stale: 0 };
       const segs = d.segments || [];
       const pending = segs.filter(s => !s.missing && !this.isDone(s));
-      const shown = this.state.hideSigned ? segs.filter(s => s.missing || !this.isDone(s)) : segs;
+      // Hide only human-signed segments with nothing left open — a signed segment that
+      // still has open findings, and any agent-checked-but-unsigned segment, stay visible.
+      const shown = this.state.hideSigned ? segs.filter(s => !this.isDone(s) || openFindingCount(s.annotations) > 0) : segs;
       const pct = cr.total ? Math.round(cr.signed / cr.total * 100) : 0;
       return html`
         <div class="crumbs"><a on-click="${() => go(nodeUrl(u, d.id))}">← ${d.title}</a> <span class="sep">·</span> code review</div>
@@ -1015,7 +1030,7 @@ class FlowPage extends Component {
     if (!a.code) return html`<div class="anchor-code"><div class="sym">${a.symbol} — code unavailable</div></div>`;
     const nf = openFindingCount(a.annotations);
     return html`<div class="anchor-code">
-      <div class="sym">${a.symbol} · ${a.file}:${a.lines}${when(nf, () => html`<span class="rvfbadge" title="${nf} open finding${nf === 1 ? '' : 's'}">⚑ ${nf}</span>`)}${reviewRowEl(a.review, a.viewed, (att, st) => this.toggle('anchor', a.id, 'code', st, att))}</div>
+      <div class="sym">${a.symbol} · ${a.file}:${a.lines}${when(nf, () => html`<span class="rvfbadge" title="${nf} open finding${nf === 1 ? '' : 's'}">⚑ ${nf}</span>`)}${reviewRowEl(a.review, a.viewed, (att, st, actor) => this.toggle('anchor', a.id, 'code', st, att, actor))}</div>
       ${codeReviewLines(this, this.props.params.universe, a.id, a.code, a.lang, a.startLine, a.annotations)}
     </div>`;
   }
