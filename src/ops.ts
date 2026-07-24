@@ -482,18 +482,39 @@ export async function nodeCatalog(root: string) {
       severity: e?.triage.severity ?? "untriaged",
     };
   });
-  const tally = (arr: typeof out, k: "type" | "domain" | "status" | "severity") =>
+  // Fold state-map enrichment pairs: a generated transition skeleton `mtr-x` and
+  // its authored enrichment `tr-x` are ONE logical transition. Keep the enrichment
+  // row (the reviewable, trust-bearing doc), merge in the skeleton's connectivity,
+  // and drop the skeleton so the catalog doesn't double-count machines.
+  const rowById = new Map(out.map((n) => [n.id, n]));
+  const isSkeletonWithTwin = (n: (typeof out)[number]) => {
+    if (!n.generatedBy || n.type !== "transition" || !n.id.startsWith("mtr-")) return false;
+    const twin = rowById.get(n.id.slice(1));
+    return !!twin && twin.type === "transition" && !twin.generatedBy;
+  };
+  const folded = out
+    .filter((n) => !isSkeletonWithTwin(n))
+    .map((n) => {
+      if (n.type === "transition" && !n.generatedBy) {
+        const sk = rowById.get("m" + n.id);
+        if (sk && isSkeletonWithTwin(sk)) {
+          return { ...n, edgesIn: n.edgesIn + sk.edgesIn, edgesOut: n.edgesOut + sk.edgesOut, degree: n.degree + sk.degree, skeleton: sk.id };
+        }
+      }
+      return n;
+    });
+  const tally = (arr: typeof folded, k: "type" | "domain" | "status" | "severity") =>
     arr.reduce<Record<string, number>>((m, x) => ((m[x[k] ?? "(none)"] = (m[x[k] ?? "(none)"] ?? 0) + 1), m), {});
-  const reviewed = out.filter((n) => n.review.logical !== "unreviewed" || n.review.code !== "unreviewed").length;
+  const reviewed = folded.filter((n) => n.review.logical !== "unreviewed" || n.review.code !== "unreviewed").length;
   return {
-    total: out.length,
+    total: folded.length,
     reviewed,
-    byType: tally(out, "type"),
-    byDomain: tally(out, "domain"),
-    byStatus: tally(out, "status"),
-    bySeverity: tally(out, "severity"),
+    byType: tally(folded, "type"),
+    byDomain: tally(folded, "domain"),
+    byStatus: tally(folded, "status"),
+    bySeverity: tally(folded, "severity"),
     coverage: rollupCoverage([...rt.values()].map((v) => v.triage)),
-    nodes: out,
+    nodes: folded,
   };
 }
 

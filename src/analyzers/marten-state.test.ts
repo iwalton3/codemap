@@ -11,7 +11,7 @@ import { buildMartenModel, deriveStateMachines, analyzeMarten } from "./marten.j
 import { emitMartenGraph } from "./marten-emit.js";
 import { writeStore, loadNodes, readGraph } from "../store.js";
 import { indexRepo } from "../repo.js";
-import { document as documentNode, connect, stateMap } from "../ops.js";
+import { document as documentNode, connect, stateMap, nodeCatalog } from "../ops.js";
 import { markReviewed } from "../reviews.js";
 
 // Hold: class aggregate — object-initializer Create, `this.`/bare assignments,
@@ -452,6 +452,17 @@ test("stateMap op: layout, enrichment join, work queue, trust", async () => {
     r = await stateMap(root, { aggregate: "Hold" });
     m = r.machines[0]!;
     assert.equal(tr("mtr-hold-holdapproved").enrichment!.trust, "checked");
+
+    // Catalog folds the pair: the skeleton row disappears, the enrichment row
+    // absorbs its connectivity — one logical transition, not two entries.
+    const cat = await nodeCatalog(root);
+    const rows = cat.nodes.filter((n: { id: string }) => n.id.endsWith("hold-holdapproved") && n.id !== "mev-holdapproved");
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]!.id, "tr-hold-holdapproved");
+    assert.equal((rows[0] as { skeleton?: string }).skeleton, "mtr-hold-holdapproved");
+    assert.ok(rows[0]!.degree > 0, "skeleton connectivity folded into the enrichment row");
+    // unpaired skeletons still list normally
+    assert.ok(cat.nodes.some((n: { id: string }) => n.id === "mtr-hold-holdrouted"));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
