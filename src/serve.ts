@@ -76,6 +76,8 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return ops.eventMatrix(root);
     case "/api/pipeline":
       return ops.pipelineGraph(root, { domain: q.get("domain") || undefined });
+    case "/api/statemap":
+      return ops.stateMap(root, { aggregate: q.get("aggregate") || undefined });
     case "/api/flows":
       return ops.flows(root);
     case "/api/flow":

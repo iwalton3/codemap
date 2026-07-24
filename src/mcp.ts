@@ -237,6 +237,12 @@ const tools: Tool[] = [
     handler: (a, c) => ops.pipelineGraph(c.universe.path, { domain: a.domain }),
   },
   {
+    name: "state_map",
+    description: "Per-aggregate state machines: states (status-enum members) and transition nodes, with BFS layers from the initial states for layout. A transition skeleton `mtr-<agg>-<event>` is analyzer-generated; its SOURCE STATES and GUARDS are enrichment you author — a versioned node whose id is EXACTLY the skeleton id minus the leading 'm' (`mtr-hold-approved` → `tr-hold-approved`; copy it, don't re-derive the slug) via `document` (type 'transition', citing the Apply/guard anchors) plus `connect` edges: `from_state` (state → transition) for each source, and `transitions_to` (transition → state) when you derive a dynamic transition's target. `unenriched` per machine is the work queue: transitions with no enrichment or whose enrichment went stale when code drifted. Optional `aggregate` filters to one machine (id or title).",
+    inputSchema: obj({ aggregate: { type: "string" } }),
+    handler: (a, c) => ops.stateMap(c.universe.path, { aggregate: a.aggregate }),
+  },
+  {
     name: "subgraph",
     description: "Induced subgraph for incremental graph exploration: pass `ids` (the current node set) and optionally `expand` (one node id) to pull in that node's neighbors. Returns the nodes (each with full-graph degree and how many neighbors are still hidden) plus every edge among them. Grow the view one node at a time.",
     inputSchema: obj({ ids: { type: "array", items: { type: "string" } }, expand: { type: "string" } }, ["ids"]),
@@ -301,10 +307,10 @@ const tools: Tool[] = [
   },
   {
     name: "document",
-    description: "Create/update a logical node (module|process|step) in a universe. Must cite ≥1 anchor — floating claims are rejected. Set `id` to control the slug you'll [[link]] to.",
+    description: "Create/update a logical node (module|process|step|transition|state) in a universe. Must cite ≥1 anchor — floating claims are rejected. Set `id` to control the slug you'll [[link]] to. For state-machine enrichment use type 'transition' with id `tr-<agg>-<event>` (see `state_map`).",
     inputSchema: obj({
       id: { type: "string" },
-      type: { type: "string", enum: ["module", "process", "step"] },
+      type: { type: "string", enum: ["module", "process", "step", "transition", "state"] },
       title: { type: "string" },
       summary: { type: "string" },
       anchors: { type: "array", items: { type: "string" }, description: "Anchors by `file#Symbol`, `file:line`, or raw id — resolved server-side." },
@@ -331,11 +337,11 @@ const tools: Tool[] = [
   },
   {
     name: "connect",
-    description: "Add one edge or many (same-universe: part_of/depends_on/step_of/touches). Pass from/to/type for one, or edges:[…] for a batch. For cross-universe API boundaries use `link`.",
+    description: "Add one edge or many (same-universe: part_of/depends_on/step_of/touches, plus state-map enrichment: from_state = state→transition source, transitions_to = transition→state target for dynamic transitions, initial_state = aggregate→state when the static pass couldn't detect the initial). Pass from/to/type for one, or edges:[…] for a batch. For cross-universe API boundaries use `link`.",
     inputSchema: obj({
       from: { type: "string" },
       to: { type: "string" },
-      type: { type: "string", enum: ["part_of", "depends_on", "step_of", "touches"] },
+      type: { type: "string", enum: ["part_of", "depends_on", "step_of", "touches", "from_state", "transitions_to", "initial_state"] },
       order: { type: "number" },
       edges: {
         type: "array",
@@ -344,7 +350,7 @@ const tools: Tool[] = [
           properties: {
             from: { type: "string" },
             to: { type: "string" },
-            type: { type: "string", enum: ["part_of", "depends_on", "step_of", "touches"] },
+            type: { type: "string", enum: ["part_of", "depends_on", "step_of", "touches", "from_state", "transitions_to", "initial_state"] },
             order: { type: "number" },
           },
           required: ["from", "to", "type"],

@@ -113,7 +113,7 @@ export function anchorId(
  * analyzers can add their own (e.g. the Marten analyzer's `event_family`) without
  * the core knowing about them. The `(string & {})` keeps literal autocomplete.
  */
-export type LogicalNodeType = "module" | "process" | "step" | "event_family" | "aggregate" | "projection" | "command" | "handler" | (string & {});
+export type LogicalNodeType = "module" | "process" | "step" | "event_family" | "aggregate" | "projection" | "command" | "handler" | "state" | "transition" | (string & {});
 
 /**
  * A doc is a *set of versions* (see docs/doc-versioning.md). Each version records
@@ -197,6 +197,14 @@ export type EdgeType =
   | "projects" // event_family -> projection (Transform)
   | "emits" // handler -> event_family
   | "handles" // handler -> command
+  // State-machine vocabulary (see docs/state-map.md): states + transitions are
+  // NODES (a transition is a claim and must cite anchors); these edges wire them.
+  | "state_of" // state -> aggregate
+  | "transition_of" // transition -> aggregate (tether; survives even with no static target)
+  | "transitions_to" // transition -> state (target; generated when static, authored for dynamic)
+  | "on_event" // transition -> event_family
+  | "initial_state" // aggregate -> state (Create-assigned / property default)
+  | "from_state" // state -> transition (source; AUTHORED during enrichment, never generated)
   | (string & {});
 
 export interface Edge {

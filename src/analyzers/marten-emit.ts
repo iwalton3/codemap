@@ -11,7 +11,7 @@ import {
   loadNodes, readGraph, writeGraph, writeNode, deleteNode, slug,
 } from "../store.js";
 import { indexRepo } from "../repo.js";
-import { buildMartenModel } from "./marten.js";
+import { buildMartenModel, deriveStateMachines } from "./marten.js";
 
 const GEN = "marten";
 
@@ -32,7 +32,7 @@ function anchorByLeaf(anchors: Anchor[], name: string, kinds?: string[]): Anchor
 
 const TYPE_KINDS = ["class", "record", "struct"];
 
-export async function emitMartenGraph(root: string): Promise<{ events: number; aggregates: number; projections: number; commands: number; handlers: number; edges: number; skipped: number }> {
+export async function emitMartenGraph(root: string): Promise<{ events: number; aggregates: number; projections: number; commands: number; handlers: number; states: number; transitions: number; stateEdges: number; edges: number; skipped: number }> {
   const model = await buildMartenModel(root);
   // Index current code (not the possibly-stale anchors.json) so a refresh reflects
   // reality; anchor ids are deterministic, so citations still match the store.
@@ -134,8 +134,60 @@ export async function emitMartenGraph(root: string): Promise<{ events: number; a
     for (const e of emits) edges.push({ from: id, to: evId(e), type: "emits", generatedBy: GEN });
   }
 
+  // State machines: state nodes (every enum member — unassigned ones must exist
+  // for the gap UI) + transition skeletons + wiring edges. Enrichment (`tr-…`
+  // nodes, from_state edges) is authored via document/connect, never emitted, so
+  // the clear-and-rewrite above can never clobber it.
+  let stateCount = 0, transitionCount = 0;
+  const edgesBeforeStates = edges.length;
+  for (const mach of deriveStateMachines(model)) {
+    if (!aggWritten.has(mach.aggregate)) continue;
+    // anchorAt over the recorded decl line, not anchorByLeaf: two aggregates often
+    // nest identically-named `Status` enums.
+    const enumAnchor = anchorAt(anchors, mach.enumWhere.file, mach.enumWhere.line) ?? anchorByLeaf(anchors, mach.enumName, ["enum"]);
+    const stId = (member: string) => "mst-" + slug(`${mach.aggregate}-${member}`);
+    const trId = (event: string) => "mtr-" + slug(`${mach.aggregate}-${event}`);
+    const stWritten = new Set<string>();
+    if (enumAnchor) {
+      for (const member of mach.members) {
+        const initial = mach.initialMembers.includes(member);
+        nodes.push({ id: stId(member), type: "state", title: `${mach.aggregate} · ${member}`, summary: `State \`${member}\` of \`${mach.aggregate}\` (\`${mach.enumName}\` via \`${mach.prop}\`)${initial ? " — initial" : ""}.`, anchors: [enumAnchor.id], body: "", generatedBy: GEN });
+        stWritten.add(member);
+        stateCount++;
+        edges.push({ from: stId(member), to: aggId(mach.aggregate), type: "state_of", generatedBy: GEN });
+        if (initial) edges.push({ from: aggId(mach.aggregate), to: stId(member), type: "initial_state", generatedBy: GEN });
+      }
+    } else skipped += mach.members.length;
+
+    for (const t of mach.transitions) {
+      const ids: string[] = [];
+      const fold = anchorAt(anchors, t.file, t.line);
+      if (fold) ids.push(fold.id);
+      for (const h of model.handlers.values()) {
+        if (!h.emits.includes(t.event)) continue;
+        const a = anchorAt(anchors, h.file, h.line);
+        if (a) ids.push(a.id);
+      }
+      if (!ids.length) { skipped++; continue; }
+      const to = t.targets.length ? `sets \`${mach.prop}\` → ${t.targets.map((x) => `\`${x}\``).join(" | ")}` : "";
+      const dyn = t.dynamic ? "target is runtime-determined (needs enrichment)" : "";
+      nodes.push({
+        id: trId(t.event), type: "transition", title: `${mach.aggregate} ← ${t.event}`,
+        summary: `Transition on \`${t.event}\`${t.isCreate ? " (stream start)" : ""} — ${[to, dyn].filter(Boolean).join("; ")}. Source states/guards live in the \`tr-\` enrichment node.`,
+        anchors: uniq(ids), body: "", generatedBy: GEN,
+      });
+      transitionCount++;
+      // transition_of tethers the transition to its machine even when it has no
+      // static target (dynamic) — without it the stateMap op couldn't find it.
+      edges.push({ from: trId(t.event), to: aggId(mach.aggregate), type: "transition_of", generatedBy: GEN });
+      for (const target of t.targets) if (stWritten.has(target)) edges.push({ from: trId(t.event), to: stId(target), type: "transitions_to", generatedBy: GEN });
+      if (evWritten.has(t.event)) edges.push({ from: trId(t.event), to: evId(t.event), type: "on_event", generatedBy: GEN });
+    }
+  }
+  const stateEdges = edges.length - edgesBeforeStates;
+
   for (const n of nodes) await writeNode(root, n);
   graph.edges.push(...edges);
   await writeGraph(root, graph);
-  return { events: eventCount, aggregates: aggWritten.size, projections: projWritten.size, commands: cmdWritten.size, handlers: handlerCount, edges: edges.length, skipped };
+  return { events: eventCount, aggregates: aggWritten.size, projections: projWritten.size, commands: cmdWritten.size, handlers: handlerCount, states: stateCount, transitions: transitionCount, stateEdges, edges: edges.length, skipped };
 }

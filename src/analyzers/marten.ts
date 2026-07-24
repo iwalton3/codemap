@@ -13,6 +13,8 @@
  *   emit       session.Events.Append/StartStream(…, new EventT) → EventT emitted
  *   command    record : IIntentCommand / ILineCommand           → a command
  *   handler    Handle/Consume(CommandT, …)                      → handles CommandT
+ *   state      status-enum property + literal assignments in folds → per-aggregate
+ *              state machine (states, event → target-state transitions, initials)
  */
 
 import { readFile } from "node:fs/promises";
@@ -30,6 +32,35 @@ interface Where {
   line: number;
 }
 
+interface EnumDecl extends Where {
+  members: string[];
+}
+
+/** A property (or positional record param) and its declared type name. */
+interface TypeProp {
+  prop: string;
+  typeName: string;
+  file: string;
+  line: number;
+  /** `= Enum.Member` default initializer — an initial state candidate. */
+  defaultMember?: { typeName: string; member: string };
+}
+
+/** RHS of a state assignment: `Enum.Member` is a literal; anything else is runtime-determined. */
+type AssignedValue = { kind: "literal"; typeName: string; member: string } | { kind: "dynamic" };
+
+/** One property assignment inside an Apply/Create body — the raw material of a transition. */
+interface FoldAssignment {
+  aggregate: string;
+  event: string;
+  /** LHS property name; "?ctor" = a positional `new Agg(…)` argument (resolved against the enum later). */
+  prop: string;
+  rhs: AssignedValue;
+  isCreate: boolean;
+  file: string;
+  line: number;
+}
+
 interface Model {
   folded: Map<string, Where & { aggregate: string }>; // event → aggregate that Apply()s it
   projected: Map<string, Where & { projection: string }>; // event → projection
@@ -43,6 +74,9 @@ interface Model {
   projectionDecls: Map<string, Where>; // projection type name → where declared
   records: Map<string, Where>; // every record decl name → where (to resolve event record anchors)
   handlers: Map<string, HandlerInfo>; // "file:line" → a handler/endpoint method (for emits/handles edges)
+  enums: Map<string, EnumDecl[]>; // enum simple name → declarations (same name may recur across namespaces)
+  typeProps: Map<string, TypeProp[]>; // type name → property/positional-param candidates (enum resolved post-parse)
+  foldAssignments: FoldAssignment[]; // per-assignment records from Apply/Create bodies (state transitions)
 }
 
 interface HandlerInfo {
@@ -51,6 +85,7 @@ interface HandlerInfo {
   line: number;
   params: string[]; // parameter type names (⊇ the command handled)
   emits: string[]; // event types `new`'d into Events.Append/StartStream in its body
+  memberRefs: string[]; // unique member-access names in the body (guard detection: does it read `.Status`?)
 }
 
 /** A command marker interface by convention (IAcmeCommand, IIntentCommand, ILineCommand, …). */
@@ -164,6 +199,75 @@ function appendedEventsUnder(node: Node): { event: string; line: number }[] {
   return out;
 }
 
+/** Classify a value expression: `Enum.Member` → literal; anything else (ternary, switch, call, `e.X`…) → dynamic. */
+function classifyValue(expr: Node | null): AssignedValue {
+  if (expr?.type === "member_access_expression") {
+    const tn = typeToName(expr.childForFieldName("expression"));
+    const member = expr.childForFieldName("name")?.text;
+    if (tn && member) return { kind: "literal", typeName: tn.split(".").pop()!, member };
+  }
+  return { kind: "dynamic" };
+}
+
+/**
+ * Property assignments under a fold method: plain/`this.` assignments, `with { … }`
+ * initializers, and positional `new <Agg>(…)` ctor args (recorded as "?ctor" and
+ * resolved against the status enum later). Object initializers parse as
+ * assignment_expressions, so `new Agg { Status = X }` needs no special case — but
+ * initializers of OTHER constructed types are skipped so a `new LineItem { Status = … }`
+ * can't masquerade as an aggregate transition.
+ */
+function stateAssignmentsUnder(method: Node, aggregate: string): { prop: string; rhs: AssignedValue; line: number }[] {
+  const out: { prop: string; rhs: AssignedValue; line: number }[] = [];
+  const walk = (n: Node, foreign: boolean) => {
+    if (n.type === "assignment_expression" && !foreign) {
+      const left = n.childForFieldName("left");
+      const prop = left?.type === "identifier" ? left.text
+        : left?.type === "member_access_expression" ? left.childForFieldName("name")?.text : undefined;
+      if (prop) out.push({ prop, rhs: classifyValue(n.childForFieldName("right")), line: n.startPosition.row + 1 });
+    }
+    if (n.type === "with_expression" && !foreign) {
+      for (const wi of n.namedChildren) {
+        if (wi.type !== "with_initializer") continue;
+        const prop = wi.namedChild(0)?.text;
+        if (prop) out.push({ prop, rhs: classifyValue(wi.namedChild(1)), line: wi.startPosition.row + 1 });
+      }
+    }
+    if (n.type === "object_creation_expression") {
+      const isAgg = typeToName(n.childForFieldName("type")) === aggregate;
+      if (isAgg) {
+        for (const arg of n.childForFieldName("arguments")?.namedChildren ?? []) {
+          const expr = arg.type === "argument" ? arg.namedChild(0) : arg;
+          if (expr?.type === "member_access_expression") {
+            const v = classifyValue(expr);
+            if (v.kind === "literal") out.push({ prop: "?ctor", rhs: v, line: expr.startPosition.row + 1 });
+          }
+        }
+      }
+      for (const c of n.children) walk(c, !isAgg);
+      return;
+    }
+    for (const c of n.children) walk(c, foreign);
+  };
+  walk(method, false);
+  return out;
+}
+
+/** Unique member-access names under a node (`hold.Status` → "Status") — for guard detection. */
+function memberAccessNamesUnder(node: Node): string[] {
+  const out = new Set<string>();
+  const walk = (n: Node) => {
+    if (n.type === "member_access_expression") {
+      const nm = n.childForFieldName("name");
+      const t = nm?.type === "generic_name" ? nm.namedChild(0)?.text : nm?.text;
+      if (t) out.add(t);
+    }
+    for (const c of n.children) walk(c);
+  };
+  walk(node);
+  return [...out];
+}
+
 /** The event a method folds/projects: Apply(T)→T, Transform(IEvent<T>)→T. */
 function eventOfMethod(method: Node): string | null {
   const t = firstParamType(method);
@@ -212,9 +316,24 @@ function collectFromFile(root: Node, file: string, m: Model): void {
         if (bases.some(isCommandMarker)) m.commands.set(name, { file, line });
       }
 
-      // methods on this type
+      // members: enum-typed property candidates (state machines) + methods. The
+      // enum may live in another file, so candidates are collected raw and
+      // resolved against `m.enums` in deriveStateMachines.
       const body = node.childForFieldName("body");
+      const props: TypeProp[] = [];
       for (const member of body?.namedChildren ?? []) {
+        if (member.type === "property_declaration") {
+          const tn = typeToName(member.childForFieldName("type"));
+          const pn = member.childForFieldName("name")?.text;
+          if (tn && pn) {
+            const dv = classifyValue(member.childForFieldName("value"));
+            props.push({
+              prop: pn, typeName: tn, file, line: member.startPosition.row + 1,
+              ...(dv.kind === "literal" ? { defaultMember: { typeName: dv.typeName, member: dv.member } } : {}),
+            });
+          }
+          continue;
+        }
         if (member.type !== "method_declaration") continue;
         const mname = member.childForFieldName("name")?.text;
         const mline = member.startPosition.row + 1;
@@ -229,6 +348,11 @@ function collectFromFile(root: Node, file: string, m: Model): void {
             } else {
               m.folded.set(ev, { file, line: mline, aggregate: name });
               if (!m.aggregateDecls.has(name)) m.aggregateDecls.set(name, { file, line });
+              // Capture state transitions inline — `folded` keeps only the last
+              // aggregate per event, so it can't source per-assignment records.
+              for (const a of stateAssignmentsUnder(member, name)) {
+                m.foldAssignments.push({ aggregate: name, event: ev, prop: a.prop, rhs: a.rhs, isCreate: mname === "Create", file, line: a.line });
+              }
             }
           }
         } else if (isHandlerMethod(mname, attrs)) {
@@ -239,8 +363,30 @@ function collectFromFile(root: Node, file: string, m: Model): void {
           // Broad: any event `new`'d in the body (incl. via a local var), filtered to
           // known events at emission — the strict Append-arg form misses variable emits.
           const emits = [...new Set(constructedTypesUnder(member))];
-          m.handlers.set(`${file}:${mline}`, { name: `${name}.${mname ?? "?"}`, file, line: mline, params, emits });
+          m.handlers.set(`${file}:${mline}`, { name: `${name}.${mname ?? "?"}`, file, line: mline, params, emits, memberRefs: memberAccessNamesUnder(member) });
         }
+      }
+
+      // positional record / primary-ctor params are properties too
+      const plist = node.namedChildren.find((c) => c.type === "parameter_list");
+      for (const p of plist?.namedChildren ?? []) {
+        if (p.type !== "parameter") continue;
+        const tn = typeToName(p.childForFieldName("type"));
+        const pn = p.childForFieldName("name")?.text;
+        if (tn && pn) props.push({ prop: pn, typeName: tn, file, line: p.startPosition.row + 1 });
+      }
+      if (props.length) m.typeProps.set(name, [...(m.typeProps.get(name) ?? []), ...props]);
+    }
+
+    // enum declarations — the state vocabulary for per-aggregate machines
+    if (node.type === "enum_declaration") {
+      const name = node.childForFieldName("name")?.text;
+      if (name) {
+        const members = (node.childForFieldName("body")?.namedChildren ?? [])
+          .filter((c) => c.type === "enum_member_declaration")
+          .map((c) => c.childForFieldName("name")?.text)
+          .filter((x): x is string => Boolean(x));
+        (m.enums.get(name) ?? m.enums.set(name, []).get(name)!).push({ file, line: node.startPosition.row + 1, members });
       }
     }
 
@@ -281,6 +427,91 @@ function collectFromFile(root: Node, file: string, m: Model): void {
   walk(root);
 }
 
+// --- state machines ----------------------------------------------------------
+
+export interface StateTransition {
+  event: string;
+  /** Statically-resolved target members (an if/else assigning two literals yields two). */
+  targets: string[];
+  /** Some assignment's target isn't statically resolvable (ternary/switch/call/cross-enum) — needs enrichment. */
+  dynamic: boolean;
+  isCreate: boolean;
+  file: string;
+  line: number;
+}
+
+export interface StateMachine {
+  aggregate: string;
+  /** The chosen status property. */
+  prop: string;
+  enumName: string;
+  enumWhere: Where;
+  members: string[];
+  /** Create-assigned targets ∪ the property's default initializer. */
+  initialMembers: string[];
+  transitions: StateTransition[];
+  /** Enum-typed properties NOT tracked (surfaced by `status-prop-ambiguous`). */
+  otherEnumProps: string[];
+}
+
+/**
+ * Per-aggregate state machine, derived post-parse (the status enum may live in a
+ * different file than the aggregate). ONE machine per aggregate — the emission id
+ * convention (mtr-<agg>-<event>) can't address two — so when several enum-typed
+ * properties exist the status-ish one wins and the rest become a finding.
+ */
+export function deriveStateMachines(m: Model): StateMachine[] {
+  const out: StateMachine[] = [];
+  for (const [agg] of m.aggregateDecls) {
+    const candidates = (m.typeProps.get(agg) ?? []).filter((p) => m.enums.has(p.typeName));
+    if (!candidates.length) continue;
+    const assigns = (prop: string) => m.foldAssignments.filter((a) => a.aggregate === agg && a.prop === prop);
+    const statusish = candidates.filter((p) => /status|state|phase|stage|lifecycle/i.test(p.prop));
+    const isStatusish = statusish.length > 0;
+    const pool = isStatusish ? statusish : candidates;
+    const best = pool.reduce((a, b) => (assigns(b.prop).length > assigns(a.prop).length ? b : a));
+    const decls = m.enums.get(best.typeName)!;
+    const en = decls.find((e) => e.file === best.file) ?? decls[0]!; // prefer same-file on name collision
+    const members = new Set(en.members);
+    const resolves = (v: AssignedValue): v is { kind: "literal"; typeName: string; member: string } =>
+      v.kind === "literal" && v.typeName === best.typeName && members.has(v.member);
+
+    // "?ctor" args are positional guesses — they count only when they resolve to
+    // this machine's enum; real prop assignments count always (unresolvable ⇒ dynamic).
+    const relevant = m.foldAssignments.filter((a) => a.aggregate === agg &&
+      (a.prop === best.prop || (a.prop === "?ctor" && resolves(a.rhs))));
+    if (!relevant.length) continue; // enum-typed prop never assigned in folds — not a state machine
+    // A prop that isn't status-named qualifies only with ≥1 statically-resolved
+    // target: type/kind DISCRIMINATORS copied from a command payload (`Type =
+    // cmd.Type`) look like all-dynamic machines and are pure noise (the Acme
+    // CustomFieldType/Order false-positive class). A status-NAMED prop keeps
+    // its machine even when fully dynamic — the name signals intent and the
+    // dynamic transitions are exactly the enrichment queue.
+    if (!isStatusish && !relevant.some((a) => resolves(a.rhs))) continue;
+
+    const byEvent = new Map<string, FoldAssignment[]>();
+    for (const a of relevant) (byEvent.get(a.event) ?? byEvent.set(a.event, []).get(a.event)!).push(a);
+    const transitions: StateTransition[] = [...byEvent.entries()].map(([event, as]) => ({
+      event,
+      targets: [...new Set(as.flatMap((a) => (resolves(a.rhs) ? [a.rhs.member] : [])))],
+      dynamic: as.some((a) => !resolves(a.rhs)),
+      isCreate: as.some((a) => a.isCreate),
+      file: as[0]!.file,
+      line: as[0]!.line,
+    }));
+    const initial = new Set<string>(transitions.filter((t) => t.isCreate).flatMap((t) => t.targets));
+    if (best.defaultMember && best.defaultMember.typeName === best.typeName && members.has(best.defaultMember.member)) {
+      initial.add(best.defaultMember.member);
+    }
+    out.push({
+      aggregate: agg, prop: best.prop, enumName: best.typeName, enumWhere: { file: en.file, line: en.line },
+      members: en.members, initialMembers: [...initial], transitions,
+      otherEnumProps: candidates.filter((c) => c !== best).map((c) => c.prop),
+    });
+  }
+  return out;
+}
+
 // --- checks ------------------------------------------------------------------
 
 export type Severity = "warn" | "info";
@@ -293,7 +524,7 @@ export interface Finding {
   line?: number;
 }
 
-function runChecks(m: Model, verbose: boolean): Finding[] {
+function runChecks(m: Model, machines: StateMachine[], verbose: boolean): Finding[] {
   const out: Finding[] = [];
 
   // 1. command with no handler — high signal (warn). Consumed = a handler/endpoint
@@ -312,9 +543,21 @@ function runChecks(m: Model, verbose: boolean): Finding[] {
     }
   }
 
+  // 3. unreachable state — no transition targets it and it isn't initial (warn).
+  // Only when every transition is statically resolved: a dynamic one may reach anything.
+  for (const mach of machines) {
+    if (mach.transitions.some((t) => t.dynamic)) continue;
+    const reachable = new Set(mach.transitions.flatMap((t) => t.targets));
+    for (const s of mach.members) {
+      if (!reachable.has(s) && !mach.initialMembers.includes(s)) {
+        out.push({ check: "state-unreachable", severity: "warn", entity: `${mach.aggregate}.${s}`, message: `state \`${s}\` of \`${mach.aggregate}\` is never assigned by any fold and is not an initial state (unreachable?)`, ...mach.enumWhere });
+      }
+    }
+  }
+
   if (!verbose) return out;
 
-  // 3. folded event with no projection, on a NON-snapshot aggregate (info). Snapshot
+  // 4. folded event with no projection, on a NON-snapshot aggregate (info). Snapshot
   // aggregates are self-projecting, so folding without a separate projection is normal.
   for (const [ev, w] of m.folded) {
     if (!m.projected.has(ev) && !m.snapshotted.has(w.aggregate)) {
@@ -322,10 +565,30 @@ function runChecks(m: Model, verbose: boolean): Finding[] {
     }
   }
 
-  // 4. projected but no aggregate fold — often intentional (projection-only), surface anyway.
+  // 5. projected but no aggregate fold — often intentional (projection-only), surface anyway.
   for (const [ev, w] of m.projected) {
     if (!m.folded.has(ev)) {
       out.push({ check: "projected-not-folded", severity: "info", entity: ev, message: `event \`${ev}\` is projected on \`${w.projection}\` but no aggregate Apply()s it`, ...w });
+    }
+  }
+
+  // 6. state-machine review candidates (info): dynamic transitions (enrichment queue),
+  // untracked enum props, and handlers that emit a state-changing event without ever
+  // reading the status property (missing guard candidate).
+  for (const mach of machines) {
+    for (const t of mach.transitions) {
+      if (t.dynamic) {
+        out.push({ check: "transition-dynamic", severity: "info", entity: `${mach.aggregate} ← ${t.event}`, message: `transition on \`${t.event}\` sets \`${mach.aggregate}.${mach.prop}\` to a runtime-determined value — target state needs enrichment`, file: t.file, line: t.line });
+      }
+      if (!t.isCreate) {
+        for (const h of m.handlers.values()) {
+          if (!h.emits.includes(t.event) || h.memberRefs.includes(mach.prop)) continue;
+          out.push({ check: "transition-unguarded-candidate", severity: "info", entity: `${h.name} → ${t.event}`, message: `handler \`${h.name}\` emits \`${t.event}\` (a \`${mach.aggregate}\` state change) without reading \`${mach.prop}\` — missing state guard?`, file: h.file, line: h.line });
+        }
+      }
+    }
+    if (mach.otherEnumProps.length) {
+      out.push({ check: "status-prop-ambiguous", severity: "info", entity: mach.aggregate, message: `\`${mach.aggregate}\` has other enum-typed properties (${mach.otherEnumProps.join(", ")}) — the state machine tracks \`${mach.prop}\` only`, ...mach.enumWhere });
     }
   }
 
@@ -338,6 +601,7 @@ export async function buildMartenModel(repoRoot: string): Promise<Model> {
     folded: new Map(), projected: new Map(), appended: new Map(),
     commands: new Map(), consumed: new Set(), endpointFiles: new Set(), snapshotted: new Set(), events: new Set(),
     aggregateDecls: new Map(), projectionDecls: new Map(), records: new Map(), handlers: new Map(),
+    enums: new Map(), typeProps: new Map(), foldAssignments: [],
   };
   const files = (await listSupportedFiles(repoRoot)).filter((f) => grammarForPath(f) === "c_sharp");
   for (const abs of files) {
@@ -352,16 +616,23 @@ export async function buildMartenModel(repoRoot: string): Promise<Model> {
 export type MartenModel = Model;
 
 export async function analyzeMarten(repoRoot: string, opts: { verbose?: boolean } = {}): Promise<{
-  summary: { events: number; commands: number; aggregatesFolds: number; projections: number; snapshots: number; warnings: number; info: number };
+  summary: {
+    events: number; commands: number; aggregatesFolds: number; projections: number; snapshots: number;
+    stateMachines: number; states: number; transitions: number; warnings: number; info: number;
+  };
   findings: Finding[];
   note: string;
 }> {
   const m = await buildMartenModel(repoRoot);
-  const findings = runChecks(m, opts.verbose ?? false).sort((a, b) => (a.severity === b.severity ? 0 : a.severity === "warn" ? -1 : 1));
+  const machines = deriveStateMachines(m);
+  const findings = runChecks(m, machines, opts.verbose ?? false).sort((a, b) => (a.severity === b.severity ? 0 : a.severity === "warn" ? -1 : 1));
   return {
     summary: {
       events: m.events.size, commands: m.commands.size, aggregatesFolds: m.folded.size,
       projections: m.projected.size, snapshots: m.snapshotted.size,
+      stateMachines: machines.length,
+      states: machines.reduce((n, x) => n + x.members.length, 0),
+      transitions: machines.reduce((n, x) => n + x.transitions.length, 0),
       warnings: findings.filter((f) => f.severity === "warn").length,
       info: findings.filter((f) => f.severity === "info").length,
     },

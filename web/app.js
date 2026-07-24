@@ -53,12 +53,14 @@ const barColor = (pct) => pct === 0 ? '#3a4250' : `hsl(${Math.round(pct * 1.2)},
 const KICON = { dir: '▸', file: '≡' };
 const NODE_COLORS = {
   event_family: '#7ee787', aggregate: '#58a6ff', projection: '#f0a35e', command: '#d2a8ff',
-  handler: '#79c0ff', module: '#8b95a3', process: '#f778ba', step: '#a5d6ff', unknown: '#3a4250',
+  handler: '#79c0ff', module: '#8b95a3', process: '#f778ba', step: '#a5d6ff',
+  state: '#e3b341', transition: '#8b95a3', unknown: '#3a4250',
 };
 const nodeColor = (t) => NODE_COLORS[t] ?? NODE_COLORS.unknown;
 const EDGE_COLORS = {
   folds: '#7ee787', projects: '#f0a35e', emits: '#79c0ff', handles: '#d2a8ff',
   touches: '#f778ba', step_of: '#a5d6ff', part_of: '#8b95a3', depends_on: '#58a6ff', calls_api: '#ffab70',
+  state_of: '#e3b341', transition_of: '#8b95a3', transitions_to: '#e3b341', from_state: '#8b95a3', on_event: '#79c0ff', initial_state: '#7ee787',
 };
 const edgeColor = (t) => EDGE_COLORS[t] ?? '#6b7684';
 const bugsUrl = (u) => `/u/${u}/bugs/`;
@@ -71,6 +73,7 @@ const flowUrl = (u, id) => `/u/${u}/flow/${id}/`;
 const nodesUrl = (u) => `/u/${u}/nodes/`;
 const matrixUrl = (u) => `/u/${u}/matrix/`;
 const pipelineUrl = (u) => `/u/${u}/pipeline/`;
+const stateMapUrl = (u) => `/u/${u}/statemap/`;
 const REV_COLOR = { reviewed: '#7ee787', stale: '#f0a35e', unreviewed: '#3a4250' };
 // Actor-aware review rendering: human review = green (`on`), agent `checked` = blue.
 const revCls = (state, actor) => state === 'reviewed' ? (actor === 'agent' ? 'checked' : 'on') : state === 'stale' ? 'stale' : '';
@@ -358,6 +361,7 @@ class CodemapHeader extends Component {
       <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(nodesUrl(u)); }}">nodes</a>
       <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(matrixUrl(u)); }}">matrix</a>
       <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(pipelineUrl(u)); }}">pipeline</a>
+      <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(stateMapUrl(u)); }}">states</a>
       <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(flowsUrl(u)); }}">flows</a>
       <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(bugsUrl(u)); }}">bugs</a>
       <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(diffUrl(u)); }}">diff</a>
@@ -399,7 +403,7 @@ class DashboardPage extends Component {
     const u = this.props.params.universe, d = this.state.d;
     const nav2 = [
       ['nodes', () => go(nodesUrl(u))], ['matrix', () => go(matrixUrl(u))], ['pipeline', () => go(pipelineUrl(u))],
-      ['flows', () => go(flowsUrl(u))], ['bugs', () => go(bugsUrl(u))], ['diff', () => go(diffUrl(u))], ['browse files', () => goTree(u, '')],
+      ['states', () => go(stateMapUrl(u))], ['flows', () => go(flowsUrl(u))], ['bugs', () => go(bugsUrl(u))], ['diff', () => go(diffUrl(u))], ['browse files', () => goTree(u, '')],
     ];
     return pageShell(d, d && d.error, () => html`
       <div class="crumbs"><b>${u}</b> <span class="sep">·</span> overview${when(d.tripwires && d.tripwires.armed && this.canEnableAlerts(), () => html` <span class="sep">·</span> <button title="get a browser notification when a watched tripwire fires" on-click="${() => this.enableAlerts()}">🔔 enable alerts</button>`)}</div>
@@ -1326,6 +1330,160 @@ class PipelinePage extends Component {
 }
 defineComponent('pipeline-page', PipelinePage);
 
+// --- per-aggregate state machines: states + transitions, enrichment-aware -----
+// States sit at their BFS layer (server-computed); transitions are placed
+// client-side at the midpoint of their source→target span. A transition with no
+// authored from_state edge hangs off the "?" gutter; a dynamic one with no
+// static target parks in a right-hand column. Dashed = needs enrichment.
+// COLW - NODEW must exceed TW so a transition fits between adjacent columns.
+const SMAP = { COLW: 380, NODEW: 170, NODEH: 34, ROWH: 64, TW: 150, TH: 22, GUT: 110 };
+const smapCurve = (sx, sy, tx, ty) => { const c = Math.max(30, Math.abs(tx - sx) * 0.4); return `M${sx},${sy} C${sx + c},${sy} ${tx - c},${ty} ${tx},${ty}`; };
+class StatemapPage extends Component {
+  static props = { params: {}, query: {} };
+  constructor(props) { super(props); this.state = { data: null, loading: true, agg: '' }; this._view = { x: 10, y: 36, s: 1 }; }
+  async fetchData() {
+    nav.current = this.props.params.universe;
+    if (!this.state.data) this.state.loading = true;
+    const data = await api('/api/statemap', { u: this.props.params.universe });
+    this.state.data = data; this.state.loading = false;
+    await this.nextRender();
+    this.setup();
+  }
+  mounted() { this.fetchData(); }
+  propsChanged() { this.fetchData(); }
+  machine() {
+    const d = this.state.data; if (!d || !d.machines.length) return null;
+    return d.machines.find((m) => m.aggregate.id === this.state.agg) || d.machines[0];
+  }
+  setAgg(v) { this.state.agg = v; this.nextRender().then(() => this.fit()); }
+  layout() {
+    const m = this.machine(); if (!m) return null;
+    const S = SMAP;
+    const spos = new Map();
+    const layerOf = new Map();
+    for (const st of m.states) { spos.set(st.id, { x: st.layer * S.COLW, y: st.row * S.ROWH }); layerOf.set(st.id, st.layer); }
+    const maxLayer = Math.max(0, ...m.states.map((s) => s.layer));
+    const placed = [];
+    const bump = new Map(); let dynRow = 0;
+    for (const t of m.transitions) {
+      const dashed = !t.enriched || t.dynamic;
+      let x, y, gutter = !t.sources.length;
+      if (t.targets.length) {
+        const tl = Math.min(...t.targets.map((id) => layerOf.get(id) ?? 1));
+        const ty = t.targets.reduce((a, id) => a + ((spos.get(id) || { y: 0 }).y), 0) / t.targets.length;
+        // midpoint of the horizontal GAP between source right edge and target left
+        // edge (gutter transitions get a virtual source one column-gap to the left)
+        const tgtLeft = tl * S.COLW;
+        const srcRight = t.sources.length
+          ? Math.max(...t.sources.map((id) => layerOf.get(id) ?? 0)) * S.COLW + S.NODEW
+          : tgtLeft - (S.COLW - S.NODEW);
+        x = (srcRight + tgtLeft) / 2 - S.TW / 2;
+        y = ty + (S.NODEH - S.TH) / 2;
+        // same-layer source→target (or backwards) would sit on the column itself:
+        // drop between the rows instead of covering a state box
+        if (x + S.TW > tgtLeft && srcRight > tgtLeft) { x = tgtLeft + (S.NODEW - S.TW) / 2; y += S.NODEH; }
+      } else {
+        x = (maxLayer + 1) * S.COLW; y = dynRow++ * (S.TH + 10);
+      }
+      const k = Math.round(x / 20) + ':' + Math.round(y / 12);
+      const c = bump.get(k) || 0; bump.set(k, c + 1);
+      y += c * (S.TH + 6);
+      placed.push({ t, x, y, gutter, dashed });
+    }
+    return { m, spos, placed, maxLayer };
+  }
+  applyTransform() { const g = this.querySelector('.vp'); if (g) { const v = this._view; g.setAttribute('transform', `translate(${v.x},${v.y}) scale(${v.s})`); } }
+  fit() {
+    const svg = this.querySelector('svg.statemap'); if (!svg) return;
+    const L = this.layout(); if (!L) return;
+    const cw = svg.clientWidth || 960, ch = svg.clientHeight || 640;
+    let maxX = SMAP.NODEW, maxY = SMAP.NODEH;
+    for (const p of L.spos.values()) { maxX = Math.max(maxX, p.x + SMAP.NODEW); maxY = Math.max(maxY, p.y + SMAP.NODEH); }
+    for (const p of L.placed) { maxX = Math.max(maxX, p.x + SMAP.TW); maxY = Math.max(maxY, p.y + SMAP.TH); }
+    const s = Math.min(cw / (maxX + SMAP.GUT + 60), ch / (maxY + 80), 1.2);
+    this._view = { s, x: Math.max(20, (cw - maxX * s) / 2), y: 50 };
+    this.applyTransform();
+  }
+  hover(id) {
+    const svg = this.querySelector('svg.statemap'); if (!svg) return;
+    if (!id) { svg.classList.remove('hovering'); svg.querySelectorAll('.hl').forEach((el) => el.classList.remove('hl')); return; }
+    const near = (this._adj && this._adj.get(id)) || new Set();
+    svg.classList.add('hovering');
+    svg.querySelectorAll('.pn').forEach((el) => el.classList.toggle('hl', el.getAttribute('data-id') === id || near.has(el.getAttribute('data-id'))));
+    svg.querySelectorAll('.pe').forEach((el) => el.classList.toggle('hl', el.getAttribute('data-from') === id || el.getAttribute('data-to') === id));
+  }
+  setup() {
+    const svg = this.querySelector('svg.statemap'); if (!svg) return;
+    this.fit();
+    if (!this._winWired) {
+      this._winWired = true;
+      window.addEventListener('mousemove', (e) => { const drag = this._drag; if (!drag) return; if (Math.abs(e.clientX - drag.sx) + Math.abs(e.clientY - drag.sy) > 3) drag.moved = true; this._view.x = drag.ox + (e.clientX - drag.sx); this._view.y = drag.oy + (e.clientY - drag.sy); this.applyTransform(); });
+      window.addEventListener('mouseup', () => { const drag = this._drag; if (drag && drag.moved) { this._panned = true; setTimeout(() => { this._panned = false; }, 0); } this._drag = null; const s = this.querySelector('svg.statemap'); if (s) s.classList.remove('grabbing'); });
+    }
+    if (svg._cmWired) return; svg._cmWired = true;
+    svg.addEventListener('mousedown', (e) => { if (e.target.closest('.pn')) return; this._drag = { sx: e.clientX, sy: e.clientY, ox: this._view.x, oy: this._view.y, moved: false }; svg.classList.add('grabbing'); });
+    svg.addEventListener('wheel', (e) => { e.preventDefault(); const r = svg.getBoundingClientRect(); const mx = e.clientX - r.left, my = e.clientY - r.top; const f = e.deltaY < 0 ? 1.12 : 0.89; const v = this._view; const ns = Math.max(0.15, Math.min(3, v.s * f)); v.x = mx - (mx - v.x) * (ns / v.s); v.y = my - (my - v.y) * (ns / v.s); v.s = ns; this.applyTransform(); }, { passive: false });
+    svg.addEventListener('mouseover', (e) => { const g = e.target.closest('.pn'); if (g) this.hover(g.getAttribute('data-id')); });
+    svg.addEventListener('mouseout', (e) => { const g = e.target.closest('.pn'); if (g) this.hover(null); });
+  }
+  onClick(e) { if (this._panned) return; const g = e.target.closest('.pn'); if (g) go(nodeUrl(this.props.params.universe, g.getAttribute('data-open'))); }
+  template() {
+    const u = this.props.params.universe, d = this.state.data;
+    if (this.state.loading || !d) return html`<main><div class="loading">loading…</div></main>`;
+    if (!d.machines || !d.machines.length) return html`<main>
+      <div class="crumbs">${u} <span class="sep">·</span> state map</div>
+      <div class="empty">no state machines yet — run <code>codemap analyze marten --emit</code> on a repo whose aggregates carry a status enum</div>
+    </main>`;
+    const S = SMAP, L = this.layout(), m = L.m;
+    const adj = new Map(); const link = (a, b) => { let s = adj.get(a); if (!s) { s = new Set(); adj.set(a, s); } s.add(b); };
+    for (const p of L.placed) {
+      for (const sid of p.t.sources) { link(sid, p.t.id); link(p.t.id, sid); }
+      for (const tid of p.t.targets) { link(tid, p.t.id); link(p.t.id, tid); }
+    }
+    this._adj = adj;
+    const epaths = [];
+    for (const p of L.placed) {
+      const dash = p.dashed ? ' dashed' : '';
+      if (p.t.sources.length) {
+        for (const sid of p.t.sources) { const sp = L.spos.get(sid); if (sp) epaths.push({ k: sid + '~' + p.t.id, from: sid, to: p.t.id, cls: 'pe from_state' + dash, d: smapCurve(sp.x + S.NODEW, sp.y + S.NODEH / 2, p.x, p.y + S.TH / 2) }); }
+      } else {
+        epaths.push({ k: '?~' + p.t.id, from: '?', to: p.t.id, cls: 'pe gutter' + dash, d: smapCurve(p.x - S.GUT * 0.6, p.y + S.TH / 2, p.x, p.y + S.TH / 2) });
+      }
+      for (const tid of p.t.targets) { const tp = L.spos.get(tid); if (tp) epaths.push({ k: p.t.id + '~' + tid, from: p.t.id, to: tid, cls: 'pe transitions_to' + dash, d: smapCurve(p.x + S.TW, p.y + S.TH / 2, tp.x, tp.y + S.NODEH / 2) }); }
+    }
+    const stateNode = (st) => { const p = L.spos.get(st.id);
+      return html`<g class="pn state ${m.unreachable.includes(st.id) ? 'dashed' : ''}" data-id="${st.id}" data-open="${st.id}" transform="translate(${p.x},${p.y})">
+        <rect width="${S.NODEW}" height="${S.NODEH}" rx="10"></rect>
+        ${when(st.initial, () => html`<circle class="initdot" cx="10" cy="${S.NODEH / 2}" r="3"></circle>`)}
+        <text x="${st.initial ? 20 : 12}" y="${S.NODEH / 2 + 3}">${st.member}</text>
+      </g>`; };
+    const trNode = (p) => { const t = p.t; const label = t.event ? t.event.title : t.title; const short = label.length > 20 ? label.slice(0, 19) + '…' : label;
+      const trust = t.enrichment ? t.enrichment.trust : null;
+      return html`<g class="pn transition ${p.dashed ? 'dashed' : ''}" data-id="${t.id}" data-open="${t.enrichment ? t.enrichment.id : t.id}" transform="translate(${p.x},${p.y})">
+        <rect width="${S.TW}" height="${S.TH}" rx="4"></rect>
+        <text x="6" y="${S.TH / 2 + 3}">${short}${t.dynamic ? ' → ?' : ''}</text>
+        ${when(trust, () => html`<circle class="trustdot ${trust}" cx="${S.TW - 7}" cy="${S.TH / 2}" r="3"></circle>`)}
+      </g>`; };
+    return html`<main class="wide">
+      <div class="crumbs">${u} <span class="sep">·</span> state map <span class="sep">·</span> ${m.aggregate.title}</div>
+      <div class="nfilters">
+        <select on-change="${(e, v) => this.setAgg(v)}">${each(d.machines, (mm) => html`<option value="${mm.aggregate.id}" selected="${mm.aggregate.id === m.aggregate.id}">${mm.aggregate.title} · ${mm.states.length} states, ${mm.transitions.length} transitions</option>`, (mm) => mm.aggregate.id)}</select>
+        <span class="dim">${m.unenriched.length} unenriched · ${m.unreachable.length} unreachable${m.hasDynamic ? ' · has dynamic transitions' : ''} · dashed = needs enrichment · click a transition to open its doc</span>
+      </div>
+      <svg class="pipeline statemap" on-click="${(e) => this.onClick(e)}">
+        <g class="vp" transform="translate(10,40)">
+          ${when(L.placed.some((p) => p.gutter && p.t.targets.length), () => html`<text class="plabel" x="${-S.GUT}" y="-16">? source unknown</text>`)}
+          ${when(L.placed.some((p) => !p.t.targets.length), () => html`<text class="plabel" x="${(L.maxLayer + 1) * S.COLW}" y="-16">dynamic · target unknown</text>`)}
+          ${each(epaths, (p) => html`<path class="${p.cls}" data-from="${p.from}" data-to="${p.to}" d="${p.d}"></path>`, (p) => p.k)}
+          ${each(m.states, stateNode, (st) => st.id)}
+          ${each(L.placed, trNode, (p) => p.t.id)}
+        </g>
+      </svg>
+    </main>`;
+  }
+}
+defineComponent('statemap-page', StatemapPage);
+
 // --- bugs: triage MCP-reported findings, re-validate against live code --------
 const BUG_STATUSES = ['open', 'fixed', 'wontfix', 'invalid'];
 class BugsPage extends Component {
@@ -1686,6 +1844,7 @@ router = enableRouting(document.querySelector('router-outlet'), {
   '/u/:universe/nodes/': { component: 'node-catalog-page' },
   '/u/:universe/matrix/': { component: 'matrix-page' },
   '/u/:universe/pipeline/': { component: 'pipeline-page' },
+  '/u/:universe/statemap/': { component: 'statemap-page' },
   '/u/:universe/bugs/': { component: 'bugs-page' },
   '/u/:universe/diff/': { component: 'diff-page' },
   '/u/:universe/search/': { component: 'search-page' },

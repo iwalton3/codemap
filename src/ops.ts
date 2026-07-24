@@ -1004,6 +1004,143 @@ export async function pipelineGraph(root: string, opts: { domain?: string } = {}
   };
 }
 
+/**
+ * Per-aggregate state machines: states (enum members) + transitions, both nodes
+ * emitted by the Marten analyzer. A transition skeleton `mtr-…` is joined by id
+ * convention to its authored enrichment `tr-…` (source states / guards, written
+ * via document + from_state connect edges — analyzer re-emits never touch them).
+ * `unenriched` is the agent work queue: transitions with no enrichment node or
+ * whose enrichment went stale/dangling (drifted claims re-enter the queue).
+ * Layout: BFS layers from the initial states over sources→targets; targets of
+ * source-less transitions surface at layer 1 (the UI feeds them from a "?"
+ * gutter); states the graph never reaches land in a final layer.
+ */
+export async function stateMap(root: string, opts: { aggregate?: string } = {}) {
+  const [nodes, graph] = await Promise.all([loadNodes(root), readGraph(root)]);
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const present = (e: Edge) => byId.has(e.from) && byId.has(e.to);
+
+  const stateOf = graph.edges.filter((e) => e.type === "state_of" && present(e));
+  const trOf = graph.edges.filter((e) => e.type === "transition_of" && present(e));
+  const aggIds = [...new Set(stateOf.map((e) => e.to))].sort((a, b) => byId.get(a)!.title.localeCompare(byId.get(b)!.title));
+  const aggregates = aggIds.map((id) => ({ id, title: byId.get(id)!.title }));
+
+  const q = opts.aggregate?.toLowerCase();
+  const sel = q ? aggIds.filter((id) => id === opts.aggregate || byId.get(id)!.title.toLowerCase() === q) : aggIds;
+
+  // One batched review query for everything this response touches.
+  const trIdOf = (mtrId: string) => "tr-" + mtrId.slice(4);
+  const involved = new Set<string>();
+  for (const e of stateOf) if (sel.includes(e.to)) involved.add(e.from);
+  for (const e of trOf) if (sel.includes(e.to)) { involved.add(e.from); if (byId.has(trIdOf(e.from))) involved.add(trIdOf(e.from)); }
+  const reviews = await reviewStatesFor(root, [...involved].map((id) => ({ kind: "node" as const, id })));
+  const reviewOf = (id: string) => {
+    const rp = reviews.get(`node:${id}`);
+    return { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" };
+  };
+
+  const machines = sel.map((aggId) => {
+    const agg = byId.get(aggId)!;
+    const stateIds = stateOf.filter((e) => e.to === aggId).map((e) => e.from);
+    const stateSet = new Set(stateIds);
+    const initial = new Set(graph.edges.filter((e) => e.type === "initial_state" && e.from === aggId && stateSet.has(e.to)).map((e) => e.to));
+
+    const transitions = trOf.filter((e) => e.to === aggId).map((e) => e.from).map((tid) => {
+      const n = byId.get(tid)!;
+      const ev = graph.edges.find((x) => x.type === "on_event" && x.from === tid && byId.has(x.to));
+      const targets = [...new Set(graph.edges.filter((x) => x.type === "transitions_to" && x.from === tid && stateSet.has(x.to)).map((x) => x.to))];
+      const sources = [...new Set(graph.edges.filter((x) => x.type === "from_state" && x.to === tid && stateSet.has(x.from)).map((x) => x.from))];
+      const en = byId.get(trIdOf(tid));
+      const enrichment = en && en.type === "transition" && !en.generatedBy
+        ? { id: en.id, title: en.title, summary: en.summary, status: en.status, review: reviewOf(en.id), trust: trustOf(en.status, reviews.get(`node:${en.id}`)) }
+        : null;
+      return {
+        id: tid, title: n.title, summary: n.summary,
+        event: ev ? { id: ev.to, title: byId.get(ev.to)!.title } : null,
+        targets, sources,
+        dynamic: targets.length === 0, // no statically-known target
+        enrichment,
+        enriched: !!enrichment && enrichment.status !== "stale" && enrichment.status !== "dangling",
+      };
+    });
+
+    // Layers: sourced BFS first ("first reached through real sources" wins), then
+    // seed still-unplaced targets of source-less transitions at 1, repeat.
+    const layerOf = new Map<string, number>();
+    for (const s of initial) layerOf.set(s, 0);
+    const propagate = () => {
+      for (let moved = true; moved; ) {
+        moved = false;
+        for (const t of transitions) {
+          if (!t.sources.length) continue;
+          const from = t.sources.filter((s) => layerOf.has(s));
+          if (!from.length) continue;
+          const base = Math.min(...from.map((s) => layerOf.get(s)!)) + 1;
+          for (const tg of t.targets) if (!layerOf.has(tg)) { layerOf.set(tg, base); moved = true; }
+        }
+      }
+    };
+    propagate();
+    for (let seeded = true; seeded; ) {
+      seeded = false;
+      for (const t of transitions) {
+        if (t.sources.length) continue;
+        for (const tg of t.targets) if (!layerOf.has(tg)) { layerOf.set(tg, 1); seeded = true; }
+      }
+      if (seeded) propagate();
+    }
+    const maxLayer = layerOf.size ? Math.max(...layerOf.values()) : 0;
+    for (const s of stateIds) if (!layerOf.has(s)) layerOf.set(s, maxLayer + 1);
+
+    // Rows: alphabetical, then two barycenter sweeps over source↔target adjacency.
+    const layers: string[][] = [];
+    for (const [sid, li] of layerOf) (layers[li] ??= []).push(sid);
+    for (let i = 0; i < layers.length; i++) layers[i] ??= [];
+    const adj = new Map<string, string[]>();
+    const link = (a: string, b: string) => { let l = adj.get(a); if (!l) { l = []; adj.set(a, l); } l.push(b); };
+    for (const t of transitions) for (const s of t.sources) for (const tg of t.targets) { link(s, tg); link(tg, s); }
+    for (const L of layers) L.sort((a, b) => byId.get(a)!.title.localeCompare(byId.get(b)!.title));
+    const pos = new Map<string, number>();
+    const setPos = () => layers.forEach((L) => L.forEach((s, i) => pos.set(s, i)));
+    setPos();
+    const idxs = layers.map((_, i) => i);
+    for (const order of [idxs.slice(1), idxs.slice(0, -1).reverse()]) {
+      for (const li of order) {
+        const bary = (x: string) => {
+          const neigh = (adj.get(x) ?? []).filter((m) => Math.abs(layerOf.get(m)! - li) === 1);
+          return neigh.length ? neigh.reduce((s, m) => s + (pos.get(m) ?? 0), 0) / neigh.length : (pos.get(x) ?? 0);
+        };
+        layers[li]!.sort((a, b) => bary(a) - bary(b));
+        setPos();
+      }
+    }
+
+    const targeted = new Set(transitions.flatMap((t) => t.targets));
+    const ids = new Set([...stateIds, ...transitions.map((t) => t.id), aggId]);
+    return {
+      aggregate: { id: aggId, title: agg.title },
+      states: stateIds.map((sid) => {
+        const n = byId.get(sid)!;
+        return {
+          id: sid, member: n.title.split("·").pop()!.trim(), title: n.title,
+          initial: initial.has(sid), layer: layerOf.get(sid)!, row: pos.get(sid) ?? 0,
+          review: reviewOf(sid), trust: trustOf(n.status, reviews.get(`node:${sid}`)),
+        };
+      }),
+      transitions,
+      edges: graph.edges
+        .filter((e) => (ids.has(e.from) || ids.has(e.to)) && present(e) &&
+          ["state_of", "transition_of", "transitions_to", "on_event", "initial_state", "from_state"].includes(e.type))
+        .map((e) => ({ from: e.from, to: e.to, type: e.type })),
+      unenriched: transitions.filter((t) => !t.enriched).map((t) => t.id),
+      unreachable: stateIds.filter((sid) => !targeted.has(sid) && !initial.has(sid)),
+      hasDynamic: transitions.some((t) => t.dynamic),
+    };
+  });
+
+  return { aggregates, aggregate: opts.aggregate ?? null, machines };
+}
+
 /** One flow: its ordered steps, each with touched modules + the live source of its anchors. */
 export async function flow(root: string, id: string) {
   const [nodes, graph, store, annStore] = await Promise.all([loadNodes(root), readGraph(root), readAnchorStore(root), readAnnotations(root)]);

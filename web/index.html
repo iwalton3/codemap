@@ -244,6 +244,15 @@
     svg.pipeline.hovering .pe:not(.hl) { opacity: 0.04; }
     .pe.hl { opacity: 1; stroke-width: 1.8; }
     .pn.hl rect { stroke-width: 2; }
+    /* --- state map (rides the pipeline svg/pan/hover styles) --- */
+    .pn.state rect { stroke: #e3b341; }
+    .pn.transition rect { stroke: #8b95a3; fill: #10141b; }
+    .pn.transition text { fill: #aeb8c6; }
+    .pn.dashed rect, .pe.dashed { stroke-dasharray: 4 3; }
+    .pe.transitions_to { stroke: #e3b341; } .pe.from_state { stroke: #8b95a3; } .pe.gutter { stroke: #6b7684; }
+    .pn .initdot { fill: #7ee787; }
+    .pn .trustdot.verified { fill: #7ee787; } .pn .trustdot.checked { fill: #58a6ff; }
+    .pn .trustdot.stale { fill: #f0a35e; } .pn .trustdot.unverified { fill: #0b0e13; stroke: #8b95a3; }
 
     /* --- branch diff viewer --- */
     .dim { color: var(--dim); font-size: 12.5px; }
