@@ -98,8 +98,14 @@ drifts, the claim goes stale and re-enters the queue.
   (`/status|state|phase|stage|lifecycle/i`) or ≥1 statically-resolved target.
   Enum-typed type/kind DISCRIMINATORS copied from payloads (`Type = cmd.Type`)
   are rejected — the Acme.API CustomFieldType/Order false-positive class.
-- Reference-data statuses (`Guid InvitationStatusId = InvitationStatuses.Pending`,
-  the Acme.API pattern) are invisible to the enum pass — enrichment/future work.
+- Guid state-constant classes (`static class FooStates { static Guid Draft = … }`,
+  the Acme.API pattern) ARE detected: a class whose name matches `/stat(e|us)/i`
+  with ≥2 Guid members becomes a vocabulary, bound to a status-ish Guid prop by
+  usage (majority of its default/fold-assignment references). Declared transition
+  TABLES (`NextEntityStates` seed data — UI metadata, not enforced) and
+  enforcement services (`GetValidTransitions`) are NOT parsed — mapping the
+  declared-vs-enforced gap is authored/enrichment territory, and that gap is
+  itself a review finding worth recording.
 - Ternary/switch/call targets aren't mined — flagged `dynamic`, enrichment's
   job. Implicit state (bool/timestamp combinations) is enrichment-only.
 - Guard detection is member-access-based; C# property patterns

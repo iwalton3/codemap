@@ -75,6 +75,7 @@ interface Model {
   records: Map<string, Where>; // every record decl name → where (to resolve event record anchors)
   handlers: Map<string, HandlerInfo>; // "file:line" → a handler/endpoint method (for emits/handles edges)
   enums: Map<string, EnumDecl[]>; // enum simple name → declarations (same name may recur across namespaces)
+  guidStates: Map<string, EnumDecl[]>; // Guid state-constant classes (`static class FooStates { static Guid Draft = … }`)
   typeProps: Map<string, TypeProp[]>; // type name → property/positional-param candidates (enum resolved post-parse)
   foldAssignments: FoldAssignment[]; // per-assignment records from Apply/Create bodies (state transitions)
 }
@@ -253,6 +254,27 @@ function stateAssignmentsUnder(method: Node, aggregate: string): { prop: string;
   return out;
 }
 
+/** Names of Guid-typed fields/properties on a type body (the Guid state-constant shape). */
+function guidMemberNames(body: Node | null): string[] {
+  const out: string[] = [];
+  for (const member of body?.namedChildren ?? []) {
+    if (member.type === "field_declaration") {
+      const vd = member.namedChildren.find((c) => c.type === "variable_declaration");
+      if (typeToName(vd?.childForFieldName("type") ?? null) !== "Guid") continue;
+      for (const d of vd?.namedChildren ?? []) {
+        if (d.type !== "variable_declarator") continue;
+        const n = d.childForFieldName("name")?.text ?? d.namedChild(0)?.text;
+        if (n) out.push(n);
+      }
+    } else if (member.type === "property_declaration") {
+      if (typeToName(member.childForFieldName("type")) !== "Guid") continue;
+      const n = member.childForFieldName("name")?.text;
+      if (n) out.push(n);
+    }
+  }
+  return out;
+}
+
 /** Unique member-access names under a node (`hold.Status` → "Status") — for guard detection. */
 function memberAccessNamesUnder(node: Node): string[] {
   const out = new Set<string>();
@@ -367,6 +389,15 @@ function collectFromFile(root: Node, file: string, m: Model): void {
         }
       }
 
+      // Guid state-constant class (`public static class FooStates { public static Guid Draft = … }`)
+      // — a state vocabulary for aggregates whose status prop is a Guid id, not an enum
+      // (the Acme.API reference-data pattern). Name-gated for precision; it only binds
+      // to a machine when a status-ish Guid prop's fold assignments reference it.
+      if (node.type === "class_declaration" && /stat(e|us)/i.test(name)) {
+        const gm = guidMemberNames(body);
+        if (gm.length >= 2) (m.guidStates.get(name) ?? m.guidStates.set(name, []).get(name)!).push({ file, line, members: gm });
+      }
+
       // positional record / primary-ctor params are properties too
       const plist = node.namedChildren.find((c) => c.type === "parameter_list");
       for (const p of plist?.namedChildren ?? []) {
@@ -444,6 +475,7 @@ export interface StateMachine {
   aggregate: string;
   /** The chosen status property. */
   prop: string;
+  /** The state VOCABULARY type: an enum, or a Guid state-constant class (Acme.API pattern). */
   enumName: string;
   enumWhere: Where;
   members: string[];
@@ -463,24 +495,47 @@ export interface StateMachine {
 export function deriveStateMachines(m: Model): StateMachine[] {
   const out: StateMachine[] = [];
   for (const [agg] of m.aggregateDecls) {
-    const candidates = (m.typeProps.get(agg) ?? []).filter((p) => m.enums.has(p.typeName));
-    if (!candidates.length) continue;
     const assigns = (prop: string) => m.foldAssignments.filter((a) => a.aggregate === agg && a.prop === prop);
-    const statusish = candidates.filter((p) => /status|state|phase|stage|lifecycle/i.test(p.prop));
+    // Vocabulary binding: an enum-typed prop binds by TYPE; a Guid-typed status-ish
+    // prop binds by USAGE — the state-constant class its default/fold assignments
+    // reference (majority wins so one stray cross-class literal can't flip it).
+    const bind = (p: TypeProp): { vocabName: string; decls: EnumDecl[] } | null => {
+      const byType = m.enums.get(p.typeName);
+      if (byType) return { vocabName: p.typeName, decls: byType };
+      if (p.typeName === "Guid" && /stat(e|us)/i.test(p.prop)) {
+        const refs = [
+          ...(p.defaultMember ? [p.defaultMember.typeName] : []),
+          ...assigns(p.prop).flatMap((a) => (a.rhs.kind === "literal" ? [a.rhs.typeName] : [])),
+        ].filter((t) => m.guidStates.has(t));
+        if (refs.length) {
+          const counts = new Map<string, number>();
+          for (const t of refs) counts.set(t, (counts.get(t) ?? 0) + 1);
+          const vocabName = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]![0];
+          return { vocabName, decls: m.guidStates.get(vocabName)! };
+        }
+      }
+      return null;
+    };
+    const candidates = (m.typeProps.get(agg) ?? [])
+      .map((p) => ({ p, b: bind(p) }))
+      .filter((x): x is { p: TypeProp; b: { vocabName: string; decls: EnumDecl[] } } => x.b !== null);
+    if (!candidates.length) continue;
+    const statusish = candidates.filter((x) => /status|state|phase|stage|lifecycle/i.test(x.p.prop));
     const isStatusish = statusish.length > 0;
     const pool = isStatusish ? statusish : candidates;
-    const best = pool.reduce((a, b) => (assigns(b.prop).length > assigns(a.prop).length ? b : a));
-    const decls = m.enums.get(best.typeName)!;
-    const en = decls.find((e) => e.file === best.file) ?? decls[0]!; // prefer same-file on name collision
+    const bestC = pool.reduce((a, b) => (assigns(b.p.prop).length > assigns(a.p.prop).length ? b : a));
+    const best = bestC.p;
+    const vocabName = bestC.b.vocabName;
+    const en = bestC.b.decls.find((e) => e.file === best.file) ?? bestC.b.decls[0]!; // prefer same-file on name collision
     const members = new Set(en.members);
     const resolves = (v: AssignedValue): v is { kind: "literal"; typeName: string; member: string } =>
-      v.kind === "literal" && v.typeName === best.typeName && members.has(v.member);
+      v.kind === "literal" && v.typeName === vocabName && members.has(v.member);
 
     // "?ctor" args are positional guesses — they count only when they resolve to
-    // this machine's enum; real prop assignments count always (unresolvable ⇒ dynamic).
+    // this machine's vocabulary; real prop assignments count always (unresolvable ⇒ dynamic).
     const relevant = m.foldAssignments.filter((a) => a.aggregate === agg &&
       (a.prop === best.prop || (a.prop === "?ctor" && resolves(a.rhs))));
-    if (!relevant.length) continue; // enum-typed prop never assigned in folds — not a state machine
+    if (!relevant.length) continue; // status prop never assigned in folds — not a state machine
     // A prop that isn't status-named qualifies only with ≥1 statically-resolved
     // target: type/kind DISCRIMINATORS copied from a command payload (`Type =
     // cmd.Type`) look like all-dynamic machines and are pure noise (the Acme
@@ -500,13 +555,13 @@ export function deriveStateMachines(m: Model): StateMachine[] {
       line: as[0]!.line,
     }));
     const initial = new Set<string>(transitions.filter((t) => t.isCreate).flatMap((t) => t.targets));
-    if (best.defaultMember && best.defaultMember.typeName === best.typeName && members.has(best.defaultMember.member)) {
+    if (best.defaultMember && best.defaultMember.typeName === vocabName && members.has(best.defaultMember.member)) {
       initial.add(best.defaultMember.member);
     }
     out.push({
-      aggregate: agg, prop: best.prop, enumName: best.typeName, enumWhere: { file: en.file, line: en.line },
+      aggregate: agg, prop: best.prop, enumName: vocabName, enumWhere: { file: en.file, line: en.line },
       members: en.members, initialMembers: [...initial], transitions,
-      otherEnumProps: candidates.filter((c) => c !== best).map((c) => c.prop),
+      otherEnumProps: candidates.filter((c) => c !== bestC).map((c) => c.p.prop),
     });
   }
   return out;
@@ -601,7 +656,7 @@ export async function buildMartenModel(repoRoot: string): Promise<Model> {
     folded: new Map(), projected: new Map(), appended: new Map(),
     commands: new Map(), consumed: new Set(), endpointFiles: new Set(), snapshotted: new Set(), events: new Set(),
     aggregateDecls: new Map(), projectionDecls: new Map(), records: new Map(), handlers: new Map(),
-    enums: new Map(), typeProps: new Map(), foldAssignments: [],
+    enums: new Map(), guidStates: new Map(), typeProps: new Map(), foldAssignments: [],
   };
   const files = (await listSupportedFiles(repoRoot)).filter((f) => grammarForPath(f) === "c_sharp");
   for (const abs of files) {

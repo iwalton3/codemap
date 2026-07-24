@@ -111,6 +111,38 @@ public class Order
 }
 `;
 
+// Quote: the Guid state-constant pattern (Acme.API) — no enum anywhere; the
+// vocabulary is a static class of Guid constants, bound to the status prop by
+// usage. Includes a generic state-changed event (dynamic) and an unreferenced
+// constant (Orphan) that dynamic transitions keep out of the unreachable warn.
+const QUOTE_CS = `
+namespace Bank;
+
+public static class QuoteStates
+{
+    public static readonly Guid Quoting = new Guid("930A79B9-21FD-40BF-9F90-6FF20FB618F7");
+    public static readonly Guid Released = new Guid("7A815EDE-A451-4AA0-AA53-066B5C12CAE6");
+    public static Guid Cancelled = new Guid("955857ED-2AF7-4FCA-B93B-43DC0E5F8FF3");
+    public static readonly Guid Orphan = new Guid("11111111-1111-1111-1111-111111111111");
+}
+
+public record QuoteCreated(string Id);
+public record QuoteReleased(string Id);
+public record QuoteCancelled(string Id);
+public record QuoteStateChanged(Guid NewStateId);
+
+public class Quote
+{
+    public string Id { get; set; } = "";
+    public Guid EntityStateId { get; set; } = QuoteStates.Quoting;
+
+    public static Quote Create(QuoteCreated e) => new Quote { Id = e.Id };
+    public void Apply(QuoteReleased e) { EntityStateId = QuoteStates.Released; }
+    public void Apply(QuoteCancelled e) { EntityStateId = QuoteStates.Cancelled; }
+    public void Apply(QuoteStateChanged e) { EntityStateId = e.NewStateId; }
+}
+`;
+
 // Widget: an enum-typed TYPE DISCRIMINATOR (not status-named, only ever copied
 // from the event payload → all-dynamic) must NOT become a state machine — the
 // Acme CustomFieldType/Order false-positive class.
@@ -164,6 +196,7 @@ function mkFixture(): string {
   writeFileSync(join(root, "Domain", "Invoice.cs"), INVOICE_CS);
   writeFileSync(join(root, "Domain", "Order.cs"), ORDER_CS);
   writeFileSync(join(root, "Domain", "Widget.cs"), WIDGET_CS);
+  writeFileSync(join(root, "Domain", "Quote.cs"), QUOTE_CS);
   writeFileSync(join(root, "Api", "Endpoints.cs"), ENDPOINTS_CS);
   return root;
 }
@@ -175,7 +208,19 @@ test("state machines: extraction and derivation", async () => {
     const by = new Map(machines.map((x) => [x.aggregate, x]));
     // Widget is absent: a non-status-named enum prop with zero static targets is
     // a type discriminator, not a machine.
-    assert.deepEqual([...by.keys()].sort(), ["Hold", "Invoice", "Order", "Shipment"]);
+    assert.deepEqual([...by.keys()].sort(), ["Hold", "Invoice", "Order", "Quote", "Shipment"]);
+
+    // Quote: Guid state-constant vocabulary, bound by usage
+    const quote = by.get("Quote")!;
+    assert.equal(quote.prop, "EntityStateId");
+    assert.equal(quote.enumName, "QuoteStates");
+    assert.deepEqual(quote.members, ["Quoting", "Released", "Cancelled", "Orphan"]);
+    assert.deepEqual(quote.initialMembers, ["Quoting"]); // property default
+    const qt = new Map(quote.transitions.map((t) => [t.event, t]));
+    assert.deepEqual(qt.get("QuoteReleased")!.targets, ["Released"]);
+    assert.deepEqual(qt.get("QuoteCancelled")!.targets, ["Cancelled"]);
+    assert.equal(qt.get("QuoteStateChanged")!.dynamic, true); // e.NewStateId
+    assert.equal(qt.has("QuoteCreated"), false); // Create assigns no state
 
     // Hold: enum + prop choice, all assignment forms
     const hold = by.get("Hold")!;
@@ -241,8 +286,8 @@ test("state machines: findings", async () => {
     assert.ok(unguarded.some((f) => f.entity === "HoldEndpoints.Approve → HoldApproved"));
     assert.ok(!unguarded.some((f) => f.entity.startsWith("HoldEndpoints.Cancel")));
 
-    assert.equal(r.summary.stateMachines, 4);
-    assert.equal(r.summary.states, 4 + 3 + 2 + 3);
+    assert.equal(r.summary.stateMachines, 5);
+    assert.equal(r.summary.states, 4 + 3 + 2 + 3 + 4);
     // warns (non-verbose path) still include state-unreachable
     const quiet = await analyzeMarten(root, {});
     assert.ok(quiet.findings.some((f) => f.check === "state-unreachable"));
@@ -256,8 +301,8 @@ test("state machines: emission, idempotence, enrichment survival", async () => {
   try {
     await writeStore(root, await indexRepo(root), { schemaVersion: 1, lastVerifiedCommit: null, grammarVersions: {} });
     const r1 = await emitMartenGraph(root);
-    assert.equal(r1.states, 12);
-    assert.equal(r1.transitions, 12);
+    assert.equal(r1.states, 16);
+    assert.equal(r1.transitions, 15);
 
     const nodes1 = await loadNodes(root);
     const byId = new Map(nodes1.map((n) => [n.id, n]));
@@ -363,7 +408,7 @@ test("stateMap op: layout, enrichment join, work queue, trust", async () => {
 
     // Before enrichment: every transition is source-less → flat two-layer map.
     let r = await stateMap(root, { aggregate: "Hold" });
-    assert.deepEqual(r.aggregates.map((a) => a.title), ["Hold", "Invoice", "Order", "Shipment"]);
+    assert.deepEqual(r.aggregates.map((a) => a.title), ["Hold", "Invoice", "Order", "Quote", "Shipment"]);
     assert.equal(r.machines.length, 1);
     let m = r.machines[0]!;
     const state = (id: string) => m.states.find((s) => s.id === id)!;
