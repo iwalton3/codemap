@@ -55,6 +55,20 @@ authored edges are never touched by emission. **Never store enrichment by
 editing a generated node — the next re-emit deletes it** (`writeNode`'s
 generated branch replaces all versions under that id).
 
+## Authored machines — the static/model balance
+
+The analyzer only asserts what it can prove; everything judgment-shaped is the
+model's job, recorded as witness-hashed claims. That split extends to WHOLE
+machines: lifecycles the fold-pass can't see — handler-mutated side documents
+(`TransferRecord.State`), collection-item children (card holds in
+`lane.Holds`) — can be authored end-to-end. `document` the state/transition
+nodes (citing the enum and the mutating code) and `connect` the same edge
+vocabulary; `state_of`/`transition_of` may tether to ANY node standing for the
+machine's owner. `stateMap` treats an authored transition as its own
+enrichment (no `tr-` pair needed), so it participates in layout, trust, and
+staleness exactly like a generated-then-enriched one: when the cited handler
+drifts, the claim goes stale and re-enters the queue.
+
 ## Gap checks (analyzer findings)
 
 - `state-unreachable` (warn) — a member no fold assigns and no default/Create

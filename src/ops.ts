@@ -1050,7 +1050,9 @@ export async function stateMap(root: string, opts: { aggregate?: string } = {}) 
       const ev = graph.edges.find((x) => x.type === "on_event" && x.from === tid && byId.has(x.to));
       const targets = [...new Set(graph.edges.filter((x) => x.type === "transitions_to" && x.from === tid && stateSet.has(x.to)).map((x) => x.to))];
       const sources = [...new Set(graph.edges.filter((x) => x.type === "from_state" && x.to === tid && stateSet.has(x.from)).map((x) => x.from))];
-      const en = byId.get(trIdOf(tid));
+      // A generated skeleton pairs with its authored `tr-` node by id convention;
+      // a fully-AUTHORED transition (no generatedBy) is its own enrichment.
+      const en = n.generatedBy ? byId.get(trIdOf(tid)) : n;
       const enrichment = en && en.type === "transition" && !en.generatedBy
         ? { id: en.id, title: en.title, summary: en.summary, status: en.status, review: reviewOf(en.id), trust: trustOf(en.status, reviews.get(`node:${en.id}`)) }
         : null;

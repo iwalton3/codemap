@@ -238,7 +238,7 @@ const tools: Tool[] = [
   },
   {
     name: "state_map",
-    description: "Per-aggregate state machines: states (status-enum members) and transition nodes, with BFS layers from the initial states for layout. A transition skeleton `mtr-<agg>-<event>` is analyzer-generated; its SOURCE STATES and GUARDS are enrichment you author — a versioned node whose id is EXACTLY the skeleton id minus the leading 'm' (`mtr-hold-approved` → `tr-hold-approved`; copy it, don't re-derive the slug) via `document` (type 'transition', citing the Apply/guard anchors) plus `connect` edges: `from_state` (state → transition) for each source, and `transitions_to` (transition → state) when you derive a dynamic transition's target. `unenriched` per machine is the work queue: transitions with no enrichment or whose enrichment went stale when code drifted. Optional `aggregate` filters to one machine (id or title).",
+    description: "Per-aggregate state machines: states (status-enum members) and transition nodes, with BFS layers from the initial states for layout. A transition skeleton `mtr-<agg>-<event>` is analyzer-generated; its SOURCE STATES and GUARDS are enrichment you author — a versioned node whose id is EXACTLY the skeleton id minus the leading 'm' (`mtr-hold-approved` → `tr-hold-approved`; copy it, don't re-derive the slug) via `document` (type 'transition', citing the Apply/guard anchors) plus `connect` edges: `from_state` (state → transition) for each source, and `transitions_to` (transition → state) when you derive a dynamic transition's target. `unenriched` per machine is the work queue: transitions with no enrichment or whose enrichment went stale when code drifted. Machines can also be FULLY AUTHORED for lifecycles the static pass can't see (handler-mutated documents, collection-item children like card holds): `document` state/transition nodes (types 'state'/'transition', citing the enum + the mutating code) and `connect` the same edge vocabulary — `state_of`/`transition_of` tether them to any node standing for the machine's owner, and the machine appears here like a generated one. Optional `aggregate` filters to one machine (id or title).",
     inputSchema: obj({ aggregate: { type: "string" } }),
     handler: (a, c) => ops.stateMap(c.universe.path, { aggregate: a.aggregate }),
   },
@@ -341,7 +341,7 @@ const tools: Tool[] = [
     inputSchema: obj({
       from: { type: "string" },
       to: { type: "string" },
-      type: { type: "string", enum: ["part_of", "depends_on", "step_of", "touches", "from_state", "transitions_to", "initial_state"] },
+      type: { type: "string", enum: ["part_of", "depends_on", "step_of", "touches", "from_state", "transitions_to", "initial_state", "state_of", "transition_of", "on_event"] },
       order: { type: "number" },
       edges: {
         type: "array",
@@ -350,7 +350,7 @@ const tools: Tool[] = [
           properties: {
             from: { type: "string" },
             to: { type: "string" },
-            type: { type: "string", enum: ["part_of", "depends_on", "step_of", "touches", "from_state", "transitions_to", "initial_state"] },
+            type: { type: "string", enum: ["part_of", "depends_on", "step_of", "touches", "from_state", "transitions_to", "initial_state", "state_of", "transition_of", "on_event"] },
             order: { type: "number" },
           },
           required: ["from", "to", "type"],

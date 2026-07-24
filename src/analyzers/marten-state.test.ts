@@ -308,6 +308,53 @@ test("state machines: emission, idempotence, enrichment survival", async () => {
   }
 });
 
+test("stateMap op: fully authored machine (no analyzer involvement)", async () => {
+  const root = mkFixture();
+  try {
+    await writeStore(root, await indexRepo(root), { schemaVersion: 1, lastVerifiedCommit: null, grammarVersions: {} });
+    // No emit: the machine is documented by hand, the way an agent maps a
+    // handler-mutated document or collection-child lifecycle the static pass
+    // can't see (Widget is the rejected discriminator — perfect stand-in).
+    const doc = async (input: Parameters<typeof documentNode>[1]) => {
+      const r = await documentNode(root, input);
+      assert.ok(!("error" in r), JSON.stringify(r));
+    };
+    await doc({ id: "widget", type: "module", title: "Widget", summary: "Owner of the authored machine.", anchors: ["Widget.cs#Widget"] });
+    for (const s of ["Text", "Number", "Date"]) {
+      await doc({ id: `st-widget-${s.toLowerCase()}`, type: "state", title: `Widget · ${s}`, summary: `State ${s}.`, anchors: ["Widget.cs#WidgetKind"] });
+    }
+    await doc({ id: "tr-widget-widgetcreated", type: "transition", title: "Widget ← WidgetCreated", summary: "Created as Number when the payload says so.", anchors: ["Widget.cs#Create"] });
+    const conn = await connect(root, { edges: [
+      ...["text", "number", "date"].map((s) => ({ from: `st-widget-${s}`, to: "widget", type: "state_of" as const })),
+      { from: "tr-widget-widgetcreated", to: "widget", type: "transition_of" as const },
+      { from: "st-widget-text", to: "tr-widget-widgetcreated", type: "from_state" as const },
+      { from: "tr-widget-widgetcreated", to: "st-widget-number", type: "transitions_to" as const },
+      { from: "widget", to: "st-widget-text", type: "initial_state" as const },
+    ] });
+    assert.ok(!("error" in conn), JSON.stringify(conn));
+
+    const r = await stateMap(root, { aggregate: "widget" });
+    assert.equal(r.machines.length, 1);
+    const m = r.machines[0]!;
+    assert.equal(m.states.length, 3);
+    const st = (id: string) => m.states.find((s) => s.id === id)!;
+    assert.equal(st("st-widget-text").initial, true);
+    assert.equal(st("st-widget-text").layer, 0);
+    assert.equal(st("st-widget-number").layer, 1); // via real from_state chain
+    assert.deepEqual(m.unreachable, ["st-widget-date"]);
+    const t = m.transitions[0]!;
+    // an authored transition is its own enrichment — never queued as unenriched
+    assert.equal(t.enriched, true);
+    assert.equal(t.enrichment!.id, "tr-widget-widgetcreated");
+    assert.equal(t.enrichment!.trust, "unverified");
+    assert.deepEqual(m.unenriched, []);
+    assert.deepEqual(t.sources, ["st-widget-text"]);
+    assert.deepEqual(t.targets, ["st-widget-number"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("stateMap op: layout, enrichment join, work queue, trust", async () => {
   const root = mkFixture();
   try {
