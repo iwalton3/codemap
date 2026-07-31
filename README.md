@@ -16,6 +16,57 @@ Consumed by **both** a human (web app, later) and **AI agents** (a token-cheap
 map file read instead of a fresh codebase exploration each session), from the
 same `.codemap/` data.
 
+## Getting started (one repo)
+
+Requires **Node ≥ 23.4** (the store uses `node:sqlite`). One runtime dependency
+(`web-tree-sitter`); the grammars are vendored, so there is nothing else to fetch.
+
+```sh
+git clone <this repo> ~/codemap && cd ~/codemap
+npm install && npm run build
+```
+
+**1. Index the repo you want to map.** This builds the anchor index — every
+symbol, hashed — and caches the current commit so you can diff against it later.
+
+```sh
+node ~/codemap/dist/cli.js init /path/to/your-repo
+```
+
+The map lives in `/path/to/your-repo/.codemap/codemap.db`, which is gitignored
+for you: it never shows up in a branch or PR diff. Vendored/generated code can be
+excluded with a gitignore-style `.codemapignore` in the repo root.
+
+**2. Give an agent the map.** One server, one repo — every per-universe tool just
+defaults to it, so nothing needs a `universe` argument:
+
+```sh
+claude mcp add codemap -- node ~/codemap/dist/mcp.js /path/to/your-repo
+```
+
+Skipped step 1? The agent will be told the universe isn't initialized and can run
+the `init` tool itself — it doesn't need you at a terminal.
+
+**3. Read it yourself.** The web UI serves the same store the agent writes to, so
+documentation appears live:
+
+```sh
+node ~/codemap/dist/serve.js /path/to/your-repo    # http://localhost:4310 (pass a port to change)
+```
+
+**Then, as the code moves:**
+
+```sh
+node ~/codemap/dist/cli.js check /path/to/your-repo    # what drifted, and which docs it flags
+node ~/codemap/dist/cli.js snapshot /path/to/your-repo # cache this branch before switching away
+node ~/codemap/dist/cli.js diff main --repo /path/to/your-repo   # review a branch: changed symbols → the flows, docs and reviews they affect
+```
+
+`check` is also an MCP tool (`check_stale`) and the diff has a web view at
+`/#/u/<universe>/diff/` — the CLI, the agent, and the browser are three
+front-ends over one store. To map several repos at once, see the workspace
+manifest below.
+
 ## Status
 
 Building **v1: the anchor + staleness engine** (the code-index phase). Process

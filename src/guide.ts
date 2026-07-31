@@ -12,6 +12,10 @@ maintain that map collaboratively with the human. Work top-down; never try to
 list or read everything.
 
 ## Orient
+0. If a tool says **"codemap not initialized"** (or \`list_universes\` shows
+   \`initialized: false\`), call \`init\` on that universe — it builds the anchor
+   index in one pass. That is a setup step you can do yourself; do NOT fall back
+   to reading the codebase by hand, and don't go looking for a way to run the CLI.
 1. \`list_universes\` — the projects served and which is primary (the hub).
 2. \`outline\` — drills the folder tree one level at a time with a doc% per child.
    Start where coverage is low and importance is high (\`outline\` a domain, read

@@ -38,7 +38,7 @@ async function cmdAnalyze(analyzer: string, root: string, verbose: boolean, emit
 
 async function cmdInit(root: string): Promise<void> {
   // init and reindex are the same operation (full re-baseline); share it.
-  const r = await ops.reindex(root);
+  const r = await ops.init(root);
   console.log(`indexed ${r.anchors} anchors across ${r.files} files`);
   console.log(`baseline commit: ${r.commit ?? "(no git)"}${r.commit ? ` (snapshotted, branch ${r.branch ?? "?"})` : ""}`);
 }

@@ -23,7 +23,7 @@ import { withLock } from "./lock.js";
 
 // Tools that write to a universe's .codemap/ — held under the write lock so a
 // concurrent CLI run or second agent can't clobber a read-modify-write.
-const MUTATING = new Set(["document", "connect", "update_node", "delete_node", "confirm", "ack_hole", "cover", "report_bug", "update_bug", "annotate", "resolve_question", "link", "check_stale", "analyze", "review", "sanity_check", "snapshot", "reindex"]);
+const MUTATING = new Set(["init", "document", "connect", "update_node", "delete_node", "confirm", "ack_hole", "cover", "report_bug", "update_bug", "annotate", "resolve_question", "link", "check_stale", "analyze", "review", "sanity_check", "snapshot", "reindex"]);
 
 // Anti-self-vouching guard: node ids this MCP CONNECTION authored/edited this
 // session. An agent can't `sanity_check` (or agent-review) a doc its own
@@ -88,6 +88,12 @@ const tools: Tool[] = [
     description: "The documentation methodology: how to orient, document at the right granularity, connect, and file bugs. Re-read this any time you're unsure how to proceed.",
     inputSchema: obj({}, [], false),
     handler: async () => ({ methodology: METHODOLOGY }),
+  },
+  {
+    name: "init",
+    description: "Build the anchor index for a universe that isn't mapped yet — run this FIRST if any tool answers \"codemap not initialized\", instead of falling back to reading the codebase by hand. `list_universes` shows `initialized: false` for a universe that needs it. Safe to re-run on an initialized universe: it is the same full re-baseline as `reindex` and leaves docs, edges, reviews, coverage, bugs and annotations untouched. Note it only builds the ANCHOR index — the map's documentation starts empty, so follow with `outline` / `find_gaps`.",
+    inputSchema: obj({}),
+    handler: (_a, c) => ops.init(c.universe.path),
   },
   {
     name: "status",

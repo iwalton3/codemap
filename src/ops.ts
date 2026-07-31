@@ -295,6 +295,33 @@ export async function reindex(root: string) {
 }
 
 /**
+ * First-run entry point: build the anchor index for a repo that has no map yet.
+ * Mechanically the same full re-baseline as `reindex` — the difference is what
+ * the caller is told. Every read op throws "not initialized" until this runs, and
+ * an agent that hits that error should call this rather than start reading the
+ * codebase by hand, so the result reports whether it created the map or
+ * re-baselined an existing one, and what to do next.
+ */
+export async function init(root: string) {
+  let existing = false;
+  try {
+    await readState(root);
+    existing = true;
+  } catch {
+    /* no map here yet — the normal first-run path */
+  }
+  const r = await reindex(root);
+  return {
+    ...r,
+    created: !existing,
+    note: existing
+      ? "already initialized — re-baselined at HEAD; docs, edges, reviews, coverage and bugs are untouched"
+      : "initialized — the anchor index is built; the map itself (docs/edges/bugs) starts empty",
+    next: existing ? "check_stale to see what drifted" : "outline to orient, find_gaps for the work queue",
+  };
+}
+
+/**
  * If the checked-out branch differs from the one the index was baselined on,
  * re-init to the new branch's HEAD and return a note. First-ever call just
  * records the current branch (older indexes predate the field) without the

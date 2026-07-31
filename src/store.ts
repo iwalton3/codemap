@@ -94,9 +94,18 @@ export async function writeStore(root: string, anchors: Anchor[], state: State):
   setMeta(d, "state", state);
 }
 
+/**
+ * The one message every front-end shows for an unmapped repo. It names the fix in
+ * both vocabularies on purpose: an agent that only has the MCP tools was reading
+ * the codebase by hand when the text said "run `codemap init`".
+ */
+const notInitialized = (root: string) =>
+  `codemap not initialized at ${root} — build the anchor index first ` +
+  `(MCP: call the \`init\` tool; CLI: \`codemap init ${root}\`)`;
+
 export async function readAnchorStore(root: string): Promise<AnchorStore> {
   const d = db(root);
-  if (!getMeta(d, "state")) throw new Error(`codemap not initialized at ${root} (run \`codemap init\`)`);
+  if (!getMeta(d, "state")) throw new Error(notInitialized(root));
   return { schemaVersion: SCHEMA_VERSION, anchors: anchorsUnder(d, WORK_REF) };
 }
 
@@ -142,7 +151,7 @@ export async function listSnapshots(root: string): Promise<SnapshotInfo[]> {
 
 export async function readState(root: string): Promise<State> {
   const s = getMeta<State>(db(root), "state");
-  if (!s) throw new Error(`codemap not initialized at ${root}`);
+  if (!s) throw new Error(notInitialized(root));
   return s;
 }
 
