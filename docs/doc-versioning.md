@@ -35,7 +35,7 @@ both hit on the Acme.API `develop` ↔ `feat/payments-seam` diff:
    is flagged "an anchor it cites changed since the last reindex" — not "since
    *this doc* was written / last confirmed."
 2. The `.codemap` DB is one shared, gitignored store across all branches. So when
-   the payments agent retitled the CreditLine docs "(REMOVED)", it edited the
+   the payments-seam agent retitled the CreditLine docs "(REMOVED)", it edited the
    **same records** `develop` reads — **branch edits leak backward.** View
    `develop` now and those docs lie.
 
@@ -107,7 +107,7 @@ from current code every run, so they're inherently current-branch. *(Open Q5.)*
 
 Plain migration seeds every existing node as a single v1 against *current* code
 (`@work` = payments-seam right now). That's a fine floor but **can't un-leak**
-the docs payments clobbered. We can do better, because we have both inputs:
+the docs payments-seam clobbered. We can do better, because we have both inputs:
 
 - **The two anchor snapshots** already cached in the DB: `develop@8c80b94f` and
   `feat/payments-seam@430cd788` — so we can compute the *correct* write-time hash
@@ -119,8 +119,8 @@ the docs payments clobbered. We can do better, because we have both inputs:
 Reconstruction:
 1. Parse each session's `document`/`update_node` calls → per-branch content by node id.
 2. For a node both sessions touched → build **two versions**: develop's content
-   (accepted_hashes from the develop snapshot) + payments's content (from the feat
-   snapshot). The leak is undone: `develop` gets its original text back, `payments`
+   (accepted_hashes from the develop snapshot) + payments-seam's content (from the feat
+   snapshot). The leak is undone: `develop` gets its original text back, `payments-seam`
    keeps the rewrite.
 3. For a node only one session touched → single version on that branch's snapshot.
 4. **Produce a report** — per node: salvage-as-fork / keep-as-is / drop-and-let-the-
@@ -128,7 +128,7 @@ Reconstruction:
    automatic — I lean "report first, you approve per node.")*
 
 Result: you salvage the develop map (recovered from f153eb96) **and** the
-payments map, correctly forked, instead of hand-redoing either.
+payments-seam map, correctly forked, instead of hand-redoing either.
 
 ## Rough size
 
