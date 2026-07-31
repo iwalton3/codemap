@@ -24,6 +24,7 @@ export async function listUniverses(ws: Workspace) {
       path: u.path,
       primary: u.primary,
       initialized: s !== null,
+      views: s?.views, // which event-graph views have data here (nav gating)
       anchors: s?.anchors,
       nodes: s?.nodes,
       open: s?.open,

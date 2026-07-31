@@ -346,6 +346,20 @@ class MdContent extends Component {
 defineComponent('md-content', MdContent);
 
 // --- header ------------------------------------------------------------------
+// The view bar. A third entry is the `views` key gating the link: the matrix,
+// pipeline and state map only mean something on a map with an event graph, so on
+// a plain repo they're hidden rather than shown leading to empty scaffolding.
+// (url builders are wrapped in arrows: `diffUrl` is declared further down the
+// file, so naming it directly here would read the binding before its init.)
+const VIEW_LINKS = [
+  ['nodes', u => nodesUrl(u)], ['matrix', u => matrixUrl(u), 'matrix'], ['pipeline', u => pipelineUrl(u), 'pipeline'],
+  ['states', u => stateMapUrl(u), 'states'], ['flows', u => flowsUrl(u)], ['bugs', u => bugsUrl(u)], ['diff', u => diffUrl(u)],
+];
+// Ungated links always show. A gated one needs the universe's `views` to say so —
+// unknown-yet (nav still loading) hides it so a link can't flash and vanish, while
+// a payload with no `views` at all shows everything rather than hiding the UI.
+const viewEnabled = (uni, gate) => !gate || (!!uni && (!uni.views || !!uni.views[gate]));
+
 class CodemapHeader extends Component {
   static stores = { nav };
   mounted() { nav.load(); }
@@ -355,16 +369,11 @@ class CodemapHeader extends Component {
   }
   template() {
     const n = this.stores.nav;
+    const cur = n.universes.find(x => x.id === n.current) || n.universes[0];
     return html`<header>
       <div class="brand" on-click="${() => go('/')}">codemap<span> · map browser</span></div>
       <div class="uni">${each(n.universes, u => html`<button class="${u.id === n.current ? 'active' : ''}" on-click="${() => go(dashUrl(u.id))}">${u.id}<span class="n">${u.anchors ?? '–'}</span></button>`)}</div>
-      <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(nodesUrl(u)); }}">nodes</a>
-      <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(matrixUrl(u)); }}">matrix</a>
-      <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(pipelineUrl(u)); }}">pipeline</a>
-      <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(stateMapUrl(u)); }}">states</a>
-      <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(flowsUrl(u)); }}">flows</a>
-      <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(bugsUrl(u)); }}">bugs</a>
-      <a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(diffUrl(u)); }}">diff</a>
+      ${each(VIEW_LINKS.filter(l => viewEnabled(cur, l[2])), l => html`<a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(l[1](u)); }}">${l[0]}</a>`, l => l[0])}
       <div class="search"><input placeholder="search symbols & docs…" on-change="${(e, v) => this.search(e, v)}"></div>
     </header>`;
   }
@@ -401,10 +410,12 @@ class DashboardPage extends Component {
   stat(label, value, extra) { return html`<div class="dstat"><div class="dsv">${value}</div><div class="dsl">${label}</div>${when(extra, () => html`<div class="dsx">${extra}</div>`)}</div>`; }
   template() {
     const u = this.props.params.universe, d = this.state.d;
+    // Same gating as the header's view bar (`viewEnabled`): the event-graph views
+    // only appear once this universe has the nodes behind them.
     const nav2 = [
-      ['nodes', () => go(nodesUrl(u))], ['matrix', () => go(matrixUrl(u))], ['pipeline', () => go(pipelineUrl(u))],
-      ['states', () => go(stateMapUrl(u))], ['flows', () => go(flowsUrl(u))], ['bugs', () => go(bugsUrl(u))], ['diff', () => go(diffUrl(u))], ['browse files', () => goTree(u, '')],
-    ];
+      ['nodes', () => go(nodesUrl(u))], ['matrix', () => go(matrixUrl(u)), 'matrix'], ['pipeline', () => go(pipelineUrl(u)), 'pipeline'],
+      ['states', () => go(stateMapUrl(u)), 'states'], ['flows', () => go(flowsUrl(u))], ['bugs', () => go(bugsUrl(u))], ['diff', () => go(diffUrl(u))], ['browse files', () => goTree(u, '')],
+    ].filter(x => viewEnabled(d, x[2]));
     return pageShell(d, d && d.error, () => html`
       <div class="crumbs"><b>${u}</b> <span class="sep">·</span> overview${when(d.tripwires && d.tripwires.armed && this.canEnableAlerts(), () => html` <span class="sep">·</span> <button title="get a browser notification when a watched tripwire fires" on-click="${() => this.enableAlerts()}">🔔 enable alerts</button>`)}</div>
       ${when(d.attention > 0, () => html`<div class="attn-banner">
@@ -1213,6 +1224,10 @@ class MatrixPage extends Component {
   template() {
     const u = this.props.params.universe, d = this.state.data;
     return pageShell(d, null, () => {
+    // Reachable by deep link even when the nav hides it — say why it's blank.
+    if (!d.events.length) return html`
+      <div class="crumbs">${u} <span class="sep">·</span> event matrix</div>
+      <div class="empty">no event families in this map — the matrix needs <code>event_family</code> nodes (run <code>codemap analyze marten --emit</code> on an event-sourced repo, or document them by hand)</div>`;
     const rows = this.filtered();
     const domains = [...new Set(d.events.map((e) => e.domain))].sort();
     return html`
@@ -1304,6 +1319,11 @@ class PipelinePage extends Component {
   template() {
     const u = this.props.params.universe, d = this.state.data;
     if (this.state.loading || !d) return html`<main><div class="loading">loading…</div></main>`;
+    // Reachable by deep link even when the nav hides it — say why it's blank.
+    if (!d.nodes.length) return html`<main>
+      <div class="crumbs">${u} <span class="sep">·</span> event pipeline</div>
+      <div class="empty">nothing to lay out — the pipeline needs command / handler / event / aggregate / projection nodes (run <code>codemap analyze marten --emit</code> on an event-sourced repo, or document them by hand)</div>
+    </main>`;
     const pos = this.pos();
     const edge = (e) => { const a = pos.get(e.from), b = pos.get(e.to); const sx = a.x + PIPE.NODEW, sy = a.y + PIPE.NODEH / 2, tx = b.x, ty = b.y + PIPE.NODEH / 2, c = PIPE.COLW * 0.4; return html`<path class="pe ${e.type}" data-from="${e.from}" data-to="${e.to}" d="M${sx},${sy} C${sx + c},${sy} ${tx - c},${ty} ${tx},${ty}"></path>`; };
     const node = (n) => { const p = pos.get(n.id); const t = n.title.length > 34 ? n.title.slice(0, 33) + '…' : n.title;

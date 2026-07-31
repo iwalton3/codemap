@@ -126,6 +126,29 @@ async function coverageFor(root: string): Promise<{ store: Awaited<ReturnType<ty
   return { store, nodes, result: resolveCoverage(store.anchors, cited, cov.rules) };
 }
 
+/**
+ * Which of the event-sourcing views have anything behind them. The event matrix,
+ * the layered pipeline and the state map all read an event graph; on a repo that
+ * has none they render empty scaffolding, so the front-ends hide them instead of
+ * offering dead links. Keyed on node types PRESENT, not on whether an analyzer
+ * ran — a hand-authored event graph counts exactly the same.
+ */
+export function availableViews(nodesByType: Record<string, number>) {
+  const n = (t: string) => nodesByType[t] ?? 0;
+  return {
+    matrix: n("event_family") > 0, // events are the matrix's rows
+    pipeline: n("command") + n("handler") + n("event_family") + n("aggregate") + n("projection") > 0,
+    states: n("state") + n("transition") > 0,
+  };
+}
+
+/** Node-type tally — the input to `availableViews`, and a headline count itself. */
+function tallyTypes(nodes: LogicalNode[]): Record<string, number> {
+  const byType: Record<string, number> = {};
+  for (const n of nodes) byType[n.type] = (byType[n.type] ?? 0) + 1;
+  return byType;
+}
+
 export async function status(root: string) {
   const [{ store, nodes, result }, graph, bugStore, annStore] = await Promise.all([
     coverageFor(root), readGraph(root), readBugs(root), readAnnotations(root),
@@ -136,8 +159,7 @@ export async function status(root: string) {
   } catch {
     /* not initialized */
   }
-  const nodesByType: Record<string, number> = {};
-  for (const n of nodes) nodesByType[n.type] = (nodesByType[n.type] ?? 0) + 1;
+  const nodesByType = tallyTypes(nodes);
   const bugsByStatus: Record<string, number> = {};
   for (const b of bugStore.bugs) bugsByStatus[b.status] = (bugsByStatus[b.status] ?? 0) + 1;
   return {
@@ -147,6 +169,7 @@ export async function status(root: string) {
     open: result.breakdown.open, // the real work queue size
     nodes: nodes.length,
     nodesByType,
+    views: availableViews(nodesByType),
     edges: graph.edges.length,
     bugs: bugStore.bugs.length,
     bugsByStatus,
@@ -197,6 +220,7 @@ export async function dashboard(root: string) {
 
   return {
     coverage: { docPct: computeDocPct(result.breakdown), open: result.breakdown.open, anchors: store.anchors.length, nodes: nodes.length, edges: graph.edges.length, breakdown: result.breakdown },
+    views: availableViews(tallyTypes(nodes)), // which event-graph views this map can offer
     docs: { total: nodes.length, stale: staleDocs, dangling: danglingDocs, fresh: nodes.length - staleDocs - danglingDocs },
     bugs: { total: bugStore.bugs.length, open: openBugs, possiblyFixed, byStatus: bugCounts },
     annotations: annStore.annotations.length,
