@@ -416,11 +416,32 @@ export async function diffCode(root: string, base: string, head: string | undefi
   };
 }
 
-/** Collapse a namespace to a browsable domain (e.g. Acme.Settlement.Cards.Handlers → Settlement.Cards). */
-function domainOf(ns: string | undefined): string {
+/**
+ * The corpus-wide org prefix, if any: enterprise codebases root every namespace
+ * under one company segment (`Corp.Settlement.Cards.Handlers`), which carries no
+ * information as a grouping key. Detected rather than configured — the leading
+ * segment counts as an org prefix only when it dominates the whole corpus, so a
+ * repo whose top-level segments are real domains is left alone.
+ */
+function orgPrefixOf(nsById: Map<string, string | undefined>): string | undefined {
+  const heads = new Map<string, number>();
+  let total = 0;
+  for (const ns of new Set(nsById.values())) {
+    const p = ns?.split(".");
+    if (!p || p.length < 2 || !p[0]) continue;
+    total++;
+    heads.set(p[0], (heads.get(p[0]) ?? 0) + 1);
+  }
+  if (total < 5) return undefined; // too small a corpus to call it
+  const [head, n] = [...heads.entries()].sort((a, b) => b[1] - a[1])[0] ?? [];
+  return head && n! / total >= 0.8 ? head : undefined;
+}
+
+/** Collapse a namespace to a browsable domain (e.g. Corp.Settlement.Cards.Handlers → Settlement.Cards). */
+function domainOf(ns: string | undefined, org?: string): string {
   if (!ns) return "(none)";
   const p = ns.split(".");
-  if (p[0] === "Acme" && p[1] && p[2]) return `${p[1]}.${p[2]}`;
+  if (org && p[0] === org && p[1] && p[2]) return `${p[1]}.${p[2]}`;
   return p.slice(0, 2).join(".") || ns;
 }
 
@@ -443,6 +464,7 @@ function topNamespace(anchorIds: string[], nsById: Map<string, string | undefine
 export async function nodeCatalog(root: string) {
   const [nodes, graph, store] = await Promise.all([loadNodes(root), readGraph(root), readAnchorStore(root)]);
   const nsById = new Map(store.anchors.map((a) => [a.id, a.symbolPath[0]]));
+  const org = orgPrefixOf(nsById);
   const inC = new Map<string, number>();
   const outC = new Map<string, number>();
   for (const e of graph.edges) {
@@ -464,7 +486,7 @@ export async function nodeCatalog(root: string) {
       type: n.type,
       title: n.title,
       summary: n.summary,
-      domain: domainOf(topNs),
+      domain: domainOf(topNs, org),
       namespace: topNs ?? null,
       anchors: n.anchors.length,
       edgesIn: inC.get(n.id) ?? 0,
@@ -530,6 +552,7 @@ export async function nodeCatalog(root: string) {
 export async function eventMatrix(root: string) {
   const [nodes, graph, store] = await Promise.all([loadNodes(root), readGraph(root), readAnchorStore(root)]);
   const nsById = new Map(store.anchors.map((a) => [a.id, a.symbolPath[0]]));
+  const org = orgPrefixOf(nsById);
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const events = nodes.filter((n) => n.type === "event_family");
 
@@ -564,7 +587,7 @@ export async function eventMatrix(root: string) {
       return {
         id: n.id,
         title: n.title,
-        domain: domainOf(topNamespace(n.anchors, nsById)),
+        domain: domainOf(topNamespace(n.anchors, nsById), org),
         emitters: emitsInto.get(n.id) ?? 0,
         cells,
         folds,
@@ -959,7 +982,8 @@ export async function pipelineGraph(root: string, opts: { domain?: string } = {}
   const nsById = new Map(store.anchors.map((a) => [a.id, a.symbolPath[0]]));
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const inLayer = (n: LogicalNode) => PIPELINE_LAYER[n.type] !== undefined;
-  const domOf = (n: LogicalNode) => domainOf(topNamespace(n.anchors, nsById));
+  const org = orgPrefixOf(nsById);
+  const domOf = (n: LogicalNode) => domainOf(topNamespace(n.anchors, nsById), org);
 
   const relTypes = new Set(["handles", "emits", "folds", "projects"]);
   const rel = graph.edges.filter((e) => relTypes.has(e.type) && byId.has(e.from) && byId.has(e.to));

@@ -22,7 +22,7 @@ import type { Node } from "web-tree-sitter";
 import { listSupportedFiles, toPosixRel } from "../fs-scan.js";
 import { grammarForPath, parserForPath } from "../grammars.js";
 
-// Convention config — the Acme defaults; a real deployment could override these.
+// Convention config — the target repo's defaults; a real deployment could override these.
 const COMMAND_MARKERS = new Set(["IIntentCommand", "ILineCommand", "ICommand"]);
 const PROJECTION_BASES = new Set(["EventProjection", "SingleStreamProjection", "MultiStreamProjection"]);
 const APPEND_MEMBERS = new Set(["Append", "StartStream", "AppendOptimistic", "AppendExclusive"]);
@@ -538,7 +538,7 @@ export function deriveStateMachines(m: Model): StateMachine[] {
     if (!relevant.length) continue; // status prop never assigned in folds — not a state machine
     // A prop that isn't status-named qualifies only with ≥1 statically-resolved
     // target: type/kind DISCRIMINATORS copied from a command payload (`Type =
-    // cmd.Type`) look like all-dynamic machines and are pure noise (the Acme
+    // cmd.Type`) look like all-dynamic machines and are pure noise (the Acme.API
     // CustomFieldType/Order false-positive class). A status-NAMED prop keeps
     // its machine even when fully dynamic — the name signals intent and the
     // dynamic transitions are exactly the enrichment queue.

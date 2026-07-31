@@ -145,7 +145,7 @@ public class Quote
 
 // Widget: an enum-typed TYPE DISCRIMINATOR (not status-named, only ever copied
 // from the event payload → all-dynamic) must NOT become a state machine — the
-// Acme CustomFieldType/Order false-positive class.
+// Acme.API CustomFieldType/Order false-positive class.
 const WIDGET_CS = `
 namespace Bank;
 

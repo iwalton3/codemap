@@ -128,9 +128,10 @@ analyzers/*          OPT-IN framework plugins (Marten) — never in the agnostic
 
 ## Operational constraints
 
-- **The `/working/Acme.*` universes are LIVE and edited by another agent — do not
-  write to them.** Validate on isolated scratch copies. `Acme.API` is the real
-  motivating target; work out of it (it's the hub where system knowledge lives).
+- **The private C# universes under `/working/` are LIVE and edited by another
+  agent — do not write to them.** Validate on isolated scratch copies. The
+  primary one is the real motivating target; work out of it (it's the hub where
+  system knowledge lives).
 - Use the **`gh` CLI** for GitHub, not raw URL fetches.
 - **Don't `pkill -f serve.js`** — it self-kills the shell (exit 144). Kill scratch
   servers by pid. Never kill the user's `/working/codemap.workspace.json` server.
@@ -142,4 +143,6 @@ analyzers/*          OPT-IN framework plugins (Marten) — never in the agnostic
 ## Guinea-pig repos
 
 `cl-pprint` (primary; py+js, git), `FakeBankSimulator` (C# hard cases),
-`mrepo-web` (scale, gitless), `Acme.Settlement` / `Acme.API` (the real C# targets).
+`mrepo-web` (scale, gitless), plus two private enterprise C# repos under
+`/working/` — the real targets (referred to as `Acme.API` / `Acme.Settlement` in
+examples throughout this repo).
