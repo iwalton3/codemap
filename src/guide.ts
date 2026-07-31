@@ -58,7 +58,15 @@ absolute in a summary is a re-read trigger — and the re-read is usually just t
 - READ FIRST: \`get_anchor\` returns the live code. Never document code you have
   not read.
 - Cite anchors by \`file#Symbol\` (or \`file:line\`) — no need to look up \`a_…\`
-  ids first. Ambiguous names come back with the candidate list; disambiguate.
+  ids first. Overloads: \`file#Symbol(*)\` cites them ALL in one ref; an ambiguous
+  \`file#Symbol\` comes back with each candidate's id AND line range, so pick from
+  that message rather than paying a lookup.
+- Writes accept what resolves. A ref that can't be resolved does NOT discard the
+  call — the doc is saved and the bad refs return as \`rejectedAnchors\` (only a
+  call where nothing resolved fails). Don't re-send the body; fix the rejects with
+  \`update_node addAnchors\`.
+- Need to see what's in a big file? \`outline\` it with \`compact:true\` — just
+  {id, symbol, kind, lines} per symbol. Don't fall back to grepping signatures.
 - Granularity: a \`module\` node per meaningful unit — a domain, a service, a
   subsystem — NOT one per method. Cite the anchors the summary actually depends
   on: the type-shell anchor for structure, the key method anchors for behavior.
@@ -80,6 +88,14 @@ Selectors match anchors added later too, so the queue doesn't re-pollute.
 - Every node MUST cite ≥1 anchor (enforced). Cite *precisely* — that is what
   routes staleness to the right doc when the code changes. Over-citing makes docs
   flap; under-citing lets changes slip by.
+
+**But keep the two numbers apart.** \`docPct\` counts cited AND selector-covered
+anchors, so a heavily-\`cover\`ed map can read 100% while little of it is actually
+described. \`citedPct\` (same denominator, citations only) is the honest "how much
+is described" number. Read a high docPct as *the queue is clean*, not *everything
+is documented* — and when they diverge sharply, that gap is where the map is
+thinnest.
+
 
 ## Connect & maintain
 - \`connect\` (same universe): \`part_of\` for containment, \`depends_on\` for deps —

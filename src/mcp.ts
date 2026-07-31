@@ -103,9 +103,12 @@ const tools: Tool[] = [
   },
   {
     name: "outline",
-    description: "Drill down the structural tree (derived from anchor paths) one level at a time, with anchor counts, documentation coverage %, and node/bug rollups per child. Omit prefix for the repo root; pass a dir prefix to expand it, or a file path to list its symbols. The way to understand a large codebase top-down.",
-    inputSchema: obj({ prefix: { type: "string", description: "Directory or file prefix to expand (default: repo root)." } }),
-    handler: (a, c) => ops.outline(c.universe.path, a.prefix ?? ""),
+    description: "Drill down the structural tree (derived from anchor paths) one level at a time, with anchor counts, documentation coverage %, and node/bug rollups per child. Omit prefix for the repo root; pass a dir prefix to expand it, or a file path to list its symbols. The way to understand a large codebase top-down. Per-directory coverage reports `docPct` (cited OR swept in by a `cover` selector) and `citedPct` (actually cited by a doc) separately — read the gap between them as \"claimed\" vs \"described\". For a big file pass `compact: true` to get just {id, symbol, kind, lines} per symbol instead of the full per-anchor coverage/review payload — that is the cheap symbol listing, no need to grep the file.",
+    inputSchema: obj({
+      prefix: { type: "string", description: "Directory or file prefix to expand (default: repo root)." },
+      compact: { type: "boolean", description: "File listings only: return {id, symbol, kind, lines} per symbol and nothing else." },
+    }),
+    handler: (a, c) => ops.outline(c.universe.path, a.prefix ?? "", { compact: !!a.compact }),
   },
   {
     name: "find_gaps",
@@ -125,7 +128,7 @@ const tools: Tool[] = [
   },
   {
     name: "lint_summaries",
-    description: "Zero-cost drift check (no code read): nodes whose SUMMARY makes an absolute claim (only/all/always/never/…) while the BODY carries a qualifier (except/unless/…) — a summary/body self-contradiction, the most common doc drift. Review candidates: verify each (usually just re-read the body) and `update_node` to bound the summary, or dismiss.",
+    description: "Zero-cost drift check (no code read): nodes whose SUMMARY makes an absolute claim (only/all/always/never/…) while the BODY carries a qualifier (except/unless/…) — a summary/body self-contradiction, the most common doc drift. Review candidates: verify each (usually just re-read the body) and `update_node` to bound the summary, or dismiss. Bounded by construction: it compares a doc against ITSELF, so it cannot see a claim that contradicts the CODE — use `sanity_check` (read the cited code, confirm or correct) for that.",
     inputSchema: obj({}),
     handler: (a, c) => ops.lintSummaries(c.universe.path),
   },
@@ -313,13 +316,13 @@ const tools: Tool[] = [
   },
   {
     name: "document",
-    description: "Create/update a logical node (module|process|step|transition|state) in a universe. Must cite ≥1 anchor — floating claims are rejected. Set `id` to control the slug you'll [[link]] to. For state-machine enrichment use type 'transition' with id `tr-<agg>-<event>` (see `state_map`).",
+    description: "Create/update a logical node (module|process|step|transition|state) in a universe. Must cite ≥1 anchor — floating claims are rejected. Anchors resolve PARTIALLY: refs that resolve are saved and the rest come back as `rejectedAnchors` (only a call where nothing resolves fails), so one ambiguous overload no longer costs you the whole body — fix the rejects with `update_node addAnchors`. Set `id` to control the slug you'll [[link]] to. For state-machine enrichment use type 'transition' with id `tr-<agg>-<event>` (see `state_map`).",
     inputSchema: obj({
       id: { type: "string" },
       type: { type: "string", enum: ["module", "process", "step", "transition", "state"] },
       title: { type: "string" },
       summary: { type: "string" },
-      anchors: { type: "array", items: { type: "string" }, description: "Anchors by `file#Symbol`, `file:line`, or raw id — resolved server-side." },
+      anchors: { type: "array", items: { type: "string" }, description: "Anchors by `file#Symbol`, `file:line`, or raw id — resolved server-side. `file#Symbol(*)` cites EVERY overload of Symbol in that file; an ambiguous `file#Symbol` comes back with each candidate id AND line range, so you can pick without another lookup." },
       body: { type: "string" },
       steps: {
         type: "array",
@@ -392,7 +395,7 @@ const tools: Tool[] = [
   },
   {
     name: "update_node",
-    description: "Patch a node in place without resending its whole body: change title/summary/body and/or add/remove anchors (by file#Symbol or id). A node must keep ≥1 anchor.",
+    description: "Patch a node in place without resending its whole body: change title/summary/body and/or add/remove anchors (by `file#Symbol`, `file#Symbol(*)` for every overload, or id). A node must keep ≥1 anchor. Added anchors resolve partially — whatever resolves is added and the rest come back as `rejectedAnchors`.",
     inputSchema: obj({
       id: { type: "string" },
       setTitle: { type: "string" },
@@ -427,7 +430,7 @@ const tools: Tool[] = [
     inputSchema: obj({
       title: { type: "string" },
       description: { type: "string" },
-      anchors: { type: "array", items: { type: "string" }, description: "Anchors by `file#Symbol`, `file:line`, or raw id." },
+      anchors: { type: "array", items: { type: "string" }, description: "Anchors by `file#Symbol`, `file:line`, or raw id (`file#Symbol(*)` = every overload). Partially resolved: unresolvable refs come back as `rejectedAnchors`." },
       severity: { type: "string", enum: ["low", "medium", "high", "critical"] },
     }, ["title", "description", "anchors"]),
     handler: (a, c) => ops.reportBug(c.universe.path, a),

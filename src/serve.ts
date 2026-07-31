@@ -55,7 +55,7 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
     case "/api/dashboard":
       return ops.dashboard(root);
     case "/api/outline":
-      return ops.outline(root, q.get("prefix") ?? "");
+      return ops.outline(root, q.get("prefix") ?? "", { compact: q.get("compact") === "1" });
     case "/api/anchor":
       return ops.getAnchor(root, q.get("id") ?? "");
     case "/api/node":

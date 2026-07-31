@@ -433,7 +433,9 @@ class DashboardPage extends Component {
         <div class="dcard">
           <div class="dch">documentation</div>
           <div class="dstats">
-            ${this.stat('documented', d.coverage.docPct + '%')}
+            ${this.stat('documented', d.coverage.docPct + '%', d.coverage.citedPct === undefined ? null
+              : d.coverage.citedPct === d.coverage.docPct ? 'all of it cited'
+              : d.coverage.citedPct + '% cited · rest swept by `cover`')}
             ${this.stat('open anchors', d.coverage.open, 'the work queue')}
             ${this.stat('doc nodes', d.coverage.nodes)}
           </div>
@@ -512,12 +514,12 @@ class OutlinePage extends Component {
     }
     if (!d.children || !d.children.length) return html`<div class="empty">no anchors here</div>`;
     return html`<div>
-      <div class="rlegend"><span class="k"><span class="mini"></span>review heat — top: logical · bottom: code (green reviewed, amber stale)</span></div>
+      <div class="rlegend"><span class="k"><span class="mini"></span>review heat — top: logical · bottom: code (green reviewed, amber stale) · hatched coverage = swept in by a <code>cover</code> selector, not cited by a doc</span></div>
       <div class="rows">${each(d.children, c => html`
         <div class="row" on-click="${() => goTree(u, c.path)}">
           <span class="ico">${KICON[c.kind]}</span>
           <span class="name ${c.kind}">${c.name}</span>
-          <span class="bar" title="${c.docPct}% documented"><i style="width:${c.docPct}%;background:${barColor(c.docPct)}"></i></span>
+          <span class="bar" title="${c.docPct}% documented — ${c.cited ?? '?'} cited, ${c.covered ?? '?'} covered by selector, ${c.open} open"><i style="width:${c.docPct}%;background:${barColor(c.docPct)}"></i>${when(c.citedPct !== undefined && c.citedPct < c.docPct, () => html`<b class="swept" style="left:${c.citedPct}%;width:${c.docPct - c.citedPct}%"></b>`)}</span>
           ${reviewHeat(c.review)}
           <span class="muted">${c.anchors} anc</span>
           <span class="muted">${c.nodes ? c.nodes + ' doc' : ''}${c.bugs ? ' · ' + c.bugs + '🐞' : ''}</span>

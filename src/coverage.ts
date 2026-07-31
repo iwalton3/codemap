@@ -78,3 +78,17 @@ export function docPct(b: Record<CoverageState, number>): number {
   const done = DOCUMENTED.reduce((n, s) => n + b[s], 0);
   return denom ? Math.round((100 * done) / denom) : 0;
 }
+
+/**
+ * The stricter number: anchors a doc actually CITES, over the same denominator.
+ *
+ * `docPct` counts a `cover` selector sweep the same as a citation, so a map can
+ * read 100% documented while most of its code is only conceptually claimed by a
+ * module doc. Both are honest answers to different questions — "is the queue
+ * clean" vs "is this described" — so report them side by side and let neither
+ * stand in for the other.
+ */
+export function citedPct(b: Record<CoverageState, number>): number {
+  const denom = DENOMINATOR.reduce((n, s) => n + b[s], 0);
+  return denom ? Math.round((100 * b.cited) / denom) : 0;
+}

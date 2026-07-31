@@ -27,7 +27,7 @@ import {
 } from "./store.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "./diff.js";
-import { resolveCoverage, selectAnchors, docPct as computeDocPct, type CoverageResult } from "./coverage.js";
+import { resolveCoverage, selectAnchors, docPct as computeDocPct, citedPct as computeCitedPct, type CoverageResult } from "./coverage.js";
 import { resolveAnchorRefs } from "./refs.js";
 import { refreshAnalyzers } from "./analyzers/run.js";
 import { applyIndexUpdate } from "./sync.js";
@@ -165,7 +165,8 @@ export async function status(root: string) {
   return {
     anchors: store.anchors.length,
     coverage: result.breakdown, // open / cited / covered / trivial / deferred / owned
-    docPct: computeDocPct(result.breakdown),
+    docPct: computeDocPct(result.breakdown), // cited OR selector-covered
+    citedPct: computeCitedPct(result.breakdown), // the stricter claim: cited by a doc
     open: result.breakdown.open, // the real work queue size
     nodes: nodes.length,
     nodesByType,
@@ -219,7 +220,7 @@ export async function dashboard(root: string) {
   try { tw = await triageTripwires(root); } catch { /* best-effort */ }
 
   return {
-    coverage: { docPct: computeDocPct(result.breakdown), open: result.breakdown.open, anchors: store.anchors.length, nodes: nodes.length, edges: graph.edges.length, breakdown: result.breakdown },
+    coverage: { docPct: computeDocPct(result.breakdown), citedPct: computeCitedPct(result.breakdown), open: result.breakdown.open, anchors: store.anchors.length, nodes: nodes.length, edges: graph.edges.length, breakdown: result.breakdown },
     views: availableViews(tallyTypes(nodes)), // which event-graph views this map can offer
     docs: { total: nodes.length, stale: staleDocs, dangling: danglingDocs, fresh: nodes.length - staleDocs - danglingDocs },
     bugs: { total: bugStore.bugs.length, open: openBugs, possiblyFixed, byStatus: bugCounts },
@@ -670,7 +671,7 @@ export async function eventMatrix(root: string) {
  * counts, documentation coverage, and node/bug rollups; a file prefix returns
  * its symbols. You never list everything — you expand one level at a time.
  */
-export async function outline(root: string, prefix = "") {
+export async function outline(root: string, prefix = "", opts: { compact?: boolean } = {}) {
   const [{ store, nodes, result }, bugStore, reviewStore] = await Promise.all([coverageFor(root), readBugs(root), readReviews(root)]);
   const byId = new Map(store.anchors.map((a) => [a.id, a]));
   const state = (id: string) => result.state.get(id) ?? "open";
@@ -681,11 +682,22 @@ export async function outline(root: string, prefix = "") {
   // A file prefix → list that file's symbols.
   const fileAnchors = store.anchors.filter((a) => a.file === prefix);
   if (fileAnchors.length) {
+    const byLine = [...fileAnchors].sort((a, b) => (a.loc?.startLine ?? 0) - (b.loc?.startLine ?? 0));
+    // `compact` is the cheap symbol listing: id, symbol, kind, lines and nothing
+    // else. A big C# file's full listing (coverage + per-anchor review + citing
+    // node ids) runs to tens of KB, which pushed callers to grep the file instead.
+    if (opts.compact) {
+      return {
+        prefix,
+        kind: "file" as const,
+        compact: true,
+        symbols: byLine.map((a) => ({ id: a.id, symbol: a.symbolPath.join(" › "), kind: a.kind, lines: a.loc ? `${a.loc.startLine}-${a.loc.endLine}` : undefined })),
+      };
+    }
     return {
       prefix,
       kind: "file" as const,
-      symbols: fileAnchors
-        .sort((a, b) => (a.loc?.startLine ?? 0) - (b.loc?.startLine ?? 0))
+      symbols: byLine
         .map((a) => ({
           ...anchorBrief(a),
           coverage: state(a.id),
@@ -732,6 +744,12 @@ export async function outline(root: string, prefix = "") {
         anchors: g.anchors,
         open: g.b.open, // in-scope, undocumented — the real work here
         docPct: denom ? Math.round((100 * (g.b.cited + g.b.covered)) / denom) : 0,
+        // The stronger claim: cited BY a doc, not just swept in by a `cover`
+        // selector. docPct counts both, so it can read 100% on a map where almost
+        // nothing is actually described — report them apart.
+        citedPct: denom ? Math.round((100 * g.b.cited) / denom) : 0,
+        cited: g.b.cited,
+        covered: g.b.covered,
         review: { total: g.rDenom, logical: g.rl, logicalStale: g.rlStale, code: g.rc, codeStale: g.rcStale },
         nodes: nodes.filter((n) => underPath(n.anchors, path)).length,
         bugs: bugStore.bugs.filter((b) => underPath(b.anchors, path)).length,
@@ -1507,13 +1525,23 @@ export async function changedSince(
 // Documenting
 // ---------------------------------------------------------------------------
 
-/** Resolve human-friendly anchor refs (file#Symbol, file:line, or raw id) → ids. */
-async function resolveRefs(root: string, refs: string[]): Promise<{ ids?: string[]; error?: string }> {
+/**
+ * Resolve human-friendly anchor refs (file#Symbol, file#Symbol(*), file:line, or
+ * raw id) → ids, keeping the failures alongside what resolved.
+ *
+ * Write ops PARTIALLY ACCEPT: a doc is saved with the anchors that resolved and
+ * the rejects come back as `rejectedAnchors`, because the alternative — the whole
+ * call discarded over one ambiguous overload — cost the caller a re-send of the
+ * entire body. The "no floating claims" invariant is unchanged: a node still can
+ * not exist with zero anchors, so a call where NOTHING resolves is still an error.
+ */
+async function resolveRefs(root: string, refs: string[]): Promise<{ ids: string[]; errors: string[] }> {
   const store = await readAnchorStore(root);
-  const { ids, errors } = resolveAnchorRefs(store.anchors, refs);
-  if (errors.length) return { error: errors.join("; ") };
-  return { ids };
+  return resolveAnchorRefs(store.anchors, refs);
 }
+
+/** `rejectedAnchors: […]` for a result, or nothing when every ref resolved. */
+const rejected = (errors: string[]) => (errors.length ? { rejectedAnchors: errors } : {});
 
 // --- shared helpers for authoring ---
 const LINK_RE = /\[\[([^\]]+)\]\]/g;
@@ -1542,12 +1570,14 @@ export async function document(
   input: { id?: string; type: LogicalNodeType; title: string; summary: string; anchors: string[]; body?: string; steps?: StepInput[] },
 ) {
   const r = await resolveRefs(root, input.anchors);
-  if (r.error) return { error: r.error };
+  // Partial acceptance — but a node with no anchors is a floating claim, so a call
+  // where nothing resolved is still rejected outright.
+  if (!r.ids.length) return { error: r.errors.join("; ") || "no anchors given" };
   const id = input.id ?? slug(input.title);
   const body = input.body ?? "";
-  await writeNode(root, { id, type: input.type, title: input.title, summary: input.summary, anchors: r.ids!, body });
+  await writeNode(root, { id, type: input.type, title: input.title, summary: input.summary, anchors: r.ids, body });
 
-  const result: Record<string, unknown> = { ok: true, id, anchors: r.ids!.length };
+  const result: Record<string, unknown> = { ok: true, id, anchors: r.ids.length, ...rejected(r.errors) };
 
   // P1.2 — inline ordered steps materialize step nodes + step_of + touches edges.
   if (input.type === "process" && input.steps?.length) {
@@ -1558,10 +1588,14 @@ export async function document(
     let i = 0;
     for (const step of input.steps) {
       const sr = await resolveRefs(root, step.anchors);
-      if (sr.error) return { error: `step "${step.title}": ${sr.error}` };
+      // A step with nothing resolved is SKIPPED, not fatal: the process node and
+      // its other steps are already written, so aborting here would leave the map
+      // half-built and the caller re-sending everything.
+      if (!sr.ids.length) { warnings.push(`step "${step.title}" skipped — no anchor resolved: ${sr.errors.join("; ")}`); i++; continue; }
+      for (const e of sr.errors) warnings.push(`step "${step.title}": ${e}`);
       const stepId = step.id ?? uniqueSlug(slug(step.title), taken);
       taken.add(stepId);
-      await writeNode(root, { id: stepId, type: "step", title: step.title, summary: step.summary, anchors: sr.ids!, body: step.body ?? "" });
+      await writeNode(root, { id: stepId, type: "step", title: step.title, summary: step.summary, anchors: sr.ids, body: step.body ?? "" });
       created.push(stepId);
       addEdge(graph, { from: stepId, to: id, type: "step_of", order: i });
       for (const t of step.touches ?? []) {
@@ -1616,10 +1650,11 @@ export async function updateNode(
   if (input.setTitle !== undefined) node.title = input.setTitle;
   if (input.setSummary !== undefined) node.summary = input.setSummary;
   if (input.setBody !== undefined) node.body = input.setBody;
+  const rejects: string[] = [];
   if (input.addAnchors?.length) {
     const r = await resolveRefs(root, input.addAnchors);
-    if (r.error) return { error: r.error };
-    for (const a of r.ids!) if (!node.anchors.includes(a)) node.anchors.push(a);
+    rejects.push(...r.errors); // partial: add what resolved, report the rest
+    for (const a of r.ids) if (!node.anchors.includes(a)) node.anchors.push(a);
   }
   if (input.removeAnchors?.length) {
     // Raw ids (a_…) are removed literally so a vanished/orphaned anchor ref can be
@@ -1628,8 +1663,8 @@ export async function updateNode(
     const refs = input.removeAnchors.filter((r) => !/^a_[0-9a-f]+$/.test(r));
     if (refs.length) {
       const r = await resolveRefs(root, refs);
-      if (r.error) return { error: r.error };
-      r.ids!.forEach((id) => rm.add(id));
+      rejects.push(...r.errors);
+      r.ids.forEach((id) => rm.add(id));
     }
     node.anchors = node.anchors.filter((a) => !rm.has(a));
   }
@@ -1637,7 +1672,7 @@ export async function updateNode(
   await writeNode(root, node);
   const known = new Set(nodes.map((n) => n.id));
   const dangling = [...new Set(extractLinks(node.summary + "\n" + node.body))].filter((l) => !known.has(l));
-  return { ok: true, id: node.id, anchors: node.anchors.length, ...(dangling.length ? { danglingLinks: dangling } : {}) };
+  return { ok: true, id: node.id, anchors: node.anchors.length, ...rejected(rejects), ...(dangling.length ? { danglingLinks: dangling } : {}) };
 }
 
 /**
@@ -1712,8 +1747,9 @@ export async function reportBug(
   input: { title: string; description: string; anchors: string[]; severity?: BugSeverity },
 ) {
   const r = await resolveRefs(root, input.anchors);
-  if (r.error) return { error: r.error };
-  const anchorIds = r.ids!;
+  // Partial acceptance (see resolveRefs) — a bug still needs somewhere to point.
+  if (!r.ids.length) return { error: r.errors.join("; ") || "no anchors given" };
+  const anchorIds = r.ids;
   const store = await readAnchorStore(root);
   const files = anchorIds.map((id) => store.anchors.find((a) => a.id === id)!.file);
   const live = await liveAnchors(root, files);
@@ -1807,10 +1843,11 @@ export async function updateBug(
   const bugStore = await readBugs(root);
   const bug = bugStore.bugs.find((b) => b.id === input.id);
   if (!bug) return { error: `no bug "${input.id}"` };
+  const rejects: string[] = [];
   if (input.addAnchors?.length) {
     const r = await resolveRefs(root, input.addAnchors);
-    if (r.error) return { error: r.error };
-    for (const a of r.ids!) if (!bug.anchors.includes(a)) bug.anchors.push(a);
+    rejects.push(...r.errors); // partial: add what resolved, report the rest
+    for (const a of r.ids) if (!bug.anchors.includes(a)) bug.anchors.push(a);
   }
   if (input.status && input.status !== bug.status) {
     bug.history.push(`status: ${bug.status} → ${input.status}`);
@@ -1825,7 +1862,7 @@ export async function updateBug(
     bug.history.push("witnesses refreshed");
   }
   await writeBugs(root, bugStore.bugs);
-  return { ok: true, id: bug.id, status: bug.status };
+  return { ok: true, id: bug.id, status: bug.status, ...rejected(rejects) };
 }
 
 // ---------------------------------------------------------------------------
@@ -1839,9 +1876,11 @@ export async function annotate(
   // Validate the target exists (anchor targets accept file#Symbol refs too).
   let targetId = input.targetId;
   if (input.targetKind === "anchor") {
+    // A single-target ref is strict: there is nothing partial to accept, and the
+    // ambiguity error now carries the candidates' ids and line ranges.
     const r = await resolveRefs(root, [input.targetId]);
-    if (r.error) return { error: r.error };
-    targetId = r.ids![0]!;
+    if (!r.ids.length) return { error: r.errors.join("; ") };
+    targetId = r.ids[0]!;
   } else {
     const nodes = await loadNodes(root);
     if (!nodes.some((n) => n.id === input.targetId)) return { error: `unknown node "${input.targetId}"` };
