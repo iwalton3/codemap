@@ -8,7 +8,7 @@
 import { randomBytes } from "node:crypto";
 import { type Importance, type Complexity, type TriageSource, type Triage, type BugSeverity } from "./schema.js";
 import { readTriage, writeTriage, loadNodes, readGraph, readAnchorStore } from "./store.js";
-import { reviewStatesFor, witnessesFor, liveHashes, witnessDrift, type Target, type ReviewPair, type AnchorChange } from "./reviews.js";
+import { reviewStatesFor, witnessesFor, liveHashes, witnessDrift, deriveCodeReview, type Target, type ReviewPair, type AnchorChange } from "./reviews.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { indexFile } from "./repo.js";
@@ -186,25 +186,63 @@ const emptyPair = (): ReviewPair => ({ logical: { state: "unreviewed" }, code: {
  * Review state (vouch + viewed) *and* triage severity for many targets, in a single
  * set of passes. The one enrichment primitive every review surface uses, so they all
  * speak the same language (attestation + stakes).
+ *
+ * A node's *code* attestation is **derived from the anchors it cites** (`deriveCodeReview`)
+ * — there is no `node`+`code` review row to find, because signing a node vouches for the
+ * doc, never for code you never opened. Reading the raw row here would pin every node at
+ * `signed:false` forever, so the whole map could never leave 0% review-complete.
  */
 export async function reviewTriageFor(root: string, targets: Target[]): Promise<Map<string, ReviewTriage>> {
+  // Node targets need their cited anchors' code reviews too — batch them into the same
+  // passes (reviewStatesFor re-indexes each file once, so widening the list is cheap).
+  const nodeTargets = targets.filter((t) => t.kind === "node");
+  const [nodes, present] = nodeTargets.length
+    ? await Promise.all([loadNodes(root), readAnchorStore(root).then((s) => new Set(s.anchors.map((a) => a.id)))])
+    : [[], new Set<string>()];
+  // Missing anchors are excluded from the denominator — a lost anchor is a `dangling`
+  // status, not an un-completable review (matches `getNode`).
+  const citedBy = new Map(nodeTargets.map((t) => [t.id, (nodes.find((n) => n.id === t.id)?.anchors ?? []).filter((a) => present.has(a))]));
+  const seen = new Set(targets.map((t) => `${t.kind}:${t.id}`));
+  const extra: Target[] = [];
+  for (const ids of citedBy.values()) {
+    for (const id of ids) if (!seen.has(`anchor:${id}`)) { seen.add(`anchor:${id}`); extra.push({ kind: "anchor", id }); }
+  }
+  const all = extra.length ? [...targets, ...extra] : targets;
   const [ts, vouch, viewed] = await Promise.all([
     readTriage(root),
-    reviewStatesFor(root, targets),
-    reviewStatesFor(root, targets, { viewed: true }),
+    reviewStatesFor(root, all),
+    reviewStatesFor(root, all, { viewed: true }),
   ]);
   const byTarget = new Map(ts.triage.map((t) => [`${t.target.kind}:${t.target.id}`, t]));
   const out = new Map<string, ReviewTriage>();
   for (const t of targets) {
     const k = `${t.kind}:${t.id}`;
-    const vp = vouch.get(k) ?? emptyPair();
-    const vw = viewed.get(k) ?? emptyPair();
+    let vp = vouch.get(k) ?? emptyPair();
+    let vw = viewed.get(k) ?? emptyPair();
+    if (t.kind === "node") {
+      const cited = citedBy.get(t.id) ?? [];
+      const codeOf = (m: Map<string, ReviewPair>, id: string) => m.get(`anchor:${id}`)?.code ?? { state: "unreviewed" as const };
+      const sign = deriveCodeReview(cited.map((id) => codeOf(vouch, id)));
+      // Exposure per segment is "signed OR viewed" — signing implies reading, so a node
+      // half-signed / half-viewed still reads as fully looked at.
+      const look = deriveCodeReview(cited.map((id) => {
+        const s = codeOf(vouch, id);
+        return s.state === "reviewed" ? s : codeOf(viewed, id);
+      }));
+      vp = { logical: vp.logical, code: { state: sign.state, actor: sign.actor ?? undefined } };
+      vw = { logical: vw.logical, code: look.state === "unreviewed" ? vw.code : { state: look.state, actor: look.actor ?? undefined } };
+    }
     const tri = byTarget.get(k);
     const signed = isLive(vp); // a live sign-off/checked at code level
     const read = signed || isLive(vw); // signing implies reading
     let triage: TriageInfo;
     if (!tri) {
-      triage = { importance: null, likely: false, severity: "untriaged", bar: null };
+      // Untriaged escalates *while a gap remains* — but a live sign-off clears the bar
+      // (DEFAULT_COMPLEXITY `standard` → `signed`) whatever the stakes turn out to be,
+      // so reviewed-but-unclassified code isn't stuck outstanding forever.
+      triage = signed
+        ? { importance: null, likely: false, severity: "complete", bar: null }
+        : { importance: null, likely: false, severity: "untriaged", bar: null };
     } else {
       const importance = normImportance(tri.importance);
       const complexity = tri.complexity ?? DEFAULT_COMPLEXITY;

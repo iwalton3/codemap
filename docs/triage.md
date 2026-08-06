@@ -95,6 +95,18 @@ Phase-4 path.
 | deep / standard / rote | `signed` (a vouch — you reasoned it through / confirmed the check) |
 | wiring | `viewed` (a glance is enough; sign-off on plumbing is wasted golden-window) |
 
+**Whose attestation clears it.** For an anchor it's the anchor's own mark. For a **node
+it is derived from the segments it cites** — the node is signed when every cited anchor
+is signed at live hashes, read when every one is signed *or* viewed. There is no
+`node`+`code` review row to reach for: signing a node vouches for the doc (`logical`),
+never for code you never opened (see `deriveCodeReview`). A `logical` sign-off does not
+move severity — that axis is "is the doc right", not "has the code been reviewed".
+
+**Untriaged** escalates only *while a gap remains*. A target signed at live hashes is
+`complete` even if nobody classified its stakes — the default complexity (`standard`)
+sets the bar at `signed`, and that bar has been met. Unclassified code can't hide, but
+reviewed code doesn't sit outstanding forever waiting on a triage pass.
+
 ### The severity matrix
 
 `severity = stakes × complexity × review-gap`, on the `BugSeverity` scale

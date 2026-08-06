@@ -1,11 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writeStore, readTriage, writeTriage, writeAnchorStore, writeNode, readGraph, writeGraph } from "./store.js";
+import { writeStore, readTriage, writeTriage, writeAnchorStore, writeNode, readGraph, writeGraph, readReviews } from "./store.js";
+import { indexFile } from "./repo.js";
+import { markReviewed, unmarkReviewed } from "./reviews.js";
 import type { Anchor, Triage } from "./schema.js";
-import { setTriage, clearTriage, triageStatus, triageSeverity, deriveTriage, rollupCoverage, triageDrift, tripwires } from "./triage.js";
+import { setTriage, clearTriage, triageStatus, triageSeverity, deriveTriage, rollupCoverage, triageDrift, tripwires, reviewTriageFor } from "./triage.js";
 import type { TriageInfo } from "./triage.js";
 
 const initRoot = () => {
@@ -219,6 +221,76 @@ test("triageStatus crosses stakes with attestation to a severity + bar", async (
     await clearTriage(root, t);
     info = await triageStatus(root, { kind: "anchor", id: "a_s" });
     assert.equal(info.severity, "untriaged");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A real on-disk file so live hashes actually match the reviews' witnesses — a synthetic
+// anchor has no file, so every mark on it reads `stale` and nothing can be complete.
+const initIndexed = async (root: string, src: string) => {
+  writeFileSync(join(root, "pay.ts"), src);
+  const anchors = await indexFile(join(root, "pay.ts"), "pay.ts");
+  await writeStore(root, anchors, { schemaVersion: 1, lastVerifiedCommit: null, grammarVersions: {} });
+  return anchors;
+};
+
+test("a node's code attestation is DERIVED from its anchors — signing them completes the node", async () => {
+  const root = initRoot();
+  try {
+    const [a1, a2] = await initIndexed(root, `
+export function charge(amount: number) { if (amount > 0) return amount; return 0; }
+export function refund(amount: number) { return -amount; }
+`);
+    await writeNode(root, { id: "pay", type: "command", title: "Charge card", summary: "", anchors: [a1!.id, a2!.id], body: "" });
+    const node = { kind: "node" as const, id: "pay" };
+    await setTriage(root, { targetKind: "node", targetId: "pay", importance: "business-critical", complexity: "deep", source: "human" });
+    const sev = async () => (await triageStatus(root, node)).severity;
+
+    // Nothing signed → the full critical gap.
+    assert.equal(await sev(), "critical");
+
+    // Signing ONE of the two cited segments is not enough — the node still owes review.
+    await markReviewed(root, { targetKind: "anchor", targetId: a1!.id, level: "code", actor: "human", attestation: "signed" });
+    assert.equal(await sev(), "critical");
+
+    // Viewing the other → every segment has been looked at, so the gap narrows to `high`
+    // (read-but-unsigned), proving exposure derives across a mixed signed/viewed node.
+    await markReviewed(root, { targetKind: "anchor", targetId: a2!.id, level: "code", actor: "human", attestation: "viewed" });
+    assert.equal(await sev(), "high");
+
+    // Signing the second completes the node — with no `node`+`code` review row anywhere.
+    await markReviewed(root, { targetKind: "anchor", targetId: a2!.id, level: "code", actor: "human", attestation: "signed" });
+    assert.equal(await sev(), "complete");
+    assert.equal((await readReviews(root)).reviews.filter((r) => r.target.kind === "node" && r.level === "code").length, 0);
+
+    // ...and the derived state is what `reviewTriageFor` reports, so every surface agrees.
+    const rt = (await reviewTriageFor(root, [node])).get("node:pay")!;
+    assert.equal(rt.review.code.state, "reviewed");
+    assert.equal(rt.review.code.actor, "human");
+    assert.equal(rt.triage.bar, null);
+
+    // Unsigning one segment re-opens the node (a green check never outlives its code).
+    await unmarkReviewed(root, { targetKind: "anchor", targetId: a1!.id, level: "code", attestation: "signed" });
+    assert.equal(await sev(), "critical");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("untriaged escalates only while a review gap remains — a live sign-off completes it", async () => {
+  const root = initRoot();
+  try {
+    const [a1] = await initIndexed(root, `export function settle(x: number) { return x; }\n`);
+    const t = { kind: "anchor" as const, id: a1!.id };
+    // No stakes assigned → escalates, so unclassified code can't hide.
+    assert.equal((await triageStatus(root, t)).severity, "untriaged");
+    // Signed at live hashes → the bar (default complexity `standard` → `signed`) is met,
+    // so it stops counting as outstanding even though nobody ever classified its stakes.
+    await markReviewed(root, { targetKind: "anchor", targetId: a1!.id, level: "code", actor: "human", attestation: "signed" });
+    const info = await triageStatus(root, t);
+    assert.equal(info.severity, "complete");
+    assert.equal(info.importance, null); // still unclassified — completing isn't triaging
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
