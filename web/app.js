@@ -101,8 +101,10 @@ const trustChip = (t, onClick) => {
 const postConfirm = (u, id) => fetch('/api/confirm', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id }) });
 const postAckHole = (u, id) => fetch('/api/ack_hole', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id }) });
 // attestation: 'viewed' (exposure) | 'signed' (sign-off) | undefined (server → signed).
-const postReview = (u, targetKind, targetId, level, unmark, attestation) =>
-  fetch('/api/review', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, targetKind, targetId, level, unmark, attestation }) });
+// `ref` (a PR head sha) witnesses the mark against the code actually on screen —
+// without it a PR sign-off records the working tree's hash, i.e. code never read.
+const postReview = (u, targetKind, targetId, level, unmark, attestation, ref) =>
+  fetch('/api/review', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, targetKind, targetId, level, unmark, attestation, ref }) });
 // Stakes triage (human source → confirmed tier). `body` = { importance } or { clear:true }.
 const postTriage = (u, targetKind, targetId, body) =>
   fetch('/api/triage', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, targetKind, targetId, ...body }) });
@@ -1896,7 +1898,7 @@ class PrStoryPage extends Component {
   }
   async markStep(id, attestation, state, actor) {
     const unmark = state === 'reviewed' && actor !== 'agent';
-    await postReview(this.props.params.universe, 'anchor', id, 'code', unmark, attestation);
+    await postReview(this.props.params.universe, 'anchor', id, 'code', unmark, attestation, this.state.prRef);
     await this.load.run();
     if (this.state.code[id]) { const c = await api('/api/pr/code', { u: this.props.params.universe, pr: this.props.params.pr, id }); this.state.code = { ...this.state.code, [id]: c }; }
   }

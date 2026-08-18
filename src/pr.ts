@@ -246,7 +246,7 @@ async function buildWorklist(
 
   let rt: Awaited<ReturnType<typeof reviewTriageFor>> = new Map();
   try {
-    rt = await reviewTriageFor(root, entries.map((e) => ({ kind: "anchor" as const, id: e.b.id })));
+    rt = await reviewTriageFor(root, entries.map((e) => ({ kind: "anchor" as const, id: e.b.id })), { ref: headSha });
   } catch { /* no live index — fall back to untriaged/unreviewed */ }
 
   const items: WorkItem[] = entries.map(({ b, change }) => {

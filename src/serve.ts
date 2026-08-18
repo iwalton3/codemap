@@ -162,7 +162,8 @@ const server = createServer(async (req, res) => {
       const out = await withLock<unknown>(root, () =>
         body.unmark
           ? unmarkReviewed(root, { targetKind: body.targetKind, targetId: body.targetId, level: body.level, attestation })
-          : markReviewed(root, { targetKind: body.targetKind, targetId: body.targetId, level: body.level, reviewer: body.reviewer, actor: "human", attestation }),
+          // `ref` (the PR head) makes the witness cover the code actually read.
+          : markReviewed(root, { targetKind: body.targetKind, targetId: body.targetId, level: body.level, reviewer: body.reviewer, actor: "human", attestation, ref: body.ref }),
       );
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(out));

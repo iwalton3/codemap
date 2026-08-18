@@ -7,7 +7,7 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { type Review, type ReviewLevel, type ReviewState, type BugWitness } from "./schema.js";
-import { readReviews, writeReviews, readAnchorStore, loadNodes } from "./store.js";
+import { readReviews, writeReviews, readAnchorStore, loadNodes, readSnapshot } from "./store.js";
 import { indexFile } from "./repo.js";
 import { headCommit } from "./git.js";
 
@@ -49,8 +49,24 @@ async function coveredAnchorIds(root: string, target: Target, nodeAnchors?: Map<
   return nodes.find((n) => n.id === target.id)?.anchors ?? [];
 }
 
-/** Current live hashes for a set of anchor ids (re-indexes their files once). */
-export async function liveHashes(root: string, anchorIds: Iterable<string>): Promise<Map<string, string>> {
+/**
+ * Hashes for a set of anchor ids — from the working tree by default, or from a
+ * cached commit snapshot when `ref` is given.
+ *
+ * `ref` is what makes reviewing a pull request honest. The working tree is on
+ * some other branch, so witnessing a PR sign-off against it records the hash of
+ * code the reviewer never saw: `sha256:absent` for a symbol the branch adds, and
+ * the *pre-change* hash for one it modifies. Either way the mark claims a vouch
+ * for something else — the exact lie witness hashes exist to prevent.
+ */
+export async function liveHashes(root: string, anchorIds: Iterable<string>, ref?: string): Promise<Map<string, string>> {
+  if (ref) {
+    const snap = await readSnapshot(root, ref);
+    const want = new Set(anchorIds);
+    const out = new Map<string, string>();
+    for (const a of snap ?? []) if (want.has(a.id)) out.set(a.id, a.bodyHash);
+    return out;
+  }
   const store = await readAnchorStore(root);
   const byId = new Map(store.anchors.map((a) => [a.id, a]));
   const files = new Set<string>();
@@ -78,11 +94,13 @@ export async function witnessesFor(root: string, target: Target): Promise<BugWit
 
 export async function markReviewed(
   root: string,
-  input: { targetKind: "node" | "anchor"; targetId: string; level: ReviewLevel; reviewer?: string; actor?: "human" | "agent"; attestation?: Attestation },
+  input: { targetKind: "node" | "anchor"; targetId: string; level: ReviewLevel; reviewer?: string; actor?: "human" | "agent"; attestation?: Attestation; ref?: string },
 ) {
   const target: Target = { kind: input.targetKind, id: input.targetId };
   const anchorIds = await coveredAnchorIds(root, target);
-  const live = await liveHashes(root, anchorIds);
+  // Witness the code that was actually read: on a PR surface that is the head
+  // commit, not whatever the working tree happens to hold.
+  const live = await liveHashes(root, anchorIds, input.ref);
   const witnesses = anchorIds.map((id) => ({ anchorId: id, bodyHash: live.get(id) ?? "sha256:absent" }));
   // Default to "agent": only an explicit human action (the web UI) grants a human
   // review. A human act with no attestation is a `signed` sign-off (the old `verified`).
@@ -142,7 +160,7 @@ export async function unmarkReviewed(
 export async function reviewStatesFor(
   root: string,
   targets: Target[],
-  opts?: { viewed?: boolean },
+  opts?: { viewed?: boolean; ref?: string },
 ): Promise<Map<string, ReviewPair>> {
   const rs = await readReviews(root);
   const nodes = await loadNodes(root);
@@ -154,7 +172,10 @@ export async function reviewStatesFor(
     covers.set(key(t), ids);
     ids.forEach((id) => all.add(id));
   }
-  const live = await liveHashes(root, all);
+  // Judge staleness against the same ref the surface is showing. A mark made on a
+  // PR reads fresh there and stale on the base branch until the change lands —
+  // which is right: the vouch covers the branch's code, and it activates on merge.
+  const live = await liveHashes(root, all, opts?.ref);
   const out = new Map<string, ReviewPair>();
   const wantViewed = opts?.viewed ?? false;
   const forLevel = (t: Target, level: ReviewLevel): ReviewInfo => {
