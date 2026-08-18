@@ -351,14 +351,19 @@ export async function deriveTriage(root: string): Promise<{ derived: number; byI
   // Per-anchor complexity from live source (cyclomatic-ish). Read+index each file once.
   const anchorCx = new Map<string, Complexity>();
   const files = [...new Set(store.anchors.map((a) => a.file))];
-  await Promise.all(files.map(async (f) => {
+  // Sequential on purpose. web-tree-sitter hands out one parser per grammar, and
+  // parsing concurrently on it aborts the WASM instance — a `Promise.all` over
+  // every file died with a flood of `Aborted()` on a 1200-file repo, taking the
+  // whole derive with it. `indexRepo`/`indexCommit` walk sequentially for the
+  // same reason; the cost is a couple of seconds, not a timeout.
+  for (const f of files) {
     try {
       const src = await readFile(join(root, f), "utf8");
       for (const a of await indexFile(join(root, f), f)) {
         if (a.loc) anchorCx.set(a.id, complexityOf(src.slice(a.loc.startByte, a.loc.endByte)));
       }
     } catch { /* file gone */ }
-  }));
+  }
   const nodeCx = (anchors: string[]): Complexity | undefined => {
     let best: Complexity | undefined;
     for (const aid of anchors) { const c = anchorCx.get(aid); if (c && (best === undefined || COMPLEXITY_RANK[c] > COMPLEXITY_RANK[best])) best = c; }
