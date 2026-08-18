@@ -11,7 +11,8 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "tsc && node --test \"dist/**/*.test.js\"",
-    "serve": "node dist/serve.js"
+    "serve": "node dist/serve.js",
+    "test:e2e": "tsc && node --test \"dist/e2e/**/*.e2e.js\""
   },
   "devDependencies": {
     "@types/node": "^26.1.0",
