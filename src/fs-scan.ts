@@ -9,7 +9,7 @@
 import { readdir, stat } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import { grammarForPath } from "./grammars.js";
-import { loadIgnore } from "./ignore.js";
+import { loadIgnore, type Ignore } from "./ignore.js";
 
 export const SKIP_DIRS = new Set([
   "node_modules", ".git", "dist", "build", "obj", "bin", "out",
@@ -24,7 +24,7 @@ export function isSkippedFile(name: string): boolean {
   );
 }
 
-const MAX_BYTES = 1_000_000; // generated bundles / data files
+export const MAX_BYTES = 1_000_000; // generated bundles / data files
 
 export function toPosixRel(root: string, abs: string): string {
   return relative(root, abs).split(sep).join("/");
@@ -63,4 +63,27 @@ export async function listSupportedFiles(root: string): Promise<string[]> {
   }
   await walk(root);
   return out;
+}
+
+/**
+ * Whether a repo-relative POSIX path should be indexed, judged from the path
+ * alone (no filesystem) — for indexing a commit's tree listing, where there is
+ * no walk to prune.
+ *
+ * Ancestors are tested explicitly because that is where `listSupportedFiles`
+ * enforces gitignore's "an excluded directory prunes everything under it": a
+ * flat path list would otherwise let a `!keep/this.js` negation resurrect a
+ * file under an excluded dir. The two must stay in step — a divergence surfaces
+ * as phantom added/removed anchors in a diff, which reads exactly like a real
+ * code change.
+ */
+export function isIndexablePath(rel: string, ignore: Ignore): boolean {
+  const segs = rel.split("/");
+  const name = segs[segs.length - 1]!;
+  if (!grammarForPath(name) || isSkippedFile(name)) return false;
+  for (let i = 0; i < segs.length - 1; i++) {
+    if (SKIP_DIRS.has(segs[i]!)) return false;
+    if (ignore.ignores(segs.slice(0, i + 1).join("/"), true)) return false;
+  }
+  return !ignore.ignores(rel, false);
 }
