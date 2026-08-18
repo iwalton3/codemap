@@ -29,6 +29,7 @@ import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "./diff.js";
 import { prTriage, listOpenPrs, prPacket, prStory, prAnchorCode } from "./pr.js";
 import { parseAgentLines, ingestAgentReview } from "./pr-ingest.js";
+import { planPrPush, executePrPush } from "./pr-push.js";
 import { resolveCoverage, selectAnchors, docPct as computeDocPct, citedPct as computeCitedPct, type CoverageResult } from "./coverage.js";
 import { resolveAnchorRefs } from "./refs.js";
 import { refreshAnalyzers } from "./analyzers/run.js";
@@ -502,6 +503,18 @@ export async function prIngest(root: string, input: string, texts: string[], opt
 /** The PR's spec-derived walkthrough. */
 export async function prStoryFor(root: string, input: string, opts: { fetch?: boolean } = {}) {
   return prStory(root, input, opts);
+}
+
+/** What a push to GitHub would contain — inspect before anything leaves the machine. */
+export async function prPushPlan(root: string, input: string) {
+  return planPrPush(root, input);
+}
+
+/** Publish findings (and optionally `viewed` state) to the pull request. Outward-facing. */
+export async function prPush(root: string, input: string, opts: { markViewed?: boolean } = {}) {
+  const plan = await planPrPush(root, input);
+  if ("error" in plan) return plan;
+  return { plan, result: await executePrPush(root, plan, opts) };
 }
 
 /** One anchor's source as the PR leaves it — the walkthrough's code pane. */

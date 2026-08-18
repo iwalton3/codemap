@@ -280,6 +280,8 @@ async function buildWorklist(
 
 export interface PacketItem {
   rank: number; id: string; file: string; symbol: string; signature: string;
+  /** Absolute line span at the PR head — without it an agent cannot pin a finding to a real file line. */
+  startLine?: number; endLine?: number;
   change: "added" | "changed" | "removed";
   lane: Lane; complexity: Complexity; severity: string; moneyHint: boolean;
   /** Source at the PR head. Absent for a removed symbol. */
@@ -324,11 +326,14 @@ export async function prPacket(
     const a = (await indexBlob(src, path)).find((x) => x.id === id);
     return a?.loc ? src.slice(a.loc.startByte, a.loc.endByte) : undefined;
   };
+  const span = await anchorSpans(root, t.refs.head, slice.filter((w) => w.change !== "removed"));
 
   const items: PacketItem[] = [];
   for (const w of slice) {
+    const loc = span.get(w.id);
     items.push({
       rank: w.rank, id: w.id, file: w.file, symbol: w.symbol, signature: w.signature,
+      startLine: loc?.startLine, endLine: loc?.endLine,
       change: w.change, lane: w.lane, complexity: w.complexity, severity: w.severity, moneyHint: w.moneyHint,
       head: w.change === "removed" ? undefined : await cut(headByFile.get(w.file), w.file, w.id),
       base: w.change === "added" ? undefined : await cut(baseByFile.get(w.file), w.file, w.id),
@@ -428,6 +433,24 @@ export async function prAnchorCode(root: string, input: string, id: string): Pro
     id, file: item.file, lang: langOf(item.file),
     head: head.code, startLine: head.startLine, base: base.code, annotations: anns,
   };
+}
+
+/** Line spans for a set of anchors at one commit — one blob read + parse per file. */
+export async function anchorSpans(
+  root: string, sha: string, items: { id: string; file: string }[],
+): Promise<Map<string, { startLine: number; endLine: number }>> {
+  const out = new Map<string, { startLine: number; endLine: number }>();
+  const wanted = new Map<string, Set<string>>();
+  for (const it of items) (wanted.get(it.file) ?? wanted.set(it.file, new Set()).get(it.file)!).add(it.id);
+  const blobs = readBlobs(root, sha, [...wanted.keys()]);
+  for (const [file, ids] of wanted) {
+    const src = blobs.get(file);
+    if (!src) continue;
+    for (const a of await indexBlob(src, file)) {
+      if (ids.has(a.id) && a.loc) out.set(a.id, { startLine: a.loc.startLine, endLine: a.loc.endLine });
+    }
+  }
+  return out;
 }
 
 const LANG: Record<string, string> = { cs: "csharp", py: "python", js: "javascript", mjs: "javascript", cjs: "javascript", ts: "typescript", tsx: "typescript", jsx: "javascript" };

@@ -446,3 +446,27 @@ export async function readTriage(root: string): Promise<TriageStore> {
 export async function writeTriage(root: string, triage: Triage[]): Promise<void> {
   setMeta(db(root), "triage", { schemaVersion: SCHEMA_VERSION, triage });
 }
+
+/**
+ * What has already been published to a pull request, keyed by PR number.
+ *
+ * A comment posted to GitHub cannot be un-posted cheaply, and re-running a push
+ * would otherwise duplicate every finding on the PR. Kept as a meta blob (like
+ * triage) rather than a column on Annotation: it is a record of an outward
+ * action, not a property of the claim.
+ */
+export interface PushRecord { annotationIds: string[]; viewedPaths: string[]; at: string; reviewUrl?: string }
+export type PushStore = { schemaVersion: number; pushes: Record<string, PushRecord> };
+
+export async function readPushes(root: string): Promise<PushStore> {
+  return getMeta<PushStore>(db(root), "pr_push") ?? { schemaVersion: SCHEMA_VERSION, pushes: {} };
+}
+
+export async function writePush(root: string, pr: string, rec: PushRecord): Promise<void> {
+  const store = await readPushes(root);
+  const prev = store.pushes[pr];
+  store.pushes[pr] = prev
+    ? { ...rec, annotationIds: [...new Set([...prev.annotationIds, ...rec.annotationIds])], viewedPaths: [...new Set([...prev.viewedPaths, ...rec.viewedPaths])] }
+    : rec;
+  setMeta(db(root), "pr_push", store);
+}

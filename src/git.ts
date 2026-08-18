@@ -188,3 +188,34 @@ export function originSlug(root: string): { owner: string; repo: string } | null
   const m = /github\.com[:/]([^/]+)\/(.+?)(?:\.git)?$/.exec(url);
   return m ? { owner: m[1]!, repo: m[2]! } : null;
 }
+
+/**
+ * Head-side line ranges that appear in a diff, per file — the lines GitHub will
+ * accept a review comment on. A finding anchored to a symbol often sits on a line
+ * the PR never touched, and posting there is rejected outright, so the caller
+ * needs to know before it tries.
+ */
+export function diffLineRanges(root: string, from: string, to: string): Map<string, [number, number][]> {
+  const r = spawnSync("git", ["diff", "--unified=3", "--no-color", from, to], { cwd: root, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  const out = new Map<string, [number, number][]>();
+  if (r.status !== 0) return out;
+  let file = "";
+  for (const line of (r.stdout ?? "").split("\n")) {
+    if (line.startsWith("+++ ")) {
+      const p = line.slice(4).trim();
+      file = p === "/dev/null" ? "" : p.replace(/^b\//, "");
+      continue;
+    }
+    if (!file || !line.startsWith("@@")) continue;
+    // @@ -oldStart,oldLen +newStart,newLen @@
+    const m = /\+(\d+)(?:,(\d+))?/.exec(line);
+    if (!m) continue;
+    const start = Number(m[1]);
+    const len = m[2] === undefined ? 1 : Number(m[2]);
+    if (!len) continue;
+    const arr = out.get(file) ?? [];
+    arr.push([start, start + len - 1]);
+    out.set(file, arr);
+  }
+  return out;
+}
