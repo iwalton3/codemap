@@ -517,6 +517,20 @@
     .prstools { display: flex; align-items: center; gap: 10px; font-size: 11.5px; margin: 4px 0 6px; font-family: var(--mono); }
     .prload { padding: 6px 10px; font-size: 12px; }
     .prbase { border: 1px solid var(--border); border-radius: 6px; padding: 8px; overflow-x: auto; opacity: 0.85; }
+    .prlanes { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+    .prlane { font-size: 11px; color: var(--dim); border: 1px solid var(--border); border-radius: 10px; padding: 1px 8px; }
+    .prlane b { color: var(--text); }
+    .prlane.l-queue { border-color: #2d4a63; }
+    .prlane.l-skip { opacity: 0.6; }
+    .prempty { padding: 14px; border-top: none; }
+    .prempty .dim { margin-top: 6px; max-width: 70ch; }
+    .prrow { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; margin: 6px 0; background: var(--panel); cursor: pointer; }
+    .prrow:hover { border-color: var(--accent); }
+    .prnum { font-family: var(--mono); font-size: 12px; color: var(--dim); width: 52px; }
+    .prtitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+    .prmeta { font-size: 11.5px; white-space: nowrap; }
+    .prsize { font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
+    .pradd { color: #7ee787; } .prdel { color: #f85149; }
     .prswc { font-size: 12.5px; padding: 3px 0; }
     .prswc code { font-family: var(--mono); font-size: 12px; color: #f0a35e; }
   </style>

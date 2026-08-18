@@ -64,6 +64,8 @@ const EDGE_COLORS = {
 };
 const edgeColor = (t) => EDGE_COLORS[t] ?? '#6b7684';
 const bugsUrl = (u) => `/u/${u}/bugs/`;
+const prsUrl = (u) => `/u/${u}/prs/`;
+const prUrl = (u, n) => `/u/${u}/pr/${n}/`;
 const SEV_COLOR = { low: '#8b95a3', medium: '#58a6ff', high: '#f0a35e', critical: '#f27b7b', complete: '#7ee787', untriaged: '#58a6ff' };
 // Attention priority (mirrors server SEV_RANK) — drives the worklist sort/grouping.
 const SEV_RANK = { critical: 5, untriaged: 4, high: 3, medium: 2, low: 1, complete: 0 };
@@ -356,6 +358,7 @@ defineComponent('md-content', MdContent);
 const VIEW_LINKS = [
   ['nodes', u => nodesUrl(u)], ['matrix', u => matrixUrl(u), 'matrix'], ['pipeline', u => pipelineUrl(u), 'pipeline'],
   ['states', u => stateMapUrl(u), 'states'], ['flows', u => flowsUrl(u)], ['bugs', u => bugsUrl(u)], ['diff', u => diffUrl(u)],
+  ['pull requests', u => prsUrl(u), 'prs'],
 ];
 // Ungated links always show. A gated one needs the universe's `views` to say so —
 // unknown-yet (nav still loading) hides it so a link can't flash and vanish, while
@@ -416,7 +419,8 @@ class DashboardPage extends Component {
     // only appear once this universe has the nodes behind them.
     const nav2 = [
       ['nodes', () => go(nodesUrl(u))], ['matrix', () => go(matrixUrl(u)), 'matrix'], ['pipeline', () => go(pipelineUrl(u)), 'pipeline'],
-      ['states', () => go(stateMapUrl(u)), 'states'], ['flows', () => go(flowsUrl(u))], ['bugs', () => go(bugsUrl(u))], ['diff', () => go(diffUrl(u))], ['browse files', () => goTree(u, '')],
+      ['states', () => go(stateMapUrl(u)), 'states'], ['flows', () => go(flowsUrl(u))], ['bugs', () => go(bugsUrl(u))], ['diff', () => go(diffUrl(u))],
+      ['pull requests', () => go(prsUrl(u)), 'prs'], ['browse files', () => goTree(u, '')],
     ].filter(x => viewEnabled(d, x[2]));
     return pageShell(d, d && d.error, () => html`
       <div class="crumbs"><b>${u}</b> <span class="sep">·</span> overview${when(d.tripwires && d.tripwires.armed && this.canEnableAlerts(), () => html` <span class="sep">·</span> <button title="get a browser notification when a watched tripwire fires" on-click="${() => this.enableAlerts()}">🔔 enable alerts</button>`)}</div>
@@ -1959,10 +1963,19 @@ class PrStoryPage extends Component {
         <div class="prstats">
           <span><b>${signed}</b>/${st.totals.steps} symbols signed</span>
           <span><b>${st.totals.chapters}</b> chapters</span>
+          <span title="lines in the review queue vs total changed"><b>${st.totals.queueLines}</b>/${st.totals.changedLines} lines to review</span>
           ${when(st.undocumented, () => html`<span class="warn" title="changed symbols no spec section accounts for">${st.undocumented} unspecified</span>`)}
           ${when(st.specWithoutCode.length, () => html`<span class="warn" title="spec sections that name code this PR does not contain">${st.specWithoutCode.length} spec-without-code</span>`)}
+          ${when(st.refs.baseAheadOfMergeBase, () => html`<span class="dim" title="the PR is diffed against its merge-base, not the tip of ${st.pr.baseRef} — otherwise those commits would read as part of this change">${st.pr.baseRef} moved ${st.refs.baseAheadOfMergeBase} commits since branch</span>`)}
         </div>
+        <div class="prlanes">${each(st.lanes, l => html`<span class="prlane l-${l.review}" title="${l.why}"><b>${l.lane}</b> ${l.lines} lines · ${l.files} files · ${l.review}</span>`, l => l.lane)}</div>
       </div>
+      ${when(!st.totals.steps, () => html`<section class="prchapter"><div class="prcbody prempty">
+        <b>Nothing in the review queue.</b>
+        <div class="dim">Every changed file in this PR falls outside the code lane, so there are no symbols to walk through.
+        That is a verdict, not a failure — the lane strip above shows where the ${st.totals.changedLines} changed lines went.
+        Tests and generated files are still read by the first-pass agent, which can promote one into your queue if it matters.</div>
+      </div></section>`)}
       ${each(st.chapters, c => this.chapterEl(u, c), c => c.id)}
       ${when(st.specWithoutCode.length, () => html`<section class="prchapter">
         <div class="prchead"><b class="prctitle">Spec sections with no code behind them</b></div>
@@ -1975,6 +1988,41 @@ class PrStoryPage extends Component {
   }
 }
 defineComponent('pr-story-page', PrStoryPage);
+
+// The PR inbox. Deliberately cheap: it renders `gh pr list` metadata only, because
+// triaging a PR means snapshotting both its sides, and doing that for every open PR
+// just to draw a list would cost seconds per row. The numbers arrive on the
+// walkthrough itself.
+class PrInboxPage extends Component {
+  static props = { params: {}, query: {} };
+  constructor(props) { super(props); this.state = { d: null }; }
+  load = this.createTask(async () => {
+    const u = this.props.params.universe; nav.current = u;
+    this.state.d = await api('/api/prs', { u });
+  });
+  mounted() { this.load.run(); }
+  propsChanged(name) { if (name === 'params') this.load.run(); }
+
+  template() {
+    const u = this.props.params.universe, d = this.state.d;
+    if (!d) return pageShell(null, null, html`<div class="dim">loading pull requests…</div>`);
+    if (d.error) return pageShell(null, d.error, html``);
+    return pageShell(d, null, html`
+      <div class="crumbs"><b>${u}</b> <span class="sep">·</span> pull requests <span class="dim">· ${d.prs.length} open</span></div>
+      ${when(!d.prs.length, () => html`<div class="dim">no open pull requests.</div>`)}
+      ${each(d.prs, p => html`<div class="prrow" on-click="${() => go(prUrl(u, p.number))}">
+        <span class="prnum">#${p.number}</span>
+        <span class="prtitle">${p.title}</span>
+        ${when(p.draft, () => html`<span class="prbadge orphan">draft</span>`)}
+        <span class="dim prmeta">${p.author}</span>
+        <span class="dim prmeta">${p.headRef} → ${p.baseRef}</span>
+        <span class="prsize" title="${p.changedFiles} files changed"><span class="pradd">+${p.additions}</span> <span class="prdel">−${p.deletions}</span></span>
+      </div>`, p => p.number)}
+    `);
+  }
+}
+defineComponent('pr-inbox-page', PrInboxPage);
+
 
 
 router = enableRouting(document.querySelector('router-outlet'), {
@@ -1994,6 +2042,7 @@ router = enableRouting(document.querySelector('router-outlet'), {
   '/u/:universe/statemap/': { component: 'statemap-page' },
   '/u/:universe/bugs/': { component: 'bugs-page' },
   '/u/:universe/diff/': { component: 'diff-page' },
+  '/u/:universe/prs/': { component: 'pr-inbox-page' },
   '/u/:universe/pr/:pr/': { component: 'pr-story-page' },
   '/u/:universe/search/': { component: 'search-page' },
 });

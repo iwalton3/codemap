@@ -135,12 +135,16 @@ async function coverageFor(root: string): Promise<{ store: Awaited<ReturnType<ty
  * offering dead links. Keyed on node types PRESENT, not on whether an analyzer
  * ran — a hand-authored event graph counts exactly the same.
  */
-export function availableViews(nodesByType: Record<string, number>) {
+export function availableViews(nodesByType: Record<string, number>, opts: { prs?: boolean } = {}) {
   const n = (t: string) => nodesByType[t] ?? 0;
   return {
     matrix: n("event_family") > 0, // events are the matrix's rows
     pipeline: n("command") + n("handler") + n("event_family") + n("aggregate") + n("projection") > 0,
     states: n("state") + n("transition") > 0,
+    // Not a node-shape question like the others: the PR views need a github remote
+    // to talk to, so a repo without one hides the link rather than offering a
+    // page that can only ever error.
+    prs: opts.prs ?? false,
   };
 }
 
@@ -172,7 +176,7 @@ export async function status(root: string) {
     open: result.breakdown.open, // the real work queue size
     nodes: nodes.length,
     nodesByType,
-    views: availableViews(nodesByType),
+    views: availableViews(nodesByType, { prs: !!originSlug(root) }),
     edges: graph.edges.length,
     bugs: bugStore.bugs.length,
     bugsByStatus,
@@ -223,7 +227,7 @@ export async function dashboard(root: string) {
 
   return {
     coverage: { docPct: computeDocPct(result.breakdown), citedPct: computeCitedPct(result.breakdown), open: result.breakdown.open, anchors: store.anchors.length, nodes: nodes.length, edges: graph.edges.length, breakdown: result.breakdown },
-    views: availableViews(tallyTypes(nodes)), // which event-graph views this map can offer
+    views: availableViews(tallyTypes(nodes), { prs: !!originSlug(root) }), // which extra views this map can offer
     docs: { total: nodes.length, stale: staleDocs, dangling: danglingDocs, fresh: nodes.length - staleDocs - danglingDocs },
     bugs: { total: bugStore.bugs.length, open: openBugs, possiblyFixed, byStatus: bugCounts },
     annotations: annStore.annotations.length,

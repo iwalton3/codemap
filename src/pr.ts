@@ -51,6 +51,13 @@ export interface PrMeta {
 }
 
 const PR_FIELDS = "number,url,title,author,baseRefName,headRefName,baseRefOid,headRefOid,isDraft,state,createdAt,updatedAt,additions,deletions,changedFiles,commits";
+/**
+ * Same minus `commits`. That field is a GraphQL *connection*, and asking for it
+ * across a page of PRs multiplies out past GitHub's 500k-node ceiling — a repo
+ * with a long history fails the whole query with a limit error rather than
+ * returning fewer rows. The list never displays commit counts anyway.
+ */
+const PR_LIST_FIELDS = "number,url,title,author,baseRefName,headRefName,baseRefOid,headRefOid,isDraft,state,createdAt,updatedAt,additions,deletions,changedFiles";
 
 export function fetchPrMeta(ref: PrRef): PrMeta | { error: string } {
   const r = gh(["pr", "view", String(ref.number), "--repo", `${ref.owner}/${ref.repo}`, "--json", PR_FIELDS]);
@@ -69,7 +76,7 @@ export function fetchPrMeta(ref: PrRef): PrMeta | { error: string } {
 
 /** Open PRs for a repo, newest first — the "what's on my plate" list. */
 export function listOpenPrs(repoSlug: string): { prs: PrMeta[] } | { error: string } {
-  const r = gh(["pr", "list", "--repo", repoSlug, "--state", "open", "--limit", "100", "--json", PR_FIELDS]);
+  const r = gh(["pr", "list", "--repo", repoSlug, "--state", "open", "--limit", "50", "--json", PR_LIST_FIELDS]);
   if (!r.ok) return { error: `gh pr list failed: ${r.err || "unknown error"}` };
   try {
     const prs = JSON.parse(r.out).map((j: any) => ({
@@ -77,7 +84,7 @@ export function listOpenPrs(repoSlug: string): { prs: PrMeta[] } | { error: stri
       baseRef: j.baseRefName, headRef: j.headRefName, baseSha: j.baseRefOid, headSha: j.headRefOid,
       draft: !!j.isDraft, state: j.state, createdAt: j.createdAt, updatedAt: j.updatedAt,
       additions: j.additions ?? 0, deletions: j.deletions ?? 0, changedFiles: j.changedFiles ?? 0,
-      commits: Array.isArray(j.commits) ? j.commits.length : 0,
+      commits: 0, // not queried for lists — see PR_LIST_FIELDS
     }));
     return { prs };
   } catch (e) { return { error: `could not parse gh output: ${(e as Error).message}` }; }
@@ -348,7 +355,12 @@ export async function prPacket(
  */
 export async function prStory(
   root: string, input: string, opts: { fetch?: boolean } = {},
-): Promise<(PrStory & { pr: PrPacket["pr"]; refs: { mergeBase: string; head: string }; totals: { steps: number; chapters: number } }) | { error: string }> {
+): Promise<(PrStory & {
+  pr: PrPacket["pr"];
+  refs: { mergeBase: string; head: string; baseAheadOfMergeBase: number };
+  lanes: LaneTally[];
+  totals: { steps: number; chapters: number; changedLines: number; queueLines: number };
+}) | { error: string }> {
   const t = await prTriage(root, input, { fetch: opts.fetch });
   if ("error" in t) return t;
 
@@ -374,8 +386,12 @@ export async function prStory(
   return {
     ...story,
     pr: { number: t.pr.number, title: t.pr.title, url: t.pr.url, author: t.pr.author, headRef: t.pr.headRef, baseRef: t.pr.baseRef },
-    refs: { mergeBase: t.refs.mergeBase, head: t.refs.head },
-    totals: { steps: steps.length, chapters: story.chapters.length },
+    refs: { mergeBase: t.refs.mergeBase, head: t.refs.head, baseAheadOfMergeBase: t.refs.baseAheadOfMergeBase },
+    // Carried so a walkthrough with nothing in it can say *why* — a PR that is all
+    // tests or all generated code has an empty queue by design, and an unexplained
+    // empty page reads as a broken one.
+    lanes: t.lanes,
+    totals: { steps: steps.length, chapters: story.chapters.length, changedLines: t.totals.changedLines, queueLines: t.totals.queueLines },
   };
 }
 
