@@ -35,7 +35,7 @@ import { resolveAnchorRefs } from "./refs.js";
 import { refreshAnalyzers } from "./analyzers/run.js";
 import { applyIndexUpdate } from "./sync.js";
 import { grammarForPath } from "./grammars.js";
-import { reviewStatus, reviewStatesFor, anchorReviewMap, changedSince as reviewsChangedSince, deriveCodeReview, type Attestation, type ReviewPair, type DerivedCodeReview } from "./reviews.js";
+import { reviewStatus, reviewStatesFor, anchorReviewMap, changedSince as reviewsChangedSince, deriveCodeReview, revertedMarks, type Attestation, type ReviewPair, type DerivedCodeReview } from "./reviews.js";
 import { setTriage as triageSet, clearTriage as triageClear, triageStatus, reviewTriageFor, deriveTriage as triageDerive, coverageFor as triageCoverageFor, rollupCoverage, tripwires as triageTripwires, triageDrift } from "./triage.js";
 
 const HL_LANG: Record<string, string> = { c_sharp: "csharp", python: "python", javascript: "javascript", typescript: "typescript", tsx: "typescript" };
@@ -203,6 +203,9 @@ export async function dashboard(root: string) {
   // agrees with the MCP tool (applyIndexUpdate freezes @work hashes, so a stored
   // node.status wouldn't reflect an un-reindexed code change — this does).
   const stale = await computeStaleness(root, store, nodes, commit);
+  // Approvals sitting on top of a revert: the code went back to a body signed
+  // before it was superseded here, so the tick reads fine and probably should not.
+  const reverted = await revertedMarks(root).catch(() => []);
   const anchorIds = new Set(store.anchors.map((a) => a.id));
   const danglingIds = new Set(nodes.filter((n) => n.anchors.some((a) => !anchorIds.has(a))).map((n) => n.id));
   const staleIds = new Set(stale.flaggedNodes.map((f) => f.node.id));
@@ -236,7 +239,8 @@ export async function dashboard(root: string) {
     tripwires: { fired: tw.fired.map((f) => ({ kind: f.target.kind, id: f.target.id, importance: f.importance, reason: f.reason })), armed: tw.armedCount },
     baselineCommit: commit,
     // The single number a reviewer/agent should drive to zero.
-    attention: staleDocs + danglingDocs + possiblyFixed + openQuestions + tw.fired.length,
+    reverted: reverted.length,
+    attention: staleDocs + danglingDocs + possiblyFixed + openQuestions + tw.fired.length + reverted.length,
   };
 }
 
@@ -765,7 +769,7 @@ export async function outline(root: string, prefix = "", opts: { compact?: boole
   const byId = new Map(store.anchors.map((a) => [a.id, a]));
   const state = (id: string) => result.state.get(id) ?? "open";
   const reviews = await anchorReviewMap(root, store.anchors, nodes, reviewStore.reviews);
-  const rv = (id: string) => reviews.get(id) ?? { code: "unreviewed" as const, logical: "unreviewed" as const, codeActor: null, logicalActor: null };
+  const rv = (id: string) => reviews.get(id) ?? { code: "unreviewed" as const, logical: "unreviewed" as const, codeActor: null, logicalActor: null, codeVia: undefined, logicalVia: undefined };
   const inScope = (id: string) => { const s = state(id); return s === "open" || s === "cited" || s === "covered"; };
 
   // A file prefix → list that file's symbols.
@@ -799,7 +803,7 @@ export async function outline(root: string, prefix = "", opts: { compact?: boole
   // Otherwise a directory prefix → group by the next path segment, rolling up
   // the coverage state breakdown so docPct/open counts are honest.
   const p = prefix ? (prefix.endsWith("/") ? prefix : prefix + "/") : "";
-  type Grp = { anchors: number; b: Record<CoverageState, number>; isFile: boolean; rDenom: number; rc: number; rcStale: number; rl: number; rlStale: number };
+  type Grp = { anchors: number; b: Record<CoverageState, number>; isFile: boolean; rDenom: number; rc: number; rcStale: number; rcReverted: number; rl: number; rlStale: number };
   const groups = new Map<string, Grp>();
   for (const a of store.anchors) {
     if (!a.file.startsWith(p)) continue;
@@ -807,13 +811,13 @@ export async function outline(root: string, prefix = "", opts: { compact?: boole
     const slash = rest.indexOf("/");
     const seg = slash === -1 ? rest : rest.slice(0, slash);
     let g = groups.get(seg);
-    if (!g) groups.set(seg, (g = { anchors: 0, b: { open: 0, cited: 0, covered: 0, trivial: 0, deferred: 0, owned: 0 }, isFile: slash === -1, rDenom: 0, rc: 0, rcStale: 0, rl: 0, rlStale: 0 }));
+    if (!g) groups.set(seg, (g = { anchors: 0, b: { open: 0, cited: 0, covered: 0, trivial: 0, deferred: 0, owned: 0 }, isFile: slash === -1, rDenom: 0, rc: 0, rcStale: 0, rcReverted: 0, rl: 0, rlStale: 0 }));
     g.anchors++;
     g.b[state(a.id)]++;
     if (inScope(a.id)) { // review % over documentable anchors only
       g.rDenom++;
       const r = rv(a.id);
-      if (r.code === "reviewed") g.rc++; else if (r.code === "stale") g.rcStale++;
+      if (r.code === "reviewed") { g.rc++; if (r.codeVia === "reverted") g.rcReverted++; } else if (r.code === "stale") g.rcStale++;
       if (r.logical === "reviewed") g.rl++; else if (r.logical === "stale") g.rlStale++;
     }
   }
@@ -839,7 +843,7 @@ export async function outline(root: string, prefix = "", opts: { compact?: boole
         citedPct: denom ? Math.round((100 * g.b.cited) / denom) : 0,
         cited: g.b.cited,
         covered: g.b.covered,
-        review: { total: g.rDenom, logical: g.rl, logicalStale: g.rlStale, code: g.rc, codeStale: g.rcStale },
+        review: { total: g.rDenom, logical: g.rl, logicalStale: g.rlStale, code: g.rc, codeStale: g.rcStale, codeReverted: g.rcReverted },
         nodes: nodes.filter((n) => underPath(n.anchors, path)).length,
         bugs: bugStore.bugs.filter((b) => underPath(b.anchors, path)).length,
       };

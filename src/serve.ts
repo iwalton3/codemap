@@ -13,6 +13,7 @@ import { readFile, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join, normalize, extname } from "node:path";
 import * as ops from "./ops.js";
+import { revertedMarks as opsRevertedMarks } from "./reviews.js";
 import * as multi from "./multi.js";
 import { loadWorkspace, type Workspace } from "./workspace.js";
 import { METHODOLOGY } from "./guide.js";
@@ -116,6 +117,8 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return ops.prCode(root, q.get("pr") ?? "", q.get("id") ?? "");
     case "/api/prs":
       return ops.prsFor(root);
+    case "/api/reverted":
+      return { reverted: await opsRevertedMarks(root) };
     case "/api/tripwires":
       return ops.tripwires(root);
     case "/api/triage_drift":

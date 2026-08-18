@@ -1,6 +1,6 @@
 import { test, before, after, describe } from "node:test";
 import assert from "node:assert/strict";
-import { resolvePuppeteer, startServer, makeFixture, watchErrors, launch, type Server, type Fixture } from "./harness.js";
+import { resolvePuppeteer, startServer, makeFixture, makeRevertFixture, watchErrors, launch, type Server, type Fixture } from "./harness.js";
 
 const puppeteer = resolvePuppeteer();
 
@@ -71,6 +71,49 @@ describe("web UI", { skip: puppeteer ? false : "puppeteer not resolvable (set CO
     await page.goto(`${server.url}/u/${fixture.universe}/node/n_transfer_flow/`, { waitUntil: "networkidle0" });
     const text = await page.evaluate(() => document.body.innerText);
     assert.doesNotMatch(text, /Transfer flow/, "if this now works, the router left hash mode — update CLAUDE.md");
+    await page.close();
+  });
+});
+
+/**
+ * An approval that survives because the code went BACK to a body it once covered
+ * looks exactly like one earned here — unless every surface says which it is.
+ * These assert the whole chain (acceptance resolution → API → each renderer),
+ * because the failure mode is silent: a green tick that is quietly wrong.
+ */
+describe("an approval sitting on a revert", { skip: puppeteer ? false : "puppeteer not resolvable" }, () => {
+  let fixture: Awaited<ReturnType<typeof makeRevertFixture>>, server: Server, browser: any;
+
+  before(async () => {
+    fixture = await makeRevertFixture();
+    server = await startServer(fixture.root);
+    browser = await launch(puppeteer);
+  });
+  after(async () => { await browser?.close(); server?.stop(); fixture?.cleanup(); });
+
+  test("the node rollup does not present it as an ordinary sign-off", async () => {
+    const page = await browser.newPage();
+    const seen = watchErrors(page);
+    await page.goto(`${server.url}/#/u/${fixture.universe}/node/${fixture.nodeId}/`, { waitUntil: "networkidle0", timeout: 30_000 });
+    await new Promise((r) => setTimeout(r, 800));
+
+    const flags: string[] = await page.evaluate(() => [...document.querySelectorAll(".viaflag")].map((x) => (x as HTMLElement).innerText));
+    assert.ok(flags.some((f) => /reverted/.test(f)), `expected a reverted flag on the rollup, got ${JSON.stringify(flags)}`);
+
+    const marked = await page.evaluate(() => document.querySelectorAll("button.reverted").length);
+    assert.ok(marked > 0, "the segment's own mark should render as reverted too");
+    assert.deepEqual(seen.errors, []);
+    await page.close();
+  });
+
+  test("the dashboard raises it, so it is findable without knowing where to look", async () => {
+    const page = await browser.newPage();
+    const seen = watchErrors(page);
+    await page.goto(`${server.url}/#/u/${fixture.universe}/`, { waitUntil: "networkidle0", timeout: 30_000 });
+    await new Promise((r) => setTimeout(r, 800));
+    const pills: string[] = await page.evaluate(() => [...document.querySelectorAll(".attn-pill")].map((x) => (x as HTMLElement).innerText));
+    assert.ok(pills.some((p) => /reverted code/.test(p)), `expected an attention pill, got ${JSON.stringify(pills)}`);
+    assert.deepEqual(seen.errors, []);
     await page.close();
   });
 });

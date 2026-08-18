@@ -78,9 +78,19 @@ const pipelineUrl = (u) => `/u/${u}/pipeline/`;
 const stateMapUrl = (u) => `/u/${u}/statemap/`;
 const REV_COLOR = { reviewed: '#7ee787', stale: '#f0a35e', unreviewed: '#3a4250' };
 // Actor-aware review rendering: human review = green (`on`), agent `checked` = blue.
-const revCls = (state, actor) => state === 'reviewed' ? (actor === 'agent' ? 'checked' : 'on') : state === 'stale' ? 'stale' : '';
-const revColorA = (info) => { const s = info && info.state, a = info && info.actor; return s === 'reviewed' ? (a === 'agent' ? '#58a6ff' : '#7ee787') : s === 'stale' ? '#f0a35e' : '#3a4250'; };
-const revMark = (state, actor) => state === 'reviewed' ? (actor === 'agent' ? ' ·' : ' ✓') : state === 'stale' ? ' ⚠' : '';
+// `via` says how a tick was earned (see markBtnEl): direct, ↻ borrowed from a
+// lineage this ref does not descend from, or ⟲ sitting on top of a revert. Every
+// surface that draws a review mark takes it, or the summaries quietly disagree
+// with the buttons they summarise.
+const revCls = (state, actor, via) => state === 'reviewed' ? (via === 'reverted' ? 'reverted' : actor === 'agent' ? 'checked' : 'on') : state === 'stale' ? 'stale' : '';
+const revColorA = (info) => {
+  const s = info && info.state, a = info && info.actor, v = info && info.via;
+  return s === 'reviewed' ? (v === 'reverted' ? '#f0a35e' : a === 'agent' ? '#58a6ff' : '#7ee787') : s === 'stale' ? '#f0a35e' : '#3a4250';
+};
+const revMark = (state, actor, via) => state === 'reviewed'
+  ? (via === 'reverted' ? ' ⟲' : via === 'replayed' ? ' ↻' : actor === 'agent' ? ' ·' : ' ✓')
+  : state === 'stale' ? ' ⚠' : '';
+const VIA_TIP = { reverted: ' — approved before the code moved BACK to this body on this branch; someone undid work', replayed: ' — approval borrowed from a branch this one does not descend from' };
 // Doc-version status (see docs/doc-versioning.md).
 const STATUS = { fresh: '#7ee787', stale: '#f0a35e', dangling: '#f27b7b', removed: '#8b95a3', generated: '#6b7684' };
 const statusChip = (s, extra) => s && s !== 'generated' ? html`<span class="stchip ${s}" title="doc version: ${s}${extra || ''}">${s}</span>` : html``;
@@ -192,8 +202,18 @@ const codeRollupEl = (cr) => {
   const c = cr.state === 'reviewed' ? '#7ee787' : cr.state === 'stale' ? '#f0a35e' : '#8b949e';
   const label = cr.state === 'reviewed' ? `code reviewed — all ${cr.total} segment${cr.total === 1 ? '' : 's'} signed`
     : `code: ${cr.signed}/${cr.total} segment${cr.total === 1 ? '' : 's'} signed${cr.stale ? ` · ${cr.stale} stale` : ''}`;
-  return html`<span class="rev" style="align-items:center;gap:6px"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${c}"></span><span style="color:${c}">${label}</span>${when(cr.state !== 'reviewed', () => html`<span class="dim" style="font-size:12px">— read &amp; sign each segment below</span>`)}</span>`;
+  return html`<span class="rev" style="align-items:center;gap:6px"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${c}"></span><span style="color:${c}">${label}</span>${viaNote(cr)}${when(cr.state !== 'reviewed', () => html`<span class="dim" style="font-size:12px">— read &amp; sign each segment below</span>`)}</span>`;
 };
+// A rollup that hides how its ticks were earned is the same lie the per-segment
+// mark was fixed to stop telling, one level up. `reverted` outranks `replayed`:
+// borrowed approval is fine, approval sitting on undone work is not.
+const viaNote = (cr) => {
+  if (!cr) return html``;
+  if (cr.reverted) return html`<span class="viaflag rev-back" title="${cr.reverted} segment(s) approved before the code moved BACK to that body on this branch — someone undid work">⟲ ${cr.reverted} reverted</span>`;
+  if (cr.replayed) return html`<span class="viaflag rev-replay" title="${cr.replayed} segment(s) whose approval is borrowed from a branch this one does not descend from">↻ ${cr.replayed} replayed</span>`;
+  return html``;
+};
+
 // Client-side rollup of a node's cited segments, from the same resolvedAnchors the
 // node page renders below — so the summary can't disagree with the list, and it
 // still works if the server predates the `codeReview` field. Mirrors server
@@ -203,15 +223,23 @@ const deriveCode = (anchors) => {
   const total = seg.length;
   const signed = seg.filter(a => a.review.code.state === 'reviewed').length;
   const stale = seg.filter(a => a.review.code.state === 'stale').length;
-  return { state: total === 0 ? 'unreviewed' : stale ? 'stale' : signed === total ? 'reviewed' : 'unreviewed', signed, total, stale };
+  const replayed = seg.filter(a => a.review.code.state === 'reviewed' && a.review.code.via === 'replayed').length;
+  const reverted = seg.filter(a => a.review.code.state === 'reviewed' && a.review.code.via === 'reverted').length;
+  return { state: total === 0 ? 'unreviewed' : stale ? 'stale' : signed === total ? 'reviewed' : 'unreviewed', signed, total, stale, replayed, reverted };
 };
 // Compact derived-code indicator for dense list rows (catalog, matrix). Read-only
 // rollup — code review is per-segment, so it opens the node rather than signing.
-const codeMark = (cr) => (!cr || !cr.total) ? 'C' : cr.state === 'reviewed' ? 'C✓' : cr.state === 'stale' ? 'C⚠' : `C ${cr.signed}/${cr.total}`;
-const codeTip = (cr) => (!cr || !cr.total) ? 'no reviewable code segments' : `code: ${cr.signed}/${cr.total} segment${cr.total === 1 ? '' : 's'} signed${cr.stale ? ' · ' + cr.stale + ' stale' : ''} — open to read & sign each`;
+const codeMark = (cr) => (!cr || !cr.total) ? 'C'
+  : cr.state === 'reviewed' ? (cr.reverted ? 'C⟲' : cr.replayed ? 'C↻' : 'C✓')
+    : cr.state === 'stale' ? 'C⚠' : `C ${cr.signed}/${cr.total}`;
+const codeTip = (cr) => (!cr || !cr.total) ? 'no reviewable code segments'
+  : `code: ${cr.signed}/${cr.total} segment${cr.total === 1 ? '' : 's'} signed${cr.stale ? ' · ' + cr.stale + ' stale' : ''}`
+    + (cr.reverted ? ` · ${cr.reverted} sitting on a revert (code moved back to a body signed before it was superseded here)` : '')
+    + (cr.replayed ? ` · ${cr.replayed} borrowed from another branch` : '')
+    + ' — open to read & sign each';
 const codeCellBtn = (cr, onOpen) => {
   const st = cr ? cr.state : 'unreviewed';
-  const cls = st === 'reviewed' ? 'on' : st === 'stale' ? 'stale' : '';
+  const cls = st === 'reviewed' ? (cr && cr.reverted ? 'reverted' : 'on') : st === 'stale' ? 'stale' : '';
   return html`<button class="${cls}" title="${codeTip(cr)}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onOpen(); }}">${codeMark(cr)}</button>`;
 };
 // Two axes: `stakes` (blast radius) and `complexity` (verification difficulty) — set
@@ -342,10 +370,11 @@ const reviewHeat = (rev) => {
   if (!rev || !rev.total) return html`<span class="rheat empty"></span>`;
   const w = (n) => Math.round(100 * n / rev.total);
   const track = (done, stale) => html`<span class="rtrack"><i class="done" style="width:${w(done)}%"></i><i class="stale" style="width:${w(stale)}%"></i></span>`;
-  const tip = `logical ${rev.logical}/${rev.total}${rev.logicalStale ? ' (' + rev.logicalStale + ' stale)' : ''} · code ${rev.code}/${rev.total}${rev.codeStale ? ' (' + rev.codeStale + ' stale)' : ''}`;
-  return html`<span class="rheat" title="${tip}">${track(rev.logical, rev.logicalStale)}${track(rev.code, rev.codeStale)}</span>`;
+  const tip = `logical ${rev.logical}/${rev.total}${rev.logicalStale ? ' (' + rev.logicalStale + ' stale)' : ''} · code ${rev.code}/${rev.total}${rev.codeStale ? ' (' + rev.codeStale + ' stale)' : ''}`
+    + (rev.codeReverted ? ` · ${rev.codeReverted} approval(s) sitting on a revert` : '');
+  return html`<span class="rheat ${rev.codeReverted ? 'has-reverted' : ''}" title="${tip}">${track(rev.logical, rev.logicalStale)}${track(rev.code, rev.codeStale)}</span>`;
 };
-const revDot = (state, actor) => html`<span class="rd ${state === 'reviewed' ? (actor === 'agent' ? 'checked' : 'done') : state === 'stale' ? 'stale' : ''}"></span>`;
+const revDot = (state, actor, via) => html`<span class="rd ${state === 'reviewed' ? (via === 'reverted' ? 'reverted' : actor === 'agent' ? 'checked' : 'done') : state === 'stale' ? 'stale' : ''}" title="${state}${via && VIA_TIP[via] ? VIA_TIP[via] : ''}"></span>`;
 
 // --- markdown ----------------------------------------------------------------
 // Content is authored by the documenting agent / developers (internal, trusted).
@@ -448,6 +477,7 @@ class DashboardPage extends Component {
         ${when(d.docs.stale, () => html`<span class="attn-pill" on-click="${() => go(nodesUrl(u))}">${d.docs.stale} stale doc${d.docs.stale === 1 ? '' : 's'}</span>`)}
         ${when(d.docs.dangling, () => html`<span class="attn-pill bad" on-click="${() => go(nodesUrl(u))}">${d.docs.dangling} dangling</span>`)}
         ${when(d.bugs.possiblyFixed, () => html`<span class="attn-pill" on-click="${() => go(bugsUrl(u), { status: 'open' })}">${d.bugs.possiblyFixed} bug${d.bugs.possiblyFixed === 1 ? '' : 's'} possibly fixed</span>`)}
+        ${when(d.reverted, () => html`<span class="attn-pill bad" title="code moved BACK to a body signed before it was superseded here — the tick still reads green, and probably should not">${d.reverted} approval${d.reverted === 1 ? '' : 's'} on reverted code</span>`)}
         ${when(d.tripwires && d.tripwires.fired.length, () => html`<span class="attn-pill bad" title="business-critical code you're watching changed" on-click="${() => go(nodesUrl(u))}">🔔 ${d.tripwires.fired.length} tripwire${d.tripwires.fired.length === 1 ? '' : 's'} fired</span>`)}
         ${when(d.openQuestions, () => html`<span class="attn-pill q">${d.openQuestions} open question${d.openQuestions === 1 ? '' : 's'}</span>`)}
         <span class="attn-hint">re-validate via <code>check_stale</code> / the bugs tab</span>
@@ -534,7 +564,7 @@ class OutlinePage extends Component {
     if (d.kind === 'file') {
       return html`<div class="rows">${each(d.symbols, s => html`
         <div class="sym" on-click="${() => go(anchorUrl(u, s.id))}"><span class="k">${s.kind}</span>
-          <span><span class="dot ${(s.coverage === 'cited' || s.coverage === 'covered') ? 'on' : ''}" title="coverage: ${s.coverage}"></span>${s.symbol}${when(s.review, () => html`<span class="rdots" title="logical ${s.review.logical} · code ${s.review.code}">${revDot(s.review.logical, s.review.logicalActor)}${revDot(s.review.code, s.review.codeActor)}</span>`)}</span><span class="muted">${s.lines ?? ''}</span></div>`)}</div>`;
+          <span><span class="dot ${(s.coverage === 'cited' || s.coverage === 'covered') ? 'on' : ''}" title="coverage: ${s.coverage}"></span>${s.symbol}${when(s.review, () => html`<span class="rdots" title="logical ${s.review.logical} · code ${s.review.code}">${revDot(s.review.logical, s.review.logicalActor, s.review.logicalVia)}${revDot(s.review.code, s.review.codeActor, s.review.codeVia)}</span>`)}</span><span class="muted">${s.lines ?? ''}</span></div>`)}</div>`;
     }
     if (!d.children || !d.children.length) return html`<div class="empty">no anchors here</div>`;
     return html`<div>
@@ -1708,12 +1738,12 @@ class DiffPage extends Component {
     return html`${statusChip(n.status)}${sevChip(n.triage || { severity: n.severity, importance: null })}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions">⑂${n.versionCount}</span>`)}<span class="ddacts">
       ${when(n.status === 'stale', () => html`<button title="confirm the doc still holds at this code" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.confirmDoc(n.id); }}">confirm</button>`)}
       ${when(n.status === 'dangling', () => html`<button class="bad" title="cited code was removed here — ack" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.ackDoc(n.id); }}">ack-hole</button>`)}
-      <span class="rev">${this.revBtn('node', n.id, 'logical', n.review.logical, () => this.reloadDiff(), n.reviewBy && n.reviewBy.logical)}</span></span>`;
+      <span class="rev">${this.revBtn('node', n.id, 'logical', n.review.logical, () => this.reloadDiff(), n.reviewBy && n.reviewBy.logical, n.reviewVia && n.reviewVia.logical)}</span></span>`;
   }
-  revBtn(kind, id, level, state, after, actor) {
-    const cls = revCls(state, actor);
-    const tip = `${level}: ${state}${state === 'reviewed' && actor === 'agent' ? ' (agent-checked)' : ''}`;
-    return html`<button class="${cls}" title="${tip}" on-click="${async (e) => { if (e.stopPropagation) e.stopPropagation(); await postReview(this.props.params.universe, kind, id, level, state === 'reviewed'); await after(); }}">${level}${revMark(state, actor)}</button>`;
+  revBtn(kind, id, level, state, after, actor, via) {
+    const cls = revCls(state, actor, via);
+    const tip = `${level}: ${state}${state === 'reviewed' && actor === 'agent' ? ' (agent-checked)' : ''}${via && VIA_TIP[via] ? VIA_TIP[via] : ''}`;
+    return html`<button class="${cls}" title="${tip}" on-click="${async (e) => { if (e.stopPropagation) e.stopPropagation(); await postReview(this.props.params.universe, kind, id, level, state === 'reviewed'); await after(); }}">${level}${revMark(state, actor, via)}</button>`;
   }
 
   // Group the raw symbol changes by file for the structural view.
@@ -1931,7 +1961,7 @@ class PrStoryPage extends Component {
         <code class="prsig">${step.signature || step.symbol}</code>
         <span class="dim prfile">${step.file.split('/').pop()}</span>
         ${when(finds, () => html`<span class="prfind" title="${finds} open finding(s)">⚑${finds}</span>`)}
-        <span class="prrev" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">${reviewRowEl({ code: step.reviewed ? { state: 'reviewed', actor: 'human' } : { state: 'unreviewed' } }, { code: step.viewed ? { state: 'reviewed', actor: 'human' } : { state: 'unreviewed' } }, (att, st, actor) => this.markStep(step.anchorId, att, st, actor))}</span>
+        <span class="prrev" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">${reviewRowEl({ code: step.review || { state: step.reviewed ? 'reviewed' : 'unreviewed' } }, { code: step.viewedMark || { state: step.viewed ? 'reviewed' : 'unreviewed' } }, (att, st, actor) => this.markStep(step.anchorId, att, st, actor))}</span>
       </div>
       ${when(this.state.pending[step.anchorId], () => html`<div class="dim prload">loading source…</div>`)}
       ${when(code && !code.error, () => html`<div class="prsbody">

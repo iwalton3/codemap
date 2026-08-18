@@ -125,6 +125,8 @@ export interface WorkItem {
   severity: string;
   reviewed: boolean;
   viewed: boolean;
+  review?: unknown;
+  viewedMark?: unknown;
   rank: number;
 }
 
@@ -262,6 +264,10 @@ async function buildWorklist(
       severity: e?.triage.severity ?? "untriaged",
       reviewed: e?.review.code.state === "reviewed",
       viewed: e?.viewed.code.state === "reviewed",
+      // The full marks, not just booleans: a replayed or revert-sitting approval
+      // must look different on the walkthrough than one signed here.
+      review: e?.review.code,
+      viewedMark: e?.viewed.code,
       rank: 0,
     };
   });
@@ -384,6 +390,7 @@ export async function prStory(
       change: w.change, complexity: w.complexity, severity: w.severity, lane: w.lane,
       layer: layerOf(w.file, w.symbol),
       reviewed: w.reviewed, viewed: w.viewed,
+      review: w.review, viewedMark: w.viewedMark,
       annotations: byAnchor.get(w.id) ?? [],
     }));
 

@@ -517,7 +517,12 @@
     .prstools { display: flex; align-items: center; gap: 10px; font-size: 11.5px; margin: 4px 0 6px; font-family: var(--mono); }
     .prload { padding: 6px 10px; font-size: 12px; }
     .prbase { border: 1px solid var(--border); border-radius: 6px; padding: 8px; overflow-x: auto; opacity: 0.85; }
-    .rev button.reverted { border-color: #8a5a2b; color: #f0a35e; }
+    .rev button.reverted, button.reverted { border-color: #8a5a2b; color: #f0a35e; }
+    .viaflag { font-size: 11px; padding: 0 6px; border-radius: 10px; border: 1px solid var(--border); white-space: nowrap; }
+    .viaflag.rev-back { border-color: #8a5a2b; color: #f0a35e; }
+    .viaflag.rev-replay { border-color: #2d4a63; color: #79c0ff; }
+    .rd.reverted { background: #f0a35e; }
+    .rheat.has-reverted { outline: 1px solid #8a5a2b; outline-offset: 1px; }
     .prlanes { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
     .prlane { font-size: 11px; color: var(--dim); border: 1px solid var(--border); border-radius: 10px; padding: 1px 8px; }
     .prlane b { color: var(--text); }

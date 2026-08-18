@@ -97,6 +97,8 @@ export interface StoryStep {
   lane: Lane; layer: number;
   /** Live review state and the first-pass agent's findings, so a chapter renders in one call. */
   reviewed?: boolean; viewed?: boolean;
+  /** The marks themselves, carrying `via` — a borrowed approval must not render as a plain tick. */
+  review?: unknown; viewedMark?: unknown;
   annotations?: unknown[];
 }
 

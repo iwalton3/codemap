@@ -284,6 +284,10 @@ export interface DerivedCodeReview {
   signed: number;
   total: number;
   stale: number;
+  /** Segments whose approval is borrowed from another lineage (↻). */
+  replayed: number;
+  /** Segments approved before the code moved BACK to that body on this history (⟲). */
+  reverted: number;
 }
 
 /**
@@ -302,7 +306,12 @@ export function deriveCodeReview(anchorCode: ReviewInfo[]): DerivedCodeReview {
   const state: ReviewState = total === 0 ? "unreviewed" : stale > 0 ? "stale" : signed === total ? "reviewed" : "unreviewed";
   const actor: "human" | "agent" | null =
     state === "reviewed" ? (anchorCode.some((a) => a.state === "reviewed" && a.actor === "human") ? "human" : "agent") : null;
-  return { state, actor, signed, total, stale };
+  // Carried up so a rollup cannot present a borrowed or revert-sitting approval as
+  // an ordinary one — the whole point of tracking `via` is lost if it stops at the
+  // per-anchor button and every summary above it shows a plain tick.
+  const replayed = anchorCode.filter((a) => a.state === "reviewed" && a.via === "replayed").length;
+  const reverted = anchorCode.filter((a) => a.state === "reviewed" && a.via === "reverted").length;
+  return { state, actor, signed, total, stale, replayed, reverted };
 }
 
 export interface AnchorChange { anchorId: string; was: string; now: string }
@@ -348,7 +357,11 @@ export async function changedSince(
  * outline heatmap. A node review propagates to the anchors it cites. Precedence:
  * reviewed > stale > unreviewed.
  */
-export interface AnchorReview { code: ReviewState; logical: ReviewState; codeActor: "human" | "agent" | null; logicalActor: "human" | "agent" | null }
+export interface AnchorReview {
+  code: ReviewState; logical: ReviewState;
+  codeActor: "human" | "agent" | null; logicalActor: "human" | "agent" | null;
+  codeVia?: AcceptanceVia; logicalVia?: AcceptanceVia;
+}
 
 export async function anchorReviewMap(
   root: string,
@@ -363,25 +376,51 @@ export async function anchorReviewMap(
     else for (const aid of nodeAnchors.get(r.target.id) ?? []) reviewedAnchorIds.add(aid);
   }
   const live = await liveHashes(root, reviewedAnchorIds);
-  const isStale = (r: Review) => r.witnesses.some((w) => live.get(w.anchorId) !== w.bodyHash);
-  type Cell = { state: ReviewState; actor: "human" | "agent" };
+  // Judge through the accepted set, exactly as reviewStatesFor does. Comparing the
+  // single legacy `witnesses` hash here instead would make this surface disagree
+  // with the node and anchor pages the moment an approval is replayed or reverted.
+  const viewRef = headCommit(root);
+  const gitHere = isGitRepo(root);
+  const cache = new Map<string, boolean>();
+  const onAncestry = (commit: string | null): boolean => {
+    if (!commit || !gitHere || !viewRef || commit === viewRef) return true;
+    let v = cache.get(commit);
+    if (v === undefined) { v = isAncestor(root, commit, viewRef); cache.set(commit, v); }
+    return v;
+  };
+  const verdict = (r: Review): { state: ReviewState; via: AcceptanceVia } => {
+    const cites = acceptedOf(r);
+    if (!cites.length) return { state: "reviewed", via: "direct" };
+    const each = cites.map((c) => resolveAcceptance(c.entries, live.get(c.anchorId), onAncestry));
+    if (each.some((x) => x.via === "none")) return { state: "stale", via: "none" };
+    if (each.some((x) => x.via === "reverted")) return { state: "reviewed", via: "reverted" };
+    if (each.some((x) => x.via === "replayed")) return { state: "reviewed", via: "replayed" };
+    return { state: "reviewed", via: "direct" };
+  };
+  type Cell = { state: ReviewState; actor: "human" | "agent"; via: AcceptanceVia };
   const rank: Record<ReviewState, number> = { reviewed: 2, stale: 1, unreviewed: 0 };
   const code = new Map<string, Cell>();
   const logical = new Map<string, Cell>();
   // Higher-precedence state wins (reviewed > stale); among reviewed, a human review
   // beats an agent one (verified > checked), so the anchor reads at the best trust.
-  const bump = (m: Map<string, Cell>, id: string, state: ReviewState, actor: "human" | "agent") => {
+  // `via` rides along with the state it belongs to; a weaker tick never overwrites
+  // a stronger one, but a `reverted` among equals is kept — it is the loud case.
+  const VIA_RANK: Record<AcceptanceVia, number> = { reverted: 3, replayed: 2, direct: 1, none: 0 };
+  const bump = (m: Map<string, Cell>, id: string, state: ReviewState, actor: "human" | "agent", via: AcceptanceVia) => {
     const c = m.get(id);
-    if (!c) { m.set(id, { state, actor }); return; }
-    if (rank[state] > rank[c.state]) { c.state = state; c.actor = actor; }
-    else if (state === c.state && state === "reviewed" && actor === "human") c.actor = "human";
+    if (!c) { m.set(id, { state, actor, via }); return; }
+    if (rank[state] > rank[c.state]) { c.state = state; c.actor = actor; c.via = via; }
+    else if (state === c.state && state === "reviewed") {
+      if (actor === "human") c.actor = "human";
+      if (VIA_RANK[via] > VIA_RANK[c.via]) c.via = via;
+    }
   };
   for (const r of reviews) {
-    const state: ReviewState = isStale(r) ? "stale" : "reviewed";
+    const { state, via } = verdict(r);
     const actor = r.actor ?? "agent"; // migration: legacy reviews read as agent-checked
     const m = r.level === "code" ? code : logical;
-    if (r.target.kind === "anchor") bump(m, r.target.id, state, actor);
-    else for (const aid of nodeAnchors.get(r.target.id) ?? []) bump(m, aid, state, actor);
+    if (r.target.kind === "anchor") bump(m, r.target.id, state, actor, via);
+    else for (const aid of nodeAnchors.get(r.target.id) ?? []) bump(m, aid, state, actor, via);
   }
   const out = new Map<string, AnchorReview>();
   for (const a of anchors) {
@@ -389,7 +428,58 @@ export async function anchorReviewMap(
     out.set(a.id, {
       code: c?.state ?? "unreviewed", logical: l?.state ?? "unreviewed",
       codeActor: c?.state === "reviewed" ? c.actor : null, logicalActor: l?.state === "reviewed" ? l.actor : null,
+      codeVia: c?.state === "reviewed" ? c.via : undefined, logicalVia: l?.state === "reviewed" ? l.via : undefined,
     });
+  }
+  return out;
+}
+
+export interface RevertedMark {
+  target: { kind: "node" | "anchor"; id: string };
+  level: ReviewLevel;
+  anchorId: string;
+  reviewer: string;
+  /** Where the body was originally approved, and the newer body it has moved back from. */
+  approvedAt: { branch: string | null; commit: string | null; at: string };
+  supersededBy: { branch: string | null; commit: string | null; at: string };
+}
+
+/**
+ * Marks whose code has moved *back* to a body approved earlier on this same
+ * history — someone undid work that had since been superseded.
+ *
+ * Distinct from staleness, and louder: a stale mark says the code moved on and
+ * needs another look; this says the code returned to something you signed before
+ * it was replaced, so the tick is technically honest and probably misleading.
+ * Navigating to a branch that legitimately holds the older body is NOT this.
+ */
+export async function revertedMarks(root: string, opts: { ref?: string } = {}): Promise<RevertedMark[]> {
+  const rs = await readReviews(root);
+  const all = new Set<string>();
+  for (const r of rs.reviews) for (const c of acceptedOf(r)) all.add(c.anchorId);
+  const live = await liveHashes(root, all, opts.ref);
+
+  const viewRef = opts.ref ?? headCommit(root);
+  const gitHere = isGitRepo(root);
+  const cache = new Map<string, boolean>();
+  const onAncestry = (commit: string | null): boolean => {
+    if (!commit || !gitHere || !viewRef || commit === viewRef) return true;
+    let v = cache.get(commit);
+    if (v === undefined) { v = isAncestor(root, commit, viewRef); cache.set(commit, v); }
+    return v;
+  };
+
+  const out: RevertedMark[] = [];
+  for (const r of rs.reviews) {
+    for (const c of acceptedOf(r)) {
+      const a = resolveAcceptance(c.entries, live.get(c.anchorId), onAncestry);
+      if (a.via !== "reverted" || !a.entry || !a.supersededBy) continue;
+      out.push({
+        target: r.target, level: r.level, anchorId: c.anchorId, reviewer: r.reviewer,
+        approvedAt: { branch: a.entry.branch, commit: a.entry.commit, at: a.entry.at },
+        supersededBy: { branch: a.supersededBy.branch, commit: a.supersededBy.commit, at: a.supersededBy.at },
+      });
+    }
   }
   return out;
 }

@@ -113,18 +113,38 @@ test("changedSince finds the mark and reports no drift when code is unchanged", 
 });
 
 test("deriveCodeReview: a node is code-reviewed only when every segment is signed", () => {
+  const base = { replayed: 0, reverted: 0 };
   // no segments → nothing to review
-  assert.deepEqual(deriveCodeReview([]), { state: "unreviewed", actor: null, signed: 0, total: 0, stale: 0 });
+  assert.deepEqual(deriveCodeReview([]), { state: "unreviewed", actor: null, signed: 0, total: 0, stale: 0, ...base });
   // partial → unreviewed, but progress is reported
   assert.deepEqual(deriveCodeReview([{ state: "reviewed", actor: "human" }, { state: "unreviewed" }]),
-    { state: "unreviewed", actor: null, signed: 1, total: 2, stale: 0 });
+    { state: "unreviewed", actor: null, signed: 1, total: 2, stale: 0, ...base });
   // all signed → reviewed; a human signer promotes the actor (→ trust can reach verified)
   assert.deepEqual(deriveCodeReview([{ state: "reviewed", actor: "agent" }, { state: "reviewed", actor: "human" }]),
-    { state: "reviewed", actor: "human", signed: 2, total: 2, stale: 0 });
+    { state: "reviewed", actor: "human", signed: 2, total: 2, stale: 0, ...base });
   // all signed but only agents → agent-checked
   assert.deepEqual(deriveCodeReview([{ state: "reviewed", actor: "agent" }]),
-    { state: "reviewed", actor: "agent", signed: 1, total: 1, stale: 0 });
+    { state: "reviewed", actor: "agent", signed: 1, total: 1, stale: 0, ...base });
   // any stale segment poisons the whole node, even if the rest are signed
   assert.deepEqual(deriveCodeReview([{ state: "reviewed", actor: "human" }, { state: "stale" }]),
-    { state: "stale", actor: null, signed: 1, total: 2, stale: 1 });
+    { state: "stale", actor: null, signed: 1, total: 2, stale: 1, ...base });
+});
+
+test("deriveCodeReview carries how its ticks were earned up to the rollup", () => {
+  // A rollup that reports a plain "all signed" while a segment's approval is
+  // borrowed, or sits on undone work, tells the same lie the per-segment mark was
+  // fixed to stop telling — one level up, where it is harder to notice.
+  const r = deriveCodeReview([
+    { state: "reviewed", actor: "human", via: "direct" },
+    { state: "reviewed", actor: "human", via: "replayed" },
+    { state: "reviewed", actor: "human", via: "reverted" },
+  ]);
+  assert.equal(r.state, "reviewed");
+  assert.equal(r.signed, 3);
+  assert.equal(r.replayed, 1);
+  assert.equal(r.reverted, 1);
+
+  // counts only reviewed segments — an unreviewed one has no `via` to report
+  const q = deriveCodeReview([{ state: "unreviewed", via: "replayed" }, { state: "reviewed", actor: "human" }]);
+  assert.equal(q.replayed, 0);
 });

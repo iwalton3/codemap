@@ -131,3 +131,43 @@ export async function launch(puppeteer: any) {
     args: ["--no-sandbox", "--disable-dev-shm-usage"],
   });
 }
+
+/**
+ * A universe where an approval sits on top of a revert.
+ *
+ * Built by actually doing it — sign the body at v1, sign the changed body at v2,
+ * then commit a third change putting the body back to v1. That is the one review
+ * state no live repo happens to be in, and the one whose whole point is that it
+ * looks identical to an ordinary approval unless every surface says otherwise.
+ */
+export async function makeRevertFixture(): Promise<Fixture & { anchorId: string; nodeId: string }> {
+  const root = mkdtempSync(join(tmpdir(), "codemap-e2e-revert-"));
+  const git = (...a: string[]) => spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...a], { cwd: root });
+  git("init", "-q", "-b", "main");
+  mkdirSync(join(root, "src"));
+  const write = (body: string) => writeFileSync(join(root, "src/pay.ts"), `export function transfer(cents: number) {\n${body}\n}\n`);
+  const commit = (m: string) => { git("add", "-A"); git("commit", "-qm", m); return spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim(); };
+
+  write("  return cents;");
+  const c1 = commit("v1");
+  write('  if (cents < 0) throw new Error("neg");\n  return cents;');
+  const c2 = commit("v2 guard");
+
+  const ops = await import("../ops.js");
+  const { writeNode, readAnchorStore, writeSnapshot } = await import("../store.js");
+  const { markReviewed } = await import("../reviews.js");
+  const { indexCommit } = await import("../repo.js");
+  await ops.init(root);
+  for (const sha of [c1, c2]) await writeSnapshot(root, sha, "main", (await indexCommit(root, sha))!, new Date().toISOString());
+
+  const anchorId = (await readAnchorStore(root)).anchors.find((a) => a.symbolPath.join(".") === "transfer")!.id;
+  await writeNode(root, { id: "n_pay", type: "process", title: "Payment transfer", summary: "Moves money.", anchors: [anchorId], body: "The guard rejects negative amounts." } as any);
+  for (const ref of [c1, c2]) {
+    await markReviewed(root, { targetKind: "anchor", targetId: anchorId, level: "code", actor: "human", attestation: "signed", ref });
+  }
+
+  write("  return cents;");                       // the revert: back to the v1 body
+  commit("revert the guard");
+
+  return { root, universe: root.split("/").pop()!, anchorId, nodeId: "n_pay", cleanup: () => rmSync(root, { recursive: true, force: true }) };
+}
