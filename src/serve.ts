@@ -108,6 +108,14 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return ops.diffCode(root, q.get("base") ?? "", q.get("head") || undefined, q.get("id") ?? "", q.get("file") ?? "");
     case "/api/diff/doc":
       return ops.docDiff(root, q.get("base") ?? "", q.get("head") || undefined, q.get("id") ?? "");
+    case "/api/pr":
+      return ops.pr(root, q.get("pr") ?? "", { fetch: q.get("fetch") === "1" });
+    case "/api/pr/story":
+      return ops.prStoryFor(root, q.get("pr") ?? "", { fetch: q.get("fetch") === "1" });
+    case "/api/pr/code":
+      return ops.prCode(root, q.get("pr") ?? "", q.get("id") ?? "");
+    case "/api/prs":
+      return ops.prsFor(root);
     case "/api/tripwires":
       return ops.tripwires(root);
     case "/api/triage_drift":
@@ -187,7 +195,7 @@ const server = createServer(async (req, res) => {
       const root = rootFor(body.u ?? null);
       const out = await withLock<unknown>(root, () =>
         url.pathname === "/api/annotate"
-          ? ops.annotate(root, { targetKind: body.targetKind, targetId: body.targetId, text: body.text, kind: body.kind, severity: body.severity, category: body.category, author: body.author, line: body.line })
+          ? ops.annotate(root, { targetKind: body.targetKind, targetId: body.targetId, text: body.text, kind: body.kind, severity: body.severity, category: body.category, author: body.author, line: body.line, ref: body.ref })
           : ops.resolveAnnotation(root, body.id, body.resolved !== false),
       );
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });

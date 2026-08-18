@@ -14,7 +14,7 @@ import { spawnSync } from "node:child_process";
 import type { Anchor } from "./schema.js";
 import { computeDiff, type DiffResult } from "./diff.js";
 import { indexBlob, indexCommit } from "./repo.js";
-import { readSnapshot, writeSnapshot } from "./store.js";
+import { readSnapshot, writeSnapshot, readAnnotations } from "./store.js";
 import { loadLanes, LANE_POLICY, type Lane } from "./lanes.js";
 import { complexityOf, MONEY_RX, reviewTriageFor } from "./triage.js";
 import type { Complexity } from "./schema.js";
@@ -356,12 +356,18 @@ export async function prStory(
   const blobs = readBlobs(root, t.refs.head, specPaths);
   const sections = specPaths.flatMap((p) => splitSpec(p, blobs.get(p) ?? ""));
 
+  const anns = (await readAnnotations(root)).annotations.filter((a) => a.target.kind === "anchor" && !a.resolved);
+  const byAnchor = new Map<string, unknown[]>();
+  for (const a of anns) (byAnchor.get(a.target.id) ?? byAnchor.set(a.target.id, []).get(a.target.id)!).push(a);
+
   const steps: StoryStep[] = t.worklist
     .filter((w) => w.lane === "code")
     .map((w) => ({
       anchorId: w.id, file: w.file, symbol: w.symbol, signature: w.signature,
       change: w.change, complexity: w.complexity, severity: w.severity, lane: w.lane,
       layer: layerOf(w.file, w.symbol),
+      reviewed: w.reviewed, viewed: w.viewed,
+      annotations: byAnchor.get(w.id) ?? [],
     }));
 
   const story = buildStory(sections, steps);
@@ -372,3 +378,41 @@ export async function prStory(
     totals: { steps: steps.length, chapters: story.chapters.length },
   };
 }
+
+export interface PrAnchorCode {
+  id: string; file: string; lang: string;
+  /** Head source plus its real starting line, so findings can be pinned to file lines. */
+  head: string | null; startLine: number;
+  base: string | null;
+  annotations: unknown[];
+}
+
+/**
+ * One anchor's source at the PR head (and at the merge-base, when it existed
+ * there). `/api/anchor` reads the working tree, which is on some other branch
+ * entirely — a walkthrough has to read the code as the PR actually leaves it.
+ */
+export async function prAnchorCode(root: string, input: string, id: string): Promise<PrAnchorCode | { error: string }> {
+  const t = await prTriage(root, input, { fetch: false });
+  if ("error" in t) return t;
+  const item = t.worklist.find((w) => w.id === id);
+  if (!item) return { error: `anchor ${id} is not part of PR #${t.pr.number}` };
+
+  const at = async (sha: string) => {
+    const src = readBlobs(root, sha, [item.file]).get(item.file);
+    if (!src) return { code: null as string | null, startLine: 1 };
+    const a = (await indexBlob(src, item.file)).find((x) => x.id === id);
+    return a?.loc ? { code: src.slice(a.loc.startByte, a.loc.endByte), startLine: a.loc.startLine } : { code: null, startLine: 1 };
+  };
+  const head = item.change === "removed" ? { code: null, startLine: 1 } : await at(t.refs.head);
+  const base = item.change === "added" ? { code: null, startLine: 1 } : await at(t.refs.mergeBase);
+  const anns = (await readAnnotations(root)).annotations.filter((a) => a.target.kind === "anchor" && a.target.id === id);
+
+  return {
+    id, file: item.file, lang: langOf(item.file),
+    head: head.code, startLine: head.startLine, base: base.code, annotations: anns,
+  };
+}
+
+const LANG: Record<string, string> = { cs: "csharp", py: "python", js: "javascript", mjs: "javascript", cjs: "javascript", ts: "typescript", tsx: "typescript", jsx: "javascript" };
+const langOf = (file: string) => LANG[file.split(".").pop()?.toLowerCase() ?? ""] ?? "plaintext";

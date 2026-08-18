@@ -18,7 +18,7 @@ import {
   SCHEMA_VERSION,
 } from "./schema.js";
 import { indexFile, indexRepo, indexCommit } from "./repo.js";
-import { headCommit, currentBranch, isDirty, revParse, mergeBase } from "./git.js";
+import { headCommit, currentBranch, isDirty, revParse, mergeBase, originSlug } from "./git.js";
 import { computeStaleness } from "./stale.js";
 import {
   readAnchorStore, readState, writeState, writeStore, loadNodes, readGraph, writeGraph, writeNode, slug,
@@ -27,7 +27,7 @@ import {
 } from "./store.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "./diff.js";
-import { prTriage, listOpenPrs, prPacket } from "./pr.js";
+import { prTriage, listOpenPrs, prPacket, prStory, prAnchorCode } from "./pr.js";
 import { parseAgentLines, ingestAgentReview } from "./pr-ingest.js";
 import { resolveCoverage, selectAnchors, docPct as computeDocPct, citedPct as computeCitedPct, type CoverageResult } from "./coverage.js";
 import { resolveAnchorRefs } from "./refs.js";
@@ -493,6 +493,23 @@ export async function prIngest(root: string, input: string, texts: string[], opt
   }
   const r = await ingestAgentReview(root, lines, { annotate }, { headRef: t.refs.head, author: opts.author, dryRun: opts.dryRun });
   return { ...r, malformed: bad, pr: t.pr.number, head: t.refs.head };
+}
+
+/** The PR's spec-derived walkthrough. */
+export async function prStoryFor(root: string, input: string, opts: { fetch?: boolean } = {}) {
+  return prStory(root, input, opts);
+}
+
+/** One anchor's source as the PR leaves it — the walkthrough's code pane. */
+export async function prCode(root: string, input: string, id: string) {
+  return prAnchorCode(root, input, id);
+}
+
+/** Open PRs for the universe's own origin remote — the inbox, without having to know the slug. */
+export function prsFor(root: string) {
+  const slug = originSlug(root);
+  if (!slug) return { error: "this universe has no github origin remote" };
+  return listOpenPrs(`${slug.owner}/${slug.repo}`);
 }
 
 /** Open PRs for a repo slug (`owner/repo`) — the inbox. */

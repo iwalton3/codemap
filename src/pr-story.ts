@@ -95,6 +95,9 @@ export interface StoryStep {
   anchorId: string; file: string; symbol: string; signature: string;
   change: "added" | "changed" | "removed"; complexity: Complexity; severity: string;
   lane: Lane; layer: number;
+  /** Live review state and the first-pass agent's findings, so a chapter renders in one call. */
+  reviewed?: boolean; viewed?: boolean;
+  annotations?: unknown[];
 }
 
 export interface StoryChapter {

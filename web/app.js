@@ -202,8 +202,10 @@ const triageRowEl = (triage, onSet, onTripwire) => {
   const cbtn = (cx, label, tip) => html`<button class="${ccur === cx ? 'on' : ''}" title="set complexity (review depth): ${cx} — ${tip}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onSet({ complexity: cx }); }}">${label}</button>`;
   return html`<span class="rev" style="align-items:center;flex-wrap:wrap;gap:6px"><span style="color:#8b949e">stakes:</span>${sbtn('business-critical', 'business-critical')}${sbtn('important', 'important')}${sbtn('low', 'low')}${when(cur, () => html`<button title="clear triage" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onSet({ clear: true }); }}">✕</button>`)}<span style="color:#8b949e;margin-left:6px">complexity:</span>${cbtn('deep', 'deep', 'subtle logic, needs careful thought')}${cbtn('standard', 'standard', 'real but tractable logic')}${cbtn('rote', 'rote', 'a mechanical/checklist verify')}${cbtn('wiring', 'wiring', 'plumbing — a glance clears it')}${sevChip(triage)}${when(cur && onTripwire, () => html`<button class="${triage.tripwire ? 'checked' : ''}" title="${triage.tripwire ? 'tripwire armed — alert if this code changes (click to disarm)' : 'arm tripwire — alert me the instant this code changes'}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onTripwire(!triage.tripwire); }}">🔔</button>`)}${when(triage && triage.likely, () => html`<span style="color:#58a6ff;font-size:12px" title="agent proposal — click a tier to confirm">· likely</span>`)}</span>`;
 };
-const postAnnotate = (u, targetKind, targetId, text, kind, line) =>
-  fetch('/api/annotate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, targetKind, targetId, text, kind, line, author: 'human' }) });
+// `ref` scopes anchor resolution to a PR head, so a finding can land on a symbol
+// that exists only on the branch (server: resolveRefs' scopeRef).
+const postAnnotate = (u, targetKind, targetId, text, kind, line, ref) =>
+  fetch('/api/annotate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, targetKind, targetId, text, kind, line, ref, author: 'human' }) });
 const postResolveAnnotation = (u, id, resolved) =>
   fetch('/api/annotation_resolve', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id, resolved }) });
 
@@ -245,7 +247,7 @@ const openFindingCount = (annotations) => (annotations || []).filter(a => !a.res
 async function raiseFinding(c, u, anchorId, line) {
   const key = findingKey(anchorId, line);
   const text = (c._fdrafts?.[key] || '').trim(); if (!text) return;
-  await postAnnotate(u, 'anchor', anchorId, text, 'finding', Number.isFinite(line) ? line : undefined);
+  await postAnnotate(u, 'anchor', anchorId, text, 'finding', Number.isFinite(line) ? line : undefined, c.state?.prRef);
   if (c._fdrafts) c._fdrafts[key] = '';
   c.state.finding = null;
   await c.load.run(); if (c.refreshFile && c.state.file) await c.refreshFile();
@@ -1852,6 +1854,129 @@ class DiffPage extends Component {
 }
 defineComponent('diff-page', DiffPage);
 
+// --- PR walkthrough ----------------------------------------------------------
+// "Tell me the story of this change." Chapters come from the spec markdown the PR
+// itself ships (server: pr-story.ts), each bound to the symbols that implement it
+// and ordered command → handler → event → aggregate → read-model. A chapter whose
+// spec describes the *system* rather than this change is marked promotable; the
+// rest are an executive summary and stay ephemeral.
+const CHANGE_COLOR = { added: '#7ee787', changed: '#f0a35e', removed: '#f85149' };
+const LAYER_NAME = ['command', 'handler', 'event', 'aggregate', 'read-model', 'job'];
+
+class PrStoryPage extends Component {
+  static props = { params: {}, query: {} };
+  constructor(props) { super(props); this.state = { story: null, open: {}, code: {}, pending: {}, finding: null, prRef: null, showBase: {} }; }
+  load = this.createTask(async () => {
+    const u = this.props.params.universe; nav.current = u;
+    const story = await api('/api/pr/story', { u, pr: this.props.params.pr });
+    this.state.story = story;
+    this.state.prRef = story && story.refs ? story.refs.head : null;
+    // Open the first chapter that still has unsigned work — the queue, not chapter 1.
+    if (story && story.chapters && !Object.keys(this.state.open).length) {
+      const first = story.chapters.find(c => c.steps.some(s => !s.reviewed));
+      if (first) this.state.open = { [first.id]: true };
+    }
+  });
+  mounted() { this.load.run(); }
+  propsChanged(name) { if (name === 'params') { this.state.open = {}; this.state.code = {}; this.load.run(); } }
+
+  toggleChapter(id) { this.state.open = { ...this.state.open, [id]: !this.state.open[id] }; }
+  async openStep(step) {
+    const id = step.anchorId;
+    if (this.state.code[id]) { this.state.code = { ...this.state.code, [id]: null }; return; }
+    this.state.pending = { ...this.state.pending, [id]: true };
+    try {
+      const c = await api('/api/pr/code', { u: this.props.params.universe, pr: this.props.params.pr, id });
+      this.state.code = { ...this.state.code, [id]: c };
+    } finally { this.state.pending = { ...this.state.pending, [id]: false }; }
+  }
+  async markStep(id, attestation, state, actor) {
+    const unmark = state === 'reviewed' && actor !== 'agent';
+    await postReview(this.props.params.universe, 'anchor', id, 'code', unmark, attestation);
+    await this.load.run();
+    if (this.state.code[id]) { const c = await api('/api/pr/code', { u: this.props.params.universe, pr: this.props.params.pr, id }); this.state.code = { ...this.state.code, [id]: c }; }
+  }
+
+  stepEl(u, step) {
+    const code = this.state.code[step.anchorId];
+    const finds = openFindingCount(step.annotations);
+    const showBase = this.state.showBase[step.anchorId];
+    return html`<div class="prstep ${step.reviewed ? 'done' : ''}">
+      <div class="prsthead" on-click="${() => this.openStep(step)}">
+        <span class="prlayer" title="position on the command → read-model spine">${LAYER_NAME[step.layer] || 'code'}</span>
+        <span class="prchg" style="color:${CHANGE_COLOR[step.change] || '#8b949e'}">${step.change}</span>
+        ${sevDot(step.severity)}
+        <code class="prsig">${step.signature || step.symbol}</code>
+        <span class="dim prfile">${step.file.split('/').pop()}</span>
+        ${when(finds, () => html`<span class="prfind" title="${finds} open finding(s)">⚑${finds}</span>`)}
+        <span class="prrev" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">${reviewRowEl({ code: step.reviewed ? { state: 'reviewed', actor: 'human' } : { state: 'unreviewed' } }, { code: step.viewed ? { state: 'reviewed', actor: 'human' } : { state: 'unreviewed' } }, (att, st, actor) => this.markStep(step.anchorId, att, st, actor))}</span>
+      </div>
+      ${when(this.state.pending[step.anchorId], () => html`<div class="dim prload">loading source…</div>`)}
+      ${when(code && !code.error, () => html`<div class="prsbody">
+        <div class="prstools">
+          <span class="dim">${code.file}</span>
+          ${when(code.base, () => html`<button class="ghost" on-click="${() => { this.state.showBase = { ...this.state.showBase, [step.anchorId]: !showBase }; }}">${showBase ? 'show head' : 'show before'}</button>`)}
+          <span class="viewlink" title="open the full anchor page" on-click="${() => go(anchorUrl(u, step.anchorId))}">↗</span>
+        </div>
+        ${when(showBase && code.base,
+          () => html`<pre class="rvpre hljs prbase">${raw(highlight(code.base, code.lang))}</pre>`,
+          () => codeReviewLines(this, u, step.anchorId, code.head, code.lang, code.startLine, code.annotations))}
+      </div>`)}
+      ${when(code && code.error, () => html`<div class="prsbody dim">${code.error}</div>`)}
+    </div>`;
+  }
+
+  chapterEl(u, ch) {
+    const open = !!this.state.open[ch.id];
+    const done = ch.steps.filter(s => s.reviewed).length;
+    return html`<section class="prchapter ${ch.source}">
+      <div class="prchead" on-click="${() => this.toggleChapter(ch.id)}">
+        <span class="prtwisty">${open ? '▾' : '▸'}</span>
+        <b class="prctitle">${ch.title}</b>
+        ${when(ch.source === 'spec', () => html`<span class="prbadge spec" title="derived from ${ch.specPath}">spec</span>`)}
+        ${when(ch.durable, () => html`<span class="prbadge durable" title="this section describes the system, not just this change — a candidate to promote into the map">promotable</span>`)}
+        ${when(ch.source !== 'spec', () => html`<span class="prbadge orphan" title="no spec section in this PR names these symbols">unspecified</span>`)}
+        <span class="dim prcount">${done}/${ch.steps.length} signed</span>
+      </div>
+      ${when(open, () => html`<div class="prcbody">
+        ${when(ch.source === 'spec' && ch.prose, () => html`<md-content text="${ch.prose}"></md-content>`)}
+        ${when(ch.source !== 'spec', () => html`<div class="dim prorphan">${ch.prose}</div>`)}
+        ${each(ch.steps, s => this.stepEl(u, s), s => s.anchorId)}
+      </div>`)}
+    </section>`;
+  }
+
+  template() {
+    const st = this.state.story, u = this.props.params.universe;
+    if (st && st.error) return pageShell(null, st.error, html``);
+    if (!st) return pageShell(null, null, html`<div class="dim">loading pull request…</div>`);
+    const signed = st.chapters.reduce((n, c) => n + c.steps.filter(s => s.reviewed).length, 0);
+    return pageShell(st, null, html`
+      <div class="prhead">
+        <h2>#${st.pr.number} ${st.pr.title}</h2>
+        <div class="dim">${st.pr.author} · ${st.pr.headRef} → ${st.pr.baseRef} ·
+          <a href="${st.pr.url}" target="_blank" rel="noreferrer">open on GitHub ↗</a></div>
+        <div class="prstats">
+          <span><b>${signed}</b>/${st.totals.steps} symbols signed</span>
+          <span><b>${st.totals.chapters}</b> chapters</span>
+          ${when(st.undocumented, () => html`<span class="warn" title="changed symbols no spec section accounts for">${st.undocumented} unspecified</span>`)}
+          ${when(st.specWithoutCode.length, () => html`<span class="warn" title="spec sections that name code this PR does not contain">${st.specWithoutCode.length} spec-without-code</span>`)}
+        </div>
+      </div>
+      ${each(st.chapters, c => this.chapterEl(u, c), c => c.id)}
+      ${when(st.specWithoutCode.length, () => html`<section class="prchapter">
+        <div class="prchead"><b class="prctitle">Spec sections with no code behind them</b></div>
+        <div class="prcbody">
+          <div class="dim prorphan">These sections name symbols the PR does not contain — either shipped incomplete, or described but deferred.</div>
+          ${each(st.specWithoutCode, x => html`<div class="prswc"><code>${x.heading}</code><span class="dim"> — ${x.specPath.split('/').pop()}</span></div>`, x => x.specPath + x.heading)}
+        </div>
+      </section>`)}
+    `);
+  }
+}
+defineComponent('pr-story-page', PrStoryPage);
+
+
 router = enableRouting(document.querySelector('router-outlet'), {
   '/': { component: 'home-page' },
   '/u/:universe/': { component: 'dashboard-page' },
@@ -1869,5 +1994,6 @@ router = enableRouting(document.querySelector('router-outlet'), {
   '/u/:universe/statemap/': { component: 'statemap-page' },
   '/u/:universe/bugs/': { component: 'bugs-page' },
   '/u/:universe/diff/': { component: 'diff-page' },
+  '/u/:universe/pr/:pr/': { component: 'pr-story-page' },
   '/u/:universe/search/': { component: 'search-page' },
 });

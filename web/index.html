@@ -485,6 +485,40 @@
     .bhist .hline { padding: 5px 10px; border-top: 1px solid var(--border); font-family: var(--mono); font-size: 12px; color: var(--dim); }
     .bhist .hline:first-child { border-top: none; }
     .warn { color: var(--warn); }
+
+    /* --- PR walkthrough ------------------------------------------------- */
+    .prhead { margin-bottom: 14px; }
+    .prhead h2 { margin: 0 0 4px; font-size: 17px; }
+    .prstats { display: flex; gap: 16px; margin-top: 8px; font-size: 12.5px; color: var(--dim); flex-wrap: wrap; }
+    .prstats b { color: var(--text); }
+    .prstats .warn { color: #f0a35e; }
+    .prchapter { border: 1px solid var(--border); border-radius: 8px; margin: 10px 0; background: var(--panel); }
+    .prchead { display: flex; align-items: center; gap: 8px; padding: 9px 12px; cursor: pointer; }
+    .prtwisty { color: var(--dim); width: 12px; }
+    .prctitle { font-size: 13.5px; }
+    .prcount { margin-left: auto; font-size: 12px; white-space: nowrap; }
+    .prbadge { font-size: 10.5px; padding: 1px 6px; border-radius: 10px; border: 1px solid var(--border); color: var(--dim); }
+    .prbadge.spec { border-color: #2d4a63; color: #79c0ff; }
+    .prbadge.durable { border-color: #2f5d3a; color: #7ee787; }
+    .prbadge.orphan { border-color: #5d4a2f; color: #f0a35e; }
+    .prcbody { padding: 4px 12px 12px; border-top: 1px solid var(--border); }
+    .prcbody .md { font-size: 12.5px; color: var(--dim); max-height: 320px; overflow-y: auto; border-left: 2px solid var(--border); padding-left: 10px; margin: 8px 0 12px; }
+    .prorphan { font-size: 12.5px; margin: 6px 0 10px; }
+    .prstep { border: 1px solid var(--border); border-radius: 6px; margin: 6px 0; background: var(--bg); }
+    .prstep.done { border-color: #24303a; background: rgba(126,231,135,0.02); }
+    .prsthead { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; font-size: 12.5px; }
+    .prlayer { font-size: 10.5px; color: var(--dim); border: 1px solid var(--border); border-radius: 10px; padding: 0 6px; white-space: nowrap; }
+    .prchg { font-size: 11px; font-weight: 600; width: 58px; }
+    .prsig { font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+    .prfile { font-size: 11.5px; white-space: nowrap; }
+    .prfind { color: #f0a35e; font-size: 11.5px; }
+    .prrev { margin-left: 4px; }
+    .prsbody { padding: 0 10px 10px; }
+    .prstools { display: flex; align-items: center; gap: 10px; font-size: 11.5px; margin: 4px 0 6px; font-family: var(--mono); }
+    .prload { padding: 6px 10px; font-size: 12px; }
+    .prbase { border: 1px solid var(--border); border-radius: 6px; padding: 8px; overflow-x: auto; opacity: 0.85; }
+    .prswc { font-size: 12.5px; padding: 3px 0; }
+    .prswc code { font-family: var(--mono); font-size: 12px; color: #f0a35e; }
   </style>
   <!-- Absolute paths so deep-linked routes (e.g. /u/x/diff/?base=…) still resolve assets. -->
   <link rel="stylesheet" href="/vendor/github-dark.min.css">

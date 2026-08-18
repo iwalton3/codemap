@@ -50,6 +50,22 @@ describe("web UI", { skip: puppeteer ? false : "puppeteer not resolvable (set CO
     await page.close();
   });
 
+  /**
+   * The happy path needs a real GitHub PR, so it cannot be hermetic. What IS worth
+   * asserting here is that the page degrades without exploding — a stack trace in
+   * the console is how a review session turns into a debugging session.
+   */
+  test("the PR walkthrough reports a bad PR reference instead of throwing", async () => {
+    const page = await browser.newPage();
+    const seen = watchErrors(page);
+    await page.goto(`${server.url}/#/u/${fixture.universe}/pr/999999/`, { waitUntil: "networkidle0", timeout: 30_000 });
+    const text = await page.evaluate(() => document.body.innerText);
+    assert.ok(text.trim().length > 0, "the page should render something, not a blank body");
+    assert.doesNotMatch(text, /undefined|\[object Object\]/, "an unhandled value leaked into the UI");
+    assert.deepEqual(seen.errors, [], "a failed PR lookup must not produce console errors");
+    await page.close();
+  });
+
   test("the path form of a deep link is NOT a working link (documents the hash-router constraint)", async () => {
     const page = await browser.newPage();
     await page.goto(`${server.url}/u/${fixture.universe}/node/n_transfer_flow/`, { waitUntil: "networkidle0" });
