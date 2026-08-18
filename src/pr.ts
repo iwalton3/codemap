@@ -19,6 +19,7 @@ import { loadLanes, LANE_POLICY, type Lane } from "./lanes.js";
 import { complexityOf, MONEY_RX, reviewTriageFor } from "./triage.js";
 import type { Complexity } from "./schema.js";
 import { revParse, mergeBase, hasObject, fetchRef, numstat, readBlobs, isGitRepo, originSlug } from "./git.js";
+import { splitSpec, buildStory, layerOf, type PrStory, type StoryStep } from "./pr-story.js";
 
 export interface PrRef { owner: string; repo: string; number: number }
 
@@ -337,5 +338,37 @@ export async function prPacket(
     specs,
     counts: { total: selected.length, included: slice.length },
     items,
+  };
+}
+
+/**
+ * The PR's story: spec-derived chapters bound to the symbols that implement
+ * them, ordered along the command → handler → event → aggregate → read-model
+ * spine, with everything the spec fails to account for swept in behind.
+ */
+export async function prStory(
+  root: string, input: string, opts: { fetch?: boolean } = {},
+): Promise<(PrStory & { pr: PrPacket["pr"]; refs: { mergeBase: string; head: string }; totals: { steps: number; chapters: number } }) | { error: string }> {
+  const t = await prTriage(root, input, { fetch: opts.fetch });
+  if ("error" in t) return t;
+
+  const specPaths = t.files.filter((f) => f.lane === "spec").map((f) => f.path);
+  const blobs = readBlobs(root, t.refs.head, specPaths);
+  const sections = specPaths.flatMap((p) => splitSpec(p, blobs.get(p) ?? ""));
+
+  const steps: StoryStep[] = t.worklist
+    .filter((w) => w.lane === "code")
+    .map((w) => ({
+      anchorId: w.id, file: w.file, symbol: w.symbol, signature: w.signature,
+      change: w.change, complexity: w.complexity, severity: w.severity, lane: w.lane,
+      layer: layerOf(w.file, w.symbol),
+    }));
+
+  const story = buildStory(sections, steps);
+  return {
+    ...story,
+    pr: { number: t.pr.number, title: t.pr.title, url: t.pr.url, author: t.pr.author, headRef: t.pr.headRef, baseRef: t.pr.baseRef },
+    refs: { mergeBase: t.refs.mergeBase, head: t.refs.head },
+    totals: { steps: steps.length, chapters: story.chapters.length },
   };
 }
