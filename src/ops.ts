@@ -506,13 +506,13 @@ export async function prStoryFor(root: string, input: string, opts: { fetch?: bo
 }
 
 /** What a push to GitHub would contain — inspect before anything leaves the machine. */
-export async function prPushPlan(root: string, input: string) {
-  return planPrPush(root, input);
+export async function prPushPlan(root: string, input: string, filter: { reviewedOnly?: boolean; minSeverity?: "low" | "medium" | "high" | "critical" } = {}) {
+  return planPrPush(root, input, filter);
 }
 
 /** Publish findings (and optionally `viewed` state) to the pull request. Outward-facing. */
-export async function prPush(root: string, input: string, opts: { markViewed?: boolean } = {}) {
-  const plan = await planPrPush(root, input);
+export async function prPush(root: string, input: string, opts: { markViewed?: boolean; reviewedOnly?: boolean; minSeverity?: "low" | "medium" | "high" | "critical" } = {}) {
+  const plan = await planPrPush(root, input, opts);
   if ("error" in plan) return plan;
   return { plan, result: await executePrPush(root, plan, opts) };
 }

@@ -30,7 +30,7 @@ export interface PushPlan {
   comments: InlineComment[];
   deferred: DeferredComment[];
   viewedPaths: string[];
-  skipped: { alreadyPushed: number; resolved: number };
+  skipped: { alreadyPushed: number; resolved: number; unreviewed: number; belowSeverity: number };
 }
 
 const ICON: Record<string, string> = { finding: "⚑", question: "❓", pointer: "👁", note: "✎" };
@@ -43,7 +43,21 @@ function renderAnnotation(a: Annotation, symbol: string): string {
   return [head, "", a.text, "", who, `<sub>codemap · \`${symbol}\`</sub>`].filter(Boolean).join("\n");
 }
 
-export async function planPrPush(root: string, input: string): Promise<PushPlan | { error: string }> {
+export interface PushFilter {
+  /**
+   * Publish only findings on symbols the human has actually looked at (viewed or
+   * signed). This is the default because the first pass is an agent's proposal,
+   * and sending an unread proposal to a colleague's pull request under your own
+   * account vouches for something you never read. Reviewing the symbol is the act
+   * that turns a proposal into something worth their time.
+   */
+  reviewedOnly?: boolean;
+  minSeverity?: "low" | "medium" | "high" | "critical";
+}
+
+const SEV_ORDER = ["low", "medium", "high", "critical"];
+
+export async function planPrPush(root: string, input: string, filter: PushFilter = {}): Promise<PushPlan | { error: string }> {
   const t = await prTriage(root, input, { fetch: false });
   if ("error" in t) return t;
 
@@ -71,7 +85,9 @@ export async function planPrPush(root: string, input: string): Promise<PushPlan 
 
   const comments: InlineComment[] = [];
   const deferred: DeferredComment[] = [];
-  let resolved = 0, already = 0;
+  let resolved = 0, already = 0, unreviewed = 0, belowSeverity = 0;
+  const reviewedOnly = filter.reviewedOnly !== false;
+  const minSev = filter.minSeverity ? SEV_ORDER.indexOf(filter.minSeverity) : -1;
 
   for (const a of anns) {
     if (a.target.kind !== "anchor") continue;
@@ -79,6 +95,8 @@ export async function planPrPush(root: string, input: string): Promise<PushPlan 
     if (!w) continue;                                   // not part of this PR
     if (a.resolved) { resolved++; continue; }
     if (pushed.has(a.id)) { already++; continue; }
+    if (reviewedOnly && !(w.reviewed || w.viewed)) { unreviewed++; continue; }
+    if (minSev >= 0 && SEV_ORDER.indexOf(a.severity ?? "low") < minSev) { belowSeverity++; continue; }
     const body = renderAnnotation(a, w.symbol);
     const line = a.line && commentable(w.file, a.line) ? a.line : firstCommentableLine(a.target.id, w.file);
     if (line) {
@@ -126,7 +144,7 @@ export async function planPrPush(root: string, input: string): Promise<PushPlan 
     pr: { number: t.pr.number, title: t.pr.title, url: t.pr.url, owner: t.pr.owner, repo: t.pr.repo },
     head: t.refs.head,
     body, comments, deferred, viewedPaths,
-    skipped: { alreadyPushed: already, resolved },
+    skipped: { alreadyPushed: already, resolved, unreviewed, belowSeverity },
   };
 }
 

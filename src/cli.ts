@@ -64,9 +64,9 @@ async function cmdPr(root: string, input: string, opts: { fetch: boolean; json: 
  * plan and stops: comments on someone else's pull request notify people and are
  * not meaningfully undoable, so the default has to be "show me first".
  */
-async function cmdPrPush(root: string, prInput: string, confirm: boolean, markViewed: boolean): Promise<void> {
-  if (!prInput) { console.error("usage: codemap pr-push <pr> [--confirm] [--viewed]"); process.exit(2); }
-  const plan = await ops.prPushPlan(root, prInput);
+async function cmdPrPush(root: string, prInput: string, confirm: boolean, markViewed: boolean, filter: { reviewedOnly?: boolean; minSeverity?: any }): Promise<void> {
+  if (!prInput) { console.error("usage: codemap pr-push <pr> [--confirm] [--viewed] [--all]"); process.exit(2); }
+  const plan = await ops.prPushPlan(root, prInput, filter);
   if ("error" in plan) { console.error(plan.error); process.exit(1); }
 
   console.log(`#${plan.pr.number} ${plan.pr.title}`);
@@ -74,6 +74,8 @@ async function cmdPrPush(root: string, prInput: string, confirm: boolean, markVi
   console.log(`  ${plan.viewedPaths.length} file(s) fully reviewed → would be marked viewed on GitHub`);
   if (plan.skipped.alreadyPushed) console.log(`  ${plan.skipped.alreadyPushed} already pushed (skipped — a re-run never duplicates)`);
   if (plan.skipped.resolved) console.log(`  ${plan.skipped.resolved} resolved locally (not pushed)`);
+  if (plan.skipped.unreviewed) console.log(`  ${plan.skipped.unreviewed} held back — on symbols you have not viewed or signed (--all to include)`);
+  if (plan.skipped.belowSeverity) console.log(`  ${plan.skipped.belowSeverity} below --min-severity`);
   for (const c of plan.comments) console.log(`    ${c.path}:${c.line}  ${c.body.split("\n")[0]}`);
   for (const d of plan.deferred) console.log(`    [body] ${d.path}${d.line ? ":" + d.line : ""}  (${d.why})`);
 
@@ -85,7 +87,7 @@ async function cmdPrPush(root: string, prInput: string, confirm: boolean, markVi
     console.log("\nnothing to publish.");
     return;
   }
-  const out = await ops.prPush(root, prInput, { markViewed });
+  const out = await ops.prPush(root, prInput, { markViewed, ...filter });
   if ("error" in out) { console.error(out.error); process.exit(1); }
   const { result } = out;
   console.log(`\nposted: ${result.postedComments} inline comment(s)${result.reviewUrl ? ` → ${result.reviewUrl}` : ""}`);
@@ -112,7 +114,7 @@ async function cmdPrIngest(root: string, prInput: string, files: string[], dryRu
 }
 
 function usage(): never {
-  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed]   publish findings to GitHub\n  codemap analyze marten [repo] [--verbose] [--emit]");
+  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n  codemap analyze marten [repo] [--verbose] [--emit]");
   process.exit(2);
 }
 
@@ -220,7 +222,7 @@ async function cmdCheck(root: string): Promise<void> {
   }
 }
 
-const { positionals, values } = parseArgs({ allowPositionals: true, options: { verbose: { type: "boolean" }, emit: { type: "boolean" }, repo: { type: "string" }, "no-fetch": { type: "boolean" }, json: { type: "boolean" }, limit: { type: "string" }, offset: { type: "string" }, "dry-run": { type: "boolean" }, confirm: { type: "boolean" }, viewed: { type: "boolean" } } });
+const { positionals, values } = parseArgs({ allowPositionals: true, options: { verbose: { type: "boolean" }, emit: { type: "boolean" }, repo: { type: "string" }, "no-fetch": { type: "boolean" }, json: { type: "boolean" }, limit: { type: "string" }, offset: { type: "string" }, "dry-run": { type: "boolean" }, confirm: { type: "boolean" }, viewed: { type: "boolean" }, all: { type: "boolean" }, "min-severity": { type: "string" } } });
 
 if (positionals[0] === "analyze") {
   const analyzer = positionals[1] ?? "";
@@ -238,7 +240,7 @@ if (positionals[0] === "analyze") {
     if ("error" in r) { console.error(r.error); process.exit(1); }
     console.log(JSON.stringify(r, null, 1));
   } else if (positionals[0] === "pr-push") {
-    await cmdPrPush(resolve(values.repo ?? "."), positionals[1] ?? "", Boolean(values.confirm), Boolean(values.viewed));
+    await cmdPrPush(resolve(values.repo ?? "."), positionals[1] ?? "", Boolean(values.confirm), Boolean(values.viewed), { reviewedOnly: !values.all, minSeverity: values["min-severity"] as any });
   } else if (positionals[0] === "pr-ingest") {
     await cmdPrIngest(resolve(values.repo ?? "."), positionals[1] ?? "", positionals.slice(2), Boolean(values["dry-run"]));
   } else if (positionals[0] === "pr") {
