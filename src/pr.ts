@@ -269,3 +269,73 @@ async function buildWorklist(
   items.forEach((it, i) => { it.rank = i + 1; });
   return items;
 }
+
+export interface PacketItem {
+  rank: number; id: string; file: string; symbol: string; signature: string;
+  change: "added" | "changed" | "removed";
+  lane: Lane; complexity: Complexity; severity: string; moneyHint: boolean;
+  /** Source at the PR head. Absent for a removed symbol. */
+  head?: string;
+  /** Source at the merge-base — present only for a changed symbol, so the agent can compare. */
+  base?: string;
+}
+
+export interface PrPacket {
+  pr: { number: number; title: string; url: string; author: string; headRef: string; baseRef: string };
+  refs: { mergeBase: string; head: string };
+  /** Spec/doc files the PR itself changed — the author's own account of the change. */
+  specs: { path: string; text: string }[];
+  counts: { total: number; included: number };
+  items: PacketItem[];
+}
+
+/**
+ * Everything an agent needs to review a PR's symbols without touching the repo:
+ * the ranked items with their before/after source, plus the specs the PR ships.
+ *
+ * Specs come first on purpose — these PRs carry thousands of lines of numbered
+ * spec describing the intended behaviour, and a reviewer (human or agent) that
+ * reads the code without it is guessing at intent.
+ */
+export async function prPacket(
+  root: string, input: string,
+  opts: { limit?: number; offset?: number; lanes?: Lane[]; fetch?: boolean } = {},
+): Promise<PrPacket | { error: string }> {
+  const t = await prTriage(root, input, { fetch: opts.fetch });
+  if ("error" in t) return t;
+
+  const want = new Set<Lane>(opts.lanes ?? ["code"]);
+  const selected = t.worklist.filter((w) => want.has(w.lane));
+  const offset = opts.offset ?? 0;
+  const slice = selected.slice(offset, offset + (opts.limit ?? 40));
+
+  const headByFile = readBlobs(root, t.refs.head, [...new Set(slice.filter((w) => w.change !== "removed").map((w) => w.file))]);
+  const baseByFile = readBlobs(root, t.refs.mergeBase, [...new Set(slice.filter((w) => w.change !== "added").map((w) => w.file))]);
+  const cut = async (src: string | undefined, path: string, id: string) => {
+    if (!src) return undefined;
+    const a = (await indexBlob(src, path)).find((x) => x.id === id);
+    return a?.loc ? src.slice(a.loc.startByte, a.loc.endByte) : undefined;
+  };
+
+  const items: PacketItem[] = [];
+  for (const w of slice) {
+    items.push({
+      rank: w.rank, id: w.id, file: w.file, symbol: w.symbol, signature: w.signature,
+      change: w.change, lane: w.lane, complexity: w.complexity, severity: w.severity, moneyHint: w.moneyHint,
+      head: w.change === "removed" ? undefined : await cut(headByFile.get(w.file), w.file, w.id),
+      base: w.change === "added" ? undefined : await cut(baseByFile.get(w.file), w.file, w.id),
+    });
+  }
+
+  const specPaths = t.files.filter((f) => f.lane === "spec").map((f) => f.path);
+  const specBlobs = readBlobs(root, t.refs.head, specPaths);
+  const specs = specPaths.map((p) => ({ path: p, text: specBlobs.get(p) ?? "" })).filter((s) => s.text);
+
+  return {
+    pr: { number: t.pr.number, title: t.pr.title, url: t.pr.url, author: t.pr.author, headRef: t.pr.headRef, baseRef: t.pr.baseRef },
+    refs: { mergeBase: t.refs.mergeBase, head: t.refs.head },
+    specs,
+    counts: { total: selected.length, included: slice.length },
+    items,
+  };
+}

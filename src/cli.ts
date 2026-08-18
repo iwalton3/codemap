@@ -59,8 +59,26 @@ async function cmdPr(root: string, input: string, opts: { fetch: boolean; json: 
   console.log(`\ncoverage: ${diff.coverage.complete}/${diff.coverage.total} review-complete`);
 }
 
+async function cmdPrIngest(root: string, prInput: string, files: string[], dryRun: boolean): Promise<void> {
+  if (!prInput || !files.length) { console.error("usage: codemap pr-ingest <pr> [--dry-run] <findings.jsonl...>"); process.exit(2); }
+  const { readFile } = await import("node:fs/promises");
+  const texts = await Promise.all(files.map((f) => readFile(f, "utf8")));
+  const r = await ops.prIngest(root, prInput, texts, { dryRun });
+  if ("error" in r && r.error) { console.error(r.error); process.exit(1); }
+  const res = r as Exclude<typeof r, { error: string }>;
+  console.log(`${dryRun ? "[dry run] " : ""}pr #${res.pr} @ ${String(res.head).slice(0, 12)}`);
+  console.log(`  annotations: ${res.annotations}  triage proposals: ${res.triaged}`);
+  console.log(`  by severity: ${JSON.stringify(res.bySeverity)}`);
+  if (res.rejected.length) {
+    console.log(`  rejected: ${res.rejected.length}`);
+    for (const x of res.rejected.slice(0, 10)) console.log(`    line ${x.line}: ${x.why}`);
+  }
+  if (res.malformed?.length) console.log(`  malformed json lines: ${res.malformed.length}`);
+  for (const s of res.summaries) console.log(`\n  [${s.batch}] reviewed ${s.reviewed}, ${s.findings} findings\n    ${s.narrative}`);
+}
+
 function usage(): never {
-  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap analyze marten [repo] [--verbose] [--emit]");
+  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap analyze marten [repo] [--verbose] [--emit]");
   process.exit(2);
 }
 
@@ -168,7 +186,7 @@ async function cmdCheck(root: string): Promise<void> {
   }
 }
 
-const { positionals, values } = parseArgs({ allowPositionals: true, options: { verbose: { type: "boolean" }, emit: { type: "boolean" }, repo: { type: "string" }, "no-fetch": { type: "boolean" }, json: { type: "boolean" } } });
+const { positionals, values } = parseArgs({ allowPositionals: true, options: { verbose: { type: "boolean" }, emit: { type: "boolean" }, repo: { type: "string" }, "no-fetch": { type: "boolean" }, json: { type: "boolean" }, limit: { type: "string" }, offset: { type: "string" }, "dry-run": { type: "boolean" } } });
 
 if (positionals[0] === "analyze") {
   const analyzer = positionals[1] ?? "";
@@ -177,7 +195,17 @@ if (positionals[0] === "analyze") {
   if (values.emit) await withLock(root, () => cmdAnalyze(analyzer, root, Boolean(values.verbose), true));
   else await cmdAnalyze(analyzer, root, Boolean(values.verbose), false);
 } else {
-  if (positionals[0] === "pr") {
+  if (positionals[0] === "pr-packet") {
+    const r = await ops.prPacketFor(resolve(values.repo ?? "."), positionals[1] ?? "", {
+      limit: values.limit ? Number(values.limit) : undefined,
+      offset: values.offset ? Number(values.offset) : undefined,
+      fetch: !values["no-fetch"],
+    });
+    if ("error" in r) { console.error(r.error); process.exit(1); }
+    console.log(JSON.stringify(r, null, 1));
+  } else if (positionals[0] === "pr-ingest") {
+    await cmdPrIngest(resolve(values.repo ?? "."), positionals[1] ?? "", positionals.slice(2), Boolean(values["dry-run"]));
+  } else if (positionals[0] === "pr") {
     await cmdPr(resolve(values.repo ?? "."), positionals[1] ?? "", { fetch: !values["no-fetch"], json: Boolean(values.json) });
   } else if (positionals[0] === "prs") {
     cmdPrs(positionals[1] ?? "");

@@ -27,7 +27,8 @@ import {
 } from "./store.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "./diff.js";
-import { prTriage, listOpenPrs } from "./pr.js";
+import { prTriage, listOpenPrs, prPacket } from "./pr.js";
+import { parseAgentLines, ingestAgentReview } from "./pr-ingest.js";
 import { resolveCoverage, selectAnchors, docPct as computeDocPct, citedPct as computeCitedPct, type CoverageResult } from "./coverage.js";
 import { resolveAnchorRefs } from "./refs.js";
 import { refreshAnalyzers } from "./analyzers/run.js";
@@ -470,6 +471,28 @@ export async function diff(root: string, base: string, head?: string) {
  */
 export async function pr(root: string, input: string, opts: { fetch?: boolean } = {}) {
   return prTriage(root, input, opts);
+}
+
+/** The agent's work packet for a PR: ranked items with before/after source, plus the specs it ships. */
+export async function prPacketFor(root: string, input: string, opts: { limit?: number; offset?: number; fetch?: boolean } = {}) {
+  return prPacket(root, input, opts);
+}
+
+/**
+ * Fold a first-pass agent review (JSONL) into the map as durable annotations and
+ * `likely` triage proposals. Findings are written against the PR head, so they
+ * can land on symbols that exist only on the branch.
+ */
+export async function prIngest(root: string, input: string, texts: string[], opts: { author?: string; dryRun?: boolean } = {}) {
+  const t = await prTriage(root, input, { fetch: false });
+  if ("error" in t) return { error: t.error };
+  const lines = [], bad = [];
+  for (const text of texts) {
+    const p = parseAgentLines(text);
+    lines.push(...p.lines); bad.push(...p.bad);
+  }
+  const r = await ingestAgentReview(root, lines, { annotate }, { headRef: t.refs.head, author: opts.author, dryRun: opts.dryRun });
+  return { ...r, malformed: bad, pr: t.pr.number, head: t.refs.head };
 }
 
 /** Open PRs for a repo slug (`owner/repo`) — the inbox. */
@@ -1567,9 +1590,23 @@ export async function changedSince(
  * entire body. The "no floating claims" invariant is unchanged: a node still can
  * not exist with zero anchors, so a call where NOTHING resolves is still an error.
  */
-async function resolveRefs(root: string, refs: string[]): Promise<{ ids: string[]; errors: string[] }> {
+async function resolveRefs(root: string, refs: string[], scopeRef?: string): Promise<{ ids: string[]; errors: string[] }> {
   const store = await readAnchorStore(root);
-  return resolveAnchorRefs(store.anchors, refs);
+  let anchors = store.anchors;
+  if (scopeRef) {
+    // A symbol that exists only on a PR's head is not a floating claim — it is in
+    // this store, under that commit's ref. Union those anchors in so a finding can
+    // be raised on code that has not merged yet. The invariant holds: the citation
+    // still has to resolve against anchors the store actually holds, and an id that
+    // is in neither @work nor `scopeRef` is still rejected.
+    const snap = await readSnapshot(root, scopeRef);
+    if (snap) {
+      const byId = new Map(anchors.map((a) => [a.id, a]));
+      for (const a of snap) if (!byId.has(a.id)) byId.set(a.id, a);
+      anchors = [...byId.values()];
+    }
+  }
+  return resolveAnchorRefs(anchors, refs);
 }
 
 /** `rejectedAnchors: […]` for a result, or nothing when every ref resolved. */
@@ -1903,14 +1940,14 @@ export async function updateBug(
 
 export async function annotate(
   root: string,
-  input: { targetKind: "anchor" | "node"; targetId: string; text: string; author?: string; kind?: Annotation["kind"]; severity?: BugSeverity; category?: string; line?: number },
+  input: { targetKind: "anchor" | "node"; targetId: string; text: string; author?: string; kind?: Annotation["kind"]; severity?: BugSeverity; category?: string; line?: number; ref?: string },
 ) {
   // Validate the target exists (anchor targets accept file#Symbol refs too).
   let targetId = input.targetId;
   if (input.targetKind === "anchor") {
     // A single-target ref is strict: there is nothing partial to accept, and the
     // ambiguity error now carries the candidates' ids and line ranges.
-    const r = await resolveRefs(root, [input.targetId]);
+    const r = await resolveRefs(root, [input.targetId], input.ref);
     if (!r.ids.length) return { error: r.errors.join("; ") };
     targetId = r.ids[0]!;
   } else {
