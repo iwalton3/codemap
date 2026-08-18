@@ -13,8 +13,54 @@ import { applyIndexUpdate } from "./sync.js";
 import { withLock } from "./lock.js";
 import * as ops from "./ops.js";
 
+const pad = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + "…" : s.padEnd(n));
+
+function cmdPrs(slug: string): void {
+  if (!slug) { console.error("usage: codemap prs <owner/repo>"); process.exit(2); }
+  const r = ops.prs(slug);
+  if ("error" in r) { console.error(r.error); process.exit(1); }
+  for (const p of r.prs) {
+    console.log(`#${String(p.number).padEnd(5)} ${pad(p.title, 60)} ${pad(p.author, 14)} +${p.additions}/-${p.deletions} ${p.changedFiles}f ${p.draft ? "DRAFT" : ""}`);
+  }
+  if (!r.prs.length) console.log("no open pull requests");
+}
+
+async function cmdPr(root: string, input: string, opts: { fetch: boolean; json: boolean }): Promise<void> {
+  if (!input) { console.error("usage: codemap pr <url|owner/repo#N|#N>"); process.exit(2); }
+  const r = await ops.pr(root, input, { fetch: opts.fetch });
+  if ("error" in r) { console.error(r.error); process.exit(1); }
+  if (opts.json) { console.log(JSON.stringify(r, null, 2)); return; }
+
+  const { pr, refs, lanes, totals, worklist, diff } = r;
+  console.log(`#${pr.number} ${pr.title}`);
+  console.log(`  ${pr.author} · ${pr.headRef} → ${pr.baseRef} · +${pr.additions}/-${pr.deletions} over ${pr.changedFiles} files`);
+  console.log(`  merge-base ${refs.mergeBase.slice(0, 12)}${refs.baseAheadOfMergeBase ? `  (${pr.baseRef} is ${refs.baseAheadOfMergeBase} commits ahead of it — diffing against the tip would fold those in)` : ""}`);
+
+  console.log("\nlanes:");
+  for (const l of lanes) console.log(`  ${pad(l.lane, 10)} ${String(l.lines).padStart(6)} lines  ${String(l.files).padStart(4)} files  ${pad(l.review, 8)} ${l.why}`);
+  const pct = totals.changedLines ? Math.round((totals.queueLines / totals.changedLines) * 100) : 0;
+  console.log(`  → ${totals.queueLines} of ${totals.changedLines} changed lines are in the review queue (${pct}%)`);
+
+  console.log(`\nsymbols: ${diff.changed.length} changed, ${diff.added.length} added, ${diff.removed.length} removed`);
+  if (diff.added.length > diff.changed.length * 3 && diff.changed.length >= 0) {
+    console.log(`  (mostly new surface — the ${diff.changed.length} *changed* symbols carry the regression risk)`);
+  }
+  const queue = worklist.filter((w) => w.lane === "code" && !w.reviewed);
+  console.log(`worklist (top 20 of ${queue.length} unreviewed):`);
+  for (const w of queue.slice(0, 20)) {
+    const leaf = w.symbol.split(" › ").slice(-2).join(" › ");
+    console.log(`  ${String(w.rank).padStart(4)}. [${pad(w.severity, 9)}][${pad(w.complexity, 8)}]${w.moneyHint ? "[$]" : "   "} ${w.change.padEnd(7)} ${pad(leaf, 38)} ${w.file.split("/").pop()}`);
+    if (w.signature) console.log(`        ${w.signature.slice(0, 110)}`);
+  }
+  if (diff.impact.nodes.length) {
+    console.log(`\ndocumented nodes impacted: ${diff.impact.nodes.length}`);
+    for (const n of diff.impact.nodes.slice(0, 10)) console.log(`  [${pad(n.severity, 9)}] ${pad(n.title, 50)} (${n.anchors.length} anchors)`);
+  }
+  console.log(`\ncoverage: ${diff.coverage.complete}/${diff.coverage.total} review-complete`);
+}
+
 function usage(): never {
-  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap analyze marten [repo] [--verbose] [--emit]");
+  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap analyze marten [repo] [--verbose] [--emit]");
   process.exit(2);
 }
 
@@ -122,7 +168,7 @@ async function cmdCheck(root: string): Promise<void> {
   }
 }
 
-const { positionals, values } = parseArgs({ allowPositionals: true, options: { verbose: { type: "boolean" }, emit: { type: "boolean" }, repo: { type: "string" } } });
+const { positionals, values } = parseArgs({ allowPositionals: true, options: { verbose: { type: "boolean" }, emit: { type: "boolean" }, repo: { type: "string" }, "no-fetch": { type: "boolean" }, json: { type: "boolean" } } });
 
 if (positionals[0] === "analyze") {
   const analyzer = positionals[1] ?? "";
@@ -131,7 +177,11 @@ if (positionals[0] === "analyze") {
   if (values.emit) await withLock(root, () => cmdAnalyze(analyzer, root, Boolean(values.verbose), true));
   else await cmdAnalyze(analyzer, root, Boolean(values.verbose), false);
 } else {
-  if (positionals[0] === "diff") {
+  if (positionals[0] === "pr") {
+    await cmdPr(resolve(values.repo ?? "."), positionals[1] ?? "", { fetch: !values["no-fetch"], json: Boolean(values.json) });
+  } else if (positionals[0] === "prs") {
+    cmdPrs(positionals[1] ?? "");
+  } else if (positionals[0] === "diff") {
     // codemap diff <base> [head] [--repo path]   (defaults to cwd; head defaults to working tree)
     await cmdDiff(resolve(values.repo ?? "."), positionals[1] ?? "", positionals[2]);
   } else {

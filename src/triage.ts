@@ -316,7 +316,8 @@ export async function coverageFor(root: string, targets: Target[]): Promise<Cove
 
 // Money/value signal — a strong business-critical cue that's codebase-agnostic. Word
 // boundaries so "feel" ≠ "fee". Recorded as the reason, so it's auditable/confirmable.
-const MONEY_RX = /\b(amount|currenc|balance|payment|payout|settle|settlement|debit|credit|fee|fees|transfer|price|total|money|refund|charge|invoice|ledger|remit|disburse|wallet|deposit|withdraw)\w*/i;
+/** Name-shaped money signal — also used to rank PR anchors in universes with no graph yet. */
+export const MONEY_RX = /\b(amount|currenc|balance|payment|payout|settle|settlement|debit|credit|fee|fees|transfer|price|total|money|refund|charge|invoice|ledger|remit|disburse|wallet|deposit|withdraw)\w*/i;
 
 const key = (kind: "node" | "anchor", id: string) => `${kind}:${id}`;
 

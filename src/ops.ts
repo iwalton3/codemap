@@ -17,16 +17,17 @@ import {
   type AnchorSelector, type CoverageMark, type CoverageState, type Edge, type ReviewLevel, type Importance, type Complexity, type TriageSource,
   SCHEMA_VERSION,
 } from "./schema.js";
-import { indexFile, indexRepo } from "./repo.js";
-import { headCommit, currentBranch, isDirty } from "./git.js";
+import { indexFile, indexRepo, indexCommit } from "./repo.js";
+import { headCommit, currentBranch, isDirty, revParse, mergeBase } from "./git.js";
 import { computeStaleness } from "./stale.js";
 import {
   readAnchorStore, readState, writeState, writeStore, loadNodes, readGraph, writeGraph, writeNode, slug,
   readBugs, writeBugs, readAnnotations, writeAnnotations, readCoverage, writeCoverage, readReviews,
-  writeSnapshot, listSnapshots, deleteNode as storeDeleteNode, confirmNode, ackHole as storeAckHole, loadNodeVersions,
+  writeSnapshot, readSnapshot, listSnapshots, deleteNode as storeDeleteNode, confirmNode, ackHole as storeAckHole, loadNodeVersions,
 } from "./store.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "./diff.js";
+import { prTriage, listOpenPrs } from "./pr.js";
 import { resolveCoverage, selectAnchors, docPct as computeDocPct, citedPct as computeCitedPct, type CoverageResult } from "./coverage.js";
 import { resolveAnchorRefs } from "./refs.js";
 import { refreshAnalyzers } from "./analyzers/run.js";
@@ -430,6 +431,24 @@ export async function snapshot(root: string) {
   return { ok: true, ref: commit, branch: currentBranch(root), anchors: anchors.length, dirty: isDirty(root) };
 }
 
+/**
+ * Cache a snapshot of *any* commit, indexed straight from git objects — no
+ * checkout. `snapshot` can only ever capture the commit that happens to be on
+ * disk, which is the wrong shape for reviewing a pull request: its base is the
+ * merge-base of head and the target branch, and nobody has that checked out.
+ * Already-cached shas are left alone unless `force` (snapshots are immutable).
+ */
+export async function snapshotAt(root: string, ref: string, opts: { force?: boolean; label?: string } = {}) {
+  const sha = revParse(root, ref);
+  if (!sha) return { error: `cannot resolve ref "${ref}" in this repo` };
+  const existing = opts.force ? null : await readSnapshot(root, sha);
+  if (existing) return { ok: true, ref: sha, cached: true, anchors: existing.length };
+  const anchors = await indexCommit(root, sha);
+  if (!anchors) return { error: `could not read tree for ${sha.slice(0, 12)} (fetch it first?)` };
+  await writeSnapshot(root, sha, opts.label ?? (ref === sha ? null : ref), anchors, new Date().toISOString());
+  return { ok: true, ref: sha, cached: false, anchors: anchors.length };
+}
+
 /** List cached commit snapshots available to diff. */
 export async function snapshots(root: string) {
   return { snapshots: await listSnapshots(root) };
@@ -443,6 +462,19 @@ export async function snapshots(root: string) {
  */
 export async function diff(root: string, base: string, head?: string) {
   return computeDiff(root, base, head);
+}
+
+/**
+ * Triage a pull request: resolve its merge-base, snapshot both sides without a
+ * checkout, and return the lane breakdown plus a ranked worklist.
+ */
+export async function pr(root: string, input: string, opts: { fetch?: boolean } = {}) {
+  return prTriage(root, input, opts);
+}
+
+/** Open PRs for a repo slug (`owner/repo`) — the inbox. */
+export function prs(repoSlug: string) {
+  return listOpenPrs(repoSlug);
 }
 
 /** Diff a doc's prose between the versions that win on base vs head (grounds the code diff). */
