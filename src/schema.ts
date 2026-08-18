@@ -428,7 +428,49 @@ export interface Review {
   reviewedCommit: string | null;
   /** Hashes of the covered anchors at review time; a mismatch later = `stale`. */
   witnesses: BugWitness[];
+  /**
+   * Every body this mark has ever approved, per anchor, with where it happened.
+   *
+   * `witnesses` holds one hash per anchor and is overwritten on each re-mark, so
+   * signing the same symbol on a second branch destroyed the first sign-off — a
+   * stacked PR chain, where the same symbols recur with different hashes, loses
+   * approvals as you walk down it. An acceptance is really a statement about
+   * (anchor, body): it should hold wherever that body appears.
+   *
+   * Provenance is per entry because *how* the code got here matters. Arriving at
+   * an older approved body by switching refs is navigation; a new commit on this
+   * ref's own ancestry moving back to one is a revert, and only the second is
+   * worth interrupting someone for. See `resolveAcceptance`.
+   */
+  accepted?: AcceptedCitation[];
 }
+
+export interface AcceptedEntry {
+  bodyHash: string;
+  /** Commit the acceptance was made against — the ancestry probe for revert detection. */
+  commit: string | null;
+  branch: string | null;
+  at: string;
+}
+
+export interface AcceptedCitation {
+  anchorId: string;
+  /** Oldest first. Capped; see ACCEPTED_CAP. */
+  entries: AcceptedEntry[];
+}
+
+/**
+ * How a live body relates to what this mark has approved.
+ *   direct   — the newest acceptance on this ref's own ancestry; the ordinary case.
+ *   replayed — approved, but on a lineage this ref does not descend from.
+ *   reverted — approved earlier on THIS ancestry, then superseded there by a
+ *              different body, and the code has since moved back to it.
+ *   none     — never approved.
+ */
+export type AcceptanceVia = "direct" | "replayed" | "reverted" | "none";
+
+/** Keep the accepted set from growing without bound on a much-revised symbol. */
+export const ACCEPTED_CAP = 24;
 
 export interface ReviewStore {
   schemaVersion: number;

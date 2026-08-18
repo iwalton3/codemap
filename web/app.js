@@ -149,15 +149,31 @@ const coverageBar = (cov) => {
 };
 // Shared review/triage renderers so every surface (anchor, node, flow, diff) reads the
 // same: `viewed` (blue) + `signed` (green) marks, then the stakes buttons + severity chip.
+// A green tick earned three different ways is three different claims, so the mark
+// says which. `direct` you approved here; `replayed` you approved this exact body
+// on another branch (a stack walk, a rebase) — real, but borrowed; `reverted` the
+// code moved BACK to a body you approved before it was superseded on this very
+// history, which is someone undoing work and is the one worth interrupting for.
+const VIA_MARK = { replayed: ' ↻', reverted: ' ⟲' };
+const whereFrom = (p) => (p ? `${p.branch || (p.commit ? p.commit.slice(0, 7) : 'unknown')}${p.at ? ' · ' + p.at.slice(0, 10) : ''}` : 'unknown');
 const markBtnEl = (attestation, info, onMark) => {
   const st = (info && info.state) || 'unreviewed';
   const actor = info && info.actor;
+  const via = info && info.via;
   const agent = st === 'reviewed' && actor === 'agent'; // agent `checked`, not a human vouch
   const on = attestation === 'signed';
   // A human sign-off is green; an agent-checked vouch (or a viewed mark) is blue.
-  const cls = st === 'reviewed' ? (on && !agent ? 'on' : 'checked') : st === 'stale' ? 'stale' : '';
-  const mk = st === 'reviewed' ? ' ✓' : st === 'stale' ? ' ⚠' : '';
-  const tip = `${attestation}: ${st}${agent ? ' (agent-checked — click to confirm as human)' : st === 'stale' ? ' — code changed, click to re-approve at the live hash' : st === 'unreviewed' ? ' — click to mark' : ' — click to clear'}`;
+  const cls = st === 'reviewed'
+    ? (via === 'reverted' ? 'reverted' : on && !agent ? 'on' : 'checked')
+    : st === 'stale' ? 'stale' : '';
+  const mk = st === 'reviewed' ? (VIA_MARK[via] || ' ✓') : st === 'stale' ? ' ⚠' : '';
+  const tip = st !== 'reviewed'
+    ? `${attestation}: ${st}${st === 'stale' ? ' — code changed, click to re-approve at the live hash' : ' — click to mark'}`
+    : via === 'reverted'
+      ? `${attestation}: this body was approved on ${whereFrom(info.acceptedAt)}, then superseded on this branch by ${whereFrom(info.revertedFrom)} — the code has since moved BACK. Someone undid work; re-read before trusting the tick.`
+      : via === 'replayed'
+        ? `${attestation}: replayed — you approved this exact body on ${whereFrom(info.acceptedAt)}, which this branch does not descend from. Same code, approval borrowed from there.`
+        : `${attestation}: ${st}${agent ? ' (agent-checked — click to confirm as human)' : ' — click to clear'}`;
   return html`<button class="${cls}" title="${tip}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onMark(attestation, st, actor); }}">${attestation}${mk}</button>`;
 };
 const reviewRowEl = (review, viewed, onMark, level = 'code') => {

@@ -219,3 +219,8 @@ export function diffLineRanges(root: string, from: string, to: string): Map<stri
   }
   return out;
 }
+
+/** True when `maybeAncestor` is an ancestor of `ref` (or the same commit). */
+export function isAncestor(root: string, maybeAncestor: string, ref: string): boolean {
+  return spawnSync("git", ["merge-base", "--is-ancestor", maybeAncestor, ref], { cwd: root }).status === 0;
+}

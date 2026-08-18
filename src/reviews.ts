@@ -8,6 +8,9 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { type Review, type ReviewLevel, type ReviewState, type BugWitness } from "./schema.js";
 import { readReviews, writeReviews, readAnchorStore, loadNodes, readSnapshot } from "./store.js";
+import { resolveAcceptance, recordAcceptance } from "./acceptance.js";
+import { ACCEPTED_CAP, type AcceptedCitation, type AcceptedEntry, type AcceptanceVia } from "./schema.js";
+import { isAncestor, isGitRepo, currentBranch as gitBranch } from "./git.js";
 import { indexFile } from "./repo.js";
 import { headCommit } from "./git.js";
 
@@ -33,6 +36,17 @@ export interface ReviewInfo {
   /** "human" (verified) or "agent" (checked); absent legacy reviews are treated as human. */
   actor?: "human" | "agent";
   at?: string;
+  /**
+   * How the mark still applies: `direct` (approved here), `replayed` (approved on
+   * another lineage — a branch switch), `reverted` (approved earlier on THIS
+   * lineage and the code has moved back to it). Replay-green and just-signed-green
+   * are different claims, so the surface can say which it is.
+   */
+  via?: AcceptanceVia;
+  /** Where the acceptance being relied on happened, for `replayed` / `reverted`. */
+  acceptedAt?: { branch: string | null; commit: string | null; at: string };
+  /** For `reverted`: the newer body on this lineage that the code went back from. */
+  revertedFrom?: { branch: string | null; commit: string | null; at: string };
 }
 export interface ReviewPair {
   logical: ReviewInfo;
@@ -102,18 +116,38 @@ export async function markReviewed(
   // commit, not whatever the working tree happens to hold.
   const live = await liveHashes(root, anchorIds, input.ref);
   const witnesses = anchorIds.map((id) => ({ anchorId: id, bodyHash: live.get(id) ?? "sha256:absent" }));
+
   // Default to "agent": only an explicit human action (the web UI) grants a human
   // review. A human act with no attestation is a `signed` sign-off (the old `verified`).
   const actor = input.actor ?? "agent";
   const attestation: Attestation | undefined = input.attestation ?? (actor === "human" ? "signed" : undefined);
   const viewed = attestation === "viewed";
+
   const rs = await readReviews(root);
+  const sameMark = (r: Review) =>
+    r.target.kind === target.kind && r.target.id === target.id && r.level === input.level && isViewedRow(r) === viewed;
+
+  // Carry forward what this mark has already approved. The row is replaced below,
+  // so without this every earlier acceptance is dropped — and the same symbol
+  // signed on two branches of a stack would keep only the last one.
+  const prior = rs.reviews.find(sameMark);
+  const priorAccepted = new Map((prior ? acceptedOf(prior) : []).map((c) => [c.anchorId, c.entries]));
+  const commit = input.ref ?? headCommit(root);
+  const branch = isGitRepo(root) ? gitBranch(root) : null;
+  const stamp = new Date().toISOString();
+  const accepted: AcceptedCitation[] = anchorIds.map((id) => {
+    const hash = live.get(id);
+    const entries = priorAccepted.get(id) ?? [];
+    return {
+      anchorId: id,
+      entries: hash ? recordAcceptance(entries, { bodyHash: hash, commit, branch, at: stamp }, ACCEPTED_CAP) : entries,
+    };
+  });
+
   // `viewed` and vouches (`signed`/`checked`) are independent marks: a new vouch
   // replaces the prior vouch at this level (human `signed` supersedes agent `checked`,
   // as before), while a new `viewed` replaces only the prior `viewed` — never a sign-off.
-  rs.reviews = rs.reviews.filter(
-    (r) => !(r.target.kind === target.kind && r.target.id === target.id && r.level === input.level && isViewedRow(r) === viewed),
-  );
+  rs.reviews = rs.reviews.filter((r) => !sameMark(r));
   rs.reviews.push({
     id: "rev_" + randomBytes(6).toString("hex"),
     target,
@@ -124,6 +158,7 @@ export async function markReviewed(
     at: new Date().toISOString(),
     reviewedCommit: headCommit(root),
     witnesses,
+    accepted,
   });
   await writeReviews(root, rs.reviews);
   return { ok: true, level: input.level, attestation: attestation ?? "checked", anchors: anchorIds.length };
@@ -178,13 +213,48 @@ export async function reviewStatesFor(
   const live = await liveHashes(root, all, opts?.ref);
   const out = new Map<string, ReviewPair>();
   const wantViewed = opts?.viewed ?? false;
+
+  // Ancestry is what separates "this branch holds the older body" from "someone
+  // committed a move back to it". Memoised: a mark is made against a handful of
+  // commits, so this is a few `merge-base` calls, not one per anchor.
+  const viewRef = opts?.ref ?? headCommit(root);
+  const gitHere = isGitRepo(root);
+  const ancestry = new Map<string, boolean>();
+  const onAncestry = (commit: string | null): boolean => {
+    if (!commit) return true;              // legacy marks have no commit — treat as this lineage
+    if (!gitHere || !viewRef) return true;
+    if (commit === viewRef) return true;
+    const k = commit;
+    let v = ancestry.get(k);
+    if (v === undefined) { v = isAncestor(root, commit, viewRef); ancestry.set(k, v); }
+    return v;
+  };
+
   const forLevel = (t: Target, level: ReviewLevel): ReviewInfo => {
     // Default: only vouches (`signed`/`checked`) set the reviewed state — a `viewed`
     // row is exposure, not a blessing. With `{viewed:true}` we read exactly those rows.
     const r = rs.reviews.find((x) => x.target.kind === t.kind && x.target.id === t.id && x.level === level && isViewedRow(x) === wantViewed);
     if (!r) return { state: "unreviewed" };
-    const stale = r.witnesses.some((w) => live.get(w.anchorId) !== w.bodyHash);
-    return { state: stale ? "stale" : "reviewed", by: r.reviewer, actor: r.actor ?? "agent", at: r.at };
+    const base = { by: r.reviewer, actor: r.actor ?? "agent", at: r.at } as const;
+
+    const cites = acceptedOf(r);
+    const resolved = cites.map((c) => resolveAcceptance(c.entries, live.get(c.anchorId), onAncestry));
+    if (!resolved.length) return { state: "reviewed", ...base, via: "direct" };
+    // A mark covers several anchors; the weakest one decides, so a single drifted
+    // segment cannot hide behind the others.
+    if (resolved.some((x) => x.via === "none")) return { state: "stale", ...base };
+
+    const reverted = resolved.find((x) => x.via === "reverted");
+    if (reverted) {
+      return {
+        state: "reviewed", ...base, via: "reverted",
+        acceptedAt: entryStamp(reverted.entry),
+        revertedFrom: entryStamp(reverted.supersededBy),
+      };
+    }
+    const replayed = resolved.find((x) => x.via === "replayed");
+    if (replayed) return { state: "reviewed", ...base, via: "replayed", acceptedAt: entryStamp(replayed.entry) };
+    return { state: "reviewed", ...base, via: "direct" };
   };
   for (const t of targets) out.set(key(t), { logical: forLevel(t, "logical"), code: forLevel(t, "code") });
   return out;
@@ -192,6 +262,20 @@ export async function reviewStatesFor(
 
 export async function reviewStatus(root: string, target: Target, opts?: { viewed?: boolean }): Promise<ReviewPair> {
   return (await reviewStatesFor(root, [target], opts)).get(key(target))!;
+}
+
+/**
+ * A row's accepted sets, seeding from `witnesses` for marks written before
+ * accepted sets existed — a legacy sign-off accepted exactly the body it witnessed.
+ */
+const entryStamp = (e?: AcceptedEntry) => (e ? { branch: e.branch, commit: e.commit, at: e.at } : undefined);
+
+export function acceptedOf(r: Review): AcceptedCitation[] {
+  if (r.accepted?.length) return r.accepted;
+  return r.witnesses.map((w) => ({
+    anchorId: w.anchorId,
+    entries: [{ bodyHash: w.bodyHash, commit: r.reviewedCommit, branch: null, at: r.at }],
+  }));
 }
 
 export interface DerivedCodeReview {
