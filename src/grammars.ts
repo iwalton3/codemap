@@ -66,12 +66,30 @@ export interface ParserHandle {
   grammar: GrammarName;
 }
 
-/** A ready-to-use Parser for a path, or null if the language is unsupported. */
+const parserCache = new Map<GrammarName, Parser>();
+
+/**
+ * A ready-to-use Parser for a path, or null if the language is unsupported.
+ *
+ * The parser is CACHED per grammar and must not be `delete()`d by the caller.
+ * `Parser` and `Tree` live in tree-sitter's wasm heap, which the JS collector does
+ * not touch — minting one per file leaked both, and a process that indexed a few
+ * large trees (`indexCommit` over a 2000-file C# repo, twice) died on a bare
+ * `Aborted()` out of wasm. Long-lived processes reach this: `serve.js` and the MCP
+ * server snapshot a commit on demand. Callers own the TREE and must delete it;
+ * `indexFile`/`indexBlob` are the ones that do.
+ *
+ * Reuse is safe because `parse()` and the `indexSource` walk that consumes its
+ * nodes are both synchronous, so no second caller can interleave with them.
+ */
 export async function parserForPath(path: string): Promise<ParserHandle | null> {
   const grammar = grammarForPath(path);
   if (!grammar) return null;
+  const cached = parserCache.get(grammar);
+  if (cached) return { parser: cached, grammar };
   const lang = await loadLanguage(grammar);
   const parser = new Parser();
   parser.setLanguage(lang);
+  parserCache.set(grammar, parser);
   return { parser, grammar };
 }

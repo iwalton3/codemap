@@ -37,6 +37,7 @@ async function report(root: string): Promise<void> {
     }
     const anchors = indexSource(src, rel, handle.grammar, tree.rootNode);
     stats.push({ rel, grammar: handle.grammar, bytes: src.length, hasError: tree.rootNode.hasError, anchors: anchors.length });
+    tree.delete();   // wasm-heap memory JS will not collect — see `parserForPath`
   }
   const ms = Math.round(performance.now() - t0);
 

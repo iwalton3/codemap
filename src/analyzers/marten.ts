@@ -663,7 +663,10 @@ export async function buildMartenModel(repoRoot: string): Promise<Model> {
     const handle = await parserForPath(abs);
     if (!handle) continue;
     const tree = handle.parser.parse(await readFile(abs, "utf8"));
-    if (tree) collectFromFile(tree.rootNode, toPosixRel(repoRoot, abs), m);
+    if (!tree) continue;
+    // The tree is wasm-heap memory that JS will not collect — see `parserForPath`.
+    try { collectFromFile(tree.rootNode, toPosixRel(repoRoot, abs), m); }
+    finally { tree.delete(); }
   }
   return m;
 }

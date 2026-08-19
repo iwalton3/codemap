@@ -45,10 +45,17 @@ lines we own beats another thing that can become a worm/rugpull vector.
 ## Build & test
 
 ```sh
-npm test        # tsc build + node --test over dist/**/*.test.js
-npm run build   # emit dist/
+npm test         # tsc build + node --test over dist/**/*.test.js  (hermetic, ~2s)
+npm run test:e2e # dist/e2e/**/*.e2e.js — needs a browser and a real repo; ~60s
+npm run build    # emit dist/
 node dist/serve.js <repo|workspace.json> [port]   # web UI (default :4310)
 ```
+
+**`npm test` must stay hermetic and fast.** Anything needing an external
+prerequisite goes in `src/e2e/` and *skips* when the prerequisite is absent —
+puppeteer for the UI suite, a `jellyfin/jellyfin` clone for the PR suite (see
+Guinea-pig repos). The golden rule applies to the test tree too: no runtime deps,
+and no test that fails because a browser or a repo is missing.
 
 Requires **Node ≥ 23.4** — the store uses `node:sqlite` (`DatabaseSync`)
 unflagged, which lands there (emits an ExperimentalWarning; harmless).
@@ -146,3 +153,10 @@ analyzers/*          OPT-IN framework plugins (Marten) — never in the agnostic
 `mrepo-web` (scale, gitless), plus two private enterprise C# repos under
 `/working/` — the real targets (referred to as `Acme.API` / `Acme.Settlement` in
 examples throughout this repo).
+
+`~/Desktop/jellyfin` (override with `CODEMAP_E2E_GIT_REPO`) backs the PR e2e
+suite: a public C# repo with a genuine history, which is the only way to reach
+merged-PR base resolution, working-tree independence, and symbols a branch
+DELETES. Tests always run on a `--local` clone — never the named repo, which is
+somebody's working tree. Fixture shas live in `src/e2e/real-repo.ts`; a merged
+PR's `baseRefOid`/`headRefOid` are immutable, so they do not rot.

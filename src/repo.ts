@@ -18,7 +18,9 @@ export async function indexFile(absPath: string, relPath: string): Promise<Ancho
   const source = await readFile(absPath, "utf8");
   const tree = handle.parser.parse(source);
   if (!tree) return [];
-  return indexSource(source, relPath, handle.grammar, tree.rootNode);
+  // The tree lives in the wasm heap, which JS does not collect — see `parserForPath`.
+  try { return indexSource(source, relPath, handle.grammar, tree.rootNode); }
+  finally { tree.delete(); }
 }
 
 /**
@@ -34,7 +36,8 @@ export async function indexBlob(source: string, relPath: string): Promise<Anchor
   if (!handle) return [];
   const tree = handle.parser.parse(source);
   if (!tree) return [];
-  return indexSource(source, relPath, handle.grammar, tree.rootNode);
+  try { return indexSource(source, relPath, handle.grammar, tree.rootNode); }
+  finally { tree.delete(); }
 }
 
 export async function indexRepo(root: string): Promise<Anchor[]> {

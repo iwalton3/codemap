@@ -67,3 +67,23 @@ test("loc slices the parsed string, not raw UTF-8 bytes (multi-byte safe)", asyn
   const bufSlice = Buffer.from(src, "utf8").subarray(a!.loc!.startByte, a!.loc!.endByte).toString("utf8");
   assert.ok(!bufSlice.startsWith("public class"), "raw-buffer slice must drift here — proves the string slice is load-bearing");
 });
+
+test("parsers are reused per grammar — a Parser per file leaked the wasm heap", async () => {
+  // `Parser` and `Tree` are wasm-heap allocations the JS collector never touches.
+  // Minting a Parser per file and dropping every Tree on the floor made a process
+  // that indexed a couple of large C# trees die on a bare `Aborted()` out of wasm —
+  // reachable by `serve.js` and the MCP server, which snapshot commits on demand.
+  // (The e2e suite is the end-to-end regression test; this pins the mechanism,
+  // because the leak scales with TREE SIZE and small sources never reproduce it.)
+  const { parserForPath } = await import("./grammars.js");
+  const a = await parserForPath("a.cs");
+  const b = await parserForPath("b.cs");
+  const ts = await parserForPath("x.ts");
+  assert.ok(a && b && ts);
+  assert.equal(a!.parser, b!.parser, "the same grammar must hand back the same parser");
+  assert.notEqual(a!.parser, ts!.parser, "different grammars need different parsers");
+
+  // and the cached parser stays usable after a tree taken from it has been deleted
+  assert.ok((await indexBlob("public class A { void B() {} }", "a.cs")).length > 0);
+  assert.ok((await indexBlob("public class C { void D() {} }", "c.cs")).length > 0);
+});
