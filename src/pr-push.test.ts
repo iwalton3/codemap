@@ -210,8 +210,15 @@ test("only findings triage stands behind go out unasked", () => {
   // line closing it out, so the submitter stops defending a non-issue.
   assert.equal(pushVerdict(ann({ disposition: "refuted" }), true, none, { ids: new Set(["n1"]) }), "push");
 
-  // a note is not a finding and has no disposition to stand behind
-  assert.equal(pushVerdict(ann({ kind: "note", disposition: undefined }), true, none), "push");
+  // The gate is on DISPOSITION, not on kind. A `pointer` filed as "watch out for X"
+  // and then investigated and confirmed is a finding in everything but the field it
+  // was filed under — six were excluded on kind alone, including the highest-rated
+  // item in the whole review.
+  assert.equal(pushVerdict(ann({ kind: "pointer", disposition: "confirmed" }), true, none), "push");
+  assert.equal(pushVerdict(ann({ kind: "pointer", disposition: "open" }), true, none), "not-publishable");
+  // ...and nothing rides through on kind either: an untriaged note is not a claim
+  // anybody has stood behind, whatever it was called.
+  assert.equal(pushVerdict(ann({ kind: "note", disposition: undefined }), true, none), "not-publishable");
 });
 
 test("withdrawn stays on the map and off the pull request", () => {

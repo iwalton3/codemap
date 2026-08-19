@@ -17,7 +17,7 @@ import type { PrWalkthrough } from "./walkthrough.js";
 
 import type { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
-import { db, WORK_REF } from "./db.js";
+import { db, WORK_REF, ORPHAN_REF } from "./db.js";
 import { headCommit, currentBranch } from "./git.js";
 import {
   type Anchor, type AnchorStore, type State, type LogicalNode, type LogicalNodeType,
@@ -148,6 +148,61 @@ export async function writeSnapshot(root: string, ref: string, branch: string | 
  * no source, which is exactly the hunting the tool description promises it will not
  * have to do.
  */
+/**
+ * Keep anchors that are leaving the tree but that somebody's work still cites.
+ *
+ * Reindex replaces `@work` wholesale, so an anchor the new index does not produce
+ * is deleted — and every annotation, bug, review and citation aimed at it dangles
+ * with no record of what it ever meant. That is not hypothetical: it has already
+ * destroyed a batch of findings once.
+ *
+ * Retained rows are additive and never overwrite an existing one — the FIRST
+ * eviction holds the last state the anchor was actually seen in, and a later
+ * reindex must not replace it with something staler or re-derived.
+ */
+export function retainOrphans(root: string, anchors: Anchor[]): number {
+  if (!anchors.length) return 0;
+  const d = db(root);
+  const ins = d.prepare(
+    "INSERT OR IGNORE INTO anchors(ref,id,file,symbol_path,kind,disambiguator,body_hash,last_commit,start_byte,end_byte,start_line,end_line) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+  );
+  let n = 0;
+  d.exec("BEGIN");
+  try {
+    for (const a of anchors) {
+      ins.run(ORPHAN_REF, a.id, a.file, JSON.stringify(a.symbolPath), a.kind, a.disambiguator ?? null,
+        a.bodyHash, a.lastVerifiedCommit ?? null,
+        a.loc?.startByte ?? null, a.loc?.endByte ?? null, a.loc?.startLine ?? null, a.loc?.endLine ?? null);
+      n++;
+    }
+    d.exec("COMMIT");
+  } catch (e) { d.exec("ROLLBACK"); throw e; }
+  return n;
+}
+
+/** Retained anchors, by id. The last known state of code the tree no longer has. */
+export function readOrphans(root: string, ids?: string[]): Map<string, Anchor> {
+  const d = db(root);
+  const rows = (ids?.length
+    ? d.prepare(`SELECT * FROM anchors WHERE ref = ? AND id IN (${ids.map(() => "?").join(",")})`).all(ORPHAN_REF, ...ids)
+    : d.prepare("SELECT * FROM anchors WHERE ref = ?").all(ORPHAN_REF)) as unknown as AnchorRow[];
+  return new Map(rows.map((r) => [r.id, rowToAnchor(r)]));
+}
+
+/**
+ * Forget retained copies of anchors the tree has again.
+ *
+ * A symbol that comes back — a branch checked out, a revert, a rename undone — is
+ * live code once more, and leaving a stale copy beside it would give two answers to
+ * "what does this id mean".
+ */
+export function dropOrphans(root: string, ids: string[]): number {
+  if (!ids.length) return 0;
+  const d = db(root);
+  const r = d.prepare(`DELETE FROM anchors WHERE ref = ? AND id IN (${ids.map(() => "?").join(",")})`).run(ORPHAN_REF, ...ids);
+  return Number(r.changes ?? 0);
+}
+
 export function findAnchorsOutsideWork(root: string, ids: string[]): Map<string, { ref: string; anchor: Anchor }> {
   const out = new Map<string, { ref: string; anchor: Anchor }>();
   if (!ids.length) return out;
@@ -191,8 +246,12 @@ export async function readSnapshot(root: string, ref: string): Promise<Anchor[] 
  */
 export function dropLegacyOverloadSnapshots(root: string): string[] {
   const d = db(root);
+  // `@orphan` is not a snapshot: it is the last surviving record of code somebody
+  // filed a finding against, and it is EXPECTED to hold old-scheme disambiguators —
+  // that is what it retained. Rebuilding it is impossible, so it must never be swept
+  // up by a rule about caches that can be rebuilt.
   const stale = (d.prepare(
-    "SELECT DISTINCT ref FROM anchors WHERE ref <> '@work' AND disambiguator GLOB '[0-9]*'",
+    "SELECT DISTINCT ref FROM anchors WHERE ref <> '@work' AND ref <> '@orphan' AND disambiguator GLOB '[0-9]*'",
   ).all() as { ref: string }[]).map((r) => r.ref);
   if (!stale.length) return [];
   d.exec("BEGIN");

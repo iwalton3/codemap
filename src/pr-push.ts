@@ -16,7 +16,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { PUBLISHABLE, type Annotation, type Disposition } from "./schema.js";
-import { readAnnotations, writeAnnotations, readAnchorStore, readPushes, writePush, readSnapshot } from "./store.js";
+import { readAnnotations, writeAnnotations, readAnchorStore, readPushes, writePush, readSnapshot, readOrphans } from "./store.js";
 import { diffHunks } from "./git.js";
 import { prTriage, anchorSpans, fetchPrMeta, type PrMeta } from "./pr.js";
 import { LANE_POLICY } from "./lanes.js";
@@ -191,7 +191,13 @@ export function pushVerdict(
   // Named ids are the human picking a specific batch in the editor; that choice
   // outranks the disposition default, which is how a refutation worth closing out
   // gets published on request.
-  if (!filter.ids?.has(a.id) && (a.kind === "finding" || a.kind === "question")) {
+  //
+  // The gate is on DISPOSITION, not on kind. A `pointer` filed as "watch out for X
+  // when reviewing this" and then investigated and confirmed is a finding in
+  // everything but the field it was filed under — and the six that were excluded on
+  // kind alone included the highest-rated item in the whole review. What triage
+  // concluded outranks what it was called when nobody knew yet.
+  if (!filter.ids?.has(a.id)) {
     const allowed = filter.dispositions ?? PUBLISHABLE;
     if (!allowed.includes(a.disposition ?? "open")) return "not-publishable";
   }
@@ -522,7 +528,12 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
     return undefined;
   };
 
+  // Retained anchors are unioned in: a finding whose symbol the tree no longer has
+  // still knows the file and line it was about, and if the pull request touches that
+  // file the comment can be placed exactly as before. Without this an orphan reports
+  // as "not in this pull request", which is both wrong and unactionable.
   const allAnchors = new Map((await readAnchorStore(root)).anchors.map((x) => [x.id, x]));
+  for (const [id, a] of readOrphans(root)) if (!allAnchors.has(id)) allAnchors.set(id, a);
   // The PR head's bodies, from the snapshot `prContext` already cached — so a
   // finding's witness can be checked against what this pull request actually holds
   // without another git read.

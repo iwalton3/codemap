@@ -2443,7 +2443,12 @@ class PrStoryPage extends Component {
     for (const c of (this.state.story && this.state.story.chapters) || []) {
       for (const st of c.steps) {
         for (const f of st.annotations || []) {
-          if (f.kind !== 'finding' && f.kind !== 'question') continue;
+          // Every kind, not just findings. Pointers were filtered out here and so
+          // were never OFFERED for publishing — six of them on the first real batch
+          // had been investigated, confirmed and given submitter-facing text, and
+          // the highest-rated item in the whole review was invisible. What triage
+          // concluded is what decides; the kind it was filed under is history.
+          if (f.kind === 'note') continue;
           out.push({ f, step: st, chapter: c });
         }
       }
@@ -2514,7 +2519,9 @@ class PrStoryPage extends Component {
       return html`<div class="prfcmt">
         ${when(f.comment, () => html`<span class="prfcmttext" title="what the submitter reads">${f.comment}</span>`)}
         ${when(!f.comment, () => html`<span class="dim">no submitter-facing version yet</span>`)}
-        ${when(f.disposition && f.disposition !== 'open', () => html`<span class="prfdisp d-${f.disposition}">${f.disposition}</span>`)}
+        ${when(f.kind && f.kind !== 'finding', () => html`<span class="prfkind" title="filed as a ${f.kind}. What triage concluded is what decides whether it goes out.">${f.kind}</span>`)}
+        <span class="prfdisp d-${f.disposition || 'open'}">${f.disposition || 'open'}</span>
+        ${when(f.targetResolved === false, () => html`<span class="warn" title="the code this points at is not in the working tree${f.targetAt ? ' — last seen at ' + f.targetAt : ' and was not retained'}. It cannot be placed on the diff; set a publish path.">⚠ target gone</span>`)}
         ${when(f.publishPath, () => html`<span class="dim" title="published against this file, because the code it is about is not in the diff">→ <code>${f.publishPath}</code></span>`)}
         ${when(f.revisions && f.revisions.length, () => html`<span class="dim" title="${f.revisions.map(r => `${r.at.slice(0, 10)} ${r.by}`).join('\n')}">· revised ${f.revisions.length}×</span>`)}
         <button class="ghost" on-click="${() => { this.state.findingErr = null; this.state.editFinding = { id: f.id, comment: f.comment || '', disposition: f.disposition || 'open', publishPath: f.publishPath || '' }; }}">✎ edit</button>

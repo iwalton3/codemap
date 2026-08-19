@@ -336,15 +336,15 @@ test("the queue is brief by default, because the full form could not be read at 
     assert.equal((brief.queue[0] as any).code, undefined, "no source inlined");
     assert.equal(brief.queue[0]!.text, undefined);
     assert.match(brief.queue[0]!.textPreview!, /negative amounts/);
-    assert.equal(brief.queue[0]!.disposition, "open");
+    assert.equal(brief.queue[0]!.disposition, "confirmed", "a human writing it IS the assertion");
     assert.equal(brief.queue[0]!.publishState, "approved", "a human wrote it, so it is theirs to publish");
     assert.match(brief.hint!, /brief:false/);
 
     assert.match((await reviewQueue(root, { brief: false })).queue[0]!.code!, /throw new Error/);
 
     // and it can be filtered and paged, which is what makes 248 items workable
-    assert.equal((await reviewQueue(root, { disposition: "confirmed" })).queue.length, 0);
-    assert.equal((await reviewQueue(root, { disposition: "open" })).queue.length, 1);
+    assert.equal((await reviewQueue(root, { disposition: "confirmed" })).queue.length, 1);
+    assert.equal((await reviewQueue(root, { disposition: "open" })).queue.length, 0);
     assert.equal((await reviewQueue(root, { publishState: "local" })).queue.length, 0);
     const paged = await reviewQueue(root, { limit: 1, offset: 1 });
     assert.equal(paged.queue.length, 0);
@@ -416,5 +416,26 @@ test("a published finding nobody was assigned is still findable", async () => {
     assert.deepEqual(posted.queue.map((q) => q.id), [loose.id]);
     assert.equal(posted.queue[0]!.postedRef!.commentId, 3816014418, "with the comment it landed in");
     assert.equal(posted.queue[0]!.assignment, undefined, "and no assignment invented for it");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("what triage concluded outranks what the finding was called", async () => {
+  // Six pointers on the first real batch carried `disposition: confirmed` and a
+  // finished submitter-facing comment, and not one was ever OFFERED for publishing.
+  // The highest-rated item in the whole review was invisible. A declined finding is
+  // a decision; an unoffered one is a hole.
+  const { root, anchorId } = await fixture();
+  try {
+    const p = await annotate(root, {
+      targetKind: "anchor", targetId: anchorId, text: "watch the credit gate when reviewing this",
+      kind: "pointer", author: "agent:pr-first-pass",
+    }) as any;
+    const of = async () => (await readAnnotations(root)).annotations.find((a) => a.id === p.id)!;
+    assert.equal((await of()).disposition, "open", "an agent's is a proposal awaiting triage");
+
+    // ...and triage can promote it, without it having to be re-filed as a `finding`
+    await reviseAnnotation(root, { id: p.id, disposition: "confirmed", comment: "the credit gate is not enforced", by: "me" });
+    assert.equal((await of()).disposition, "confirmed");
+    assert.equal((await of()).kind, "pointer", "the kind it was filed under is history, not a verdict");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

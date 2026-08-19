@@ -116,6 +116,25 @@ async function cmdPrPush(
   for (const e of result.errors) console.error(`  ! ${e}`);
 }
 
+/** What is pointing at code the tree no longer has. See ops.orphanedWork. */
+async function cmdOrphans(root: string): Promise<void> {
+  const r = await ops.orphanedWork(root);
+  if (!r.total) { console.log("nothing is pointing at missing code."); return; }
+  console.log(`${r.total} reference(s) to code the working tree does not have:\n`);
+  const show = (label: string, rows: any[], note: string) => {
+    if (!rows.length) return;
+    console.log(`  ${label} — ${rows.length}  (${note})`);
+    for (const x of rows) {
+      console.log(`    ${x.ref}  ${x.file ?? "?"}${x.line ? ":" + x.line : ""}  ${x.symbol ?? ""}`);
+      console.log(`      ${x.label}${x.at ? `   [last seen at ${x.at}]` : ""}${x.posted ? `   [POSTED to PR #${x.posted.pr}]` : ""}`);
+    }
+    console.log("");
+  };
+  show("off-tree", r.offTree as any[], "exists on a branch — check that ref out, or work against it");
+  show("retained", r.retained as any[], "gone from the tree; last known state kept, still re-anchorable");
+  show("lost", r.lost as any[], "no record anywhere — the finding's own text is all that survives");
+}
+
 async function cmdPrIngest(root: string, prInput: string, files: string[], dryRun: boolean): Promise<void> {
   if (!prInput || !files.length) { console.error("usage: codemap pr-ingest <pr> [--dry-run] <findings.jsonl...>"); process.exit(2); }
   const { readFile } = await import("node:fs/promises");
@@ -139,7 +158,7 @@ async function cmdPrIngest(root: string, prInput: string, files: string[], dryRu
 }
 
 function usage(): never {
-  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n                     [--summary TEXT] [--approve | --request-changes]\n  codemap pr-triage <pr> [--repo path]        derive stakes+complexity for the PR's symbols\n  codemap pr-pull-viewed <pr|--all> [--repo path] [--dry-run] [--force] [--limit N] [--max-prs N]\n                                              import GitHub's viewed ticks as `viewed`\n  codemap analyze marten [repo] [--verbose] [--emit]");
+  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap orphans  [repo]              findings/reviews pointing at code the tree no longer has\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n                     [--summary TEXT] [--approve | --request-changes]\n  codemap pr-triage <pr> [--repo path]        derive stakes+complexity for the PR's symbols\n  codemap pr-pull-viewed <pr|--all> [--repo path] [--dry-run] [--force] [--limit N] [--max-prs N]\n                                              import GitHub's viewed ticks as `viewed`\n  codemap analyze marten [repo] [--verbose] [--emit]");
   process.exit(2);
 }
 
@@ -166,6 +185,11 @@ async function cmdInit(root: string): Promise<void> {
   const r = await ops.init(root);
   console.log(`indexed ${r.anchors} anchors across ${r.files} files`);
   console.log(`baseline commit: ${r.commit ?? "(no git)"}${r.commit ? ` (snapshotted, branch ${r.branch ?? "?"})` : ""}`);
+  // A reindex is routine; losing review history to one should not be. Say what this
+  // stranded, and where to go and look at it.
+  const o = (r as { orphans?: { retained: number; recovered: number } }).orphans;
+  if (o?.retained) console.log(`${o.retained} anchor(s) left the tree with findings or reviews on them — kept, run \`codemap orphans\` to see what and where`);
+  if (o?.recovered) console.log(`${o.recovered} previously-missing anchor(s) are back in the tree`);
 }
 
 async function cmdSnapshot(root: string): Promise<void> {

@@ -16,6 +16,16 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 
 export const WORK_REF = "@work";
+/**
+ * Where an anchor goes when the tree no longer has it but somebody's work still
+ * points at it.
+ *
+ * Reserved like `@work`, and deliberately NOT a snapshot: a snapshot is a cache of
+ * a commit and can be rebuilt or dropped, whereas this is the last surviving record
+ * of what a finding was about. Nothing a human wrote should be able to disappear
+ * because a machine re-read the tree.
+ */
+export const ORPHAN_REF = "@orphan";
 
 const cache = new Map<string, DatabaseSync>();
 

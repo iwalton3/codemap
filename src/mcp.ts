@@ -587,6 +587,19 @@ const tools: Tool[] = [
     }),
   },
   {
+    name: "orphans",
+    description:
+      "What is pointing at code the working tree no longer has — \"what did that refactor break?\"\n\n"
+      + "An anchor id is derived from file + symbol path + signature, so it survives a line move or a body rewrite, but NOT a rename, a deletion, or a change to an overload's parameter list. Reindex replaces the live index wholesale, so an annotation whose target the new index does not produce used to be silently stranded.\n\n"
+      + "Three buckets, and the difference is the point:\n"
+      + "  • `offTree` — the symbol is in a cached commit snapshot, almost always a PR branch. Nothing is lost; the working tree is just on another branch. Re-run against that ref.\n"
+      + "  • `retained` — gone from the tree and every snapshot, but its last known file/symbol/line/hash was kept because work pointed at it. Readable and re-anchorable.\n"
+      + "  • `lost` — no record anywhere. Filed before retention existed. Irrecoverable; the finding's own `comment` and `text` are all that survive.\n\n"
+      + "Items carrying `posted` are live on a pull request as review comments — a third party can see them, so the map disagreeing with GitHub about them is the worst case.",
+    inputSchema: obj({}),
+    handler: (_a, c) => ops.orphanedWork(c.universe.path),
+  },
+  {
     name: "findings",
     description: "Every finding and question on the map, whoever raised them and whether or not anyone was asked to act.\n\n`review_queue` answers \"what have I been asked to do\" and only lists items with an assignment — so a finding raised by `annotate` and published to a pull request was invisible to every query afterwards. This one answers \"what is on this map, and where has it got to\": filter by `disposition` (what triage concluded) and `publishState` (local / approved / withdrawn / posted), and `posted` items carry `postedRef` with the review and comment they landed in.\n\nBrief by default, same as `review_queue`.",
     inputSchema: obj({

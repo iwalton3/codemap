@@ -26,7 +26,7 @@ import {
   readBugs, writeBugs, readAnnotations, writeAnnotations, readCoverage, writeCoverage, readReviews,
   writeSnapshot, readSnapshot, listSnapshots, deleteNode as storeDeleteNode, confirmNode, ackHole as storeAckHole, loadNodeVersions,
   writeReviews, remapNodeCitations, readTriage as triageRead, writeTriage as triageWrite, dropLegacyOverloadSnapshots, findAnchorsOutsideWork,
-  readWalkthroughs, writeWalkthrough, readPushes, bodyHashAt,
+  readWalkthroughs, writeWalkthrough, readPushes, bodyHashAt, retainOrphans, readOrphans, dropOrphans,
 } from "./store.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "./diff.js";
@@ -339,11 +339,113 @@ export async function reindex(root: string) {
   // are the only record of what the old ids meant.
   const remapped = await migrateOverloads(root, anchors);
 
+  // Anything somebody's work still points at, that this index no longer produces,
+  // is kept before the store is overwritten. Reindex replaces `@work` wholesale, so
+  // without this an annotation's target is simply deleted — which has already
+  // destroyed a batch of findings once, and needs no PR or branch mismatch to
+  // happen: a rename, a checkout, or a signature change on an overload is enough.
+  const retained = await retainReferencedAnchors(root, anchors);
+
   const state: State = { schemaVersion: SCHEMA_VERSION, lastVerifiedCommit: commit, branch, grammarVersions: GRAMMAR_VERSIONS };
   await writeStore(root, anchors, state);
   if (commit) await writeSnapshot(root, commit, branch, anchors, new Date().toISOString());
   const files = new Set(anchors.map((a) => a.file)).size;
-  return { ok: true, anchors: anchors.length, files, commit, branch, ...(remapped ? { remapped } : {}) };
+  return {
+    ok: true, anchors: anchors.length, files, commit, branch,
+    ...(remapped ? { remapped } : {}),
+    ...(retained.retained || retained.recovered ? { orphans: retained } : {}),
+  };
+}
+
+/**
+ * What is pointing at code the working tree no longer has — "what did that refactor
+ * break?", which there was previously no way to ask.
+ *
+ * Three outcomes, and the difference is the whole point of asking:
+ *   `offTree`   the symbol exists in a cached commit snapshot — a PR branch, most
+ *               likely. Nothing is lost; the tree is just on a different branch.
+ *   `retained`  gone from the tree and from every snapshot, but its last known
+ *               state was kept because work pointed at it. Readable, re-anchorable.
+ *   `lost`      no record anywhere. Filed before retention existed, or the record
+ *               was evicted. This is the irrecoverable bucket.
+ */
+export async function orphanedWork(root: string) {
+  const [annStore, bugStore, store] = await Promise.all([readAnnotations(root), readBugs(root), readAnchorStore(root)]);
+  const live = new Set(store.anchors.map((a) => a.id));
+
+  const refs: { id: string; kind: "annotation" | "bug"; ref: string; label: string; posted?: Annotation["postedRef"] }[] = [];
+  for (const a of annStore.annotations) {
+    if (a.target.kind !== "anchor" || live.has(a.target.id)) continue;
+    refs.push({
+      id: a.target.id, kind: "annotation", ref: a.id,
+      label: (a.comment || a.text || "").split("\n")[0]?.slice(0, 120) ?? "",
+      ...(a.postedRef ? { posted: a.postedRef } : {}),
+    });
+  }
+  for (const b of bugStore.bugs) {
+    for (const id of b.anchors) if (!live.has(id)) refs.push({ id, kind: "bug", ref: b.id, label: b.title });
+  }
+  if (!refs.length) return { total: 0, offTree: [], retained: [], lost: [] };
+
+  const ids = [...new Set(refs.map((r) => r.id))];
+  const inSnapshots = findAnchorsOutsideWork(root, ids);
+  const kept = readOrphans(root, ids);
+
+  const where = (id: string) => {
+    const s = inSnapshots.get(id);
+    if (s) return { bucket: "offTree" as const, at: s.ref, anchor: s.anchor };
+    const k = kept.get(id);
+    if (k) return { bucket: "retained" as const, at: "@orphan", anchor: k };
+    return { bucket: "lost" as const, at: null, anchor: null };
+  };
+
+  const out = { total: refs.length, offTree: [] as unknown[], retained: [] as unknown[], lost: [] as unknown[] };
+  for (const r of refs) {
+    const w = where(r.id);
+    out[w.bucket].push({
+      ...r, at: w.at,
+      ...(w.anchor ? { file: w.anchor.file, symbol: w.anchor.symbolPath.join(" › "), line: w.anchor.loc?.startLine } : {}),
+    });
+  }
+  return out;
+}
+
+/** Every anchor id any stored work points at — the set a reindex must not silently drop. */
+export async function referencedAnchorIds(root: string): Promise<Set<string>> {
+  const [annStore, bugStore, reviewStore, triageStore, nodes] = await Promise.all([
+    readAnnotations(root), readBugs(root), readReviews(root), triageRead(root), loadNodes(root),
+  ]);
+  const ids = new Set<string>();
+  for (const a of annStore.annotations) if (a.target.kind === "anchor") ids.add(a.target.id);
+  for (const b of bugStore.bugs) {
+    for (const id of b.anchors) ids.add(id);
+    for (const w of b.witnesses ?? []) ids.add(w.anchorId);
+  }
+  for (const r of reviewStore.reviews) if (r.target.kind === "anchor") ids.add(r.target.id);
+  for (const t of triageStore.triage) if (t.target.kind === "anchor") ids.add(t.target.id);
+  for (const n of nodes) for (const id of n.anchors) ids.add(id);
+  return ids;
+}
+
+/**
+ * Retain the referenced anchors this index drops, and release the ones it brings
+ * back.
+ *
+ * Both halves matter. A symbol that returns — a branch checked out, a revert, a
+ * rename undone — is live code again, and a stale retained copy beside it would give
+ * two answers to what its id means.
+ */
+async function retainReferencedAnchors(root: string, fresh: Anchor[]): Promise<{ retained: number; recovered: number }> {
+  let stored: Anchor[];
+  try { stored = (await readAnchorStore(root)).anchors; } catch { return { retained: 0, recovered: 0 }; }
+  const referenced = await referencedAnchorIds(root);
+  if (!referenced.size) return { retained: 0, recovered: 0 };
+
+  const freshIds = new Set(fresh.map((a) => a.id));
+  const going = stored.filter((a) => referenced.has(a.id) && !freshIds.has(a.id));
+  const retained = retainOrphans(root, going);
+  const recovered = dropOrphans(root, [...freshIds].filter((id) => referenced.has(id)));
+  return { retained, recovered };
 }
 
 /** See migrate-overloads.ts. Returns null when there is nothing from the old scheme. */
@@ -1733,7 +1835,12 @@ export async function getAnchor(root: string, id: string) {
   const [store, nodes, bugStore, annStore] = await Promise.all([
     readAnchorStore(root), loadNodes(root), readBugs(root), readAnnotations(root),
   ]);
-  const anchor = store.anchors.find((a) => a.id === id);
+  let anchor = store.anchors.find((a) => a.id === id);
+  // Not in the tree, but retained because somebody's work points at it. Returning
+  // the last known state beats "no anchor": the finding on it is real, and the
+  // reader needs to know the CODE is gone rather than that the id is wrong.
+  const orphaned = !anchor;
+  if (!anchor) anchor = readOrphans(root, [id]).get(id);
   if (!anchor) return { error: `no anchor "${id}"` };
   // Resolve current code live so it is always exact.
   let code: string | null = null;
@@ -1758,8 +1865,12 @@ export async function getAnchor(root: string, id: string) {
     // WHICH version this is. The working tree is a third thing during a PR review —
     // neither the PR under review nor whatever branch the reader last had in mind —
     // and a response that just says "current" invites all three to be conflated.
-    sourceRef: "@work",
+    sourceRef: orphaned ? "@orphan" : "@work",
     sourceCommit: headCommit(root),
+    ...(orphaned ? {
+      orphaned: true,
+      orphanedNote: `this symbol is no longer in the working tree — ${anchor.file} › ${anchor.symbolPath.join(" › ")} was retained because findings or reviews point at it. \`code\` is null; the last known body hash is ${anchor.bodyHash}. It may exist on a branch: check a PR head before concluding it was deleted.`,
+    } : {}),
     // citedBy carries the trust ladder so "what documents this code, and can I
     // trust it?" is answerable from the anchor alone.
     citedBy: citing.map((n) => {
@@ -1947,9 +2058,20 @@ export async function changedSince(
  * entire body. The "no floating claims" invariant is unchanged: a node still can
  * not exist with zero anchors, so a call where NOTHING resolves is still an error.
  */
-async function resolveRefs(root: string, refs: string[], scopeRef?: string): Promise<{ ids: string[]; errors: string[] }> {
+async function resolveRefs(
+  root: string, refs: string[], scopeRef?: string,
+  opts: { includeOrphans?: boolean } = {},
+): Promise<{ ids: string[]; errors: string[] }> {
   const store = await readAnchorStore(root);
   let anchors = store.anchors;
+  if (opts.includeOrphans) {
+    // Code the tree no longer has, that somebody's work still points at. Resolvable
+    // so a filed finding can still be read and revised — an orphan that cannot even
+    // be addressed is indistinguishable from one that was deleted.
+    const byId = new Map(anchors.map((a) => [a.id, a]));
+    for (const [id, a] of readOrphans(root)) if (!byId.has(id)) byId.set(id, a);
+    anchors = [...byId.values()];
+  }
   if (scopeRef) {
     // A symbol that exists only on a PR's head is not a floating claim — it is in
     // this store, under that commit's ref. Union those anchors in so a finding can
@@ -2354,6 +2476,10 @@ async function witnessAt(
     const live = (await liveAnchors(root, [stored.file])).get(anchorId);
     if (live) return { witness: { anchorId, bodyHash: live.bodyHash }, sourceRef: "@work" };
   }
+  // Code the tree no longer has. The retained body is the last one anybody saw, and
+  // saying so is more use than recording no witness at all.
+  const orphan = readOrphans(root, [anchorId]).get(anchorId);
+  if (orphan) return { witness: { anchorId, bodyHash: orphan.bodyHash }, sourceRef: "@orphan" };
   return { sourceRef: ref ?? "@work" };
 }
 
@@ -2368,7 +2494,10 @@ export async function annotate(
   if (input.targetKind === "anchor") {
     // A single-target ref is strict: there is nothing partial to accept, and the
     // ambiguity error now carries the candidates' ids and line ranges.
-    const r = await resolveRefs(root, [input.targetId], input.ref);
+    // Orphans included: re-filing against code the tree no longer has is exactly what
+    // someone needs when a reindex has stranded a finding, and refusing it leaves the
+    // work unreachable rather than safe.
+    const r = await resolveRefs(root, [input.targetId], input.ref, { includeOrphans: true });
     if (!r.ids.length) return { error: r.errors.join("; ") };
     targetId = r.ids[0]!;
     const w = await witnessAt(root, targetId, input.ref);
@@ -2401,7 +2530,15 @@ export async function annotate(
     ...(severity ? { severity } : {}),
     ...(category ? { category } : {}),
     ...(c.comment ? { comment: c.comment } : {}),
-    ...(kind === "finding" || kind === "question" ? { disposition: checkDisposition(input.disposition) ?? "open" } : {}),
+    // Every kind carries one, so triage can promote any of them — a `pointer` that
+    // investigation confirms is a finding in all but the field it was filed under.
+    //
+    // The default follows authorship, exactly as `isElected` does: a human writing
+    // it IS the assertion, so `confirmed`; an agent's is a proposal awaiting triage,
+    // so `open`. Anything else would either make the human re-affirm their own
+    // finding before it could be sent, or let an unreviewed agent claim through.
+    disposition: checkDisposition(input.disposition)
+      ?? ((input.author ?? "agent").startsWith("agent") ? "open" : "confirmed"),
     ...(input.publishPath?.trim() ? { publishPath: input.publishPath.trim() } : {}),
     ...(Number.isFinite(input.publishLine) ? { publishLine: Math.floor(input.publishLine as number) } : {}),
     resolved: false,
@@ -2596,6 +2733,14 @@ export interface QueueItem {
   comment?: string;
   disposition?: Disposition;
   publishState?: PublishState;
+  /**
+   * False when the target is not in the working tree. The queue used to serve a
+   * dangling id with nothing marking it — while `annotate` and `get_anchor` both
+   * rejected the same id — so an agent could work from it and never learn the code
+   * was gone. `targetAt` says where it was found instead.
+   */
+  targetResolved?: boolean;
+  targetAt?: string;
   postedRef?: Annotation["postedRef"];
   line?: number;
   author: string;
@@ -2638,6 +2783,7 @@ export async function reviewQueue(
 ) {
   const store = await readAnnotations(root);
   const pushedIds = await pushedAnnotationIds(root);
+  const liveIds = new Set((await readAnchorStore(root)).anchors.map((a) => a.id));
   const assignedOnly = opts.assignedOnly !== false;
   let pending = store.annotations.filter((a) => assignedOnly
     ? a.assignment && !a.resolved && (opts.includeAnswered || !a.outcome)
@@ -2658,6 +2804,21 @@ export async function reviewQueue(
   // outright, so the work could not start until it had been dumped to a file and
   // mined with jq. Full source is one `get_anchor` away; a queue you cannot read is
   // not a queue.
+  // A dangling target is not an error here — the finding is still real, and the
+  // comment on it is the durable artefact. It just has to be VISIBLE, so nobody
+  // works from an id that `annotate` and `get_anchor` will both reject.
+  const offTree = findAnchorsOutsideWork(root, [...new Set(
+    pending.filter((a) => a.target.kind === "anchor" && !liveIds.has(a.target.id)).map((a) => a.target.id),
+  )]);
+  const keptAnchors = readOrphans(root, [...new Set(
+    pending.filter((a) => a.target.kind === "anchor" && !liveIds.has(a.target.id)).map((a) => a.target.id),
+  )]);
+  const targetState = (a: Annotation) => {
+    if (a.target.kind !== "anchor" || liveIds.has(a.target.id)) return {};
+    const at = offTree.get(a.target.id)?.ref ?? (keptAnchors.has(a.target.id) ? "@orphan" : undefined);
+    return { targetResolved: false, ...(at ? { targetAt: at } : {}) };
+  };
+
   if (opts.brief !== false) {
     const brief: QueueItem[] = page.map((a) => ({
       id: a.id, kind: a.kind, severity: a.severity, category: a.category,
@@ -2665,6 +2826,7 @@ export async function reviewQueue(
       comment: a.comment,
       textPreview: a.text.length > 300 ? a.text.slice(0, 300) + "…" : a.text,
       line: a.line, author: a.author, assignment: a.assignment, target: a.target,
+      ...targetState(a),
       ...(a.postedRef ? { postedRef: a.postedRef } : {}),
     }));
     return {
@@ -2717,6 +2879,7 @@ export async function reviewQueue(
       comment: a.comment,
       disposition: a.disposition ?? "open",
       publishState: publishStateOf(a, pushedIds),
+      ...targetState(a),
       ...(a.postedRef ? { postedRef: a.postedRef } : {}),
     });
   }

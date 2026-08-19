@@ -117,6 +117,8 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       // blew an agent's token limit; a browser has no such ceiling, and the queue
       // view renders the file, symbol and source that brief drops.
       return ops.reviewQueue(root, { includeAnswered: q.get("answered") === "1", brief: q.get("brief") === "1" });
+    case "/api/orphans":
+      return ops.orphanedWork(root);
     case "/api/questions":
       return ops.listQuestions(root, { includeResolved: q.get("all") === "1" });
     // Writes: `checkStale` re-indexes on a branch change, applies the index update
