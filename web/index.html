@@ -581,6 +581,9 @@
     .prfeditacts { display: flex; gap: 6px; }
     /* Elected findings that cannot land on this diff. Loud on purpose: the whole
        point is that they used to disappear without the plan admitting it. */
+    .prfpick { flex: none; display: flex; align-items: center; padding-top: 4px; }
+    .prfpicked { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px;
+      padding: 6px 8px; margin-bottom: 8px; border: 1px solid var(--accent); border-radius: 5px; }
     .pushsum { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
     .pushsum label { display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; color: var(--dim); }
     .pushsum textarea { width: 100%; box-sizing: border-box; font: inherit; font-size: 12.5px; resize: vertical;

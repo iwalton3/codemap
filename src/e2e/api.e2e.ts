@@ -161,6 +161,29 @@ describe("HTTP write routes", () => {
     assert.doesNotMatch(String(out.error), /header|431|too large/i);
   });
 
+  test("the resolve-sync routes are reachable and fail on the pull request, not the wiring", async () => {
+    // Three POST routes added at once behind one `startsWith` prefix check — the last
+    // time a route was added without a test that exercised it, the handler existed and
+    // the dispatch did not.
+    for (const path of ["/api/pr/resolve_plan", "/api/pr/resolve_push", "/api/pr/resolve_pull"]) {
+      const out = await post(path, { pr: "999999" });
+      assert.ok(out.error, `${path} should reach the PR lookup`);
+      assert.doesNotMatch(String(out.error), /unknown route|not found/i, `${path} is not dispatched`);
+    }
+  });
+
+  test("the queue can list beyond the assignment queue over HTTP", async () => {
+    const raised = await post("/api/annotate", {
+      targetKind: "anchor", targetId: anchorId, text: "e", comment: "unassigned but real",
+      kind: "finding", author: "human",
+    });
+    assert.ok(!raised.error, raised.error);
+    const assigned = await (await fetch(`${server.url}/api/queue?u=${u}`)).json() as any;
+    assert.equal(assigned.queue.find((q: any) => q.id === raised.id), undefined, "not in the assignment queue");
+    const all = await (await fetch(`${server.url}/api/queue?u=${u}&all=1`)).json() as any;
+    assert.ok(all.queue.find((q: any) => q.id === raised.id), "but findable in the full list");
+  });
+
   test("a review write hands back the resulting mark", async () => {
     const out = await post("/api/review", { targetKind: "anchor", targetId: anchorId, level: "code", attestation: "signed" });
     assert.ok(!out.error, out.error);

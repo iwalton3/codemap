@@ -36,7 +36,11 @@ import { validateWalkthrough, buildWalkthrough, walkCoverage, staleChapters, typ
 import { LANE_POLICY } from "./lanes.js";
 import { remapOverloadIds, applyRemap } from "./migrate-overloads.js";
 import { parseAgentLines, ingestAgentReview } from "./pr-ingest.js";
-import { planPrPush, executePrPush, pullViewedFromGitHub, isAgentAuthored, publishStateOf, type PushPlan, type PublishState, type ReviewEvent } from "./pr-push.js";
+import {
+  planPrPush, executePrPush, pullViewedFromGitHub, isAgentAuthored, publishStateOf,
+  fetchReviewThreads, planResolveSync, pushResolvedToGitHub, pullResolvedFromGitHub, ghViewer,
+  type PushPlan, type PublishState, type ReviewEvent, type ResolveSyncPlan,
+} from "./pr-push.js";
 import { bulkPullViewed } from "./pr-bulk.js";
 import { resolveCoverage, selectAnchors, docPct as computeDocPct, citedPct as computeCitedPct, type CoverageResult } from "./coverage.js";
 import { resolveAnchorRefs } from "./refs.js";
@@ -899,6 +903,35 @@ export async function prPushPlan(
   } = {},
 ) {
   return planPrPush(root, input, filter);
+}
+
+/**
+ * Compare what codemap considers settled against the pull request's own threads.
+ *
+ * Read-only and inspectable, like the push plan: both directions are shown before
+ * either is acted on.
+ */
+export async function prResolvePlan(root: string, input: string) {
+  const t = await prTriage(root, input, { fetch: false });
+  if ("error" in t) return { error: t.error };
+  const threads = fetchReviewThreads(`${t.pr.owner}/${t.pr.repo}`, t.pr.number);
+  if ("error" in threads) return threads;
+  const anns = (await readAnnotations(root)).annotations;
+  return { ...planResolveSync(anns, threads, t.pr.number), slug: `${t.pr.owner}/${t.pr.repo}`, url: t.pr.url };
+}
+
+/** Close settled conversations on the pull request. Outward-facing; never implicit. */
+export async function prResolvePush(root: string, plan: ResolveSyncPlan & { slug: string }) {
+  return pushResolvedToGitHub(root, plan, plan.slug);
+}
+
+/** Take GitHub's resolutions into the map. See `pullResolvedFromGitHub` for the asymmetry. */
+export async function prResolvePull(
+  root: string, plan: ResolveSyncPlan, opts: { anyone?: boolean; dryRun?: boolean } = {},
+) {
+  return pullResolvedFromGitHub(root, plan, { resolveAnnotation: (r, id, v) => resolveAnnotation(r, id, v) }, {
+    viewer: ghViewer(), anyone: opts.anyone, dryRun: opts.dryRun,
+  });
 }
 
 /**

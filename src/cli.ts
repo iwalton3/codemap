@@ -70,7 +70,7 @@ async function cmdPr(root: string, input: string, opts: { fetch: boolean; json: 
  */
 async function cmdPrPush(
   root: string, prInput: string, confirm: boolean, markViewed: boolean,
-  filter: { electedOnly?: boolean; minSeverity?: any; summary?: string; event?: "APPROVE" | "REQUEST_CHANGES" },
+  filter: { electedOnly?: boolean; minSeverity?: any; summary?: string; event?: "APPROVE" | "REQUEST_CHANGES"; ids?: string[] },
 ): Promise<void> {
   if (!prInput) { console.error("usage: codemap pr-push <pr> [--confirm] [--viewed] [--all] [--summary TEXT] [--approve|--request-changes]"); process.exit(2); }
   const plan = await ops.prPushPlan(root, prInput, filter);
@@ -114,6 +114,42 @@ async function cmdPrPush(
   console.log(`\nposted: ${result.postedComments} inline comment(s)${result.reviewUrl ? ` → ${result.reviewUrl}` : ""}`);
   if (result.markedViewed.length) console.log(`marked viewed: ${result.markedViewed.length} file(s)`);
   for (const e of result.errors) console.error(`  ! ${e}`);
+}
+
+/**
+ * Sync which review conversations are settled, either way.
+ *
+ * Both directions are shown first, because they are different acts: pushing closes
+ * threads on somebody else's pull request, and pulling records their resolution as
+ * your own agreement — which is why it defaults to only accepting your own.
+ */
+async function cmdPrResolve(root: string, prInput: string, o: { confirm: boolean; pull: boolean; anyone: boolean }): Promise<void> {
+  if (!prInput) { console.error("usage: codemap pr-resolve <pr> [--confirm] [--pull] [--anyone]"); process.exit(2); }
+  const plan = await ops.prResolvePlan(root, prInput);
+  if ("error" in plan) { console.error(plan.error); process.exit(1); }
+
+  console.log(`#${plan.pr} — ${plan.inSync} conversation(s) already agree`);
+  if (plan.toResolve.length) {
+    console.log(`\n  settled here, still open on the pull request — ${plan.toResolve.length}:`);
+    for (const t of plan.toResolve) console.log(`    ${t.path ?? "?"}${t.line ? ":" + t.line : ""}  ${t.label}`);
+  }
+  if (plan.toClose.length) {
+    console.log(`\n  resolved on the pull request, still open here — ${plan.toClose.length}:`);
+    for (const t of plan.toClose) console.log(`    by ${t.resolvedBy ?? "?"}  ${t.label}`);
+  }
+  if (plan.unmatched.length) console.log(`\n  ${plan.unmatched.length} posted finding(s) have no thread on this PR (deleted, or posted elsewhere)`);
+
+  if (!o.confirm) { console.log(`\nnothing changed. --confirm to ${o.pull ? "take these resolutions into the map" : "close those conversations on GitHub"}.`); return; }
+
+  if (o.pull) {
+    const r = await ops.prResolvePull(root, plan, { anyone: o.anyone });
+    console.log(`\nclosed here: ${r.closed.length}`);
+    for (const s of r.skipped) console.log(`  skipped ${s.annotationId}: ${s.why}`);
+  } else {
+    const r = await ops.prResolvePush(root, plan);
+    console.log(`\nresolved on GitHub: ${r.resolved.length}`);
+    for (const e of r.errors) console.error(`  ! ${e}`);
+  }
 }
 
 /** What is pointing at code the tree no longer has. See ops.orphanedWork. */
@@ -167,7 +203,7 @@ async function cmdPrIngest(root: string, prInput: string, files: string[], dryRu
 }
 
 function usage(): never {
-  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap orphans  [repo]              findings/reviews pointing at code the tree no longer has\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n                     [--summary TEXT] [--approve | --request-changes]\n  codemap pr-triage <pr> [--repo path]        derive stakes+complexity for the PR's symbols\n  codemap pr-pull-viewed <pr|--all> [--repo path] [--dry-run] [--force] [--limit N] [--max-prs N]\n                                              import GitHub's viewed ticks as `viewed`\n  codemap analyze marten [repo] [--verbose] [--emit]");
+  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap orphans  [repo]              findings/reviews pointing at code the tree no longer has\n  codemap pr-resolve <pr> [--repo path] [--confirm] [--pull] [--anyone]\n                                              sync which review conversations are settled\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n                     [--only id,id,…]  publish exactly these, whatever their disposition\n                     [--summary TEXT] [--approve | --request-changes]\n  codemap pr-triage <pr> [--repo path]        derive stakes+complexity for the PR's symbols\n  codemap pr-pull-viewed <pr|--all> [--repo path] [--dry-run] [--force] [--limit N] [--max-prs N]\n                                              import GitHub's viewed ticks as `viewed`\n  codemap analyze marten [repo] [--verbose] [--emit]");
   process.exit(2);
 }
 
@@ -280,7 +316,7 @@ async function cmdCheck(root: string): Promise<void> {
   }
 }
 
-const { positionals, values } = parseArgs({ allowPositionals: true, options: { verbose: { type: "boolean" }, emit: { type: "boolean" }, repo: { type: "string" }, "no-fetch": { type: "boolean" }, json: { type: "boolean" }, limit: { type: "string" }, offset: { type: "string" }, "dry-run": { type: "boolean" }, confirm: { type: "boolean" }, viewed: { type: "boolean" }, all: { type: "boolean" }, "min-severity": { type: "string" }, force: { type: "boolean" }, "max-prs": { type: "string" }, summary: { type: "string" }, approve: { type: "boolean" }, "request-changes": { type: "boolean" } } });
+const { positionals, values } = parseArgs({ allowPositionals: true, options: { verbose: { type: "boolean" }, emit: { type: "boolean" }, repo: { type: "string" }, "no-fetch": { type: "boolean" }, json: { type: "boolean" }, limit: { type: "string" }, offset: { type: "string" }, "dry-run": { type: "boolean" }, confirm: { type: "boolean" }, viewed: { type: "boolean" }, all: { type: "boolean" }, "min-severity": { type: "string" }, force: { type: "boolean" }, "max-prs": { type: "string" }, summary: { type: "string" }, approve: { type: "boolean" }, "request-changes": { type: "boolean" }, pull: { type: "boolean" }, anyone: { type: "boolean" }, only: { type: "string" } } });
 
 if (positionals[0] === "analyze") {
   const analyzer = positionals[1] ?? "";
@@ -368,6 +404,7 @@ if (positionals[0] === "analyze") {
     const pushRoot = resolve(values.repo ?? ".");
     await withLock(pushRoot, () => cmdPrPush(pushRoot, positionals[1] ?? "", Boolean(values.confirm), Boolean(values.viewed), {
       electedOnly: !values.all, minSeverity: values["min-severity"] as any,
+      ids: values.only ? String(values.only).split(",").map((x) => x.trim()).filter(Boolean) : undefined,
       summary: values.summary as string | undefined,
       event: values.approve ? "APPROVE" : values["request-changes"] ? "REQUEST_CHANGES" : undefined,
     }));
@@ -377,6 +414,11 @@ if (positionals[0] === "analyze") {
   } else if (positionals[0] === "pr") {
     const prRoot = resolve(values.repo ?? ".");
     await withLock(prRoot, () => cmdPr(prRoot, positionals[1] ?? "", { fetch: !values["no-fetch"], json: Boolean(values.json) }));
+  } else if (positionals[0] === "pr-resolve") {
+    const r = resolve(values.repo ?? ".");
+    await withLock(r, () => cmdPrResolve(r, positionals[1] ?? "", {
+      confirm: Boolean(values.confirm), pull: Boolean(values.pull), anyone: Boolean(values.anyone),
+    }));
   } else if (positionals[0] === "orphans") {
     await cmdOrphans(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."));
   } else if (positionals[0] === "prs") {

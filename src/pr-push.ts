@@ -824,6 +824,89 @@ export async function executePrPush(
   return result;
 }
 
+/**
+ * A review conversation on a pull request, and whether it is settled.
+ *
+ * Threads are what GitHub resolves — not comments. The id we store on a finding is
+ * the comment's REST `databaseId`, which is a different object entirely, so the
+ * thread has to be found by matching that id inside it.
+ */
+export interface ReviewThread {
+  id: string;
+  isResolved: boolean;
+  resolvedBy: string | null;
+  path: string | null;
+  line: number | null;
+  /** REST ids of the comments in it — ours is the root, replies may follow. */
+  commentIds: number[];
+}
+
+export function fetchReviewThreads(slug: string, number: number, gh_: typeof gh = gh): ReviewThread[] | { error: string } {
+  const [owner, repo] = slug.split("/");
+  const out: ReviewThread[] = [];
+  let after: string | null = null;
+  for (let page = 0; page < 40; page++) {
+    const args = ["api", "graphql", "-f",
+      "query=query($o:String!,$r:String!,$n:Int!,$after:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:50,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved resolvedBy{login} path line comments(first:5){nodes{databaseId}}}}}}}",
+      "-f", `o=${owner}`, "-f", `r=${repo}`, "-F", `n=${number}`];
+    if (after) args.push("-f", `after=${after}`);
+    const r = gh_(args);
+    if (!r.ok) return { error: `gh graphql failed: ${r.err.slice(0, 300)}` };
+    try {
+      const t = JSON.parse(r.out).data.repository.pullRequest.reviewThreads;
+      for (const n of t.nodes) {
+        out.push({
+          id: n.id, isResolved: !!n.isResolved, resolvedBy: n.resolvedBy?.login ?? null,
+          path: n.path ?? null, line: n.line ?? null,
+          commentIds: (n.comments?.nodes ?? []).map((c: { databaseId: number }) => c.databaseId).filter(Boolean),
+        });
+      }
+      if (!t.pageInfo.hasNextPage) return out;
+      after = t.pageInfo.endCursor;
+    } catch (e) { return { error: `could not parse gh output: ${(e as Error).message}` }; }
+  }
+  // Same rule as the viewed list: a partial set returned as a success is a claim
+  // about the threads it never looked at.
+  return { error: `pull request has more review threads than this was read to the end of (${out.length}+)` };
+}
+
+export interface ResolveSyncPlan {
+  pr: number;
+  /** Settled here, still an open conversation on the pull request. */
+  toResolve: { annotationId: string; threadId: string; commentId: number; path: string | null; line: number | null; label: string }[];
+  /** Settled on the pull request, still open here — the input to a pull. */
+  toClose: { annotationId: string; threadId: string; commentId: number; resolvedBy: string | null; label: string }[];
+  /** Already agreeing. */
+  inSync: number;
+  /** Posted findings whose thread could not be found — deleted, or outside this PR. */
+  unmatched: string[];
+}
+
+/**
+ * Compare what codemap considers settled against what the pull request does.
+ *
+ * Only ever OUR comments: a finding without a `postedRef` for this PR has no thread
+ * here, and a thread we did not post is somebody else's conversation. Pure, so both
+ * directions can be inspected before anything is written anywhere.
+ */
+export function planResolveSync(anns: readonly Annotation[], threads: readonly ReviewThread[], pr: number): ResolveSyncPlan {
+  const byComment = new Map<number, ReviewThread>();
+  for (const t of threads) for (const c of t.commentIds) if (!byComment.has(c)) byComment.set(c, t);
+
+  const plan: ResolveSyncPlan = { pr, toResolve: [], toClose: [], inSync: 0, unmatched: [] };
+  for (const a of anns) {
+    const ref = a.postedRef;
+    if (!ref || ref.pr !== pr || !ref.commentId) continue;
+    const t = byComment.get(ref.commentId);
+    if (!t) { plan.unmatched.push(a.id); continue; }
+    const settledHere = !!a.resolved;
+    if (settledHere === t.isResolved) { plan.inSync++; continue; }
+    if (settledHere) plan.toResolve.push({ annotationId: a.id, threadId: t.id, commentId: ref.commentId, path: t.path, line: t.line, label: labelOf(a) });
+    else plan.toClose.push({ annotationId: a.id, threadId: t.id, commentId: ref.commentId, resolvedBy: t.resolvedBy, label: labelOf(a) });
+  }
+  return plan;
+}
+
 /** GitHub's per-file review state for a PR, paginated. */
 export function fetchViewedFiles(slug: string, number: number): { viewed: Set<string>; total: number } | { error: string } {
   const [owner, repo] = slug.split("/");
@@ -854,6 +937,79 @@ export function fetchViewedFiles(slug: string, number: number): { viewed: Set<st
   // Pages remain. A partial set returned as a success reads as "these are the only
   // files ticked", which is a claim about the ones it never looked at.
   return { error: `pull request has more files than the viewed list was read to the end of (${total}+)` };
+}
+
+export interface ResolveSyncResult {
+  resolved: string[];
+  closed: string[];
+  skipped: { annotationId: string; why: string }[];
+  errors: string[];
+}
+
+/**
+ * Mark settled conversations settled on the pull request.
+ *
+ * The workflow this is for: the submitter fixed it and did not close the comment, so
+ * the thread sits open on their PR long after the finding stopped being live here.
+ * Only threads rooted in a comment codemap posted are touched — the `postedRef`
+ * match is what guarantees that.
+ *
+ * Resolving only. A finding reopened here does NOT reopen the conversation there:
+ * un-resolving a thread the submitter closed would be arguing with them through a
+ * state change rather than a sentence, and that is a reply, not a sync.
+ */
+export async function pushResolvedToGitHub(
+  root: string, plan: ResolveSyncPlan, slug: string,
+  opts: { gh?: typeof gh } = {},
+): Promise<ResolveSyncResult> {
+  const gh_ = opts.gh ?? gh;
+  const out: ResolveSyncResult = { resolved: [], closed: [], skipped: [], errors: [] };
+  for (const t of plan.toResolve) {
+    const r = gh_(["api", "graphql", "-f",
+      "query=mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{id isResolved}}}",
+      "-f", `t=${t.threadId}`]);
+    if (r.ok) out.resolved.push(t.annotationId);
+    else out.errors.push(`resolve ${t.path ?? "?"}${t.line ? ":" + t.line : ""}: ${r.err.slice(0, 160)}`);
+  }
+  void root;
+  return out;
+}
+
+/**
+ * Learn that a conversation was settled on the pull request.
+ *
+ * Who resolved it matters, and is why this is not symmetric with the push. A pull
+ * request's AUTHOR can resolve your comment, and doing so is not your agreement that
+ * it is closed — `resolved` is the human reviewer's act, the same distinction that
+ * keeps GitHub's viewed tick from importing as `signed`. So by default this accepts
+ * only resolutions by the account that posted the review, and anything closed by
+ * somebody else is reported rather than applied.
+ */
+export async function pullResolvedFromGitHub(
+  root: string, plan: ResolveSyncPlan,
+  deps: { resolveAnnotation: (root: string, id: string, resolved: boolean) => Promise<unknown> },
+  opts: { viewer?: string | null; anyone?: boolean; dryRun?: boolean } = {},
+): Promise<ResolveSyncResult> {
+  const out: ResolveSyncResult = { resolved: [], closed: [], skipped: [], errors: [] };
+  for (const t of plan.toClose) {
+    const mine = opts.viewer && t.resolvedBy && t.resolvedBy === opts.viewer;
+    if (!opts.anyone && !mine) {
+      out.skipped.push({
+        annotationId: t.annotationId,
+        why: `resolved on GitHub by ${t.resolvedBy ?? "someone"}, not by you — closing it here would record their click as your agreement. Pass --anyone to accept it.`,
+      });
+      continue;
+    }
+    if (!opts.dryRun) await deps.resolveAnnotation(root, t.annotationId, true);
+    out.closed.push(t.annotationId);
+  }
+  return out;
+}
+
+/** The login `gh` is authenticated as — who "I resolved it myself" means. */
+export function ghViewer(gh_: typeof gh = gh): string | null {
+  const r = gh_(["api", "user", "--jq", ".login"]);
+  return r.ok ? r.out.trim() || null : null;
 }
 
 export interface PullViewedResult {

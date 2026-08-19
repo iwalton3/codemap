@@ -116,7 +116,13 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       // Full form here, unlike MCP. `brief` exists because a 100k-character response
       // blew an agent's token limit; a browser has no such ceiling, and the queue
       // view renders the file, symbol and source that brief drops.
-      return ops.reviewQueue(root, { includeAnswered: q.get("answered") === "1", brief: q.get("brief") === "1" });
+      return ops.reviewQueue(root, {
+        includeAnswered: q.get("answered") === "1", brief: q.get("brief") === "1",
+        // `all=1` drops the assignment requirement — the "what is on this map" view,
+        // as opposed to "what have I been asked to do".
+        assignedOnly: q.get("all") !== "1",
+        includeResolved: q.get("resolved") === "1",
+      });
     case "/api/orphans":
       return ops.orphanedWork(root);
     case "/api/questions":
@@ -337,6 +343,26 @@ const server = createServer(async (req, res) => {
     // caller returns the FINGERPRINT of the plan it displayed and the push is
     // refused if re-deriving no longer matches it — publishing something the human
     // did not read is the failure the plan/execute split exists to prevent.
+    // Which review conversations are settled, and syncing that either way. The plan
+    // is read-only; both directions are separate, confirmed acts.
+    if (req.method === "POST" && url.pathname.startsWith("/api/pr/resolve")) {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      const root = rootFor(body.u ?? null);
+      const out = await withLock<unknown>(root, async () => {
+        const plan = await ops.prResolvePlan(root, String(body.pr ?? ""));
+        if ("error" in plan) return plan;
+        if (url.pathname === "/api/pr/resolve_plan") return plan;
+        if (url.pathname === "/api/pr/resolve_push") return { plan, result: await ops.prResolvePush(root, plan) };
+        if (url.pathname === "/api/pr/resolve_pull") return { plan, result: await ops.prResolvePull(root, plan, { anyone: body.anyone === true }) };
+        return { error: `unknown route ${url.pathname}` };
+      });
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(out));
+      return;
+    }
+
     // The plan is also a POST, because the reviewer's summary travels with it and a
     // few paragraphs URL-encoded into a query string approaches Node's 16KB header
     // limit — failing exactly when someone has just written something they care
@@ -351,6 +377,7 @@ const server = createServer(async (req, res) => {
         minSeverity: body.minSeverity || undefined,
         summary: body.summary || undefined,
         event: body.event || undefined,
+        ids: Array.isArray(body.ids) && body.ids.length ? body.ids.map(String) : undefined,
       }));
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(out));
@@ -368,6 +395,7 @@ const server = createServer(async (req, res) => {
           minSeverity: body.minSeverity || undefined,
           summary: body.summary || undefined,
           event: body.event || undefined,
+          ids: Array.isArray(body.ids) && body.ids.length ? body.ids.map(String) : undefined,
         });
         if ("error" in plan) return plan;
         if (body.fingerprint !== plan.fingerprint) {

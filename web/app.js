@@ -2340,6 +2340,7 @@ class PrStoryPage extends Component {
     const r = await apiPost('/api/pr/push_plan', {
       u: this.props.params.universe, pr: this.props.params.pr,
       summary: draft.summary || undefined, event: draft.event,
+      ids: [...(this.state.pick || [])],
     }).catch((e) => ({ error: `could not work out what would be sent: ${e && e.message ? e.message : e}` }));
     if (this._pushToken !== token) return;
     if (r.error) { this.state.push = { what, error: r.error }; return; }
@@ -2370,6 +2371,7 @@ class PrStoryPage extends Component {
     const r = await apiPost('/api/pr/push_plan', {
       u: this.props.params.universe, pr: this.props.params.pr,
       summary: draft.summary || undefined, event: draft.event,
+      ids: [...(this.state.pick || [])],
     }).catch((e) => ({ error: `could not work out what would be sent: ${e && e.message ? e.message : e}` }));
     if (this._pushToken !== token) return;
     if (r.error) { this.state.push = { what, error: r.error }; return; }
@@ -2390,6 +2392,7 @@ class PrStoryPage extends Component {
         markViewed: p.what === 'viewed',
         summary: (this.state.pushDraft && this.state.pushDraft.summary) || undefined,
         event: (this.state.pushDraft && this.state.pushDraft.event) || 'COMMENT',
+        ids: [...(this.state.pick || [])],
       }),
     }).then(x => x.json());
     if (res.error) { this.state.push = { ...p, sending: false, error: res.error }; return; }
@@ -2444,6 +2447,40 @@ class PrStoryPage extends Component {
    * in turn to find them. Grouped by what the push would do with them, because that
    * is the question being answered.
    */
+  /**
+   * Findings that belong to this pull request but sit on no symbol in it.
+   *
+   * `allFindings` walks the story's steps, so a finding whose anchor is not in the
+   * PR's worklist — code the branch never touched, or code no longer in the tree —
+   * could not appear at all. That is how three orphans were found one at a time by
+   * tripping over them. Two cases are this PR's business: something already posted
+   * to it, and something whose target has gone.
+   */
+  togglePick(id) {
+    const next = new Set(this.state.pick || []);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    this.state.pick = next;
+  }
+
+  /** Opening the list also loads the findings the story cannot show. */
+  async toggleFindings() {
+    this.state.showFindings = !this.state.showFindings;
+    if (!this.state.showFindings || this.state.allFindings) return;
+    this.state.allFindings = await api('/api/queue', { u: this.props.params.universe, all: '1', resolved: '1' })
+      .catch(() => ({ queue: [] }));
+  }
+
+  offStoryFindings() {
+    const rows = (this.state.allFindings && this.state.allFindings.queue) || [];
+    if (!rows.length) return [];
+    const onStory = new Set(this.allFindings().map(e => e.f.id));
+    const pr = Number(this.props.params.pr);
+    return rows
+      .filter(q => !onStory.has(q.id))
+      .filter(q => (q.postedRef && q.postedRef.pr === pr) || q.targetResolved === false)
+      .map(q => ({ f: q, step: null, chapter: null }));
+  }
+
   allFindings() {
     const out = [];
     for (const c of (this.state.story && this.state.story.chapters) || []) {
@@ -2483,7 +2520,9 @@ class PrStoryPage extends Component {
     if (!all.length) return html`<div class="prfindings dim">No findings raised on this pull request yet.</div>`;
     const live = all.filter(e => !e.f.resolved && !e.f.withdrawn && !e.f.postedRef);
     const elected = live.filter(e => !isAgentFinding(e.f) || e.f.escalated);
+    const off = this.offStoryFindings();
     const groups = [
+      ['not on a symbol this pull request changes — these need a publish path, or their code is gone', off],
       ['goes out on the next push', elected.filter(e => PUBLISHABLE.has(e.f.disposition) && (e.f.comment || '').trim())],
       ['needs the submitter-facing version before it can go', elected.filter(e => PUBLISHABLE.has(e.f.disposition) && !(e.f.comment || '').trim())],
       ['nobody has said what this turned out to be — set a disposition', elected.filter(e => !e.f.disposition || e.f.disposition === 'open')],
@@ -2493,18 +2532,31 @@ class PrStoryPage extends Component {
       ['withdrawn — kept here, not sent', all.filter(e => e.f.withdrawn && !e.f.resolved)],
       ['resolved locally — not sent', all.filter(e => e.f.resolved)],
     ].filter(g => g[1].length);
+    const picked = [...(this.state.pick || [])];
     return html`<div class="prfindings">
+      ${when(picked.length, () => html`<div class="prfpicked">
+        <b>${picked.length}</b> picked — publishing these sends exactly them, whatever their disposition.
+        <button class="on" on-click="${() => this.openPush('comments')}">review what would be sent</button>
+        <button class="ghost" on-click="${() => { this.state.pick = new Set(); }}">clear</button>
+      </div>`)}
       ${each(groups, g => html`<div class="prfgroup">
         <div class="prfgh">${g[0]} <b>${g[1].length}</b></div>
         ${each(g[1], e => html`<div class="prfrow">
-          <div class="prfloc" title="open this symbol" on-click="${() => this.gotoFinding(e)}">
+          ${when(e.step, () => html`<div class="prfloc" title="open this symbol" on-click="${() => this.gotoFinding(e)}">
             <code>${e.step.file.split('/').pop()}${e.f.line ? ':' + e.f.line : ''}</code>
             <span class="dim">${e.step.symbol.split(' › ').pop()}</span>
-          </div>
+          </div>`)}
+          ${when(!e.step, () => html`<div class="prfloc dim" title="not on a symbol this pull request changes — there is nothing here to open">
+            <code>${(e.f.file || '?').split('/').pop()}${e.f.line ? ':' + e.f.line : ''}</code>
+            <span>${(e.f.symbol || '').split(' › ').pop()}</span>
+          </div>`)}
           <div class="prfbody">
             ${findingItemEl(this, u, e.f)}
             ${this.findingEditorEl(u, e.f)}
           </div>
+          ${when(!e.f.resolved && !e.f.postedRef, () => html`<label class="prfpick" title="publish exactly the picked findings, whatever their disposition — this is how a refutation worth closing out gets sent">
+            <input type="checkbox" checked="${this.state.pick && this.state.pick.has(e.f.id)}" on-change="${() => this.togglePick(e.f.id)}">
+          </label>`)}
         </div>`, e => e.f.id)}
       </div>`, g => g[0])}
     </div>`;
@@ -2586,6 +2638,70 @@ class PrStoryPage extends Component {
           <input type="radio" name="pushevent" checked="${d.event === ev.id}" on-change="${() => this.repushPlan({ event: ev.id })}"> ${ev.label}
         </label>`, ev => ev.id)}
       </div>
+    </div>`;
+  }
+
+  async openResolveSync() {
+    if (this.state.resolveSync) { this._syncToken = null; this.state.resolveSync = null; return; }
+    const token = Symbol('sync');
+    this._syncToken = token;
+    this.state.resolveSync = { loading: true };
+    const r = await apiPost('/api/pr/resolve_plan', { u: this.props.params.universe, pr: this.props.params.pr })
+      .catch((e) => ({ error: `could not read the pull request's conversations: ${e && e.message ? e.message : e}` }));
+    if (this._syncToken !== token) return;
+    this.state.resolveSync = r.error ? { error: r.error } : { plan: r };
+  }
+
+  async runResolveSync(dir, anyone) {
+    const st = this.state.resolveSync;
+    if (!st || !st.plan || st.running) return;
+    this.state.resolveSync = { ...st, running: true };
+    const r = await apiPost(`/api/pr/resolve_${dir}`, { u: this.props.params.universe, pr: this.props.params.pr, anyone })
+      .catch((e) => ({ error: String(e && e.message ? e.message : e) }));
+    this.state.resolveSync = r.error ? { error: r.error } : { plan: r.plan, done: r.result, dir };
+  }
+
+  /**
+   * Which conversations are settled, on each side.
+   *
+   * The two directions are deliberately separate buttons: closing threads on
+   * somebody else's pull request and recording their resolutions as your own
+   * agreement are different acts, and only one of them is outward-facing.
+   */
+  resolveSyncEl() {
+    const st = this.state.resolveSync;
+    if (!st) return html``;
+    if (st.error) return html`<div class="prpromo err">${st.error}</div>`;
+    if (!st.plan) return html`<div class="prpromo dim">reading the pull request's conversations…</div>`;
+    if (st.done) {
+      const d = st.done;
+      return html`<div class="prpromo">
+        <div><b>Synced.</b> ${st.dir === 'push' ? `${d.resolved.length} conversation(s) resolved on GitHub` : `${d.closed.length} finding(s) closed here`}</div>
+        ${each(d.skipped || [], s => html`<div class="warn">${s.why}</div>`, s => s.annotationId)}
+        ${each(d.errors || [], e => html`<div class="warn">${e}</div>`, (e, i) => String(i))}
+        <div class="prpromoacts"><button class="ghost" on-click="${() => { this.state.resolveSync = null; }}">close</button></div>
+      </div>`;
+    }
+    const p = st.plan;
+    return html`<div class="prpromo">
+      <div><b>${p.inSync}</b> conversation(s) already agree.</div>
+      ${when(p.toResolve.length, () => html`
+        <div class="pushblocked">
+          <b>${p.toResolve.length} settled here, still open on the pull request</b> — the submitter's threads stay open until someone closes them.
+          ${each(p.toResolve, t => html`<div class="pushrow"><code>${t.path || '?'}${t.line ? ':' + t.line : ''}</code> <span class="dim">${t.label}</span></div>`, t => t.annotationId)}
+          <div class="prpromoacts"><button class="on" disabled="${!!st.running}" on-click="${() => this.runResolveSync('push', false)}">resolve these on GitHub</button></div>
+        </div>`)}
+      ${when(p.toClose.length, () => html`
+        <div class="pushblocked">
+          <b>${p.toClose.length} resolved on the pull request, still open here</b>
+          ${each(p.toClose, t => html`<div class="pushrow"><span class="dim">by ${t.resolvedBy || '?'}</span> ${t.label}</div>`, t => t.annotationId)}
+          <div class="prpromoacts">
+            <button class="on" disabled="${!!st.running}" on-click="${() => this.runResolveSync('pull', false)}">close the ones you resolved</button>
+            <button class="ghost" disabled="${!!st.running}" on-click="${() => this.runResolveSync('pull', true)}" title="including ones the pull request's author resolved — their click is not your agreement, so this is deliberate">accept anyone's</button>
+          </div>
+        </div>`)}
+      ${when(p.unmatched.length, () => html`<div class="dim">${p.unmatched.length} posted finding(s) have no thread on this pull request any more.</div>`)}
+      <div class="prpromoacts"><button class="ghost" on-click="${() => { this.state.resolveSync = null; }}">close</button></div>
     </div>`;
   }
 
@@ -2806,12 +2922,14 @@ class PrStoryPage extends Component {
         </div>
         ${when(this.state.markError, () => html`<div class="warn">sign-off failed: ${this.state.markError}</div>`)}
         <div class="prderive prpush">
-          <button class="${this.state.showFindings ? 'on' : ''}" on-click="${() => { this.state.showFindings = !this.state.showFindings; }}" title="every finding on this PR in one list — raise or resolve without opening each symbol">${this.state.showFindings ? 'hide findings' : `findings (${this.allFindings().filter(e => !e.f.resolved).length})`}</button>
+          <button class="${this.state.showFindings ? 'on' : ''}" on-click="${() => this.toggleFindings()}" title="every finding on this PR in one list — raise or resolve without opening each symbol">${this.state.showFindings ? 'hide findings' : `findings (${this.allFindings().filter(e => !e.f.resolved).length})`}</button>
           <button on-click="${() => this.openPush('comments')}" title="post your findings to the pull request as review comments. Yours go out; an agent's only if you raised it. Shows you exactly what would be sent first.">push comments to GitHub</button>
           <button on-click="${() => this.openPush('viewed')}" title="tick the per-file viewed boxes on GitHub for files you have fully signed off here, so both tools agree about what has been read.">push viewed state to GitHub</button>
+          <button on-click="${() => this.openResolveSync()}" title="compare which of your posted findings are settled here against which conversations are resolved on the pull request — for when the submitter fixed it and left the comment open.">sync resolved state</button>
         </div>
         ${this.findingsPanelEl(u)}
         ${this.pushPanelEl()}
+        ${this.resolveSyncEl()}
       </div>
       ${when(!st.totals.steps, () => html`<section class="prchapter"><div class="prcbody prempty">
         <b>Nothing in the review queue.</b>

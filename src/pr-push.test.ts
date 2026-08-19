@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { diffLineRanges, diffHunks } from "./git.js";
-import { planPrPush, isAgentAuthored, isElected, pushVerdict, executePrPush, placeAnnotation, publishStateOf, buildComments, citedLine } from "./pr-push.js";
+import { planPrPush, isAgentAuthored, isElected, pushVerdict, executePrPush, placeAnnotation, publishStateOf, buildComments, citedLine, planResolveSync, pushResolvedToGitHub, pullResolvedFromGitHub, type ReviewThread } from "./pr-push.js";
 import { readPushes, writePush } from "./store.js";
 import type { Annotation } from "./schema.js";
 
@@ -688,4 +688,91 @@ test("GitHub refusing a self-review says the comments were lost with it", () => 
       assert.equal(r.postedComments, 0);
     });
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+/**
+ * Resolve sync. The workflow: the submitter fixed the problem and did not close the
+ * comment, so a settled finding sits as an open conversation on their pull request.
+ */
+const thread = (over: Partial<ReviewThread> = {}): ReviewThread =>
+  ({ id: "T1", isResolved: false, resolvedBy: null, path: "a.cs", line: 12, commentIds: [901], ...over });
+
+const posted = (over: Partial<Annotation> = {}) =>
+  ann({ postedRef: { pr: 264, at: "n", placement: "inline", commentId: 901 }, ...over });
+
+test("only conversations codemap posted are its business", () => {
+  // A thread we did not post is somebody else's, and a finding with no postedRef for
+  // this PR has no thread here at all.
+  const p = planResolveSync(
+    [posted({ id: "mine", resolved: true }), ann({ id: "never-sent", resolved: true }),
+     posted({ id: "other-pr", resolved: true, postedRef: { pr: 227, at: "n", placement: "inline", commentId: 901 } })],
+    [thread(), thread({ id: "T2", commentIds: [999] })],
+    264,
+  );
+  assert.deepEqual(p.toResolve.map((t) => t.annotationId), ["mine"]);
+  assert.equal(p.toResolve[0]!.threadId, "T1", "matched by the comment id inside the thread, not by the comment id itself");
+});
+
+test("the two directions are told apart, and agreement is left alone", () => {
+  const p = planResolveSync([
+    posted({ id: "close-there", resolved: true }),
+    posted({ id: "close-here", resolved: false, postedRef: { pr: 264, at: "n", placement: "inline", commentId: 902 } }),
+    posted({ id: "agreed", resolved: true, postedRef: { pr: 264, at: "n", placement: "inline", commentId: 903 } }),
+  ], [
+    thread({ id: "T1", commentIds: [901], isResolved: false }),
+    thread({ id: "T2", commentIds: [902], isResolved: true, resolvedBy: "submitter" }),
+    thread({ id: "T3", commentIds: [903], isResolved: true, resolvedBy: "izzie" }),
+  ], 264);
+  assert.deepEqual(p.toResolve.map((t) => t.annotationId), ["close-there"]);
+  assert.deepEqual(p.toClose.map((t) => t.annotationId), ["close-here"]);
+  assert.equal(p.inSync, 1);
+});
+
+test("a posted finding whose thread is gone is reported, not silently dropped", () => {
+  const p = planResolveSync([posted({ resolved: true })], [], 264);
+  assert.deepEqual(p.unmatched, ["n1"]);
+  assert.equal(p.toResolve.length, 0);
+});
+
+test("pulling does not record somebody else's click as your agreement", async () => {
+  // A pull request's AUTHOR can resolve your comment. `resolved` is the reviewer's
+  // act — the same distinction that stops GitHub's viewed tick importing as `signed`.
+  const p = planResolveSync([
+    posted({ id: "theirs", resolved: false }),
+    posted({ id: "mine", resolved: false, postedRef: { pr: 264, at: "n", placement: "inline", commentId: 902 } }),
+  ], [
+    thread({ id: "T1", commentIds: [901], isResolved: true, resolvedBy: "submitter" }),
+    thread({ id: "T2", commentIds: [902], isResolved: true, resolvedBy: "izzie" }),
+  ], 264);
+
+  const calls: string[] = [];
+  const deps = { resolveAnnotation: async (_r: string, id: string) => { calls.push(id); } };
+  const r = await pullResolvedFromGitHub("/tmp", p, deps, { viewer: "izzie" });
+  assert.deepEqual(r.closed, ["mine"]);
+  assert.deepEqual(calls, ["mine"]);
+  assert.equal(r.skipped.length, 1);
+  assert.match(r.skipped[0]!.why, /resolved on GitHub by submitter, not by you/);
+  assert.match(r.skipped[0]!.why, /--anyone/, "and says how to accept it deliberately");
+
+  const all = await pullResolvedFromGitHub("/tmp", p, deps, { viewer: "izzie", anyone: true });
+  assert.deepEqual(all.closed.sort(), ["mine", "theirs"]);
+});
+
+test("pushing resolves each thread, and one failure does not stop the rest", async () => {
+  const p = planResolveSync([
+    posted({ id: "a", resolved: true }),
+    posted({ id: "b", resolved: true, postedRef: { pr: 264, at: "n", placement: "inline", commentId: 902 } }),
+  ], [thread({ id: "T1", commentIds: [901] }), thread({ id: "T2", commentIds: [902] })], 264);
+
+  const seen: string[] = [];
+  const fakeGh = (args: string[]) => {
+    // Two `-f` flags go out: the query and the thread id. Pick the one that is the id.
+    const t = args.find((x) => x.startsWith("t="));
+    seen.push(t!);
+    return t === "t=T1" ? { ok: false, out: "", err: "boom" } : { ok: true, out: "{}", err: "" };
+  };
+  const r = await pushResolvedToGitHub("/tmp", { ...p, slug: "o/r" } as never, "o/r", { gh: fakeGh as never });
+  assert.deepEqual(r.resolved, ["b"], "the second still went");
+  assert.equal(r.errors.length, 1);
+  assert.match(r.errors[0]!, /a\.cs:12/, "and the failure names where it was");
 });
