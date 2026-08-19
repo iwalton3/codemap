@@ -368,6 +368,8 @@ if (positionals[0] === "analyze") {
   } else if (positionals[0] === "pr") {
     const prRoot = resolve(values.repo ?? ".");
     await withLock(prRoot, () => cmdPr(prRoot, positionals[1] ?? "", { fetch: !values["no-fetch"], json: Boolean(values.json) }));
+  } else if (positionals[0] === "orphans") {
+    await cmdOrphans(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."));
   } else if (positionals[0] === "prs") {
     cmdPrs(positionals[1] ?? "");
   } else if (positionals[0] === "diff") {
