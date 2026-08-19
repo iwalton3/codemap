@@ -2400,6 +2400,10 @@ class PrStoryPage extends Component {
           ${when(st.refs.baseAheadOfMergeBase, () => html`<span class="dim" title="the PR is diffed against its merge-base, not the tip of ${st.pr.baseRef} — otherwise those commits would read as part of this change">${st.pr.baseRef} moved ${st.refs.baseAheadOfMergeBase} commits since branch</span>`)}
           ${when(st.refs.baseAheadOfMergeBase === null, () => html`<span class="dim" title="git could not count commits between the merge-base and ${st.pr.baseRef} — usually an unfetched remote-tracking ref. Silence here would read as 'the base has not moved'.">whether ${st.pr.baseRef} moved is unknown</span>`)}
         </div>
+        ${when(st.laneProblems && st.laneProblems.length, () => html`<div class="warn">
+          <b>.codemaplanes</b> — these lines do nothing, so files you meant to reroute are in their default lane:
+          ${each(st.laneProblems, p => html`<div>${p}</div>`, (p, i) => String(i))}
+        </div>`)}
         <div class="prlanes">${each(st.lanes, l => html`<span class="prlane l-${l.review}" title="${l.why}"><b>${l.lane}</b> ${l.lines} lines · ${l.files} files · ${l.review}</span>`, l => l.lane)}</div>
         <div class="prderive">
           <button on-click="${() => this.deriveTriage()}" title="propose stakes and complexity for this PR's symbols. Symbols the branch adds are not in the live index, so the graph-wide derivation cannot see them at all.">${this.state.deriving ? 'deriving…' : 'derive stakes for this PR'}</button>

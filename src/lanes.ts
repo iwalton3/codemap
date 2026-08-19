@@ -34,7 +34,12 @@ const DEFAULTS: Record<PatternLane, string[]> = {
   ],
   test: [
     "*.Tests/", "*Tests/", "**/__tests__/", "**/test/", "**/tests/",
-    "*.test.*", "*.spec.*", "*_test.py", "test_*.py",
+    "*.test.*", "*_test.py", "test_*.py",
+    // `*.spec.*` matched an API contract (`orders.spec.yaml`) as readily as a Jest
+    // spec, and the test lane is evaluated first, so a specification became "test
+    // evidence about code elsewhere". Only source extensions are test specs.
+    "*.spec.ts", "*.spec.tsx", "*.spec.js", "*.spec.jsx", "*.spec.mjs", "*.spec.cjs",
+    "*.spec.cs", "*.spec.py",
     "e2e-playwright/", "**/testdata/", "TestDataScripts/", "test-scripts/",
     "**/ObjectMothers/", "**/fixtures/",
   ],
@@ -45,7 +50,11 @@ const DEFAULTS: Record<PatternLane, string[]> = {
   ],
 };
 
-export interface LaneRules { classify(relPath: string): Lane }
+export interface LaneRules {
+  classify(relPath: string): Lane;
+  /** Complaints about `.codemaplanes` — a broken override file must not look like it worked. */
+  problems: string[];
+}
 
 /**
  * How much human attention a lane earns by default. `code` is the queue;
@@ -62,42 +71,76 @@ export const LANE_POLICY: Record<Lane, { review: "queue" | "agent" | "context" |
   other:     { review: "glance",  why: "unmapped file type" },
 };
 
-export function compileLanes(overrides: Partial<Record<PatternLane, string[]>> = {}): LaneRules {
+export function compileLanes(overrides: Partial<Record<PatternLane, string[]>> = {}, problems: string[] = []): LaneRules {
   const matchers = new Map<PatternLane, Ignore>();
   for (const lane of LANE_ORDER) {
     matchers.set(lane, compileIgnore([...DEFAULTS[lane], ...(overrides[lane] ?? [])].join("\n")));
   }
   return {
+    problems,
     classify(relPath: string): Lane {
-      for (const lane of LANE_ORDER) if (matchers.get(lane)!.ignores(relPath, false)) return lane;
-      return grammarForPath(relPath) ? "code" : "other";
+      const parseable = !!grammarForPath(relPath);
+      for (const lane of LANE_ORDER) {
+        if (!matchers.get(lane)!.ignores(relPath, false)) continue;
+        // `data` means "not executable". A DIRECTORY name must not take source out
+        // of the queue: `**/Migrations/` sent EF migrations — C# that can drop a
+        // column — to `glance`, and `**/locales/` did the same to any module living
+        // there. Lanes route attention; they never hide a defect.
+        if (lane === "data" && parseable) return "code";
+        return lane;
+      }
+      return parseable ? "code" : "other";
     },
   };
 }
 
-/** Parse a `.codemaplanes` file: `[lane]` sections of gitignore-style patterns. */
-export function parseLaneOverrides(text: string): Partial<Record<PatternLane, string[]>> {
-  const out: Partial<Record<PatternLane, string[]>> = {};
+/**
+ * Parse a `.codemaplanes` file: `[lane]` sections of gitignore-style patterns.
+ *
+ * Every way this can go wrong is REPORTED rather than absorbed. A misparse here
+ * silently reroutes attention — a header with inner spaces was not recognised as a
+ * header, so the line and everything under it were appended to the PREVIOUS
+ * section, and if that was `[generated]` the user's own code went to the skip lane
+ * and vanished from the review queue. A broken override file must not look like it
+ * worked.
+ */
+export function parseLaneOverrides(text: string): { overrides: Partial<Record<PatternLane, string[]>>; problems: string[] } {
+  const overrides: Partial<Record<PatternLane, string[]>> = {};
+  const problems: string[] = [];
   let cur: PatternLane | null = null;
-  for (const raw of text.split("\n")) {
+  // Set by an unknown header, so the patterns it swallowed are not each reported
+  // again — one complaint per broken section is the useful granularity.
+  let underBadHeader = false;
+  text.split("\n").forEach((raw, i) => {
     const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
-    const section = /^\[(\w+)\]$/.exec(line);
-    if (section) {
-      const name = section[1]!.toLowerCase() as PatternLane;
-      cur = LANE_ORDER.includes(name) ? name : null;
-      if (cur) out[cur] ??= [];
-      continue;
+    if (!line || line.startsWith("#")) return;
+    // Anything bracket-shaped is a HEADER attempt, never a pattern: reading a
+    // malformed one as a glob is what leaked patterns into the wrong lane.
+    const bracket = /^\[(.*)\]$/.exec(line);
+    if (bracket) {
+      const name = bracket[1]!.trim().toLowerCase() as PatternLane;
+      if (LANE_ORDER.includes(name)) { cur = name; underBadHeader = false; overrides[cur] ??= []; return; }
+      cur = null;
+      underBadHeader = true;
+      problems.push(`line ${i + 1}: unknown lane "${bracket[1]!.trim()}" — expected one of ${LANE_ORDER.join(", ")}; every pattern under it is ignored`);
+      return;
     }
-    if (cur) out[cur]!.push(line);
-  }
-  return out;
+    if (!cur) {
+      if (!underBadHeader) problems.push(`line ${i + 1}: "${line}" is not under any [lane] section, so it does nothing`);
+      return;
+    }
+    overrides[cur]!.push(line);
+  });
+  return { overrides, problems };
 }
 
 export async function loadLanes(root: string): Promise<LaneRules> {
+  let text: string;
   try {
-    return compileLanes(parseLaneOverrides(await readFile(join(root, ".codemaplanes"), "utf8")));
+    text = await readFile(join(root, ".codemaplanes"), "utf8");
   } catch {
-    return compileLanes();
+    return compileLanes();          // no override file at all is the normal case
   }
+  const { overrides, problems } = parseLaneOverrides(text);
+  return compileLanes(overrides, problems);
 }

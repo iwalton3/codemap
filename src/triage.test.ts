@@ -7,7 +7,7 @@ import { writeStore, readTriage, writeTriage, writeAnchorStore, writeNode, readG
 import { indexFile } from "./repo.js";
 import { markReviewed, unmarkReviewed } from "./reviews.js";
 import type { Anchor, Triage } from "./schema.js";
-import { setTriage, clearTriage, triageStatus, triageSeverity, deriveTriage, rollupCoverage, triageDrift, tripwires, reviewTriageFor } from "./triage.js";
+import { setTriage, setTriageBatch, clearTriage, triageStatus, triageSeverity, deriveTriage, rollupCoverage, triageDrift, tripwires, reviewTriageFor } from "./triage.js";
 import type { TriageInfo } from "./triage.js";
 
 const initRoot = () => {
@@ -376,4 +376,42 @@ test("an agent that asserts no stakes does not get `important` invented for it",
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("witnessing against a commit that was never indexed is an error, not an absent witness", async () => {
+  // `liveHashes` returned an EMPTY map for an unsnapshotted ref, so every witness
+  // was written `sha256:absent` and the write reported success. The mark then read
+  // as permanently drifted, indistinguishable from code that genuinely moved.
+  const root = initRoot();
+  try {
+    await init(root);
+    await assert.rejects(
+      () => setTriageBatch(root, [{ anchorId: "a_x", importance: "important", complexity: "rote" }], { source: "agent", ref: "nosuchcommit" }),
+      /no cached snapshot/i,
+    );
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a human write clears analyzer provenance in the batch path too", async () => {
+  // `setTriage` clears `generatedBy` on a human write; the batch carried it forward,
+  // leaving a human-owned mark tagged as analyzer-generated — and a re-emit is
+  // contracted to rewrite only generated content.
+  const root = initRoot();
+  try {
+    await init(root);
+    await writeTriage(root, [{
+      target: { kind: "anchor", id: "a_g" }, importance: "low", likely: true,
+      source: "graph", generatedBy: "marten", at: "2026-08-19T00:00:00Z", witnesses: [],
+    }]);
+
+    await setTriageBatch(root, [{ anchorId: "a_g", importance: "business-critical" }], { source: "human" });
+    const t = (await readTriage(root)).triage.find((x) => x.target.id === "a_g")!;
+    assert.equal(t.source, "human");
+    assert.equal(t.generatedBy, undefined, "a human now owns this mark");
+
+    // an agent/graph write still carries it, so a re-emit can find its own content
+    await writeTriage(root, [{ ...t, source: "graph", generatedBy: "marten", importance: "low" }]);
+    await setTriageBatch(root, [{ anchorId: "a_g", importance: "business-critical" }], { source: "graph" });
+    assert.equal((await readTriage(root)).triage.find((x) => x.target.id === "a_g")!.generatedBy, "marten");
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

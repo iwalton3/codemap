@@ -72,13 +72,20 @@ async function coveredAnchorIds(root: string, target: Target, nodeAnchors?: Map<
  * code the reviewer never saw: `sha256:absent` for a symbol the branch adds, and
  * the *pre-change* hash for one it modifies. Either way the mark claims a vouch
  * for something else — the exact lie witness hashes exist to prevent.
+ *
+ * THROWS when `ref` names a commit with no cached snapshot. Returning an empty map
+ * wrote every witness as `sha256:absent` and reported success, so the mark read as
+ * permanently drifted and no caller could tell that from code genuinely having
+ * moved. A caller that wants working-tree hashes passes no `ref`; one that names a
+ * commit is asserting it has been indexed.
  */
 export async function liveHashes(root: string, anchorIds: Iterable<string>, ref?: string): Promise<Map<string, string>> {
   if (ref) {
     const snap = await readSnapshot(root, ref);
+    if (!snap) throw new Error(`no cached snapshot for ${ref.slice(0, 12)} — index that commit before witnessing against it`);
     const want = new Set(anchorIds);
     const out = new Map<string, string>();
-    for (const a of snap ?? []) if (want.has(a.id)) out.set(a.id, a.bodyHash);
+    for (const a of snap) if (want.has(a.id)) out.set(a.id, a.bodyHash);
     return out;
   }
   const store = await readAnchorStore(root);

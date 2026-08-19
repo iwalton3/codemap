@@ -38,6 +38,7 @@ async function cmdPr(root: string, input: string, opts: { fetch: boolean; json: 
     ? `  (could not tell whether ${pr.baseRef} has moved — is it fetched?)`
     : refs.baseAheadOfMergeBase ? `  (${pr.baseRef} is ${refs.baseAheadOfMergeBase} commits ahead of it — diffing against the tip would fold those in)` : "";
   console.log(`  merge-base ${refs.mergeBase.slice(0, 12)}${drift}`);
+  for (const p of r.laneProblems ?? []) console.error(`  ! .codemaplanes ${p}`);
 
   console.log("\nlanes:");
   for (const l of lanes) console.log(`  ${pad(l.lane, 10)} ${String(l.lines).padStart(6)} lines  ${String(l.files).padStart(4)} files  ${pad(l.review, 8)} ${l.why}`);

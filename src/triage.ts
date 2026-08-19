@@ -578,7 +578,10 @@ export async function setTriageBatch(
       likely: opts.source !== "human",
       tripwire: existing?.tripwire,
       source: opts.source,
-      generatedBy: existing?.generatedBy,
+      // A human write CLEARS analyzer provenance, matching `setTriage`: carrying it
+      // forward left a human-owned mark tagged as analyzer-generated, and a re-emit
+      // is contracted to rewrite only generated content.
+      generatedBy: opts.source === "human" ? undefined : existing?.generatedBy,
       reason: item.reason ?? existing?.reason,
       at,
       witnesses: [{ anchorId: item.anchorId, bodyHash: hashes.get(item.anchorId) ?? "sha256:absent" }],

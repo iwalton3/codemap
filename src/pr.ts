@@ -157,6 +157,8 @@ export interface PrTriageResult {
   pr: PrMeta & { owner: string; repo: string };
   refs: { base: string; head: string; mergeBase: string; baseAheadOfMergeBase: number | null };
   lanes: LaneTally[];
+  /** Complaints about `.codemaplanes` — a broken override reroutes attention silently. */
+  laneProblems: string[];
   files: PrFile[];
   worklist: WorkItem[];
   diff: DiffResult;
@@ -244,6 +246,7 @@ export async function prTriage(
     pr: { ...meta, owner: ref.owner, repo: ref.repo },
     refs: { base: baseTip, head: meta.headSha, mergeBase: mb, baseAheadOfMergeBase: drift },
     lanes: [...tally.values()].sort((a, b) => b.lines - a.lines),
+    laneProblems: lanes.problems,
     files,
     worklist,
     diff,
@@ -460,6 +463,7 @@ export async function prStory(
   pr: PrPacket["pr"];
   refs: { mergeBase: string; head: string; baseAheadOfMergeBase: number | null };
   lanes: LaneTally[];
+  laneProblems: string[];
   totals: { steps: number; chapters: number; changedLines: number; queueLines: number };
 }) | { error: string }> {
   const t = await prTriage(root, input, { fetch: opts.fetch });
@@ -498,7 +502,7 @@ export async function prStory(
     // Carried so a walkthrough with nothing in it can say *why* — a PR that is all
     // tests or all generated code has an empty queue by design, and an unexplained
     // empty page reads as a broken one.
-    lanes: t.lanes,
+    lanes: t.lanes, laneProblems: t.laneProblems,
     totals: { steps: steps.length, chapters: story.chapters.length, changedLines: t.totals.changedLines, queueLines: t.totals.queueLines },
   };
 }
