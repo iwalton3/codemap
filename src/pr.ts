@@ -73,14 +73,18 @@ const PR_LIST_FIELDS = "number,url,title,author,baseRefName,headRefName,baseRefO
  * The TTL is short because `headRefOid` is the one field that genuinely moves: a
  * force-push shows up within it. Long-lived processes (serve.js, the MCP server)
  * are the ones that benefit; a one-shot CLI run sees no difference either way.
+ *
+ * `fresh: true` bypasses it. Anything that makes an OUTWARD-FACING claim about the
+ * head — publishing viewed state, which GitHub records against whatever the head is
+ * NOW — must ask rather than trust a value up to a minute old.
  */
 const META_TTL_MS = 60_000;
 const metaCache = new Map<string, { at: number; value: PrMeta }>();
 
-export function fetchPrMeta(ref: PrRef): PrMeta | { error: string } {
+export function fetchPrMeta(ref: PrRef, opts: { fresh?: boolean } = {}): PrMeta | { error: string } {
   const key = `${ref.owner}/${ref.repo}#${ref.number}`;
   const hit = metaCache.get(key);
-  if (hit && Date.now() - hit.at < META_TTL_MS) return hit.value;
+  if (!opts.fresh && hit && Date.now() - hit.at < META_TTL_MS) return hit.value;
   const r = gh(["pr", "view", String(ref.number), "--repo", `${ref.owner}/${ref.repo}`, "--json", PR_FIELDS]);
   if (!r.ok) return { error: `gh pr view failed: ${r.err || "unknown error"}` };
   try {
@@ -139,10 +143,9 @@ export interface WorkItem {
   /** Name-shaped money signal — a hint for the triage pass, never a verdict. */
   moneyHint: boolean;
   /**
-   * First source line of the symbol. Overloads share a symbolPath and are told
-   * apart only by an *ordinal* disambiguator, which is hashed into the anchor id
-   * and so can never be made descriptive — an event-sourced aggregate's dozen
-   * `Apply` methods are otherwise indistinguishable in a worklist.
+   * First source line of the symbol. Overloads share a symbolPath, so an
+   * event-sourced aggregate's dozen `Apply` methods are indistinguishable in a
+   * worklist without it — the reader needs the parameter, not the name.
    */
   signature: string;
   severity: string;
@@ -304,7 +307,9 @@ export async function workShapes(
 ): Promise<Map<string, { complexity: Complexity; signature: string }>> {
   const key = `${root}\0${mergeBase}\0${headSha}`;
   const hit = shapeCache.get(key);
-  if (hit) return hit;
+  // Re-insert on a hit: a Map iterates in insertion order, so evicting the first key
+  // without this threw out the pull request being worked on most.
+  if (hit) { shapeCache.delete(key); shapeCache.set(key, hit); return hit; }
 
   const wanted = [...new Set(entries.filter((e) => e.change !== "removed").map((e) => e.b.file))];
   const blobs = readBlobs(root, headSha, wanted);
@@ -488,7 +493,11 @@ export async function prStory(
   const blobs = readBlobs(root, t.refs.head, specPaths);
   const sections = specPaths.flatMap((p) => splitSpec(p, blobs.get(p) ?? ""));
 
-  const anns = (await readAnnotations(root)).annotations.filter((a) => a.target.kind === "anchor" && !a.resolved);
+  // Resolved ones are carried too. The walkthrough's ⚑ badge counts only OPEN
+  // findings, but the findings list has to be able to show a resolved one so it can
+  // be reopened — and the push panel reports them ("2 resolved locally, so not
+  // sent"), which is unactionable if they are nowhere on the page.
+  const anns = (await readAnnotations(root)).annotations.filter((a) => a.target.kind === "anchor");
   const byAnchor = new Map<string, unknown[]>();
   for (const a of anns) (byAnchor.get(a.target.id) ?? byAnchor.set(a.target.id, []).get(a.target.id)!).push(a);
 

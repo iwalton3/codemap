@@ -1787,9 +1787,10 @@ export async function triageDriftList(root: string) {
  */
 export async function changedSince(
   root: string,
-  input: { targetKind: "node" | "anchor"; targetId: string; level: ReviewLevel; attestation: Attestation },
+  /** `ref` says what "now" is — pass the PR head when asking about a PR sign-off. */
+  input: { targetKind: "node" | "anchor"; targetId: string; level: ReviewLevel; attestation: Attestation; ref?: string },
 ) {
-  return reviewsChangedSince(root, { kind: input.targetKind, id: input.targetId }, { level: input.level, attestation: input.attestation });
+  return reviewsChangedSince(root, { kind: input.targetKind, id: input.targetId }, { level: input.level, attestation: input.attestation, ref: input.ref });
 }
 
 // ---------------------------------------------------------------------------
@@ -1872,7 +1873,19 @@ export async function document(
   // P1.2 — inline ordered steps materialize step nodes + step_of + touches edges.
   if (input.type === "process" && input.steps?.length) {
     const graph = await readGraph(root);
-    const taken = new Set((await loadNodes(root)).map((n) => n.id)); // includes the process just written
+    const allNodes = await loadNodes(root);
+    const taken = new Set(allNodes.map((n) => n.id)); // includes the process just written
+    // Re-documenting a process must UPDATE its steps, not mint a second set. Ids came
+    // from `uniqueSlug` against every existing node, so a second promotion of the same
+    // chapter produced `command-2`, `handler-2`, … and a second run of `step_of`
+    // edges — the flow-walker then rendered the same flow twice. The promotion guard
+    // explicitly permits re-promoting a section, and the UI advertises it, so this is
+    // a path the product invites.
+    const existingSteps = new Map(
+      graph.edges.filter((e) => e.type === "step_of" && e.to === id)
+        .map((e) => [allNodes.find((n) => n.id === e.from)?.title, e.from] as const)
+        .filter((x): x is readonly [string, string] => typeof x[0] === "string"),
+    );
     const created: string[] = [];
     const warnings: string[] = [];
     let i = 0;
@@ -1883,7 +1896,7 @@ export async function document(
       // half-built and the caller re-sending everything.
       if (!sr.ids.length) { warnings.push(`step "${step.title}" skipped — no anchor resolved: ${sr.errors.join("; ")}`); i++; continue; }
       for (const e of sr.errors) warnings.push(`step "${step.title}": ${e}`);
-      const stepId = step.id ?? uniqueSlug(slug(step.title), taken);
+      const stepId = step.id ?? existingSteps.get(step.title) ?? uniqueSlug(slug(step.title), taken);
       taken.add(stepId);
       await writeNode(root, { id: stepId, type: "step", title: step.title, summary: step.summary, anchors: sr.ids, body: step.body ?? "" }, wopts);
       created.push(stepId);

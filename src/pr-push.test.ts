@@ -174,7 +174,7 @@ test("publishing records the review BEFORE syncing viewed state", async () => {
     };
     const seenAt: string[] = [];
     const origRead = readPushes;
-    const r = await executePrPush(root, plan as any, { markViewed: true, gh: fakeGh as any });
+    const r = await executePrPush(root, plan as any, { markViewed: true, gh: fakeGh as any, headNow: { headSha: plan.head } as any });
     assert.equal(r.postedComments, 1);
     assert.deepEqual(r.markedViewed, ["a.ts"]);
     assert.deepEqual(calls, ["post-review", "node-id", "mark-viewed"], "post, then sync");
@@ -198,7 +198,7 @@ test("a failed comment post does not abandon a viewed sync that was also asked f
     const fakeGh = (args: string[]) => args.includes("--method")
       ? { ok: false, out: "", err: "422 unprocessable" }
       : { ok: true, out: args[0] === "pr" ? "PR_1" : "{}", err: "" };
-    const r = await executePrPush(root, plan as any, { markViewed: true, gh: fakeGh as any });
+    const r = await executePrPush(root, plan as any, { markViewed: true, gh: fakeGh as any, headNow: { headSha: plan.head } as any });
     assert.equal(r.postedComments, 0);
     assert.ok(r.errors.some((e) => /review post failed/.test(e)));
     assert.deepEqual(r.markedViewed, ["a.ts"], "they are independent acts; one failing is not the other's news");
@@ -221,9 +221,49 @@ test("pushing viewed state alone opens no review on the pull request", async () 
       calls.push(args.includes("--method") ? "post-review" : args[0] === "pr" ? "node-id" : "mark-viewed");
       return { ok: true, out: args[0] === "pr" ? "PR_1" : "{}", err: "" };
     };
-    const r = await executePrPush(root, plan as any, { comments: false, markViewed: true, gh: fakeGh as any });
+    const r = await executePrPush(root, plan as any, { comments: false, markViewed: true, gh: fakeGh as any, headNow: { headSha: plan.head } as any });
     assert.equal(calls.includes("post-review"), false, "viewed state is a different act from commenting");
     assert.equal(r.postedComments, 0);
     assert.deepEqual(r.markedViewed, ["a.ts"]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a viewed sync is refused when the pull request head moved under the plan", async () => {
+  // GitHub records a tick against whatever the head is NOW, so ticking a plan built
+  // against an older head claims the reviewer read code that arrived afterwards.
+  const root = mkdtempSync(join(tmpdir(), "codemap-moved-"));
+  try {
+    const plan = {
+      fingerprint: "f", pr: { number: 5, title: "t", url: "u", owner: "o", repo: "r" }, head: "OLDHEAD",
+      body: "b", comments: [], deferred: [], viewedPaths: ["a.ts"],
+      skipped: { alreadyPushed: 0, resolved: 0, notElected: 0, belowSeverity: 0 },
+    };
+    const calls: string[] = [];
+    const fakeGh = (args: string[]) => { calls.push(args[0]!); return { ok: true, out: "{}", err: "" }; };
+
+    const moved = await executePrPush(root, plan as any, {
+      comments: false, markViewed: true, gh: fakeGh as any,
+      headNow: { headSha: "NEWHEAD" } as any,
+    });
+    assert.deepEqual(moved.markedViewed, [], "nothing is ticked against a head nobody reviewed");
+    assert.ok(moved.errors.some((e) => /head moved/.test(e)));
+    assert.equal(calls.length, 0, "and GitHub is not called at all");
+
+    const same = await executePrPush(root, plan as any, {
+      comments: false, markViewed: true, gh: fakeGh as any,
+      headNow: { headSha: "OLDHEAD" } as any,
+    });
+    assert.deepEqual(same.markedViewed, ["a.ts"], "an unmoved head syncs normally");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("publishing viewed state alone does not erase the link to a review posted earlier", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-url-"));
+  try {
+    await writePush(root, "9", { annotationIds: ["n1"], viewedPaths: [], at: "t1", reviewUrl: "https://x/1" });
+    await writePush(root, "9", { annotationIds: [], viewedPaths: ["a.ts"], at: "t2" });
+    const rec = (await readPushes(root)).pushes["9"]!;
+    assert.equal(rec.reviewUrl, "https://x/1", "the arrays union; a scalar must not be blanked by a later write");
+    assert.deepEqual(rec.viewedPaths, ["a.ts"]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

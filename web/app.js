@@ -2029,7 +2029,7 @@ class PrStoryPage extends Component {
     return {
       story: null, open: {}, code: {}, pending: {}, finding: null, prRef: null, showDiff: {},
       promote: null, promoted: {}, showCovered: false, deriving: false, derived: null,
-      pulling: false, pulled: null, push: null, markError: null,
+      pulling: false, pulled: null, push: null, markError: null, showFindings: false,
     };
   }
   constructor(props) { super(props); this.state = PrStoryPage.blank(); }
@@ -2065,6 +2065,13 @@ class PrStoryPage extends Component {
     // `pageShell`'s contract: a real navigation nulls the page's data so it shows
     // loading and resets scroll, rather than rendering the last PR's content.
     Object.assign(this.state, PrStoryPage.blank());
+    // Not reactive, so `blank()` cannot reach them — but they outlive a navigation
+    // just the same. A promote plan still in flight would otherwise reopen its form
+    // on the NEXT pull request (chapter ids are shared across PRs touching one spec),
+    // and an unsent finding draft would follow its anchor across too.
+    this._promoteToken = null;
+    this._pushToken = null;
+    this._fdrafts = {};
     this.load.run();
   }
 
@@ -2199,9 +2206,20 @@ class PrStoryPage extends Component {
   // 'viewed' — different acts: comments argue for a change and notify the author,
   // viewed state only says which files someone read.
   async openPush(what) {
-    if (this.state.push && this.state.push.what === what) { this.state.push = null; return; }
+    if (this.state.push && this.state.push.what === what) { this._pushToken = null; this.state.push = null; return; }
+    // Same token guard as `openPromote`, and for the same reason: the toggle-off
+    // check runs against state the in-flight request will overwrite, so a dismissed
+    // panel reopened when the response landed. Clicking "comments" then "viewed"
+    // hits one endpoint, so without this the later click could be overwritten by the
+    // earlier response — on the one surface that writes to somebody else's repo.
+    const token = Symbol('push');
+    this._pushToken = token;
     this.state.push = { what, loading: true };
-    const r = await api('/api/pr/push_plan', { u: this.props.params.universe, pr: this.props.params.pr });
+    // `api()` throws on any non-2xx; with no catch the panel sat on "working out
+    // what would be sent…" for ever and the rejection went unhandled.
+    const r = await api('/api/pr/push_plan', { u: this.props.params.universe, pr: this.props.params.pr })
+      .catch((e) => ({ error: `could not work out what would be sent: ${e && e.message ? e.message : e}` }));
+    if (this._pushToken !== token) return;
     if (r.error) { this.state.push = { what, error: r.error }; return; }
     this.state.push = { what, plan: r };
   }
@@ -2263,6 +2281,61 @@ class PrStoryPage extends Component {
     this.state.promoted = { ...this.state.promoted, [ch.id]: res.promoted };
     this.state.promote = null;
   }
+  /**
+   * Every finding on this pull request, in one place.
+   *
+   * Raising an agent's finding to the maintainer and resolving one are decisions
+   * about a LIST — "which of these do I stand behind?" — but the only place to make
+   * them was inside an expanded symbol's code pane, which meant opening each symbol
+   * in turn to find them. Grouped by what the push would do with them, because that
+   * is the question being answered.
+   */
+  allFindings() {
+    const out = [];
+    for (const c of (this.state.story && this.state.story.chapters) || []) {
+      for (const st of c.steps) {
+        for (const f of st.annotations || []) {
+          if (f.kind !== 'finding' && f.kind !== 'question') continue;
+          out.push({ f, step: st, chapter: c });
+        }
+      }
+    }
+    const rank = { critical: 0, high: 1, medium: 2, low: 3 };
+    return out.sort((a, b) => (rank[a.f.severity] ?? 4) - (rank[b.f.severity] ?? 4)
+      || a.step.file.localeCompare(b.step.file) || (a.f.line || 0) - (b.f.line || 0));
+  }
+
+  /** Open the symbol a finding sits on and put it on screen. */
+  async gotoFinding(entry) {
+    this.state.open = { ...this.state.open, [entry.chapter.id]: true };
+    if (!this.state.code[entry.step.anchorId]) await this.openStep(entry.step);
+    requestAnimationFrame(() => document.getElementById(`step-${entry.step.anchorId}`)?.scrollIntoView({ block: 'start', behavior: 'smooth' }));
+  }
+
+  findingsPanelEl(u) {
+    if (!this.state.showFindings) return html``;
+    const all = this.allFindings();
+    if (!all.length) return html`<div class="prfindings dim">No findings raised on this pull request yet.</div>`;
+    const groups = [
+      ['yours — these go out on the next push', all.filter(e => !e.f.resolved && !isAgentFinding(e.f))],
+      ['raised to the maintainer', all.filter(e => !e.f.resolved && isAgentFinding(e.f) && e.f.escalated)],
+      ['an agent\'s — raise one to include it', all.filter(e => !e.f.resolved && isAgentFinding(e.f) && !e.f.escalated)],
+      ['resolved locally — not sent', all.filter(e => e.f.resolved)],
+    ].filter(g => g[1].length);
+    return html`<div class="prfindings">
+      ${each(groups, g => html`<div class="prfgroup">
+        <div class="prfgh">${g[0]} <b>${g[1].length}</b></div>
+        ${each(g[1], e => html`<div class="prfrow">
+          <div class="prfloc" title="open this symbol" on-click="${() => this.gotoFinding(e)}">
+            <code>${e.step.file.split('/').pop()}${e.f.line ? ':' + e.f.line : ''}</code>
+            <span class="dim">${e.step.symbol.split(' › ').pop()}</span>
+          </div>
+          ${findingItemEl(this, u, e.f)}
+        </div>`, e => e.f.id)}
+      </div>`, g => g[0])}
+    </div>`;
+  }
+
   // What would leave the machine, before anything does. Deliberately verbose: this
   // is the one surface in codemap that writes to somebody else's repository.
   pushPanelEl() {
@@ -2466,9 +2539,11 @@ class PrStoryPage extends Component {
         </div>
         ${when(this.state.markError, () => html`<div class="warn">sign-off failed: ${this.state.markError}</div>`)}
         <div class="prderive prpush">
+          <button class="${this.state.showFindings ? 'on' : ''}" on-click="${() => { this.state.showFindings = !this.state.showFindings; }}" title="every finding on this PR in one list — raise or resolve without opening each symbol">${this.state.showFindings ? 'hide findings' : `findings (${this.allFindings().filter(e => !e.f.resolved).length})`}</button>
           <button on-click="${() => this.openPush('comments')}" title="post your findings to the pull request as review comments. Yours go out; an agent's only if you raised it. Shows you exactly what would be sent first.">push comments to GitHub</button>
           <button on-click="${() => this.openPush('viewed')}" title="tick the per-file viewed boxes on GitHub for files you have fully signed off here, so both tools agree about what has been read.">push viewed state to GitHub</button>
         </div>
+        ${this.findingsPanelEl(u)}
         ${this.pushPanelEl()}
       </div>
       ${when(!st.totals.steps, () => html`<section class="prchapter"><div class="prcbody prempty">

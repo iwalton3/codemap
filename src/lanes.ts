@@ -37,9 +37,11 @@ const DEFAULTS: Record<PatternLane, string[]> = {
     "*.test.*", "*_test.py", "test_*.py",
     // `*.spec.*` matched an API contract (`orders.spec.yaml`) as readily as a Jest
     // spec, and the test lane is evaluated first, so a specification became "test
-    // evidence about code elsewhere". Only source extensions are test specs.
-    "*.spec.ts", "*.spec.tsx", "*.spec.js", "*.spec.jsx", "*.spec.mjs", "*.spec.cjs",
-    "*.spec.cs", "*.spec.py",
+    // evidence about code elsewhere". Excluding DATA extensions rather than listing
+    // source ones: an allowlist quietly dropped `foo.spec.rb`, `foo.spec.vue` and
+    // `foo.spec.go` out of the agent lane, which is the same shape of loss.
+    "*.spec.*",
+    "!*.spec.yaml", "!*.spec.yml", "!*.spec.json", "!*.spec.xml", "!*.spec.toml", "!*.spec.md",
     "e2e-playwright/", "**/testdata/", "TestDataScripts/", "test-scripts/",
     "**/ObjectMothers/", "**/fixtures/",
   ],
@@ -72,6 +74,9 @@ export const LANE_POLICY: Record<Lane, { review: "queue" | "agent" | "context" |
 };
 
 export function compileLanes(overrides: Partial<Record<PatternLane, string[]>> = {}, problems: string[] = []): LaneRules {
+  // The user's own `[data]` patterns, separately from the defaults, so an explicit
+  // override can outrank the "data never claims source" rule below.
+  const userData = compileIgnore((overrides.data ?? []).join("\n"));
   const matchers = new Map<PatternLane, Ignore>();
   for (const lane of LANE_ORDER) {
     matchers.set(lane, compileIgnore([...DEFAULTS[lane], ...(overrides[lane] ?? [])].join("\n")));
@@ -86,7 +91,11 @@ export function compileLanes(overrides: Partial<Record<PatternLane, string[]>> =
         // of the queue: `**/Migrations/` sent EF migrations — C# that can drop a
         // column — to `glance`, and `**/locales/` did the same to any module living
         // there. Lanes route attention; they never hide a defect.
-        if (lane === "data" && parseable) return "code";
+        //
+        // A user's OWN `[data]` pattern is honoured, though: overriding it silently
+        // would be the same complaint from the other side, and `.codemaplanes` is
+        // documented as the way to override these defaults.
+        if (lane === "data" && parseable && !userData.ignores(relPath, false)) return "code";
         return lane;
       }
       return parseable ? "code" : "other";

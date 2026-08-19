@@ -259,3 +259,31 @@ test("an imported viewed tick does not raise an approval-sitting-on-a-revert ala
     for (const m of withViewed) assert.equal(m.attestation, "viewed", "and when asked for, they say which they are");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("changedSince answers about the ref you ask about, not the working tree", async () => {
+  // Without a ref, "now" is the working tree — which for a PR sign-off is some other
+  // branch entirely, so a mark whose code has not moved at the PR head still reported
+  // the whole thing as drifted.
+  const root = mkdtempSync(join(tmpdir(), "codemap-since-"));
+  try {
+    mkdirSync(join(root, "src"));
+    const worktree = "export function f() {\n  return 1;\n}\n";
+    writeFileSync(join(root, "src/f.ts"), worktree);
+    const onDisk = await indexBlob(worktree, "src/f.ts");
+    await writeStore(root, onDisk, { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State);
+    const id = onDisk[0]!.id;
+
+    // the PR head holds a DIFFERENT body for the same symbol
+    const { writeSnapshot } = await import("./store.js");
+    const branch = await indexBlob("export function f() {\n  return 99;\n}\n", "src/f.ts");
+    await writeSnapshot(root, "prhead", "feature/x", branch, "2026-08-19T00:00:00Z");
+
+    await markReviewed(root, { targetKind: "anchor", targetId: id, level: "code", actor: "human", attestation: "signed", ref: "prhead" });
+
+    const atHead = await changedSince(root, { kind: "anchor", id }, { level: "code", attestation: "signed", ref: "prhead" });
+    assert.deepEqual(atHead.changed, [], "nothing changed at the head it was signed against");
+
+    const atWorktree = await changedSince(root, { kind: "anchor", id }, { level: "code", attestation: "signed" });
+    assert.equal(atWorktree.changed.length, 1, "and the working tree really does differ — a separate question");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

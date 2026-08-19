@@ -570,7 +570,15 @@ export async function writePush(root: string, pr: string, rec: PushRecord): Prom
   const store = await readPushes(root);
   const prev = store.pushes[pr];
   store.pushes[pr] = prev
-    ? { ...rec, annotationIds: [...new Set([...prev.annotationIds, ...rec.annotationIds])], viewedPaths: [...new Set([...prev.viewedPaths, ...rec.viewedPaths])] }
+    ? {
+      ...prev, ...rec,
+      annotationIds: [...new Set([...prev.annotationIds, ...rec.annotationIds])],
+      viewedPaths: [...new Set([...prev.viewedPaths, ...rec.viewedPaths])],
+      // The arrays union; a scalar must not be erased by a later write that has none.
+      // Publishing viewed state alone carries no review url, and spreading `rec` over
+      // `prev` dropped the link to the review posted earlier.
+      reviewUrl: rec.reviewUrl ?? prev.reviewUrl,
+    }
     : rec;
   setMeta(db(root), "pr_push", store);
 }

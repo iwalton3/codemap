@@ -119,11 +119,12 @@ export async function witnessesFor(root: string, target: Target, ref?: string): 
  * A PR sign-off is made against the pull request's head, not against whatever the
  * working tree happens to be checked out to. Stamping `headCommit(root)` made the
  * mark claim it happened at the local HEAD while its witnesses came from the PR
- * head, so `changedSince` compared PR-head witnesses with working-tree hashes and
- * reported the whole mark as drifted — "what changed since I signed?" was unusable
- * for anything signed on a PR surface. The branch had the same split: it was the
- * working tree's, so a year of imported acceptances all carry whichever branch the
- * importer happened to be on.
+ * head. The branch had the same split: it was the working tree's, so a year of
+ * imported acceptances all carry whichever branch the importer happened to be on.
+ *
+ * This fixes what a mark RECORDS. What a reader compares it against is a separate
+ * question — `changedSince` takes its own `ref` for that, and a caller asking about
+ * a PR must pass one, or it is answered against the working tree.
  */
 function markedAt(root: string, ref: string | undefined): { commit: string | null; branch: string | null } {
   if (ref) return { commit: ref, branch: snapshotBranch(root, ref) };
@@ -380,7 +381,13 @@ export function witnessDrift(witnesses: BugWitness[], live: Map<string, string>)
 export async function changedSince(
   root: string,
   target: Target,
-  opts: { level: ReviewLevel; attestation: Attestation },
+  /**
+   * `ref` is what "now" means. Without it this compares a mark's witnesses against
+   * the WORKING TREE, which for a pull-request sign-off is some other branch
+   * entirely — so a mark whose code has not moved at the PR head still reports the
+   * whole thing as drifted. The caller knows which "now" it is asking about.
+   */
+  opts: { level: ReviewLevel; attestation: Attestation; ref?: string },
 ): Promise<{ found: boolean; at?: string; reviewedCommit?: string | null; changed: AnchorChange[] }> {
   const rs = await readReviews(root);
   const r = rs.reviews.find(
@@ -391,7 +398,7 @@ export async function changedSince(
       effectiveAttestation(x) === opts.attestation,
   );
   if (!r) return { found: false, changed: [] };
-  const live = await liveHashes(root, r.witnesses.map((w) => w.anchorId));
+  const live = await liveHashes(root, r.witnesses.map((w) => w.anchorId), opts.ref);
   return { found: true, at: r.at, reviewedCommit: r.reviewedCommit, changed: witnessDrift(r.witnesses, live) };
 }
 

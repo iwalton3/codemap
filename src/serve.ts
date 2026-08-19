@@ -171,6 +171,9 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
         targetId: q.get("targetId") ?? "",
         level: (q.get("level") as "logical" | "code") ?? "code",
         attestation: q.get("attestation") === "viewed" ? "viewed" : "signed",
+        // Absent, "now" is the working tree — which for a PR sign-off is some other
+        // branch, and every mark then reads as drifted.
+        ref: q.get("ref") || undefined,
       });
     default:
       return null;

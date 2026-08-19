@@ -196,8 +196,11 @@ export async function bulkPullViewed(
       const meta = gh(["pr", "view", String(p.number), "--repo", slug, "--json", "baseRefName,headRefOid,baseRefOid"]);
       if (!meta.ok) { res.errors.push({ pr: p.number, why: "gh pr view failed" }); continue; }
       const { baseRefName, headRefOid, baseRefOid } = JSON.parse(meta.out);
-      // The head must already be local — a bulk run fetches every PR head once up
-      // front rather than paying a round trip per PR.
+      // The head must already be local. Nothing here fetches: a back-catalogue run
+      // is for a clone that already has the PR refs (`git fetch origin
+      // "+refs/pull/*/head:refs/remotes/origin/pr/*"`), because paying a round trip
+      // per pull request across hundreds of them is the cost this module exists to
+      // avoid. A PR whose head is missing is reported, not silently skipped.
       if (!hasObject(root, headRefOid)) { res.errors.push({ pr: p.number, why: "head object not fetched" }); continue; }
 
       const paths = viewedPaths(slug, p.number);

@@ -204,7 +204,7 @@ const NOT_A_SUMMARY = [
   /\(L\d+/,                       // a line reference — belongs to a diff
   /:$/,                            // a lead-in to a code block
   /\.(cs|ts|tsx|py|js|md)\b/i,     // names a file
-  // A path: two or more segments, or one segment and a file extension. The bare
+  // A path: two or more SLASHES, or one slash and a file extension. The bare
   // `\w+\/\w+` also matched "read/write", "and/or", "24/7" and "input/output", so a
   // perfectly good spec sentence was rejected and the node fell back to being
   // summarised by its own title — which the UI reads as "the spec had no

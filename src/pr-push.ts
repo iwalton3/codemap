@@ -18,7 +18,7 @@ import { createHash } from "node:crypto";
 import type { Annotation } from "./schema.js";
 import { readAnnotations, readPushes, writePush } from "./store.js";
 import { diffLineRanges } from "./git.js";
-import { prTriage, anchorSpans } from "./pr.js";
+import { prTriage, anchorSpans, fetchPrMeta, type PrMeta } from "./pr.js";
 import { LANE_POLICY } from "./lanes.js";
 
 export interface InlineComment { path: string; line: number; side: "RIGHT"; body: string; annotationId: string }
@@ -234,7 +234,7 @@ export async function executePrPush(
   // `gh` is injected so the ORDER of what this does — post, record, then sync — is
   // testable without posting to anybody's pull request. That order is load-bearing:
   // see the recording comment below.
-  opts: { markViewed?: boolean; comments?: boolean; gh?: typeof gh } = {},
+  opts: { markViewed?: boolean; comments?: boolean; gh?: typeof gh; headNow?: PrMeta | { error: string } } = {},
 ): Promise<PushResult> {
   const gh_ = opts.gh ?? gh;
   const slug = `${plan.pr.owner}/${plan.pr.repo}`;
@@ -273,6 +273,21 @@ export async function executePrPush(
   }
 
   if (opts.markViewed && plan.viewedPaths.length) {
+    // GitHub records a viewed tick against whatever the head is NOW, not against the
+    // commit the plan was built from — so if the head moved since, ticking claims the
+    // reviewer read code that arrived afterwards. That is the same lie `fetchViewedFiles`
+    // refuses in the other direction by dropping DISMISSED. The head is re-read
+    // FRESH, past the metadata cache, because a value up to a minute old is exactly
+    // what would hide this.
+    const now = opts.headNow ?? fetchPrMeta({ owner: plan.pr.owner, repo: plan.pr.repo, number: plan.pr.number }, { fresh: true });
+    if ("error" in now) {
+      errors.push(`viewed state not synced — could not confirm the head has not moved: ${now.error}`);
+      return result;
+    }
+    if (now.headSha !== plan.head) {
+      errors.push(`viewed state not synced — the pull request head moved from ${plan.head.slice(0, 12)} to ${now.headSha.slice(0, 12)} since this plan was made; re-open it and look again`);
+      return result;
+    }
     const idr = gh_(["pr", "view", String(plan.pr.number), "--repo", slug, "--json", "id", "--jq", ".id"]);
     const nodeId = idr.ok ? idr.out.trim() : "";
     if (!nodeId) errors.push("could not resolve the PR node id — viewed state not synced");
@@ -291,7 +306,10 @@ export async function executePrPush(
   // unions, so this adds to the record above rather than replacing it.
   if (result.markedViewed.length) {
     await writePush(root, String(plan.pr.number), {
-      annotationIds: [], viewedPaths: result.markedViewed, at: new Date().toISOString(), reviewUrl: result.reviewUrl,
+      annotationIds: [], viewedPaths: result.markedViewed, at: new Date().toISOString(),
+      // Not `result.reviewUrl` — a viewed-only publish has none, and `writePush`
+      // spreads scalars, so it would erase the link to a review posted earlier.
+      ...(result.reviewUrl ? { reviewUrl: result.reviewUrl } : {}),
     });
   }
   return result;
