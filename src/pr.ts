@@ -426,7 +426,12 @@ export interface PrAnchorCode {
   id: string; file: string; lang: string;
   /** Head source plus its real starting line, so findings can be pinned to file lines. */
   head: string | null; startLine: number;
-  base: string | null;
+  /**
+   * Base source and its own starting line. For a symbol the PR REMOVES this is the
+   * only body there is — the walkthrough shows it, because deleted code is what a
+   * review must least skip.
+   */
+  base: string | null; baseStartLine: number;
   /** Unified diff of base→head. What a reviewer of a *changed* symbol actually wants. */
   lines: DiffLine[];
   /**
@@ -471,7 +476,7 @@ export async function prAnchorCode(root: string, input: string, id: string): Pro
 
   return {
     id, file: item.file, lang: langOf(item.file),
-    head: h, startLine: head.startLine, base: b, lines, lineEndingsChanged, annotations: anns,
+    head: h, startLine: head.startLine, base: b, baseStartLine: base.startLine, lines, lineEndingsChanged, annotations: anns,
   };
 }
 

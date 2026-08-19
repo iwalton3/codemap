@@ -1987,7 +1987,7 @@ const LAYER_NAME = ['command', 'handler', 'event', 'aggregate', 'read-model', 'j
 
 class PrStoryPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { story: null, open: {}, code: {}, pending: {}, finding: null, prRef: null, showBase: {}, promote: null, promoted: {}, showCovered: false, deriving: false, derived: null, pulling: false, pulled: null }; }
+  constructor(props) { super(props); this.state = { story: null, open: {}, code: {}, pending: {}, finding: null, prRef: null, showDiff: {}, promote: null, promoted: {}, showCovered: false, deriving: false, derived: null, pulling: false, pulled: null }; }
   load = this.createTask(async () => {
     const u = this.props.params.universe; nav.current = u;
     const story = await api('/api/pr/story', { u, pr: this.props.params.pr });
@@ -2127,15 +2127,24 @@ class PrStoryPage extends Component {
   // have no meaningful "before", so those open on the source itself.
   showsDiff(step) {
     const code = this.state.code[step.anchorId];
-    if (!code || !code.base || !code.head) return false;
-    const override = this.state.showBase[step.anchorId];
+    if (!code || !code.lines || !code.lines.length) return false;
+    const override = this.state.showDiff[step.anchorId];
     return override === undefined ? step.change === 'changed' : !!override;
+  }
+
+  // A removed symbol's source is the body the PR DELETES — `head` is null for it.
+  // Falling through to `head` rendered "(source unavailable)" over a step that
+  // still carried a sign-off button, i.e. an attestation to code never shown.
+  sourceOf(code) {
+    return code.head != null
+      ? { text: code.head, startLine: code.startLine }
+      : { text: code.base, startLine: code.baseStartLine };
   }
 
   stepEl(u, step) {
     const code = this.state.code[step.anchorId];
     const finds = openFindingCount(step.annotations);
-    const showBase = this.state.showBase[step.anchorId];
+    const src = code ? this.sourceOf(code) : null;
     return html`<div class="prstep ${step.reviewed ? 'done' : ''}">
       <div class="prsthead" on-click="${() => this.openStep(step)}">
         <span class="prlayer" title="position on the command → read-model spine">${LAYER_NAME[step.layer] || 'code'}</span>
@@ -2150,13 +2159,13 @@ class PrStoryPage extends Component {
       ${when(code && !code.error, () => html`<div class="prsbody">
         <div class="prstools">
           <span class="dim">${code.file}</span>
-          ${when(code.base && code.head, () => html`<button class="ghost" on-click="${() => { this.state.showBase = { ...this.state.showBase, [step.anchorId]: !this.state.showBase[step.anchorId] }; }}">${this.showsDiff(step) ? 'show full source' : 'show diff'}</button>`)}
+          ${when(src && src.text != null && code.lines && code.lines.length, () => html`<button class="ghost" on-click="${() => { this.state.showDiff = { ...this.state.showDiff, [step.anchorId]: !this.showsDiff(step) }; }}">${this.showsDiff(step) ? 'show full source' : 'show diff'}</button>`)}
           ${when(code.lineEndingsChanged, () => html`<span class="crlf" title="one side uses CRLF and the other LF. The diff below is normalised so a line-ending flip does not read as a full rewrite — but the change is real and will show in the file diff on GitHub.">⚠ line endings changed</span>`)}
           <span class="viewlink" title="open the full anchor page" on-click="${() => go(anchorUrl(u, step.anchorId))}">↗</span>
         </div>
         ${when(this.showsDiff(step),
           () => diffReviewLines(this, u, step.anchorId, code.lines, code.lang, code.startLine, code.annotations),
-          () => codeReviewLines(this, u, step.anchorId, code.head, code.lang, code.startLine, code.annotations))}
+          () => codeReviewLines(this, u, step.anchorId, src.text, code.lang, src.startLine, code.annotations))}
       </div>`)}
       ${when(code && code.error, () => html`<div class="prsbody dim">${code.error}</div>`)}
     </div>`;
