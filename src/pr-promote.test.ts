@@ -153,3 +153,51 @@ test("a fenced code line can never become the promoted node's summary", () => {
   }));
   assert.equal(only.summarySource, "title", "the surface must ask the human rather than quote SQL at them");
 });
+
+test("a summary is a whole sentence, not a fragment ending at an abbreviation", () => {
+  // `looksLikeSummary` only guards where a candidate STARTS, so a fragment cut at
+  // "e.g." passed every check and went into the map as the node's description.
+  for (const [prose, want] of [
+    ["The gateway retries transient failures, e.g. timeouts, up to three times before failing.", /three times before failing\.$/],
+    ["Orders settle at 5 p.m. daily and the ledger posts the difference overnight.", /overnight\.$/],
+    ["The ledger is authoritative, i.e. it wins any disagreement with the projection.", /projection\.$/],
+  ] as const) {
+    const p = planPromotion(chapter({ prose, steps: [step("a1", "A", 3)] }));
+    assert.equal(p.summarySource, "spec", prose);
+    assert.match(p.summary, want);
+  }
+});
+
+test("an instruction loses only itself, not the sentence that follows it", () => {
+  // DIRECTIVE was applied per LINE and discarded the whole line.
+  const p = planPromotion(chapter({
+    prose: "Add `public bool ConfirmationRequired` to the aggregate. When false, releases are auto-confirmed and no email is sent.",
+    steps: [step("a1", "A", 3)],
+  }));
+  assert.equal(p.summarySource, "spec");
+  assert.match(p.summary, /^When false/);
+
+  // a line that is only an instruction still contributes nothing
+  const only = planPromotion(chapter({ prose: "Add the column to the table.", steps: [step("a1", "A", 3)] }));
+  assert.equal(only.summarySource, "title");
+});
+
+test("ordinary prose containing a slash is not mistaken for a file path", () => {
+  // `\w+/\w+` matched "read/write", "and/or" and "24/7", so a good spec sentence
+  // was rejected and the node was summarised by its own title — which the UI reads
+  // as "the spec had no description" and asks the human to write one that existed.
+  for (const prose of [
+    "The ledger supports read/write access for settlement operators.",
+    "Reconciliation runs 24/7 and reports any drift to the operator.",
+    "Each release is confirmed and/or cancelled before the ticket is issued.",
+  ]) {
+    const p = planPromotion(chapter({ prose, steps: [step("a1", "A", 3)] }));
+    assert.equal(p.summarySource, "spec", prose);
+  }
+  // a real path is still patch talk
+  const path = planPromotion(chapter({
+    prose: "In `Domains/OrderDomain/ModelAndProjections/Shipment.cs`, after the block, add the field.",
+    steps: [step("a1", "A", 3)],
+  }));
+  assert.equal(path.summarySource, "title");
+});

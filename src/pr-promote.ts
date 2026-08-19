@@ -162,15 +162,42 @@ const DIRECTIVE = /^\s*(?:[-*]\s*)?(?:\*\*)?(add|change|set|remove|delete|rename
  * line of SQL could pass `looksLikeSummary` and become the promoted node's summary
  * — reported as `summarySource: "spec"`, which tells the surface a real description
  * was found and stops it asking the human for one.
+ *
+ * `DIRECTIVE` is NOT applied here any more: it is a sentence-level test, and
+ * discarding the whole line meant a paragraph that opens with an instruction and
+ * then states the behaviour lost the statement too.
  */
-const isProse = (l: string) => l.trim() && !l.startsWith("|") && !l.startsWith(">") && !DIRECTIVE.test(l);
+const isProse = (l: string) => l.trim() && !l.startsWith("|") && !l.startsWith(">");
+
+/**
+ * Sentence boundaries that survive abbreviations. A plain split after `.!?` cuts
+ * "e.g.", "i.e.", "5 p.m." and an initial mid-sentence, and the fragment it leaves
+ * passes every check — `looksLikeSummary` only guards where a candidate STARTS —
+ * so "The gateway retries transient failures, e.g." was written into the map as a
+ * node's description.
+ */
+const ABBREV_END = /(?:\b(?:e\.g|i\.e|etc|vs|viz|cf|approx|est|no|fig|al|Mr|Mrs|Ms|Dr|Prof|St|Inc|Ltd|Co|a\.m|p\.m)|\b[A-Z]|\b\d+)\.$/i;
+function sentences(line: string): string[] {
+  const out: string[] = [];
+  for (const piece of line.split(/(?<=[.!?])\s+/)) {
+    const prev = out[out.length - 1];
+    if (prev !== undefined && ABBREV_END.test(prev)) out[out.length - 1] = `${prev} ${piece}`;
+    else out.push(piece);
+  }
+  return out;
+}
 
 /** Marks of a fragment lifted out of an instruction rather than a statement about the system. */
 const NOT_A_SUMMARY = [
   /\(L\d+/,                       // a line reference — belongs to a diff
   /:$/,                            // a lead-in to a code block
   /\.(cs|ts|tsx|py|js|md)\b/i,     // names a file
-  /\w+\/\w+/,                     // a path
+  // A path: two or more segments, or one segment and a file extension. The bare
+  // `\w+\/\w+` also matched "read/write", "and/or", "24/7" and "input/output", so a
+  // perfectly good spec sentence was rejected and the node fell back to being
+  // summarised by its own title — which the UI reads as "the spec had no
+  // description" and asks the human to write one that already existed.
+  /\w[\w.-]*\/[\w.-]*\/|\w[\w.-]*\/[\w.-]*\.\w{1,5}\b/,
 ];
 const looksLikeSummary = (t: string) =>
   t.length >= 20
@@ -181,12 +208,19 @@ const looksLikeSummary = (t: string) =>
   && !NOT_A_SUMMARY.some((rx) => rx.test(t));
 
 function firstSentence(text: string, fallback: string): string {
-  const prose = proseLines(text).filter(isProse).join(" ").replace(/\s+/g, " ").trim();
-  // Take the first sentence that actually reads like one. Spec prose is written to
-  // be acted on, so most leading lines are instructions, file paths or front-matter;
-  // a bad summary is worse than the title, which is at least honest.
-  for (const cand of prose.split(/(?<=[.!?])\s+/).slice(0, 6)) {
+  // Sentences are cut WITHIN each line, so a line stays its own boundary — spec
+  // prose is line-oriented, and "Add the column:" does not run on into whatever
+  // follows it. `DIRECTIVE` then applies per SENTENCE rather than per line: it used
+  // to discard the whole line, so a paragraph opening with an instruction and then
+  // stating the behaviour lost the statement too.
+  const candidates = proseLines(text).filter(isProse)
+    .flatMap((l) => sentences(l.replace(/\s+/g, " ").trim()));
+  // Take the first that actually reads like a description. Spec prose is written to
+  // be acted on, so most leading sentences are instructions, file paths or
+  // front-matter; a bad summary is worse than the title, which is at least honest.
+  for (const cand of candidates.slice(0, 10)) {
     const t = cand.trim();
+    if (DIRECTIVE.test(t)) continue;
     if (looksLikeSummary(t)) return t.length > 240 ? t.slice(0, 239) + "…" : t;
   }
   return fallback;
