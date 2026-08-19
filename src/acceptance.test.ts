@@ -23,9 +23,13 @@ const viewedFrom = (ref: string, parents: Record<string, string[]> = {}): Ancest
     }
     return seen;
   };
+  // Every commit named in the graph exists; anything else has been rewritten away
+  // (a squash- or rebase-merge) and cannot be placed on or off this history.
+  const all = new Set([ref, ...Object.keys(parents), ...Object.values(parents).flat()]);
   return {
     onRef: (c) => c === null || c === ref || ancestorsOf(ref).has(c),
     precedes: (a, b) => a !== null && b !== null && a !== b && ancestorsOf(b).has(a),
+    known: (c) => all.has(c),
   };
 };
 
@@ -39,10 +43,38 @@ test("the newest acceptance on this ancestry is a direct approval", () => {
 });
 
 test("a body approved on another lineage replays — switching branches is not a revert", () => {
-  // H_pr was approved on a PR branch this ref does not descend from.
-  const r = resolveAcceptance([e("H_dev", "c1"), e("H_pr", "pr1")], "H_pr", chain("c1"));
+  // H_pr was approved on a PR branch this ref does not descend from — and that
+  // branch still EXISTS, which is what makes it a branch switch rather than a
+  // commit that was rewritten away.
+  const r = resolveAcceptance([e("H_dev", "c1"), e("H_pr", "pr1")], "H_pr", viewedFrom("c1", { c1: [], pr1: [] }));
   assert.equal(r.via, "replayed");
   assert.equal(r.entry?.commit, "pr1");
+});
+
+test("a squash-merged sign-off is direct, not a permanent `replayed` badge", () => {
+  // Squash- and rebase-merge — GitHub's default — REWRITE the pull request's
+  // commits, so the head a sign-off was witnessed against is not an ancestor of the
+  // mainline and never will be. Read as a branch switch, every acceptance ever made
+  // on a PR surface badged `replayed` forever and `reverted` could never fire for
+  // one. A commit that no longer exists cannot be placed, so it is read the way a
+  // legacy (null) commit is: on-ref, and unable to supersede anything.
+  const squashed = viewedFrom("s1", { s1: ["base"], base: [] });   // prhead is gone
+  assert.equal(resolveAcceptance([e("H1", "prhead")], "H1", squashed).via, "direct");
+
+  // The limit, stated rather than papered over: supersession needs one commit to
+  // DESCEND from another, and a commit that no longer exists descends from nothing.
+  // So two acceptances both made on a squashed branch cannot be ordered, and this
+  // reports the benign verdict rather than guessing from write order — which is the
+  // very thing that used to read 1,148 of 3,724 marks back as reverts.
+  const both = resolveAcceptance([e("H1", "prhead"), e("H2", "prhead2")], "H1", squashed);
+  assert.equal(both.via, "direct");
+
+  // A revert on the surviving mainline is still caught, because those commits are
+  // real and can be ordered.
+  const line = viewedFrom("c3", { c3: ["c2"], c2: ["c1"], c1: [] });
+  const onMain = resolveAcceptance([e("H1", "c1"), e("H2", "c2")], "H1", line);
+  assert.equal(onMain.via, "reverted");
+  assert.equal(onMain.supersededBy?.bodyHash, "H2");
 });
 
 test("a commit moving this ancestry BACK to an older approved body is a revert", () => {

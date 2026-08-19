@@ -10,7 +10,7 @@ import { type Review, type ReviewLevel, type ReviewState, type BugWitness } from
 import { readReviews, writeReviews, readAnchorStore, loadNodes, readSnapshot, snapshotBranch } from "./store.js";
 import { resolveAcceptance, recordAcceptance, type Ancestry } from "./acceptance.js";
 import { ACCEPTED_CAP, type AcceptedCitation, type AcceptedEntry, type AcceptanceVia } from "./schema.js";
-import { isAncestor, isGitRepo, currentBranch as gitBranch } from "./git.js";
+import { isAncestor, isGitRepo, currentBranch as gitBranch, hasObject } from "./git.js";
 import { indexFile } from "./repo.js";
 import { headCommit } from "./git.js";
 
@@ -229,9 +229,18 @@ function ancestryProbe(root: string, viewRef: string | null): Ancestry {
     if (v === undefined) { v = isAncestor(root, a, b); cache.set(k, v); }
     return v;
   };
+  const existsCache = new Map<string, boolean>();
   return {
     onRef: (c) => !c || !gitHere || !viewRef || c === viewRef || ancestor(c, viewRef),
     precedes: (a, b) => !!a && !!b && a !== b && gitHere && ancestor(a, b),
+    known: (c) => {
+      if (!gitHere) return false;                 // nothing can be placed without git
+      const hit = existsCache.get(c);
+      if (hit !== undefined) return hit;
+      const v = hasObject(root, c);
+      existsCache.set(c, v);
+      return v;
+    },
   };
 }
 

@@ -41,6 +41,24 @@ export interface Ancestry {
   onRef(commit: string | null): boolean;
   /** Is `a` a STRICT ancestor of `b`? Same commit is false — see `supersededBy` below. */
   precedes(a: string | null, b: string | null): boolean;
+  /**
+   * Does this commit still exist in the repository at all?
+   *
+   * "Not on this history" and "gone" are different answers, and only the first is
+   * a branch switch. A squash- or rebase-merge — GitHub's default — REWRITES the
+   * pull request's commits, so the head a sign-off was witnessed against is not an
+   * ancestor of the mainline and never will be. Read as a branch switch, every
+   * acceptance ever made on a PR surface badges `replayed` forever, and `reverted`
+   * can never fire for one. An absent commit cannot be placed, so it is treated
+   * like a legacy (null) one: on-ref, but unable to supersede anything.
+   *
+   * The limit that follows, stated rather than papered over: supersession needs one
+   * commit to DESCEND from another, so two acceptances both made on a branch that
+   * was squashed away cannot be ordered and report the benign verdict. Guessing
+   * from write order instead is what used to read 1,148 of 3,724 marks back as
+   * reverts.
+   */
+  known(commit: string): boolean;
 }
 
 /**
@@ -60,7 +78,10 @@ export function resolveAcceptance(entries: AcceptedEntry[], liveHash: string | u
   if (!liveHash || !entries.length) return { via: "none" };
   if (!entries.some((e) => e.bodyHash === liveHash)) return { via: "none" };
 
-  const lineage = entries.filter((e) => anc.onRef(e.commit));
+  // An entry whose commit is gone cannot be placed on or off this history, so it
+  // counts as on-ref — the same conservative reading a legacy `null` commit gets.
+  const placeable = (e: AcceptedEntry) => e.commit !== null && anc.known(e.commit);
+  const lineage = entries.filter((e) => !placeable(e) || anc.onRef(e.commit));
   const mine = lineage.filter((e) => e.bodyHash === liveHash);
 
   // An acceptance is superseded only by a *descendant* acceptance of a different
