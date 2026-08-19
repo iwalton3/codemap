@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { diffLineRanges } from "./git.js";
-import { planPrPush, isAgentAuthored, isElected, pushVerdict, executePrPush, placeAnnotation, publishStateOf } from "./pr-push.js";
+import { planPrPush, isAgentAuthored, isElected, pushVerdict, executePrPush, placeAnnotation, publishStateOf, buildComments } from "./pr-push.js";
 import { readPushes, writePush } from "./store.js";
 import type { Annotation } from "./schema.js";
 
@@ -379,4 +379,104 @@ test("publishState is read from the acts that already happened, not stored twice
 
   // posted outranks withdrawn: deciding against it afterwards does not un-send it
   assert.equal(publishStateOf(ann({ withdrawn: { at: "n", by: "me" } }), new Set(["n1"])), "posted");
+});
+
+/**
+ * The assembly. Every piece of it was testable alone and the whole was not, because
+ * reaching it needed a live GitHub pull request — which is exactly how the
+ * silently-dropped finding survived.
+ */
+const world = (over: Partial<Parameters<typeof buildComments>[1]> = {}) => ({
+  inPr: (id: string) => (id === "a_1" ? { file: "touched.cs", symbol: "S › M" } : undefined),
+  anchorOf: (id: string) => ({ a_1: { file: "touched.cs", symbol: "S › M" }, a_far: { file: "untouched.cs", symbol: "Q › Handle" } } as Record<string, { file: string; symbol: string }>)[id],
+  pushed: new Set<string>(),
+  inDiff: (p: string) => p === "touched.cs",
+  commentable: (p: string, l: number) => p === "touched.cs" && l >= 10 && l <= 20,
+  firstHunkLine: (p: string) => (p === "touched.cs" ? 10 : undefined),
+  firstChangedLineOfSymbol: () => 12,
+  ...over,
+});
+
+test("the plan publishes the comment, never the evidence", () => {
+  const set = buildComments([ann({ line: 12, text: "PARTLY CONFIRMED — three paragraphs of what was traced" })], world());
+  assert.equal(set.comments.length, 1);
+  assert.match(set.comments[0]!.body, /no tenant predicate/);
+  assert.doesNotMatch(set.comments[0]!.body, /PARTLY CONFIRMED/,
+    "publishing `text` is the wall of text this whole split exists to prevent");
+});
+
+test("an agent's comment is marked, a human's is not", () => {
+  const mine = buildComments([ann({ line: 12, author: "izzie" })], world());
+  assert.doesNotMatch(mine.comments[0]!.body, /\[Claude\]/);
+
+  const theirs = buildComments([ann({ line: 12, author: "agent:pr-first-pass", escalated: { at: "n", by: "me" } })], world());
+  assert.match(theirs.comments[0]!.body, /^\[Claude\] /, "short, at the start — not a banner or a generated-by footer");
+
+  // a human who rewrites an agent's wording owns it, and does not have to choose
+  // between mislabelling it and losing the marker
+  const rewritten = buildComments([ann({
+    line: 12, author: "agent:pr-first-pass", escalated: { at: "n", by: "me" },
+    revisions: [{ at: "n", by: "izzie", was: { comment: "the agent's wording" } }],
+  })], world());
+  assert.doesNotMatch(rewritten.comments[0]!.body, /\[Claude\]/);
+});
+
+test("a question asks for an answer, and says so", () => {
+  const set = buildComments([ann({ line: 12, kind: "question", disposition: "confirmed" })], world());
+  assert.match(set.comments[0]!.body, /\*\*Question\*\* —/);
+});
+
+test("an elected finding on code the PR never touched is reported, not dropped", () => {
+  // The defect this replaced: a bare `continue`, uncounted, so electing one meant it
+  // silently never went out AND the plan said nothing was held back.
+  const far = ann({ id: "n2", target: { kind: "anchor", id: "a_far" }, line: 51, author: "izzie" });
+  const set = buildComments([far], world());
+  assert.equal(set.comments.length, 0);
+  assert.equal(set.blocked.length, 1);
+  assert.equal(set.blocked[0]!.file, "untouched.cs");
+  assert.match(set.blocked[0]!.label, /no tenant predicate/, "named, so it can be recognised");
+  assert.match(set.blocked[0]!.why, /publishPath/);
+
+  // ...and placing it is one field
+  const placed = buildComments([{ ...far, publishPath: "touched.cs" } as Annotation], world());
+  assert.equal(placed.blocked.length, 0);
+  assert.deepEqual([placed.comments[0]!.path, placed.comments[0]!.line], ["touched.cs", 10]);
+  assert.match(placed.comments[0]!.body, /Re: untouched\.cs:51/, "and it says where the subject really is");
+});
+
+test("an unelected agent finding on untouched code stays silent", () => {
+  // The map is full of annotations about other code. Only a human's deliberate act
+  // makes one this pull request's business.
+  const set = buildComments([ann({ id: "n3", target: { kind: "anchor", id: "a_far" }, author: "agent:x" })], world());
+  assert.deepEqual([set.blocked.length, set.comments.length], [0, 0]);
+  assert.equal(set.skipped.notElected, 0, "not even counted — it was never a candidate");
+});
+
+test("a finding with no comment is blocked by name, with what to write", () => {
+  const set = buildComments([ann({ line: 12, comment: undefined })], world());
+  assert.equal(set.comments.length, 0);
+  assert.equal(set.skipped.noComment, 1);
+  assert.match(set.blocked[0]!.why, /what is broken, the file:line proving it, the ask/);
+  assert.match(set.blocked[0]!.label, /boom/, "falls back to the evidence just to identify it");
+});
+
+test("the skip counts add up to what was held back, and say why", () => {
+  const set = buildComments([
+    ann({ id: "p1", line: 12 }),
+    ann({ id: "p2", line: 12, resolved: true }),
+    ann({ id: "p3", line: 12, withdrawn: { at: "n", by: "me" } }),
+    ann({ id: "p4", line: 12, disposition: "refuted" }),
+    ann({ id: "p5", line: 12, author: "agent:x" }),
+    ann({ id: "p6", line: 12, severity: "low" }),
+  ], world(), { minSeverity: "medium" });
+  assert.equal(set.comments.length, 1, "only p1");
+  assert.deepEqual(set.skipped, {
+    alreadyPushed: 0, resolved: 1, notElected: 1, belowSeverity: 1,
+    withdrawn: 1, noComment: 0, notPublishable: 1,
+  });
+});
+
+test("naming a batch publishes exactly it", () => {
+  const set = buildComments([ann({ id: "p1", line: 12 }), ann({ id: "p2", line: 12 })], world(), { ids: ["p2"] });
+  assert.deepEqual(set.comments.map((c) => c.annotationId), ["p2"]);
 });

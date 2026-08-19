@@ -250,6 +250,106 @@ export interface PushFilterExt extends PushFilter {
   dispositions?: Disposition[];
 }
 
+export interface CommentSet {
+  comments: InlineComment[];
+  deferred: DeferredComment[];
+  blocked: BlockedComment[];
+  skipped: PushPlan["skipped"];
+}
+
+/**
+ * Turn the map's annotations into what this pull request would actually receive.
+ *
+ * Extracted from `planPrPush` for the same reason `pushVerdict` was: every decision
+ * about what lands irreversibly on somebody else's pull request lived inside a loop
+ * that no test could reach, because reaching it needed a live GitHub PR. The
+ * surrounding function still does the git and network work; this does the deciding,
+ * against injected views of the diff and the worklist.
+ */
+export function buildComments(
+  anns: readonly Annotation[],
+  ctx: {
+    inPr: (anchorId: string) => { file: string; symbol: string } | undefined;
+    anchorOf: (anchorId: string) => { file: string; symbol: string } | undefined;
+    pushed: ReadonlySet<string>;
+    inDiff: (path: string) => boolean;
+    commentable: (path: string, line: number) => boolean;
+    firstHunkLine: (path: string) => number | undefined;
+    firstChangedLineOfSymbol: (anchorId: string, path: string) => number | undefined;
+  },
+  filter: PushFilterExt = {},
+): CommentSet {
+  const comments: InlineComment[] = [];
+  const deferred: DeferredComment[] = [];
+  const blocked: BlockedComment[] = [];
+  let resolved = 0, already = 0, notElected = 0, belowSeverity = 0, withdrawn = 0, noComment = 0, notPublishable = 0;
+  const electedOnly = filter.electedOnly !== false;
+  const ids = filter.ids?.length ? new Set(filter.ids) : undefined;
+  const { pushed, inDiff, commentable, firstHunkLine } = ctx;
+
+  for (const a of anns) {
+    if (a.target.kind !== "anchor") continue;
+    if (ids && !ids.has(a.id)) continue;                   // an explicit batch is exactly that
+    const w = ctx.inPr(a.target.id);
+
+    // A finding whose anchor is not in this PR is normally none of its business —
+    // the map is full of them. But one the human ELECTED, or gave a publishPath, is
+    // a deliberate act, and §4.3 is the common case rather than an error: the
+    // witness findings were a fail-open predicate in a file the branch never touched
+    // and a missing registration, which is an absence and has no line anywhere.
+    const claimed = !w && (isElected(a) || !!a.publishPath) && !a.resolved && !a.withdrawn
+      && !pushed.has(a.id) && !a.postedRef;
+    if (!w && !claimed) continue;
+
+    const verdict = pushVerdict(a, w ? true : claimed, pushed, {
+      electedOnly, minSeverity: filter.minSeverity, dispositions: filter.dispositions, ids,
+    });
+    if (verdict === "not-in-pr") continue;
+    if (verdict === "resolved") { resolved++; continue; }
+    if (verdict === "already-pushed") { already++; continue; }
+    if (verdict === "withdrawn") { withdrawn++; continue; }
+    if (verdict === "not-elected") { notElected++; continue; }
+    if (verdict === "below-severity") { belowSeverity++; continue; }
+    if (verdict === "not-publishable") { notPublishable++; continue; }
+
+    const anc = ctx.anchorOf(a.target.id);
+    const subject = { file: w?.file ?? anc?.file, symbol: w?.symbol ?? anc?.symbol };
+
+    if (verdict === "no-comment") {
+      noComment++;
+      blocked.push({
+        annotationId: a.id, severity: a.severity, file: subject.file, symbol: subject.symbol, label: labelOf(a),
+        why: "no `comment` — write the submitter-facing version (what is broken, the file:line proving it, the ask). Publishing `text` would send the investigation.",
+      });
+      continue;
+    }
+
+    const place = placeAnnotation(a, subject, {
+      inDiff, commentable, firstHunkLine,
+      firstChangedLineOfSymbol: () => (w ? ctx.firstChangedLineOfSymbol(a.target.id, w.file) : undefined),
+    });
+
+    if (place.kind === "inline") {
+      comments.push({
+        path: place.path, line: place.line, side: "RIGHT", annotationId: a.id,
+        body: renderAnnotation(a, subject.symbol ?? place.path, place.preamble),
+      });
+      continue;
+    }
+    // Findings about the PR as a whole genuinely belong in the body; everything else
+    // in here has lost its own resolvable thread, which is a cost worth naming.
+    if (w) {
+      deferred.push({
+        annotationId: a.id, path: subject.file!, line: a.line, why: place.why,
+        body: renderAnnotation(a, subject.symbol ?? subject.file!),
+      });
+    } else {
+      blocked.push({ annotationId: a.id, severity: a.severity, file: subject.file, symbol: subject.symbol, label: labelOf(a), why: place.why });
+    }
+  }
+  return { comments, deferred, blocked, skipped: { alreadyPushed: already, resolved, notElected, belowSeverity, withdrawn, noComment, notPublishable } };
+}
+
 export async function planPrPush(root: string, input: string, filter: PushFilterExt = {}): Promise<PushPlan | { error: string }> {
   // A misspelt tier used to yield indexOf() === -1, which the filter below read as
   // "no severity filter" — so `--min-severity High` published every `low` finding
@@ -286,77 +386,17 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
     return undefined;
   };
 
-  const comments: InlineComment[] = [];
-  const deferred: DeferredComment[] = [];
-  const blocked: BlockedComment[] = [];
-  let resolved = 0, already = 0, notElected = 0, belowSeverity = 0, withdrawn = 0, noComment = 0, notPublishable = 0;
-  const electedOnly = filter.electedOnly !== false;
-  const ids = filter.ids?.length ? new Set(filter.ids) : undefined;
-
-  const inDiff = (path: string) => ranges.has(path);
-  const firstHunkLine = (path: string) => ranges.get(path)?.[0]?.[0];
   const allAnchors = new Map((await readAnchorStore(root)).anchors.map((x) => [x.id, x]));
-
-  for (const a of anns) {
-    if (a.target.kind !== "anchor") continue;
-    if (ids && !ids.has(a.id)) continue;                   // an explicit batch is exactly that
-    const w = byAnchor.get(a.target.id);
-
-    // A finding whose anchor is not in this PR is normally none of its business —
-    // the map is full of them. But one the human ELECTED, or gave a publishPath, is
-    // a deliberate act, and §4.3 is the common case rather than an error: the
-    // witness findings were a fail-open predicate in a file the branch never touched
-    // and a missing registration, which is an absence and has no line anywhere.
-    const claimed = !w && (isElected(a) || !!a.publishPath) && !a.resolved && !a.withdrawn
-      && !pushed.has(a.id) && !a.postedRef;
-    if (!w && !claimed) continue;
-
-    const verdict = pushVerdict(a, w ? true : claimed, pushed, {
-      electedOnly, minSeverity: filter.minSeverity, dispositions: filter.dispositions, ids,
-    });
-    if (verdict === "not-in-pr") continue;
-    if (verdict === "resolved") { resolved++; continue; }
-    if (verdict === "already-pushed") { already++; continue; }
-    if (verdict === "withdrawn") { withdrawn++; continue; }
-    if (verdict === "not-elected") { notElected++; continue; }
-    if (verdict === "below-severity") { belowSeverity++; continue; }
-    if (verdict === "not-publishable") { notPublishable++; continue; }
-
-    const anc = allAnchors.get(a.target.id);
-    const subject = { file: w?.file ?? anc?.file, symbol: w?.symbol ?? anc?.symbolPath.join(" › ") };
-
-    if (verdict === "no-comment") {
-      noComment++;
-      blocked.push({
-        annotationId: a.id, severity: a.severity, file: subject.file, symbol: subject.symbol, label: labelOf(a),
-        why: "no `comment` — write the submitter-facing version (what is broken, the file:line proving it, the ask). Publishing `text` would send the investigation.",
-      });
-      continue;
-    }
-
-    const place = placeAnnotation(a, subject, {
-      inDiff, commentable, firstHunkLine,
-      firstChangedLineOfSymbol: () => (w ? firstCommentableLine(a.target.id, w.file) : undefined),
-    });
-
-    if (place.kind === "inline") {
-      comments.push({
-        path: place.path, line: place.line, side: "RIGHT", annotationId: a.id,
-        body: renderAnnotation(a, subject.symbol ?? place.path, place.preamble),
-      });
-      continue;
-    }
-    // Findings about the PR as a whole genuinely belong in the body; everything else
-    // in here has lost its own resolvable thread, which is a cost worth naming.
-    if (w) {
-      deferred.push({
-        annotationId: a.id, path: subject.file!, line: a.line, why: place.why,
-        body: renderAnnotation(a, subject.symbol ?? subject.file!),
-      });
-    } else {
-      blocked.push({ annotationId: a.id, severity: a.severity, file: subject.file, symbol: subject.symbol, label: labelOf(a), why: place.why });
-    }
-  }
+  const set = buildComments(anns, {
+    inPr: (id) => { const w = byAnchor.get(id); return w ? { file: w.file, symbol: w.symbol } : undefined; },
+    anchorOf: (id) => { const x = allAnchors.get(id); return x ? { file: x.file, symbol: x.symbolPath.join(" › ") } : undefined; },
+    pushed,
+    inDiff: (path) => ranges.has(path),
+    commentable,
+    firstHunkLine: (path) => ranges.get(path)?.[0]?.[0],
+    firstChangedLineOfSymbol: firstCommentableLine,
+  }, filter);
+  const { comments, deferred, blocked } = set;
 
   // A file counts as viewed once every reviewable symbol the PR changed in it has
   // been looked at — GitHub's checkbox is per file, codemap's marks are per symbol.
@@ -413,7 +453,7 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
     pr: { number: t.pr.number, title: t.pr.title, url: t.pr.url, owner: t.pr.owner, repo: t.pr.repo },
     head: t.refs.head,
     body, comments, deferred, blocked, viewedPaths,
-    skipped: { alreadyPushed: already, resolved, notElected, belowSeverity, withdrawn, noComment, notPublishable },
+    skipped: set.skipped,
   };
 }
 
