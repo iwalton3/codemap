@@ -494,10 +494,19 @@ export async function revertedMarks(root: string, opts: { ref?: string } = {}): 
 export async function markReviewedBatch(
   root: string,
   anchorIds: string[],
-  input: { level: ReviewLevel; reviewer?: string; actor?: "human" | "agent"; attestation?: Attestation; ref?: string },
+  input: {
+    level: ReviewLevel; reviewer?: string; actor?: "human" | "agent"; attestation?: Attestation; ref?: string;
+    /**
+     * Hashes supplied by the caller, skipping the snapshot lookup entirely. A bulk
+     * historical import parses only the files a PR touched; caching a full-tree
+     * snapshot per side just to look those up would cost gigabytes across a year
+     * of pull requests.
+     */
+    hashes?: Map<string, string>;
+  },
 ): Promise<{ marked: number }> {
   if (!anchorIds.length) return { marked: 0 };
-  const live = await liveHashes(root, anchorIds, input.ref);
+  const live = input.hashes ?? await liveHashes(root, anchorIds, input.ref);
   const actor = input.actor ?? "agent";
   const attestation: Attestation | undefined = input.attestation ?? (actor === "human" ? "signed" : undefined);
   const viewed = attestation === "viewed";

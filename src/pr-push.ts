@@ -303,3 +303,40 @@ export async function pullViewedFromGitHub(
     skippedFiles,
   };
 }
+
+export interface ViewedTarget { id: string; hash: string }
+
+/**
+ * The reviewable symbols a PR touches, per file, read straight from the head
+ * commit's blobs.
+ *
+ * Deliberately does NOT go through `prTriage`. That caches a full-tree anchor
+ * snapshot of both sides, which is right for reviewing one PR and ruinous across
+ * a back-catalogue: ~2MB per snapshot, two per PR, hundreds of PRs. Only the
+ * changed files matter here, and their bodies at head are all a witness needs.
+ */
+export async function viewedTargetsFor(
+  root: string, meta: { baseRef: string; headSha: string },
+  deps: {
+    mergeBase: (root: string, a: string, b: string) => string | null;
+    changedFiles: (root: string, from: string, to: string) => string[];
+    readBlobs: (root: string, sha: string, paths: string[]) => Map<string, string>;
+    indexBlob: (src: string, path: string) => Promise<{ id: string; bodyHash: string }[]>;
+    lane: (path: string) => string;
+  },
+): Promise<{ byFile: Map<string, ViewedTarget[]>; mergeBase: string } | { error: string }> {
+  const baseTip = `origin/${meta.baseRef}`;
+  const mb = deps.mergeBase(root, baseTip, meta.headSha);
+  if (!mb) return { error: `no merge-base between ${meta.baseRef} and ${meta.headSha.slice(0, 12)}` };
+
+  const files = deps.changedFiles(root, mb, meta.headSha).filter((f) => LANE_POLICY[deps.lane(f) as keyof typeof LANE_POLICY]?.review === "queue");
+  const byFile = new Map<string, ViewedTarget[]>();
+  if (!files.length) return { byFile, mergeBase: mb };
+
+  const blobs = deps.readBlobs(root, meta.headSha, files);
+  for (const [path, src] of blobs) {
+    const anchors = await deps.indexBlob(src, path);
+    if (anchors.length) byFile.set(path, anchors.map((a) => ({ id: a.id, hash: a.bodyHash })));
+  }
+  return { byFile, mergeBase: mb };
+}

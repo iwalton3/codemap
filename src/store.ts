@@ -473,6 +473,19 @@ export async function readPushes(root: string): Promise<PushStore> {
   return getMeta<PushStore>(db(root), "pr_push") ?? { schemaVersion: SCHEMA_VERSION, pushes: {} };
 }
 
+/** Which PRs have already had their GitHub viewed-ticks imported, so a bulk run resumes. */
+export type ViewedImportStore = { schemaVersion: number; imported: Record<string, { at: string; marked: number }> };
+
+export async function readViewedImports(root: string): Promise<ViewedImportStore> {
+  return getMeta<ViewedImportStore>(db(root), "viewed_import") ?? { schemaVersion: SCHEMA_VERSION, imported: {} };
+}
+
+export async function writeViewedImport(root: string, pr: string, marked: number): Promise<void> {
+  const store = await readViewedImports(root);
+  store.imported[pr] = { at: nowISO(), marked };
+  setMeta(db(root), "viewed_import", store);
+}
+
 export async function writePush(root: string, pr: string, rec: PushRecord): Promise<void> {
   const store = await readPushes(root);
   const prev = store.pushes[pr];

@@ -30,6 +30,7 @@ import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "./diff.j
 import { prTriage, listOpenPrs, prPacket, prStory, prAnchorCode, prPromotionPlan, derivePrTriage } from "./pr.js";
 import { parseAgentLines, ingestAgentReview } from "./pr-ingest.js";
 import { planPrPush, executePrPush, pullViewedFromGitHub } from "./pr-push.js";
+import { bulkPullViewed } from "./pr-bulk.js";
 import { resolveCoverage, selectAnchors, docPct as computeDocPct, citedPct as computeCitedPct, type CoverageResult } from "./coverage.js";
 import { resolveAnchorRefs } from "./refs.js";
 import { refreshAnalyzers } from "./analyzers/run.js";
@@ -553,6 +554,17 @@ export async function prPromote(root: string, input: string, chapterId: string, 
  */
 export async function prPullViewed(root: string, input: string, opts: { dryRun?: boolean; reviewer?: string } = {}) {
   return pullViewedFromGitHub(root, input, { triage: prTriage, markBatch: markReviewedBatch }, opts);
+}
+
+/**
+ * Import viewed ticks across a repo's whole back catalogue. Snapshot-free and
+ * resumable: a year of pull requests is worth importing, but not at ~2MB of
+ * cached snapshot per side per PR.
+ */
+export async function prPullViewedAll(root: string, opts: { force?: boolean; limit?: number; onProgress?: (m: string) => void } = {}) {
+  const slug = originSlug(root);
+  if (!slug) return { error: "this universe has no github origin remote" };
+  return bulkPullViewed(root, `${slug.owner}/${slug.repo}`, opts);
 }
 
 /** What a push to GitHub would contain — inspect before anything leaves the machine. */

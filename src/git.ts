@@ -224,3 +224,25 @@ export function diffLineRanges(root: string, from: string, to: string): Map<stri
 export function isAncestor(root: string, maybeAncestor: string, ref: string): boolean {
   return spawnSync("git", ["merge-base", "--is-ancestor", maybeAncestor, ref], { cwd: root }).status === 0;
 }
+
+/** Repo-relative paths changed between two commits (rename-aware, head-side names). */
+export function changedFilesBetween(root: string, from: string, to: string): string[] {
+  const r = spawnSync("git", ["diff", "--name-only", "-M", from, to], { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  if (r.status !== 0) return [];
+  const prefix = repoPrefix(root);
+  return (r.stdout ?? "").split("\n").map((l) => l.trim()).filter(Boolean)
+    .filter((p) => !prefix || p.startsWith(prefix))
+    .map((p) => (prefix ? p.slice(prefix.length) : p));
+}
+
+/**
+ * Fetch every pull-request head in one go. One fetch instead
+ * of one per PR: a back-catalogue import otherwise pays a network round trip
+ * hundreds of times over for objects it mostly already has.
+ */
+export function fetchAllPrHeads(root: string, remote = "origin"): { ok: boolean; err: string } {
+  const r = spawnSync("git", ["fetch", "--no-tags", "--quiet", remote, `+refs/pull/*/head:refs/remotes/${remote}/pr/*`], {
+    cwd: root, encoding: "utf8", timeout: 900_000,
+  });
+  return { ok: r.status === 0, err: (r.stderr ?? "").trim() };
+}
