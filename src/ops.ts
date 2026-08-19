@@ -2527,8 +2527,12 @@ async function witnessAt(
     const live = (await liveAnchors(root, [stored.file])).get(anchorId);
     if (live) return { witness: { anchorId, bodyHash: live.bodyHash }, sourceRef: "@work" };
   }
-  // Code the tree no longer has. The retained body is the last one anybody saw, and
-  // saying so is more use than recording no witness at all.
+  // Not in the working tree. Resolution reaches snapshots and retained anchors, so
+  // witnessing has to as well — otherwise a finding on a symbol the branch ADDS gets
+  // no witness and claims `@work`, which is both false and exactly the record the
+  // cross-branch gate reads.
+  const off = findAnchorsOutsideWork(root, [anchorId]).get(anchorId);
+  if (off) return { witness: { anchorId, bodyHash: off.anchor.bodyHash }, sourceRef: off.ref };
   const orphan = readOrphans(root, [anchorId]).get(anchorId);
   if (orphan) return { witness: { anchorId, bodyHash: orphan.bodyHash }, sourceRef: "@orphan" };
   return { sourceRef: ref ?? "@work" };

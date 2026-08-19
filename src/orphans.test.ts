@@ -138,3 +138,29 @@ test("an orphaned anchor can still be filed against, so stranded work is reachab
     assert.equal(ann.sourceRef, "@orphan", "and it says the body it witnessed is the last one anybody saw");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("a symbol that exists only on a branch can be annotated without naming the ref", async () => {
+  // Reviewing a pull request mostly means annotating files the branch ADDS, and those
+  // are not in the working tree at all — so `annotate` failing on them made the
+  // common case the one that broke. One finding could not be re-filed for this reason
+  // and had to stay a `pointer` with a publish path as a workaround.
+  const root = await repo();
+  try {
+    const { writeSnapshot } = await import("./store.js");
+    const { indexBlob } = await import("./repo.js");
+    const branchOnly = await indexBlob(
+      "export function onlyOnTheBranch(x: number) {\n  return x;\n}\n", "src/branch-only.ts");
+    await writeSnapshot(root, "prhead", "feature/x", branchOnly, "2026-08-19T00:00:00Z");
+    const id = branchOnly[0]!.id;
+
+    const r = await annotate(root, {
+      targetKind: "anchor", targetId: id, text: "no guard", comment: "no guard on the new endpoint",
+      kind: "finding", author: "me",
+    }) as any;
+    assert.ok(!r.error, r.error);
+
+    const a = (await readAnnotations(root)).annotations.find((x) => x.id === r.id)!;
+    assert.equal(a.target.id, id);
+    assert.equal(a.sourceRef, "prhead", "and it witnesses the branch's body, not the working tree's");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
