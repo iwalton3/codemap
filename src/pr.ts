@@ -62,18 +62,38 @@ const PR_FIELDS = "number,url,title,author,baseRefName,headRefName,baseRefOid,he
  */
 const PR_LIST_FIELDS = "number,url,title,author,baseRefName,headRefName,baseRefOid,headRefOid,isDraft,state,createdAt,updatedAt,additions,deletions,changedFiles";
 
+/**
+ * PR metadata, cached briefly in-process.
+ *
+ * This is a `gh pr view` network round trip — ~470ms measured — and EVERY PR
+ * endpoint starts with one, including the per-symbol ones. Expanding a step or
+ * signing a symbol in the walkthrough paid it again each time, so half the latency
+ * of a click was re-asking GitHub a question whose answer had not changed.
+ *
+ * The TTL is short because `headRefOid` is the one field that genuinely moves: a
+ * force-push shows up within it. Long-lived processes (serve.js, the MCP server)
+ * are the ones that benefit; a one-shot CLI run sees no difference either way.
+ */
+const META_TTL_MS = 60_000;
+const metaCache = new Map<string, { at: number; value: PrMeta }>();
+
 export function fetchPrMeta(ref: PrRef): PrMeta | { error: string } {
+  const key = `${ref.owner}/${ref.repo}#${ref.number}`;
+  const hit = metaCache.get(key);
+  if (hit && Date.now() - hit.at < META_TTL_MS) return hit.value;
   const r = gh(["pr", "view", String(ref.number), "--repo", `${ref.owner}/${ref.repo}`, "--json", PR_FIELDS]);
   if (!r.ok) return { error: `gh pr view failed: ${r.err || "unknown error"}` };
   try {
     const j = JSON.parse(r.out);
-    return {
+    const meta: PrMeta = {
       number: j.number, url: j.url, title: j.title, author: j.author?.login ?? "?",
       baseRef: j.baseRefName, headRef: j.headRefName, baseSha: j.baseRefOid, headSha: j.headRefOid,
       draft: !!j.isDraft, state: j.state, createdAt: j.createdAt, updatedAt: j.updatedAt,
       additions: j.additions, deletions: j.deletions, changedFiles: j.changedFiles,
       commits: Array.isArray(j.commits) ? j.commits.length : 0,
     };
+    metaCache.set(key, { at: Date.now(), value: meta });
+    return meta;
   } catch (e) { return { error: `could not parse gh output: ${(e as Error).message}` }; }
 }
 
@@ -146,11 +166,18 @@ export interface PrTriageResult {
 const SEV_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3, untriaged: 2.5, complete: 9 };
 const CX_RANK: Record<Complexity, number> = { deep: 0, standard: 1, rote: 2, wiring: 3 };
 
-export async function prTriage(
+/**
+ * Resolve a PR to its two commits and cache their snapshots — everything the whole
+ * PR analysis needs BEFORE any diffing, and on its own everything a question about
+ * a single symbol needs. Split out because `prAnchorCode` used to reach it through
+ * `prTriage`, which meant expanding one step in the walkthrough re-diffed the whole
+ * pull request and re-parsed every file it touched.
+ */
+async function prContext(
   root: string,
   input: string,
   opts: { fetch?: boolean; fallbackRepo?: { owner: string; repo: string } } = {},
-): Promise<PrTriageResult | { error: string }> {
+): Promise<{ ref: PrRef; meta: PrMeta; mergeBase: string; baseTip: string; drift: number | null } | { error: string }> {
   if (!isGitRepo(root)) return { error: "not a git repository" };
   if (!ghAvailable()) return { error: "the `gh` CLI is required for PR triage (not on PATH)" };
 
@@ -183,6 +210,17 @@ export async function prTriage(
     const s = await ensureSnapshot(root, sha, label);
     if (s.error) return { error: `snapshot ${sha.slice(0, 12)}: ${s.error}` };
   }
+  return { ref, meta, mergeBase: mb, baseTip, drift };
+}
+
+export async function prTriage(
+  root: string,
+  input: string,
+  opts: { fetch?: boolean; fallbackRepo?: { owner: string; repo: string } } = {},
+): Promise<PrTriageResult | { error: string }> {
+  const ctx = await prContext(root, input, opts);
+  if ("error" in ctx) return ctx;
+  const { ref, meta, mergeBase: mb, baseTip, drift } = ctx;
 
   const diff = await computeDiff(root, mb, meta.headSha);
   if ("error" in diff) return { error: diff.error };
@@ -458,10 +496,27 @@ export interface PrAnchorCode {
  * entirely — a walkthrough has to read the code as the PR actually leaves it.
  */
 export async function prAnchorCode(root: string, input: string, id: string): Promise<PrAnchorCode | { error: string }> {
-  const t = await prTriage(root, input, { fetch: false });
-  if ("error" in t) return t;
-  const item = t.worklist.find((w) => w.id === id);
-  if (!item) return { error: `anchor ${id} is not part of PR #${t.pr.number}` };
+  // Deliberately NOT `prTriage`: answering about one symbol does not need the whole
+  // pull request diffed and every file it touches re-parsed for complexity. The two
+  // snapshots already say everything this needs — which file the symbol lives in,
+  // and which sides it exists on. Measured on a 5-file PR that was 757ms a click;
+  // it scales with PR SIZE, and the walkthrough calls this on every expansion.
+  const ctx = await prContext(root, input, { fetch: false });
+  if ("error" in ctx) return ctx;
+  const refs = { head: ctx.meta.headSha, mergeBase: ctx.mergeBase };
+
+  const [headSnap, baseSnap] = await Promise.all([readSnapshot(root, refs.head), readSnapshot(root, refs.mergeBase)]);
+  const inHead = headSnap?.find((a) => a.id === id);
+  const inBase = baseSnap?.find((a) => a.id === id);
+  // Same id on both sides with the same body means the PR did not touch it — which
+  // is "not part of this PR", the same answer the worklist lookup used to give.
+  if ((!inHead && !inBase) || (inHead && inBase && inHead.bodyHash === inBase.bodyHash)) {
+    return { error: `anchor ${id} is not part of PR #${ctx.meta.number}` };
+  }
+  const item = {
+    file: (inHead ?? inBase)!.file,
+    change: (!inBase ? "added" : !inHead ? "removed" : "changed") as "added" | "removed" | "changed",
+  };
 
   const at = async (sha: string) => {
     const src = readBlobs(root, sha, [item.file]).get(item.file);
@@ -469,8 +524,8 @@ export async function prAnchorCode(root: string, input: string, id: string): Pro
     const a = (await indexBlob(src, item.file)).find((x) => x.id === id);
     return a?.loc ? { code: src.slice(a.loc.startByte, a.loc.endByte), startLine: a.loc.startLine } : { code: null, startLine: 1 };
   };
-  const head = item.change === "removed" ? { code: null as string | null, startLine: 1 } : await at(t.refs.head);
-  const base = item.change === "added" ? { code: null as string | null, startLine: 1 } : await at(t.refs.mergeBase);
+  const head = item.change === "removed" ? { code: null as string | null, startLine: 1 } : await at(refs.head);
+  const base = item.change === "added" ? { code: null as string | null, startLine: 1 } : await at(refs.mergeBase);
   const anns = (await readAnnotations(root)).annotations.filter((a) => a.target.kind === "anchor" && a.target.id === id);
 
   const hasCR = (x: string | null) => x != null && x.includes("\r");

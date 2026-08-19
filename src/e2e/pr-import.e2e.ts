@@ -95,6 +95,22 @@ describe("PR import against a real repository", { skip: skip ?? false }, () => {
     }
   });
 
+  test("a symbol the PR did not touch is not part of it", async () => {
+    // `prAnchorCode` no longer rebuilds the worklist to find this out — it reads the
+    // two snapshots directly — so the "same id, same body, both sides" case has to
+    // give the same answer the worklist lookup did.
+    const root = at(FIXTURE_PR.head);
+    const { indexCommit } = await import("../repo.js");
+    const head = (await indexCommit(root, FIXTURE_PR.head))!;
+    const r = await read(root) as any;
+    const touched = new Set(r.worklist.map((w: any) => w.id));
+    const untouched = head.find((a) => !touched.has(a.id))!;
+
+    const code = await ops.prCode(root, PR, untouched.id) as any;
+    assert.ok(code.error, "a symbol present and unchanged on both sides is not part of the PR");
+    assert.match(code.error, /not part of/i);
+  });
+
   test("a commit's index is deterministic — the same sha twice gives the same anchors", async () => {
     // Snapshots are cached as immutable and diffed against each other; a
     // non-deterministic index would surface as phantom added/removed symbols.

@@ -2027,11 +2027,37 @@ class PrStoryPage extends Component {
       this.state.code = { ...this.state.code, [id]: c };
     } finally { this.state.pending = { ...this.state.pending, [id]: false }; }
   }
-  async markStep(id, attestation, state, actor) {
+  /** The next symbol still needing attention, in walkthrough order. */
+  nextUnsignedAfter(anchorId) {
+    const flat = [];
+    for (const c of (this.state.story && this.state.story.chapters) || []) for (const st of c.steps) flat.push({ chapter: c, step: st });
+    const i = flat.findIndex(x => x.step.anchorId === anchorId);
+    if (i < 0) return null;
+    return flat.slice(i + 1).find(x => !x.step.reviewed) || null;
+  }
+
+  async markStep(step, attestation, state, actor) {
+    const id = step.anchorId;
     const unmark = state === 'reviewed' && actor !== 'agent';
     await postReview(this.props.params.universe, 'anchor', id, 'code', unmark, attestation, this.state.prRef);
     await this.load.run();
-    if (this.state.code[id]) { const c = await api('/api/pr/code', { u: this.props.params.universe, pr: this.props.params.pr, id }); this.state.code = { ...this.state.code, [id]: c }; }
+    // Taking a sign-off back is a correction, not progress — stay put. (The code
+    // pane is NOT re-fetched either way: signing changes review state, which
+    // `load.run()` already brought, not the source or its annotations.)
+    if (unmark) return;
+
+    // Signing is the "done with this one" gesture, so move the walkthrough on:
+    // collapse what was just signed, and open the next symbol still needing
+    // attention rather than making the reviewer hunt for it.
+    const next = this.nextUnsignedAfter(id);
+    const code = { ...this.state.code, [id]: null };
+    const open = { ...this.state.open };
+    const here = ((this.state.story && this.state.story.chapters) || []).find(c => c.steps.some(st => st.anchorId === id));
+    if (here && here.steps.every(st => st.reviewed)) open[here.id] = false;   // chapter finished — fold it away
+    if (next) open[next.chapter.id] = true;
+    this.state.code = code;
+    this.state.open = open;
+    if (next && !this.state.code[next.step.anchorId]) await this.openStep(next.step);
   }
 
   // Promotion is deliberately two-step: the plan says what would be written and
@@ -2153,7 +2179,7 @@ class PrStoryPage extends Component {
         <code class="prsig">${step.signature || step.symbol}</code>
         <span class="dim prfile">${step.file.split('/').pop()}</span>
         ${when(finds, () => html`<span class="prfind" title="${finds} open finding(s)">⚑${finds}</span>`)}
-        <span class="prrev" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">${reviewRowEl({ code: step.review || { state: step.reviewed ? 'reviewed' : 'unreviewed' } }, { code: step.viewedMark || { state: step.viewed ? 'reviewed' : 'unreviewed' } }, (att, st, actor) => this.markStep(step.anchorId, att, st, actor))}</span>
+        <span class="prrev" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">${reviewRowEl({ code: step.review || { state: step.reviewed ? 'reviewed' : 'unreviewed' } }, { code: step.viewedMark || { state: step.viewed ? 'reviewed' : 'unreviewed' } }, (att, st, actor) => this.markStep(step, att, st, actor))}</span>
       </div>
       ${when(this.state.pending[step.anchorId], () => html`<div class="dim prload">loading source…</div>`)}
       ${when(code && !code.error, () => html`<div class="prsbody">
