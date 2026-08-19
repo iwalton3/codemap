@@ -598,10 +598,16 @@ export async function prPushPlan(root: string, input: string, filter: { reviewed
   return planPrPush(root, input, filter);
 }
 
-/** Publish findings (and optionally `viewed` state) to the pull request. Outward-facing. */
-export async function prPush(root: string, input: string, opts: { markViewed?: boolean; reviewedOnly?: boolean; minSeverity?: "low" | "medium" | "high" | "critical" } = {}) {
-  const plan = await planPrPush(root, input, opts);
-  if ("error" in plan) return plan;
+/**
+ * Publish a plan that was already inspected — the ONLY way to publish.
+ *
+ * There is deliberately no `prPush(root, input)` that plans and posts in one call:
+ * it re-derived the plan after the operator had approved the printed one, so what
+ * went to the PR was never provably what they read (annotations and review marks
+ * can move in between, and the PR head can advance). Comments on someone else's
+ * pull request notify people and are not meaningfully undoable.
+ */
+export async function prPushExecute(root: string, plan: PushPlan, opts: { markViewed?: boolean } = {}) {
   return { plan, result: await executePrPush(root, plan, opts) };
 }
 

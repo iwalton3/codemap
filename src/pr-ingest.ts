@@ -41,6 +41,8 @@ export interface IngestResult {
   /** Findings already present from an earlier ingest of the same batch. */
   duplicates: number;
   triaged: number;
+  /** Triage lines the ratchet declined — an agent may only ever ESCALATE a tier. */
+  triageRefused: { line: number; why: string }[];
   summaries: { batch: string; reviewed: number; findings: number; narrative: string }[];
   rejected: { line: number; why: string }[];
   bySeverity: Record<string, number>;
@@ -75,7 +77,7 @@ export async function ingestAgentReview(
   },
   opts: { headRef: string; author?: string; dryRun?: boolean } = { headRef: "" },
 ): Promise<IngestResult> {
-  const out: IngestResult = { annotations: 0, duplicates: 0, triaged: 0, summaries: [], rejected: [], bySeverity: {} };
+  const out: IngestResult = { annotations: 0, duplicates: 0, triaged: 0, triageRefused: [], summaries: [], rejected: [], bySeverity: {} };
   const author = opts.author ?? "agent:pr-first-pass";
 
   // A finding's identity is what it says and where it says it. Ingest mints a fresh
@@ -101,11 +103,18 @@ export async function ingestAgentReview(
       if (!opts.dryRun) {
         // `source: "agent"` keeps the ratchet honest — an agent may only ever raise a
         // tier, and its mark is recorded as a `likely` proposal for a human to confirm.
-        await setTriage(root, {
+        // `ref` witnesses the mark against the PR head: a symbol the branch ADDS is
+        // not in the working tree, so without it every proposal on new code is
+        // witnessed `sha256:absent` and can never be told apart from drift later.
+        const r = await setTriage(root, {
           targetKind: "anchor", targetId: l.anchorId,
           importance: l.importance, complexity: l.complexity,
           source: "agent", reason: l.reason ?? "first-pass review",
+          ref: opts.headRef || undefined,
         });
+        // Refusal is the COMMON case on a re-ingest. Counting it as applied told the
+        // operator a tier had been written when the store was untouched.
+        if (!r.ok) { out.triageRefused.push({ line: i + 1, why: r.reason ?? "refused by the ratchet" }); continue; }
       }
       out.triaged++;
       continue;

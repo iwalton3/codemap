@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { diffLineRanges } from "./git.js";
+import { planPrPush } from "./pr-push.js";
 import { readPushes, writePush } from "./store.js";
 
 const git = (root: string, ...a: string[]) =>
@@ -50,5 +51,22 @@ test("a push record accumulates, so re-running never re-posts a comment", async 
     await writePush(root, "290", { annotationIds: ["an_9"], viewedPaths: [], at: "2026-08-18T02:00:00Z" });
     assert.deepEqual((await readPushes(root)).pushes["290"]!.annotationIds, ["an_9"]);
     assert.equal((await readPushes(root)).pushes["264"]!.annotationIds.length, 3);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("an unrecognised --min-severity is refused, never read as \"no filter\"", async () => {
+  // indexOf() === -1 read as "no severity filter" published every `low` finding to
+  // the PR while the plan printed `belowSeverity: 0` — a confirmation that nothing
+  // had been held back. It must refuse before any git or network work.
+  const root = mkdtempSync(join(tmpdir(), "codemap-push-"));
+  try {
+    for (const bad of ["High", "med", "major", ""]) {
+      const r = await planPrPush(root, "owner/repo#1", { minSeverity: bad as any });
+      assert.ok("error" in r, `"${bad}" must not be accepted`);
+      assert.match((r as { error: string }).error, /min-severity/i, `"${bad}" should name the flag`);
+    }
+    // an absent filter is still "no filter", which is a different thing
+    const ok = await planPrPush(root, "", {});
+    assert.ok(!("error" in ok) || !/min-severity/i.test((ok as { error: string }).error));
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

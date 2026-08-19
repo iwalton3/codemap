@@ -34,7 +34,10 @@ async function cmdPr(root: string, input: string, opts: { fetch: boolean; json: 
   const { pr, refs, lanes, totals, worklist, diff } = r;
   console.log(`#${pr.number} ${pr.title}`);
   console.log(`  ${pr.author} · ${pr.headRef} → ${pr.baseRef} · +${pr.additions}/-${pr.deletions} over ${pr.changedFiles} files`);
-  console.log(`  merge-base ${refs.mergeBase.slice(0, 12)}${refs.baseAheadOfMergeBase ? `  (${pr.baseRef} is ${refs.baseAheadOfMergeBase} commits ahead of it — diffing against the tip would fold those in)` : ""}`);
+  const drift = refs.baseAheadOfMergeBase === null
+    ? `  (could not tell whether ${pr.baseRef} has moved — is it fetched?)`
+    : refs.baseAheadOfMergeBase ? `  (${pr.baseRef} is ${refs.baseAheadOfMergeBase} commits ahead of it — diffing against the tip would fold those in)` : "";
+  console.log(`  merge-base ${refs.mergeBase.slice(0, 12)}${drift}`);
 
   console.log("\nlanes:");
   for (const l of lanes) console.log(`  ${pad(l.lane, 10)} ${String(l.lines).padStart(6)} lines  ${String(l.files).padStart(4)} files  ${pad(l.review, 8)} ${l.why}`);
@@ -87,8 +90,9 @@ async function cmdPrPush(root: string, prInput: string, confirm: boolean, markVi
     console.log("\nnothing to publish.");
     return;
   }
-  const out = await ops.prPush(root, prInput, { markViewed, ...filter });
-  if ("error" in out) { console.error(out.error); process.exit(1); }
+  // The plan just printed is the one published — not a second one derived after
+  // the operator agreed to the first.
+  const out = await ops.prPushExecute(root, plan, { markViewed });
   const { result } = out;
   console.log(`\nposted: ${result.postedComments} inline comment(s)${result.reviewUrl ? ` → ${result.reviewUrl}` : ""}`);
   if (result.markedViewed.length) console.log(`marked viewed: ${result.markedViewed.length} file(s)`);
@@ -105,6 +109,10 @@ async function cmdPrIngest(root: string, prInput: string, files: string[], dryRu
   console.log(`${dryRun ? "[dry run] " : ""}pr #${res.pr} @ ${String(res.head).slice(0, 12)}`);
   console.log(`  annotations: ${res.annotations}${res.duplicates ? `  (${res.duplicates} already present, skipped)` : ""}  triage proposals: ${res.triaged}`);
   console.log(`  by severity: ${JSON.stringify(res.bySeverity)}`);
+  if (res.triageRefused?.length) {
+    console.log(`  triage left alone: ${res.triageRefused.length} (already at or above that tier, or human-owned)`);
+    for (const x of res.triageRefused.slice(0, 5)) console.log(`    line ${x.line}: ${x.why}`);
+  }
   if (res.rejected.length) {
     console.log(`  rejected: ${res.rejected.length}`);
     for (const x of res.rejected.slice(0, 10)) console.log(`    line ${x.line}: ${x.why}`);

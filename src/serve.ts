@@ -111,10 +111,14 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return ops.diffCode(root, q.get("base") ?? "", q.get("head") || undefined, q.get("id") ?? "", q.get("file") ?? "");
     case "/api/diff/doc":
       return ops.docDiff(root, q.get("base") ?? "", q.get("head") || undefined, q.get("id") ?? "");
+    // `fetch` defaults ON, matching `prTriage` and the CLI. Reading the param as a
+    // bare === "1" made its ABSENCE an explicit false, so the web UI refused any PR
+    // whose head was not already local — with an error blaming the universe — while
+    // `codemap pr` on the same PR just worked. Only `fetch=0` disables it now.
     case "/api/pr":
-      return ops.pr(root, q.get("pr") ?? "", { fetch: q.get("fetch") === "1" });
+      return ops.pr(root, q.get("pr") ?? "", { fetch: q.get("fetch") !== "0" });
     case "/api/pr/story":
-      return ops.prStoryFor(root, q.get("pr") ?? "", { fetch: q.get("fetch") === "1" });
+      return ops.prStoryFor(root, q.get("pr") ?? "", { fetch: q.get("fetch") !== "0" });
     case "/api/pr/promote_plan":
       return ops.prPromotePlan(root, q.get("pr") ?? "", q.get("chapter") ?? "");
     case "/api/pr/code":
@@ -212,8 +216,8 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    // Promoting a walkthrough chapter into the map — a write, and a human act:
-    // the walkthrough only ever proposes.
+    // Importing GitHub's per-file viewed ticks: reaches the GitHub API and writes
+    // `viewed` marks — never `signed`, since a tick is one click on a whole file.
     if (req.method === "POST" && url.pathname === "/api/pr/pull_viewed") {
       const chunks: Buffer[] = [];
       for await (const c of req) chunks.push(c as Buffer);
@@ -236,6 +240,8 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    // Promoting a walkthrough chapter into the map — a write, and a human act:
+    // the walkthrough only ever proposes.
     if (req.method === "POST" && url.pathname === "/api/pr/promote") {
       const chunks: Buffer[] = [];
       for await (const c of req) chunks.push(c as Buffer);

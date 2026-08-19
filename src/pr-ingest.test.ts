@@ -1,5 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Anchor, State } from "./schema.js";
+import { writeStore, writeSnapshot, readTriage } from "./store.js";
+import { setTriage } from "./triage.js";
 import { parseAgentLines, ingestAgentReview, type AgentLine } from "./pr-ingest.js";
 
 test("parseAgentLines tolerates blanks and reports malformed lines without losing good ones", () => {
@@ -76,4 +82,49 @@ test("a medium-confidence finding says so in its text, so a human can weight it"
     { kind: "finding", anchorId: "a_1", text: "maybe wrong", confidence: "medium" },
   ], { annotate: async (_r, i) => { calls.push(i); return {}; } }, { headRef: "x" });
   assert.match(calls[0].text, /agent confidence: medium/);
+});
+
+test("a triage line the ratchet declines is reported as declined, not counted as applied", async () => {
+  // Refusal is the COMMON case on a re-ingest, and unlike findings there was no
+  // bucket revealing it — the operator was told a tier had been written when the
+  // store was untouched.
+  const root = mkdtempSync(join(tmpdir(), "codemap-ingest-"));
+  try {
+    const anchor: Anchor = { id: "a_1", file: "src/x.cs", symbolPath: ["X"], kind: "function", bodyHash: "sha256:OLD", lastVerifiedCommit: null };
+    await writeStore(root, [anchor], { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State);
+    await setTriage(root, { targetKind: "anchor", targetId: "a_1", importance: "business-critical", complexity: "deep", source: "human" });
+
+    const r = await ingestAgentReview(root, [
+      { kind: "triage", anchorId: "a_1", importance: "low", complexity: "rote" },   // lowering — refused
+      { kind: "triage", anchorId: "a_1", importance: "business-critical", complexity: "deep" }, // no change — refused
+    ], { annotate: async () => ({}) }, { headRef: "headsha", dryRun: false });
+
+    assert.equal(r.triaged, 0, "a refusal is not an applied triage");
+    assert.equal(r.triageRefused.length, 2);
+    assert.match(r.triageRefused[0]!.why, /human-owned|ratchet/i);
+
+    // the human's mark is untouched
+    const t = (await readTriage(root)).triage.find((x) => x.target.id === "a_1")!;
+    assert.equal(t.importance, "business-critical");
+    assert.equal(t.source, "human");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("an ingested triage proposal is witnessed against the PR head, not the working tree", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-ingest-"));
+  try {
+    await writeStore(root, [], { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State);  // symbol not on this branch
+    await writeSnapshot(root, "headsha", "feature",
+      [{ id: "a_new", file: "src/x.cs", symbolPath: ["X"], kind: "function", bodyHash: "sha256:NEW", lastVerifiedCommit: null }],
+      "2026-08-19T00:00:00Z");
+
+    const r = await ingestAgentReview(root, [
+      { kind: "triage", anchorId: "a_new", importance: "important", complexity: "wiring" },
+    ], { annotate: async () => ({}) }, { headRef: "headsha", dryRun: false });
+
+    assert.equal(r.triaged, 1);
+    const t = (await readTriage(root)).triage.find((x) => x.target.id === "a_new")!;
+    assert.equal(t.witnesses[0]!.bodyHash, "sha256:NEW",
+      "a symbol the branch ADDS must not be witnessed sha256:absent — that can never be told apart from drift");
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

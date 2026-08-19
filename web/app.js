@@ -2242,6 +2242,7 @@ class PrStoryPage extends Component {
           ${when(st.undocumented, () => html`<span class="warn" title="changed symbols no spec section accounts for">${st.undocumented} unspecified</span>`)}
           ${when(st.specWithoutCode.filter(g => g.reason === 'absent').length, () => html`<span class="warn" title="spec sections naming code that is nowhere in this universe — a sibling repo's half of the spec, or unbuilt">${st.specWithoutCode.filter(g => g.reason === 'absent').length} spec not in this repo</span>`)}
           ${when(st.refs.baseAheadOfMergeBase, () => html`<span class="dim" title="the PR is diffed against its merge-base, not the tip of ${st.pr.baseRef} — otherwise those commits would read as part of this change">${st.pr.baseRef} moved ${st.refs.baseAheadOfMergeBase} commits since branch</span>`)}
+          ${when(st.refs.baseAheadOfMergeBase === null, () => html`<span class="dim" title="git could not count commits between the merge-base and ${st.pr.baseRef} — usually an unfetched remote-tracking ref. Silence here would read as 'the base has not moved'.">whether ${st.pr.baseRef} moved is unknown</span>`)}
         </div>
         <div class="prlanes">${each(st.lanes, l => html`<span class="prlane l-${l.review}" title="${l.why}"><b>${l.lane}</b> ${l.lines} lines · ${l.files} files · ${l.review}</span>`, l => l.lane)}</div>
         <div class="prderive">

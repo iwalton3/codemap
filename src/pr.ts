@@ -135,7 +135,7 @@ export interface WorkItem {
 
 export interface PrTriageResult {
   pr: PrMeta & { owner: string; repo: string };
-  refs: { base: string; head: string; mergeBase: string; baseAheadOfMergeBase: number };
+  refs: { base: string; head: string; mergeBase: string; baseAheadOfMergeBase: number | null };
   lanes: LaneTally[];
   files: PrFile[];
   worklist: WorkItem[];
@@ -222,9 +222,17 @@ async function ensureSnapshot(root: string, sha: string, label: string): Promise
   return {};
 }
 
-function countCommits(root: string, from: string, to: string): number {
+/**
+ * Commits in `from..to`, or null when git could not answer (missing object, an
+ * unfetched remote-tracking ref). Not 0: every surface suppresses the drift notice
+ * at 0, so folding the failure in there rendered "the base branch has not moved"
+ * precisely when the base was least known.
+ */
+function countCommits(root: string, from: string, to: string): number | null {
   const r = spawnSync("git", ["rev-list", "--count", `${from}..${to}`], { cwd: root, encoding: "utf8" });
-  return r.status === 0 ? Number((r.stdout ?? "0").trim()) || 0 : 0;
+  if (r.status !== 0) return null;
+  const n = Number((r.stdout ?? "").trim());
+  return Number.isFinite(n) ? n : null;
 }
 
 /**
@@ -377,7 +385,7 @@ export async function prStory(
   root: string, input: string, opts: { fetch?: boolean } = {},
 ): Promise<(PrStory & {
   pr: PrPacket["pr"];
-  refs: { mergeBase: string; head: string; baseAheadOfMergeBase: number };
+  refs: { mergeBase: string; head: string; baseAheadOfMergeBase: number | null };
   lanes: LaneTally[];
   totals: { steps: number; chapters: number; changedLines: number; queueLines: number };
 }) | { error: string }> {

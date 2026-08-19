@@ -58,6 +58,16 @@ export interface PushFilter {
 const SEV_ORDER = ["low", "medium", "high", "critical"];
 
 export async function planPrPush(root: string, input: string, filter: PushFilter = {}): Promise<PushPlan | { error: string }> {
+  // A misspelt tier used to yield indexOf() === -1, which the filter below read as
+  // "no severity filter" — so `--min-severity High` published every `low` finding
+  // to someone else's PR, and the plan printed `belowSeverity: 0` confirming
+  // nothing had been held back. Publishing is not undoable, so refuse; and refuse
+  // before any git or network work, so the message is the first thing seen.
+  const minSev = filter.minSeverity === undefined ? -1 : SEV_ORDER.indexOf(filter.minSeverity);
+  if (minSev < 0 && filter.minSeverity !== undefined) {
+    return { error: `unknown --min-severity "${filter.minSeverity}" — expected one of ${SEV_ORDER.join(", ")}` };
+  }
+
   const t = await prTriage(root, input, { fetch: false });
   if ("error" in t) return t;
 
@@ -87,7 +97,6 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
   const deferred: DeferredComment[] = [];
   let resolved = 0, already = 0, unreviewed = 0, belowSeverity = 0;
   const reviewedOnly = filter.reviewedOnly !== false;
-  const minSev = filter.minSeverity ? SEV_ORDER.indexOf(filter.minSeverity) : -1;
 
   for (const a of anns) {
     if (a.target.kind !== "anchor") continue;
