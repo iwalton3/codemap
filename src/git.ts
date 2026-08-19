@@ -47,7 +47,12 @@ export function isDirty(root: string): boolean {
  * holds UTF-16 code-unit indices despite the `startByte` name (see indexBlob).
  */
 export function showFile(root: string, sha: string, path: string): Buffer | null {
-  const r = spawnSync("git", ["show", `${sha}:${path}`], { cwd: root, maxBuffer: 256 * 1024 * 1024 });
+  // `git show <sha>:<path>` is relative to the REPO root, but every caller passes a
+  // path relative to the codemap root. For a universe rooted in a subdirectory those
+  // differ, and without the prefix this read the wrong blob — including the
+  // repo-root `.codemapignore`, which then filtered sub-relative paths and made the
+  // commit index disagree with the walk.
+  const r = spawnSync("git", ["show", `${sha}:${repoPrefix(root)}${path}`], { cwd: root, maxBuffer: 256 * 1024 * 1024 });
   return r.status === 0 ? r.stdout : null;
 }
 
@@ -71,9 +76,15 @@ export function changedFilesSince(root: string, commit: string | null): string[]
   return [...files];
 }
 
-/** The repo-relative path of `root` itself ("" at the toplevel, else "sub/dir/"). */
+/**
+ * The repo-relative path of `root` itself ("" at the toplevel, else "sub/dir/").
+ * Memoised: it is a `git` process, and the blob readers call it per batch.
+ */
+const prefixCache = new Map<string, string>();
 export function repoPrefix(root: string): string {
-  return git(root, ["rev-parse", "--show-prefix"]).out.trim();
+  let p = prefixCache.get(root);
+  if (p === undefined) { p = git(root, ["rev-parse", "--show-prefix"]).out.trim(); prefixCache.set(root, p); }
+  return p;
 }
 
 /** The merge-base of two refs — a PR's true base, which is rarely the base branch tip. */

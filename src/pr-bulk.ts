@@ -94,16 +94,16 @@ export interface BulkViewedResult {
 export async function bulkPullViewed(
   root: string,
   slug: string,
-  opts: { force?: boolean; limit?: number; onProgress?: (msg: string) => void } = {},
+  opts: { force?: boolean; limit?: number; dryRun?: boolean; onProgress?: (msg: string) => void } = {},
 ): Promise<BulkViewedResult | { error: string }> {
   const log = opts.onProgress ?? (() => {});
   const listed = gh(["pr", "list", "--repo", slug, "--state", "all", "--limit", "400", "--json", "number,state,author,createdAt"]);
   if (!listed.ok) return { error: `gh pr list failed: ${listed.err.slice(0, 200)}` };
   const prs: { number: number; state: string; author: { login: string } | null; createdAt: string }[] = JSON.parse(listed.out);
-  // OLDEST first. An accepted set is documented "oldest first" and `resolveAcceptance`
-  // treats the last entry on the ancestry as the current one; importing newest-first
-  // appends them backwards, so every earlier body reads as something the code was
-  // reverted to.
+  // Oldest first, so an accepted set reads chronologically. This used to be load
+  // bearing — `resolveAcceptance` inferred supersession from array position, and a
+  // newest-first import made every earlier body look reverted-to. It now derives
+  // that from git ancestry instead, so this is presentation, not correctness.
   prs.sort((a, b) => a.number - b.number);
 
   log(`surveying ${prs.length} pull requests…`);
@@ -128,7 +128,7 @@ export async function bulkPullViewed(
 
       const paths = viewedPaths(slug, p.number);
       if ("error" in paths) { res.errors.push({ pr: p.number, why: paths.error }); continue; }
-      if (!paths.size) { await writeViewedImport(root, String(p.number), 0); res.processed++; continue; }
+      if (!paths.size) { if (!opts.dryRun) await writeViewedImport(root, String(p.number), 0); res.processed++; continue; }
 
       // GitHub's recorded base sha, not the branch tip: a merged PR's head is an
       // ancestor of the tip, so that merge-base is the head and the diff is empty.
@@ -138,15 +138,26 @@ export async function bulkPullViewed(
 
       const files = changedFilesBetween(root, mb, headRefOid)
         .filter((f) => paths.has(f) && LANE_POLICY[lanes.classify(f)]?.review === "queue");
-      if (!files.length) { await writeViewedImport(root, String(p.number), 0); res.processed++; continue; }
+      if (!files.length) { if (!opts.dryRun) await writeViewedImport(root, String(p.number), 0); res.processed++; continue; }
 
-      const blobs = readBlobs(root, headRefOid, files);
+      // Only the symbols the PR actually CHANGED in a ticked file — not every symbol
+      // the file happens to contain. A tick on a 30-symbol file where the PR touched
+      // one method must not record exposure to the other 29: GitHub never rendered
+      // them, and those marks would then satisfy `pr-push`'s reviewed-only gate.
+      // The single-PR path maps ticks onto the worklist for exactly this reason.
+      const headBlobs = readBlobs(root, headRefOid, files);
+      const baseBlobs = readBlobs(root, mb, files);
       const ids: string[] = [];
       const hashes = new Map<string, string>();
-      for (const [path, src] of blobs) {
-        for (const a of await indexBlob(src, path)) { ids.push(a.id); hashes.set(a.id, a.bodyHash); }
+      for (const [path, src] of headBlobs) {
+        const before = new Map((await indexBlob(baseBlobs.get(path) ?? "", path)).map((a) => [a.id, a.bodyHash]));
+        for (const a of await indexBlob(src, path)) {
+          if (before.get(a.id) === a.bodyHash) continue;   // unchanged by this PR
+          ids.push(a.id);
+          hashes.set(a.id, a.bodyHash);
+        }
       }
-      if (!ids.length) { await writeViewedImport(root, String(p.number), 0); res.processed++; continue; }
+      if (!ids.length) { if (!opts.dryRun) await writeViewedImport(root, String(p.number), 0); res.processed++; continue; }
 
       // A sign-off already outranks a tick; never overwrite one with weaker evidence.
       const st = await reviewStatesFor(root, ids.map((id) => ({ kind: "anchor" as const, id })));
@@ -157,8 +168,10 @@ export async function bulkPullViewed(
       // commit falls back to whatever the working tree is on, so every acceptance
       // across a year of PRs records the same commit — which makes the ancestry test
       // in `resolveAcceptance` meaningless and reads most of them back as reverts.
-      const m = await markReviewedBatch(root, fresh, { level: "code", actor: "human", attestation: "viewed", reviewer: "github-import", ref: headRefOid, hashes });
-      await writeViewedImport(root, String(p.number), m.marked);
+      const m = opts.dryRun
+        ? { marked: fresh.length }
+        : await markReviewedBatch(root, fresh, { level: "code", actor: "human", attestation: "viewed", reviewer: "github-import", ref: headRefOid, hashes });
+      if (!opts.dryRun) await writeViewedImport(root, String(p.number), m.marked);
       res.marked += m.marked;
       res.processed++;
       log(`#${p.number} (${p.author?.login ?? "?"}, ${p.createdAt.slice(0, 10)}) → ${m.marked} symbol(s)`);

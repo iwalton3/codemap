@@ -8,7 +8,7 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { type Review, type ReviewLevel, type ReviewState, type BugWitness } from "./schema.js";
 import { readReviews, writeReviews, readAnchorStore, loadNodes, readSnapshot } from "./store.js";
-import { resolveAcceptance, recordAcceptance } from "./acceptance.js";
+import { resolveAcceptance, recordAcceptance, type Ancestry } from "./acceptance.js";
 import { ACCEPTED_CAP, type AcceptedCitation, type AcceptedEntry, type AcceptanceVia } from "./schema.js";
 import { isAncestor, isGitRepo, currentBranch as gitBranch } from "./git.js";
 import { indexFile } from "./repo.js";
@@ -188,6 +188,31 @@ export async function unmarkReviewed(
 }
 
 /**
+ * The ancestry probe `resolveAcceptance` needs, backed by `merge-base --is-ancestor`
+ * and memoised per (commit, commit) pair. One probe is built per batch and shared
+ * across every anchor in it: marks are made against a handful of commits, so a run
+ * over thousands of anchors costs a few git calls rather than one per anchor.
+ *
+ * Outside git (or with no resolvable ref) every acceptance reads as on-ref and
+ * unrelated to every other — acceptances stand and nothing is reported reverted,
+ * which is the right default when there is no history to appeal to.
+ */
+function ancestryProbe(root: string, viewRef: string | null): Ancestry {
+  const gitHere = isGitRepo(root);
+  const cache = new Map<string, boolean>();
+  const ancestor = (a: string, b: string): boolean => {
+    const k = `${a}\0${b}`;
+    let v = cache.get(k);
+    if (v === undefined) { v = isAncestor(root, a, b); cache.set(k, v); }
+    return v;
+  };
+  return {
+    onRef: (c) => !c || !gitHere || !viewRef || c === viewRef || ancestor(c, viewRef),
+    precedes: (a, b) => !!a && !!b && a !== b && gitHere && ancestor(a, b),
+  };
+}
+
+/**
  * Review state for many targets at once — batches the live re-index over all covered
  * files. By default reflects the *vouch* (`signed`/`checked`); pass `{ viewed: true }`
  * to read the `viewed` exposure marks instead (same shape, so callers render either).
@@ -215,20 +240,8 @@ export async function reviewStatesFor(
   const wantViewed = opts?.viewed ?? false;
 
   // Ancestry is what separates "this branch holds the older body" from "someone
-  // committed a move back to it". Memoised: a mark is made against a handful of
-  // commits, so this is a few `merge-base` calls, not one per anchor.
-  const viewRef = opts?.ref ?? headCommit(root);
-  const gitHere = isGitRepo(root);
-  const ancestry = new Map<string, boolean>();
-  const onAncestry = (commit: string | null): boolean => {
-    if (!commit) return true;              // legacy marks have no commit — treat as this lineage
-    if (!gitHere || !viewRef) return true;
-    if (commit === viewRef) return true;
-    const k = commit;
-    let v = ancestry.get(k);
-    if (v === undefined) { v = isAncestor(root, commit, viewRef); ancestry.set(k, v); }
-    return v;
-  };
+  // committed a move back to it".
+  const ancestry = ancestryProbe(root, opts?.ref ?? headCommit(root));
 
   const forLevel = (t: Target, level: ReviewLevel): ReviewInfo => {
     // Default: only vouches (`signed`/`checked`) set the reviewed state — a `viewed`
@@ -238,7 +251,7 @@ export async function reviewStatesFor(
     const base = { by: r.reviewer, actor: r.actor ?? "agent", at: r.at } as const;
 
     const cites = acceptedOf(r);
-    const resolved = cites.map((c) => resolveAcceptance(c.entries, live.get(c.anchorId), onAncestry));
+    const resolved = cites.map((c) => resolveAcceptance(c.entries, live.get(c.anchorId), ancestry));
     if (!resolved.length) return { state: "reviewed", ...base, via: "direct" };
     // A mark covers several anchors; the weakest one decides, so a single drifted
     // segment cannot hide behind the others.
@@ -379,19 +392,11 @@ export async function anchorReviewMap(
   // Judge through the accepted set, exactly as reviewStatesFor does. Comparing the
   // single legacy `witnesses` hash here instead would make this surface disagree
   // with the node and anchor pages the moment an approval is replayed or reverted.
-  const viewRef = headCommit(root);
-  const gitHere = isGitRepo(root);
-  const cache = new Map<string, boolean>();
-  const onAncestry = (commit: string | null): boolean => {
-    if (!commit || !gitHere || !viewRef || commit === viewRef) return true;
-    let v = cache.get(commit);
-    if (v === undefined) { v = isAncestor(root, commit, viewRef); cache.set(commit, v); }
-    return v;
-  };
+  const ancestry = ancestryProbe(root, headCommit(root));
   const verdict = (r: Review): { state: ReviewState; via: AcceptanceVia } => {
     const cites = acceptedOf(r);
     if (!cites.length) return { state: "reviewed", via: "direct" };
-    const each = cites.map((c) => resolveAcceptance(c.entries, live.get(c.anchorId), onAncestry));
+    const each = cites.map((c) => resolveAcceptance(c.entries, live.get(c.anchorId), ancestry));
     if (each.some((x) => x.via === "none")) return { state: "stale", via: "none" };
     if (each.some((x) => x.via === "reverted")) return { state: "reviewed", via: "reverted" };
     if (each.some((x) => x.via === "replayed")) return { state: "reviewed", via: "replayed" };
@@ -459,20 +464,12 @@ export async function revertedMarks(root: string, opts: { ref?: string } = {}): 
   for (const r of rs.reviews) for (const c of acceptedOf(r)) all.add(c.anchorId);
   const live = await liveHashes(root, all, opts.ref);
 
-  const viewRef = opts.ref ?? headCommit(root);
-  const gitHere = isGitRepo(root);
-  const cache = new Map<string, boolean>();
-  const onAncestry = (commit: string | null): boolean => {
-    if (!commit || !gitHere || !viewRef || commit === viewRef) return true;
-    let v = cache.get(commit);
-    if (v === undefined) { v = isAncestor(root, commit, viewRef); cache.set(commit, v); }
-    return v;
-  };
+  const ancestry = ancestryProbe(root, opts.ref ?? headCommit(root));
 
   const out: RevertedMark[] = [];
   for (const r of rs.reviews) {
     for (const c of acceptedOf(r)) {
-      const a = resolveAcceptance(c.entries, live.get(c.anchorId), onAncestry);
+      const a = resolveAcceptance(c.entries, live.get(c.anchorId), ancestry);
       if (a.via !== "reverted" || !a.entry || !a.supersededBy) continue;
       out.push({
         target: r.target, level: r.level, anchorId: c.anchorId, reviewer: r.reviewer,

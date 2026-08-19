@@ -323,7 +323,11 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(port, () => {
+// Loopback only. The server has no authentication and now carries write routes that
+// mutate the map, fetch from remotes and post to GitHub; binding every interface put
+// all of that on the local network. Set CODEMAP_HOST to widen it deliberately.
+const host = process.env.CODEMAP_HOST ?? "127.0.0.1";
+server.listen(port, host, () => {
   process.stderr.write(
     `codemap-serve: http://localhost:${port}  (${ws.universes.length} universe(s): ${ws.universes.map((x) => x.id + (x.primary ? "*" : "")).join(", ")})\n`,
   );

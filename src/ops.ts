@@ -562,7 +562,7 @@ export async function prPullViewed(root: string, input: string, opts: { dryRun?:
  * resumable: a year of pull requests is worth importing, but not at ~2MB of
  * cached snapshot per side per PR.
  */
-export async function prPullViewedAll(root: string, opts: { force?: boolean; limit?: number; onProgress?: (m: string) => void } = {}) {
+export async function prPullViewedAll(root: string, opts: { force?: boolean; limit?: number; dryRun?: boolean; onProgress?: (m: string) => void } = {}) {
   const slug = originSlug(root);
   if (!slug) return { error: "this universe has no github origin remote" };
   return bulkPullViewed(root, `${slug.owner}/${slug.repo}`, opts);
@@ -2161,10 +2161,15 @@ export async function reviewQueue(root: string, opts: { includeAnswered?: boolea
   for (const a of pending) {
     const anc = a.target.kind === "anchor" ? anchors.get(a.target.id) : undefined;
     let code: string | undefined;
-    if (anc?.loc) {
+    if (anc) {
+      // Re-index live, as `getAnchor` does. The stored `loc` is from the last index;
+      // any edit above the symbol since then shifts the window, so slicing with it
+      // hands an agent asked to FIX a finding the wrong text — under a tool
+      // description that promises the symbol's current source.
       try {
         const src = await readFile(join(root, anc.file), "utf8");
-        code = src.slice(anc.loc.startByte, anc.loc.endByte);
+        const live = (await indexFile(join(root, anc.file), anc.file)).find((x) => x.id === anc.id);
+        if (live?.loc) code = src.slice(live.loc.startByte, live.loc.endByte);
       } catch { /* file gone — the finding still stands, the agent will see it missing */ }
     }
     queue.push({

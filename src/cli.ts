@@ -241,13 +241,26 @@ if (positionals[0] === "analyze") {
     console.log(JSON.stringify(r, null, 1));
   } else if (positionals[0] === "pr-pull-viewed" && (values.all || positionals[1] === "--all")) {
     const root = resolve(values.repo ?? ".");
+    // `--dry-run` is advertised for this command; ignoring it meant
+    // `pr-pull-viewed 42 --all --dry-run` performed a real import across up to 400
+    // pull requests. A PR number alongside --all is a contradiction, not a filter.
+    if (positionals[1] && positionals[1] !== "--all") {
+      console.error(`--all imports every pull request; drop "${positionals[1]}" or drop --all`);
+      process.exit(2);
+    }
+    const limitArg = values.limit === undefined ? undefined : Number(values.limit);
+    if (limitArg !== undefined && (!Number.isFinite(limitArg) || limitArg < 1)) {
+      console.error(`--limit must be a positive number (got "${values.limit}")`);
+      process.exit(2);
+    }
     const r = await ops.prPullViewedAll(root, {
       force: Boolean(values.force),
-      limit: values.limit ? Number(values.limit) : undefined,
+      limit: limitArg,
+      dryRun: Boolean(values["dry-run"]),
       onProgress: (m) => process.stderr.write(m + "\n"),
     });
     if ("error" in r) { console.error(r.error); process.exit(1); }
-    console.log(`\nsurveyed ${r.surveyed} PRs — ${r.withTicks} carry viewed ticks`);
+    console.log(`\n${values["dry-run"] ? "[dry run] " : ""}surveyed ${r.surveyed} PRs — ${r.withTicks} carry viewed ticks`);
     console.log(`  processed ${r.processed}${r.skippedAlreadyImported ? `, skipped ${r.skippedAlreadyImported} already imported` : ""}`);
     console.log(`  ${r.marked} symbol(s) marked viewed${r.leftSigned ? `, ${r.leftSigned} left alone (already signed)` : ""}`);
     if (r.errors.length) {

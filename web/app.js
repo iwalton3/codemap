@@ -405,7 +405,7 @@ const revDot = (state, actor, via) => html`<span class="rd ${state === 'reviewed
 // --- markdown ----------------------------------------------------------------
 // Content is authored by the documenting agent / developers (internal, trusted).
 class MdContent extends Component {
-  static props = { text: '' };
+  static props = { text: '', untrusted: false };
   // Syntax-highlight any fenced code blocks marked produced (it doesn't itself).
   hl() {
     if (!window.hljs) return;
@@ -416,7 +416,13 @@ class MdContent extends Component {
   afterRender() { this.hl(); }
   async propsChanged() { await this.nextRender(); this.hl(); }
   template() {
-    const t = this.props.text || '';
+    let t = this.props.text || '';
+    // Node bodies are authored by the documenting agent or a developer — trusted.
+    // Spec prose read off a PR branch is not: it is written by whoever opened the
+    // pull request, and marked has had no sanitizer since v5, so inline HTML would
+    // execute against this same-origin unauthenticated API. Escaping the angle
+    // brackets before parsing kills embedded HTML and leaves markdown intact.
+    if (this.props.untrusted) t = t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     return html`<div class="md">${raw(window.marked ? window.marked.parse(t) : t)}</div>`;
   }
 }
@@ -2152,7 +2158,7 @@ class PrStoryPage extends Component {
       </div>
       ${this.promoteFormEl(u, ch)}
       ${when(open, () => html`<div class="prcbody">
-        ${when(ch.source === 'spec' && ch.prose, () => html`<md-content text="${ch.prose}"></md-content>`)}
+        ${when(ch.source === 'spec' && ch.prose, () => html`<md-content text="${ch.prose}" untrusted="${true}"></md-content>`)}
         ${when(ch.source !== 'spec', () => html`<div class="dim prorphan">${ch.prose}</div>`)}
         ${each(ch.steps, s => this.stepEl(u, s), s => s.anchorId)}
       </div>`)}
@@ -2191,8 +2197,10 @@ class PrStoryPage extends Component {
 
   template() {
     const st = this.state.story, u = this.props.params.universe;
-    if (st && st.error) return pageShell(null, st.error, html``);
-    if (!st) return pageShell(null, null, html`<div class="dim">loading pull request…</div>`);
+    // pageShell renders `loading` whenever data is falsy, so passing null alongside
+    // an error made every failure here an eternal "loading…". Pass the payload.
+    if (!st) return html`<main><div class="loading">loading pull request…</div></main>`;
+    if (st.error) return pageShell(st, st.error, html``);
     const signed = st.chapters.reduce((n, c) => n + c.steps.filter(s => s.reviewed).length, 0);
     return pageShell(st, null, html`
       <div class="prhead">
@@ -2246,8 +2254,8 @@ class PrInboxPage extends Component {
 
   template() {
     const u = this.props.params.universe, d = this.state.d;
-    if (!d) return pageShell(null, null, html`<div class="dim">loading pull requests…</div>`);
-    if (d.error) return pageShell(null, d.error, html``);
+    if (!d) return html`<main><div class="loading">loading pull requests…</div></main>`;
+    if (d.error) return pageShell(d, d.error, html``);
     return pageShell(d, null, html`
       <div class="crumbs"><b>${u}</b> <span class="sep">·</span> pull requests <span class="dim">· ${d.prs.length} open</span></div>
       ${when(!d.prs.length, () => html`<div class="dim">no open pull requests.</div>`)}

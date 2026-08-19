@@ -26,6 +26,16 @@ export interface AgentLine {
   batch?: string; reviewed?: number; findings?: number; narrative?: string;
 }
 
+const IMPORTANCE = new Set(["business-critical", "important", "low", "mechanical"]);
+const COMPLEXITY = new Set(["deep", "standard", "rote", "wiring"]);
+
+/**
+ * `annotate` floors and drops a non-positive line; the dedupe key must apply the
+ * same rule or a `"line": 0` from an agent compares against a stored `undefined`
+ * and duplicates on every re-run.
+ */
+const normLine = (n: number | undefined) => (Number.isFinite(n) && (n as number) > 0 ? Math.floor(n as number) : undefined);
+
 export interface IngestResult {
   annotations: number;
   /** Findings already present from an earlier ingest of the same batch. */
@@ -72,7 +82,7 @@ export async function ingestAgentReview(
   // annotation id per call, so without this a re-run — the natural response to a
   // partial batch — silently doubles every finding already in the map.
   const key = (targetId: string, line: number | undefined, kind: string, text: string) =>
-    [author, targetId, line ?? "", kind, text].join(" | ");
+    [author, targetId, normLine(line) ?? "", kind, text].join(" | ");
   const seen = new Set((deps.existing ?? []).map((a) => key(a.targetId, a.line, a.kind ?? "note", a.text)));
 
   for (const [i, l] of lines.entries()) {
@@ -83,6 +93,11 @@ export async function ingestAgentReview(
     if (!l.anchorId) { out.rejected.push({ line: i + 1, why: "no anchorId" }); continue; }
 
     if (l.kind === "triage") {
+      // Straight from an agent's JSONL. An unknown tier reaches `triageSeverity`'s
+      // table lookup and throws, which 500s `diff` and every surface that reads
+      // triage — one malformed line would blank the whole PR worklist.
+      if (l.importance !== undefined && !IMPORTANCE.has(l.importance)) { out.rejected.push({ line: i + 1, why: `unknown importance "${l.importance}"` }); continue; }
+      if (l.complexity !== undefined && !COMPLEXITY.has(l.complexity)) { out.rejected.push({ line: i + 1, why: `unknown complexity "${l.complexity}"` }); continue; }
       if (!opts.dryRun) {
         // `source: "agent"` keeps the ratchet honest — an agent may only ever raise a
         // tier, and its mark is recorded as a `likely` proposal for a human to confirm.
@@ -98,6 +113,8 @@ export async function ingestAgentReview(
 
     const text = [l.text, l.evidence ? `\n\nEvidence: ${l.evidence}` : "", l.confidence === "medium" ? "\n\n(agent confidence: medium)" : ""].join("");
     if (!l.text) { out.rejected.push({ line: i + 1, why: "no text" }); continue; }
+    const KINDS = new Set(["note", "question", "finding", "pointer"]);
+    if (l.kind && !KINDS.has(l.kind)) { out.rejected.push({ line: i + 1, why: `unknown kind "${l.kind}"` }); continue; }
     const k = key(l.anchorId, l.line, l.kind ?? "note", text);
     if (seen.has(k)) { out.duplicates++; continue; }
     seen.add(k);

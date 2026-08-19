@@ -183,6 +183,17 @@ export async function executePrPush(
   try { result.reviewUrl = JSON.parse(r.out).html_url; } catch { /* url is a nicety */ }
   result.postedComments = plan.comments.length;
 
+  // Record the publish IMMEDIATELY. The viewed-sync below is a sequential `gh` call
+  // per file with a 120s timeout each; recording afterwards left a window where an
+  // interrupt lost the only evidence the review went out, and the next --confirm
+  // re-posted every inline comment on someone else's pull request.
+  await writePush(root, String(plan.pr.number), {
+    annotationIds: [...plan.comments.map((c) => c.annotationId), ...plan.deferred.map((d) => d.annotationId)],
+    viewedPaths: [],
+    at: new Date().toISOString(),
+    reviewUrl: result.reviewUrl,
+  });
+
   if (opts.markViewed && plan.viewedPaths.length) {
     const idr = gh(["pr", "view", String(plan.pr.number), "--repo", slug, "--json", "id", "--jq", ".id"]);
     const nodeId = idr.ok ? idr.out.trim() : "";
@@ -198,12 +209,13 @@ export async function executePrPush(
     }
   }
 
-  await writePush(root, String(plan.pr.number), {
-    annotationIds: [...plan.comments.map((c) => c.annotationId), ...plan.deferred.map((d) => d.annotationId)],
-    viewedPaths: result.markedViewed,
-    at: new Date().toISOString(),
-    reviewUrl: result.reviewUrl,
-  });
+  // Second write: the viewed paths, once they are actually synced. `writePush`
+  // unions, so this adds to the record above rather than replacing it.
+  if (result.markedViewed.length) {
+    await writePush(root, String(plan.pr.number), {
+      annotationIds: [], viewedPaths: result.markedViewed, at: new Date().toISOString(), reviewUrl: result.reviewUrl,
+    });
+  }
   return result;
 }
 

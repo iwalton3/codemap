@@ -54,7 +54,12 @@ export const isDurableHeading = (heading: string) => !CHANGE_HEADING.test(headin
 /** Split spec markdown into `##`-level sections, each carrying the file's title as context. */
 export function splitSpec(specPath: string, text: string): SpecSection[] {
   const durable = !EPHEMERAL_SPEC.test(specPath);
-  const lines = text.split("\n");
+  // Strip CR before splitting: a CRLF-committed spec leaves \r on every line, and
+  // the heading regex has no /m and cannot match \r before $, so EVERY heading was
+  // missed — the file collapsed into one fake chapter and both gap signals reported
+  // "all accounted for" without having computed anything. Blobs come from
+  // `git cat-file`, so core.autocrlf never masks this.
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
   const out: SpecSection[] = [];
   let heading = specPath.split("/").pop() ?? specPath;
   let level = 1;

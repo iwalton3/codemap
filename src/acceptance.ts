@@ -27,35 +27,64 @@ export interface Acceptance {
 }
 
 /**
- * `onAncestry(commit)` answers "is this commit in the viewed ref's history?".
- * Injected so this stays pure and testable; callers back it with `git merge-base
- * --is-ancestor`, memoised per commit.
+ * The two git questions this needs, injected so it stays pure and testable.
+ * Callers back both with `git merge-base --is-ancestor`, memoised.
+ *
+ * A `null` commit is a legacy mark, written before acceptances recorded one: it
+ * counts as on-ref (there is nothing better to assume) but stands in no ancestor
+ * relation to anything, so it can neither supersede nor be superseded. A legacy
+ * acceptance therefore never raises a revert on its own — the conservative read,
+ * since we cannot tell whether it predates the commits around it.
  */
-export function resolveAcceptance(
-  entries: AcceptedEntry[],
-  liveHash: string | undefined,
-  onAncestry: (commit: string | null) => boolean,
-): Acceptance {
+export interface Ancestry {
+  /** Is `commit` in the viewed ref's history? */
+  onRef(commit: string | null): boolean;
+  /** Is `a` a STRICT ancestor of `b`? Same commit is false — see `supersededBy` below. */
+  precedes(a: string | null, b: string | null): boolean;
+}
+
+/**
+ * Pick the newest of `pool` by ancestry: an entry no other entry descends from.
+ * Concurrent commits (either side of a merge) are both maximal and neither is
+ * "newer"; the timestamp tie-break only decides which one is displayed.
+ */
+function newest(pool: AcceptedEntry[], anc: Ancestry): AcceptedEntry | undefined {
+  const maximal = pool.filter((e) => !pool.some((o) => o !== e && anc.precedes(e.commit, o.commit)));
+  return (maximal.length ? maximal : pool).reduce<AcceptedEntry | undefined>(
+    (best, e) => (best && best.at >= e.at ? best : e),
+    undefined,
+  );
+}
+
+export function resolveAcceptance(entries: AcceptedEntry[], liveHash: string | undefined, anc: Ancestry): Acceptance {
   if (!liveHash || !entries.length) return { via: "none" };
+  if (!entries.some((e) => e.bodyHash === liveHash)) return { via: "none" };
 
-  const matches = entries.filter((e) => e.bodyHash === liveHash);
-  if (!matches.length) return { via: "none" };
+  const lineage = entries.filter((e) => anc.onRef(e.commit));
+  const mine = lineage.filter((e) => e.bodyHash === liveHash);
 
-  // Entries on this ref's own history, oldest first (input order is chronological).
-  const lineage = entries.filter((e) => onAncestry(e.commit));
-  const newestOnLineage = lineage.length ? lineage[lineage.length - 1] : undefined;
+  // An acceptance is superseded only by a *descendant* acceptance of a different
+  // body: that is a commit on this history which knowingly moved past it. Position
+  // in `entries` is the order marks were WRITTEN, which is not commit order — a
+  // stack walk signs the tip before its base, and after a merge two concurrent
+  // commits are both ancestors of the head while neither follows the other. Reading
+  // the array as a timeline calls both of those a revert.
+  const supersedersOf = (e: AcceptedEntry) =>
+    lineage.filter((o) => o.bodyHash !== liveHash && anc.precedes(e.commit, o.commit));
 
-  if (newestOnLineage && newestOnLineage.bodyHash === liveHash) return { via: "direct", entry: newestOnLineage };
+  const standing = mine.filter((e) => !supersedersOf(e).length);
+  if (standing.length) return { via: "direct", entry: newest(standing, anc) };
 
-  // Approved on this ancestry, but something newer here approved a different body:
-  // the code has moved back. That is a revert, not navigation.
-  const onLineageMatch = [...lineage].reverse().find((e) => e.bodyHash === liveHash);
-  if (onLineageMatch && newestOnLineage) {
-    return { via: "reverted", entry: onLineageMatch, supersededBy: newestOnLineage };
+  if (mine.length) {
+    // Every acceptance of this body on this history has been left behind, yet the
+    // code is that body again: someone undid the work the newer one covered.
+    const entry = newest(mine, anc);
+    const supersededBy = newest(mine.flatMap(supersedersOf), anc);
+    if (entry && supersededBy) return { via: "reverted", entry, supersededBy };
   }
 
   // Approved somewhere this ref does not descend from — a branch switch.
-  return { via: "replayed", entry: matches[matches.length - 1] };
+  return { via: "replayed", entry: newest(entries.filter((e) => e.bodyHash === liveHash), anc) };
 }
 
 /** Add a body to an accepted set, keeping it chronological, deduped and bounded. */
