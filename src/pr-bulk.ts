@@ -8,8 +8,7 @@
  *
  * So this never snapshots. `prTriage` caches a full anchor snapshot of both sides
  * (~2MB each); across hundreds of PRs that is over a gigabyte of cache to answer
- * a question that only needs the changed files' bodies at head. `viewedTargetsFor`
- * reads exactly those.
+ * a question that only needs the changed files' bodies at head.
  *
  * Progress is recorded per PR so a run that dies halfway resumes instead of
  * redoing hundreds of PRs' network calls.
@@ -104,6 +103,35 @@ export function viewedPaths(slug: string, number: number, deps: { gh?: typeof gh
   return { error: `more than ${MAX_PAGES * 100} files — the viewed list was not read to the end` };
 }
 
+/**
+ * The symbols a pull request actually CHANGED in the files it touched — not every
+ * symbol those files happen to contain.
+ *
+ * A tick on a 30-symbol file where the PR touched one method must not record
+ * exposure to the other 29: GitHub never rendered them, and those marks would then
+ * satisfy `pr-push`'s vetting gate. This was inline and untested while a `pr-push`
+ * helper that did the WRONG thing — every anchor in the file, and a tip-based
+ * merge-base rather than the PR's recorded one — carried the test asserting the
+ * property. That helper is gone; this is the path that runs.
+ */
+export async function changedSymbolsIn(
+  headBlobs: Map<string, string>,
+  baseBlobs: Map<string, string>,
+  index: (src: string, path: string) => Promise<{ id: string; bodyHash: string }[]>,
+): Promise<{ ids: string[]; hashes: Map<string, string> }> {
+  const ids: string[] = [];
+  const hashes = new Map<string, string>();
+  for (const [path, src] of headBlobs) {
+    const before = new Map((await index(baseBlobs.get(path) ?? "", path)).map((a) => [a.id, a.bodyHash]));
+    for (const a of await index(src, path)) {
+      if (before.get(a.id) === a.bodyHash) continue;   // unchanged by this PR
+      ids.push(a.id);
+      hashes.set(a.id, a.bodyHash);
+    }
+  }
+  return { ids, hashes };
+}
+
 export interface BulkViewedResult {
   surveyed: number;
   withTicks: number;
@@ -191,18 +219,8 @@ export async function bulkPullViewed(
       // one method must not record exposure to the other 29: GitHub never rendered
       // them, and those marks would then satisfy `pr-push`'s reviewed-only gate.
       // The single-PR path maps ticks onto the worklist for exactly this reason.
-      const headBlobs = readBlobs(root, headRefOid, files);
-      const baseBlobs = readBlobs(root, mb, files);
-      const ids: string[] = [];
-      const hashes = new Map<string, string>();
-      for (const [path, src] of headBlobs) {
-        const before = new Map((await indexBlob(baseBlobs.get(path) ?? "", path)).map((a) => [a.id, a.bodyHash]));
-        for (const a of await indexBlob(src, path)) {
-          if (before.get(a.id) === a.bodyHash) continue;   // unchanged by this PR
-          ids.push(a.id);
-          hashes.set(a.id, a.bodyHash);
-        }
-      }
+      const { ids, hashes } = await changedSymbolsIn(
+        readBlobs(root, headRefOid, files), readBlobs(root, mb, files), indexBlob);
       if (!ids.length) { if (!opts.dryRun) await recordEmpty(); res.processed++; continue; }
 
       // Everything above is read-only (gh, blob reads, parsing) and deliberately

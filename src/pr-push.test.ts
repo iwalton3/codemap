@@ -5,8 +5,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { diffLineRanges } from "./git.js";
-import { planPrPush, isAgentAuthored, isElected } from "./pr-push.js";
+import { planPrPush, isAgentAuthored, isElected, pushVerdict, executePrPush } from "./pr-push.js";
 import { readPushes, writePush } from "./store.js";
+import type { Annotation } from "./schema.js";
 
 const git = (root: string, ...a: string[]) =>
   spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...a], { cwd: root, encoding: "utf8" });
@@ -116,4 +117,113 @@ test("only findings the human elected are publishable", () => {
   // an author codemap did not set is treated as a person, not an agent
   assert.equal(isElected({ author: "izzie", text: "x" } as any), true);
   assert.equal(isElected({ author: "", text: "x" } as any), true);
+});
+
+/**
+ * Every decision about what lands irreversibly on somebody else's pull request
+ * used to live inside a loop no test reached: the vetting gate, the re-run dedupe
+ * and the severity bar could all have been deleted without breaking anything.
+ */
+const ann = (over: Partial<Annotation> = {}): Annotation => ({
+  id: "n1", target: { kind: "anchor", id: "a_1" }, text: "boom", author: "human",
+  createdCommit: null, kind: "finding", severity: "medium", ...over,
+} as Annotation);
+
+test("what gets published: mine, raised ones, unresolved, unsent, above the bar", () => {
+  const none = new Set<string>();
+  assert.equal(pushVerdict(ann(), true, none), "push");
+
+  assert.equal(pushVerdict(ann(), false, none), "not-in-pr", "a finding on a symbol this PR does not touch");
+  assert.equal(pushVerdict(ann({ resolved: true }), true, none), "resolved", "closed locally is not news for the author");
+  assert.equal(pushVerdict(ann(), true, new Set(["n1"])), "already-pushed", "a re-run never duplicates a comment");
+
+  const theirs = ann({ author: "agent:pr-first-pass" });
+  assert.equal(pushVerdict(theirs, true, none), "not-elected", "an agent's proposal needs raising first");
+  assert.equal(pushVerdict({ ...theirs, escalated: { at: "now", by: "me" } } as Annotation, true, none), "push");
+  assert.equal(pushVerdict(theirs, true, none, { electedOnly: false }), "push", "--all is the override");
+
+  assert.equal(pushVerdict(ann({ severity: "low" }), true, none, { minSeverity: "high" }), "below-severity");
+  assert.equal(pushVerdict(ann({ severity: "critical" }), true, none, { minSeverity: "high" }), "push");
+  assert.equal(pushVerdict(ann({ severity: undefined }), true, none, { minSeverity: "medium" }), "below-severity",
+    "no severity reads as the lowest, not as exempt");
+
+  // the order matters: resolved beats everything, so a resolved agent finding
+  // reports as resolved rather than as unelected
+  assert.equal(pushVerdict({ ...theirs, resolved: true } as Annotation, true, none), "resolved");
+});
+
+test("publishing records the review BEFORE syncing viewed state", async () => {
+  // The viewed sync is a `gh` call per file with a 120s timeout each. Recording
+  // afterwards left a window where an interrupt lost the only evidence the review
+  // went out, and the next publish re-posted every inline comment.
+  const root = mkdtempSync(join(tmpdir(), "codemap-exec-"));
+  try {
+    const calls: string[] = [];
+    const plan = {
+      fingerprint: "f", pr: { number: 7, title: "t", url: "u", owner: "o", repo: "r" }, head: "h",
+      body: "summary", comments: [{ path: "a.ts", line: 2, side: "RIGHT" as const, body: "x", annotationId: "n1" }],
+      deferred: [], viewedPaths: ["a.ts"],
+      skipped: { alreadyPushed: 0, resolved: 0, notElected: 0, belowSeverity: 0 },
+    };
+    const fakeGh = (args: string[]) => {
+      const kind = args.includes("--method") ? "post-review" : args[0] === "pr" ? "node-id" : "mark-viewed";
+      calls.push(kind);
+      if (kind === "post-review") return { ok: true, out: JSON.stringify({ html_url: "https://x/1" }), err: "" };
+      if (kind === "node-id") return { ok: true, out: "PR_1", err: "" };
+      return { ok: true, out: "{}", err: "" };
+    };
+    const seenAt: string[] = [];
+    const origRead = readPushes;
+    const r = await executePrPush(root, plan as any, { markViewed: true, gh: fakeGh as any });
+    assert.equal(r.postedComments, 1);
+    assert.deepEqual(r.markedViewed, ["a.ts"]);
+    assert.deepEqual(calls, ["post-review", "node-id", "mark-viewed"], "post, then sync");
+    void seenAt; void origRead;
+
+    const rec = (await readPushes(root)).pushes["7"]!;
+    assert.deepEqual(rec.annotationIds, ["n1"], "the publish is recorded, so a re-run skips it");
+    assert.deepEqual(rec.viewedPaths, ["a.ts"]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a failed comment post does not abandon a viewed sync that was also asked for", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-exec2-"));
+  try {
+    const plan = {
+      fingerprint: "f", pr: { number: 8, title: "t", url: "u", owner: "o", repo: "r" }, head: "h",
+      body: "b", comments: [{ path: "a.ts", line: 1, side: "RIGHT" as const, body: "x", annotationId: "n1" }],
+      deferred: [], viewedPaths: ["a.ts"],
+      skipped: { alreadyPushed: 0, resolved: 0, notElected: 0, belowSeverity: 0 },
+    };
+    const fakeGh = (args: string[]) => args.includes("--method")
+      ? { ok: false, out: "", err: "422 unprocessable" }
+      : { ok: true, out: args[0] === "pr" ? "PR_1" : "{}", err: "" };
+    const r = await executePrPush(root, plan as any, { markViewed: true, gh: fakeGh as any });
+    assert.equal(r.postedComments, 0);
+    assert.ok(r.errors.some((e) => /review post failed/.test(e)));
+    assert.deepEqual(r.markedViewed, ["a.ts"], "they are independent acts; one failing is not the other's news");
+    // and nothing is recorded as published, so a retry still sends the comment
+    assert.equal((await readPushes(root)).pushes["8"]?.annotationIds?.length ?? 0, 0);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("pushing viewed state alone opens no review on the pull request", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-exec3-"));
+  try {
+    const calls: string[] = [];
+    const plan = {
+      fingerprint: "f", pr: { number: 9, title: "t", url: "u", owner: "o", repo: "r" }, head: "h",
+      body: "b", comments: [{ path: "a.ts", line: 1, side: "RIGHT" as const, body: "x", annotationId: "n1" }],
+      deferred: [], viewedPaths: ["a.ts"],
+      skipped: { alreadyPushed: 0, resolved: 0, notElected: 0, belowSeverity: 0 },
+    };
+    const fakeGh = (args: string[]) => {
+      calls.push(args.includes("--method") ? "post-review" : args[0] === "pr" ? "node-id" : "mark-viewed");
+      return { ok: true, out: args[0] === "pr" ? "PR_1" : "{}", err: "" };
+    };
+    const r = await executePrPush(root, plan as any, { comments: false, markViewed: true, gh: fakeGh as any });
+    assert.equal(calls.includes("post-review"), false, "viewed state is a different act from commenting");
+    assert.equal(r.postedComments, 0);
+    assert.deepEqual(r.markedViewed, ["a.ts"]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

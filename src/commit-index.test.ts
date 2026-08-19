@@ -84,7 +84,7 @@ test("a committed .codemapignore is read as of that commit, not from disk", asyn
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("submodule contents are indexed under the parent's path", async () => {
+test("submodule contents are indexed under the parent's path", async (t) => {
   const root = repo(), sub = repo();
   try {
     writeFileSync(join(sub, "money.ts"), "export function settle(cents: number) { return cents; }\n");
@@ -93,7 +93,10 @@ test("submodule contents are indexed under the parent's path", async () => {
     writeFileSync(join(root, "app.ts"), "export function main() { return 1; }\n");
     commit(root, "app");
     const added = git(root, "submodule", "add", "-q", sub, "lib");
-    if (added.status !== 0) return; // some git builds refuse file:// submodules outright
+    // A bare `return` here made this pass VACUOUSLY, and it is the only coverage of
+    // the gitlink recursion — so a build that refuses file:// submodules reported
+    // green for a path it never ran. Skip loudly instead.
+    if (added.status !== 0) { t.skip(`git refused a file:// submodule: ${added.stderr.trim().slice(0, 120)}`); return; }
     commit(root, "add sub");
 
     const anchors = (await indexCommit(root, headCommit(root)!))!;
@@ -102,4 +105,38 @@ test("submodule contents are indexed under the parent's path", async () => {
     // ids hash the path, so the parent-prefixed path is what makes them line up with the walk
     assert.equal(fingerprint(anchors), fingerprint(await indexRepo(root)), "submodule anchors must match the walk");
   } finally { rmSync(root, { recursive: true, force: true }); rmSync(sub, { recursive: true, force: true }); }
+});
+
+test("indexCommit matches indexRepo for non-ASCII names and a nested universe", async () => {
+  // The parity tests only used ASCII basenames at the repo ROOT, so they could not
+  // see the two ways the two indexers diverge: `ls-tree` C-quotes a non-ASCII path,
+  // and a universe rooted in a subdirectory has to reconcile `repoPrefix` with the
+  // root-relative paths `showFile` returns. Ids hash the path, so a divergence
+  // means every anchor in those files reads as removed-and-added in the next diff.
+  const root = repo();
+  try {
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "src/café.ts"), "export function facturé(n: number) { return n; }\n");
+    writeFileSync(join(root, "src/naïve-π.py"), "def calcul(x):\n    return x\n");
+    commit(root);
+    assert.equal(fingerprint(await indexCommit(root, headCommit(root)!) ?? []), fingerprint(await indexRepo(root)),
+      "a non-ASCII filename must index identically from the tree and from disk");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a universe rooted in a subdirectory indexes the same either way", async () => {
+  const outer = repo();
+  try {
+    mkdirSync(join(outer, "services/api/src"), { recursive: true });
+    writeFileSync(join(outer, "services/api/src/pay.ts"), "export function transfer(a: number) { return a; }\n");
+    writeFileSync(join(outer, "top.ts"), "export function ignored() { return 0; }\n");
+    commit(outer);
+
+    // the universe is the subdirectory, not the repo root
+    const root = join(outer, "services/api");
+    const fromTree = (await indexCommit(root, headCommit(root)!)) ?? [];
+    assert.equal(fingerprint(fromTree), fingerprint(await indexRepo(root)));
+    assert.deepEqual([...new Set(fromTree.map((a) => a.file))], ["src/pay.ts"],
+      "paths are relative to the universe, and the repo's other files are not its business");
+  } finally { rmSync(outer, { recursive: true, force: true }); }
 });

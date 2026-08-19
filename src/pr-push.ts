@@ -62,6 +62,29 @@ function renderAnnotation(a: Annotation, symbol: string): string {
 export const isAgentAuthored = (a: Annotation) => (a.author ?? "").startsWith("agent");
 export const isElected = (a: Annotation) => !isAgentAuthored(a) || !!a.escalated;
 
+/**
+ * Why one finding is or is not published. Extracted because every decision that
+ * determines what lands irreversibly on somebody else's pull request lived inside
+ * a loop with no test reaching it: the vetting gate, the re-run dedupe and the
+ * severity bar could all have been deleted without breaking anything.
+ */
+export type PushVerdict = "push" | "not-in-pr" | "resolved" | "already-pushed" | "not-elected" | "below-severity";
+
+export function pushVerdict(
+  a: Annotation,
+  inPr: boolean,
+  pushed: ReadonlySet<string>,
+  filter: { electedOnly?: boolean; minSeverity?: string } = {},
+): PushVerdict {
+  if (!inPr) return "not-in-pr";
+  if (a.resolved) return "resolved";                       // never send something closed locally
+  if (pushed.has(a.id)) return "already-pushed";           // a re-run must not duplicate a comment
+  if (filter.electedOnly !== false && !isElected(a)) return "not-elected";
+  const minSev = filter.minSeverity === undefined ? -1 : SEV_ORDER.indexOf(filter.minSeverity);
+  if (minSev >= 0 && SEV_ORDER.indexOf(a.severity ?? "low") < minSev) return "below-severity";
+  return "push";
+}
+
 export interface PushFilter {
   /**
    * Publish only findings the human elected: their own, plus any agent finding they
@@ -120,17 +143,18 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
   for (const a of anns) {
     if (a.target.kind !== "anchor") continue;
     const w = byAnchor.get(a.target.id);
-    if (!w) continue;                                   // not part of this PR
-    if (a.resolved) { resolved++; continue; }
-    if (pushed.has(a.id)) { already++; continue; }
-    if (electedOnly && !isElected(a)) { notElected++; continue; }
-    if (minSev >= 0 && SEV_ORDER.indexOf(a.severity ?? "low") < minSev) { belowSeverity++; continue; }
-    const body = renderAnnotation(a, w.symbol);
-    const line = a.line && commentable(w.file, a.line) ? a.line : firstCommentableLine(a.target.id, w.file);
+    const verdict = pushVerdict(a, !!w, pushed, { electedOnly, minSeverity: filter.minSeverity });
+    if (verdict === "not-in-pr") continue;
+    if (verdict === "resolved") { resolved++; continue; }
+    if (verdict === "already-pushed") { already++; continue; }
+    if (verdict === "not-elected") { notElected++; continue; }
+    if (verdict === "below-severity") { belowSeverity++; continue; }
+    const body = renderAnnotation(a, w!.symbol);
+    const line = a.line && commentable(w!.file, a.line) ? a.line : firstCommentableLine(a.target.id, w!.file);
     if (line) {
-      comments.push({ path: w.file, line, side: "RIGHT", body, annotationId: a.id });
+      comments.push({ path: w!.file, line, side: "RIGHT", body, annotationId: a.id });
     } else {
-      deferred.push({ annotationId: a.id, path: w.file, line: a.line, body, why: a.line ? "line is not in the diff and the symbol has no changed lines" : "no line, and the symbol has no changed lines" });
+      deferred.push({ annotationId: a.id, path: w!.file, line: a.line, body, why: a.line ? "line is not in the diff and the symbol has no changed lines" : "no line, and the symbol has no changed lines" });
     }
   }
 
@@ -206,8 +230,13 @@ export interface PushResult {
  * files someone has read. Wanting one is not wanting the other.
  */
 export async function executePrPush(
-  root: string, plan: PushPlan, opts: { markViewed?: boolean; comments?: boolean } = {},
+  root: string, plan: PushPlan,
+  // `gh` is injected so the ORDER of what this does — post, record, then sync — is
+  // testable without posting to anybody's pull request. That order is load-bearing:
+  // see the recording comment below.
+  opts: { markViewed?: boolean; comments?: boolean; gh?: typeof gh } = {},
 ): Promise<PushResult> {
+  const gh_ = opts.gh ?? gh;
   const slug = `${plan.pr.owner}/${plan.pr.repo}`;
   const errors: string[] = [];
   const result: PushResult = { postedComments: 0, deferredInBody: plan.deferred.length, markedViewed: [], errors };
@@ -221,7 +250,7 @@ export async function executePrPush(
       event: "COMMENT",
       comments: plan.comments.map((c) => ({ path: c.path, line: c.line, side: c.side, body: c.body })),
     });
-    const r = gh(["api", "--method", "POST", `repos/${slug}/pulls/${plan.pr.number}/reviews`, "--input", "-"], payload);
+    const r = gh_(["api", "--method", "POST", `repos/${slug}/pulls/${plan.pr.number}/reviews`, "--input", "-"], payload);
     if (!r.ok) {
       // A failed post must not abandon a viewed sync that was also asked for: they
       // are independent acts, and one failing is not the other's news.
@@ -244,12 +273,12 @@ export async function executePrPush(
   }
 
   if (opts.markViewed && plan.viewedPaths.length) {
-    const idr = gh(["pr", "view", String(plan.pr.number), "--repo", slug, "--json", "id", "--jq", ".id"]);
+    const idr = gh_(["pr", "view", String(plan.pr.number), "--repo", slug, "--json", "id", "--jq", ".id"]);
     const nodeId = idr.ok ? idr.out.trim() : "";
     if (!nodeId) errors.push("could not resolve the PR node id — viewed state not synced");
     else {
       for (const path of plan.viewedPaths) {
-        const m = gh(["api", "graphql", "-f",
+        const m = gh_(["api", "graphql", "-f",
           "query=mutation($id:ID!,$p:String!){markFileAsViewed(input:{pullRequestId:$id,path:$p}){clientMutationId}}",
           "-f", `id=${nodeId}`, "-f", `p=${path}`]);
         if (m.ok) result.markedViewed.push(path);
@@ -365,41 +394,4 @@ export async function pullViewedFromGitHub(
     anchors: { marked, alreadyViewed, alreadySigned },
     skippedFiles,
   };
-}
-
-export interface ViewedTarget { id: string; hash: string }
-
-/**
- * The reviewable symbols a PR touches, per file, read straight from the head
- * commit's blobs.
- *
- * Deliberately does NOT go through `prTriage`. That caches a full-tree anchor
- * snapshot of both sides, which is right for reviewing one PR and ruinous across
- * a back-catalogue: ~2MB per snapshot, two per PR, hundreds of PRs. Only the
- * changed files matter here, and their bodies at head are all a witness needs.
- */
-export async function viewedTargetsFor(
-  root: string, meta: { baseRef: string; headSha: string },
-  deps: {
-    mergeBase: (root: string, a: string, b: string) => string | null;
-    changedFiles: (root: string, from: string, to: string) => string[];
-    readBlobs: (root: string, sha: string, paths: string[]) => Map<string, string>;
-    indexBlob: (src: string, path: string) => Promise<{ id: string; bodyHash: string }[]>;
-    lane: (path: string) => string;
-  },
-): Promise<{ byFile: Map<string, ViewedTarget[]>; mergeBase: string } | { error: string }> {
-  const baseTip = `origin/${meta.baseRef}`;
-  const mb = deps.mergeBase(root, baseTip, meta.headSha);
-  if (!mb) return { error: `no merge-base between ${meta.baseRef} and ${meta.headSha.slice(0, 12)}` };
-
-  const files = deps.changedFiles(root, mb, meta.headSha).filter((f) => LANE_POLICY[deps.lane(f) as keyof typeof LANE_POLICY]?.review === "queue");
-  const byFile = new Map<string, ViewedTarget[]>();
-  if (!files.length) return { byFile, mergeBase: mb };
-
-  const blobs = deps.readBlobs(root, meta.headSha, files);
-  for (const [path, src] of blobs) {
-    const anchors = await deps.indexBlob(src, path);
-    if (anchors.length) byFile.set(path, anchors.map((a) => ({ id: a.id, hash: a.bodyHash })));
-  }
-  return { byFile, mergeBase: mb };
 }

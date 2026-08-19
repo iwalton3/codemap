@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Anchor, State } from "./schema.js";
 import { writeStore, writeSnapshot, readTriage } from "./store.js";
-import { setTriageBatch, setTriage, ratchet } from "./triage.js";
+import { setTriageBatch, setTriage, ratchet, triageStatus } from "./triage.js";
 import { spineRole, layerOf } from "./pr-story.js";
 import { workShapes } from "./pr.js";
 import { spawnSync } from "node:child_process";
@@ -96,5 +96,31 @@ test("a PR's parse-derived shapes are computed once per commit pair, not per req
     // A different commit pair is a different question and is computed afresh.
     const other = await workShapes(root, "other-base", head, entries);
     assert.notEqual(other, first);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the batch ratchet is judged on BAR and severity, not just on importance", async () => {
+  // The existing batch tests only compared importance on both sides, which is
+  // exactly the input where an agent could lower a human's mark: a complexity-only
+  // write left importance untouched while dropping the bar from `signed` to
+  // `viewed` and the severity from high to medium.
+  const root = mkdtempSync(join(tmpdir(), "codemap-bar-"));
+  try {
+    await writeStore(root, [anchor("a_1", "sha256:A")], state);
+    await writeSnapshot(root, "h", "feature", [anchor("a_1", "sha256:A")], "2026-08-19T00:00:00Z");
+    await setTriage(root, { targetKind: "anchor", targetId: "a_1", importance: "business-critical", source: "human" });
+    const before = await triageStatus(root, { kind: "anchor", id: "a_1" });
+    assert.equal(before.bar, "signed");
+
+    // complexity only, from an agent: no importance to compare, and `wiring` is the
+    // cheapest tier — the shape that used to slip through
+    const r = await setTriageBatch(root, [{ anchorId: "a_1", complexity: "wiring" }], { source: "agent", ref: "h" });
+    assert.equal(r.applied, 0);
+    assert.equal(r.refused, 1);
+
+    const after = await triageStatus(root, { kind: "anchor", id: "a_1" });
+    assert.equal(after.bar, "signed", "the bar a human set is what an agent must not lower");
+    assert.equal(after.severity, before.severity);
+    assert.equal(after.likely, before.likely, "and it stays a confirmed human mark, not an agent proposal");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

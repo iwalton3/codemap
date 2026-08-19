@@ -6,36 +6,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { State } from "./schema.js";
 import { writeStore, readViewedImports, writeViewedImport } from "./store.js";
-import { viewedTargetsFor } from "./pr-push.js";
-import { surveyViewed, viewedPaths } from "./pr-bulk.js";
+import { surveyViewed, viewedPaths, changedSymbolsIn } from "./pr-bulk.js";
 import { prBaseCommit, mergeBase } from "./git.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 
-test("viewedTargetsFor reads only the changed, reviewable files — never the whole tree", async () => {
-  const read: string[][] = [];
-  const r = await viewedTargetsFor("/nope", { baseRef: "develop", headSha: "head" }, {
-    mergeBase: () => "mb",
-    changedFiles: () => ["src/pay.cs", "tests/pay.cs", "gen/x.g.cs", "docs/spec.md"],
-    readBlobs: (_r, _s, paths) => { read.push(paths); return new Map(paths.map((p) => [p, "class X {}"])); },
-    indexBlob: async (_src, path) => [{ id: "a_" + path, bodyHash: "sha256:" + path }],
-    // stand-in lane classifier: only src/ is the review queue
-    lane: (p) => (p.startsWith("src/") ? "code" : p.startsWith("tests/") ? "test" : p.endsWith(".md") ? "spec" : "generated"),
-  });
-  assert.ok(!("error" in r));
-  if ("error" in r) return;
-  assert.deepEqual(read[0], ["src/pay.cs"], "tests, generated and spec files are never even read");
-  assert.deepEqual([...r.byFile.keys()], ["src/pay.cs"]);
-  assert.equal(r.byFile.get("src/pay.cs")![0]!.hash, "sha256:src/pay.cs", "the head body is the witness");
-});
 
-test("viewedTargetsFor reports a missing merge-base rather than guessing one", async () => {
-  const r = await viewedTargetsFor("/nope", { baseRef: "gone", headSha: "head" }, {
-    mergeBase: () => null,
-    changedFiles: () => [], readBlobs: () => new Map(), indexBlob: async () => [], lane: () => "code",
-  });
-  assert.ok("error" in r);
-});
 
 test("import progress is recorded per PR so a long run resumes instead of restarting", async () => {
   const root = mkdtempSync(join(tmpdir(), "codemap-bulk-"));
@@ -179,4 +155,30 @@ test("a viewed list that was not read to the end is an error, not a short answer
   });
   assert.ok(!("error" in done));
   assert.deepEqual([...(done as Set<string>)], ["a.cs"], "DISMISSED is not exposure");
+});
+
+test("a ticked file marks only the symbols the PR changed in it", async () => {
+  // GitHub's unit is the file and codemap's is the symbol. A tick on a 30-symbol
+  // file where the PR touched one method must not record exposure to the other 29:
+  // GitHub never rendered them, and those marks would then satisfy `pr-push`'s
+  // vetting gate. This ran inline and untested while a `pr-push` helper that did the
+  // WRONG thing — every anchor in the file, off a tip-based merge-base — carried the
+  // test asserting the property. That helper is gone; this is the path that runs.
+  const index = async (src: string, path: string) =>
+    src ? src.split("\n").filter(Boolean).map((l) => {
+      const [name, body] = l.split("=");
+      return { id: `${path}#${name}`, bodyHash: `sha256:${body}` };
+    }) : [];
+
+  const r = await changedSymbolsIn(
+    new Map([["a.cs", "one=1\ntwo=CHANGED\nthree=3"]]),
+    new Map([["a.cs", "one=1\ntwo=2\nthree=3"]]),
+    index,
+  );
+  assert.deepEqual(r.ids, ["a.cs#two"], "only the method the PR touched");
+  assert.equal(r.hashes.get("a.cs#two"), "sha256:CHANGED", "witnessed at the HEAD body");
+
+  // a file the branch adds has no base side, so every symbol in it is changed
+  const added = await changedSymbolsIn(new Map([["b.cs", "x=1\ny=2"]]), new Map(), index);
+  assert.deepEqual(added.ids, ["b.cs#x", "b.cs#y"]);
 });
