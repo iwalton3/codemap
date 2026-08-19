@@ -387,7 +387,11 @@
     .rvfinds { padding: 8px 12px 10px 32px; border-top: 1px dashed var(--border); display: flex; flex-direction: column; gap: 6px; }
     .rvfinds.compact { padding: 6px 12px 8px; border-top: none; gap: 5px; }
     .rvfhdr { font-size: 11.5px; }
-    .rvfind { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; }
+    /* WRAPS. `.asgndetail` carries `flex-basis: 100%` to claim its own line, but a
+       flex row that cannot wrap just made it an over-wide item instead — an agent's
+       report ran off the right edge of the page and squeezed the finding text into a
+       tall thin column beside it. */
+    .rvfind { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; font-size: 12.5px; min-width: 0; }
     .rvfind.resolved { opacity: 0.5; text-decoration: line-through; }
     .rvfind.resolved .annores { text-decoration: none; }
     .rvfpin { color: var(--warn); font-family: var(--mono); font-size: 11.5px; flex: none; }
@@ -397,7 +401,10 @@
     .rvfind.k-question .rvfpin { color: var(--accent); }
     .rvfsev { width: 8px; height: 8px; border-radius: 50%; flex: none; align-self: center; }
     .rvfcat { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; flex: none; }
-    .rvftext { flex: 1; }
+    /* Takes the row, but may shrink and must break inside the code identifiers these
+       findings are full of (`session.Query<Aircraft>().FirstOrDefaultAsync(...)`),
+       which otherwise set an unbreakable minimum width and force the row wider. */
+    .rvftext { flex: 1 1 22em; min-width: 0; overflow-wrap: anywhere; }
     .rvfauthor { font-size: 11px; flex: none; }
     .rvaddbtn { align-self: flex-start; background: none; border: 1px dashed var(--border); color: var(--dim); border-radius: 6px; padding: 3px 9px; cursor: pointer; font-size: 12px; }
     .rvaddbtn:hover { border-style: solid; color: var(--text); }
@@ -547,11 +554,13 @@
     .prfgroup { margin-bottom: 10px; }
     .prfgroup:last-child { margin-bottom: 0; }
     .prfgh { font-size: 11.5px; color: var(--dim); text-transform: lowercase; padding: 2px 0 4px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
-    .prfrow { display: flex; align-items: flex-start; gap: 10px; padding: 2px 0; }
-    .prfloc { flex: none; width: 260px; font-size: 11.5px; cursor: pointer; padding-top: 3px; }
+    .prfrow { display: flex; align-items: flex-start; gap: 10px; padding: 3px 0; border-bottom: 1px solid var(--border); }
+    .prfrow:last-child { border-bottom: none; }
+    .prfloc { flex: none; width: 190px; font-size: 11.5px; cursor: pointer; padding-top: 3px; overflow-wrap: anywhere; }
     .prfloc:hover code { color: var(--accent); text-decoration: underline; }
     .prfloc code { color: var(--text); }
-    .prfrow .rvfind { flex: 1; min-width: 0; }
+    .prfrow .rvfind { flex: 1 1 auto; min-width: 0; }
+    .prfindings { overflow-x: hidden; }
     .pushrow { font-size: 12px; padding: 2px 0; border-bottom: 1px solid var(--border); }
     .pushrow code { color: var(--text); }
     .rvfraise { font-size: 11px; padding: 1px 6px; border-radius: 3px; border: 1px solid var(--border); background: var(--panel); color: var(--dim); cursor: pointer; }
@@ -591,7 +600,19 @@
     .asgn.done.r-declined { color: #f0a35e; border-color: #8a5a2b; }
     .asgnacts { display: inline-flex; gap: 4px; }
     .asgnacts button { font-size: 11px; padding: 0 6px; }
-    .asgndetail { flex-basis: 100%; font-size: 12px; color: var(--dim); margin-top: 4px; padding-left: 22px; }
+    .asgndetail { flex-basis: 100%; width: 100%; min-width: 0; font-size: 12px; color: var(--dim); margin-top: 4px; padding-left: 22px; overflow-wrap: anywhere; white-space: pre-wrap; }
+    /* Controls keep their size rather than being squeezed to a wrapped stub. */
+    .asgn, .asgnacts, .rvfraise, .annores, .rvfpin, .rvfsev, .rvfcat, .rvfauthor { flex: none; }
+    /* `.annores` is right-aligned in the notes thread, where it is the only control.
+       In a finding row it has neighbours, and on a WRAPPED line the auto margin
+       stranded `resolve` opposite `raise` with a gap between them. `.rvftext` grows
+       instead, which pushes the whole group right on the first line and keeps it
+       together on any other. */
+    .rvfind .annores { margin-left: 0; }
+    /* Author, outcome and the controls travel as ONE unit. Left loose they wrapped
+       individually, so `resolve` could end up on a line of its own — below the
+       agent's full-width report, half a screen from the `raise` it belongs beside. */
+    .rvfacts { display: inline-flex; align-items: baseline; gap: 8px; flex: none; margin-left: auto; }
     .prgap { margin: 8px 0; }
     .prgaph { font-size: 12.5px; padding: 3px 0; }
     .prgap.g-covered .prgaph { cursor: pointer; color: var(--dim); }

@@ -154,6 +154,61 @@ describe("web UI", { skip: puppeteer ? false : "puppeteer not resolvable (set CO
     await page.close();
   });
 
+  test("a finding with a long agent report wraps instead of running off the page", async () => {
+    // `.asgndetail` claims its own line with `flex-basis: 100%`, but a flex row that
+    // cannot WRAP made it an over-wide item instead: the report ran off the right
+    // edge and squeezed the finding text into a tall thin column beside it.
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1000, height: 700 });
+    await page.goto(`${server.url}/#/u/${fixture.universe}/`, { waitUntil: "networkidle0" });
+    const m = await page.evaluate(() => {
+      const long = "PARTLY CONFIRMED — ".repeat(40);
+      const host = document.createElement("div");
+      host.style.width = "700px";
+      host.innerHTML = `<div class="rvfinds"><div class="rvfind k-finding">
+        <span class="rvfpin">⚑ 518</span><span class="rvfcat">TENANT SAFETY</span>
+        <span class="rvftext">session.Query&lt;Aircraft&gt;().FirstOrDefaultAsync(x =&gt; x.Id == request.AircraftId.Value) ${long}</span>
+        <span class="rvfacts"><span class="dim rvfauthor">agent:pr-first-pass</span>
+        <span class="asgn done r-answered">answered</span>
+        <button class="rvfraise on">raised</button><button class="annores">resolve</button></span>
+        <div class="asgndetail">${long}</div>
+      </div></div>`;
+      document.body.appendChild(host);
+      const row = host.querySelector(".rvfind") as HTMLElement;
+      const detail = host.querySelector(".asgndetail") as HTMLElement;
+      const text = host.querySelector(".rvftext") as HTMLElement;
+      const r = {
+        wraps: getComputedStyle(row).flexWrap === "wrap",
+        detailOnOwnLine: detail.getBoundingClientRect().left <= row.getBoundingClientRect().left + 24,
+        detailFits: detail.getBoundingClientRect().right <= row.getBoundingClientRect().right + 1,
+        textFits: text.getBoundingClientRect().right <= row.getBoundingClientRect().right + 1,
+        textWide: text.getBoundingClientRect().width > 200,
+        noPageOverflow: document.documentElement.scrollWidth <= window.innerWidth,
+        // The raise/resolve pair must stay together on one line: `.annores` uses
+        // `margin-left: auto`, which on a wrapped row would strand it opposite the
+        // raise button with a gap between them.
+        controlsTogether: (() => {
+          const raise = host.querySelector(".rvfraise")!.getBoundingClientRect();
+          const res = host.querySelector(".annores")!.getBoundingClientRect();
+          // Vertical CENTRES: a button and a span baseline-align a couple of pixels
+          // apart even when they sit side by side.
+          const mid = (b: DOMRect) => b.top + b.height / 2;
+          return Math.abs(mid(raise) - mid(res)) < 8 && res.left - raise.right < 24;
+        })(),
+      };
+      host.remove();
+      return r;
+    });
+    assert.equal(m.wraps, true);
+    assert.equal(m.detailOnOwnLine, true, "the agent's report belongs on its own line, not beside the finding");
+    assert.equal(m.detailFits, true, "and inside the row rather than off the edge");
+    assert.equal(m.textFits, true);
+    assert.equal(m.textWide, true, "the finding text gets the row, not a tall thin column");
+    assert.equal(m.noPageOverflow, true, "nothing pushes the page sideways");
+    assert.equal(m.controlsTogether, true, "raise and resolve stay side by side, not split across the row");
+    await page.close();
+  });
+
   test("the path form of a deep link is NOT a working link (documents the hash-router constraint)", async () => {
     const page = await browser.newPage();
     await page.goto(`${server.url}/u/${fixture.universe}/node/n_transfer_flow/`, { waitUntil: "networkidle0" });

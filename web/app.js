@@ -336,16 +336,18 @@ const findingItemEl = (c, u, f) => {
     ${when(f.severity, () => html`<span class="rvfsev" style="background:${SEV_COLOR[f.severity] || '#3a4250'}" title="severity: ${f.severity}"></span>`)}
     ${when(f.category, () => html`<span class="rvfcat">${f.category}</span>`)}
     <span class="rvftext">${f.text}</span>
-    <span class="dim rvfauthor">${f.author || 'agent'}</span>
-    ${when(a && !o, () => html`<span class="asgn pending" title="handed to an agent ${a.at ? 'on ' + a.at.slice(0, 10) : ''} — waiting">→ agent: ${a.kind}…</span>`)}
-    ${when(o, () => html`<span class="asgn done r-${o.result}" title="${o.detail}${o.files && o.files.length ? '\n\nfiles: ' + o.files.join(', ') : ''}">${OUTCOME_ICON[o.result] || '·'} ${o.result}</span>`)}
-    ${when(!f.resolved && !a, () => html`<span class="asgnacts">
-      <button title="ask an agent to work out whether this is real and report back" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); assignFinding(c, u, f.id, 'investigate'); }}">→ look into</button>
-      <button title="ask an agent to fix it. One file only — anything wider comes back declined with what it would take, to be handed to a real agent instead." on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); assignFinding(c, u, f.id, 'fix'); }}">→ fix</button>
-    </span>`)}
-    ${when(!f.resolved && isAgentFinding(f), () => html`<button class="rvfraise ${f.escalated ? 'on' : ''}" title="${f.escalated ? 'raised to the maintainer — it will go out with the next push (click to take it back)' : 'raise to the maintainer: an agent proposed this, and publishing it posts under YOUR account. Nothing is sent until you push.'}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); escalateFinding(c, u, f.id, !f.escalated); }}">${f.escalated ? '▲ raised' : '▲ raise'}</button>`)}
-    ${when(!f.resolved && !isAgentFinding(f), () => html`<span class="rvfraise mine" title="you wrote this one — it goes out with the next push">▲ yours</span>`)}
-    <button class="annores" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); toggleFinding(c, u, f.id, !f.resolved); }}">${f.resolved ? 'reopen' : 'resolve'}</button>
+    <span class="rvfacts">
+      <span class="dim rvfauthor">${f.author || 'agent'}</span>
+      ${when(a && !o, () => html`<span class="asgn pending" title="handed to an agent ${a.at ? 'on ' + a.at.slice(0, 10) : ''} — waiting">→ agent: ${a.kind}…</span>`)}
+      ${when(o, () => html`<span class="asgn done r-${o.result}" title="${o.detail}${o.files && o.files.length ? '\n\nfiles: ' + o.files.join(', ') : ''}">${OUTCOME_ICON[o.result] || '·'} ${o.result}</span>`)}
+      ${when(!f.resolved && !a, () => html`<span class="asgnacts">
+        <button title="ask an agent to work out whether this is real and report back" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); assignFinding(c, u, f.id, 'investigate'); }}">→ look into</button>
+        <button title="ask an agent to fix it. One file only — anything wider comes back declined with what it would take, to be handed to a real agent instead." on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); assignFinding(c, u, f.id, 'fix'); }}">→ fix</button>
+      </span>`)}
+      ${when(!f.resolved && isAgentFinding(f), () => html`<button class="rvfraise ${f.escalated ? 'on' : ''}" title="${f.escalated ? 'raised to the maintainer — it will go out with the next push (click to take it back)' : 'raise to the maintainer: an agent proposed this, and publishing it posts under YOUR account. Nothing is sent until you push.'}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); escalateFinding(c, u, f.id, !f.escalated); }}">${f.escalated ? '▲ raised' : '▲ raise'}</button>`)}
+      ${when(!f.resolved && !isAgentFinding(f), () => html`<span class="rvfraise mine" title="you wrote this one — it goes out with the next push">▲ yours</span>`)}
+      <button class="annores" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); toggleFinding(c, u, f.id, !f.resolved); }}">${f.resolved ? 'reopen' : 'resolve'}</button>
+    </span>
     ${when(o, () => html`<div class="asgndetail">${o.detail}${when(o.files && o.files.length, () => html` <span class="dim">— ${o.files.join(', ')}</span>`)}</div>`)}
   </div>`;
 };
