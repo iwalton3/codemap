@@ -186,12 +186,21 @@ const server = createServer(async (req, res) => {
       // A web review is always a human act; `attestation` picks which human mark —
       // "viewed" (exposure) or "signed" (sign-off). Absent → "signed" (legacy behavior).
       const attestation = body.attestation === "viewed" ? "viewed" : "signed";
-      const out = await withLock<unknown>(root, () =>
-        body.unmark
-          ? unmarkReviewed(root, { targetKind: body.targetKind, targetId: body.targetId, level: body.level, attestation })
+      const out = await withLock<unknown>(root, async () => {
+        const r = body.unmark
+          ? await unmarkReviewed(root, { targetKind: body.targetKind, targetId: body.targetId, level: body.level, attestation })
           // `ref` (the PR head) makes the witness cover the code actually read.
-          : markReviewed(root, { targetKind: body.targetKind, targetId: body.targetId, level: body.level, reviewer: body.reviewer, actor: "human", attestation, ref: body.ref }),
-      );
+          : await markReviewed(root, { targetKind: body.targetKind, targetId: body.targetId, level: body.level, reviewer: body.reviewer, actor: "human", attestation, ref: body.ref });
+        // Hand back the resulting mark so a caller can update that one symbol in
+        // place. The walkthrough re-fetched the WHOLE story to learn this, which on
+        // a large pull request is seconds of work to answer a question about one
+        // anchor — and the answer has real nuance (replayed, sitting on a revert),
+        // so the client must not guess it.
+        if (body.targetKind === "anchor" && typeof body.targetId === "string") {
+          return { ...(r as object), mark: await ops.anchorMark(root, body.targetId, { ref: body.ref }) };
+        }
+        return r;
+      });
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(out));
       return;

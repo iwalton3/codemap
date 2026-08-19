@@ -236,7 +236,7 @@ export async function prTriage(
     tally.set(f.lane, t);
   }
 
-  const worklist = await buildWorklist(root, meta.headSha, diff, lanes.classify);
+  const worklist = await buildWorklist(root, mb, meta.headSha, diff, lanes.classify);
   const changedLines = files.reduce((n, f) => n + f.adds + f.dels, 0);
   const queueLines = files.filter((f) => LANE_POLICY[f.lane].review === "queue").reduce((n, f) => n + f.adds + f.dels, 0);
 
@@ -278,8 +278,53 @@ function countCommits(root: string, from: string, to: string): number | null {
  * ordering is useful even in a universe with no documented nodes yet (the React
  * map is empty today); stakes and review state layer on wherever the map has them.
  */
+/**
+ * The parse-derived half of the worklist: each changed symbol's complexity and
+ * signature, which come from reading and tree-sitter-parsing every file the PR
+ * touches at head.
+ *
+ * This is the expensive half — 1,319ms for 2,012 changed symbols across 490 files,
+ * measured — and it is a PURE function of the PR's two commits, both of which are
+ * immutable. It was being redone on every request, including the whole-story reload
+ * after each sign-off, which is what made signing a symbol on a large pull request
+ * take seconds. Review and triage state is the half that genuinely changes, and
+ * that is still read fresh below.
+ *
+ * In-process and bounded: a handful of pull requests are open at a time, and a
+ * restart just pays the first request again.
+ */
+const SHAPE_CACHE_MAX = 8;
+const shapeCache = new Map<string, Map<string, { complexity: Complexity; signature: string }>>();
+
+export async function workShapes(
+  root: string, mergeBase: string, headSha: string, entries: { b: { id: string; file: string }; change: string }[],
+): Promise<Map<string, { complexity: Complexity; signature: string }>> {
+  const key = `${root}\0${mergeBase}\0${headSha}`;
+  const hit = shapeCache.get(key);
+  if (hit) return hit;
+
+  const wanted = [...new Set(entries.filter((e) => e.change !== "removed").map((e) => e.b.file))];
+  const blobs = readBlobs(root, headSha, wanted);
+  const shapes = new Map<string, { complexity: Complexity; signature: string }>();
+  for (const [path, src] of blobs) {
+    for (const a of await indexBlob(src, path)) {
+      if (!a.loc) continue;
+      const body = src.slice(a.loc.startByte, a.loc.endByte);
+      const sig = body.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("//") && !l.startsWith("*") && !l.startsWith("/*")) ?? "";
+      shapes.set(a.id, {
+        complexity: complexityOf(body),
+        signature: sig.length > 120 ? sig.slice(0, 119) + "…" : sig,
+      });
+    }
+  }
+
+  if (shapeCache.size >= SHAPE_CACHE_MAX) shapeCache.delete(shapeCache.keys().next().value!);
+  shapeCache.set(key, shapes);
+  return shapes;
+}
+
 async function buildWorklist(
-  root: string, headSha: string, diff: DiffResult, classify: (p: string) => Lane,
+  root: string, mergeBase: string, headSha: string, diff: DiffResult, classify: (p: string) => Lane,
 ): Promise<WorkItem[]> {
   const entries = [
     ...diff.changed.map((b) => ({ b, change: "changed" as const })),
@@ -288,18 +333,7 @@ async function buildWorklist(
   ];
   if (!entries.length) return [];
 
-  // Source for complexity: read each touched file's head blob once, re-index it,
-  // and slice each anchor's own body out of it.
-  const headAnchors = new Map<string, Anchor>();
-  const wanted = [...new Set(entries.filter((e) => e.change !== "removed").map((e) => e.b.file))];
-  const blobs = readBlobs(root, headSha, wanted);
-  const bodies = new Map<string, string>();
-  for (const [path, src] of blobs) {
-    for (const a of await indexBlob(src, path)) {
-      headAnchors.set(a.id, a);
-      if (a.loc) bodies.set(a.id, src.slice(a.loc.startByte, a.loc.endByte));
-    }
-  }
+  const shapes = await workShapes(root, mergeBase, headSha, entries);
 
   let rt: Awaited<ReturnType<typeof reviewTriageFor>> = new Map();
   try {
@@ -308,13 +342,14 @@ async function buildWorklist(
 
   const items: WorkItem[] = entries.map(({ b, change }) => {
     const e = rt.get(`anchor:${b.id}`);
-    const body = bodies.get(b.id) ?? "";
-    const complexity = complexityOf(body);
+    const shape = shapes.get(b.id);
+    // `lane` is NOT cached with the shape: it comes from `.codemaplanes`, which a
+    // user can edit between requests, and it is a glob match rather than a parse.
     const lane = classify(b.file);
-    const sig = body.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("//") && !l.startsWith("*") && !l.startsWith("/*")) ?? "";
     return {
-      id: b.id, file: b.file, symbol: b.symbol, kind: b.kind, change, lane, complexity,
-      signature: sig.length > 120 ? sig.slice(0, 119) + "…" : sig,
+      id: b.id, file: b.file, symbol: b.symbol, kind: b.kind, change, lane,
+      complexity: shape?.complexity ?? complexityOf(""),
+      signature: shape?.signature ?? "",
       moneyHint: MONEY_RX.test(`${b.file} ${b.symbol}`),
       severity: e?.triage.severity ?? "untriaged",
       reviewed: e?.review.code.state === "reviewed",

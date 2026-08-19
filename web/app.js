@@ -1995,7 +1995,7 @@ const LAYER_NAME = ['command', 'handler', 'event', 'aggregate', 'read-model', 'j
 
 class PrStoryPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { story: null, open: {}, code: {}, pending: {}, finding: null, prRef: null, showDiff: {}, promote: null, promoted: {}, showCovered: false, deriving: false, derived: null, pulling: false, pulled: null, push: null }; }
+  constructor(props) { super(props); this.state = { story: null, open: {}, code: {}, pending: {}, finding: null, prRef: null, showDiff: {}, promote: null, promoted: {}, showCovered: false, deriving: false, derived: null, pulling: false, pulled: null, push: null, markError: null }; }
   load = this.createTask(async () => {
     const u = this.props.params.universe; nav.current = u;
     const story = await api('/api/pr/story', { u, pr: this.props.params.pr });
@@ -2044,14 +2044,32 @@ class PrStoryPage extends Component {
     return flat.slice(i + 1).find(x => !x.step.reviewed) || null;
   }
 
+  /** Update one symbol in the loaded story, leaving everything else alone. */
+  patchStep(id, mark) {
+    const st = this.state.story;
+    if (!st || !mark) return;
+    this.state.story = { ...st, chapters: st.chapters.map(c => (
+      c.steps.some(s => s.anchorId === id)
+        ? { ...c, steps: c.steps.map(s => s.anchorId === id ? { ...s, ...mark, anchorId: s.anchorId } : s) }
+        : c
+    )) };
+  }
+
   async markStep(step, attestation, state, actor) {
     const id = step.anchorId;
     const unmark = state === 'reviewed' && actor !== 'agent';
-    await postReview(this.props.params.universe, 'anchor', id, 'code', unmark, attestation, this.state.prRef);
-    await this.load.run();
+    // No story reload. Re-deriving the whole pull request to learn one symbol's new
+    // state is seconds of work on a big PR; the write hands the resulting mark back,
+    // and it is the SERVER's mark rather than a guess — the state has nuance
+    // (replayed, sitting on a revert) the client has no business inventing.
+    const res = await postReview(this.props.params.universe, 'anchor', id, 'code', unmark, attestation, this.state.prRef)
+      .then(r => r.json()).catch(() => null);
+    if (!res || res.error) { this.state.markError = (res && res.error) || 'the sign-off did not reach the server'; return; }
+    this.state.markError = null;
+    this.patchStep(id, res.mark);
     // Taking a sign-off back is a correction, not progress — stay put. (The code
-    // pane is NOT re-fetched either way: signing changes review state, which
-    // `load.run()` already brought, not the source or its annotations.)
+    // pane is not re-fetched either way: signing changes review state, not the
+    // source or its annotations.)
     if (unmark) return;
 
     // Signing is the "done with this one" gesture, so move the walkthrough on:
@@ -2060,8 +2078,8 @@ class PrStoryPage extends Component {
     const next = this.nextUnsignedAfter(id);
     const code = { ...this.state.code, [id]: null };
     const open = { ...this.state.open };
-    const here = ((this.state.story && this.state.story.chapters) || []).find(c => c.steps.some(st => st.anchorId === id));
-    if (here && here.steps.every(st => st.reviewed)) open[here.id] = false;   // chapter finished — fold it away
+    const here = ((this.state.story && this.state.story.chapters) || []).find(c => c.steps.some(s => s.anchorId === id));
+    if (here && here.steps.every(s => s.reviewed)) open[here.id] = false;   // chapter finished — fold it away
     if (next) open[next.chapter.id] = true;
     this.state.code = code;
     this.state.open = open;
@@ -2357,6 +2375,7 @@ class PrStoryPage extends Component {
           ${when(this.state.pulled && !this.state.pulled.error, () => html`<span class="dim">${this.state.pulled.files.viewedOnGitHub}/${this.state.pulled.files.total} files ticked on GitHub → ${this.state.pulled.anchors.marked} symbol(s) marked <b>viewed</b>${this.state.pulled.anchors.alreadySigned ? `; ${this.state.pulled.anchors.alreadySigned} already signed and left alone` : ''}.</span>`)}
           ${when(this.state.derived && !this.state.derived.error, () => html`<span class="dim">${this.state.derived.applied} newly proposed${this.state.derived.refused ? `, ${this.state.derived.refused} already at or above this tier` : ''} — of ${this.state.derived.considered} with a signal. Every one is <b>likely</b>: confirm or lower it yourself.</span>`)}
         </div>
+        ${when(this.state.markError, () => html`<div class="warn">sign-off failed: ${this.state.markError}</div>`)}
         <div class="prderive prpush">
           <button on-click="${() => this.openPush('comments')}" title="post your findings to the pull request as review comments. Yours go out; an agent's only if you raised it. Shows you exactly what would be sent first.">push comments to GitHub</button>
           <button on-click="${() => this.openPush('viewed')}" title="tick the per-file viewed boxes on GitHub for files you have fully signed off here, so both tools agree about what has been read.">push viewed state to GitHub</button>

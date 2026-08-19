@@ -1,12 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Anchor, State } from "./schema.js";
 import { writeStore, writeSnapshot, readTriage } from "./store.js";
 import { setTriageBatch, setTriage, ratchet } from "./triage.js";
 import { spineRole, layerOf } from "./pr-story.js";
+import { workShapes } from "./pr.js";
+import { spawnSync } from "node:child_process";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 const anchor = (id: string, hash: string): Anchor => ({ id, file: "src/x.cs", symbolPath: ["X"], kind: "function", bodyHash: hash, lastVerifiedCommit: null });
@@ -66,4 +68,33 @@ test("the extracted ratchet is what both paths use", () => {
   assert.ok("refused" in ratchet(human, { importance: "low", source: "agent" }), "agents cannot lower");
   assert.ok(!("refused" in ratchet(human, { importance: "low", source: "human" })), "a human can");
   assert.ok("refused" in ratchet(human, { importance: "business-critical", source: "graph" }), "the blind graph batch does not nag a human mark");
+});
+
+test("a PR's parse-derived shapes are computed once per commit pair, not per request", async () => {
+  // Reading and tree-sitter-parsing every file a PR touches is the expensive half of
+  // the worklist — 1,319ms for 2,012 changed symbols across 490 files, measured —
+  // and it is a pure function of two immutable commits. It was being redone on every
+  // request, including the whole-story reload after each sign-off.
+  const root = mkdtempSync(join(tmpdir(), "codemap-shape-"));
+  try {
+    mkdirSync(join(root, "src"));
+    const src = "export function transfer(cents: number) {\n  if (cents < 0) throw new Error('neg');\n  return cents;\n}\n";
+    writeFileSync(join(root, "src/pay.ts"), src);
+    const g = (...a: string[]) => spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...a], { cwd: root });
+    g("init", "-q", "-b", "main"); g("add", "-A"); g("commit", "-qm", "one");
+    const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+
+    const entries = [{ b: { id: "a_1", file: "src/pay.ts" }, change: "changed" }];
+    const first = await workShapes(root, "base-sha", head, entries);
+    assert.ok(first.size > 0, "the head blob was read and parsed");
+
+    // Same commit pair → the SAME map, not a recomputation. Asking for a file that
+    // does not exist proves it: a recompute would come back empty.
+    const second = await workShapes(root, "base-sha", head, [{ b: { id: "a_1", file: "does/not/exist.ts" }, change: "changed" }]);
+    assert.equal(second, first, "a second request on the same two commits must not re-parse");
+
+    // A different commit pair is a different question and is computed afresh.
+    const other = await workShapes(root, "other-base", head, entries);
+    assert.notEqual(other, first);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

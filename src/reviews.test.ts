@@ -1,11 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Review, BugWitness } from "./schema.js";
+import type { Review, BugWitness, Anchor, State } from "./schema.js";
 import { readReviews, writeStore } from "./store.js";
 import { markReviewed, unmarkReviewed, changedSince, reviewStatesFor, witnessDrift, effectiveAttestation, deriveCodeReview } from "./reviews.js";
+import { anchorMark } from "./ops.js";
+import { indexBlob } from "./repo.js";
 
 const rev = (over: Partial<Review>): Review => ({
   id: "r", target: { kind: "anchor", id: "a" }, level: "code", reviewer: "me",
@@ -147,4 +149,37 @@ test("deriveCodeReview carries how its ticks were earned up to the rollup", () =
   // counts only reviewed segments — an unreviewed one has no `via` to report
   const q = deriveCodeReview([{ state: "unreviewed", via: "replayed" }, { state: "reviewed", actor: "human" }]);
   assert.equal(q.replayed, 0);
+});
+
+test("a review write reports the resulting mark, so one symbol can be updated in place", async () => {
+  // The walkthrough re-fetched the WHOLE PR story to learn what one sign-off did,
+  // which on a large pull request is seconds of work. The state has nuance the
+  // client must not guess (replayed, sitting on a revert), so the server returns it.
+  const root = mkdtempSync(join(tmpdir(), "codemap-mark-"));
+  try {
+    // A real file on disk: review state is judged against LIVE hashes, so a
+    // store-only anchor would read as stale rather than reviewed.
+    mkdirSync(join(root, "src"));
+    const src = "export function transfer(cents: number) {\n  return cents;\n}\n";
+    writeFileSync(join(root, "src/pay.ts"), src);
+    const anchors = await indexBlob(src, "src/pay.ts");
+    await writeStore(root, anchors, { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State);
+    const id = anchors[0]!.id;
+
+    const before = await anchorMark(root, id);
+    assert.equal(before.reviewed, false);
+    assert.equal(before.viewed, false);
+
+    await markReviewed(root, { targetKind: "anchor", targetId: id, level: "code", actor: "human", attestation: "signed" });
+    const after = await anchorMark(root, id);
+    assert.equal(after.reviewed, true, "the sign-off is visible without re-deriving the PR");
+    assert.ok(after.review, "and carries the mark itself, not just a boolean");
+    assert.equal(after.viewed, false, "viewed and signed stay independent");
+
+    await markReviewed(root, { targetKind: "anchor", targetId: id, level: "code", actor: "human", attestation: "viewed" });
+    assert.equal((await anchorMark(root, id)).viewed, true);
+
+    await unmarkReviewed(root, { targetKind: "anchor", targetId: id, level: "code", attestation: "signed" });
+    assert.equal((await anchorMark(root, id)).reviewed, false, "taking it back is reported too");
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

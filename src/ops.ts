@@ -1687,6 +1687,25 @@ export async function setTriage(
   return triageSet(root, input);
 }
 
+/**
+ * One anchor's review/viewed marks and severity, exactly as the walkthrough
+ * renders them. Returned by the review write so a sign-off can update the symbol
+ * in place — re-deriving the whole PR story to learn one symbol's new state was
+ * what made signing feel slow on a large pull request.
+ */
+export async function anchorMark(root: string, id: string, opts: { ref?: string } = {}) {
+  const rt = await reviewTriageFor(root, [{ kind: "anchor", id }], { ref: opts.ref });
+  const e = rt.get(`anchor:${id}`);
+  return {
+    id,
+    severity: e?.triage.severity ?? "untriaged",
+    reviewed: e?.review.code.state === "reviewed",
+    viewed: e?.viewed.code.state === "reviewed",
+    review: e?.review.code,
+    viewedMark: e?.viewed.code,
+  };
+}
+
 /** Clear a target's stakes (back to untriaged). */
 export async function clearTriage(root: string, input: { targetKind: "node" | "anchor"; targetId: string }) {
   return triageClear(root, input);
