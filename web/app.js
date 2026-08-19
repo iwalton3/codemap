@@ -2070,15 +2070,26 @@ class PrStoryPage extends Component {
     this.state.promote = { chapter: ch.id, loading: true };
     const r = await api('/api/pr/promote_plan', { u: this.props.params.universe, pr: this.props.params.pr, chapter: ch.id });
     if (r.error) { this.state.promote = { chapter: ch.id, error: r.error }; return; }
-    this.state.promote = { chapter: ch.id, plan: r.promotion, title: r.promotion.title, summary: r.promotion.summarySource === 'title' ? '' : r.promotion.summary };
+    this.state.promote = { chapter: ch.id, plan: r.promotion, existing: r.existing, id: r.promotion.id, title: r.promotion.title, summary: r.promotion.summarySource === 'title' ? '' : r.promotion.summary };
   }
   async confirmPromote(ch) {
     const p = this.state.promote;
-    if (!p || !p.plan) return;
+    // `saving` also guards: a second click while the POST is in flight wrote a
+    // second doc version of the same node from one user action.
+    if (!p || !p.plan || p.saving) return;
+    const id = (p.id || '').trim();
     this.state.promote = { ...p, saving: true };
     const res = await fetch('/api/pr/promote', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ u: this.props.params.universe, pr: this.props.params.pr, chapter: ch.id, title: p.title, summary: p.summary || p.plan.summary, type: p.plan.type }),
+      body: JSON.stringify({
+        u: this.props.params.universe, pr: this.props.params.pr, chapter: ch.id,
+        // An emptied box is not a request for a node called "" — the plan's own
+        // value is what the human was shown, so that is what it falls back to.
+        id: id && id !== p.plan.id ? id : undefined,
+        title: (p.title || '').trim() || p.plan.title,
+        summary: (p.summary || '').trim() || p.plan.summary,
+        type: p.plan.type,
+      }),
     }).then(x => x.json());
     if (res.error) { this.state.promote = { ...p, saving: false, error: res.error }; return; }
     this.state.promoted = { ...this.state.promoted, [ch.id]: res.promoted };
@@ -2089,14 +2100,22 @@ class PrStoryPage extends Component {
     if (!p || p.chapter !== ch.id) return html``;
     if (p.error) return html`<div class="prpromo err">${p.error}</div>`;
     if (!p.plan) return html`<div class="prpromo dim">planning…</div>`;
+    // Promotion UPSERTS, and which node it lands on is the one thing here that
+    // cannot be undone — so the id is shown and editable, and a node this section
+    // did not write is called out before the button rather than refused after it.
+    // `prPromote` refuses either way; this is so the human is not surprised.
+    const clash = p.existing && !p.existing.ours;
     return html`<div class="prpromo">
       <div class="dim">${p.plan.rationale}</div>
+      ${when(clash, () => html`<div class="prpromo-clash">⚠ a node <code>${p.existing.id}</code> already exists ("${p.existing.title}") and was not promoted from this section. Promoting onto it would rewrite it — give the id below an unused name.</div>`)}
+      ${when(p.existing && p.existing.ours, () => html`<div class="dim">updates <code>${p.existing.id}</code>, promoted from this section before.</div>`)}
+      <label>id<input value="${p.id}" on-input="${(e) => { this.state.promote = { ...this.state.promote, id: e.target.value }; }}"></label>
       <label>title<input value="${p.title}" on-input="${(e) => { this.state.promote = { ...this.state.promote, title: e.target.value }; }}"></label>
       <label>summary${when(p.plan.summarySource === 'title', () => html`<span class="dim"> — the spec has no sentence describing the system; write one</span>`)}
         <input placeholder="${p.plan.summary}" value="${p.summary}" on-input="${(e) => { this.state.promote = { ...this.state.promote, summary: e.target.value }; }}"></label>
       ${when(p.plan.steps, () => html`<div class="dim">flow steps: ${p.plan.steps.map(s => `${s.title} (${s.anchors.length})`).join(' → ')}</div>`)}
       <div class="prpromoacts">
-        <button class="on" on-click="${() => this.confirmPromote(ch)}">${p.saving ? 'promoting…' : `promote as ${p.plan.type}`}</button>
+        <button class="on" disabled="${!!p.saving}" on-click="${() => this.confirmPromote(ch)}">${p.saving ? 'promoting…' : `promote as ${p.plan.type}`}</button>
         <button class="ghost" on-click="${() => { this.state.promote = null; }}">cancel</button>
         <span class="dim">cites ${p.plan.anchors.length} symbol(s) at this PR's head</span>
       </div>

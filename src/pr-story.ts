@@ -142,6 +142,12 @@ export interface StoryStep {
 
 export interface StoryChapter {
   id: string;
+  /**
+   * Which chapter of this name this is, 1-based. A spec that repeats a heading
+   * produces two chapters that are otherwise identical; the ordinal is what keeps
+   * their ids — and the node ids they promote to — apart.
+   */
+  occurrence: number;
   title: string;
   source: "spec" | "derived";
   specPath?: string;
@@ -193,6 +199,19 @@ const distinctive = (w: string) => w.length > 3 && !GENERIC.has(w);
 const display = (h: string) => h.replace(/`/g, "").trim();
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48);
+
+/**
+ * Chapter ids must be distinct: they key `each()` in the walkthrough (vdx drops a
+ * duplicate and never reconciles it), they key the open/promoted maps, and they
+ * are what a promotion's node id is derived from. A spec that repeats a heading —
+ * "### Notes" under two features — otherwise yields two chapters with one id.
+ */
+function distinctId(base: string, taken: Set<string>): { id: string; occurrence: number } {
+  let occurrence = 1, id = base;
+  while (taken.has(id)) id = `${base}-${++occurrence}`;
+  taken.add(id);
+  return { id, occurrence };
+}
 
 /**
  * Bind steps to spec sections by identifier mention, then sweep the remainder into
@@ -247,6 +266,7 @@ export function buildStory(sections: SpecSection[], steps: StoryStep[], opts: { 
   }
 
   const chapters: StoryChapter[] = [];
+  const chapterIds = new Set<string>();
   const specWithoutCode: { specPath: string; heading: string; reason: SpecGapReason; names: string[] }[] = [];
   sections.forEach((s, i) => {
     const steps = (byIdx.get(i) ?? []).sort(order);
@@ -272,7 +292,7 @@ export function buildStory(sections: SpecSection[], steps: StoryStep[], opts: { 
       return;
     }
     chapters.push({
-      id: `spec-${slug(s.specPath)}-${slug(s.heading)}`,
+      ...distinctId(`spec-${slug(s.specPath)}-${slug(s.heading)}`, chapterIds),
       title: display(s.heading), source: "spec", specPath: s.specPath, durable: s.durable,
       prose: s.text, steps,
     });
@@ -287,7 +307,7 @@ export function buildStory(sections: SpecSection[], steps: StoryStep[], opts: { 
   }
   for (const [dir, list] of [...byDir.entries()].sort((a, b) => b[1].length - a[1].length)) {
     chapters.push({
-      id: `derived-${slug(dir)}`, title: dir, source: "derived", durable: false,
+      ...distinctId(`derived-${slug(dir)}`, chapterIds), title: dir, source: "derived", durable: false,
       prose: "No spec section in this PR names these symbols.", steps: list.sort(order),
     });
   }

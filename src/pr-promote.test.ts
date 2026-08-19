@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { planPromotion } from "./pr-promote.js";
+import { planPromotion, promotionOwns } from "./pr-promote.js";
 import { splitSpec, isDurableHeading } from "./pr-story.js";
 import type { StoryChapter, StoryStep } from "./pr-story.js";
 
@@ -9,7 +9,7 @@ const step = (anchorId: string, symbol: string, layer: number): StoryStep => ({
   complexity: "standard", severity: "untriaged", lane: "code", layer,
 });
 const chapter = (over: Partial<StoryChapter> & { steps: StoryStep[] }): StoryChapter => ({
-  id: "c1", title: "Confirmation axis", source: "spec", specPath: "docs/specs/x/01-domain-model.md",
+  id: "c1", occurrence: 1, title: "Confirmation axis", source: "spec", specPath: "docs/specs/x/01-domain-model.md",
   durable: true, prose: "", ...over,
 });
 
@@ -71,4 +71,64 @@ test("a change-scoped heading is not promotable even inside a system-describing 
   }
   const secs = splitSpec("docs/specs/x/01-domain-model.md", "## Overview of the axis\nprose\n## 3.1 Changed: `Foo` (L1-2)\nprose");
   assert.deepEqual(secs.map((s) => s.durable), [true, false]);
+});
+
+test("two chapters never share a node id — `document()` upserts, so a shared id is a silent rewrite", () => {
+  // the same heading under two specs: routine in a numbered spec cluster
+  const a = planPromotion(chapter({ title: "Validation rules", specPath: "docs/specs/x/01-domain-model.md", steps: [step("a1", "A", 3)] }));
+  const b = planPromotion(chapter({ title: "Validation rules", specPath: "docs/specs/x/02-api.md", steps: [step("a2", "B", 3)] }));
+  assert.notEqual(a.id, b.id);
+
+  // headings that differ only past the slug's length cap
+  const long = "Settlement reconciliation for partially delivered supplier orders (phase ";
+  const one = planPromotion(chapter({ title: long + "one)", steps: [step("a1", "A", 3)] }));
+  const two = planPromotion(chapter({ title: long + "two)", steps: [step("a2", "B", 3)] }));
+  assert.notEqual(one.id, two.id, "a truncated slug must carry a digest of what was cut");
+
+  // and the same heading twice inside ONE spec file
+  const first = planPromotion(chapter({ title: "Notes", occurrence: 1, steps: [step("a1", "A", 3)] }));
+  const again = planPromotion(chapter({ title: "Notes", occurrence: 2, steps: [step("a2", "B", 3)] }));
+  assert.notEqual(first.id, again.id);
+  assert.notEqual(first.promotedFrom, again.promotedFrom, "ownership must tell the two apart too");
+});
+
+test("promoting the same section twice targets the same node — a re-promote updates, it does not fork", () => {
+  const c = chapter({ title: "Validation rules", steps: [step("a1", "A", 3)] });
+  assert.equal(planPromotion(c).id, planPromotion(c).id);
+  assert.equal(planPromotion(c).promotedFrom, planPromotion(c).promotedFrom);
+});
+
+test("the body's provenance line names the section, and is what marks the node as this chapter's", () => {
+  const p = planPromotion(chapter({ title: "Validation rules", prose: "The rules.", steps: [step("a1", "A", 3)] }));
+  assert.ok(p.promotedFrom, "a spec chapter owns the node it promotes to");
+  assert.match(p.promotedFrom!, /01-domain-model\.md/);
+  assert.match(p.promotedFrom!, /§ Validation rules/);
+  assert.ok(p.body.includes(p.promotedFrom!), "the marker must be findable in the stored body");
+
+  // a derived chapter cites no spec section, so it owns nothing and may never overwrite
+  const d = planPromotion(chapter({ source: "derived", specPath: undefined, title: "Domains/Fin/Domain", steps: [step("a1", "A", 3)] }));
+  assert.equal(d.promotedFrom, undefined);
+});
+
+test("a title that slugs to nothing falls back to the chapter, not to the bare prefix", () => {
+  const p = planPromotion(chapter({ id: "spec-x-md", title: "—", steps: [step("a1", "A", 3)] }), { idPrefix: "pr42-" });
+  assert.notEqual(p.id, "pr42-", "the fallback applied to the whole template only fired when the prefix was empty too");
+  assert.match(p.id, /^pr42-/);
+});
+
+test("a promotion may only overwrite a node its own spec section wrote", () => {
+  const p = planPromotion(chapter({ title: "Validation rules", prose: "The rules.", steps: [step("a1", "A", 3)] }));
+
+  assert.equal(promotionOwns({ body: p.body }, p.promotedFrom), true, "re-promoting the same section updates its node");
+  assert.equal(promotionOwns({ body: "Hand-written notes about validation." }, p.promotedFrom), false);
+  assert.equal(promotionOwns(undefined, p.promotedFrom), false);
+
+  // a sibling spec's section is a different claim even under the same heading
+  const other = planPromotion(chapter({ title: "Validation rules", specPath: "docs/specs/x/02-api.md", steps: [step("a2", "B", 3)] }));
+  assert.equal(promotionOwns({ body: other.body }, p.promotedFrom), false);
+
+  // a derived chapter has no section to cite, so it owns nothing — an empty
+  // marker must not make `includes` vacuously true
+  const derived = planPromotion(chapter({ source: "derived", specPath: undefined, title: "src/api", steps: [step("a1", "A", 3)] }));
+  assert.equal(promotionOwns({ body: derived.body }, derived.promotedFrom), false);
 });

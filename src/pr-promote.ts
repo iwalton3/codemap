@@ -12,6 +12,7 @@
  * chapters at all.
  */
 
+import { createHash } from "node:crypto";
 import type { StoryChapter, StoryStep } from "./pr-story.js";
 
 /** Layer index → the name a reader recognises. Mirrors pr-story's `layerOf`. */
@@ -36,10 +37,57 @@ export interface Promotion {
    * node into the map summarised by its own title.
    */
   summarySource: "spec" | "title";
+  /**
+   * The provenance line written into the body, and the token that lets a later
+   * promotion recognise its own node. Absent for a derived chapter, which has no
+   * spec section to cite — those own nothing and may never overwrite.
+   */
+  promotedFrom?: string;
 }
 
 const leaf = (s: StoryStep) => s.symbol.split(" › ").pop() ?? s.symbol;
-const slugOf = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60);
+
+const SLUG_MAX = 60;
+const digest = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 6);
+
+/**
+ * Slugify, keeping the id readable. Truncation is where two long sibling headings
+ * collapse onto one id, so a slug that had to be cut carries a digest of the whole
+ * string instead of silently becoming its neighbour.
+ */
+function slugOf(s: string): string {
+  const full = s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  if (full.length <= SLUG_MAX) return full;
+  return `${full.slice(0, SLUG_MAX - 7).replace(/-$/, "")}-${digest(full)}`;
+}
+
+/** The stem of the spec file, which is what qualifies a heading that repeats across specs. */
+const specStem = (path: string | undefined) => path?.split("/").pop()?.replace(/\.[^.]*$/, "") ?? "";
+
+/**
+ * The body's provenance line — a citation for the human, and the token a later
+ * promotion matches to recognise a node as its own. `document()` upserts, so
+ * without an ownership test a chapter whose title slugs onto someone's
+ * hand-written node would rewrite it; `prPromote` refuses unless it finds this.
+ */
+export function promotedFromLine(chapter: { specPath?: string; title: string; occurrence?: number }): string | undefined {
+  if (!chapter.specPath) return undefined;
+  const nth = (chapter.occurrence ?? 1) > 1 ? ` (${chapter.occurrence})` : "";
+  return `_Promoted from \`${chapter.specPath}\` § ${cleanTitle(chapter.title)}${nth}._`;
+}
+
+/**
+ * May a promotion write over the node already sitting at its id?
+ *
+ * Only when that node is this same spec section's earlier promotion — then the
+ * write is the intended re-promote. Anything else is a different chapter or
+ * somebody's hand-written node, and `document()` upserts: the write would replace
+ * its title, body and citations with no way back. A derived chapter carries no
+ * marker, so it owns nothing and can never overwrite.
+ */
+export function promotionOwns(node: { body: string } | undefined, promotedFrom: string | undefined): boolean {
+  return !!node && !!promotedFrom && node.body.includes(promotedFrom);
+}
 
 /**
  * Shape a chapter for promotion.
@@ -61,23 +109,32 @@ export function planPromotion(chapter: StoryChapter, opts: { idPrefix?: string }
   const layers = [...byLayer.keys()].sort((a, b) => a - b);
 
   const anchors = steps.map((s) => s.anchorId);
-  const id = `${opts.idPrefix ?? ""}${slugOf(cleanTitle(chapter.title))}` || `chapter-${slugOf(chapter.id)}`;
-  // The spec section's own prose is the claim; the file it came from is the citation
-  // that makes it checkable later.
-  const body = [chapter.prose, chapter.specPath ? `\n\n_Promoted from \`${chapter.specPath}\`._` : ""].join("").trim();
   const title = cleanTitle(chapter.title);
+  // `document()` upserts, so an id shared by two chapters means the second
+  // rewrites the first node's title, body and citations. The title alone is not
+  // distinct: headings repeat across the numbered specs this targets ("Validation
+  // rules" under both 01-domain-model and 02-api), so the spec file qualifies it,
+  // and the ordinal separates a heading that repeats *within* one file.
+  const nth = chapter.occurrence > 1 ? ` ${chapter.occurrence}` : "";
+  const base = slugOf([specStem(chapter.specPath), title + nth].filter(Boolean).join(" "))
+    || `chapter-${slugOf(chapter.id) || digest(chapter.id)}`;
+  const id = `${opts.idPrefix ?? ""}${base}`;
+  // The spec section's own prose is the claim; the section it came from is the
+  // citation that makes it checkable later — and the ownership token.
+  const promotedFrom = promotedFromLine(chapter);
+  const body = [chapter.prose, promotedFrom ? `\n\n${promotedFrom}` : ""].join("").trim();
   const summary = firstSentence(chapter.prose, title);
   const summarySource: "spec" | "title" = summary === title ? "title" : "spec";
 
   if (layers.length < 2) {
     return {
-      id, type: "module", title, summary, summarySource, body, anchors,
+      id, type: "module", title, summary, summarySource, body, anchors, promotedFrom,
       rationale: `${steps.length} symbol(s) at a single layer (${LAYER_LABEL[layers[0] ?? 3] ?? "code"}) — a flow with one step says nothing a module does not.`,
     };
   }
 
   return {
-    id, type: "process", title, summary, summarySource, body, anchors,
+    id, type: "process", title, summary, summarySource, body, anchors, promotedFrom,
     steps: layers.map((l) => {
       const group = byLayer.get(l)!;
       return {

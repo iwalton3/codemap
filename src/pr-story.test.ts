@@ -74,3 +74,19 @@ test("symbols no section names are swept into derived chapters, grouped by direc
   assert.deepEqual(story.chapters.map((c) => c.title), ["src/api", "src/ui"]);
   assert.equal(story.chapters[0]!.durable, false);
 });
+
+test("a repeated heading yields two chapters, not one id shared by both", () => {
+  // vdx keys the chapter list by id and drops a duplicate outright; the same id
+  // also keys open/promoted state and is what the promoted node id derives from.
+  const secs = splitSpec("docs/specs/x/01-domain-model.md",
+    "## Refunds\n`RefundPolicy` applies.\n## Shipping\nprose\n## Refunds\n`RefundLedger` posts.");
+  const story = buildStory(secs, [
+    step({ anchorId: "a_1", symbol: "RefundPolicy", file: "src/RefundPolicy.cs" }),
+    step({ anchorId: "a_2", symbol: "RefundLedger", file: "src/RefundLedger.cs" }),
+  ]);
+  const ids = story.chapters.map((c) => c.id);
+  assert.equal(new Set(ids).size, ids.length, `duplicate chapter id in ${JSON.stringify(ids)}`);
+  const refunds = story.chapters.filter((c) => c.title === "Refunds");
+  assert.equal(refunds.length, 2);
+  assert.deepEqual(refunds.map((c) => c.occurrence), [1, 2]);
+});

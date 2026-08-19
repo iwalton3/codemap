@@ -28,8 +28,9 @@ import {
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "./diff.js";
 import { prTriage, listOpenPrs, prPacket, prStory, prAnchorCode, prPromotionPlan, derivePrTriage } from "./pr.js";
+import { promotionOwns } from "./pr-promote.js";
 import { parseAgentLines, ingestAgentReview } from "./pr-ingest.js";
-import { planPrPush, executePrPush, pullViewedFromGitHub } from "./pr-push.js";
+import { planPrPush, executePrPush, pullViewedFromGitHub, type PushPlan } from "./pr-push.js";
 import { bulkPullViewed } from "./pr-bulk.js";
 import { resolveCoverage, selectAnchors, docPct as computeDocPct, citedPct as computeCitedPct, type CoverageResult } from "./coverage.js";
 import { resolveAnchorRefs } from "./refs.js";
@@ -521,8 +522,23 @@ export async function prTriageDerive(root: string, input: string) {
 }
 
 /** What promoting a walkthrough chapter into the map would write. */
+/**
+ * A node the promotion would land on. `ours` means this same spec section wrote
+ * it, so promoting again updates it — the intended re-promote. Anything else is a
+ * different chapter, or somebody's hand-written node, and `prPromote` refuses.
+ */
+async function nodeAtPromotionId(root: string, id: string, promotedFrom: string | undefined) {
+  const node = (await loadNodes(root)).find((n) => n.id === id);
+  if (!node) return undefined;
+  return { id: node.id, title: node.title, type: node.type, ours: promotionOwns(node, promotedFrom) };
+}
+
 export async function prPromotePlan(root: string, input: string, chapterId: string) {
-  return prPromotionPlan(root, input, chapterId);
+  const plan = await prPromotionPlan(root, input, chapterId);
+  if ("error" in plan) return plan;
+  // Surfaced with the plan so a collision is something the human sees *before*
+  // confirming, rather than an error after they have committed to the idea.
+  return { ...plan, existing: await nodeAtPromotionId(root, plan.promotion.id, plan.promotion.promotedFrom) };
 }
 
 /**
@@ -534,6 +550,15 @@ export async function prPromote(root: string, input: string, chapterId: string, 
   const plan = await prPromotionPlan(root, input, chapterId);
   if ("error" in plan) return plan;
   const p = plan.promotion;
+  // `document()` upserts, and a node's body, citations and accepted hashes are not
+  // recoverable once rewritten. A promotion may land only on a node this same spec
+  // section wrote; anything else is refused rather than merged, including when the
+  // caller names the id itself — an id typed into the form is not evidence that
+  // the human knew what was already sitting there.
+  const at = await nodeAtPromotionId(root, over.id ?? p.id, p.promotedFrom);
+  if (at && !at.ours) {
+    return { error: `node "${at.id}" ("${at.title}") already exists and was not promoted from this section — promoting would rewrite it. Choose an unused id to promote alongside it, or edit that node directly.` };
+  }
   const type = over.type ?? p.type;
   const r = await document(root, {
     id: over.id ?? p.id,
