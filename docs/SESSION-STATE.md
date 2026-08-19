@@ -45,6 +45,18 @@ the PR's worklist was dropped with a bare `continue`, uncounted — so electing 
 code the branch never touched silently never went out, and the plan reported nothing
 held back. Those are now `blocked`, and visible in all three front-ends.
 
+**Findings are witnessed, and cross-PR contamination is refused at publish.** A
+review agent found a finding that accurately described PR #227's version of
+`EmailTemplateService.cs` filed onto PR #264's anchor for the same path — correct
+prose, correct line numbers, wrong branch, and nothing inside it marked it as wrong.
+The collision vector is by design: an anchor id is path+symbol with no ref, which is
+what lets a review mark survive a rebase. So the ref went on the FINDING. A finding
+now records `witness` (the body it was written against) and `sourceRef` (which ref
+that was), and publishing one whose witness is not the body at the PR head is
+refused. `get_anchor` now says which ref it served, because during a PR review it
+serves the WORKING TREE — a third version, neither the PR nor the branch the reader
+had in mind.
+
 ## Next, in order
 
 1. **Push #264's findings back for real.** Everything for it is built and nothing
@@ -65,6 +77,18 @@ held back. Those are now `blocked`, and visible in all three front-ends.
 - No "approve all confirmed" bulk action (§8.5). With 12–16 findings, per-item is
   the slow step.
 - `subject_type: "file"` comments are deliberately unused; see §0.4.
+- The witness gate cannot catch an agent that reads another branch but files against
+  the correct ref. That is a model error with no tooling signal, and the gate does
+  not pretend otherwise. The report's §7.6 — flag a finding whose quoted text matches
+  another open PR's version of the same path better — is the cheap heuristic that
+  would name the culprit branch automatically, and is not built.
+- `createdCommit` on an annotation is still the working tree's HEAD and still says
+  nothing about what was read. It was left alone rather than redefined; `sourceRef`
+  is the field the gate reads and the one to trust.
+- Findings filed before witnessing (everything on #264 today) publish with an
+  `unverified` note rather than being blocked. Re-witnessing them wholesale via
+  `revise_finding --ref <head>` would stamp them valid without anyone re-reading,
+  which is the opposite of the point.
 
 ## Decisions made in conversation that the code does not show
 

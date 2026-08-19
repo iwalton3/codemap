@@ -160,6 +160,19 @@ export function findAnchorsOutsideWork(root: string, ids: string[]): Map<string,
   return out;
 }
 
+/**
+ * One anchor's body hash under one ref — a primary-key point lookup.
+ *
+ * `readSnapshot` materialises every anchor under the ref (thousands, on a real
+ * universe), which is the wrong shape for witnessing a single finding: an ingest of
+ * a hundred findings would load the whole snapshot a hundred times.
+ */
+export function bodyHashAt(root: string, ref: string, anchorId: string): string | null {
+  const row = db(root).prepare("SELECT body_hash FROM anchors WHERE ref = ? AND id = ?").get(ref, anchorId) as
+    { body_hash?: string } | undefined;
+  return row?.body_hash ?? null;
+}
+
 export async function readSnapshot(root: string, ref: string): Promise<Anchor[] | null> {
   const d = db(root);
   const meta = d.prepare("SELECT 1 FROM snapshots WHERE ref = ?").get(ref);

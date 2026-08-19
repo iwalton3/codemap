@@ -26,7 +26,7 @@ import {
   readBugs, writeBugs, readAnnotations, writeAnnotations, readCoverage, writeCoverage, readReviews,
   writeSnapshot, readSnapshot, listSnapshots, deleteNode as storeDeleteNode, confirmNode, ackHole as storeAckHole, loadNodeVersions,
   writeReviews, remapNodeCitations, readTriage as triageRead, writeTriage as triageWrite, dropLegacyOverloadSnapshots, findAnchorsOutsideWork,
-  readWalkthroughs, writeWalkthrough, readPushes,
+  readWalkthroughs, writeWalkthrough, readPushes, bodyHashAt,
 } from "./store.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "./diff.js";
@@ -2338,9 +2338,8 @@ async function witnessAt(
   root: string, anchorId: string, ref?: string,
 ): Promise<{ witness?: { anchorId: string; bodyHash: string }; sourceRef: string }> {
   if (ref) {
-    const snap = await readSnapshot(root, ref);
-    const a = snap?.find((x) => x.id === anchorId);
-    if (a) return { witness: { anchorId, bodyHash: a.bodyHash }, sourceRef: ref };
+    const hash = bodyHashAt(root, ref, anchorId);
+    if (hash) return { witness: { anchorId, bodyHash: hash }, sourceRef: ref };
   }
   const stored = (await readAnchorStore(root)).anchors.find((a) => a.id === anchorId);
   if (stored) {
