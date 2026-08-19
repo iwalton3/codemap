@@ -45,6 +45,21 @@ try {
 const rootFor = (u: string | null) => (u && ws.byId.get(u) ? ws.byId.get(u)!.path : ws.primary.path);
 
 /** Dispatch a /api/* request to the ops/multi layer. Returns a JSON-able value. */
+/**
+ * Every annotation write reports the anchor it landed on and that anchor's
+ * annotations afterwards, so a caller can refresh one symbol instead of re-deriving
+ * the whole pull request to find out what changed.
+ *
+ * Module scope on purpose: it takes `root`, so nothing ties it to a request, and
+ * declaring it inside the handler put it in the temporal dead zone of the two
+ * routes above its declaration.
+ */
+async function withAnchorAnnotations(root: string, out: any): Promise<any> {
+  return out && !out.error && out.target?.kind === "anchor"
+    ? { ...out, annotations: await ops.anchorAnnotations(root, out.target.id) }
+    : out;
+}
+
 async function api(path: string, q: URLSearchParams): Promise<unknown> {
   const u = q.get("u");
   const root = rootFor(u);
@@ -320,15 +335,6 @@ const server = createServer(async (req, res) => {
       res.end(JSON.stringify(out));
       return;
     }
-
-    // Every annotation write reports the anchor it landed on and that anchor's
-    // annotations afterwards, so a caller can refresh one symbol instead of
-    // re-deriving the whole pull request to find out what changed.
-    const withAnchorAnnotations = async (root: string, out: any) => (
-      out && !out.error && out.target?.kind === "anchor"
-        ? { ...out, annotations: await ops.anchorAnnotations(root, out.target.id) }
-        : out
-    );
 
     // Review-time notes/questions from the UI: create, and resolve (close a question).
     if (req.method === "POST" && (url.pathname === "/api/annotate" || url.pathname === "/api/annotation_resolve")) {
