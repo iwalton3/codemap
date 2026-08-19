@@ -1688,6 +1688,19 @@ export async function setTriage(
 }
 
 /**
+ * Every annotation on one anchor, as the walkthrough renders them.
+ *
+ * Returned alongside every annotation write so a caller can refresh the one symbol
+ * that changed. Raising, handing a finding to an agent, resolving one or raising it
+ * to the maintainer all used to reload the whole PR story, which on a large pull
+ * request is seconds of work to learn what happened to a single anchor.
+ */
+export async function anchorAnnotations(root: string, anchorId: string) {
+  const anns = (await readAnnotations(root)).annotations;
+  return anns.filter((a) => a.target.kind === "anchor" && a.target.id === anchorId);
+}
+
+/**
  * One anchor's review/viewed marks and severity, exactly as the walkthrough
  * renders them. Returned by the review write so a sign-off can update the symbol
  * in place — re-deriving the whole PR story to learn one symbol's new state was
@@ -2141,7 +2154,7 @@ export async function annotate(
   const annStore = await readAnnotations(root);
   annStore.annotations.push(ann);
   await writeAnnotations(root, annStore.annotations);
-  return { ok: true, id: ann.id };
+  return { ok: true, id: ann.id, target: ann.target };
 }
 
 /** Resolve (or re-open) an annotation — used to close out an answered question. */
@@ -2151,7 +2164,7 @@ export async function resolveAnnotation(root: string, id: string, resolved = tru
   if (!ann) return { error: `no annotation "${id}"` };
   ann.resolved = resolved;
   await writeAnnotations(root, annStore.annotations);
-  return { ok: true, id, resolved };
+  return { ok: true, id, resolved, target: ann.target };
 }
 
 /**
@@ -2174,7 +2187,7 @@ export async function escalateAnnotation(root: string, input: { id: string; esca
   const escalate = input.escalate !== false;
   ann.escalated = escalate ? { at: new Date().toISOString(), by: input.by || "human" } : undefined;
   await writeAnnotations(root, annStore.annotations);
-  return { ok: true, id: ann.id, escalated: escalate };
+  return { ok: true, id: ann.id, escalated: escalate, target: ann.target };
 }
 
 /**
@@ -2192,7 +2205,7 @@ export async function assignAnnotation(
   ann.assignment = { to: "agent", kind: input.kind, at: new Date().toISOString(), by: input.by || "me", note: input.note };
   ann.outcome = undefined; // a re-assignment asks again; the previous answer no longer stands
   await writeAnnotations(root, store.annotations);
-  return { ok: true, id: ann.id, assigned: input.kind };
+  return { ok: true, id: ann.id, assigned: input.kind, target: ann.target };
 }
 
 export interface QueueItem {
@@ -2280,7 +2293,7 @@ export async function closeAssignment(
   }
   ann.outcome = { at: new Date().toISOString(), by: input.by || "agent", result: input.result, detail: input.detail, files: files.length ? files : undefined };
   await writeAnnotations(root, store.annotations);
-  return { ok: true, id: ann.id, result: input.result, awaitingHuman: true };
+  return { ok: true, id: ann.id, result: input.result, awaitingHuman: true, target: ann.target };
 }
 
 /**

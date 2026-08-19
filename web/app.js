@@ -292,23 +292,36 @@ const closeFindingForm = (c) => { c.state.finding = null; };
 // action items (findings + questions); pointers/notes render but don't inflate it.
 const ANNO_ICON = { finding: '⚑', pointer: '👁', question: '?', note: '✎' };
 const openFindingCount = (annotations) => (annotations || []).filter(a => !a.resolved && (a.kind === 'finding' || a.kind === 'question')).length;
+// Every annotation write reports the anchor it landed on and that anchor's
+// annotations afterwards. A host that can update one symbol in place says so by
+// implementing `patchAnnotations`, and skips the full reload — on a large pull
+// request that reload is seconds of work to learn what became of one finding.
+// Hosts without it (the file/anchor views) keep the reload, which is cheap there.
+async function afterAnnotationWrite(c, res) {
+  if (res && !res.error && res.target && res.target.kind === 'anchor'
+      && c.patchAnnotations && c.patchAnnotations(res.target.id, res.annotations || [])) return;
+  await c.load.run();
+  if (c.refreshFile && c.state.file) await c.refreshFile();
+}
+const asJson = (p) => p.then(r => r.json()).catch(() => null);
+
 async function raiseFinding(c, u, anchorId, line) {
   const key = findingKey(anchorId, line);
   const text = (c._fdrafts?.[key] || '').trim(); if (!text) return;
-  await postAnnotate(u, 'anchor', anchorId, text, 'finding', Number.isFinite(line) ? line : undefined, c.state?.prRef);
+  const res = await asJson(postAnnotate(u, 'anchor', anchorId, text, 'finding', Number.isFinite(line) ? line : undefined, c.state?.prRef));
   if (c._fdrafts) c._fdrafts[key] = '';
   c.state.finding = null;
-  await c.load.run(); if (c.refreshFile && c.state.file) await c.refreshFile();
+  await afterAnnotationWrite(c, res);
 }
-async function toggleFinding(c, u, id, resolved) { await postResolveAnnotation(u, id, resolved); await c.load.run(); if (c.refreshFile && c.state.file) await c.refreshFile(); }
+async function toggleFinding(c, u, id, resolved) { await afterAnnotationWrite(c, await asJson(postResolveAnnotation(u, id, resolved))); }
 const postAssign = (u, id, kind) =>
   fetch('/api/annotation_assign', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id, kind, by: 'me' }) });
-async function assignFinding(c, u, id, kind) { await postAssign(u, id, kind); await c.load.run(); if (c.refreshFile && c.state.file) await c.refreshFile(); }
+async function assignFinding(c, u, id, kind) { await afterAnnotationWrite(c, await asJson(postAssign(u, id, kind))); }
 // Raising an agent's finding to the maintainer. Local only — it makes the finding
 // PUBLISHABLE; nothing reaches GitHub until the push button, which is its own act.
 const postEscalate = (u, id, escalate) =>
   fetch('/api/annotation_escalate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id, escalate, by: 'human' }) });
-async function escalateFinding(c, u, id, escalate) { await postEscalate(u, id, escalate); await c.load.run(); if (c.refreshFile && c.state.file) await c.refreshFile(); }
+async function escalateFinding(c, u, id, escalate) { await afterAnnotationWrite(c, await asJson(postEscalate(u, id, escalate))); }
 const isAgentFinding = (f) => (f.author || 'agent').startsWith('agent');
 
 // A finding, plus the two halves of the agent loop: hand it over, and read what
@@ -343,8 +356,9 @@ const findingForm = (c, u, anchorId, line) => {
 };
 // Render one anchor's source line-by-line (absolute line numbers from `startLine`)
 // with a hover 💬 per line that raises a finding pinned to that exact line; existing
-// findings render inline under their line, unlocated notes below. `c.load.run()` must
-// refresh the annotations this reads (server carries per-anchor `annotations`).
+// findings render inline under their line, unlocated notes below. The `annotations`
+// this reads are refreshed either by `c.load.run()` or, where the host implements
+// it, by `c.patchAnnotations` updating just this anchor (see afterAnnotationWrite).
 function codeReviewLines(c, u, anchorId, code, lang, startLine, annotations) {
   if (code == null) return html`<pre class="code rvcode">(source unavailable — anchor renamed/removed?)</pre>`;
   const base = startLine || 1;
@@ -2042,6 +2056,26 @@ class PrStoryPage extends Component {
     const i = flat.findIndex(x => x.step.anchorId === anchorId);
     if (i < 0) return null;
     return flat.slice(i + 1).find(x => !x.step.reviewed) || null;
+  }
+
+  /**
+   * Update one symbol's findings in place — the walkthrough's half of the fast
+   * path for raising, handing off, resolving and raising to the maintainer.
+   * Returns true when it handled it, so the caller can skip the story reload.
+   */
+  patchAnnotations(anchorId, annotations) {
+    const st = this.state.story;
+    if (!st) return false;
+    this.state.story = { ...st, chapters: st.chapters.map(c => (
+      c.steps.some(s => s.anchorId === anchorId)
+        ? { ...c, steps: c.steps.map(s => s.anchorId === anchorId ? { ...s, annotations } : s) }
+        : c
+    )) };
+    // The open code pane renders findings from its OWN copy, so it needs the same
+    // update or the finding appears in the header count and nowhere else.
+    const code = this.state.code[anchorId];
+    if (code) this.state.code = { ...this.state.code, [anchorId]: { ...code, annotations } };
+    return true;
   }
 
   /** Update one symbol in the loaded story, leaving everything else alone. */

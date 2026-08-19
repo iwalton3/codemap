@@ -231,11 +231,11 @@ const server = createServer(async (req, res) => {
       for await (const c of req) chunks.push(c as Buffer);
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
       const root = rootFor(body.u ?? null);
-      const out = await withLock<unknown>(root, () =>
-        url.pathname === "/api/annotation_assign"
+      const out = await withLock<unknown>(root, async () => withAnchorAnnotations(root,
+        await (url.pathname === "/api/annotation_assign"
           ? ops.assignAnnotation(root, { id: body.id, kind: body.kind, by: body.by, note: body.note })
-          : ops.closeAssignment(root, { id: body.id, result: body.result, detail: body.detail, files: body.files, by: body.by }),
-      );
+          : ops.closeAssignment(root, { id: body.id, result: body.result, detail: body.detail, files: body.files, by: body.by })),
+      ));
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(out));
       return;
@@ -272,9 +272,9 @@ const server = createServer(async (req, res) => {
       for await (const c of req) chunks.push(c as Buffer);
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
       const root = rootFor(body.u ?? null);
-      const out = await withLock<unknown>(root, () =>
-        ops.escalateAnnotation(root, { id: String(body.id ?? ""), escalate: body.escalate !== false, by: body.by }),
-      );
+      const out = await withLock<unknown>(root, async () => withAnchorAnnotations(root,
+        await ops.escalateAnnotation(root, { id: String(body.id ?? ""), escalate: body.escalate !== false, by: body.by }),
+      ));
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(out));
       return;
@@ -321,17 +321,26 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    // Every annotation write reports the anchor it landed on and that anchor's
+    // annotations afterwards, so a caller can refresh one symbol instead of
+    // re-deriving the whole pull request to find out what changed.
+    const withAnchorAnnotations = async (root: string, out: any) => (
+      out && !out.error && out.target?.kind === "anchor"
+        ? { ...out, annotations: await ops.anchorAnnotations(root, out.target.id) }
+        : out
+    );
+
     // Review-time notes/questions from the UI: create, and resolve (close a question).
     if (req.method === "POST" && (url.pathname === "/api/annotate" || url.pathname === "/api/annotation_resolve")) {
       const chunks: Buffer[] = [];
       for await (const c of req) chunks.push(c as Buffer);
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
       const root = rootFor(body.u ?? null);
-      const out = await withLock<unknown>(root, () =>
-        url.pathname === "/api/annotate"
+      const out = await withLock<unknown>(root, async () => withAnchorAnnotations(root,
+        await (url.pathname === "/api/annotate"
           ? ops.annotate(root, { targetKind: body.targetKind, targetId: body.targetId, text: body.text, kind: body.kind, severity: body.severity, category: body.category, author: body.author, line: body.line, ref: body.ref })
-          : ops.resolveAnnotation(root, body.id, body.resolved !== false),
-      );
+          : ops.resolveAnnotation(root, body.id, body.resolved !== false)),
+      ));
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(out));
       return;

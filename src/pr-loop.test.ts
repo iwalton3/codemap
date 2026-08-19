@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { State } from "./schema.js";
 import { writeStore, readAnnotations, writeAnnotations } from "./store.js";
 import { withLock } from "./lock.js";
-import { annotate, assignAnnotation, reviewQueue, closeAssignment, resolveAnnotation, escalateAnnotation } from "./ops.js";
+import { annotate, assignAnnotation, reviewQueue, closeAssignment, resolveAnnotation, escalateAnnotation, anchorAnnotations } from "./ops.js";
 import { indexBlob } from "./repo.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
@@ -161,4 +161,33 @@ test("raising a finding to the maintainer is a separate act from writing or reso
   // a resolved finding is not something to send to anybody
   await resolveAnnotation(root, a.id, true);
   assert.ok((await escalateAnnotation(root, { id: a.id }) as any).error);
+});
+
+test("an annotation write reports the anchor's findings, so one symbol can be refreshed", async () => {
+  // Raising, handing off, resolving and raising to the maintainer all reloaded the
+  // whole PR story to learn what happened to one finding. Each write now says which
+  // anchor it landed on; `anchorAnnotations` is what the caller refreshes with.
+  const { root, anchorId, annId } = await fixture();
+
+  const before = await anchorAnnotations(root, anchorId);
+  assert.equal(before.length, 1);
+
+  const raised = await annotate(root, {
+    targetKind: "anchor", targetId: anchorId, text: "second", kind: "finding", author: "human",
+  }) as any;
+  assert.deepEqual(raised.target, { kind: "anchor", id: anchorId }, "the write says where it landed");
+
+  const assigned = await assignAnnotation(root, { id: annId, kind: "investigate", by: "me" }) as any;
+  assert.deepEqual(assigned.target, { kind: "anchor", id: anchorId });
+
+  const resolved = await resolveAnnotation(root, raised.id, true) as any;
+  assert.deepEqual(resolved.target, { kind: "anchor", id: anchorId });
+
+  const after = await anchorAnnotations(root, anchorId);
+  assert.equal(after.length, 2, "both findings, with their current state");
+  assert.ok(after.find((a) => a.id === annId)!.assignment, "the handoff is visible");
+  assert.equal(after.find((a) => a.id === raised.id)!.resolved, true);
+
+  // and nothing from another anchor leaks in
+  assert.ok(after.every((a) => a.target.id === anchorId));
 });

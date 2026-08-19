@@ -66,6 +66,39 @@ describe("web UI", { skip: puppeteer ? false : "puppeteer not resolvable (set CO
     await page.close();
   });
 
+  test("a long line scrolls the diff block, not each line on its own", async () => {
+    // `.prdiff .fltext` carried `overflow-x: auto`, so EVERY long line got its own
+    // scrollbar and reading across one left the rest of the hunk behind. The rule
+    // under test is CSS, so this exercises the real stylesheet in a real browser
+    // against the markup `diffReviewLines` emits.
+    const page = await browser.newPage();
+    await page.goto(`${server.url}/#/u/${fixture.universe}/`, { waitUntil: "networkidle0" });
+    const m = await page.evaluate(() => {
+      const wide = "x".repeat(4000);
+      const host = document.createElement("div");
+      host.style.width = "600px";
+      host.innerHTML = `<div class="rvpre hljs prdiff"><div class="flrow">
+        <div class="dline add"><span class="dsign">+</span><span class="flno">1</span
+        ><span class="fltext">${wide}</span><button class="flcomment">c</button></div>
+      </div></div>`;
+      document.body.appendChild(host);
+      const block = host.querySelector(".prdiff") as HTMLElement;
+      const text = host.querySelector(".fltext") as HTMLElement;
+      const line = host.querySelector(".dline") as HTMLElement;
+      const r = {
+        blockScrolls: block.scrollWidth > block.clientWidth,
+        textScrolls: text.scrollWidth > text.clientWidth,
+        lineReachesText: line.scrollWidth >= text.scrollWidth,
+      };
+      host.remove();
+      return r;
+    });
+    assert.equal(m.textScrolls, false, "a single line must NOT be its own scroll container");
+    assert.equal(m.blockScrolls, true, "the block is what scrolls sideways");
+    assert.equal(m.lineReachesText, true, "the row widens to the line, so its add/del tint covers it");
+    await page.close();
+  });
+
   test("the path form of a deep link is NOT a working link (documents the hash-router constraint)", async () => {
     const page = await browser.newPage();
     await page.goto(`${server.url}/u/${fixture.universe}/node/n_transfer_flow/`, { waitUntil: "networkidle0" });

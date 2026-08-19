@@ -366,7 +366,12 @@
     .rvpre { font-family: var(--mono); font-size: 12px; line-height: 1.5; padding: 8px 0; background: #0b0e13; }
     /* standalone snippets (flow, node segments, review cards) render as a code block */
     .rvseg .rvpre, .anchor-code .rvpre { border: 1px solid var(--border); border-radius: 6px; margin: 4px 0 0; overflow-x: auto; }
-    .fline { display: flex; gap: 12px; padding: 0 14px; white-space: pre; }
+    .fline { display: flex; gap: 12px; padding: 0 14px; white-space: pre; min-width: max-content; }
+    /* Same rule for the walkthrough's plain-source pane, which had no horizontal
+       scroll of its own — a long line pushed the whole page sideways instead. */
+    .prsbody .rvpre { overflow-x: auto; }
+    .prsbody .rvpre .rvfind, .prsbody .rvpre .rvaddf { position: sticky; left: 0; }
+    .prsbody .rvpre .flcomment { position: sticky; right: 0; }
     .fline.fhl { background: rgba(88,166,255,0.14); }
     .flno { color: #4a5666; text-align: right; width: 44px; flex: none; user-select: none; }
     .fltext { color: #c9d4e2; }
@@ -540,7 +545,12 @@
     .prpromo-clash code { color: var(--text); }
     .prpromoacts { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .prpromoacts button[disabled] { opacity: .55; cursor: default; }
-    .prdiff .dline { display: flex; align-items: baseline; font-family: var(--mono); font-size: 12px; line-height: 1.5; position: relative; }
+    /* The BLOCK scrolls sideways, never the individual line: a per-line
+       `overflow-x` gave every long line its own scrollbar, so reading across one
+       line left the rest behind. `min-width: max-content` lets a long line widen
+       the row so the add/del tint reaches the end of it too. */
+    .prdiff { overflow-x: auto; }
+    .prdiff .dline { display: flex; align-items: baseline; font-family: var(--mono); font-size: 12px; line-height: 1.5; position: relative; min-width: max-content; }
     .prdiff .dsign { width: 16px; text-align: center; color: var(--dim); flex: none; user-select: none; }
     .prdiff .flno { width: 44px; text-align: right; padding-right: 10px; color: #5b6472; flex: none; user-select: none; }
     .prdiff .flcomment { opacity: 0; margin-left: auto; flex: none; background: none; border: none; cursor: pointer; padding: 0 6px; }
@@ -549,7 +559,11 @@
     .prdiff .dline.add .dsign { color: #7ee787; }
     .prdiff .dline.del { background: rgba(248,81,73,0.09); }
     .prdiff .dline.del .dsign { color: #f85149; }
-    .prdiff .fltext { white-space: pre; overflow-x: auto; }
+    .prdiff .fltext { white-space: pre; }
+    /* Findings and the raise button live in the scrolling block, so pin them to the
+       visible edges rather than letting them slide away with the code. */
+    .prdiff .flcomment { position: sticky; right: 0; }
+    .prdiff .rvfind, .prdiff .rvaddf, .prdiff .rvfinds { position: sticky; left: 0; }
     .prdiffhint { font-size: 11.5px; margin-top: 4px; }
     .crlf { font-size: 11px; color: #f0a35e; border: 1px solid #8a5a2b; border-radius: 10px; padding: 0 6px; }
     .prderive { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: 12px; flex-wrap: wrap; }
