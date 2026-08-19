@@ -30,6 +30,27 @@ export interface SpecSection { specPath: string; heading: string; level: number;
  */
 const EPHEMERAL_SPEC = /(implementation-log|implementation-plan|open-items|changelog|migration-notes|_spec-authoring-playbook|README)/i;
 
+/**
+ * A heading that describes *this change* rather than the system, even inside a
+ * file that otherwise documents the system. `01-domain-model.md` is a durable
+ * document, but its "3.1 Changed: `OrderShipmentCreated` (L903-968)" section
+ * is a diff instruction — promoting that mints a node named after a patch, which
+ * is the junk the durable/ephemeral split exists to prevent.
+ */
+const CHANGE_VERB = "changed|new|not added|added|removed|deprecated|renamed|extend(?:ed|s)?|migrat\\w*|revert(?:ed)?";
+const CHANGE_HEADING = new RegExp(
+  // leading, after an optional section number: "3.1 Changed: `Foo`"
+  `^\\s*(?:[\\d.]+\\s*)?(?:${CHANGE_VERB})\\b`
+  // or trailing after a dash, which is how these specs qualify a heading:
+  // "4.4 Apply(OrderDeliveryCreated) — extend (D7)"
+  + `|[—–-]\\s*(?:${CHANGE_VERB})\\b`
+  // or carrying a line range, which only a diff has
+  + `|\\(L\\d+[-–]\\d+\\)|\\bTODO\\b`,
+  "i",
+);
+
+export const isDurableHeading = (heading: string) => !CHANGE_HEADING.test(heading);
+
 /** Split spec markdown into `##`-level sections, each carrying the file's title as context. */
 export function splitSpec(specPath: string, text: string): SpecSection[] {
   const durable = !EPHEMERAL_SPEC.test(specPath);
@@ -46,7 +67,7 @@ export function splitSpec(specPath: string, text: string): SpecSection[] {
   let started = false;
   const flush = () => {
     const body = buf.join("\n").trim();
-    if (started || body) out.push({ specPath, heading, level, text: body, durable });
+    if (started || body) out.push({ specPath, heading, level, text: body, durable: durable && isDurableHeading(heading) });
     buf = [];
   };
   for (const line of lines) {
@@ -56,7 +77,7 @@ export function splitSpec(specPath: string, text: string): SpecSection[] {
     buf.push(line);
   }
   flush();
-  if (!out.length) out.push({ specPath, heading, level, text: "", durable });
+  if (!out.length) out.push({ specPath, heading, level, text: "", durable: durable && isDurableHeading(heading) });
   return out;
 }
 
@@ -113,10 +134,22 @@ export interface StoryChapter {
   steps: StoryStep[];
 }
 
+/**
+ * Why a spec section has no code behind it in this PR. Without the distinction the
+ * list is unusable: a backend PR ships the whole spec cluster, so its UI sections
+ * are "missing" only in the sense that they live in the front-end repo.
+ *   covered   — its symbols ARE in this PR, but another section claimed them; a
+ *               step binds to one chapter only, so the loser looks empty.
+ *   unchanged — the symbols it names exist here; this PR just did not touch them.
+ *   absent    — nothing by that name exists in this universe, so it is another
+ *               repo's concern (or genuinely unbuilt).
+ */
+export type SpecGapReason = "covered" | "unchanged" | "absent";
+
 export interface PrStory {
   chapters: StoryChapter[];
-  /** Spec sections with no changed code behind them — shipped incomplete, or prose-only. */
-  specWithoutCode: { specPath: string; heading: string }[];
+  /** Spec sections naming code this PR does not contain, and why. */
+  specWithoutCode: { specPath: string; heading: string; reason: SpecGapReason; names: string[] }[];
   /** Changed symbols no spec section accounts for — where scrutiny belongs. */
   undocumented: number;
 }
@@ -149,7 +182,7 @@ const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(
  * derived chapters by directory. A step binds to at most one section — the one
  * naming the most of its identifiers — so a symbol appears once in the walkthrough.
  */
-export function buildStory(sections: SpecSection[], steps: StoryStep[]): PrStory {
+export function buildStory(sections: SpecSection[], steps: StoryStep[], opts: { known?: Set<string> } = {}): PrStory {
   const claimed = new Map<string, { idx: number; score: number }>();
   // Heading and body are scored separately: a section whose *heading* names a
   // symbol is almost always the chapter that symbol belongs in, while a passing
@@ -187,16 +220,38 @@ export function buildStory(sections: SpecSection[], steps: StoryStep[]): PrStory
 
   const order = (a: StoryStep, b: StoryStep) => a.layer - b.layer || a.file.localeCompare(b.file) || a.symbol.localeCompare(b.symbol);
 
+  // Every identifier this PR actually touched, however it is spelled — leaf name,
+  // any path segment, or a type named in the signature (which is how an aggregate's
+  // Apply overloads are told apart).
+  const changedNames = new Set<string>();
+  for (const st of steps) {
+    for (const part of st.symbol.split(" › ")) changedNames.add(part);
+    for (const id of mentionedIdentifiers(st.signature)) changedNames.add(id);
+  }
+
   const chapters: StoryChapter[] = [];
-  const specWithoutCode: { specPath: string; heading: string }[] = [];
+  const specWithoutCode: { specPath: string; heading: string; reason: SpecGapReason; names: string[] }[] = [];
   sections.forEach((s, i) => {
     const steps = (byIdx.get(i) ?? []).sort(order);
     if (!steps.length) {
       // Only a section that actually names code can be "shipped without code";
       // prose, tables and headings legitimately have no symbols behind them, and
-      // reporting them buries the sections that matter.
-      const named = [...secIds[i]!.heading, ...secIds[i]!.body];
-      if (named.some(distinctive)) specWithoutCode.push({ specPath: s.specPath, heading: display(s.heading) });
+      // reporting them buries the sections that matter. A tracker or readme is
+      // never a claim about code at all.
+      if (EPHEMERAL_SPEC.test(s.specPath)) return;
+      const named = [...new Set([...secIds[i]!.heading, ...secIds[i]!.body])].filter(distinctive);
+      if (!named.length) return;
+      // Claimed by a sibling section? Then it is documented in this PR after all,
+      // and reporting it as a gap is an artefact of one-section-per-step binding.
+      const covered = named.filter((n) => changedNames.has(n));
+      const here = opts.known ? named.filter((n) => opts.known!.has(n)) : [];
+      const reason: SpecGapReason = covered.length ? "covered" : here.length ? "unchanged" : "absent";
+      specWithoutCode.push({
+        specPath: s.specPath,
+        heading: display(s.heading),
+        reason,
+        names: (covered.length ? covered : here.length ? here : named).slice(0, 6),
+      });
       return;
     }
     chapters.push({

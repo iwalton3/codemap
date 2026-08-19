@@ -270,7 +270,17 @@ const nowISO = () => new Date().toISOString();
  *   (you're editing against drifted/removed code), FORK a new version so the old
  *   branch's version is preserved.
  */
-export async function writeNode(root: string, node: LogicalNode): Promise<void> {
+/**
+ * `opts.hashes` overrides the hash source used to capture accepted hashes and to
+ * pick the winning version. Documenting a pull request needs it: the symbols
+ * being described may exist only on that branch, so capturing from @work would
+ * record an empty accepted set and the version could never match anything.
+ */
+export async function writeNode(
+  root: string,
+  node: LogicalNode,
+  opts: { hashes?: Map<string, string>; commit?: string | null; branch?: string | null } = {},
+): Promise<void> {
   const d = db(root);
   const existing = versionsOf(d, node.id);
 
@@ -289,8 +299,9 @@ export async function writeNode(root: string, node: LogicalNode): Promise<void> 
     return;
   }
 
-  const work = workHashes(d);
-  const commit = headCommit(root), branch = currentBranch(root);
+  const work = opts.hashes ?? workHashes(d);
+  const commit = opts.commit !== undefined ? opts.commit : headCommit(root);
+  const branch = opts.branch !== undefined ? opts.branch : currentBranch(root);
   const capture = (ids: string[]): NodeCitation[] => ids.map((id) => ({ anchorId: id, acceptedHashes: work.has(id) ? [work.get(id)!] : [] }));
   const insert = (cites: NodeCitation[]) =>
     d.prepare(INS_VERSION).run(vid(), node.id, node.type, node.title, node.summary, node.body, null, commit, branch, nowISO(), JSON.stringify(cites));

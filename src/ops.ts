@@ -27,7 +27,7 @@ import {
 } from "./store.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "./diff.js";
-import { prTriage, listOpenPrs, prPacket, prStory, prAnchorCode } from "./pr.js";
+import { prTriage, listOpenPrs, prPacket, prStory, prAnchorCode, prPromotionPlan } from "./pr.js";
 import { parseAgentLines, ingestAgentReview } from "./pr-ingest.js";
 import { planPrPush, executePrPush } from "./pr-push.js";
 import { resolveCoverage, selectAnchors, docPct as computeDocPct, citedPct as computeCitedPct, type CoverageResult } from "./coverage.js";
@@ -509,6 +509,34 @@ export async function prStoryFor(root: string, input: string, opts: { fetch?: bo
   return prStory(root, input, opts);
 }
 
+/** What promoting a walkthrough chapter into the map would write. */
+export async function prPromotePlan(root: string, input: string, chapterId: string) {
+  return prPromotionPlan(root, input, chapterId);
+}
+
+/**
+ * Promote a chapter into a real node (a flow when it spans layers). Documenting
+ * against the PR head, so the doc describes the code as that branch leaves it and
+ * its citations are accepted at those hashes.
+ */
+export async function prPromote(root: string, input: string, chapterId: string, over: { id?: string; title?: string; summary?: string; type?: "process" | "module" } = {}) {
+  const plan = await prPromotionPlan(root, input, chapterId);
+  if ("error" in plan) return plan;
+  const p = plan.promotion;
+  const type = over.type ?? p.type;
+  const r = await document(root, {
+    id: over.id ?? p.id,
+    type,
+    title: over.title ?? p.title,
+    summary: over.summary ?? p.summary,
+    body: p.body,
+    anchors: p.anchors,
+    steps: type === "process" ? p.steps : undefined,
+    ref: plan.ref,
+  });
+  return { ...r, promoted: over.id ?? p.id, shape: type, rationale: p.rationale };
+}
+
 /** What a push to GitHub would contain — inspect before anything leaves the machine. */
 export async function prPushPlan(root: string, input: string, filter: { reviewedOnly?: boolean; minSeverity?: "low" | "medium" | "high" | "critical" } = {}) {
   return planPrPush(root, input, filter);
@@ -541,6 +569,12 @@ export function prs(repoSlug: string) {
 /** Diff a doc's prose between the versions that win on base vs head (grounds the code diff). */
 export async function docDiff(root: string, base: string, head: string | undefined, id: string) {
   return computeDocDiff(root, base, head, id);
+}
+
+/** Anchor→hash map for a cached commit — the hash source when documenting a branch. */
+async function snapshotHashes(root: string, ref: string): Promise<Map<string, string>> {
+  const snap = await readSnapshot(root, ref);
+  return new Map((snap ?? []).map((a) => [a.id, a.bodyHash]));
 }
 
 /** Before/after source for one anchor between two refs (the code drill-down) + its review state. */
@@ -1674,15 +1708,20 @@ interface StepInput { id?: string; title: string; summary: string; anchors: stri
 
 export async function document(
   root: string,
-  input: { id?: string; type: LogicalNodeType; title: string; summary: string; anchors: string[]; body?: string; steps?: StepInput[] },
+  input: { id?: string; type: LogicalNodeType; title: string; summary: string; anchors: string[]; body?: string; steps?: StepInput[]; ref?: string },
 ) {
-  const r = await resolveRefs(root, input.anchors);
+  // `ref` documents code as a branch leaves it: anchors resolve against that
+  // commit's snapshot as well as @work, and the version's accepted hashes are
+  // captured there — otherwise a doc written while reviewing a PR would cite
+  // symbols the working tree has never seen and match nothing.
+  const r = await resolveRefs(root, input.anchors, input.ref);
+  const wopts = input.ref ? { hashes: await snapshotHashes(root, input.ref), commit: input.ref, branch: null } : {};
   // Partial acceptance — but a node with no anchors is a floating claim, so a call
   // where nothing resolved is still rejected outright.
   if (!r.ids.length) return { error: r.errors.join("; ") || "no anchors given" };
   const id = input.id ?? slug(input.title);
   const body = input.body ?? "";
-  await writeNode(root, { id, type: input.type, title: input.title, summary: input.summary, anchors: r.ids, body });
+  await writeNode(root, { id, type: input.type, title: input.title, summary: input.summary, anchors: r.ids, body }, wopts);
 
   const result: Record<string, unknown> = { ok: true, id, anchors: r.ids.length, ...rejected(r.errors) };
 
@@ -1694,7 +1733,7 @@ export async function document(
     const warnings: string[] = [];
     let i = 0;
     for (const step of input.steps) {
-      const sr = await resolveRefs(root, step.anchors);
+      const sr = await resolveRefs(root, step.anchors, input.ref);
       // A step with nothing resolved is SKIPPED, not fatal: the process node and
       // its other steps are already written, so aborting here would leave the map
       // half-built and the caller re-sending everything.
@@ -1702,7 +1741,7 @@ export async function document(
       for (const e of sr.errors) warnings.push(`step "${step.title}": ${e}`);
       const stepId = step.id ?? uniqueSlug(slug(step.title), taken);
       taken.add(stepId);
-      await writeNode(root, { id: stepId, type: "step", title: step.title, summary: step.summary, anchors: sr.ids, body: step.body ?? "" });
+      await writeNode(root, { id: stepId, type: "step", title: step.title, summary: step.summary, anchors: sr.ids, body: step.body ?? "" }, wopts);
       created.push(stepId);
       addEdge(graph, { from: stepId, to: id, type: "step_of", order: i });
       for (const t of step.touches ?? []) {

@@ -113,6 +113,8 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return ops.pr(root, q.get("pr") ?? "", { fetch: q.get("fetch") === "1" });
     case "/api/pr/story":
       return ops.prStoryFor(root, q.get("pr") ?? "", { fetch: q.get("fetch") === "1" });
+    case "/api/pr/promote_plan":
+      return ops.prPromotePlan(root, q.get("pr") ?? "", q.get("chapter") ?? "");
     case "/api/pr/code":
       return ops.prCode(root, q.get("pr") ?? "", q.get("id") ?? "");
     case "/api/prs":
@@ -185,6 +187,21 @@ const server = createServer(async (req, res) => {
           : body.clear
             ? ops.clearTriage(root, { targetKind: body.targetKind, targetId: body.targetId })
             : ops.setTriage(root, { targetKind: body.targetKind, targetId: body.targetId, importance: body.importance, complexity: body.complexity, source: "human", reason: body.reason, tripwire: body.tripwire }),
+      );
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(out));
+      return;
+    }
+
+    // Promoting a walkthrough chapter into the map — a write, and a human act:
+    // the walkthrough only ever proposes.
+    if (req.method === "POST" && url.pathname === "/api/pr/promote") {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      const root = rootFor(body.u ?? null);
+      const out = await withLock<unknown>(root, () =>
+        ops.prPromote(root, String(body.pr ?? ""), String(body.chapter ?? ""), { id: body.id, title: body.title, summary: body.summary, type: body.type }),
       );
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(out));

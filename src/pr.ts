@@ -12,14 +12,15 @@
 
 import { spawnSync } from "node:child_process";
 import type { Anchor } from "./schema.js";
-import { computeDiff, type DiffResult } from "./diff.js";
+import { computeDiff, lineDiff, stripCR, type DiffResult, type DiffLine } from "./diff.js";
 import { indexBlob, indexCommit } from "./repo.js";
-import { readSnapshot, writeSnapshot, readAnnotations } from "./store.js";
+import { readSnapshot, writeSnapshot, readAnnotations, readAnchorStore } from "./store.js";
 import { loadLanes, LANE_POLICY, type Lane } from "./lanes.js";
 import { complexityOf, MONEY_RX, reviewTriageFor } from "./triage.js";
 import type { Complexity } from "./schema.js";
 import { revParse, mergeBase, hasObject, fetchRef, numstat, readBlobs, isGitRepo, originSlug } from "./git.js";
-import { splitSpec, buildStory, layerOf, type PrStory, type StoryStep } from "./pr-story.js";
+import { splitSpec, buildStory, layerOf, type PrStory, type StoryStep, type StoryChapter } from "./pr-story.js";
+import { planPromotion, type Promotion } from "./pr-promote.js";
 
 export interface PrRef { owner: string; repo: string; number: number }
 
@@ -394,7 +395,13 @@ export async function prStory(
       annotations: byAnchor.get(w.id) ?? [],
     }));
 
-  const story = buildStory(sections, steps);
+  // Symbol names this universe knows about at all — live plus the PR head — so a
+  // spec section can be told apart from one describing another repo's code.
+  const known = new Set<string>();
+  for (const a of (await readAnchorStore(root).catch(() => ({ anchors: [] as Anchor[] }))).anchors) known.add(a.symbolPath[a.symbolPath.length - 1]!);
+  for (const a of (await readSnapshot(root, t.refs.head)) ?? []) known.add(a.symbolPath[a.symbolPath.length - 1]!);
+
+  const story = buildStory(sections, steps, { known });
   return {
     ...story,
     pr: { number: t.pr.number, title: t.pr.title, url: t.pr.url, author: t.pr.author, headRef: t.pr.headRef, baseRef: t.pr.baseRef },
@@ -412,6 +419,15 @@ export interface PrAnchorCode {
   /** Head source plus its real starting line, so findings can be pinned to file lines. */
   head: string | null; startLine: number;
   base: string | null;
+  /** Unified diff of base→head. What a reviewer of a *changed* symbol actually wants. */
+  lines: DiffLine[];
+  /**
+   * The two sides disagree about line endings. Reported rather than silently
+   * normalised: a CRLF↔LF flip makes every line look rewritten, and a reviewer
+   * who is not told will either read a wall of false changes or, worse, trust a
+   * diff that quietly hid it.
+   */
+  lineEndingsChanged: boolean;
   annotations: unknown[];
 }
 
@@ -432,13 +448,22 @@ export async function prAnchorCode(root: string, input: string, id: string): Pro
     const a = (await indexBlob(src, item.file)).find((x) => x.id === id);
     return a?.loc ? { code: src.slice(a.loc.startByte, a.loc.endByte), startLine: a.loc.startLine } : { code: null, startLine: 1 };
   };
-  const head = item.change === "removed" ? { code: null, startLine: 1 } : await at(t.refs.head);
-  const base = item.change === "added" ? { code: null, startLine: 1 } : await at(t.refs.mergeBase);
+  const head = item.change === "removed" ? { code: null as string | null, startLine: 1 } : await at(t.refs.head);
+  const base = item.change === "added" ? { code: null as string | null, startLine: 1 } : await at(t.refs.mergeBase);
   const anns = (await readAnnotations(root)).annotations.filter((a) => a.target.kind === "anchor" && a.target.id === id);
+
+  const hasCR = (x: string | null) => x != null && x.includes("\r");
+  const lineEndingsChanged = base.code != null && head.code != null && hasCR(base.code) !== hasCR(head.code);
+  const b = stripCR(base.code), h = stripCR(head.code);
+  const lines: DiffLine[] =
+    b != null && h != null ? lineDiff(b, h)
+      : h != null ? h.split("\n").map((text) => ({ tag: "+" as const, text }))
+        : b != null ? b.split("\n").map((text) => ({ tag: "-" as const, text }))
+          : [];
 
   return {
     id, file: item.file, lang: langOf(item.file),
-    head: head.code, startLine: head.startLine, base: base.code, annotations: anns,
+    head: h, startLine: head.startLine, base: b, lines, lineEndingsChanged, annotations: anns,
   };
 }
 
@@ -462,3 +487,20 @@ export async function anchorSpans(
 
 const LANG: Record<string, string> = { cs: "csharp", py: "python", js: "javascript", mjs: "javascript", cjs: "javascript", ts: "typescript", tsx: "typescript", jsx: "javascript" };
 const langOf = (file: string) => LANG[file.split(".").pop()?.toLowerCase() ?? ""] ?? "plaintext";
+
+
+/** What promoting a chapter would write — inspect before it lands in the map. */
+export async function prPromotionPlan(
+  root: string, input: string, chapterId: string,
+): Promise<{ promotion: Promotion; chapter: { id: string; title: string; durable: boolean; source: string }; ref: string } | { error: string }> {
+  const story = await prStory(root, input, { fetch: false });
+  if ("error" in story) return story;
+  const chapter = story.chapters.find((c) => c.id === chapterId);
+  if (!chapter) return { error: `no chapter "${chapterId}" in PR #${story.pr.number}` };
+  if (!chapter.steps.length) return { error: `chapter "${chapter.title}" has no symbols to cite — a node with no anchors is a floating claim` };
+  return {
+    promotion: planPromotion(chapter),
+    chapter: { id: chapter.id, title: chapter.title, durable: chapter.durable, source: chapter.source },
+    ref: story.refs.head,
+  };
+}
