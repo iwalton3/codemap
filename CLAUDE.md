@@ -86,7 +86,13 @@ analyzers/*          OPT-IN framework plugins (Marten) — never in the agnostic
 - **No floating claims.** A logical node must cite anchors; write ops validate
   that the anchors exist. That invariant is what makes staleness detectable.
 - **Deterministic anchor id** = `a_ + sha256(file \0 symbolPath \0 disambiguator)`
-  — stable across branches/line-moves; only a file/symbol rename changes it.
+  — stable across branches/line-moves, and across a body rewrite: the hash of the
+  CODE is not in it. What does change an id: a file rename, a symbol rename, and —
+  since an overload's disambiguator is its parameter-type list — a change to an
+  overload's signature. In an event-sourced codebase that last one is
+  `Apply(SomeEvent)`, i.e. exactly the code people file findings about, so it is
+  worth knowing before diagnosing "my findings disappeared". Referenced anchors that
+  leave the tree are retained under `@orphan`; `codemap orphans` reports them.
 - **Witness-hash staleness.** Bugs and reviews snapshot the covered code's
   normalized hashes; a later mismatch = `possiblyFixed` / `stale`. Judge review
   staleness against **live** hashes, never the frozen stored ones.
