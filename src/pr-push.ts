@@ -16,7 +16,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { PUBLISHABLE, type Annotation, type Disposition } from "./schema.js";
-import { readAnnotations, writeAnnotations, readAnchorStore, readPushes, writePush } from "./store.js";
+import { readAnnotations, writeAnnotations, readAnchorStore, readPushes, writePush, readSnapshot } from "./store.js";
 import { diffLineRanges } from "./git.js";
 import { prTriage, anchorSpans, fetchPrMeta, type PrMeta } from "./pr.js";
 import { LANE_POLICY } from "./lanes.js";
@@ -47,7 +47,9 @@ export interface PushPlan {
   deferred: DeferredComment[];
   blocked: BlockedComment[];
   viewedPaths: string[];
-  skipped: { alreadyPushed: number; resolved: number; notElected: number; belowSeverity: number; withdrawn: number; noComment: number; notPublishable: number };
+  skipped: { alreadyPushed: number; resolved: number; notElected: number; belowSeverity: number; withdrawn: number; noComment: number; notPublishable: number; evidenceMoved: number };
+  /** Published findings codemap could not confirm were written against this PR. */
+  unverified: string[];
   /**
    * Identity of exactly what this plan would publish. A caller that inspected a
    * plan sends it back with the publish; if re-deriving gives a different one, the
@@ -141,13 +143,17 @@ export function publishStateOf(a: Annotation, pushed: ReadonlySet<string>): Publ
  */
 export type PushVerdict =
   | "push" | "not-in-pr" | "resolved" | "already-pushed" | "not-elected" | "below-severity"
-  | "withdrawn" | "no-comment" | "not-publishable";
+  | "withdrawn" | "no-comment" | "not-publishable" | "evidence-moved";
 
 export function pushVerdict(
   a: Annotation,
   inPr: boolean,
   pushed: ReadonlySet<string>,
-  filter: { electedOnly?: boolean; minSeverity?: string; dispositions?: readonly Disposition[]; ids?: ReadonlySet<string> } = {},
+  filter: {
+    electedOnly?: boolean; minSeverity?: string; dispositions?: readonly Disposition[]; ids?: ReadonlySet<string>;
+    /** The anchor's body hash at the PR head; undefined when the PR does not carry it. */
+    headHashOf?: (anchorId: string) => string | undefined;
+  } = {},
 ): PushVerdict {
   if (!inPr) return "not-in-pr";
   if (a.resolved) return "resolved";                       // never send something closed locally
@@ -167,6 +173,15 @@ export function pushVerdict(
   // would OTHERWISE have gone out reports — not something every unelected note says.
   // Falling back to `text` here is exactly the wall of text the split exists to stop.
   if (!a.comment?.trim()) return "no-comment";
+  // The body it was written against is not the body on this pull request. Either the
+  // submitter has pushed since, or — the case this was built for — it was written
+  // while reading a DIFFERENT branch that touches the same path, and an anchor id
+  // carries no ref to tell those apart. Publishing it would send a confident,
+  // well-evidenced review of code that is not in this PR.
+  if (filter.headHashOf && a.witness) {
+    const head = filter.headHashOf(a.witness.anchorId);
+    if (head !== undefined && head !== a.witness.bodyHash) return "evidence-moved";
+  }
   return "push";
 }
 
@@ -254,6 +269,14 @@ export interface CommentSet {
   comments: InlineComment[];
   deferred: DeferredComment[];
   blocked: BlockedComment[];
+  /**
+   * Findings going out that predate witnessing, so codemap cannot confirm they were
+   * written against this pull request. Not blocked — they were filed under the old
+   * contract and blocking them all would be a migration disguised as a safety check
+   * — but named, because "we did not check this one" is different from "this one is
+   * fine" and the plan should not let them read the same.
+   */
+  unverified: string[];
   skipped: PushPlan["skipped"];
 }
 
@@ -276,13 +299,16 @@ export function buildComments(
     commentable: (path: string, line: number) => boolean;
     firstHunkLine: (path: string) => number | undefined;
     firstChangedLineOfSymbol: (anchorId: string, path: string) => number | undefined;
+    /** The anchor's body hash at the PR head — what a finding's witness must match. */
+    headHashOf: (anchorId: string) => string | undefined;
   },
   filter: PushFilterExt = {},
 ): CommentSet {
   const comments: InlineComment[] = [];
   const deferred: DeferredComment[] = [];
   const blocked: BlockedComment[] = [];
-  let resolved = 0, already = 0, notElected = 0, belowSeverity = 0, withdrawn = 0, noComment = 0, notPublishable = 0;
+  const unverified: string[] = [];
+  let resolved = 0, already = 0, notElected = 0, belowSeverity = 0, withdrawn = 0, noComment = 0, notPublishable = 0, evidenceMoved = 0;
   const electedOnly = filter.electedOnly !== false;
   const ids = filter.ids?.length ? new Set(filter.ids) : undefined;
   const { pushed, inDiff, commentable, firstHunkLine } = ctx;
@@ -303,6 +329,7 @@ export function buildComments(
 
     const verdict = pushVerdict(a, w ? true : claimed, pushed, {
       electedOnly, minSeverity: filter.minSeverity, dispositions: filter.dispositions, ids,
+      headHashOf: ctx.headHashOf,
     });
     if (verdict === "not-in-pr") continue;
     if (verdict === "resolved") { resolved++; continue; }
@@ -314,6 +341,15 @@ export function buildComments(
 
     const anc = ctx.anchorOf(a.target.id);
     const subject = { file: w?.file ?? anc?.file, symbol: w?.symbol ?? anc?.symbol };
+
+    if (verdict === "evidence-moved") {
+      evidenceMoved++;
+      blocked.push({
+        annotationId: a.id, severity: a.severity, file: subject.file, symbol: subject.symbol, label: labelOf(a),
+        why: `written against a different version of this code${a.sourceRef && a.sourceRef !== "@work" ? ` (${a.sourceRef.slice(0, 12)})` : a.sourceRef === "@work" ? " (the working tree, not this pull request)" : ""}. Re-read it at this PR's head and revise — or, if it describes another branch that touches the same file, it belongs on that one.`,
+      });
+      continue;
+    }
 
     if (verdict === "no-comment") {
       noComment++;
@@ -328,6 +364,8 @@ export function buildComments(
       inDiff, commentable, firstHunkLine,
       firstChangedLineOfSymbol: () => (w ? ctx.firstChangedLineOfSymbol(a.target.id, w.file) : undefined),
     });
+
+    if (!a.witness) unverified.push(a.id);
 
     if (place.kind === "inline") {
       comments.push({
@@ -347,7 +385,7 @@ export function buildComments(
       blocked.push({ annotationId: a.id, severity: a.severity, file: subject.file, symbol: subject.symbol, label: labelOf(a), why: place.why });
     }
   }
-  return { comments, deferred, blocked, skipped: { alreadyPushed: already, resolved, notElected, belowSeverity, withdrawn, noComment, notPublishable } };
+  return { comments, deferred, blocked, unverified, skipped: { alreadyPushed: already, resolved, notElected, belowSeverity, withdrawn, noComment, notPublishable, evidenceMoved } };
 }
 
 export async function planPrPush(root: string, input: string, filter: PushFilterExt = {}): Promise<PushPlan | { error: string }> {
@@ -387,7 +425,13 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
   };
 
   const allAnchors = new Map((await readAnchorStore(root)).anchors.map((x) => [x.id, x]));
+  // The PR head's bodies, from the snapshot `prContext` already cached — so a
+  // finding's witness can be checked against what this pull request actually holds
+  // without another git read.
+  const headBodies = new Map(((await readSnapshot(root, t.refs.head)) ?? []).map((a) => [a.id, a.bodyHash]));
+
   const set = buildComments(anns, {
+    headHashOf: (id) => headBodies.get(id),
     inPr: (id) => { const w = byAnchor.get(id); return w ? { file: w.file, symbol: w.symbol } : undefined; },
     anchorOf: (id) => { const x = allAnchors.get(id); return x ? { file: x.file, symbol: x.symbolPath.join(" › ") } : undefined; },
     pushed,
@@ -453,6 +497,7 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
     pr: { number: t.pr.number, title: t.pr.title, url: t.pr.url, owner: t.pr.owner, repo: t.pr.repo },
     head: t.refs.head,
     body, comments, deferred, blocked, viewedPaths,
+    unverified: set.unverified,
     skipped: set.skipped,
   };
 }

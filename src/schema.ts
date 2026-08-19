@@ -423,8 +423,28 @@ export interface Annotation {
     at: string;
     by: string;
     /** The values as they stood BEFORE this revision — only the fields it changed. */
-    was: Partial<Pick<Annotation, "text" | "comment" | "disposition" | "severity" | "publishPath" | "publishLine">>;
+    was: Partial<Pick<Annotation, "text" | "comment" | "disposition" | "severity" | "publishPath" | "publishLine" | "witness" | "sourceRef">>;
   }[];
+  /**
+   * The code this was written against, witnessed the way bugs and reviews are.
+   *
+   * A finding is a claim ABOUT a body of code, and an anchor id is deliberately
+   * ref-free — `EmailTemplateService` at that path is the same anchor on every
+   * branch, which is what lets a review mark survive a rebase. The cost is that a
+   * finding written while reading one branch lands on an anchor another branch's
+   * review will read. Recording the hash makes that detectable: publishing a
+   * finding whose witnessed body is not the body at the PR head is refused.
+   *
+   * Witnessed at `sourceRef`, so a finding raised on a symbol that exists only on a
+   * branch is witnessed against the branch, not the working tree.
+   */
+  witness?: BugWitness;
+  /**
+   * Which ref the anchor was resolved and witnessed at — a commit sha, or `@work`
+   * for the live index. Distinct from `createdCommit`, which is only ever the
+   * working tree's HEAD and so says nothing about what was actually read.
+   */
+  sourceRef?: string;
   /** Who wrote it — an agent label or a person. */
   author: string;
   createdCommit: string | null;

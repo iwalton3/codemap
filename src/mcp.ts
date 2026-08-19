@@ -251,7 +251,7 @@ const tools: Tool[] = [
   },
   {
     name: "get_anchor",
-    description: "Read an anchor with its CURRENT source code (live), citing nodes, related bugs, annotations, and review state. Use before documenting or filing a bug.",
+    description: "Read an anchor with its source code, citing nodes, related bugs, annotations, and review state. Use before documenting or filing a bug.\n\nThe source is the WORKING TREE's, and the response says so (`sourceRef: \"@work\"`, `sourceCommit`). During a pull-request review that is a THIRD version — not the PR's head, and not whatever branch you were last reading. An anchor id carries no ref (the same path+symbol is one anchor on every branch), so if you are reviewing a PR, get its bodies from `pr_packet`, and check `sourceCommit` before quoting this one as evidence.",
     inputSchema: obj({ id: { type: "string" } }, ["id"]),
     handler: (a, c) => ops.getAnchor(c.universe.path, a.id),
   },

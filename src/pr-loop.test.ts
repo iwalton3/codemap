@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { State } from "./schema.js";
-import { writeStore, readAnnotations, writeAnnotations } from "./store.js";
+import { writeStore, readAnnotations, writeAnnotations, writeSnapshot } from "./store.js";
 import { withLock } from "./lock.js";
 import { annotate, assignAnnotation, reviewQueue, closeAssignment, resolveAnnotation, escalateAnnotation, anchorAnnotations, reviseAnnotation, withdrawAnnotation } from "./ops.js";
 import { indexBlob } from "./repo.js";
@@ -349,5 +349,43 @@ test("the queue is brief by default, because the full form could not be read at 
     const paged = await reviewQueue(root, { limit: 1, offset: 1 });
     assert.equal(paged.queue.length, 0);
     assert.equal(paged.total, 1, "the count is of everything, not of the page");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a finding records the body it was written against, and which ref that was", async () => {
+  // An anchor id is path+symbol with no ref: the same `EmailTemplateService` on
+  // every branch. That is what lets a review mark survive a rebase, and it is also
+  // how a finding written while reading one branch lands on an anchor another
+  // branch's review reads. The witness is what tells those apart afterwards.
+  const { root, anchorId } = await fixture();
+  try {
+    const live = await annotate(root, {
+      targetKind: "anchor", targetId: anchorId, text: "e", comment: "c", kind: "finding", author: "me",
+    }) as any;
+    const of = async (id: string) => (await readAnnotations(root)).annotations.find((a) => a.id === id)!;
+    const fromWork = await of(live.id);
+    assert.equal(fromWork.sourceRef, "@work", "the working tree, said out loud");
+    assert.match(fromWork.witness!.bodyHash, /^sha256:/);
+    assert.equal(fromWork.witness!.anchorId, anchorId);
+
+    // ...and a finding raised against a branch snapshot witnesses THAT body
+    const branchSrc = "export function transfer(cents: number) {\n  return cents * 2;\n}\n";
+    const branch = await indexBlob(branchSrc, "src/pay.ts");
+    await writeSnapshot(root, "prhead", "feature/x", branch, "2026-08-19T00:00:00Z");
+    const onBranch = await annotate(root, {
+      targetKind: "anchor", targetId: anchorId, text: "e", comment: "c", kind: "finding", author: "me", ref: "prhead",
+    }) as any;
+    const filed = await of(onBranch.id);
+    assert.equal(filed.sourceRef, "prhead");
+    assert.equal(filed.witness!.bodyHash, branch.find((a) => a.id === anchorId)!.bodyHash);
+    assert.notEqual(filed.witness!.bodyHash, fromWork.witness!.bodyHash,
+      "the two findings sit on the SAME anchor and witness different bodies — which is the whole point");
+
+    // re-reading at a ref re-witnesses, which is how a blocked finding is cleared
+    const revised = await reviseAnnotation(root, { id: live.id, ref: "prhead", by: "me" }) as any;
+    assert.deepEqual(revised.changed, ["witness"]);
+    const after = await of(live.id);
+    assert.equal(after.sourceRef, "prhead");
+    assert.equal(after.revisions![0]!.was.sourceRef, "@work", "and what it used to be witnessed against survives");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

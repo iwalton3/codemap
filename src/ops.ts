@@ -1749,6 +1749,11 @@ export async function getAnchor(root: string, id: string) {
     ...anchorBrief(anchor),
     present,
     code,
+    // WHICH version this is. The working tree is a third thing during a PR review —
+    // neither the PR under review nor whatever branch the reader last had in mind —
+    // and a response that just says "current" invites all three to be conflated.
+    sourceRef: "@work",
+    sourceCommit: headCommit(root),
     // citedBy carries the trust ladder so "what documents this code, and can I
     // trust it?" is answerable from the anchor alone.
     citedBy: citing.map((n) => {
@@ -2321,18 +2326,49 @@ function checkComment(comment: string | undefined): { comment?: string } | { err
 const checkDisposition = (d: string | undefined): Disposition | undefined =>
   d && (DISPOSITIONS as readonly string[]).includes(d) ? (d as Disposition) : undefined;
 
+/**
+ * The body an annotation is being written against, and the ref that body came from.
+ *
+ * `ref` is a cached commit snapshot (a PR head); without one this is the live index,
+ * which during a PR review is the WORKING TREE — a third version of the file that is
+ * neither the PR under review nor the branch the reader may have been looking at.
+ * Recording which one it was is what makes that confusion detectable later.
+ */
+async function witnessAt(
+  root: string, anchorId: string, ref?: string,
+): Promise<{ witness?: { anchorId: string; bodyHash: string }; sourceRef: string }> {
+  if (ref) {
+    const snap = await readSnapshot(root, ref);
+    const a = snap?.find((x) => x.id === anchorId);
+    if (a) return { witness: { anchorId, bodyHash: a.bodyHash }, sourceRef: ref };
+  }
+  const stored = (await readAnchorStore(root)).anchors.find((a) => a.id === anchorId);
+  if (stored) {
+    // Re-index rather than trusting the stored hash: an edit since the last index
+    // would witness a body nobody has read.
+    const live = (await liveAnchors(root, [stored.file])).get(anchorId);
+    if (live) return { witness: { anchorId, bodyHash: live.bodyHash }, sourceRef: "@work" };
+  }
+  return { sourceRef: ref ?? "@work" };
+}
+
 export async function annotate(
   root: string,
   input: { targetKind: "anchor" | "node"; targetId: string; text: string; author?: string; kind?: Annotation["kind"]; severity?: BugSeverity; category?: string; line?: number; ref?: string; comment?: string; disposition?: Disposition; publishPath?: string; publishLine?: number },
 ) {
   // Validate the target exists (anchor targets accept file#Symbol refs too).
   let targetId = input.targetId;
+  let witness: { anchorId: string; bodyHash: string } | undefined;
+  let sourceRef: string | undefined;
   if (input.targetKind === "anchor") {
     // A single-target ref is strict: there is nothing partial to accept, and the
     // ambiguity error now carries the candidates' ids and line ranges.
     const r = await resolveRefs(root, [input.targetId], input.ref);
     if (!r.ids.length) return { error: r.errors.join("; ") };
     targetId = r.ids[0]!;
+    const w = await witnessAt(root, targetId, input.ref);
+    witness = w.witness;
+    sourceRef = w.sourceRef;
   } else {
     const nodes = await loadNodes(root);
     if (!nodes.some((n) => n.id === input.targetId)) return { error: `unknown node "${input.targetId}"` };
@@ -2365,6 +2401,8 @@ export async function annotate(
     ...(Number.isFinite(input.publishLine) ? { publishLine: Math.floor(input.publishLine as number) } : {}),
     resolved: false,
     ...(line !== undefined ? { line } : {}),
+    ...(witness ? { witness } : {}),
+    ...(sourceRef ? { sourceRef } : {}),
     author: input.author ?? "agent",
     createdCommit: headCommit(root),
   };
@@ -2438,6 +2476,13 @@ export async function reviseAnnotation(
     id: string; by?: string; allowPostEdit?: boolean;
     text?: string; comment?: string; disposition?: Disposition; severity?: BugSeverity;
     publishPath?: string; publishLine?: number; publishAttribution?: "agent" | "human";
+    /**
+     * Re-witness against this ref. Revising after re-reading the code is exactly how
+     * a finding blocked as written-against-a-different-body gets cleared, so the
+     * re-read has to be recordable — otherwise the only way past the gate would be
+     * to ignore it.
+     */
+    ref?: string;
   },
 ) {
   const store = await readAnnotations(root);
@@ -2476,6 +2521,16 @@ export async function reviseAnnotation(
   bump("publishPath", input.publishPath?.trim() || undefined);
   bump("publishLine", Number.isFinite(input.publishLine) ? Math.floor(input.publishLine as number) : undefined);
   if (input.publishAttribution) ann.publishAttribution = input.publishAttribution;
+  if (input.ref !== undefined && ann.target.kind === "anchor") {
+    const w = await witnessAt(root, ann.target.id, input.ref || undefined);
+    if (!w.witness) return { error: `could not read ${ann.target.id} at ${input.ref || "@work"} — nothing to witness against` };
+    if (w.witness.bodyHash !== ann.witness?.bodyHash) {
+      was.witness = ann.witness; was.sourceRef = ann.sourceRef;
+      changed.push("witness");
+    }
+    ann.witness = w.witness;
+    ann.sourceRef = w.sourceRef;
+  }
 
   if (!changed.length) return { ok: true, id: ann.id, changed: [], note: "nothing to change" };
   (ann.revisions ??= []).push({ at: new Date().toISOString(), by: input.by || "agent", was });

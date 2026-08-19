@@ -83,6 +83,8 @@ async function cmdPrPush(root: string, prInput: string, confirm: boolean, markVi
   if (plan.skipped.withdrawn) console.log(`  ${plan.skipped.withdrawn} withdrawn`);
   if (plan.skipped.notPublishable) console.log(`  ${plan.skipped.notPublishable} held back by disposition (untriaged, refuted or accepted)`);
   if (plan.skipped.noComment) console.log(`  ${plan.skipped.noComment} have no submitter-facing \`comment\` written — the evidence is not published in its place`);
+  if (plan.skipped.evidenceMoved) console.log(`  ${plan.skipped.evidenceMoved} written against a different version of the code (see below)`);
+  if (plan.unverified.length) console.log(`  ${plan.unverified.length} predate witnessing — codemap cannot confirm they were written against THIS pull request`);
   for (const c of plan.comments) console.log(`    ${c.path}:${c.line}  ${c.body.split("\n")[0]}`);
   for (const d of plan.deferred) console.log(`    [body] ${d.path}${d.line ? ":" + d.line : ""}  (${d.why})`);
   // Loud, and never folded into a count: these are findings the human vouched for

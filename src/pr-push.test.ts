@@ -394,6 +394,7 @@ const world = (over: Partial<Parameters<typeof buildComments>[1]> = {}) => ({
   commentable: (p: string, l: number) => p === "touched.cs" && l >= 10 && l <= 20,
   firstHunkLine: (p: string) => (p === "touched.cs" ? 10 : undefined),
   firstChangedLineOfSymbol: () => 12,
+  headHashOf: () => undefined,
   ...over,
 });
 
@@ -472,11 +473,62 @@ test("the skip counts add up to what was held back, and say why", () => {
   assert.equal(set.comments.length, 1, "only p1");
   assert.deepEqual(set.skipped, {
     alreadyPushed: 0, resolved: 1, notElected: 1, belowSeverity: 1,
-    withdrawn: 1, noComment: 0, notPublishable: 1,
+    withdrawn: 1, noComment: 0, notPublishable: 1, evidenceMoved: 0,
   });
 });
 
 test("naming a batch publishes exactly it", () => {
   const set = buildComments([ann({ id: "p1", line: 12 }), ann({ id: "p2", line: 12 })], world(), { ids: ["p2"] });
   assert.deepEqual(set.comments.map((c) => c.annotationId), ["p2"]);
+});
+
+/**
+ * Cross-PR contamination: a finding accurately describing PR #227's version of
+ * EmailTemplateService.cs was filed onto PR #264's anchor for the same path, because
+ * an anchor id is path+symbol with no ref in it. The prose, line numbers and quoted
+ * expressions were all correct — for the other branch. Nothing inside the finding
+ * marked it as wrong, and it would have gone to #264's author in the batch.
+ *
+ * See the report: codemap-bug-cross-pr-finding-contamination.md.
+ */
+test("a finding written against a different body does not reach the submitter", () => {
+  const onHead = new Map([["a_1", "sha256:HEAD"]]);
+  const w = world({ headHashOf: (id: string) => onHead.get(id) });
+
+  const fromHere = buildComments([ann({ line: 12, witness: { anchorId: "a_1", bodyHash: "sha256:HEAD" } })], w);
+  assert.equal(fromHere.comments.length, 1, "witnessed against this PR's body — it goes");
+
+  const fromElsewhere = buildComments([ann({
+    line: 12, witness: { anchorId: "a_1", bodyHash: "sha256:OTHER-BRANCH" }, sourceRef: "b352cb66aa",
+  })], w);
+  assert.equal(fromElsewhere.comments.length, 0);
+  assert.equal(fromElsewhere.skipped.evidenceMoved, 1);
+  assert.match(fromElsewhere.blocked[0]!.why, /different version of this code \(b352cb66aa\)/);
+  assert.match(fromElsewhere.blocked[0]!.why, /belongs on that one/, "and says where to look");
+
+  // a finding written against the WORKING TREE during a PR review says so by name —
+  // that is the third-version case, and the one the reported bug actually hit
+  const fromWorktree = buildComments([ann({
+    line: 12, witness: { anchorId: "a_1", bodyHash: "sha256:DEVELOP" }, sourceRef: "@work",
+  })], w);
+  assert.match(fromWorktree.blocked[0]!.why, /the working tree, not this pull request/);
+});
+
+test("findings filed before witnessing are sent, but named as unchecked", () => {
+  // Blocking every pre-existing finding would be a migration disguised as a safety
+  // check. Letting them read as verified would be a lie. So: they go, and they are
+  // listed.
+  const w = world({ headHashOf: () => "sha256:HEAD" });
+  const set = buildComments([ann({ id: "old", line: 12 }), ann({ id: "new", line: 12, witness: { anchorId: "a_1", bodyHash: "sha256:HEAD" } })], w);
+  assert.equal(set.comments.length, 2);
+  assert.deepEqual(set.unverified, ["old"]);
+});
+
+test("a PR that does not carry the anchor at all cannot judge the witness", () => {
+  // `headHashOf` returning undefined means this PR's snapshot has no body for that
+  // anchor — a symbol the branch deletes, say. Absence of evidence is not a mismatch,
+  // and treating it as one would block every finding on deleted code.
+  const set = buildComments([ann({ line: 12, witness: { anchorId: "a_1", bodyHash: "sha256:ANY" } })], world());
+  assert.equal(set.comments.length, 1);
+  assert.equal(set.skipped.evidenceMoved, 0);
 });

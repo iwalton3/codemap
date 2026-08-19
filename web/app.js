@@ -2536,6 +2536,8 @@ class PrStoryPage extends Component {
           ${when(sk.notElected, () => html`${sk.notElected} held back — an agent raised them and you have not. Use <b>▲ raise</b> on a finding to include it.<br>`)}
           ${when(sk.notPublishable, () => html`${sk.notPublishable} held back by disposition — untriaged, refuted or accepted. Set one in the findings list to include it.<br>`)}
           ${when(sk.noComment, () => html`${sk.noComment} have no submitter-facing version written, so they are not sent — publishing the evidence instead is the thing this avoids.<br>`)}
+          ${when(sk.evidenceMoved, () => html`${sk.evidenceMoved} written against a different version of the code — listed above.<br>`)}
+          ${when(plan.unverified && plan.unverified.length, () => html`${plan.unverified.length} predate witnessing, so codemap cannot confirm they were written against <b>this</b> pull request. They are in this review.<br>`)}
           ${when(sk.withdrawn, () => html`${sk.withdrawn} withdrawn.<br>`)}
           ${when(sk.alreadyPushed, () => html`${sk.alreadyPushed} already sent on an earlier push — a re-run never duplicates a comment.<br>`)}
           ${when(sk.resolved, () => html`${sk.resolved} resolved locally, so not sent.<br>`)}
