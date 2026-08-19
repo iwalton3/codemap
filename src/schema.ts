@@ -87,6 +87,26 @@ export interface AnchorStore {
   anchors: Anchor[];
 }
 
+/**
+ * How anchor ids are derived, as a number. BUMP IT whenever that changes.
+ *
+ * Ids are the identity of a piece of code, and a cached snapshot is a set of them.
+ * Comparing a snapshot minted under one derivation against one minted under another
+ * makes every affected symbol read as removed-and-added — 107 phantom "changes" on
+ * one real pull request, across nine files that git says are byte-identical, which
+ * put the review-queue coverage number permanently out of reach.
+ *
+ * The previous guard sniffed for NUMERIC disambiguators, so it caught the
+ * ordinal→signature change and silently missed the next one (adding parameter
+ * modifiers, which made an extension method's `(AcmeUser)` become `(thisAcmeUser)`).
+ * A version cannot miss the next one.
+ *
+ *   1  ordinal disambiguators for overloads
+ *   2  signature disambiguators, parameter TYPES only
+ *   3  …plus parameter modifiers (`this`, `ref`, `out`, `in`, `params`)
+ */
+export const ANCHOR_SCHEME = 3;
+
 /** Stable anchor id — same inputs always yield the same id across re-indexes. */
 export function anchorId(
   file: string,

@@ -14,7 +14,7 @@ import { spawnSync } from "node:child_process";
 import type { Anchor } from "./schema.js";
 import { computeDiff, lineDiff, stripCR, type DiffResult, type DiffLine } from "./diff.js";
 import { indexBlob, indexCommit } from "./repo.js";
-import { readSnapshot, writeSnapshot, readAnnotations, readAnchorStore } from "./store.js";
+import { readSnapshot, writeSnapshot, readAnnotations, readAnchorStore, retainOrphans, referencedAnchorIds, anchorsUnderRef } from "./store.js";
 import { loadLanes, LANE_POLICY, type Lane } from "./lanes.js";
 import { complexityOf, MONEY_RX, reviewTriageFor, setTriageBatch } from "./triage.js";
 import { readTriage } from "./store.js";
@@ -257,11 +257,36 @@ export async function prTriage(
   };
 }
 
-/** Cache a commit's anchors if not already cached. Snapshots are immutable, so a hit is final. */
+/**
+ * Cache a commit's anchors if not already cached.
+ *
+ * A snapshot is immutable for a given anchor-id derivation, so a hit is final —
+ * UNLESS it was minted under a different one. Diffing across two derivations reports
+ * every affected symbol as removed-and-added; on one real pull request that was 107
+ * phantom changes across nine byte-identical files, which put the review queue's
+ * coverage permanently out of reach. So a stale-scheme snapshot is rebuilt here,
+ * lazily and only when something actually reads it.
+ *
+ * Referenced anchors it uniquely holds are retained first: `offTree` findings are
+ * reachable precisely BECAUSE a snapshot still holds their anchor, and rebuilding
+ * under new ids would otherwise strand them.
+ */
 async function ensureSnapshot(root: string, sha: string, label: string): Promise<{ error?: string }> {
+  // `readSnapshot` already returns null for a snapshot minted under a different
+  // derivation, so a hit here means genuinely usable.
   if (await readSnapshot(root, sha)) return {};
   const anchors = await indexCommit(root, sha);
   if (!anchors) return { error: "could not read that commit's tree" };
+  // A stale-scheme snapshot is about to be replaced by ids derived differently.
+  // Anything somebody's work points at that the new derivation does not produce is
+  // retained first: an `offTree` finding is reachable precisely BECAUSE a snapshot
+  // still holds its anchor, and rebuilding over it would strand exactly those.
+  const previous = anchorsUnderRef(root, sha);
+  if (previous.length) {
+    const fresh = new Set(anchors.map((a) => a.id));
+    const referenced = await referencedAnchorIds(root);
+    retainOrphans(root, previous.filter((a) => referenced.has(a.id) && !fresh.has(a.id)));
+  }
   await writeSnapshot(root, sha, label, anchors, new Date().toISOString());
   return {};
 }

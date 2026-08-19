@@ -108,6 +108,10 @@ function migrate(d: DatabaseSync): void {
   `);
   // node_versions.removed (Phase 2) — add to tables created before it existed.
   try { d.exec("ALTER TABLE node_versions ADD COLUMN removed INTEGER DEFAULT 0"); } catch { /* already present */ }
+  // Which anchor-id derivation a snapshot was written under. NULL means "before this
+  // column existed", which is indistinguishable from "some older scheme" — so it is
+  // treated as stale and the snapshot is rebuilt on next use.
+  try { d.exec("ALTER TABLE snapshots ADD COLUMN scheme INTEGER"); } catch { /* already present */ }
 }
 
 // --- one-time migration of a legacy JSON .codemap/ into the DB ---------------

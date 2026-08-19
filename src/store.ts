@@ -24,7 +24,7 @@ import {
   type NodeVersion, type NodeCitation, type NodeStatus,
   type Graph, type Edge, type Bug, type BugStore, type Annotation, type AnnotationStore,
   type CoverageRule, type CoverageStore, type AnalyzerConfig, type Review, type ReviewStore, type Triage, type TriageStore,
-  SCHEMA_VERSION,
+  SCHEMA_VERSION, ANCHOR_SCHEME,
 } from "./schema.js";
 
 // --- meta key/value helpers (small structured stores kept as JSON blobs) -----
@@ -133,8 +133,37 @@ export async function writeSnapshot(root: string, ref: string, branch: string | 
   if (ref === WORK_REF) throw new Error("cannot snapshot the reserved @work ref");
   const d = db(root);
   replaceAnchors(d, ref, anchors);
-  d.prepare("INSERT INTO snapshots(ref,branch,at,count) VALUES(?,?,?,?) ON CONFLICT(ref) DO UPDATE SET branch=excluded.branch, at=excluded.at, count=excluded.count")
-    .run(ref, branch, at, anchors.length);
+  d.prepare("INSERT INTO snapshots(ref,branch,at,count,scheme) VALUES(?,?,?,?,?) ON CONFLICT(ref) DO UPDATE SET branch=excluded.branch, at=excluded.at, count=excluded.count, scheme=excluded.scheme")
+    .run(ref, branch, at, anchors.length, ANCHOR_SCHEME);
+}
+
+/**
+ * Snapshots minted under a different anchor-id derivation than the one in force.
+ *
+ * A diff is a set operation over ids between two snapshots, so pairing one scheme
+ * against another reports every affected symbol as removed-and-added. NULL scheme
+ * means "written before this was recorded", which cannot be distinguished from an
+ * older derivation and so counts as stale.
+ */
+/** Every anchor stored under a ref, scheme-check bypassed — the raw rows. */
+export function anchorsUnderRef(root: string, ref: string): Anchor[] {
+  return anchorsUnder(db(root), ref);
+}
+
+export function staleSchemeSnapshots(root: string): string[] {
+  return (db(root).prepare("SELECT ref FROM snapshots WHERE scheme IS NULL OR scheme <> ?").all(ANCHOR_SCHEME) as { ref: string }[])
+    .map((r) => r.ref);
+}
+
+/** Forget one cached snapshot. It rebuilds from the commit's own objects on next use. */
+export function dropSnapshot(root: string, ref: string): void {
+  const d = db(root);
+  d.exec("BEGIN");
+  try {
+    d.prepare("DELETE FROM anchors WHERE ref = ?").run(ref);
+    d.prepare("DELETE FROM snapshots WHERE ref = ?").run(ref);
+    d.exec("COMMIT");
+  } catch (e) { d.exec("ROLLBACK"); throw e; }
 }
 
 /** Read a cached snapshot's anchors, or null when that commit was never indexed. */
@@ -148,6 +177,29 @@ export async function writeSnapshot(root: string, ref: string, branch: string | 
  * no source, which is exactly the hunting the tool description promises it will not
  * have to do.
  */
+/**
+ * Every anchor id any stored work points at — annotations, bugs, reviews, triage and
+ * node citations. The set a reindex or a snapshot rebuild must not silently drop.
+ *
+ * Lives here rather than in ops because `pr.ts` needs it and sits below ops: this
+ * reads nothing but the store.
+ */
+export async function referencedAnchorIds(root: string): Promise<Set<string>> {
+  const [annStore, bugStore, reviewStore, triageStore, nodes] = await Promise.all([
+    readAnnotations(root), readBugs(root), readReviews(root), readTriage(root), loadNodes(root),
+  ]);
+  const ids = new Set<string>();
+  for (const a of annStore.annotations) if (a.target.kind === "anchor") ids.add(a.target.id);
+  for (const b of bugStore.bugs) {
+    for (const id of b.anchors) ids.add(id);
+    for (const w of b.witnesses ?? []) ids.add(w.anchorId);
+  }
+  for (const r of reviewStore.reviews) if (r.target.kind === "anchor") ids.add(r.target.id);
+  for (const t of triageStore.triage) if (t.target.kind === "anchor") ids.add(t.target.id);
+  for (const n of nodes) for (const id of n.anchors) ids.add(id);
+  return ids;
+}
+
 /**
  * Keep anchors that are leaving the tree but that somebody's work still cites.
  *
@@ -234,41 +286,27 @@ export function bodyHashAt(root: string, ref: string, anchorId: string): string 
   return row?.body_hash ?? null;
 }
 
+/**
+ * Read a cached snapshot's anchors, or null when that commit was never indexed —
+ * or was indexed under a DIFFERENT anchor-id derivation.
+ *
+ * The second case reads as "not cached" on purpose. Such a snapshot cannot be
+ * compared with a current one: a diff is a set operation over ids, so every symbol
+ * whose id derivation changed comes out removed-and-added. Callers already handle
+ * "not cached" — `ensureSnapshot` rebuilds, and `diff` says to run `codemap
+ * snapshot` — whereas a silently wrong answer has no handler at all.
+ *
+ * Deliberately NOT applied to the raw by-ref lookups (`findAnchorsOutsideWork`,
+ * `bodyHashAt`): those resolve an id somebody already holds, and an id from an old
+ * snapshot is exactly what needs finding there.
+ */
 export async function readSnapshot(root: string, ref: string): Promise<Anchor[] | null> {
   const d = db(root);
-  const meta = d.prepare("SELECT 1 FROM snapshots WHERE ref = ?").get(ref);
-  if (!meta) return null;
+  const meta = d.prepare("SELECT scheme FROM snapshots WHERE ref = ?").get(ref) as { scheme: number | null } | undefined;
+  if (!meta || meta.scheme !== ANCHOR_SCHEME) return null;
   return anchorsUnder(d, ref);
 }
 
-/**
- * Drop every cached commit snapshot still written under the OLD overload-id scheme.
- *
- * Snapshots are a cache keyed by sha, and `diff` is a set operation over anchor ids
- * BETWEEN two of them. A snapshot minted with ordinal disambiguators cannot be
- * compared with one minted from signatures — every overloaded callable would read
- * as removed-and-added. They are rebuilt on demand from the commit's own objects,
- * so discarding them costs time, not information.
- */
-export function dropLegacyOverloadSnapshots(root: string): string[] {
-  const d = db(root);
-  // `@orphan` is not a snapshot: it is the last surviving record of code somebody
-  // filed a finding against, and it is EXPECTED to hold old-scheme disambiguators —
-  // that is what it retained. Rebuilding it is impossible, so it must never be swept
-  // up by a rule about caches that can be rebuilt.
-  const stale = (d.prepare(
-    "SELECT DISTINCT ref FROM anchors WHERE ref <> ? AND ref <> ? AND disambiguator GLOB '[0-9]*'",
-  ).all(WORK_REF, ORPHAN_REF) as { ref: string }[]).map((r) => r.ref);
-  if (!stale.length) return [];
-  d.exec("BEGIN");
-  try {
-    const delA = d.prepare("DELETE FROM anchors WHERE ref = ?");
-    const delS = d.prepare("DELETE FROM snapshots WHERE ref = ?");
-    for (const ref of stale) { delA.run(ref); delS.run(ref); }
-    d.exec("COMMIT");
-  } catch (e) { d.exec("ROLLBACK"); throw e; }
-  return stale;
-}
 
 /** The label a commit's snapshot was cached under (a branch or PR head ref), if any. */
 export function snapshotBranch(root: string, ref: string): string | null {

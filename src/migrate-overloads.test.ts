@@ -121,17 +121,25 @@ test("a sign-off on an overload survives the re-index that changes its id", asyn
     await writeStore(root, legacy, { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State);
     await markReviewed(root, { targetKind: "anchor", targetId: "legacy_1", level: "code", actor: "human", attestation: "signed" });
 
-    // a cached commit snapshot written under the old scheme
-    const { writeSnapshot, listSnapshots } = await import("./store.js");
+    // A cached commit snapshot from before the derivation changed. Snapshots written
+    // by the current code are stamped with the scheme in force, so simulating an old
+    // one means clearing that stamp — which is exactly the state every snapshot
+    // written before the column existed is already in.
+    const { writeSnapshot, readSnapshot, listSnapshots } = await import("./store.js");
     await writeSnapshot(root, "oldsha", "main", legacy, "2026-08-19T00:00:00Z");
-    assert.equal((await listSnapshots(root)).length, 1);
+    const { DatabaseSync } = await import("node:sqlite");
+    const raw = new DatabaseSync(join(root, ".codemap/codemap.db"));
+    raw.prepare("UPDATE snapshots SET scheme = NULL WHERE ref = ?").run("oldsha");
+    raw.close();
+
+    assert.equal(await readSnapshot(root, "oldsha"), null,
+      "a snapshot from another derivation reads as NOT CACHED — comparing it would report every affected symbol as removed-and-added");
+    assert.equal((await listSnapshots(root)).length, 1, "…while still being on record, so it can be rebuilt rather than lost");
 
     const r = await reindex(root) as any;
     assert.ok(r.remapped, "the re-index reports what it carried across");
     assert.equal(r.remapped.reviews, 1);
-    assert.equal(r.remapped.droppedSnapshots, 1,
-      "an old-scheme snapshot cannot be diffed against a new-scheme one, so it is discarded and rebuilt");
-    assert.equal((await listSnapshots(root)).some((s) => s.ref === "oldsha"), false);
+    assert.equal(r.remapped.droppedSnapshots, 1, "and says how many snapshots are due a rebuild");
 
     const store = await readAnchorStore(root);
     const ticket = store.anchors.find((a) => a.disambiguator === "(TicketCreated)")!;
@@ -139,5 +147,46 @@ test("a sign-off on an overload survives the re-index that changes its id", asyn
     const rev = (await readReviews(root)).reviews[0]!;
     assert.equal(rev.target.id, ticket.id, "the sign-off followed the method, not the ordinal");
     assert.equal(rev.witnesses[0]!.anchorId, ticket.id);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a snapshot from another derivation never reports phantom changes", async () => {
+  // On one real pull request this was 107 symbols across NINE files that git says are
+  // byte-identical, every one carrying an overloaded name. The base snapshot predated
+  // a change to how a signature is rendered (`(AcmeUser)` became `(thisAcmeUser)` once
+  // parameter modifiers were included), so every overload read as removed-and-added —
+  // and the review queue's coverage could never reach "everything accounted for",
+  // which is the one thing that number is for.
+  const root = mkdtempSync(join(tmpdir(), "codemap-scheme-"));
+  try {
+    mkdirSync(join(root, "src"));
+    const src = `namespace D { public static class E {
+      public static bool Is(this User u) { return true; }
+      public static bool Is(this User u, Guid g) { return false; }
+    } }`;
+    writeFileSync(join(root, "src/E.cs"), src);
+    const current = await indexBlob(src, "src/E.cs");
+
+    // the same file, indexed under a derivation that rendered signatures differently
+    const older = current.map((a) => a.disambiguator
+      ? { ...a, id: `old_${a.disambiguator}`, disambiguator: a.disambiguator.replace("this", "") }
+      : a);
+    assert.notDeepEqual(older.map((a) => a.id), current.map((a) => a.id), "the fixture has to actually differ");
+
+    const { writeSnapshot, readSnapshot } = await import("./store.js");
+    await writeStore(root, current, { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State);
+    await writeSnapshot(root, "basesha", "main", older, "2026-08-19T00:00:00Z");
+    const { DatabaseSync } = await import("node:sqlite");
+    const raw = new DatabaseSync(join(root, ".codemap/codemap.db"));
+    raw.prepare("UPDATE snapshots SET scheme = NULL WHERE ref = ?").run("basesha");
+    raw.close();
+
+    // The point: it refuses to be read as a comparable set, so `diff` says it is not
+    // cached instead of inventing two added and two removed symbols.
+    assert.equal(await readSnapshot(root, "basesha"), null);
+    const { computeDiff } = await import("./diff.js");
+    const d = await computeDiff(root, "basesha") as any;
+    assert.ok(d.error, "a wrong answer has no handler; 'not cached' has one");
+    assert.match(d.error, /codemap (init|snapshot)/, "and it says how to fix it");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

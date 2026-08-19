@@ -25,8 +25,8 @@ import {
   readAnchorStore, readState, writeState, writeStore, loadNodes, readGraph, writeGraph, writeNode, slug,
   readBugs, writeBugs, readAnnotations, writeAnnotations, readCoverage, writeCoverage, readReviews,
   writeSnapshot, readSnapshot, listSnapshots, deleteNode as storeDeleteNode, confirmNode, ackHole as storeAckHole, loadNodeVersions,
-  writeReviews, remapNodeCitations, readTriage as triageRead, writeTriage as triageWrite, dropLegacyOverloadSnapshots, findAnchorsOutsideWork,
-  readWalkthroughs, writeWalkthrough, readPushes, bodyHashAt, retainOrphans, readOrphans, releaseRecoveredOrphans,
+  writeReviews, remapNodeCitations, readTriage as triageRead, writeTriage as triageWrite, staleSchemeSnapshots, findAnchorsOutsideWork,
+  readWalkthroughs, writeWalkthrough, readPushes, bodyHashAt, retainOrphans, readOrphans, releaseRecoveredOrphans, referencedAnchorIds,
 } from "./store.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "./diff.js";
@@ -442,22 +442,6 @@ export async function orphanedWork(root: string) {
   return out;
 }
 
-/** Every anchor id any stored work points at — the set a reindex must not silently drop. */
-export async function referencedAnchorIds(root: string): Promise<Set<string>> {
-  const [annStore, bugStore, reviewStore, triageStore, nodes] = await Promise.all([
-    readAnnotations(root), readBugs(root), readReviews(root), triageRead(root), loadNodes(root),
-  ]);
-  const ids = new Set<string>();
-  for (const a of annStore.annotations) if (a.target.kind === "anchor") ids.add(a.target.id);
-  for (const b of bugStore.bugs) {
-    for (const id of b.anchors) ids.add(id);
-    for (const w of b.witnesses ?? []) ids.add(w.anchorId);
-  }
-  for (const r of reviewStore.reviews) if (r.target.kind === "anchor") ids.add(r.target.id);
-  for (const t of triageStore.triage) if (t.target.kind === "anchor") ids.add(t.target.id);
-  for (const n of nodes) for (const id of n.anchors) ids.add(id);
-  return ids;
-}
 
 /**
  * Retain the referenced anchors this index is about to drop. Must run BEFORE the
@@ -483,12 +467,12 @@ async function migrateOverloads(root: string, fresh: Anchor[]) {
   const map = remapOverloadIds(stored, fresh);
 
   // Cached commit snapshots hold the OLD ids, and a diff is a set operation over ids
-  // between two of them, so an old-scheme snapshot cannot be compared with a
-  // new-scheme one. This runs INDEPENDENTLY of whether anything was remapped: a
-  // working tree with no overload group at all still has PR-head snapshots that do —
-  // which is the ordinary shape of a branch that ADDS a second overload — and gating
-  // it behind `map.size` skipped exactly the case it exists for.
-  const droppedSnapshots = dropLegacyOverloadSnapshots(root).length;
+  // between two of them, so a snapshot from one derivation cannot be compared with
+  // one from another. Counted here for the reindex report; the snapshots themselves
+  // are rebuilt LAZILY by `ensureSnapshot` when something reads them, which is both
+  // cheaper and self-healing — the previous eager sweep sniffed for numeric
+  // disambiguators and so caught only the one scheme change it was written for.
+  const droppedSnapshots = staleSchemeSnapshots(root).length;
   if (!map.size) return droppedSnapshots ? { anchors: 0, reviews: 0, triage: 0, annotations: 0, citations: 0, bugs: 0, droppedSnapshots } : null;
 
   const [reviewStore, triageStore, annStore, bugStore] = await Promise.all([
@@ -2122,12 +2106,22 @@ async function resolveRefs(
   const store = await readAnchorStore(root);
   let anchors = store.anchors;
   if (opts.includeOrphans) {
-    // Code the tree no longer has, that somebody's work still points at. Resolvable
-    // so a filed finding can still be read and revised — an orphan that cannot even
-    // be addressed is indistinguishable from one that was deleted.
+    // Code the working tree does not have, that somebody's work still points at.
+    // Resolvable so a filed finding can still be read and revised — one that cannot
+    // even be addressed is indistinguishable from one that was deleted.
+    //
+    // Two sources, and both are needed. `@orphan` is code gone from everywhere; a
+    // commit SNAPSHOT holds code that exists on a branch, which during a PR review
+    // is most of what is worth annotating — the files the branch ADDS are not in the
+    // working tree at all, so requiring the caller to name the ref made the common
+    // case the one that failed.
     const byId = new Map(anchors.map((a) => [a.id, a]));
-    for (const [id, a] of readOrphans(root)) if (!byId.has(id)) byId.set(id, a);
-    anchors = [...byId.values()];
+    const missing = refs.filter((r) => /^a_[0-9a-f]+$/.test(r) && !byId.has(r));
+    if (missing.length) {
+      for (const [id, hit] of findAnchorsOutsideWork(root, missing)) if (!byId.has(id)) byId.set(id, hit.anchor);
+      for (const [id, a] of readOrphans(root, missing)) if (!byId.has(id)) byId.set(id, a);
+      anchors = [...byId.values()];
+    }
   }
   if (scopeRef) {
     // A symbol that exists only on a PR's head is not a floating claim — it is in

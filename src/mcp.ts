@@ -516,6 +516,7 @@ const tools: Tool[] = [
       severity: { type: "string", enum: ["low", "medium", "high", "critical"], description: "For findings: critical=security/auth/data-integrity, high=logic bug, medium=improvement, low=nitpick." },
       category: { type: "string", description: "Review bucket, e.g. Authorization, Logic, Tenant Safety, Performance, Domain Model, Validation, Separation of Concerns." },
       line: { type: "number", description: "1-based line to pin to (anchor targets) — the exact line the finding/pointer is about." },
+      ref: { type: "string", description: "Resolve the target against this commit snapshot as well as the live index — a PR head, for a symbol that exists only on the branch. Rarely needed: an anchor id found in any cached snapshot resolves without it." },
       author: { type: "string" },
     }, ["targetKind", "targetId", "text"]),
     mutates: true,
