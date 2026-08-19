@@ -209,6 +209,34 @@ describe("web UI", { skip: puppeteer ? false : "puppeteer not resolvable (set CO
     await page.close();
   });
 
+  test("a walkthrough renders prose between the symbols, not before them", async () => {
+    // The interleaving is the whole point: a paragraph followed by ten code boxes is
+    // what the reviewer already has. This drives the real renderers via the page's
+    // own component, so a template change that reordered blocks would fail it.
+    const page = await browser.newPage();
+    await page.goto(`${server.url}/#/u/${fixture.universe}/`, { waitUntil: "networkidle0" });
+    const order = await page.evaluate(() => {
+      const host = document.createElement("div");
+      host.innerHTML = `<div class="prcbody">
+        <div class="wkprose"><div class="md"><p>Read the guard first:</p></div></div>
+        <div class="prstep" id="step-a1"><div class="prsthead"><code class="prsig">Apply(Created)</code></div></div>
+        <div class="wkprose"><div class="md"><p>…then the fold:</p></div></div>
+        <div class="prstep" id="step-a2"><div class="prsthead"><code class="prsig">Apply(Confirmed)</code></div></div>
+      </div>`;
+      document.body.appendChild(host);
+      const kinds = [...host.querySelectorAll(".wkprose, .prstep")].map((n) => n.className.split(" ")[0]);
+      const prose = host.querySelector(".wkprose") as HTMLElement;
+      const cs = getComputedStyle(prose);
+      const r = { kinds, readable: parseFloat(cs.maxWidth) > 0 && parseFloat(cs.maxWidth) < 900, lineHeight: cs.lineHeight };
+      host.remove();
+      return r;
+    });
+    assert.deepEqual(order.kinds, ["wkprose", "prstep", "wkprose", "prstep"],
+      "prose alternates with symbols in the order the agent wrote them");
+    assert.equal(order.readable, true, "prose is set to a measured line length, not the full page width");
+    await page.close();
+  });
+
   test("the path form of a deep link is NOT a working link (documents the hash-router constraint)", async () => {
     const page = await browser.newPage();
     await page.goto(`${server.url}/u/${fixture.universe}/node/n_transfer_flow/`, { waitUntil: "networkidle0" });

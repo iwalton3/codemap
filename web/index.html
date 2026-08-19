@@ -561,6 +561,24 @@
     .prfloc code { color: var(--text); }
     .prfrow .rvfind { flex: 1 1 auto; min-width: 0; }
     .prfindings { overflow-x: hidden; }
+    /* --- the agent-written walkthrough: features > chapters > interleaved blocks --- */
+    .wkbanner { margin: 0 12px 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 12.5px; line-height: 1.5; }
+    .wkfeature { margin: 0 0 18px; }
+    .wkfhead { display: flex; align-items: baseline; gap: 10px; padding: 4px 12px; font-size: 14px; }
+    .wkunstated { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: #e3b341; border: 1px solid #7a5a1e; background: #2a2010; border-radius: 4px; padding: 0 5px; }
+    .wkfsummary { padding: 0 12px 6px; max-width: 78ch; color: var(--dim); font-size: 13px; }
+    .wkfsummary .md p { margin: 0 0 4px; }
+    .wkchapter.stale { border-color: #7a5a1e; }
+    /* Prose BETWEEN the symbols is what makes this a walkthrough rather than a wall
+       of text with code boxes attached, so it is set to read as prose: measured line
+       length, and indented to sit with the symbols it is talking about. */
+    .wkprose { padding: 6px 14px 8px 22px; max-width: 78ch; font-size: 13px; line-height: 1.6; }
+    .wkprose .md p { margin: 0 0 6px; }
+    .wkprose .md code { font-size: 12px; }
+    .wkacts { margin-left: auto; display: inline-flex; gap: 6px; }
+    .wkacts button { font-size: 11.5px; padding: 1px 8px; }
+    .wkacts button[disabled] { opacity: .55; cursor: default; }
+    .wkuncovered .prchead b { color: #e3b341; }
     .pushrow { font-size: 12px; padding: 2px 0; border-bottom: 1px solid var(--border); }
     .pushrow code { color: var(--text); }
     .rvfraise { font-size: 11px; padding: 1px 6px; border-radius: 3px; border: 1px solid var(--border); background: var(--panel); color: var(--dim); cursor: pointer; }

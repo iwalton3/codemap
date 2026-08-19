@@ -327,6 +327,24 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    // Signing or viewing a whole chapter — the shortcut over per-symbol marking. It
+    // writes the ordinary per-anchor marks underneath, so nothing about staleness or
+    // acceptance changes.
+    if (req.method === "POST" && url.pathname === "/api/pr/chapter_mark") {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      const root = rootFor(body.u ?? null);
+      const out = await withLock<unknown>(root, () => ops.prChapterMark(root, String(body.pr ?? ""), String(body.chapter ?? ""), {
+        attestation: body.attestation === "viewed" ? "viewed" : "signed",
+        unmark: body.unmark === true,
+        reviewer: body.reviewer,
+      }));
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(out));
+      return;
+    }
+
     // Promoting a walkthrough chapter into the map — a write, and a human act:
     // the walkthrough only ever proposes.
     if (req.method === "POST" && url.pathname === "/api/pr/promote") {

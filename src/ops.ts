@@ -42,7 +42,7 @@ import { resolveAnchorRefs } from "./refs.js";
 import { refreshAnalyzers } from "./analyzers/run.js";
 import { applyIndexUpdate } from "./sync.js";
 import { grammarForPath } from "./grammars.js";
-import { reviewStatus, reviewStatesFor, anchorReviewMap, changedSince as reviewsChangedSince, deriveCodeReview, revertedMarks, markReviewedBatch, type Attestation, type ReviewPair, type DerivedCodeReview } from "./reviews.js";
+import { reviewStatus, reviewStatesFor, anchorReviewMap, changedSince as reviewsChangedSince, deriveCodeReview, revertedMarks, markReviewedBatch, unmarkReviewed, type Attestation, type ReviewPair, type DerivedCodeReview } from "./reviews.js";
 import { setTriage as triageSet, clearTriage as triageClear, triageStatus, reviewTriageFor, deriveTriage as triageDerive, coverageFor as triageCoverageFor, rollupCoverage, tripwires as triageTripwires, triageDrift } from "./triage.js";
 
 const HL_LANG: Record<string, string> = { c_sharp: "csharp", python: "python", javascript: "javascript", typescript: "typescript", tsx: "typescript" };
@@ -616,9 +616,70 @@ export async function prWalkthroughGet(root: string, input: string) {
   };
 }
 
-/** The PR's spec-derived walkthrough. */
+/**
+ * The PR page's data: the ranked symbols and spec-derived grouping as before, plus
+ * the agent-written walkthrough when one exists.
+ *
+ * The walkthrough supplies STRUCTURE and the story supplies the STEPS, so every
+ * symbol keeps its diff, review state and findings whichever way it is grouped —
+ * and a PR nobody has walked yet still renders exactly as it did.
+ */
 export async function prStoryFor(root: string, input: string, opts: { fetch?: boolean } = {}) {
-  return prStory(root, input, opts);
+  const story = await prStory(root, input, opts);
+  if ("error" in story) return story;
+
+  const stored = (await readWalkthroughs(root)).walkthroughs[String(story.pr.number)];
+  if (!stored) return { ...story, walkthrough: null };
+
+  const live = await snapshotHashes(root, story.refs.head);
+  const queue = new Set(story.chapters.flatMap((c) => c.steps).map((s) => s.anchorId));
+  return {
+    ...story,
+    walkthrough: {
+      ...stored,
+      headMoved: stored.head !== story.refs.head,
+      stale: staleChapters(stored, live),
+      coverage: walkCoverage(stored.features, queue, story.totals.steps - queue.size),
+    },
+  };
+}
+
+/**
+ * Apply one mark to every symbol in a chapter — the shortcut that turns 541
+ * decisions into 20.
+ *
+ * Deliberately a shortcut and not a new granularity: this writes the ordinary
+ * per-anchor marks, witnessed per anchor, so staleness, acceptance and per-symbol
+ * sign-off all keep working exactly as they did. A reviewer who wants to sign three
+ * symbols and leave the rest still can.
+ */
+export async function prChapterMark(
+  root: string, input: string,
+  chapterId: string,
+  opts: { attestation: Attestation; unmark?: boolean; reviewer?: string },
+) {
+  const t = await prTriage(root, input, { fetch: false });
+  if ("error" in t) return { error: t.error };
+  const stored = (await readWalkthroughs(root)).walkthroughs[String(t.pr.number)];
+  if (!stored) return { error: `PR #${t.pr.number} has no walkthrough` };
+  const chapter = stored.features.flatMap((f) => f.chapters).find((c) => c.id === chapterId);
+  if (!chapter) return { error: `no chapter "${chapterId}" in that walkthrough` };
+
+  const ids = chapter.blocks.filter((b) => b.kind === "symbol").map((b) => (b as { anchorId: string }).anchorId);
+  if (!ids.length) return { error: "that chapter walks no symbols" };
+
+  if (opts.unmark) {
+    for (const id of ids) await unmarkReviewed(root, { targetKind: "anchor", targetId: id, level: "code", attestation: opts.attestation });
+  } else {
+    await markReviewedBatch(root, ids, {
+      level: "code", actor: "human", attestation: opts.attestation, reviewer: opts.reviewer, ref: t.refs.head,
+    });
+  }
+  // The resulting marks, so the page updates in place rather than re-deriving the
+  // whole pull request to learn what its own click did.
+  const marks: Record<string, unknown> = {};
+  for (const id of ids) marks[id] = await anchorMark(root, id, { ref: t.refs.head });
+  return { ok: true, chapter: chapterId, anchors: ids.length, marks };
 }
 
 /**

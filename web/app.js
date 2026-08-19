@@ -2031,7 +2031,7 @@ class PrStoryPage extends Component {
     return {
       story: null, open: {}, code: {}, pending: {}, finding: null, prRef: null, showDiff: {},
       promote: null, promoted: {}, showCovered: false, deriving: false, derived: null,
-      pulling: false, pulled: null, push: null, markError: null, showFindings: false,
+      pulling: false, pulled: null, push: null, markError: null, showFindings: false, chapterBusy: {},
     };
   }
   constructor(props) { super(props); this.state = PrStoryPage.blank(); }
@@ -2093,6 +2093,88 @@ class PrStoryPage extends Component {
       this.state.code = { ...this.state.code, [id]: { error: `could not load this symbol's source: ${e && e.message ? e.message : e}` } };
     } finally { this.state.pending = { ...this.state.pending, [id]: false }; }
   }
+  /**
+   * The walkthrough supplies STRUCTURE; the story supplies the STEPS. Every symbol
+   * keeps its diff, review state and findings whichever way it is grouped, and a PR
+   * nobody has walked yet renders exactly as it did before.
+   */
+  stepsByAnchor() {
+    const m = new Map();
+    for (const c of (this.state.story && this.state.story.chapters) || []) for (const s of c.steps) m.set(s.anchorId, s);
+    return m;
+  }
+
+  async markChapter(chapterId, attestation, unmark) {
+    this.state.chapterBusy = { ...this.state.chapterBusy, [chapterId]: true };
+    const res = await fetch('/api/pr/chapter_mark', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ u: this.props.params.universe, pr: this.props.params.pr, chapter: chapterId, attestation, unmark }),
+    }).then(x => x.json()).catch(() => null);
+    this.state.chapterBusy = { ...this.state.chapterBusy, [chapterId]: false };
+    if (!res || res.error) { this.state.markError = (res && res.error) || 'the chapter mark did not reach the server'; return; }
+    this.state.markError = null;
+    // Patch each symbol from the server's own marks, for the same reason a single
+    // sign-off does: the state has nuance (replayed, sitting on a revert) a client
+    // must not invent.
+    for (const [id, mark] of Object.entries(res.marks || {})) this.patchStep(id, mark);
+  }
+
+  walkBlockEl(u, block, steps) {
+    if (block.kind === 'prose') return html`<div class="wkprose"><md-content text="${block.text}" untrusted="${true}"></md-content></div>`;
+    const step = steps.get(block.anchorId);
+    if (!step) return html`<div class="wkprose warn">a symbol this walkthrough cites is no longer in the pull request (${block.anchorId})</div>`;
+    return this.stepEl(u, step);
+  }
+
+  walkChapterEl(u, ch, steps, stale) {
+    const ids = ch.blocks.filter(b => b.kind === 'symbol').map(b => b.anchorId);
+    const mine = ids.map(id => steps.get(id)).filter(Boolean);
+    const signed = mine.filter(s => s.reviewed).length;
+    const viewed = mine.filter(s => s.viewed).length;
+    const busy = !!this.state.chapterBusy[ch.id];
+    const open = this.state.open[ch.id] !== false;          // chapters start open — this is the reading order
+    return html`<section class="prchapter wkchapter ${stale ? 'stale' : ''}">
+      <div class="prchead" on-click="${() => this.toggleChapter(ch.id)}">
+        <span class="prtwisty">${open ? '▾' : '▸'}</span>
+        <b>${ch.title}</b>
+        <span class="dim">${signed}/${mine.length} signed${viewed ? ` · ${viewed} viewed` : ''}</span>
+        ${when(stale, () => html`<span class="warn" title="the code this chapter walks has changed since it was written — it needs re-walking">stale</span>`)}
+        <span class="wkacts" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">
+          <button disabled="${busy}" title="mark every symbol in this chapter viewed — a shortcut, the same per-symbol marks underneath" on-click="${() => this.markChapter(ch.id, 'viewed', viewed === mine.length)}">${viewed === mine.length && mine.length ? 'unview all' : 'view all'}</button>
+          <button class="on" disabled="${busy}" title="sign off every symbol in this chapter" on-click="${() => this.markChapter(ch.id, 'signed', signed === mine.length)}">${signed === mine.length && mine.length ? 'unsign all' : 'sign all'}</button>
+        </span>
+      </div>
+      ${when(open, () => html`<div class="prcbody">${each(ch.blocks, (b, i) => this.walkBlockEl(u, b, steps), (b, i) => b.kind === 'symbol' ? 's' + b.anchorId : 'p' + i)}</div>`)}
+    </section>`;
+  }
+
+  walkthroughEl(u, st) {
+    const w = st.walkthrough;
+    const steps = this.stepsByAnchor();
+    const stale = new Set(w.stale || []);
+    const uncovered = (w.coverage && w.coverage.uncovered) || [];
+    return html`
+      ${when(w.headMoved, () => html`<div class="warn wkbanner">This walkthrough was written against a different commit (${String(w.head).slice(0, 12)}). Every chapter is suspect — ask an agent to re-walk the pull request.</div>`)}
+      ${each(w.features, f => html`<section class="wkfeature">
+        <div class="wkfhead">
+          <b>${f.title}</b>
+          ${when(f.unstated, () => html`<span class="wkunstated" title="not part of this pull request's stated purpose — a drive-by the agent found and named">not in the spec</span>`)}
+          <span class="dim">${f.chapters.length} chapter(s)</span>
+        </div>
+        <div class="wkfsummary"><md-content text="${f.summary}" untrusted="${true}"></md-content></div>
+        ${each(f.chapters, c => this.walkChapterEl(u, c, steps, stale.has(c.id)), c => c.id)}
+      </section>`, f => f.id)}
+      ${when(uncovered.length, () => html`<section class="prchapter wkuncovered">
+        <div class="prchead" on-click="${() => this.toggleChapter('__uncovered')}">
+          <span class="prtwisty">${this.state.open['__uncovered'] ? '▾' : '▸'}</span>
+          <b>Not in the walkthrough</b>
+          <span class="dim">${uncovered.length} symbol(s)</span>
+          <span class="warn" title="nothing here has been explained — this is what you would end up reading on GitHub, unviewed and without context">unaccounted for</span>
+        </div>
+        ${when(this.state.open['__uncovered'], () => html`<div class="prcbody">${each(uncovered.filter(id => steps.get(id)), id => this.stepEl(u, steps.get(id)), id => id)}</div>`)}
+      </section>`)}`;
+  }
+
   /** The next symbol still needing attention, in walkthrough order. */
   nextUnsignedAfter(anchorId) {
     const flat = [];
@@ -2554,7 +2636,17 @@ class PrStoryPage extends Component {
         That is a verdict, not a failure — the lane strip above shows where the ${st.totals.changedLines} changed lines went.
         Tests and generated files are still read by the first-pass agent, which can promote one into your queue if it matters.</div>
       </div></section>`)}
-      ${each(st.chapters, c => this.chapterEl(u, c), c => c.id)}
+      ${when(st.walkthrough,
+        () => this.walkthroughEl(u, st),
+        // No agent has walked this one: the spec-derived grouping is the fallback,
+        // and it says so rather than presenting itself as a reading guide.
+        () => html`
+          ${when(st.totals.steps > 40, () => html`<div class="wkbanner dim">
+            ${st.totals.steps} symbols, grouped by the spec sections that name them — which is not a
+            reading order. Ask an agent to <b>map out PR ${st.pr.number}</b> for a walkthrough:
+            features, chapters you can sign off in one go, and anything the spec does not mention.
+          </div>`)}
+          ${each(st.chapters, c => this.chapterEl(u, c), c => c.id)}`)}
       ${this.specGapEl(st)}
     `);
   }
