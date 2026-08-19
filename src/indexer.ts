@@ -126,6 +126,33 @@ function shellTokens(typeNode: Node, cfg: LangConfig): string[] {
   return out;
 }
 
+/**
+ * What tells two same-named callables apart: their parameter TYPES.
+ *
+ * The disambiguator used to be the overload's ordinal position in its scope, which
+ * is not an identity at all. Deleting `Apply(OrderCreated)` renumbered every later
+ * `Apply`, so each one inherited a sibling's anchor id — and a diff then reported
+ * `Apply(QuoteTicketCreated)` as having "changed" into
+ * `Apply(QuoteReleaseCreditStatusUpdated)` and showed two unrelated bodies side
+ * by side. Reviews, triage and citations key on that id, so they retargeted with
+ * it. Merely reordering methods in a file did the same, against the documented
+ * invariant that an id is stable across line-moves.
+ *
+ * Types only, not names: renaming a parameter is not a new method. The grammars
+ * agree on a `parameters` field with a per-parameter `type` (TypeScript's includes
+ * the leading colon; Python's untyped parameters have none, so the parameter text
+ * stands in).
+ */
+function signatureKey(node: Node): string | undefined {
+  const params = node.childForFieldName("parameters");
+  if (!params) return undefined;
+  const parts = params.namedChildren.map((c) => {
+    const t = c.childForFieldName("type");
+    return (t?.text ?? c.text).replace(/^[:\s]+/, "").replace(/\s+/g, " ").trim();
+  });
+  return `(${parts.join(",")})`;
+}
+
 type ItemKind = "type" | "callable" | "nsBlock" | "nsFile";
 
 interface Item {
@@ -274,6 +301,7 @@ export function indexSource(
       totals.set(k, (totals.get(k) ?? 0) + 1);
     }
     const seen = new Map<string, number>();
+    const usedKeys = new Set<string>();
     for (const { item, path: p } of entries) {
       if (item.kind === "nsBlock") {
         const body = item.defNode.childForFieldName("body");
@@ -285,7 +313,13 @@ export function indexSource(
       if ((totals.get(k) ?? 0) > 1) {
         const i = seen.get(k) ?? 0;
         seen.set(k, i + 1);
-        disambiguator = String(i);
+        const sig = item.kind === "callable" ? signatureKey(item.defNode) : undefined;
+        // Fall back to the ordinal only when there is no signature to go on (a
+        // non-callable, or a grammar with no parameter list here), or when two
+        // same-named items genuinely share one — otherwise they would collide onto
+        // a single id, which is worse than an unstable one.
+        disambiguator = sig && !usedKeys.has(`${k}\0${sig}`) ? sig : `${sig ?? ""}#${i}`;
+        usedKeys.add(`${k}\0${sig ?? String(i)}`);
       }
       const symbolPath = [...p, item.name];
       if (item.kind === "callable") {

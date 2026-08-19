@@ -24,11 +24,13 @@ import {
   readAnchorStore, readState, writeState, writeStore, loadNodes, readGraph, writeGraph, writeNode, slug,
   readBugs, writeBugs, readAnnotations, writeAnnotations, readCoverage, writeCoverage, readReviews,
   writeSnapshot, readSnapshot, listSnapshots, deleteNode as storeDeleteNode, confirmNode, ackHole as storeAckHole, loadNodeVersions,
+  writeReviews, remapNodeCitations, readTriage as triageRead, writeTriage as triageWrite, dropLegacyOverloadSnapshots,
 } from "./store.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "./diff.js";
 import { prTriage, listOpenPrs, prPacket, prStory, prAnchorCode, prPromotionPlan, derivePrTriage } from "./pr.js";
 import { promotionOwns } from "./pr-promote.js";
+import { remapOverloadIds, applyRemap } from "./migrate-overloads.js";
 import { parseAgentLines, ingestAgentReview } from "./pr-ingest.js";
 import { planPrPush, executePrPush, pullViewedFromGitHub, isAgentAuthored, type PushPlan } from "./pr-push.js";
 import { bulkPullViewed } from "./pr-bulk.js";
@@ -325,11 +327,44 @@ export async function reindex(root: string) {
   const commit = headCommit(root);
   const branch = currentBranch(root);
   for (const a of anchors) a.lastVerifiedCommit = commit;
+
+  // An overload's anchor id used to encode its ORDINAL rather than its signature.
+  // Re-indexing mints the new ids, which would leave every review, triage mark,
+  // annotation and citation on an overloaded callable pointing at an id that no
+  // longer exists. Carry them across BEFORE the store is overwritten — the old rows
+  // are the only record of what the old ids meant.
+  const remapped = await migrateOverloads(root, anchors);
+
   const state: State = { schemaVersion: SCHEMA_VERSION, lastVerifiedCommit: commit, branch, grammarVersions: GRAMMAR_VERSIONS };
   await writeStore(root, anchors, state);
   if (commit) await writeSnapshot(root, commit, branch, anchors, new Date().toISOString());
   const files = new Set(anchors.map((a) => a.file)).size;
-  return { ok: true, anchors: anchors.length, files, commit, branch };
+  return { ok: true, anchors: anchors.length, files, commit, branch, ...(remapped ? { remapped } : {}) };
+}
+
+/** See migrate-overloads.ts. Returns null when there is nothing from the old scheme. */
+async function migrateOverloads(root: string, fresh: Anchor[]) {
+  let stored: Anchor[];
+  try { stored = (await readAnchorStore(root)).anchors; } catch { return null; }   // first run
+  const map = remapOverloadIds(stored, fresh);
+  if (!map.size) return null;
+
+  const [reviewStore, triageStore, annStore] = await Promise.all([readReviews(root), triageRead(root), readAnnotations(root)]);
+  const counts = applyRemap(map, {
+    reviews: reviewStore.reviews, triage: triageStore.triage, annotations: annStore.annotations, citations: [],
+  });
+  counts.citations = remapNodeCitations(root, map);
+  await Promise.all([
+    writeReviews(root, reviewStore.reviews),
+    triageWrite(root, triageStore.triage),
+    writeAnnotations(root, annStore.annotations),
+  ]);
+  // Cached commit snapshots hold the OLD ids, and a diff is a set operation over
+  // ids between two of them — comparing an old-scheme snapshot with a new-scheme one
+  // reads every overloaded callable as removed-and-added. They are a cache, rebuilt
+  // from the commit's own objects on demand.
+  const droppedSnapshots = dropLegacyOverloadSnapshots(root).length;
+  return { ...counts, droppedSnapshots };
 }
 
 /**

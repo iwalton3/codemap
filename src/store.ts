@@ -144,6 +144,31 @@ export async function readSnapshot(root: string, ref: string): Promise<Anchor[] 
   return anchorsUnder(d, ref);
 }
 
+/**
+ * Drop every cached commit snapshot still written under the OLD overload-id scheme.
+ *
+ * Snapshots are a cache keyed by sha, and `diff` is a set operation over anchor ids
+ * BETWEEN two of them. A snapshot minted with ordinal disambiguators cannot be
+ * compared with one minted from signatures — every overloaded callable would read
+ * as removed-and-added. They are rebuilt on demand from the commit's own objects,
+ * so discarding them costs time, not information.
+ */
+export function dropLegacyOverloadSnapshots(root: string): string[] {
+  const d = db(root);
+  const stale = (d.prepare(
+    "SELECT DISTINCT ref FROM anchors WHERE ref <> '@work' AND disambiguator GLOB '[0-9]*'",
+  ).all() as { ref: string }[]).map((r) => r.ref);
+  if (!stale.length) return [];
+  d.exec("BEGIN");
+  try {
+    const delA = d.prepare("DELETE FROM anchors WHERE ref = ?");
+    const delS = d.prepare("DELETE FROM snapshots WHERE ref = ?");
+    for (const ref of stale) { delA.run(ref); delS.run(ref); }
+    d.exec("COMMIT");
+  } catch (e) { d.exec("ROLLBACK"); throw e; }
+  return stale;
+}
+
 export async function listSnapshots(root: string): Promise<SnapshotInfo[]> {
   const rows = db(root).prepare("SELECT ref, branch, at, count FROM snapshots ORDER BY at DESC").all() as unknown as SnapshotInfo[];
   return rows;
@@ -256,6 +281,33 @@ export function winningVersionAt(versions: NodeVersion[], hashes: Map<string, st
 // A conservative id-safe slug (kept: node ids are still human-facing).
 export function slug(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "node";
+}
+
+/**
+ * Rewrite anchor ids across every node version's citations — the migration path for
+ * the one-time overload-id change. Returns how many citations moved.
+ */
+export function remapNodeCitations(root: string, map: Map<string, string>): number {
+  if (!map.size) return 0;
+  const d = db(root);
+  const rows = d.prepare("SELECT version_id, citations FROM node_versions").all() as { version_id: string; citations: string }[];
+  const upd = d.prepare("UPDATE node_versions SET citations=? WHERE version_id=?");
+  let moved = 0;
+  d.exec("BEGIN");
+  try {
+    for (const r of rows) {
+      let cites: { anchorId: string }[];
+      try { cites = JSON.parse(r.citations ?? "[]"); } catch { continue; }
+      let touched = false;
+      for (const c of cites) {
+        const to = map.get(c.anchorId);
+        if (to) { c.anchorId = to; touched = true; moved++; }
+      }
+      if (touched) upd.run(JSON.stringify(cites), r.version_id);
+    }
+    d.exec("COMMIT");
+  } catch (e) { d.exec("ROLLBACK"); throw e; }
+  return moved;
 }
 
 const INS_VERSION = "INSERT INTO node_versions(version_id,node_id,type,title,summary,body,generated_by,created_commit,created_branch,created_at,citations) VALUES(?,?,?,?,?,?,?,?,?,?,?)";

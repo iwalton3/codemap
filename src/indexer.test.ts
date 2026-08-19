@@ -87,3 +87,54 @@ test("parsers are reused per grammar — a Parser per file leaked the wasm heap"
   assert.ok((await indexBlob("public class A { void B() {} }", "a.cs")).length > 0);
   assert.ok((await indexBlob("public class C { void D() {} }", "c.cs")).length > 0);
 });
+
+test("overloads are identified by their parameter types, not by position", async () => {
+  // The disambiguator was the overload's ordinal in its scope, which is not an
+  // identity: deleting or reordering one renumbered the rest, so each inherited a
+  // sibling's anchor id. A diff then reported `Apply(QuoteTicketCreated)` as
+  // having "changed" into `Apply(QuoteReleaseCreditStatusUpdated)` and put two
+  // unrelated bodies side by side — and reviews, triage and citations key on that
+  // id, so they retargeted with it.
+  const applies = async (src: string) => {
+    const all = await indexBlob(src, "Agg.cs");
+    return new Map(all.filter((a) => a.symbolPath.at(-1) === "Apply").map((a) => [a.disambiguator!, a.id]));
+  };
+  const agg = (...methods: string[]) => `namespace D { public class Agg { ${methods.join(" ")} } }`;
+  const m = (evt: string, body: string) => `public void Apply(${evt} e) { ${body} }`;
+
+  const base = await applies(agg(m("OrderCreated", "X(1);"), m("TicketCreated", "Y(2);"), m("OrderClosed", "Z(3);")));
+  assert.deepEqual([...base.keys()], ["(OrderCreated)", "(TicketCreated)", "(OrderClosed)"]);
+
+  // one overload swapped for an unrelated one: a removal and an addition, never a change
+  const swapped = await applies(agg(m("OrderCreated", "X(1);"), m("CreditStatusUpdated", "W(9);"), m("OrderClosed", "Z(3);")));
+  assert.equal(swapped.get("(OrderCreated)"), base.get("(OrderCreated)"));
+  assert.equal(swapped.get("(OrderClosed)"), base.get("(OrderClosed)"), "the overload AFTER the swap keeps its identity");
+  assert.equal([...swapped.values()].includes(base.get("(TicketCreated)")!), false, "the deleted overload's id is not reused");
+
+  // reordering is a line-move, and an id is documented as stable across those
+  const reordered = await applies(agg(m("OrderClosed", "Z(3);"), m("TicketCreated", "Y(2);"), m("OrderCreated", "X(1);")));
+  for (const k of base.keys()) assert.equal(reordered.get(k), base.get(k), `${k} moved but is the same method`);
+
+  // deleting an earlier overload does not renumber the later ones
+  const fewer = await applies(agg(m("TicketCreated", "Y(2);"), m("OrderClosed", "Z(3);")));
+  assert.equal(fewer.get("(TicketCreated)"), base.get("(TicketCreated)"));
+  assert.equal(fewer.get("(OrderClosed)"), base.get("(OrderClosed)"));
+});
+
+test("a parameter rename is not a new method, but a type change is", async () => {
+  const ids = async (src: string) => (await indexBlob(src, "A.cs"))
+    .filter((a) => a.symbolPath.at(-1) === "Apply").map((a) => a.id);
+  const agg = (p: string) => `namespace D { public class A { public void Apply(${p}) {} public void Apply(int n) {} } }`;
+
+  assert.deepEqual(await ids(agg("OrderCreated e")), await ids(agg("OrderCreated evt")), "the parameter's NAME is not identity");
+  assert.notDeepEqual(await ids(agg("OrderCreated e")), await ids(agg("OrderClosed e")), "its type is");
+});
+
+test("same-named callables that share a signature still get distinct ids", async () => {
+  // Two identical signatures cannot be told apart by signature, and colliding onto
+  // one id would be worse than an unstable one — so the ordinal still backs it up.
+  const a = await indexBlob("def f(x):\n    return 1\ndef f(x):\n    return 2\n", "m.py");
+  const fs = a.filter((x) => x.symbolPath.at(-1) === "f");
+  assert.equal(fs.length, 2);
+  assert.equal(new Set(fs.map((x) => x.id)).size, 2, "distinct ids");
+});
