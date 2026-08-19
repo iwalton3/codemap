@@ -82,6 +82,24 @@ there was nowhere to say what you make of the change, and no way to approve or
 request changes. Both live on the PLAN, so the preview is what goes out and the
 fingerprint covers them.
 
+**A reindex can no longer delete work.** Referenced anchors that leave the tree are
+retained under `@orphan` with their last known file/symbol/line/hash, stay resolvable
+read-only, and are released if the symbol comes back. `codemap orphans` (also MCP and
+`/api/orphans`) answers "what did that refactor break?" in three buckets — `offTree`
+(on a branch, nothing lost), `retained`, `lost`.
+
+Worth knowing, because the report that prompted this got the mechanism wrong and it
+changes what to watch for: **an anchor id does not contain the body hash.** It is
+`file + symbolPath + disambiguator`, so an ordinary refactor orphans nothing. What
+does: a rename, a deletion, and — since the overload disambiguator became the
+signature — a change to an overload's PARAMETER LIST. In an event-sourced codebase
+that means `Apply(SomeEvent)`, which is exactly the code people file findings about.
+
+**Pointers are publishable when triage confirms them.** The publish gate is on
+`disposition`, not `kind`, and the findings panel lists every kind but `note`. Its
+disposition defaults by authorship — human-written is `confirmed` (writing it is the
+assertion), agent-written is `open` (a proposal awaiting triage).
+
 ### Known gaps in what was just built
 
 - Publishing a `refuted` finding **deliberately** (the spec's "withdrawals are worth
@@ -95,6 +113,14 @@ fingerprint covers them.
   blocked. GitHub accepts it, and only a human can tell a mis-placement from a
   comment that cites elsewhere deliberately. Worth watching whether that is the
   right side of the line after another batch.
+- **The findings panel only shows findings on symbols in the PR worklist**, so an
+  orphaned or off-tree finding is still invisible there — `codemap orphans` and the
+  `findings` tool are the way to see those. The report's ask for a findings-first
+  view that does not need a live anchor is not built.
+- Retention protects anchors referenced by annotations, bugs, reviews, triage and
+  node citations. It does NOT retroactively recover anything orphaned before it
+  existed; those land in `orphans`' `lost` bucket, where the finding's own `comment`
+  and `text` are all that survive.
 - Nothing repairs a comment already posted to the wrong line. GitHub's
   `PATCH /pulls/comments/{id}` takes only `body`; moving one means DELETE and
   re-POST, which drops the thread and re-notifies. Prepending a correction to the
