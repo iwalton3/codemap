@@ -164,3 +164,56 @@ test("a symbol that exists only on a branch can be annotated without naming the 
     assert.equal(a.sourceRef, "prhead", "and it witnesses the branch's body, not the working tree's");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("reading a branch-only symbol answers with the branch's body, and says so", async () => {
+  // `annotate` accepted these ids while `get_anchor` refused them — the tool
+  // disagreeing with itself on the read path a reviewer reaches for FIRST. And the
+  // answer has to name where it came from: the working tree is a third version
+  // during a PR review, neither the branch under review nor what the reader assumes.
+  const root = await repo();
+  try {
+    const { writeSnapshot } = await import("./store.js");
+    const { indexBlob } = await import("./repo.js");
+    const src = "export function onlyOnTheBranch(x: number) {\n  return x * 2;\n}\n";
+    const branchOnly = await indexBlob(src, "src/branch-only.ts");
+    await writeSnapshot(root, "prhead", "feature/x", branchOnly, "2026-08-19T00:00:00Z");
+
+    const a = await getAnchor(root, branchOnly[0]!.id) as any;
+    assert.equal(a.error, undefined, "it resolves");
+    assert.equal(a.sourceRef, "prhead");
+    assert.equal(a.offTree, true);
+    assert.equal(a.orphaned, undefined, "off-tree is not orphaned — the code exists, just not here");
+    assert.match(a.offTreeNote, /not in the working tree/);
+    assert.match(a.offTreeNote, /feature\/x/, "and names the branch it is on");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a doc can cite code that exists only on a branch", async () => {
+  // Same shape as `annotate`: `ops.document` has accepted a `ref` since it was
+  // written — its own comment says a doc written during a PR review would otherwise
+  // "cite symbols the working tree has never seen and match nothing" — and the MCP
+  // tool never exposed it. Capability present, surface absent, nothing fails loudly.
+  const root = await repo();
+  try {
+    const { writeSnapshot, loadNodes } = await import("./store.js");
+    const { indexBlob } = await import("./repo.js");
+    const { document } = await import("./ops.js");
+    const branchOnly = await indexBlob(
+      "export function onlyOnTheBranch(x: number) {\n  return x;\n}\n", "src/branch-only.ts");
+    await writeSnapshot(root, "prhead", "feature/x", branchOnly, "2026-08-19T00:00:00Z");
+
+    const bare = await document(root, {
+      type: "concept", title: "T", summary: "S", anchors: [branchOnly[0]!.id],
+    }) as any;
+    assert.ok(bare.error || bare.rejectedAnchors, "without a ref the branch's symbol is not in scope");
+
+    const withRef = await document(root, {
+      type: "concept", title: "The branch feature", summary: "what it does",
+      anchors: [branchOnly[0]!.id], ref: "prhead",
+    }) as any;
+    assert.ok(!withRef.error, withRef.error);
+    assert.equal(withRef.rejectedAnchors, undefined);
+    const node = (await loadNodes(root)).find((n) => n.id === withRef.id)!;
+    assert.deepEqual(node.anchors, [branchOnly[0]!.id]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

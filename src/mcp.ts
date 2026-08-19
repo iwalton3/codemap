@@ -363,6 +363,7 @@ const tools: Tool[] = [
       summary: { type: "string" },
       anchors: { type: "array", items: { type: "string" }, description: "Anchors by `file#Symbol`, `file:line`, or raw id — resolved server-side. `file#Symbol(*)` cites EVERY overload of Symbol in that file; an ambiguous `file#Symbol` comes back with each candidate id AND line range, so you can pick without another lookup." },
       body: { type: "string" },
+      ref: { type: "string", description: "Document code as a BRANCH leaves it: anchors resolve against that commit's snapshot as well as the live index, and the version's accepted hashes are captured there. Pass a PR head when documenting a change that has not merged — without it a doc written during a PR review cites symbols the working tree has never seen and matches nothing." },
       steps: {
         type: "array",
         description: "For a process: inline ordered steps. Each is materialized as a step node with a step_of edge (order = position) and touches edges — no separate document/connect calls.",

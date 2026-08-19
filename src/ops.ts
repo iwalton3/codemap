@@ -26,7 +26,7 @@ import {
   readBugs, writeBugs, readAnnotations, writeAnnotations, readCoverage, writeCoverage, readReviews,
   writeSnapshot, readSnapshot, listSnapshots, deleteNode as storeDeleteNode, confirmNode, ackHole as storeAckHole, loadNodeVersions,
   writeReviews, remapNodeCitations, readTriage as triageRead, writeTriage as triageWrite, staleSchemeSnapshots, findAnchorsOutsideWork,
-  readWalkthroughs, writeWalkthrough, readPushes, bodyHashAt, retainOrphans, readOrphans, releaseRecoveredOrphans, referencedAnchorIds,
+  readWalkthroughs, writeWalkthrough, readPushes, bodyHashAt, snapshotBranch, retainOrphans, readOrphans, releaseRecoveredOrphans, referencedAnchorIds,
 } from "./store.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "./diff.js";
@@ -1877,22 +1877,37 @@ export async function getAnchor(root: string, id: string) {
     readAnchorStore(root), loadNodes(root), readBugs(root), readAnnotations(root),
   ]);
   let anchor = store.anchors.find((a) => a.id === id);
-  // Not in the tree, but retained because somebody's work points at it. Returning
-  // the last known state beats "no anchor": the finding on it is real, and the
-  // reader needs to know the CODE is gone rather than that the id is wrong.
+  // Three places to look, and WHICH one answered is part of the answer.
+  //
+  // The working tree first. Then any cached commit snapshot — during a pull-request
+  // review that is where the files the branch ADDS live, and this is the read path a
+  // reviewer reaches for first, so refusing them here while `annotate` accepts them
+  // is the tool disagreeing with itself. Then retained anchors, whose code is gone
+  // everywhere but whose last known state is still worth returning: the finding on
+  // it is real, and the reader needs to learn the CODE went, not that the id is wrong.
+  const off = anchor ? undefined : findAnchorsOutsideWork(root, [id]).get(id);
+  if (!anchor && off) anchor = off.anchor;
   const orphaned = !anchor;
   if (!anchor) anchor = readOrphans(root, [id]).get(id);
   if (!anchor) return { error: `no anchor "${id}"` };
-  // Resolve current code live so it is always exact.
+
+  // Resolve the code live so it is always exact — from the commit that holds it when
+  // the working tree does not.
   let code: string | null = null;
   let present = false;
   try {
+    if (off) {
+      const src = readBlobs(root, off.ref, [anchor.file]).get(anchor.file);
+      const live = src ? (await indexBlob(src, anchor.file)).find((a) => a.id === id) : undefined;
+      if (src && live?.loc) { code = src.slice(live.loc.startByte, live.loc.endByte); present = true; }
+    } else {
     const src = await readFile(join(root, anchor.file), "utf8"); // loc index the parsed string, not raw bytes
     const fresh = await indexFile(join(root, anchor.file), anchor.file);
     const live = fresh.find((a) => a.id === id);
     if (live?.loc) {
       code = src.slice(live.loc.startByte, live.loc.endByte);
       present = true;
+    }
     }
   } catch {
     /* file gone */
@@ -1906,8 +1921,12 @@ export async function getAnchor(root: string, id: string) {
     // WHICH version this is. The working tree is a third thing during a PR review —
     // neither the PR under review nor whatever branch the reader last had in mind —
     // and a response that just says "current" invites all three to be conflated.
-    sourceRef: orphaned ? "@orphan" : "@work",
-    sourceCommit: headCommit(root),
+    sourceRef: orphaned ? "@orphan" : off ? off.ref : "@work",
+    sourceCommit: off ? off.ref : headCommit(root),
+    ...(off ? {
+      offTree: true,
+      offTreeNote: `${anchor.file} is not in the working tree — this is the body at ${off.ref.slice(0, 12)}${snapshotBranch(root, off.ref) ? ` (${snapshotBranch(root, off.ref)})` : ""}, which is where the code actually lives. The tree is on another branch.`,
+    } : {}),
     ...(orphaned ? {
       orphaned: true,
       orphanedNote: `this symbol is no longer in the working tree — ${anchor.file} › ${anchor.symbolPath.join(" › ")} was retained because findings or reviews point at it. \`code\` is null; the last known body hash is ${anchor.bodyHash}. It may exist on a branch: check a PR head before concluding it was deleted.`,
