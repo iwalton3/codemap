@@ -20,7 +20,7 @@ import { complexityOf, MONEY_RX, reviewTriageFor, setTriageBatch } from "./triag
 import { readTriage } from "./store.js";
 import type { Importance } from "./schema.js";
 import type { Complexity } from "./schema.js";
-import { revParse, mergeBase, hasObject, fetchRef, numstat, readBlobs, isGitRepo, originSlug } from "./git.js";
+import { revParse, mergeBase, hasObject, fetchRef, numstat, readBlobs, isGitRepo, originSlug, prBaseCommit } from "./git.js";
 import { splitSpec, buildStory, layerOf, spineRole, type PrStory, type StoryStep, type StoryChapter } from "./pr-story.js";
 import { planPromotion, type Promotion } from "./pr-promote.js";
 
@@ -165,11 +165,17 @@ export async function prTriage(
   }
   if (!hasObject(root, meta.headSha)) return { error: `PR head ${meta.headSha.slice(0, 12)} is not in this repo — is ${ref.owner}/${ref.repo} the right universe?` };
 
-  // The PR's true base: merge-base of head and the base branch, NOT the branch
+  // The PR's true base: the merge-base of head and the base branch, NOT the branch
   // tip. For a long-lived branch these differ by hundreds of commits, and using
   // the tip reports every one of them as part of the PR.
+  //
+  // The base side must be GitHub's recorded `baseRefOid`, not the branch's current
+  // tip. Once a PR is MERGED its head is an ancestor of that tip, so the merge-base
+  // collapses to the head itself and the diff comes out empty — every merged PR
+  // would read as changing nothing. Checked against open, closed and merged PRs:
+  // the recorded base sha reproduces GitHub's own file count in all three.
   const baseTip = revParse(root, `origin/${meta.baseRef}`) ?? meta.baseSha;
-  const mb = mergeBase(root, baseTip, meta.headSha);
+  const mb = prBaseCommit(root, { recordedBase: meta.baseSha, baseRef: meta.baseRef, headSha: meta.headSha });
   if (!mb) return { error: `no merge-base between ${meta.baseRef} and the PR head` };
   const drift = countCommits(root, mb, baseTip);
 

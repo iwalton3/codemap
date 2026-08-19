@@ -246,3 +246,24 @@ export function fetchAllPrHeads(root: string, remote = "origin"): { ok: boolean;
   });
   return { ok: r.status === 0, err: (r.stderr ?? "").trim() };
 }
+
+/**
+ * The commit a pull request actually forked from.
+ *
+ * `recordedBase` is GitHub's base sha for the PR and must be preferred over the
+ * base branch's current tip. Once a PR is merged its head is an ancestor of that
+ * tip, so `merge-base(tip, head)` is the head itself and the PR appears to change
+ * nothing — which silently empties every merged PR in a back catalogue. The
+ * recorded sha reproduces GitHub's own changed-file count for open, closed and
+ * merged alike.
+ */
+export function prBaseCommit(root: string, opts: { recordedBase?: string | null; baseRef: string; headSha: string }): string | null {
+  const fromRecorded = opts.recordedBase && hasObject(root, opts.recordedBase)
+    ? mergeBase(root, opts.recordedBase, opts.headSha) : null;
+  if (fromRecorded && fromRecorded !== opts.headSha) return fromRecorded;
+  const tip = revParse(root, `origin/${opts.baseRef}`);
+  const fromTip = tip ? mergeBase(root, tip, opts.headSha) : null;
+  // A tip-derived base equal to the head is the merged-PR collapse, not a real answer.
+  if (fromTip && fromTip !== opts.headSha) return fromTip;
+  return fromRecorded ?? null;
+}

@@ -1,11 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { State } from "./schema.js";
 import { writeStore, readViewedImports, writeViewedImport } from "./store.js";
 import { viewedTargetsFor } from "./pr-push.js";
+import { prBaseCommit, mergeBase } from "./git.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 
@@ -44,5 +46,42 @@ test("import progress is recorded per PR so a long run resumes instead of restar
     const got = (await readViewedImports(root)).imported;
     assert.equal(got["94"]!.marked, 124);
     assert.ok(got["227"], "a PR that yielded nothing is still recorded — otherwise it is retried forever");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+/**
+ * The bug this pins: once a PR is merged, its head is an ancestor of the base
+ * branch, so `merge-base(tip, head)` is the head and the PR reads as changing
+ * nothing. It emptied 67 of 69 PRs on a real back-catalogue import before it was
+ * caught, and it silently produced *plausible* zeros rather than an error.
+ */
+test("a merged PR still resolves to the commit it forked from", () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-base-"));
+  try {
+    const git = (...a: string[]) => spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...a], { cwd: root, encoding: "utf8" });
+    const sha = () => spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+    git("init", "-q", "-b", "develop");
+    writeFileSync(join(root, "a.txt"), "base\n"); git("add", "-A"); git("commit", "-qm", "base");
+    const forkPoint = sha();
+
+    git("checkout", "-q", "-b", "feature");
+    writeFileSync(join(root, "a.txt"), "feature\n"); git("add", "-A"); git("commit", "-qm", "feature");
+    const head = sha();
+
+    git("checkout", "-q", "develop");
+    git("merge", "-q", "--no-ff", "feature", "-m", "merge");        // head is now an ancestor of develop
+    writeFileSync(join(root, "b.txt"), "later\n"); git("add", "-A"); git("commit", "-qm", "later");
+    // stand in for the remote-tracking ref the real code reads
+    git("update-ref", "refs/remotes/origin/develop", sha());
+
+    // the naive answer collapses to the head itself
+    assert.equal(mergeBase(root, sha(), head), head, "precondition: the tip-based merge-base is the head");
+
+    const resolved = prBaseCommit(root, { recordedBase: forkPoint, baseRef: "develop", headSha: head });
+    assert.equal(resolved, forkPoint, "GitHub's recorded base recovers the real fork point");
+    assert.notEqual(resolved, head);
+
+    // and with no recorded base it refuses rather than returning the collapsed answer
+    assert.notEqual(prBaseCommit(root, { recordedBase: null, baseRef: "develop", headSha: head }), head);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

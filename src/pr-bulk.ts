@@ -16,7 +16,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { mergeBase, changedFilesBetween, readBlobs, revParse, hasObject } from "./git.js";
+import { changedFilesBetween, readBlobs, hasObject, prBaseCommit } from "./git.js";
 import { indexBlob } from "./repo.js";
 import { loadLanes, LANE_POLICY } from "./lanes.js";
 import { markReviewedBatch, reviewStatesFor } from "./reviews.js";
@@ -115,9 +115,9 @@ export async function bulkPullViewed(
   for (const p of targets) {
     if (!opts.force && already[String(p.number)]) { res.skippedAlreadyImported++; continue; }
     try {
-      const meta = gh(["pr", "view", String(p.number), "--repo", slug, "--json", "baseRefName,headRefOid"]);
+      const meta = gh(["pr", "view", String(p.number), "--repo", slug, "--json", "baseRefName,headRefOid,baseRefOid"]);
       if (!meta.ok) { res.errors.push({ pr: p.number, why: "gh pr view failed" }); continue; }
-      const { baseRefName, headRefOid } = JSON.parse(meta.out);
+      const { baseRefName, headRefOid, baseRefOid } = JSON.parse(meta.out);
       // The head must already be local — a bulk run fetches every PR head once up
       // front rather than paying a round trip per PR.
       if (!hasObject(root, headRefOid)) { res.errors.push({ pr: p.number, why: "head object not fetched" }); continue; }
@@ -126,8 +126,11 @@ export async function bulkPullViewed(
       if ("error" in paths) { res.errors.push({ pr: p.number, why: paths.error }); continue; }
       if (!paths.size) { await writeViewedImport(root, String(p.number), 0); res.processed++; continue; }
 
-      const mb = mergeBase(root, revParse(root, `origin/${baseRefName}`) ?? baseRefName, headRefOid);
-      if (!mb) { res.errors.push({ pr: p.number, why: `no merge-base with ${baseRefName}` }); continue; }
+      // GitHub's recorded base sha, not the branch tip: a merged PR's head is an
+      // ancestor of the tip, so that merge-base is the head and the diff is empty.
+      // This is a back catalogue — most of it is merged.
+      const mb = prBaseCommit(root, { recordedBase: baseRefOid, baseRef: baseRefName, headSha: headRefOid });
+      if (!mb || mb === headRefOid) { res.errors.push({ pr: p.number, why: `could not locate a base for ${baseRefName}` }); continue; }
 
       const files = changedFilesBetween(root, mb, headRefOid)
         .filter((f) => paths.has(f) && LANE_POLICY[lanes.classify(f)]?.review === "queue");
