@@ -465,3 +465,26 @@ test("a field sent empty is cleared; one not sent at all is left alone", async (
     assert.equal(a.revisions!.at(-1)!.was.publishPath, "src/pay.ts");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("an agent may close the question it answered, not the finding it reported on", async () => {
+  // `close_finding` refuses to resolve, on the grounds that reporting and agreeing it
+  // is closed are different acts. `resolve_question` took any annotation id, so the
+  // same agent could reach the same state through the next door along — and
+  // `resolved` also keeps a finding off the pull request for good, so it doubles as a
+  // way to suppress one silently.
+  const { root, anchorId, annId } = await fixture();
+  try {
+    const q = await annotate(root, {
+      targetKind: "anchor", targetId: anchorId, text: "is the retry intended?", kind: "question", author: "agent:x",
+    }) as any;
+
+    const denied = await resolveAnnotation(root, annId, true, { actor: "agent" }) as any;
+    assert.match(denied.error, /not a question/);
+    assert.match(denied.error, /close_finding/, "and says what to do instead");
+    assert.equal((await readAnnotations(root)).annotations.find((a) => a.id === annId)!.resolved, false);
+
+    assert.equal((await resolveAnnotation(root, q.id, true, { actor: "agent" }) as any).ok, true, "its own question is fine");
+    // the human keeps the full power — this is about who is acting, not about the kind
+    assert.equal((await resolveAnnotation(root, annId, true) as any).ok, true);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

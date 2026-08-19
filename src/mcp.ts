@@ -665,10 +665,10 @@ const tools: Tool[] = [
   },
   {
     name: "resolve_question",
-    description: "Close out a review question (or re-open with resolved:false) once you've answered it by improving the documentation.",
+    description: "Close out a review QUESTION (or re-open with resolved:false) once you've answered it by improving the documentation.\n\nQuestions only. Reporting on a finding and agreeing it is closed are different acts — use `close_finding` to say what you did and what you found; the human closes it after reading.",
     inputSchema: obj({ id: { type: "string" }, resolved: { type: "boolean" } }, ["id"]),
     mutates: true,
-    handler: (a, c) => ops.resolveAnnotation(c.universe.path, a.id, a.resolved !== false),
+    handler: (a, c) => ops.resolveAnnotation(c.universe.path, a.id, a.resolved !== false, { actor: "agent" }),
   },
 ];
 

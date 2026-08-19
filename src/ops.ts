@@ -2578,11 +2578,27 @@ export async function annotate(
   return { ok: true, id: ann.id, target: ann.target };
 }
 
-/** Resolve (or re-open) an annotation — used to close out an answered question. */
-export async function resolveAnnotation(root: string, id: string, resolved = true) {
+/**
+ * Resolve (or re-open) an annotation.
+ *
+ * `actor: "agent"` may only close a QUESTION — the thing it was asked and has now
+ * answered. Closing a finding is the human's act: `closeAssignment` refuses to do it
+ * for exactly this reason ("reporting and agreeing it is closed are different
+ * acts"), and an agent that could reach the same state through this door would have
+ * that guarantee for nothing. It is not only about self-vouching — `resolved` also
+ * stops a finding ever reaching the pull request, so it is a way to silently
+ * suppress one.
+ */
+export async function resolveAnnotation(
+  root: string, id: string, resolved = true,
+  opts: { actor?: "human" | "agent" } = {},
+) {
   const annStore = await readAnnotations(root);
   const ann = annStore.annotations.find((a) => a.id === id);
   if (!ann) return { error: `no annotation "${id}"` };
+  if (opts.actor === "agent" && (ann.kind ?? "note") !== "question") {
+    return { error: `\`${id}\` is a ${ann.kind ?? "note"}, not a question — reporting on it and agreeing it is closed are different acts. Use \`close_finding\` to say what you did; the human closes it after reading.` };
+  }
   ann.resolved = resolved;
   await writeAnnotations(root, annStore.annotations);
   return { ok: true, id, resolved, target: ann.target };
