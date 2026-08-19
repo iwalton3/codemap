@@ -25,11 +25,14 @@ import {
   readBugs, writeBugs, readAnnotations, writeAnnotations, readCoverage, writeCoverage, readReviews,
   writeSnapshot, readSnapshot, listSnapshots, deleteNode as storeDeleteNode, confirmNode, ackHole as storeAckHole, loadNodeVersions,
   writeReviews, remapNodeCitations, readTriage as triageRead, writeTriage as triageWrite, dropLegacyOverloadSnapshots, findAnchorsOutsideWork,
+  readWalkthroughs, writeWalkthrough,
 } from "./store.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "./diff.js";
 import { prTriage, listOpenPrs, prPacket, prStory, prAnchorCode, prPromotionPlan, derivePrTriage } from "./pr.js";
 import { promotionOwns } from "./pr-promote.js";
+import { validateWalkthrough, buildWalkthrough, walkCoverage, staleChapters, type WalkInput } from "./walkthrough.js";
+import { LANE_POLICY } from "./lanes.js";
 import { remapOverloadIds, applyRemap } from "./migrate-overloads.js";
 import { parseAgentLines, ingestAgentReview } from "./pr-ingest.js";
 import { planPrPush, executePrPush, pullViewedFromGitHub, isAgentAuthored, type PushPlan } from "./pr-push.js";
@@ -547,6 +550,70 @@ export async function prIngest(root: string, input: string, texts: string[], opt
   const existing = (await readAnnotations(root)).annotations.map((a) => ({ targetId: a.target.id, line: a.line, kind: a.kind, text: a.text, author: a.author }));
   const r = await ingestAgentReview(root, lines, { annotate, existing }, { headRef: t.refs.head, author: opts.author, dryRun: opts.dryRun });
   return { ...r, malformed: bad, pr: t.pr.number, head: t.refs.head };
+}
+
+/**
+ * Store an agent's walkthrough of a pull request.
+ *
+ * Validated before anything lands: a chapter may not cite code the PR does not
+ * touch, no symbol may be claimed by two chapters, and a chapter with no symbol in
+ * it is not a chapter. Those are what make the walkthrough trustworthy enough to
+ * review FROM rather than alongside — and what makes the coverage number mean
+ * something, since anything left uncovered is what the reviewer ends up reading on
+ * GitHub instead.
+ */
+export async function prWalkthroughSet(
+  root: string, input: string,
+  features: WalkInput[],
+  opts: { by?: string; dryRun?: boolean } = {},
+) {
+  const t = await prTriage(root, input, { fetch: false });
+  if ("error" in t) return { error: t.error };
+
+  const queue = new Set(t.worklist.filter((w) => LANE_POLICY[w.lane].review === "queue").map((w) => w.id));
+  const inPr = new Set(t.worklist.map((w) => w.id));
+  const v = validateWalkthrough(features, inPr);
+  if (!v.ok) {
+    return {
+      error: "the walkthrough does not describe this pull request",
+      notInPr: v.notInPr,
+      claimedTwice: v.claimedTwice,
+      emptyChapters: v.emptyChapters,
+    };
+  }
+
+  // Witness against the PR HEAD's bodies, not the working tree's — a walkthrough is
+  // a claim about the branch, and the working tree is usually on another one.
+  const live = await snapshotHashes(root, t.refs.head);
+  const built = buildWalkthrough(
+    { pr: t.pr.number, head: t.refs.head, by: opts.by || "agent", at: new Date().toISOString(), features },
+    (id) => live.get(id),
+  );
+  const coverage = walkCoverage(features, queue, t.worklist.length - queue.size);
+  if (!opts.dryRun) await writeWalkthrough(root, String(t.pr.number), built);
+  return {
+    ok: true, pr: t.pr.number, head: t.refs.head,
+    features: built.features.length,
+    chapters: built.features.reduce((n, f) => n + f.chapters.length, 0),
+    coverage,
+    dryRun: !!opts.dryRun,
+  };
+}
+
+/** The stored walkthrough for a PR, with the chapters whose code has since moved. */
+export async function prWalkthroughGet(root: string, input: string) {
+  const t = await prTriage(root, input, { fetch: false });
+  if ("error" in t) return { error: t.error };
+  const w = (await readWalkthroughs(root)).walkthroughs[String(t.pr.number)];
+  if (!w) return { pr: t.pr.number, walkthrough: null };
+  const live = await snapshotHashes(root, t.refs.head);
+  return {
+    pr: t.pr.number,
+    walkthrough: w,
+    /** Written against another commit entirely — every chapter is suspect. */
+    headMoved: w.head !== t.refs.head,
+    stale: staleChapters(w, live),
+  };
 }
 
 /** The PR's spec-derived walkthrough. */

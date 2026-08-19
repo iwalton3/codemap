@@ -1,3 +1,4 @@
+import type { PrWalkthrough } from "./walkthrough.js";
 /**
  * The codemap store — now backed by a per-universe SQLite DB (`src/db.ts`)
  * instead of JSON sidecar files. The public API is unchanged (same async
@@ -551,6 +552,23 @@ export type PushStore = { schemaVersion: number; pushes: Record<string, PushReco
 
 export async function readPushes(root: string): Promise<PushStore> {
   return getMeta<PushStore>(db(root), "pr_push") ?? { schemaVersion: SCHEMA_VERSION, pushes: {} };
+}
+
+/**
+ * Agent-written walkthroughs, one per pull request. Keyed by PR number and carrying
+ * the head it was written against, so a walkthrough is never silently read as being
+ * about a commit it has not seen.
+ */
+export type WalkthroughStore = { schemaVersion: number; walkthroughs: Record<string, PrWalkthrough> };
+
+export async function readWalkthroughs(root: string): Promise<WalkthroughStore> {
+  return getMeta<WalkthroughStore>(db(root), "pr_walkthrough") ?? { schemaVersion: SCHEMA_VERSION, walkthroughs: {} };
+}
+
+export async function writeWalkthrough(root: string, pr: string, w: PrWalkthrough): Promise<void> {
+  const store = await readWalkthroughs(root);
+  store.walkthroughs[pr] = w;
+  setMeta(db(root), "pr_walkthrough", store);
 }
 
 /** Which PRs have already had their GitHub viewed-ticks imported, so a bulk run resumes. */

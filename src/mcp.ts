@@ -497,6 +497,54 @@ const tools: Tool[] = [
     handler: (a, c) => ops.annotate(c.universe.path, a),
   },
   {
+    name: "pr_walkthrough",
+    description:
+      "Write the reading guide for a pull request: the document a human reviews FROM.\n\n"
+      + "A 22k-line PR is unreviewable as a flat list. Break it into FEATURES (a coherent capability the change delivers) and, inside each, CHAPTERS (a unit someone can hold in their head and then sign off in one go — roughly 5-20 symbols).\n\n"
+      + "A chapter body is an ORDERED list of blocks that INTERLEAVE prose and symbols:\n"
+      + "  [{\"kind\":\"prose\",\"text\":\"The aggregate owns every transition. Read the guard first:\"},\n"
+      + "   {\"kind\":\"symbol\",\"anchorId\":\"a_1f..\"},\n"
+      + "   {\"kind\":\"prose\",\"text\":\"...which is the only place Pending is enforced. Confirmation is then a straight fold:\"},\n"
+      + "   {\"kind\":\"symbol\",\"anchorId\":\"a_9c..\"}]\n"
+      + "Prose goes BETWEEN symbols and says what to look at next and why. A paragraph followed by ten symbols is not a walkthrough — it is a wall of text with code boxes attached, which is what the reviewer already has.\n\n"
+      + "DESCRIBE WHAT THE CODE DOES. The spec is evidence, not scaffolding: specs lie, and code drifts. Use `pr_packet` for the ranked symbols, their source and the spec text, then say what is actually there.\n\n"
+      + "ACCOUNT FOR EVERYTHING. Every changed symbol in the review queue belongs in exactly one chapter. Anything you leave out is what the human ends up reading on GitHub with no context — so if a cluster does not fit the change's stated purpose, it is still a feature: name it for what it is and set `unstated: true`. A drive-by that is called out is useful; one that is silently omitted is the thing this exists to prevent.\n\n"
+      + "REJECTED if a chapter cites a symbol this PR does not touch, if two chapters claim the same symbol, or if a chapter has no symbol in it. Re-run with `dryRun: true` to check coverage before writing.\n\n"
+      + "Chapter and feature ids are derived from titles, so re-walking a PR with the same structure keeps the reviewer's place. Chapters are witnessed against the head's bodies: when the submitter pushes, only the chapters whose code moved go stale, and only those need re-walking.",
+    mutates: true,
+    inputSchema: obj({
+      pr: { type: "string", description: "PR number, url, or owner/repo#N." },
+      dryRun: { type: "boolean", description: "Validate and report coverage without storing." },
+      features: {
+        type: "array",
+        description: "Ordered for reading — put the feature the rest builds on first.",
+        items: obj({
+          title: { type: "string", description: "What this capability IS, in the reviewer's words." },
+          summary: { type: "string", description: "What it is aiming to do. One to three sentences that guide reading — not a description of every symbol in it." },
+          unstated: { type: "boolean", description: "This is not part of the change's stated purpose — a drive-by. Say so here rather than in prose." },
+          chapters: {
+            type: "array",
+            items: obj({
+              title: { type: "string" },
+              blocks: {
+                type: "array",
+                description: "Interleaved. Each item is {kind:'prose',text} or {kind:'symbol',anchorId}.",
+                items: { type: "object" },
+              },
+            }, ["title", "blocks"], false),
+          },
+        }, ["title", "summary", "chapters"], false),
+      },
+    }, ["pr", "features"]),
+    handler: (a, c) => ops.prWalkthroughSet(c.universe.path, String(a.pr ?? ""), a.features ?? [], { by: "agent", dryRun: !!a.dryRun }),
+  },
+  {
+    name: "pr_walkthrough_get",
+    description: "The stored walkthrough for a pull request, with `stale` naming the chapters whose code has moved since it was written (re-walk only those) and `headMoved` when it was written against a different commit entirely.",
+    inputSchema: obj({ pr: { type: "string", description: "PR number, url, or owner/repo#N." } }, ["pr"]),
+    handler: (a, c) => ops.prWalkthroughGet(c.universe.path, String(a.pr ?? "")),
+  },
+  {
     name: "review_queue",
     description: "What the human has asked you to act on: findings they raised during review and handed to an agent, newest-severity-first, each with the symbol it sits on and that symbol's CURRENT source — so you can act without hunting for it.\n\n`assignment.kind` says what was asked:\n  • \"investigate\" — work out whether it is real and report back what you found.\n  • \"fix\" — make the change. ONE file only. A fix that needs to span files is work for an agent the human dispatches, not a review-tool edit: report `declined` with what it would take, which is a useful answer, not a failure.\n\nReport back with `close_finding`. You do NOT resolve the finding — the human does, after reading what you did.",
     inputSchema: obj({
