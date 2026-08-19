@@ -20,6 +20,7 @@
  */
 
 import type { Lane } from "./lanes.js";
+import { scanMarkdown } from "./markdown.js";
 import type { Complexity } from "./schema.js";
 
 export interface SpecSection { specPath: string; heading: string; level: number; text: string; durable: boolean }
@@ -51,20 +52,19 @@ const CHANGE_HEADING = new RegExp(
 
 export const isDurableHeading = (heading: string) => !CHANGE_HEADING.test(heading);
 
-/** Split spec markdown into `##`-level sections, each carrying the file's title as context. */
+/**
+ * Split spec markdown into sections, each carrying the file's title as context.
+ *
+ * The document is scanned once (`scanMarkdown`) rather than matched line by line:
+ * headings inside fenced blocks, inside HTML comments, or written as setext
+ * underlines all used to be got wrong, each of them silently. See markdown.ts.
+ */
 export function splitSpec(specPath: string, text: string): SpecSection[] {
   const durable = !EPHEMERAL_SPEC.test(specPath);
-  // Strip CR before splitting: a CRLF-committed spec leaves \r on every line, and
-  // the heading regex has no /m and cannot match \r before $, so EVERY heading was
-  // missed — the file collapsed into one fake chapter and both gap signals reported
-  // "all accounted for" without having computed anything. Blobs come from
-  // `git cat-file`, so core.autocrlf never masks this.
-  const lines = text.replace(/\r\n?/g, "\n").split("\n");
   const out: SpecSection[] = [];
   let heading = specPath.split("/").pop() ?? specPath;
   let level = 1;
   let buf: string[] = [];
-  let fenced = false;
   // The run before the first heading is a preamble and only counts when it has
   // text; once a heading has been seen, every section counts even if its body is
   // empty — a heading with nothing under it is exactly the "shipped without
@@ -75,11 +75,16 @@ export function splitSpec(specPath: string, text: string): SpecSection[] {
     if (started || body) out.push({ specPath, heading, level, text: body, durable: durable && isDurableHeading(heading) });
     buf = [];
   };
-  for (const line of lines) {
-    if (/^```/.test(line)) fenced = !fenced;       // a "#" inside a fence is code, not a heading
-    const m = !fenced && /^(#{1,3})\s+(.*)$/.exec(line);
-    if (m) { flush(); started = true; level = m[1]!.length; heading = m[2]!.trim(); continue; }
-    buf.push(line);
+  for (const l of scanMarkdown(text)) {
+    // Only `#`..`###` cut a section; deeper ones are detail inside one.
+    if (l.kind === "heading" && l.level <= 3) {
+      flush(); started = true; level = l.level; heading = l.text;
+      continue;
+    }
+    // A commented-out section is text the author DELETED. Keeping its body would
+    // report its identifiers as spec shipped without code.
+    if (l.kind === "comment") continue;
+    buf.push(l.kind === "heading" ? `${"#".repeat(l.level)} ${l.text}` : l.text);
   }
   flush();
   if (!out.length) out.push({ specPath, heading, level, text: "", durable: durable && isDurableHeading(heading) });

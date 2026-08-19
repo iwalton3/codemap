@@ -90,3 +90,20 @@ test("a repeated heading yields two chapters, not one id shared by both", () => 
   assert.equal(refunds.length, 2);
   assert.deepEqual(refunds.map((c) => c.occurrence), [1, 2]);
 });
+
+test("splitSpec cuts on real headings only — not ones inside fences or comments", async () => {
+  // Each of these used to hand the caller sections the document does not have, and
+  // lose the ones it does. See markdown.ts for why they are one scanner now.
+  const secs = (md: string) => splitSpec("docs/specs/x/01-domain-model.md", md).map((s) => s.heading);
+
+  assert.deepEqual(secs("# Spec\n~~~csharp\n# not a heading\n~~~\n## Real\nbody"), ["Spec", "Real"]);
+  assert.deepEqual(secs("# Spec\n````\n```\nsample\n````\n## After\nbody"), ["Spec", "After"]);
+  assert.deepEqual(secs("Domain model\n============\nprose\n\nRefunds\n-------\nmore"), ["Domain model", "Refunds"]);
+
+  // a commented-out section is text the author deleted: not a chapter, and its
+  // identifiers must not be reported as spec shipped without code
+  const commented = splitSpec("docs/specs/x/01-domain-model.md",
+    "# Spec\nintro\n<!--\n## Dropped: `LegacyRefund`\nthe old refund path\n-->\n## Refunds\nbody");
+  assert.deepEqual(commented.map((s) => s.heading), ["Spec", "Refunds"]);
+  assert.equal(commented.some((s) => s.text.includes("old refund path")), false);
+});

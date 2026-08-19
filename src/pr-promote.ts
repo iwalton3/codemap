@@ -14,6 +14,7 @@
 
 import { createHash } from "node:crypto";
 import type { StoryChapter, StoryStep } from "./pr-story.js";
+import { proseLines } from "./markdown.js";
 
 /** Layer index → the name a reader recognises. Mirrors pr-story's `layerOf`. */
 const LAYER_LABEL = ["Command", "Handler", "Event", "Aggregate", "Read model", "Scheduled job"];
@@ -155,8 +156,14 @@ export function planPromotion(chapter: StoryChapter, opts: { idPrefix?: string }
  * does, the title is a better summary than a misleading sentence.
  */
 const DIRECTIVE = /^\s*(?:[-*]\s*)?(?:\*\*)?(add|change|set|remove|delete|rename|replace|update|introduce|extend|move|drop|status|depends|owner|prior art|see|note|todo|domain type|in|under|inside)\b/i;
-const isProse = (l: string) =>
-  l.trim() && !l.startsWith("#") && !l.startsWith("|") && !l.startsWith("```") && !l.startsWith(">") && !DIRECTIVE.test(l);
+/**
+ * Prose, once `scanMarkdown` has already removed code fences, HTML comments and
+ * headings. It used to drop fence DELIMITERS while keeping fence CONTENTS, so a
+ * line of SQL could pass `looksLikeSummary` and become the promoted node's summary
+ * — reported as `summarySource: "spec"`, which tells the surface a real description
+ * was found and stops it asking the human for one.
+ */
+const isProse = (l: string) => l.trim() && !l.startsWith("|") && !l.startsWith(">") && !DIRECTIVE.test(l);
 
 /** Marks of a fragment lifted out of an instruction rather than a statement about the system. */
 const NOT_A_SUMMARY = [
@@ -174,7 +181,7 @@ const looksLikeSummary = (t: string) =>
   && !NOT_A_SUMMARY.some((rx) => rx.test(t));
 
 function firstSentence(text: string, fallback: string): string {
-  const prose = text.split("\n").filter(isProse).join(" ").replace(/\s+/g, " ").trim();
+  const prose = proseLines(text).filter(isProse).join(" ").replace(/\s+/g, " ").trim();
   // Take the first sentence that actually reads like one. Spec prose is written to
   // be acted on, so most leading lines are instructions, file paths or front-matter;
   // a bad summary is worse than the title, which is at least honest.

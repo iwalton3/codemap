@@ -132,3 +132,24 @@ test("a promotion may only overwrite a node its own spec section wrote", () => {
   const derived = planPromotion(chapter({ source: "derived", specPath: undefined, title: "src/api", steps: [step("a1", "A", 3)] }));
   assert.equal(promotionOwns({ body: derived.body }, derived.promotedFrom), false);
 });
+
+test("a fenced code line can never become the promoted node's summary", () => {
+  // `isProse` dropped fence DELIMITERS but kept fence CONTENTS, so a SQL line that
+  // starts with a capital and is long enough passed every check — and it was
+  // reported as `summarySource: "spec"`, which tells the surface a real description
+  // was found and stops it asking the human for one.
+  const p = planPromotion(chapter({
+    title: "Fallback title",
+    prose: "Add the column:\n```sql\nSELECT * FROM orders WHERE settled = true\n```\nThe ledger is authoritative here.",
+    steps: [step("a1", "A", 3)],
+  }));
+  assert.equal(p.summary.includes("SELECT"), false);
+  assert.match(p.summary, /ledger is authoritative/);
+  assert.equal(p.summarySource, "spec");
+
+  // with nothing but code under it, there is no spec sentence — say so
+  const only = planPromotion(chapter({
+    title: "Migration", prose: "```sql\nALTER TABLE orders ADD COLUMN settled bool\n```", steps: [step("a1", "A", 3)],
+  }));
+  assert.equal(only.summarySource, "title", "the surface must ask the human rather than quote SQL at them");
+});
