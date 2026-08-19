@@ -4,7 +4,8 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { State } from "./schema.js";
-import { writeStore, readAnnotations } from "./store.js";
+import { writeStore, readAnnotations, writeAnnotations } from "./store.js";
+import { withLock } from "./lock.js";
 import { annotate, assignAnnotation, reviewQueue, closeAssignment, resolveAnnotation } from "./ops.js";
 import { indexBlob } from "./repo.js";
 
@@ -100,4 +101,38 @@ test("a resolved finding cannot be assigned", async () => {
     const r = await assignAnnotation(root, { id: annId, kind: "fix" }) as any;
     assert.ok(r.error);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the annotation blob is a whole-file read-modify-write — an interleave loses UNRELATED records", async () => {
+  // Not a hypothetical: this is the exact shape of `closeAssignment`, `annotate`
+  // and `resolveAnnotation` — read the whole blob, mutate, write the whole blob.
+  // Interleaved, the loser does not lose a field, it loses somebody else's
+  // annotation. The interleave is hand-rolled so the test is deterministic.
+  const { root, anchorId } = await fixture();
+  const asAgentSees = (await readAnnotations(root)).annotations;          // agent reads
+
+  await annotate(root, { targetKind: "anchor", targetId: anchorId, text: "a human's note", kind: "note", author: "human" });
+  await writeAnnotations(root, asAgentSees);                              // agent writes its stale copy
+
+  const after = (await readAnnotations(root)).annotations;
+  assert.equal(after.length, 1);
+  assert.equal(after.find((a) => a.text === "a human's note"), undefined,
+    "this is the lost update the write lock exists to prevent");
+});
+
+test("under the lock, a close and a concurrent annotate both survive", async () => {
+  // `close_finding` was the one MCP write tool missing from `MUTATING`, so it was
+  // the only one that could run the race above against a human's `/api/annotate`.
+  const { root, anchorId, annId } = await fixture();
+  await assignAnnotation(root, { id: annId, kind: "investigate", by: "me" });
+
+  await Promise.all([
+    withLock(root, () => closeAssignment(root, { id: annId, result: "answered", detail: "not reachable", by: "agent" })),
+    withLock(root, () => annotate(root, { targetKind: "anchor", targetId: anchorId, text: "a human's note", kind: "note", author: "human" })),
+  ]);
+
+  const anns = (await readAnnotations(root)).annotations;
+  assert.equal(anns.length, 2, "neither write may drop the other");
+  assert.ok(anns.find((a) => a.id === annId)!.outcome, "the agent's outcome landed");
+  assert.ok(anns.find((a) => a.text === "a human's note"), "and the human's annotation is still there");
 });

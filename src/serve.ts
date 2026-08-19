@@ -111,18 +111,27 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return ops.diffCode(root, q.get("base") ?? "", q.get("head") || undefined, q.get("id") ?? "", q.get("file") ?? "");
     case "/api/diff/doc":
       return ops.docDiff(root, q.get("base") ?? "", q.get("head") || undefined, q.get("id") ?? "");
+    // These four are GETs that WRITE: each runs `prTriage`, which caches two commit
+    // snapshots through `ensureSnapshot`, and with fetch on also fetches into .git.
+    // They stay GETs — a snapshot is keyed by sha and immutable, and a fetch is
+    // idempotent, so a browser retrying one changes nothing — but they must hold the
+    // write lock like every other writer, or a snapshot write interleaves with a
+    // locked one. The lock is taken HERE and never inside `ensureSnapshot`:
+    // `withLock` is not re-entrant, and the POST routes already hold it over ops
+    // that reach the same code.
+    //
     // `fetch` defaults ON, matching `prTriage` and the CLI. Reading the param as a
     // bare === "1" made its ABSENCE an explicit false, so the web UI refused any PR
     // whose head was not already local — with an error blaming the universe — while
     // `codemap pr` on the same PR just worked. Only `fetch=0` disables it now.
     case "/api/pr":
-      return ops.pr(root, q.get("pr") ?? "", { fetch: q.get("fetch") !== "0" });
+      return withLock(root, () => ops.pr(root, q.get("pr") ?? "", { fetch: q.get("fetch") !== "0" }));
     case "/api/pr/story":
-      return ops.prStoryFor(root, q.get("pr") ?? "", { fetch: q.get("fetch") !== "0" });
+      return withLock(root, () => ops.prStoryFor(root, q.get("pr") ?? "", { fetch: q.get("fetch") !== "0" }));
     case "/api/pr/promote_plan":
-      return ops.prPromotePlan(root, q.get("pr") ?? "", q.get("chapter") ?? "");
+      return withLock(root, () => ops.prPromotePlan(root, q.get("pr") ?? "", q.get("chapter") ?? ""));
     case "/api/pr/code":
-      return ops.prCode(root, q.get("pr") ?? "", q.get("id") ?? "");
+      return withLock(root, () => ops.prCode(root, q.get("pr") ?? "", q.get("id") ?? ""));
     case "/api/prs":
       return ops.prsFor(root);
     case "/api/reverted":

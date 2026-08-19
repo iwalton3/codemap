@@ -23,7 +23,7 @@ import { withLock } from "./lock.js";
 
 // Tools that write to a universe's .codemap/ — held under the write lock so a
 // concurrent CLI run or second agent can't clobber a read-modify-write.
-const MUTATING = new Set(["init", "document", "connect", "update_node", "delete_node", "confirm", "ack_hole", "cover", "report_bug", "update_bug", "annotate", "resolve_question", "link", "check_stale", "analyze", "review", "sanity_check", "snapshot", "reindex"]);
+const MUTATING = new Set(["init", "document", "connect", "update_node", "delete_node", "confirm", "ack_hole", "cover", "report_bug", "update_bug", "annotate", "close_finding", "resolve_question", "link", "check_stale", "analyze", "review", "sanity_check", "snapshot", "reindex"]);
 
 // Anti-self-vouching guard: node ids this MCP CONNECTION authored/edited this
 // session. An agent can't `sanity_check` (or agent-review) a doc its own

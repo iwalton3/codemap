@@ -21,6 +21,7 @@ import { indexBlob } from "./repo.js";
 import { loadLanes, LANE_POLICY } from "./lanes.js";
 import { markReviewedBatch, reviewStatesFor } from "./reviews.js";
 import { readViewedImports, writeViewedImport } from "./store.js";
+import { withLock } from "./lock.js";
 
 function gh(args: string[]): { ok: boolean; out: string; err: string } {
   const r = spawnSync("gh", args, { encoding: "utf8", maxBuffer: 1 << 28, timeout: 120_000 });
@@ -117,6 +118,9 @@ export async function bulkPullViewed(
 
   const targets = opts.limit ? withTicks.slice(0, opts.limit) : withTicks;
   for (const p of targets) {
+    // "nothing to import for this PR" is still a store write, and still has to be
+    // atomic against the user's own server.
+    const recordEmpty = () => withLock(root, () => writeViewedImport(root, String(p.number), 0));
     if (!opts.force && already[String(p.number)]) { res.skippedAlreadyImported++; continue; }
     try {
       const meta = gh(["pr", "view", String(p.number), "--repo", slug, "--json", "baseRefName,headRefOid,baseRefOid"]);
@@ -128,7 +132,7 @@ export async function bulkPullViewed(
 
       const paths = viewedPaths(slug, p.number);
       if ("error" in paths) { res.errors.push({ pr: p.number, why: paths.error }); continue; }
-      if (!paths.size) { if (!opts.dryRun) await writeViewedImport(root, String(p.number), 0); res.processed++; continue; }
+      if (!paths.size) { if (!opts.dryRun) await recordEmpty(); res.processed++; continue; }
 
       // GitHub's recorded base sha, not the branch tip: a merged PR's head is an
       // ancestor of the tip, so that merge-base is the head and the diff is empty.
@@ -138,7 +142,7 @@ export async function bulkPullViewed(
 
       const files = changedFilesBetween(root, mb, headRefOid)
         .filter((f) => paths.has(f) && LANE_POLICY[lanes.classify(f)]?.review === "queue");
-      if (!files.length) { if (!opts.dryRun) await writeViewedImport(root, String(p.number), 0); res.processed++; continue; }
+      if (!files.length) { if (!opts.dryRun) await recordEmpty(); res.processed++; continue; }
 
       // Only the symbols the PR actually CHANGED in a ticked file — not every symbol
       // the file happens to contain. A tick on a 30-symbol file where the PR touched
@@ -157,21 +161,29 @@ export async function bulkPullViewed(
           hashes.set(a.id, a.bodyHash);
         }
       }
-      if (!ids.length) { if (!opts.dryRun) await writeViewedImport(root, String(p.number), 0); res.processed++; continue; }
+      if (!ids.length) { if (!opts.dryRun) await recordEmpty(); res.processed++; continue; }
 
-      // A sign-off already outranks a tick; never overwrite one with weaker evidence.
-      const st = await reviewStatesFor(root, ids.map((id) => ({ kind: "anchor" as const, id })));
-      const fresh = ids.filter((id) => st.get(`anchor:${id}`)?.code.state !== "reviewed");
-      res.leftSigned += ids.length - fresh.length;
-
-      // `ref` is the PR's head, and it is the acceptance's provenance. Without it the
-      // commit falls back to whatever the working tree is on, so every acceptance
-      // across a year of PRs records the same commit — which makes the ancestry test
-      // in `resolveAcceptance` meaningless and reads most of them back as reverts.
-      const m = opts.dryRun
-        ? { marked: fresh.length }
-        : await markReviewedBatch(root, fresh, { level: "code", actor: "human", attestation: "viewed", reviewer: "github-import", ref: headRefOid, hashes });
-      if (!opts.dryRun) await writeViewedImport(root, String(p.number), m.marked);
+      // Everything above is read-only (gh, blob reads, parsing) and deliberately
+      // outside the lock: a back-catalogue run takes minutes, and holding one lock
+      // across it would block the user's own server for the whole import. What has
+      // to be atomic is this tail — the "is it already signed?" read has to see the
+      // same store its write lands in, and reviews and the import record are
+      // whole-blob rewrites, so an interleaved writer loses UNRELATED marks.
+      const apply = async () => {
+        // A sign-off already outranks a tick; never overwrite one with weaker evidence.
+        const st = await reviewStatesFor(root, ids.map((id) => ({ kind: "anchor" as const, id })));
+        const fresh = ids.filter((id) => st.get(`anchor:${id}`)?.code.state !== "reviewed");
+        res.leftSigned += ids.length - fresh.length;
+        if (opts.dryRun) return { marked: fresh.length };
+        // `ref` is the PR's head, and it is the acceptance's provenance. Without it the
+        // commit falls back to whatever the working tree is on, so every acceptance
+        // across a year of PRs records the same commit — which makes the ancestry test
+        // in `resolveAcceptance` meaningless and reads most of them back as reverts.
+        const r = await markReviewedBatch(root, fresh, { level: "code", actor: "human", attestation: "viewed", reviewer: "github-import", ref: headRefOid, hashes });
+        await writeViewedImport(root, String(p.number), r.marked);
+        return r;
+      };
+      const m = opts.dryRun ? await apply() : await withLock(root, apply);
       res.marked += m.marked;
       res.processed++;
       log(`#${p.number} (${p.author?.login ?? "?"}, ${p.createdAt.slice(0, 10)}) → ${m.marked} symbol(s)`);

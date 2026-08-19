@@ -240,11 +240,20 @@ if (positionals[0] === "analyze") {
   else await cmdAnalyze(analyzer, root, Boolean(values.verbose), false);
 } else {
   if (positionals[0] === "pr-packet") {
-    const r = await ops.prPacketFor(resolve(values.repo ?? "."), positionals[1] ?? "", {
+    // Every `pr-*` command below writes: annotations, reviews and triage are
+    // whole-blob read-modify-write, and even a plain read caches two commit
+    // snapshots through `prTriage` -> `ensureSnapshot`. The MCP server and the
+    // HTTP API hold the lock for the identical ops; these ran outside it, so a
+    // concurrent writer's update was lost outright — and because the blobs are
+    // rewritten whole, what is lost is UNRELATED records, not just the racing one.
+    // The lock is taken here, at the entry point, and never nested: `withLock` is
+    // not re-entrant, so an inner acquisition would deadlock until its timeout.
+    const packetRoot = resolve(values.repo ?? ".");
+    const r = await withLock(packetRoot, () => ops.prPacketFor(packetRoot, positionals[1] ?? "", {
       limit: values.limit ? Number(values.limit) : undefined,
       offset: values.offset ? Number(values.offset) : undefined,
       fetch: !values["no-fetch"],
-    });
+    }));
     if ("error" in r) { console.error(r.error); process.exit(1); }
     console.log(JSON.stringify(r, null, 1));
   } else if (positionals[0] === "pr-pull-viewed" && (values.all || positionals[1] === "--all")) {
@@ -276,7 +285,8 @@ if (positionals[0] === "analyze") {
       for (const e of r.errors.slice(0, 10)) console.log(`    #${e.pr}: ${e.why}`);
     }
   } else if (positionals[0] === "pr-pull-viewed") {
-    const r = await ops.prPullViewed(resolve(values.repo ?? "."), positionals[1] ?? "", { dryRun: Boolean(values["dry-run"]) });
+    const pvRoot = resolve(values.repo ?? ".");
+    const r = await withLock(pvRoot, () => ops.prPullViewed(pvRoot, positionals[1] ?? "", { dryRun: Boolean(values["dry-run"]) }));
     if ("error" in r) { console.error(r.error); process.exit(1); }
     console.log(`${values["dry-run"] ? "[dry run] " : ""}${r.files.viewedOnGitHub} of ${r.files.total} file(s) ticked viewed on GitHub`);
     console.log(`  ${r.anchors.marked} symbol(s) marked viewed here` +
@@ -284,16 +294,20 @@ if (positionals[0] === "analyze") {
       (r.anchors.alreadySigned ? `, ${r.anchors.alreadySigned} already signed (a vouch outranks a tick)` : ""));
     if (r.skippedFiles.length) console.log(`  ${r.skippedFiles.length} ticked file(s) carry no reviewable symbol here (tests/generated/data)`);
   } else if (positionals[0] === "pr-triage") {
-    const r = await ops.prTriageDerive(resolve(values.repo ?? "."), positionals[1] ?? "");
+    const ptRoot = resolve(values.repo ?? ".");
+    const r = await withLock(ptRoot, () => ops.prTriageDerive(ptRoot, positionals[1] ?? ""));
     if ("error" in r) { console.error(r.error); process.exit(1); }
     console.log(`considered ${r.considered} symbol(s) — ${r.applied} marked, ${r.refused} left alone (already at or above this tier)`);
     console.log(`  proposed stakes: ${JSON.stringify(r.byImportance)}`);
   } else if (positionals[0] === "pr-push") {
-    await cmdPrPush(resolve(values.repo ?? "."), positionals[1] ?? "", Boolean(values.confirm), Boolean(values.viewed), { reviewedOnly: !values.all, minSeverity: values["min-severity"] as any });
+    const pushRoot = resolve(values.repo ?? ".");
+    await withLock(pushRoot, () => cmdPrPush(pushRoot, positionals[1] ?? "", Boolean(values.confirm), Boolean(values.viewed), { reviewedOnly: !values.all, minSeverity: values["min-severity"] as any }));
   } else if (positionals[0] === "pr-ingest") {
-    await cmdPrIngest(resolve(values.repo ?? "."), positionals[1] ?? "", positionals.slice(2), Boolean(values["dry-run"]));
+    const ingestRoot = resolve(values.repo ?? ".");
+    await withLock(ingestRoot, () => cmdPrIngest(ingestRoot, positionals[1] ?? "", positionals.slice(2), Boolean(values["dry-run"])));
   } else if (positionals[0] === "pr") {
-    await cmdPr(resolve(values.repo ?? "."), positionals[1] ?? "", { fetch: !values["no-fetch"], json: Boolean(values.json) });
+    const prRoot = resolve(values.repo ?? ".");
+    await withLock(prRoot, () => cmdPr(prRoot, positionals[1] ?? "", { fetch: !values["no-fetch"], json: Boolean(values.json) }));
   } else if (positionals[0] === "prs") {
     cmdPrs(positionals[1] ?? "");
   } else if (positionals[0] === "diff") {
