@@ -68,6 +68,20 @@ had in mind.
 3. `code in no spec section` — the dual of `specWithoutCode`, designed in §4 of the
    walkthrough design, not built. It is the drive-by detector.
 
+**The first real batch went out** (PR #264, review `4975892283`, 6 comments) and
+produced a second report, `codemap-bug-publish-placement.md`. Four of six landed
+right, `[Claude]` applied correctly, and the §4.4 preamble worked on the hardest
+case. What was wrong is fixed: placement fell through to the enclosing symbol's
+first HUNK line, which is three lines of context belonging to whatever came before,
+so a comment landed eleven lines off its subject. Placement now prefers lines the
+change ADDED, reads the `file:line` the comment's own prose cites, and `line` is
+settable from `close_finding` / `revise_finding` — an agent could not say one.
+
+**The reviewer can now write a summary and vote.** The body was all generated stats;
+there was nowhere to say what you make of the change, and no way to approve or
+request changes. Both live on the PLAN, so the preview is what goes out and the
+fingerprint covers them.
+
 ### Known gaps in what was just built
 
 - Publishing a `refuted` finding **deliberately** (the spec's "withdrawals are worth
@@ -77,6 +91,14 @@ had in mind.
 - No "approve all confirmed" bulk action (§8.5). With 12–16 findings, per-item is
   the slow step.
 - `subject_type: "file"` comments are deliberately unused; see §0.4.
+- A comment whose text cites a different line than it landed on is FLAGGED, not
+  blocked. GitHub accepts it, and only a human can tell a mis-placement from a
+  comment that cites elsewhere deliberately. Worth watching whether that is the
+  right side of the line after another batch.
+- Nothing repairs a comment already posted to the wrong line. GitHub's
+  `PATCH /pulls/comments/{id}` takes only `body`; moving one means DELETE and
+  re-POST, which drops the thread and re-notifies. Prepending a correction to the
+  body is the only in-place option.
 - The witness gate cannot catch an agent that reads another branch but files against
   the correct ref. That is a model error with no tooling signal, and the gate does
   not pretend otherwise. The report's §7.6 — flag a finding whose quoted text matches
