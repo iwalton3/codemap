@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { State } from "./schema.js";
 import { writeStore, readAnnotations, writeAnnotations } from "./store.js";
 import { withLock } from "./lock.js";
-import { annotate, assignAnnotation, reviewQueue, closeAssignment, resolveAnnotation } from "./ops.js";
+import { annotate, assignAnnotation, reviewQueue, closeAssignment, resolveAnnotation, escalateAnnotation } from "./ops.js";
 import { indexBlob } from "./repo.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
@@ -135,4 +135,30 @@ test("under the lock, a close and a concurrent annotate both survive", async () 
   assert.equal(anns.length, 2, "neither write may drop the other");
   assert.ok(anns.find((a) => a.id === annId)!.outcome, "the agent's outcome landed");
   assert.ok(anns.find((a) => a.text === "a human's note"), "and the human's annotation is still there");
+});
+
+test("raising a finding to the maintainer is a separate act from writing or resolving one", async () => {
+  const { root, anchorId, annId } = await fixture();
+
+  // the fixture's finding is the human's own — there is nothing to elect
+  const own = await escalateAnnotation(root, { id: annId }) as any;
+  assert.ok(own.error, "a finding you wrote is already yours to publish");
+
+  const a = await annotate(root, {
+    targetKind: "anchor", targetId: anchorId, text: "agent thinks this overflows",
+    kind: "finding", severity: "high", author: "agent:pr-first-pass",
+  }) as any;
+  const find = async () => (await readAnnotations(root)).annotations.find((x) => x.id === a.id)!;
+  assert.equal((await find()).escalated, undefined, "an agent's finding starts unraised");
+
+  assert.equal((await escalateAnnotation(root, { id: a.id, by: "izzie" }) as any).ok, true);
+  assert.equal((await find()).escalated!.by, "izzie");
+
+  // and it can be taken back
+  assert.equal((await escalateAnnotation(root, { id: a.id, escalate: false }) as any).ok, true);
+  assert.equal((await find()).escalated, undefined);
+
+  // a resolved finding is not something to send to anybody
+  await resolveAnnotation(root, a.id, true);
+  assert.ok((await escalateAnnotation(root, { id: a.id }) as any).error);
 });

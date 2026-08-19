@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { diffLineRanges } from "./git.js";
-import { planPrPush } from "./pr-push.js";
+import { planPrPush, isAgentAuthored, isElected } from "./pr-push.js";
 import { readPushes, writePush } from "./store.js";
 
 const git = (root: string, ...a: string[]) =>
@@ -97,4 +97,23 @@ test("an unrecognised --min-severity is refused, never read as \"no filter\"", a
     const ok = await planPrPush(root, "", {});
     assert.ok(!("error" in ok) || !/min-severity/i.test((ok as { error: string }).error));
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("only findings the human elected are publishable", () => {
+  // Publishing posts under your account and notifies the author, so an agent's
+  // proposal needs an explicit act — not merely having been read.
+  const mine = { author: "human", text: "x" } as any;
+  const theirs = { author: "agent:pr-first-pass", text: "x" } as any;
+  const raised = { author: "agent:pr-first-pass", text: "x", escalated: { at: "now", by: "human" } } as any;
+
+  assert.equal(isAgentAuthored(mine), false);
+  assert.equal(isAgentAuthored(theirs), true);
+
+  assert.equal(isElected(mine), true, "writing it yourself IS the act");
+  assert.equal(isElected(theirs), false, "an unraised agent proposal must not go out");
+  assert.equal(isElected(raised), true, "raising it to the maintainer is what makes it publishable");
+
+  // an author codemap did not set is treated as a person, not an agent
+  assert.equal(isElected({ author: "izzie", text: "x" } as any), true);
+  assert.equal(isElected({ author: "", text: "x" } as any), true);
 });

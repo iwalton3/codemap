@@ -67,7 +67,7 @@ async function cmdPr(root: string, input: string, opts: { fetch: boolean; json: 
  * plan and stops: comments on someone else's pull request notify people and are
  * not meaningfully undoable, so the default has to be "show me first".
  */
-async function cmdPrPush(root: string, prInput: string, confirm: boolean, markViewed: boolean, filter: { reviewedOnly?: boolean; minSeverity?: any }): Promise<void> {
+async function cmdPrPush(root: string, prInput: string, confirm: boolean, markViewed: boolean, filter: { electedOnly?: boolean; minSeverity?: any }): Promise<void> {
   if (!prInput) { console.error("usage: codemap pr-push <pr> [--confirm] [--viewed] [--all]"); process.exit(2); }
   const plan = await ops.prPushPlan(root, prInput, filter);
   if ("error" in plan) { console.error(plan.error); process.exit(1); }
@@ -77,7 +77,7 @@ async function cmdPrPush(root: string, prInput: string, confirm: boolean, markVi
   console.log(`  ${plan.viewedPaths.length} file(s) fully reviewed → would be marked viewed on GitHub`);
   if (plan.skipped.alreadyPushed) console.log(`  ${plan.skipped.alreadyPushed} already pushed (skipped — a re-run never duplicates)`);
   if (plan.skipped.resolved) console.log(`  ${plan.skipped.resolved} resolved locally (not pushed)`);
-  if (plan.skipped.unreviewed) console.log(`  ${plan.skipped.unreviewed} held back — on symbols you have not viewed or signed (--all to include)`);
+  if (plan.skipped.notElected) console.log(`  ${plan.skipped.notElected} held back — an agent raised them and you have not raised them to the maintainer (--all to include)`);
   if (plan.skipped.belowSeverity) console.log(`  ${plan.skipped.belowSeverity} below --min-severity`);
   for (const c of plan.comments) console.log(`    ${c.path}:${c.line}  ${c.body.split("\n")[0]}`);
   for (const d of plan.deferred) console.log(`    [body] ${d.path}${d.line ? ":" + d.line : ""}  (${d.why})`);
@@ -301,7 +301,7 @@ if (positionals[0] === "analyze") {
     console.log(`  proposed stakes: ${JSON.stringify(r.byImportance)}`);
   } else if (positionals[0] === "pr-push") {
     const pushRoot = resolve(values.repo ?? ".");
-    await withLock(pushRoot, () => cmdPrPush(pushRoot, positionals[1] ?? "", Boolean(values.confirm), Boolean(values.viewed), { reviewedOnly: !values.all, minSeverity: values["min-severity"] as any }));
+    await withLock(pushRoot, () => cmdPrPush(pushRoot, positionals[1] ?? "", Boolean(values.confirm), Boolean(values.viewed), { electedOnly: !values.all, minSeverity: values["min-severity"] as any }));
   } else if (positionals[0] === "pr-ingest") {
     const ingestRoot = resolve(values.repo ?? ".");
     await withLock(ingestRoot, () => cmdPrIngest(ingestRoot, positionals[1] ?? "", positionals.slice(2), Boolean(values["dry-run"])));

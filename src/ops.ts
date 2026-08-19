@@ -30,7 +30,7 @@ import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "./diff.j
 import { prTriage, listOpenPrs, prPacket, prStory, prAnchorCode, prPromotionPlan, derivePrTriage } from "./pr.js";
 import { promotionOwns } from "./pr-promote.js";
 import { parseAgentLines, ingestAgentReview } from "./pr-ingest.js";
-import { planPrPush, executePrPush, pullViewedFromGitHub, type PushPlan } from "./pr-push.js";
+import { planPrPush, executePrPush, pullViewedFromGitHub, isAgentAuthored, type PushPlan } from "./pr-push.js";
 import { bulkPullViewed } from "./pr-bulk.js";
 import { resolveCoverage, selectAnchors, docPct as computeDocPct, citedPct as computeCitedPct, type CoverageResult } from "./coverage.js";
 import { resolveAnchorRefs } from "./refs.js";
@@ -594,7 +594,7 @@ export async function prPullViewedAll(root: string, opts: { force?: boolean; lim
 }
 
 /** What a push to GitHub would contain — inspect before anything leaves the machine. */
-export async function prPushPlan(root: string, input: string, filter: { reviewedOnly?: boolean; minSeverity?: "low" | "medium" | "high" | "critical" } = {}) {
+export async function prPushPlan(root: string, input: string, filter: { electedOnly?: boolean; minSeverity?: "low" | "medium" | "high" | "critical" } = {}) {
   return planPrPush(root, input, filter);
 }
 
@@ -607,7 +607,7 @@ export async function prPushPlan(root: string, input: string, filter: { reviewed
  * can move in between, and the PR head can advance). Comments on someone else's
  * pull request notify people and are not meaningfully undoable.
  */
-export async function prPushExecute(root: string, plan: PushPlan, opts: { markViewed?: boolean } = {}) {
+export async function prPushExecute(root: string, plan: PushPlan, opts: { markViewed?: boolean; comments?: boolean } = {}) {
   return { plan, result: await executePrPush(root, plan, opts) };
 }
 
@@ -2133,6 +2133,29 @@ export async function resolveAnnotation(root: string, id: string, resolved = tru
   ann.resolved = resolved;
   await writeAnnotations(root, annStore.annotations);
   return { ok: true, id, resolved };
+}
+
+/**
+ * Raise an agent's finding to the pull request's maintainer — or take it back.
+ *
+ * The one act that makes an agent's proposal publishable. It is deliberately
+ * separate from `resolve` and from signing the symbol: reading a finding, agreeing
+ * with it, and being willing to put your name on it in front of the author are
+ * three different things, and only the third should notify anybody.
+ *
+ * A human-authored finding needs no flag — writing it was the act — so electing one
+ * is refused rather than silently recorded as something it is not.
+ */
+export async function escalateAnnotation(root: string, input: { id: string; escalate?: boolean; by?: string }) {
+  const annStore = await readAnnotations(root);
+  const ann = annStore.annotations.find((a) => a.id === input.id);
+  if (!ann) return { error: `no annotation "${input.id}"` };
+  if (!isAgentAuthored(ann)) return { error: "you wrote this one — it is already yours to publish" };
+  if (ann.resolved) return { error: "that finding is resolved; reopen it first if it should go to the maintainer" };
+  const escalate = input.escalate !== false;
+  ann.escalated = escalate ? { at: new Date().toISOString(), by: input.by || "human" } : undefined;
+  await writeAnnotations(root, annStore.annotations);
+  return { ok: true, id: ann.id, escalated: escalate };
 }
 
 /**

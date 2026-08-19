@@ -130,6 +130,13 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return withLock(root, () => ops.prStoryFor(root, q.get("pr") ?? "", { fetch: q.get("fetch") !== "0" }));
     case "/api/pr/promote_plan":
       return withLock(root, () => ops.prPromotePlan(root, q.get("pr") ?? "", q.get("chapter") ?? ""));
+    // What WOULD go to GitHub. Nothing leaves the machine on this route — see the
+    // POST below, which is the only thing that publishes.
+    case "/api/pr/push_plan":
+      return withLock(root, () => ops.prPushPlan(root, q.get("pr") ?? "", {
+        electedOnly: q.get("all") !== "1",
+        minSeverity: (q.get("min_severity") as any) || undefined,
+      }));
     case "/api/pr/code":
       return withLock(root, () => ops.prCode(root, q.get("pr") ?? "", q.get("id") ?? ""));
     case "/api/prs":
@@ -244,6 +251,47 @@ const server = createServer(async (req, res) => {
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
       const root = rootFor(body.u ?? null);
       const out = await withLock<unknown>(root, () => ops.prTriageDerive(root, String(body.pr ?? "")));
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(out));
+      return;
+    }
+
+    // Raising an agent's finding to the maintainer — the act that makes it
+    // publishable. Local only; nothing is sent until /api/pr/push.
+    if (req.method === "POST" && url.pathname === "/api/annotation_escalate") {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      const root = rootFor(body.u ?? null);
+      const out = await withLock<unknown>(root, () =>
+        ops.escalateAnnotation(root, { id: String(body.id ?? ""), escalate: body.escalate !== false, by: body.by }),
+      );
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(out));
+      return;
+    }
+
+    // THE outward-facing route: this posts to somebody else's pull request and
+    // notifies them. A plan cannot be handed back by reference over HTTP, so the
+    // caller returns the FINGERPRINT of the plan it displayed and the push is
+    // refused if re-deriving no longer matches it — publishing something the human
+    // did not read is the failure the plan/execute split exists to prevent.
+    if (req.method === "POST" && url.pathname === "/api/pr/push") {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      const root = rootFor(body.u ?? null);
+      const out = await withLock<unknown>(root, async () => {
+        const plan = await ops.prPushPlan(root, String(body.pr ?? ""), {
+          electedOnly: body.all !== true,
+          minSeverity: body.minSeverity || undefined,
+        });
+        if ("error" in plan) return plan;
+        if (body.fingerprint !== plan.fingerprint) {
+          return { error: "this pull request changed since you reviewed the plan — reopen it and look again before publishing", staleFingerprint: true, plan };
+        }
+        return ops.prPushExecute(root, plan, { comments: body.comments !== false, markViewed: body.markViewed === true });
+      });
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(out));
       return;

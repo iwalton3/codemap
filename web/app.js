@@ -304,6 +304,12 @@ async function toggleFinding(c, u, id, resolved) { await postResolveAnnotation(u
 const postAssign = (u, id, kind) =>
   fetch('/api/annotation_assign', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id, kind, by: 'me' }) });
 async function assignFinding(c, u, id, kind) { await postAssign(u, id, kind); await c.load.run(); if (c.refreshFile && c.state.file) await c.refreshFile(); }
+// Raising an agent's finding to the maintainer. Local only — it makes the finding
+// PUBLISHABLE; nothing reaches GitHub until the push button, which is its own act.
+const postEscalate = (u, id, escalate) =>
+  fetch('/api/annotation_escalate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id, escalate, by: 'human' }) });
+async function escalateFinding(c, u, id, escalate) { await postEscalate(u, id, escalate); await c.load.run(); if (c.refreshFile && c.state.file) await c.refreshFile(); }
+const isAgentFinding = (f) => (f.author || 'agent').startsWith('agent');
 
 // A finding, plus the two halves of the agent loop: hand it over, and read what
 // came back. The agent reports; resolving stays the human's act, so an agent can
@@ -324,6 +330,8 @@ const findingItemEl = (c, u, f) => {
       <button title="ask an agent to work out whether this is real and report back" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); assignFinding(c, u, f.id, 'investigate'); }}">→ look into</button>
       <button title="ask an agent to fix it. One file only — anything wider comes back declined with what it would take, to be handed to a real agent instead." on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); assignFinding(c, u, f.id, 'fix'); }}">→ fix</button>
     </span>`)}
+    ${when(!f.resolved && isAgentFinding(f), () => html`<button class="rvfraise ${f.escalated ? 'on' : ''}" title="${f.escalated ? 'raised to the maintainer — it will go out with the next push (click to take it back)' : 'raise to the maintainer: an agent proposed this, and publishing it posts under YOUR account. Nothing is sent until you push.'}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); escalateFinding(c, u, f.id, !f.escalated); }}">${f.escalated ? '▲ raised' : '▲ raise'}</button>`)}
+    ${when(!f.resolved && !isAgentFinding(f), () => html`<span class="rvfraise mine" title="you wrote this one — it goes out with the next push">▲ yours</span>`)}
     <button class="annores" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); toggleFinding(c, u, f.id, !f.resolved); }}">${f.resolved ? 'reopen' : 'resolve'}</button>
     ${when(o, () => html`<div class="asgndetail">${o.detail}${when(o.files && o.files.length, () => html` <span class="dim">— ${o.files.join(', ')}</span>`)}</div>`)}
   </div>`;
@@ -1987,7 +1995,7 @@ const LAYER_NAME = ['command', 'handler', 'event', 'aggregate', 'read-model', 'j
 
 class PrStoryPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { story: null, open: {}, code: {}, pending: {}, finding: null, prRef: null, showDiff: {}, promote: null, promoted: {}, showCovered: false, deriving: false, derived: null, pulling: false, pulled: null }; }
+  constructor(props) { super(props); this.state = { story: null, open: {}, code: {}, pending: {}, finding: null, prRef: null, showDiff: {}, promote: null, promoted: {}, showCovered: false, deriving: false, derived: null, pulling: false, pulled: null, push: null }; }
   load = this.createTask(async () => {
     const u = this.props.params.universe; nav.current = u;
     const story = await api('/api/pr/story', { u, pr: this.props.params.pr });
@@ -2091,6 +2099,37 @@ class PrStoryPage extends Component {
     if (!r.error) await this.load.run();
   }
 
+  // Publishing to GitHub is two steps, always. The first shows exactly what would
+  // leave the machine; nothing is sent until the second. `what` is 'comments' or
+  // 'viewed' — different acts: comments argue for a change and notify the author,
+  // viewed state only says which files someone read.
+  async openPush(what) {
+    if (this.state.push && this.state.push.what === what) { this.state.push = null; return; }
+    this.state.push = { what, loading: true };
+    const r = await api('/api/pr/push_plan', { u: this.props.params.universe, pr: this.props.params.pr });
+    if (r.error) { this.state.push = { what, error: r.error }; return; }
+    this.state.push = { what, plan: r };
+  }
+  async confirmPush() {
+    const p = this.state.push;
+    if (!p || !p.plan || p.sending) return;
+    this.state.push = { ...p, sending: true };
+    const res = await fetch('/api/pr/push', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        u: this.props.params.universe, pr: this.props.params.pr,
+        // The fingerprint of the plan on screen. If anything moved since, the server
+        // refuses rather than publishing something nobody read.
+        fingerprint: p.plan.fingerprint,
+        comments: p.what === 'comments',
+        markViewed: p.what === 'viewed',
+      }),
+    }).then(x => x.json());
+    if (res.error) { this.state.push = { ...p, sending: false, error: res.error }; return; }
+    this.state.push = { ...p, sending: false, done: res };
+    await this.load.run();
+  }
+
   async openPromote(ch) {
     if (this.state.promote && this.state.promote.chapter === ch.id) { this.state.promote = null; return; }
     this.state.promote = { chapter: ch.id, loading: true };
@@ -2121,6 +2160,45 @@ class PrStoryPage extends Component {
     this.state.promoted = { ...this.state.promoted, [ch.id]: res.promoted };
     this.state.promote = null;
   }
+  // What would leave the machine, before anything does. Deliberately verbose: this
+  // is the one surface in codemap that writes to somebody else's repository.
+  pushPanelEl() {
+    const p = this.state.push;
+    if (!p) return html``;
+    if (p.error) return html`<div class="prpromo err">${p.error}</div>`;
+    if (!p.plan) return html`<div class="prpromo dim">working out what would be sent…</div>`;
+    if (p.done) {
+      const d = p.done;
+      return html`<div class="prpromo">
+        <div><b>Sent.</b> ${when(d.result.postedComments, () => html`${d.result.postedComments} inline comment(s)`)}${when(d.result.reviewUrl, () => html` · <a href="${d.result.reviewUrl}" target="_blank" rel="noreferrer">open the review ↗</a>`)}
+        ${when(d.result.markedViewed.length, () => html`${d.result.markedViewed.length} file(s) ticked viewed`)}</div>
+        ${each(d.result.errors || [], e => html`<div class="warn">${e}</div>`, (e, i) => String(i))}
+        <div class="prpromoacts"><button class="ghost" on-click="${() => { this.state.push = null; }}">close</button></div>
+      </div>`;
+    }
+    const plan = p.plan, sk = plan.skipped;
+    const comments = p.what === 'comments';
+    return html`<div class="prpromo">
+      ${when(comments, () => html`
+        <div><b>${plan.comments.length}</b> inline comment(s)${plan.deferred.length ? `, ${plan.deferred.length} folded into the review body (their line is not in the diff)` : ''} would go to <a href="${plan.pr.url}" target="_blank" rel="noreferrer">#${plan.pr.number}</a>.</div>
+        ${each(plan.comments, c => html`<div class="pushrow"><code>${c.path}:${c.line}</code> <span class="dim">${c.body.split('\n')[0]}</span></div>`, c => c.annotationId)}
+        ${each(plan.deferred, d => html`<div class="pushrow"><code>${d.path}</code> <span class="dim">[body] ${d.why}</span></div>`, d => d.annotationId)}
+        <div class="dim">
+          ${when(sk.notElected, () => html`${sk.notElected} held back — an agent raised them and you have not. Use <b>▲ raise</b> on a finding to include it.<br>`)}
+          ${when(sk.alreadyPushed, () => html`${sk.alreadyPushed} already sent on an earlier push — a re-run never duplicates a comment.<br>`)}
+          ${when(sk.resolved, () => html`${sk.resolved} resolved locally, so not sent.<br>`)}
+        </div>`)}
+      ${when(!comments, () => html`
+        <div><b>${plan.viewedPaths.length}</b> file(s) would be ticked <b>viewed</b> on <a href="${plan.pr.url}" target="_blank" rel="noreferrer">#${plan.pr.number}</a> — every reviewable symbol in them is signed off here.</div>
+        ${each(plan.viewedPaths, f => html`<div class="pushrow"><code>${f}</code></div>`, f => f)}`)}
+      <div class="prpromoacts">
+        <button class="on" disabled="${!!p.sending || (comments ? !(plan.comments.length || plan.deferred.length) : !plan.viewedPaths.length)}" on-click="${() => this.confirmPush()}">${p.sending ? 'sending…' : (comments ? 'post to GitHub' : 'tick these on GitHub')}</button>
+        <button class="ghost" on-click="${() => { this.state.push = null; }}">cancel</button>
+        <span class="dim">this notifies the pull request's author</span>
+      </div>
+    </div>`;
+  }
+
   promoteFormEl(u, ch) {
     const p = this.state.promote;
     if (!p || p.chapter !== ch.id) return html``;
@@ -2279,6 +2357,11 @@ class PrStoryPage extends Component {
           ${when(this.state.pulled && !this.state.pulled.error, () => html`<span class="dim">${this.state.pulled.files.viewedOnGitHub}/${this.state.pulled.files.total} files ticked on GitHub → ${this.state.pulled.anchors.marked} symbol(s) marked <b>viewed</b>${this.state.pulled.anchors.alreadySigned ? `; ${this.state.pulled.anchors.alreadySigned} already signed and left alone` : ''}.</span>`)}
           ${when(this.state.derived && !this.state.derived.error, () => html`<span class="dim">${this.state.derived.applied} newly proposed${this.state.derived.refused ? `, ${this.state.derived.refused} already at or above this tier` : ''} — of ${this.state.derived.considered} with a signal. Every one is <b>likely</b>: confirm or lower it yourself.</span>`)}
         </div>
+        <div class="prderive prpush">
+          <button on-click="${() => this.openPush('comments')}" title="post your findings to the pull request as review comments. Yours go out; an agent's only if you raised it. Shows you exactly what would be sent first.">push comments to GitHub</button>
+          <button on-click="${() => this.openPush('viewed')}" title="tick the per-file viewed boxes on GitHub for files you have fully signed off here, so both tools agree about what has been read.">push viewed state to GitHub</button>
+        </div>
+        ${this.pushPanelEl()}
       </div>
       ${when(!st.totals.steps, () => html`<section class="prchapter"><div class="prcbody prempty">
         <b>Nothing in the review queue.</b>

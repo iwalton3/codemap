@@ -344,6 +344,15 @@ export interface Annotation {
    */
   assignment?: { to: "agent"; kind: "investigate" | "fix"; at: string; by: string; note?: string };
   /**
+   * The human elected to send an AGENT's finding to the pull request.
+   *
+   * An agent's finding is a proposal. Publishing it posts under your account and
+   * notifies the author, so vouching for it has to be a deliberate act rather than
+   * a side effect of having looked at the symbol. A finding you wrote yourself
+   * carries no flag — writing it WAS the act.
+   */
+  escalated?: { at: string; by: string };
+  /**
    * What the agent did. Kept separate from `resolved` because closing the loop and
    * agreeing it is closed are different acts: the agent reports, the human resolves.
    */

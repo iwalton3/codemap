@@ -14,6 +14,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import type { Annotation } from "./schema.js";
 import { readAnnotations, readPushes, writePush } from "./store.js";
 import { diffLineRanges } from "./git.js";
@@ -30,7 +31,15 @@ export interface PushPlan {
   comments: InlineComment[];
   deferred: DeferredComment[];
   viewedPaths: string[];
-  skipped: { alreadyPushed: number; resolved: number; unreviewed: number; belowSeverity: number };
+  skipped: { alreadyPushed: number; resolved: number; notElected: number; belowSeverity: number };
+  /**
+   * Identity of exactly what this plan would publish. A caller that inspected a
+   * plan sends it back with the publish; if re-deriving gives a different one, the
+   * push is refused rather than sending something nobody read. The plan/execute
+   * split exists so a human approves a SPECIFIC set of comments, and over HTTP the
+   * plan cannot be handed back by reference.
+   */
+  fingerprint: string;
 }
 
 const ICON: Record<string, string> = { finding: "⚑", question: "❓", pointer: "👁", note: "✎" };
@@ -43,15 +52,25 @@ function renderAnnotation(a: Annotation, symbol: string): string {
   return [head, "", a.text, "", who, `<sub>codemap · \`${symbol}\`</sub>`].filter(Boolean).join("\n");
 }
 
+/**
+ * A finding is the human's to publish when they wrote it, or when they explicitly
+ * raised an agent's to the maintainer. Nothing else goes out under their account.
+ *
+ * The `author` prefix is the existing provenance convention — `renderAnnotation`
+ * uses the same test to label an agent's finding on the PR.
+ */
+export const isAgentAuthored = (a: Annotation) => (a.author ?? "").startsWith("agent");
+export const isElected = (a: Annotation) => !isAgentAuthored(a) || !!a.escalated;
+
 export interface PushFilter {
   /**
-   * Publish only findings on symbols the human has actually looked at (viewed or
-   * signed). This is the default because the first pass is an agent's proposal,
-   * and sending an unread proposal to a colleague's pull request under your own
-   * account vouches for something you never read. Reviewing the symbol is the act
-   * that turns a proposal into something worth their time.
+   * Publish only findings the human elected: their own, plus any agent finding they
+   * raised to the maintainer. This is the default because the first pass is an
+   * agent's PROPOSAL — sending one to a colleague's pull request under your own
+   * account vouches for it, and that has to be something you chose, not something
+   * that happened because you happened to open the symbol.
    */
-  reviewedOnly?: boolean;
+  electedOnly?: boolean;
   minSeverity?: "low" | "medium" | "high" | "critical";
 }
 
@@ -95,8 +114,8 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
 
   const comments: InlineComment[] = [];
   const deferred: DeferredComment[] = [];
-  let resolved = 0, already = 0, unreviewed = 0, belowSeverity = 0;
-  const reviewedOnly = filter.reviewedOnly !== false;
+  let resolved = 0, already = 0, notElected = 0, belowSeverity = 0;
+  const electedOnly = filter.electedOnly !== false;
 
   for (const a of anns) {
     if (a.target.kind !== "anchor") continue;
@@ -104,7 +123,7 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
     if (!w) continue;                                   // not part of this PR
     if (a.resolved) { resolved++; continue; }
     if (pushed.has(a.id)) { already++; continue; }
-    if (reviewedOnly && !(w.reviewed || w.viewed)) { unreviewed++; continue; }
+    if (electedOnly && !isElected(a)) { notElected++; continue; }
     if (minSev >= 0 && SEV_ORDER.indexOf(a.severity ?? "low") < minSev) { belowSeverity++; continue; }
     const body = renderAnnotation(a, w.symbol);
     const line = a.line && commentable(w.file, a.line) ? a.line : firstCommentableLine(a.target.id, w.file);
@@ -149,11 +168,19 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
     `<sub>Posted from [codemap](https://github.com/) — findings are anchored to symbols, so they survive a rebase.</sub>`,
   ].filter((x) => x !== "").join("\n");
 
+  const fingerprint = createHash("sha256").update(JSON.stringify([
+    t.refs.head,
+    comments.map((c) => [c.annotationId, c.path, c.line]).sort(),
+    deferred.map((d) => d.annotationId).sort(),
+    [...viewedPaths].sort(),
+  ])).digest("hex").slice(0, 16);
+
   return {
+    fingerprint,
     pr: { number: t.pr.number, title: t.pr.title, url: t.pr.url, owner: t.pr.owner, repo: t.pr.repo },
     head: t.refs.head,
     body, comments, deferred, viewedPaths,
-    skipped: { alreadyPushed: already, resolved, unreviewed, belowSeverity },
+    skipped: { alreadyPushed: already, resolved, notElected, belowSeverity },
   };
 }
 
@@ -170,38 +197,51 @@ export interface PushResult {
   errors: string[];
 }
 
-/** Actually publish. Never called without an explicit caller decision — see the CLI's confirmation. */
+/**
+ * Actually publish. Never called without an explicit caller decision — see the
+ * CLI's confirmation and the walkthrough's two-step buttons.
+ *
+ * The two halves are independent because they are different acts: comments notify
+ * the author and argue for a change, while viewed state just tells them which
+ * files someone has read. Wanting one is not wanting the other.
+ */
 export async function executePrPush(
-  root: string, plan: PushPlan, opts: { markViewed?: boolean } = {},
+  root: string, plan: PushPlan, opts: { markViewed?: boolean; comments?: boolean } = {},
 ): Promise<PushResult> {
   const slug = `${plan.pr.owner}/${plan.pr.repo}`;
   const errors: string[] = [];
   const result: PushResult = { postedComments: 0, deferredInBody: plan.deferred.length, markedViewed: [], errors };
+  // Nothing to say is not a reason to open a review on someone's pull request.
+  const postComments = opts.comments !== false && (plan.comments.length > 0 || plan.deferred.length > 0);
 
-  const payload = JSON.stringify({
-    commit_id: plan.head,
-    body: plan.body,
-    event: "COMMENT",
-    comments: plan.comments.map((c) => ({ path: c.path, line: c.line, side: c.side, body: c.body })),
-  });
-  const r = gh(["api", "--method", "POST", `repos/${slug}/pulls/${plan.pr.number}/reviews`, "--input", "-"], payload);
-  if (!r.ok) {
-    errors.push(`review post failed: ${r.err.slice(0, 400)}`);
-    return result;
+  if (postComments) {
+    const payload = JSON.stringify({
+      commit_id: plan.head,
+      body: plan.body,
+      event: "COMMENT",
+      comments: plan.comments.map((c) => ({ path: c.path, line: c.line, side: c.side, body: c.body })),
+    });
+    const r = gh(["api", "--method", "POST", `repos/${slug}/pulls/${plan.pr.number}/reviews`, "--input", "-"], payload);
+    if (!r.ok) {
+      // A failed post must not abandon a viewed sync that was also asked for: they
+      // are independent acts, and one failing is not the other's news.
+      errors.push(`review post failed: ${r.err.slice(0, 400)}`);
+    } else {
+      try { result.reviewUrl = JSON.parse(r.out).html_url; } catch { /* url is a nicety */ }
+      result.postedComments = plan.comments.length;
+
+      // Record the publish IMMEDIATELY. The viewed-sync below is a sequential `gh`
+      // call per file with a 120s timeout each; recording afterwards left a window
+      // where an interrupt lost the only evidence the review went out, and the next
+      // publish re-posted every inline comment on someone else's pull request.
+      await writePush(root, String(plan.pr.number), {
+        annotationIds: [...plan.comments.map((c) => c.annotationId), ...plan.deferred.map((d) => d.annotationId)],
+        viewedPaths: [],
+        at: new Date().toISOString(),
+        reviewUrl: result.reviewUrl,
+      });
+    }
   }
-  try { result.reviewUrl = JSON.parse(r.out).html_url; } catch { /* url is a nicety */ }
-  result.postedComments = plan.comments.length;
-
-  // Record the publish IMMEDIATELY. The viewed-sync below is a sequential `gh` call
-  // per file with a 120s timeout each; recording afterwards left a window where an
-  // interrupt lost the only evidence the review went out, and the next --confirm
-  // re-posted every inline comment on someone else's pull request.
-  await writePush(root, String(plan.pr.number), {
-    annotationIds: [...plan.comments.map((c) => c.annotationId), ...plan.deferred.map((d) => d.annotationId)],
-    viewedPaths: [],
-    at: new Date().toISOString(),
-    reviewUrl: result.reviewUrl,
-  });
 
   if (opts.markViewed && plan.viewedPaths.length) {
     const idr = gh(["pr", "view", String(plan.pr.number), "--repo", slug, "--json", "id", "--jq", ".id"]);
