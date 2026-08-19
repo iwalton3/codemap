@@ -95,7 +95,8 @@ const COMMENT_CONTRACT =
   "\n\n`comment` — READ BY THE PR SUBMITTER, who wants to know what is broken and what to do about it. They do not want the investigation. At most 800 characters (over-length is REFUSED, not trimmed). Three parts, in order:\n"
   + "  1. WHAT IS BROKEN — one sentence, stated as a defect, not as a suspicion.\n"
   + "  2. WHERE / THE EVIDENCE — file:line plus the smallest quote that proves it.\n"
-  + "  3. THE ASK — the change, or the decision needed. If you are withdrawing a concern, say so FIRST.\n"
+  + "  3. THE ASK — the change, or the decision needed.\n"
+  + "ORDER BY DISPOSITION. A `refuted` finding leads with the withdrawal — that IS the news. A `partial` or `rerated` one leads with WHAT IS STILL BROKEN and puts the withdrawn half second, marked as such: a real finding that opens \"X cannot express this, so the ad-hoc filter is correct\" reads as a refutation on a skim, and gets dropped from the batch by a reviewer who is filtering out refutations.\n"
   + "Omit: how you found it, what you ruled out, what you checked and cleared, why it was filed, tool names, and any narration of your own process. Those go in `text`, which is not published.\n"
   + "GOOD: \"The by-id branch has no tenant predicate — `CreateTicket.cs:1006` queries `Aircraft` on `x.Id == request.AircraftId.Value` while the registration branch below scopes to `x.OperatorId == operatorId`. Add the same `.Where`. Currently an existence oracle over the aircraft table (`:512` blocks the actual attach, so this is not an IDOR).\"\n"
   + "BAD: the same finding written for the map — opening \"PARTLY CONFIRMED — the missing predicate is real; the stated IMPACT is overstated\", then three paragraphs of what was traced and a severity re-rating discussion. All correct, all valuable in `text`, all noise to the person who has to fix it.";
@@ -586,6 +587,24 @@ const tools: Tool[] = [
     }),
   },
   {
+    name: "findings",
+    description: "Every finding and question on the map, whoever raised them and whether or not anyone was asked to act.\n\n`review_queue` answers \"what have I been asked to do\" and only lists items with an assignment — so a finding raised by `annotate` and published to a pull request was invisible to every query afterwards. This one answers \"what is on this map, and where has it got to\": filter by `disposition` (what triage concluded) and `publishState` (local / approved / withdrawn / posted), and `posted` items carry `postedRef` with the review and comment they landed in.\n\nBrief by default, same as `review_queue`.",
+    inputSchema: obj({
+      disposition: { type: "string", enum: ["open", "confirmed", "partial", "rerated", "refuted", "accepted"] },
+      publishState: { type: "string", enum: ["local", "approved", "withdrawn", "posted"] },
+      includeResolved: { type: "boolean", description: "Also list findings a human has closed out (default false)." },
+      brief: { type: "boolean", description: "Default TRUE. `false` inlines each symbol's current source — large." },
+      limit: { type: "number" },
+      offset: { type: "number" },
+    }, []),
+    handler: (a, c) => ops.reviewQueue(c.universe.path, {
+      assignedOnly: false,
+      includeResolved: Boolean(a.includeResolved), brief: a.brief !== false,
+      limit: a.limit as number | undefined, offset: a.offset as number | undefined,
+      disposition: a.disposition as string | undefined, publishState: a.publishState as string | undefined,
+    }),
+  },
+  {
     name: "close_finding",
     description: "Report back on a finding from `review_queue`. This records what you did; it does NOT resolve the finding — reporting and agreeing it is closed are different acts, and the human closes it after reading.\n\n`result`:\n  • \"fixed\" — you changed the code. List every file you touched in `files`; more than one is refused, by design.\n  • \"answered\" — you investigated. Put the finding in `detail`: whether it is real, why, and what you checked.\n  • \"declined\" — you did not act. Say what it would take. Declining a fix that spans files, or that needs a judgement call you cannot make, is the RIGHT answer.\n\n`result` is what YOU DID; `disposition` is what turned out to be TRUE of the finding. They are different axes — a false positive is `answered` + `refuted`, because you did answer and the answer was \"not a defect\". Set `disposition` whenever you reached a conclusion: it is what decides whether this goes to the submitter, and prose saying \"recommend closing as invalid\" cannot be filtered on." + COMMENT_CONTRACT,
     inputSchema: obj({
@@ -594,6 +613,7 @@ const tools: Tool[] = [
       detail: { type: "string", description: "What you did or found — the human reads this, so be concrete." },
       disposition: { type: "string", enum: ["open", "confirmed", "partial", "rerated", "refuted", "accepted"], description: DISPOSITION_DOC },
       comment: { type: "string", description: "Rewrite the submitter-facing version if your investigation changed it — a refutation especially, which should open by withdrawing the concern. Max 800 characters. The previous wording is kept." },
+      line: { type: "number", description: "The line in the finding's own file that it actually points at. SET THIS — you have just read the code, and without it the comment is placed by geometry (the enclosing symbol's first changed line), which lands on a neighbouring member." },
       files: { type: "array", items: { type: "string" }, description: "Files you actually changed (for `fixed`). One file maximum." },
       by: { type: "string" },
     }, ["id", "result", "detail"]),
@@ -614,8 +634,10 @@ const tools: Tool[] = [
       comment: { type: "string", description: "The submitter-facing version. Max 800 characters." },
       disposition: { type: "string", enum: ["open", "confirmed", "partial", "rerated", "refuted", "accepted"], description: DISPOSITION_DOC },
       severity: { type: "string", enum: ["low", "medium", "high", "critical"] },
-      publishPath: { type: "string", description: "For a finding about code this PR does not touch: the file IN THE DIFF nearest to the problem." },
-      publishLine: { type: "number" },
+      line: { type: "number", description: "The line in the finding's OWN file that it points at — the normal way to say where it is." },
+      publishPath: { type: "string", description: "For a finding about code this PR does not touch: the file IN THE DIFF nearest to the problem. An out-of-diff override, not the everyday field — use `line` for that." },
+      publishLine: { type: "number", description: "Line within `publishPath`. Only meaningful alongside it." },
+      ref: { type: "string", description: "Re-witness against this ref after re-reading the code — how a finding blocked as \"written against a different version\" is cleared." },
       allowPostEdit: { type: "boolean", description: "Revise even though it is already posted. The GitHub copy is NOT updated — reply there instead; this only stops the map from silently disagreeing with it." },
       by: { type: "string" },
     }, ["id"]),

@@ -36,7 +36,7 @@ import { validateWalkthrough, buildWalkthrough, walkCoverage, staleChapters, typ
 import { LANE_POLICY } from "./lanes.js";
 import { remapOverloadIds, applyRemap } from "./migrate-overloads.js";
 import { parseAgentLines, ingestAgentReview } from "./pr-ingest.js";
-import { planPrPush, executePrPush, pullViewedFromGitHub, isAgentAuthored, publishStateOf, type PushPlan, type PublishState } from "./pr-push.js";
+import { planPrPush, executePrPush, pullViewedFromGitHub, isAgentAuthored, publishStateOf, type PushPlan, type PublishState, type ReviewEvent } from "./pr-push.js";
 import { bulkPullViewed } from "./pr-bulk.js";
 import { resolveCoverage, selectAnchors, docPct as computeDocPct, citedPct as computeCitedPct, type CoverageResult } from "./coverage.js";
 import { resolveAnchorRefs } from "./refs.js";
@@ -765,7 +765,13 @@ export async function prPullViewedAll(root: string, opts: { force?: boolean; lim
 }
 
 /** What a push to GitHub would contain — inspect before anything leaves the machine. */
-export async function prPushPlan(root: string, input: string, filter: { electedOnly?: boolean; minSeverity?: "low" | "medium" | "high" | "critical" } = {}) {
+export async function prPushPlan(
+  root: string, input: string,
+  filter: {
+    electedOnly?: boolean; minSeverity?: "low" | "medium" | "high" | "critical";
+    ids?: string[]; summary?: string; event?: ReviewEvent;
+  } = {},
+) {
   return planPrPush(root, input, filter);
 }
 
@@ -2475,6 +2481,8 @@ export async function reviseAnnotation(
     id: string; by?: string; allowPostEdit?: boolean;
     text?: string; comment?: string; disposition?: Disposition; severity?: BugSeverity;
     publishPath?: string; publishLine?: number; publishAttribution?: "agent" | "human";
+    /** Where in the anchor's own file this points — the normal way to say it. */
+    line?: number;
     /**
      * Re-witness against this ref. Revising after re-reading the code is exactly how
      * a finding blocked as written-against-a-different-body gets cleared, so the
@@ -2513,6 +2521,7 @@ export async function reviseAnnotation(
     (ann as never as Record<string, unknown>)[k] = next;
     changed.push(k);
   };
+  bump("line", Number.isFinite(input.line) ? Math.floor(input.line as number) : undefined);
   bump("text", input.text?.trim() || undefined);
   bump("comment", c.comment);
   bump("disposition", disposition);
@@ -2587,9 +2596,11 @@ export interface QueueItem {
   comment?: string;
   disposition?: Disposition;
   publishState?: PublishState;
+  postedRef?: Annotation["postedRef"];
   line?: number;
   author: string;
-  assignment: NonNullable<Annotation["assignment"]>;
+  /** Absent when listing beyond the assignment queue (`assignedOnly: false`). */
+  assignment?: Annotation["assignment"];
   target: Annotation["target"];
   /** Where to look: the anchor's file and symbol, plus its current source. */
   file?: string;
@@ -2608,13 +2619,29 @@ export interface QueueItem {
  */
 export async function reviewQueue(
   root: string,
-  opts: { includeAnswered?: boolean; brief?: boolean; limit?: number; offset?: number; disposition?: string; publishState?: string } = {},
+  opts: {
+    includeAnswered?: boolean; brief?: boolean; limit?: number; offset?: number;
+    disposition?: string; publishState?: string;
+    /**
+     * Default true: the queue is "what a human asked an agent to act on", and an
+     * assignment is what made it that.
+     *
+     * `false` lists every finding instead. Without it there was no way to enumerate
+     * what had been PUBLISHED — a finding raised by `annotate` and never assigned
+     * was posted to GitHub and then invisible to every query, which is a hole under
+     * the idempotency rule even though the dedupe itself reads `postedRef` and the
+     * push record rather than this.
+     */
+    assignedOnly?: boolean;
+    includeResolved?: boolean;
+  } = {},
 ) {
   const store = await readAnnotations(root);
   const pushedIds = await pushedAnnotationIds(root);
-  let pending = store.annotations.filter(
-    (a) => a.assignment && !a.resolved && (opts.includeAnswered || !a.outcome),
-  );
+  const assignedOnly = opts.assignedOnly !== false;
+  let pending = store.annotations.filter((a) => assignedOnly
+    ? a.assignment && !a.resolved && (opts.includeAnswered || !a.outcome)
+    : (a.kind === "finding" || a.kind === "question") && (opts.includeResolved || !a.resolved));
   if (opts.disposition) pending = pending.filter((a) => (a.disposition ?? "open") === opts.disposition);
   if (opts.publishState) pending = pending.filter((a) => publishStateOf(a, pushedIds) === opts.publishState);
 
@@ -2637,7 +2664,8 @@ export async function reviewQueue(
       disposition: a.disposition ?? "open", publishState: publishStateOf(a, pushedIds),
       comment: a.comment,
       textPreview: a.text.length > 300 ? a.text.slice(0, 300) + "…" : a.text,
-      line: a.line, author: a.author, assignment: a.assignment!, target: a.target,
+      line: a.line, author: a.author, assignment: a.assignment, target: a.target,
+      ...(a.postedRef ? { postedRef: a.postedRef } : {}),
     }));
     return {
       total, offset, more, queue: brief,
@@ -2681,7 +2709,7 @@ export async function reviewQueue(
     }
     queue.push({
       id: a.id, kind: a.kind, severity: a.severity, category: a.category, text: a.text,
-      line: a.line, author: a.author, assignment: a.assignment!, target: a.target,
+      line: a.line, author: a.author, assignment: a.assignment, target: a.target,
       file: anc?.file, symbol: anc?.symbolPath.join(" › "), startLine: anc?.loc?.startLine, code,
       // Where the source came from, when it is not the working tree — an agent asked
       // to FIX must know it is looking at a branch's body, not at HEAD.
@@ -2689,6 +2717,7 @@ export async function reviewQueue(
       comment: a.comment,
       disposition: a.disposition ?? "open",
       publishState: publishStateOf(a, pushedIds),
+      ...(a.postedRef ? { postedRef: a.postedRef } : {}),
     });
   }
   return { total, offset, more, queue };
@@ -2710,6 +2739,12 @@ export async function closeAssignment(
     id: string; result: "fixed" | "answered" | "declined"; detail: string; files?: string[]; by?: string;
     /** The submitter-facing version of what was found, if this is going to the PR. */
     comment?: string;
+    /**
+     * Where in the file this actually points. An agent that has just read the code
+     * knows the line; until it could say so, the publisher fell back to the enclosing
+     * symbol's first changed line and put comments on the wrong member.
+     */
+    line?: number;
     /**
      * What the investigation concluded. Deliberately NOT folded into `result`:
      * `result` is what the AGENT DID (fixed it, looked into it, declined), and
@@ -2743,10 +2778,12 @@ export async function closeAssignment(
   // Reporting back is a revision of the finding, so it leaves the same trail: what
   // it said before the investigation is exactly what a reader wants when the
   // investigation changed the answer.
-  if (c.comment || disposition) {
+  const line = Number.isFinite(input.line) && (input.line as number) > 0 ? Math.floor(input.line as number) : undefined;
+  if (c.comment || disposition || line !== undefined) {
     const was: NonNullable<Annotation["revisions"]>[number]["was"] = {};
     if (c.comment && c.comment !== ann.comment) { was.comment = ann.comment; ann.comment = c.comment; }
     if (disposition && disposition !== ann.disposition) { was.disposition = ann.disposition; ann.disposition = disposition; }
+    if (line !== undefined && line !== ann.line) { was.line = ann.line; ann.line = line; }
     if (Object.keys(was).length) (ann.revisions ??= []).push({ at: new Date().toISOString(), by: input.by || "agent", was });
   }
   ann.outcome = { at: new Date().toISOString(), by: input.by || "agent", result: input.result, detail: input.detail, files: files.length ? files : undefined };

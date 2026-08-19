@@ -423,7 +423,7 @@ export interface Annotation {
     at: string;
     by: string;
     /** The values as they stood BEFORE this revision — only the fields it changed. */
-    was: Partial<Pick<Annotation, "text" | "comment" | "disposition" | "severity" | "publishPath" | "publishLine" | "witness" | "sourceRef">>;
+    was: Partial<Pick<Annotation, "text" | "comment" | "disposition" | "severity" | "publishPath" | "publishLine" | "witness" | "sourceRef" | "line">>;
   }[];
   /**
    * The code this was written against, witnessed the way bugs and reviews are.

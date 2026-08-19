@@ -4,8 +4,8 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { diffLineRanges } from "./git.js";
-import { planPrPush, isAgentAuthored, isElected, pushVerdict, executePrPush, placeAnnotation, publishStateOf, buildComments } from "./pr-push.js";
+import { diffLineRanges, diffHunks } from "./git.js";
+import { planPrPush, isAgentAuthored, isElected, pushVerdict, executePrPush, placeAnnotation, publishStateOf, buildComments, citedLine } from "./pr-push.js";
 import { readPushes, writePush } from "./store.js";
 import type { Annotation } from "./schema.js";
 
@@ -34,6 +34,32 @@ test("diffLineRanges reports the head-side lines GitHub will accept a comment on
     assert.ok(covers(20), "the changed line must be commentable");
     assert.ok(covers(18) && covers(22), "context lines around it are commentable too");
     assert.ok(!covers(1), "a line far from any hunk is not commentable");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the hunk geometry separates lines the change ADDED from its context", () => {
+  // A hunk carries three lines of context either side, and a comment on a context
+  // line is a comment on code the change did not touch. That is how a finding about
+  // one property landed on an unchanged property eleven lines above it.
+  const root = mkdtempSync(join(tmpdir(), "codemap-push-"));
+  try {
+    git(root, "init", "-q", "-b", "main");
+    const lines = (n: number) => Array.from({ length: n }, (_, i) => `x${i + 1}`).join("\n") + "\n";
+    writeFileSync(join(root, "a.txt"), lines(40));
+    git(root, "add", "-A"); git(root, "commit", "-qm", "base");
+    const base = git(root, "rev-parse", "HEAD").stdout.trim();
+
+    const edited = lines(40).split("\n");
+    edited.splice(19, 0, "NEW-A", "NEW-B");     // inserted before old line 20 → new lines 20,21
+    writeFileSync(join(root, "a.txt"), edited.join("\n"));
+    git(root, "add", "-A"); git(root, "commit", "-qm", "insert");
+    const head = git(root, "rev-parse", "HEAD").stdout.trim();
+
+    const h = diffHunks(root, base, head).get("a.txt")!;
+    assert.deepEqual([...h.added].sort((a, b) => a - b), [20, 21], "only the inserted lines");
+    const covers = (n: number) => h.ranges.some(([lo, hi]) => n >= lo && n <= hi);
+    assert.ok(covers(17) && covers(24), "context is still commentable — it is just not what changed");
+    assert.ok(!h.added.has(17), "…and is not confused for an addition");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -318,12 +344,14 @@ test("publishing viewed state alone does not erase the link to a review posted e
 const place = (a: Partial<Annotation>, subject: { file?: string; symbol?: string }, world: {
   diff?: Record<string, [number, number][]>;
   symbolLine?: number;
+  addedLine?: number;
 } = {}) => {
   const diff: Record<string, [number, number][]> = world.diff ?? { "touched.cs": [[10, 20]] };
   return placeAnnotation(ann(a), subject, {
     inDiff: (f: string) => f in diff,
     commentable: (f: string, l: number) => (diff[f] ?? []).some(([x, y]) => l >= x && l <= y),
     firstHunkLine: (f: string) => diff[f]?.[0]?.[0],
+    firstAddedLineOfSymbol: () => world.addedLine,
     firstChangedLineOfSymbol: () => world.symbolLine,
   });
 };
@@ -393,6 +421,7 @@ const world = (over: Partial<Parameters<typeof buildComments>[1]> = {}) => ({
   inDiff: (p: string) => p === "touched.cs",
   commentable: (p: string, l: number) => p === "touched.cs" && l >= 10 && l <= 20,
   firstHunkLine: (p: string) => (p === "touched.cs" ? 10 : undefined),
+  firstAddedLineOfSymbol: () => undefined,
   firstChangedLineOfSymbol: () => 12,
   headHashOf: () => undefined,
   ...over,
@@ -531,4 +560,111 @@ test("a PR that does not carry the anchor at all cannot judge the witness", () =
   const set = buildComments([ann({ line: 12, witness: { anchorId: "a_1", bodyHash: "sha256:ANY" } })], world());
   assert.equal(set.comments.length, 1);
   assert.equal(set.skipped.evidenceMoved, 0);
+});
+
+/**
+ * The first real batch put a comment about `AircraftRegistration` (lines 41-43,
+ * all added) onto `CreateTicket.cs:30` — an unchanged context line belonging to
+ * a different property, eleven lines above. The finding carried no `line`, so
+ * placement fell through to the enclosing record's first HUNK line. GitHub would
+ * have taken 41; and the body already said `CreateTicket.cs:40-44`.
+ *
+ * See codemap-bug-publish-placement.md §1.
+ */
+test("placement prefers what the change ADDED over the hunk's leading context", () => {
+  const p = place({ comment: "something is wrong" }, { file: "touched.cs", symbol: "R" },
+    { diff: { "touched.cs": [[30, 46]] }, addedLine: 41, symbolLine: 30 });
+  assert.deepEqual(p, { kind: "inline", path: "touched.cs", line: 41 },
+    "context lines are by definition not what the PR changed");
+});
+
+test("a finding with no line is placed where its own text says it is", () => {
+  // The content contract already requires "file:line plus the smallest quote that
+  // proves it", so the information is nearly always there — it was just never read.
+  const p = place({ comment: "`AircraftRegistration` is unvalidated — CreateTicket.cs:41 accepts any string." },
+    { file: "CreateTicket.cs", symbol: "R" },
+    { diff: { "CreateTicket.cs": [[30, 46]] }, addedLine: 44, symbolLine: 30 });
+  assert.deepEqual(p, { kind: "inline", path: "CreateTicket.cs", line: 41 },
+    "what the author wrote beats geometry");
+});
+
+test("citedLine reads the contract's file:line, and only for the right file", () => {
+  assert.equal(citedLine("see CreateTicket.cs:41 for the guard", "a/b/CreateTicket.cs"), 41);
+  assert.equal(citedLine("`CreateTicket.cs:40-44` is the block", "CreateTicket.cs"), 40,
+    "a range starts the thread at its first line");
+  // A citation naming a DIFFERENT file is a pointer elsewhere; repositioning this
+  // comment onto that number would put it on an unrelated line of the right file.
+  assert.equal(citedLine("mirrors Other.cs:200", "CreateTicket.cs"), undefined);
+  assert.equal(citedLine("no citation at all", "CreateTicket.cs"), undefined);
+  assert.equal(citedLine(undefined, "x.cs"), undefined);
+});
+
+test("an explicit line still wins over everything", () => {
+  const p = place({ line: 35, comment: "touched.cs:41 mentions something else" }, { file: "touched.cs", symbol: "R" },
+    { diff: { "touched.cs": [[30, 46]] }, addedLine: 41 });
+  assert.deepEqual(p, { kind: "inline", path: "touched.cs", line: 35 });
+});
+
+test("a comment whose text points somewhere other than where it lands is flagged", () => {
+  // A pure string check, and it would have caught the mis-placement before posting.
+  // GitHub's PATCH accepts only `body` — line and path are immutable once created,
+  // so relocating means deleting the thread and re-notifying.
+  const w = world({
+    commentable: (_p: string, l: number) => l >= 30 && l <= 46,
+    firstAddedLineOfSymbol: () => 44,
+  });
+  const set = buildComments([ann({ comment: "the guard at touched.cs:41 is missing" })], w);
+  assert.equal(set.comments[0]!.line, 41, "…and in this case it is not even needed");
+
+  const off = buildComments([ann({ line: 33, comment: "the guard at touched.cs:41 is missing" })], w);
+  assert.equal(off.comments[0]!.line, 33);
+  assert.equal(off.comments[0]!.citesLine, 41, "the disagreement is surfaced, not silently resolved");
+});
+
+test("a verdict is posted as one, and is reason enough to open a review", () => {
+  // Approving a change, or asking for work on it, is worth posting with no inline
+  // comments at all — but it is a VOTE that shows on the pull request, so it is
+  // never inherited from a filter or defaulted into.
+  const root = mkdtempSync(join(tmpdir(), "codemap-exec-"));
+  try {
+    let payload: any = null;
+    const fakeGh = (args: string[], input?: string) => {
+      if (args.includes("--method")) { payload = JSON.parse(input!); return { ok: true, out: JSON.stringify({ id: 1, html_url: "https://x/1" }), err: "" }; }
+      return { ok: true, out: "[]", err: "" };
+    };
+    const plan = {
+      fingerprint: "f", pr: { number: 7, title: "t", url: "u", owner: "o", repo: "r" }, head: "h",
+      body: "my summary\n\n---\n### codemap review", summary: "my summary", event: "REQUEST_CHANGES" as const,
+      comments: [], deferred: [], blocked: [], unverified: [], viewedPaths: [],
+      skipped: { alreadyPushed: 0, resolved: 0, notElected: 0, belowSeverity: 0, withdrawn: 0, noComment: 0, notPublishable: 0, evidenceMoved: 0 },
+    };
+    return executePrPush(root, plan as any, { gh: fakeGh as any }).then((r) => {
+      assert.equal(payload.event, "REQUEST_CHANGES");
+      assert.match(payload.body, /^my summary/, "the human's words lead; the stats are context for them");
+      assert.deepEqual(r.errors, []);
+    });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("GitHub refusing a self-review says the comments were lost with it", () => {
+  // The raw message ("Can not approve your own pull request") does not mention that
+  // nothing was posted — which is the part that decides what you do next.
+  const root = mkdtempSync(join(tmpdir(), "codemap-exec-"));
+  try {
+    const fakeGh = (args: string[]) => args.includes("--method")
+      ? { ok: false, out: "", err: "gh: Can not approve your own pull request (HTTP 422)" }
+      : { ok: true, out: "[]", err: "" };
+    const plan = {
+      fingerprint: "f", pr: { number: 7, title: "t", url: "u", owner: "o", repo: "r" }, head: "h",
+      body: "b", event: "APPROVE" as const,
+      comments: [{ path: "a.ts", line: 2, side: "RIGHT" as const, body: "x", annotationId: "n1" }],
+      deferred: [], blocked: [], unverified: [], viewedPaths: [],
+      skipped: { alreadyPushed: 0, resolved: 0, notElected: 0, belowSeverity: 0, withdrawn: 0, noComment: 0, notPublishable: 0, evidenceMoved: 0 },
+    };
+    return executePrPush(root, plan as any, { gh: fakeGh as any }).then((r) => {
+      assert.match(r.errors[0]!, /will not let you approve your own pull request/);
+      assert.match(r.errors[0]!, /NOTHING was posted — including the comments/);
+      assert.equal(r.postedComments, 0);
+    });
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

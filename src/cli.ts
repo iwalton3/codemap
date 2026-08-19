@@ -68,12 +68,17 @@ async function cmdPr(root: string, input: string, opts: { fetch: boolean; json: 
  * plan and stops: comments on someone else's pull request notify people and are
  * not meaningfully undoable, so the default has to be "show me first".
  */
-async function cmdPrPush(root: string, prInput: string, confirm: boolean, markViewed: boolean, filter: { electedOnly?: boolean; minSeverity?: any }): Promise<void> {
-  if (!prInput) { console.error("usage: codemap pr-push <pr> [--confirm] [--viewed] [--all]"); process.exit(2); }
+async function cmdPrPush(
+  root: string, prInput: string, confirm: boolean, markViewed: boolean,
+  filter: { electedOnly?: boolean; minSeverity?: any; summary?: string; event?: "APPROVE" | "REQUEST_CHANGES" },
+): Promise<void> {
+  if (!prInput) { console.error("usage: codemap pr-push <pr> [--confirm] [--viewed] [--all] [--summary TEXT] [--approve|--request-changes]"); process.exit(2); }
   const plan = await ops.prPushPlan(root, prInput, filter);
   if ("error" in plan) { console.error(plan.error); process.exit(1); }
 
   console.log(`#${plan.pr.number} ${plan.pr.title}`);
+  if (plan.event !== "COMMENT") console.log(`  VERDICT: ${plan.event} — this shows on the pull request as a vote`);
+  if (plan.summary) console.log(`  summary: ${(plan.summary.split("\n")[0] ?? "").slice(0, 120)}${plan.summary.length > 120 ? "…" : ""}`);
   console.log(`  ${plan.comments.length} inline comment(s), ${plan.deferred.length} folded into the summary body`);
   console.log(`  ${plan.viewedPaths.length} file(s) fully reviewed → would be marked viewed on GitHub`);
   if (plan.skipped.alreadyPushed) console.log(`  ${plan.skipped.alreadyPushed} already pushed (skipped — a re-run never duplicates)`);
@@ -85,7 +90,7 @@ async function cmdPrPush(root: string, prInput: string, confirm: boolean, markVi
   if (plan.skipped.noComment) console.log(`  ${plan.skipped.noComment} have no submitter-facing \`comment\` written — the evidence is not published in its place`);
   if (plan.skipped.evidenceMoved) console.log(`  ${plan.skipped.evidenceMoved} written against a different version of the code (see below)`);
   if (plan.unverified.length) console.log(`  ${plan.unverified.length} predate witnessing — codemap cannot confirm they were written against THIS pull request`);
-  for (const c of plan.comments) console.log(`    ${c.path}:${c.line}  ${c.body.split("\n")[0]}`);
+  for (const c of plan.comments) console.log(`    ${c.path}:${c.line}  ${c.body.split("\n")[0]}${c.citesLine ? `   [!] its own text points at :${c.citesLine}` : ""}`);
   for (const d of plan.deferred) console.log(`    [body] ${d.path}${d.line ? ":" + d.line : ""}  (${d.why})`);
   // Loud, and never folded into a count: these are findings the human vouched for
   // that this plan is NOT sending, which used to happen without anything saying so.
@@ -98,7 +103,7 @@ async function cmdPrPush(root: string, prInput: string, confirm: boolean, markVi
     console.log(`\nnothing posted. re-run with --confirm to publish${markViewed ? " (and --viewed to sync viewed state)" : ""}.`);
     return;
   }
-  if (!plan.comments.length && !plan.deferred.length && !(markViewed && plan.viewedPaths.length)) {
+  if (!plan.comments.length && !plan.deferred.length && plan.event === "COMMENT" && !plan.summary && !(markViewed && plan.viewedPaths.length)) {
     console.log("\nnothing to publish.");
     return;
   }
@@ -134,7 +139,7 @@ async function cmdPrIngest(root: string, prInput: string, files: string[], dryRu
 }
 
 function usage(): never {
-  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n  codemap pr-triage <pr> [--repo path]        derive stakes+complexity for the PR's symbols\n  codemap pr-pull-viewed <pr|--all> [--repo path] [--dry-run] [--force] [--limit N] [--max-prs N]\n                                              import GitHub's viewed ticks as `viewed`\n  codemap analyze marten [repo] [--verbose] [--emit]");
+  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n                     [--summary TEXT] [--approve | --request-changes]\n  codemap pr-triage <pr> [--repo path]        derive stakes+complexity for the PR's symbols\n  codemap pr-pull-viewed <pr|--all> [--repo path] [--dry-run] [--force] [--limit N] [--max-prs N]\n                                              import GitHub's viewed ticks as `viewed`\n  codemap analyze marten [repo] [--verbose] [--emit]");
   process.exit(2);
 }
 
@@ -242,7 +247,7 @@ async function cmdCheck(root: string): Promise<void> {
   }
 }
 
-const { positionals, values } = parseArgs({ allowPositionals: true, options: { verbose: { type: "boolean" }, emit: { type: "boolean" }, repo: { type: "string" }, "no-fetch": { type: "boolean" }, json: { type: "boolean" }, limit: { type: "string" }, offset: { type: "string" }, "dry-run": { type: "boolean" }, confirm: { type: "boolean" }, viewed: { type: "boolean" }, all: { type: "boolean" }, "min-severity": { type: "string" }, force: { type: "boolean" }, "max-prs": { type: "string" } } });
+const { positionals, values } = parseArgs({ allowPositionals: true, options: { verbose: { type: "boolean" }, emit: { type: "boolean" }, repo: { type: "string" }, "no-fetch": { type: "boolean" }, json: { type: "boolean" }, limit: { type: "string" }, offset: { type: "string" }, "dry-run": { type: "boolean" }, confirm: { type: "boolean" }, viewed: { type: "boolean" }, all: { type: "boolean" }, "min-severity": { type: "string" }, force: { type: "boolean" }, "max-prs": { type: "string" }, summary: { type: "string" }, approve: { type: "boolean" }, "request-changes": { type: "boolean" } } });
 
 if (positionals[0] === "analyze") {
   const analyzer = positionals[1] ?? "";
@@ -328,7 +333,11 @@ if (positionals[0] === "analyze") {
     console.log(`  proposed stakes: ${JSON.stringify(r.byImportance)}`);
   } else if (positionals[0] === "pr-push") {
     const pushRoot = resolve(values.repo ?? ".");
-    await withLock(pushRoot, () => cmdPrPush(pushRoot, positionals[1] ?? "", Boolean(values.confirm), Boolean(values.viewed), { electedOnly: !values.all, minSeverity: values["min-severity"] as any }));
+    await withLock(pushRoot, () => cmdPrPush(pushRoot, positionals[1] ?? "", Boolean(values.confirm), Boolean(values.viewed), {
+      electedOnly: !values.all, minSeverity: values["min-severity"] as any,
+      summary: values.summary as string | undefined,
+      event: values.approve ? "APPROVE" : values["request-changes"] ? "REQUEST_CHANGES" : undefined,
+    }));
   } else if (positionals[0] === "pr-ingest") {
     const ingestRoot = resolve(values.repo ?? ".");
     await withLock(ingestRoot, () => cmdPrIngest(ingestRoot, positionals[1] ?? "", positionals.slice(2), Boolean(values["dry-run"])));

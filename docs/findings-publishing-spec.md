@@ -310,7 +310,14 @@ that determines whether the feature works.
 > They do not want the investigation. Three parts, in order:
 > 1. **What is broken** — one sentence, stated as a defect, not as a suspicion.
 > 2. **Where / the evidence** — `file:line` plus the smallest quote that proves it.
-> 3. **The ask** — the change, or the decision needed. If you are withdrawing a concern, say so first.
+> 3. **The ask** — the change, or the decision needed.
+>
+> **Order by disposition** (amended 2026-08-19, after the first real batch).
+> `refuted` leads with the withdrawal — that is the news. `partial` / `rerated` lead
+> with **what is still broken**, putting the withdrawn half second and marked as
+> such: `finding_33b5dec01919` was a real `partial` that opened with its withdrawal,
+> read as a refutation on a skim, and was dropped by a reviewer filtering
+> refutations out. The half that survived was its last sentence.
 >
 > Omit: how you found it, what you ruled out, what you checked and cleared, why it was filed, tool names,
 > and any narration of your own process. Those belong in `text`.

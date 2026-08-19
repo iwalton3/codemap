@@ -226,11 +226,29 @@ export function originSlug(root: string): { owner: string; repo: string } | null
  * the PR never touched, and posting there is rejected outright, so the caller
  * needs to know before it tries.
  */
-export function diffLineRanges(root: string, from: string, to: string): Map<string, [number, number][]> {
+export interface FileHunks {
+  /** New-side line ranges GitHub will accept a comment on — hunk bodies, context included. */
+  ranges: [number, number][];
+  /**
+   * New-side lines the change actually ADDED.
+   *
+   * Distinct from `ranges` because a hunk carries three lines of context either
+   * side, and a review comment placed on a context line is placed on code this
+   * change did not touch — which is how a finding about `AircraftRegistration`
+   * landed on an unchanged `ActualQuantity` eleven lines above it.
+   */
+  added: Set<number>;
+}
+
+/** Hunk geometry per file: what is commentable, and what was actually added. */
+export function diffHunks(root: string, from: string, to: string): Map<string, FileHunks> {
   const r = spawnSync("git", ["-c", "core.quotePath=false", "diff", "--unified=3", "--no-color", from, to], { cwd: root, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
-  const out = new Map<string, [number, number][]>();
+  const out = new Map<string, FileHunks>();
   if (r.status !== 0) return out;
   let file = "";
+  // New-side line number of the next body line, so `+` lines can be recorded by
+  // absolute position rather than inferred from the hunk header afterwards.
+  let newLine = 0;
   // A hunk body is consumed by counting the lines its own header promises, because
   // an ADDED source line beginning "++ " renders as "+++ ..." and is otherwise
   // indistinguishable from a file header — one in a fixture or patch file
@@ -240,9 +258,9 @@ export function diffLineRanges(root: string, from: string, to: string): Map<stri
   for (const line of (r.stdout ?? "").split("\n")) {
     if (oldLeft > 0 || newLeft > 0) {
       // Inside a hunk: context counts against both sides, "\ No newline" against neither.
-      if (line.startsWith(" ")) { oldLeft--; newLeft--; }
+      if (line.startsWith(" ")) { oldLeft--; newLeft--; newLine++; }
       else if (line.startsWith("-")) oldLeft--;
-      else if (line.startsWith("+")) newLeft--;
+      else if (line.startsWith("+")) { newLeft--; if (file) out.get(file)?.added.add(newLine); newLine++; }
       else if (line.startsWith("\\")) continue;
       // Anything else means the diff is not shaped as the counts claimed; fall
       // through to structural parsing rather than swallowing the rest of the file.
@@ -265,11 +283,17 @@ export function diffLineRanges(root: string, from: string, to: string): Map<stri
     const start = Number(m[3]);
     const len = newLeft;
     if (!file || !len) continue;
-    const arr = out.get(file) ?? [];
-    arr.push([start, start + len - 1]);
-    out.set(file, arr);
+    const e = out.get(file) ?? { ranges: [], added: new Set<number>() };
+    e.ranges.push([start, start + len - 1]);
+    out.set(file, e);
+    newLine = start;
   }
   return out;
+}
+
+/** Just the commentable ranges — the shape most callers want. */
+export function diffLineRanges(root: string, from: string, to: string): Map<string, [number, number][]> {
+  return new Map([...diffHunks(root, from, to)].map(([f, h]) => [f, h.ranges]));
 }
 
 /** True when `maybeAncestor` is an ancestor of `ref` (or the same commit). */

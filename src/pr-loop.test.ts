@@ -36,7 +36,7 @@ test("assigning hands it over with the symbol's current source attached", async 
     await assignAnnotation(root, { id: annId, kind: "investigate", by: "me" });
     const { queue } = await reviewQueue(root, { brief: false });
     assert.equal(queue.length, 1);
-    assert.equal(queue[0]!.assignment.kind, "investigate");
+    assert.equal(queue[0]!.assignment!.kind, "investigate");
     assert.equal(queue[0]!.file, "src/pay.ts");
     assert.match(queue[0]!.symbol!, /transfer/);
     assert.match(queue[0]!.code!, /throw new Error/, "the agent gets the code, not just a pointer to it");
@@ -387,5 +387,34 @@ test("a finding records the body it was written against, and which ref that was"
     const after = await of(live.id);
     assert.equal(after.sourceRef, "prhead");
     assert.equal(after.revisions![0]!.was.sourceRef, "@work", "and what it used to be witnessed against survives");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a published finding nobody was assigned is still findable", async () => {
+  // `review_queue` lists what a human asked an agent to act on, so an assignment is
+  // what puts something in it. A finding raised by `annotate` and posted to GitHub
+  // had no assignment — and so appeared in no query at all, which is a hole under
+  // the idempotency rule even though the dedupe itself reads `postedRef`.
+  const { root, anchorId, annId } = await fixture();
+  try {
+    const loose = await annotate(root, {
+      targetKind: "anchor", targetId: anchorId, text: "capacity guard", comment: "no capacity guard",
+      kind: "finding", disposition: "confirmed", author: "human",
+    }) as any;
+    const store = await readAnnotations(root);
+    store.annotations.find((a) => a.id === loose.id)!.postedRef =
+      { pr: 264, at: "now", placement: "inline", commentId: 3816014418, url: "https://x/c" };
+    await writeAnnotations(root, store.annotations);
+
+    await assignAnnotation(root, { id: annId, kind: "investigate", by: "me" });
+    const queue = await reviewQueue(root);
+    assert.deepEqual(queue.queue.map((q) => q.id), [annId], "the assignment queue is unchanged");
+
+    const all = await reviewQueue(root, { assignedOnly: false });
+    assert.equal(all.total, 2);
+    const posted = await reviewQueue(root, { assignedOnly: false, publishState: "posted" });
+    assert.deepEqual(posted.queue.map((q) => q.id), [loose.id]);
+    assert.equal(posted.queue[0]!.postedRef!.commentId, 3816014418, "with the comment it landed in");
+    assert.equal(posted.queue[0]!.assignment, undefined, "and no assignment invented for it");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

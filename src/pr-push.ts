@@ -17,11 +17,23 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { PUBLISHABLE, type Annotation, type Disposition } from "./schema.js";
 import { readAnnotations, writeAnnotations, readAnchorStore, readPushes, writePush, readSnapshot } from "./store.js";
-import { diffLineRanges } from "./git.js";
+import { diffHunks } from "./git.js";
 import { prTriage, anchorSpans, fetchPrMeta, type PrMeta } from "./pr.js";
 import { LANE_POLICY } from "./lanes.js";
 
-export interface InlineComment { path: string; line: number; side: "RIGHT"; body: string; annotationId: string }
+export interface InlineComment {
+  path: string; line: number; side: "RIGHT"; body: string; annotationId: string;
+  /**
+   * The comment's own prose cites a line, and this is not it.
+   *
+   * A pure string check, and it would have caught the one comment in the first real
+   * batch that landed eleven lines off its subject — the body said
+   * `CreateTicket.cs:40-44` while the comment sat on line 30. Surfaced in the
+   * plan rather than blocked: GitHub will accept it, and the human is the one who
+   * can tell a mis-placement from a comment that legitimately cites elsewhere.
+   */
+  citesLine?: number;
+}
 export interface DeferredComment { annotationId: string; path: string; line?: number; body: string; why: string }
 /**
  * A finding the human elected that this plan cannot place, and why.
@@ -39,10 +51,24 @@ export interface BlockedComment {
   label: string;
 }
 
+/**
+ * What kind of review this is, in GitHub's vocabulary.
+ *
+ * `COMMENT` leaves feedback without a verdict. The other two are votes that show on
+ * the PR and can gate a merge, so neither is ever a default — the caller has to
+ * choose one, and the UI makes it a separate deliberate act from writing the
+ * comments.
+ */
+export type ReviewEvent = "COMMENT" | "APPROVE" | "REQUEST_CHANGES";
+
 export interface PushPlan {
   pr: { number: number; title: string; url: string; owner: string; repo: string; nodeId?: string };
   head: string;
+  /** The whole review body: the human's summary, then the generated stats. */
   body: string;
+  /** The human's own words to the author, as they wrote them. */
+  summary?: string;
+  event: ReviewEvent;
   comments: InlineComment[];
   deferred: DeferredComment[];
   blocked: BlockedComment[];
@@ -190,6 +216,34 @@ export type Placement =
   | { kind: "body"; why: string };
 
 /**
+ * The `file:line` a comment cites as its evidence.
+ *
+ * The content contract requires part 2 to be "file:line plus the smallest quote
+ * that proves it", so a finding that never got an explicit `line` has usually said
+ * where it points anyway — in prose. Reading it back beats falling through to the
+ * enclosing symbol's first hunk line, which lands on whatever the diff happened to
+ * touch first.
+ *
+ * Ranges (`Foo.cs:40-44`) resolve to their FIRST line: the comment is about the
+ * whole span and the thread has to start somewhere.
+ */
+export function citedLine(comment: string | undefined, file: string | undefined): number | undefined {
+  if (!comment) return undefined;
+  const base = file?.split("/").pop();
+  let fallback: number | undefined;
+  // `Name.ext:120` / `Name.ext:120-124`, optionally inside backticks or a path.
+  for (const m of comment.matchAll(/([\w.-]+\.\w+):(\d+)(?:\s*[-–]\s*(\d+))?/g)) {
+    const line = Number(m[2]);
+    if (!Number.isFinite(line) || line <= 0) continue;
+    // A citation naming THIS file wins outright; one naming another file is a
+    // pointer somewhere else and must not silently reposition this comment.
+    if (base && m[1] === base) return line;
+    if (!base) fallback ??= line;
+  }
+  return fallback;
+}
+
+/**
  * Where a finding can actually land.
  *
  * GitHub only accepts a review comment on a file in the diff, and only on a line
@@ -210,6 +264,8 @@ export function placeAnnotation(
     inDiff: (path: string) => boolean;
     commentable: (path: string, line: number) => boolean;
     firstHunkLine: (path: string) => number | undefined;
+    /** The first line the change ADDED inside this finding's symbol, if any. */
+    firstAddedLineOfSymbol: () => number | undefined;
     firstChangedLineOfSymbol: () => number | undefined;
   },
 ): Placement {
@@ -227,6 +283,15 @@ export function placeAnnotation(
 
   if (subject.file && q.inDiff(subject.file)) {
     if (a.line && q.commentable(subject.file, a.line)) return { kind: "inline", path: subject.file, line: a.line };
+    // An agent filing through `close_finding` could not set a line until recently,
+    // but the contract made it say one in the prose. Trust that before falling back
+    // to geometry.
+    const cited = citedLine(a.comment, subject.file);
+    if (cited !== undefined && q.commentable(subject.file, cited)) return { kind: "inline", path: subject.file, line: cited };
+    // Then the first line this change ADDED inside the symbol. Context lines are by
+    // definition not what the PR changed, so they are rarely a finding's subject.
+    const added = q.firstAddedLineOfSymbol();
+    if (added !== undefined) return { kind: "inline", path: subject.file, line: added };
     const own = q.firstChangedLineOfSymbol();
     if (own !== undefined) return { kind: "inline", path: subject.file, line: own };
     const first = q.firstHunkLine(subject.file);
@@ -258,7 +323,20 @@ export interface PushFilter {
 
 const SEV_ORDER = ["low", "medium", "high", "critical"];
 
-export interface PushFilterExt extends PushFilter {
+export interface PushOptions {
+  /**
+   * The reviewer's own summary, addressed to the author.
+   *
+   * The generated body says how much was signed and which lanes it fell into, which
+   * is useful and is not feedback. Without somewhere to say "here is what I think of
+   * this change", the human's actual verdict had to go somewhere other than the tool
+   * that holds the review.
+   */
+  summary?: string;
+  event?: ReviewEvent;
+}
+
+export interface PushFilterExt extends PushFilter, PushOptions {
   /** Publish exactly these, whatever their disposition — the editor's approved batch. */
   ids?: string[];
   /** Override which dispositions go out unasked (default: confirmed / partial / rerated). */
@@ -299,6 +377,8 @@ export function buildComments(
     commentable: (path: string, line: number) => boolean;
     firstHunkLine: (path: string) => number | undefined;
     firstChangedLineOfSymbol: (anchorId: string, path: string) => number | undefined;
+    /** The first line the change ADDED inside that anchor, if any. */
+    firstAddedLineOfSymbol: (anchorId: string, path: string) => number | undefined;
     /** The anchor's body hash at the PR head — what a finding's witness must match. */
     headHashOf: (anchorId: string) => string | undefined;
   },
@@ -362,15 +442,21 @@ export function buildComments(
 
     const place = placeAnnotation(a, subject, {
       inDiff, commentable, firstHunkLine,
+      firstAddedLineOfSymbol: () => (w ? ctx.firstAddedLineOfSymbol(a.target.id, w.file) : undefined),
       firstChangedLineOfSymbol: () => (w ? ctx.firstChangedLineOfSymbol(a.target.id, w.file) : undefined),
     });
 
     if (!a.witness) unverified.push(a.id);
 
     if (place.kind === "inline") {
+      const cites = citedLine(a.comment, subject.file);
       comments.push({
         path: place.path, line: place.line, side: "RIGHT", annotationId: a.id,
         body: renderAnnotation(a, subject.symbol ?? place.path, place.preamble),
+        // Only when it disagrees, and only when the comment lands on its own file —
+        // a §4.3 comment placed elsewhere cites its real subject on purpose, and the
+        // preamble already says so.
+        ...(cites !== undefined && cites !== place.line && place.path === subject.file ? { citesLine: cites } : {}),
       });
       continue;
     }
@@ -406,7 +492,8 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
   const byAnchor = new Map(t.worklist.map((w) => [w.id, w]));
   const pushed = new Set((await readPushes(root)).pushes[String(t.pr.number)]?.annotationIds ?? []);
 
-  const ranges = diffLineRanges(root, t.refs.mergeBase, t.refs.head);
+  const hunks = diffHunks(root, t.refs.mergeBase, t.refs.head);
+  const ranges = new Map([...hunks].map(([f, h]) => [f, h.ranges] as const));
   const commentable = (path: string, line: number) => (ranges.get(path) ?? []).some(([a, b]) => line >= a && line <= b);
 
   // A finding without its own line still belongs *somewhere* specific. Fall back to
@@ -414,6 +501,17 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
   // lands on the code it is about instead of being swept into the summary. Only a
   // symbol with no changed lines at all — a body the PR never edited — defers.
   const spans = await anchorSpans(root, t.refs.head, t.worklist.filter((w) => w.change !== "removed").map((w) => ({ id: w.id, file: w.file })));
+  // The first line the change ADDED inside the symbol, which is what the finding is
+  // almost always about. Preferred over the hunk intersection below, whose first
+  // line is often three lines of context belonging to the previous member.
+  const firstAddedLine = (anchorId: string, path: string): number | undefined => {
+    const s = spans.get(anchorId);
+    const added = hunks.get(path)?.added;
+    if (!s || !added) return undefined;
+    let best: number | undefined;
+    for (const n of added) if (n >= s.startLine && n <= s.endLine && (best === undefined || n < best)) best = n;
+    return best;
+  };
   const firstCommentableLine = (anchorId: string, path: string): number | undefined => {
     const s = spans.get(anchorId);
     if (!s) return undefined;
@@ -438,6 +536,7 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
     inDiff: (path) => ranges.has(path),
     commentable,
     firstHunkLine: (path) => ranges.get(path)?.[0]?.[0],
+    firstAddedLineOfSymbol: firstAddedLine,
     firstChangedLineOfSymbol: firstCommentableLine,
   }, filter);
   const { comments, deferred, blocked } = set;
@@ -458,7 +557,15 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
   const queue = t.worklist.filter((w) => w.lane === "code").length;
   const laneLines = t.lanes.map((l) => `| ${l.lane} | ${l.lines} | ${l.files} | ${l.review} |`).join("\n");
 
+  const EVENTS: ReviewEvent[] = ["COMMENT", "APPROVE", "REQUEST_CHANGES"];
+  const event = filter.event && EVENTS.includes(filter.event) ? filter.event : "COMMENT";
+  const summary = filter.summary?.trim() || undefined;
+
   const body = [
+    // The human's words first, and above the machine's. The stats are context for
+    // the feedback, not the other way round.
+    summary ?? "",
+    summary ? `---` : "",
     `### codemap review`,
     ``,
     `**${signed}/${queue}** changed symbols signed · **${t.totals.queueLines}** of **${t.totals.changedLines}** changed lines in the review queue.`,
@@ -484,6 +591,9 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
 
   const fingerprint = createHash("sha256").update(JSON.stringify([
     t.refs.head,
+    // The verdict and the summary change what the author receives as much as the
+    // comments do — a plan approved as COMMENT must not be published as APPROVE.
+    event, summary ?? "",
     // Bodies are in, not just placements: the whole point of the plan/execute split
     // is that a human approved SPECIFIC text, and a revision between inspecting and
     // publishing changes what goes to the submitter without moving a single line.
@@ -496,7 +606,8 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
     fingerprint,
     pr: { number: t.pr.number, title: t.pr.title, url: t.pr.url, owner: t.pr.owner, repo: t.pr.repo },
     head: t.refs.head,
-    body, comments, deferred, blocked, viewedPaths,
+    body, event, ...(summary ? { summary } : {}),
+    comments, deferred, blocked, viewedPaths,
     unverified: set.unverified,
     skipped: set.skipped,
   };
@@ -593,21 +704,32 @@ export async function executePrPush(
   const slug = `${plan.pr.owner}/${plan.pr.repo}`;
   const errors: string[] = [];
   const result: PushResult = { postedComments: 0, deferredInBody: plan.deferred.length, markedViewed: [], errors };
-  // Nothing to say is not a reason to open a review on someone's pull request.
-  const postComments = opts.comments !== false && (plan.comments.length > 0 || plan.deferred.length > 0);
+  // Nothing to say is not a reason to open a review on someone's pull request — but
+  // a VERDICT is: approving a change, or asking for work on it, is worth posting
+  // with no inline comments at all. So is a summary the human wrote by hand.
+  const hasVerdict = plan.event !== "COMMENT" || !!plan.summary;
+  const postComments = opts.comments !== false
+    && (plan.comments.length > 0 || plan.deferred.length > 0 || hasVerdict);
 
   if (postComments) {
     const payload = JSON.stringify({
       commit_id: plan.head,
       body: plan.body,
-      event: "COMMENT",
+      event: plan.event,
       comments: plan.comments.map((c) => ({ path: c.path, line: c.line, side: c.side, body: c.body })),
     });
     const r = gh_(["api", "--method", "POST", `repos/${slug}/pulls/${plan.pr.number}/reviews`, "--input", "-"], payload);
     if (!r.ok) {
       // A failed post must not abandon a viewed sync that was also asked for: they
       // are independent acts, and one failing is not the other's news.
-      errors.push(`review post failed: ${r.err.slice(0, 400)}`);
+      //
+      // GitHub refuses APPROVE and REQUEST_CHANGES on your own pull request, and the
+      // raw message ("Can not approve your own pull request") does not say that the
+      // comments were lost with it — which is the part that matters here.
+      const own = /own pull request/i.test(r.err);
+      errors.push(own
+        ? `GitHub will not let you ${plan.event === "APPROVE" ? "approve" : "request changes on"} your own pull request, so NOTHING was posted — including the comments. Re-run as a plain comment review.`
+        : `review post failed: ${r.err.slice(0, 400)}`);
     } else {
       let reviewId: number | undefined;
       try {

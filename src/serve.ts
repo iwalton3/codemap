@@ -157,6 +157,11 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return withLock(root, () => ops.prPushPlan(root, q.get("pr") ?? "", {
         electedOnly: q.get("all") !== "1",
         minSeverity: (q.get("min_severity") as any) || undefined,
+        // The summary and verdict come in on the PLAN, not on the publish, so what
+        // the human reads in the preview is byte-for-byte what goes out — the
+        // fingerprint covers both.
+        summary: q.get("summary") || undefined,
+        event: (q.get("event") as any) || undefined,
       }));
     case "/api/pr/code":
       return withLock(root, () => ops.prCode(root, q.get("pr") ?? "", q.get("id") ?? ""));
@@ -339,6 +344,8 @@ const server = createServer(async (req, res) => {
         const plan = await ops.prPushPlan(root, String(body.pr ?? ""), {
           electedOnly: body.all !== true,
           minSeverity: body.minSeverity || undefined,
+          summary: body.summary || undefined,
+          event: body.event || undefined,
         });
         if ("error" in plan) return plan;
         if (body.fingerprint !== plan.fingerprint) {

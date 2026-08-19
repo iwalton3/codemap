@@ -343,6 +343,14 @@ const isAgentFinding = (f) => (f.author || 'agent').startsWith('agent');
 // means nobody has checked it, and refuted/accepted are conclusions ABOUT the
 // finding rather than asks of the author.
 const DISPOSITIONS = ['open', 'confirmed', 'partial', 'rerated', 'refuted', 'accepted'];
+// A verdict shows on the pull request and can gate a merge, so COMMENT stays the
+// default and the other two are chosen deliberately, never inherited from a filter.
+const REVIEW_EVENTS = [
+  { id: 'COMMENT', label: 'comment', why: 'feedback without a verdict' },
+  { id: 'APPROVE', label: 'approve', why: 'vote to approve. Shows on the pull request and may satisfy a required review.' },
+  { id: 'REQUEST_CHANGES', label: 'request changes', why: 'vote to block. Shows on the pull request and may prevent merging until you clear it.' },
+];
+const PUSH_VERB = { COMMENT: 'post to GitHub', APPROVE: 'approve on GitHub', REQUEST_CHANGES: 'request changes on GitHub' };
 const PUBLISHABLE = new Set(['confirmed', 'partial', 'rerated']);
 
 // A finding, plus the two halves of the agent loop: hand it over, and read what
@@ -2322,8 +2330,41 @@ class PrStoryPage extends Component {
     this.state.push = { what, loading: true };
     // `api()` throws on any non-2xx; with no catch the panel sat on "working out
     // what would be sent…" for ever and the rejection went unhandled.
-    const r = await api('/api/pr/push_plan', { u: this.props.params.universe, pr: this.props.params.pr })
-      .catch((e) => ({ error: `could not work out what would be sent: ${e && e.message ? e.message : e}` }));
+    const draft = this.state.pushDraft || { summary: '', event: 'COMMENT' };
+    const r = await api('/api/pr/push_plan', {
+      u: this.props.params.universe, pr: this.props.params.pr,
+      summary: draft.summary || undefined, event: draft.event,
+    }).catch((e) => ({ error: `could not work out what would be sent: ${e && e.message ? e.message : e}` }));
+    if (this._pushToken !== token) return;
+    if (r.error) { this.state.push = { what, error: r.error }; return; }
+    this.state.push = { what, plan: r };
+  }
+
+  /**
+   * Re-plan whenever the summary or the verdict changes.
+   *
+   * The plan's fingerprint covers both, so the server refuses a publish whose text
+   * differs from the one on screen. Re-planning is what keeps the preview and the
+   * publish the same document rather than two that agree by luck.
+   */
+  async repushPlan(patch) {
+    this.state.pushDraft = { ...(this.state.pushDraft || { summary: '', event: 'COMMENT' }), ...patch };
+    const p = this.state.push;
+    if (!p || !p.plan) return;
+    clearTimeout(this._pushPlanTimer);
+    this._pushPlanTimer = setTimeout(() => {
+      const what = this.state.push && this.state.push.what;
+      if (what) this.openPushRefresh(what);
+    }, 250);
+  }
+  async openPushRefresh(what) {
+    const token = Symbol('push');
+    this._pushToken = token;
+    const draft = this.state.pushDraft || { summary: '', event: 'COMMENT' };
+    const r = await api('/api/pr/push_plan', {
+      u: this.props.params.universe, pr: this.props.params.pr,
+      summary: draft.summary || undefined, event: draft.event,
+    }).catch((e) => ({ error: `could not work out what would be sent: ${e && e.message ? e.message : e}` }));
     if (this._pushToken !== token) return;
     if (r.error) { this.state.push = { what, error: r.error }; return; }
     this.state.push = { what, plan: r };
@@ -2341,6 +2382,8 @@ class PrStoryPage extends Component {
         fingerprint: p.plan.fingerprint,
         comments: p.what === 'comments',
         markViewed: p.what === 'viewed',
+        summary: (this.state.pushDraft && this.state.pushDraft.summary) || undefined,
+        event: (this.state.pushDraft && this.state.pushDraft.event) || 'COMMENT',
       }),
     }).then(x => x.json());
     if (res.error) { this.state.push = { ...p, sending: false, error: res.error }; return; }
@@ -2504,6 +2547,28 @@ class PrStoryPage extends Component {
     </div>`;
   }
 
+  /**
+   * The reviewer's own words, and their verdict.
+   *
+   * The generated body says how much was signed and which lanes it landed in. That
+   * is context, not feedback — without somewhere to say what you actually think of
+   * the change, your verdict had to go somewhere other than the tool holding the
+   * review. Both re-plan on change, so the preview and the publish are one document.
+   */
+  pushSummaryEl() {
+    const d = this.state.pushDraft || { summary: '', event: 'COMMENT' };
+    return html`<div class="pushsum">
+      <label>your summary, to the author <span class="dim">— goes above the stats, in your words</span>
+        <textarea rows="4" placeholder="What you make of this change overall. Blocking concerns, what you checked, what you are trusting." value="${d.summary}"
+          on-input="${(e) => this.repushPlan({ summary: e.target.value })}"></textarea></label>
+      <div class="pushevent">
+        ${each(REVIEW_EVENTS, ev => html`<label class="${d.event === ev.id ? 'on' : ''}" title="${ev.why}">
+          <input type="radio" name="pushevent" checked="${d.event === ev.id}" on-change="${() => this.repushPlan({ event: ev.id })}"> ${ev.label}
+        </label>`, ev => ev.id)}
+      </div>
+    </div>`;
+  }
+
   // What would leave the machine, before anything does. Deliberately verbose: this
   // is the one surface in codemap that writes to somebody else's repository.
   pushPanelEl() {
@@ -2525,7 +2590,11 @@ class PrStoryPage extends Component {
     return html`<div class="prpromo">
       ${when(comments, () => html`
         <div><b>${plan.comments.length}</b> inline comment(s)${plan.deferred.length ? `, ${plan.deferred.length} folded into the review body (their line is not in the diff)` : ''} would go to <a href="${plan.pr.url}" target="_blank" rel="noreferrer">#${plan.pr.number}</a>.</div>
-        ${each(plan.comments, c => html`<div class="pushrow"><code>${c.path}:${c.line}</code> <span class="dim">${c.body.split('\n')[0]}</span></div>`, c => c.annotationId)}
+        ${this.pushSummaryEl()}
+        ${each(plan.comments, c => html`<div class="pushrow">
+          <code>${c.path}:${c.line}</code> <span class="dim">${c.body.split('\n')[0]}</span>
+          ${when(c.citesLine, () => html`<span class="warn" title="the comment's own text points at a different line — check it before posting; GitHub will not let you move it afterwards">⚠ body says :${c.citesLine}</span>`)}
+        </div>`, c => c.annotationId)}
         ${each(plan.deferred, d => html`<div class="pushrow"><code>${d.path}</code> <span class="dim">[body] ${d.why}</span></div>`, d => d.annotationId)}
         ${when(plan.blocked && plan.blocked.length, () => html`
           <div class="pushblocked">
@@ -2546,9 +2615,9 @@ class PrStoryPage extends Component {
         <div><b>${plan.viewedPaths.length}</b> file(s) would be ticked <b>viewed</b> on <a href="${plan.pr.url}" target="_blank" rel="noreferrer">#${plan.pr.number}</a> — every reviewable symbol in them is signed off here.</div>
         ${each(plan.viewedPaths, f => html`<div class="pushrow"><code>${f}</code></div>`, f => f)}`)}
       <div class="prpromoacts">
-        <button class="on" disabled="${!!p.sending || (comments ? !(plan.comments.length || plan.deferred.length) : !plan.viewedPaths.length)}" on-click="${() => this.confirmPush()}">${p.sending ? 'sending…' : (comments ? 'post to GitHub' : 'tick these on GitHub')}</button>
+        <button class="on" disabled="${!!p.sending || (comments ? !(plan.comments.length || plan.deferred.length || plan.summary || plan.event !== 'COMMENT') : !plan.viewedPaths.length)}" on-click="${() => this.confirmPush()}">${p.sending ? 'sending…' : (comments ? PUSH_VERB[plan.event] : 'tick these on GitHub')}</button>
         <button class="ghost" on-click="${() => { this.state.push = null; }}">cancel</button>
-        <span class="dim">this notifies the pull request's author</span>
+        <span class="dim">${plan.event === 'COMMENT' ? 'this notifies the pull request\'s author' : 'this is a VERDICT on the pull request, and shows on it as one'}</span>
       </div>
     </div>`;
   }
