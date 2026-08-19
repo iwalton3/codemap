@@ -93,6 +93,13 @@ analyzers/*          OPT-IN framework plugins (Marten) — never in the agnostic
   `Apply(SomeEvent)`, i.e. exactly the code people file findings about, so it is
   worth knowing before diagnosing "my findings disappeared". Referenced anchors that
   leave the tree are retained under `@orphan`; `codemap orphans` reports them.
+- **Change how an id is derived → bump `ANCHOR_SCHEME`.** A cached snapshot is a set
+  of ids, and a diff is a set operation between two of them, so pairing snapshots
+  from different derivations reports every affected symbol as removed-and-added.
+  Snapshots store the scheme they were written under and one from another value reads
+  as NOT CACHED, which callers already handle. This replaced a guard that sniffed
+  disambiguator SHAPE and therefore only ever caught the one change it was written
+  for — the next one shipped 107 phantom "changed" symbols on a real PR.
 - **Witness-hash staleness.** Bugs and reviews snapshot the covered code's
   normalized hashes; a later mismatch = `possiblyFixed` / `stale`. Judge review
   staleness against **live** hashes, never the frozen stored ones.
