@@ -511,7 +511,14 @@
     .prorphan { font-size: 12.5px; margin: 6px 0 10px; }
     .prstep { border: 1px solid var(--border); border-radius: 6px; margin: 6px 0; background: var(--bg); }
     .prstep.done { border-color: #24303a; background: rgba(126,231,135,0.02); }
-    .prsthead { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; font-size: 12.5px; }
+    /* The sign-off row rides with the symbol: on a long body it used to scroll out
+       of reach, so marking something signed meant scrolling back up to find it.
+       Sits just under the page header, like the other sticky heads. */
+    .prsthead { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; font-size: 12.5px;
+                position: sticky; top: var(--hdr-h); z-index: 2; background: var(--bg); border-radius: 6px 6px 0 0; }
+    .prstep.done .prsthead { background: #0d1411; }
+    /* so scrollIntoView does not tuck the step under the sticky header */
+    .prstep { scroll-margin-top: calc(var(--hdr-h) + 10px); }
     .prlayer { font-size: 10.5px; color: var(--dim); border: 1px solid var(--border); border-radius: 10px; padding: 0 6px; white-space: nowrap; }
     .prchg { font-size: 11px; font-weight: 600; width: 58px; }
     .prsig { font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }

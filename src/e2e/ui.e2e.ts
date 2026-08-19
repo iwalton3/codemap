@@ -99,6 +99,38 @@ describe("web UI", { skip: puppeteer ? false : "puppeteer not resolvable (set CO
     await page.close();
   });
 
+  test("a symbol's sign-off row stays on screen while its body scrolls", async () => {
+    // On a long symbol the row scrolled out of reach, so marking something signed
+    // meant scrolling back up to find it. Sticky is a CSS claim, so this measures it
+    // in a real browser against the real stylesheet.
+    const page = await browser.newPage();
+    await page.setViewport({ width: 900, height: 400 });
+    await page.goto(`${server.url}/#/u/${fixture.universe}/`, { waitUntil: "networkidle0" });
+    const m = await page.evaluate(() => {
+      const host = document.createElement("div");
+      host.innerHTML = `<div class="prstep" id="step-x">
+        <div class="prsthead"><code class="prsig">transfer(...)</code></div>
+        <div class="prsbody"><div class="rvpre">${"<div class='fline'>line</div>".repeat(200)}</div></div>
+      </div>`;
+      document.body.appendChild(host);
+      const head = host.querySelector(".prsthead") as HTMLElement;
+      const cs = getComputedStyle(head);
+      const r = {
+        sticky: cs.position === "sticky",
+        offset: cs.top,
+        opaque: cs.backgroundColor !== "rgba(0, 0, 0, 0)" && cs.backgroundColor !== "transparent",
+        scrollMargin: getComputedStyle(host.querySelector(".prstep")!).scrollMarginTop,
+      };
+      host.remove();
+      return r;
+    });
+    assert.equal(m.sticky, true, "the sign-off row must stay put while the body scrolls");
+    assert.notEqual(m.offset, "auto", "and stick below the page header, not under it");
+    assert.equal(m.opaque, true, "a transparent sticky row would have code showing through it");
+    assert.notEqual(m.scrollMargin, "0px", "scrollIntoView must clear the sticky header");
+    await page.close();
+  });
+
   test("the path form of a deep link is NOT a working link (documents the hash-router constraint)", async () => {
     const page = await browser.newPage();
     await page.goto(`${server.url}/u/${fixture.universe}/node/n_transfer_flow/`, { waitUntil: "networkidle0" });

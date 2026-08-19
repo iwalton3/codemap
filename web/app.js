@@ -2117,7 +2117,15 @@ class PrStoryPage extends Component {
     if (next) open[next.chapter.id] = true;
     this.state.code = code;
     this.state.open = open;
-    if (next && !this.state.code[next.step.anchorId]) await this.openStep(next.step);
+    if (!next) return;
+    if (!this.state.code[next.step.anchorId]) await this.openStep(next.step);
+    // Bring it into view: the previous symbol collapsing usually leaves the next one
+    // off-screen, and the point of advancing is not having to go looking for it.
+    // A frame after the state change, so vdx has rendered the row being scrolled to.
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`step-${next.step.anchorId}`);
+      if (el) el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    });
   }
 
   // Promotion is deliberately two-step: the plan says what would be written and
@@ -2301,7 +2309,7 @@ class PrStoryPage extends Component {
     const code = this.state.code[step.anchorId];
     const finds = openFindingCount(step.annotations);
     const src = code ? this.sourceOf(code) : null;
-    return html`<div class="prstep ${step.reviewed ? 'done' : ''}">
+    return html`<div class="prstep ${step.reviewed ? 'done' : ''}" id="step-${step.anchorId}">
       <div class="prsthead" on-click="${() => this.openStep(step)}">
         <span class="prlayer" title="position on the command → read-model spine">${LAYER_NAME[step.layer] || 'code'}</span>
         <span class="prchg" style="color:${CHANGE_COLOR[step.change] || '#8b949e'}">${step.change}</span>
