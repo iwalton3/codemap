@@ -2676,19 +2676,28 @@ export async function reviseAnnotation(
 
   const was: NonNullable<Annotation["revisions"]>[number]["was"] = {};
   const changed: string[] = [];
-  const bump = <K extends keyof typeof was>(k: K, next: (typeof was)[K] | undefined) => {
-    if (next === undefined || next === (ann as never as Record<string, unknown>)[k]) return;
+  /**
+   * `provided` is separate from the value on purpose: a field the caller did not
+   * mention must not change, and a field it sent EMPTY must be cleared. Folding the
+   * two together meant an empty string read as "no change", so clearing a
+   * `publishPath` in the editor silently kept the old one while the form showed it
+   * gone — a comment would then have published against a file nobody chose.
+   */
+  const bump = <K extends keyof typeof was>(k: K, provided: boolean, next: (typeof was)[K] | undefined) => {
+    if (!provided || next === (ann as never as Record<string, unknown>)[k]) return;
     (was as Record<string, unknown>)[k] = (ann as never as Record<string, unknown>)[k];
-    (ann as never as Record<string, unknown>)[k] = next;
+    if (next === undefined) delete (ann as never as Record<string, unknown>)[k];
+    else (ann as never as Record<string, unknown>)[k] = next;
     changed.push(k);
   };
-  bump("line", Number.isFinite(input.line) ? Math.floor(input.line as number) : undefined);
-  bump("text", input.text?.trim() || undefined);
-  bump("comment", c.comment);
-  bump("disposition", disposition);
-  bump("severity", input.severity);
-  bump("publishPath", input.publishPath?.trim() || undefined);
-  bump("publishLine", Number.isFinite(input.publishLine) ? Math.floor(input.publishLine as number) : undefined);
+  const num = (v: unknown) => (Number.isFinite(v) && (v as number) > 0 ? Math.floor(v as number) : undefined);
+  bump("line", input.line !== undefined, num(input.line));
+  bump("text", input.text !== undefined, input.text?.trim() || undefined);
+  bump("comment", input.comment !== undefined, c.comment);
+  bump("disposition", input.disposition !== undefined, disposition);
+  bump("severity", input.severity !== undefined, input.severity);
+  bump("publishPath", input.publishPath !== undefined, input.publishPath?.trim() || undefined);
+  bump("publishLine", input.publishLine !== undefined, num(input.publishLine));
   if (input.publishAttribution) ann.publishAttribution = input.publishAttribution;
   if (input.ref !== undefined && ann.target.kind === "anchor") {
     const w = await witnessAt(root, ann.target.id, input.ref || undefined);

@@ -442,3 +442,26 @@ test("what triage concluded outranks what the finding was called", async () => {
     assert.equal((await of()).kind, "pointer", "the kind it was filed under is history, not a verdict");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("a field sent empty is cleared; one not sent at all is left alone", async () => {
+  // These were the same case, so clearing a `publishPath` in the editor silently kept
+  // the old one while the form showed it gone — and the comment would then have
+  // published against a file nobody chose.
+  const { root, annId } = await fixture();
+  try {
+    const of = async () => (await readAnnotations(root)).annotations.find((a) => a.id === annId)!;
+    await reviseAnnotation(root, { id: annId, publishPath: "src/pay.ts", publishLine: 12, by: "me" });
+    assert.equal((await of()).publishPath, "src/pay.ts");
+
+    // not mentioned → untouched
+    await reviseAnnotation(root, { id: annId, disposition: "confirmed", by: "me" });
+    assert.equal((await of()).publishPath, "src/pay.ts");
+
+    // sent empty → gone, and the old value is kept in the revision
+    const r = await reviseAnnotation(root, { id: annId, publishPath: "", by: "me" }) as any;
+    assert.deepEqual(r.changed, ["publishPath"]);
+    const a = await of();
+    assert.equal(a.publishPath, undefined);
+    assert.equal(a.revisions!.at(-1)!.was.publishPath, "src/pay.ts");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
