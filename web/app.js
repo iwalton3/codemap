@@ -414,6 +414,10 @@ const diffCodeRows = (lines, lang) => {
     return { tag: l.tag, html };
   });
 };
+// Exposed for the e2e suite: the multi-line highlighting rule is only observable
+// in a browser with hljs loaded.
+if (typeof window !== 'undefined') window.__diffCodeRows = diffCodeRows;
+
 const reviewHeat = (rev) => {
   if (!rev || !rev.total) return html`<span class="rheat empty"></span>`;
   const w = (n) => Math.round(100 * n / rev.total);
@@ -1976,9 +1980,15 @@ function diffReviewLines(c, u, anchorId, lines, lang, startLine, annotations) {
   const byLine = new Map(); const noLine = [];
   for (const a of (annotations || [])) { if (a.line) { (byLine.get(a.line) || byLine.set(a.line, []).get(a.line)).push(a); } else noLine.push(a); }
   let head = (startLine || 1) - 1;
-  const rows = lines.map((l) => {
+  // Highlight through `diffCodeRows`, which reconstructs each SIDE and highlights it
+  // as one block. Lexing a line on its own loses the multi-line context that a block
+  // comment, an XML doc comment or a verbatim string needs, so those re-lexed as
+  // code — the +/- column this used to blame for it is exactly what diffCodeRows
+  // already strips.
+  const hl = diffCodeRows(lines, lang);
+  const rows = lines.map((l, i) => {
     const n = l.tag === '-' ? null : ++head;
-    return { tag: l.tag, text: l.text, n };
+    return { tag: l.tag, text: l.text, html: hl[i] ? hl[i].html : null, n };
   });
   return html`<div class="rvpre hljs prdiff">
     ${each(rows, (r, i) => {
@@ -1987,7 +1997,7 @@ function diffReviewLines(c, u, anchorId, lines, lang, startLine, annotations) {
         <div class="dline ${r.tag === '+' ? 'add' : r.tag === '-' ? 'del' : ''}">
           <span class="dsign">${r.tag}</span>
           <span class="flno">${r.n ?? ''}</span>
-          <span class="fltext">${raw(highlight(r.text, lang))}</span>
+          <span class="fltext">${raw(r.html != null ? r.html : highlight(r.text, lang))}</span>
           ${when(r.n, () => html`<button class="flcomment" title="raise a finding on line ${r.n}" on-click="${() => openFindingForm(c, anchorId, r.n)}">💬</button>`)}
         </div>
         ${each(finds, f => findingItemEl(c, u, f), f => f.id)}
@@ -2009,7 +2019,20 @@ const LAYER_NAME = ['command', 'handler', 'event', 'aggregate', 'read-model', 'j
 
 class PrStoryPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { story: null, open: {}, code: {}, pending: {}, finding: null, prRef: null, showDiff: {}, promote: null, promoted: {}, showCovered: false, deriving: false, derived: null, pulling: false, pulled: null, push: null, markError: null }; }
+  // Everything this page holds about ONE pull request. `propsChanged` restores it
+  // wholesale on a navigation: keeping any of it across PRs is how the previous
+  // PR's chapters stayed on screen until the fetch landed, and — worse — how
+  // `promoted` marked a chapter "✓ in the map" on a PR that never promoted it,
+  // linking to the other PR's node. Chapter ids are `spec-<path>-<heading>` and
+  // are NOT PR-scoped, so two pull requests touching one spec file share them.
+  static blank() {
+    return {
+      story: null, open: {}, code: {}, pending: {}, finding: null, prRef: null, showDiff: {},
+      promote: null, promoted: {}, showCovered: false, deriving: false, derived: null,
+      pulling: false, pulled: null, push: null, markError: null,
+    };
+  }
+  constructor(props) { super(props); this.state = PrStoryPage.blank(); }
   load = this.createTask(async () => {
     const u = this.props.params.universe; nav.current = u;
     const story = await api('/api/pr/story', { u, pr: this.props.params.pr });
@@ -2037,7 +2060,13 @@ class PrStoryPage extends Component {
     this.state.code = fresh;
   }
   mounted() { this.load.run(); }
-  propsChanged(name) { if (name === 'params') { this.state.open = {}; this.state.code = {}; this.load.run(); } }
+  propsChanged(name) {
+    if (name !== 'params') return;
+    // `pageShell`'s contract: a real navigation nulls the page's data so it shows
+    // loading and resets scroll, rather than rendering the last PR's content.
+    Object.assign(this.state, PrStoryPage.blank());
+    this.load.run();
+  }
 
   toggleChapter(id) { this.state.open = { ...this.state.open, [id]: !this.state.open[id] }; }
   async openStep(step) {
@@ -2047,6 +2076,12 @@ class PrStoryPage extends Component {
     try {
       const c = await api('/api/pr/code', { u: this.props.params.universe, pr: this.props.params.pr, id });
       this.state.code = { ...this.state.code, [id]: c };
+    } catch (e) {
+      // `api()` throws on any non-2xx. Without this the pane cleared `pending`,
+      // left `code[id]` undefined and raised an unhandled rejection: "loading
+      // source…" flashed and then nothing, which is indistinguishable from a symbol
+      // that genuinely has no body.
+      this.state.code = { ...this.state.code, [id]: { error: `could not load this symbol's source: ${e && e.message ? e.message : e}` } };
     } finally { this.state.pending = { ...this.state.pending, [id]: false }; }
   }
   /** The next symbol still needing attention, in walkthrough order. */
@@ -2191,9 +2226,17 @@ class PrStoryPage extends Component {
   }
 
   async openPromote(ch) {
-    if (this.state.promote && this.state.promote.chapter === ch.id) { this.state.promote = null; return; }
+    // Toggling off also invalidates any plan still in flight for it.
+    if (this.state.promote && this.state.promote.chapter === ch.id) { this._promoteToken = null; this.state.promote = null; return; }
+    // A token, because the toggle-off check runs against state the in-flight
+    // request is about to overwrite: two quick clicks closed the form, then the
+    // first response reassigned `promote` and reopened one the user had dismissed.
+    const token = Symbol('promote');
+    this._promoteToken = token;
     this.state.promote = { chapter: ch.id, loading: true };
-    const r = await api('/api/pr/promote_plan', { u: this.props.params.universe, pr: this.props.params.pr, chapter: ch.id });
+    const r = await api('/api/pr/promote_plan', { u: this.props.params.universe, pr: this.props.params.pr, chapter: ch.id })
+      .catch((e) => ({ error: `could not plan the promotion: ${e && e.message ? e.message : e}` }));
+    if (this._promoteToken !== token) return;                       // superseded or dismissed
     if (r.error) { this.state.promote = { chapter: ch.id, error: r.error }; return; }
     this.state.promote = { chapter: ch.id, plan: r.promotion, existing: r.existing, id: r.promotion.id, title: r.promotion.title, summary: r.promotion.summarySource === 'title' ? '' : r.promotion.summary };
   }
@@ -2280,7 +2323,7 @@ class PrStoryPage extends Component {
       ${when(p.plan.steps, () => html`<div class="dim">flow steps: ${p.plan.steps.map(s => `${s.title} (${s.anchors.length})`).join(' → ')}</div>`)}
       <div class="prpromoacts">
         <button class="on" disabled="${!!p.saving}" on-click="${() => this.confirmPromote(ch)}">${p.saving ? 'promoting…' : `promote as ${p.plan.type}`}</button>
-        <button class="ghost" on-click="${() => { this.state.promote = null; }}">cancel</button>
+        <button class="ghost" on-click="${() => { this._promoteToken = null; this.state.promote = null; }}">cancel</button>
         <span class="dim">cites ${p.plan.anchors.length} symbol(s) at this PR's head</span>
       </div>
     </div>`;

@@ -131,6 +131,29 @@ describe("web UI", { skip: puppeteer ? false : "puppeteer not resolvable (set CO
     await page.close();
   });
 
+  test("a diff highlights with multi-line context, not line by line", async () => {
+    // Lexing each line on its own loses the context a block comment, an XML doc
+    // comment or a verbatim string needs, so those re-lexed as code — an apostrophe
+    // inside a comment opened a phantom string and swallowed the rest of the line.
+    const page = await browser.newPage();
+    await page.goto(`${server.url}/#/u/${fixture.universe}/`, { waitUntil: "networkidle0" });
+    const m = await page.evaluate(() => {
+      const lines = [
+        { tag: " ", text: "/* it's a block comment" },
+        { tag: " ", text: "   still the comment */" },
+        { tag: "+", text: "const x = 1;" },
+      ];
+      // @ts-expect-error — the page exposes this for exactly this test
+      const rows = window.__diffCodeRows(lines, "typescript");
+      return rows.map((r: { html: string }) => r.html);
+    });
+    assert.ok(Array.isArray(m) && m.length === 3, "app.js must expose __diffCodeRows for this");
+    assert.match(m[0]!, /hljs-comment/, "the comment opens");
+    assert.match(m[1]!, /hljs-comment/, "and the continuation line is still inside it");
+    assert.equal(/hljs-string/.test(m[1]!), false, "the apostrophe must not open a phantom string");
+    await page.close();
+  });
+
   test("the path form of a deep link is NOT a working link (documents the hash-router constraint)", async () => {
     const page = await browser.newPage();
     await page.goto(`${server.url}/u/${fixture.universe}/node/n_transfer_flow/`, { waitUntil: "networkidle0" });
