@@ -80,8 +80,17 @@ async function cmdPrPush(root: string, prInput: string, confirm: boolean, markVi
   if (plan.skipped.resolved) console.log(`  ${plan.skipped.resolved} resolved locally (not pushed)`);
   if (plan.skipped.notElected) console.log(`  ${plan.skipped.notElected} held back — an agent raised them and you have not raised them to the maintainer (--all to include)`);
   if (plan.skipped.belowSeverity) console.log(`  ${plan.skipped.belowSeverity} below --min-severity`);
+  if (plan.skipped.withdrawn) console.log(`  ${plan.skipped.withdrawn} withdrawn`);
+  if (plan.skipped.notPublishable) console.log(`  ${plan.skipped.notPublishable} held back by disposition (untriaged, refuted or accepted)`);
+  if (plan.skipped.noComment) console.log(`  ${plan.skipped.noComment} have no submitter-facing \`comment\` written — the evidence is not published in its place`);
   for (const c of plan.comments) console.log(`    ${c.path}:${c.line}  ${c.body.split("\n")[0]}`);
   for (const d of plan.deferred) console.log(`    [body] ${d.path}${d.line ? ":" + d.line : ""}  (${d.why})`);
+  // Loud, and never folded into a count: these are findings the human vouched for
+  // that this plan is NOT sending, which used to happen without anything saying so.
+  if (plan.blocked.length) {
+    console.log(`\n  ${plan.blocked.length} finding(s) you elected cannot be placed on this diff and are NOT in this review:`);
+    for (const b of plan.blocked) console.log(`    ${b.file ?? b.symbol ?? "?"}  ${b.label}\n      → ${b.why}`);
+  }
 
   if (!confirm) {
     console.log(`\nnothing posted. re-run with --confirm to publish${markViewed ? " (and --viewed to sync viewed state)" : ""}.`);

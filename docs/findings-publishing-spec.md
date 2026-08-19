@@ -1,11 +1,77 @@
 # Spec: promoting codemap findings to batched GitHub PR review comments
 
-**Status:** proposal for implementation — ACCEPTED, not yet built.
+**Status:** BUILT (2026-08-19), with four deliberate deviations — see §0.
 **Provenance:** written by a review agent during a live Acme.API #264 session and
 copied into the repo verbatim; it was living in a scratchpad that will not survive.
-**Priority:** blocks pushing #264 back to its submitter.
+**Priority:** was blocking pushing #264 back to its submitter.
 **Decided since:** `review_queue` defaulting to `brief: true` (§3.4) is approved,
 breaking change and all — the 100k-character failure it cites is the whole reason.
+
+The body below is the spec **as written**, kept unedited so its witnesses stay
+readable. Where the implementation differs, §0 says how and why.
+
+---
+
+## 0. What was built, and where it deviates
+
+Built: `comment` (800 cap, required on findings, refused not truncated),
+`disposition`, `revise_finding`, `withdrawn`, `postedRef`, brief-by-default
+`review_queue` with paging and filters, the full §4 placement ladder, the §5
+content contract in every tool that writes a `comment`, and a findings panel that
+can triage and edit without opening the code.
+
+**1. `publishState` is derived, not stored (§2.3).** Both transitions already
+existed: `escalated` is the human-only vouch — a web action, with no MCP tool that
+can set it, so "agents must not be able to set this" holds by construction — and
+the push record is the receipt for what went out. A stored enum beside them would
+have been a second answer to the same question, kept in step by hand. `withdrawn`
+IS stored, because un-escalating cannot express it for a finding the human wrote
+themselves. See `publishStateOf`.
+
+**2. One `severity`, not `severityFiled` + `severityCurrent` (§2.2).** Once
+revisions append, "as filed" is revision zero. Two fields would fork every read
+site — triage, sort order, `--min-severity`, rendering — with no rule for which
+one wins.
+
+**3. `result: "refuted"` was not added to `close_finding` (§3.2).** `result` is
+what the AGENT DID (fixed, answered, declined); `disposition` is what turned out to
+be TRUE. A false positive is `answered` + `refuted`: the agent did answer, and the
+answer was "not a defect". The spec's actual complaint — that a batch builder
+cannot act on it — is answered by `disposition`, which is data. Adding it to
+`result` as well would make `result` mean two things at once.
+
+**4. File-level comments are not used (§4.2).** `subject_type: "file"` is not
+reliably accepted inside a batched review create, and a 422 there fails the WHOLE
+batch. So §4.2 lands on the first hunk line with the §4.4 preamble — the fallback
+the spec itself names — in every case. Worth revisiting if GitHub's support firms
+up; the placement ladder is one function (`placeAnnotation`).
+
+### What §4.3 turned out to be
+
+Not a gap but a live defect. A finding whose anchor was not in the PR's worklist hit
+a bare `continue`, **uncounted**: electing one on code the branch never touched
+silently never went out, and the plan printed nothing held back. Those now surface
+as `blocked`, in the plan, the push panel and the CLI, with `publishPath` to place
+them.
+
+### The open questions (§8), as settled by building it
+
+1. **Who owns "nearest file"?** The human, as the spec assumed. Nothing is guessed;
+   an unset `publishPath` is reported by name.
+2. **Does `severityCurrent` drive batch order?** Moot — GitHub renders review
+   comments in file order regardless.
+3. **Re-review of an updated PR.** Still open. `postedRef` gives the cross-reference
+   the spec wanted; whether a `posted` finding should reopen when its code moves is
+   not decided, and `possiblyFixed` may already be enough.
+4. **Multi-repo.** Untouched — one universe, one PR.
+5. **Bulk approval.** Not built. The panel groups by what will happen to each, which
+   makes the batch legible, but there is no "approve all confirmed" button yet.
+
+### Still unproven
+
+Nothing has been posted to a real pull request. The publish path is tested with an
+injected `gh`; no comment has landed on GitHub, so §4's placement ladder has never
+met the API that constrains it.
 **Author:** derived from a live PR-review session (Acme.API PR #264, 78 files, 12 agent findings + 3 human findings + 1 derived finding + 3 filed bugs)
 **Audience:** the agent implementing changes to the codemap MCP server
 

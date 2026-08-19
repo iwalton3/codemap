@@ -33,16 +33,38 @@ touched.
 model is built and tested (`src/walkthrough.ts`), and it renders. Not yet exercised
 end-to-end: nobody has run a real `map out PR 264` against it.
 
+**Findings publishing is built** (`docs/findings-publishing-spec.md`, whose §0 lists
+what was built and the four places the implementation deviates). A finding now
+carries two documents — `text` is the evidence, `comment` is what its submitter
+reads, capped at 800 and required — plus a `disposition` so a refuted one stays out
+of a batch, revisions so a correction is visible as one, and `postedRef` so a re-run
+is idempotent per finding. Placement (§4) is one function.
+
+That work found a live defect worth knowing about: a finding whose anchor was not in
+the PR's worklist was dropped with a bare `continue`, uncounted — so electing one on
+code the branch never touched silently never went out, and the plan reported nothing
+held back. Those are now `blocked`, and visible in all three front-ends.
+
 ## Next, in order
 
-1. **`docs/findings-publishing-spec.md` — accepted, unbuilt, and blocking.** It is
-   what lets #264's findings go back to its submitter as one batched review with
-   short submitter-facing text. `brief: true` by default on `review_queue` is
-   approved.
+1. **Push #264's findings back for real.** Everything for it is built and nothing
+   has been posted to a pull request yet — see the operational notes. The likely
+   first friction is that findings filed before this change have no `comment` and
+   will be held back by name until one is written in the findings panel.
 2. Exercise the walkthrough for real on #264 and #227 and see what the structure
    actually looks like.
 3. `code in no spec section` — the dual of `specWithoutCode`, designed in §4 of the
    walkthrough design, not built. It is the drive-by detector.
+
+### Known gaps in what was just built
+
+- Publishing a `refuted` finding **deliberately** (the spec's "withdrawals are worth
+  publishing" case) has the mechanism — `planPrPush` takes `ids`, which outranks the
+  disposition default — but no UI reaches it. A selection affordance in the findings
+  panel is what it needs.
+- No "approve all confirmed" bulk action (§8.5). With 12–16 findings, per-item is
+  the slow step.
+- `subject_type: "file"` comments are deliberately unused; see §0.4.
 
 ## Decisions made in conversation that the code does not show
 
@@ -69,6 +91,13 @@ end-to-end: nobody has run a real `map out PR 264` against it.
   ~200 references; the dry run says they pair cleanly, so `reindex` should be as
   clean as `Acme.API` was — but it has not been run.
 - The push-to-GitHub UI has never posted anything for real. The backend is tested
-  with an injected `gh`; no comment has actually landed on a pull request.
-- 191 unit tests, 22 e2e. `npm test` is hermetic; `npm run test:e2e` needs puppeteer
+  with an injected `gh`; no comment has actually landed on a pull request. This is
+  the single largest unproven thing in the branch, and §4's placement ladder is
+  written against an API it has never met.
+- 202 unit tests, 25 e2e. `npm test` is hermetic; `npm run test:e2e` needs puppeteer
   and a `jellyfin/jellyfin` clone and skips loudly without them.
+- **`annotate` now refuses a finding with no `comment`.** Anything that files
+  findings — the ingest format, the HTTP route, another agent's script — has to pass
+  one. This was the spec's call and its witness is strong (twelve findings filed
+  without a short form, all twelve rewritten by hand), but it is the change most
+  likely to surprise something outside this repo.
