@@ -1906,12 +1906,43 @@ class DiffPage extends Component {
 }
 defineComponent('diff-page', DiffPage);
 
-// Unified diff rendering. Highlighted per line rather than as a block: the +/-
-// prefixes are not part of the language, so a whole-block highlight would lex
-// them as syntax.
-const diffLinesEl = (lines, lang) => html`<div class="rvpre hljs prdiff">
-  ${each(lines || [], (l, i) => html`<div class="dline ${l.tag === '+' ? 'add' : l.tag === '-' ? 'del' : ''}"><span class="dsign">${l.tag}</span><span class="fltext">${raw(highlight(l.text, lang))}</span></div>`, (l, i) => i)}
-</div>`;
+// Unified diff rendering, with the same per-line finding affordance as the full
+// source view — a reviewer looking at what changed is exactly who wants to raise
+// something, so the diff must not be a read-only dead end.
+//
+// A finding pins to a HEAD line number, so the counter advances on context and
+// added lines only. Removed lines have no line in the head file at all: they are
+// still shown (they are half the change) but carry no 💬, because the alternative
+// is inventing a line number that points at unrelated code.
+//
+// Highlighted per line rather than as a block: the +/- signs are not part of the
+// language, so a whole-block highlight would lex them as syntax.
+function diffReviewLines(c, u, anchorId, lines, lang, startLine, annotations) {
+  if (!lines || !lines.length) return html`<pre class="code rvcode">(no diff available)</pre>`;
+  const byLine = new Map(); const noLine = [];
+  for (const a of (annotations || [])) { if (a.line) { (byLine.get(a.line) || byLine.set(a.line, []).get(a.line)).push(a); } else noLine.push(a); }
+  let head = (startLine || 1) - 1;
+  const rows = lines.map((l) => {
+    const n = l.tag === '-' ? null : ++head;
+    return { tag: l.tag, text: l.text, n };
+  });
+  return html`<div class="rvpre hljs prdiff">
+    ${each(rows, (r, i) => {
+      const finds = r.n ? (byLine.get(r.n) || []) : [];
+      return html`<div class="flrow">
+        <div class="dline ${r.tag === '+' ? 'add' : r.tag === '-' ? 'del' : ''}">
+          <span class="dsign">${r.tag}</span>
+          <span class="flno">${r.n ?? ''}</span>
+          <span class="fltext">${raw(highlight(r.text, lang))}</span>
+          ${when(r.n, () => html`<button class="flcomment" title="raise a finding on line ${r.n}" on-click="${() => openFindingForm(c, anchorId, r.n)}">💬</button>`)}
+        </div>
+        ${each(finds, f => findingItemEl(c, u, f), f => f.id)}
+        ${when(r.n && c.state.finding === findingKey(anchorId, r.n), () => findingForm(c, u, anchorId, r.n))}
+      </div>`;
+    }, (r, i) => i)}
+    ${when(noLine.length, () => html`<div class="rvfinds">${each(noLine, f => findingItemEl(c, u, f), f => f.id)}</div>`)}
+  </div>`;
+}
 
 // --- PR walkthrough ----------------------------------------------------------
 // "Tell me the story of this change." Chapters come from the spec markdown the PR
@@ -1924,7 +1955,7 @@ const LAYER_NAME = ['command', 'handler', 'event', 'aggregate', 'read-model', 'j
 
 class PrStoryPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { story: null, open: {}, code: {}, pending: {}, finding: null, prRef: null, showBase: {}, promote: null, promoted: {}, showCovered: false }; }
+  constructor(props) { super(props); this.state = { story: null, open: {}, code: {}, pending: {}, finding: null, prRef: null, showBase: {}, promote: null, promoted: {}, showCovered: false, deriving: false, derived: null }; }
   load = this.createTask(async () => {
     const u = this.props.params.universe; nav.current = u;
     const story = await api('/api/pr/story', { u, pr: this.props.params.pr });
@@ -1959,6 +1990,20 @@ class PrStoryPage extends Component {
   // Promotion is deliberately two-step: the plan says what would be written and
   // why that shape, and nothing lands until it is confirmed. An auto-promoted map
   // is worse than one with no chapters in it.
+  // Stakes for symbols the branch ADDS cannot come from the graph — they are not in
+  // the live index at all — so the PR-scoped derivation is offered here, where the
+  // symbols in question are on screen.
+  async deriveTriage() {
+    this.state.deriving = true;
+    const r = await fetch('/api/pr/triage', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ u: this.props.params.universe, pr: this.props.params.pr }),
+    }).then(x => x.json());
+    this.state.deriving = false;
+    this.state.derived = r.error ? { error: r.error } : r;
+    if (!r.error) await this.load.run();
+  }
+
   async openPromote(ch) {
     if (this.state.promote && this.state.promote.chapter === ch.id) { this.state.promote = null; return; }
     this.state.promote = { chapter: ch.id, loading: true };
@@ -2030,9 +2075,8 @@ class PrStoryPage extends Component {
           <span class="viewlink" title="open the full anchor page" on-click="${() => go(anchorUrl(u, step.anchorId))}">↗</span>
         </div>
         ${when(this.showsDiff(step),
-          () => diffLinesEl(code.lines, code.lang),
+          () => diffReviewLines(this, u, step.anchorId, code.lines, code.lang, code.startLine, code.annotations),
           () => codeReviewLines(this, u, step.anchorId, code.head, code.lang, code.startLine, code.annotations))}
-        ${when(this.showsDiff(step), () => html`<div class="dim prdiffhint">showing what changed — switch to full source to pin a finding to a line</div>`)}
       </div>`)}
       ${when(code && code.error, () => html`<div class="prsbody dim">${code.error}</div>`)}
     </div>`;
@@ -2109,6 +2153,11 @@ class PrStoryPage extends Component {
           ${when(st.refs.baseAheadOfMergeBase, () => html`<span class="dim" title="the PR is diffed against its merge-base, not the tip of ${st.pr.baseRef} — otherwise those commits would read as part of this change">${st.pr.baseRef} moved ${st.refs.baseAheadOfMergeBase} commits since branch</span>`)}
         </div>
         <div class="prlanes">${each(st.lanes, l => html`<span class="prlane l-${l.review}" title="${l.why}"><b>${l.lane}</b> ${l.lines} lines · ${l.files} files · ${l.review}</span>`, l => l.lane)}</div>
+        <div class="prderive">
+          <button on-click="${() => this.deriveTriage()}" title="propose stakes and complexity for this PR's symbols. Symbols the branch adds are not in the live index, so the graph-wide derivation cannot see them at all.">${this.state.deriving ? 'deriving…' : 'derive stakes for this PR'}</button>
+          ${when(this.state.derived && this.state.derived.error, () => html`<span class="warn">${this.state.derived.error}</span>`)}
+          ${when(this.state.derived && !this.state.derived.error, () => html`<span class="dim">${this.state.derived.applied} newly proposed${this.state.derived.refused ? `, ${this.state.derived.refused} already at or above this tier` : ''} — of ${this.state.derived.considered} with a signal. Every one is <b>likely</b>: confirm or lower it yourself.</span>`)}
+        </div>
       </div>
       ${when(!st.totals.steps, () => html`<section class="prchapter"><div class="prcbody prempty">
         <b>Nothing in the review queue.</b>
