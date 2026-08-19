@@ -100,7 +100,11 @@ export async function bulkPullViewed(
   const listed = gh(["pr", "list", "--repo", slug, "--state", "all", "--limit", "400", "--json", "number,state,author,createdAt"]);
   if (!listed.ok) return { error: `gh pr list failed: ${listed.err.slice(0, 200)}` };
   const prs: { number: number; state: string; author: { login: string } | null; createdAt: string }[] = JSON.parse(listed.out);
-  prs.sort((a, b) => b.number - a.number);
+  // OLDEST first. An accepted set is documented "oldest first" and `resolveAcceptance`
+  // treats the last entry on the ancestry as the current one; importing newest-first
+  // appends them backwards, so every earlier body reads as something the code was
+  // reverted to.
+  prs.sort((a, b) => a.number - b.number);
 
   log(`surveying ${prs.length} pull requests…`);
   const survey = surveyViewed(slug, prs.map((p) => p.number));
@@ -149,7 +153,11 @@ export async function bulkPullViewed(
       const fresh = ids.filter((id) => st.get(`anchor:${id}`)?.code.state !== "reviewed");
       res.leftSigned += ids.length - fresh.length;
 
-      const m = await markReviewedBatch(root, fresh, { level: "code", actor: "human", attestation: "viewed", reviewer: "github-import", hashes });
+      // `ref` is the PR's head, and it is the acceptance's provenance. Without it the
+      // commit falls back to whatever the working tree is on, so every acceptance
+      // across a year of PRs records the same commit — which makes the ancestry test
+      // in `resolveAcceptance` meaningless and reads most of them back as reverts.
+      const m = await markReviewedBatch(root, fresh, { level: "code", actor: "human", attestation: "viewed", reviewer: "github-import", ref: headRefOid, hashes });
       await writeViewedImport(root, String(p.number), m.marked);
       res.marked += m.marked;
       res.processed++;

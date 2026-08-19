@@ -85,3 +85,30 @@ test("a merged PR still resolves to the commit it forked from", () => {
     assert.notEqual(prBaseCommit(root, { recordedBase: null, baseRef: "develop", headSha: head }), head);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+/**
+ * An accepted set is documented "oldest first", and `resolveAcceptance` treats the
+ * last entry on the ancestry as the current body. Two things broke that on the
+ * first real import and between them read 1,148 of 3,724 marks back as `reverted`:
+ * PRs walked newest-first, and every acceptance recorded the working tree's commit
+ * instead of the PR's head — so the ancestry test had nothing to discriminate on.
+ */
+test("acceptances accumulate oldest-first, each stamped with its own PR head", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-order-"));
+  try {
+    await writeStore(root, [], state);
+    const { markReviewedBatch } = await import("./reviews.js");
+    const { readReviews } = await import("./store.js");
+
+    // as the importer now runs: oldest PR first, each with its own head sha
+    for (const [commit, hash] of [["c_old", "sha256:V1"], ["c_mid", "sha256:V2"], ["c_new", "sha256:V3"]] as const) {
+      await markReviewedBatch(root, ["a_1"], {
+        level: "code", actor: "human", attestation: "viewed", reviewer: "github-import",
+        ref: commit, hashes: new Map([["a_1", hash]]),
+      });
+    }
+    const entries = (await readReviews(root)).reviews[0]!.accepted![0]!.entries;
+    assert.deepEqual(entries.map((e) => e.bodyHash), ["sha256:V1", "sha256:V2", "sha256:V3"], "oldest first");
+    assert.deepEqual(entries.map((e) => e.commit), ["c_old", "c_mid", "c_new"], "each acceptance carries its own PR head, not the working tree's commit");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
