@@ -107,3 +107,39 @@ test("splitSpec cuts on real headings only — not ones inside fences or comment
   assert.deepEqual(commented.map((s) => s.heading), ["Spec", "Refunds"]);
   assert.equal(commented.some((s) => s.text.includes("old refund path")), false);
 });
+
+test("an interface name and a short domain type both bind", async () => {
+  // Two blind spots that made a section bind NOTHING and disappear — not even
+  // reported as a gap, while its symbol was swept into a derived chapter captioned
+  // "No spec section in this PR names these symbols", contradicting the spec on screen.
+  assert.deepEqual([...mentionedIdentifiers("The IOrderService is replaced by APIKeyStore.")].sort(),
+    ["APIKeyStore", "IOrderService"], "a leading run of capitals produced nothing at all before");
+
+  // a single-hump word is an identifier only when the PR actually has one
+  assert.deepEqual([...mentionedIdentifiers("The ledger records every posting.")], []);
+  assert.deepEqual([...mentionedIdentifiers("The Ledger records every posting.", new Set(["Ledger"]))], ["Ledger"]);
+  assert.deepEqual([...mentionedIdentifiers("The Ledger records every posting.")], [],
+    "without a vocabulary it stays out — otherwise The/This/When bind everything to everything");
+
+  const story = buildStory(
+    splitSpec("docs/specs/x/01-domain-model.md", "## Ledger\nThe ledger records every posting."),
+    [step({ anchorId: "a_1", symbol: "Ledger", file: "Domains/Fin/Domain/Ledger.cs" })],
+  );
+  assert.deepEqual(story.chapters.map((c) => [c.title, c.source]), [["Ledger", "spec"]]);
+  assert.equal(story.undocumented, 0);
+});
+
+test("a three-letter domain type binds when the PR has one", () => {
+  // `Fee`, `Tax`, `Vat`, `Sku` could never bind under a blanket length cut-off, so
+  // the section backticking one was dropped with no chapter AND no gap row, while
+  // its symbol was reported undocumented.
+  const story = buildStory(
+    splitSpec("docs/specs/x/01-domain-model.md", "## `Fee` calculation\nThe `Fee` is applied per line.\n## `Ledger`\nposting"),
+    [step({ anchorId: "a1", symbol: "Fee", file: "Domains/Fin/Domain/Fee.cs" })],
+    { known: new Set(["Fee", "Ledger"]) },
+  );
+  const bound = story.chapters.find((c) => c.steps.some((s) => s.anchorId === "a1"));
+  assert.ok(bound, "the Fee section claims the Fee symbol");
+  assert.match(bound!.title, /Fee/);
+  assert.equal(story.undocumented, 0);
+});

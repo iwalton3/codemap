@@ -97,12 +97,24 @@ export function splitSpec(specPath: string, text: string): SpecSection[] {
  * always type or member names. Lowercase prose words are deliberately not
  * candidates — matching on them binds everything to everything.
  */
-export function mentionedIdentifiers(text: string): Set<string> {
+export function mentionedIdentifiers(text: string, known?: Set<string>): Set<string> {
   const ids = new Set<string>();
   for (const m of text.matchAll(/`([^`\n]+)`/g)) {
     for (const w of m[1]!.split(/[^A-Za-z0-9_]+/)) if (w.length > 2) ids.add(w);
   }
-  for (const m of text.matchAll(/\b([A-Z][a-z0-9]+(?:[A-Z][a-z0-9]*)+)\b/g)) ids.add(m[1]!);
+  // Two humps, OR a leading run of capitals: the `\b[A-Z][a-z0-9]+` form could not
+  // match anything starting with two capitals, so `IOrderService`, `APIKeyStore`
+  // and every `I`-prefixed interface produced NOTHING — not even a tail — and the
+  // section naming one bound no symbols and vanished from the walkthrough.
+  for (const m of text.matchAll(/\b([A-Z][a-z0-9]+(?:[A-Z][a-z0-9]*)+|[A-Z]{2,}[a-z0-9]+(?:[A-Z][a-z0-9]*)*)\b/g)) ids.add(m[1]!);
+  // A single-hump word is only an identifier if something in this pull request
+  // actually goes by that name. Admitting them unconditionally would make "The",
+  // "This" and "When" identifiers and bind everything to everything, which is why
+  // they were excluded outright; checking against what the PR touches is the
+  // precision that was missing, and it is what lets an unbackticked `Ledger` bind.
+  if (known?.size) {
+    for (const m of text.matchAll(/\b([A-Z][A-Za-z0-9_]*)\b/g)) if (known.has(m[1]!)) ids.add(m[1]!);
+  }
   return ids;
 }
 
@@ -195,7 +207,14 @@ const GENERIC = new Set([
   "Model", "Dto", "Item", "Value", "Name", "Status", "Type", "State", "Data", "Info", "Async",
 ]);
 
-const distinctive = (w: string) => w.length > 3 && !GENERIC.has(w);
+/**
+ * Worth binding on. `known` is what the pull request actually touches, which is
+ * what makes a SHORT name safe: `Fee`, `Tax`, `Vat` and `Sku` are real domain types
+ * and could never bind under a blanket length cut-off, while a bare three-letter
+ * word from prose still cannot get in.
+ */
+const distinctive = (w: string, known?: Set<string>) =>
+  !GENERIC.has(w) && (w.length > 3 || (w.length >= 3 && !!known?.has(w)));
 
 /**
  * Headings keep their raw markdown, because the backticks are load-bearing for
@@ -225,10 +244,25 @@ function distinctId(base: string, taken: Set<string>): { id: string; occurrence:
  */
 export function buildStory(sections: SpecSection[], steps: StoryStep[], opts: { known?: Set<string> } = {}): PrStory {
   const claimed = new Map<string, { idx: number; score: number }>();
+
+  // Every identifier this PR actually touched, however it is spelled — leaf name,
+  // any path segment, or a type named in a signature (which is how an aggregate's
+  // Apply overloads are told apart). Computed FIRST because it is what makes a
+  // single-hump or three-letter word in the spec safe to read as an identifier.
+  const changedNames = new Set<string>();
+  for (const st of steps) {
+    for (const part of st.symbol.split(" › ")) changedNames.add(part);
+    for (const id of mentionedIdentifiers(st.signature)) changedNames.add(id);
+  }
+  const vocabulary = new Set([...changedNames, ...(opts.known ?? [])]);
+
   // Heading and body are scored separately: a section whose *heading* names a
   // symbol is almost always the chapter that symbol belongs in, while a passing
   // mention in the body is weak evidence.
-  const secIds = sections.map((s) => ({ heading: mentionedIdentifiers(s.heading), body: mentionedIdentifiers(s.text) }));
+  const secIds = sections.map((s) => ({
+    heading: mentionedIdentifiers(s.heading, vocabulary),
+    body: mentionedIdentifiers(s.text, vocabulary),
+  }));
 
   for (const step of steps) {
     const leaf = step.symbol.split(" › ").pop() ?? step.symbol;
@@ -242,7 +276,7 @@ export function buildStory(sections: SpecSection[], steps: StoryStep[], opts: { 
     secIds.forEach((ids, i) => {
       let score = 0;
       for (const p of parts) {
-        if (!distinctive(p)) continue;
+        if (!distinctive(p, vocabulary)) continue;
         if (ids.heading.has(p)) score += p === leaf ? 6 : 3;
         else if (ids.body.has(p)) score += p === leaf ? 2 : 1;
       }
@@ -261,15 +295,6 @@ export function buildStory(sections: SpecSection[], steps: StoryStep[], opts: { 
 
   const order = (a: StoryStep, b: StoryStep) => a.layer - b.layer || a.file.localeCompare(b.file) || a.symbol.localeCompare(b.symbol);
 
-  // Every identifier this PR actually touched, however it is spelled — leaf name,
-  // any path segment, or a type named in the signature (which is how an aggregate's
-  // Apply overloads are told apart).
-  const changedNames = new Set<string>();
-  for (const st of steps) {
-    for (const part of st.symbol.split(" › ")) changedNames.add(part);
-    for (const id of mentionedIdentifiers(st.signature)) changedNames.add(id);
-  }
-
   const chapters: StoryChapter[] = [];
   const chapterIds = new Set<string>();
   const specWithoutCode: { specPath: string; heading: string; reason: SpecGapReason; names: string[] }[] = [];
@@ -281,7 +306,7 @@ export function buildStory(sections: SpecSection[], steps: StoryStep[], opts: { 
       // reporting them buries the sections that matter. A tracker or readme is
       // never a claim about code at all.
       if (EPHEMERAL_SPEC.test(s.specPath)) return;
-      const named = [...new Set([...secIds[i]!.heading, ...secIds[i]!.body])].filter(distinctive);
+      const named = [...new Set([...secIds[i]!.heading, ...secIds[i]!.body])].filter((w) => distinctive(w, vocabulary));
       if (!named.length) return;
       // Claimed by a sibling section? Then it is documented in this PR after all,
       // and reporting it as a gap is an artefact of one-section-per-step binding.
