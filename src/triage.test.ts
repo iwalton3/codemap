@@ -325,3 +325,55 @@ test("an agent cannot lower a human's review bar through the complexity axis", a
     assert.equal(up.complexity, "deep");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("the derive pass uses the SAME ratchet — it cannot lower a human's bar through complexity", async () => {
+  // `deriveTriage` kept a third, hand-written copy of the ratchet, and it still had
+  // the absent-complexity hole the shared one had already closed: with no complexity
+  // recorded, a derived `wiring` counted as a raise, so a business-critical mark's
+  // bar fell from `signed` to `viewed` and its severity from high to medium — with
+  // no human involved and nothing in the graph having actually escalated.
+  const root = initRoot();
+  try {
+    await init(root);
+    await writeNode(root, { id: "pay3", type: "command", title: "Charge card", summary: "", anchors: [], body: "" });
+    await writeTriage(root, [{
+      target: { kind: "node", id: "pay3" }, importance: "business-critical",
+      likely: false, source: "human", at: "2026-08-19T00:00:00Z", witnesses: [],
+    }]);
+
+    await deriveTriage(root);
+    const info = await triageStatus(root, { kind: "node", id: "pay3" });
+    assert.equal(info.importance, "business-critical", "the human's stakes stand");
+    assert.equal(info.bar, "signed", "and a derived `wiring` must not drop the bar they set");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an agent that asserts no stakes does not get `important` invented for it", async () => {
+  // `untriaged` ranks BC-until-looked-at; a fabricated important+wiring mark scores
+  // `medium` and drops the bar to `viewed`. So defaulting a signal-free agent input
+  // LOWERED attention on a symbol nobody had judged.
+  const root = initRoot();
+  try {
+    await init(root);
+    const before = await triageStatus(root, { kind: "anchor", id: "a_ns" });
+    assert.equal(before.severity, "untriaged");
+
+    // complexity only, and nothing at all — neither asserts stakes
+    for (const input of [{ complexity: "wiring" as const }, {}]) {
+      const r = await setTriage(root, { targetKind: "anchor", targetId: "a_ns", source: "agent", ...input });
+      assert.equal(r.ok, false, `${JSON.stringify(input)} must be refused`);
+      assert.match(r.reason ?? "", /no importance/i);
+    }
+    assert.equal((await triageStatus(root, { kind: "anchor", id: "a_ns" })).severity, "untriaged",
+      "still untriaged — which outranks a fabricated `important`");
+
+    // a HUMAN writing only a complexity is an explicit act, and keeps the default
+    const h = await setTriage(root, { targetKind: "anchor", targetId: "a_ns", complexity: "wiring", source: "human" });
+    assert.equal(h.ok, true);
+    assert.equal(h.importance, "important");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

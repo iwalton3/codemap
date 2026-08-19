@@ -102,17 +102,34 @@ export interface TriageInput {
 }
 
 /**
- * The ratchet decision, pure so the single-set and batch paths cannot drift apart.
+ * The ratchet decision, pure so every path that writes a mark shares one rule.
  * Agents and the graph may only ever RAISE either axis; a human writes what they
- * set. Returns null when the mark would add nothing.
+ * set. Returns `{refused}` when the mark would add nothing or is not theirs to make.
+ *
+ * `humanDrifted` is the one exception: a human mark is authoritative UNLESS the
+ * code it covers has moved since they set it, and then a higher derivation is a
+ * legitimate re-escalation ("grew teeth") rather than an override. `deriveTriage`
+ * is the only caller that can know this, which is why it is a parameter and not a
+ * third hand-written copy of the ratchet — the copy it used to keep still had the
+ * absent-complexity hole this function closed.
  */
 export function ratchet(
   existing: Triage | undefined,
   input: { importance?: Importance; complexity?: Complexity; source: TriageSource },
+  opts: { humanDrifted?: boolean } = {},
 ): { importance: Importance; complexity?: Complexity } | { refused: string } {
   const human = input.source === "human";
   const exImp = existing ? normImportance(existing.importance) : undefined;
   const wantImp = input.importance ? normImportance(input.importance) : undefined;
+  // No signal means no claim. Defaulting a signal-free agent input to `important`
+  // LOWERED attention: `untriaged` ranks BC-until-looked-at, while a fabricated
+  // important+wiring mark scores `medium` and drops the bar from `signed` to
+  // `viewed`. `pr.ts` guards this on its own path; the rule belongs here, where
+  // `pr-ingest` and any direct `setTriageBatch` caller also reach it. A human
+  // writing only a complexity is still an explicit act, so the default stays theirs.
+  if (!human && wantImp === undefined && exImp === undefined) {
+    return { refused: "no importance given and none on record — an agent that asserts no stakes does not get one invented for it" };
+  }
   if (existing && !human) {
     const raisesImp = wantImp !== undefined && (exImp === undefined || IMPORTANCE_RANK[wantImp] > IMPORTANCE_RANK[exImp]);
     // An ABSENT complexity is not "lower than everything" — every consumer
@@ -126,7 +143,7 @@ export function ratchet(
     if (!raisesImp && !raisesCx) {
       return { refused: existing.source === "human" ? "human-owned — agents may only ESCALATE it, never lower" : "ratchet: agents/graph may only raise stakes/complexity" };
     }
-    if (existing.source === "human" && input.source === "graph") {
+    if (existing.source === "human" && input.source === "graph" && !opts.humanDrifted) {
       return { refused: "graph derivation won't override a human mark — an agent with evidence can escalate via `triage`" };
     }
   }
@@ -146,13 +163,19 @@ export function ratchet(
 export async function setTriage(
   root: string,
   input: TriageInput,
-): Promise<{ ok: boolean; importance: Importance; complexity?: Complexity; likely?: boolean; reason?: string }> {
+  // `importance` is absent only on a refusal with nothing on record — there is no
+  // mark to report, and inventing one here is the very thing being refused.
+): Promise<{ ok: boolean; importance?: Importance; complexity?: Complexity; likely?: boolean; reason?: string }> {
   const ts = await readTriage(root);
   const existing = ts.triage.find((t) => sameTarget(t, input.targetKind, input.targetId));
   const human = input.source === "human";
   const decision = ratchet(existing, input);
   if (decision && "refused" in decision) {
-    return { ok: false, importance: normImportance(existing!.importance), complexity: existing!.complexity, reason: decision.refused };
+    // `existing` may be absent: a signal-free agent input is refused with nothing on
+    // record, and reporting the refusal must not depend on there being a prior mark.
+    return existing
+      ? { ok: false, importance: normImportance(existing.importance), complexity: existing.complexity, reason: decision.refused }
+      : { ok: false, reason: decision.refused };
   }
   const { importance, complexity } = decision!;
   const target: Target = { kind: input.targetKind, id: input.targetId };
@@ -408,29 +431,23 @@ export async function deriveTriage(root: string): Promise<{ derived: number; byI
 
   const at = new Date().toISOString();
   let escalated = 0;
-  // Raise-only on BOTH axes: an escalation is any rise in stakes OR complexity.
+  // Raise-only on BOTH axes, via the SHARED `ratchet` — this used to be a third
+  // hand-written copy, and it still carried the absent-complexity hole that the
+  // shared one had already closed: against a human's business-critical mark with no
+  // complexity recorded, a derived `wiring` counted as a raise and dropped the bar
+  // from `signed` to `viewed` with no human involved.
   const graphMark = (kind: "node" | "anchor", id: string, importance: Importance, complexity: Complexity | undefined, reason: string) => {
     const k = key(kind, id);
     const ex = result.get(k);
-    const exImp = ex ? normImportance(ex.importance) : undefined;
+    const overHuman = ex?.source === "human";
+    const d = ratchet(ex, { importance, complexity, source: "graph" }, { humanDrifted: overHuman && humanDrifted.has(k) });
+    if ("refused" in d) return;
+    // A human mark is authoritative UNLESS its code drifted since they set it —
+    // then a higher derivation re-enters the confirm queue rather than silently
+    // overriding their judgement.
     let note = reason;
-    let imp = importance, cx = complexity;
-    if (ex) {
-      const raisesImp = IMPORTANCE_RANK[importance] > IMPORTANCE_RANK[exImp!];
-      const raisesCx = complexity !== undefined && (ex.complexity === undefined || COMPLEXITY_RANK[complexity] > COMPLEXITY_RANK[ex.complexity]);
-      if (!raisesImp && !raisesCx) return; // nothing new to add
-      if (ex.source === "human") {
-        // A human mark is authoritative UNLESS its code drifted since they set it —
-        // then a higher derivation is a legitimate re-escalation ("grew teeth"): it
-        // re-enters the confirm queue rather than silently overriding their judgement.
-        if (!humanDrifted.has(k)) return;
-        note = `${reason} (code changed since you triaged — re-confirm)`;
-        escalated++;
-      }
-      imp = raisesImp ? importance : exImp!; // keep the higher of each axis
-      cx = raisesCx ? complexity : ex.complexity;
-    }
-    result.set(k, { target: { kind, id }, importance: imp, complexity: cx, likely: true, source: "graph", reason: note, at, witnesses: witnessesOf(kind, id) });
+    if (overHuman) { note = `${reason} (code changed since you triaged — re-confirm)`; escalated++; }
+    result.set(k, { target: { kind, id }, importance: d.importance, complexity: d.complexity, likely: true, source: "graph", reason: note, at, witnesses: witnessesOf(kind, id) });
   };
 
   const nodeMoney = (n: { title: string; summary?: string; anchors: string[] }) =>
