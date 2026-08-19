@@ -337,6 +337,26 @@ const server = createServer(async (req, res) => {
     // caller returns the FINGERPRINT of the plan it displayed and the push is
     // refused if re-deriving no longer matches it — publishing something the human
     // did not read is the failure the plan/execute split exists to prevent.
+    // The plan is also a POST, because the reviewer's summary travels with it and a
+    // few paragraphs URL-encoded into a query string approaches Node's 16KB header
+    // limit — failing exactly when someone has just written something they care
+    // about. The GET form stays for callers with nothing to send.
+    if (req.method === "POST" && url.pathname === "/api/pr/push_plan") {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      const root = rootFor(body.u ?? null);
+      const out = await withLock<unknown>(root, () => ops.prPushPlan(root, String(body.pr ?? ""), {
+        electedOnly: body.all !== true,
+        minSeverity: body.minSeverity || undefined,
+        summary: body.summary || undefined,
+        event: body.event || undefined,
+      }));
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(out));
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/api/pr/push") {
       const chunks: Buffer[] = [];
       for await (const c of req) chunks.push(c as Buffer);

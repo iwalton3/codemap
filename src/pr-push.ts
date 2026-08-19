@@ -728,7 +728,10 @@ export async function executePrPush(
   // Nothing to say is not a reason to open a review on someone's pull request — but
   // a VERDICT is: approving a change, or asking for work on it, is worth posting
   // with no inline comments at all. So is a summary the human wrote by hand.
-  const hasVerdict = plan.event !== "COMMENT" || !!plan.summary;
+  // Normalised, not trusted: a plan reaching here without one must not put
+  // `event: undefined` on the wire, where GitHub rejects the whole batch.
+  const event: ReviewEvent = plan.event ?? "COMMENT";
+  const hasVerdict = event !== "COMMENT" || !!plan.summary;
   const postComments = opts.comments !== false
     && (plan.comments.length > 0 || plan.deferred.length > 0 || hasVerdict);
 
@@ -736,7 +739,7 @@ export async function executePrPush(
     const payload = JSON.stringify({
       commit_id: plan.head,
       body: plan.body,
-      event: plan.event,
+      event,
       comments: plan.comments.map((c) => ({ path: c.path, line: c.line, side: c.side, body: c.body })),
     });
     const r = gh_(["api", "--method", "POST", `repos/${slug}/pulls/${plan.pr.number}/reviews`, "--input", "-"], payload);
@@ -749,7 +752,7 @@ export async function executePrPush(
       // comments were lost with it — which is the part that matters here.
       const own = /own pull request/i.test(r.err);
       errors.push(own
-        ? `GitHub will not let you ${plan.event === "APPROVE" ? "approve" : "request changes on"} your own pull request, so NOTHING was posted — including the comments. Re-run as a plain comment review.`
+        ? `GitHub will not let you ${event === "APPROVE" ? "approve" : "request changes on"} your own pull request, so NOTHING was posted — including the comments. Re-run as a plain comment review.`
         : `review post failed: ${r.err.slice(0, 400)}`);
     } else {
       let reviewId: number | undefined;

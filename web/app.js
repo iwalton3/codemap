@@ -13,6 +13,12 @@
 import { defineComponent, Component, html, when, each, Store, raw } from './vendor/vdx/framework.js';
 import { enableRouting } from './vendor/vdx/router.js';
 
+/** POST + JSON, for requests whose payload does not belong in a URL. */
+async function apiPost(path, body) {
+  const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
 async function api(path, params = {}) {
   const qs = new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v != null && v !== '')));
   const r = await fetch(path + (qs.toString() ? '?' + qs : ''));
@@ -2331,7 +2337,7 @@ class PrStoryPage extends Component {
     // `api()` throws on any non-2xx; with no catch the panel sat on "working out
     // what would be sent…" for ever and the rejection went unhandled.
     const draft = this.state.pushDraft || { summary: '', event: 'COMMENT' };
-    const r = await api('/api/pr/push_plan', {
+    const r = await apiPost('/api/pr/push_plan', {
       u: this.props.params.universe, pr: this.props.params.pr,
       summary: draft.summary || undefined, event: draft.event,
     }).catch((e) => ({ error: `could not work out what would be sent: ${e && e.message ? e.message : e}` }));
@@ -2361,7 +2367,7 @@ class PrStoryPage extends Component {
     const token = Symbol('push');
     this._pushToken = token;
     const draft = this.state.pushDraft || { summary: '', event: 'COMMENT' };
-    const r = await api('/api/pr/push_plan', {
+    const r = await apiPost('/api/pr/push_plan', {
       u: this.props.params.universe, pr: this.props.params.pr,
       summary: draft.summary || undefined, event: draft.event,
     }).catch((e) => ({ error: `could not work out what would be sent: ${e && e.message ? e.message : e}` }));
@@ -2629,7 +2635,7 @@ class PrStoryPage extends Component {
         <div><b>${plan.viewedPaths.length}</b> file(s) would be ticked <b>viewed</b> on <a href="${plan.pr.url}" target="_blank" rel="noreferrer">#${plan.pr.number}</a> — every reviewable symbol in them is signed off here.</div>
         ${each(plan.viewedPaths, f => html`<div class="pushrow"><code>${f}</code></div>`, f => f)}`)}
       <div class="prpromoacts">
-        <button class="on" disabled="${!!p.sending || (comments ? !(plan.comments.length || plan.deferred.length || plan.summary || plan.event !== 'COMMENT') : !plan.viewedPaths.length)}" on-click="${() => this.confirmPush()}">${p.sending ? 'sending…' : (comments ? PUSH_VERB[plan.event] : 'tick these on GitHub')}</button>
+        <button class="on" disabled="${!!p.sending || (comments ? !(plan.comments.length || plan.deferred.length || plan.summary || plan.event !== 'COMMENT') : !plan.viewedPaths.length)}" on-click="${() => this.confirmPush()}">${p.sending ? 'sending…' : (comments ? (PUSH_VERB[plan.event] || 'post to GitHub') : 'tick these on GitHub')}</button>
         <button class="ghost" on-click="${() => { this.state.push = null; }}">cancel</button>
         <span class="dim">${plan.event === 'COMMENT' ? 'this notifies the pull request\'s author' : 'this is a VERDICT on the pull request, and shows on it as one'}</span>
       </div>

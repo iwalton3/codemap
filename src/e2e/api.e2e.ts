@@ -148,6 +148,19 @@ describe("HTTP write routes", () => {
     assert.equal(found(back).withdrawn, undefined);
   });
 
+  test("the push plan is a POST, so a long summary cannot break the request", async () => {
+    // It travelled as a query parameter, and a few paragraphs URL-encoded approaches
+    // Node's 16KB header limit — failing exactly when someone has just written
+    // something they care about. This is 8KB of summary through the real server.
+    const summary = "Overall this looks right, but see the notes.\n".repeat(180);
+    assert.ok(summary.length > 8000, "the fixture has to be big enough to matter");
+    const out = await post("/api/pr/push_plan", { pr: "999999", summary, event: "REQUEST_CHANGES" });
+    // The fixture has no GitHub remote, so the PLAN fails — on the pull request, not
+    // on the transport. A 431/dropped connection would have thrown in `post`.
+    assert.ok(out.error, "expected a PR-resolution error, not a transport one");
+    assert.doesNotMatch(String(out.error), /header|431|too large/i);
+  });
+
   test("a review write hands back the resulting mark", async () => {
     const out = await post("/api/review", { targetKind: "anchor", targetId: anchorId, level: "code", attestation: "signed" });
     assert.ok(!out.error, out.error);
