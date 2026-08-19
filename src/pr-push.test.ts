@@ -36,6 +36,34 @@ test("diffLineRanges reports the head-side lines GitHub will accept a comment on
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("an added line that looks like a diff header does not re-attribute the hunks after it", () => {
+  // "++ b/other.ts" in a patch fixture renders as "+++ b/other.ts" inside the hunk
+  // body. Read as a file header it moved every later hunk onto a file the commit
+  // never touched — and pr-push posts review comments at these line numbers.
+  const root = mkdtempSync(join(tmpdir(), "codemap-push-"));
+  try {
+    git(root, "init", "-q", "-b", "main");
+    const lines = (n: number) => Array.from({ length: n }, (_, i) => `x${i + 1}`).join("\n") + "\n";
+    writeFileSync(join(root, "fixture.patch"), lines(40));
+    writeFileSync(join(root, "untouched.ts"), lines(10));
+    git(root, "add", "-A"); git(root, "commit", "-qm", "base");
+    const base = git(root, "rev-parse", "HEAD").stdout.trim();
+
+    const edited = lines(40).split("\n");
+    edited[4] = "++ b/untouched.ts";     // line 5 — the trap
+    edited[29] = "CHANGED";              // line 30 — a second, later hunk in the same file
+    writeFileSync(join(root, "fixture.patch"), edited.join("\n"));
+    git(root, "add", "-A"); git(root, "commit", "-qm", "edit");
+    const head = git(root, "rev-parse", "HEAD").stdout.trim();
+
+    const ranges = diffLineRanges(root, base, head);
+    assert.equal(ranges.has("untouched.ts"), false, "a file the commit never changed must have no commentable range");
+    const f = ranges.get("fixture.patch");
+    assert.ok(f && f.length >= 2, "both hunks belong to the file that actually changed");
+    assert.ok(f!.some(([lo, hi]) => 30 >= lo && 30 <= hi), "the hunk after the trap keeps its own file");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("a push record accumulates, so re-running never re-posts a comment", async () => {
   const root = mkdtempSync(join(tmpdir(), "codemap-push-"));
   try {

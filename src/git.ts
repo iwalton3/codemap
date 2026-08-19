@@ -97,7 +97,8 @@ export interface TreeEntry {
   path: string;
   /** "blob" for a file, "commit" for a submodule gitlink. */
   type: "blob" | "commit";
-  /** Blob size in bytes; the gitlink's target sha for a submodule. */
+  /** Blob size in bytes. `ls-tree -l` prints `-` for a gitlink, which reads as 0 —
+   * a submodule's target sha is in `oid`, which is what `indexCommit` recurses on. */
   size: number;
   oid: string;
 }
@@ -131,6 +132,12 @@ export function lsTreeEntries(root: string, sha: string): TreeEntry[] | null {
  * Read many blobs from one commit in a single `git cat-file --batch` pass —
  * one process for the whole tree instead of one `git show` per file (~55ms vs
  * minutes on a 1200-file repo). Paths absent from the commit are omitted.
+ *
+ * THROWS if a batch fails. A dropped chunk is indistinguishable from "those files
+ * had no symbols", so swallowing it let `indexCommit` persist a snapshot missing
+ * up to 500 files — which the next diff reads as a mass symbol deletion. Loud is
+ * correct here: `indexCommit` turns it back into its documented `null`, and every
+ * other caller sits under a front-end that renders the message.
  */
 export function readBlobs(root: string, sha: string, paths: string[]): Map<string, string> {
   const prefix = repoPrefix(root);
@@ -143,7 +150,10 @@ export function readBlobs(root: string, sha: string, paths: string[]): Map<strin
       input: batch.map((p) => `${sha}:${prefix}${p}`).join("\n") + "\n",
       maxBuffer: 512 * 1024 * 1024,
     });
-    if (r.status !== 0 || !r.stdout) continue;
+    if (r.status !== 0 || !r.stdout) {
+      const why = r.error?.message ?? (r.stderr ? Buffer.from(r.stderr).toString("utf8").trim() : "");
+      throw new Error(`git cat-file failed reading ${batch.length} path(s) at ${sha.slice(0, 12)}${why ? `: ${why}` : ""}`);
+    }
     const buf: Buffer = r.stdout;
     let off = 0;
     for (const p of batch) {
@@ -221,19 +231,40 @@ export function diffLineRanges(root: string, from: string, to: string): Map<stri
   const out = new Map<string, [number, number][]>();
   if (r.status !== 0) return out;
   let file = "";
+  // A hunk body is consumed by counting the lines its own header promises, because
+  // an ADDED source line beginning "++ " renders as "+++ ..." and is otherwise
+  // indistinguishable from a file header — one in a fixture or patch file
+  // re-attributed every later hunk to a file the commit never touched, which is
+  // where pr-push then tried to post a comment.
+  let oldLeft = 0, newLeft = 0;
   for (const line of (r.stdout ?? "").split("\n")) {
+    if (oldLeft > 0 || newLeft > 0) {
+      // Inside a hunk: context counts against both sides, "\ No newline" against neither.
+      if (line.startsWith(" ")) { oldLeft--; newLeft--; }
+      else if (line.startsWith("-")) oldLeft--;
+      else if (line.startsWith("+")) newLeft--;
+      else if (line.startsWith("\\")) continue;
+      // Anything else means the diff is not shaped as the counts claimed; fall
+      // through to structural parsing rather than swallowing the rest of the file.
+      else { oldLeft = newLeft = 0; }
+      if (oldLeft > 0 || newLeft > 0) continue;
+      if (line.startsWith(" ") || line.startsWith("-") || line.startsWith("+")) continue;
+    }
+    if (line.startsWith("diff --git ")) { file = ""; continue; }
     if (line.startsWith("+++ ")) {
       const p = line.slice(4).trim();
       file = p === "/dev/null" ? "" : p.replace(/^b\//, "");
       continue;
     }
-    if (!file || !line.startsWith("@@")) continue;
+    if (!line.startsWith("@@")) continue;
     // @@ -oldStart,oldLen +newStart,newLen @@
-    const m = /\+(\d+)(?:,(\d+))?/.exec(line);
+    const m = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
     if (!m) continue;
-    const start = Number(m[1]);
-    const len = m[2] === undefined ? 1 : Number(m[2]);
-    if (!len) continue;
+    oldLeft = m[2] === undefined ? 1 : Number(m[2]);
+    newLeft = m[4] === undefined ? 1 : Number(m[4]);
+    const start = Number(m[3]);
+    const len = newLeft;
+    if (!file || !len) continue;
     const arr = out.get(file) ?? [];
     arr.push([start, start + len - 1]);
     out.set(file, arr);
@@ -286,5 +317,9 @@ export function prBaseCommit(root: string, opts: { recordedBase?: string | null;
   const fromTip = tip ? mergeBase(root, tip, opts.headSha) : null;
   // A tip-derived base equal to the head is the merged-PR collapse, not a real answer.
   if (fromTip && fromTip !== opts.headSha) return fromTip;
-  return fromRecorded ?? null;
+  // Not `?? fromRecorded`: the only way it is non-null here is by equalling the
+  // head, which is the same collapse just rejected. Returning it made the caller
+  // snapshot head-vs-head and report the PR as changing nothing — the failure this
+  // function exists to prevent. No answer is better than that one.
+  return null;
 }

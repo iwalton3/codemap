@@ -80,7 +80,12 @@ export async function indexCommit(
   const ignore = opts.ignore ?? (committed !== undefined ? compileIgnore(committed) : await loadIgnore(root));
 
   const files = tree.filter((e) => e.type === "blob" && e.size <= MAX_BYTES && isIndexablePath(prefix + e.path, ignore));
-  const blobs = readBlobs(root, sha, files.map((f) => f.path));
+  // `readBlobs` throws when a batch fails. A partial read here would be cached as
+  // this commit's snapshot and read as a mass symbol deletion by the next diff, so
+  // it becomes the documented `null` — no snapshot at all beats a truncated one.
+  let blobs: Map<string, string>;
+  try { blobs = readBlobs(root, sha, files.map((f) => f.path)); }
+  catch { return null; }
 
   const anchors: Anchor[] = [];
   // relPath must carry the prefix: it is hashed into the anchor id, so indexing a
