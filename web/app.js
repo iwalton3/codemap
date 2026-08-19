@@ -1906,6 +1906,13 @@ class DiffPage extends Component {
 }
 defineComponent('diff-page', DiffPage);
 
+// Unified diff rendering. Highlighted per line rather than as a block: the +/-
+// prefixes are not part of the language, so a whole-block highlight would lex
+// them as syntax.
+const diffLinesEl = (lines, lang) => html`<div class="rvpre hljs prdiff">
+  ${each(lines || [], (l, i) => html`<div class="dline ${l.tag === '+' ? 'add' : l.tag === '-' ? 'del' : ''}"><span class="dsign">${l.tag}</span><span class="fltext">${raw(highlight(l.text, lang))}</span></div>`, (l, i) => i)}
+</div>`;
+
 // --- PR walkthrough ----------------------------------------------------------
 // "Tell me the story of this change." Chapters come from the spec markdown the PR
 // itself ships (server: pr-story.ts), each bound to the symbols that implement it
@@ -1917,7 +1924,7 @@ const LAYER_NAME = ['command', 'handler', 'event', 'aggregate', 'read-model', 'j
 
 class PrStoryPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { story: null, open: {}, code: {}, pending: {}, finding: null, prRef: null, showBase: {} }; }
+  constructor(props) { super(props); this.state = { story: null, open: {}, code: {}, pending: {}, finding: null, prRef: null, showBase: {}, promote: null, promoted: {}, showCovered: false }; }
   load = this.createTask(async () => {
     const u = this.props.params.universe; nav.current = u;
     const story = await api('/api/pr/story', { u, pr: this.props.params.pr });
@@ -1949,6 +1956,57 @@ class PrStoryPage extends Component {
     if (this.state.code[id]) { const c = await api('/api/pr/code', { u: this.props.params.universe, pr: this.props.params.pr, id }); this.state.code = { ...this.state.code, [id]: c }; }
   }
 
+  // Promotion is deliberately two-step: the plan says what would be written and
+  // why that shape, and nothing lands until it is confirmed. An auto-promoted map
+  // is worse than one with no chapters in it.
+  async openPromote(ch) {
+    if (this.state.promote && this.state.promote.chapter === ch.id) { this.state.promote = null; return; }
+    this.state.promote = { chapter: ch.id, loading: true };
+    const r = await api('/api/pr/promote_plan', { u: this.props.params.universe, pr: this.props.params.pr, chapter: ch.id });
+    if (r.error) { this.state.promote = { chapter: ch.id, error: r.error }; return; }
+    this.state.promote = { chapter: ch.id, plan: r.promotion, title: r.promotion.title, summary: r.promotion.summarySource === 'title' ? '' : r.promotion.summary };
+  }
+  async confirmPromote(ch) {
+    const p = this.state.promote;
+    if (!p || !p.plan) return;
+    this.state.promote = { ...p, saving: true };
+    const res = await fetch('/api/pr/promote', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ u: this.props.params.universe, pr: this.props.params.pr, chapter: ch.id, title: p.title, summary: p.summary || p.plan.summary, type: p.plan.type }),
+    }).then(x => x.json());
+    if (res.error) { this.state.promote = { ...p, saving: false, error: res.error }; return; }
+    this.state.promoted = { ...this.state.promoted, [ch.id]: res.promoted };
+    this.state.promote = null;
+  }
+  promoteFormEl(u, ch) {
+    const p = this.state.promote;
+    if (!p || p.chapter !== ch.id) return html``;
+    if (p.error) return html`<div class="prpromo err">${p.error}</div>`;
+    if (!p.plan) return html`<div class="prpromo dim">planning…</div>`;
+    return html`<div class="prpromo">
+      <div class="dim">${p.plan.rationale}</div>
+      <label>title<input value="${p.title}" on-input="${(e) => { this.state.promote = { ...this.state.promote, title: e.target.value }; }}"></label>
+      <label>summary${when(p.plan.summarySource === 'title', () => html`<span class="dim"> — the spec has no sentence describing the system; write one</span>`)}
+        <input placeholder="${p.plan.summary}" value="${p.summary}" on-input="${(e) => { this.state.promote = { ...this.state.promote, summary: e.target.value }; }}"></label>
+      ${when(p.plan.steps, () => html`<div class="dim">flow steps: ${p.plan.steps.map(s => `${s.title} (${s.anchors.length})`).join(' → ')}</div>`)}
+      <div class="prpromoacts">
+        <button class="on" on-click="${() => this.confirmPromote(ch)}">${p.saving ? 'promoting…' : `promote as ${p.plan.type}`}</button>
+        <button class="ghost" on-click="${() => { this.state.promote = null; }}">cancel</button>
+        <span class="dim">cites ${p.plan.anchors.length} symbol(s) at this PR's head</span>
+      </div>
+    </div>`;
+  }
+
+  // A changed symbol opens on its diff — the delta is the review, and the rest of
+  // the body is context the reviewer did not ask for. Added and removed symbols
+  // have no meaningful "before", so those open on the source itself.
+  showsDiff(step) {
+    const code = this.state.code[step.anchorId];
+    if (!code || !code.base || !code.head) return false;
+    const override = this.state.showBase[step.anchorId];
+    return override === undefined ? step.change === 'changed' : !!override;
+  }
+
   stepEl(u, step) {
     const code = this.state.code[step.anchorId];
     const finds = openFindingCount(step.annotations);
@@ -1967,12 +2025,14 @@ class PrStoryPage extends Component {
       ${when(code && !code.error, () => html`<div class="prsbody">
         <div class="prstools">
           <span class="dim">${code.file}</span>
-          ${when(code.base, () => html`<button class="ghost" on-click="${() => { this.state.showBase = { ...this.state.showBase, [step.anchorId]: !showBase }; }}">${showBase ? 'show head' : 'show before'}</button>`)}
+          ${when(code.base && code.head, () => html`<button class="ghost" on-click="${() => { this.state.showBase = { ...this.state.showBase, [step.anchorId]: !this.state.showBase[step.anchorId] }; }}">${this.showsDiff(step) ? 'show full source' : 'show diff'}</button>`)}
+          ${when(code.lineEndingsChanged, () => html`<span class="crlf" title="one side uses CRLF and the other LF. The diff below is normalised so a line-ending flip does not read as a full rewrite — but the change is real and will show in the file diff on GitHub.">⚠ line endings changed</span>`)}
           <span class="viewlink" title="open the full anchor page" on-click="${() => go(anchorUrl(u, step.anchorId))}">↗</span>
         </div>
-        ${when(showBase && code.base,
-          () => html`<pre class="rvpre hljs prbase">${raw(highlight(code.base, code.lang))}</pre>`,
+        ${when(this.showsDiff(step),
+          () => diffLinesEl(code.lines, code.lang),
           () => codeReviewLines(this, u, step.anchorId, code.head, code.lang, code.startLine, code.annotations))}
+        ${when(this.showsDiff(step), () => html`<div class="dim prdiffhint">showing what changed — switch to full source to pin a finding to a line</div>`)}
       </div>`)}
       ${when(code && code.error, () => html`<div class="prsbody dim">${code.error}</div>`)}
     </div>`;
@@ -1986,15 +2046,47 @@ class PrStoryPage extends Component {
         <span class="prtwisty">${open ? '▾' : '▸'}</span>
         <b class="prctitle">${ch.title}</b>
         ${when(ch.source === 'spec', () => html`<span class="prbadge spec" title="derived from ${ch.specPath}">spec</span>`)}
-        ${when(ch.durable, () => html`<span class="prbadge durable" title="this section describes the system, not just this change — a candidate to promote into the map">promotable</span>`)}
+        ${when(ch.durable && !this.state.promoted[ch.id], () => html`<button class="prbadge durable" title="this section describes the system, not just this change — promote it into the map" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.openPromote(ch); }}">promote →</button>`)}
+        ${when(this.state.promoted[ch.id], () => html`<span class="prbadge promoted" title="now a node in the map" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); go(nodeUrl(u, this.state.promoted[ch.id])); }}">✓ in the map ↗</span>`)}
         ${when(ch.source !== 'spec', () => html`<span class="prbadge orphan" title="no spec section in this PR names these symbols">unspecified</span>`)}
         <span class="dim prcount">${done}/${ch.steps.length} signed</span>
       </div>
+      ${this.promoteFormEl(u, ch)}
       ${when(open, () => html`<div class="prcbody">
         ${when(ch.source === 'spec' && ch.prose, () => html`<md-content text="${ch.prose}"></md-content>`)}
         ${when(ch.source !== 'spec', () => html`<div class="dim prorphan">${ch.prose}</div>`)}
         ${each(ch.steps, s => this.stepEl(u, s), s => s.anchorId)}
       </div>`)}
+    </section>`;
+  }
+
+  // Grouped by why, because undifferentiated this list is unreadable: on a
+  // back-end PR most entries are the front-end half of the same spec cluster, and
+  // most of the rest are sections a sibling section already documented.
+  specGapEl(st) {
+    const gaps = st.specWithoutCode || [];
+    if (!gaps.length) return html``;
+    const by = (r) => gaps.filter(g => g.reason === r);
+    const REASON = {
+      absent: ['not in this repo', 'Nothing by these names exists in this universe — implemented in a sibling repo, or genuinely not built.'],
+      unchanged: ['already here, untouched', 'These symbols exist in this universe; this PR did not change them.'],
+      covered: ['documented by another section', 'Their symbols ARE in this PR — a sibling section claimed them first, since a symbol appears in one chapter only.'],
+    };
+    const group = (r) => {
+      const list = by(r);
+      if (!list.length) return html``;
+      const openIt = r !== 'covered' || this.state.showCovered;
+      return html`<div class="prgap g-${r}">
+        <div class="prgaph" on-click="${() => { if (r === 'covered') this.state.showCovered = !this.state.showCovered; }}">
+          <b>${list.length}</b> ${REASON[r][0]}${when(r === 'covered', () => html`<span class="dim"> ${this.state.showCovered ? '▾' : '▸'}</span>`)}
+        </div>
+        ${when(openIt, () => html`<div class="dim prorphan">${REASON[r][1]}</div>
+          ${each(list, x => html`<div class="prswc"><code>${x.heading}</code><span class="dim"> — ${x.specPath.split('/').pop()}${x.names && x.names.length ? ' · ' + x.names.slice(0, 3).join(', ') : ''}</span></div>`, x => x.specPath + x.heading)}`)}
+      </div>`;
+    };
+    return html`<section class="prchapter">
+      <div class="prchead"><b class="prctitle">Spec sections with no code in this PR</b><span class="dim prcount">${gaps.length}</span></div>
+      <div class="prcbody">${group('absent')}${group('unchanged')}${group('covered')}</div>
     </section>`;
   }
 
@@ -2013,7 +2105,7 @@ class PrStoryPage extends Component {
           <span><b>${st.totals.chapters}</b> chapters</span>
           <span title="lines in the review queue vs total changed"><b>${st.totals.queueLines}</b>/${st.totals.changedLines} lines to review</span>
           ${when(st.undocumented, () => html`<span class="warn" title="changed symbols no spec section accounts for">${st.undocumented} unspecified</span>`)}
-          ${when(st.specWithoutCode.length, () => html`<span class="warn" title="spec sections that name code this PR does not contain">${st.specWithoutCode.length} spec-without-code</span>`)}
+          ${when(st.specWithoutCode.filter(g => g.reason === 'absent').length, () => html`<span class="warn" title="spec sections naming code that is nowhere in this universe — a sibling repo's half of the spec, or unbuilt">${st.specWithoutCode.filter(g => g.reason === 'absent').length} spec not in this repo</span>`)}
           ${when(st.refs.baseAheadOfMergeBase, () => html`<span class="dim" title="the PR is diffed against its merge-base, not the tip of ${st.pr.baseRef} — otherwise those commits would read as part of this change">${st.pr.baseRef} moved ${st.refs.baseAheadOfMergeBase} commits since branch</span>`)}
         </div>
         <div class="prlanes">${each(st.lanes, l => html`<span class="prlane l-${l.review}" title="${l.why}"><b>${l.lane}</b> ${l.lines} lines · ${l.files} files · ${l.review}</span>`, l => l.lane)}</div>
@@ -2025,13 +2117,7 @@ class PrStoryPage extends Component {
         Tests and generated files are still read by the first-pass agent, which can promote one into your queue if it matters.</div>
       </div></section>`)}
       ${each(st.chapters, c => this.chapterEl(u, c), c => c.id)}
-      ${when(st.specWithoutCode.length, () => html`<section class="prchapter">
-        <div class="prchead"><b class="prctitle">Spec sections with no code behind them</b></div>
-        <div class="prcbody">
-          <div class="dim prorphan">These sections name symbols the PR does not contain — either shipped incomplete, or described but deferred.</div>
-          ${each(st.specWithoutCode, x => html`<div class="prswc"><code>${x.heading}</code><span class="dim"> — ${x.specPath.split('/').pop()}</span></div>`, x => x.specPath + x.heading)}
-        </div>
-      </section>`)}
+      ${this.specGapEl(st)}
     `);
   }
 }

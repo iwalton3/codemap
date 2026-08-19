@@ -178,7 +178,7 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
 export type DiffLine = { tag: " " | "+" | "-"; text: string };
 
 /** LCS line diff — cheap and exact for function-body-sized code. */
-function lineDiff(a: string, b: string): DiffLine[] {
+export function lineDiff(a: string, b: string): DiffLine[] {
   const A = a.split("\n"), B = b.split("\n");
   const n = A.length, m = B.length;
   const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
@@ -234,7 +234,7 @@ async function codeAtHead(root: string, headRef: string | undefined, id: string,
 }
 
 /** Strip CR so CRLF-vs-LF differences don't turn a real diff into full replacement. */
-const stripCR = (s: string | null): string | null => (s == null ? null : s.replace(/\r/g, ""));
+export const stripCR = (s: string | null): string | null => (s == null ? null : s.replace(/\r/g, ""));
 
 export interface AnchorCodeDiff {
   id: string;
