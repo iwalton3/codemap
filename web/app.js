@@ -301,7 +301,33 @@ async function raiseFinding(c, u, anchorId, line) {
   await c.load.run(); if (c.refreshFile && c.state.file) await c.refreshFile();
 }
 async function toggleFinding(c, u, id, resolved) { await postResolveAnnotation(u, id, resolved); await c.load.run(); if (c.refreshFile && c.state.file) await c.refreshFile(); }
-const findingItemEl = (c, u, f) => { const k = f.kind || 'note'; return html`<div class="rvfind k-${k} ${f.resolved ? 'resolved' : ''}"><span class="rvfpin" title="${k}${f.line ? ' · line ' + f.line : ''}">${ANNO_ICON[k] || '✎'}${f.line ? ' ' + f.line : ''}</span>${when(f.severity, () => html`<span class="rvfsev" style="background:${SEV_COLOR[f.severity] || '#3a4250'}" title="severity: ${f.severity}"></span>`)}${when(f.category, () => html`<span class="rvfcat">${f.category}</span>`)}<span class="rvftext">${f.text}</span><span class="dim rvfauthor">${f.author || 'agent'}</span><button class="annores" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); toggleFinding(c, u, f.id, !f.resolved); }}">${f.resolved ? 'reopen' : 'resolve'}</button></div>`; };
+const postAssign = (u, id, kind) =>
+  fetch('/api/annotation_assign', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id, kind, by: 'me' }) });
+async function assignFinding(c, u, id, kind) { await postAssign(u, id, kind); await c.load.run(); if (c.refreshFile && c.state.file) await c.refreshFile(); }
+
+// A finding, plus the two halves of the agent loop: hand it over, and read what
+// came back. The agent reports; resolving stays the human's act, so an agent can
+// never mark its own work accepted.
+const OUTCOME_ICON = { fixed: '✔', answered: '💬', declined: '⊘' };
+const findingItemEl = (c, u, f) => {
+  const k = f.kind || 'note';
+  const a = f.assignment, o = f.outcome;
+  return html`<div class="rvfind k-${k} ${f.resolved ? 'resolved' : ''}">
+    <span class="rvfpin" title="${k}${f.line ? ' · line ' + f.line : ''}">${ANNO_ICON[k] || '✎'}${f.line ? ' ' + f.line : ''}</span>
+    ${when(f.severity, () => html`<span class="rvfsev" style="background:${SEV_COLOR[f.severity] || '#3a4250'}" title="severity: ${f.severity}"></span>`)}
+    ${when(f.category, () => html`<span class="rvfcat">${f.category}</span>`)}
+    <span class="rvftext">${f.text}</span>
+    <span class="dim rvfauthor">${f.author || 'agent'}</span>
+    ${when(a && !o, () => html`<span class="asgn pending" title="handed to an agent ${a.at ? 'on ' + a.at.slice(0, 10) : ''} — waiting">→ agent: ${a.kind}…</span>`)}
+    ${when(o, () => html`<span class="asgn done r-${o.result}" title="${o.detail}${o.files && o.files.length ? '\n\nfiles: ' + o.files.join(', ') : ''}">${OUTCOME_ICON[o.result] || '·'} ${o.result}</span>`)}
+    ${when(!f.resolved && !a, () => html`<span class="asgnacts">
+      <button title="ask an agent to work out whether this is real and report back" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); assignFinding(c, u, f.id, 'investigate'); }}">→ look into</button>
+      <button title="ask an agent to fix it. One file only — anything wider comes back declined with what it would take, to be handed to a real agent instead." on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); assignFinding(c, u, f.id, 'fix'); }}">→ fix</button>
+    </span>`)}
+    <button class="annores" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); toggleFinding(c, u, f.id, !f.resolved); }}">${f.resolved ? 'reopen' : 'resolve'}</button>
+    ${when(o, () => html`<div class="asgndetail">${o.detail}${when(o.files && o.files.length, () => html` <span class="dim">— ${o.files.join(', ')}</span>`)}</div>`)}
+  </div>`;
+};
 const findingForm = (c, u, anchorId, line) => {
   if (!c._fdrafts) c._fdrafts = {};
   const key = findingKey(anchorId, line);
@@ -1966,7 +1992,22 @@ class PrStoryPage extends Component {
       const first = story.chapters.find(c => c.steps.some(s => !s.reviewed));
       if (first) this.state.open = { [first.id]: true };
     }
+    // Expanded code panes carry their own copy of a step's annotations, so a
+    // reload that only refreshed the story left a finding you just raised — or
+    // just handed to an agent — invisible until the pane was collapsed and
+    // reopened. Refresh whatever is open alongside it.
+    await this.refreshOpenCode();
   });
+
+  async refreshOpenCode() {
+    const open = Object.entries(this.state.code).filter(([, v]) => v && !v.error).map(([id]) => id);
+    if (!open.length) return;
+    const fresh = { ...this.state.code };
+    for (const id of open) {
+      try { fresh[id] = await api('/api/pr/code', { u: this.props.params.universe, pr: this.props.params.pr, id }); } catch { /* keep the stale pane rather than blanking it */ }
+    }
+    this.state.code = fresh;
+  }
   mounted() { this.load.run(); }
   propsChanged(name) { if (name === 'params') { this.state.open = {}; this.state.code = {}; this.load.run(); } }
 

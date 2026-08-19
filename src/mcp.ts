@@ -469,6 +469,26 @@ const tools: Tool[] = [
     handler: (a, c) => ops.annotate(c.universe.path, a),
   },
   {
+    name: "review_queue",
+    description: "What the human has asked you to act on: findings they raised during review and handed to an agent, newest-severity-first, each with the symbol it sits on and that symbol's CURRENT source — so you can act without hunting for it.\n\n`assignment.kind` says what was asked:\n  • \"investigate\" — work out whether it is real and report back what you found.\n  • \"fix\" — make the change. ONE file only. A fix that needs to span files is work for an agent the human dispatches, not a review-tool edit: report `declined` with what it would take, which is a useful answer, not a failure.\n\nReport back with `close_finding`. You do NOT resolve the finding — the human does, after reading what you did.",
+    inputSchema: obj({
+      includeAnswered: { type: "boolean", description: "Also return items you have already reported on (default false — those are waiting on the human, not on you)." },
+    }, []),
+    handler: (a, c) => ops.reviewQueue(c.universe.path, { includeAnswered: Boolean(a.includeAnswered) }),
+  },
+  {
+    name: "close_finding",
+    description: "Report back on a finding from `review_queue`. This records what you did; it does NOT resolve the finding — reporting and agreeing it is closed are different acts, and the human closes it after reading.\n\n`result`:\n  • \"fixed\" — you changed the code. List every file you touched in `files`; more than one is refused, by design.\n  • \"answered\" — you investigated. Put the finding in `detail`: whether it is real, why, and what you checked.\n  • \"declined\" — you did not act. Say what it would take. Declining a fix that spans files, or that needs a judgement call you cannot make, is the RIGHT answer.",
+    inputSchema: obj({
+      id: { type: "string", description: "The annotation id from `review_queue`." },
+      result: { type: "string", enum: ["fixed", "answered", "declined"] },
+      detail: { type: "string", description: "What you did or found — the human reads this, so be concrete." },
+      files: { type: "array", items: { type: "string" }, description: "Files you actually changed (for `fixed`). One file maximum." },
+      by: { type: "string" },
+    }, ["id", "result", "detail"]),
+    handler: (a, c) => ops.closeAssignment(c.universe.path, a as never),
+  },
+  {
     name: "questions",
     description: "List open questions a human left during review — the 'answer these to improve the docs' queue. Address each (edit the cited doc), then resolve_question.",
     inputSchema: obj({ includeResolved: { type: "boolean" } }),

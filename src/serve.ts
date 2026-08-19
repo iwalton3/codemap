@@ -97,6 +97,8 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return ops.listBugs(root, { status: (q.get("status") as any) ?? undefined });
     case "/api/bug":
       return ops.bugDetail(root, q.get("id") ?? "");
+    case "/api/queue":
+      return ops.reviewQueue(root, { includeAnswered: q.get("answered") === "1" });
     case "/api/questions":
       return ops.listQuestions(root, { includeResolved: q.get("all") === "1" });
     case "/api/stale":
@@ -187,6 +189,23 @@ const server = createServer(async (req, res) => {
           : body.clear
             ? ops.clearTriage(root, { targetKind: body.targetKind, targetId: body.targetId })
             : ops.setTriage(root, { targetKind: body.targetKind, targetId: body.targetId, importance: body.importance, complexity: body.complexity, source: "human", reason: body.reason, tripwire: body.tripwire }),
+      );
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(out));
+      return;
+    }
+
+    // The reviewer's half of the agent loop: hand a finding over, and read back
+    // what the agent reported. Closing it stays a human act.
+    if (req.method === "POST" && (url.pathname === "/api/annotation_assign" || url.pathname === "/api/annotation_close")) {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      const root = rootFor(body.u ?? null);
+      const out = await withLock<unknown>(root, () =>
+        url.pathname === "/api/annotation_assign"
+          ? ops.assignAnnotation(root, { id: body.id, kind: body.kind, by: body.by, note: body.note })
+          : ops.closeAssignment(root, { id: body.id, result: body.result, detail: body.detail, files: body.files, by: body.by }),
       );
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(out));

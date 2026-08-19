@@ -332,6 +332,29 @@ export interface Annotation {
   /** Who wrote it — an agent label or a person. */
   author: string;
   createdCommit: string | null;
+  /**
+   * Handed to an agent to act on. The reviewer's half of the loop: raising a
+   * finding records it, assigning it asks for something to be done.
+   *
+   * `investigate` — go find out whether this is real and report back.
+   * `fix` — make the change. Deliberately scoped to ONE file: a fix that spans
+   *   files is a piece of work to hand a proper agent, not something to slip into
+   *   someone's branch from a review tool. An agent that finds it needs more must
+   *   decline and say why, which is a useful answer rather than a failure.
+   */
+  assignment?: { to: "agent"; kind: "investigate" | "fix"; at: string; by: string; note?: string };
+  /**
+   * What the agent did. Kept separate from `resolved` because closing the loop and
+   * agreeing it is closed are different acts: the agent reports, the human resolves.
+   */
+  outcome?: {
+    at: string;
+    by: string;
+    result: "fixed" | "answered" | "declined";
+    detail: string;
+    /** Files actually touched — the receipt for the single-file rule. */
+    files?: string[];
+  };
 }
 
 export interface AnnotationStore {

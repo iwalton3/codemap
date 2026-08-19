@@ -2096,6 +2096,107 @@ export async function resolveAnnotation(root: string, id: string, resolved = tru
 }
 
 /**
+ * Hand a finding to an agent. The reviewer's half of the loop: raising a finding
+ * records it, assigning it asks for something to be done about it.
+ */
+export async function assignAnnotation(
+  root: string,
+  input: { id: string; kind: "investigate" | "fix"; by?: string; note?: string },
+) {
+  const store = await readAnnotations(root);
+  const ann = store.annotations.find((a) => a.id === input.id);
+  if (!ann) return { error: `no annotation "${input.id}"` };
+  if (ann.resolved) return { error: "that annotation is already resolved — reopen it before assigning" };
+  ann.assignment = { to: "agent", kind: input.kind, at: new Date().toISOString(), by: input.by || "me", note: input.note };
+  ann.outcome = undefined; // a re-assignment asks again; the previous answer no longer stands
+  await writeAnnotations(root, store.annotations);
+  return { ok: true, id: ann.id, assigned: input.kind };
+}
+
+export interface QueueItem {
+  id: string;
+  kind: Annotation["kind"];
+  severity?: BugSeverity;
+  category?: string;
+  text: string;
+  line?: number;
+  author: string;
+  assignment: NonNullable<Annotation["assignment"]>;
+  target: Annotation["target"];
+  /** Where to look: the anchor's file and symbol, plus its current source. */
+  file?: string;
+  symbol?: string;
+  startLine?: number;
+  code?: string;
+}
+
+/**
+ * What an agent has been asked to act on, with enough context to act without
+ * hunting: the finding, the symbol it sits on, and that symbol's current source.
+ *
+ * Only unresolved, unanswered assignments — an item that already has an `outcome`
+ * is waiting on the human, not on the agent, and returning it would have agents
+ * redo work someone has not read yet.
+ */
+export async function reviewQueue(root: string, opts: { includeAnswered?: boolean } = {}) {
+  const store = await readAnnotations(root);
+  const pending = store.annotations.filter(
+    (a) => a.assignment && !a.resolved && (opts.includeAnswered || !a.outcome),
+  );
+  if (!pending.length) return { queue: [] as QueueItem[] };
+
+  const anchorIds = [...new Set(pending.filter((a) => a.target.kind === "anchor").map((a) => a.target.id))];
+  const anchors = new Map((await readAnchorStore(root)).anchors.filter((a) => anchorIds.includes(a.id)).map((a) => [a.id, a]));
+
+  const queue: QueueItem[] = [];
+  for (const a of pending) {
+    const anc = a.target.kind === "anchor" ? anchors.get(a.target.id) : undefined;
+    let code: string | undefined;
+    if (anc?.loc) {
+      try {
+        const src = await readFile(join(root, anc.file), "utf8");
+        code = src.slice(anc.loc.startByte, anc.loc.endByte);
+      } catch { /* file gone — the finding still stands, the agent will see it missing */ }
+    }
+    queue.push({
+      id: a.id, kind: a.kind, severity: a.severity, category: a.category, text: a.text,
+      line: a.line, author: a.author, assignment: a.assignment!, target: a.target,
+      file: anc?.file, symbol: anc?.symbolPath.join(" › "), startLine: anc?.loc?.startLine, code,
+    });
+  }
+  const rank = { critical: 0, high: 1, medium: 2, low: 3 } as Record<string, number>;
+  queue.sort((x, y) => (rank[x.severity ?? "low"] ?? 3) - (rank[y.severity ?? "low"] ?? 3));
+  return { queue };
+}
+
+/**
+ * An agent reporting back. It does NOT resolve the finding — reporting and
+ * agreeing it is closed are different acts, and an agent marking its own work
+ * done is the accountability hole the whole attestation model avoids.
+ *
+ * A `fix` touching more than one file is refused. That boundary was drawn
+ * deliberately: a multi-file change is work to hand a proper agent, not something
+ * a review tool slips into someone's branch. Declining with a reason is a useful
+ * answer, so it is recorded as one.
+ */
+export async function closeAssignment(
+  root: string,
+  input: { id: string; result: "fixed" | "answered" | "declined"; detail: string; files?: string[]; by?: string },
+) {
+  const store = await readAnnotations(root);
+  const ann = store.annotations.find((a) => a.id === input.id);
+  if (!ann) return { error: `no annotation "${input.id}"` };
+  if (!ann.assignment) return { error: "that annotation was not assigned to an agent" };
+  const files = input.files ?? [];
+  if (input.result === "fixed" && files.length > 1) {
+    return { error: `a fix may touch one file; this touched ${files.length} (${files.join(", ")}). Report \`declined\` with what the change needs — a multi-file change belongs to an agent the human dispatches, not to a review-tool edit.` };
+  }
+  ann.outcome = { at: new Date().toISOString(), by: input.by || "agent", result: input.result, detail: input.detail, files: files.length ? files : undefined };
+  await writeAnnotations(root, store.annotations);
+  return { ok: true, id: ann.id, result: input.result, awaitingHuman: true };
+}
+
+/**
  * Open questions a human left for the agent during review — the "answer these to
  * improve the docs" queue. Each is resolved to its target's title/symbol + a link.
  */
