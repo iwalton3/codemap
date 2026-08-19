@@ -29,13 +29,13 @@ import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "./diff.js";
 import { prTriage, listOpenPrs, prPacket, prStory, prAnchorCode, prPromotionPlan, derivePrTriage } from "./pr.js";
 import { parseAgentLines, ingestAgentReview } from "./pr-ingest.js";
-import { planPrPush, executePrPush } from "./pr-push.js";
+import { planPrPush, executePrPush, pullViewedFromGitHub } from "./pr-push.js";
 import { resolveCoverage, selectAnchors, docPct as computeDocPct, citedPct as computeCitedPct, type CoverageResult } from "./coverage.js";
 import { resolveAnchorRefs } from "./refs.js";
 import { refreshAnalyzers } from "./analyzers/run.js";
 import { applyIndexUpdate } from "./sync.js";
 import { grammarForPath } from "./grammars.js";
-import { reviewStatus, reviewStatesFor, anchorReviewMap, changedSince as reviewsChangedSince, deriveCodeReview, revertedMarks, type Attestation, type ReviewPair, type DerivedCodeReview } from "./reviews.js";
+import { reviewStatus, reviewStatesFor, anchorReviewMap, changedSince as reviewsChangedSince, deriveCodeReview, revertedMarks, markReviewedBatch, type Attestation, type ReviewPair, type DerivedCodeReview } from "./reviews.js";
 import { setTriage as triageSet, clearTriage as triageClear, triageStatus, reviewTriageFor, deriveTriage as triageDerive, coverageFor as triageCoverageFor, rollupCoverage, tripwires as triageTripwires, triageDrift } from "./triage.js";
 
 const HL_LANG: Record<string, string> = { c_sharp: "csharp", python: "python", javascript: "javascript", typescript: "typescript", tsx: "typescript" };
@@ -544,6 +544,15 @@ export async function prPromote(root: string, input: string, chapterId: string, 
     ref: plan.ref,
   });
   return { ...r, promoted: over.id ?? p.id, shape: type, rationale: p.rationale };
+}
+
+/**
+ * Import GitHub's per-file viewed ticks as codemap `viewed` marks — never
+ * `signed`. Useful as a baseline on older pull requests, where the ticks are the
+ * only surviving record that anyone looked.
+ */
+export async function prPullViewed(root: string, input: string, opts: { dryRun?: boolean; reviewer?: string } = {}) {
+  return pullViewedFromGitHub(root, input, { triage: prTriage, markBatch: markReviewedBatch }, opts);
 }
 
 /** What a push to GitHub would contain — inspect before anything leaves the machine. */

@@ -114,7 +114,7 @@ async function cmdPrIngest(root: string, prInput: string, files: string[], dryRu
 }
 
 function usage(): never {
-  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n  codemap pr-triage <pr> [--repo path]        derive stakes+complexity for the PR's symbols\n  codemap analyze marten [repo] [--verbose] [--emit]");
+  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n  codemap pr-triage <pr> [--repo path]        derive stakes+complexity for the PR's symbols\n  codemap pr-pull-viewed <pr> [--repo path] [--dry-run]   import GitHub's viewed ticks as `viewed`\n  codemap analyze marten [repo] [--verbose] [--emit]");
   process.exit(2);
 }
 
@@ -239,6 +239,14 @@ if (positionals[0] === "analyze") {
     });
     if ("error" in r) { console.error(r.error); process.exit(1); }
     console.log(JSON.stringify(r, null, 1));
+  } else if (positionals[0] === "pr-pull-viewed") {
+    const r = await ops.prPullViewed(resolve(values.repo ?? "."), positionals[1] ?? "", { dryRun: Boolean(values["dry-run"]) });
+    if ("error" in r) { console.error(r.error); process.exit(1); }
+    console.log(`${values["dry-run"] ? "[dry run] " : ""}${r.files.viewedOnGitHub} of ${r.files.total} file(s) ticked viewed on GitHub`);
+    console.log(`  ${r.anchors.marked} symbol(s) marked viewed here` +
+      (r.anchors.alreadyViewed ? `, ${r.anchors.alreadyViewed} already viewed` : "") +
+      (r.anchors.alreadySigned ? `, ${r.anchors.alreadySigned} already signed (a vouch outranks a tick)` : ""));
+    if (r.skippedFiles.length) console.log(`  ${r.skippedFiles.length} ticked file(s) carry no reviewable symbol here (tests/generated/data)`);
   } else if (positionals[0] === "pr-triage") {
     const r = await ops.prTriageDerive(resolve(values.repo ?? "."), positionals[1] ?? "");
     if ("error" in r) { console.error(r.error); process.exit(1); }

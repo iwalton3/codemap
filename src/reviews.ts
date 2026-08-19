@@ -483,3 +483,64 @@ export async function revertedMarks(root: string, opts: { ref?: string } = {}): 
   }
   return out;
 }
+
+/**
+ * Mark many ANCHOR targets at once, sharing one read/write of the review store.
+ *
+ * `markReviewed` re-reads and rewrites the whole store per call — fine for a
+ * button, quadratic when importing a 500-file pull request's viewed state. The
+ * acceptance bookkeeping is identical; only the I/O is hoisted.
+ */
+export async function markReviewedBatch(
+  root: string,
+  anchorIds: string[],
+  input: { level: ReviewLevel; reviewer?: string; actor?: "human" | "agent"; attestation?: Attestation; ref?: string },
+): Promise<{ marked: number }> {
+  if (!anchorIds.length) return { marked: 0 };
+  const live = await liveHashes(root, anchorIds, input.ref);
+  const actor = input.actor ?? "agent";
+  const attestation: Attestation | undefined = input.attestation ?? (actor === "human" ? "signed" : undefined);
+  const viewed = attestation === "viewed";
+
+  const rs = await readReviews(root);
+  const commit = input.ref ?? headCommit(root);
+  const branch = isGitRepo(root) ? gitBranch(root) : null;
+  const stamp = new Date().toISOString();
+  const headSha = headCommit(root);
+
+  const wanted = new Set(anchorIds);
+  const priorFor = new Map<string, Review>();
+  for (const r of rs.reviews) {
+    if (r.target.kind === "anchor" && wanted.has(r.target.id) && r.level === input.level && isViewedRow(r) === viewed) {
+      priorFor.set(r.target.id, r);
+    }
+  }
+
+  const fresh: Review[] = anchorIds.map((id) => {
+    const prior = priorFor.get(id);
+    const entries = prior ? (acceptedOf(prior).find((c) => c.anchorId === id)?.entries ?? []) : [];
+    const hash = live.get(id);
+    return {
+      id: "rev_" + randomBytes(6).toString("hex"),
+      target: { kind: "anchor" as const, id },
+      level: input.level,
+      reviewer: input.reviewer || "me",
+      actor,
+      attestation,
+      at: stamp,
+      reviewedCommit: headSha,
+      witnesses: [{ anchorId: id, bodyHash: hash ?? "sha256:absent" }],
+      accepted: [{
+        anchorId: id,
+        entries: hash ? recordAcceptance(entries, { bodyHash: hash, commit, branch, at: stamp }, ACCEPTED_CAP) : entries,
+      }],
+    };
+  });
+
+  const replaced = new Set(fresh.map((r) => r.target.id));
+  rs.reviews = rs.reviews.filter(
+    (r) => !(r.target.kind === "anchor" && replaced.has(r.target.id) && r.level === input.level && isViewedRow(r) === viewed),
+  ).concat(fresh);
+  await writeReviews(root, rs.reviews);
+  return { marked: fresh.length };
+}

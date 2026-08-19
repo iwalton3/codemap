@@ -1955,7 +1955,7 @@ const LAYER_NAME = ['command', 'handler', 'event', 'aggregate', 'read-model', 'j
 
 class PrStoryPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { story: null, open: {}, code: {}, pending: {}, finding: null, prRef: null, showBase: {}, promote: null, promoted: {}, showCovered: false, deriving: false, derived: null }; }
+  constructor(props) { super(props); this.state = { story: null, open: {}, code: {}, pending: {}, finding: null, prRef: null, showBase: {}, promote: null, promoted: {}, showCovered: false, deriving: false, derived: null, pulling: false, pulled: null }; }
   load = this.createTask(async () => {
     const u = this.props.params.universe; nav.current = u;
     const story = await api('/api/pr/story', { u, pr: this.props.params.pr });
@@ -2001,6 +2001,20 @@ class PrStoryPage extends Component {
     }).then(x => x.json());
     this.state.deriving = false;
     this.state.derived = r.error ? { error: r.error } : r;
+    if (!r.error) await this.load.run();
+  }
+
+  // GitHub's per-file tick is weaker than a codemap sign-off: one click on a whole
+  // file, no record of what was in it. It imports as `viewed` and never `signed` —
+  // "eyes were on it", which is exactly what the checkbox can honestly claim.
+  async pullViewed() {
+    this.state.pulling = true;
+    const r = await fetch('/api/pr/pull_viewed', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ u: this.props.params.universe, pr: this.props.params.pr }),
+    }).then(x => x.json());
+    this.state.pulling = false;
+    this.state.pulled = r.error ? { error: r.error } : r;
     if (!r.error) await this.load.run();
   }
 
@@ -2156,6 +2170,9 @@ class PrStoryPage extends Component {
         <div class="prderive">
           <button on-click="${() => this.deriveTriage()}" title="propose stakes and complexity for this PR's symbols. Symbols the branch adds are not in the live index, so the graph-wide derivation cannot see them at all.">${this.state.deriving ? 'deriving…' : 'derive stakes for this PR'}</button>
           ${when(this.state.derived && this.state.derived.error, () => html`<span class="warn">${this.state.derived.error}</span>`)}
+          <button on-click="${() => this.pullViewed()}" title="import GitHub's per-file viewed ticks. They land as viewed, never signed — a tick is one click on a whole file, not a vouch for its contents.">${this.state.pulling ? 'importing…' : 'import viewed from GitHub'}</button>
+          ${when(this.state.pulled && this.state.pulled.error, () => html`<span class="warn">${this.state.pulled.error}</span>`)}
+          ${when(this.state.pulled && !this.state.pulled.error, () => html`<span class="dim">${this.state.pulled.files.viewedOnGitHub}/${this.state.pulled.files.total} files ticked on GitHub → ${this.state.pulled.anchors.marked} symbol(s) marked <b>viewed</b>${this.state.pulled.anchors.alreadySigned ? `; ${this.state.pulled.anchors.alreadySigned} already signed and left alone` : ''}.</span>`)}
           ${when(this.state.derived && !this.state.derived.error, () => html`<span class="dim">${this.state.derived.applied} newly proposed${this.state.derived.refused ? `, ${this.state.derived.refused} already at or above this tier` : ''} — of ${this.state.derived.considered} with a signal. Every one is <b>likely</b>: confirm or lower it yourself.</span>`)}
         </div>
       </div>

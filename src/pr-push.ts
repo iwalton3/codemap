@@ -206,3 +206,100 @@ export async function executePrPush(
   });
   return result;
 }
+
+/** GitHub's per-file review state for a PR, paginated. */
+export function fetchViewedFiles(slug: string, number: number): { viewed: Set<string>; total: number } | { error: string } {
+  const [owner, repo] = slug.split("/");
+  const viewed = new Set<string>();
+  let total = 0, after: string | null = null;
+  for (let page = 0; page < 40; page++) {                    // 4000 files is far past any reviewable PR
+    const args = [
+      "api", "graphql", "-f",
+      "query=query($o:String!,$r:String!,$n:Int!,$after:String){repository(owner:$o,name:$r){pullRequest(number:$n){files(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{path viewerViewedState}}}}}",
+      "-f", `o=${owner}`, "-f", `r=${repo}`, "-F", `n=${number}`,
+    ];
+    if (after) args.push("-f", `after=${after}`);
+    const r = gh(args);
+    if (!r.ok) return { error: `gh graphql failed: ${r.err.slice(0, 300)}` };
+    try {
+      const f = JSON.parse(r.out).data.repository.pullRequest.files;
+      for (const n of f.nodes) {
+        total++;
+        // VIEWED only. DISMISSED means GitHub reset the tick because the file changed
+        // after it was ticked — importing that would claim exposure to code the
+        // reviewer never saw, which is the lie the whole attestation model avoids.
+        if (n.viewerViewedState === "VIEWED") viewed.add(n.path);
+      }
+      if (!f.pageInfo.hasNextPage) break;
+      after = f.pageInfo.endCursor;
+    } catch (e) { return { error: `could not parse gh output: ${(e as Error).message}` }; }
+  }
+  return { viewed, total };
+}
+
+export interface PullViewedResult {
+  files: { total: number; viewedOnGitHub: number; mapped: number };
+  anchors: { marked: number; alreadyViewed: number; alreadySigned: number };
+  /** Files ticked on GitHub that carry no reviewable symbol here (tests, generated, data). */
+  skippedFiles: string[];
+}
+
+/**
+ * Import GitHub's per-file "viewed" ticks as codemap `viewed` marks.
+ *
+ * Never `signed`, and that asymmetry is the point. GitHub's checkbox is a single
+ * click on a whole file with no record of what was in it; a codemap sign-off is a
+ * liability-bearing vouch witnessed against exact bodies. Treating one as the
+ * other would launder "I clicked through this in a hurry" into "I stand behind
+ * it" — which is precisely the failure the viewed/signed split exists to prevent.
+ * `viewed` says what is true: eyes were on it.
+ *
+ * GitHub's unit is the file and codemap's is the symbol, so a ticked file marks
+ * every symbol the PR changed *in* it. Marks are witnessed at the PR head, so
+ * they read fresh against the code that was actually on screen and go stale if it
+ * moves — which is the value over the checkbox itself.
+ */
+export async function pullViewedFromGitHub(
+  root: string, input: string,
+  deps: {
+    triage: (root: string, input: string, opts: { fetch?: boolean }) => Promise<any>;
+    markBatch: (root: string, ids: string[], o: { level: "code"; actor: "human"; attestation: "viewed"; reviewer?: string; ref?: string }) => Promise<{ marked: number }>;
+    /** Injected so the mapping is testable without GitHub. */
+    fetchViewed?: (slug: string, number: number) => { viewed: Set<string>; total: number } | { error: string };
+  },
+  opts: { dryRun?: boolean; reviewer?: string } = {},
+): Promise<PullViewedResult | { error: string }> {
+  const t = await deps.triage(root, input, { fetch: false });
+  if ("error" in t) return t;
+
+  const gh = (deps.fetchViewed ?? fetchViewedFiles)(`${t.pr.owner}/${t.pr.repo}`, t.pr.number);
+  if ("error" in gh) return gh;
+
+  const byFile = new Map<string, any[]>();
+  for (const w of t.worklist) {
+    if (LANE_POLICY[w.lane as keyof typeof LANE_POLICY].review !== "queue") continue;
+    (byFile.get(w.file) ?? byFile.set(w.file, []).get(w.file)!).push(w);
+  }
+
+  const toMark: string[] = [];
+  const skippedFiles: string[] = [];
+  let alreadyViewed = 0, alreadySigned = 0;
+  for (const path of gh.viewed) {
+    const items = byFile.get(path);
+    if (!items) { skippedFiles.push(path); continue; }
+    for (const w of items) {
+      if (w.reviewed) { alreadySigned++; continue; }   // a sign-off already outranks this
+      if (w.viewed) { alreadyViewed++; continue; }
+      toMark.push(w.id);
+    }
+  }
+
+  const marked = opts.dryRun ? toMark.length
+    : (await deps.markBatch(root, toMark, { level: "code", actor: "human", attestation: "viewed", reviewer: opts.reviewer, ref: t.refs.head })).marked;
+
+  return {
+    files: { total: gh.total, viewedOnGitHub: gh.viewed.size, mapped: gh.viewed.size - skippedFiles.length },
+    anchors: { marked, alreadyViewed, alreadySigned },
+    skippedFiles,
+  };
+}
