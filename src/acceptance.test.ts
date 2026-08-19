@@ -169,3 +169,21 @@ test("the same body re-approved on a different commit is kept as its own accepta
   const entries = recordAcceptance([e("H1", "c1")], e("H1", "c2"), 10);
   assert.equal(entries.length, 2, "provenance differs, so both acceptances are worth keeping");
 });
+
+test("the cap evicts a duplicate before it forgets a body entirely", () => {
+  // Dropping the oldest outright changed the VERDICT rather than just bounding
+  // storage: a body you did sign, whose only entry had gone, read as `none` — stale,
+  // with no record it was ever approved.
+  let entries: AcceptedEntry[] = [];
+  entries = recordAcceptance(entries, e("H_first", "c0"), 3);
+  // three more approvals of one other body, at different commits, would have
+  // crowded the first one out
+  for (const c of ["c1", "c2", "c3"]) entries = recordAcceptance(entries, e("H_hot", c), 3);
+
+  assert.equal(entries.length, 3);
+  assert.ok(entries.some((x) => x.bodyHash === "H_first"), "the body signed once is still known");
+  assert.equal(entries.filter((x) => x.bodyHash === "H_hot").length, 2, "a hot body loses its own duplicates first");
+
+  // and it still resolves rather than reading as never-approved
+  assert.equal(resolveAcceptance(entries, "H_first", chain("c0", "c1", "c2", "c3")).via, "reverted");
+});

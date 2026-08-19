@@ -108,10 +108,31 @@ export function resolveAcceptance(entries: AcceptedEntry[], liveHash: string | u
   return { via: "replayed", entry: newest(entries.filter((e) => e.bodyHash === liveHash), anc) };
 }
 
-/** Add a body to an accepted set, keeping it chronological, deduped and bounded. */
+/**
+ * Add a body to an accepted set, keeping it chronological, deduped and bounded.
+ *
+ * The trim is BODY-AWARE. Dropping the oldest entries outright silently changed the
+ * verdict rather than just bounding storage: a body you did sign, whose only entry
+ * had been evicted, read as `none` — the mark went stale with no record it was ever
+ * approved — and when the on-lineage copy of a body went while an off-lineage copy
+ * survived, a genuine `reverted` downgraded to the benign `replayed`. That is the
+ * loud case being lost precisely on the hottest symbols, which are the ones most
+ * likely to be reverted.
+ *
+ * So eviction prefers a DUPLICATE of a body that still has another entry: no body
+ * is forgotten while a second trace of some other body remains. The residual, since
+ * a bound is a bound: once every body is down to one entry, the oldest body does
+ * go. It now takes `cap` DISTINCT bodies to lose one rather than `cap` re-marks.
+ */
 export function recordAcceptance(entries: AcceptedEntry[], next: AcceptedEntry, cap: number): AcceptedEntry[] {
   // Re-approving the same body on the same commit is a no-op rather than a new row.
   const kept = entries.filter((e) => !(e.bodyHash === next.bodyHash && e.commit === next.commit));
   const out = [...kept, next];
-  return out.length > cap ? out.slice(out.length - cap) : out;
+  while (out.length > cap) {
+    const counts = new Map<string, number>();
+    for (const e of out) counts.set(e.bodyHash, (counts.get(e.bodyHash) ?? 0) + 1);
+    const dup = out.findIndex((e) => (counts.get(e.bodyHash) ?? 0) > 1);   // oldest-first
+    out.splice(dup >= 0 ? dup : 0, 1);
+  }
+  return out;
 }

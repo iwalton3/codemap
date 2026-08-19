@@ -79,6 +79,35 @@ describe("HTTP write routes", () => {
     assert.ok(raised.annotations.find((a: any) => a.id === theirs.id)?.escalated, "raised, and visible in the refresh");
   });
 
+  test("a finding on a symbol only the branch has still comes back with its source", async () => {
+    // Findings ingested against a pull request are written against the PR HEAD's
+    // anchors, so one on a symbol the branch ADDS has no `@work` row — and the queue
+    // handed the agent an item with no file, no symbol and no source, which is
+    // exactly the hunting this surface promises it will not have to do.
+    const { writeSnapshot } = await import("../store.js");
+    const { indexBlob } = await import("../repo.js");
+    const src = "export function onlyOnTheBranch(cents: number) {\n  return cents * 2;\n}\n";
+    const branchAnchors = await indexBlob(src, "src/branch-only.ts");
+    const id = branchAnchors[0]!.id;
+    await writeSnapshot(fixture.root, "prhead", "feature/x", branchAnchors, "2026-08-19T00:00:00Z");
+
+    const raised = await post("/api/annotate", {
+      targetKind: "anchor", targetId: id, text: "overflows", kind: "finding", author: "human", ref: "prhead",
+    });
+    assert.ok(!raised.error, raised.error);
+    await post("/api/annotation_assign", { id: raised.id, kind: "investigate", by: "me" });
+
+    const q = await (await fetch(`${server.url}/api/queue?u=${u}`)).json() as any;
+    const item = q.queue.find((x: any) => x.id === raised.id);
+    assert.ok(item, "the assigned finding is in the queue");
+    assert.equal(item.file, "src/branch-only.ts", "with the file it lives in");
+    assert.match(item.symbol, /onlyOnTheBranch/);
+    assert.equal(item.atCommit, "prhead", "and it says the body is the branch's, not HEAD's");
+    // The source itself needs that commit's objects, which a synthetic snapshot in a
+    // fixture repo does not have — what this pins is that the item is LOCATED at all,
+    // which is what was missing.
+  });
+
   test("a review write hands back the resulting mark", async () => {
     const out = await post("/api/review", { targetKind: "anchor", targetId: anchorId, level: "code", attestation: "signed" });
     assert.ok(!out.error, out.error);

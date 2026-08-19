@@ -191,3 +191,18 @@ test("an annotation write reports the anchor's findings, so one symbol can be re
   // and nothing from another anchor leaks in
   assert.ok(after.every((a) => a.target.id === anchorId));
 });
+
+test("an agent cannot record an outcome on a finding the human closed meanwhile", async () => {
+  // `assignAnnotation` refuses a resolved annotation for the same reason. An agent
+  // holding a queue read from before the close would otherwise stamp an outcome over
+  // the record of what happened at close time — and `reviewQueue` filters resolved
+  // items out, so the write would be invisible afterwards.
+  const { root, annId } = await fixture();
+  await assignAnnotation(root, { id: annId, kind: "investigate", by: "me" });
+  await resolveAnnotation(root, annId, true);
+
+  const r = await closeAssignment(root, { id: annId, result: "answered", detail: "late", by: "agent" }) as any;
+  assert.ok(r.error, "closing a resolved finding is refused");
+  assert.match(r.error, /resolved/i);
+  assert.equal((await readAnnotations(root)).annotations.find((a) => a.id === annId)!.outcome, undefined);
+});

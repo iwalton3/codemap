@@ -131,7 +131,18 @@ export function mentionedIdentifiers(text: string, known?: Set<string>): Set<str
  * can still order it, but *deriving stakes* from that default would assert
  * "important" about every unclassifiable file in the PR.
  */
-export function spineRole(file: string, symbol: string): number | null {
+/**
+ * Position on the command → handler → event → aggregate → read-model spine, or
+ * null. STAKES are derived from this one only.
+ *
+ * `spineRole` also places front-end paths, which is right for ORDERING a React PR
+ * but wrong for stakes: those positions are indices into the same table, so every
+ * `/components/` and `/routes/` file asserted "important", which pins severity at
+ * >= medium and leaves the whole ranking carrying no information. The docstring
+ * there promises a null rather than "a stake about every unclassifiable file" —
+ * this is the half that keeps that promise.
+ */
+export function backendSpineRole(file: string, symbol: string): number | null {
   const p = `${file} ${symbol}`;
   if (/\/Commands?\//i.test(file) || /Command\b/.test(symbol)) return 0;
   if (/\/Handlers?\//i.test(file) || /Handler\b/.test(symbol)) return 1;
@@ -139,7 +150,14 @@ export function spineRole(file: string, symbol: string): number | null {
   if (/ModelAndProjections|Aggregate|\/Domain\//i.test(p)) return 3;
   if (/\/Quer(y|ies)\//i.test(file) || /Projection|ReadModel/.test(symbol)) return 4;
   if (/\/ScheduledJobs?\//i.test(file)) return 5;
-  // front end: data access → hooks/components → routes
+  return null;
+}
+
+export function spineRole(file: string, symbol: string): number | null {
+  const backend = backendSpineRole(file, symbol);
+  if (backend !== null) return backend;
+  // front end: data access → hooks/components → routes. ORDERING only — see
+  // `backendSpineRole` for why these must not reach the stake table.
   if (/\/api\//.test(file)) return 0;
   if (/\/components?\//.test(file)) return 2;
   if (/\/routes?\//.test(file)) return 3;

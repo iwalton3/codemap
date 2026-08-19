@@ -250,9 +250,17 @@ if (positionals[0] === "analyze") {
     // The lock is taken here, at the entry point, and never nested: `withLock` is
     // not re-entrant, so an inner acquisition would deadlock until its timeout.
     const packetRoot = resolve(values.repo ?? ".");
+    // `Number()` unchecked let `--limit 5x` through as NaN, and `slice(0, NaN)` is
+    // empty — so the packet came back with `included: 0` and no error at all.
+    const num = (flag: string, raw: string | undefined, min: number): number | undefined => {
+      if (raw === undefined) return undefined;
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < min) { console.error(`--${flag} must be a number >= ${min} (got "${raw}")`); process.exit(2); }
+      return n;
+    };
     const r = await withLock(packetRoot, () => ops.prPacketFor(packetRoot, positionals[1] ?? "", {
-      limit: values.limit ? Number(values.limit) : undefined,
-      offset: values.offset ? Number(values.offset) : undefined,
+      limit: num("limit", values.limit, 1),
+      offset: num("offset", values.offset, 0),
       fetch: !values["no-fetch"],
     }));
     if ("error" in r) { console.error(r.error); process.exit(1); }

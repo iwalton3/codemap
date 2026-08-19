@@ -137,6 +137,28 @@ export async function writeSnapshot(root: string, ref: string, branch: string | 
 }
 
 /** Read a cached snapshot's anchors, or null when that commit was never indexed. */
+/**
+ * Locate anchors that are NOT in `@work`, in the newest cached commit snapshot
+ * that holds them.
+ *
+ * A finding ingested against a pull request is deliberately written against the
+ * PR HEAD's anchors, so a finding on a symbol the branch ADDS has no `@work` row at
+ * all — the review queue then handed an agent an item with no file, no symbol and
+ * no source, which is exactly the hunting the tool description promises it will not
+ * have to do.
+ */
+export function findAnchorsOutsideWork(root: string, ids: string[]): Map<string, { ref: string; anchor: Anchor }> {
+  const out = new Map<string, { ref: string; anchor: Anchor }>();
+  if (!ids.length) return out;
+  const q = `SELECT a.*, s.at AS snap_at FROM anchors a JOIN snapshots s ON s.ref = a.ref
+             WHERE a.ref <> '@work' AND a.id IN (${ids.map(() => "?").join(",")})
+             ORDER BY s.at DESC`;
+  for (const r of db(root).prepare(q).all(...ids) as unknown as (AnchorRow & { ref: string })[]) {
+    if (!out.has(r.id)) out.set(r.id, { ref: r.ref, anchor: rowToAnchor(r) });   // newest wins
+  }
+  return out;
+}
+
 export async function readSnapshot(root: string, ref: string): Promise<Anchor[] | null> {
   const d = db(root);
   const meta = d.prepare("SELECT 1 FROM snapshots WHERE ref = ?").get(ref);

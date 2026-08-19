@@ -17,14 +17,14 @@ import {
   type AnchorSelector, type CoverageMark, type CoverageState, type Edge, type ReviewLevel, type Importance, type Complexity, type TriageSource,
   SCHEMA_VERSION,
 } from "./schema.js";
-import { indexFile, indexRepo, indexCommit } from "./repo.js";
-import { headCommit, currentBranch, isDirty, revParse, mergeBase, originSlug } from "./git.js";
+import { indexFile, indexBlob, indexRepo, indexCommit } from "./repo.js";
+import { headCommit, currentBranch, isDirty, revParse, mergeBase, originSlug, readBlobs } from "./git.js";
 import { computeStaleness } from "./stale.js";
 import {
   readAnchorStore, readState, writeState, writeStore, loadNodes, readGraph, writeGraph, writeNode, slug,
   readBugs, writeBugs, readAnnotations, writeAnnotations, readCoverage, writeCoverage, readReviews,
   writeSnapshot, readSnapshot, listSnapshots, deleteNode as storeDeleteNode, confirmNode, ackHole as storeAckHole, loadNodeVersions,
-  writeReviews, remapNodeCitations, readTriage as triageRead, writeTriage as triageWrite, dropLegacyOverloadSnapshots,
+  writeReviews, remapNodeCitations, readTriage as triageRead, writeTriage as triageWrite, dropLegacyOverloadSnapshots, findAnchorsOutsideWork,
 } from "./store.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "./diff.js";
@@ -2277,12 +2277,26 @@ export async function reviewQueue(root: string, opts: { includeAnswered?: boolea
 
   const anchorIds = [...new Set(pending.filter((a) => a.target.kind === "anchor").map((a) => a.target.id))];
   const anchors = new Map((await readAnchorStore(root)).anchors.filter((a) => anchorIds.includes(a.id)).map((a) => [a.id, a]));
+  // A finding ingested against a pull request is written against the PR HEAD's
+  // anchors, so one on a symbol the branch ADDS has no `@work` row — and the item
+  // came back with no file, no symbol and no source, which is precisely the hunting
+  // this surface promises the agent will not have to do. Fall back to the newest
+  // cached commit snapshot that holds it.
+  const elsewhere = findAnchorsOutsideWork(root, anchorIds.filter((id) => !anchors.has(id)));
 
   const queue: QueueItem[] = [];
   for (const a of pending) {
-    const anc = a.target.kind === "anchor" ? anchors.get(a.target.id) : undefined;
+    const off = a.target.kind === "anchor" ? elsewhere.get(a.target.id) : undefined;
+    const anc = a.target.kind === "anchor" ? (anchors.get(a.target.id) ?? off?.anchor) : undefined;
     let code: string | undefined;
-    if (anc) {
+    if (anc && off) {
+      // Only that commit has this body; read it from the commit, not from disk.
+      try {
+        const src = readBlobs(root, off.ref, [anc.file]).get(anc.file);
+        const live = src ? (await indexBlob(src, anc.file)).find((x) => x.id === anc.id) : undefined;
+        if (src && live?.loc) code = src.slice(live.loc.startByte, live.loc.endByte);
+      } catch { /* the commit is gone — the finding still stands */ }
+    } else if (anc) {
       // Re-index live, as `getAnchor` does. The stored `loc` is from the last index;
       // any edit above the symbol since then shifts the window, so slicing with it
       // hands an agent asked to FIX a finding the wrong text — under a tool
@@ -2297,6 +2311,9 @@ export async function reviewQueue(root: string, opts: { includeAnswered?: boolea
       id: a.id, kind: a.kind, severity: a.severity, category: a.category, text: a.text,
       line: a.line, author: a.author, assignment: a.assignment!, target: a.target,
       file: anc?.file, symbol: anc?.symbolPath.join(" › "), startLine: anc?.loc?.startLine, code,
+      // Where the source came from, when it is not the working tree — an agent asked
+      // to FIX must know it is looking at a branch's body, not at HEAD.
+      ...(off ? { atCommit: off.ref } : {}),
     });
   }
   const rank = { critical: 0, high: 1, medium: 2, low: 3 } as Record<string, number>;
@@ -2322,6 +2339,11 @@ export async function closeAssignment(
   const ann = store.annotations.find((a) => a.id === input.id);
   if (!ann) return { error: `no annotation "${input.id}"` };
   if (!ann.assignment) return { error: "that annotation was not assigned to an agent" };
+  // `assignAnnotation` refuses a resolved annotation for the same reason: an agent
+  // holding a queue read from before the human closed this would otherwise stamp an
+  // outcome over the record of what happened at close time — and `reviewQueue`
+  // filters resolved items out, so the write would be invisible afterwards.
+  if (ann.resolved) return { error: "that finding was resolved while you were working on it — reopen it before recording an outcome" };
   const files = input.files ?? [];
   if (input.result === "fixed" && files.length > 1) {
     return { error: `a fix may touch one file; this touched ${files.length} (${files.join(", ")}). Report \`declined\` with what the change needs — a multi-file change belongs to an agent the human dispatches, not to a review-tool edit.` };

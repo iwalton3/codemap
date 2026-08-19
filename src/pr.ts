@@ -21,7 +21,7 @@ import { readTriage } from "./store.js";
 import type { Importance } from "./schema.js";
 import type { Complexity } from "./schema.js";
 import { revParse, mergeBase, hasObject, fetchRef, numstat, readBlobs, isGitRepo, originSlug, prBaseCommit } from "./git.js";
-import { splitSpec, buildStory, layerOf, spineRole, type PrStory, type StoryStep, type StoryChapter } from "./pr-story.js";
+import { splitSpec, buildStory, layerOf, spineRole, type PrStory, type StoryStep, type StoryChapter, backendSpineRole } from "./pr-story.js";
 import { planPromotion, type Promotion } from "./pr-promote.js";
 
 export interface PrRef { owner: string; repo: string; number: number }
@@ -420,10 +420,25 @@ export async function prPacket(
 
   const headByFile = readBlobs(root, t.refs.head, [...new Set(slice.filter((w) => w.change !== "removed").map((w) => w.file))]);
   const baseByFile = readBlobs(root, t.refs.mergeBase, [...new Set(slice.filter((w) => w.change !== "added").map((w) => w.file))]);
-  const cut = async (src: string | undefined, path: string, id: string) => {
+  // Parse each blob ONCE. This indexed per ITEM, so a file holding twenty selected
+  // symbols was fully tree-sitter-parsed twenty times per side — a default 40-item
+  // packet concentrated in one large C# file parsed it ~80 times. `buildWorklist`
+  // reads each touched file's head blob once for exactly this reason.
+  const spans = new Map<string, Map<string, { startByte: number; endByte: number }>>();
+  const locsIn = async (src: string, path: string, side: string) => {
+    const key = `${side}\0${path}`;
+    let m = spans.get(key);
+    if (!m) {
+      m = new Map();
+      for (const a of await indexBlob(src, path)) if (a.loc) m.set(a.id, { startByte: a.loc.startByte, endByte: a.loc.endByte });
+      spans.set(key, m);
+    }
+    return m;
+  };
+  const cut = async (src: string | undefined, path: string, id: string, side: string) => {
     if (!src) return undefined;
-    const a = (await indexBlob(src, path)).find((x) => x.id === id);
-    return a?.loc ? src.slice(a.loc.startByte, a.loc.endByte) : undefined;
+    const loc = (await locsIn(src, path, side)).get(id);
+    return loc ? src.slice(loc.startByte, loc.endByte) : undefined;
   };
   const span = await anchorSpans(root, t.refs.head, slice.filter((w) => w.change !== "removed"));
 
@@ -434,8 +449,8 @@ export async function prPacket(
       rank: w.rank, id: w.id, file: w.file, symbol: w.symbol, signature: w.signature,
       startLine: loc?.startLine, endLine: loc?.endLine,
       change: w.change, lane: w.lane, complexity: w.complexity, severity: w.severity, moneyHint: w.moneyHint,
-      head: w.change === "removed" ? undefined : await cut(headByFile.get(w.file), w.file, w.id),
-      base: w.change === "added" ? undefined : await cut(baseByFile.get(w.file), w.file, w.id),
+      head: w.change === "removed" ? undefined : await cut(headByFile.get(w.file), w.file, w.id, "head"),
+      base: w.change === "added" ? undefined : await cut(baseByFile.get(w.file), w.file, w.id, "base"),
     });
   }
 
@@ -613,6 +628,14 @@ export async function prPromotionPlan(
   const chapter = story.chapters.find((c) => c.id === chapterId);
   if (!chapter) return { error: `no chapter "${chapterId}" in PR #${story.pr.number}` };
   if (!chapter.steps.length) return { error: `chapter "${chapter.title}" has no symbols to cite — a node with no anchors is a floating claim` };
+  // All-removed is not "some symbols": the node would cite code this PR DELETES.
+  // `document`'s `resolveRefs` unions @work with the head snapshot, and those ids
+  // still resolve from @work whenever the working tree is on the base branch, so it
+  // would land — with empty accepted hashes, since the head snapshot has no entry
+  // for them, which means its staleness can never be judged either.
+  if (chapter.steps.every((s) => s.change === "removed")) {
+    return { error: `chapter "${chapter.title}" only covers symbols this PR removes — there is nothing left for a node to describe` };
+  }
   return {
     promotion: planPromotion(chapter),
     chapter: { id: chapter.id, title: chapter.title, durable: chapter.durable, source: chapter.source },
@@ -663,7 +686,7 @@ export async function derivePrTriage(
     .filter((w) => w.lane === "code" && w.change !== "removed")
     .map((w) => {
       const money = MONEY_RX.test(`${w.file} ${w.symbol} ${w.signature}`);
-      const role = spineRole(w.file, w.symbol);
+      const role = backendSpineRole(w.file, w.symbol);
       const structural = role === null ? undefined : LAYER_STAKE[role];
       const importance: Importance | undefined =
         money ? "business-critical"

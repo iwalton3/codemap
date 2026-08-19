@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { Anchor, State } from "./schema.js";
 import { writeStore, writeSnapshot, readTriage } from "./store.js";
 import { setTriageBatch, setTriage, ratchet, triageStatus } from "./triage.js";
-import { spineRole, layerOf } from "./pr-story.js";
+import { spineRole, backendSpineRole, layerOf } from "./pr-story.js";
 import { workShapes } from "./pr.js";
 import { spawnSync } from "node:child_process";
 
@@ -123,4 +123,18 @@ test("the batch ratchet is judged on BAR and severity, not just on importance", 
     assert.equal(after.severity, before.severity);
     assert.equal(after.likely, before.likely, "and it stays a confirmed human mark, not an agent proposal");
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("front-end paths order a PR but never assert stakes", async () => {
+  // `spineRole` places front-end files so a React PR can be ORDERED, but those
+  // positions are indices into the backend's stake table — so every `/components/`
+  // and `/routes/` file asserted "important", which pins severity at >= medium and
+  // leaves the ranking carrying no information at all.
+  for (const [file, sym] of [["src/api/orders.ts", "fetchOrders"], ["src/components/Spinner.tsx", "Spinner"], ["src/routes/orders.tsx", "OrdersRoute"]] as const) {
+    assert.equal(backendSpineRole(file, sym), null, `${file} is not on the command → read-model spine`);
+    assert.notEqual(spineRole(file, sym), null, "but it still has an ordering position");
+  }
+  // the backend spine is untouched
+  assert.equal(backendSpineRole("Acme.API/Domains/D/Commands/Confirm.cs", "ConfirmEndpoint"), 0);
+  assert.equal(backendSpineRole("Acme.API/Domains/D/Queries/Get.cs", "GetThing"), 4);
 });
