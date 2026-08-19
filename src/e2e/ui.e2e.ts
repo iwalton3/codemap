@@ -99,6 +99,48 @@ describe("web UI", { skip: puppeteer ? false : "puppeteer not resolvable (set CO
     await page.close();
   });
 
+  test("a finding's submitter-facing half sits UNDER it, not beside it", async () => {
+    // `.prfrow` is a flex row of [location | finding], so a sibling added to it lands
+    // in a third column and the editor ends up in a 2em-wide strip. The last CSS bug
+    // here was exactly this shape and reasoning about the cascade did not catch it —
+    // only printing the rects did. So this measures them.
+    const page = await browser.newPage();
+    await page.setViewport({ width: 900, height: 700 });
+    await page.goto(`${server.url}/#/u/${fixture.universe}/`, { waitUntil: "networkidle0" });
+    const m = await page.evaluate(() => {
+      const host = document.createElement("div");
+      host.style.width = "800px";
+      host.innerHTML = `<div class="prfindings"><div class="prfgroup"><div class="prfrow">
+        <div class="prfloc"><code>pay.ts:2</code></div>
+        <div class="prfbody">
+          <div class="rvfind k-finding"><span class="rvftext">${"the evidence ".repeat(20)}</span></div>
+          <div class="prfcmt"><span class="prfcmttext">${"the short version ".repeat(10)}</span><button>edit</button></div>
+        </div>
+      </div></div></div>`;
+      document.body.appendChild(host);
+      const find = host.querySelector(".rvfind") as HTMLElement;
+      const cmt = host.querySelector(".prfcmt") as HTMLElement;
+      const loc = host.querySelector(".prfloc") as HTMLElement;
+      const panel = host.querySelector(".prfindings") as HTMLElement;
+      const [f, c, l] = [find.getBoundingClientRect(), cmt.getBoundingClientRect(), loc.getBoundingClientRect()];
+      const r = {
+        commentBelow: c.top >= f.bottom - 1,
+        sameLeft: Math.abs(c.left - f.left) < 1,
+        besideLocation: c.left > l.right - 1,
+        wideEnough: c.width > 300,
+        noSideScroll: panel.scrollWidth <= panel.clientWidth + 1,
+      };
+      host.remove();
+      return r;
+    });
+    assert.equal(m.commentBelow, true, "the comment stacks under the finding");
+    assert.equal(m.sameLeft, true, "and lines up with it, rather than starting a new column");
+    assert.equal(m.besideLocation, true, "the file:line stays in its own column to the left");
+    assert.equal(m.wideEnough, true, "it gets real width, not a squeezed flex leftover");
+    assert.equal(m.noSideScroll, true, "and none of it pushes the panel sideways");
+    await page.close();
+  });
+
   test("a symbol's sign-off row stays on screen while its body scrolls", async () => {
     // On a long symbol the row scrolled out of reach, so marking something signed
     // meant scrolling back up to find it. Sticky is a CSS claim, so this measures it

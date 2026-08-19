@@ -39,6 +39,7 @@ describe("HTTP write routes", () => {
   test("raising a finding reports the anchor it landed on and that anchor's findings", async () => {
     const out = await post("/api/annotate", {
       targetKind: "anchor", targetId: anchorId, text: "negative amounts are only guarded here",
+      comment: "`transfer` guards negatives at pay.ts:2 only. Add the same check on the by-id path.",
       kind: "finding", severity: "high", author: "human", line: 2,
     });
     assert.ok(!out.error, out.error);
@@ -50,7 +51,7 @@ describe("HTTP write routes", () => {
   test("handing a finding to an agent does the same", async () => {
     // The route that broke: it sits ABOVE the helper's old declaration.
     const raised = await post("/api/annotate", {
-      targetKind: "anchor", targetId: anchorId, text: "check the rounding mode", kind: "finding", author: "human",
+      targetKind: "anchor", targetId: anchorId, text: "check the rounding mode", comment: "rounds half-up; the ledger rounds half-even", kind: "finding", author: "human",
     });
     const out = await post("/api/annotation_assign", { id: raised.id, kind: "investigate", by: "me" });
     assert.ok(!out.error, out.error);
@@ -60,7 +61,7 @@ describe("HTTP write routes", () => {
 
   test("resolving and raising to the maintainer report the same shape", async () => {
     const mine = await post("/api/annotate", {
-      targetKind: "anchor", targetId: anchorId, text: "mine", kind: "finding", author: "human",
+      targetKind: "anchor", targetId: anchorId, text: "mine", comment: "mine", kind: "finding", author: "human",
     });
     const resolved = await post("/api/annotation_resolve", { id: mine.id, resolved: true });
     assert.ok(!resolved.error, resolved.error);
@@ -72,7 +73,7 @@ describe("HTTP write routes", () => {
 
     const theirs = await post("/api/annotate", {
       targetKind: "anchor", targetId: anchorId, text: "agent thinks this overflows",
-      kind: "finding", author: "agent:pr-first-pass",
+      comment: "an agent's proposal", kind: "finding", author: "agent:pr-first-pass",
     });
     const raised = await post("/api/annotation_escalate", { id: theirs.id, by: "izzie" });
     assert.ok(!raised.error, raised.error);
@@ -92,7 +93,7 @@ describe("HTTP write routes", () => {
     await writeSnapshot(fixture.root, "prhead", "feature/x", branchAnchors, "2026-08-19T00:00:00Z");
 
     const raised = await post("/api/annotate", {
-      targetKind: "anchor", targetId: id, text: "overflows", kind: "finding", author: "human", ref: "prhead",
+      targetKind: "anchor", targetId: id, text: "overflows", comment: "sums into an int32", kind: "finding", author: "human", ref: "prhead",
     });
     assert.ok(!raised.error, raised.error);
     await post("/api/annotation_assign", { id: raised.id, kind: "investigate", by: "me" });
@@ -106,6 +107,45 @@ describe("HTTP write routes", () => {
     // The source itself needs that commit's objects, which a synthetic snapshot in a
     // fixture repo does not have — what this pins is that the item is LOCATED at all,
     // which is what was missing.
+  });
+
+  test("a finding must carry the version its submitter reads", async () => {
+    // The UI raises findings through this route, so the requirement has to hold at
+    // the wiring and not only in ops — and the message has to say what to do.
+    const bare = await post("/api/annotate", {
+      targetKind: "anchor", targetId: anchorId, text: "no tenant predicate", kind: "finding", author: "human",
+    });
+    assert.match(bare.error, /needs `comment`/);
+
+    const long = await post("/api/annotate", {
+      targetKind: "anchor", targetId: anchorId, text: "x", kind: "finding", author: "human", comment: "y".repeat(801),
+    });
+    assert.match(long.error, /cap is 800/);
+  });
+
+  test("a finding can be corrected, withdrawn, and taken back", async () => {
+    const raised = await post("/api/annotate", {
+      targetKind: "anchor", targetId: anchorId, text: "the evidence", comment: "the short version",
+      kind: "finding", severity: "high", author: "human",
+    });
+    const found = (out: any) => out.annotations.find((a: any) => a.id === raised.id);
+
+    const revised = await post("/api/annotation_revise", {
+      id: raised.id, comment: "Real, but narrower than filed.", disposition: "rerated", publishPath: "src/pay.ts",
+    });
+    assert.ok(!revised.error, revised.error);
+    assert.equal(found(revised).disposition, "rerated");
+    assert.equal(found(revised).publishPath, "src/pay.ts");
+    assert.equal(found(revised).comment, "Real, but narrower than filed.");
+    assert.equal(found(revised).revisions.length, 1, "and what it used to say survives");
+    assert.equal(found(revised).revisions[0].was.comment, "the short version");
+
+    const gone = await post("/api/annotation_withdraw", { id: raised.id });
+    assert.equal(found(gone).withdrawn.by, "human");
+    assert.equal(found(gone).resolved, false, "withdrawn is not closed");
+
+    const back = await post("/api/annotation_withdraw", { id: raised.id, withdraw: false });
+    assert.equal(found(back).withdrawn, undefined);
   });
 
   test("a review write hands back the resulting mark", async () => {

@@ -252,8 +252,14 @@ const triageRowEl = (triage, onSet, onTripwire) => {
 };
 // `ref` scopes anchor resolution to a PR head, so a finding can land on a symbol
 // that exists only on the branch (server: resolveRefs' scopeRef).
-const postAnnotate = (u, targetKind, targetId, text, kind, line, ref) =>
-  fetch('/api/annotate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, targetKind, targetId, text, kind, line, ref, author: 'human' }) });
+const postAnnotate = (u, targetKind, targetId, text, kind, line, ref, comment) =>
+  fetch('/api/annotate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, targetKind, targetId, text, comment, kind, line, ref, author: 'human' }) });
+// Editing a finding, and deciding against sending one. Both local: the map moves,
+// nothing reaches GitHub until the push button, which is its own act.
+const postRevise = (u, id, patch) =>
+  fetch('/api/annotation_revise', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id, by: 'human', ...patch }) });
+const postWithdraw = (u, id, withdraw) =>
+  fetch('/api/annotation_withdraw', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id, withdraw, by: 'human' }) });
 const postResolveAnnotation = (u, id, resolved) =>
   fetch('/api/annotation_resolve', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id, resolved }) });
 
@@ -308,7 +314,10 @@ const asJson = (p) => p.then(r => r.json()).catch(() => null);
 async function raiseFinding(c, u, anchorId, line) {
   const key = findingKey(anchorId, line);
   const text = (c._fdrafts?.[key] || '').trim(); if (!text) return;
-  const res = await asJson(postAnnotate(u, 'anchor', anchorId, text, 'finding', Number.isFinite(line) ? line : undefined, c.state?.prRef));
+  // What you type here IS the submitter-facing version: a finding raised in one line
+  // while reading a diff is already the short form. The evidence half only diverges
+  // once someone investigates, and it is editable in the findings list when it does.
+  const res = await asJson(postAnnotate(u, 'anchor', anchorId, text, 'finding', Number.isFinite(line) ? line : undefined, c.state?.prRef, text));
   if (c._fdrafts) c._fdrafts[key] = '';
   c.state.finding = null;
   await afterAnnotationWrite(c, res);
@@ -317,12 +326,24 @@ async function toggleFinding(c, u, id, resolved) { await afterAnnotationWrite(c,
 const postAssign = (u, id, kind) =>
   fetch('/api/annotation_assign', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id, kind, by: 'me' }) });
 async function assignFinding(c, u, id, kind) { await afterAnnotationWrite(c, await asJson(postAssign(u, id, kind))); }
+async function reviseFinding(c, u, id, patch) {
+  const res = await asJson(postRevise(u, id, patch));
+  if (res && res.error) { c.state.findingErr = { id, error: res.error }; return; }
+  c.state.findingErr = null;
+  await afterAnnotationWrite(c, res);
+}
+async function withdrawFinding(c, u, id, withdraw) { await afterAnnotationWrite(c, await asJson(postWithdraw(u, id, withdraw))); }
 // Raising an agent's finding to the maintainer. Local only — it makes the finding
 // PUBLISHABLE; nothing reaches GitHub until the push button, which is its own act.
 const postEscalate = (u, id, escalate) =>
   fetch('/api/annotation_escalate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id, escalate, by: 'human' }) });
 async function escalateFinding(c, u, id, escalate) { await afterAnnotationWrite(c, await asJson(postEscalate(u, id, escalate))); }
 const isAgentFinding = (f) => (f.author || 'agent').startsWith('agent');
+// Mirrors schema.ts. Only these reach the submitter without being named: `open`
+// means nobody has checked it, and refuted/accepted are conclusions ABOUT the
+// finding rather than asks of the author.
+const DISPOSITIONS = ['open', 'confirmed', 'partial', 'rerated', 'refuted', 'accepted'];
+const PUBLISHABLE = new Set(['confirmed', 'partial', 'rerated']);
 
 // A finding, plus the two halves of the agent loop: hand it over, and read what
 // came back. The agent reports; resolving stays the human's act, so an agent can
@@ -2396,14 +2417,26 @@ class PrStoryPage extends Component {
     requestAnimationFrame(() => document.getElementById(`step-${entry.step.anchorId}`)?.scrollIntoView({ block: 'start', behavior: 'smooth' }));
   }
 
+  /**
+   * The findings list, grouped by WHAT WILL HAPPEN TO EACH rather than by who wrote
+   * it. The question this panel exists to answer is "what goes to the submitter when
+   * I press push", and the reasons one does not are the actionable part: a missing
+   * comment is one edit away, a disposition nobody set is one click.
+   */
   findingsPanelEl(u) {
     if (!this.state.showFindings) return html``;
     const all = this.allFindings();
     if (!all.length) return html`<div class="prfindings dim">No findings raised on this pull request yet.</div>`;
+    const live = all.filter(e => !e.f.resolved && !e.f.withdrawn && !e.f.postedRef);
+    const elected = live.filter(e => !isAgentFinding(e.f) || e.f.escalated);
     const groups = [
-      ['yours — these go out on the next push', all.filter(e => !e.f.resolved && !isAgentFinding(e.f))],
-      ['raised to the maintainer', all.filter(e => !e.f.resolved && isAgentFinding(e.f) && e.f.escalated)],
-      ['an agent\'s — raise one to include it', all.filter(e => !e.f.resolved && isAgentFinding(e.f) && !e.f.escalated)],
+      ['goes out on the next push', elected.filter(e => PUBLISHABLE.has(e.f.disposition) && (e.f.comment || '').trim())],
+      ['needs the submitter-facing version before it can go', elected.filter(e => PUBLISHABLE.has(e.f.disposition) && !(e.f.comment || '').trim())],
+      ['nobody has said what this turned out to be — set a disposition', elected.filter(e => !e.f.disposition || e.f.disposition === 'open')],
+      ['held back: refuted or accepted — publish one deliberately if it closes a concern out', elected.filter(e => e.f.disposition === 'refuted' || e.f.disposition === 'accepted')],
+      ['an agent\'s — raise one to include it', live.filter(e => isAgentFinding(e.f) && !e.f.escalated)],
+      ['already on the pull request', all.filter(e => e.f.postedRef)],
+      ['withdrawn — kept here, not sent', all.filter(e => e.f.withdrawn && !e.f.resolved)],
       ['resolved locally — not sent', all.filter(e => e.f.resolved)],
     ].filter(g => g[1].length);
     return html`<div class="prfindings">
@@ -2414,9 +2447,60 @@ class PrStoryPage extends Component {
             <code>${e.step.file.split('/').pop()}${e.f.line ? ':' + e.f.line : ''}</code>
             <span class="dim">${e.step.symbol.split(' › ').pop()}</span>
           </div>
-          ${findingItemEl(this, u, e.f)}
+          <div class="prfbody">
+            ${findingItemEl(this, u, e.f)}
+            ${this.findingEditorEl(u, e.f)}
+          </div>
         </div>`, e => e.f.id)}
       </div>`, g => g[0])}
+    </div>`;
+  }
+
+  /**
+   * Editing the half the submitter reads.
+   *
+   * Two fields, kept apart on screen because they are two documents: `text` is the
+   * evidence and stays on the map, `comment` is what the person fixing it reads. The
+   * character count is live because the cap is REFUSED rather than trimmed — finding
+   * that out on save, having written 1,400 characters, is the wrong time.
+   */
+  findingEditorEl(u, f) {
+    const ed = this.state.editFinding;
+    const err = this.state.findingErr && this.state.findingErr.id === f.id ? this.state.findingErr.error : null;
+    if (!ed || ed.id !== f.id) {
+      return html`<div class="prfcmt">
+        ${when(f.comment, () => html`<span class="prfcmttext" title="what the submitter reads">${f.comment}</span>`)}
+        ${when(!f.comment, () => html`<span class="dim">no submitter-facing version yet</span>`)}
+        ${when(f.disposition && f.disposition !== 'open', () => html`<span class="prfdisp d-${f.disposition}">${f.disposition}</span>`)}
+        ${when(f.publishPath, () => html`<span class="dim" title="published against this file, because the code it is about is not in the diff">→ <code>${f.publishPath}</code></span>`)}
+        ${when(f.revisions && f.revisions.length, () => html`<span class="dim" title="${f.revisions.map(r => `${r.at.slice(0, 10)} ${r.by}`).join('\n')}">· revised ${f.revisions.length}×</span>`)}
+        <button class="ghost" on-click="${() => { this.state.findingErr = null; this.state.editFinding = { id: f.id, comment: f.comment || '', disposition: f.disposition || 'open', publishPath: f.publishPath || '' }; }}">✎ edit</button>
+        ${when(!f.resolved && !f.postedRef, () => html`<button class="ghost" on-click="${() => withdrawFinding(this, u, f.id, !f.withdrawn)}">${f.withdrawn ? 'un-withdraw' : 'withdraw'}</button>`)}
+      </div>`;
+    }
+    const over = ed.comment.length > 800;
+    return html`<div class="prfedit">
+      <label>what the submitter reads <span class="${over ? 'warn' : 'dim'}">${ed.comment.length}/800</span>
+        <textarea rows="3" placeholder="What is broken (one sentence, as a defect). Where — file:line and the smallest quote that proves it. The ask." value="${ed.comment}"
+          on-input="${(e) => { this.state.editFinding = { ...this.state.editFinding, comment: e.target.value }; }}"></textarea></label>
+      <div class="prfeditrow">
+        <label>disposition
+          <select on-change="${(e) => { this.state.editFinding = { ...this.state.editFinding, disposition: e.target.value }; }}">
+            ${each(DISPOSITIONS, d => html`<option value="${d}" selected="${ed.disposition === d}">${d}</option>`, d => d)}
+          </select></label>
+        <label title="only when this is about code the pull request does not touch: the file IN THE DIFF nearest to the problem. GitHub takes a comment nowhere else."
+          >publish on <input placeholder="(same file as the symbol)" value="${ed.publishPath}"
+          on-input="${(e) => { this.state.editFinding = { ...this.state.editFinding, publishPath: e.target.value }; }}"></label>
+      </div>
+      ${when(err, () => html`<div class="warn">${err}</div>`)}
+      <div class="prfeditacts">
+        <button class="on" disabled="${over}" on-click="${async () => {
+          const patch = { comment: ed.comment, disposition: ed.disposition, publishPath: ed.publishPath };
+          this.state.editFinding = null;
+          await reviseFinding(this, u, f.id, patch);
+        }}">save</button>
+        <button class="ghost" on-click="${() => { this.state.findingErr = null; this.state.editFinding = null; }}">cancel</button>
+      </div>
     </div>`;
   }
 
@@ -2443,8 +2527,16 @@ class PrStoryPage extends Component {
         <div><b>${plan.comments.length}</b> inline comment(s)${plan.deferred.length ? `, ${plan.deferred.length} folded into the review body (their line is not in the diff)` : ''} would go to <a href="${plan.pr.url}" target="_blank" rel="noreferrer">#${plan.pr.number}</a>.</div>
         ${each(plan.comments, c => html`<div class="pushrow"><code>${c.path}:${c.line}</code> <span class="dim">${c.body.split('\n')[0]}</span></div>`, c => c.annotationId)}
         ${each(plan.deferred, d => html`<div class="pushrow"><code>${d.path}</code> <span class="dim">[body] ${d.why}</span></div>`, d => d.annotationId)}
+        ${when(plan.blocked && plan.blocked.length, () => html`
+          <div class="pushblocked">
+            <b>${plan.blocked.length} finding(s) you elected cannot be placed on this diff</b> — they stay on the map, and are NOT in this review.
+            ${each(plan.blocked, b => html`<div class="pushrow"><code>${b.file || b.symbol || '?'}</code> ${b.label} <span class="dim">— ${b.why}</span></div>`, b => b.annotationId)}
+          </div>`)}
         <div class="dim">
           ${when(sk.notElected, () => html`${sk.notElected} held back — an agent raised them and you have not. Use <b>▲ raise</b> on a finding to include it.<br>`)}
+          ${when(sk.notPublishable, () => html`${sk.notPublishable} held back by disposition — untriaged, refuted or accepted. Set one in the findings list to include it.<br>`)}
+          ${when(sk.noComment, () => html`${sk.noComment} have no submitter-facing version written, so they are not sent — publishing the evidence instead is the thing this avoids.<br>`)}
+          ${when(sk.withdrawn, () => html`${sk.withdrawn} withdrawn.<br>`)}
           ${when(sk.alreadyPushed, () => html`${sk.alreadyPushed} already sent on an earlier push — a re-run never duplicates a comment.<br>`)}
           ${when(sk.resolved, () => html`${sk.resolved} resolved locally, so not sent.<br>`)}
         </div>`)}

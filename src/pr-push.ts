@@ -33,7 +33,11 @@ export interface DeferredComment { annotationId: string; path: string; line?: nu
  * but once a human has vouched for one, dropping it without saying so is the tool
  * lying about what it published.
  */
-export interface BlockedComment { annotationId: string; severity?: string; file?: string; symbol?: string; why: string }
+export interface BlockedComment {
+  annotationId: string; severity?: string; file?: string; symbol?: string; why: string;
+  /** Enough of the finding to recognise it — a plan that names only ids is not readable. */
+  label: string;
+}
 
 export interface PushPlan {
   pr: { number: number; title: string; url: string; owner: string; repo: string; nodeId?: string };
@@ -64,6 +68,11 @@ export interface PushPlan {
  */
 const attributionOf = (a: Annotation): "agent" | "human" =>
   a.publishAttribution ?? (lastCommentAuthorIsAgent(a) ? "agent" : "human");
+
+const labelOf = (a: Annotation): string => {
+  const t = (a.comment || a.text || "").trim().split("\n")[0] ?? "";
+  return t.length > 120 ? t.slice(0, 120) + "…" : t;
+};
 
 function lastCommentAuthorIsAgent(a: Annotation): boolean {
   // Whoever last CHANGED the comment owns it. A finding an agent filed and a human
@@ -319,7 +328,7 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
     if (verdict === "no-comment") {
       noComment++;
       blocked.push({
-        annotationId: a.id, severity: a.severity, file: subject.file, symbol: subject.symbol,
+        annotationId: a.id, severity: a.severity, file: subject.file, symbol: subject.symbol, label: labelOf(a),
         why: "no `comment` — write the submitter-facing version (what is broken, the file:line proving it, the ask). Publishing `text` would send the investigation.",
       });
       continue;
@@ -345,7 +354,7 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
         body: renderAnnotation(a, subject.symbol ?? subject.file!),
       });
     } else {
-      blocked.push({ annotationId: a.id, severity: a.severity, file: subject.file, symbol: subject.symbol, why: place.why });
+      blocked.push({ annotationId: a.id, severity: a.severity, file: subject.file, symbol: subject.symbol, label: labelOf(a), why: place.why });
     }
   }
 
