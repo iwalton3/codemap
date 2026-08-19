@@ -15,36 +15,49 @@ const anchor = (over: Partial<Anchor> & { id: string; disambiguator?: string }):
   bodyHash: "sha256:x", lastVerifiedCommit: null, ...over,
 });
 
-test("old ordinal ids are paired with the new signature ids by position", () => {
+test("old ids are paired to new ones by body hash, so a reorder cannot mis-assign", () => {
+  // Position looked right because the old disambiguator WAS a position — but that
+  // only holds if nothing moved. Reorder the methods in a file (or check out a
+  // branch that orders them differently, which auto-reindexes) and the counts still
+  // match while every pairing is off by a rotation, attaching somebody's sign-off to
+  // a method they never read.
   const stored = [
-    anchor({ id: "old0", disambiguator: "0" }),
-    anchor({ id: "old1", disambiguator: "1" }),
-    anchor({ id: "old2", disambiguator: "2" }),
+    anchor({ id: "old0", disambiguator: "0", bodyHash: "sha256:A" }),
+    anchor({ id: "old1", disambiguator: "1", bodyHash: "sha256:B" }),
+    anchor({ id: "old2", disambiguator: "2", bodyHash: "sha256:C" }),
   ];
+  // the same three methods, reordered in the file, under the new scheme
   const fresh = [
-    anchor({ id: "new_a", disambiguator: "(OrderCreated)" }),
-    anchor({ id: "new_b", disambiguator: "(TicketCreated)" }),
-    anchor({ id: "new_c", disambiguator: "(OrderClosed)" }),
+    anchor({ id: "new_c", disambiguator: "(OrderClosed)", bodyHash: "sha256:C" }),
+    anchor({ id: "new_a", disambiguator: "(OrderCreated)", bodyHash: "sha256:A" }),
+    anchor({ id: "new_b", disambiguator: "(TicketCreated)", bodyHash: "sha256:B" }),
   ];
-  const map = remapOverloadIds(stored, fresh);
-  assert.deepEqual([...map], [["old0", "new_a"], ["old1", "new_b"], ["old2", "new_c"]]);
-
-  // the ordinals are the old ORDER, however the rows happen to be listed
-  const shuffled = [stored[2]!, stored[0]!, stored[1]!];
-  assert.deepEqual([...remapOverloadIds(shuffled, fresh)], [...map]);
+  assert.deepEqual([...remapOverloadIds(stored, fresh)].sort(),
+    [["old0", "new_a"], ["old1", "new_b"], ["old2", "new_c"]].sort(),
+    "each old id follows its own body, whatever order the file is in");
 });
 
-test("a group whose shape moved is skipped rather than guessed at", () => {
-  // Position only pairs reliably when nothing was added or removed. Guessing here
-  // would attach somebody's sign-off to a method they never read.
-  const stored = [anchor({ id: "old0", disambiguator: "0" }), anchor({ id: "old1", disambiguator: "1" })];
-  const fresh = [anchor({ id: "new_a", disambiguator: "(OrderCreated)" })];
-  assert.equal(remapOverloadIds(stored, fresh).size, 0);
+test("a group that cannot be paired beyond doubt is left alone", () => {
+  // Skipping leaves those references dangling — which is what would have happened
+  // anyway, and dangling is visible. Guessing is what is not recoverable.
+  const two = (aHash: string, bHash: string, ids: [string, string], dis: [string, string]) => [
+    anchor({ id: ids[0], disambiguator: dis[0], bodyHash: aHash }),
+    anchor({ id: ids[1], disambiguator: dis[1], bodyHash: bHash }),
+  ];
+  const stored = two("sha256:A", "sha256:B", ["old0", "old1"], ["0", "1"]);
 
-  // and a store already on the new scheme is left alone
-  const already = [anchor({ id: "new_a", disambiguator: "(OrderCreated)" })];
+  // a body changed since the index — we cannot tell which method it was
+  assert.equal(remapOverloadIds(stored, two("sha256:A", "sha256:CHANGED", ["n0", "n1"], ["(x)", "(y)"])).size, 0);
+  // two overloads sharing a body cannot be told apart by it
+  assert.equal(remapOverloadIds(two("sha256:S", "sha256:S", ["old0", "old1"], ["0", "1"]),
+    two("sha256:S", "sha256:S", ["n0", "n1"], ["(x)", "(y)"])).size, 0);
+  // the shape moved
+  assert.equal(remapOverloadIds(stored, [anchor({ id: "n0", disambiguator: "(x)", bodyHash: "sha256:A" })]).size, 0);
+  // and a store already on the new scheme is a no-op
+  const already = two("sha256:A", "sha256:B", ["n0", "n1"], ["(x)", "(y)"]);
   assert.equal(remapOverloadIds(already, already).size, 0);
 });
+
 
 test("every kind of stored reference is carried across", () => {
   const map = new Map([["old0", "new_a"]]);
@@ -63,9 +76,17 @@ test("every kind of stored reference is carried across", () => {
     id: "n1", target: { kind: "anchor", id: "old0" }, text: "x", author: "me", createdCommit: null,
   } as Annotation];
   const citations = [[{ anchorId: "old0", acceptedHashes: [] }, { anchorId: "untouched" }]];
+  // Bugs are witness-hashed against anchor ids exactly as reviews are, and were the
+  // one store the first version of this migration forgot.
+  const bugs = [{
+    id: "b1", title: "t", body: "", status: "open", severity: "high",
+    anchors: ["old0", "untouched"], witnesses: [{ anchorId: "old0", bodyHash: "sha256:a" }],
+  } as unknown as import("./schema.js").Bug];
 
-  const counts = applyRemap(map, { reviews, triage, annotations, citations });
-  assert.deepEqual(counts, { anchors: 1, reviews: 1, triage: 1, annotations: 1, citations: 1 });
+  const counts = applyRemap(map, { reviews, triage, annotations, bugs, citations });
+  assert.deepEqual(counts, { anchors: 1, reviews: 1, triage: 1, annotations: 1, citations: 1, bugs: 1 });
+  assert.deepEqual(bugs[0]!.anchors, ["new_a", "untouched"]);
+  assert.equal(bugs[0]!.witnesses[0]!.anchorId, "new_a");
   assert.equal(reviews[0]!.target.id, "new_a");
   assert.equal(reviews[0]!.witnesses[0]!.anchorId, "new_a");
   assert.equal(reviews[0]!.accepted![0]!.anchorId, "new_a");

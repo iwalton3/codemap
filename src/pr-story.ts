@@ -45,7 +45,7 @@ const CHANGE_HEADING = new RegExp(
   // name) or be the whole heading: a bare `\b` also caught "Extended attributes"
   // and "New order flow", so an ordinary system-describing heading was excluded
   // from promotion even in a durable spec.
-  `^\\s*(?:[\\d.]+\\s*)?(?:${CHANGE_VERB})\\b(?:\\s*[:—–]|\\s+-\\s|\\s+\`|\\s*$)`
+  `^\\s*(?:[\\d.]+\\s*)?(?:${CHANGE_VERB})\\b(?:\\s*[:—–]|\\s+-\\s|\\s+\`|\\s*$|\\s+(?:the|a|an|support|this|that)\\b)`
   // or trailing after a real dash, which is how these specs qualify a heading:
   // "4.4 Apply(OrderDeliveryCreated) — extend (D7)". A bare hyphen matched inside
   // hyphenated words too ("auto-removed"), so it must be an em/en dash or spaced.
@@ -272,10 +272,16 @@ export function buildStory(sections: SpecSection[], steps: StoryStep[], opts: { 
   // any path segment, or a type named in a signature (which is how an aggregate's
   // Apply overloads are told apart). Computed FIRST because it is what makes a
   // single-hump or three-letter word in the spec safe to read as an identifier.
+  // A signature's parameter type IS the identifier that tells `Apply` overloads
+  // apart, and a single-hump event name (`Refunded`, `Shipped`) needs a vocabulary
+  // to be seen at all. Seeding from the caller's `known` plus the symbol names
+  // themselves — the signature is a declaration, so anything capitalised in it is a
+  // type, not prose.
+  const KNOWN_SEED = new Set([...(opts.known ?? []), ...steps.flatMap((s) => s.symbol.split(" › "))]);
   const changedNames = new Set<string>();
   for (const st of steps) {
     for (const part of st.symbol.split(" › ")) changedNames.add(part);
-    for (const id of mentionedIdentifiers(st.signature)) changedNames.add(id);
+    for (const id of mentionedIdentifiers(st.signature, KNOWN_SEED)) changedNames.add(id);
   }
   const vocabulary = new Set([...changedNames, ...(opts.known ?? [])]);
 
@@ -293,7 +299,7 @@ export function buildStory(sections: SpecSection[], steps: StoryStep[], opts: { 
     // The signature carries what the symbolPath cannot: an aggregate's `Apply`
     // overloads are distinguished only by their event parameter, and that event
     // name is exactly what the spec section is titled after.
-    for (const id of mentionedIdentifiers(step.signature)) parts.add(id);
+    for (const id of mentionedIdentifiers(step.signature, vocabulary)) parts.add(id);
 
     let best = -1, bestScore = 0;
     secIds.forEach((ids, i) => {

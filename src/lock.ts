@@ -11,7 +11,8 @@
  * (older than staleMs) — so a crashed writer never wedges the map. Zero deps.
  */
 
-import { open, readFile, rm, rename, mkdir, stat } from "node:fs/promises";
+import { open, readFile, writeFile, rm, rename, mkdir, stat } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import { join, dirname } from "node:path";
 
 const lockPath = (root: string) => join(root, ".codemap", ".lock");
@@ -66,12 +67,33 @@ export async function withLock<T>(root: string, fn: () => Promise<T>, opts: { ti
       continue;
     }
 
+    // A TOKEN, so release can tell our own lock from one somebody else has since
+    // taken, and a HEARTBEAT, so a legitimately-long holder is never mistaken for a
+    // dead one. Without both, work that outlives `staleMs` was stolen mid-flight and
+    // the original holder then deleted the thief's lock on its way out — admitting a
+    // third writer. Reachable in normal use: publishing to a pull request is one
+    // `gh` call per viewed file at a 120s timeout each, and a first `/api/pr` on a
+    // large repo holds this across a fetch and two full-tree indexes.
+    const token = randomBytes(8).toString("hex");
+    const stamp = () => writeFile(p, JSON.stringify({ pid: process.pid, at: Date.now(), token }));
     try {
-      await fh.writeFile(JSON.stringify({ pid: process.pid, at: Date.now() }));
+      await fh.writeFile(JSON.stringify({ pid: process.pid, at: Date.now(), token }));
       await fh.close();
-      return await fn();
+      // Well inside `staleMs`, whatever it is set to — a floor that exceeded it would
+      // leave the heartbeat useless exactly where the window is tightest.
+      const beat = setInterval(() => { void stamp().catch(() => {}); }, Math.max(50, Math.floor(staleMs / 3)));
+      beat.unref?.();
+      try {
+        return await fn();
+      } finally {
+        clearInterval(beat);
+      }
     } finally {
-      await rm(p, { force: true }).catch(() => {});
+      // Only ever remove OUR lock. If it was stolen while we ran, the file now
+      // belongs to whoever took it and removing it would hand the universe to a
+      // third writer on top of the two already racing.
+      const mine = await readFile(p, "utf8").then((t) => JSON.parse(t)?.token === token).catch(() => false);
+      if (mine) await rm(p, { force: true }).catch(() => {});
     }
   }
 }

@@ -138,18 +138,36 @@ function shellTokens(typeNode: Node, cfg: LangConfig): string[] {
  * it. Merely reordering methods in a file did the same, against the documented
  * invariant that an id is stable across line-moves.
  *
- * Types only, not names: renaming a parameter is not a new method. The grammars
- * agree on a `parameters` field with a per-parameter `type` (TypeScript's includes
- * the leading colon; Python's untyped parameters have none, so the parameter text
- * stands in).
+ * Types and the modifiers that distinguish an overload (`ref`/`out`/`in`) — never
+ * the parameter's NAME and never a default VALUE. Letting either in would orphan
+ * every review on a method whose parameter was renamed, instead of leaving the mark
+ * intact, and it would break the documented invariant that only a file or symbol
+ * rename moves an id. A parameter declared without a type contributes a bare slot,
+ * because arity is genuinely all such a signature carries.
  */
 function signatureKey(node: Node): string | undefined {
   const params = node.childForFieldName("parameters");
   if (!params) return undefined;
-  const parts = params.namedChildren.map((c) => {
-    const t = c.childForFieldName("type");
-    return (t?.text ?? c.text).replace(/^[:\s]+/, "").replace(/\s+/g, " ").trim();
-  });
+  const parts: string[] = [];
+  // A `params`/varargs parameter is not wrapped in a `parameter` node by the C#
+  // grammar: the list's children are the TYPE and then a bare identifier naming it.
+  let expectName = false;
+  for (const c of params.namedChildren) {
+    if (expectName && c.type === "identifier") { expectName = false; continue; }   // that name
+    expectName = false;
+    const type = c.childForFieldName("type");
+    const mods = c.namedChildren.filter((x) => x.type === "modifier").map((x) => x.text);
+    if (type) { parts.push([...mods, type.text].join(" ").replace(/\s+/g, "")); continue; }
+    if (c.childForFieldName("name") || c.childForFieldName("pattern") || /parameter/.test(c.type)) {
+      // Declared without a type — Python, JS. Nothing but the slot is signature,
+      // and saying so is honest: arity is all these languages overload on.
+      parts.push(mods.length ? `${mods.join("")}_` : "_");
+      continue;
+    }
+    // A bare type sitting directly under the list; its name follows.
+    parts.push(c.text.replace(/\s+/g, ""));
+    expectName = true;
+  }
   return `(${parts.join(",")})`;
 }
 

@@ -176,7 +176,19 @@ const isProse = (l: string) => l.trim() && !l.startsWith("|") && !l.startsWith("
  * so "The gateway retries transient failures, e.g." was written into the map as a
  * node's description.
  */
-const ABBREV_END = /(?:\b(?:e\.g|i\.e|etc|vs|viz|cf|approx|est|no|fig|al|Mr|Mrs|Ms|Dr|Prof|St|Inc|Ltd|Co|a\.m|p\.m)|\b[A-Z]|\b\d+)\.$/i;
+// Case-SENSITIVE on the initial, and no bare trailing number: under `/i` the
+// `[A-Z]` alternative matched any single letter and `\d+` matched any figure, so
+// "Add the column X." absorbed the sentence after it — and the joined candidate then
+// began with a directive and was discarded, taking a perfectly good summary with it.
+const ABBREV_END = new RegExp(
+  "(?:" + ["e\\.g", "i\\.e", "etc", "vs", "viz", "cf", "approx", "est", "fig", "al",
+           "Mr", "Mrs", "Ms", "Dr", "Prof", "St", "Inc", "Ltd", "Co", "a\\.m", "p\\.m"].join("|") + ")\\.$",
+  "i",
+);
+// Deliberately NOT joining on a trailing single capital ("…the column X."): an
+// initial like "J. Smith" is rare, and the fragment it leaves is dropped by the
+// length check anyway — whereas joining wrongly swallows the following sentence and
+// loses a good summary entirely. The cheap error is the recoverable one.
 function sentences(line: string): string[] {
   const out: string[] = [];
   for (const piece of line.split(/(?<=[.!?])\s+/)) {

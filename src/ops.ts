@@ -347,23 +347,30 @@ async function migrateOverloads(root: string, fresh: Anchor[]) {
   let stored: Anchor[];
   try { stored = (await readAnchorStore(root)).anchors; } catch { return null; }   // first run
   const map = remapOverloadIds(stored, fresh);
-  if (!map.size) return null;
 
-  const [reviewStore, triageStore, annStore] = await Promise.all([readReviews(root), triageRead(root), readAnnotations(root)]);
+  // Cached commit snapshots hold the OLD ids, and a diff is a set operation over ids
+  // between two of them, so an old-scheme snapshot cannot be compared with a
+  // new-scheme one. This runs INDEPENDENTLY of whether anything was remapped: a
+  // working tree with no overload group at all still has PR-head snapshots that do —
+  // which is the ordinary shape of a branch that ADDS a second overload — and gating
+  // it behind `map.size` skipped exactly the case it exists for.
+  const droppedSnapshots = dropLegacyOverloadSnapshots(root).length;
+  if (!map.size) return droppedSnapshots ? { anchors: 0, reviews: 0, triage: 0, annotations: 0, citations: 0, bugs: 0, droppedSnapshots } : null;
+
+  const [reviewStore, triageStore, annStore, bugStore] = await Promise.all([
+    readReviews(root), triageRead(root), readAnnotations(root), readBugs(root),
+  ]);
   const counts = applyRemap(map, {
-    reviews: reviewStore.reviews, triage: triageStore.triage, annotations: annStore.annotations, citations: [],
+    reviews: reviewStore.reviews, triage: triageStore.triage, annotations: annStore.annotations,
+    bugs: bugStore.bugs, citations: [],
   });
   counts.citations = remapNodeCitations(root, map);
   await Promise.all([
     writeReviews(root, reviewStore.reviews),
     triageWrite(root, triageStore.triage),
     writeAnnotations(root, annStore.annotations),
+    writeBugs(root, bugStore.bugs),
   ]);
-  // Cached commit snapshots hold the OLD ids, and a diff is a set operation over
-  // ids between two of them — comparing an old-scheme snapshot with a new-scheme one
-  // reads every overloaded callable as removed-and-added. They are a cache, rebuilt
-  // from the commit's own objects on demand.
-  const droppedSnapshots = dropLegacyOverloadSnapshots(root).length;
   return { ...counts, droppedSnapshots };
 }
 

@@ -52,11 +52,15 @@ export interface Ancestry {
    * can never fire for one. An absent commit cannot be placed, so it is treated
    * like a legacy (null) one: on-ref, but unable to supersede anything.
    *
-   * The limit that follows, stated rather than papered over: supersession needs one
-   * commit to DESCEND from another, so two acceptances both made on a branch that
-   * was squashed away cannot be ordered and report the benign verdict. Guessing
-   * from write order instead is what used to read 1,148 of 3,724 marks back as
-   * reverts.
+   * An entry whose commit was REWRITTEN is still superseded by a different body
+   * approved at a commit that is on this history — see `supersedersOf`. Without
+   * that, a force-push followed by a genuine revert reported `direct`. A LEGACY
+   * entry (no commit ever recorded) keeps its documented conservatism instead.
+   *
+   * The limit that remains, stated rather than papered over: two acceptances BOTH
+   * made on branches that were squashed away cannot be ordered against each other,
+   * and report the benign verdict. Guessing from write order instead is what used
+   * to read 1,148 of 3,724 marks back as reverts.
    */
   known(commit: string): boolean;
 }
@@ -81,6 +85,10 @@ export function resolveAcceptance(entries: AcceptedEntry[], liveHash: string | u
   // An entry whose commit is gone cannot be placed on or off this history, so it
   // counts as on-ref — the same conservative reading a legacy `null` commit gets.
   const placeable = (e: AcceptedEntry) => e.commit !== null && anc.known(e.commit);
+  // Recorded a commit, and that commit is GONE — force-pushed, amended, squashed.
+  // Distinct from a LEGACY entry (`commit === null`), which never recorded one and
+  // is documented to stay conservative: it can neither supersede nor be superseded.
+  const rewritten = (e: AcceptedEntry) => e.commit !== null && !anc.known(e.commit);
   const lineage = entries.filter((e) => !placeable(e) || anc.onRef(e.commit));
   const mine = lineage.filter((e) => e.bodyHash === liveHash);
 
@@ -91,7 +99,15 @@ export function resolveAcceptance(entries: AcceptedEntry[], liveHash: string | u
   // commits are both ancestors of the head while neither follows the other. Reading
   // the array as a timeline calls both of those a revert.
   const supersedersOf = (e: AcceptedEntry) =>
-    lineage.filter((o) => o.bodyHash !== liveHash && anc.precedes(e.commit, o.commit));
+    lineage.filter((o) => o.bodyHash !== liveHash && (
+      anc.precedes(e.commit, o.commit)
+      // `e`'s commit is gone (force-push, amend, squash), so NOTHING can be ordered
+      // against it by ancestry — and without this it came out `standing`, i.e. a full
+      // green check on code somebody had since moved past. A different body approved
+      // at a commit that IS on this history is evidence the work moved on, and a
+      // verdict we cannot support must never be the strongest one.
+      || (rewritten(e) && placeable(o))
+    ));
 
   const standing = mine.filter((e) => !supersedersOf(e).length);
   if (standing.length) return { via: "direct", entry: newest(standing, anc) };

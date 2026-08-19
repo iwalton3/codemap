@@ -116,8 +116,11 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return ops.reviewQueue(root, { includeAnswered: q.get("answered") === "1" });
     case "/api/questions":
       return ops.listQuestions(root, { includeResolved: q.get("all") === "1" });
+    // Writes: `checkStale` re-indexes on a branch change, applies the index update
+    // and refreshes analyzer graphs — all whole-blob read-modify-write. MCP has
+    // always treated `check_stale` as mutating; the HTTP route was missed.
     case "/api/stale":
-      return ops.checkStale(root);
+      return withLock(root, () => ops.checkStale(root));
     case "/api/snapshots":
       return ops.snapshots(root);
     case "/api/diff":

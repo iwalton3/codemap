@@ -21,9 +21,15 @@ import { enableAnalyzer } from "./analyzers/run.js";
 import { markReviewed, unmarkReviewed } from "./reviews.js";
 import { withLock } from "./lock.js";
 
-// Tools that write to a universe's .codemap/ — held under the write lock so a
-// concurrent CLI run or second agent can't clobber a read-modify-write.
-const MUTATING = new Set(["init", "document", "connect", "update_node", "delete_node", "confirm", "ack_hole", "cover", "report_bug", "update_bug", "annotate", "close_finding", "resolve_question", "link", "check_stale", "analyze", "review", "sanity_check", "snapshot", "reindex"]);
+/**
+ * Tools that write to a universe's `.codemap/` are held under the write lock, so a
+ * concurrent CLI run or a second agent cannot clobber a read-modify-write.
+ *
+ * Declared as `mutates: true` on the tool ITSELF rather than in a separate list of
+ * names. That list drifted from the handlers twice: `close_finding` ran unlocked,
+ * and so did `triage` and `triage_derive` — the latter rewriting the whole triage
+ * store on every call. A flag beside the handler cannot fall out of step with it.
+ */
 
 // Anti-self-vouching guard: node ids this MCP CONNECTION authored/edited this
 // session. An agent can't `sanity_check` (or agent-review) a doc its own
@@ -59,6 +65,8 @@ interface Tool {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /** Writes to `.codemap/` — run under the cross-process write lock. */
+  mutates?: boolean;
   handler: (args: any, ctx: Ctx) => Promise<unknown>;
 }
 
@@ -93,6 +101,7 @@ const tools: Tool[] = [
     name: "init",
     description: "Build the anchor index for a universe that isn't mapped yet — run this FIRST if any tool answers \"codemap not initialized\", instead of falling back to reading the codebase by hand. `list_universes` shows `initialized: false` for a universe that needs it. Safe to re-run on an initialized universe: it is the same full re-baseline as `reindex` and leaves docs, edges, reviews, coverage, bugs and annotations untouched. Note it only builds the ANCHOR index — the map's documentation starts empty, so follow with `outline` / `find_gaps`.",
     inputSchema: obj({}),
+    mutates: true,
     handler: (_a, c) => ops.init(c.universe.path),
   },
   {
@@ -150,24 +159,28 @@ const tools: Tool[] = [
         additionalProperties: false,
       },
     }, ["as", "select"]),
+    mutates: true,
     handler: (a, c) => ops.cover(c.universe.path, a),
   },
   {
     name: "check_stale",
     description: "Staleness pass for a universe: which anchors changed/vanished since baseline and which docs they flag. Also auto re-inits the anchor index if the checked-out branch changed since it was baselined (a branch switch = different code) — the result then includes `rebaselined`.",
     inputSchema: obj({}),
+    mutates: true,
     handler: (_a, c) => ops.checkStale(c.universe.path),
   },
   {
     name: "reindex",
     description: "Force a full re-baseline: re-index the whole repo at the CURRENT HEAD and replace the live anchor index, advancing the baseline commit/branch. Use when the index is pinned to an old commit and newly-added files/symbols aren't resolving (e.g. a subsystem added after the last init). NON-DESTRUCTIVE to the map — nodes, edges, reviews, coverage, bugs, and annotations are untouched; only anchors + baseline move (and the commit is cached as a diff snapshot). `check_stale` does this automatically on a branch change; call `reindex` to refresh same-branch drift on demand.",
     inputSchema: obj({}),
+    mutates: true,
     handler: (_a, c) => ops.reindex(c.universe.path),
   },
   {
     name: "snapshot",
     description: "Cache the current commit's anchors as an immutable snapshot (a fresh full index), so this branch can be diffed later WITHOUT checking it out again. Run it on a branch before switching away. `init` snapshots automatically; use this to (re)cache the current commit on demand.",
     inputSchema: obj({}),
+    mutates: true,
     handler: (_a, c) => ops.snapshot(c.universe.path),
   },
   {
@@ -196,6 +209,7 @@ const tools: Tool[] = [
       verbose: { type: "boolean" },
       emit: { type: "boolean" },
     }, ["analyzer"]),
+    mutates: true,
     handler: async (a, c) => {
       const r = await analyzeMarten(c.universe.path, { verbose: Boolean(a.verbose) });
       if (!a.emit) return r;
@@ -273,6 +287,7 @@ const tools: Tool[] = [
       unmark: { type: "boolean" },
       reviewer: { type: "string" },
     }, ["targetKind", "targetId", "level"]),
+    mutates: true,
     handler: async (a, c) => {
       if (a.unmark) return unmarkReviewed(c.universe.path, a);
       const g = guardSelfCheck(c.universe.id, a.targetKind, a.targetId);
@@ -290,12 +305,14 @@ const tools: Tool[] = [
       complexity: { type: "string", enum: ["deep", "standard", "rote", "wiring"] },
       reason: { type: "string" },
     }, ["targetKind", "targetId"]),
+    mutates: true,
     handler: async (a, c) => ops.setTriage(c.universe.path, { targetKind: a.targetKind, targetId: a.targetId, importance: a.importance, complexity: a.complexity, source: "agent", reason: a.reason }),
   },
   {
     name: "triage_derive",
     description: "Graph-derive `likely` stakes AND complexity across the whole map in one pass (the honest first cut). Stakes: money/value names → business-critical; emitting a domain event or being a command/handler/aggregate/event → important; projection → low; proximity elevates untriaged neighbors of high-stakes modules; anchors inherit their citing nodes' max stakes. Complexity: read off each anchor's source shape (branching density) → deep/standard/rote/wiring, a node taking its meatiest anchor. Regenerable — clears prior graph marks, never touches human or agent marks. Run this FIRST, then use `triage` to raise the anchors the graph couldn't judge, and leave the rest for a human to confirm.",
     inputSchema: obj({}, []),
+    mutates: true,
     handler: async (_a, c) => ops.deriveTriage(c.universe.path),
   },
   {
@@ -308,6 +325,7 @@ const tools: Tool[] = [
     name: "sanity_check",
     description: "Record that YOU (an agent) read the current code and a doc's claims hold — promotes it from `unverified` to `checked` trust. Witnessed, so it reverts to `stale` when the code changes. GUARDED: the connection that authored the doc can't check it — a different session must corroborate (no self-vouching). Use after verifying a doc during exploration.",
     inputSchema: obj({ id: { type: "string" }, reviewer: { type: "string" } }, ["id"]),
+    mutates: true,
     handler: async (a, c) => {
       const g = guardSelfCheck(c.universe.id, "node", a.id);
       if (g) return g;
@@ -342,6 +360,7 @@ const tools: Tool[] = [
         },
       },
     }, ["type", "title", "summary", "anchors"]),
+    mutates: true,
     handler: async (a, c) => trackAuthored(await ops.document(c.universe.path, a)),
   },
   {
@@ -367,24 +386,28 @@ const tools: Tool[] = [
         },
       },
     }),
+    mutates: true,
     handler: (a, c) => ops.connect(c.universe.path, a),
   },
   {
     name: "delete_node",
     description: "Delete a logical node outright and any edges touching it (ALL branches). For removing code on ONE branch while keeping the doc live on another, use `ack_hole` instead. To drop a single vanished anchor ref while keeping the node, use update_node with removeAnchors: [\"a_<id>\"].",
     inputSchema: obj({ id: { type: "string" } }, ["id"]),
+    mutates: true,
     handler: (a, c) => ops.removeNode(c.universe.path, a.id),
   },
   {
     name: "confirm",
     description: "Confirm a doc is still accurate at the CURRENT code without editing or forking it: accepts the current anchor hashes, clearing a `stale` flag. Use when a change touched code the doc cites but the doc's claims still hold. (Editing a stale doc instead FORKS a new version — confirm is the 'no change needed' path.) Docs versioning: see how a node resolves per branch via get_node/node_versions.",
     inputSchema: obj({ id: { type: "string" } }, ["id"]),
+    mutates: true,
     handler: (a, c) => ops.confirm(c.universe.path, a.id),
   },
   {
     name: "ack_hole",
     description: "Acknowledge a hole: the code a doc cited was removed ON THIS BRANCH and that's correct → tombstone the doc here (it disappears from this branch's map, but its content version still wins on branches where the code exists). Only valid when the doc is `dangling`. This is the branch-scoped 'delete' (vs delete_node which removes it everywhere).",
     inputSchema: obj({ id: { type: "string" } }, ["id"]),
+    mutates: true,
     handler: (a, c) => ops.ackHole(c.universe.path, a.id),
   },
   {
@@ -404,6 +427,7 @@ const tools: Tool[] = [
       addAnchors: { type: "array", items: { type: "string" } },
       removeAnchors: { type: "array", items: { type: "string" } },
     }, ["id"]),
+    mutates: true,
     handler: async (a, c) => trackAuthored(await ops.updateNode(c.universe.path, a)),
   },
   {
@@ -422,6 +446,7 @@ const tools: Tool[] = [
       type: { type: "string", enum: ["calls_api", "depends_on"] },
       order: { type: "number" },
     }, ["from", "toUniverse", "to"]),
+    mutates: true,
     handler: (a, c) => multi.link(ws, { fromUniverse: c.universe.id, from: a.from, toUniverse: a.toUniverse, to: a.to, type: a.type, order: a.order }),
   },
   {
@@ -433,6 +458,7 @@ const tools: Tool[] = [
       anchors: { type: "array", items: { type: "string" }, description: "Anchors by `file#Symbol`, `file:line`, or raw id (`file#Symbol(*)` = every overload). Partially resolved: unresolvable refs come back as `rejectedAnchors`." },
       severity: { type: "string", enum: ["low", "medium", "high", "critical"] },
     }, ["title", "description", "anchors"]),
+    mutates: true,
     handler: (a, c) => ops.reportBug(c.universe.path, a),
   },
   {
@@ -451,6 +477,7 @@ const tools: Tool[] = [
       addAnchors: { type: "array", items: { type: "string" } },
       refreshWitnesses: { type: "boolean" },
     }, ["id"]),
+    mutates: true,
     handler: (a, c) => ops.updateBug(c.universe.path, a),
   },
   {
@@ -466,6 +493,7 @@ const tools: Tool[] = [
       line: { type: "number", description: "1-based line to pin to (anchor targets) — the exact line the finding/pointer is about." },
       author: { type: "string" },
     }, ["targetKind", "targetId", "text"]),
+    mutates: true,
     handler: (a, c) => ops.annotate(c.universe.path, a),
   },
   {
@@ -486,6 +514,7 @@ const tools: Tool[] = [
       files: { type: "array", items: { type: "string" }, description: "Files you actually changed (for `fixed`). One file maximum." },
       by: { type: "string" },
     }, ["id", "result", "detail"]),
+    mutates: true,
     handler: (a, c) => ops.closeAssignment(c.universe.path, a as never),
   },
   {
@@ -498,6 +527,7 @@ const tools: Tool[] = [
     name: "resolve_question",
     description: "Close out a review question (or re-open with resolved:false) once you've answered it by improving the documentation.",
     inputSchema: obj({ id: { type: "string" }, resolved: { type: "boolean" } }, ["id"]),
+    mutates: true,
     handler: (a, c) => ops.resolveAnnotation(c.universe.path, a.id, a.resolved !== false),
   },
 ];
@@ -567,7 +597,7 @@ async function handle(msg: any): Promise<void> {
       }
       try {
         const run = () => tool.handler(args, { ws, universe });
-        const out = MUTATING.has(tool.name) ? await withLock(universe.path, run) : await run();
+        const out = tool.mutates ? await withLock(universe.path, run) : await run();
         send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] } });
       } catch (e: any) {
         send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: "Error: " + (e?.message ?? String(e)) }], isError: true } });

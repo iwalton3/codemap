@@ -57,13 +57,14 @@ export function scanMarkdown(text: string): MdLine[] {
   let inComment = false;
 
   // YAML front matter is not a setext heading, and `---` on line one is the only
-  // place it can start.
+  // place it can start — but ONLY when it actually closes. A spec that opens with a
+  // horizontal rule would otherwise have its entire body swallowed as front matter,
+  // reported as a file with no claims at all.
   let i = 0;
   if (raw[0]?.trim() === "---") {
-    out.push({ kind: "comment", text: raw[0]!, line: 1 });
-    for (i = 1; i < raw.length; i++) {
-      out.push({ kind: "comment", text: raw[i]!, line: i + 1 });
-      if (raw[i]!.trim() === "---") { i++; break; }
+    const close = raw.findIndex((l, n) => n > 0 && l.trim() === "---");
+    if (close > 0) {
+      for (i = 0; i <= close; i++) out.push({ kind: "comment", text: raw[i]!, line: i + 1 });
     }
   }
 
@@ -89,16 +90,26 @@ export function scanMarkdown(text: string): MdLine[] {
       out.push({ kind: "code", text: line, line: at });
       continue;
     }
-    // A comment that opens and closes on one line never hides anything.
-    if (line.includes("<!--") && !line.includes("-->")) {
+    // Only a line that OPENS with the delimiter starts a comment block. Testing for
+    // `<!--` anywhere meant a prose line merely mentioning it — in inline code, in an
+    // HTML snippet — swallowed every heading and every section after it to EOF, and
+    // `splitSpec` then discarded all of them as text the author had deleted.
+    const opensComment = /^\s{0,3}<!--/.test(line);
+    if (opensComment && !line.includes("-->")) {
       inComment = true;
       out.push({ kind: "comment", text: line, line: at });
       continue;
     }
-    if (line.includes("<!--") && line.includes("-->")) {
-      out.push({ kind: "comment", text: line, line: at });
-      continue;
-    }
+    if (opensComment) { out.push({ kind: "comment", text: line, line: at }); continue; }
+
+    // A 4-space indented block is code too. Without this a SQL statement written
+    // that way (rather than fenced) still reached the summariser and became a
+    // promoted node's description, reported as having come from the spec — which is
+    // the failure this module's docstring claims to have closed.
+    const prevLine = out[out.length - 1];
+    const afterBlankOrCode = !prevLine || (prevLine.kind === "code")
+      || (prevLine.kind === "text" && !prevLine.text.trim());
+    if (/^ {4,}\S/.test(line) && afterBlankOrCode) { out.push({ kind: "code", text: line, line: at }); continue; }
 
     const atx = ATX.exec(line);
     if (atx) { out.push({ kind: "heading", level: atx[1]!.length, text: atx[2]!.trim(), line: at }); continue; }
@@ -107,7 +118,9 @@ export function scanMarkdown(text: string): MdLine[] {
     // ordinary text. `---` under nothing is a thematic break, not a heading.
     const se = SETEXT.exec(line);
     const prev = out[out.length - 1];
-    if (se && prev && prev.kind === "text" && prev.text.trim()) {
+    // A list item under a rule is a list plus a thematic break, not a heading.
+    const isListItem = prev?.kind === "text" && /^\s{0,3}([-*+]|\d+[.)])\s/.test(prev.text);
+    if (se && prev && prev.kind === "text" && prev.text.trim() && !isListItem) {
       out[out.length - 1] = { kind: "heading", level: se[1]![0] === "=" ? 1 : 2, text: prev.text.trim(), line: prev.line };
       out.push({ kind: "code", text: line, line: at });   // the underline itself is not body
       continue;
