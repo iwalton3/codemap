@@ -310,7 +310,7 @@ const server = createServer(async (req, res) => {
               text: body.text, comment: body.comment, disposition: body.disposition, severity: body.severity,
               publishPath: body.publishPath, publishLine: body.publishLine, publishAttribution: body.publishAttribution,
             })
-          : ops.withdrawAnnotation(root, { id: String(body.id ?? ""), withdraw: body.withdraw !== false, by: body.by })),
+          : ops.withdrawAnnotation(root, { id: String(body.id ?? ""), withdraw: body.withdraw !== false, by: body.by, reason: body.reason })),
       ));
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(out));

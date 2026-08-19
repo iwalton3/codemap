@@ -258,8 +258,8 @@ const postAnnotate = (u, targetKind, targetId, text, kind, line, ref, comment) =
 // nothing reaches GitHub until the push button, which is its own act.
 const postRevise = (u, id, patch) =>
   fetch('/api/annotation_revise', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id, by: 'human', ...patch }) });
-const postWithdraw = (u, id, withdraw) =>
-  fetch('/api/annotation_withdraw', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id, withdraw, by: 'human' }) });
+const postWithdraw = (u, id, withdraw, reason) =>
+  fetch('/api/annotation_withdraw', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id, withdraw, reason, by: 'human' }) });
 const postResolveAnnotation = (u, id, resolved) =>
   fetch('/api/annotation_resolve', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id, resolved }) });
 
@@ -332,7 +332,7 @@ async function reviseFinding(c, u, id, patch) {
   c.state.findingErr = null;
   await afterAnnotationWrite(c, res);
 }
-async function withdrawFinding(c, u, id, withdraw) { await afterAnnotationWrite(c, await asJson(postWithdraw(u, id, withdraw))); }
+async function withdrawFinding(c, u, id, withdraw, reason) { await afterAnnotationWrite(c, await asJson(postWithdraw(u, id, withdraw, reason))); }
 // Raising an agent's finding to the maintainer. Local only — it makes the finding
 // PUBLISHABLE; nothing reaches GitHub until the push button, which is its own act.
 const postEscalate = (u, id, escalate) =>
@@ -2523,9 +2523,16 @@ class PrStoryPage extends Component {
         <span class="prfdisp d-${f.disposition || 'open'}">${f.disposition || 'open'}</span>
         ${when(f.targetResolved === false, () => html`<span class="warn" title="the code this points at is not in the working tree${f.targetAt ? ' — last seen at ' + f.targetAt : ' and was not retained'}. It cannot be placed on the diff; set a publish path.">⚠ target gone</span>`)}
         ${when(f.publishPath, () => html`<span class="dim" title="published against this file, because the code it is about is not in the diff">→ <code>${f.publishPath}</code></span>`)}
+        ${when(f.withdrawn && f.withdrawn.reason, () => html`<span class="dim" title="withdrawn by ${f.withdrawn.by}">withdrawn: ${f.withdrawn.reason}</span>`)}
         ${when(f.revisions && f.revisions.length, () => html`<span class="dim" title="${f.revisions.map(r => `${r.at.slice(0, 10)} ${r.by}`).join('\n')}">· revised ${f.revisions.length}×</span>`)}
         <button class="ghost" on-click="${() => { this.state.findingErr = null; this.state.editFinding = { id: f.id, comment: f.comment || '', disposition: f.disposition || 'open', publishPath: f.publishPath || '' }; }}">✎ edit</button>
-        ${when(!f.resolved && !f.postedRef, () => html`<button class="ghost" on-click="${() => withdrawFinding(this, u, f.id, !f.withdrawn)}">${f.withdrawn ? 'un-withdraw' : 'withdraw'}</button>`)}
+        ${when(!f.resolved && !f.postedRef, () => html`<button class="ghost" title="${f.withdrawn ? 'put it back in the batch' : 'decide against sending this one. It stays on the map; you will be asked why.'}" on-click="${() => {
+          if (f.withdrawn) return withdrawFinding(this, u, f.id, false, null);
+          // Asked for, not required: "withdrawn" with no reason is indistinguishable
+          // from "forgotten", and the usual reason names what superseded it.
+          const reason = prompt('Why is this not going out? (e.g. "duplicate of finding_x, already on the PR")') ;
+          if (reason !== null) withdrawFinding(this, u, f.id, true, reason);
+        }}">${f.withdrawn ? 'un-withdraw' : 'withdraw'}</button>`)}
       </div>`;
     }
     const over = ed.comment.length > 800;

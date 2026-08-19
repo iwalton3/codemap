@@ -295,9 +295,12 @@ test("withdrawing keeps a finding on the map and off the pull request", async ()
   const { root, annId } = await fixture();
   try {
     // Distinct from resolving: it may still be true and still worth having.
-    assert.equal((await withdrawAnnotation(root, { id: annId, by: "izzie" }) as any).withdrawn, true);
+    assert.equal((await withdrawAnnotation(root, { id: annId, by: "izzie", reason: "duplicate of finding_x, already on the PR" }) as any).withdrawn, true);
     const a = () => readAnnotations(root).then((s) => s.annotations.find((x) => x.id === annId)!);
     assert.equal((await a()).withdrawn!.by, "izzie");
+    // The reason IS the record: "withdrawn" alone is indistinguishable from
+    // "forgotten", and the usual reason names what superseded it.
+    assert.match((await a()).withdrawn!.reason!, /duplicate of finding_x/);
     assert.equal((await a()).resolved, false, "withdrawn is not closed");
 
     assert.equal((await withdrawAnnotation(root, { id: annId, withdraw: false }) as any).withdrawn, false);

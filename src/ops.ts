@@ -2691,7 +2691,7 @@ export async function reviseAnnotation(
  * human's own finding is publishable by virtue of having been written, so declining
  * to send it needs a record of its own rather than the absence of one.
  */
-export async function withdrawAnnotation(root: string, input: { id: string; withdraw?: boolean; by?: string }) {
+export async function withdrawAnnotation(root: string, input: { id: string; withdraw?: boolean; by?: string; reason?: string }) {
   const store = await readAnnotations(root);
   const ann = store.annotations.find((a) => a.id === input.id);
   if (!ann) return { error: `no annotation "${input.id}"` };
@@ -2699,7 +2699,9 @@ export async function withdrawAnnotation(root: string, input: { id: string; with
     return { error: `that finding is already posted to PR #${ann.postedRef.pr} — withdrawing it here would not take it off the pull request. Reply to it there instead.` };
   }
   const withdraw = input.withdraw !== false;
-  ann.withdrawn = withdraw ? { at: new Date().toISOString(), by: input.by || "human" } : undefined;
+  ann.withdrawn = withdraw
+    ? { at: new Date().toISOString(), by: input.by || "human", ...(input.reason?.trim() ? { reason: input.reason.trim() } : {}) }
+    : undefined;
   await writeAnnotations(root, store.annotations);
   return { ok: true, id: ann.id, withdrawn: withdraw, target: ann.target };
 }

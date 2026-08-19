@@ -399,7 +399,16 @@ export interface Annotation {
    * which only exists on an agent's finding — a human's own finding is publishable
    * by having been written, so declining to send it needs its own record.
    */
-  withdrawn?: { at: string; by: string };
+  withdrawn?: {
+    at: string; by: string;
+    /**
+     * Why it is not going out. Optional, but the reason is the whole value of the
+     * record: "withdrawn" alone is indistinguishable from "forgotten", and the
+     * common case — a duplicate of something already on the pull request — is only
+     * legible if it names what superseded it.
+     */
+    reason?: string;
+  };
   /** Where this landed on GitHub. Set by the publish; what makes editing it possible. */
   postedRef?: {
     pr: number;

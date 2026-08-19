@@ -226,6 +226,19 @@ test("withdrawn stays on the map and off the pull request", () => {
   assert.equal(pushVerdict(ann({ withdrawn: { at: "now", by: "me" } }), true, none), "withdrawn");
   // a finding already posted is never re-sent, whichever record says so
   assert.equal(pushVerdict(ann({ postedRef: { pr: 7, at: "now", placement: "inline" } }), true, none), "already-pushed");
+  assert.equal(pushVerdict(ann({ postedRef: { pr: 7, at: "now", placement: "inline" } }), true, none, { pr: 7 }), "already-pushed");
+});
+
+test("a finding sent to one pull request is not thereby answered on another", () => {
+  // Two PRs can touch the same symbol. `postedRef` names the PR it landed on, so it
+  // only speaks for that one — reading it as a global "already sent" silently
+  // withholds the finding from every other pull request, with no way to tell.
+  const none = new Set<string>();
+  const posted = ann({ postedRef: { pr: 227, at: "now", placement: "inline" } });
+  assert.equal(pushVerdict(posted, true, none, { pr: 264 }), "push");
+  assert.equal(pushVerdict(posted, true, none, { pr: 227 }), "already-pushed");
+  // the per-PR push record is unconditional — it IS this PR's receipt
+  assert.equal(pushVerdict(ann(), true, new Set(["n1"]), { pr: 264 }), "already-pushed");
 });
 
 test("publishing records the review BEFORE syncing viewed state", async () => {
@@ -431,6 +444,7 @@ const world = (over: Partial<Parameters<typeof buildComments>[1]> = {}) => ({
   firstAddedLineOfSymbol: () => undefined,
   firstChangedLineOfSymbol: () => 12,
   headHashOf: () => undefined,
+  pr: 264,
   ...over,
 });
 

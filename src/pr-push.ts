@@ -179,11 +179,18 @@ export function pushVerdict(
     electedOnly?: boolean; minSeverity?: string; dispositions?: readonly Disposition[]; ids?: ReadonlySet<string>;
     /** The anchor's body hash at the PR head; undefined when the PR does not carry it. */
     headHashOf?: (anchorId: string) => string | undefined;
+    /** Which pull request this plan is for — `postedRef` is scoped to one. */
+    pr?: number;
   } = {},
 ): PushVerdict {
   if (!inPr) return "not-in-pr";
   if (a.resolved) return "resolved";                       // never send something closed locally
-  if (pushed.has(a.id) || a.postedRef) return "already-pushed";  // a re-run must not duplicate a comment
+  // A re-run must not duplicate a comment. `pushed` is already this PR's record;
+  // `postedRef` names the PR it landed on, so it only speaks for that one — two pull
+  // requests can touch the same symbol, and a finding that went to one is not
+  // thereby answered on the other.
+  if (pushed.has(a.id)) return "already-pushed";
+  if (a.postedRef && (filter.pr === undefined || a.postedRef.pr === filter.pr)) return "already-pushed";
   if (a.withdrawn) return "withdrawn";
   if (filter.electedOnly !== false && !isElected(a)) return "not-elected";
   const minSev = filter.minSeverity === undefined ? -1 : SEV_ORDER.indexOf(filter.minSeverity);
@@ -387,6 +394,8 @@ export function buildComments(
     firstAddedLineOfSymbol: (anchorId: string, path: string) => number | undefined;
     /** The anchor's body hash at the PR head — what a finding's witness must match. */
     headHashOf: (anchorId: string) => string | undefined;
+    /** Which pull request this is for; `postedRef` is scoped to one. */
+    pr?: number;
   },
   filter: PushFilterExt = {},
 ): CommentSet {
@@ -410,12 +419,12 @@ export function buildComments(
     // witness findings were a fail-open predicate in a file the branch never touched
     // and a missing registration, which is an absence and has no line anywhere.
     const claimed = !w && (isElected(a) || !!a.publishPath) && !a.resolved && !a.withdrawn
-      && !pushed.has(a.id) && !a.postedRef;
+      && !pushed.has(a.id) && !(a.postedRef && (ctx.pr === undefined || a.postedRef.pr === ctx.pr));
     if (!w && !claimed) continue;
 
     const verdict = pushVerdict(a, w ? true : claimed, pushed, {
       electedOnly, minSeverity: filter.minSeverity, dispositions: filter.dispositions, ids,
-      headHashOf: ctx.headHashOf,
+      headHashOf: ctx.headHashOf, pr: ctx.pr,
     });
     if (verdict === "not-in-pr") continue;
     if (verdict === "resolved") { resolved++; continue; }
@@ -540,6 +549,7 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
   const headBodies = new Map(((await readSnapshot(root, t.refs.head)) ?? []).map((a) => [a.id, a.bodyHash]));
 
   const set = buildComments(anns, {
+    pr: t.pr.number,
     headHashOf: (id) => headBodies.get(id),
     inPr: (id) => { const w = byAnchor.get(id); return w ? { file: w.file, symbol: w.symbol } : undefined; },
     anchorOf: (id) => { const x = allAnchors.get(id); return x ? { file: x.file, symbol: x.symbolPath.join(" › ") } : undefined; },
