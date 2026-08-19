@@ -7,7 +7,7 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { type Review, type ReviewLevel, type ReviewState, type BugWitness } from "./schema.js";
-import { readReviews, writeReviews, readAnchorStore, loadNodes, readSnapshot } from "./store.js";
+import { readReviews, writeReviews, readAnchorStore, loadNodes, readSnapshot, snapshotBranch } from "./store.js";
 import { resolveAcceptance, recordAcceptance, type Ancestry } from "./acceptance.js";
 import { ACCEPTED_CAP, type AcceptedCitation, type AcceptedEntry, type AcceptanceVia } from "./schema.js";
 import { isAncestor, isGitRepo, currentBranch as gitBranch } from "./git.js";
@@ -113,6 +113,23 @@ export async function witnessesFor(root: string, target: Target, ref?: string): 
   return anchorIds.map((id) => ({ anchorId: id, bodyHash: live.get(id) ?? "sha256:absent" }));
 }
 
+/**
+ * The commit a mark is ABOUT, and the branch that commit belongs to.
+ *
+ * A PR sign-off is made against the pull request's head, not against whatever the
+ * working tree happens to be checked out to. Stamping `headCommit(root)` made the
+ * mark claim it happened at the local HEAD while its witnesses came from the PR
+ * head, so `changedSince` compared PR-head witnesses with working-tree hashes and
+ * reported the whole mark as drifted — "what changed since I signed?" was unusable
+ * for anything signed on a PR surface. The branch had the same split: it was the
+ * working tree's, so a year of imported acceptances all carry whichever branch the
+ * importer happened to be on.
+ */
+function markedAt(root: string, ref: string | undefined): { commit: string | null; branch: string | null } {
+  if (ref) return { commit: ref, branch: snapshotBranch(root, ref) };
+  return { commit: headCommit(root), branch: isGitRepo(root) ? gitBranch(root) : null };
+}
+
 export async function markReviewed(
   root: string,
   input: { targetKind: "node" | "anchor"; targetId: string; level: ReviewLevel; reviewer?: string; actor?: "human" | "agent"; attestation?: Attestation; ref?: string },
@@ -139,8 +156,7 @@ export async function markReviewed(
   // signed on two branches of a stack would keep only the last one.
   const prior = rs.reviews.find(sameMark);
   const priorAccepted = new Map((prior ? acceptedOf(prior) : []).map((c) => [c.anchorId, c.entries]));
-  const commit = input.ref ?? headCommit(root);
-  const branch = isGitRepo(root) ? gitBranch(root) : null;
+  const { commit, branch } = markedAt(root, input.ref);
   const stamp = new Date().toISOString();
   const accepted: AcceptedCitation[] = anchorIds.map((id) => {
     const hash = live.get(id);
@@ -163,7 +179,7 @@ export async function markReviewed(
     actor,
     attestation,
     at: new Date().toISOString(),
-    reviewedCommit: headCommit(root),
+    reviewedCommit: commit,
     witnesses,
     accepted,
   });
@@ -451,6 +467,12 @@ export interface RevertedMark {
   level: ReviewLevel;
   anchorId: string;
   reviewer: string;
+  /**
+   * Which kind of mark this is. A `viewed` tick is exposure, not a vouch, and the
+   * dashboard presents these as "approvals sitting on top of a revert" — so a
+   * consumer that means APPROVALS has to be able to tell them apart.
+   */
+  attestation: Attestation | "checked";
   /** Where the body was originally approved, and the newer body it has moved back from. */
   approvedAt: { branch: string | null; commit: string | null; at: string };
   supersededBy: { branch: string | null; commit: string | null; at: string };
@@ -465,7 +487,7 @@ export interface RevertedMark {
  * it was replaced, so the tick is technically honest and probably misleading.
  * Navigating to a branch that legitimately holds the older body is NOT this.
  */
-export async function revertedMarks(root: string, opts: { ref?: string } = {}): Promise<RevertedMark[]> {
+export async function revertedMarks(root: string, opts: { ref?: string; includeViewed?: boolean } = {}): Promise<RevertedMark[]> {
   const rs = await readReviews(root);
   const all = new Set<string>();
   for (const r of rs.reviews) for (const c of acceptedOf(r)) all.add(c.anchorId);
@@ -475,11 +497,19 @@ export async function revertedMarks(root: string, opts: { ref?: string } = {}): 
 
   const out: RevertedMark[] = [];
   for (const r of rs.reviews) {
+    // A bulk import writes thousands of `viewed` rows (reviewer "github-import")
+    // that are explicitly NOT vouches. Every one of them could raise a revert alarm
+    // the dashboard renders as an approval, and the same target appeared twice —
+    // once viewed, once signed — with nothing to tell them apart. `reviewStatesFor`
+    // already excludes viewed rows from the vouch state; this now says which it is,
+    // and skips them by default.
+    const attestation = effectiveAttestation(r);
+    if (!opts.includeViewed && attestation === "viewed") continue;
     for (const c of acceptedOf(r)) {
       const a = resolveAcceptance(c.entries, live.get(c.anchorId), ancestry);
       if (a.via !== "reverted" || !a.entry || !a.supersededBy) continue;
       out.push({
-        target: r.target, level: r.level, anchorId: c.anchorId, reviewer: r.reviewer,
+        target: r.target, level: r.level, anchorId: c.anchorId, reviewer: r.reviewer, attestation,
         approvedAt: { branch: a.entry.branch, commit: a.entry.commit, at: a.entry.at },
         supersededBy: { branch: a.supersededBy.branch, commit: a.supersededBy.commit, at: a.supersededBy.at },
       });
@@ -516,11 +546,13 @@ export async function markReviewedBatch(
   const viewed = attestation === "viewed";
 
   const rs = await readReviews(root);
-  const commit = input.ref ?? headCommit(root);
-  const branch = isGitRepo(root) ? gitBranch(root) : null;
+  const { commit, branch } = markedAt(root, input.ref);
   const stamp = new Date().toISOString();
-  const headSha = headCommit(root);
 
+  // A repeated id would mint two independent rows for one (target, level,
+  // attestation), and every reader — `reviewStatesFor`, `forLevel`, `changedSince`
+  // — uses `.find` and assumes there is one.
+  anchorIds = [...new Set(anchorIds)];
   const wanted = new Set(anchorIds);
   const priorFor = new Map<string, Review>();
   for (const r of rs.reviews) {
@@ -541,7 +573,7 @@ export async function markReviewedBatch(
       actor,
       attestation,
       at: stamp,
-      reviewedCommit: headSha,
+      reviewedCommit: commit,
       witnesses: [{ anchorId: id, bodyHash: hash ?? "sha256:absent" }],
       accepted: [{
         anchorId: id,

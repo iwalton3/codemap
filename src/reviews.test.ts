@@ -183,3 +183,79 @@ test("a review write reports the resulting mark, so one symbol can be updated in
     assert.equal((await anchorMark(root, id)).reviewed, false, "taking it back is reported too");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("a mark made against a PR head records THAT commit, not the working tree's", async () => {
+  // `reviewedCommit` was always `headCommit(root)`, so a PR sign-off claimed to have
+  // happened at the local HEAD while its witnesses came from the PR head.
+  // `changedSince` then compared the two and reported the whole mark as drifted —
+  // "what changed since I signed?" was unusable for anything signed on a PR surface.
+  const root = mkdtempSync(join(tmpdir(), "codemap-refmark-"));
+  try {
+    mkdirSync(join(root, "src"));
+    const src = "export function transfer(cents: number) {\n  return cents;\n}\n";
+    writeFileSync(join(root, "src/pay.ts"), src);
+    const anchors = await indexBlob(src, "src/pay.ts");
+    await writeStore(root, anchors, { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State);
+    const id = anchors[0]!.id;
+
+    const { writeSnapshot, readReviews } = await import("./store.js");
+    await writeSnapshot(root, "prhead", "feature/x", anchors, "2026-08-19T00:00:00Z");
+
+    await markReviewed(root, { targetKind: "anchor", targetId: id, level: "code", actor: "human", attestation: "signed", ref: "prhead" });
+    const r = (await readReviews(root)).reviews[0]!;
+    assert.equal(r.reviewedCommit, "prhead", "the mark is about the commit it was made against");
+    assert.equal(r.accepted![0]!.entries[0]!.commit, "prhead");
+    assert.equal(r.accepted![0]!.entries[0]!.branch, "feature/x",
+      "and carries THAT commit's branch, not whichever the working tree was on");
+    assert.equal((await changedSince(root, { kind: "anchor", id }, { level: "code", attestation: "signed" })).changed.length, 0,
+      "nothing changed since it was signed");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("markReviewedBatch dedupes its ids — every reader assumes one row per target", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-batch-"));
+  try {
+    await writeStore(root, [], { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State);
+    const { markReviewedBatch } = await import("./reviews.js");
+    const { readReviews } = await import("./store.js");
+    const r = await markReviewedBatch(root, ["a_1", "a_1", "a_2"], {
+      level: "code", actor: "human", attestation: "viewed", reviewer: "github-import",
+      ref: "h", hashes: new Map([["a_1", "sha256:A"], ["a_2", "sha256:B"]]),
+    });
+    assert.equal(r.marked, 2, "a repeated id is one mark");
+    const rows = (await readReviews(root)).reviews.filter((x) => x.target.id === "a_1");
+    assert.equal(rows.length, 1, "two rows for one (target, level, attestation) breaks every `.find` that reads them");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("an imported viewed tick does not raise an approval-sitting-on-a-revert alarm", async () => {
+  // A bulk import writes thousands of `viewed` rows (reviewer "github-import") that
+  // are explicitly NOT vouches, and the dashboard renders every revert alarm as
+  // "approvals sitting on top of a revert".
+  const root = mkdtempSync(join(tmpdir(), "codemap-revert-"));
+  try {
+    mkdirSync(join(root, "src"));
+    const v1 = "export function f() {\n  return 1;\n}\n";
+    writeFileSync(join(root, "src/f.ts"), v1);
+    const a1 = await indexBlob(v1, "src/f.ts");
+    await writeStore(root, a1, { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State);
+    const id = a1[0]!.id;
+    const h1 = a1[0]!.bodyHash;
+    const a2 = await indexBlob("export function f() {\n  return 2;\n}\n", "src/f.ts");
+    const h2 = a2[0]!.bodyHash;
+
+    const { markReviewedBatch, revertedMarks } = await import("./reviews.js");
+    // viewed at v1, viewed at v2, and the code is back at v1 — a revert, on ticks
+    for (const [ref, hash] of [["c1", h1], ["c2", h2]] as const) {
+      await markReviewedBatch(root, [id], {
+        level: "code", actor: "human", attestation: "viewed", reviewer: "github-import",
+        ref, hashes: new Map([[id, hash]]),
+      });
+    }
+    const marks = await revertedMarks(root);
+    assert.deepEqual(marks, [], "exposure is not approval; these must not read as approvals on a revert");
+
+    const withViewed = await revertedMarks(root, { includeViewed: true });
+    for (const m of withViewed) assert.equal(m.attestation, "viewed", "and when asked for, they say which they are");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

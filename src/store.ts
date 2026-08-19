@@ -169,6 +169,12 @@ export function dropLegacyOverloadSnapshots(root: string): string[] {
   return stale;
 }
 
+/** The label a commit's snapshot was cached under (a branch or PR head ref), if any. */
+export function snapshotBranch(root: string, ref: string): string | null {
+  const r = db(root).prepare("SELECT branch FROM snapshots WHERE ref = ?").get(ref) as { branch: string | null } | undefined;
+  return r?.branch ?? null;
+}
+
 export async function listSnapshots(root: string): Promise<SnapshotInfo[]> {
   const rows = db(root).prepare("SELECT ref, branch, at, count FROM snapshots ORDER BY at DESC").all() as unknown as SnapshotInfo[];
   return rows;
