@@ -40,11 +40,16 @@ const EPHEMERAL_SPEC = /(implementation-log|implementation-plan|open-items|chang
  */
 const CHANGE_VERB = "changed|new|not added|added|removed|deprecated|renamed|extend(?:ed|s)?|migrat\\w*|revert(?:ed)?";
 const CHANGE_HEADING = new RegExp(
-  // leading, after an optional section number: "3.1 Changed: `Foo`"
-  `^\\s*(?:[\\d.]+\\s*)?(?:${CHANGE_VERB})\\b`
-  // or trailing after a dash, which is how these specs qualify a heading:
-  // "4.4 Apply(OrderDeliveryCreated) — extend (D7)"
-  + `|[—–-]\\s*(?:${CHANGE_VERB})\\b`
+  // Leading, after an optional section number — "3.1 Changed: `Foo`", "3.5 Not
+  // added". The verb has to be QUALIFYING something (a colon, a dash, a backticked
+  // name) or be the whole heading: a bare `\b` also caught "Extended attributes"
+  // and "New order flow", so an ordinary system-describing heading was excluded
+  // from promotion even in a durable spec.
+  `^\\s*(?:[\\d.]+\\s*)?(?:${CHANGE_VERB})\\b(?:\\s*[:—–]|\\s+-\\s|\\s+\`|\\s*$)`
+  // or trailing after a real dash, which is how these specs qualify a heading:
+  // "4.4 Apply(OrderDeliveryCreated) — extend (D7)". A bare hyphen matched inside
+  // hyphenated words too ("auto-removed"), so it must be an em/en dash or spaced.
+  + `|(?:[—–]|\\s-)\\s*(?:${CHANGE_VERB})\\b`
   // or carrying a line range, which only a diff has
   + `|\\(L\\d+[-–]\\d+\\)|\\bTODO\\b`,
   "i",
@@ -280,6 +285,14 @@ export function buildStory(sections: SpecSection[], steps: StoryStep[], opts: { 
         if (ids.heading.has(p)) score += p === leaf ? 6 : 3;
         else if (ids.body.has(p)) score += p === leaf ? 2 : 1;
       }
+      // A GENERIC leaf (`Apply`, `Handle`) never binds on its own — that is what
+      // `distinctive` is for. But when a section heading names it AND something
+      // distinctive the step also carries, that section is the more specific home:
+      // `## \`Apply(OrderShipmentCreated)\` on the aggregate` and `## \`OrderShipmentCreated\``
+      // otherwise scored identically, and the tie went to whichever came FIRST in
+      // the file, so the aggregate's prose ended up with no steps and was demoted
+      // to a gap row — never shown beside the overload it exists to explain.
+      if (score > 0 && GENERIC.has(leaf) && ids.heading.has(leaf)) score += 1;
       if (score > bestScore) { bestScore = score; best = i; }
     });
     if (best >= 0) claimed.set(step.anchorId, { idx: best, score: bestScore });

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { splitSpec, mentionedIdentifiers, layerOf, buildStory, type StoryStep } from "./pr-story.js";
+import { splitSpec, mentionedIdentifiers, layerOf, buildStory, isDurableHeading, type StoryStep } from "./pr-story.js";
 
 const step = (o: Partial<StoryStep> & { anchorId: string; symbol: string }): StoryStep => ({
   file: "src/X.cs", signature: "", change: "added", complexity: "standard", severity: "untriaged",
@@ -142,4 +142,37 @@ test("a three-letter domain type binds when the PR has one", () => {
   assert.ok(bound, "the Fee section claims the Fee symbol");
   assert.match(bound!.title, /Fee/);
   assert.equal(story.undocumented, 0);
+});
+
+test("an overload lands in the section about the overload, not the one about its event", () => {
+  // Both sections name `OrderShipmentCreated`, and the overload's own leaf `Apply`
+  // is GENERIC so it cannot score — the two tied, and the tie went to whichever
+  // section came FIRST in the file. Both symbols piled into the event's section and
+  // the aggregate's prose was demoted to a gap row, never shown beside the overload
+  // it exists to explain. Which is the whole reason the signature is fed into the match.
+  const story = buildStory(
+    splitSpec("docs/specs/x/01-domain-model.md",
+      "## `OrderShipmentCreated`\nThe event.\n## `Apply(OrderShipmentCreated)` on the aggregate\nHow it folds."),
+    [
+      step({ anchorId: "a_evt", symbol: "Domain › OrderShipmentCreated", file: "Domains/D/OrderShipmentCreated.cs" }),
+      step({ anchorId: "a_apply", symbol: "OrderAggregate › Apply", file: "Domains/D/OrderAggregate.cs", signature: "public void Apply(OrderShipmentCreated e)" }),
+    ],
+  );
+  const where = (id: string) => story.chapters.find((c) => c.steps.some((s) => s.anchorId === id))?.title;
+  assert.equal(where("a_evt"), "OrderShipmentCreated");
+  assert.match(where("a_apply") ?? "", /on the aggregate/);
+  assert.equal(story.specWithoutCode.length, 0, "neither section is left without code");
+});
+
+test("a heading is change-scoped only when a change verb is qualifying something", () => {
+  // `extend(?:ed|s)?` and `new` matched anywhere at the start, or after ANY hyphen,
+  // so ordinary system-describing headings were excluded from promotion.
+  for (const h of ["3.1 Changed: `OrderShipmentCreated` (L903-968)", "3.2 New: `OrderShipmentConfirmed`",
+                   "4.4 Apply(X) — extend (D7)", "3.5 Not added", "Ledger — removed"]) {
+    assert.equal(isDurableHeading(h), false, `"${h}" is change-scoped`);
+  }
+  for (const h of ["Extended attributes on a location", "New order flow", "Auto-removed releases",
+                   "Domain Model: the confirmation axis", "6. Failure semantics per transition"]) {
+    assert.equal(isDurableHeading(h), true, `"${h}" describes the system`);
+  }
 });
