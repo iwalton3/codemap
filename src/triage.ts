@@ -115,7 +115,14 @@ export function ratchet(
   const wantImp = input.importance ? normImportance(input.importance) : undefined;
   if (existing && !human) {
     const raisesImp = wantImp !== undefined && (exImp === undefined || IMPORTANCE_RANK[wantImp] > IMPORTANCE_RANK[exImp]);
-    const raisesCx = input.complexity !== undefined && (existing.complexity === undefined || COMPLEXITY_RANK[input.complexity] > COMPLEXITY_RANK[existing.complexity]);
+    // An ABSENT complexity is not "lower than everything" — every consumer
+    // (severity, barFor) reads it as DEFAULT_COMPLEXITY, so treating undefined as
+    // raisable let an agent send `wiring` against a human's business-critical mark,
+    // drop the bar from `signed` to `viewed`, and flip the mark back to
+    // agent/`likely`. `derivePrTriage` sends a complexity for every changed symbol,
+    // so the hole was mass-reachable.
+    const exCx = existing.complexity ?? DEFAULT_COMPLEXITY;
+    const raisesCx = input.complexity !== undefined && COMPLEXITY_RANK[input.complexity] > COMPLEXITY_RANK[exCx];
     if (!raisesImp && !raisesCx) {
       return { refused: existing.source === "human" ? "human-owned — agents may only ESCALATE it, never lower" : "ratchet: agents/graph may only raise stakes/complexity" };
     }
@@ -128,7 +135,11 @@ export function ratchet(
       : IMPORTANCE_RANK[wantImp] > IMPORTANCE_RANK[exImp] ? wantImp : exImp;
   const complexity = human ? (input.complexity ?? existing?.complexity)
     : input.complexity === undefined ? existing?.complexity
-      : existing?.complexity === undefined || COMPLEXITY_RANK[input.complexity] > COMPLEXITY_RANK[existing.complexity] ? input.complexity : existing.complexity;
+      // Nothing to ratchet against on a first mark — the agent's proposal stands.
+      // The DEFAULT_COMPLEXITY baseline only applies once a mark exists, because
+      // that is when an absent complexity is already *read* as `standard`.
+      : existing === undefined ? input.complexity
+        : COMPLEXITY_RANK[input.complexity] > COMPLEXITY_RANK[existing.complexity ?? DEFAULT_COMPLEXITY] ? input.complexity : existing.complexity;
   return { importance, complexity };
 }
 

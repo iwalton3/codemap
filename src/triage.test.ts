@@ -295,3 +295,33 @@ test("untriaged escalates only while a review gap remains — a live sign-off co
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+/**
+ * The hole an adversarial review found: `ratchet` treated an ABSENT complexity as
+ * raisable, while severity and `barFor` read absent as DEFAULT_COMPLEXITY. So an
+ * agent could send only a low complexity against a human's business-critical mark,
+ * drop the bar from `signed` to `viewed`, and flip the mark back to agent/`likely`
+ * — erasing the confirmation. `derivePrTriage` sends a complexity for every changed
+ * symbol, so it was reachable in bulk rather than by contrivance.
+ */
+test("an agent cannot lower a human's review bar through the complexity axis", async () => {
+  const root = initRoot();
+  try {
+    await init(root);
+    const t = { targetKind: "anchor" as const, targetId: "a_bar" };
+    await setTriage(root, { ...t, importance: "business-critical", source: "human" });
+
+    const r = await setTriage(root, { ...t, complexity: "wiring", source: "agent" });
+    assert.equal(r.ok, false, "an absent complexity reads as `standard`, so `wiring` is a LOWERING");
+
+    const stored = (await readTriage(root)).triage.find((x) => x.target.id === "a_bar")!;
+    assert.equal(stored.complexity, undefined, "nothing was written");
+    assert.equal(stored.likely, false, "the human's confirmation survives");
+    assert.equal(stored.source, "human");
+
+    // escalation is still allowed — the ratchet only ever blocks lowering
+    const up = await setTriage(root, { ...t, complexity: "deep", source: "agent" });
+    assert.equal(up.ok, true);
+    assert.equal(up.complexity, "deep");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

@@ -98,7 +98,7 @@ export interface TreeEntry {
  * of real code behind it.
  */
 export function lsTreeEntries(root: string, sha: string): TreeEntry[] | null {
-  const r = spawnSync("git", ["ls-tree", "-r", "-l", "--full-name", sha], { cwd: root, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  const r = spawnSync("git", ["-c", "core.quotePath=false", "ls-tree", "-r", "-l", "--full-name", sha], { cwd: root, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
   if (r.status !== 0) return null;
   const prefix = repoPrefix(root);
   const out: TreeEntry[] = [];
@@ -138,10 +138,20 @@ export function readBlobs(root: string, sha: string, paths: string[]): Map<strin
     for (const p of batch) {
       const nl = buf.indexOf(10, off);
       if (nl < 0) break;
-      const header = buf.subarray(off, nl).toString("utf8").split(" ");
-      // "<oid> missing" / "<oid> <type> <size>" — a missing object has no payload.
-      if (header[1] === "missing" || header.length < 3) { off = nl + 1; continue; }
-      const size = Number(header[2]);
+      // Header is "<request> SP <type> SP <size>" for a hit and "<request> SP missing"
+      // for a miss — and <request> is `<sha>:<path>`, which can contain spaces. Parse
+      // from the RIGHT: splitting from the left made `size` NaN on a spaced path,
+      // which reset the read offset to 0 and handed the NEXT file the WRONG blob.
+      // Reachable in normal use: `changedFilesBetween` lists files deleted at head,
+      // which are exactly the misses.
+      const header = buf.subarray(off, nl).toString("utf8");
+      const parts = header.split(" ");
+      const size = Number(parts[parts.length - 1]);
+      const type = parts[parts.length - 2];
+      if (header.endsWith(" missing") || parts.length < 3 || type !== "blob" || !Number.isFinite(size)) {
+        off = nl + 1;
+        continue;
+      }
       const start = nl + 1;
       found.set(p, buf.subarray(start, start + size).toString("utf8"));
       off = start + size + 1; // payload is followed by a newline
@@ -167,7 +177,7 @@ export function fetchRef(root: string, remote: string, refspec: string): { ok: b
 
 /** Per-file added/deleted line counts between two commits (three-dot semantics are the caller's job). */
 export function numstat(root: string, from: string, to: string): { path: string; adds: number; dels: number }[] | null {
-  const r = spawnSync("git", ["diff", "--numstat", "-M", from, to], { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  const r = spawnSync("git", ["-c", "core.quotePath=false", "diff", "--numstat", "-M", from, to], { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   if (r.status !== 0) return null;
   const out: { path: string; adds: number; dels: number }[] = [];
   for (const line of (r.stdout ?? "").split("\n")) {
@@ -196,7 +206,7 @@ export function originSlug(root: string): { owner: string; repo: string } | null
  * needs to know before it tries.
  */
 export function diffLineRanges(root: string, from: string, to: string): Map<string, [number, number][]> {
-  const r = spawnSync("git", ["diff", "--unified=3", "--no-color", from, to], { cwd: root, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  const r = spawnSync("git", ["-c", "core.quotePath=false", "diff", "--unified=3", "--no-color", from, to], { cwd: root, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
   const out = new Map<string, [number, number][]>();
   if (r.status !== 0) return out;
   let file = "";
@@ -227,7 +237,7 @@ export function isAncestor(root: string, maybeAncestor: string, ref: string): bo
 
 /** Repo-relative paths changed between two commits (rename-aware, head-side names). */
 export function changedFilesBetween(root: string, from: string, to: string): string[] {
-  const r = spawnSync("git", ["diff", "--name-only", "-M", from, to], { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  const r = spawnSync("git", ["-c", "core.quotePath=false", "diff", "--name-only", "-M", from, to], { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   if (r.status !== 0) return [];
   const prefix = repoPrefix(root);
   return (r.stdout ?? "").split("\n").map((l) => l.trim()).filter(Boolean)

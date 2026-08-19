@@ -10,7 +10,7 @@
 
 import { readFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import {
   type Anchor, type LogicalNode, type LogicalNodeType, type EdgeType, type State,
   type Bug, type BugStatus, type BugSeverity, type Annotation,
@@ -1619,10 +1619,18 @@ export async function nodeReview(root: string, id: string) {
  * full-file context and signed there.
  */
 export async function fileSource(root: string, file: string) {
+  // `file` arrives from a query string. `join` happily resolves `../` out of the
+  // repo, so without this the endpoint reads any file the server user can — it
+  // served /etc/hostname. Resolve and require containment; the static handler
+  // guards its own paths, this one did not.
+  const abs = resolve(root, file);
+  const base = resolve(root);
+  if (abs !== base && !abs.startsWith(base + sep)) return { error: `"${file}" is outside this universe` };
+
   const [store, annStore] = await Promise.all([readAnchorStore(root), readAnnotations(root)]);
   const inFile = store.anchors.filter((a) => a.file === file);
   let code: string;
-  try { code = await readFile(join(root, file), "utf8"); } catch { return { error: `cannot read "${file}"` }; }
+  try { code = await readFile(abs, "utf8"); } catch { return { error: `cannot read "${file}"` }; }
   const live = new Map((await indexFile(join(root, file), file)).map((x) => [x.id, x]));
   const targets = inFile.map((a) => ({ kind: "anchor" as const, id: a.id }));
   const [rev, revView] = await Promise.all([reviewStatesFor(root, targets), reviewStatesFor(root, targets, { viewed: true })]);
