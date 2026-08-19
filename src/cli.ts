@@ -103,7 +103,7 @@ async function cmdPrIngest(root: string, prInput: string, files: string[], dryRu
   if ("error" in r && r.error) { console.error(r.error); process.exit(1); }
   const res = r as Exclude<typeof r, { error: string }>;
   console.log(`${dryRun ? "[dry run] " : ""}pr #${res.pr} @ ${String(res.head).slice(0, 12)}`);
-  console.log(`  annotations: ${res.annotations}  triage proposals: ${res.triaged}`);
+  console.log(`  annotations: ${res.annotations}${res.duplicates ? `  (${res.duplicates} already present, skipped)` : ""}  triage proposals: ${res.triaged}`);
   console.log(`  by severity: ${JSON.stringify(res.bySeverity)}`);
   if (res.rejected.length) {
     console.log(`  rejected: ${res.rejected.length}`);

@@ -28,6 +28,8 @@ export interface AgentLine {
 
 export interface IngestResult {
   annotations: number;
+  /** Findings already present from an earlier ingest of the same batch. */
+  duplicates: number;
   triaged: number;
   summaries: { batch: string; reviewed: number; findings: number; narrative: string }[];
   rejected: { line: number; why: string }[];
@@ -54,6 +56,8 @@ export async function ingestAgentReview(
   root: string,
   lines: AgentLine[],
   deps: {
+    /** Existing annotations, so a re-ingest does not mint a second copy of every finding. */
+    existing?: { targetId: string; line?: number; kind?: string; text: string; author: string }[];
     annotate: (root: string, input: {
       targetKind: "anchor"; targetId: string; text: string; author?: string;
       kind?: Annotation["kind"]; severity?: BugSeverity; category?: string; line?: number; ref?: string;
@@ -61,8 +65,15 @@ export async function ingestAgentReview(
   },
   opts: { headRef: string; author?: string; dryRun?: boolean } = { headRef: "" },
 ): Promise<IngestResult> {
-  const out: IngestResult = { annotations: 0, triaged: 0, summaries: [], rejected: [], bySeverity: {} };
+  const out: IngestResult = { annotations: 0, duplicates: 0, triaged: 0, summaries: [], rejected: [], bySeverity: {} };
   const author = opts.author ?? "agent:pr-first-pass";
+
+  // A finding's identity is what it says and where it says it. Ingest mints a fresh
+  // annotation id per call, so without this a re-run — the natural response to a
+  // partial batch — silently doubles every finding already in the map.
+  const key = (targetId: string, line: number | undefined, kind: string, text: string) =>
+    [author, targetId, line ?? "", kind, text].join(" | ");
+  const seen = new Set((deps.existing ?? []).map((a) => key(a.targetId, a.line, a.kind ?? "note", a.text)));
 
   for (const [i, l] of lines.entries()) {
     if (l.kind === "summary") {
@@ -87,6 +98,9 @@ export async function ingestAgentReview(
 
     const text = [l.text, l.evidence ? `\n\nEvidence: ${l.evidence}` : "", l.confidence === "medium" ? "\n\n(agent confidence: medium)" : ""].join("");
     if (!l.text) { out.rejected.push({ line: i + 1, why: "no text" }); continue; }
+    const k = key(l.anchorId, l.line, l.kind ?? "note", text);
+    if (seen.has(k)) { out.duplicates++; continue; }
+    seen.add(k);
     if (!opts.dryRun) {
       const r = await deps.annotate(root, {
         targetKind: "anchor", targetId: l.anchorId, text, author,

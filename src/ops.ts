@@ -501,7 +501,8 @@ export async function prIngest(root: string, input: string, texts: string[], opt
     const p = parseAgentLines(text);
     lines.push(...p.lines); bad.push(...p.bad);
   }
-  const r = await ingestAgentReview(root, lines, { annotate }, { headRef: t.refs.head, author: opts.author, dryRun: opts.dryRun });
+  const existing = (await readAnnotations(root)).annotations.map((a) => ({ targetId: a.target.id, line: a.line, kind: a.kind, text: a.text, author: a.author }));
+  const r = await ingestAgentReview(root, lines, { annotate, existing }, { headRef: t.refs.head, author: opts.author, dryRun: opts.dryRun });
   return { ...r, malformed: bad, pr: t.pr.number, head: t.refs.head };
 }
 

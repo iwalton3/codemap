@@ -40,6 +40,36 @@ test("ingest routes findings to annotate, triage to the ratchet, and rejects una
   assert.match(calls[0].text, /Evidence: no AuthCheck/);
 });
 
+test("re-ingesting the same findings adds nothing — a partial batch can be re-run safely", async () => {
+  const calls: any[] = [];
+  const lines: AgentLine[] = [
+    { kind: "finding", anchorId: "a_1", text: "missing tenant check", severity: "critical", line: 42 },
+    { kind: "pointer", anchorId: "a_2", text: "confirm the rounding mode" },
+  ];
+  const annotate = async (_root: string, input: any) => { calls.push(input); return {}; };
+
+  const first = await ingestAgentReview("/nonexistent", lines, { annotate }, { headRef: "h" });
+  assert.equal(first.annotations, 2);
+  assert.equal(first.duplicates, 0);
+
+  // second run, with the first run's output already in the map
+  const existing = calls.map((c) => ({ targetId: c.targetId, line: c.line, kind: c.kind, text: c.text, author: c.author }));
+  const second = await ingestAgentReview("/nonexistent", lines, { annotate, existing }, { headRef: "h" });
+  assert.equal(second.annotations, 0, "ingest mints fresh ids, so without dedupe this doubles every finding");
+  assert.equal(second.duplicates, 2);
+  assert.equal(calls.length, 2, "and nothing new was written");
+});
+
+test("a finding that differs only in its line is NOT a duplicate", async () => {
+  const calls: any[] = [];
+  const annotate = async (_r: string, i: any) => { calls.push(i); return {}; };
+  const a: AgentLine = { kind: "finding", anchorId: "a_1", text: "same words", line: 10 };
+  const b: AgentLine = { kind: "finding", anchorId: "a_1", text: "same words", line: 99 };
+  const r = await ingestAgentReview("/nonexistent", [a, b], { annotate }, { headRef: "h" });
+  assert.equal(r.annotations, 2);
+  assert.equal(r.duplicates, 0);
+});
+
 test("a medium-confidence finding says so in its text, so a human can weight it", async () => {
   const calls: any[] = [];
   await ingestAgentReview("/nonexistent", [
