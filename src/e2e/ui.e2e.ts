@@ -279,6 +279,116 @@ describe("web UI", { skip: puppeteer ? false : "puppeteer not resolvable (set CO
     await page.close();
   });
 
+  test("signing advances to the next symbol in READING order, not story order", async () => {
+    // A walkthrough regroups the derived chapters into features and re-orders them.
+    // Advancing along `story.chapters` therefore jumped to an unrelated section in
+    // another chapter — the reviewer's next symbol has to be the next one on screen.
+    const page = await browser.newPage();
+    await page.goto(`${server.url}/#/u/${fixture.universe}/`, { waitUntil: "networkidle0" });
+    const m = await page.evaluate(() => {
+      // story order is a1,a2,a3; the walkthrough reads a3 (feature 1) then a1,a2.
+      const story = {
+        chapters: [
+          { id: "c1", steps: [{ anchorId: "a1", reviewed: true }, { anchorId: "a2", reviewed: false }] },
+          { id: "c2", steps: [{ anchorId: "a3", reviewed: false }, { anchorId: "a4", reviewed: false }] },
+        ],
+        walkthrough: {
+          features: [
+            { id: "f1", chapters: [{ id: "w1", blocks: [{ kind: "prose" }, { kind: "symbol", anchorId: "a3" }] }] },
+            { id: "f2", chapters: [{ id: "w2", blocks: [{ kind: "symbol", anchorId: "a1" }, { kind: "symbol", anchorId: "a2" }] }] },
+          ],
+          coverage: { uncovered: ["a4", "a_gone"] },
+        },
+      };
+      const steps = new Map();
+      for (const c of story.chapters) for (const s of c.steps) steps.set(s.anchorId, s);
+      const walk = (window as any).__readingOrder(story, steps) as { chapter: { id: string }; step: { anchorId: string; reviewed: boolean } }[];
+      const plain = (window as any).__readingOrder({ chapters: story.chapters }, steps) as typeof walk;
+      const after = (id: string) => {
+        const i = walk.findIndex((x) => x.step.anchorId === id);
+        return walk.slice(i + 1).find((x) => !x.step.reviewed) || null;
+      };
+      return {
+        exposed: typeof (window as any).__readingOrder === "function",
+        order: walk.map((x) => x.step.anchorId),
+        chapters: walk.map((x) => x.chapter.id),
+        plain: plain.map((x) => x.step.anchorId),
+        afterA3: after("a3")?.step.anchorId ?? null,
+        afterA2: after("a2")?.step.anchorId ?? null,
+      };
+    });
+    assert.equal(m.exposed, true, "app.js must expose __readingOrder for this");
+    assert.deepEqual(m.order, ["a3", "a1", "a2", "a4"], "reading order is the walkthrough's, and a symbol it never cites comes last");
+    assert.deepEqual(m.chapters, ["w1", "w2", "w2", "__uncovered"], "each symbol carries the chapter it is rendered under, so the right one gets opened");
+    assert.deepEqual(m.plain, ["a1", "a2", "a3", "a4"], "with no walkthrough, the derived chapters are the reading order");
+    assert.equal(m.afterA3, "a2", "signing the first symbol of a feature moves to the next one on screen");
+    assert.equal(m.afterA2, "a4", "and at the end of a chapter, on to what nothing explained — not back up the story");
+    await page.close();
+  });
+
+  test("signing moves the walkthrough by the least it can", async () => {
+    // Advancing is a courtesy, not a jump: the reviewer's eye is already on the page.
+    // Geometry against a real viewport is the only place this is observable, so the
+    // page exposes the rule itself and the scroll is intercepted rather than watched.
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1200, height: 800 });
+    await page.goto(`${server.url}/#/u/${fixture.universe}/`, { waitUntil: "networkidle0" });
+    const m = await page.evaluate(() => {
+      const host = document.createElement("div");
+      host.innerHTML = `<div class="prcbody">
+        <div id="spacer"></div>
+        <div class="wkprose" id="prose"></div>
+        <div class="prstep" id="step-x"></div>
+        <div id="tail" style="height:4000px"></div>
+      </div>`;
+      document.body.appendChild(host);
+      const el = (id: string) => document.getElementById(id) as HTMLElement;
+
+      /** Set the layout, park the scroll, and report where revealStep wants to go. */
+      const ask = (spacer: number, prose: number, step: number, scroll: number) => {
+        el("spacer").style.height = `${spacer}px`;
+        el("prose").style.height = `${prose}px`;
+        el("step-x").style.height = `${step}px`;
+        window.scrollTo(0, scroll);
+        const real = window.scrollTo;
+        let target: number | null = null;
+        (window as any).scrollTo = (o: any) => { target = o && typeof o === "object" ? o.top : null; };
+        (window as any).__revealStep("x");
+        window.scrollTo = real;
+        const s = el("step-x").getBoundingClientRect(), p = el("prose").getBoundingClientRect();
+        return { target, scrollY: window.scrollY, top: s.top, bottom: s.bottom, proseTop: p.top };
+      };
+
+      const hdr = (document.querySelector("header") as HTMLElement).getBoundingClientRect().height;
+      const viewH = window.innerHeight - hdr;
+      const r = {
+        hdr, innerHeight: window.innerHeight, exposed: typeof (window as any).__revealStep === "function",
+        // whole thing already on screen · hanging off the bottom · taller than the
+        // viewport with a short intro · taller, with an intro too long to keep
+        fits: ask(hdr + 40, 0, 200, 0),
+        hangs: ask(600, 0, 300, 0),
+        tallShortProse: ask(400, 80, viewH + 400, 0),
+        tallLongProse: ask(400, viewH - 60, viewH + 400, 0),
+      };
+      host.remove();
+      window.scrollTo(0, 0);
+      return r;
+    });
+    assert.equal(m.exposed, true, "app.js must expose __revealStep for this");
+    assert.equal(m.fits.target, null, "a symbol already fully on screen must not be scrolled at all");
+
+    const moved = (c: { target: number | null; scrollY: number }, y: number) => y - ((c.target as number) - c.scrollY);
+    assert.notEqual(m.hangs.target, null, "a symbol hanging off the bottom has to move");
+    assert.ok(moved(m.hangs, m.hangs.bottom) <= m.innerHeight, "…far enough that its end is on screen");
+    assert.ok(moved(m.hangs, m.hangs.top) >= m.hdr, "…but not so far that its head hides under the page header");
+
+    assert.ok(Math.abs(moved(m.tallShortProse, m.tallShortProse.proseTop) - m.hdr) < 20,
+      "a symbol too tall to frame aligns the prose that introduces it, not itself");
+    assert.ok(Math.abs(moved(m.tallLongProse, m.tallLongProse.top) - m.hdr) < 20,
+      "unless the prose is long enough to push the symbol off screen — then the symbol wins");
+    await page.close();
+  });
+
   test("the path form of a deep link is NOT a working link (documents the hash-router constraint)", async () => {
     const page = await browser.newPage();
     await page.goto(`${server.url}/u/${fixture.universe}/node/n_transfer_flow/`, { waitUntil: "networkidle0" });

@@ -2051,6 +2051,71 @@ function diffReviewLines(c, u, anchorId, lines, lang, startLine, annotations) {
 // and ordered command → handler → event → aggregate → read-model. A chapter whose
 // spec describes the *system* rather than this change is marked promotable; the
 // rest are an executive summary and stay ephemeral.
+
+// Put a symbol on screen after signing the previous one, moving as little as
+// possible: the reviewer's eye is already somewhere on the page, so a jump they
+// did not ask for costs more attention than a short scroll saves. Three cases —
+// it already fits (do nothing), it fits but hangs off an edge (nudge just enough),
+// or it is taller than the viewport, where the top is what matters and the
+// walkthrough prose introducing it is worth keeping in frame if it can be.
+const REVEAL_PAD = 10;          // breathing room under the sticky header
+const REVEAL_MIN_READ = 160;    // enough of a too-tall symbol to start reading it
+function revealStep(anchorId) {
+  const el = document.getElementById(`step-${anchorId}`);
+  if (!el) return;
+  const hdr = document.querySelector('header');
+  const top = hdr ? hdr.getBoundingClientRect().bottom : 0;
+  const viewH = window.innerHeight - top;
+  const r = el.getBoundingClientRect();
+  const to = (y) => window.scrollTo({ top: Math.max(0, window.scrollY + y), behavior: 'smooth' });
+
+  if (r.height <= viewH - REVEAL_PAD) {
+    if (r.top >= top && r.bottom <= window.innerHeight) return;              // already whole on screen
+    if (r.bottom > window.innerHeight)                                       // hanging off the bottom
+      return to(Math.min(r.bottom - window.innerHeight + REVEAL_PAD, r.top - top - REVEAL_PAD));
+    return to(r.top - top - REVEAL_PAD);                                     // tucked under the header
+  }
+
+  // Too tall to frame. Align the prose block that introduces it instead, when the
+  // pair still leaves a readable slice of the symbol below it.
+  // Any preceding block that is not itself a symbol: walkthrough prose, a chapter's
+  // spec section, the placeholder for a symbol that left the PR.
+  const prev = el.previousElementSibling;
+  const prose = prev && !prev.classList.contains('prstep') ? prev.getBoundingClientRect() : null;
+  const anchorTop = prose && (r.top - prose.top) + REVEAL_MIN_READ <= viewH ? prose.top : r.top;
+  if (anchorTop >= top && r.top <= window.innerHeight - REVEAL_MIN_READ) return;
+  to(anchorTop - top - REVEAL_PAD);
+}
+// Exposed for the e2e suite: the rule is geometry against a real viewport.
+if (typeof window !== 'undefined') window.__revealStep = revealStep;
+
+const UNCOVERED_ID = '__uncovered';   // the catch-all section, keyed like a chapter
+
+/**
+ * Every symbol in the order the PAGE renders it. A walkthrough regroups the derived
+ * chapters into features and re-orders them, so advancing along `story.chapters`
+ * sent the reviewer to a symbol nowhere near the one they had just signed — a
+ * different chapter of a different feature.
+ */
+function readingOrder(story, steps) {
+  const flat = [];
+  if (!story) return flat;
+  if (story.walkthrough) {
+    for (const f of story.walkthrough.features || [])
+      for (const c of f.chapters || [])
+        for (const b of c.blocks || [])
+          if (b.kind === 'symbol' && steps.get(b.anchorId)) flat.push({ chapter: c, step: steps.get(b.anchorId) });
+    // The unaccounted-for symbols render last and are still work to do.
+    const cov = (story.walkthrough.coverage && story.walkthrough.coverage.uncovered) || [];
+    for (const id of cov) if (steps.get(id)) flat.push({ chapter: { id: UNCOVERED_ID }, step: steps.get(id) });
+    return flat;
+  }
+  for (const c of story.chapters || []) for (const step of c.steps) flat.push({ chapter: c, step });
+  return flat;
+}
+// Exposed for the e2e suite, alongside the scroll rule it feeds.
+if (typeof window !== 'undefined') window.__readingOrder = readingOrder;
+
 const CHANGE_COLOR = { added: '#7ee787', changed: '#f0a35e', removed: '#f85149' };
 const LAYER_NAME = ['command', 'handler', 'event', 'aggregate', 'read-model', 'job'];
 
@@ -2200,20 +2265,20 @@ class PrStoryPage extends Component {
         ${each(f.chapters, c => this.walkChapterEl(u, c, steps, stale.has(c.id)), c => c.id)}
       </section>`, f => f.id)}
       ${when(uncovered.length, () => html`<section class="prchapter wkuncovered">
-        <div class="prchead" on-click="${() => this.toggleChapter('__uncovered')}">
-          <span class="prtwisty">${this.state.open['__uncovered'] ? '▾' : '▸'}</span>
+        <div class="prchead" on-click="${() => this.toggleChapter(UNCOVERED_ID)}">
+          <span class="prtwisty">${this.state.open[UNCOVERED_ID] ? '▾' : '▸'}</span>
           <b>Not in the walkthrough</b>
           <span class="dim">${uncovered.length} symbol(s)</span>
           <span class="warn" title="nothing here has been explained — this is what you would end up reading on GitHub, unviewed and without context">unaccounted for</span>
         </div>
-        ${when(this.state.open['__uncovered'], () => html`<div class="prcbody">${each(uncovered.filter(id => steps.get(id)), id => this.stepEl(u, steps.get(id)), id => id)}</div>`)}
+        ${when(this.state.open[UNCOVERED_ID], () => html`<div class="prcbody">${each(uncovered.filter(id => steps.get(id)), id => this.stepEl(u, steps.get(id)), id => id)}</div>`)}
       </section>`)}`;
   }
 
-  /** The next symbol still needing attention, in walkthrough order. */
-  nextUnsignedAfter(anchorId) {
-    const flat = [];
-    for (const c of (this.state.story && this.state.story.chapters) || []) for (const st of c.steps) flat.push({ chapter: c, step: st });
+  walkOrder() { return readingOrder(this.state.story, this.stepsByAnchor()); }
+
+  /** The next symbol still needing attention, in reading order. */
+  nextUnsignedAfter(anchorId, flat = this.walkOrder()) {
     const i = flat.findIndex(x => x.step.anchorId === anchorId);
     if (i < 0) return null;
     return flat.slice(i + 1).find(x => !x.step.reviewed) || null;
@@ -2270,23 +2335,24 @@ class PrStoryPage extends Component {
     // Signing is the "done with this one" gesture, so move the walkthrough on:
     // collapse what was just signed, and open the next symbol still needing
     // attention rather than making the reviewer hunt for it.
-    const next = this.nextUnsignedAfter(id);
+    const flat = this.walkOrder();
+    const next = this.nextUnsignedAfter(id, flat);
     const code = { ...this.state.code, [id]: null };
     const open = { ...this.state.open };
-    const here = ((this.state.story && this.state.story.chapters) || []).find(c => c.steps.some(s => s.anchorId === id));
-    if (here && here.steps.every(s => s.reviewed)) open[here.id] = false;   // chapter finished — fold it away
+    const here = flat.find(x => x.step.anchorId === id);
+    const mine = here ? flat.filter(x => x.chapter.id === here.chapter.id) : [];
+    if (here && here.chapter.id !== UNCOVERED_ID && mine.every(x => x.step.reviewed))
+      open[here.chapter.id] = false;                                       // chapter finished — fold it away
     if (next) open[next.chapter.id] = true;
     this.state.code = code;
     this.state.open = open;
     if (!next) return;
     if (!this.state.code[next.step.anchorId]) await this.openStep(next.step);
-    // Bring it into view: the previous symbol collapsing usually leaves the next one
-    // off-screen, and the point of advancing is not having to go looking for it.
-    // A frame after the state change, so vdx has rendered the row being scrolled to.
-    requestAnimationFrame(() => {
-      const el = document.getElementById(`step-${next.step.anchorId}`);
-      if (el) el.scrollIntoView({ block: 'start', behavior: 'smooth' });
-    });
+    // Bring it into view if it is not already there — the previous symbol collapsing
+    // often leaves the next one off-screen, and the point of advancing is not having
+    // to go looking for it. A frame after the state change, so vdx has rendered the
+    // row being measured.
+    requestAnimationFrame(() => revealStep(next.step.anchorId));
   }
 
   // Promotion is deliberately two-step: the plan says what would be written and
