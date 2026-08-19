@@ -16,10 +16,12 @@ import { computeDiff, lineDiff, stripCR, type DiffResult, type DiffLine } from "
 import { indexBlob, indexCommit } from "./repo.js";
 import { readSnapshot, writeSnapshot, readAnnotations, readAnchorStore } from "./store.js";
 import { loadLanes, LANE_POLICY, type Lane } from "./lanes.js";
-import { complexityOf, MONEY_RX, reviewTriageFor } from "./triage.js";
+import { complexityOf, MONEY_RX, reviewTriageFor, setTriageBatch } from "./triage.js";
+import { readTriage } from "./store.js";
+import type { Importance } from "./schema.js";
 import type { Complexity } from "./schema.js";
 import { revParse, mergeBase, hasObject, fetchRef, numstat, readBlobs, isGitRepo, originSlug } from "./git.js";
-import { splitSpec, buildStory, layerOf, type PrStory, type StoryStep, type StoryChapter } from "./pr-story.js";
+import { splitSpec, buildStory, layerOf, spineRole, type PrStory, type StoryStep, type StoryChapter } from "./pr-story.js";
 import { planPromotion, type Promotion } from "./pr-promote.js";
 
 export interface PrRef { owner: string; repo: string; number: number }
@@ -503,4 +505,68 @@ export async function prPromotionPlan(
     chapter: { id: chapter.id, title: chapter.title, durable: chapter.durable, source: chapter.source },
     ref: story.refs.head,
   };
+}
+
+/**
+ * Derive stakes and complexity for the symbols a pull request touches.
+ *
+ * The graph-wide `deriveTriage` cannot reach these: it reads the @work index, and
+ * a symbol the branch *adds* is not there — so every added symbol stayed
+ * `untriaged`, which is why a big feature PR ranked as an undifferentiated wall.
+ * #227 is 521 added symbols against 16 changed ones.
+ *
+ * Signals, weakest claim first — the graph knows nothing about brand-new code, so
+ * these are shape-based and all land as `likely` proposals a human confirms:
+ *   - money in the file or symbol name → business-critical (the existing MONEY_RX);
+ *   - position on the command → handler → event → aggregate spine → important,
+ *     a read model → low (mirrors `structuralImportance`, read off the path
+ *     because a new symbol has no node type yet);
+ *   - proximity: a file that already holds business-critical or important marks
+ *     is presumed to keep producing them (docs/triage.md), so an otherwise
+ *     unclassified symbol there inherits `important`.
+ * Complexity comes from the head source, which needs no graph at all.
+ */
+export async function derivePrTriage(
+  root: string, input: string, opts: { fetch?: boolean } = {},
+): Promise<{ applied: number; refused: number; considered: number; byImportance: Record<string, number> } | { error: string }> {
+  const t = await prTriage(root, input, { fetch: opts.fetch });
+  if ("error" in t) return t;
+
+  const existing = await readTriage(root);
+  // Files that already carry a real stake — the proximity signal.
+  const anchorFile = new Map(t.worklist.map((w) => [w.id, w.file]));
+  const hotFiles = new Set<string>();
+  for (const tr of existing.triage) {
+    if (tr.target.kind !== "anchor") continue;
+    // legacy stores wrote "mechanical" for the low tier; it is normalised on read
+    if (tr.importance === "business-critical" || tr.importance === "important") {
+      const f = anchorFile.get(tr.target.id);
+      if (f) hotFiles.add(f);
+    }
+  }
+
+  const LAYER_STAKE: (Importance | undefined)[] = ["important", "important", "important", "important", "low", "important"];
+  const items = t.worklist
+    .filter((w) => w.lane === "code" && w.change !== "removed")
+    .map((w) => {
+      const money = MONEY_RX.test(`${w.file} ${w.symbol} ${w.signature}`);
+      const role = spineRole(w.file, w.symbol);
+      const structural = role === null ? undefined : LAYER_STAKE[role];
+      const importance: Importance | undefined =
+        money ? "business-critical"
+          : structural ?? (hotFiles.has(w.file) ? "important" : undefined);
+      const reason = money ? "name suggests money/value"
+        : structural ? "on the command → read-model spine"
+          : hotFiles.has(w.file) ? "file already holds high-stakes code" : "";
+      return { anchorId: w.id, importance, complexity: w.complexity, reason };
+    })
+    // No signal means no claim. Asserting a stake here would turn "we do not know"
+    // into "important", and untriaged already escalates — while the worklist reads
+    // complexity off the live source anyway, so the ranking loses nothing.
+    .filter((i) => i.importance !== undefined);
+
+  const r = await setTriageBatch(root, items, { source: "agent", ref: t.refs.head });
+  const byImportance: Record<string, number> = {};
+  for (const i of items) if (i.importance) byImportance[i.importance] = (byImportance[i.importance] ?? 0) + 1;
+  return { ...r, considered: items.length, byImportance };
 }

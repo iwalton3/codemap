@@ -100,9 +100,9 @@ export async function liveHashes(root: string, anchorIds: Iterable<string>, ref?
 }
 
 /** Witnesses (anchor id + current live hash) covering a target — the staleness snapshot. */
-export async function witnessesFor(root: string, target: Target): Promise<BugWitness[]> {
+export async function witnessesFor(root: string, target: Target, ref?: string): Promise<BugWitness[]> {
   const anchorIds = await coveredAnchorIds(root, target);
-  const live = await liveHashes(root, anchorIds);
+  const live = await liveHashes(root, anchorIds, ref);
   return anchorIds.map((id) => ({ anchorId: id, bodyHash: live.get(id) ?? "sha256:absent" }));
 }
 

@@ -96,8 +96,15 @@ export function mentionedIdentifiers(text: string): Set<string> {
   return ids;
 }
 
-/** Where a symbol sits on the command → handler → event → aggregate → read-model spine. */
-export function layerOf(file: string, symbol: string): number {
+/**
+ * Where a symbol sits on the spine, or null when nothing in its path or name says.
+ *
+ * The distinction matters to anything drawing a conclusion from it: `layerOf`
+ * defaults an unrecognised symbol to the middle of the spine so the walkthrough
+ * can still order it, but *deriving stakes* from that default would assert
+ * "important" about every unclassifiable file in the PR.
+ */
+export function spineRole(file: string, symbol: string): number | null {
   const p = `${file} ${symbol}`;
   if (/\/Commands?\//i.test(file) || /Command\b/.test(symbol)) return 0;
   if (/\/Handlers?\//i.test(file) || /Handler\b/.test(symbol)) return 1;
@@ -109,7 +116,12 @@ export function layerOf(file: string, symbol: string): number {
   if (/\/api\//.test(file)) return 0;
   if (/\/components?\//.test(file)) return 2;
   if (/\/routes?\//.test(file)) return 3;
-  return 3;
+  return null;
+}
+
+/** The spine position for ordering — unknowns sort mid-spine rather than first. */
+export function layerOf(file: string, symbol: string): number {
+  return spineRole(file, symbol) ?? 3;
 }
 
 export interface StoryStep {

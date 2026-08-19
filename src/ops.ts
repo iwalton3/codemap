@@ -27,7 +27,7 @@ import {
 } from "./store.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "./diff.js";
-import { prTriage, listOpenPrs, prPacket, prStory, prAnchorCode, prPromotionPlan } from "./pr.js";
+import { prTriage, listOpenPrs, prPacket, prStory, prAnchorCode, prPromotionPlan, derivePrTriage } from "./pr.js";
 import { parseAgentLines, ingestAgentReview } from "./pr-ingest.js";
 import { planPrPush, executePrPush } from "./pr-push.js";
 import { resolveCoverage, selectAnchors, docPct as computeDocPct, citedPct as computeCitedPct, type CoverageResult } from "./coverage.js";
@@ -507,6 +507,15 @@ export async function prIngest(root: string, input: string, texts: string[], opt
 /** The PR's spec-derived walkthrough. */
 export async function prStoryFor(root: string, input: string, opts: { fetch?: boolean } = {}) {
   return prStory(root, input, opts);
+}
+
+/**
+ * Derive stakes + complexity for the symbols a PR touches. The graph-wide
+ * derivation cannot see symbols the branch adds, so without this a feature PR
+ * ranks as an undifferentiated wall of `untriaged`.
+ */
+export async function prTriageDerive(root: string, input: string) {
+  return derivePrTriage(root, input);
 }
 
 /** What promoting a walkthrough chapter into the map would write. */

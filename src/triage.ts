@@ -88,50 +88,62 @@ const sameTarget = (t: Triage, k: "node" | "anchor", id: string) => t.target.kin
  * full control (raise, lower, confirm); an agent/graph source may only raise an
  * existing tier and always writes a `likely` proposal. `ok:false` = ratchet refusal.
  */
-export async function setTriage(
-  root: string,
-  input: {
-    targetKind: "node" | "anchor";
-    targetId: string;
-    importance?: Importance; // omit to set complexity alone (keeps existing stakes)
-    complexity?: Complexity;
-    source: TriageSource;
-    reason?: string;
-    tripwire?: boolean;
-    generatedBy?: string;
-  },
-): Promise<{ ok: boolean; importance: Importance; complexity?: Complexity; likely?: boolean; reason?: string }> {
-  const ts = await readTriage(root);
-  const existing = ts.triage.find((t) => sameTarget(t, input.targetKind, input.targetId));
+export interface TriageInput {
+  targetKind: "node" | "anchor";
+  targetId: string;
+  importance?: Importance; // omit to set complexity alone (keeps existing stakes)
+  complexity?: Complexity;
+  source: TriageSource;
+  reason?: string;
+  tripwire?: boolean;
+  generatedBy?: string;
+  /** Witness the mark against this commit instead of the working tree (a PR head). */
+  ref?: string;
+}
+
+/**
+ * The ratchet decision, pure so the single-set and batch paths cannot drift apart.
+ * Agents and the graph may only ever RAISE either axis; a human writes what they
+ * set. Returns null when the mark would add nothing.
+ */
+export function ratchet(
+  existing: Triage | undefined,
+  input: { importance?: Importance; complexity?: Complexity; source: TriageSource },
+): { importance: Importance; complexity?: Complexity } | { refused: string } {
   const human = input.source === "human";
   const exImp = existing ? normImportance(existing.importance) : undefined;
   const wantImp = input.importance ? normImportance(input.importance) : undefined;
   if (existing && !human) {
-    // The ratchet is per-axis: agents/graph may only RAISE either stakes or complexity.
     const raisesImp = wantImp !== undefined && (exImp === undefined || IMPORTANCE_RANK[wantImp] > IMPORTANCE_RANK[exImp]);
     const raisesCx = input.complexity !== undefined && (existing.complexity === undefined || COMPLEXITY_RANK[input.complexity] > COMPLEXITY_RANK[existing.complexity]);
     if (!raisesImp && !raisesCx) {
-      return {
-        ok: false,
-        importance: exImp!,
-        complexity: existing.complexity,
-        reason: existing.source === "human" ? "human-owned — agents may only ESCALATE it, never lower" : "ratchet: agents/graph may only raise stakes/complexity",
-      };
+      return { refused: existing.source === "human" ? "human-owned — agents may only ESCALATE it, never lower" : "ratchet: agents/graph may only raise stakes/complexity" };
     }
-    // The blind graph batch respects a human mark (no new evidence, won't nag); a
-    // deliberate agent with evidence escalates via `triage`.
     if (existing.source === "human" && input.source === "graph") {
-      return { ok: false, importance: exImp!, complexity: existing.complexity, reason: "graph derivation won't override a human mark — an agent with evidence can escalate via `triage`" };
+      return { refused: "graph derivation won't override a human mark — an agent with evidence can escalate via `triage`" };
     }
   }
-  // Raise-only merge per axis (agents never lower); a human writes exactly what they set.
-  // An omitted stakes value keeps the existing tier (untriaged → default `important`).
   const importance: Importance = wantImp === undefined ? (exImp ?? "important")
     : human || exImp === undefined ? wantImp
       : IMPORTANCE_RANK[wantImp] > IMPORTANCE_RANK[exImp] ? wantImp : exImp;
   const complexity = human ? (input.complexity ?? existing?.complexity)
     : input.complexity === undefined ? existing?.complexity
       : existing?.complexity === undefined || COMPLEXITY_RANK[input.complexity] > COMPLEXITY_RANK[existing.complexity] ? input.complexity : existing.complexity;
+  return { importance, complexity };
+}
+
+export async function setTriage(
+  root: string,
+  input: TriageInput,
+): Promise<{ ok: boolean; importance: Importance; complexity?: Complexity; likely?: boolean; reason?: string }> {
+  const ts = await readTriage(root);
+  const existing = ts.triage.find((t) => sameTarget(t, input.targetKind, input.targetId));
+  const human = input.source === "human";
+  const decision = ratchet(existing, input);
+  if (decision && "refused" in decision) {
+    return { ok: false, importance: normImportance(existing!.importance), complexity: existing!.complexity, reason: decision.refused };
+  }
+  const { importance, complexity } = decision!;
   const target: Target = { kind: input.targetKind, id: input.targetId };
   const rec: Triage = {
     target,
@@ -143,7 +155,7 @@ export async function setTriage(
     generatedBy: input.generatedBy ?? (human ? undefined : existing?.generatedBy),
     reason: input.reason ?? existing?.reason,
     at: new Date().toISOString(),
-    witnesses: await witnessesFor(root, target),
+    witnesses: await witnessesFor(root, target, input.ref),
   };
   ts.triage = ts.triage.filter((t) => !sameTarget(t, input.targetKind, input.targetId)).concat(rec);
   await writeTriage(root, ts.triage);
@@ -500,4 +512,52 @@ export async function tripwires(root: string): Promise<{ fired: TriageDrift[]; a
   const armedCount = ts.triage.filter((t) => t.tripwire).length;
   const drift = await triageDrift(root);
   return { fired: drift.filter((d) => d.tripwire), armedCount };
+}
+
+export interface BatchTriageItem { anchorId: string; importance?: Importance; complexity?: Complexity; reason?: string }
+
+/**
+ * Apply many anchor triage marks in one read/write of the store.
+ *
+ * `setTriage` re-reads and rewrites the whole triage blob per call, which is fine
+ * for a button click and quadratic for a pull request — #227 changes 531 symbols.
+ * The ratchet is the shared `ratchet()`, so batching cannot drift from the
+ * single-set path.
+ *
+ * `ref` witnesses against that commit, so a mark on a symbol the branch adds
+ * records the body it was actually derived from rather than `sha256:absent`.
+ */
+export async function setTriageBatch(
+  root: string,
+  items: BatchTriageItem[],
+  opts: { source: TriageSource; ref?: string },
+): Promise<{ applied: number; refused: number }> {
+  if (!items.length) return { applied: 0, refused: 0 };
+  const ts = await readTriage(root);
+  const byId = new Map(ts.triage.filter((t) => t.target.kind === "anchor").map((t) => [t.target.id, t]));
+  const hashes = await liveHashes(root, items.map((i) => i.anchorId), opts.ref);
+  const at = new Date().toISOString();
+
+  let applied = 0, refused = 0;
+  for (const item of items) {
+    const existing = byId.get(item.anchorId);
+    const d = ratchet(existing, { importance: item.importance, complexity: item.complexity, source: opts.source });
+    if ("refused" in d) { refused++; continue; }
+    byId.set(item.anchorId, {
+      target: { kind: "anchor", id: item.anchorId },
+      importance: d.importance,
+      complexity: d.complexity,
+      likely: opts.source !== "human",
+      tripwire: existing?.tripwire,
+      source: opts.source,
+      generatedBy: existing?.generatedBy,
+      reason: item.reason ?? existing?.reason,
+      at,
+      witnesses: [{ anchorId: item.anchorId, bodyHash: hashes.get(item.anchorId) ?? "sha256:absent" }],
+    });
+    applied++;
+  }
+  const kept = ts.triage.filter((t) => t.target.kind !== "anchor" || !byId.has(t.target.id));
+  await writeTriage(root, [...kept, ...byId.values()]);
+  return { applied, refused };
 }

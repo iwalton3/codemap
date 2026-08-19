@@ -114,7 +114,7 @@ async function cmdPrIngest(root: string, prInput: string, files: string[], dryRu
 }
 
 function usage(): never {
-  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n  codemap analyze marten [repo] [--verbose] [--emit]");
+  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n  codemap pr-triage <pr> [--repo path]        derive stakes+complexity for the PR's symbols\n  codemap analyze marten [repo] [--verbose] [--emit]");
   process.exit(2);
 }
 
@@ -239,6 +239,11 @@ if (positionals[0] === "analyze") {
     });
     if ("error" in r) { console.error(r.error); process.exit(1); }
     console.log(JSON.stringify(r, null, 1));
+  } else if (positionals[0] === "pr-triage") {
+    const r = await ops.prTriageDerive(resolve(values.repo ?? "."), positionals[1] ?? "");
+    if ("error" in r) { console.error(r.error); process.exit(1); }
+    console.log(`considered ${r.considered} symbol(s) — ${r.applied} marked, ${r.refused} left alone (already at or above this tier)`);
+    console.log(`  proposed stakes: ${JSON.stringify(r.byImportance)}`);
   } else if (positionals[0] === "pr-push") {
     await cmdPrPush(resolve(values.repo ?? "."), positionals[1] ?? "", Boolean(values.confirm), Boolean(values.viewed), { reviewedOnly: !values.all, minSeverity: values["min-severity"] as any });
   } else if (positionals[0] === "pr-ingest") {
