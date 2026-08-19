@@ -123,7 +123,7 @@ async function cmdPrIngest(root: string, prInput: string, files: string[], dryRu
 }
 
 function usage(): never {
-  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n  codemap pr-triage <pr> [--repo path]        derive stakes+complexity for the PR's symbols\n  codemap pr-pull-viewed <pr|--all> [--repo path] [--dry-run] [--force] [--limit N]\n                                              import GitHub's viewed ticks as `viewed`\n  codemap analyze marten [repo] [--verbose] [--emit]");
+  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n  codemap pr-triage <pr> [--repo path]        derive stakes+complexity for the PR's symbols\n  codemap pr-pull-viewed <pr|--all> [--repo path] [--dry-run] [--force] [--limit N] [--max-prs N]\n                                              import GitHub's viewed ticks as `viewed`\n  codemap analyze marten [repo] [--verbose] [--emit]");
   process.exit(2);
 }
 
@@ -231,7 +231,7 @@ async function cmdCheck(root: string): Promise<void> {
   }
 }
 
-const { positionals, values } = parseArgs({ allowPositionals: true, options: { verbose: { type: "boolean" }, emit: { type: "boolean" }, repo: { type: "string" }, "no-fetch": { type: "boolean" }, json: { type: "boolean" }, limit: { type: "string" }, offset: { type: "string" }, "dry-run": { type: "boolean" }, confirm: { type: "boolean" }, viewed: { type: "boolean" }, all: { type: "boolean" }, "min-severity": { type: "string" }, force: { type: "boolean" } } });
+const { positionals, values } = parseArgs({ allowPositionals: true, options: { verbose: { type: "boolean" }, emit: { type: "boolean" }, repo: { type: "string" }, "no-fetch": { type: "boolean" }, json: { type: "boolean" }, limit: { type: "string" }, offset: { type: "string" }, "dry-run": { type: "boolean" }, confirm: { type: "boolean" }, viewed: { type: "boolean" }, all: { type: "boolean" }, "min-severity": { type: "string" }, force: { type: "boolean" }, "max-prs": { type: "string" } } });
 
 if (positionals[0] === "analyze") {
   const analyzer = positionals[1] ?? "";
@@ -271,14 +271,21 @@ if (positionals[0] === "analyze") {
       console.error(`--limit must be a positive number (got "${values.limit}")`);
       process.exit(2);
     }
+    const maxArg = values["max-prs"] === undefined ? undefined : Number(values["max-prs"]);
+    if (maxArg !== undefined && (!Number.isFinite(maxArg) || maxArg < 1)) {
+      console.error(`--max-prs must be a positive number (got "${values["max-prs"]}")`);
+      process.exit(2);
+    }
     const r = await ops.prPullViewedAll(root, {
       force: Boolean(values.force),
       limit: limitArg,
+      maxPrs: maxArg,
       dryRun: Boolean(values["dry-run"]),
       onProgress: (m) => process.stderr.write(m + "\n"),
     });
     if ("error" in r) { console.error(r.error); process.exit(1); }
-    console.log(`\n${values["dry-run"] ? "[dry run] " : ""}surveyed ${r.surveyed} PRs — ${r.withTicks} carry viewed ticks`);
+    console.log(`\n${values["dry-run"] ? "[dry run] " : ""}surveyed ${r.surveyed} PRs — ${r.withTicks} to check${r.unresolvedBySurvey ? ` (${r.unresolvedBySurvey} the survey could not settle)` : ""}`);
+    if (r.listTruncated) console.error(`  ! the listing hit its cap; older pull requests were never surveyed — re-run with --max-prs`);
     console.log(`  processed ${r.processed}${r.skippedAlreadyImported ? `, skipped ${r.skippedAlreadyImported} already imported` : ""}`);
     console.log(`  ${r.marked} symbol(s) marked viewed${r.leftSigned ? `, ${r.leftSigned} left alone (already signed)` : ""}`);
     if (r.errors.length) {

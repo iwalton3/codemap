@@ -587,7 +587,7 @@ export async function prPullViewed(root: string, input: string, opts: { dryRun?:
  * resumable: a year of pull requests is worth importing, but not at ~2MB of
  * cached snapshot per side per PR.
  */
-export async function prPullViewedAll(root: string, opts: { force?: boolean; limit?: number; dryRun?: boolean; onProgress?: (m: string) => void } = {}) {
+export async function prPullViewedAll(root: string, opts: { force?: boolean; limit?: number; maxPrs?: number; dryRun?: boolean; onProgress?: (m: string) => void } = {}) {
   const slug = originSlug(root);
   if (!slug) return { error: "this universe has no github origin remote" };
   return bulkPullViewed(root, `${slug.owner}/${slug.repo}`, opts);

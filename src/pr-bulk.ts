@@ -30,56 +30,78 @@ function gh(args: string[]): { ok: boolean; out: string; err: string } {
 
 export interface PrViewedSurvey { number: number; state: string; author: string; createdAt: string; viewed: number; dismissed: number; unviewed: number }
 
+/** `unknown` means the survey could not answer — NOT that there are no ticks. */
+export interface SurveyCount { viewed: number; dismissed: number; unviewed: number; unknown?: boolean }
+
 /**
  * Per-file viewed state for a page of PRs in one query, via GraphQL aliases.
  * One request per 20 PRs rather than per PR — the difference between a survey
  * that costs 30 requests and one that costs 600.
+ *
+ * It is a cheap GATE, not an answer: it reads only the first page of files, and a
+ * batch can fail outright. Both cases now come back `unknown` so the caller checks
+ * the pull request properly instead of reading silence as "nothing to import".
+ * They used to be indistinguishable from zero ticks, which quietly dropped any PR
+ * whose ticks were past file 100 — and, because `gh api graphql` exits non-zero if
+ * ANY aliased PR in the batch is inaccessible, all 20 of a batch containing one
+ * deleted pull request.
  */
-export function surveyViewed(slug: string, numbers: number[]): Map<number, { viewed: number; dismissed: number; unviewed: number }> {
+export function surveyViewed(slug: string, numbers: number[], deps: { gh?: typeof gh } = {}): Map<number, SurveyCount> {
+  const gh_ = deps.gh ?? gh;
   const [owner, repo] = slug.split("/");
-  const out = new Map<number, { viewed: number; dismissed: number; unviewed: number }>();
+  const out = new Map<number, SurveyCount>();
+  const unknown = (batch: number[]) => { for (const n of batch) out.set(n, { viewed: 0, dismissed: 0, unviewed: 0, unknown: true }); };
   for (let i = 0; i < numbers.length; i += 20) {
     const batch = numbers.slice(i, i + 20);
     const q = `query{repository(owner:"${owner}",name:"${repo}"){`
-      + batch.map((n) => `p${n}: pullRequest(number:${n}){files(first:100){nodes{viewerViewedState}}}`).join(" ") + `}}`;
-    const r = gh(["api", "graphql", "-f", `query=${q}`]);
-    if (!r.ok) continue;
+      + batch.map((n) => `p${n}: pullRequest(number:${n}){files(first:100){pageInfo{hasNextPage} nodes{viewerViewedState}}}`).join(" ") + `}}`;
+    const r = gh_(["api", "graphql", "-f", `query=${q}`]);
+    if (!r.ok) { unknown(batch); continue; }
     try {
       const data = JSON.parse(r.out).data.repository;
       for (const n of batch) {
-        const nodes = data[`p${n}`]?.files?.nodes ?? [];
-        const c = { viewed: 0, dismissed: 0, unviewed: 0 };
-        for (const x of nodes) {
+        const files = data[`p${n}`]?.files;
+        if (!files) { out.set(n, { viewed: 0, dismissed: 0, unviewed: 0, unknown: true }); continue; }
+        const c: SurveyCount = { viewed: 0, dismissed: 0, unviewed: 0 };
+        for (const x of files.nodes ?? []) {
           if (x.viewerViewedState === "VIEWED") c.viewed++;
           else if (x.viewerViewedState === "DISMISSED") c.dismissed++;
           else c.unviewed++;
         }
+        // More files than this page: the ticks may all be past it, so "0 viewed"
+        // here proves nothing.
+        if (files.pageInfo?.hasNextPage && !c.viewed) c.unknown = true;
         out.set(n, c);
       }
-    } catch { /* skip an unparseable batch rather than abort the survey */ }
+    } catch { unknown(batch); }
   }
   return out;
 }
 
 /** Every VIEWED path for one PR, paginated. */
-function viewedPaths(slug: string, number: number): Set<string> | { error: string } {
+export function viewedPaths(slug: string, number: number, deps: { gh?: typeof gh } = {}): Set<string> | { error: string } {
+  const gh_ = deps.gh ?? gh;
   const [owner, repo] = slug.split("/");
   const out = new Set<string>();
   let after: string | null = null;
-  for (let page = 0; page < 40; page++) {
+  const MAX_PAGES = 40;                       // 4,000 files is far past any reviewable PR
+  for (let page = 0; page < MAX_PAGES; page++) {
     const q = `query($after:String){repository(owner:"${owner}",name:"${repo}"){pullRequest(number:${number}){files(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{path viewerViewedState}}}}}`;
     const args = ["api", "graphql", "-f", `query=${q}`];
     if (after) args.push("-f", `after=${after}`);
-    const r = gh(args);
+    const r = gh_(args);
     if (!r.ok) return { error: r.err.slice(0, 200) };
     try {
       const f = JSON.parse(r.out).data.repository.pullRequest.files;
       for (const n of f.nodes) if (n.viewerViewedState === "VIEWED") out.add(n.path);
-      if (!f.pageInfo.hasNextPage) break;
+      if (!f.pageInfo.hasNextPage) return out;
       after = f.pageInfo.endCursor;
     } catch (e) { return { error: (e as Error).message }; }
   }
-  return out;
+  // Falling out of the loop means pages remain. Returning the partial set as a
+  // success let the caller write a COMPLETED import record for a PR it had only
+  // half read, so the rest was never retried without --force.
+  return { error: `more than ${MAX_PAGES * 100} files — the viewed list was not read to the end` };
 }
 
 export interface BulkViewedResult {
@@ -90,31 +112,51 @@ export interface BulkViewedResult {
   marked: number;
   leftSigned: number;
   errors: { pr: number; why: string }[];
+  /** The PR listing hit its cap — older pull requests were never surveyed. */
+  listTruncated: boolean;
+  /** PRs the cheap survey could not settle, so they were checked in full. */
+  unresolvedBySurvey: number;
 }
 
 export async function bulkPullViewed(
   root: string,
   slug: string,
-  opts: { force?: boolean; limit?: number; dryRun?: boolean; onProgress?: (msg: string) => void } = {},
+  opts: { force?: boolean; limit?: number; maxPrs?: number; dryRun?: boolean; onProgress?: (msg: string) => void } = {},
 ): Promise<BulkViewedResult | { error: string }> {
   const log = opts.onProgress ?? (() => {});
-  const listed = gh(["pr", "list", "--repo", slug, "--state", "all", "--limit", "400", "--json", "number,state,author,createdAt"]);
+  // `gh pr list` returns NEWEST first, and the sort to oldest-first below happens
+  // after this cap — so a hardcoded 400 silently truncated exactly the back
+  // catalogue this module exists to import. The cap is now explicit and, when it
+  // bites, reported rather than presented as the whole repository.
+  const maxPrs = opts.maxPrs ?? 2000;
+  const listed = gh(["pr", "list", "--repo", slug, "--state", "all", "--limit", String(maxPrs), "--json", "number,state,author,createdAt"]);
   if (!listed.ok) return { error: `gh pr list failed: ${listed.err.slice(0, 200)}` };
   const prs: { number: number; state: string; author: { login: string } | null; createdAt: string }[] = JSON.parse(listed.out);
+  const listTruncated = prs.length >= maxPrs;
   // Oldest first, so an accepted set reads chronologically. This used to be load
   // bearing — `resolveAcceptance` inferred supersession from array position, and a
   // newest-first import made every earlier body look reverted-to. It now derives
   // that from git ancestry instead, so this is presentation, not correctness.
   prs.sort((a, b) => a.number - b.number);
+  if (listTruncated) {
+    log(`! only the newest ${maxPrs} pull requests were listed; anything older than #${prs[0]!.number} was not surveyed (raise --max-prs)`);
+  }
 
   log(`surveying ${prs.length} pull requests…`);
   const survey = surveyViewed(slug, prs.map((p) => p.number));
-  const withTicks = prs.filter((p) => (survey.get(p.number)?.viewed ?? 0) > 0);
-  log(`${withTicks.length} carry viewed ticks`);
+  // `unknown` is a survey that could not answer — a PR whose files ran past the
+  // first page, or a batch that failed. Checking it properly costs one paginated
+  // request; reading it as "no ticks" cost the whole import silently.
+  const unresolved = prs.filter((p) => survey.get(p.number)?.unknown).length;
+  const withTicks = prs.filter((p) => { const c = survey.get(p.number); return !!c && (c.viewed > 0 || !!c.unknown); });
+  log(`${withTicks.length} to check${unresolved ? ` (${unresolved} the survey could not settle — checked in full)` : ""}`);
 
   const already = (await readViewedImports(root)).imported;
   const lanes = await loadLanes(root);
-  const res: BulkViewedResult = { surveyed: prs.length, withTicks: withTicks.length, processed: 0, skippedAlreadyImported: 0, marked: 0, leftSigned: 0, errors: [] };
+  const res: BulkViewedResult = {
+    surveyed: prs.length, withTicks: withTicks.length, processed: 0, skippedAlreadyImported: 0,
+    marked: 0, leftSigned: 0, errors: [], listTruncated, unresolvedBySurvey: unresolved,
+  };
 
   const targets = opts.limit ? withTicks.slice(0, opts.limit) : withTicks;
   for (const p of targets) {

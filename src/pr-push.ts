@@ -273,7 +273,7 @@ export function fetchViewedFiles(slug: string, number: number): { viewed: Set<st
   const [owner, repo] = slug.split("/");
   const viewed = new Set<string>();
   let total = 0, after: string | null = null;
-  for (let page = 0; page < 40; page++) {                    // 4000 files is far past any reviewable PR
+  for (let page = 0; page < 40; page++) {                    // 4,000 files is far past any reviewable PR
     const args = [
       "api", "graphql", "-f",
       "query=query($o:String!,$r:String!,$n:Int!,$after:String){repository(owner:$o,name:$r){pullRequest(number:$n){files(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{path viewerViewedState}}}}}",
@@ -291,11 +291,13 @@ export function fetchViewedFiles(slug: string, number: number): { viewed: Set<st
         // reviewer never saw, which is the lie the whole attestation model avoids.
         if (n.viewerViewedState === "VIEWED") viewed.add(n.path);
       }
-      if (!f.pageInfo.hasNextPage) break;
+      if (!f.pageInfo.hasNextPage) return { viewed, total };
       after = f.pageInfo.endCursor;
     } catch (e) { return { error: `could not parse gh output: ${(e as Error).message}` }; }
   }
-  return { viewed, total };
+  // Pages remain. A partial set returned as a success reads as "these are the only
+  // files ticked", which is a claim about the ones it never looked at.
+  return { error: `pull request has more files than the viewed list was read to the end of (${total}+)` };
 }
 
 export interface PullViewedResult {

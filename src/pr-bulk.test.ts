@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { State } from "./schema.js";
 import { writeStore, readViewedImports, writeViewedImport } from "./store.js";
 import { viewedTargetsFor } from "./pr-push.js";
+import { surveyViewed, viewedPaths } from "./pr-bulk.js";
 import { prBaseCommit, mergeBase } from "./git.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
@@ -111,4 +112,71 @@ test("acceptances accumulate oldest-first, each stamped with its own PR head", a
     assert.deepEqual(entries.map((e) => e.bodyHash), ["sha256:V1", "sha256:V2", "sha256:V3"], "oldest first");
     assert.deepEqual(entries.map((e) => e.commit), ["c_old", "c_mid", "c_new"], "each acceptance carries its own PR head, not the working tree's commit");
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+/**
+ * The survey is a cheap GATE: whether a PR is imported at all rides on it. Every
+ * way it could fail to answer used to be indistinguishable from "this pull request
+ * has no viewed ticks", so the PR was counted in `surveyed`, never in `processed`
+ * or `errors`, and nothing recorded that it had been skipped.
+ */
+const ghOk = (payload: unknown) => ({ ok: true, out: JSON.stringify(payload), err: "" });
+
+test("a survey that cannot answer says so, instead of reading as 'no ticks'", () => {
+  const files = (states: string[], hasNextPage = false) =>
+    ({ pageInfo: { hasNextPage }, nodes: states.map((s) => ({ viewerViewedState: s })) });
+
+  const survey = surveyViewed("o/r", [1, 2, 3, 4], {
+    gh: () => ghOk({
+      data: { repository: {
+        p1: { files: files(["VIEWED", "UNVIEWED"]) },              // settled: has ticks
+        p2: { files: files(["UNVIEWED", "UNVIEWED"]) },            // settled: none
+        p3: { files: files(["UNVIEWED"], true) },                  // more pages, no tick yet
+        // p4 missing from the response entirely
+      } },
+    }),
+  });
+
+  assert.equal(survey.get(1)!.viewed, 2 - 1);
+  assert.ok(!survey.get(1)!.unknown);
+  assert.ok(!survey.get(2)!.unknown, "a short file list with no ticks IS an answer");
+  assert.equal(survey.get(3)!.unknown, true, "ticks may be past the first page — check it properly");
+  assert.equal(survey.get(4)!.unknown, true, "a PR the response omits was not answered");
+});
+
+test("one inaccessible PR does not silently remove its whole batch", () => {
+  // `gh api graphql` exits non-zero if ANY aliased PR in the batch is inaccessible,
+  // and a batch is 20 pull requests.
+  const numbers = Array.from({ length: 20 }, (_, i) => i + 1);
+  const survey = surveyViewed("o/r", numbers, { gh: () => ({ ok: false, out: "", err: "Could not resolve to a PullRequest" }) });
+  assert.equal(survey.size, 20);
+  assert.ok(numbers.every((n) => survey.get(n)!.unknown), "all 20 are unresolved, not tick-free");
+
+  // an unparseable response is the same kind of not-an-answer
+  const garbled = surveyViewed("o/r", [7], { gh: () => ({ ok: true, out: "<html>", err: "" }) });
+  assert.equal(garbled.get(7)!.unknown, true);
+});
+
+test("a viewed list that was not read to the end is an error, not a short answer", () => {
+  // Returned as a success, the caller wrote a COMPLETED import record for a PR it
+  // had only half read, so the rest was never retried without --force.
+  let page = 0;
+  const r = viewedPaths("o/r", 42, {
+    gh: () => ghOk({ data: { repository: { pullRequest: { files: {
+      pageInfo: { hasNextPage: true, endCursor: `c${page++}` },
+      nodes: [{ path: `f${page}.cs`, viewerViewedState: "VIEWED" }],
+    } } } } }),
+  });
+  assert.ok("error" in r, "an exhausted paginator must not look like a complete list");
+  assert.match((r as { error: string }).error, /not read to the end/);
+
+  // the ordinary case still returns the set
+  const done = viewedPaths("o/r", 42, {
+    gh: () => ghOk({ data: { repository: { pullRequest: { files: {
+      pageInfo: { hasNextPage: false, endCursor: null },
+      nodes: [{ path: "a.cs", viewerViewedState: "VIEWED" }, { path: "b.cs", viewerViewedState: "DISMISSED" }],
+    } } } } }),
+  });
+  assert.ok(!("error" in done));
+  assert.deepEqual([...(done as Set<string>)], ["a.cs"], "DISMISSED is not exposure");
 });
