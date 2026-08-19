@@ -190,16 +190,22 @@ export function readOrphans(root: string, ids?: string[]): Map<string, Anchor> {
 }
 
 /**
- * Forget retained copies of anchors the tree has again.
+ * Forget retained copies of anchors the live index has again.
  *
  * A symbol that comes back — a branch checked out, a revert, a rename undone — is
  * live code once more, and leaving a stale copy beside it would give two answers to
  * "what does this id mean".
+ *
+ * Set-based on purpose. Listing the ids meant one SQL parameter per referenced
+ * anchor, and a universe with a few thousand review marks is already most of the
+ * way to SQLite's ~32k parameter ceiling — a limit that would have been hit by
+ * growth rather than by anything going wrong. Must be called AFTER the new index is
+ * written, since it reads it.
  */
-export function dropOrphans(root: string, ids: string[]): number {
-  if (!ids.length) return 0;
-  const d = db(root);
-  const r = d.prepare(`DELETE FROM anchors WHERE ref = ? AND id IN (${ids.map(() => "?").join(",")})`).run(ORPHAN_REF, ...ids);
+export function releaseRecoveredOrphans(root: string): number {
+  const r = db(root).prepare(
+    "DELETE FROM anchors WHERE ref = ? AND id IN (SELECT id FROM anchors WHERE ref = ?)",
+  ).run(ORPHAN_REF, WORK_REF);
   return Number(r.changes ?? 0);
 }
 
@@ -251,8 +257,8 @@ export function dropLegacyOverloadSnapshots(root: string): string[] {
   // that is what it retained. Rebuilding it is impossible, so it must never be swept
   // up by a rule about caches that can be rebuilt.
   const stale = (d.prepare(
-    "SELECT DISTINCT ref FROM anchors WHERE ref <> '@work' AND ref <> '@orphan' AND disambiguator GLOB '[0-9]*'",
-  ).all() as { ref: string }[]).map((r) => r.ref);
+    "SELECT DISTINCT ref FROM anchors WHERE ref <> ? AND ref <> ? AND disambiguator GLOB '[0-9]*'",
+  ).all(WORK_REF, ORPHAN_REF) as { ref: string }[]).map((r) => r.ref);
   if (!stale.length) return [];
   d.exec("BEGIN");
   try {

@@ -26,7 +26,7 @@ import {
   readBugs, writeBugs, readAnnotations, writeAnnotations, readCoverage, writeCoverage, readReviews,
   writeSnapshot, readSnapshot, listSnapshots, deleteNode as storeDeleteNode, confirmNode, ackHole as storeAckHole, loadNodeVersions,
   writeReviews, remapNodeCitations, readTriage as triageRead, writeTriage as triageWrite, dropLegacyOverloadSnapshots, findAnchorsOutsideWork,
-  readWalkthroughs, writeWalkthrough, readPushes, bodyHashAt, retainOrphans, readOrphans, dropOrphans,
+  readWalkthroughs, writeWalkthrough, readPushes, bodyHashAt, retainOrphans, readOrphans, releaseRecoveredOrphans,
 } from "./store.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "./diff.js";
@@ -348,12 +348,15 @@ export async function reindex(root: string) {
 
   const state: State = { schemaVersion: SCHEMA_VERSION, lastVerifiedCommit: commit, branch, grammarVersions: GRAMMAR_VERSIONS };
   await writeStore(root, anchors, state);
+  // After the write, because it reads the new index: anything retained earlier that
+  // this index produces again is live code, not a ghost.
+  const recovered = releaseRecoveredOrphans(root);
   if (commit) await writeSnapshot(root, commit, branch, anchors, new Date().toISOString());
   const files = new Set(anchors.map((a) => a.file)).size;
   return {
     ok: true, anchors: anchors.length, files, commit, branch,
     ...(remapped ? { remapped } : {}),
-    ...(retained.retained || retained.recovered ? { orphans: retained } : {}),
+    ...(retained || recovered ? { orphans: { retained, recovered } } : {}),
   };
 }
 
@@ -370,10 +373,12 @@ export async function reindex(root: string) {
  *               was evicted. This is the irrecoverable bucket.
  */
 export async function orphanedWork(root: string) {
-  const [annStore, bugStore, store] = await Promise.all([readAnnotations(root), readBugs(root), readAnchorStore(root)]);
+  const [annStore, bugStore, reviewStore, store] = await Promise.all([
+    readAnnotations(root), readBugs(root), readReviews(root), readAnchorStore(root),
+  ]);
   const live = new Set(store.anchors.map((a) => a.id));
 
-  const refs: { id: string; kind: "annotation" | "bug"; ref: string; label: string; posted?: Annotation["postedRef"] }[] = [];
+  const refs: { id: string; kind: "annotation" | "bug" | "review"; ref: string; label: string; posted?: Annotation["postedRef"] }[] = [];
   for (const a of annStore.annotations) {
     if (a.target.kind !== "anchor" || live.has(a.target.id)) continue;
     refs.push({
@@ -385,7 +390,16 @@ export async function orphanedWork(root: string) {
   for (const b of bugStore.bugs) {
     for (const id of b.anchors) if (!live.has(id)) refs.push({ id, kind: "bug", ref: b.id, label: b.title });
   }
-  if (!refs.length) return { total: 0, offTree: [], retained: [], lost: [] };
+  // Reviews too: a stranded sign-off is a lost attestation, and retention protects
+  // them, so leaving them out of the sweep would report less than was kept.
+  for (const r of reviewStore.reviews) {
+    if (r.target.kind !== "anchor" || live.has(r.target.id)) continue;
+    refs.push({
+      id: r.target.id, kind: "review", ref: r.target.id,
+      label: `${r.level} ${r.attestation ?? (r.actor === "agent" ? "checked" : "signed")} by ${r.reviewer || r.actor || "?"}`,
+    });
+  }
+  if (!refs.length) return { total: 0, offTree: [] as any[], retained: [] as any[], lost: [] as any[], byKind: {} as Record<string, { offTree: number; retained: number; lost: number }> };
 
   const ids = [...new Set(refs.map((r) => r.id))];
   const inSnapshots = findAnchorsOutsideWork(root, ids);
@@ -399,13 +413,27 @@ export async function orphanedWork(root: string) {
     return { bucket: "lost" as const, at: null, anchor: null };
   };
 
-  const out = { total: refs.length, offTree: [] as unknown[], retained: [] as unknown[], lost: [] as unknown[] };
+  const out = {
+    total: refs.length,
+    offTree: [] as any[], retained: [] as any[], lost: [] as any[],
+    /**
+     * Counts per bucket per kind, because the buckets do not mean the same thing for
+     * every kind. A stranded FINDING is work somebody did that is now unreachable. A
+     * stranded historical `viewed` mark is the expected residue of importing years of
+     * pull requests — code gets deleted and renamed, and those marks were true when
+     * they were made. Reporting one total would bury six real losses under nine
+     * hundred routine ones.
+     */
+    byKind: {} as Record<string, { offTree: number; retained: number; lost: number }>,
+  };
   for (const r of refs) {
     const w = where(r.id);
     out[w.bucket].push({
       ...r, at: w.at,
       ...(w.anchor ? { file: w.anchor.file, symbol: w.anchor.symbolPath.join(" › "), line: w.anchor.loc?.startLine } : {}),
     });
+    const k = (out.byKind[r.kind] ??= { offTree: 0, retained: 0, lost: 0 });
+    k[w.bucket]++;
   }
   return out;
 }
@@ -428,24 +456,20 @@ export async function referencedAnchorIds(root: string): Promise<Set<string>> {
 }
 
 /**
- * Retain the referenced anchors this index drops, and release the ones it brings
- * back.
+ * Retain the referenced anchors this index is about to drop. Must run BEFORE the
+ * store is overwritten — the old rows are the only record of what those ids meant.
  *
- * Both halves matter. A symbol that returns — a branch checked out, a revert, a
- * rename undone — is live code again, and a stale retained copy beside it would give
- * two answers to what its id means.
+ * The other half, releasing anchors this index brings back, is
+ * `releaseRecoveredOrphans` and runs after the write.
  */
-async function retainReferencedAnchors(root: string, fresh: Anchor[]): Promise<{ retained: number; recovered: number }> {
+async function retainReferencedAnchors(root: string, fresh: Anchor[]): Promise<number> {
   let stored: Anchor[];
-  try { stored = (await readAnchorStore(root)).anchors; } catch { return { retained: 0, recovered: 0 }; }
+  try { stored = (await readAnchorStore(root)).anchors; } catch { return 0; }   // first run
   const referenced = await referencedAnchorIds(root);
-  if (!referenced.size) return { retained: 0, recovered: 0 };
+  if (!referenced.size) return 0;
 
   const freshIds = new Set(fresh.map((a) => a.id));
-  const going = stored.filter((a) => referenced.has(a.id) && !freshIds.has(a.id));
-  const retained = retainOrphans(root, going);
-  const recovered = dropOrphans(root, [...freshIds].filter((id) => referenced.has(id)));
-  return { retained, recovered };
+  return retainOrphans(root, stored.filter((a) => referenced.has(a.id) && !freshIds.has(a.id)));
 }
 
 /** See migrate-overloads.ts. Returns null when there is nothing from the old scheme. */

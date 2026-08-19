@@ -120,14 +120,23 @@ async function cmdPrPush(
 async function cmdOrphans(root: string): Promise<void> {
   const r = await ops.orphanedWork(root);
   if (!r.total) { console.log("nothing is pointing at missing code."); return; }
-  console.log(`${r.total} reference(s) to code the working tree does not have:\n`);
+  const k = r.byKind as Record<string, { offTree: number; retained: number; lost: number }>;
+  const work = Object.entries(k).filter(([n]) => n !== "review").reduce((n, [, v]) => n + v.offTree + v.retained + v.lost, 0);
+  console.log(`${r.total} reference(s) to code the working tree does not have — ${work} of them findings or bugs:\n`);
   const show = (label: string, rows: any[], note: string) => {
+    // Reviews are counted, not listed. A repository's history necessarily strands
+    // `viewed` marks — code gets deleted and renamed, and those marks were true when
+    // they were made — so enumerating hundreds of them would bury the handful of
+    // findings that are actually unreachable work.
+    const work = rows.filter((x) => x.kind !== "review");
+    const marks = rows.length - work.length;
     if (!rows.length) return;
     console.log(`  ${label} — ${rows.length}  (${note})`);
-    for (const x of rows) {
+    for (const x of work) {
       console.log(`    ${x.ref}  ${x.file ?? "?"}${x.line ? ":" + x.line : ""}  ${x.symbol ?? ""}`);
       console.log(`      ${x.label}${x.at ? `   [last seen at ${x.at}]` : ""}${x.posted ? `   [POSTED to PR #${x.posted.pr}]` : ""}`);
     }
+    if (marks) console.log(`    …and ${marks} review mark(s), not listed — mostly imported history over deleted or renamed code`);
     console.log("");
   };
   show("off-tree", r.offTree as any[], "exists on a branch — check that ref out, or work against it");
