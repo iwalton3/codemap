@@ -15,6 +15,7 @@ import {
   type Anchor, type LogicalNode, type LogicalNodeType, type EdgeType, type State,
   type Bug, type BugStatus, type BugSeverity, type Annotation,
   type AnchorSelector, type CoverageMark, type CoverageState, type Edge, type ReviewLevel, type Importance, type Complexity, type TriageSource,
+  type Disposition, DISPOSITIONS, COMMENT_MAX,
   SCHEMA_VERSION,
 } from "./schema.js";
 import { indexFile, indexBlob, indexRepo, indexCommit } from "./repo.js";
@@ -25,7 +26,7 @@ import {
   readBugs, writeBugs, readAnnotations, writeAnnotations, readCoverage, writeCoverage, readReviews,
   writeSnapshot, readSnapshot, listSnapshots, deleteNode as storeDeleteNode, confirmNode, ackHole as storeAckHole, loadNodeVersions,
   writeReviews, remapNodeCitations, readTriage as triageRead, writeTriage as triageWrite, dropLegacyOverloadSnapshots, findAnchorsOutsideWork,
-  readWalkthroughs, writeWalkthrough,
+  readWalkthroughs, writeWalkthrough, readPushes,
 } from "./store.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "./diff.js";
@@ -35,7 +36,7 @@ import { validateWalkthrough, buildWalkthrough, walkCoverage, staleChapters, typ
 import { LANE_POLICY } from "./lanes.js";
 import { remapOverloadIds, applyRemap } from "./migrate-overloads.js";
 import { parseAgentLines, ingestAgentReview } from "./pr-ingest.js";
-import { planPrPush, executePrPush, pullViewedFromGitHub, isAgentAuthored, type PushPlan } from "./pr-push.js";
+import { planPrPush, executePrPush, pullViewedFromGitHub, isAgentAuthored, publishStateOf, type PushPlan, type PublishState } from "./pr-push.js";
 import { bulkPullViewed } from "./pr-bulk.js";
 import { resolveCoverage, selectAnchors, docPct as computeDocPct, citedPct as computeCitedPct, type CoverageResult } from "./coverage.js";
 import { resolveAnchorRefs } from "./refs.js";
@@ -2300,9 +2301,29 @@ export async function updateBug(
 // Annotations
 // ---------------------------------------------------------------------------
 
+/**
+ * Validate the submitter-facing half of a finding.
+ *
+ * Over-length is refused rather than truncated, and the error names the cap and the
+ * overage: a comment silently cut at 800 characters loses its last sentence, which
+ * by the contract in the tool description is the ASK — the one part the person
+ * fixing it actually needs.
+ */
+function checkComment(comment: string | undefined): { comment?: string } | { error: string } {
+  const c = comment?.trim();
+  if (!c) return {};
+  if (c.length > COMMENT_MAX) {
+    return { error: `comment is ${c.length} characters; the cap is ${COMMENT_MAX}. Cut the investigation — what was checked and what was ruled out belong in \`text\`. Keep: what is broken, file:line proving it, and the ask.` };
+  }
+  return { comment: c };
+}
+
+const checkDisposition = (d: string | undefined): Disposition | undefined =>
+  d && (DISPOSITIONS as readonly string[]).includes(d) ? (d as Disposition) : undefined;
+
 export async function annotate(
   root: string,
-  input: { targetKind: "anchor" | "node"; targetId: string; text: string; author?: string; kind?: Annotation["kind"]; severity?: BugSeverity; category?: string; line?: number; ref?: string },
+  input: { targetKind: "anchor" | "node"; targetId: string; text: string; author?: string; kind?: Annotation["kind"]; severity?: BugSeverity; category?: string; line?: number; ref?: string; comment?: string; disposition?: Disposition; publishPath?: string; publishLine?: number },
 ) {
   // Validate the target exists (anchor targets accept file#Symbol refs too).
   let targetId = input.targetId;
@@ -2322,6 +2343,15 @@ export async function annotate(
   const SEV = ["low", "medium", "high", "critical"];
   const severity = input.severity && SEV.includes(input.severity) ? input.severity : undefined;
   const category = input.category?.trim() || undefined;
+  const c = checkComment(input.comment);
+  if ("error" in c) return c;
+  // Required on findings, not merely encouraged. Twelve findings in the session that
+  // motivated this were filed with rich evidence and no short form — because none
+  // was asked for — and all twelve were then rewritten by hand for GitHub. An
+  // optional field is skipped every time; the round-trip is the thing being removed.
+  if (kind === "finding" && !c.comment) {
+    return { error: "a finding needs `comment`: what is broken, the file:line that proves it, and the ask — in at most " + COMMENT_MAX + " characters, for the person who has to fix it. The evidence goes in `text`." };
+  }
   const ann: Annotation = {
     id: genId(kind || "note"),
     target: { kind: input.targetKind, id: targetId },
@@ -2329,6 +2359,10 @@ export async function annotate(
     kind,
     ...(severity ? { severity } : {}),
     ...(category ? { category } : {}),
+    ...(c.comment ? { comment: c.comment } : {}),
+    ...(kind === "finding" || kind === "question" ? { disposition: checkDisposition(input.disposition) ?? "open" } : {}),
+    ...(input.publishPath?.trim() ? { publishPath: input.publishPath.trim() } : {}),
+    ...(Number.isFinite(input.publishLine) ? { publishLine: Math.floor(input.publishLine as number) } : {}),
     resolved: false,
     ...(line !== undefined ? { line } : {}),
     author: input.author ?? "agent",
@@ -2374,6 +2408,103 @@ export async function escalateAnnotation(root: string, input: { id: string; esca
 }
 
 /**
+ * Every annotation already published, across every pull request.
+ *
+ * The queue is not PR-scoped, so `posted` here means "went out somewhere" — which
+ * is the question being asked. Per-PR dedupe stays in `planPrPush`, where the PR
+ * is known.
+ */
+async function pushedAnnotationIds(root: string): Promise<Set<string>> {
+  const ids = new Set<string>();
+  for (const rec of Object.values((await readPushes(root)).pushes)) for (const id of rec.annotationIds ?? []) ids.add(id);
+  return ids;
+}
+
+/**
+ * Amend a finding, keeping what it used to say.
+ *
+ * Findings are filed before they are understood. A report goes in, investigation
+ * shows it was overstated or aimed at the wrong line, and the correction has to be
+ * visible AS a correction — which is exactly the case where you most want to see
+ * what changed and who changed it. Revisions append; nothing is destroyed.
+ *
+ * Callable by either party: an agent revising its own overstatement is the loop
+ * working, and the human sharpening an agent's wording is the normal path to a
+ * publishable comment.
+ */
+export async function reviseAnnotation(
+  root: string,
+  input: {
+    id: string; by?: string; allowPostEdit?: boolean;
+    text?: string; comment?: string; disposition?: Disposition; severity?: BugSeverity;
+    publishPath?: string; publishLine?: number; publishAttribution?: "agent" | "human";
+  },
+) {
+  const store = await readAnnotations(root);
+  const ann = store.annotations.find((a) => a.id === input.id);
+  if (!ann) return { error: `no annotation "${input.id}"` };
+  // Editing what the submitter can already see, without editing it there too, makes
+  // the map and the pull request disagree about what was said — and the pull request
+  // is the copy the other person is acting on.
+  if (ann.postedRef && !input.allowPostEdit) {
+    return { error: `that finding is already posted to PR #${ann.postedRef.pr}${ann.postedRef.url ? ` (${ann.postedRef.url})` : ""}. Revising it here would diverge from what the submitter can see — reply on the pull request instead, or pass allowPostEdit to change the map anyway (which does NOT edit the posted comment).` };
+  }
+
+  const c = checkComment(input.comment);
+  if ("error" in c) return c;
+  const disposition = input.disposition === undefined ? undefined : checkDisposition(input.disposition);
+  if (input.disposition !== undefined && !disposition) {
+    return { error: `unknown disposition "${input.disposition}" — expected one of ${DISPOSITIONS.join(", ")}` };
+  }
+  const SEV = ["low", "medium", "high", "critical"];
+  if (input.severity !== undefined && !SEV.includes(input.severity)) {
+    return { error: `unknown severity "${input.severity}" — expected one of ${SEV.join(", ")}` };
+  }
+
+  const was: NonNullable<Annotation["revisions"]>[number]["was"] = {};
+  const changed: string[] = [];
+  const bump = <K extends keyof typeof was>(k: K, next: (typeof was)[K] | undefined) => {
+    if (next === undefined || next === (ann as never as Record<string, unknown>)[k]) return;
+    (was as Record<string, unknown>)[k] = (ann as never as Record<string, unknown>)[k];
+    (ann as never as Record<string, unknown>)[k] = next;
+    changed.push(k);
+  };
+  bump("text", input.text?.trim() || undefined);
+  bump("comment", c.comment);
+  bump("disposition", disposition);
+  bump("severity", input.severity);
+  bump("publishPath", input.publishPath?.trim() || undefined);
+  bump("publishLine", Number.isFinite(input.publishLine) ? Math.floor(input.publishLine as number) : undefined);
+  if (input.publishAttribution) ann.publishAttribution = input.publishAttribution;
+
+  if (!changed.length) return { ok: true, id: ann.id, changed: [], note: "nothing to change" };
+  (ann.revisions ??= []).push({ at: new Date().toISOString(), by: input.by || "agent", was });
+  await writeAnnotations(root, store.annotations);
+  return { ok: true, id: ann.id, changed, revisions: ann.revisions.length, target: ann.target };
+}
+
+/**
+ * The human decides this one is not going to the submitter — without resolving it,
+ * because it may still be true and still worth having on the map.
+ *
+ * Separate from clearing `escalated`, which only exists on an AGENT's finding. A
+ * human's own finding is publishable by virtue of having been written, so declining
+ * to send it needs a record of its own rather than the absence of one.
+ */
+export async function withdrawAnnotation(root: string, input: { id: string; withdraw?: boolean; by?: string }) {
+  const store = await readAnnotations(root);
+  const ann = store.annotations.find((a) => a.id === input.id);
+  if (!ann) return { error: `no annotation "${input.id}"` };
+  if (ann.postedRef && input.withdraw !== false) {
+    return { error: `that finding is already posted to PR #${ann.postedRef.pr} — withdrawing it here would not take it off the pull request. Reply to it there instead.` };
+  }
+  const withdraw = input.withdraw !== false;
+  ann.withdrawn = withdraw ? { at: new Date().toISOString(), by: input.by || "human" } : undefined;
+  await writeAnnotations(root, store.annotations);
+  return { ok: true, id: ann.id, withdrawn: withdraw, target: ann.target };
+}
+
+/**
  * Hand a finding to an agent. The reviewer's half of the loop: raising a finding
  * records it, assigning it asks for something to be done about it.
  */
@@ -2396,7 +2527,12 @@ export interface QueueItem {
   kind: Annotation["kind"];
   severity?: BugSeverity;
   category?: string;
-  text: string;
+  /** Absent under `brief` — `textPreview` carries the head of it instead. */
+  text?: string;
+  textPreview?: string;
+  comment?: string;
+  disposition?: Disposition;
+  publishState?: PublishState;
   line?: number;
   author: string;
   assignment: NonNullable<Annotation["assignment"]>;
@@ -2416,12 +2552,46 @@ export interface QueueItem {
  * is waiting on the human, not on the agent, and returning it would have agents
  * redo work someone has not read yet.
  */
-export async function reviewQueue(root: string, opts: { includeAnswered?: boolean } = {}) {
+export async function reviewQueue(
+  root: string,
+  opts: { includeAnswered?: boolean; brief?: boolean; limit?: number; offset?: number; disposition?: string; publishState?: string } = {},
+) {
   const store = await readAnnotations(root);
-  const pending = store.annotations.filter(
+  const pushedIds = await pushedAnnotationIds(root);
+  let pending = store.annotations.filter(
     (a) => a.assignment && !a.resolved && (opts.includeAnswered || !a.outcome),
   );
-  if (!pending.length) return { queue: [] as QueueItem[] };
+  if (opts.disposition) pending = pending.filter((a) => (a.disposition ?? "open") === opts.disposition);
+  if (opts.publishState) pending = pending.filter((a) => publishStateOf(a, pushedIds) === opts.publishState);
+
+  const rank = { critical: 0, high: 1, medium: 2, low: 3 } as Record<string, number>;
+  pending.sort((x, y) => (rank[x.severity ?? "low"] ?? 3) - (rank[y.severity ?? "low"] ?? 3));
+  const total = pending.length;
+  const offset = Math.max(0, Math.floor(opts.offset ?? 0));
+  const limit = Number.isFinite(opts.limit) ? Math.max(1, Math.floor(opts.limit as number)) : undefined;
+  const page = pending.slice(offset, limit === undefined ? undefined : offset + limit);
+  const more = offset + page.length < total;
+
+  // Brief by DEFAULT, because the full form inlines every anchor's source: the first
+  // real call of this tool returned 100,882 characters and blew the token limit
+  // outright, so the work could not start until it had been dumped to a file and
+  // mined with jq. Full source is one `get_anchor` away; a queue you cannot read is
+  // not a queue.
+  if (opts.brief !== false) {
+    const brief: QueueItem[] = page.map((a) => ({
+      id: a.id, kind: a.kind, severity: a.severity, category: a.category,
+      disposition: a.disposition ?? "open", publishState: publishStateOf(a, pushedIds),
+      comment: a.comment,
+      textPreview: a.text.length > 300 ? a.text.slice(0, 300) + "…" : a.text,
+      line: a.line, author: a.author, assignment: a.assignment!, target: a.target,
+    }));
+    return {
+      total, offset, more, queue: brief,
+      hint: "brief — pass brief:false for each symbol's full source, or read one with `get_anchor`.",
+    };
+  }
+  pending = page;
+  if (!pending.length) return { total, offset, more, queue: [] as QueueItem[] };
 
   const anchorIds = [...new Set(pending.filter((a) => a.target.kind === "anchor").map((a) => a.target.id))];
   const anchors = new Map((await readAnchorStore(root)).anchors.filter((a) => anchorIds.includes(a.id)).map((a) => [a.id, a]));
@@ -2462,11 +2632,12 @@ export async function reviewQueue(root: string, opts: { includeAnswered?: boolea
       // Where the source came from, when it is not the working tree — an agent asked
       // to FIX must know it is looking at a branch's body, not at HEAD.
       ...(off ? { atCommit: off.ref } : {}),
+      comment: a.comment,
+      disposition: a.disposition ?? "open",
+      publishState: publishStateOf(a, pushedIds),
     });
   }
-  const rank = { critical: 0, high: 1, medium: 2, low: 3 } as Record<string, number>;
-  queue.sort((x, y) => (rank[x.severity ?? "low"] ?? 3) - (rank[y.severity ?? "low"] ?? 3));
-  return { queue };
+  return { total, offset, more, queue };
 }
 
 /**
@@ -2481,7 +2652,19 @@ export async function reviewQueue(root: string, opts: { includeAnswered?: boolea
  */
 export async function closeAssignment(
   root: string,
-  input: { id: string; result: "fixed" | "answered" | "declined"; detail: string; files?: string[]; by?: string },
+  input: {
+    id: string; result: "fixed" | "answered" | "declined"; detail: string; files?: string[]; by?: string;
+    /** The submitter-facing version of what was found, if this is going to the PR. */
+    comment?: string;
+    /**
+     * What the investigation concluded. Deliberately NOT folded into `result`:
+     * `result` is what the AGENT DID (fixed it, looked into it, declined), and
+     * `disposition` is what turned out to be TRUE of the finding. A false positive
+     * is `answered` + `refuted` — the agent did answer, and the answer was "not a
+     * defect". Collapsing the two would make `result` mean two things at once.
+     */
+    disposition?: Disposition;
+  },
 ) {
   const store = await readAnnotations(root);
   const ann = store.annotations.find((a) => a.id === input.id);
@@ -2496,9 +2679,25 @@ export async function closeAssignment(
   if (input.result === "fixed" && files.length > 1) {
     return { error: `a fix may touch one file; this touched ${files.length} (${files.join(", ")}). Report \`declined\` with what the change needs — a multi-file change belongs to an agent the human dispatches, not to a review-tool edit.` };
   }
+  const c = checkComment(input.comment);
+  if ("error" in c) return c;
+  const disposition = input.disposition === undefined ? undefined : checkDisposition(input.disposition);
+  if (input.disposition !== undefined && !disposition) {
+    return { error: `unknown disposition "${input.disposition}" — expected one of ${DISPOSITIONS.join(", ")}` };
+  }
+
+  // Reporting back is a revision of the finding, so it leaves the same trail: what
+  // it said before the investigation is exactly what a reader wants when the
+  // investigation changed the answer.
+  if (c.comment || disposition) {
+    const was: NonNullable<Annotation["revisions"]>[number]["was"] = {};
+    if (c.comment && c.comment !== ann.comment) { was.comment = ann.comment; ann.comment = c.comment; }
+    if (disposition && disposition !== ann.disposition) { was.disposition = ann.disposition; ann.disposition = disposition; }
+    if (Object.keys(was).length) (ann.revisions ??= []).push({ at: new Date().toISOString(), by: input.by || "agent", was });
+  }
   ann.outcome = { at: new Date().toISOString(), by: input.by || "agent", result: input.result, detail: input.detail, files: files.length ? files : undefined };
   await writeAnnotations(root, store.annotations);
-  return { ok: true, id: ann.id, result: input.result, awaitingHuman: true, target: ann.target };
+  return { ok: true, id: ann.id, result: input.result, disposition: ann.disposition, awaitingHuman: true, target: ann.target };
 }
 
 /**

@@ -15,14 +15,25 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import type { Annotation } from "./schema.js";
-import { readAnnotations, readPushes, writePush } from "./store.js";
+import { PUBLISHABLE, type Annotation, type Disposition } from "./schema.js";
+import { readAnnotations, writeAnnotations, readAnchorStore, readPushes, writePush } from "./store.js";
 import { diffLineRanges } from "./git.js";
 import { prTriage, anchorSpans, fetchPrMeta, type PrMeta } from "./pr.js";
 import { LANE_POLICY } from "./lanes.js";
 
 export interface InlineComment { path: string; line: number; side: "RIGHT"; body: string; annotationId: string }
 export interface DeferredComment { annotationId: string; path: string; line?: number; body: string; why: string }
+/**
+ * A finding the human elected that this plan cannot place, and why.
+ *
+ * These used to vanish: a finding whose anchor was not in the PR's worklist hit a
+ * bare `continue`, uncounted, so electing one on code the branch never touched
+ * silently never went out AND the plan reported nothing held back. Most of the
+ * time that is the right call — the map is full of annotations about other code —
+ * but once a human has vouched for one, dropping it without saying so is the tool
+ * lying about what it published.
+ */
+export interface BlockedComment { annotationId: string; severity?: string; file?: string; symbol?: string; why: string }
 
 export interface PushPlan {
   pr: { number: number; title: string; url: string; owner: string; repo: string; nodeId?: string };
@@ -30,8 +41,9 @@ export interface PushPlan {
   body: string;
   comments: InlineComment[];
   deferred: DeferredComment[];
+  blocked: BlockedComment[];
   viewedPaths: string[];
-  skipped: { alreadyPushed: number; resolved: number; notElected: number; belowSeverity: number };
+  skipped: { alreadyPushed: number; resolved: number; notElected: number; belowSeverity: number; withdrawn: number; noComment: number; notPublishable: number };
   /**
    * Identity of exactly what this plan would publish. A caller that inspected a
    * plan sends it back with the publish; if re-deriving gives a different one, the
@@ -42,14 +54,42 @@ export interface PushPlan {
   fingerprint: string;
 }
 
-const ICON: Record<string, string> = { finding: "⚑", question: "❓", pointer: "👁", note: "✎" };
+/**
+ * Publish under an agent's name or the human's.
+ *
+ * Derived from who wrote the `comment` — the submitter-facing text is the thing
+ * being attributed — but overridable, because a human who rewrites an agent's
+ * wording to be sharper should not have to choose between mislabelling it and
+ * losing the marker.
+ */
+const attributionOf = (a: Annotation): "agent" | "human" =>
+  a.publishAttribution ?? (lastCommentAuthorIsAgent(a) ? "agent" : "human");
 
-/** One finding, rendered for GitHub. Provenance is explicit — a human reading this must know an agent wrote it. */
-function renderAnnotation(a: Annotation, symbol: string): string {
-  const kind = a.kind ?? "note";
-  const head = `${ICON[kind] ?? "✎"} **${kind}${a.severity ? ` · ${a.severity}` : ""}${a.category ? ` · ${a.category}` : ""}**`;
-  const who = a.author && a.author.startsWith("agent") ? `_first-pass agent review — not yet confirmed by a human_` : "";
-  return [head, "", a.text, "", who, `<sub>codemap · \`${symbol}\`</sub>`].filter(Boolean).join("\n");
+function lastCommentAuthorIsAgent(a: Annotation): boolean {
+  // Whoever last CHANGED the comment owns it. A finding an agent filed and a human
+  // then rewrote is the human's; one a human filed and an agent revised is not.
+  const rev = [...(a.revisions ?? [])].reverse().find((r) => "comment" in r.was);
+  return (rev?.by ?? a.author ?? "").startsWith("agent");
+}
+
+/**
+ * One finding, rendered for the person who has to fix it.
+ *
+ * The body is `comment`, never `text`: `text` is the investigation, written for the
+ * map, and publishing it is the failure this whole split exists to prevent. A
+ * finding without a comment is not rendered at all — it is skipped and said so.
+ */
+function renderAnnotation(a: Annotation, subject: string, preamble?: string): string {
+  const mark = attributionOf(a) === "agent" ? "[Claude] " : "";
+  // Two markers only. The submitter needs to know an answer is wanted rather than a
+  // fix; more taxonomy than that will not survive contact.
+  const q = a.kind === "question" ? "**Question** — " : "";
+  return [
+    preamble ? `${mark}**Re: ${preamble}**` : "",
+    `${preamble ? "" : mark}${q}${a.comment!.trim()}`,
+    ``,
+    `<sub>codemap · \`${subject}\`${a.severity ? ` · ${a.severity}` : ""}${a.category ? ` · ${a.category}` : ""}</sub>`,
+  ].filter((x) => x !== "").join("\n\n");
 }
 
 /**
@@ -63,26 +103,121 @@ export const isAgentAuthored = (a: Annotation) => (a.author ?? "").startsWith("a
 export const isElected = (a: Annotation) => !isAgentAuthored(a) || !!a.escalated;
 
 /**
+ * Where a finding stands on its way to the pull request. DERIVED, never stored.
+ *
+ * The two transitions already exist and are already enforced by construction:
+ * `escalated` is the human's deliberate vouch (a web action — agents have no tool
+ * that can set it), and the push record is the receipt for what actually went out.
+ * Storing a parallel enum would mean two answers to the same question and a
+ * dual-write to keep them agreeing, so this reads them instead.
+ *
+ *   local      an agent's proposal, not vouched for
+ *   approved   the human's to publish — theirs, or an agent's they raised
+ *   withdrawn  decided against; stays on the map
+ *   posted     on the pull request; terminal for that PR
+ */
+export type PublishState = "local" | "approved" | "withdrawn" | "posted";
+
+export function publishStateOf(a: Annotation, pushed: ReadonlySet<string>): PublishState {
+  if (a.postedRef || pushed.has(a.id)) return "posted";
+  if (a.withdrawn) return "withdrawn";
+  return isElected(a) ? "approved" : "local";
+}
+
+/**
  * Why one finding is or is not published. Extracted because every decision that
  * determines what lands irreversibly on somebody else's pull request lived inside
  * a loop with no test reaching it: the vetting gate, the re-run dedupe and the
  * severity bar could all have been deleted without breaking anything.
  */
-export type PushVerdict = "push" | "not-in-pr" | "resolved" | "already-pushed" | "not-elected" | "below-severity";
+export type PushVerdict =
+  | "push" | "not-in-pr" | "resolved" | "already-pushed" | "not-elected" | "below-severity"
+  | "withdrawn" | "no-comment" | "not-publishable";
 
 export function pushVerdict(
   a: Annotation,
   inPr: boolean,
   pushed: ReadonlySet<string>,
-  filter: { electedOnly?: boolean; minSeverity?: string } = {},
+  filter: { electedOnly?: boolean; minSeverity?: string; dispositions?: readonly Disposition[]; ids?: ReadonlySet<string> } = {},
 ): PushVerdict {
   if (!inPr) return "not-in-pr";
   if (a.resolved) return "resolved";                       // never send something closed locally
-  if (pushed.has(a.id)) return "already-pushed";           // a re-run must not duplicate a comment
+  if (pushed.has(a.id) || a.postedRef) return "already-pushed";  // a re-run must not duplicate a comment
+  if (a.withdrawn) return "withdrawn";
   if (filter.electedOnly !== false && !isElected(a)) return "not-elected";
   const minSev = filter.minSeverity === undefined ? -1 : SEV_ORDER.indexOf(filter.minSeverity);
   if (minSev >= 0 && SEV_ORDER.indexOf(a.severity ?? "low") < minSev) return "below-severity";
+  // Named ids are the human picking a specific batch in the editor; that choice
+  // outranks the disposition default, which is how a refutation worth closing out
+  // gets published on request.
+  if (!filter.ids?.has(a.id) && (a.kind === "finding" || a.kind === "question")) {
+    const allowed = filter.dispositions ?? PUBLISHABLE;
+    if (!allowed.includes(a.disposition ?? "open")) return "not-publishable";
+  }
+  // Deliberately last, so "you never wrote the short version" is what a finding that
+  // would OTHERWISE have gone out reports — not something every unelected note says.
+  // Falling back to `text` here is exactly the wall of text the split exists to stop.
+  if (!a.comment?.trim()) return "no-comment";
   return "push";
+}
+
+export type Placement =
+  | { kind: "inline"; path: string; line: number; preamble?: string }
+  | { kind: "body"; why: string };
+
+/**
+ * Where a finding can actually land.
+ *
+ * GitHub only accepts a review comment on a file in the diff, and only on a line
+ * inside a hunk. Findings have neither constraint: plenty are about code the branch
+ * never edited, and some are about an ABSENCE, which has no line anywhere. So the
+ * comment often has to sit somewhere other than its subject — and when it does, the
+ * body has to say where the subject really is, because the reader's context is
+ * wrong by construction.
+ *
+ * File-level comments (`subject_type: "file"`) would be the tidier landing spot for
+ * §4.2, but they are not reliably accepted inside a batched review create, and a
+ * 422 there fails the WHOLE batch. First-hunk-line plus a preamble always works.
+ */
+export function placeAnnotation(
+  a: Annotation,
+  subject: { file?: string; symbol?: string },
+  q: {
+    inDiff: (path: string) => boolean;
+    commentable: (path: string, line: number) => boolean;
+    firstHunkLine: (path: string) => number | undefined;
+    firstChangedLineOfSymbol: () => number | undefined;
+  },
+): Placement {
+  const where = subject.file ? `${subject.file}${a.line ? `:${a.line}` : ""}` : subject.symbol ?? "elsewhere";
+
+  // An explicit publishPath is the human saying "put it here" — it wins outright.
+  if (a.publishPath && q.inDiff(a.publishPath)) {
+    const line = (a.publishLine && q.commentable(a.publishPath, a.publishLine) ? a.publishLine : undefined)
+      ?? q.firstHunkLine(a.publishPath);
+    if (line !== undefined) {
+      const displaced = a.publishPath !== subject.file || (a.publishLine ?? line) !== a.line;
+      return { kind: "inline", path: a.publishPath, line, ...(displaced ? { preamble: where } : {}) };
+    }
+  }
+
+  if (subject.file && q.inDiff(subject.file)) {
+    if (a.line && q.commentable(subject.file, a.line)) return { kind: "inline", path: subject.file, line: a.line };
+    const own = q.firstChangedLineOfSymbol();
+    if (own !== undefined) return { kind: "inline", path: subject.file, line: own };
+    const first = q.firstHunkLine(subject.file);
+    // Same file, wrong line: the preamble is what stops the submitter reading the
+    // comment as being about the hunk it happens to be pinned to.
+    if (first !== undefined) return { kind: "inline", path: subject.file, line: first, preamble: where };
+    return { kind: "body", why: "the file is in the pull request but has no diff hunk to comment on" };
+  }
+
+  return {
+    kind: "body",
+    why: a.publishPath
+      ? `publishPath "${a.publishPath}" is not a file in this pull request`
+      : "the code this is about is not in this pull request — set publishPath to the nearest file that is",
+  };
 }
 
 export interface PushFilter {
@@ -99,7 +234,14 @@ export interface PushFilter {
 
 const SEV_ORDER = ["low", "medium", "high", "critical"];
 
-export async function planPrPush(root: string, input: string, filter: PushFilter = {}): Promise<PushPlan | { error: string }> {
+export interface PushFilterExt extends PushFilter {
+  /** Publish exactly these, whatever their disposition — the editor's approved batch. */
+  ids?: string[];
+  /** Override which dispositions go out unasked (default: confirmed / partial / rerated). */
+  dispositions?: Disposition[];
+}
+
+export async function planPrPush(root: string, input: string, filter: PushFilterExt = {}): Promise<PushPlan | { error: string }> {
   // A misspelt tier used to yield indexOf() === -1, which the filter below read as
   // "no severity filter" — so `--min-severity High` published every `low` finding
   // to someone else's PR, and the plan printed `belowSeverity: 0` confirming
@@ -137,24 +279,73 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
 
   const comments: InlineComment[] = [];
   const deferred: DeferredComment[] = [];
-  let resolved = 0, already = 0, notElected = 0, belowSeverity = 0;
+  const blocked: BlockedComment[] = [];
+  let resolved = 0, already = 0, notElected = 0, belowSeverity = 0, withdrawn = 0, noComment = 0, notPublishable = 0;
   const electedOnly = filter.electedOnly !== false;
+  const ids = filter.ids?.length ? new Set(filter.ids) : undefined;
+
+  const inDiff = (path: string) => ranges.has(path);
+  const firstHunkLine = (path: string) => ranges.get(path)?.[0]?.[0];
+  const allAnchors = new Map((await readAnchorStore(root)).anchors.map((x) => [x.id, x]));
 
   for (const a of anns) {
     if (a.target.kind !== "anchor") continue;
+    if (ids && !ids.has(a.id)) continue;                   // an explicit batch is exactly that
     const w = byAnchor.get(a.target.id);
-    const verdict = pushVerdict(a, !!w, pushed, { electedOnly, minSeverity: filter.minSeverity });
+
+    // A finding whose anchor is not in this PR is normally none of its business —
+    // the map is full of them. But one the human ELECTED, or gave a publishPath, is
+    // a deliberate act, and §4.3 is the common case rather than an error: the
+    // witness findings were a fail-open predicate in a file the branch never touched
+    // and a missing registration, which is an absence and has no line anywhere.
+    const claimed = !w && (isElected(a) || !!a.publishPath) && !a.resolved && !a.withdrawn
+      && !pushed.has(a.id) && !a.postedRef;
+    if (!w && !claimed) continue;
+
+    const verdict = pushVerdict(a, w ? true : claimed, pushed, {
+      electedOnly, minSeverity: filter.minSeverity, dispositions: filter.dispositions, ids,
+    });
     if (verdict === "not-in-pr") continue;
     if (verdict === "resolved") { resolved++; continue; }
     if (verdict === "already-pushed") { already++; continue; }
+    if (verdict === "withdrawn") { withdrawn++; continue; }
     if (verdict === "not-elected") { notElected++; continue; }
     if (verdict === "below-severity") { belowSeverity++; continue; }
-    const body = renderAnnotation(a, w!.symbol);
-    const line = a.line && commentable(w!.file, a.line) ? a.line : firstCommentableLine(a.target.id, w!.file);
-    if (line) {
-      comments.push({ path: w!.file, line, side: "RIGHT", body, annotationId: a.id });
+    if (verdict === "not-publishable") { notPublishable++; continue; }
+
+    const anc = allAnchors.get(a.target.id);
+    const subject = { file: w?.file ?? anc?.file, symbol: w?.symbol ?? anc?.symbolPath.join(" › ") };
+
+    if (verdict === "no-comment") {
+      noComment++;
+      blocked.push({
+        annotationId: a.id, severity: a.severity, file: subject.file, symbol: subject.symbol,
+        why: "no `comment` — write the submitter-facing version (what is broken, the file:line proving it, the ask). Publishing `text` would send the investigation.",
+      });
+      continue;
+    }
+
+    const place = placeAnnotation(a, subject, {
+      inDiff, commentable, firstHunkLine,
+      firstChangedLineOfSymbol: () => (w ? firstCommentableLine(a.target.id, w.file) : undefined),
+    });
+
+    if (place.kind === "inline") {
+      comments.push({
+        path: place.path, line: place.line, side: "RIGHT", annotationId: a.id,
+        body: renderAnnotation(a, subject.symbol ?? place.path, place.preamble),
+      });
+      continue;
+    }
+    // Findings about the PR as a whole genuinely belong in the body; everything else
+    // in here has lost its own resolvable thread, which is a cost worth naming.
+    if (w) {
+      deferred.push({
+        annotationId: a.id, path: subject.file!, line: a.line, why: place.why,
+        body: renderAnnotation(a, subject.symbol ?? subject.file!),
+      });
     } else {
-      deferred.push({ annotationId: a.id, path: w!.file, line: a.line, body, why: a.line ? "line is not in the diff and the symbol has no changed lines" : "no line, and the symbol has no changed lines" });
+      blocked.push({ annotationId: a.id, severity: a.severity, file: subject.file, symbol: subject.symbol, why: place.why });
     }
   }
 
@@ -183,10 +374,16 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
     `|---|---:|---:|---|`,
     laneLines,
     ``,
+    blocked.length
+      ? `<sub>${blocked.length} elected finding(s) could not be placed on this diff and were held back — they are still on the reviewer's map.</sub>`
+      : "",
+    ``,
     deferred.length
-      ? [`<details><summary>${deferred.length} finding(s) not on a diff line</summary>`, ``,
-         ...deferred.map((d) => `- \`${d.path}${d.line ? ":" + d.line : ""}\` — ${d.body.split("\n")[0]}\n\n  ${d.body.split("\n").slice(2).join(" ").trim()}`),
-         ``, `</details>`].join("\n")
+      ? [`<details><summary>${deferred.length} finding(s) with no diff line to sit on</summary>`, ``,
+         // Each keeps its own location line, because in here they have lost the one
+         // thing an inline comment gives them: a position that says what they are about.
+         ...deferred.map((d) => [`**\`${d.path}${d.line ? ":" + d.line : ""}\`**`, ``, d.body, ``, `---`].join("\n")),
+         `</details>`].join("\n")
       : "",
     ``,
     `<sub>Posted from [codemap](https://github.com/) — findings are anchored to symbols, so they survive a rebase.</sub>`,
@@ -194,8 +391,11 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
 
   const fingerprint = createHash("sha256").update(JSON.stringify([
     t.refs.head,
-    comments.map((c) => [c.annotationId, c.path, c.line]).sort(),
-    deferred.map((d) => d.annotationId).sort(),
+    // Bodies are in, not just placements: the whole point of the plan/execute split
+    // is that a human approved SPECIFIC text, and a revision between inspecting and
+    // publishing changes what goes to the submitter without moving a single line.
+    comments.map((c) => [c.annotationId, c.path, c.line, c.body]).sort(),
+    deferred.map((d) => [d.annotationId, d.body]).sort(),
     [...viewedPaths].sort(),
   ])).digest("hex").slice(0, 16);
 
@@ -203,14 +403,73 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
     fingerprint,
     pr: { number: t.pr.number, title: t.pr.title, url: t.pr.url, owner: t.pr.owner, repo: t.pr.repo },
     head: t.refs.head,
-    body, comments, deferred, viewedPaths,
-    skipped: { alreadyPushed: already, resolved, notElected, belowSeverity },
+    body, comments, deferred, blocked, viewedPaths,
+    skipped: { alreadyPushed: already, resolved, notElected, belowSeverity, withdrawn, noComment, notPublishable },
   };
 }
 
 function gh(args: string[], input?: string): { ok: boolean; out: string; err: string } {
   const r = spawnSync("gh", args, { encoding: "utf8", input, maxBuffer: 32 * 1024 * 1024, timeout: 120_000 });
   return { ok: r.status === 0, out: r.stdout ?? "", err: (r.stderr ?? "").trim() };
+}
+
+/**
+ * Record where each published finding landed.
+ *
+ * The create-review response carries the review, not its comments, so the ids are
+ * fetched separately and matched by (path, line). A line with two comments on it is
+ * left without an id rather than guessed at: the id's whole purpose is to identify
+ * ONE comment, and a wrong one would edit somebody else's.
+ *
+ * Best-effort throughout. Failing to record where a comment went is worth a
+ * degraded record; it is not worth reporting a successful publish as a failure.
+ */
+async function stampPostedRefs(
+  root: string, plan: PushPlan,
+  ctx: { reviewId?: number; reviewUrl?: string; gh: typeof gh; slug: string },
+): Promise<void> {
+  const at = new Date().toISOString();
+  const urls = new Map<string, { id: number; url: string }>();
+  if (ctx.reviewId) {
+    const r = ctx.gh(["api", `repos/${ctx.slug}/pulls/${plan.pr.number}/reviews/${ctx.reviewId}/comments`, "--paginate"]);
+    if (r.ok) {
+      try {
+        const seen = new Map<string, number>();
+        for (const c of JSON.parse(r.out) as { id: number; html_url: string; path: string; line?: number }[]) {
+          const key = `${c.path}:${c.line ?? ""}`;
+          seen.set(key, (seen.get(key) ?? 0) + 1);
+          if (seen.get(key) === 1) urls.set(key, { id: c.id, url: c.html_url });
+          else urls.delete(key);                          // ambiguous — no id is better than the wrong one
+        }
+      } catch { /* leave them unstamped */ }
+    }
+  }
+
+  const store = await readAnnotations(root);
+  const byId = new Map(store.annotations.map((a) => [a.id, a]));
+  let touched = false;
+  for (const c of plan.comments) {
+    const a = byId.get(c.annotationId);
+    if (!a) continue;
+    const hit = urls.get(`${c.path}:${c.line}`);
+    a.postedRef = {
+      pr: plan.pr.number, at, placement: "inline", path: c.path, line: c.line,
+      ...(ctx.reviewId ? { reviewId: ctx.reviewId } : {}),
+      ...(hit ? { commentId: hit.id, url: hit.url } : ctx.reviewUrl ? { url: ctx.reviewUrl } : {}),
+    };
+    touched = true;
+  }
+  for (const d of plan.deferred) {
+    const a = byId.get(d.annotationId);
+    if (!a) continue;
+    a.postedRef = {
+      pr: plan.pr.number, at, placement: "body", path: d.path, line: d.line,
+      ...(ctx.reviewId ? { reviewId: ctx.reviewId } : {}),
+      ...(ctx.reviewUrl ? { url: ctx.reviewUrl } : {}),
+    };
+    touched = true;
+  }
+  if (touched) await writeAnnotations(root, store.annotations);
 }
 
 export interface PushResult {
@@ -256,19 +515,29 @@ export async function executePrPush(
       // are independent acts, and one failing is not the other's news.
       errors.push(`review post failed: ${r.err.slice(0, 400)}`);
     } else {
-      try { result.reviewUrl = JSON.parse(r.out).html_url; } catch { /* url is a nicety */ }
+      let reviewId: number | undefined;
+      try {
+        const review = JSON.parse(r.out);
+        result.reviewUrl = review.html_url;
+        reviewId = typeof review.id === "number" ? review.id : undefined;
+      } catch { /* the url and id are a nicety; the post succeeded either way */ }
       result.postedComments = plan.comments.length;
 
-      // Record the publish IMMEDIATELY. The viewed-sync below is a sequential `gh`
-      // call per file with a 120s timeout each; recording afterwards left a window
-      // where an interrupt lost the only evidence the review went out, and the next
-      // publish re-posted every inline comment on someone else's pull request.
+      // Record the publish IMMEDIATELY. Everything below is more `gh` — a comment
+      // fetch here, then a call per file with a 120s timeout each — and recording
+      // afterwards left a window where an interrupt lost the only evidence the review
+      // went out, so the next publish re-posted every inline comment on someone
+      // else's pull request. The dedupe record goes down before any of it.
       await writePush(root, String(plan.pr.number), {
         annotationIds: [...plan.comments.map((c) => c.annotationId), ...plan.deferred.map((d) => d.annotationId)],
         viewedPaths: [],
         at: new Date().toISOString(),
         reviewUrl: result.reviewUrl,
       });
+
+      // Then stamp each finding with where it landed. Refinement of a record that
+      // already exists, so losing it costs detail rather than the dedupe itself.
+      await stampPostedRefs(root, plan, { reviewId, reviewUrl: result.reviewUrl, gh: gh_, slug });
     }
   }
 

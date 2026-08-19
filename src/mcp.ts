@@ -84,6 +84,26 @@ const obj = (
   additionalProperties: false,
 });
 
+/**
+ * §5 of docs/findings-publishing-spec.md, verbatim in every tool that writes a
+ * `comment`. It is the part that determines whether the feature works: a bare
+ * "write a short version" reliably yields an ABSTRACT of the finding, which is a
+ * different document from a comment to the person who has to fix it. The worked
+ * example is what makes the difference, so it travels with the rule.
+ */
+const COMMENT_CONTRACT =
+  "\n\n`comment` — READ BY THE PR SUBMITTER, who wants to know what is broken and what to do about it. They do not want the investigation. At most 800 characters (over-length is REFUSED, not trimmed). Three parts, in order:\n"
+  + "  1. WHAT IS BROKEN — one sentence, stated as a defect, not as a suspicion.\n"
+  + "  2. WHERE / THE EVIDENCE — file:line plus the smallest quote that proves it.\n"
+  + "  3. THE ASK — the change, or the decision needed. If you are withdrawing a concern, say so FIRST.\n"
+  + "Omit: how you found it, what you ruled out, what you checked and cleared, why it was filed, tool names, and any narration of your own process. Those go in `text`, which is not published.\n"
+  + "GOOD: \"The by-id branch has no tenant predicate — `CreateTicket.cs:1006` queries `Aircraft` on `x.Id == request.AircraftId.Value` while the registration branch below scopes to `x.OperatorId == operatorId`. Add the same `.Where`. Currently an existence oracle over the aircraft table (`:512` blocks the actual attach, so this is not an IDOR).\"\n"
+  + "BAD: the same finding written for the map — opening \"PARTLY CONFIRMED — the missing predicate is real; the stated IMPACT is overstated\", then three paragraphs of what was traced and a severity re-rating discussion. All correct, all valuable in `text`, all noise to the person who has to fix it.";
+
+const DISPOSITION_DOC =
+  "What triage CONCLUDED about the finding: \"open\" (filed, nobody has checked it — the default), \"confirmed\" (real as filed), \"partial\" (real in part; say which part in `comment`), \"rerated\" (real, but the severity or impact differs from as-filed), \"refuted\" (not a defect — a false positive), \"accepted\" (real, deliberately not being fixed). Only confirmed/partial/rerated go to the submitter unasked; the rest stay on the map unless the human names them.";
+
+
 const tools: Tool[] = [
   {
     name: "list_universes",
@@ -482,11 +502,15 @@ const tools: Tool[] = [
   },
   {
     name: "annotate",
-    description: "Attach review context to an anchor or node — durable on the map (not a throwaway PR comment), rendered inline for the human reviewer. This is how an agent hands off a code-review pass. `kind`:\n  • \"finding\" — a raised issue/requirement needing attention (a potential bug, a missing check). Set `severity` + `category`; stays open until a human resolves it.\n  • \"pointer\" — a review AID, not a defect: \"when reviewing this block, watch out for X / confirm Y.\" Points the human reviewer at what matters. `category` optional.\n  • \"question\" — an ask a human should answer (open-questions queue, see `questions`).\n  • \"note\" (default) — a durable remark.\nPin to a specific line with `line` (for anchor targets) so it renders against that line. Typical agent review pass: read a segment → `review` it (level:code → `checked`) → `annotate` any findings/pointers on the exact lines. `category` mirrors CI review buckets (Authorization, Logic, Tenant Safety, Performance, Domain Model, Validation, …).",
+    description: "Attach review context to an anchor or node — durable on the map (not a throwaway PR comment), rendered inline for the human reviewer. This is how an agent hands off a code-review pass. `kind`:\n  • \"finding\" — a raised issue/requirement needing attention (a potential bug, a missing check). Set `severity` + `category`; stays open until a human resolves it.\n  • \"pointer\" — a review AID, not a defect: \"when reviewing this block, watch out for X / confirm Y.\" Points the human reviewer at what matters. `category` optional.\n  • \"question\" — an ask a human should answer (open-questions queue, see `questions`).\n  • \"note\" (default) — a durable remark.\nPin to a specific line with `line` (for anchor targets) so it renders against that line. Typical agent review pass: read a segment → `review` it (level:code → `checked`) → `annotate` any findings/pointers on the exact lines. `category` mirrors CI review buckets (Authorization, Logic, Tenant Safety, Performance, Domain Model, Validation, …)." + COMMENT_CONTRACT,
     inputSchema: obj({
       targetKind: { type: "string", enum: ["anchor", "node"] },
       targetId: { type: "string" },
-      text: { type: "string" },
+      text: { type: "string", description: "The EVIDENCE, for the map and for whoever triages: what you checked, why the obvious alternative fails, what is still unverified. Not published." },
+      comment: { type: "string", description: "REQUIRED on a finding. The submitter-facing version — see the contract in this tool's description. Max 800 characters; longer is refused." },
+      disposition: { type: "string", enum: ["open", "confirmed", "partial", "rerated", "refuted", "accepted"], description: DISPOSITION_DOC },
+      publishPath: { type: "string", description: "Only when this is about code the pull request does not touch: the file IN THE DIFF nearest to the problem. Usually left to the human, who is better placed to judge \"nearest\" — an unset one is reported, never guessed." },
+      publishLine: { type: "number", description: "Line within `publishPath`, if a specific one is meant." },
       kind: { type: "string", enum: ["note", "question", "finding", "pointer"], description: "\"finding\" (issue), \"pointer\" (watch-out for the reviewer), \"question\", or \"note\" (default)." },
       severity: { type: "string", enum: ["low", "medium", "high", "critical"], description: "For findings: critical=security/auth/data-integrity, high=logic bug, medium=improvement, low=nitpick." },
       category: { type: "string", description: "Review bucket, e.g. Authorization, Logic, Tenant Safety, Performance, Domain Model, Validation, Separation of Concerns." },
@@ -546,24 +570,57 @@ const tools: Tool[] = [
   },
   {
     name: "review_queue",
-    description: "What the human has asked you to act on: findings they raised during review and handed to an agent, newest-severity-first, each with the symbol it sits on and that symbol's CURRENT source — so you can act without hunting for it.\n\n`assignment.kind` says what was asked:\n  • \"investigate\" — work out whether it is real and report back what you found.\n  • \"fix\" — make the change. ONE file only. A fix that needs to span files is work for an agent the human dispatches, not a review-tool edit: report `declined` with what it would take, which is a useful answer, not a failure.\n\nReport back with `close_finding`. You do NOT resolve the finding — the human does, after reading what you did.",
+    description: "What the human has asked you to act on: findings they raised during review and handed to an agent, newest-severity-first, each with the symbol it sits on and that symbol's CURRENT source — so you can act without hunting for it.\n\n`assignment.kind` says what was asked:\n  • \"investigate\" — work out whether it is real and report back what you found.\n  • \"fix\" — make the change. ONE file only. A fix that needs to span files is work for an agent the human dispatches, not a review-tool edit: report `declined` with what it would take, which is a useful answer, not a failure.\n\nReport back with `close_finding`. You do NOT resolve the finding — the human does, after reading what you did.\n\nBRIEF by default: no source is inlined, because the full form is unreadably large on a real queue. Read one symbol with `get_anchor`, or pass `brief:false` when you actually need every body at once.",
     inputSchema: obj({
       includeAnswered: { type: "boolean", description: "Also return items you have already reported on (default false — those are waiting on the human, not on you)." },
+      brief: { type: "boolean", description: "Default TRUE. `false` inlines each symbol's current source — large; page it with limit/offset." },
+      limit: { type: "number" },
+      offset: { type: "number" },
+      disposition: { type: "string", enum: ["open", "confirmed", "partial", "rerated", "refuted", "accepted"], description: "Only items triage concluded this about — `open` is the untouched work." },
+      publishState: { type: "string", enum: ["local", "approved", "withdrawn", "posted"], description: "Where it stands on its way to the pull request." },
     }, []),
-    handler: (a, c) => ops.reviewQueue(c.universe.path, { includeAnswered: Boolean(a.includeAnswered) }),
+    handler: (a, c) => ops.reviewQueue(c.universe.path, {
+      includeAnswered: Boolean(a.includeAnswered), brief: a.brief !== false,
+      limit: a.limit as number | undefined, offset: a.offset as number | undefined,
+      disposition: a.disposition as string | undefined, publishState: a.publishState as string | undefined,
+    }),
   },
   {
     name: "close_finding",
-    description: "Report back on a finding from `review_queue`. This records what you did; it does NOT resolve the finding — reporting and agreeing it is closed are different acts, and the human closes it after reading.\n\n`result`:\n  • \"fixed\" — you changed the code. List every file you touched in `files`; more than one is refused, by design.\n  • \"answered\" — you investigated. Put the finding in `detail`: whether it is real, why, and what you checked.\n  • \"declined\" — you did not act. Say what it would take. Declining a fix that spans files, or that needs a judgement call you cannot make, is the RIGHT answer.",
+    description: "Report back on a finding from `review_queue`. This records what you did; it does NOT resolve the finding — reporting and agreeing it is closed are different acts, and the human closes it after reading.\n\n`result`:\n  • \"fixed\" — you changed the code. List every file you touched in `files`; more than one is refused, by design.\n  • \"answered\" — you investigated. Put the finding in `detail`: whether it is real, why, and what you checked.\n  • \"declined\" — you did not act. Say what it would take. Declining a fix that spans files, or that needs a judgement call you cannot make, is the RIGHT answer.\n\n`result` is what YOU DID; `disposition` is what turned out to be TRUE of the finding. They are different axes — a false positive is `answered` + `refuted`, because you did answer and the answer was \"not a defect\". Set `disposition` whenever you reached a conclusion: it is what decides whether this goes to the submitter, and prose saying \"recommend closing as invalid\" cannot be filtered on." + COMMENT_CONTRACT,
     inputSchema: obj({
       id: { type: "string", description: "The annotation id from `review_queue`." },
       result: { type: "string", enum: ["fixed", "answered", "declined"] },
       detail: { type: "string", description: "What you did or found — the human reads this, so be concrete." },
+      disposition: { type: "string", enum: ["open", "confirmed", "partial", "rerated", "refuted", "accepted"], description: DISPOSITION_DOC },
+      comment: { type: "string", description: "Rewrite the submitter-facing version if your investigation changed it — a refutation especially, which should open by withdrawing the concern. Max 800 characters. The previous wording is kept." },
       files: { type: "array", items: { type: "string" }, description: "Files you actually changed (for `fixed`). One file maximum." },
       by: { type: "string" },
     }, ["id", "result", "detail"]),
     mutates: true,
     handler: (a, c) => ops.closeAssignment(c.universe.path, a as never),
+  },
+  {
+    name: "revise_finding",
+    description:
+      "Correct a finding — yours or somebody else's — without losing what it used to say.\n\n"
+      + "Findings get filed before they are understood: a report goes in, investigation shows it was overstated or aimed at the wrong line, and the correction has to be visible AS a correction. Revisions APPEND; nothing is destroyed, and the previous wording stays readable.\n\n"
+      + "Use it to sharpen a `comment`, to record what triage concluded (`disposition`), to re-rate a `severity` you now think is wrong, or to set `publishPath` for a finding about code the pull request does not touch.\n\n"
+      + "Refused once the finding is on the pull request: revising it here would diverge from the copy the submitter is acting on."
+      + COMMENT_CONTRACT,
+    inputSchema: obj({
+      id: { type: "string", description: "The annotation id." },
+      text: { type: "string", description: "The evidence — for the map, not published." },
+      comment: { type: "string", description: "The submitter-facing version. Max 800 characters." },
+      disposition: { type: "string", enum: ["open", "confirmed", "partial", "rerated", "refuted", "accepted"], description: DISPOSITION_DOC },
+      severity: { type: "string", enum: ["low", "medium", "high", "critical"] },
+      publishPath: { type: "string", description: "For a finding about code this PR does not touch: the file IN THE DIFF nearest to the problem." },
+      publishLine: { type: "number" },
+      allowPostEdit: { type: "boolean", description: "Revise even though it is already posted. The GitHub copy is NOT updated — reply there instead; this only stops the map from silently disagreeing with it." },
+      by: { type: "string" },
+    }, ["id"]),
+    mutates: true,
+    handler: (a, c) => ops.reviseAnnotation(c.universe.path, a as never),
   },
   {
     name: "questions",

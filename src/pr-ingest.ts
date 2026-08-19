@@ -12,7 +12,7 @@
  */
 
 import type { BugSeverity } from "./schema.js";
-import type { Annotation } from "./schema.js";
+import type { Annotation, Disposition } from "./schema.js";
 import { setTriage } from "./triage.js";
 import type { Importance, Complexity } from "./schema.js";
 
@@ -22,6 +22,14 @@ export interface AgentLine {
   file?: string; symbol?: string; line?: number;
   severity?: BugSeverity; category?: string;
   text?: string; evidence?: string; confidence?: "high" | "medium";
+  /**
+   * The submitter-facing version, required on a finding. Written at the same time
+   * as `text` rather than derived from it later: an agent that files the evidence
+   * now and is asked for the short form afterwards writes an ABSTRACT of its own
+   * investigation, which is a different document from a comment to the author.
+   */
+  comment?: string;
+  disposition?: Disposition;
   importance?: Importance; complexity?: Complexity; reason?: string;
   batch?: string; reviewed?: number; findings?: number; narrative?: string;
 }
@@ -73,6 +81,7 @@ export async function ingestAgentReview(
     annotate: (root: string, input: {
       targetKind: "anchor"; targetId: string; text: string; author?: string;
       kind?: Annotation["kind"]; severity?: BugSeverity; category?: string; line?: number; ref?: string;
+      comment?: string; disposition?: Disposition;
     }) => Promise<{ error?: string } | unknown>;
   },
   opts: { headRef: string; author?: string; dryRun?: boolean } = { headRef: "" },
@@ -131,6 +140,7 @@ export async function ingestAgentReview(
       const r = await deps.annotate(root, {
         targetKind: "anchor", targetId: l.anchorId, text, author,
         kind: l.kind, severity: l.severity, category: l.category, line: l.line, ref: opts.headRef,
+        comment: l.comment, disposition: l.disposition,
       }) as { error?: string };
       if (r && r.error) { out.rejected.push({ line: i + 1, why: r.error }); continue; }
     }

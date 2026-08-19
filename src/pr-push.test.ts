@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { diffLineRanges } from "./git.js";
-import { planPrPush, isAgentAuthored, isElected, pushVerdict, executePrPush } from "./pr-push.js";
+import { planPrPush, isAgentAuthored, isElected, pushVerdict, executePrPush, placeAnnotation, publishStateOf } from "./pr-push.js";
 import { readPushes, writePush } from "./store.js";
 import type { Annotation } from "./schema.js";
 
@@ -126,7 +126,8 @@ test("only findings the human elected are publishable", () => {
  */
 const ann = (over: Partial<Annotation> = {}): Annotation => ({
   id: "n1", target: { kind: "anchor", id: "a_1" }, text: "boom", author: "human",
-  createdCommit: null, kind: "finding", severity: "medium", ...over,
+  createdCommit: null, kind: "finding", severity: "medium",
+  comment: "the by-id branch has no tenant predicate", disposition: "confirmed", ...over,
 } as Annotation);
 
 test("what gets published: mine, raised ones, unresolved, unsent, above the bar", () => {
@@ -150,6 +151,48 @@ test("what gets published: mine, raised ones, unresolved, unsent, above the bar"
   // the order matters: resolved beats everything, so a resolved agent finding
   // reports as resolved rather than as unelected
   assert.equal(pushVerdict({ ...theirs, resolved: true } as Annotation, true, none), "resolved");
+});
+
+test("a finding with no submitter-facing comment is held back, not sent as its evidence", () => {
+  // `text` is the investigation, written for the map. Falling back to it would
+  // publish "PARTLY CONFIRMED — the stated impact is overstated" followed by three
+  // paragraphs of what was traced, to the person who just has to fix it.
+  const none = new Set<string>();
+  assert.equal(pushVerdict(ann({ comment: undefined }), true, none), "no-comment");
+  assert.equal(pushVerdict(ann({ comment: "   " }), true, none), "no-comment");
+
+  // and it is reported LAST, so a finding that was never going out anyway does not
+  // claim to be blocked on wording
+  assert.equal(pushVerdict(ann({ comment: undefined, resolved: true }), true, none), "resolved");
+  assert.equal(pushVerdict(ann({ comment: undefined, author: "agent:x" }), true, none), "not-elected");
+});
+
+test("only findings triage stands behind go out unasked", () => {
+  const none = new Set<string>();
+  // A refuted finding published to the submitter reads as "actually this is not a
+  // bug" — noise on the PR, and exactly what batching is meant to prevent.
+  assert.equal(pushVerdict(ann({ disposition: "refuted" }), true, none), "not-publishable");
+  assert.equal(pushVerdict(ann({ disposition: "accepted" }), true, none), "not-publishable");
+  assert.equal(pushVerdict(ann({ disposition: "open" }), true, none), "not-publishable", "nobody has checked it yet");
+
+  for (const d of ["confirmed", "partial", "rerated"] as const) {
+    assert.equal(pushVerdict(ann({ disposition: d }), true, none), "push", d);
+  }
+
+  // ...but naming it explicitly is the human picking a batch, and that outranks the
+  // default: a refutation of a concern they already raised on the PR is worth one
+  // line closing it out, so the submitter stops defending a non-issue.
+  assert.equal(pushVerdict(ann({ disposition: "refuted" }), true, none, { ids: new Set(["n1"]) }), "push");
+
+  // a note is not a finding and has no disposition to stand behind
+  assert.equal(pushVerdict(ann({ kind: "note", disposition: undefined }), true, none), "push");
+});
+
+test("withdrawn stays on the map and off the pull request", () => {
+  const none = new Set<string>();
+  assert.equal(pushVerdict(ann({ withdrawn: { at: "now", by: "me" } }), true, none), "withdrawn");
+  // a finding already posted is never re-sent, whichever record says so
+  assert.equal(pushVerdict(ann({ postedRef: { pr: 7, at: "now", placement: "inline" } }), true, none), "already-pushed");
 });
 
 test("publishing records the review BEFORE syncing viewed state", async () => {
@@ -266,4 +309,74 @@ test("publishing viewed state alone does not erase the link to a review posted e
     assert.equal(rec.reviewUrl, "https://x/1", "the arrays union; a scalar must not be blanked by a later write");
     assert.deepEqual(rec.viewedPaths, ["a.ts"]);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+/**
+ * Placement is where the surprises live: GitHub takes a review comment only on a
+ * file in the diff and only inside a hunk, and findings honour neither constraint.
+ */
+const place = (a: Partial<Annotation>, subject: { file?: string; symbol?: string }, world: {
+  diff?: Record<string, [number, number][]>;
+  symbolLine?: number;
+} = {}) => {
+  const diff: Record<string, [number, number][]> = world.diff ?? { "touched.cs": [[10, 20]] };
+  return placeAnnotation(ann(a), subject, {
+    inDiff: (f: string) => f in diff,
+    commentable: (f: string, l: number) => (diff[f] ?? []).some(([x, y]) => l >= x && l <= y),
+    firstHunkLine: (f: string) => diff[f]?.[0]?.[0],
+    firstChangedLineOfSymbol: () => world.symbolLine,
+  });
+};
+
+test("a finding on a changed line lands on that line, with nothing prepended", () => {
+  const p = place({ line: 12 }, { file: "touched.cs", symbol: "S › M" });
+  assert.deepEqual(p, { kind: "inline", path: "touched.cs", line: 12 });
+});
+
+test("a finding whose line is outside every hunk falls back to the symbol's changed lines", () => {
+  const p = place({ line: 3 }, { file: "touched.cs", symbol: "S › M" }, { symbolLine: 15 });
+  assert.deepEqual(p, { kind: "inline", path: "touched.cs", line: 15 },
+    "the comment belongs on the code it is about, not swept into the summary");
+});
+
+test("landing somewhere other than the subject leads with where the subject really is", () => {
+  // The reader's context is wrong by construction: they are looking at line 10 of a
+  // file and being told about line 3. Without this the comment reads as being about
+  // whatever hunk it happened to be pinned to.
+  const p = place({ line: 3 }, { file: "touched.cs", symbol: "S › M" });
+  assert.deepEqual(p, { kind: "inline", path: "touched.cs", line: 10, preamble: "touched.cs:3" });
+});
+
+test("a finding about code the pull request never touched needs a file the human picked", () => {
+  // The common case, not an error: a fail-open predicate the branch made reachable
+  // but did not edit, or a missing registration — an ABSENCE, which has no line
+  // anywhere. Guessing a file costs the submitter more than not sending it.
+  const nowhere = place({ line: 51 }, { file: "untouched.cs", symbol: "Q › Handle" });
+  assert.equal(nowhere.kind, "body");
+  assert.match((nowhere as { why: string }).why, /not in this pull request.*publishPath/);
+
+  const placed = place({ line: 51, publishPath: "touched.cs" }, { file: "untouched.cs", symbol: "Q › Handle" });
+  assert.deepEqual(placed, { kind: "inline", path: "touched.cs", line: 10, preamble: "untouched.cs:51" },
+    "and it says out loud that the real subject is elsewhere");
+});
+
+test("a publishPath that is not in the diff either is refused by name", () => {
+  // Silently falling through to the body would hide the human's typo behind a
+  // generic 'could not place this'.
+  const p = place({ publishPath: "also-untouched.cs" }, { file: "untouched.cs" });
+  assert.equal(p.kind, "body");
+  assert.match((p as { why: string }).why, /also-untouched\.cs.*not a file in this pull request/);
+});
+
+test("publishState is read from the acts that already happened, not stored twice", () => {
+  const none = new Set<string>();
+  assert.equal(publishStateOf(ann({ author: "agent:x" }), none), "local", "an agent's proposal is not vouched for");
+  assert.equal(publishStateOf(ann({ author: "human" }), none), "approved", "writing it yourself IS the act");
+  assert.equal(publishStateOf(ann({ author: "agent:x", escalated: { at: "n", by: "me" } }), none), "approved");
+  assert.equal(publishStateOf(ann({ withdrawn: { at: "n", by: "me" } }), none), "withdrawn");
+  assert.equal(publishStateOf(ann(), new Set(["n1"])), "posted", "the push record is the receipt");
+  assert.equal(publishStateOf(ann({ postedRef: { pr: 7, at: "n", placement: "inline" } }), none), "posted");
+
+  // posted outranks withdrawn: deciding against it afterwards does not un-send it
+  assert.equal(publishStateOf(ann({ withdrawn: { at: "n", by: "me" } }), new Set(["n1"])), "posted");
 });

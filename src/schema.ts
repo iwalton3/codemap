@@ -304,6 +304,37 @@ export interface BugStore {
 // Annotations — notes on anchors or nodes, for agents and human readers
 // ---------------------------------------------------------------------------
 
+/**
+ * What triage concluded about a finding.
+ *
+ *   open       filed, not yet investigated (the default)
+ *   confirmed  real, as filed
+ *   partial    real in part; `comment` states which part
+ *   rerated    real, but the severity or impact differs from as-filed
+ *   refuted    not a defect — a false positive
+ *   accepted   real, deliberately not being fixed (a product or architecture call)
+ */
+export type Disposition = "open" | "confirmed" | "partial" | "rerated" | "refuted" | "accepted";
+
+export const DISPOSITIONS: readonly Disposition[] = ["open", "confirmed", "partial", "rerated", "refuted", "accepted"];
+
+/**
+ * What goes to the submitter without being asked for by name.
+ *
+ * `open` is excluded because nobody has checked it yet; `refuted` and `accepted`
+ * because they are conclusions about the finding rather than asks of the author.
+ * All three stay individually publishable — a refutation the human already raised
+ * on the PR is worth one line closing it out, which saves the submitter defending
+ * a non-issue.
+ */
+export const PUBLISHABLE: readonly Disposition[] = ["confirmed", "partial", "rerated"];
+
+/**
+ * The `comment` cap. Over-length is REJECTED, never truncated: a comment cut off
+ * mid-sentence loses the ask, which is the one part the submitter needs.
+ */
+export const COMMENT_MAX = 800;
+
 export interface Annotation {
   id: string;
   target: { kind: "anchor" | "node"; id: string };
@@ -329,6 +360,71 @@ export interface Annotation {
    * can sign a segment off with the action item recorded.
    */
   line?: number;
+  /**
+   * The submitter-facing half of a finding: what is broken, where, and what to do.
+   *
+   * Separate from `text` because the two have different audiences and want
+   * different documents. `text` is evidence for the map and for whoever triages —
+   * what was checked, why the obvious alternative fails, what is still unverified.
+   * `comment` is for the person who has to fix it, who does not want the
+   * investigation. Writing one document for both means the PR-facing version gets
+   * hand-rewritten outside the tool every time.
+   *
+   * Capped at COMMENT_MAX. The cap is the mechanism, not decoration: it makes
+   * "verdict + evidence pointer + ask" the only shape that fits.
+   */
+  comment?: string;
+  /**
+   * What triage concluded. An enum rather than prose because the batch builder has
+   * to filter on it — a refuted finding published to the submitter reads as
+   * "actually this is not a bug", which is exactly the noise batching exists to
+   * prevent. See PUBLISHABLE for what goes out by default.
+   */
+  disposition?: Disposition;
+  /**
+   * Where to publish a finding about code this pull request does not touch.
+   *
+   * GitHub only accepts a review comment on a file in the diff, and plenty of real
+   * findings are about code the branch never edited (a fail-open predicate it now
+   * makes reachable) or about an ABSENCE, which has no line anywhere. The human
+   * picks the nearest file in the diff; nothing is guessed, because a comment on
+   * the wrong file costs the submitter more than one that did not go out.
+   */
+  publishPath?: string;
+  publishLine?: number;
+  /** Publish under `[Claude]` or not. Defaults to whether an agent wrote `comment`. */
+  publishAttribution?: "agent" | "human";
+  /**
+   * The human decided not to send this one. Distinct from clearing `escalated`,
+   * which only exists on an agent's finding — a human's own finding is publishable
+   * by having been written, so declining to send it needs its own record.
+   */
+  withdrawn?: { at: string; by: string };
+  /** Where this landed on GitHub. Set by the publish; what makes editing it possible. */
+  postedRef?: {
+    pr: number;
+    reviewId?: number;
+    commentId?: number;
+    url?: string;
+    at: string;
+    path?: string;
+    line?: number;
+    placement: "inline" | "file" | "body";
+  };
+  /**
+   * Prior states, appended on every revision, never destroyed.
+   *
+   * Findings are filed before they are understood: a report goes in, investigation
+   * says it was overstated or aimed at the wrong line, and the correction has to be
+   * visible AS a correction. Write-once meant those corrections survived only in a
+   * chat transcript.
+   */
+  revisions?: {
+    at: string;
+    by: string;
+    /** The values as they stood BEFORE this revision — only the fields it changed. */
+    was: Partial<Pick<Annotation, "text" | "comment" | "disposition" | "severity" | "publishPath" | "publishLine">>;
+  }[];
   /** Who wrote it — an agent label or a person. */
   author: string;
   createdCommit: string | null;

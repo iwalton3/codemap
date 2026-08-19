@@ -286,6 +286,27 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    // Editing a finding, and deciding against sending one. Both local; the map is
+    // the only thing that moves until /api/pr/push.
+    if (req.method === "POST" && (url.pathname === "/api/annotation_revise" || url.pathname === "/api/annotation_withdraw")) {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      const root = rootFor(body.u ?? null);
+      const out = await withLock<unknown>(root, async () => withAnchorAnnotations(root,
+        await (url.pathname === "/api/annotation_revise"
+          ? ops.reviseAnnotation(root, {
+              id: String(body.id ?? ""), by: body.by || "human", allowPostEdit: !!body.allowPostEdit,
+              text: body.text, comment: body.comment, disposition: body.disposition, severity: body.severity,
+              publishPath: body.publishPath, publishLine: body.publishLine, publishAttribution: body.publishAttribution,
+            })
+          : ops.withdrawAnnotation(root, { id: String(body.id ?? ""), withdraw: body.withdraw !== false, by: body.by })),
+      ));
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(out));
+      return;
+    }
+
     // Raising an agent's finding to the maintainer — the act that makes it
     // publishable. Local only; nothing is sent until /api/pr/push.
     if (req.method === "POST" && url.pathname === "/api/annotation_escalate") {
@@ -368,7 +389,7 @@ const server = createServer(async (req, res) => {
       const root = rootFor(body.u ?? null);
       const out = await withLock<unknown>(root, async () => withAnchorAnnotations(root,
         await (url.pathname === "/api/annotate"
-          ? ops.annotate(root, { targetKind: body.targetKind, targetId: body.targetId, text: body.text, kind: body.kind, severity: body.severity, category: body.category, author: body.author, line: body.line, ref: body.ref })
+          ? ops.annotate(root, { targetKind: body.targetKind, targetId: body.targetId, text: body.text, comment: body.comment, disposition: body.disposition, publishPath: body.publishPath, publishLine: body.publishLine, kind: body.kind, severity: body.severity, category: body.category, author: body.author, line: body.line, ref: body.ref })
           : ops.resolveAnnotation(root, body.id, body.resolved !== false)),
       ));
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });

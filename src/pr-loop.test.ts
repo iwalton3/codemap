@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { State } from "./schema.js";
 import { writeStore, readAnnotations, writeAnnotations } from "./store.js";
 import { withLock } from "./lock.js";
-import { annotate, assignAnnotation, reviewQueue, closeAssignment, resolveAnnotation, escalateAnnotation, anchorAnnotations } from "./ops.js";
+import { annotate, assignAnnotation, reviewQueue, closeAssignment, resolveAnnotation, escalateAnnotation, anchorAnnotations, reviseAnnotation, withdrawAnnotation } from "./ops.js";
 import { indexBlob } from "./repo.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
@@ -19,7 +19,7 @@ async function fixture() {
   const anchors = await indexBlob(src, "src/pay.ts");
   await writeStore(root, anchors, state);
   const id = anchors.find((a) => a.symbolPath.join(".") === "transfer")!.id;
-  const r = await annotate(root, { targetKind: "anchor", targetId: id, text: "negative amounts are only guarded here", kind: "finding", severity: "high", category: "Logic", line: 2, author: "me" }) as any;
+  const r = await annotate(root, { targetKind: "anchor", targetId: id, text: "negative amounts are only guarded here", comment: "`transfer` guards negatives at pay.ts:2 only; the by-id path does not. Add the same check.", kind: "finding", severity: "high", category: "Logic", line: 2, author: "me" }) as any;
   return { root, anchorId: id, annId: r.id as string };
 }
 
@@ -34,7 +34,7 @@ test("assigning hands it over with the symbol's current source attached", async 
   const { root, annId } = await fixture();
   try {
     await assignAnnotation(root, { id: annId, kind: "investigate", by: "me" });
-    const { queue } = await reviewQueue(root);
+    const { queue } = await reviewQueue(root, { brief: false });
     assert.equal(queue.length, 1);
     assert.equal(queue[0]!.assignment.kind, "investigate");
     assert.equal(queue[0]!.file, "src/pay.ts");
@@ -146,6 +146,7 @@ test("raising a finding to the maintainer is a separate act from writing or reso
 
   const a = await annotate(root, {
     targetKind: "anchor", targetId: anchorId, text: "agent thinks this overflows",
+    comment: "`transfer` sums into an int32; a large batch overflows silently.",
     kind: "finding", severity: "high", author: "agent:pr-first-pass",
   }) as any;
   const find = async () => (await readAnnotations(root)).annotations.find((x) => x.id === a.id)!;
@@ -173,7 +174,7 @@ test("an annotation write reports the anchor's findings, so one symbol can be re
   assert.equal(before.length, 1);
 
   const raised = await annotate(root, {
-    targetKind: "anchor", targetId: anchorId, text: "second", kind: "finding", author: "human",
+    targetKind: "anchor", targetId: anchorId, text: "second", comment: "second", kind: "finding", author: "human",
   }) as any;
   assert.deepEqual(raised.target, { kind: "anchor", id: anchorId }, "the write says where it landed");
 
@@ -205,4 +206,148 @@ test("an agent cannot record an outcome on a finding the human closed meanwhile"
   assert.ok(r.error, "closing a resolved finding is refused");
   assert.match(r.error, /resolved/i);
   assert.equal((await readAnnotations(root)).annotations.find((a) => a.id === annId)!.outcome, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// The submitter-facing half of a finding
+// ---------------------------------------------------------------------------
+
+test("a finding must carry the short version, written when the evidence is", async () => {
+  const { root, anchorId } = await fixture();
+  try {
+    // Twelve findings in the session that motivated this were filed with rich
+    // evidence and no short form, because none was asked for — and all twelve were
+    // then rewritten by hand for GitHub. Optional means skipped.
+    const bare = await annotate(root, {
+      targetKind: "anchor", targetId: anchorId, text: "no tenant predicate on the by-id branch", kind: "finding",
+    }) as any;
+    assert.match(bare.error, /needs `comment`/);
+
+    // notes and pointers are not claims aimed at anybody, so they carry no such duty
+    for (const kind of ["note", "pointer", "question"] as const) {
+      const r = await annotate(root, { targetKind: "anchor", targetId: anchorId, text: "x", kind }) as any;
+      assert.ok(r.ok, kind);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("an over-long comment is refused, never truncated", async () => {
+  const { root, anchorId } = await fixture();
+  try {
+    // A comment cut at the cap loses its LAST sentence, which by the contract is the
+    // ask — the one part the person fixing it actually needs.
+    const r = await annotate(root, {
+      targetKind: "anchor", targetId: anchorId, text: "evidence", kind: "finding",
+      comment: "x".repeat(801),
+    }) as any;
+    assert.match(r.error, /801 characters.*cap is 800/);
+    assert.match(r.error, /`text`/, "and says where the investigation belongs");
+    assert.equal((await anchorAnnotations(root, anchorId)).length, 1, "nothing was stored");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a finding can be corrected, and what it used to say survives", async () => {
+  const { root, annId } = await fixture();
+  try {
+    // Findings are filed before they are understood: the correction has to be
+    // visible AS a correction, which is when you most want to see what changed.
+    const r = await reviseAnnotation(root, {
+      id: annId, by: "agent:verify", disposition: "rerated", severity: "medium",
+      comment: "Real, but narrower than filed: the by-id branch is unreachable without the operator claim.",
+    }) as any;
+    assert.deepEqual(r.changed.sort(), ["comment", "disposition", "severity"]);
+
+    const a = (await readAnnotations(root)).annotations.find((x) => x.id === annId)!;
+    assert.equal(a.disposition, "rerated");
+    assert.equal(a.severity, "medium");
+    assert.equal(a.revisions!.length, 1);
+    assert.equal(a.revisions![0]!.by, "agent:verify");
+    assert.equal(a.revisions![0]!.was.severity, "high", "what it was filed as is still readable");
+    assert.match(a.revisions![0]!.was.comment!, /by-id path does not/);
+
+    // a revision that changes nothing does not manufacture history
+    const noop = await reviseAnnotation(root, { id: annId, disposition: "rerated" }) as any;
+    assert.deepEqual(noop.changed, []);
+    assert.equal((await readAnnotations(root)).annotations.find((x) => x.id === annId)!.revisions!.length, 1);
+
+    assert.match((await reviseAnnotation(root, { id: annId, disposition: "bogus" as never }) as any).error, /unknown disposition/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("revising something the submitter can already see is refused by default", async () => {
+  const { root, annId } = await fixture();
+  try {
+    const store = await readAnnotations(root);
+    store.annotations.find((a) => a.id === annId)!.postedRef = { pr: 264, at: "now", placement: "inline", url: "https://x/1" };
+    await writeAnnotations(root, store.annotations);
+
+    // The map and the pull request disagreeing about what was said is bad in a
+    // specific way: the PR is the copy the other person is acting on.
+    const r = await reviseAnnotation(root, { id: annId, comment: "actually never mind" }) as any;
+    assert.match(r.error, /already posted to PR #264/);
+
+    const forced = await reviseAnnotation(root, { id: annId, comment: "actually never mind", allowPostEdit: true }) as any;
+    assert.deepEqual(forced.changed, ["comment"]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("withdrawing keeps a finding on the map and off the pull request", async () => {
+  const { root, annId } = await fixture();
+  try {
+    // Distinct from resolving: it may still be true and still worth having.
+    assert.equal((await withdrawAnnotation(root, { id: annId, by: "izzie" }) as any).withdrawn, true);
+    const a = () => readAnnotations(root).then((s) => s.annotations.find((x) => x.id === annId)!);
+    assert.equal((await a()).withdrawn!.by, "izzie");
+    assert.equal((await a()).resolved, false, "withdrawn is not closed");
+
+    assert.equal((await withdrawAnnotation(root, { id: annId, withdraw: false }) as any).withdrawn, false);
+    assert.equal((await a()).withdrawn, undefined);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("reporting back can carry the short version, and records what it displaced", async () => {
+  const { root, annId } = await fixture();
+  try {
+    await assignAnnotation(root, { id: annId, kind: "investigate", by: "me" });
+    // `result` is what the AGENT DID; `disposition` is what turned out to be TRUE.
+    // A false positive is `answered` + `refuted` — the agent did answer.
+    const r = await closeAssignment(root, {
+      id: annId, result: "answered", detail: "traced every caller; the receiver cannot be null here",
+      disposition: "refuted", comment: "Withdrawing this — it is an extension method, so a null receiver cannot throw.",
+    }) as any;
+    assert.equal(r.disposition, "refuted");
+
+    const a = (await readAnnotations(root)).annotations.find((x) => x.id === annId)!;
+    assert.equal(a.outcome!.result, "answered");
+    assert.equal(a.revisions!.length, 1, "the investigation changing the answer leaves the same trail");
+    assert.match(a.revisions![0]!.was.comment!, /by-id path does not/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the queue is brief by default, because the full form could not be read at all", async () => {
+  const { root, annId } = await fixture();
+  try {
+    // The first real call returned 100,882 characters and blew the token limit
+    // outright: it inlines every anchor's source. The work could not start until it
+    // had been dumped to a file and mined with jq.
+    await assignAnnotation(root, { id: annId, kind: "investigate", by: "me" });
+    const brief = await reviewQueue(root);
+    assert.equal(brief.queue.length, 1);
+    assert.equal((brief.queue[0] as any).code, undefined, "no source inlined");
+    assert.equal(brief.queue[0]!.text, undefined);
+    assert.match(brief.queue[0]!.textPreview!, /negative amounts/);
+    assert.equal(brief.queue[0]!.disposition, "open");
+    assert.equal(brief.queue[0]!.publishState, "approved", "a human wrote it, so it is theirs to publish");
+    assert.match(brief.hint!, /brief:false/);
+
+    assert.match((await reviewQueue(root, { brief: false })).queue[0]!.code!, /throw new Error/);
+
+    // and it can be filtered and paged, which is what makes 248 items workable
+    assert.equal((await reviewQueue(root, { disposition: "confirmed" })).queue.length, 0);
+    assert.equal((await reviewQueue(root, { disposition: "open" })).queue.length, 1);
+    assert.equal((await reviewQueue(root, { publishState: "local" })).queue.length, 0);
+    const paged = await reviewQueue(root, { limit: 1, offset: 1 });
+    assert.equal(paged.queue.length, 0);
+    assert.equal(paged.total, 1, "the count is of everything, not of the page");
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
