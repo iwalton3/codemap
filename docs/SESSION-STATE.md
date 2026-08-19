@@ -110,6 +110,17 @@ conversation there. Pulling accepts only resolutions by your own account unless
 findings list now shows findings that sit on no symbol in the PR (posted here, or
 target gone).
 
+**Snapshots carry `ANCHOR_SCHEME`** (`schema.ts`). Bump it whenever anchor-id
+derivation changes; a snapshot minted under a different value reads as NOT CACHED and
+is rebuilt lazily. This replaced a guard that sniffed for numeric disambiguators and
+therefore caught only the one scheme change it was written for — the next one (adding
+parameter modifiers, `(AcmeUser)` → `(thisAcmeUser)`) produced 107 phantom "changed"
+symbols on #264 across nine byte-identical files.
+
+**`annotate` resolves anchors from cached snapshots**, so a symbol that exists only on
+a PR branch can be annotated without naming the ref. The MCP tool also exposes `ref`
+now; it never did, though `ops.annotate` always accepted one.
+
 ### Known gaps in what was just built
 
 - No "approve all confirmed" bulk action (§8.5). With 12–16 findings, per-item is
@@ -133,6 +144,11 @@ target gone).
   node citations. It does NOT retroactively recover anything orphaned before it
   existed; those land in `orphans`' `lost` bucket, where the finding's own `comment`
   and `text` are all that survive.
+- **Submodule scoping is by accident, not decision.** `indexCommit` recurses into
+  gitlinks, so `Acme.BaseClasses` symbols are in the index and can land in a PR's
+  worklist — but the parent repo's diff shows only the gitlink, so those symbols have
+  no changed lines, no lane, and no place to hang a review comment. Worth deciding
+  explicitly whether they belong in a PR queue at all.
 - Nothing repairs a comment already posted to the wrong line. GitHub's
   `PATCH /pulls/comments/{id}` takes only `body`; moving one means DELETE and
   re-POST, which drops the thread and re-notifies. Prepending a correction to the
