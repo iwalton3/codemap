@@ -100,14 +100,26 @@ that means `Apply(SomeEvent)`, which is exactly the code people file findings ab
 disposition defaults by authorship — human-written is `confirmed` (writing it is the
 assertion), agent-written is `open` (a proposal awaiting triage).
 
+**Resolved state syncs both ways** (`codemap pr-resolve`, and a panel button). GitHub
+resolves THREADS, not comments, so the thread is found by matching the stored comment
+`databaseId` inside it. Resolving only — a finding reopened here does not reopen the
+conversation there. Pulling accepts only resolutions by your own account unless
+`--anyone`, because the PR author resolving your comment is not your agreement.
+
+**The named batch (`ids`) is reachable** from the findings list and `--only`, and the
+findings list now shows findings that sit on no symbol in the PR (posted here, or
+target gone).
+
 ### Known gaps in what was just built
 
-- Publishing a `refuted` finding **deliberately** (the spec's "withdrawals are worth
-  publishing" case) has the mechanism — `planPrPush` takes `ids`, which outranks the
-  disposition default — but no UI reaches it. A selection affordance in the findings
-  panel is what it needs.
 - No "approve all confirmed" bulk action (§8.5). With 12–16 findings, per-item is
   the slow step.
+- `revise_finding`'s `allowPostEdit` still does not edit the posted GitHub comment
+  (§3.3). Same GraphQL surface as the resolve sync, if it is ever wanted.
+- §4.6's re-anchor affordance: a dead target is flagged and blocks placement, but
+  there is no action to re-point it at a live anchor.
+- The walkthrough has no CLI (§10) and the "code in no spec section" drive-by
+  detector (§4) is still unbuilt.
 - `subject_type: "file"` comments are deliberately unused; see §0.4.
 - A comment whose text cites a different line than it landed on is FLAGGED, not
   blocked. GitHub accepts it, and only a human can tell a mis-placement from a
