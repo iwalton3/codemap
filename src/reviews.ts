@@ -6,7 +6,7 @@
 
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { type Review, type ReviewLevel, type ReviewState, type BugWitness } from "./schema.js";
+import { type Anchor, type Review, type ReviewLevel, type ReviewState, type BugWitness } from "./schema.js";
 import { readReviews, writeReviews, readAnchorStore, loadNodes, readSnapshot, snapshotBranch } from "./store.js";
 import { resolveAcceptance, recordAcceptance, type Ancestry } from "./acceptance.js";
 import { ACCEPTED_CAP, type AcceptedCitation, type AcceptedEntry, type AcceptanceVia } from "./schema.js";
@@ -33,6 +33,12 @@ const isViewedRow = (r: Review) => r.attestation === "viewed";
 export interface ReviewInfo {
   state: ReviewState;
   by?: string;
+  /**
+   * Set when this mark was earned by signing the symbol that CONTAINS this one —
+   * a class over its methods. A borrowed tick is not the same claim as one made
+   * here, so the surface has to be able to say which it is (see `via`).
+   */
+  coveredBy?: string;
   /** "human" (verified) or "agent" (checked); absent legacy reviews are treated as human. */
   actor?: "human" | "agent";
   at?: string;
@@ -131,6 +137,36 @@ function markedAt(root: string, ref: string | undefined): { commit: string | nul
   return { commit: headCommit(root), branch: isGitRepo(root) ? gitBranch(root) : null };
 }
 
+/**
+ * The anchors whose code sits INSIDE another's, within one consistent index.
+ *
+ * A review pane shows a symbol's whole span, so a class's pane is a superset of
+ * each of its methods' — and on a changed symbol so is its diff. Reviewing the
+ * class therefore *is* reading the members; asking for a separate sign-off on
+ * each one asks the reviewer to read the same lines twice.
+ *
+ * `symbolPath` alone does not establish containment: two same-named types in one
+ * file are told apart by a disambiguator and their members share a path prefix,
+ * so the byte span decides. A symbol with no recorded span yields nothing rather
+ * than a guess — an unprovable cover must not become a sign-off.
+ *
+ * Pass ONE commit's anchors at a time; spans from two commits are not comparable.
+ * A caller that wants both sides of a diff unions the two results.
+ */
+export function containedAnchorIds(anchors: Anchor[], containerId: string): string[] {
+  const container = anchors.find((a) => a.id === containerId);
+  const span = container?.loc;
+  if (!container || !span) return [];
+  const path = container.symbolPath;
+  const out: string[] = [];
+  for (const a of anchors) {
+    if (a.id === containerId || a.file !== container.file || !a.loc) continue;
+    if (a.symbolPath.length <= path.length || !path.every((seg, i) => a.symbolPath[i] === seg)) continue;
+    if (a.loc.startByte >= span.startByte && a.loc.endByte <= span.endByte) out.push(a.id);
+  }
+  return out;
+}
+
 export async function markReviewed(
   root: string,
   input: { targetKind: "node" | "anchor"; targetId: string; level: ReviewLevel; reviewer?: string; actor?: "human" | "agent"; attestation?: Attestation; ref?: string },
@@ -212,6 +248,31 @@ export async function unmarkReviewed(
 }
 
 /**
+ * Withdraw the marks a container's sign-off wrote, and only those.
+ *
+ * The symmetry matters: signing a class writes a mark on every member the change
+ * touches, so taking that sign-off back has to take them with it — otherwise the
+ * class reads unsigned while everything in it stays green. Marks made about a
+ * member directly survive; they were never this container's to withdraw.
+ */
+export async function unmarkCovered(
+  root: string,
+  containerId: string,
+  input: { level: ReviewLevel; attestation?: Attestation },
+): Promise<{ removed: string[] }> {
+  const rs = await readReviews(root);
+  const dropViewed = input.attestation === undefined || input.attestation === "viewed";
+  const dropVouch = input.attestation === undefined || input.attestation === "signed";
+  const doomed = (r: Review) =>
+    r.coveredBy === containerId && r.level === input.level && (isViewedRow(r) ? dropViewed : dropVouch);
+  const removed = rs.reviews.filter(doomed).map((r) => r.target.id);
+  if (!removed.length) return { removed };
+  rs.reviews = rs.reviews.filter((r) => !doomed(r));
+  await writeReviews(root, rs.reviews);
+  return { removed };
+}
+
+/**
  * The ancestry probe `resolveAcceptance` needs, backed by `merge-base --is-ancestor`
  * and memoised per (commit, commit) pair. One probe is built per batch and shared
  * across every anchor in it: marks are made against a handful of commits, so a run
@@ -281,7 +342,7 @@ export async function reviewStatesFor(
     // row is exposure, not a blessing. With `{viewed:true}` we read exactly those rows.
     const r = rs.reviews.find((x) => x.target.kind === t.kind && x.target.id === t.id && x.level === level && isViewedRow(x) === wantViewed);
     if (!r) return { state: "unreviewed" };
-    const base = { by: r.reviewer, actor: r.actor ?? "agent", at: r.at } as const;
+    const base = { by: r.reviewer, actor: r.actor ?? "agent", at: r.at, coveredBy: r.coveredBy } as const;
 
     const cites = acceptedOf(r);
     const resolved = cites.map((c) => resolveAcceptance(c.entries, live.get(c.anchorId), ancestry));
@@ -547,6 +608,13 @@ export async function markReviewedBatch(
   input: {
     level: ReviewLevel; reviewer?: string; actor?: "human" | "agent"; attestation?: Attestation; ref?: string;
     /**
+     * Stamp these as cover rows for the container named here (see `Review.coveredBy`).
+     * An id that already carries a mark made about IT — rather than one written by
+     * some other container — is skipped: a cover never overwrites a direct act, or
+     * withdrawing the container would take a sign-off the reviewer made themselves.
+     */
+    coveredBy?: string;
+    /**
      * Hashes supplied by the caller, skipping the snapshot lookup entirely. A bulk
      * historical import parses only the files a PR touched; caching a full-tree
      * snapshot per side just to look those up would cost gigabytes across a year
@@ -577,6 +645,10 @@ export async function markReviewedBatch(
     }
   }
 
+  // A cover may replace another cover (the inner container is the more specific
+  // claim) but never a mark made about the symbol itself.
+  if (input.coveredBy) anchorIds = anchorIds.filter((id) => priorFor.get(id)?.coveredBy !== undefined || !priorFor.has(id));
+
   const fresh: Review[] = anchorIds.map((id) => {
     const prior = priorFor.get(id);
     const entries = prior ? (acceptedOf(prior).find((c) => c.anchorId === id)?.entries ?? []) : [];
@@ -588,6 +660,7 @@ export async function markReviewedBatch(
       reviewer: input.reviewer || "me",
       actor,
       attestation,
+      coveredBy: input.coveredBy,
       at: stamp,
       reviewedCommit: commit,
       witnesses: [{ anchorId: id, bodyHash: hash ?? "sha256:absent" }],

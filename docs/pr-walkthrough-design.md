@@ -171,6 +171,40 @@ unchanged.
 This is why chapter boundaries matter: a chapter should be something a person can
 hold in their head and then say yes to.
 
+### 5.1 A sign-off covers what it contains
+
+The other source of the 541 decisions is not chapters at all — it is nesting. A PR
+that adds a class puts the class on the worklist *and* every member it changed, and
+a member is often chapters away from its type. On #227, 385 of 541 steps sit inside
+another step.
+
+The reviewer has already read them: an anchor's pane is its whole span, so a type's
+pane is the entire class and its diff is every changed line inside it, member bodies
+included (a type's *hash* is only its shell — that is what makes the members
+separately stale-able, not what the pane shows). Asking for a second sign-off on
+each member asks the reviewer to read the same lines twice.
+
+So signing or viewing a symbol also marks every symbol **this pull request touches**
+inside it (`prStepMark`, `containedAnchorIds`):
+
+- **Ordinary per-member marks underneath**, each witnessing its OWN hash — so a
+  later edit to one method stales that method and leaves the rest standing.
+- **Cover rows say so** (`Review.coveredBy`): the tick reads `↳`, not `✓`. A
+  borrowed approval never renders as one made here — the same rule `via` follows.
+- **Bounded by the change.** The cover reaches only what the PR touches. A class
+  with forty methods and two changed covers the two; covering the other
+  thirty-eight would turn one click into a review claim over code this branch never
+  went near, and inflate the map's coverage with it.
+- **Containment is decided by the byte span**, not by `symbolPath` alone: two
+  same-named types in one file share a path prefix. A symbol with no recorded span
+  is not covered.
+- **Withdrawal is symmetric and precise.** Unsigning the type clears the rows it
+  wrote; a member the reviewer signed in its own right survives, and a cover never
+  overwrote it in the first place.
+
+It is a PR-scoped route (`/api/pr/step_mark`) rather than a flag on `/api/review`,
+because "what this change touches" is a question only a PR context can answer.
+
 ---
 
 ## 6. A walkthrough is a claim about code, so it goes stale

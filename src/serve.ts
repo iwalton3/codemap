@@ -408,6 +408,24 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    // Signing or viewing ONE symbol on the walkthrough. Unlike `/api/review` this
+    // carries the pull request, which is what lets the mark cover the symbols the
+    // change touches inside the one clicked (see `prStepMark`).
+    if (req.method === "POST" && url.pathname === "/api/pr/step_mark") {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      const root = rootFor(body.u ?? null);
+      const out = await withLock<unknown>(root, () => ops.prStepMark(root, String(body.pr ?? ""), String(body.id ?? ""), {
+        attestation: body.attestation === "viewed" ? "viewed" : "signed",
+        unmark: body.unmark === true,
+        reviewer: body.reviewer,
+      }));
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(out));
+      return;
+    }
+
     // Signing or viewing a whole chapter — the shortcut over per-symbol marking. It
     // writes the ordinary per-anchor marks underneath, so nothing about staleness or
     // acceptance changes.

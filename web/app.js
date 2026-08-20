@@ -172,33 +172,40 @@ const coverageBar = (cov) => {
 // history, which is someone undoing work and is the one worth interrupting for.
 const VIA_MARK = { replayed: ' ↻', reverted: ' ⟲' };
 const whereFrom = (p) => (p ? `${p.branch || (p.commit ? p.commit.slice(0, 7) : 'unknown')}${p.at ? ' · ' + p.at.slice(0, 10) : ''}` : 'unknown');
-const markBtnEl = (attestation, info, onMark) => {
+const markBtnEl = (attestation, info, onMark, coverLabel) => {
   const st = (info && info.state) || 'unreviewed';
   const actor = info && info.actor;
   const via = info && info.via;
   const agent = st === 'reviewed' && actor === 'agent'; // agent `checked`, not a human vouch
   const on = attestation === 'signed';
+  // Earned by signing the symbol that contains this one — the reviewer read these
+  // lines inside a larger pane, which is a real mark but not one made about this
+  // symbol, so it says so rather than passing for a direct tick.
+  const cover = st === 'reviewed' && info && info.coveredBy;
   // A human sign-off is green; an agent-checked vouch (or a viewed mark) is blue.
   const cls = st === 'reviewed'
     ? (via === 'reverted' ? 'reverted' : on && !agent ? 'on' : 'checked')
     : st === 'stale' ? 'stale' : '';
-  const mk = st === 'reviewed' ? (VIA_MARK[via] || ' ✓') : st === 'stale' ? ' ⚠' : '';
+  const mk = st === 'reviewed' ? (VIA_MARK[via] || (cover ? ' ↳' : ' ✓')) : st === 'stale' ? ' ⚠' : '';
   const tip = st !== 'reviewed'
     ? `${attestation}: ${st}${st === 'stale' ? ' — code changed, click to re-approve at the live hash' : ' — click to mark'}`
     : via === 'reverted'
       ? `${attestation}: this body was approved on ${whereFrom(info.acceptedAt)}, then superseded on this branch by ${whereFrom(info.revertedFrom)} — the code has since moved BACK. Someone undid work; re-read before trusting the tick.`
       : via === 'replayed'
         ? `${attestation}: replayed — you approved this exact body on ${whereFrom(info.acceptedAt)}, which this branch does not descend from. Same code, approval borrowed from there.`
-        : `${attestation}: ${st}${agent ? ' (agent-checked — click to confirm as human)' : ' — click to clear'}`;
+        // `via` first: a borrowed lineage is the louder claim, and it takes the glyph too.
+        : cover
+          ? `${attestation}: covered — you ${attestation === 'signed' ? 'signed' : 'viewed'} ${coverLabel || 'the symbol that contains this one'}, whose pane shows these lines. Witnessed at this symbol's own hash, so a later edit here stales this mark alone. Click to clear just this one.`
+          : `${attestation}: ${st}${agent ? ' (agent-checked — click to confirm as human)' : ' — click to clear'}`;
   return html`<button class="${cls}" title="${tip}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onMark(attestation, st, actor); }}">${attestation}${mk}</button>`;
 };
-const reviewRowEl = (review, viewed, onMark, level = 'code') => {
+const reviewRowEl = (review, viewed, onMark, level = 'code', coverLabel) => {
   const sign = review && review[level], view = viewed && viewed[level];
   // Signing is a stronger act than viewing, so a HUMAN sign-off implies you viewed it:
   // once human-signed, drop the now-redundant viewed button. An agent `checked` vouch
   // is not a human sign-off — keep viewed available so the human can still mark/sign.
   const humanSigned = sign && sign.state === 'reviewed' && sign.actor !== 'agent';
-  return html`<span class="rev">${when(!humanSigned, () => markBtnEl('viewed', view, onMark))}${markBtnEl('signed', sign, onMark)}${when(sign && sign.state === 'stale', () => html`<span class="hint" style="margin-left:6px;color:#f0a35e">⚠ sign-off stale</span>`)}</span>`;
+  return html`<span class="rev">${when(!humanSigned, () => markBtnEl('viewed', view, onMark, coverLabel))}${markBtnEl('signed', sign, onMark, coverLabel)}${when(sign && sign.state === 'stale', () => html`<span class="hint" style="margin-left:6px;color:#f0a35e">⚠ sign-off stale</span>`)}</span>`;
 };
 // A node's code review is DERIVED from the code reviews of the segments it cites
 // (server: deriveCodeReview) — a read-only rollup, never a one-click "I signed the
@@ -2199,9 +2206,22 @@ class PrStoryPage extends Component {
    * nobody has walked yet renders exactly as it did before.
    */
   stepsByAnchor() {
+    // Memoised on the story object: `patchStep` replaces it wholesale, so identity
+    // is a sound cache key — and this is called per rendered step (for the cover
+    // label), which on a 500-symbol pull request is quadratic without it.
+    if (this._sbaOf === this.state.story && this._sba) return this._sba;
     const m = new Map();
     for (const c of (this.state.story && this.state.story.chapters) || []) for (const s of c.steps) m.set(s.anchorId, s);
+    this._sbaOf = this.state.story; this._sba = m;
     return m;
+  }
+
+  /** The symbol a step's mark was borrowed from, named rather than left as an id. */
+  coverLabel(step) {
+    const by = (step.review && step.review.coveredBy) || (step.viewedMark && step.viewedMark.coveredBy);
+    if (!by) return null;
+    const owner = this.stepsByAnchor().get(by);
+    return owner ? (owner.symbol.split(' › ').pop() || owner.symbol) : null;
   }
 
   async markChapter(chapterId, attestation, unmark) {
@@ -2319,14 +2339,18 @@ class PrStoryPage extends Component {
     const id = step.anchorId;
     const unmark = state === 'reviewed' && actor !== 'agent';
     // No story reload. Re-deriving the whole pull request to learn one symbol's new
-    // state is seconds of work on a big PR; the write hands the resulting mark back,
-    // and it is the SERVER's mark rather than a guess — the state has nuance
-    // (replayed, sitting on a revert) the client has no business inventing.
-    const res = await postReview(this.props.params.universe, 'anchor', id, 'code', unmark, attestation, this.state.prRef)
-      .then(r => r.json()).catch(() => null);
+    // state is seconds of work on a big PR; the write hands the resulting marks back,
+    // and they are the SERVER's marks rather than a guess — the state has nuance
+    // (replayed, sitting on a revert, covered by a container) the client has no
+    // business inventing. Several come back because signing a symbol also signs what
+    // this pull request changed inside it.
+    const res = await fetch('/api/pr/step_mark', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ u: this.props.params.universe, pr: this.props.params.pr, id, attestation, unmark }),
+    }).then(r => r.json()).catch(() => null);
     if (!res || res.error) { this.state.markError = (res && res.error) || 'the sign-off did not reach the server'; return; }
     this.state.markError = null;
-    this.patchStep(id, res.mark);
+    for (const [mid, mark] of Object.entries(res.marks || {})) this.patchStep(mid, mark);
     // Taking a sign-off back is a correction, not progress — stay put. (The code
     // pane is not re-fetched either way: signing changes review state, not the
     // source or its annotations.)
@@ -2882,7 +2906,7 @@ class PrStoryPage extends Component {
         <code class="prsig">${step.signature || step.symbol}</code>
         <span class="dim prfile">${step.file.split('/').pop()}</span>
         ${when(finds, () => html`<span class="prfind" title="${finds} open finding(s)">⚑${finds}</span>`)}
-        <span class="prrev" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">${reviewRowEl({ code: step.review || { state: step.reviewed ? 'reviewed' : 'unreviewed' } }, { code: step.viewedMark || { state: step.viewed ? 'reviewed' : 'unreviewed' } }, (att, st, actor) => this.markStep(step, att, st, actor))}</span>
+        <span class="prrev" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">${reviewRowEl({ code: step.review || { state: step.reviewed ? 'reviewed' : 'unreviewed' } }, { code: step.viewedMark || { state: step.viewed ? 'reviewed' : 'unreviewed' } }, (att, st, actor) => this.markStep(step, att, st, actor), 'code', this.coverLabel(step))}</span>
       </div>
       ${when(this.state.pending[step.anchorId], () => html`<div class="dim prload">loading source…</div>`)}
       ${when(code && !code.error, () => html`<div class="prsbody">

@@ -111,6 +111,38 @@ describe("PR import against a real repository", { skip: skip ?? false }, () => {
     assert.match(code.error, /not part of/i);
   });
 
+  /**
+   * The redundancy this removes: a real PR puts a class on the worklist *and* every
+   * member it changed, and the class's pane is the whole class — so the reviewer is
+   * asked to read the same lines two, three, four times over.
+   */
+  test("signing a type also signs the members this PR changes inside it — and only those", async () => {
+    const root = at(FIXTURE_PR.head);
+    const r = await read(root) as any;
+    const work = r.worklist.filter((w: any) => w.lane === "code");
+    const type = work.find((w: any) => w.symbol.endsWith("IItemQueryHelpers"))!;
+    const members = work.filter((w: any) => w.symbol.startsWith(type.symbol + " › "));
+    assert.ok(members.length >= 3, "the fixture must actually have members on the worklist");
+    // Including the one the branch DELETES, which exists on the base side only.
+    assert.ok(members.some((m: any) => m.change === "removed"), "a deleted member is inside the base body and shows in the type's diff");
+
+    const signed = await ops.prStepMark(root, PR, type.id, { attestation: "signed" }) as any;
+    assert.ok(!signed.error, signed.error);
+    assert.deepEqual(
+      Object.keys(signed.marks).sort(),
+      [type.id, ...members.map((m: any) => m.id)].sort(),
+      "one click reports on the type and everything it covers",
+    );
+    for (const m of members) assert.equal(signed.marks[m.id].review.coveredBy, type.id);
+
+    // A symbol elsewhere in the same file is not inside it.
+    const outside = work.find((w: any) => w.file === type.file && !w.symbol.startsWith(type.symbol));
+    if (outside) assert.equal(signed.marks[outside.id], undefined, "a sibling symbol is not covered");
+
+    const undone = await ops.prStepMark(root, PR, type.id, { attestation: "signed", unmark: true }) as any;
+    for (const m of members) assert.equal(undone.marks[m.id].review.state, "unreviewed", "withdrawing the type withdraws what it covered");
+  });
+
   test("a commit's index is deterministic — the same sha twice gives the same anchors", async () => {
     // Snapshots are cached as immutable and diffed against each other; a
     // non-deterministic index would surface as phantom added/removed symbols.

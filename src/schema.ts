@@ -601,6 +601,19 @@ export interface Review {
    * human review = `signed` (see `effectiveAttestation`).
    */
   attestation?: "viewed" | "signed";
+  /**
+   * This mark was not made about this symbol directly: it was made about the
+   * anchor named here, whose body physically CONTAINS this one (a class and its
+   * methods, a method and its local functions). The container's review pane shows
+   * the whole span, so signing it reads the contained code too — but the two are
+   * still separate marks, each witnessing its own hash, so a later edit to one
+   * method stales that method alone.
+   *
+   * Only cover rows carry it. That is what makes withdrawing a container's
+   * sign-off precise: it clears the rows it wrote and leaves untouched any mark
+   * the reviewer made on a member directly.
+   */
+  coveredBy?: string;
   at: string; // ISO timestamp
   reviewedCommit: string | null;
   /** Hashes of the covered anchors at review time; a mismatch later = `stale`. */

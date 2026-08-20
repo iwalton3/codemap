@@ -30,7 +30,7 @@ import {
 } from "./store.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "./diff.js";
-import { prTriage, listOpenPrs, prPacket, prStory, prAnchorCode, prPromotionPlan, derivePrTriage } from "./pr.js";
+import { prTriage, listOpenPrs, prPacket, prStory, prAnchorCode, prPromotionPlan, derivePrTriage, prContainment } from "./pr.js";
 import { promotionOwns } from "./pr-promote.js";
 import { validateWalkthrough, buildWalkthrough, walkCoverage, staleChapters, type WalkInput } from "./walkthrough.js";
 import { LANE_POLICY } from "./lanes.js";
@@ -47,7 +47,7 @@ import { resolveAnchorRefs } from "./refs.js";
 import { refreshAnalyzers } from "./analyzers/run.js";
 import { applyIndexUpdate } from "./sync.js";
 import { grammarForPath } from "./grammars.js";
-import { reviewStatus, reviewStatesFor, anchorReviewMap, changedSince as reviewsChangedSince, deriveCodeReview, revertedMarks, markReviewedBatch, unmarkReviewed, type Attestation, type ReviewPair, type DerivedCodeReview } from "./reviews.js";
+import { reviewStatus, reviewStatesFor, anchorReviewMap, changedSince as reviewsChangedSince, deriveCodeReview, revertedMarks, markReviewedBatch, unmarkReviewed, unmarkCovered, type Attestation, type ReviewPair, type DerivedCodeReview } from "./reviews.js";
 import { setTriage as triageSet, clearTriage as triageClear, triageStatus, reviewTriageFor, deriveTriage as triageDerive, coverageFor as triageCoverageFor, rollupCoverage, tripwires as triageTripwires, triageDrift } from "./triage.js";
 
 const HL_LANG: Record<string, string> = { c_sharp: "csharp", python: "python", javascript: "javascript", typescript: "typescript", tsx: "typescript" };
@@ -760,6 +760,45 @@ export async function prStoryFor(root: string, input: string, opts: { fetch?: bo
 }
 
 /**
+ * Sign (or view) one symbol on the walkthrough, and with it every symbol this pull
+ * request touches INSIDE it.
+ *
+ * A pull request that adds a class puts the class and each of its methods on the
+ * worklist separately, and the class's pane is the whole class: the reviewer who
+ * signed it has already read every member, and being asked to sign each one again
+ * is asking them to read the same lines twice. The cover writes the ordinary
+ * per-member marks underneath — each witnessing its OWN hash — so a later edit to
+ * one method stales that method alone, and nothing about staleness changes.
+ *
+ * Deliberately a PR route rather than a flag on `/api/review`: the cover is bounded
+ * by what this pull request touches, which only a PR context can answer.
+ */
+export async function prStepMark(
+  root: string, input: string, id: string,
+  opts: { attestation: Attestation; unmark?: boolean; reviewer?: string },
+) {
+  const c = await prContainment(root, input, [id]);
+  if ("error" in c) return { error: c.error };
+  const inside = c.contained.get(id) ?? [];
+
+  let cleared: string[] = [];
+  if (opts.unmark) {
+    await unmarkReviewed(root, { targetKind: "anchor", targetId: id, level: "code", attestation: opts.attestation });
+    cleared = (await unmarkCovered(root, id, { level: "code", attestation: opts.attestation })).removed;
+  } else {
+    const mark = { level: "code" as const, actor: "human" as const, attestation: opts.attestation, reviewer: opts.reviewer, ref: c.head };
+    await markReviewedBatch(root, [id], mark);
+    await markReviewedBatch(root, inside, { ...mark, coveredBy: id });
+  }
+  // Every symbol whose state may have moved — the one clicked, what it covers, and
+  // (on a withdrawal) whatever the cover had written, in case the two disagree.
+  const affected = [id, ...new Set([...inside, ...cleared])];
+  const marks: Record<string, unknown> = {};
+  for (const a of affected) marks[a] = await anchorMark(root, a, { ref: c.head });
+  return { ok: true, anchor: id, covered: inside.length, marks };
+}
+
+/**
  * Apply one mark to every symbol in a chapter — the shortcut that turns 541
  * decisions into 20.
  *
@@ -783,18 +822,31 @@ export async function prChapterMark(
   const ids = chapter.blocks.filter((b) => b.kind === "symbol").map((b) => (b as { anchorId: string }).anchorId);
   if (!ids.length) return { error: "that chapter walks no symbols" };
 
+  // A chapter's symbols carry the same cover as a single one: members of a class
+  // the chapter walks are often chapters away, so signing per chapter alone leaves
+  // the reviewer chasing the same code across the walkthrough.
+  const c = await prContainment(root, input, ids);
+  if ("error" in c) return { error: c.error };
+
+  const cleared: string[] = [];
   if (opts.unmark) {
-    for (const id of ids) await unmarkReviewed(root, { targetKind: "anchor", targetId: id, level: "code", attestation: opts.attestation });
+    for (const id of ids) {
+      await unmarkReviewed(root, { targetKind: "anchor", targetId: id, level: "code", attestation: opts.attestation });
+      cleared.push(...(await unmarkCovered(root, id, { level: "code", attestation: opts.attestation })).removed);
+    }
   } else {
-    await markReviewedBatch(root, ids, {
-      level: "code", actor: "human", attestation: opts.attestation, reviewer: opts.reviewer, ref: t.refs.head,
-    });
+    const mark = { level: "code" as const, actor: "human" as const, attestation: opts.attestation, reviewer: opts.reviewer, ref: t.refs.head };
+    // The chapter's own symbols first: a member that is itself a step here is signed
+    // in its own right, and a cover must not displace that.
+    await markReviewedBatch(root, ids, mark);
+    for (const id of ids) await markReviewedBatch(root, c.contained.get(id) ?? [], { ...mark, coveredBy: id });
   }
   // The resulting marks, so the page updates in place rather than re-deriving the
   // whole pull request to learn what its own click did.
+  const affected = [...new Set([...ids, ...[...c.contained.values()].flat(), ...cleared])];
   const marks: Record<string, unknown> = {};
-  for (const id of ids) marks[id] = await anchorMark(root, id, { ref: t.refs.head });
-  return { ok: true, chapter: chapterId, anchors: ids.length, marks };
+  for (const id of affected) marks[id] = await anchorMark(root, id, { ref: t.refs.head });
+  return { ok: true, chapter: chapterId, anchors: ids.length, covered: affected.length - ids.length, marks };
 }
 
 /**

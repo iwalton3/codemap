@@ -16,6 +16,7 @@ import { computeDiff, lineDiff, stripCR, type DiffResult, type DiffLine } from "
 import { indexBlob, indexCommit } from "./repo.js";
 import { readSnapshot, writeSnapshot, readAnnotations, readAnchorStore, retainOrphans, referencedAnchorIds, anchorsUnderRef } from "./store.js";
 import { loadLanes, LANE_POLICY, type Lane } from "./lanes.js";
+import { containedAnchorIds } from "./reviews.js";
 import { complexityOf, MONEY_RX, reviewTriageFor, setTriageBatch } from "./triage.js";
 import { readTriage } from "./store.js";
 import type { Importance } from "./schema.js";
@@ -495,6 +496,40 @@ export async function prPacket(
     counts: { total: selected.length, included: slice.length },
     items,
   };
+}
+
+/**
+ * For each id, the other symbols THIS pull request touches that live inside it.
+ *
+ * Bounded to what the PR touches on purpose. The container's pane shows its whole
+ * body, but what a sign-off here is about is the change — and the container's diff
+ * is exactly the changed lines inside it, member bodies included, because the span
+ * a type anchor carries covers them. Covering untouched neighbours instead would
+ * turn one click on a class into a review claim over code this branch never went
+ * near, and inflate the map's coverage with it.
+ */
+export async function prContainment(
+  root: string, input: string, ids: string[],
+): Promise<{ head: string; contained: Map<string, string[]> } | { error: string }> {
+  const ctx = await prContext(root, input, { fetch: false });
+  if ("error" in ctx) return ctx;
+  const [head, base] = await Promise.all([readSnapshot(root, ctx.meta.headSha), readSnapshot(root, ctx.mergeBase)]);
+  if (!head || !base) return { error: `PR #${ctx.meta.number} is not indexed on both sides — re-open it to cache the snapshots` };
+
+  const baseHash = new Map(base.map((a) => [a.id, a.bodyHash]));
+  const headHash = new Map(head.map((a) => [a.id, a.bodyHash]));
+  // Added, removed and changed in one test: a side that does not hold the symbol
+  // answers undefined, which never equals a hash.
+  const touched = (id: string) => baseHash.get(id) !== headHash.get(id);
+
+  const contained = new Map<string, string[]>();
+  for (const id of ids) {
+    // Both sides: a member the branch DELETES is inside the container's base body
+    // only, and its removal is on screen in the container's diff like any other line.
+    const inside = new Set([...containedAnchorIds(head, id), ...containedAnchorIds(base, id)]);
+    contained.set(id, [...inside].filter(touched));
+  }
+  return { head: ctx.meta.headSha, contained };
 }
 
 /**
