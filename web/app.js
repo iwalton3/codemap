@@ -2139,6 +2139,7 @@ class PrStoryPage extends Component {
       story: null, open: {}, code: {}, pending: {}, finding: null, prRef: null, showDiff: {},
       promote: null, promoted: {}, showCovered: false, deriving: false, derived: null,
       pulling: false, pulled: null, push: null, markError: null, showFindings: false, chapterBusy: {},
+      allFindings: null,
     };
   }
   constructor(props) { super(props); this.state = PrStoryPage.blank(); }
@@ -2157,6 +2158,7 @@ class PrStoryPage extends Component {
     // just handed to an agent — invisible until the pane was collapsed and
     // reopened. Refresh whatever is open alongside it.
     await this.refreshOpenCode();
+    if (this.state.allFindings) await this.loadAllFindings();
   });
 
   async refreshOpenCode() {
@@ -2312,6 +2314,10 @@ class PrStoryPage extends Component {
   patchAnnotations(anchorId, annotations) {
     const st = this.state.story;
     if (!st) return false;
+    // A finding on a symbol the pull request does not touch sits in no chapter, so
+    // there is nothing here to patch — and claiming otherwise skipped the reload
+    // that would have shown the write. Resolving one looked like a dead button.
+    if (!st.chapters.some(c => c.steps.some(s => s.anchorId === anchorId))) return false;
     this.state.story = { ...st, chapters: st.chapters.map(c => (
       c.steps.some(s => s.anchorId === anchorId)
         ? { ...c, steps: c.steps.map(s => s.anchorId === anchorId ? { ...s, annotations } : s) }
@@ -2556,6 +2562,16 @@ class PrStoryPage extends Component {
   async toggleFindings() {
     this.state.showFindings = !this.state.showFindings;
     if (!this.state.showFindings || this.state.allFindings) return;
+    await this.loadAllFindings();
+  }
+
+  /**
+   * The off-story rows come from the queue, not the story, so `load` has to refresh
+   * them too: every write on one falls back to a story reload, and a reload that
+   * left this frozen at whatever it held when the list was opened meant resolving
+   * or withdrawing an orphan changed nothing on screen.
+   */
+  async loadAllFindings() {
     this.state.allFindings = await api('/api/queue', { u: this.props.params.universe, all: '1', resolved: '1' })
       .catch(() => ({ queue: [] }));
   }
@@ -2607,20 +2623,24 @@ class PrStoryPage extends Component {
   findingsPanelEl(u) {
     if (!this.state.showFindings) return html``;
     const all = this.allFindings();
-    if (!all.length) return html`<div class="prfindings dim">No findings raised on this pull request yet.</div>`;
+    const off = this.offStoryFindings();
+    if (!all.length && !off.length) return html`<div class="prfindings dim">No findings raised on this pull request yet.</div>`;
     const live = all.filter(e => !e.f.resolved && !e.f.withdrawn && !e.f.postedRef);
     const elected = live.filter(e => !isAgentFinding(e.f) || e.f.escalated);
-    const off = this.offStoryFindings();
+    // An orphan you resolve or withdraw leaves the orphan group by the same route an
+    // on-story finding does. Left in, the group asking for a publish path went on
+    // counting the ones already dealt with, which is the same as not resolving them.
+    const settled = all.concat(off.filter(e => e.f.resolved || e.f.withdrawn));
     const groups = [
-      ['not on a symbol this pull request changes — these need a publish path, or their code is gone', off],
+      ['not on a symbol this pull request changes — these need a publish path, or their code is gone', off.filter(e => !e.f.resolved && !e.f.withdrawn)],
       ['goes out on the next push', elected.filter(e => PUBLISHABLE.has(e.f.disposition) && (e.f.comment || '').trim())],
       ['needs the submitter-facing version before it can go', elected.filter(e => PUBLISHABLE.has(e.f.disposition) && !(e.f.comment || '').trim())],
       ['nobody has said what this turned out to be — set a disposition', elected.filter(e => !e.f.disposition || e.f.disposition === 'open')],
       ['held back: refuted or accepted — publish one deliberately if it closes a concern out', elected.filter(e => e.f.disposition === 'refuted' || e.f.disposition === 'accepted')],
       ['an agent\'s — raise one to include it', live.filter(e => isAgentFinding(e.f) && !e.f.escalated)],
       ['already on the pull request', all.filter(e => e.f.postedRef)],
-      ['withdrawn — kept here, not sent', all.filter(e => e.f.withdrawn && !e.f.resolved)],
-      ['resolved locally — not sent', all.filter(e => e.f.resolved)],
+      ['withdrawn — kept here, not sent', settled.filter(e => e.f.withdrawn && !e.f.resolved)],
+      ['resolved locally — not sent', settled.filter(e => e.f.resolved)],
     ].filter(g => g[1].length);
     const picked = [...(this.state.pick || [])];
     return html`<div class="prfindings">

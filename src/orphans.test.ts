@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { annotate, reindex, orphanedWork, getAnchor, reviewQueue, assignAnnotation } from "./ops.js";
+import { annotate, reindex, orphanedWork, getAnchor, reviewQueue, assignAnnotation, resolveAnnotation, withdrawAnnotation } from "./ops.js";
 import { readAnnotations } from "./store.js";
 
 /**
@@ -215,5 +215,39 @@ test("a doc can cite code that exists only on a branch", async () => {
     assert.equal(withRef.rejectedAnchors, undefined);
     const node = (await loadNodes(root)).find((n) => n.id === withRef.id)!;
     assert.deepEqual(node.anchors, [branchOnly[0]!.id]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the queue reports triage state, or a finding on stranded code cannot be cleared", async () => {
+  // The PR findings list can only see a finding whose symbol the branch does not
+  // touch through this queue. While the projection dropped `resolved`/`withdrawn`,
+  // every such row read as live: it offered "resolve" on one already resolved,
+  // never "reopen", and no amount of resolving took it out of the list asking for
+  // action. Nine of them had been resolved and were still being offered.
+  const root = await repo();
+  try {
+    const { readAnchorStore } = await import("./store.js");
+    const id = (await readAnchorStore(root)).anchors[0]!.id;
+    const live = await annotate(root, { targetKind: "anchor", targetId: id, text: "a", comment: "c", kind: "finding", author: "me" }) as { id: string };
+    const done = await annotate(root, { targetKind: "anchor", targetId: id, text: "b", comment: "c", kind: "finding", author: "me" }) as { id: string };
+    const gone = await annotate(root, { targetKind: "anchor", targetId: id, text: "c", comment: "c", kind: "finding", author: "me" }) as { id: string };
+    await resolveAnnotation(root, done.id, true);
+    await withdrawAnnotation(root, { id: gone.id, withdraw: true, by: "me", reason: "superseded" });
+
+    // What the web asks for: every finding, resolved ones included.
+    const opts = { assignedOnly: false, includeResolved: true };
+    const byId = (q: { queue: { id: string }[] }) => new Map(q.queue.map((x) => [x.id, x as never as Record<string, unknown>]));
+
+    for (const brief of [false, true]) {
+      const q = byId(await reviewQueue(root, { ...opts, brief }));
+      assert.equal(q.get(live.id)!.resolved, undefined, `brief=${brief}: a live finding says nothing`);
+      assert.equal(q.get(live.id)!.withdrawn, undefined, `brief=${brief}`);
+      assert.equal(q.get(done.id)!.resolved, true, `brief=${brief}: a resolved one says so`);
+      assert.ok(q.get(gone.id)!.withdrawn, `brief=${brief}: and so does a withdrawn one`);
+    }
+
+    // Reopening has to be visible too, or the round trip is one-way.
+    await resolveAnnotation(root, done.id, false);
+    assert.equal(byId(await reviewQueue(root, opts)).get(done.id)!.resolved, undefined);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

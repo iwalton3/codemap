@@ -2895,6 +2895,16 @@ export interface QueueItem {
   targetResolved?: boolean;
   targetAt?: string;
   postedRef?: Annotation["postedRef"];
+  /**
+   * Triage state. The queue is the only way the web findings list can see a finding
+   * on a symbol the pull request does not touch, and without these three every such
+   * row read as live: it offered `resolve` on an already-resolved finding and never
+   * `reopen`, and no amount of resolving could take one out of the list. Resolving a
+   * dead finding wrote to the store and changed nothing on screen.
+   */
+  resolved?: boolean;
+  withdrawn?: Annotation["withdrawn"];
+  escalated?: Annotation["escalated"];
   line?: number;
   author: string;
   /** Absent when listing beyond the assignment queue (`assignedOnly: false`). */
@@ -2966,6 +2976,11 @@ export async function reviewQueue(
   const keptAnchors = readOrphans(root, [...new Set(
     pending.filter((a) => a.target.kind === "anchor" && !liveIds.has(a.target.id)).map((a) => a.target.id),
   )]);
+  const triageState = (a: Annotation) => ({
+    ...(a.resolved ? { resolved: true } : {}),
+    ...(a.withdrawn ? { withdrawn: a.withdrawn } : {}),
+    ...(a.escalated ? { escalated: a.escalated } : {}),
+  });
   const targetState = (a: Annotation) => {
     if (a.target.kind !== "anchor" || liveIds.has(a.target.id)) return {};
     const at = offTree.get(a.target.id)?.ref ?? (keptAnchors.has(a.target.id) ? "@orphan" : undefined);
@@ -2980,6 +2995,7 @@ export async function reviewQueue(
       textPreview: a.text.length > 300 ? a.text.slice(0, 300) + "…" : a.text,
       line: a.line, author: a.author, assignment: a.assignment, target: a.target,
       ...targetState(a),
+      ...triageState(a),
       ...(a.postedRef ? { postedRef: a.postedRef } : {}),
     }));
     return {
@@ -3033,6 +3049,7 @@ export async function reviewQueue(
       disposition: a.disposition ?? "open",
       publishState: publishStateOf(a, pushedIds),
       ...targetState(a),
+      ...triageState(a),
       ...(a.postedRef ? { postedRef: a.postedRef } : {}),
     });
   }
