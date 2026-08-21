@@ -107,6 +107,26 @@ export interface AnchorStore {
  */
 export const ANCHOR_SCHEME = 3;
 
+/**
+ * How a body hash is DERIVED, as a number. BUMP IT whenever normalization changes.
+ *
+ * The sibling of ANCHOR_SCHEME, and needed for the same reason one level down: an
+ * id says WHICH code a mark is about, a hash says WHAT that code was. Change what
+ * the tokens are and every stored witness — on reviews, bugs, triage and findings
+ * alike — silently reads as drift, because a hash minted under one derivation and
+ * one minted under another are unequal for a reason that has nothing to do with
+ * anyone editing the code.
+ *
+ * Unlike ANCHOR_SCHEME this is carried IN the hash string (`h<N>:sha256:…`), not
+ * beside it. A snapshot can be rejected wholesale, but a witness frozen on a
+ * review years ago has to be individually self-describing — after a re-index the
+ * live hashes are new-scheme while those witnesses are not, and only the value
+ * itself can say so.
+ *
+ *   1  bare `sha256:…` — every hash minted before this constant existed
+ */
+export const HASH_SCHEME = 1;
+
 /** Stable anchor id — same inputs always yield the same id across re-indexes. */
 export function anchorId(
   file: string,

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { canonicalize, hashTokens } from "./normalize.js";
-import { anchorId } from "./schema.js";
+import { canonicalize, hashTokens, hashSchemeOf, comparableHashes, ABSENT_HASH } from "./normalize.js";
+import { anchorId, HASH_SCHEME } from "./schema.js";
 
 test("hash is stable for identical token streams", () => {
   assert.equal(hashTokens(["a", ".", "b"]), hashTokens(["a", ".", "b"]));
@@ -40,4 +40,30 @@ test("anchorId disambiguator separates overloads", () => {
     anchorId("src/x.cs", ["C", "M"], "(int)"),
     anchorId("src/x.cs", ["C", "M"], "(string)"),
   );
+});
+
+// --- HASH_SCHEME: telling "the code changed" from "the rules for hashing it changed"
+
+test("an unprefixed digest is scheme 1 — what every hash written before this looks like", () => {
+  assert.equal(hashSchemeOf("sha256:abc123"), 1);
+});
+
+test("a prefixed digest reports its own scheme", () => {
+  assert.equal(hashSchemeOf("h2:sha256:abc123"), 2);
+  assert.equal(hashSchemeOf("h17:sha256:abc123"), 17);
+});
+
+test("hashes from one scheme are comparable; across schemes they are not", () => {
+  assert.equal(comparableHashes("sha256:aaa", "sha256:bbb"), true, "both scheme 1");
+  assert.equal(comparableHashes("h2:sha256:aaa", "h2:sha256:bbb"), true, "both scheme 2");
+  assert.equal(comparableHashes("sha256:aaa", "h2:sha256:aaa"), false, "1 vs 2 says nothing about the code");
+});
+
+test("an absent anchor compares against any scheme — gone is gone under every derivation", () => {
+  assert.equal(comparableHashes(ABSENT_HASH, "h2:sha256:aaa"), true);
+  assert.equal(comparableHashes("h9:sha256:aaa", ABSENT_HASH), true);
+});
+
+test("hashTokens stamps the scheme in force, so a hash carries its own provenance", () => {
+  assert.equal(hashSchemeOf(hashTokens(["a"])), HASH_SCHEME);
 });

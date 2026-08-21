@@ -24,7 +24,7 @@ import {
   type NodeVersion, type NodeCitation, type NodeStatus,
   type Graph, type Edge, type Bug, type BugStore, type Annotation, type AnnotationStore,
   type CoverageRule, type CoverageStore, type AnalyzerConfig, type Review, type ReviewStore, type Triage, type TriageStore,
-  SCHEMA_VERSION, ANCHOR_SCHEME,
+  SCHEMA_VERSION, ANCHOR_SCHEME, HASH_SCHEME,
 } from "./schema.js";
 
 // --- meta key/value helpers (small structured stores kept as JSON blobs) -----
@@ -133,8 +133,8 @@ export async function writeSnapshot(root: string, ref: string, branch: string | 
   if (ref === WORK_REF) throw new Error("cannot snapshot the reserved @work ref");
   const d = db(root);
   replaceAnchors(d, ref, anchors);
-  d.prepare("INSERT INTO snapshots(ref,branch,at,count,scheme) VALUES(?,?,?,?,?) ON CONFLICT(ref) DO UPDATE SET branch=excluded.branch, at=excluded.at, count=excluded.count, scheme=excluded.scheme")
-    .run(ref, branch, at, anchors.length, ANCHOR_SCHEME);
+  d.prepare("INSERT INTO snapshots(ref,branch,at,count,scheme,hash_scheme) VALUES(?,?,?,?,?,?) ON CONFLICT(ref) DO UPDATE SET branch=excluded.branch, at=excluded.at, count=excluded.count, scheme=excluded.scheme, hash_scheme=excluded.hash_scheme")
+    .run(ref, branch, at, anchors.length, ANCHOR_SCHEME, HASH_SCHEME);
 }
 
 /**
@@ -151,7 +151,9 @@ export function anchorsUnderRef(root: string, ref: string): Anchor[] {
 }
 
 export function staleSchemeSnapshots(root: string): string[] {
-  return (db(root).prepare("SELECT ref FROM snapshots WHERE scheme IS NULL OR scheme <> ?").all(ANCHOR_SCHEME) as { ref: string }[])
+  return (db(root).prepare(
+    "SELECT ref FROM snapshots WHERE scheme IS NULL OR scheme <> ? OR hash_scheme IS NULL OR hash_scheme <> ?",
+  ).all(ANCHOR_SCHEME, HASH_SCHEME) as { ref: string }[])
     .map((r) => r.ref);
 }
 
@@ -302,8 +304,12 @@ export function bodyHashAt(root: string, ref: string, anchorId: string): string 
  */
 export async function readSnapshot(root: string, ref: string): Promise<Anchor[] | null> {
   const d = db(root);
-  const meta = d.prepare("SELECT scheme FROM snapshots WHERE ref = ?").get(ref) as { scheme: number | null } | undefined;
-  if (!meta || meta.scheme !== ANCHOR_SCHEME) return null;
+  const meta = d.prepare("SELECT scheme, hash_scheme FROM snapshots WHERE ref = ?").get(ref) as
+    { scheme: number | null; hash_scheme: number | null } | undefined;
+  // Both derivations must match. The ids decide WHICH symbols pair up; the hashes
+  // decide which of those pairs count as changed — so a snapshot carrying the right
+  // ids and another scheme's hashes reports the whole commit as rewritten.
+  if (!meta || meta.scheme !== ANCHOR_SCHEME || meta.hash_scheme !== HASH_SCHEME) return null;
   return anchorsUnder(d, ref);
 }
 

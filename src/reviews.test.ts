@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Review, BugWitness, Anchor, State } from "./schema.js";
 import { readReviews, writeStore } from "./store.js";
-import { markReviewed, unmarkReviewed, changedSince, reviewStatesFor, witnessDrift, effectiveAttestation, deriveCodeReview } from "./reviews.js";
+import { markReviewed, unmarkReviewed, changedSince, reviewStatesFor, witnessDrift, realDrift, effectiveAttestation, deriveCodeReview } from "./reviews.js";
 import { anchorMark } from "./ops.js";
 import { indexBlob } from "./repo.js";
 
@@ -286,4 +286,34 @@ test("changedSince answers about the ref you ask about, not the working tree", a
     const atWorktree = await changedSince(root, { kind: "anchor", id }, { level: "code", attestation: "signed" });
     assert.equal(atWorktree.changed.length, 1, "and the working tree really does differ — a separate question");
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// --- a witness from an older HASH_SCHEME is not drift --------------------------
+
+test("a witness minted under another hash scheme reports unverifiable, not drift", () => {
+  const witnesses: BugWitness[] = [{ anchorId: "a1", bodyHash: "sha256:old" }];
+  const live = new Map([["a1", "h2:sha256:new"]]);
+  const d = witnessDrift(witnesses, live);
+  assert.equal(d.length, 1, "it is still reported — the mark does need re-witnessing");
+  assert.equal(d[0]!.unverifiable, true);
+  assert.deepEqual(realDrift(d), [], "but it is NOT drift, so nothing escalates on it");
+});
+
+test("a real edit under one scheme is still drift", () => {
+  const d = witnessDrift([{ anchorId: "a1", bodyHash: "h2:sha256:aaa" }], new Map([["a1", "h2:sha256:bbb"]]));
+  assert.equal(d.length, 1);
+  assert.notEqual(d[0]!.unverifiable, true);
+  assert.equal(realDrift(d).length, 1);
+});
+
+test("an anchor that vanished is drift under any scheme — absence is not a derivation", () => {
+  // The dangerous reading: `lost` code looking like "just an old hash" and going quiet.
+  const d = witnessDrift([{ anchorId: "gone", bodyHash: "sha256:old" }], new Map());
+  assert.equal(d.length, 1);
+  assert.notEqual(d[0]!.unverifiable, true, "a missing anchor must never read as unverifiable");
+  assert.equal(realDrift(d).length, 1);
+});
+
+test("an unchanged witness is silent whatever the scheme", () => {
+  assert.deepEqual(witnessDrift([{ anchorId: "a1", bodyHash: "sha256:same" }], new Map([["a1", "sha256:same"]])), []);
 });

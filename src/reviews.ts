@@ -11,6 +11,7 @@ import { readReviews, writeReviews, readAnchorStore, loadNodes, readSnapshot, sn
 import { resolveAcceptance, recordAcceptance, type Ancestry } from "./acceptance.js";
 import { ACCEPTED_CAP, type AcceptedCitation, type AcceptedEntry, type AcceptanceVia } from "./schema.js";
 import { isAncestor, isGitRepo, currentBranch as gitBranch, hasObject } from "./git.js";
+import { ABSENT_HASH, comparableHashes } from "./normalize.js";
 import { indexFile } from "./repo.js";
 import { headCommit } from "./git.js";
 
@@ -421,16 +422,40 @@ export function deriveCodeReview(anchorCode: ReviewInfo[]): DerivedCodeReview {
   return { state, actor, signed, total, stale, replayed, reverted };
 }
 
-export interface AnchorChange { anchorId: string; was: string; now: string }
+export interface AnchorChange {
+  anchorId: string;
+  was: string;
+  now: string;
+  /**
+   * The two hashes were minted under different HASH_SCHEMEs, so their inequality
+   * says nothing about the code. Reported rather than dropped — the mark does need
+   * re-witnessing — but it is NOT drift, and callers that escalate on drift must
+   * filter it out. Re-indexing under the current scheme is what clears it.
+   */
+  unverifiable?: boolean;
+}
 
 /** Which of a mark's frozen witnesses no longer match the current live hashes. */
 export function witnessDrift(witnesses: BugWitness[], live: Map<string, string>): AnchorChange[] {
   const out: AnchorChange[] = [];
   for (const w of witnesses) {
-    const now = live.get(w.anchorId) ?? "sha256:absent";
-    if (now !== w.bodyHash) out.push({ anchorId: w.anchorId, was: w.bodyHash, now });
+    const now = live.get(w.anchorId) ?? ABSENT_HASH;
+    if (now === w.bodyHash) continue;
+    // Scheme first: an old-scheme witness differs from a live hash for a reason that
+    // has nothing to do with the code, and calling that drift re-opens every review
+    // in the store the moment normalization changes.
+    if (!comparableHashes(now, w.bodyHash)) {
+      out.push({ anchorId: w.anchorId, was: w.bodyHash, now, unverifiable: true });
+      continue;
+    }
+    out.push({ anchorId: w.anchorId, was: w.bodyHash, now });
   }
   return out;
+}
+
+/** Witnesses that actually moved — drift proper, with the unverifiable ones removed. */
+export function realDrift(changes: AnchorChange[]): AnchorChange[] {
+  return changes.filter((c) => !c.unverifiable);
 }
 
 /**

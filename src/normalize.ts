@@ -12,6 +12,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { HASH_SCHEME } from "./schema.js";
 
 /**
  * Canonical string for a token stream.
@@ -31,9 +32,43 @@ export function canonicalize(tokens: string[]): string {
   return out;
 }
 
-/** "sha256:..." digest of the canonicalized token stream. */
+/**
+ * The value a hash takes when the anchor resolves to nothing.
+ *
+ * Deliberately scheme-free: "there is no code here" is true under every
+ * derivation, so an absent anchor must read as CHANGED rather than as
+ * unverifiable, whatever scheme the witness it is compared against was minted
+ * under. See `hashSchemeOf`.
+ */
+export const ABSENT_HASH = "sha256:absent";
+
+/** Prefix carried by hashes from scheme 2 onward; scheme 1 is the bare digest. */
+const schemePrefix = (scheme: number): string => (scheme === 1 ? "" : `h${scheme}:`);
+
+/** "sha256:..." digest of the canonicalized token stream, stamped with its scheme. */
 export function hashTokens(tokens: string[]): string {
-  return "sha256:" + createHash("sha256").update(canonicalize(tokens)).digest("hex");
+  return schemePrefix(HASH_SCHEME) + "sha256:" + createHash("sha256").update(canonicalize(tokens)).digest("hex");
+}
+
+/**
+ * Which derivation minted a hash. An unprefixed digest is scheme 1 — that is what
+ * every hash written before HASH_SCHEME existed looks like, and there is no way to
+ * retrofit them, so "no prefix" has to mean "the original".
+ */
+export function hashSchemeOf(hash: string): number {
+  const m = /^h(\d+):/.exec(hash);
+  return m ? Number(m[1]) : 1;
+}
+
+/**
+ * Whether two hashes are comparable at all — i.e. whether their inequality would
+ * mean the code differs, rather than that the rules for hashing it did.
+ *
+ * ABSENT_HASH is comparable to everything on purpose: it encodes the absence of
+ * code, not a derivation of it.
+ */
+export function comparableHashes(a: string, b: string): boolean {
+  return a === ABSENT_HASH || b === ABSENT_HASH || hashSchemeOf(a) === hashSchemeOf(b);
 }
 
 /** Hash of an arbitrary string (used for ids / disambiguators). */

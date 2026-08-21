@@ -8,7 +8,7 @@
 import { randomBytes } from "node:crypto";
 import { type Importance, type Complexity, type TriageSource, type Triage, type BugSeverity } from "./schema.js";
 import { readTriage, writeTriage, loadNodes, readGraph, readAnchorStore } from "./store.js";
-import { reviewStatesFor, witnessesFor, liveHashes, witnessDrift, deriveCodeReview, type Target, type ReviewPair, type AnchorChange } from "./reviews.js";
+import { reviewStatesFor, witnessesFor, liveHashes, witnessDrift, realDrift, deriveCodeReview, type Target, type ReviewPair, type AnchorChange } from "./reviews.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { indexFile } from "./repo.js";
@@ -423,7 +423,10 @@ export async function deriveTriage(root: string): Promise<{ derived: number; byI
   const witnessesOf = (kind: "node" | "anchor", id: string) =>
     (kind === "anchor" ? [id] : nodeAnchors.get(id) ?? []).map((aid) => ({ anchorId: aid, bodyHash: live.get(aid) ?? "sha256:absent" }));
   const humanDrifted = new Set<string>();
-  for (const t of ts.triage) if (t.source === "human" && witnessDrift(t.witnesses, live).length) humanDrifted.add(key(t.target.kind, t.target.id));
+  // `realDrift`: a witness minted under an older HASH_SCHEME is not evidence a human's
+  // mark went stale, and treating it as such would re-escalate every human mark in the
+  // store the first time normalization changes.
+  for (const t of ts.triage) if (t.source === "human" && realDrift(witnessDrift(t.witnesses, live)).length) humanDrifted.add(key(t.target.kind, t.target.id));
 
   // Start from the marks we keep (human + agent proposals); graph marks are regenerated.
   const result = new Map<string, Triage>();
@@ -524,7 +527,10 @@ export async function triageDrift(root: string): Promise<TriageDrift[]> {
   const live = await liveHashes(root, ids);
   const out: TriageDrift[] = [];
   for (const t of ts.triage) {
-    const drift = witnessDrift(t.witnesses, live);
+    // The re-triage worklist and the tripwire both mean "this code moved", so an
+    // unverifiable witness must not appear here — it means "this hash is old", which
+    // a re-index fixes and nobody needs waking up for.
+    const drift = realDrift(witnessDrift(t.witnesses, live));
     if (drift.length) out.push({ target: t.target, importance: normImportance(t.importance), source: t.source, tripwire: !!t.tripwire, reason: t.reason, drift });
   }
   return out;

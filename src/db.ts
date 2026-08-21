@@ -112,6 +112,10 @@ function migrate(d: DatabaseSync): void {
   // column existed", which is indistinguishable from "some older scheme" — so it is
   // treated as stale and the snapshot is rebuilt on next use.
   try { d.exec("ALTER TABLE snapshots ADD COLUMN scheme INTEGER"); } catch { /* already present */ }
+  // And which body-hash derivation. Same NULL rule, for the same reason: the ids say
+  // which symbols pair up across two snapshots, the hashes say which pairs changed,
+  // so a mismatch on either makes the whole diff meaningless.
+  try { d.exec("ALTER TABLE snapshots ADD COLUMN hash_scheme INTEGER"); } catch { /* already present */ }
 }
 
 // --- one-time migration of a legacy JSON .codemap/ into the DB ---------------
