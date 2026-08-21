@@ -13,6 +13,7 @@ import { readFile, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join, normalize, extname } from "node:path";
 import * as ops from "./ops.js";
+import * as shared from "./ops-shared.js";
 import { revertedMarks as opsRevertedMarks } from "./reviews.js";
 import * as multi from "./multi.js";
 import { loadWorkspace, type Workspace } from "./workspace.js";
@@ -171,6 +172,16 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
         summary: q.get("summary") || undefined,
         event: (q.get("event") as any) || undefined,
       }));
+    // Shared review. Read-only; nothing here touches the sidecar's remote — that
+    // is POST /api/shared/sync, so a page load never surprises anyone with network.
+    case "/api/shared":
+      return shared.sharedFindings(root, q.get("pr") ?? "", { queue: q.get("queue") === "1" });
+    case "/api/shared/peers":
+      return shared.sharedStatus(root);
+    case "/api/shared/walkthroughs":
+      return shared.sharedWalkthroughs(root, q.get("pr") ?? "", q.get("head") || undefined);
+    case "/api/shared/replies":
+      return shared.inboundReplies(root, q.get("pr") ?? "");
     case "/api/pr/code":
       return withLock(root, () => ops.prCode(root, q.get("pr") ?? "", q.get("id") ?? ""));
     case "/api/prs":
@@ -244,6 +255,41 @@ const server = createServer(async (req, res) => {
     }
 
     // Stakes triage from the UI (a human source → confirmed tier; can raise or lower).
+    /**
+     * Every shared-review write, and the sync.
+     *
+     * One handler because they share a shape and a guard: each is a call into
+     * `ops-shared`, which resolves the sidecar and the actor and refuses when
+     * either is missing. No lock — the sidecar is its own repo with its own
+     * arbiter (git's non-fast-forward rejection), and `withLock` guards this
+     * universe's `.codemap/`, which none of these touch.
+     */
+    if (req.method === "POST" && url.pathname.startsWith("/api/shared/")) {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      const root = rootFor(body.u ?? null);
+      const pr = String(body.pr ?? "");
+      const action = url.pathname.slice("/api/shared/".length);
+      let out: unknown;
+      switch (action) {
+        case "sync": out = await shared.sharedSync(root); break;
+        case "corroborate": out = await shared.corroborateFinding(root, pr, body.id, body.verdict, body.rationale ?? ""); break;
+        case "comment": out = await shared.commentOnFinding(root, pr, body.id, body.body ?? "", body.inReplyTo); break;
+        case "promote": out = await shared.promoteFinding(root, pr, body.id); break;
+        case "request": out = await shared.requestOnFinding(root, pr, body.id, body.ask, body.rationale ?? ""); break;
+        case "close": out = await shared.closeFinding(root, pr, body.id, body.state, body.reason); break;
+        case "revise": out = await shared.reviseFinding(root, pr, body.id, body.now ?? {}); break;
+        case "settle": out = await shared.settleContest(root, pr, body.id, body.field, body.value); break;
+        case "upstream": out = await shared.upstreamFinding(root, pr, body.id, { system: body.system, key: body.key, url: body.url }); break;
+        case "to_bug": out = await shared.findingToBug(root, pr, body.id, body.bug); break;
+        default: out = { error: `unknown shared action "${action}"` };
+      }
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(out));
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/api/triage") {
       const chunks: Buffer[] = [];
       for await (const c of req) chunks.push(c as Buffer);
