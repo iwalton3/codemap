@@ -13,6 +13,7 @@
  */
 
 import * as ops from "./ops.js";
+import * as shared from "./ops-shared.js";
 import * as multi from "./multi.js";
 import { loadWorkspace, type Workspace, type Universe } from "./workspace.js";
 import { METHODOLOGY } from "./guide.js";
@@ -676,6 +677,88 @@ const tools: Tool[] = [
     inputSchema: obj({ id: { type: "string" }, resolved: { type: "boolean" } }, ["id"]),
     mutates: true,
     handler: (a, c) => ops.resolveAnnotation(c.universe.path, a.id, a.resolved !== false, { actor: "agent" }),
+  },
+
+  // --- shared review (the sidecar). Absent a sidecar these say so and change nothing.
+  {
+    name: "sync",
+    description: "Send and receive shared review state with the team's sidecar repo. Pull happens FIRST, always — the guard against publishing a finding somebody already published only works if it has seen what they published. Safe to run at any time; it never rewrites anyone's events.",
+    inputSchema: obj({}),
+    mutates: true,
+    handler: (_a, c) => shared.sharedSync(c.universe.path),
+  },
+  {
+    name: "shared_findings",
+    description: "Findings on the sidecar for a pull request — everyone's, not just yours. `queue:true` narrows to what is waiting on a PERSON (promoted, or confirmed by somebody, or with an outstanding request). Read this before filing: a finding somebody has already raised and refuted does not need raising again.",
+    inputSchema: obj({
+      pr: { type: "string", description: "Pull request number." },
+      queue: { type: "boolean", description: "Only what needs a human decision." },
+    }, ["pr"]),
+    handler: (a, c) => shared.sharedFindings(c.universe.path, a.pr, { queue: !!a.queue }),
+  },
+  {
+    name: "share_finding",
+    description: "Raise a finding on the SIDECAR, where the rest of the team and their agents can see it. Yours opens as a proposal (`issued`) because an agent's finding is a proposal until somebody stands behind it." + COMMENT_CONTRACT,
+    inputSchema: obj({
+      pr: { type: "string" },
+      targetKind: { type: "string", enum: ["anchor", "node"] },
+      targetId: { type: "string" },
+      text: { type: "string", description: "The evidence: what you checked, why the obvious alternative fails, what is still unverified." },
+      comment: { type: "string", description: "The submitter-facing version. Max 800 characters." },
+      severity: { type: "string", enum: ["low", "medium", "high", "critical"] },
+      category: { type: "string" },
+      line: { type: "number" },
+    }, ["pr", "targetKind", "targetId", "text"]),
+    mutates: true,
+    handler: (a, c) => shared.shareFinding(c.universe.path, a.pr, a),
+  },
+  {
+    name: "corroborate",
+    description: "Weigh in on somebody else's finding: is it real? This is the point of several models reviewing — DISAGREEMENT is the signal, so refute plainly when you think it is wrong rather than deferring. Your verdict never replaces anyone else's, only your own earlier one. A rationale is required: a verdict without one is a vote, not a review.\n\nCorroborating a finding raised by the person you are running as does not count as independent — say so anyway, it is still worth recording.",
+    inputSchema: obj({
+      pr: { type: "string" },
+      id: { type: "string" },
+      verdict: { type: "string", enum: ["confirm", "refute", "unsure"] },
+      rationale: { type: "string", description: "What you actually checked." },
+    }, ["pr", "id", "verdict", "rationale"]),
+    mutates: true,
+    handler: (a, c) => shared.corroborateFinding(c.universe.path, a.pr, a.id, a.verdict, a.rationale),
+  },
+  {
+    name: "comment_on_finding",
+    description: "Add to a finding's thread — the reviewers' conversation, which lives here rather than on GitHub so that findings about ABSENT code and about code the branch never touched can be discussed in place.",
+    inputSchema: obj({ pr: { type: "string" }, id: { type: "string" }, body: { type: "string" }, inReplyTo: { type: "string" } }, ["pr", "id", "body"]),
+    mutates: true,
+    handler: (a, c) => shared.commentOnFinding(c.universe.path, a.pr, a.id, a.body, a.inReplyTo),
+  },
+  {
+    name: "request_ack",
+    description: "Ask a PERSON to close, refute, or promote a finding you may not close yourself. Once a finding is `created`, or anything has confirmed it, an agent may only ask — this is that ask, and it lands in the human's queue with your rationale attached. Use it instead of trying to set the state and being refused.",
+    inputSchema: obj({
+      pr: { type: "string" }, id: { type: "string" },
+      ask: { type: "string", enum: ["promote", "invalidate", "refute", "resolve"] },
+      rationale: { type: "string", description: "Why. This is what the human reads to decide." },
+    }, ["pr", "id", "ask", "rationale"]),
+    mutates: true,
+    handler: (a, c) => shared.requestOnFinding(c.universe.path, a.pr, a.id, a.ask, a.rationale),
+  },
+  {
+    name: "report_on_finding",
+    description: "Say what you DID about a finding — fixed it, answered it, or declined. Reporting is not resolving: this records your work and the files you touched so the human can close it quickly, but the close stays theirs.",
+    inputSchema: obj({
+      pr: { type: "string" }, id: { type: "string" },
+      result: { type: "string", enum: ["fixed", "answered", "declined"] },
+      detail: { type: "string" },
+      files: { type: "array", items: { type: "string" }, description: "Files actually touched — the receipt." },
+    }, ["pr", "id", "result", "detail"]),
+    mutates: true,
+    handler: (a, c) => shared.reportOnFinding(c.universe.path, a.pr, a.id, a.result, a.detail, a.files),
+  },
+  {
+    name: "shared_walkthroughs",
+    description: "Walkthroughs of a pull request written by anyone on the team. Pass `head` to get the one written against the commit you are looking at — a walkthrough about another commit is reported as stale rather than shown, because it is about something else.",
+    inputSchema: obj({ pr: { type: "string" }, head: { type: "string" } }, ["pr"]),
+    handler: (a, c) => shared.sharedWalkthroughs(c.universe.path, a.pr, a.head),
   },
 ];
 

@@ -12,6 +12,7 @@ import { enableAnalyzer, refreshAnalyzers } from "./analyzers/run.js";
 import { applyIndexUpdate } from "./sync.js";
 import { withLock } from "./lock.js";
 import * as ops from "./ops.js";
+import * as shared from "./ops-shared.js";
 
 const pad = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + "…" : s.padEnd(n));
 
@@ -203,8 +204,49 @@ async function cmdPrIngest(root: string, prInput: string, files: string[], dryRu
 }
 
 function usage(): never {
-  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap orphans  [repo]              findings/reviews pointing at code the tree no longer has\n  codemap pr-resolve <pr> [--repo path] [--confirm] [--pull] [--anyone]\n                                              sync which review conversations are settled\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n                     [--only id,id,…]  publish exactly these, whatever their disposition\n                     [--summary TEXT] [--approve | --request-changes]\n  codemap pr-triage <pr> [--repo path]        derive stakes+complexity for the PR's symbols\n  codemap pr-pull-viewed <pr|--all> [--repo path] [--dry-run] [--force] [--limit N] [--max-prs N]\n                                              import GitHub's viewed ticks as `viewed`\n  codemap analyze marten [repo] [--verbose] [--emit]");
+  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap orphans  [repo]              findings/reviews pointing at code the tree no longer has\n  codemap pr-resolve <pr> [--repo path] [--confirm] [--pull] [--anyone]\n                                              sync which review conversations are settled\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n                     [--only id,id,…]  publish exactly these, whatever their disposition\n                     [--summary TEXT] [--approve | --request-changes]\n  codemap pr-triage <pr> [--repo path]        derive stakes+complexity for the PR's symbols\n  codemap pr-pull-viewed <pr|--all> [--repo path] [--dry-run] [--force] [--limit N] [--max-prs N]\n                                              import GitHub's viewed ticks as `viewed`\n  codemap analyze marten [repo] [--verbose] [--emit]\n\n  Shared review (a sidecar repo; set CODEMAP_SIDECAR or .codemap/sidecar):\n  codemap sync     [repo]              send and receive shared review state\n  codemap shared   <pr> [repo] [--queue] [--json]   findings on the sidecar\n  codemap peers    [repo]              who else is on this sidecar, and scheme drift");
   process.exit(2);
+}
+
+
+async function cmdSync(root: string): Promise<void> {
+  const r = await shared.sharedSync(root) as Record<string, unknown>;
+  if (r.error) { console.error(r.error); process.exit(1); }
+  console.log(`sidecar ${r.sidecar}  (${r.universe})`);
+  console.log(`  received ${r.gained} event(s)${r.pushed ? ", sent yours" : ", nothing to send"}${(r.retries as number) ? ` after ${r.retries} retry/retries` : ""}`);
+  if (r.warning) console.log(`  WARNING: ${r.warning}`);
+}
+
+async function cmdPeers(root: string): Promise<void> {
+  const r = await shared.sharedStatus(root) as Record<string, any>;
+  if (r.error) { console.error(r.error); process.exit(1); }
+  console.log(`sidecar ${r.sidecar}  (${r.universe})   you: ${r.you ?? "(no identity)"}`);
+  for (const p of r.peers) console.log(`  ${p.principal}   anchor=${p.anchorScheme} hash=${p.hashScheme}`);
+  if (!r.peers.length) console.log("  (nobody has written a manifest yet — sync once)");
+  if (r.blocked) { console.error(`BLOCKED: ${r.blocked}`); process.exit(1); }
+  if (r.warning) console.log(`WARNING: ${r.warning}`);
+}
+
+async function cmdShared(pr: string, root: string, opts: { queue?: boolean; json?: boolean }): Promise<void> {
+  const r = await shared.sharedFindings(root, pr, { queue: opts.queue }) as Record<string, any>;
+  if (r.error) { console.error(r.error); process.exit(1); }
+  if (opts.json) { console.log(JSON.stringify(r, null, 2)); return; }
+  console.log(`PR ${r.pr} (${r.universe}): ${r.total} finding(s), ${r.waitingOnYou} waiting on a person`);
+  for (const f of r.findings) {
+    const marks = [
+      f.needsAck ? "NEEDS-ACK" : null,
+      f.promoted ? "promoted" : null,
+      f.independentConfirms ? `${f.independentConfirms} independent confirm(s)` : null,
+      f.refutes ? `${f.refutes} refute(s)` : null,
+      f.pending ? `asked: ${f.pending.ask}` : null,
+      f.upstream ? `upstream ${f.upstream}` : null,
+      f.bug ? `→ bug ${f.bug}` : null,
+    ].filter(Boolean).join(", ");
+    console.log(`  [${f.state}] ${f.id}  ${f.severity ?? "-"}  by ${f.author}${f.authorModel ? ` (${f.authorModel})` : ""}`);
+    console.log(`      ${(f.comment ?? f.text).slice(0, 140)}`);
+    if (marks) console.log(`      ${marks}`);
+  }
+  if (!r.findings.length) console.log("  (nothing)");
 }
 
 async function cmdAnalyze(analyzer: string, root: string, verbose: boolean, emit: boolean): Promise<void> {
@@ -327,7 +369,7 @@ async function cmdCheck(root: string): Promise<void> {
   }
 }
 
-const { positionals, values } = parseArgs({ allowPositionals: true, options: { verbose: { type: "boolean" }, emit: { type: "boolean" }, repo: { type: "string" }, "no-fetch": { type: "boolean" }, json: { type: "boolean" }, limit: { type: "string" }, offset: { type: "string" }, "dry-run": { type: "boolean" }, confirm: { type: "boolean" }, viewed: { type: "boolean" }, all: { type: "boolean" }, "min-severity": { type: "string" }, force: { type: "boolean" }, "max-prs": { type: "string" }, summary: { type: "string" }, approve: { type: "boolean" }, "request-changes": { type: "boolean" }, pull: { type: "boolean" }, anyone: { type: "boolean" }, only: { type: "string" } } });
+const { positionals, values } = parseArgs({ allowPositionals: true, options: { verbose: { type: "boolean" }, emit: { type: "boolean" }, repo: { type: "string" }, "no-fetch": { type: "boolean" }, json: { type: "boolean" }, limit: { type: "string" }, offset: { type: "string" }, "dry-run": { type: "boolean" }, confirm: { type: "boolean" }, viewed: { type: "boolean" }, all: { type: "boolean" }, "min-severity": { type: "string" }, force: { type: "boolean" }, "max-prs": { type: "string" }, summary: { type: "string" }, approve: { type: "boolean" }, "request-changes": { type: "boolean" }, pull: { type: "boolean" }, anyone: { type: "boolean" }, only: { type: "string" }, queue: { type: "boolean" } } });
 
 if (positionals[0] === "analyze") {
   const analyzer = positionals[1] ?? "";
@@ -430,6 +472,14 @@ if (positionals[0] === "analyze") {
     await withLock(r, () => cmdPrResolve(r, positionals[1] ?? "", {
       confirm: Boolean(values.confirm), pull: Boolean(values.pull), anyone: Boolean(values.anyone),
     }));
+  } else if (positionals[0] === "sync") {
+    await cmdSync(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."));
+  } else if (positionals[0] === "peers") {
+    await cmdPeers(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."));
+  } else if (positionals[0] === "shared") {
+    await cmdShared(positionals[1] ?? "", resolve((values.repo as string | undefined) ?? positionals[2] ?? "."), {
+      queue: Boolean(values.queue), json: Boolean(values.json),
+    });
   } else if (positionals[0] === "orphans") {
     await cmdOrphans(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."));
   } else if (positionals[0] === "prs") {

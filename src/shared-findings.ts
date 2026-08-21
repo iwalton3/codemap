@@ -111,7 +111,14 @@ export interface SharedFinding {
   revisions: { at: string; by: Actor; was: Record<string, unknown> }[];
 }
 
-export const findingScope = (pr: number | string): string => `findings/pr-${pr}`;
+/**
+ * `pr` is whatever key the caller scopes by. `ops` passes a UNIVERSE-QUALIFIED one
+ * (`acme/api/pr-264`) because one sidecar serves several repos and PR 264 exists
+ * in more than one of them — and two universes that share a submodule have
+ * byte-identical anchor ids, so an unqualified scope would cross-contaminate the
+ * findings that are hardest to notice being wrong.
+ */
+export const findingScope = (pr: number | string): string => `findings/${pr}`;
 
 /** Derived, never stored — an OR over a latch and a grow-only set, so it cannot race. */
 export function needsHumanAck(f: SharedFinding): boolean {

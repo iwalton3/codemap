@@ -1,0 +1,195 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { resolveSidecar, universeKey, scopeFor } from "./sidecar-config.js";
+import * as shared from "./ops-shared.js";
+
+const git = (root: string, ...args: string[]) =>
+  spawnSync("git", ["-c", "user.email=izzie@x.com", "-c", "user.name=t", ...args], { cwd: root, encoding: "utf8" });
+
+const tmp = (t: string) => mkdtempSync(join(tmpdir(), `codemap-os-${t}-`));
+
+/** A universe with an identity, and a sidecar pointed at by the pointer file. */
+function universe(withSidecar = true) {
+  const root = tmp("repo");
+  git(root, "init", "-q", "-b", "main");
+  git(root, "config", "user.email", "izzie@x.com");
+  git(root, "config", "user.name", "izzie");
+  mkdirSync(join(root, ".codemap"), { recursive: true });
+  const side = tmp("side");
+  if (withSidecar) writeFileSync(join(root, ".codemap", "sidecar"), side, "utf8");
+  return { root, side, cleanup: () => [root, side].forEach((r) => rmSync(r, { recursive: true, force: true })) };
+}
+
+const withEnv = async (vars: Record<string, string | undefined>, fn: () => Promise<void>) => {
+  const saved: Record<string, string | undefined> = {};
+  for (const k of Object.keys(vars)) { saved[k] = process.env[k]; if (vars[k] === undefined) delete process.env[k]; else process.env[k] = vars[k]!; }
+  try { await fn(); } finally { for (const k of Object.keys(saved)) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]!; } }
+};
+
+const NEW = { targetKind: "anchor" as const, targetId: "a_1", text: "evidence", comment: "the ask" };
+
+// --- configuration -----------------------------------------------------------
+
+test("no sidecar configured is a clear message, not a crash", async () => {
+  const u = universe(false);
+  try {
+    await withEnv({ CODEMAP_SIDECAR: undefined }, async () => {
+      const r = await shared.sharedFindings(u.root, 264) as { error: string };
+      assert.match(r.error, /no sidecar configured/);
+      assert.match(r.error, /Everything else works without one/, "and it must not read as the whole tool being gated");
+    });
+  } finally { u.cleanup(); }
+});
+
+test("the pointer file locates the sidecar, and the env var beats it", async () => {
+  const u = universe();
+  try {
+    await withEnv({ CODEMAP_SIDECAR: undefined }, async () => {
+      assert.equal(resolveSidecar(u.root)?.path, u.side);
+    });
+    await withEnv({ CODEMAP_SIDECAR: "/elsewhere" }, async () => {
+      assert.equal(resolveSidecar(u.root)?.path, "/elsewhere");
+    });
+  } finally { u.cleanup(); }
+});
+
+test("scopes are universe-qualified — PR 264 exists in more than one repo", () => {
+  // And two universes sharing a submodule have byte-identical anchor ids, so an
+  // unqualified scope would cross-contaminate exactly the findings hardest to spot.
+  const a = { path: "/s", universe: "acme/api" };
+  const b = { path: "/s", universe: "acme/settlement" };
+  assert.notEqual(scopeFor(a, "pr", 264), scopeFor(b, "pr", 264));
+  assert.equal(scopeFor(a, "pr", 264), "acme/api/pr-264");
+});
+
+test("a universe key prefers the git remote over whatever it was cloned into", () => {
+  const u = universe(false);
+  try {
+    assert.equal(universeKey(u.root), basename(u.root).toLowerCase(), "no remote: the directory");
+    git(u.root, "remote", "add", "origin", "git@github.com:Acme/API.git");
+    assert.equal(universeKey(u.root), "acme/api", "with a remote: what two people would agree on");
+  } finally { u.cleanup(); }
+});
+
+// --- the loop, through the front-end surface ---------------------------------
+
+test("a finding filed through ops is readable through ops", async () => {
+  const u = universe();
+  try {
+    await withEnv({ CODEMAP_SIDECAR: undefined, CODEMAP_AGENT_MODEL: undefined }, async () => {
+      const r = await shared.shareFinding(u.root, 264, NEW) as { ok: true; id: string };
+      assert.ok(r.ok);
+      const list = await shared.sharedFindings(u.root, 264) as any;
+      assert.equal(list.total, 1);
+      assert.equal(list.findings[0].id, r.id);
+      assert.equal(list.findings[0].state, "created", "a person's finding");
+      assert.equal(list.findings[0].author, "izzie@x.com");
+    });
+  } finally { u.cleanup(); }
+});
+
+test("an agent's finding opens as a proposal, and its model is recorded", async () => {
+  const u = universe();
+  try {
+    await withEnv({ CODEMAP_SIDECAR: undefined, CODEMAP_AGENT_MODEL: "claude-opus-5" }, async () => {
+      await shared.shareFinding(u.root, 264, NEW);
+      const list = await shared.sharedFindings(u.root, 264) as any;
+      assert.equal(list.findings[0].state, "issued");
+      assert.equal(list.findings[0].authorModel, "claude-opus-5");
+    });
+  } finally { u.cleanup(); }
+});
+
+test("a verdict without a rationale is refused — that is a vote, not a review", async () => {
+  const u = universe();
+  try {
+    await withEnv({ CODEMAP_SIDECAR: undefined }, async () => {
+      const r = await shared.shareFinding(u.root, 264, NEW) as { id: string };
+      const bad = await shared.corroborateFinding(u.root, 264, r.id, "confirm", "   ") as { error: string };
+      assert.match(bad.error, /rationale/);
+    });
+  } finally { u.cleanup(); }
+});
+
+test("the queue holds what needs a person, and drops it once closed", async () => {
+  const u = universe();
+  try {
+    await withEnv({ CODEMAP_SIDECAR: undefined, CODEMAP_AGENT_MODEL: undefined }, async () => {
+      const { id } = await shared.shareFinding(u.root, 264, NEW) as { id: string };
+      let q = await shared.sharedFindings(u.root, 264, { queue: true }) as any;
+      assert.equal(q.waitingOnYou, 0, "nothing has been promoted or confirmed yet");
+
+      await shared.promoteFinding(u.root, 264, id);
+      q = await shared.sharedFindings(u.root, 264, { queue: true }) as any;
+      assert.equal(q.waitingOnYou, 1);
+      assert.equal(q.findings[0].needsAck, true);
+
+      await shared.closeFinding(u.root, 264, id, "resolved", "fixed in abc123");
+      q = await shared.sharedFindings(u.root, 264, { queue: true }) as any;
+      assert.equal(q.waitingOnYou, 0);
+    });
+  } finally { u.cleanup(); }
+});
+
+test("an agent asks rather than closing, and the ask carries its rationale", async () => {
+  const u = universe();
+  try {
+    await withEnv({ CODEMAP_SIDECAR: undefined, CODEMAP_AGENT_MODEL: undefined }, async () => {
+      const { id } = await shared.shareFinding(u.root, 264, NEW) as { id: string };
+      await withEnv({ CODEMAP_AGENT_MODEL: "claude-opus-5" }, async () => {
+        const denied = await shared.closeFinding(u.root, 264, id, "resolved") as { error: string };
+        assert.match(denied.error, /request it instead|only request/);
+        await shared.requestOnFinding(u.root, 264, id, "resolve", "the guard was added in abc123");
+      });
+      const list = await shared.sharedFindings(u.root, 264, { queue: true }) as any;
+      assert.equal(list.findings[0].pending.ask, "resolve");
+      assert.match(list.findings[0].pending.rationale, /abc123/);
+    });
+  } finally { u.cleanup(); }
+});
+
+test("independent confirmations are counted separately from self-agreement", async () => {
+  const u = universe();
+  try {
+    await withEnv({ CODEMAP_SIDECAR: undefined, CODEMAP_AGENT_MODEL: undefined }, async () => {
+      const { id } = await shared.shareFinding(u.root, 264, NEW) as { id: string };
+      // izzie's own agent agreeing with izzie is not a second opinion.
+      await withEnv({ CODEMAP_AGENT_MODEL: "claude-opus-5" }, async () => {
+        await shared.corroborateFinding(u.root, 264, id, "confirm", "looks right to me");
+      });
+      const list = await shared.sharedFindings(u.root, 264) as any;
+      assert.equal(list.findings[0].confirms, 1);
+      assert.equal(list.findings[0].independentConfirms, 0, "same principal");
+    });
+  } finally { u.cleanup(); }
+});
+
+test("peers reports who is on the sidecar and what they write under", async () => {
+  const u = universe();
+  try {
+    await withEnv({ CODEMAP_SIDECAR: undefined }, async () => {
+      await shared.shareFinding(u.root, 264, NEW);
+      await shared.sharedSync(u.root);
+      const s = await shared.sharedStatus(u.root) as any;
+      assert.equal(s.you, "izzie@x.com");
+      assert.deepEqual(s.peers.map((p: any) => p.principal), ["izzie@x.com"]);
+      assert.equal(s.blocked, undefined);
+    });
+  } finally { u.cleanup(); }
+});
+
+test("sync with no remote is a successful no-op, not an error", async () => {
+  const u = universe();
+  try {
+    await withEnv({ CODEMAP_SIDECAR: undefined }, async () => {
+      await shared.shareFinding(u.root, 264, NEW);
+      const r = await shared.sharedSync(u.root) as any;
+      assert.ok(!r.error, JSON.stringify(r));
+      assert.equal(r.pushed, false, "nowhere to push, and that is fine");
+    });
+  } finally { u.cleanup(); }
+});

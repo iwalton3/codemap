@@ -25,7 +25,8 @@ export interface SharedWalkthrough {
   at: string;
 }
 
-export const walkthroughScope = (pr: number | string): string => `walkthrough/pr-${pr}`;
+/** Universe-qualified by the caller, for the same reason as `findingScope`. */
+export const walkthroughScope = (pr: number | string): string => `walkthrough/${pr}`;
 
 /**
  * Record a walkthrough.
@@ -39,8 +40,10 @@ export async function publishWalkthrough(
   logRoot: string,
   actor: Actor,
   w: PrWalkthrough,
+  /** Scope key; `ops` passes a universe-qualified one. Defaults to the bare PR. */
+  key: number | string = w.pr,
 ): Promise<LogEvent> {
-  const scope = walkthroughScope(w.pr);
+  const scope = walkthroughScope(key);
   const seen = causalHead(await readScope(logRoot, scope));
   const event: LogEvent = {
     id: mintId(),
