@@ -521,6 +521,8 @@ const tools: Tool[] = [
       line: { type: "number", description: "1-based line to pin to (anchor targets) — the exact line the finding/pointer is about." },
       ref: { type: "string", description: "Resolve the target against this commit snapshot as well as the live index — a PR head, for a symbol that exists only on the branch. Rarely needed: an anchor id found in any cached snapshot resolves without it." },
       author: { type: "string" },
+      model: { type: "string", description: "YOUR model id, e.g. \"claude-opus-5\". Recorded so a finding says which model raised it — that is what makes cross-model corroboration measurable. Never guess it: pass it only if you were told what you are, and omit it otherwise." },
+      harness: { type: "string", description: "The tool running you, e.g. \"claude-code\". Optional." },
     }, ["targetKind", "targetId", "text"]),
     mutates: true,
     handler: (a, c) => ops.annotate(c.universe.path, a),

@@ -29,6 +29,7 @@ import {
   readWalkthroughs, writeWalkthrough, readPushes, bodyHashAt, snapshotBranch, retainOrphans, readOrphans, releaseRecoveredOrphans, referencedAnchorIds,
 } from "./store.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
+import { resolveActor, isAgentActor, actorLabel } from "./identity.js";
 import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "./diff.js";
 import { prTriage, listOpenPrs, prPacket, prStory, prAnchorCode, prPromotionPlan, derivePrTriage, prContainment } from "./pr.js";
 import { promotionOwns } from "./pr-promote.js";
@@ -2667,7 +2668,7 @@ async function witnessAt(
 
 export async function annotate(
   root: string,
-  input: { targetKind: "anchor" | "node"; targetId: string; text: string; author?: string; kind?: Annotation["kind"]; severity?: BugSeverity; category?: string; line?: number; ref?: string; comment?: string; disposition?: Disposition; publishPath?: string; publishLine?: number },
+  input: { targetKind: "anchor" | "node"; targetId: string; text: string; author?: string; kind?: Annotation["kind"]; severity?: BugSeverity; category?: string; line?: number; ref?: string; comment?: string; disposition?: Disposition; publishPath?: string; publishLine?: number; agent?: boolean; model?: string; harness?: string },
 ) {
   // Validate the target exists (anchor targets accept file#Symbol refs too).
   let targetId = input.targetId;
@@ -2697,6 +2698,20 @@ export async function annotate(
   const category = input.category?.trim() || undefined;
   const c = checkComment(input.comment, input.disposition);
   if ("error" in c) return c;
+  // Null when there is no git identity to attribute this to. Not an error here: a
+  // local-only store worked without one for its whole life, and refusing writes
+  // would break it. The sidecar is where an unattributed record has to be refused.
+  //
+  // `agent` falls back to the author-string sniff — the very heuristic this replaces —
+  // because until every caller passes the flag, dropping it would silently DEFAULT
+  // agent findings to `confirmed`, i.e. publishable with nobody vouching. `|| undefined`
+  // rather than the bare boolean so a false sniff still lets the env vars decide.
+  const looksAgent = (input.author ?? "agent").startsWith("agent");
+  const actor = resolveActor(root, {
+    agent: input.agent ?? (looksAgent || undefined),
+    model: input.model,
+    harness: input.harness,
+  });
   // Required on findings, not merely encouraged. Twelve findings in the session that
   // motivated this were filed with rich evidence and no short form — because none
   // was asked for — and all twelve were then rewritten by hand for GitHub. An
@@ -2719,15 +2734,25 @@ export async function annotate(
     // it IS the assertion, so `confirmed`; an agent's is a proposal awaiting triage,
     // so `open`. Anything else would either make the human re-affirm their own
     // finding before it could be sent, or let an unreviewed agent claim through.
+    //
+    // Decided from the structured actor, not from the author STRING. The old
+    // `author.startsWith("agent")` made the answer depend on a name: a person
+    // called "agentina" filed proposals, and an agent labelled anything else filed
+    // findings that were publishable without anyone vouching for them. Falls back
+    // to the string only for callers that pass no actor at all.
     disposition: checkDisposition(input.disposition)
-      ?? ((input.author ?? "agent").startsWith("agent") ? "open" : "confirmed"),
+      ?? (actor ? (isAgentActor(actor) ? "open" : "confirmed")
+        : (input.author ?? "agent").startsWith("agent") ? "open" : "confirmed"),
     ...(input.publishPath?.trim() ? { publishPath: input.publishPath.trim() } : {}),
     ...(Number.isFinite(input.publishLine) ? { publishLine: Math.floor(input.publishLine as number) } : {}),
     resolved: false,
     ...(line !== undefined ? { line } : {}),
     ...(witness ? { witness } : {}),
     ...(sourceRef ? { sourceRef } : {}),
-    author: input.author ?? "agent",
+    // Both, for now. `author` stays because every existing record has one and the
+    // UI reads it; `actor` is what a shared store needs and what the rules check.
+    author: input.author ?? (actor ? actorLabel(actor) : "agent"),
+    ...(actor ? { actor } : {}),
     createdCommit: headCommit(root),
   };
   const annStore = await readAnnotations(root);

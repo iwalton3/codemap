@@ -87,6 +87,38 @@ export interface AnchorStore {
   anchors: Anchor[];
 }
 
+// ---------------------------------------------------------------------------
+// Identity — who did this, at two levels
+// ---------------------------------------------------------------------------
+
+/**
+ * WHO caused an action (always a person) and WHAT performed it (them, or an agent
+ * acting for them). See `identity.ts` for how one is resolved.
+ *
+ * Structured rather than a string because the string was load-bearing and wrong:
+ * `annotate` decides a finding's default disposition with
+ * `author.startsWith("agent")`, so a person called "agentina" filed proposals and
+ * an agent labelled anything else filed confirmed findings. `via` answers that
+ * question by construction.
+ *
+ * Added ALONGSIDE the legacy `author`/`reviewer`/`by` strings rather than
+ * replacing them. Records written before this cannot be attributed — nobody knows
+ * who "me" was — and inventing a principal for them would be worse than admitting
+ * it, so an absent `actor` means "legacy, unattributed" and stays that way.
+ */
+export interface Actor {
+  /** A person. An agent never appears here — it appears in `via`, acting for one. */
+  principal: string;
+  /** GitHub login, when a caller knows it — for correlating with pull-request comments. */
+  github?: string;
+  /**
+   * Present when an agent performed the action on the principal's behalf.
+   * `model` is free text: the model list churns faster than any enum would ship,
+   * and cross-checking findings across models is the reason to record it at all.
+   */
+  via?: { kind: "agent"; model?: string; harness?: string };
+}
+
 /**
  * How anchor ids are derived, as a number. BUMP IT whenever that changes.
  *
@@ -500,8 +532,15 @@ export interface Annotation {
    * working tree's HEAD and so says nothing about what was actually read.
    */
   sourceRef?: string;
-  /** Who wrote it — an agent label or a person. */
+  /** Who wrote it — an agent label or a person. Display only; see `actor`. */
   author: string;
+  /**
+   * Who wrote it, structured. Absent on records written before identity existed,
+   * which are unattributable and must stay that way rather than be back-filled
+   * with a guess. Every rule that asks "was this an agent?" or "is this the same
+   * person?" reads THIS, never `author`.
+   */
+  actor?: Actor;
   createdCommit: string | null;
   /**
    * Handed to an agent to act on. The reviewer's half of the loop: raising a
@@ -610,7 +649,14 @@ export interface Review {
   id: string;
   target: { kind: "node" | "anchor"; id: string };
   level: ReviewLevel;
+  /** Display only — historically the literal "me". See `by`. */
   reviewer: string;
+  /**
+   * Who made the mark, structured. Absent on marks made before identity existed.
+   * A sign-off is a statement about who read the code, so a shared queue that
+   * cannot name them is not showing a sign-off at all.
+   */
+  by?: Actor;
   /**
    * Who vouched. "human" = a person reviewed it (top trust: `verified`). "agent"
    * = an agent read the code and confirmed the claims hold (`checked` — a corroborating

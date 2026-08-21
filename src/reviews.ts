@@ -12,6 +12,7 @@ import { resolveAcceptance, recordAcceptance, type Ancestry } from "./acceptance
 import { ACCEPTED_CAP, type AcceptedCitation, type AcceptedEntry, type AcceptanceVia } from "./schema.js";
 import { isAncestor, isGitRepo, currentBranch as gitBranch, hasObject } from "./git.js";
 import { ABSENT_HASH, comparableHashes } from "./normalize.js";
+import { resolveActor, actorLabel } from "./identity.js";
 import { indexFile } from "./repo.js";
 import { headCommit } from "./git.js";
 
@@ -182,6 +183,10 @@ export async function markReviewed(
   // Default to "agent": only an explicit human action (the web UI) grants a human
   // review. A human act with no attestation is a `signed` sign-off (the old `verified`).
   const actor = input.actor ?? "agent";
+  // The existing human/agent binary decides WHETHER this was an agent; `resolveActor`
+  // supplies WHO it was on behalf of. The two are not redundant — the binary is the
+  // caller's assertion about the act, the principal is the machine's about the person.
+  const by = resolveActor(root, { agent: actor === "agent" });
   const attestation: Attestation | undefined = input.attestation ?? (actor === "human" ? "signed" : undefined);
   const viewed = attestation === "viewed";
 
@@ -213,7 +218,8 @@ export async function markReviewed(
     id: "rev_" + randomBytes(6).toString("hex"),
     target,
     level: input.level,
-    reviewer: input.reviewer || "me",
+    reviewer: input.reviewer || (by ? actorLabel(by) : "me"),
+    ...(by ? { by } : {}),
     actor,
     attestation,
     at: new Date().toISOString(),
@@ -651,6 +657,10 @@ export async function markReviewedBatch(
   if (!anchorIds.length) return { marked: 0 };
   const live = input.hashes ?? await liveHashes(root, anchorIds, input.ref);
   const actor = input.actor ?? "agent";
+  // The existing human/agent binary decides WHETHER this was an agent; `resolveActor`
+  // supplies WHO it was on behalf of. The two are not redundant — the binary is the
+  // caller's assertion about the act, the principal is the machine's about the person.
+  const by = resolveActor(root, { agent: actor === "agent" });
   const attestation: Attestation | undefined = input.attestation ?? (actor === "human" ? "signed" : undefined);
   const viewed = attestation === "viewed";
 
@@ -682,7 +692,8 @@ export async function markReviewedBatch(
       id: "rev_" + randomBytes(6).toString("hex"),
       target: { kind: "anchor" as const, id },
       level: input.level,
-      reviewer: input.reviewer || "me",
+      reviewer: input.reviewer || (by ? actorLabel(by) : "me"),
+    ...(by ? { by } : {}),
       actor,
       attestation,
       coveredBy: input.coveredBy,
