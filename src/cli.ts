@@ -231,7 +231,7 @@ async function cmdShared(pr: string, root: string, opts: { queue?: boolean; json
   const r = await shared.sharedFindings(root, pr, { queue: opts.queue }) as Record<string, any>;
   if (r.error) { console.error(r.error); process.exit(1); }
   if (opts.json) { console.log(JSON.stringify(r, null, 2)); return; }
-  console.log(`PR ${r.pr} (${r.universe}): ${r.total} finding(s), ${r.waitingOnYou} waiting on a person`);
+  console.log(`PR ${r.pr} (${r.universe}): ${r.total} finding(s), ${r.waitingOnYou} waiting on a person${r.contested ? `, ${r.contested} contested` : ""}`);
   for (const f of r.findings) {
     const marks = [
       f.needsAck ? "NEEDS-ACK" : null,
@@ -241,6 +241,7 @@ async function cmdShared(pr: string, root: string, opts: { queue?: boolean; json
       f.pending ? `asked: ${f.pending.ask}` : null,
       f.upstream ? `upstream ${f.upstream}` : null,
       f.bug ? `→ bug ${f.bug}` : null,
+      f.contested?.length ? `CONTESTED: ${f.contested.map((x: any) => x.field).join(", ")}` : null,
     ].filter(Boolean).join(", ");
     console.log(`  [${f.state}] ${f.id}  ${f.severity ?? "-"}  by ${f.author}${f.authorModel ? ` (${f.authorModel})` : ""}`);
     console.log(`      ${(f.comment ?? f.text).slice(0, 140)}`);

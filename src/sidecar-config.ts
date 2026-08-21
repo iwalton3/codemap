@@ -8,14 +8,16 @@
  * because those two share a submodule and its anchor ids are IDENTICAL across
  * them (see PROPOSAL-shared-review-state.md).
  *
- * Configuration is an env var or a pointer file. Deliberately not a new config
- * format: `CODEMAP_ROOT` and `CODEMAP_HOST` set the precedent, and a pointer file
- * is one line that a person can read and delete.
+ * Configured, in precedence order, by `CODEMAP_SIDECAR`, a `.codemap/sidecar`
+ * pointer file, or `sidecar` in the workspace manifest. The manifest is where it
+ * belongs for a TEAM — one repo serves every universe, and the manifest already
+ * sits above them — while the env var and pointer stay for one person trying it
+ * out on a single repo. Deliberately not a new config format.
  */
 
 import { readFileSync } from "node:fs";
 import { existsSync } from "node:fs";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { CODEMAP_DIR } from "./schema.js";
 import { originSlug } from "./git.js";
 
@@ -54,18 +56,44 @@ export function resolveSidecar(root: string): SidecarConfig | null {
   if (env) return { path: resolve(env), universe };
 
   const pointer = join(root, CODEMAP_DIR, POINTER);
-  if (!existsSync(pointer)) return null;
-  try {
-    // A directory named `sidecar` IS the sidecar — the zero-configuration case,
-    // for one person trying it out before there is a remote to point at.
-    const stat = readFileSync(pointer, "utf8");
-    const p = stat.trim().split("\n")[0]!.trim();
-    if (!p) return null;
-    return { path: isAbsolute(p) ? p : resolve(root, p), universe };
-  } catch {
-    // Unreadable as a file means it is a directory: use it directly.
-    return { path: pointer, universe };
+  if (existsSync(pointer)) {
+    try {
+      const p = readFileSync(pointer, "utf8").trim().split("\n")[0]!.trim();
+      if (p) return { path: isAbsolute(p) ? p : resolve(root, p), universe };
+    } catch {
+      // Unreadable as a file means it is a directory named `sidecar`, which IS the
+      // sidecar — the zero-configuration case, for one person trying it out.
+      return { path: pointer, universe };
+    }
   }
+
+  // The workspace manifest is the place this belongs for a team: one sidecar
+  // serves every universe, and the manifest already sits above them. Found by
+  // walking up rather than passed in, so no caller has to thread it through.
+  const fromWorkspace = workspaceSidecar(root);
+  return fromWorkspace ? { path: fromWorkspace, universe } : null;
+}
+
+/** `sidecar` from the nearest `codemap.workspace.json` at or above `root`. */
+export function workspaceSidecar(root: string): string | null {
+  let dir = resolve(root);
+  // Bounded: a universe sits just under its workspace, and an unbounded walk would
+  // happily read a manifest belonging to somebody else's project further up.
+  for (let i = 0; i < 4; i++) {
+    const manifest = join(dir, "codemap.workspace.json");
+    if (existsSync(manifest)) {
+      try {
+        const m = JSON.parse(readFileSync(manifest, "utf8")) as { sidecar?: string };
+        const p = m.sidecar?.trim();
+        if (p) return isAbsolute(p) ? p : resolve(dir, p);
+      } catch { /* a malformed manifest is the loader's problem to report, not ours */ }
+      return null;
+    }
+    const up = dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+  return null;
 }
 
 /** Scope keys, universe-prefixed. The one place that layout is decided. */

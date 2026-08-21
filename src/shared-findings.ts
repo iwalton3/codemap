@@ -109,6 +109,20 @@ export interface SharedFinding {
   closed?: { at: string; by: Actor; reason: string };
 
   revisions: { at: string; by: Actor; was: Record<string, unknown> }[];
+  /**
+   * Fields two people set to different values without having seen each other.
+   *
+   * Nothing is lost and nothing is arbitrated: both values are here, both are in
+   * the log, and the finding keeps working. A PERSON clears it by re-submitting
+   * the value they want, which lands as an event causally after both and so
+   * resolves identically on every machine. Agents never clear it — same instinct
+   * as the ack queue: a machine may propose, a person decides.
+   */
+  contested?: {
+    field: string;
+    held: { value: unknown; by: string; at: string };
+    incoming: { value: unknown; by: string; at: string };
+  }[];
 }
 
 /**
@@ -151,6 +165,62 @@ const str = (d: Data | undefined, k: string): string | undefined => {
   return typeof v === "string" && v.trim() ? v : undefined;
 };
 
+/** Fields whose value is a single scalar somebody owns — the only contestable ones. */
+const CONTESTABLE = ["text", "comment", "severity", "category", "line"] as const;
+
+/**
+ * Detect two people setting the same scalar without having seen each other.
+ *
+ * Everything else in this design is append-only or a latch, and cannot conflict.
+ * A revision is the exception: it rewrites a value, so two concurrent ones
+ * genuinely disagree and the fold must not silently pick.
+ *
+ * "Concurrent" means the later writer's causal chain does not include the earlier
+ * write — NOT that the timestamps are close. Two people editing the same finding
+ * an hour apart, where the second pulled first, is ordinary collaboration and is
+ * flagged by no wall-clock rule that would also catch the real case. Getting this
+ * wrong in the eager direction is the failure that trains people to clear the
+ * state without reading it, so the test is deliberately narrow: same field,
+ * different value, neither saw the other, different people.
+ */
+interface Held { value: unknown; by: Actor; at: string; index: number }
+
+function noteContest(
+  f: SharedFinding, e: LogEvent, now: Record<string, unknown>,
+  owned: Map<string, Held>, index: Map<string, number>, at: number,
+): void {
+  // `after` is the causal HEAD — the last event in fold order the writer had
+  // applied — so they had necessarily seen everything at or before its index.
+  // That makes "did they see it?" an integer comparison rather than a graph walk.
+  const sawUpTo = e.after !== undefined ? (index.get(e.after) ?? -1) : -1;
+  for (const k of CONTESTABLE) {
+    const incoming = now[k];
+    if (incoming === undefined) continue;
+    const key = `${f.id} ${k}`;
+    const held = owned.get(key);
+    owned.set(key, { value: incoming, by: e.actor, at: e.at, index: at });
+    if (!held) continue;
+    if (held.value === incoming) continue;                  // agreeing is not conflict
+    if (held.by.principal === e.actor.principal) continue;  // revising your own is not conflict
+    if (held.index <= sawUpTo) {
+      // Written with the full picture. If the field was contested, stating a value
+      // from here CLEARS it — the fold replays history on every read, so without
+      // this a resolved disagreement would be re-detected forever and the state
+      // could never be cleared by anyone. A person only, per the rule above.
+      if (!isAgentActor(e.actor) && f.contested?.length) {
+        f.contested = f.contested.filter((c) => c.field !== k);
+        if (!f.contested.length) f.contested = undefined;
+      }
+      continue;
+    }
+    (f.contested ??= []).push({
+      field: k,
+      held: { value: held.value, by: held.by.principal, at: held.at },
+      incoming: { value: incoming, by: e.actor.principal, at: e.at },
+    });
+  }
+}
+
 /**
  * Every finding in a scope, folded from its events.
  *
@@ -161,8 +231,14 @@ const str = (d: Data | undefined, k: string): string | undefined => {
  */
 export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
   const out = new Map<string, SharedFinding>();
+  // Fold-order index per event, and who currently owns each contestable scalar.
+  // Kept out of SharedFinding: it is bookkeeping for the fold, not state anyone reads.
+  const index = new Map<string, number>();
+  const owned = new Map<string, Held>();
 
-  for (const e of events) {
+  for (let at = 0; at < events.length; at++) {
+    const e = events[at]!;
+    index.set(e.id, at);
     const d = e.data as Data | undefined;
 
     if (e.kind === "finding.created") {
@@ -202,6 +278,7 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         const now = (d?.now as Record<string, unknown>) ?? {};
         // A person may revise anyone's; an agent only while it is still a proposal.
         if (isAgentActor(e.actor) && f.state !== "issued") break;
+        noteContest(f, e, now, owned, index, at);
         f.revisions.push({ at: e.at, by: e.actor, was });
         // Assigned field by field rather than through a dynamic key: a revision is
         // the one event that rewrites the finding's substance, so what it is allowed
@@ -373,6 +450,31 @@ export const markUpstreamed = (logRoot: string, pr: number | string, actor: Acto
 
 export const promoteToBug = (logRoot: string, pr: number | string, actor: Actor, id: string, bug: string) =>
   emit(logRoot, pr, actor, id, "finding.promotedToBug", { bug });
+
+/** Rewrite a finding's substance. The one event that can contest. */
+export const revise = (logRoot: string, pr: number | string, actor: Actor, id: string, now: Record<string, unknown>, was: Record<string, unknown> = {}) =>
+  emit(logRoot, pr, actor, id, "finding.revised", { now, was });
+
+/**
+ * Clear a contested field by stating what the value should be.
+ *
+ * A person only: agents may not resolve a disagreement between people, for the
+ * same reason they may not close a finding somebody stood behind. It is an
+ * ordinary revision — which is the point. It is written having seen both sides,
+ * so it is causally after both, so every machine folds it the same way and the
+ * contest clears everywhere without anybody arbitrating.
+ */
+export async function resolveContest(
+  logRoot: string, pr: number | string, actor: Actor, id: string, field: string, value: unknown,
+): Promise<LogEvent | { error: string }> {
+  if (isAgentActor(actor)) {
+    return { error: `${field} is contested between two people — an agent may not decide it. Ask, or leave it for them.` };
+  }
+  const f = (await readFindings(logRoot, pr)).get(id);
+  if (!f) return { error: `no finding ${id}` };
+  if (!f.contested?.some((c) => c.field === field)) return { error: `${field} is not contested on ${id}` };
+  return emit(logRoot, pr, actor, id, "finding.revised", { now: { [field]: value } });
+}
 
 /**
  * Move a finding's state. Refuses up front when the ratchet forbids it — the fold

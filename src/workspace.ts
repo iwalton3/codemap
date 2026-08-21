@@ -21,6 +21,12 @@ export interface Workspace {
   primary: Universe;
   byId: Map<string, Universe>;
   manifestPath?: string;
+  /**
+   * The shared review sidecar for every universe here (see `sidecar-config.ts`).
+   * One repo serves them all, so it belongs to the workspace rather than being
+   * configured once per universe — which is the setup a team actually has.
+   */
+  sidecar?: string;
 }
 
 export function parseRef(ref: string): { universe?: string; id: string } {
@@ -42,11 +48,15 @@ export async function loadWorkspace(arg: string): Promise<Workspace> {
   const st = await stat(abs);
   let universes: Universe[];
   let manifestPath: string | undefined;
+  let sidecar: string | undefined;
 
   if (st.isFile()) {
     manifestPath = abs;
     const manifest = JSON.parse(await readFile(abs, "utf8"));
     const baseDir = dirname(abs);
+    sidecar = typeof manifest.sidecar === "string" && manifest.sidecar.trim()
+      ? (isAbsolute(manifest.sidecar) ? manifest.sidecar : resolve(baseDir, manifest.sidecar))
+      : undefined;
     universes = (manifest.universes ?? []).map((u: any, i: number) => ({
       id: String(u.id ?? `u${i}`),
       path: isAbsolute(u.path) ? u.path : resolve(baseDir, u.path),
@@ -65,5 +75,5 @@ export async function loadWorkspace(arg: string): Promise<Workspace> {
 
   const byId = new Map(universes.map((u) => [u.id, u]));
   const primary = universes.find((u) => u.primary)!;
-  return { universes, primary, byId, manifestPath };
+  return { universes, primary, byId, manifestPath, sidecar };
 }

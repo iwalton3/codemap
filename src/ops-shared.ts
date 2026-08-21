@@ -14,6 +14,7 @@ import { ensureSidecar, sync as sidecarSync, readManifests, checkPeers, currentM
 import {
   createFinding, corroborate, comment, promote, request, setState, recordOutcome,
   markPosted, markUpstreamed, promoteToBug, readFindings, needsHumanAck, ackQueue,
+  revise, resolveContest,
   type SharedFinding, type Verdict, type Ask, type FindingState, type NewFinding,
 } from "./shared-findings.js";
 import { publishWalkthrough, readWalkthroughs, currentWalkthrough, staleWalkthroughs } from "./shared-walkthrough.js";
@@ -167,7 +168,23 @@ function view(f: SharedFinding) {
     pending: f.pending ? { ask: f.pending.ask, by: f.pending.by.principal, rationale: f.pending.rationale } : undefined,
     outcome: f.outcome ? { result: f.outcome.result, detail: f.outcome.detail, by: f.outcome.by.principal, files: f.outcome.files } : undefined,
     closed: f.closed ? { by: f.closed.by.principal, reason: f.closed.reason } : undefined,
+    contested: f.contested?.map((c) => ({ field: c.field, held: c.held, incoming: c.incoming })),
   };
+}
+
+export async function reviseFinding(root: string, pr: number | string, id: string, now: Record<string, unknown>) {
+  const b = bind(root);
+  if ("error" in b) return b;
+  await revise(b.cfg.path, prKey(b.cfg, pr), b.actor, id, now);
+  return { ok: true, id };
+}
+
+/** Settle a field two people set differently without seeing each other. */
+export async function settleContest(root: string, pr: number | string, id: string, field: string, value: unknown) {
+  const b = bind(root);
+  if ("error" in b) return b;
+  const r = await resolveContest(b.cfg.path, prKey(b.cfg, pr), b.actor, id, field, value);
+  return "error" in r ? r : { ok: true, id, field };
 }
 
 export async function sharedFindings(root: string, pr: number | string, opts: { queue?: boolean } = {}) {
@@ -180,6 +197,7 @@ export async function sharedFindings(root: string, pr: number | string, opts: { 
     pr,
     total: all.length,
     waitingOnYou: ackQueue(all).length,
+    contested: all.filter((f) => f.contested?.length).length,
     findings: chosen.map(view),
   };
 }

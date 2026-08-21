@@ -193,3 +193,46 @@ test("sync with no remote is a successful no-op, not an error", async () => {
     });
   } finally { u.cleanup(); }
 });
+
+test("the workspace manifest configures the sidecar for every universe under it", async () => {
+  // Where it belongs for a team: one repo serves them all, and the manifest is
+  // already the thing that knows which universes there are.
+  const ws = tmp("ws");
+  const side = join(ws, "review-state");
+  mkdirSync(join(ws, "api"), { recursive: true });
+  writeFileSync(join(ws, "codemap.workspace.json"), JSON.stringify({
+    universes: [{ id: "api", path: "api", primary: true }],
+    sidecar: "review-state",
+  }), "utf8");
+  try {
+    await withEnv({ CODEMAP_SIDECAR: undefined }, async () => {
+      assert.equal(resolveSidecar(join(ws, "api"))?.path, side, "found by walking up to the manifest");
+    });
+  } finally { rmSync(ws, { recursive: true, force: true }); }
+});
+
+test("a pointer file beats the workspace, and the env beats both", async () => {
+  const ws = tmp("ws2");
+  mkdirSync(join(ws, "api", ".codemap"), { recursive: true });
+  writeFileSync(join(ws, "codemap.workspace.json"), JSON.stringify({ universes: [{ id: "api", path: "api" }], sidecar: "/from-workspace" }), "utf8");
+  writeFileSync(join(ws, "api", ".codemap", "sidecar"), "/from-pointer", "utf8");
+  try {
+    await withEnv({ CODEMAP_SIDECAR: undefined }, async () => {
+      assert.equal(resolveSidecar(join(ws, "api"))?.path, "/from-pointer");
+    });
+    await withEnv({ CODEMAP_SIDECAR: "/from-env" }, async () => {
+      assert.equal(resolveSidecar(join(ws, "api"))?.path, "/from-env");
+    });
+  } finally { rmSync(ws, { recursive: true, force: true }); }
+});
+
+test("a workspace with no sidecar field configures nothing", async () => {
+  const ws = tmp("ws3");
+  mkdirSync(join(ws, "api"), { recursive: true });
+  writeFileSync(join(ws, "codemap.workspace.json"), JSON.stringify({ universes: [{ id: "api", path: "api" }] }), "utf8");
+  try {
+    await withEnv({ CODEMAP_SIDECAR: undefined }, async () => {
+      assert.equal(resolveSidecar(join(ws, "api")), null);
+    });
+  } finally { rmSync(ws, { recursive: true, force: true }); }
+});
