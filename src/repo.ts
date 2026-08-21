@@ -99,7 +99,13 @@ export async function indexCommit(
     if (link.type !== "commit") continue;
     if (ignore.ignores(prefix + link.path, true)) continue;
     const sub = await indexCommit(join(root, link.path), link.oid, { prefix: `${prefix}${link.path}/`, ignore });
-    if (sub) anchors.push(...sub);
+    // Same rule as the blob read above, and it used to be a bare `if (sub)`. A
+    // submodule that cannot be read — never initialized, or pinned to a commit
+    // nobody fetched — would otherwise contribute nothing to a snapshot that still
+    // looks complete, and the next diff reads every symbol behind that gitlink as
+    // deleted. A branch that bumps a submodule is exactly when this happens.
+    if (!sub) return null;
+    anchors.push(...sub);
   }
   return anchors;
 }

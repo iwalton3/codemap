@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { indexRepo, indexCommit } from "./repo.js";
-import { headCommit } from "./git.js";
+import { headCommit, showFile } from "./git.js";
 
 const git = (root: string, ...args: string[]) =>
   spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "protocol.file.allow=always", ...args], { cwd: root, encoding: "utf8" });
@@ -104,6 +104,64 @@ test("submodule contents are indexed under the parent's path", async (t) => {
     assert.ok(files.has("lib/money.ts"), `submodule file should be indexed under its parent path, got ${[...files]}`);
     // ids hash the path, so the parent-prefixed path is what makes them line up with the walk
     assert.equal(fingerprint(anchors), fingerprint(await indexRepo(root)), "submodule anchors must match the walk");
+  } finally { rmSync(root, { recursive: true, force: true }); rmSync(sub, { recursive: true, force: true }); }
+});
+
+test("a submodule's source is readable from the parent, at the commit the parent pins", async (t) => {
+  // Indexing recursed through gitlinks; retrieval did not. So the anchors existed and
+  // their code did not — a blank drill-down and an empty PR diff for shared code.
+  const root = repo(), sub = repo();
+  try {
+    writeFileSync(join(sub, "money.ts"), "export function settle(cents: number) { return cents; }\n");
+    commit(sub, "sub v1");
+    writeFileSync(join(root, "app.ts"), "export function main() { return 1; }\n");
+    commit(root, "app");
+    const added = git(root, "submodule", "add", "-q", sub, "lib");
+    if (added.status !== 0) { t.skip(`git refused a file:// submodule: ${added.stderr.trim().slice(0, 120)}`); return; }
+    commit(root, "add sub");
+    const pinned = headCommit(root)!;
+
+    const got = showFile(root, pinned, "lib/money.ts");
+    assert.ok(got, "a file inside a gitlink must be reachable from the parent");
+    assert.match(got!.toString("utf8"), /export function settle/);
+
+    // Control: the ordinary path is untouched, and a miss is still a miss.
+    assert.match(showFile(root, pinned, "app.ts")!.toString("utf8"), /export function main/);
+    assert.equal(showFile(root, pinned, "lib/nope.ts"), null, "a nonexistent file inside a submodule is still null");
+    assert.equal(showFile(root, pinned, "nope/nope.ts"), null, "and so is a nonexistent path with no gitlink at all");
+
+    // The PIN is what is served, not whatever the submodule happens to be on now.
+    // Committed inside the submodule CHECKOUT rather than in `sub` + a fetch: it puts
+    // v2 in the same object store with no network-shaped step in a hermetic suite,
+    // and moves the submodule's HEAD off the pin, which is the situation being tested.
+    writeFileSync(join(root, "lib", "money.ts"), "export function settle(cents: number) { return cents * 2; }\n");
+    commit(join(root, "lib"), "sub v2");
+    const still = showFile(root, pinned, "lib/money.ts")!.toString("utf8");
+    assert.match(still, /return cents;/, "the parent's commit pins v1, so v1 is what it serves");
+    assert.doesNotMatch(still, /cents \* 2/);
+  } finally { rmSync(root, { recursive: true, force: true }); rmSync(sub, { recursive: true, force: true }); }
+});
+
+test("a submodule that cannot be read makes the whole commit index null, not a short one", async (t) => {
+  // The dangerous outcome is not the failure, it is the SUCCESS: a snapshot missing
+  // every symbol behind the gitlink still looks complete, gets cached under the
+  // commit, and the next diff reads all of them as deleted. Same rule the blob read
+  // already follows — no snapshot at all beats a truncated one.
+  const root = repo(), sub = repo();
+  try {
+    writeFileSync(join(sub, "money.ts"), "export function settle(cents: number) { return cents; }\n");
+    commit(sub, "sub");
+    writeFileSync(join(root, "app.ts"), "export function main() { return 1; }\n");
+    commit(root, "app");
+    const added = git(root, "submodule", "add", "-q", sub, "lib");
+    if (added.status !== 0) { t.skip(`git refused a file:// submodule: ${added.stderr.trim().slice(0, 120)}`); return; }
+    commit(root, "add sub");
+    const sha = headCommit(root)!;
+    assert.ok((await indexCommit(root, sha))!.some((a) => a.file === "lib/money.ts"), "readable to begin with");
+
+    // Now make it unreadable, the way an uninitialized or unfetched submodule is.
+    rmSync(join(root, "lib"), { recursive: true, force: true });
+    assert.equal(await indexCommit(root, sha), null, "an unreadable submodule must fail the whole index");
   } finally { rmSync(root, { recursive: true, force: true }); rmSync(sub, { recursive: true, force: true }); }
 });
 
