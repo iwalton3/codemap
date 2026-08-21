@@ -124,8 +124,9 @@ export const ANCHOR_SCHEME = 3;
  * itself can say so.
  *
  *   1  bare `sha256:…` — every hash minted before this constant existed
+ *   2  `#region`/`#endregion` subtrees dropped; CR stripped inside multi-line tokens
  */
-export const HASH_SCHEME = 1;
+export const HASH_SCHEME = 2;
 
 /** Stable anchor id — same inputs always yield the same id across re-indexes. */
 export function anchorId(

@@ -97,12 +97,42 @@ const KIND_BY_TYPE: Record<string, AnchorKind> = {
 
 const isComment = (n: Node): boolean => n.type.includes("comment");
 
-/** Collect terminal tokens under `node`, skipping comment subtrees. */
+/**
+ * `#region` / `#endregion` — organisation, not code.
+ *
+ * The whole subtree goes, so both the keyword and the region NAME leave the hash:
+ * adding, removing or renaming a region is a cosmetic edit, and discarding
+ * cosmetics is what normalization is for. Before this, renaming a region flipped
+ * the enclosing type's shell hash and staled every mark on it — 180 anchors across
+ * 176 files on one live C# repo, none of which had changed.
+ *
+ * Scoped by NODE, not by token type, on purpose. `preproc_arg` looked like the
+ * handle but is the wrong one twice over: `#if DEBUG` carries its condition as an
+ * `identifier` (so conditional compilation is untouched either way), while
+ * `#warning` / `#error` carry their message AS a `preproc_arg` and those are
+ * diagnostics the build emits, not layout.
+ */
+const isRegion = (n: Node): boolean => n.type === "preproc_region" || n.type === "preproc_endregion";
+
+/**
+ * Line endings inside a token that spans lines.
+ *
+ * Whitespace BETWEEN tokens never reaches the hash — only leaf tokens are emitted —
+ * but a leaf that spans lines carries its own: C# verbatim/raw strings, Python
+ * triple-quotes, JS template literals, JSX text. So the same file hashed on Windows
+ * and on Linux disagreed, which reads as drift and is not.
+ *
+ * CR is stripped rather than normalized to CRLF because LF is what git stores and
+ * what every non-Windows checkout has.
+ */
+const leafText = (n: Node): string => (n.text.includes("\r") ? n.text.replace(/\r/g, "") : n.text);
+
+/** Collect terminal tokens under `node`, skipping comment and region subtrees. */
 function collectLeaves(node: Node, out: string[], skipSpans?: Set<string>): void {
-  if (isComment(node)) return;
+  if (isComment(node) || isRegion(node)) return;
   if (skipSpans && skipSpans.has(`${node.startIndex}:${node.endIndex}`)) return;
   if (node.childCount === 0) {
-    out.push(node.text);
+    out.push(leafText(node));
     return;
   }
   for (const child of node.children) collectLeaves(child, out, skipSpans);

@@ -4,6 +4,8 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { State } from "./schema.js";
+import { HASH_SCHEME } from "./schema.js";
+import { hashSchemeOf } from "./normalize.js";
 import { writeStore, readAnnotations, writeAnnotations, writeSnapshot } from "./store.js";
 import { withLock } from "./lock.js";
 import { annotate, assignAnnotation, reviewQueue, closeAssignment, resolveAnnotation, escalateAnnotation, anchorAnnotations, reviseAnnotation, withdrawAnnotation } from "./ops.js";
@@ -442,7 +444,11 @@ test("a finding records the body it was written against, and which ref that was"
     const of = async (id: string) => (await readAnnotations(root)).annotations.find((a) => a.id === id)!;
     const fromWork = await of(live.id);
     assert.equal(fromWork.sourceRef, "@work", "the working tree, said out loud");
-    assert.match(fromWork.witness!.bodyHash, /^sha256:/);
+    // A real digest under the scheme in force — not a sentinel, and not one carried
+    // over from an older derivation. Asserted by scheme rather than by literal prefix
+    // so a future HASH_SCHEME bump does not read as this behaviour breaking.
+    assert.match(fromWork.witness!.bodyHash, /sha256:[0-9a-f]{64}$/);
+    assert.equal(hashSchemeOf(fromWork.witness!.bodyHash), HASH_SCHEME);
     assert.equal(fromWork.witness!.anchorId, anchorId);
 
     // ...and a finding raised against a branch snapshot witnesses THAT body

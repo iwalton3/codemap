@@ -138,3 +138,46 @@ test("same-named callables that share a signature still get distinct ids", async
   assert.equal(fs.length, 2);
   assert.equal(new Set(fs.map((x) => x.id)).size, 2, "distinct ids");
 });
+
+// --- HASH_SCHEME 2: regions and line endings are cosmetic ----------------------
+
+const hashOf = async (src: string, path: string, symbol: string) =>
+  (await indexBlob(src, path)).find((a) => a.symbolPath.at(-1) === symbol)?.bodyHash;
+
+test("renaming a #region does not touch the enclosing type's hash", async () => {
+  const withA = "namespace N;\npublic class C {\n    #region Billing Info\n    public int X = 1;\n    #endregion\n}\n";
+  const withB = withA.replace("Billing Info", "Totally Different Name");
+  assert.equal(await hashOf(withA, "C.cs", "C"), await hashOf(withB, "C.cs", "C"));
+});
+
+test("adding a #region does not touch the enclosing type's hash either", async () => {
+  const bare = "namespace N;\npublic class C {\n    public int X = 1;\n}\n";
+  const regioned = "namespace N;\npublic class C {\n    #region Grouping\n    public int X = 1;\n    #endregion\n}\n";
+  assert.equal(await hashOf(bare, "C.cs", "C"), await hashOf(regioned, "C.cs", "C"));
+});
+
+test("#if is NOT cosmetic — its condition decides what compiles", async () => {
+  const dbg = "namespace N;\npublic class C {\n    public int M() {\n#if DEBUG\n        return 1;\n#endif\n        return 2;\n    }\n}\n";
+  const stg = dbg.replace("DEBUG", "STAGING");
+  assert.notEqual(await hashOf(dbg, "C.cs", "M"), await hashOf(stg, "C.cs", "M"), "a directive that changes the build must change the hash");
+});
+
+test("CRLF and LF hash identically inside a multi-line string", async () => {
+  // C# verbatim strings (inline SQL), Python triple-quotes, JS template literals and
+  // JSX text are all single leaf tokens that span lines and carry their own endings.
+  const cs = 'namespace N;\npublic class C {\n    public string Q() {\n        return @"SELECT id\nFROM ledger";\n    }\n}\n';
+  assert.equal(await hashOf(cs, "C.cs", "Q"), await hashOf(cs.replace(/\n/g, "\r\n"), "C.cs", "Q"), "C# verbatim string");
+
+  const py = 'def f():\n    return """line one\nline two"""\n';
+  assert.equal(await hashOf(py, "m.py", "f"), await hashOf(py.replace(/\n/g, "\r\n"), "m.py", "f"), "Python triple-quote");
+
+  const js = "function g() {\n  return `alpha\nbeta`;\n}\n";
+  assert.equal(await hashOf(js, "m.js", "g"), await hashOf(js.replace(/\n/g, "\r\n"), "m.js", "g"), "JS template literal");
+});
+
+test("a real edit inside a multi-line string still flips the hash", async () => {
+  // The guard against over-stripping: CR goes, content does not.
+  const a = 'namespace N;\npublic class C {\n    public string Q() {\n        return @"SELECT id\nFROM ledger";\n    }\n}\n';
+  const b = a.replace("FROM ledger", "FROM ledger_v2");
+  assert.notEqual(await hashOf(a, "C.cs", "Q"), await hashOf(b, "C.cs", "Q"));
+});
