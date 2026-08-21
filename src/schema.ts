@@ -390,6 +390,11 @@ export interface Annotation {
    * investigation. Writing one document for both means the PR-facing version gets
    * hand-rewritten outside the tool every time.
    *
+   * It is also the ONLY thing that reaches them — not `text`, not `disposition`, not
+   * the revisions — so it has to read as a standalone statement about the code. Copy
+   * phrased against the filing ("confirmed", "wider than reported") describes a
+   * baseline the submitter has never seen.
+   *
    * Capped at COMMENT_MAX. The cap is the mechanism, not decoration: it makes
    * "verdict + evidence pointer + ask" the only shape that fits.
    */

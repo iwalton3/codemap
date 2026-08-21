@@ -2556,6 +2556,42 @@ export async function updateBug(
 // Annotations
 // ---------------------------------------------------------------------------
 
+// What has to follow a lead word for it to be a verdict rather than a subject. A
+// bare "-" counts only when SPACED, so "Partial-write recovery drops the second
+// half" opens on a hyphenated word, not on a grade.
+const leadTail = (follows: string) =>
+  String.raw`(?=[:;,.!]|\s*[\u2014\u2013]|\s+-\s|\s+(?:${follows})\b|\s*$)`;
+
+/**
+ * Openings that grade the FINDING instead of describing the code.
+ *
+ * `comment` is the whole of what reaches the submitter — never the filing, the
+ * `text`, the `disposition`, or the earlier revisions (see `renderAnnotation` in
+ * pr-push.ts) — so "Confirmed and wider than filed" cites a document they cannot
+ * read. Saying so in the tool description did not hold: agents wrote relative copy
+ * twice more after reading it, while the length cap, which REFUSES, was obeyed
+ * every time. So this refuses too.
+ *
+ * Deliberately narrow. The lead word only counts when what follows it is
+ * verdict-shaped punctuation or a conjunction, which leaves a defect sentence that
+ * happens to open on the same word alone: "Partial writes are not rolled back",
+ * "Withdrawn tickets still bill". Missing a bad comment costs a re-read; refusing a
+ * good one costs the trust that makes the check work at all.
+ */
+const VERDICT_LEAD = new RegExp(
+  String.raw`^(?:confirmed|part(?:ly|ially) confirmed|partial|re-?rated|real|as filed|as reported|still open|false positive|not a (?:bug|defect|finding)|(?:much )?(?:wider|narrower|broader|smaller|bigger|worse|less bad) than (?:filed|reported|stated|described))`
+  + leadTail("and|but"), "i");
+
+/**
+ * The withdrawal shape, which is legitimate for exactly one disposition — see
+ * PUBLISHABLE: `refuted` goes out only where the human already raised the concern
+ * on the pull request, so there the reader does share the baseline a retraction
+ * needs. On anything still real it reads as "never mind" over a live defect.
+ */
+const WITHDRAWAL_LEAD = new RegExp(
+  String.raw`^(?:withdraw(?:ing|n)|retract(?:ing|ed)|refuted|disregard|never mind|my mistake)`
+  + leadTail("this|my|the"), "i");
+
 /**
  * Validate the submitter-facing half of a finding.
  *
@@ -2564,11 +2600,24 @@ export async function updateBug(
  * by the contract in the tool description is the ASK — the one part the person
  * fixing it actually needs.
  */
-function checkComment(comment: string | undefined): { comment?: string } | { error: string } {
+function checkComment(
+  comment: string | undefined, disposition?: string,
+): { comment?: string } | { error: string } {
   const c = comment?.trim();
   if (!c) return {};
   if (c.length > COMMENT_MAX) {
     return { error: `comment is ${c.length} characters; the cap is ${COMMENT_MAX}. Cut the investigation — what was checked and what was ruled out belong in \`text\`. Keep: what is broken, file:line proving it, and the ask.` };
+  }
+  // Emphasis and quoting are not the sentence: "**Confirmed** — ..." opens exactly
+  // as "Confirmed — ..." does, and the bolding is the tell, not a defence.
+  const bare = c.replace(/[*_]/g, "").replace(/^[\s>#`]+/, "");
+  const verdict = VERDICT_LEAD.exec(bare);
+  if (verdict) {
+    return { error: `comment opens with "${verdict[0]}", which is a verdict on the FINDING. The submitter never sees the finding — not as filed, not the \`text\`, not the \`disposition\` — so an opening that grades it describes a document they cannot read. Open with the defect itself, stated as a fact about the code, then the file:line, then the ask. The verdict goes in \`disposition\`, where it can be filtered on.` };
+  }
+  const withdrawal = WITHDRAWAL_LEAD.exec(bare);
+  if (withdrawal && disposition !== "refuted") {
+    return { error: `comment opens with "${withdrawal[0]}" but the disposition is \`${disposition ?? "unset"}\`. A retraction is only readable where the submitter already saw the concern, which is why it is the \`refuted\` shape — published by hand onto a thread that has it. Anything still real leads with what is STILL broken, written as if filed fresh; if this one really is a false positive, set disposition \`refuted\`.` };
   }
   return { comment: c };
 }
@@ -2639,7 +2688,7 @@ export async function annotate(
   const SEV = ["low", "medium", "high", "critical"];
   const severity = input.severity && SEV.includes(input.severity) ? input.severity : undefined;
   const category = input.category?.trim() || undefined;
-  const c = checkComment(input.comment);
+  const c = checkComment(input.comment, input.disposition);
   if ("error" in c) return c;
   // Required on findings, not merely encouraged. Twelve findings in the session that
   // motivated this were filed with rich evidence and no short form — because none
@@ -2781,7 +2830,7 @@ export async function reviseAnnotation(
     return { error: `that finding is already posted to PR #${ann.postedRef.pr}${ann.postedRef.url ? ` (${ann.postedRef.url})` : ""}. Revising it here would diverge from what the submitter can see — reply on the pull request instead, or pass allowPostEdit to change the map anyway (which does NOT edit the posted comment).` };
   }
 
-  const c = checkComment(input.comment);
+  const c = checkComment(input.comment, input.disposition ?? ann.disposition);
   if ("error" in c) return c;
   const disposition = input.disposition === undefined ? undefined : checkDisposition(input.disposition);
   if (input.disposition !== undefined && !disposition) {
@@ -3101,7 +3150,7 @@ export async function closeAssignment(
   if (input.result === "fixed" && files.length > 1) {
     return { error: `a fix may touch one file; this touched ${files.length} (${files.join(", ")}). Report \`declined\` with what the change needs — a multi-file change belongs to an agent the human dispatches, not to a review-tool edit.` };
   }
-  const c = checkComment(input.comment);
+  const c = checkComment(input.comment, input.disposition ?? ann.disposition);
   if ("error" in c) return c;
   const disposition = input.disposition === undefined ? undefined : checkDisposition(input.disposition);
   if (input.disposition !== undefined && !disposition) {

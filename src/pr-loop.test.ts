@@ -246,6 +246,80 @@ test("an over-long comment is refused, never truncated", async () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("a comment that opens on a verdict is refused — the submitter has no baseline", async () => {
+  const { root, anchorId, annId } = await fixture();
+  try {
+    // The submitter receives `comment` and nothing else: not the finding as filed,
+    // not `text`, not `disposition` (see renderAnnotation in pr-push.ts). So an
+    // opening that grades the finding is written against a document they cannot
+    // read. The tool description said so and agents wrote it anyway; the length cap,
+    // which refuses, was obeyed every time.
+    for (const bad of [
+      "Confirmed and wider than filed: five fields, not three.",
+      "PARTLY CONFIRMED — the missing predicate is real, the impact is overstated.",
+      "**Confirmed** — the predicate is missing at pay.ts:2.",
+      "Real, but narrower than filed: the by-id branch is unreachable.",
+      "Still open: nothing has changed here.",
+      "False positive — the filter is correct.",
+    ]) {
+      const r = await annotate(root, {
+        targetKind: "anchor", targetId: anchorId, text: "evidence", kind: "finding", comment: bad,
+      }) as any;
+      assert.match(r.error ?? "", /verdict on the FINDING/, bad);
+    }
+    // ...and the same check guards the two tools that REWRITE a comment, which is
+    // where the relative framing actually came from — an investigation reporting
+    // its delta rather than restating the defect.
+    assert.match((await reviseAnnotation(root, { id: annId, comment: "Confirmed: the guard is missing." }) as any).error, /verdict on the FINDING/);
+    await assignAnnotation(root, { id: annId, kind: "investigate" });
+    assert.match((await closeAssignment(root, { id: annId, result: "answered", detail: "checked", disposition: "partial", comment: "Partial — the write side is still wrong." }) as any).error, /verdict on the FINDING/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the verdict check does not fire on a defect sentence that starts on the same word", async () => {
+  const { root, anchorId } = await fixture();
+  try {
+    // The cost of the two mistakes is not symmetric: missing a bad comment costs a
+    // re-read, refusing a good one costs the trust that makes the check work. So the
+    // lead word only counts when what follows it is verdict-shaped.
+    for (const good of [
+      "Partial writes are not rolled back — `pay.ts:2` commits before the second leg.",
+      "Partial-write recovery drops the second half of the batch (`pay.ts:2`).",
+      "Withdrawn tickets still bill: `pay.ts:2` never clears the schedule.",
+      "Real-time quotes are cached for five minutes (`pay.ts:2`), so the fee is stale.",
+      "Confirmation emails go to the pre-edit address (`pay.ts:2`).",
+    ]) {
+      const r = await annotate(root, {
+        targetKind: "anchor", targetId: anchorId, text: "evidence", kind: "finding", comment: good,
+      }) as any;
+      assert.ok(r.ok, `${good} -> ${r.error}`);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a withdrawal lead is refused unless the finding really is refuted", async () => {
+  const { root, annId } = await fixture();
+  try {
+    // `refuted` is the one disposition with a shared baseline — PUBLISHABLE keeps it
+    // off the automatic batch, so it goes out by hand onto a thread where the human
+    // already raised the concern. Anywhere else a retraction reads as "never mind"
+    // over a defect that is still live.
+    const onPartial = await reviseAnnotation(root, {
+      id: annId, disposition: "partial", comment: "Withdrawing this — the read side treats undefined as not-accepted.",
+    }) as any;
+    assert.match(onPartial.error, /disposition is `partial`/);
+
+    const asRefuted = await reviseAnnotation(root, {
+      id: annId, disposition: "refuted", comment: "Withdrawing this — `AuthCheck` returns on the first matching role block, so the owning operator is granted.",
+    }) as any;
+    assert.ok(asRefuted.changed.includes("comment"), asRefuted.error);
+
+    // and the disposition the finding is ALREADY at counts, so clearing it up in a
+    // second call does not have to restate what the first one concluded
+    assert.ok((await reviseAnnotation(root, { id: annId, comment: "Withdrawn: the guard is present at `pay.ts:2`." }) as any).changed.includes("comment"));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("a finding can be corrected, and what it used to say survives", async () => {
   const { root, annId } = await fixture();
   try {
@@ -253,7 +327,7 @@ test("a finding can be corrected, and what it used to say survives", async () =>
     // visible AS a correction, which is when you most want to see what changed.
     const r = await reviseAnnotation(root, {
       id: annId, by: "agent:verify", disposition: "rerated", severity: "medium",
-      comment: "Real, but narrower than filed: the by-id branch is unreachable without the operator claim.",
+      comment: "The by-id branch is unreachable without the operator claim, so the missing predicate is not exploitable — but it still returns 404 vs 403 (`pay.ts:2`), which is an existence oracle. Scope the lookup.",
     }) as any;
     assert.deepEqual(r.changed.sort(), ["comment", "disposition", "severity"]);
 

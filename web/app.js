@@ -305,7 +305,7 @@ function annoThread(c, u, targetKind, targetId, items) {
 // reload the host via `c.load.run()` (+ `refreshFile` if the file modal is open).
 const findingKey = (anchorId, line) => anchorId + '#' + (line ?? '');
 const openFindingForm = (c, anchorId, line) => { c.state.finding = findingKey(anchorId, line); };
-const closeFindingForm = (c) => { c.state.finding = null; };
+const closeFindingForm = (c) => { c.state.finding = null; c.state.raiseErr = null; };
 // Review annotations (mirrors the CI review vocab): finding = an issue, pointer = a
 // watch-out aid for the reviewer, question = an ask, note = a remark. The ⚑ count is
 // action items (findings + questions); pointers/notes render but don't inflate it.
@@ -331,6 +331,11 @@ async function raiseFinding(c, u, anchorId, line) {
   // while reading a diff is already the short form. The evidence half only diverges
   // once someone investigates, and it is editable in the findings list when it does.
   const res = await asJson(postAnnotate(u, 'anchor', anchorId, text, 'finding', Number.isFinite(line) ? line : undefined, c.state?.prRef, text));
+  // A refusal must not take the typed text with it. Both of them (over-length, and
+  // an opening that grades the finding instead of describing the code) are asking
+  // for a rewrite of what is in the box — which is hard to do once the box is empty.
+  if (res && res.error) { c.state.raiseErr = { key, error: res.error }; return; }
+  c.state.raiseErr = null;
   if (c._fdrafts) c._fdrafts[key] = '';
   c.state.finding = null;
   await afterAnnotationWrite(c, res);
@@ -396,7 +401,8 @@ const findingItemEl = (c, u, f) => {
 const findingForm = (c, u, anchorId, line) => {
   if (!c._fdrafts) c._fdrafts = {};
   const key = findingKey(anchorId, line);
-  return html`<div class="rvaddf"><span class="rvfpin">${line ? '↳' + line : '✎'}</span><input class="rvftextin" placeholder="finding / action item — sign-off still allowed" value="${c._fdrafts[key] || ''}" on-input="${(e) => { c._fdrafts[key] = e.target.value; }}" on-keydown="${(e) => { if (e.key === 'Enter') raiseFinding(c, u, anchorId, line); else if (e.key === 'Escape') closeFindingForm(c); }}"><button on-click="${() => raiseFinding(c, u, anchorId, line)}">raise</button><button class="ghost" on-click="${() => closeFindingForm(c)}">cancel</button></div>`;
+  const err = c.state.raiseErr && c.state.raiseErr.key === key ? c.state.raiseErr.error : null;
+  return html`<div class="rvaddf"><span class="rvfpin">${line ? '↳' + line : '✎'}</span><input class="rvftextin" placeholder="finding / action item — sign-off still allowed" value="${c._fdrafts[key] || ''}" on-input="${(e) => { c._fdrafts[key] = e.target.value; }}" on-keydown="${(e) => { if (e.key === 'Enter') raiseFinding(c, u, anchorId, line); else if (e.key === 'Escape') closeFindingForm(c); }}"><button on-click="${() => raiseFinding(c, u, anchorId, line)}">raise</button><button class="ghost" on-click="${() => closeFindingForm(c)}">cancel</button>${when(err, () => html`<span class="rvferr">${err}</span>`)}</div>`;
 };
 // Render one anchor's source line-by-line (absolute line numbers from `startLine`)
 // with a hover 💬 per line that raises a finding pinned to that exact line; existing

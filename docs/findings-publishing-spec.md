@@ -307,20 +307,35 @@ Put this in the `annotate` / `close_finding` / `revise_finding` tool description
 that determines whether the feature works.
 
 > **`comment` is read by the PR submitter, who wants to know what is broken and what to do about it.**
-> They do not want the investigation. Three parts, in order:
+> They do not want the investigation. **It is the whole message they get**: they never
+> see the finding as filed, the `text`, the `disposition`, or any earlier revision, so a
+> comment opening "confirmed", "as filed", "wider than reported", "partly right" or
+> "still open" is written against a baseline the reader does not have. Three parts, in order:
 > 1. **What is broken** — one sentence, stated as a defect, not as a suspicion.
 > 2. **Where / the evidence** — `file:line` plus the smallest quote that proves it.
 > 3. **The ask** — the change, or the decision needed.
 >
-> **Order by disposition** (amended 2026-08-19, after the first real batch).
-> `refuted` leads with the withdrawal — that is the news. `partial` / `rerated` lead
-> with **what is still broken**, putting the withdrawn half second and marked as
-> such: `finding_33b5dec01919` was a real `partial` that opened with its withdrawal,
-> read as a refutation on a skim, and was dropped by a reviewer filtering
-> refutations out. The half that survived was its last sentence.
+> **Order by disposition, stating every verdict in absolute terms** (amended 2026-08-19
+> after the first real batch; the absolute-terms half added 2026-08-21 after the second).
+> `partial` / `rerated` lead with **the defect that remains**, written in full as if filed
+> fresh; name the cleared half only if the submitter would otherwise go hunting for it, and
+> state it as a fact about the code ("the read side is safe — every consumer treats
+> undefined as not-accepted"), never as a retraction. `finding_33b5dec01919` was a real
+> `partial` that opened with its withdrawal, read as a refutation on a skim, and was dropped
+> by a reviewer filtering refutations out; the half that survived was its last sentence.
+> `refuted` is the one disposition with a shared baseline — it goes out only where the human
+> already raised the concern *on* the PR — so it leads with the withdrawal, said as what the
+> code does correctly.
 >
 > Omit: how you found it, what you ruled out, what you checked and cleared, why it was filed, tool names,
 > and any narration of your own process. Those belong in `text`.
+
+The absolute-terms half is **enforced** in `checkComment` (`ops.ts`), not just asked for: an opening that
+grades the finding is refused, and a withdrawal lead is refused on any disposition but `refuted`. Prose lost
+this argument twice — the length cap, which refuses, was obeyed every time — so it is a refusal now. The
+pattern reads the first few words and only fires when what follows the lead word is verdict-shaped, which
+leaves "Partial writes are not rolled back" alone: missing a bad comment costs a re-read, refusing a good
+one costs the trust that makes the check work.
 
 **Good** (218 chars):
 
@@ -333,6 +348,11 @@ that determines whether the feature works.
 the missing predicate is real; the stated IMPACT is overstated", then three paragraphs of what was traced,
 what the original filing got wrong, and a severity re-rating discussion. All correct, all valuable in `text`,
 all noise to the person who has to fix it.
+
+**Also bad** — short, on-topic, and still unreadable: "Confirmed and wider than filed: five fields, not
+three." Both "wider than filed" and "not three" cite a filing the reader has never seen. The relative
+framing survives the length cap, which is why the cap alone does not catch it: say what the five fields
+are and what is wrong with them.
 
 **Withdrawals are worth publishing** when the human already raised the concern on the PR — one line closing
 it out ("Withdrawing this — hand-rolling is correct here because `AuthCheck` returns on the first matching

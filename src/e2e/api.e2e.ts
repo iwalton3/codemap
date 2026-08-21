@@ -131,12 +131,12 @@ describe("HTTP write routes", () => {
     const found = (out: any) => out.annotations.find((a: any) => a.id === raised.id);
 
     const revised = await post("/api/annotation_revise", {
-      id: raised.id, comment: "Real, but narrower than filed.", disposition: "rerated", publishPath: "src/pay.ts",
+      id: raised.id, comment: "The by-id path is reachable only with the operator claim, so this leaks existence, not data.", disposition: "rerated", publishPath: "src/pay.ts",
     });
     assert.ok(!revised.error, revised.error);
     assert.equal(found(revised).disposition, "rerated");
     assert.equal(found(revised).publishPath, "src/pay.ts");
-    assert.equal(found(revised).comment, "Real, but narrower than filed.");
+    assert.equal(found(revised).comment, "The by-id path is reachable only with the operator claim, so this leaks existence, not data.");
     assert.equal(found(revised).revisions.length, 1, "and what it used to say survives");
     assert.equal(found(revised).revisions[0].was.comment, "the short version");
 

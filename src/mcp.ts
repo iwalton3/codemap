@@ -92,17 +92,19 @@ const obj = (
  * example is what makes the difference, so it travels with the rule.
  */
 const COMMENT_CONTRACT =
-  "\n\n`comment` — READ BY THE PR SUBMITTER, who wants to know what is broken and what to do about it. They do not want the investigation. At most 800 characters (over-length is REFUSED, not trimmed). Three parts, in order:\n"
+  "\n\n`comment` — READ BY THE PR SUBMITTER, who wants to know what is broken and what to do about it. They do not want the investigation. IT IS THE WHOLE MESSAGE THEY GET: they never see the finding as filed, your `text`, the `disposition`, or any earlier revision. So a comment opening \"confirmed\", \"as filed\", \"wider than reported\", \"partly right\" or \"still open\" is written against a baseline the reader does not have. At most 800 characters (over-length is REFUSED, not trimmed). Three parts, in order:\n"
   + "  1. WHAT IS BROKEN — one sentence, stated as a defect, not as a suspicion.\n"
   + "  2. WHERE / THE EVIDENCE — file:line plus the smallest quote that proves it.\n"
   + "  3. THE ASK — the change, or the decision needed.\n"
-  + "ORDER BY DISPOSITION. A `refuted` finding leads with the withdrawal — that IS the news. A `partial` or `rerated` one leads with WHAT IS STILL BROKEN and puts the withdrawn half second, marked as such: a real finding that opens \"X cannot express this, so the ad-hoc filter is correct\" reads as a refutation on a skim, and gets dropped from the batch by a reviewer who is filtering out refutations.\n"
+  + "ORDER BY DISPOSITION — stating every verdict in ABSOLUTE terms, as a fact about the code. A `partial` or `rerated` one leads with THE DEFECT THAT REMAINS, written in full as if filed fresh; name the cleared half only if the submitter would otherwise go hunting for it, and state it as a fact (\"the read side is safe — every consumer treats undefined as not-accepted\"), never as a retraction. A real `partial` that opened \"X cannot express this, so the ad-hoc filter is correct\" read as a refutation on a skim and was dropped by a reviewer filtering refutations out. `refuted` is the one disposition with a shared baseline — it goes out only where the human already raised the concern ON the pull request — so it leads with the withdrawal, said as what the code does correctly.\n"
+  + "ENFORCED, like the length cap: an opening that grades the finding (\"Confirmed…\", \"Partial —\", \"Real, but…\", \"Still open:\") is REFUSED, as is a withdrawal lead (\"Withdrawing this…\") on any disposition but `refuted`. The check reads the first few words only, so a defect sentence that happens to start on one of those words (\"Partial writes are not rolled back — …\") passes.\n"
   + "Omit: how you found it, what you ruled out, what you checked and cleared, why it was filed, tool names, and any narration of your own process. Those go in `text`, which is not published.\n"
   + "GOOD: \"The by-id branch has no tenant predicate — `CreateTicket.cs:1006` queries `Aircraft` on `x.Id == request.AircraftId.Value` while the registration branch below scopes to `x.OperatorId == operatorId`. Add the same `.Where`. Currently an existence oracle over the aircraft table (`:512` blocks the actual attach, so this is not an IDOR).\"\n"
-  + "BAD: the same finding written for the map — opening \"PARTLY CONFIRMED — the missing predicate is real; the stated IMPACT is overstated\", then three paragraphs of what was traced and a severity re-rating discussion. All correct, all valuable in `text`, all noise to the person who has to fix it.";
+  + "BAD: the same finding written for the map — opening \"PARTLY CONFIRMED — the missing predicate is real; the stated IMPACT is overstated\", then three paragraphs of what was traced and a severity re-rating discussion. All correct, all valuable in `text`, all noise to the person who has to fix it.\n"
+  + "ALSO BAD: \"Confirmed and wider than filed: five fields, not three.\" — short, on-topic, and still unreadable: \"wider than filed\" and \"not three\" cite a filing the reader has never seen. Say what the five fields are and what is wrong with them.";
 
 const DISPOSITION_DOC =
-  "What triage CONCLUDED about the finding: \"open\" (filed, nobody has checked it — the default), \"confirmed\" (real as filed), \"partial\" (real in part; say which part in `comment`), \"rerated\" (real, but the severity or impact differs from as-filed), \"refuted\" (not a defect — a false positive), \"accepted\" (real, deliberately not being fixed). Only confirmed/partial/rerated go to the submitter unasked; the rest stay on the map unless the human names them.";
+  "What triage CONCLUDED about the finding: \"open\" (filed, nobody has checked it — the default), \"confirmed\" (real as filed), \"partial\" (real in part; `comment` states the part that is real, in full), \"rerated\" (real, but the severity or impact differs from as-filed), \"refuted\" (not a defect — a false positive), \"accepted\" (real, deliberately not being fixed). Only confirmed/partial/rerated go to the submitter unasked; the rest stay on the map unless the human names them.";
 
 
 const tools: Tool[] = [
@@ -627,7 +629,7 @@ const tools: Tool[] = [
       result: { type: "string", enum: ["fixed", "answered", "declined"] },
       detail: { type: "string", description: "What you did or found — the human reads this, so be concrete." },
       disposition: { type: "string", enum: ["open", "confirmed", "partial", "rerated", "refuted", "accepted"], description: DISPOSITION_DOC },
-      comment: { type: "string", description: "Rewrite the submitter-facing version if your investigation changed it — a refutation especially, which should open by withdrawing the concern. Max 800 characters. The previous wording is kept." },
+      comment: { type: "string", description: "Rewrite the submitter-facing version if your investigation changed it — as a standalone statement about the code, not as a diff against the filing, which the submitter has never seen. Max 800 characters. The previous wording is kept on the map." },
       line: { type: "number", description: "The line in the finding's own file that it actually points at. SET THIS — you have just read the code, and without it the comment is placed by geometry (the enclosing symbol's first changed line), which lands on a neighbouring member." },
       files: { type: "array", items: { type: "string" }, description: "Files you actually changed (for `fixed`). One file maximum." },
       by: { type: "string" },
@@ -639,14 +641,15 @@ const tools: Tool[] = [
     name: "revise_finding",
     description:
       "Correct a finding — yours or somebody else's — without losing what it used to say.\n\n"
-      + "Findings get filed before they are understood: a report goes in, investigation shows it was overstated or aimed at the wrong line, and the correction has to be visible AS a correction. Revisions APPEND; nothing is destroyed, and the previous wording stays readable.\n\n"
+      + "Findings get filed before they are understood: a report goes in, investigation shows it was overstated or aimed at the wrong line, and the correction has to be visible AS a correction. Revisions APPEND; nothing is destroyed, and the previous wording stays readable ON THE MAP.\n\n"
+      + "The submitter is not a party to that history: they receive the latest `comment` and nothing else. A revised comment therefore has to STAND ALONE — rewritten as if filed fresh, not written as a correction to the one before it.\n\n"
       + "Use it to sharpen a `comment`, to record what triage concluded (`disposition`), to re-rate a `severity` you now think is wrong, or to set `publishPath` for a finding about code the pull request does not touch.\n\n"
       + "Refused once the finding is on the pull request: revising it here would diverge from the copy the submitter is acting on."
       + COMMENT_CONTRACT,
     inputSchema: obj({
       id: { type: "string", description: "The annotation id." },
       text: { type: "string", description: "The evidence — for the map, not published." },
-      comment: { type: "string", description: "The submitter-facing version. Max 800 characters." },
+      comment: { type: "string", description: "The submitter-facing version, rewritten to stand alone — it replaces the old one for the reader, who never sees what it replaced. Max 800 characters." },
       disposition: { type: "string", enum: ["open", "confirmed", "partial", "rerated", "refuted", "accepted"], description: DISPOSITION_DOC },
       severity: { type: "string", enum: ["low", "medium", "high", "critical"] },
       line: { type: "number", description: "The line in the finding's OWN file that it points at — the normal way to say where it is." },
