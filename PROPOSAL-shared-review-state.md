@@ -4,7 +4,7 @@ Status: **PROPOSAL — not approved.** Written 2026-08-21, from a design session
 about running PR review across a team where every reviewer has codemap and
 several agents review alongside them.
 
-Does not supersede `PROPOSAL-committed-docs.md`. That document answers a
+Does not supersede `docs/proposal-committed-docs.md`. That document answers a
 different question — docs that belong to the codebase, versioned by checkout —
 and its conclusion that review marks stay out of git is not what this reverses.
 What this reverses is narrower: review marks stay out of **the code repo's** git,
@@ -191,6 +191,25 @@ Three notes:
 Targeted questions need one new value: `assignment.kind: "answer"`. The return
 path — `outcome.result: "answered"` — is already defined and waiting.
 
+### Migrating `Disposition`
+
+Every existing value maps, including `accepted`, which the enum's own doc block
+already defines as *"real, deliberately not being fixed (a product or
+architecture call)"* — a won't-fix, not an ambiguity:
+
+| today | accuracy | lifecycle |
+|---|---|---|
+| `open` | none | `issued` if agent-authored, `created` if human-authored |
+| `confirmed` | one `confirm` from the author | `created` |
+| `partial` | one `confirm`, verdict qualified | `created` |
+| `rerated` | one `confirm`, severity restated | `created` |
+| `refuted` | one `refute` | `closed` (refuted) |
+| `accepted` | one `confirm` — it **is** real | `closed` (won't-fix) |
+
+`accepted` and `Bug.status: "wontfix"` are the same concept under two names.
+Unifying the machinery should unify that vocabulary too, or the shared ack queue
+will show one idea twice.
+
 ## Decision 4 — Shared state is an append-only event log
 
 The requirement is not a reconciler for arbitrary concurrent mutation; that is
@@ -373,7 +392,7 @@ Two consequences worth stating:
 
 - `contested` is a state a *human* clears, never an agent. It is the same
   instinct as the ack queue: a machine may propose, a person decides.
-- This is `PROPOSAL-committed-docs.md`'s "merge conflicts are a feature"
+- This is `docs/proposal-committed-docs.md`'s "merge conflicts are a feature"
   argument, finally landing on a layer where it is true. A hash tiebreak picking a
   winner silently is the failure it warned about; the difference from `<<<<<<<`
   is that you can keep working while it is unresolved.
@@ -612,8 +631,10 @@ ours.
 2. **Submodules.** In order: the `git submodule status` scan guard (smallest,
    and catching a live drift on `Acme.Settlement` today); gitlink-aware `showFile`,
    which restores base-side code for 186 shared-kernel symbols per snapshot; the
-   `if (sub)` null rule. Splitting the kernel into its own universe is a separate,
-   larger step that must land before the sidecar carries kernel findings.
+   `if (sub)` null rule. Splitting the kernel into its own universe runs
+   **alongside** rather than gating: it touches few live findings or reviews
+   today, and every week it waits is more marks minted against ids that the split
+   will move.
 3. **Identity** (`principal` + `via`), with the `"me"`/`"agent"`/`"human"`
    backfill. Schema-touching, and everything below assumes it.
 4. **Event log behind `store.ts`, plus walkthrough sync.** Walkthroughs are the
