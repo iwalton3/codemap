@@ -347,3 +347,58 @@ export function prBaseCommit(root: string, opts: { recordedBase?: string | null;
   // function exists to prevent. No answer is better than that one.
   return null;
 }
+
+/**
+ * A submodule whose checked-out commit is not the one the parent pins.
+ *
+ * `ahead`/`behind` are indistinguishable from the parent's point of view — the
+ * only fact `git submodule status` reports is "not the pinned commit" — so both
+ * are `drifted`. That is the state that matters: a worktree scan indexes what is
+ * on disk, so a drifted submodule puts anchors into `@work` (and into the
+ * snapshot written for HEAD) that this commit does not ship.
+ */
+export type SubmoduleState = "drifted" | "uninitialized" | "conflict";
+
+export interface SubmoduleDrift {
+  path: string;
+  sha: string;
+  state: SubmoduleState;
+}
+
+/**
+ * Parse `git submodule status`. Kept separate from the spawn so the format —
+ * which is positional and easy to get subtly wrong — is testable without a repo.
+ *
+ * Each line is `<flag><sha> <path> (<describe>)`, where the flag is a space when
+ * the checkout matches the pin, `+` when it does not, `-` when the submodule was
+ * never initialized, and `U` when it has unmerged conflicts. Only the non-space
+ * flags are returned; an in-sync submodule is not news.
+ */
+export function parseSubmoduleStatus(out: string): SubmoduleDrift[] {
+  const drift: SubmoduleDrift[] = [];
+  for (const line of out.split("\n")) {
+    if (!line.trim()) continue;
+    const flag = line[0]!;
+    const state: SubmoduleState | null =
+      flag === "+" ? "drifted" : flag === "-" ? "uninitialized" : flag === "U" ? "conflict" : null;
+    if (!state) continue;
+    // `slice(1)` drops the flag; the describe suffix is advisory and dropped with it.
+    const rest = line.slice(1).trim();
+    const sp = rest.indexOf(" ");
+    if (sp < 0) continue;
+    drift.push({ sha: rest.slice(0, sp), path: rest.slice(sp + 1).replace(/\s+\(.*\)\s*$/, ""), state });
+  }
+  return drift;
+}
+
+/**
+ * Submodules that would make a worktree scan disagree with the commit it is
+ * about to be recorded against. Empty when there are no submodules, when git is
+ * absent, or when everything is in sync — this is a warning path, never a hard
+ * failure, so a repo without git still indexes.
+ */
+export function submoduleDrift(root: string): SubmoduleDrift[] {
+  const r = spawnSync("git", ["submodule", "status"], { cwd: root, encoding: "utf8" });
+  if (r.status !== 0) return [];
+  return parseSubmoduleStatus(r.stdout ?? "");
+}

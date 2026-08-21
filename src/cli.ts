@@ -232,6 +232,17 @@ async function cmdInit(root: string): Promise<void> {
   console.log(`baseline commit: ${r.commit ?? "(no git)"}${r.commit ? ` (snapshotted, branch ${r.branch ?? "?"})` : ""}`);
   // A reindex is routine; losing review history to one should not be. Say what this
   // stranded, and where to go and look at it.
+  // Louder than the orphan notes below: a drifted submodule means the anchors just
+  // written describe code this commit does not ship, and nothing else says so.
+  for (const sm of (r as { submodules?: { path: string; sha: string; state: string }[] }).submodules ?? []) {
+    console.log(
+      sm.state === "uninitialized"
+        ? `WARNING: submodule ${sm.path} is not initialized — its code was NOT indexed. Run \`git submodule update --init ${sm.path}\``
+        : sm.state === "conflict"
+          ? `WARNING: submodule ${sm.path} has unmerged conflicts — what was indexed is whatever is on disk`
+          : `WARNING: submodule ${sm.path} is at ${sm.sha.slice(0, 12)}, which is not the commit this repo pins — the index describes code this commit does not ship. Run \`git submodule update ${sm.path}\` and re-run`,
+    );
+  }
   const o = (r as { orphans?: { retained: number; recovered: number } }).orphans;
   if (o?.retained) console.log(`${o.retained} anchor(s) left the tree with findings or reviews on them — kept, run \`codemap orphans\` to see what and where`);
   if (o?.recovered) console.log(`${o.recovered} previously-missing anchor(s) are back in the tree`);

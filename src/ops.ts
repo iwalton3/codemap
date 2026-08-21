@@ -19,7 +19,7 @@ import {
   SCHEMA_VERSION,
 } from "./schema.js";
 import { indexFile, indexBlob, indexRepo, indexCommit } from "./repo.js";
-import { headCommit, currentBranch, isDirty, revParse, mergeBase, originSlug, readBlobs } from "./git.js";
+import { headCommit, currentBranch, isDirty, revParse, mergeBase, originSlug, readBlobs, submoduleDrift } from "./git.js";
 import { computeStaleness } from "./stale.js";
 import {
   readAnchorStore, readState, writeState, writeStore, loadNodes, readGraph, writeGraph, writeNode, slug,
@@ -331,6 +331,12 @@ export async function cover(
  * Also caches the commit as a diff snapshot. This is `init` re-run on demand.
  */
 export async function reindex(root: string) {
+  // Read BEFORE the scan: a worktree scan indexes what is on disk, so a submodule
+  // sitting on a commit the parent does not pin puts anchors into `@work` — and
+  // into the snapshot written for HEAD below — that this commit does not ship.
+  // Reported rather than refused: `reindex` also runs automatically on a branch
+  // change, and wedging that is worse than a loud warning.
+  const submodules = submoduleDrift(root);
   const anchors = await indexRepo(root);
   const commit = headCommit(root);
   const branch = currentBranch(root);
@@ -359,6 +365,7 @@ export async function reindex(root: string) {
   const files = new Set(anchors.map((a) => a.file)).size;
   return {
     ok: true, anchors: anchors.length, files, commit, branch,
+    ...(submodules.length ? { submodules } : {}),
     ...(remapped ? { remapped } : {}),
     ...(retained || recovered ? { orphans: { retained, recovered } } : {}),
   };
