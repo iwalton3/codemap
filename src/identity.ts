@@ -16,6 +16,7 @@
 
 import { spawnSync } from "node:child_process";
 import type { Actor } from "./schema.js";
+import { gitBin } from "./git.js";
 
 /**
  * Resolved from git, not from `gh api user`.
@@ -33,7 +34,7 @@ export function resolvePrincipal(root: string): string | null {
   if (override) return override;
   let p = principalCache.get(root);
   if (p === undefined) {
-    const r = spawnSync("git", ["config", "user.email"], { cwd: root, encoding: "utf8" });
+    const r = spawnSync(gitBin(), ["config", "user.email"], { cwd: root, encoding: "utf8" });
     const email = r.status === 0 ? (r.stdout ?? "").trim() : "";
     p = email || null;
     principalCache.set(root, p);
@@ -76,6 +77,30 @@ export function resolveActor(root: string, input: ActorInput = {}): Actor | null
     principal,
     ...(input.github?.trim() ? { github: input.github.trim() } : {}),
     ...(isAgent ? { via: { kind: "agent" as const, ...(model ? { model } : {}), ...(harness ? { harness } : {}) } } : {}),
+  };
+}
+
+/**
+ * The actor for a write that RECORDS ATTRIBUTION, or an error refusing it.
+ *
+ * Writes fail rather than degrade. An unattributed record is the one thing a
+ * shared store cannot repair later — the person who made it is not recoverable
+ * from anywhere — so the cost of stopping now is a config line, and the cost of
+ * proceeding is a record nobody can ever stand behind.
+ *
+ * Not applied to `init`, `check` or any read: those record nothing about anyone,
+ * and a map you cannot even LOOK at without configuring git would be a worse tool
+ * for no gain.
+ */
+export function requireActor(root: string, input: ActorInput = {}): Actor | { error: string } {
+  const a = resolveActor(root, input);
+  if (a) return a;
+  return {
+    error:
+      "no identity: this records who did it, and there is nobody to name. Set one with "
+      + "`git config user.email you@example.com` (add --global to set it everywhere), "
+      + "or set CODEMAP_PRINCIPAL. Reading the map needs none of this — only writes that "
+      + "carry attribution do.",
   };
 }
 

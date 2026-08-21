@@ -21,7 +21,7 @@ import { complexityOf, MONEY_RX, reviewTriageFor, setTriageBatch } from "./triag
 import { readTriage } from "./store.js";
 import type { Importance } from "./schema.js";
 import type { Complexity } from "./schema.js";
-import { revParse, mergeBase, hasObject, fetchRef, numstat, readBlobs, isGitRepo, originSlug, prBaseCommit } from "./git.js";
+import { revParse, mergeBase, hasObject, fetchRef, numstat, readBlobs, isGitRepo, originSlug, prBaseCommit, gitBin } from "./git.js";
 import { splitSpec, buildStory, layerOf, spineRole, type PrStory, type StoryStep, type StoryChapter, backendSpineRole } from "./pr-story.js";
 import { planPromotion, type Promotion } from "./pr-promote.js";
 
@@ -299,7 +299,7 @@ async function ensureSnapshot(root: string, sha: string, label: string): Promise
  * precisely when the base was least known.
  */
 function countCommits(root: string, from: string, to: string): number | null {
-  const r = spawnSync("git", ["rev-list", "--count", `${from}..${to}`], { cwd: root, encoding: "utf8" });
+  const r = spawnSync(gitBin(), ["rev-list", "--count", `${from}..${to}`], { cwd: root, encoding: "utf8" });
   if (r.status !== 0) return null;
   const n = Number((r.stdout ?? "").trim());
   return Number.isFinite(n) ? n : null;

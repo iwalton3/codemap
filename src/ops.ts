@@ -29,7 +29,7 @@ import {
   readWalkthroughs, writeWalkthrough, readPushes, bodyHashAt, snapshotBranch, retainOrphans, readOrphans, releaseRecoveredOrphans, referencedAnchorIds,
 } from "./store.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
-import { resolveActor, isAgentActor, actorLabel } from "./identity.js";
+import { resolveActor, requireActor, isAgentActor, actorLabel } from "./identity.js";
 import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "./diff.js";
 import { prTriage, listOpenPrs, prPacket, prStory, prAnchorCode, prPromotionPlan, derivePrTriage, prContainment } from "./pr.js";
 import { promotionOwns } from "./pr-promote.js";
@@ -2698,20 +2698,18 @@ export async function annotate(
   const category = input.category?.trim() || undefined;
   const c = checkComment(input.comment, input.disposition);
   if ("error" in c) return c;
-  // Null when there is no git identity to attribute this to. Not an error here: a
-  // local-only store worked without one for its whole life, and refusing writes
-  // would break it. The sidecar is where an unattributed record has to be refused.
-  //
   // `agent` falls back to the author-string sniff — the very heuristic this replaces —
   // because until every caller passes the flag, dropping it would silently DEFAULT
   // agent findings to `confirmed`, i.e. publishable with nobody vouching. `|| undefined`
   // rather than the bare boolean so a false sniff still lets the env vars decide.
   const looksAgent = (input.author ?? "agent").startsWith("agent");
-  const actor = resolveActor(root, {
+  const resolved = requireActor(root, {
     agent: input.agent ?? (looksAgent || undefined),
     model: input.model,
     harness: input.harness,
   });
+  if ("error" in resolved) return resolved;
+  const actor = resolved;
   // Required on findings, not merely encouraged. Twelve findings in the session that
   // motivated this were filed with rich evidence and no short form — because none
   // was asked for — and all twelve were then rewritten by hand for GitHub. An

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import type { Actor } from "./schema.js";
-import { resolveActor, resolvePrincipal, isAgentActor, isIndependent, actorLabel } from "./identity.js";
+import { resolveActor, resolvePrincipal, requireActor, isAgentActor, isIndependent, actorLabel } from "./identity.js";
 
 function repoWithEmail(email: string | null): string {
   const root = mkdtempSync(join(tmpdir(), "codemap-id-"));
@@ -120,6 +120,31 @@ test("agents run by different people ARE independent", () => {
 test("an unattributed record is never independent — absence is not a second opinion", () => {
   assert.equal(isIndependent(undefined, human("izzie@x.com")), false);
   assert.equal(isIndependent(human("izzie@x.com"), undefined), false);
+});
+
+test("a write that records attribution is REFUSED when there is nobody to name", () => {
+  // Fails rather than degrades: who made a record is not recoverable later from
+  // anywhere, so the cost of stopping is a config line and the cost of proceeding
+  // is a record nobody can ever stand behind.
+  const root = repoWithEmail(null);
+  try {
+    withEnv({ CODEMAP_PRINCIPAL: undefined, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" }, () => {
+      const r = requireActor(root) as { error: string };
+      assert.ok(r.error, "must refuse");
+      assert.match(r.error, /git config user\.email/, "and must say how to fix it");
+      assert.match(r.error, /Reading the map needs none of this/, "reads are not gated on this");
+    });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("with an identity set, the same write is allowed", () => {
+  const root = repoWithEmail("izzie@example.com");
+  try {
+    withEnv({ CODEMAP_PRINCIPAL: undefined }, () => {
+      const r = requireActor(root);
+      assert.ok(!("error" in r));
+    });
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("the label names the person, and the model when one acted for them", () => {
