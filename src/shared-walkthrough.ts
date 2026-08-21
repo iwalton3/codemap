@@ -14,7 +14,7 @@
 
 import type { Actor } from "./schema.js";
 import type { PrWalkthrough } from "./walkthrough.js";
-import { appendEvents, mintId, readScope, highWatermark, type LogEvent } from "./eventlog.js";
+import { appendEvents, mintId, readScope, causalHead, type LogEvent } from "./eventlog.js";
 
 /** One person's walkthrough of one pull request, with who wrote it. */
 export interface SharedWalkthrough {
@@ -41,7 +41,7 @@ export async function publishWalkthrough(
   w: PrWalkthrough,
 ): Promise<LogEvent> {
   const scope = walkthroughScope(w.pr);
-  const seen = highWatermark(await readScope(logRoot, scope));
+  const seen = causalHead(await readScope(logRoot, scope));
   const event: LogEvent = {
     id: mintId(),
     kind: "walkthrough.published",

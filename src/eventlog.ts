@@ -63,8 +63,16 @@ export interface LogEvent {
  * 5188 and 9 after it, and an unpadded mix would sort the longer one first — a
  * lexicographic sort is only a time sort if the width is fixed.
  */
+let lastMinted = 0;
 export function mintId(now = Date.now()): string {
-  return now.toString(36).padStart(10, "0") + "-" + randomBytes(5).toString("hex");
+  // Monotonic WITHIN a process. Two events minted in the same millisecond would
+  // otherwise be ordered only by their random suffix, so a writer's own second
+  // event could sort before its first — and the causal edge it recorded would
+  // point at the wrong predecessor. Across processes the random suffix still
+  // breaks ties; this only removes the ambiguity a single writer can create.
+  const t = now > lastMinted ? now : lastMinted + 1;
+  lastMinted = t;
+  return t.toString(36).padStart(10, "0") + "-" + randomBytes(5).toString("hex");
 }
 
 /**
@@ -175,9 +183,15 @@ export function sortEvents(events: LogEvent[]): LogEvent[] {
   return out;
 }
 
-/** The highest id in a set of events — what the next write should record as `after`. */
-export function highWatermark(events: LogEvent[]): string | undefined {
-  let hi: string | undefined;
-  for (const e of events) if (hi === undefined || e.id > hi) hi = e.id;
-  return hi;
+/**
+ * What a new write should record as `after`: the last event in FOLD order.
+ *
+ * Not the highest id. Those differ whenever two events share a millisecond and are
+ * ordered by their random suffix — and then the highest id is not the one the
+ * writer most recently saw applied. Pointing `after` at that made a writer's own
+ * consecutive events read as concurrent, which is exactly the ambiguity `after`
+ * exists to remove. Pass events already in fold order (`readScope` returns them so).
+ */
+export function causalHead(sortedEvents: LogEvent[]): string | undefined {
+  return sortedEvents.length ? sortedEvents[sortedEvents.length - 1]!.id : undefined;
 }

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, appendFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Actor } from "./schema.js";
-import { mintId, shardFor, appendEvents, readShard, readScope, sortEvents, highWatermark, type LogEvent } from "./eventlog.js";
+import { mintId, shardFor, appendEvents, readShard, readScope, sortEvents, causalHead, type LogEvent } from "./eventlog.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
 const dana: Actor = { principal: "dana@x.com" };
@@ -172,7 +172,25 @@ test("sorting is deterministic regardless of input order", () => {
   assert.deepEqual(one, ["0000000002-bb", "0000000001-aa", "0000000003-cc"], "cause before effect, id otherwise");
 });
 
-test("the high watermark is what the next write records as having been seen", () => {
-  assert.equal(highWatermark([ev("0000000001-aa"), ev("0000000009-zz"), ev("0000000003-cc")]), "0000000009-zz");
-  assert.equal(highWatermark([]), undefined);
+test("the causal head is the LAST event in fold order, not the highest id", () => {
+  // These differ whenever two events share a millisecond and are ordered by their
+  // random suffix. Taking the highest id made a writer's own consecutive events
+  // read as concurrent — the exact ambiguity `after` exists to remove — because the
+  // second one pointed `after` at something that was not what it had just seen.
+  const first = ev("0000000009-zz");
+  const second = ev("0000000002-aa", { after: first.id });
+  const sorted = sortEvents([first, second]);
+  assert.deepEqual(sorted.map((e) => e.id), [first.id, second.id], "causality put the low id last");
+  assert.equal(causalHead(sorted), second.id, "so the head is that one, not the max id");
+});
+
+test("the causal head of nothing is nothing", () => {
+  assert.equal(causalHead([]), undefined);
+});
+
+test("a writer's own consecutive events keep their order even within one millisecond", () => {
+  // The regression this was found by: two asks written back to back, the second
+  // replacing the first. Same ms, so only `mintId`'s monotonicity separates them.
+  const ids = Array.from({ length: 50 }, () => mintId(1_760_000_000_000));
+  assert.deepEqual([...ids].sort(), ids, "minted in strictly increasing order");
 });
