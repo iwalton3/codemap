@@ -84,9 +84,12 @@ export function mintId(now = Date.now()): string {
  * because collisions here cost nothing — a shared file is only a merge, and the
  * actor is recorded inside every line anyway.
  */
+export function principalKey(principal: string): string {
+  return createHash("sha256").update(principal).digest("hex").slice(0, 12);
+}
+
 export function shardFor(scope: string, actor: Actor): string {
-  const who = createHash("sha256").update(actor.principal).digest("hex").slice(0, 12);
-  return join(scope, who + SHARD_EXT);
+  return join(scope, principalKey(actor.principal) + SHARD_EXT);
 }
 
 /**

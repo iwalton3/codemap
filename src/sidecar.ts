@@ -1,0 +1,301 @@
+/**
+ * The sidecar: a git repo that carries shared review state, and the send/receive
+ * loop over it.
+ *
+ * The whole algorithm is four lines, and the reason it can be four lines is that
+ * everything above it is append-only and commutative:
+ *
+ *   pull:  fetch, merge      -> re-fold
+ *   push:  commit, push      -> on reject: pull, retry
+ *
+ * The retry is safe to perform BLINDLY, and that is the property that makes a
+ * one-button sync honest rather than a lie over a fragile operation: events are
+ * immutable and their order is decided by the fold, not by the file, so a merge
+ * can never change what an event means. Nothing here has to understand findings.
+ *
+ * Merge, not rebase. Rebase replays each local commit onto the remote tip, so a
+ * conflict has to be resolved once per commit; a merge resolves once. Linear
+ * history would buy nothing here — the log's order comes from `sortEvents`, not
+ * from the commit graph.
+ */
+
+import { spawnSync } from "node:child_process";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { ANCHOR_SCHEME, HASH_SCHEME } from "./schema.js";
+import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
+import { gitBin } from "./git.js";
+import { SHARD_EXT, principalKey } from "./eventlog.js";
+import type { Actor } from "./schema.js";
+
+const g = (root: string, args: string[]) => {
+  const r = spawnSync(gitBin(), args, { cwd: root, encoding: "utf8", maxBuffer: 1 << 28, timeout: 180_000 });
+  return { ok: r.status === 0, out: (r.stdout ?? "").trim(), err: (r.stderr ?? "").trim() };
+};
+
+/**
+ * The branch name, including before the first commit.
+ *
+ * NOT `rev-parse --abbrev-ref HEAD`: on an unborn branch that prints the literal
+ * "HEAD" and exits non-zero, so taking its stdout gave a branch called "HEAD",
+ * `origin/HEAD` did not resolve, and the very first pull a new person ever ran
+ * decided there was nothing to fetch. `symbolic-ref` answers on an unborn branch,
+ * which is exactly the case that matters here.
+ */
+const branchOf = (root: string): string => g(root, ["symbolic-ref", "--short", "HEAD"]).out || "main";
+
+/**
+ * Commit whatever is in the tree. Returns false when there was nothing to commit.
+ *
+ * Called BEFORE a merge as well as before a push: a fresh sidecar's scaffold
+ * (.gitattributes, the manifest) is untracked, and git refuses a merge that would
+ * overwrite untracked files — so a new person's first pull failed on the files
+ * their own setup had just written.
+ */
+function commitLocal(root: string, message: string): boolean {
+  if (!g(root, ["status", "--porcelain"]).out) return false;
+  g(root, ["add", "-A"]);
+  return g(root, ["commit", "-q", "-m", message]).ok;
+}
+
+/**
+ * Manifests are per-principal, in a directory, for the same reason shards are.
+ *
+ * A single shared manifest cannot work: every clone rewrites it with its OWN
+ * schemes, so a pull would compare a file to itself and see agreement — and when
+ * two people genuinely differ, JSON does not union-merge, so the one file that is
+ * supposed to REPORT the incompatibility becomes a merge conflict instead. One
+ * file per person conflicts never, and answers the more useful question: not
+ * "does this sidecar match me" but "who on this team does not".
+ */
+export const MANIFEST_DIR = "manifests";
+export const ATTRIBUTES = ".gitattributes";
+
+/**
+ * What the shards were written under — the team-wide compatibility contract.
+ *
+ * Only `anchorScheme` is a hard gate. An anchor id is the identity of a piece of
+ * code, so a store minted under another derivation targets symbols that do not
+ * exist here and there is nothing sensible to show. Hashes are different: a
+ * witness carries its own HASH_SCHEME and a mismatch already reads as
+ * `unverifiable` rather than as drift, so a hash or grammar difference degrades
+ * instead of breaking — which is what that machinery was built for, and what
+ * stops one person upgrading from locking the rest of the team out mid-rollout.
+ */
+export interface SidecarManifest {
+  principal: string;
+  anchorScheme: number;
+  hashScheme: number;
+  grammars: Record<string, string>;
+}
+
+export const currentManifest = (principal: string): SidecarManifest => ({
+  principal,
+  anchorScheme: ANCHOR_SCHEME,
+  hashScheme: HASH_SCHEME,
+  grammars: { ...GRAMMAR_VERSIONS },
+});
+
+export interface Incompat {
+  fatal: boolean;
+  message: string;
+}
+
+/** Compare one peer's manifest to mine. Null = nothing worth saying. */
+export function checkManifest(theirs: SidecarManifest, mine: SidecarManifest): Incompat | null {
+  if (theirs.principal === mine.principal) return null; // my own entry
+  const who = theirs.principal;
+  if (theirs.anchorScheme !== mine.anchorScheme) {
+    return {
+      fatal: true,
+      message:
+        `${who} is writing under ANCHOR_SCHEME ${theirs.anchorScheme} and this codemap is ${mine.anchorScheme}. `
+        + `Anchor ids are derived differently, so their findings point at symbols that do not exist here. `
+        + `Get onto the same codemap version before syncing — merging would silently mis-target every one of them.`,
+    };
+  }
+  const notes: string[] = [];
+  if (theirs.hashScheme !== mine.hashScheme) {
+    notes.push(`${who} is on HASH_SCHEME ${theirs.hashScheme} (this is ${mine.hashScheme}): their witnesses read as unverifiable until re-witnessed`);
+  }
+  for (const [name, v] of Object.entries(theirs.grammars ?? {})) {
+    const local = mine.grammars[name];
+    if (local && local !== v) notes.push(`${who} has grammar ${name} ${v} (this is ${local}): bodies hash differently, so witnesses will not match across the two`);
+  }
+  return notes.length ? { fatal: false, message: notes.join("; ") } : null;
+}
+
+/** Every peer's manifest, mine included. */
+export async function readManifests(root: string): Promise<SidecarManifest[]> {
+  const dir = join(root, MANIFEST_DIR);
+  let names: string[];
+  try { names = await readdir(dir); } catch { return []; }
+  const out: SidecarManifest[] = [];
+  for (const n of names.filter((n) => n.endsWith(".json"))) {
+    try {
+      const m = JSON.parse(await readFile(join(dir, n), "utf8")) as SidecarManifest;
+      if (m && typeof m.principal === "string" && typeof m.anchorScheme === "number") out.push(m);
+    } catch { /* somebody else's client wrote something odd; not our problem to die on */ }
+  }
+  return out;
+}
+
+/** The worst thing to say about the team's manifests, or null. Fatal wins over advisory. */
+export function checkPeers(all: SidecarManifest[], mine: SidecarManifest): Incompat | null {
+  const found = all.map((t) => checkManifest(t, mine)).filter((x): x is Incompat => !!x);
+  return found.find((x) => x.fatal) ?? (found.length ? { fatal: false, message: found.map((x) => x.message).join("; ") } : null);
+}
+
+/**
+ * Make `root` a usable sidecar: a git repo, with the union merge driver in place
+ * and a manifest.
+ *
+ * `merge=union` is what covers the one case single-writer sharding does not — the
+ * same person appending from two machines. Git takes the lines from both sides,
+ * which is exactly right for an append-only line file, and the fold sorts and
+ * dedupes afterwards so neither reordering nor duplication survives.
+ */
+export async function ensureSidecar(root: string, actor?: Actor): Promise<{ created: boolean } | { error: string }> {
+  await mkdir(root, { recursive: true });
+  const isRepo = g(root, ["rev-parse", "--is-inside-work-tree"]).out === "true";
+  if (!isRepo) {
+    const init = g(root, ["init", "-q", "-b", "main"]);
+    if (!init.ok) return { error: `could not init the sidecar at ${root}: ${init.err}` };
+  }
+  // Written by everyone, identically, so it never conflicts.
+  await writeFile(join(root, ATTRIBUTES), `*${SHARD_EXT} merge=union\n`, "utf8");
+  if (actor) {
+    await mkdir(join(root, MANIFEST_DIR), { recursive: true });
+    await writeFile(
+      join(root, MANIFEST_DIR, principalKey(actor.principal) + ".json"),
+      JSON.stringify(currentManifest(actor.principal), null, 2) + "\n",
+      "utf8",
+    );
+  }
+  return { created: !isRepo };
+}
+
+/** Every event line currently on disk — the cheap way to say what a sync gained. */
+export async function countEvents(root: string): Promise<number> {
+  let total = 0;
+  const walk = async (dir: string): Promise<void> => {
+    let entries;
+    try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (e.name === ".git") continue;
+      const p = join(dir, e.name);
+      if (e.isDirectory()) await walk(p);
+      else if (e.name.endsWith(SHARD_EXT)) {
+        try { total += (await readFile(p, "utf8")).split("\n").filter((l) => l.trim()).length; } catch { /* raced */ }
+      }
+    }
+  };
+  await walk(root);
+  return total;
+}
+
+export interface PullResult { gained: number; warning?: string }
+
+/**
+ * Fetch and merge. A sidecar with no remote is a perfectly good local one, so
+ * that is a no-op rather than an error — the whole design works offline and only
+ * needs a remote to reach other people.
+ */
+export async function pull(root: string, actor?: Actor): Promise<PullResult | { error: string }> {
+  if (!g(root, ["remote"]).out) return { gained: 0 };
+  const before = await countEvents(root);
+  const fetch = g(root, ["fetch", "--quiet", "origin"]);
+  if (!fetch.ok) return { error: `fetch failed: ${fetch.err.slice(0, 300)}` };
+
+  const branch = branchOf(root);
+  // Nothing fetched yet (an empty remote, or a first sync) — not an error.
+  if (!g(root, ["rev-parse", "--verify", "--quiet", `origin/${branch}`]).ok) return { gained: 0 };
+
+  // Checked against the FETCHED ref, before merging. Reading the working tree
+  // would compare my manifest to my own, and a fatal mismatch should refuse the
+  // data rather than merge it and then complain.
+  const mine = currentManifest(actor?.principal ?? "");
+  const incompatEarly = checkPeers(remoteManifests(root, branch), mine);
+  if (incompatEarly?.fatal) return { error: incompatEarly.message };
+
+  // No `-c merge.union.driver=...`: `union` is one of git's BUILT-IN drivers, and
+  // defining one by that name would replace it with whatever was named instead.
+  //
+  // `--allow-unrelated-histories` because the ordinary way a team arrives here is
+  // that everybody ran `ensureSidecar` locally and then pointed it at the same
+  // remote, so the second person's history is genuinely unrelated to the first's.
+  // Safe for this content specifically: the shards union-merge, and the only other
+  // files are the manifest and .gitattributes, which are generated identically by
+  // the same code. Compatibility is checked below, on the merged result.
+  const merge = g(root, ["merge", "--no-edit", "--allow-unrelated-histories", `origin/${branch}`]);
+  if (!merge.ok) {
+    // With union merging on the shards, the realistic causes are a genuine
+    // conflict in the manifest or attributes — not in anyone's events.
+    g(root, ["merge", "--abort"]);
+    return { error: `merge failed and was aborted, the sidecar is untouched: ${merge.err.slice(0, 300)}` };
+  }
+  const incompat = checkPeers(await readManifests(root), mine);
+  if (incompat?.fatal) return { error: incompat.message };
+  return { gained: (await countEvents(root)) - before, ...(incompat ? { warning: incompat.message } : {}) };
+}
+
+/** Peers' manifests as they exist on the fetched ref, without touching the tree. */
+function remoteManifests(root: string, branch: string): SidecarManifest[] {
+  const listing = g(root, ["ls-tree", "--name-only", `origin/${branch}:${MANIFEST_DIR}`]);
+  if (!listing.ok) return [];
+  const out: SidecarManifest[] = [];
+  for (const name of listing.out.split("\n").map((s) => s.trim()).filter((s) => s.endsWith(".json"))) {
+    const blob = g(root, ["show", `origin/${branch}:${MANIFEST_DIR}/${name}`]);
+    if (!blob.ok) continue;
+    try {
+      const m = JSON.parse(blob.out) as SidecarManifest;
+      if (m && typeof m.principal === "string" && typeof m.anchorScheme === "number") out.push(m);
+    } catch { /* not ours to die on */ }
+  }
+  return out;
+}
+
+export interface PushResult { pushed: boolean; retries: number }
+
+/**
+ * Commit whatever is on disk and push it, pulling and retrying on rejection.
+ *
+ * Retrying without inspecting the rejection is deliberate and only safe because
+ * of what is being pushed: append-only files whose meaning does not depend on
+ * their position, so a merge in between cannot change what this push says.
+ */
+export async function push(root: string, message: string, opts: { attempts?: number; actor?: Actor } = {}): Promise<PushResult | { error: string }> {
+  const attempts = opts.attempts ?? 3;
+  commitLocal(root, message);
+  if (!g(root, ["remote"]).out) return { pushed: false, retries: 0 };
+
+  const branch = branchOf(root);
+  for (let i = 0; i < attempts; i++) {
+    const p = g(root, ["push", "--quiet", "origin", `HEAD:${branch}`]);
+    if (p.ok) return { pushed: true, retries: i };
+    const pulled = await pull(root, opts.actor);
+    if ("error" in pulled) return { error: `push rejected and the follow-up pull failed: ${pulled.error}` };
+  }
+  return { error: `push still rejected after ${attempts} attempts — someone is pushing continuously, or the remote refuses this branch` };
+}
+
+export interface SyncResult { gained: number; pushed: boolean; retries: number; warning?: string }
+
+/** Send and receive, in the order that makes the publish guard trustworthy. */
+export async function sync(root: string, actor?: Actor, message = "codemap: review state"): Promise<SyncResult | { error: string }> {
+  const ready = await ensureSidecar(root, actor);
+  if ("error" in ready) return ready;
+  // Pull FIRST, always. `alreadyPosted` is only a guard against double-publishing
+  // if it has seen what everyone else already published; planning a push against a
+  // stale pull is the one place where being behind is actively destructive rather
+  // than merely incomplete.
+  // Commit BEFORE pulling: the scaffold ensureSidecar just wrote is untracked, and
+  // git refuses a merge that would overwrite untracked files — so without this the
+  // first pull a new person ever runs fails on their own setup's files.
+  commitLocal(root, message);
+  const pulled = await pull(root, actor);
+  if ("error" in pulled) return pulled;
+  const pushed = await push(root, message, { actor });
+  if ("error" in pushed) return pushed;
+  return { gained: pulled.gained, pushed: pushed.pushed, retries: pushed.retries, ...(pulled.warning ? { warning: pulled.warning } : {}) };
+}
