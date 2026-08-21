@@ -112,7 +112,7 @@ const isComment = (n: Node): boolean => n.type.includes("comment");
  * `#warning` / `#error` carry their message AS a `preproc_arg` and those are
  * diagnostics the build emits, not layout.
  */
-const isRegion = (n: Node): boolean => n.type === "preproc_region" || n.type === "preproc_endregion";
+const isRegionType = (t: string): boolean => t === "preproc_region" || t === "preproc_endregion";
 
 /**
  * Line endings inside a token that spans lines.
@@ -125,11 +125,24 @@ const isRegion = (n: Node): boolean => n.type === "preproc_region" || n.type ===
  * CR is stripped rather than normalized to CRLF because LF is what git stores and
  * what every non-Windows checkout has.
  */
-const leafText = (n: Node): string => (n.text.includes("\r") ? n.text.replace(/\r/g, "") : n.text);
+function leafText(n: Node): string {
+  // `node.text` is a wasm-boundary getter that materialises a fresh JS string on
+  // every read, onto a heap that is not garbage-collected (see `parserForPath`).
+  // Reading it twice per leaf — once to test, once to return — doubled the
+  // allocations for every token in every file and made the indexer intermittently
+  // wedge. Read once.
+  const t = n.text;
+  return t.includes("\r") ? t.replace(/\r/g, "") : t;
+}
 
 /** Collect terminal tokens under `node`, skipping comment and region subtrees. */
 function collectLeaves(node: Node, out: string[], skipSpans?: Set<string>): void {
-  if (isComment(node) || isRegion(node)) return;
+  // `type` and `text` are wasm-boundary getters, each materialising a fresh JS
+  // value on a heap that is not garbage-collected. This runs once per NODE in
+  // every file indexed, so reading either more than once here is not a style
+  // point — it multiplies allocations across the whole tree.
+  const type = node.type;
+  if (type.includes("comment") || isRegionType(type)) return;
   if (skipSpans && skipSpans.has(`${node.startIndex}:${node.endIndex}`)) return;
   if (node.childCount === 0) {
     out.push(leafText(node));
