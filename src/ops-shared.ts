@@ -10,6 +10,8 @@
 import type { Actor } from "./schema.js";
 import { requireActor } from "./identity.js";
 import { resolveSidecar, scopeFor, type SidecarConfig } from "./sidecar-config.js";
+import { originSlug } from "./git.js";
+import { fetchReviewThreads } from "./pr-push.js";
 import { ensureSidecar, sync as sidecarSync, readManifests, checkPeers, currentManifest } from "./sidecar.js";
 import {
   createFinding, corroborate, comment, promote, request, setState, recordOutcome,
@@ -200,6 +202,56 @@ export async function sharedFindings(root: string, pr: number | string, opts: { 
     contested: all.filter((f) => f.contested?.length).length,
     findings: chosen.map(view),
   };
+}
+
+/**
+ * The submitter's replies to findings this team published — inbound only.
+ *
+ * The direction is the design. The sidecar hosts the REVIEWERS' discussion,
+ * because GitHub cannot host a conversation about code the branch never touched
+ * or about an ABSENCE, which has no line anywhere. But the person who has to fix
+ * it answers on the pull request, and that answer is information the reviewer
+ * needs — so it is read back, attributed to the GitHub account that wrote it, and
+ * never written to.
+ *
+ * Not folded into the thread: a reply is somebody else's utterance on another
+ * system, and recording it as a sidecar event would make it look like it had been
+ * said here, by an actor with a principal. It is presented alongside instead.
+ */
+export async function inboundReplies(root: string, pr: number | string) {
+  const cfg = resolveSidecar(root);
+  if (!cfg) return { error: NO_SIDECAR };
+  const slug = originSlug(root);
+  if (!slug) return { error: "no GitHub remote on this universe, so there is no pull request to read replies from" };
+
+  const all = [...(await readFindings(cfg.path, prKey(cfg, pr))).values()];
+  const published = all.filter((f) => f.posted?.key);
+  if (!published.length) return { universe: cfg.universe, pr, findings: [], note: "nothing from here has been published to the pull request" };
+
+  const threads = fetchReviewThreads(`${slug.owner}/${slug.repo}`, Number(pr));
+  if ("error" in threads) return threads;
+
+  // Ours is the ROOT comment of its thread; everything after it is the reply.
+  const byComment = new Map<number, typeof threads[number]>();
+  for (const t of threads) for (const id of t.commentIds) byComment.set(id, t);
+
+  const out = [];
+  for (const f of published) {
+    const t = byComment.get(Number(f.posted!.key));
+    if (!t) continue;
+    const replies = t.comments.filter((c) => c.databaseId !== Number(f.posted!.key));
+    if (!replies.length && !t.isResolved) continue;
+    out.push({
+      id: f.id,
+      comment: f.comment,
+      url: f.posted!.url,
+      resolvedOnGitHub: t.isResolved,
+      resolvedBy: t.resolvedBy,
+      truncated: t.truncated,
+      replies: replies.map((c) => ({ by: c.author, at: c.createdAt, body: c.body })),
+    });
+  }
+  return { universe: cfg.universe, pr, findings: out };
 }
 
 export async function shareWalkthrough(root: string, w: PrWalkthrough) {

@@ -839,6 +839,16 @@ export interface ReviewThread {
   line: number | null;
   /** REST ids of the comments in it — ours is the root, replies may follow. */
   commentIds: number[];
+  /**
+   * The conversation itself, oldest first — including the submitter's replies.
+   *
+   * Fetched because a reply to a published finding is information the reviewer
+   * needs and GitHub is the only place it exists. Read-only and one-directional:
+   * the sidecar hosts the REVIEWERS' discussion, this brings the AUTHOR's half of
+   * it back. `truncated` when the thread is longer than one page was read to.
+   */
+  comments: { databaseId: number; author: string | null; body: string; createdAt: string }[];
+  truncated: boolean;
 }
 
 export function fetchReviewThreads(slug: string, number: number, gh_: typeof gh = gh): ReviewThread[] | { error: string } {
@@ -847,7 +857,7 @@ export function fetchReviewThreads(slug: string, number: number, gh_: typeof gh 
   let after: string | null = null;
   for (let page = 0; page < 40; page++) {
     const args = ["api", "graphql", "-f",
-      "query=query($o:String!,$r:String!,$n:Int!,$after:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:50,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved resolvedBy{login} path line comments(first:5){nodes{databaseId}}}}}}}",
+      "query=query($o:String!,$r:String!,$n:Int!,$after:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:50,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved resolvedBy{login} path line comments(first:100){pageInfo{hasNextPage} nodes{databaseId author{login} body createdAt}}}}}}}",
       "-f", `o=${owner}`, "-f", `r=${repo}`, "-F", `n=${number}`];
     if (after) args.push("-f", `after=${after}`);
     const r = gh_(args);
@@ -855,10 +865,19 @@ export function fetchReviewThreads(slug: string, number: number, gh_: typeof gh 
     try {
       const t = JSON.parse(r.out).data.repository.pullRequest.reviewThreads;
       for (const n of t.nodes) {
+        const nodes = (n.comments?.nodes ?? []) as { databaseId: number; author?: { login?: string }; body?: string; createdAt?: string }[];
         out.push({
           id: n.id, isResolved: !!n.isResolved, resolvedBy: n.resolvedBy?.login ?? null,
           path: n.path ?? null, line: n.line ?? null,
-          commentIds: (n.comments?.nodes ?? []).map((c: { databaseId: number }) => c.databaseId).filter(Boolean),
+          commentIds: nodes.map((c) => c.databaseId).filter(Boolean),
+          comments: nodes.map((c) => ({
+            databaseId: c.databaseId, author: c.author?.login ?? null,
+            body: c.body ?? "", createdAt: c.createdAt ?? "",
+          })),
+          // Said rather than hidden, for the same reason the thread LIST refuses a
+          // partial read: a conversation returned as complete when it is not is a
+          // claim about the part nobody looked at.
+          truncated: !!n.comments?.pageInfo?.hasNextPage,
         });
       }
       if (!t.pageInfo.hasNextPage) return out;

@@ -755,6 +755,12 @@ const tools: Tool[] = [
     handler: (a, c) => shared.reportOnFinding(c.universe.path, a.pr, a.id, a.result, a.detail, a.files),
   },
   {
+    name: "inbound_replies",
+    description: "What the pull request's SUBMITTER said back about findings this team published. Read-only and one-directional: the reviewers' discussion lives on the sidecar (GitHub cannot host a conversation about code the branch never touched, or about an ABSENCE), but the person who has to fix it answers on the pull request and that answer exists nowhere else. Read it before acting on a finding — they may have already explained why it is not a defect.",
+    inputSchema: obj({ pr: { type: "string" } }, ["pr"]),
+    handler: (a, c) => shared.inboundReplies(c.universe.path, a.pr),
+  },
+  {
     name: "shared_walkthroughs",
     description: "Walkthroughs of a pull request written by anyone on the team. Pass `head` to get the one written against the commit you are looking at — a walkthrough about another commit is reported as stale rather than shown, because it is about something else.",
     inputSchema: obj({ pr: { type: "string" }, head: { type: "string" } }, ["pr"]),

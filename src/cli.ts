@@ -204,7 +204,7 @@ async function cmdPrIngest(root: string, prInput: string, files: string[], dryRu
 }
 
 function usage(): never {
-  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap orphans  [repo]              findings/reviews pointing at code the tree no longer has\n  codemap pr-resolve <pr> [--repo path] [--confirm] [--pull] [--anyone]\n                                              sync which review conversations are settled\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n                     [--only id,id,…]  publish exactly these, whatever their disposition\n                     [--summary TEXT] [--approve | --request-changes]\n  codemap pr-triage <pr> [--repo path]        derive stakes+complexity for the PR's symbols\n  codemap pr-pull-viewed <pr|--all> [--repo path] [--dry-run] [--force] [--limit N] [--max-prs N]\n                                              import GitHub's viewed ticks as `viewed`\n  codemap analyze marten [repo] [--verbose] [--emit]\n\n  Shared review (a sidecar repo; set CODEMAP_SIDECAR or .codemap/sidecar):\n  codemap sync     [repo]              send and receive shared review state\n  codemap shared   <pr> [repo] [--queue] [--json]   findings on the sidecar\n  codemap peers    [repo]              who else is on this sidecar, and scheme drift");
+  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap orphans  [repo]              findings/reviews pointing at code the tree no longer has\n  codemap pr-resolve <pr> [--repo path] [--confirm] [--pull] [--anyone]\n                                              sync which review conversations are settled\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n                     [--only id,id,…]  publish exactly these, whatever their disposition\n                     [--summary TEXT] [--approve | --request-changes]\n  codemap pr-triage <pr> [--repo path]        derive stakes+complexity for the PR's symbols\n  codemap pr-pull-viewed <pr|--all> [--repo path] [--dry-run] [--force] [--limit N] [--max-prs N]\n                                              import GitHub's viewed ticks as `viewed`\n  codemap analyze marten [repo] [--verbose] [--emit]\n\n  Shared review (a sidecar repo; set CODEMAP_SIDECAR or .codemap/sidecar):\n  codemap sync     [repo]              send and receive shared review state\n  codemap shared   <pr> [repo] [--queue] [--json]   findings on the sidecar\n  codemap peers    [repo]              who else is on this sidecar, and scheme drift\n  codemap replies  <pr> [repo]         what the PR submitter said back about published findings");
   process.exit(2);
 }
 
@@ -248,6 +248,19 @@ async function cmdShared(pr: string, root: string, opts: { queue?: boolean; json
     if (marks) console.log(`      ${marks}`);
   }
   if (!r.findings.length) console.log("  (nothing)");
+}
+
+async function cmdReplies(pr: string, root: string): Promise<void> {
+  const r = await shared.inboundReplies(root, pr) as Record<string, any>;
+  if (r.error) { console.error(r.error); process.exit(1); }
+  if (r.note) { console.log(r.note); return; }
+  if (!r.findings.length) { console.log("no replies yet"); return; }
+  for (const f of r.findings) {
+    console.log(`${f.id}${f.resolvedOnGitHub ? `  [resolved on GitHub by ${f.resolvedBy ?? "?"}]` : ""}  ${f.url ?? ""}`);
+    console.log(`   you: ${(f.comment ?? "").slice(0, 120)}`);
+    for (const rep of f.replies) console.log(`   ${rep.by ?? "(unknown)"}: ${rep.body.replace(/\s+/g, " ").slice(0, 200)}`);
+    if (f.truncated) console.log("   … thread longer than was read; open it on GitHub");
+  }
 }
 
 async function cmdAnalyze(analyzer: string, root: string, verbose: boolean, emit: boolean): Promise<void> {
@@ -481,6 +494,8 @@ if (positionals[0] === "analyze") {
     await cmdShared(positionals[1] ?? "", resolve((values.repo as string | undefined) ?? positionals[2] ?? "."), {
       queue: Boolean(values.queue), json: Boolean(values.json),
     });
+  } else if (positionals[0] === "replies") {
+    await cmdReplies(positionals[1] ?? "", resolve((values.repo as string | undefined) ?? positionals[2] ?? "."));
   } else if (positionals[0] === "orphans") {
     await cmdOrphans(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."));
   } else if (positionals[0] === "prs") {

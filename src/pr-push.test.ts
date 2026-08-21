@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { diffLineRanges, diffHunks } from "./git.js";
-import { planPrPush, isAgentAuthored, isElected, pushVerdict, executePrPush, placeAnnotation, publishStateOf, buildComments, citedLine, planResolveSync, pushResolvedToGitHub, pullResolvedFromGitHub, type ReviewThread } from "./pr-push.js";
+import { planPrPush, isAgentAuthored, isElected, pushVerdict, executePrPush, placeAnnotation, publishStateOf, buildComments, citedLine, planResolveSync, pushResolvedToGitHub, pullResolvedFromGitHub, fetchReviewThreads, type ReviewThread } from "./pr-push.js";
 import { readPushes, writePush } from "./store.js";
 import type { Annotation } from "./schema.js";
 
@@ -695,7 +695,7 @@ test("GitHub refusing a self-review says the comments were lost with it", () => 
  * comment, so a settled finding sits as an open conversation on their pull request.
  */
 const thread = (over: Partial<ReviewThread> = {}): ReviewThread =>
-  ({ id: "T1", isResolved: false, resolvedBy: null, path: "a.cs", line: 12, commentIds: [901], ...over });
+  ({ id: "T1", isResolved: false, resolvedBy: null, path: "a.cs", line: 12, commentIds: [901], comments: [], truncated: false, ...over });
 
 const posted = (over: Partial<Annotation> = {}) =>
   ann({ postedRef: { pr: 264, at: "n", placement: "inline", commentId: 901 }, ...over });
@@ -775,4 +775,50 @@ test("pushing resolves each thread, and one failure does not stop the rest", asy
   assert.deepEqual(r.resolved, ["b"], "the second still went");
   assert.equal(r.errors.length, 1);
   assert.match(r.errors[0]!, /a\.cs:12/, "and the failure names where it was");
+});
+
+
+// --- inbound replies: the author's half of the conversation --------------------
+
+test("a thread carries its comments, their authors, and whether it was cut short", () => {
+  // The sidecar hosts the reviewers' discussion; this brings back the reply from
+  // the person who has to fix it, which exists nowhere else.
+  const page = {
+    data: { repository: { pullRequest: { reviewThreads: {
+      pageInfo: { hasNextPage: false, endCursor: null },
+      nodes: [{
+        id: "T1", isResolved: false, resolvedBy: null, path: "a.cs", line: 12,
+        comments: {
+          pageInfo: { hasNextPage: true },
+          nodes: [
+            { databaseId: 901, author: { login: "izzie" }, body: "missing tenant predicate", createdAt: "2026-08-20T10:00:00Z" },
+            { databaseId: 902, author: { login: "submitter" }, body: "fixed in abc123", createdAt: "2026-08-20T11:00:00Z" },
+          ],
+        },
+      }],
+    } } } },
+  };
+  const r = fetchReviewThreads("o/r", 1, (() => ({ ok: true, out: JSON.stringify(page), err: "" })) as any);
+  assert.ok(!("error" in r));
+  if ("error" in r) return;
+  assert.equal(r.length, 1);
+  assert.deepEqual(r[0]!.commentIds, [901, 902]);
+  assert.equal(r[0]!.comments[1]!.author, "submitter");
+  assert.equal(r[0]!.comments[1]!.body, "fixed in abc123");
+  assert.equal(r[0]!.truncated, true, "a conversation read to the end of one page is not a complete one");
+});
+
+test("a missing author is null rather than a fabricated name", () => {
+  // Deleted accounts and bots come back without a login.
+  const page = {
+    data: { repository: { pullRequest: { reviewThreads: {
+      pageInfo: { hasNextPage: false },
+      nodes: [{ id: "T1", isResolved: true, resolvedBy: { login: "izzie" }, path: null, line: null,
+        comments: { pageInfo: { hasNextPage: false }, nodes: [{ databaseId: 5, author: null, body: "x", createdAt: "t" }] } }],
+    } } } },
+  };
+  const r = fetchReviewThreads("o/r", 1, (() => ({ ok: true, out: JSON.stringify(page), err: "" })) as any);
+  if ("error" in r) return assert.fail(r.error);
+  assert.equal(r[0]!.comments[0]!.author, null);
+  assert.equal(r[0]!.truncated, false);
 });
