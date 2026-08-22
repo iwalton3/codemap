@@ -336,12 +336,19 @@ the product's north star running backwards.
 
 Each step is shippable and independently revertible.
 
+**Order corrected.** An earlier draft finalized the schema before receipts
+existed, which would have meant a second migration and would have kept the
+`lost`-instead-of-`unverifiable` P1 alive on purpose in the interim. Steps 4 and 5
+now sit behind `PROPOSAL-provenance.md`; steps 0–1 do not, and can proceed in
+parallel with it.
+
 0. **Split the pure folds out first.** A storage-free module holding the folds,
    the shared model types, and version evaluation; `store.ts` above it owning
    SQLite only. Without this, `store.ts` importing the folds closes a cycle against
    `shared-docs.ts`'s existing import of `winningVersionAt` — and this repo's
    import cycles fail with no diagnostic at all.
 1. **Tables, key, re-fold-on-miss, behind `store.ts`.** No caller changes.
+   *(Basic cache mechanics only — the table SHAPES wait for step 3a.)*
    The fold stays the authority and the view is rebuildable — which is *not* the
    same as correctness-irrelevant. A materializer bug returns wrong state, and
    "it's only a cache" is exactly the sentence that would stop someone testing it
@@ -351,7 +358,11 @@ Each step is shippable and independently revertible.
    scope.
 2. **Point `ops-shared` reads at the store functions.** `ops-shared` becomes thin,
    which is what it should have been.
-3. **Lift the citation edges and do the anchor join in SQL.** Delete `liveHashes`
+3a. **Profiles, generations, receipts** (`PROPOSAL-provenance.md`), then
+   generation-based sharding and the sidecar-root lock. Materialized citation,
+   finding and note rows need receipt columns in their FIRST schema so read-time
+   SQL can refuse an incompatible join before making it.
+3b. **Lift the citation edges and do the anchor join in SQL.** Delete `liveHashes`
    and the `Set`-of-everything in `classifyCitations`. This is the performance win.
 4. **Single doc verdict from `evalVersion`;** delete the three re-derivations.
 5. **Expose shared docs/notes through the ordinary read ops.** The consistency win.
@@ -462,12 +473,13 @@ fine; claiming materialization as their completion is not.
    was wrong in the other direction.
 7. ~~Authority and merge semantics for local plus shared rows.~~ **Closed: the
    outbox model in §7.** What replaces it as the largest open item is below.
-8. **Immutable producer provenance on every event, plus immutable derivation
-   receipts on every copied code identity or hash.** Broader than "event envelope
-   provenance" — see §13. This is the real remaining design work; it has outgrown
-   this document and should probably become its own.
-9. `comparableHashes` fails OPEN on an unparseable hash (§13). Small, live, and
-   separable from all of the above.
+8. ~~Immutable producer provenance, plus derivation receipts.~~ **Moved to
+   `PROPOSAL-provenance.md`.** It outgrew this document. Steps 1 and the basic
+   cache mechanics do not depend on it; steps 4–5 do, which is why the sequencing
+   below changed.
+9. ~~`comparableHashes` fails OPEN on an unparseable hash.~~ **Fixed in `6d4c40d`.**
+   `hashSchemeOf` returns `number | null` and requires the whole form; an
+   unparseable value is comparable to nothing, including another unparseable one.
 
 ## 10. Open questions/revisions
 
