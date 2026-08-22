@@ -331,8 +331,14 @@ derivation this machine has used, so one-way-ness costs detail rather than an
 answer. `hashSchemeOf`'s comment now says what is actually true: the SCHEME NUMBER
 has one spelling, the string as a whole deliberately does not.
 
-What remains is the switch itself — teaching `hashTokens` to emit — and that is a
-decision about timing rather than code.
+What remains is the switch, and it is two changes rather than one: `hashTokens`
+emits the annotation, **and** `comparableHashes` starts consuming it. Today that
+function compares only `hashSchemeOf`, so two annotated hashes carrying different
+fingerprints would read as comparable and their differing digests would report as
+drift — the exact failure the annotation exists to prevent. Landing emission alone
+would write an annotation nothing honours.
+
+With both, it is a timing decision rather than a code one.
 
 **And the comparison precondition is met.** All fifteen operations are classified and
 converted, and `annotated-hash.test.ts` exercises the annotated form by hand —
