@@ -1,10 +1,10 @@
 # Proposal: immutable provenance — profiles, generations, and receipts
 
 Status: **draft.** Split out of `PROPOSAL-sidecar-materialization.md`, where it had
-grown from an open question into the larger of the two designs. Six review rounds
+grown from an open question into the larger of the two designs. Seven review rounds
 are folded in; §9 records what each round changed.
 
-Reviewed against `worktree-shared-review-hashscheme` at `6bf3686`.
+Reviewed against `worktree-shared-review-hashscheme` at `271e608`.
 
 ## 1. The rule
 
@@ -272,19 +272,15 @@ profile again, which is what the single-envelope-field design bought.
 
 ### `unverifiable` is not one state
 
-One boolean cannot carry a recovery action, and these need different ones:
-
-```
-legacy_no_receipt          incompatible_hash_scheme     unsupported_event_schema
-missing_profile            grammar_mismatch             corrupt_receipt
-incompatible_anchor_scheme
-```
+One boolean cannot carry a recovery action, and a value that cannot be compared
+has several distinct reasons that call for different ones. **The authoritative
+list is the table in §6** — it is not repeated here, because an earlier draft did
+repeat it and the copy went stale the moment the table changed.
 
 Re-witnessing and relocation are **not** interchangeable. Provenance
 incompatibility does not prove the code moved — an anchor receipt carries no
 locator evidence — so offering "relocate" for a scheme mismatch invites exactly the
-false re-targeting that `witness`/`sourceRef` exist to prevent. `missing_profile`
-resolves itself when the profile arrives and needs no user action at all.
+false re-targeting that `witness`/`sourceRef` exist to prevent.
 
 This is also why the existing `unverifiable` status must not simply absorb these.
 It currently means "confirmed under an older hashing scheme", which is one of seven
@@ -322,7 +318,8 @@ against `@work` anchor rows, and those rows carry no profile and no language tod
 — so they may themselves have been minted under an older grammar or runtime, and
 comparing against them recreates the relabeling defect on the reader's side. So:
 
-- one derivation profile per anchor REF, `@work` and every snapshot;
+- a derivation reference on each anchor ROW (see below — per-ref was tried and
+  withdrawn);
 - the actual language on each anchor row;
 - an anchor receipt on every shared target;
 - **one row per accepted hash**, with its own receipt — a single citation can hold
@@ -392,12 +389,37 @@ So:
 ```sql
 ALTER TABLE anchors ADD COLUMN profile  TEXT;   -- NULL = derived before receipts
 ALTER TABLE anchors ADD COLUMN language TEXT;   -- GrammarName selector; see below
+CHECK ((profile IS NULL) = (language IS NULL))  -- see "half a receipt", below
 ```
 
 Per-row costs a repeated short id on ~10k rows and buys correctness in both cases
-above: an incremental update leaves old rows' provenance alone and stamps only what
-it derived, and an orphan keeps the profile it was evicted under. `anchor_ref`
-disappears as a provenance mechanism.
+above. Read cost is not the objection: the hot lookup still goes through the
+existing `(ref, id)` primary key, and resolving a profile is an indexed hit on a
+registry with a handful of rows.
+
+**The real cost is the seam, and it is larger than two columns.** `Anchor` is the
+currency between the indexer, `sync.ts`, the store and orphan retention, and it has
+no provenance fields. `rowToAnchor` builds an `Anchor` from a fixed column list;
+`replaceAnchors` does `DELETE FROM anchors WHERE ref = ?` and re-inserts every row
+from `Anchor[]`; and the incremental updater round-trips *all* anchors — old and
+new — through exactly that path. So adding columns alone would have them **erased
+on the first incremental update**, which is the opposite of what per-row provenance
+is for.
+
+So this requires `Anchor.derivation?: DerivationRef` threaded through the seam —
+indexer, sync, store, `retainOrphans`, and every site that constructs an `Anchor` —
+or write paths that update anchors in place instead of replacing them. The first is
+honest and the second fights the existing design. Either way it is a change to the
+`store.ts` seam's currency, not an `ALTER TABLE`.
+
+**Half a receipt is not a receipt.** Two independent nullable columns admit
+`profile IS NULL, language IS NOT NULL` and its converse, which have no meaning —
+a crash, a partial migration or a buggy writer can produce one. The `CHECK` above
+makes it unrepresentable; where a migration cannot add the constraint, a reader
+must classify either half-populated form as `corrupt_receipt` rather than guessing
+which half to believe.
+
+`anchor_ref` disappears as a provenance mechanism.
 
 `snapshots` keeps its `scheme`/`hash_scheme` columns as the cheap "is this whole
 cache stale" check it already is — that is a different question from "what derived
@@ -420,17 +442,31 @@ reconstructs a profile, so:
 
 - **Never stamp existing rows with the current profile.** That is the §2 defect
   performed deliberately.
-- **Reindex `@work`** to populate it. Cheap, and `check` already does it on
-  connect. If the reindex fails, the rows stay NULL rather than being guessed at.
-- **Rebuild cached snapshots lazily** under the current profile, which
-  `staleSchemeSnapshots` already drives.
+- **Reindex `@work`** to populate it — a genuine full reindex, gated on a store
+  migration marker. **Not `check`.** `check` calls `applyIndexUpdate`, whose
+  contract explicitly never rehashes an existing anchor; `init` is the full reset.
+  An earlier draft claimed connect already did this, which would have left every
+  existing row NULL forever while reporting success.
+- **Rebuild cached snapshots** — but nothing currently drives that either.
+  `staleSchemeSnapshots` compares only the two numeric schemes, and `readSnapshot`
+  accepts a snapshot on the same basis, so a pre-migration snapshot with current
+  schemes and NULL per-row provenance reads as usable indefinitely. It needs a
+  snapshot-level provenance marker, or `readSnapshot` rejecting refs whose rows are
+  NULL. **Do not bump a derivation scheme to force it** — that is the borrowed
+  signal §7 rejects, and it would rebuild caches in universes that have no sidecar.
 - **Leave orphans legacy forever.** Their source may not exist any more, so their
   provenance is genuinely unknown and must read that way.
 
-A NULL `profile` is `legacy_no_receipt` — not `missing_profile`. The earlier draft
-said an existing store would have "a row with no profile", which was doubly wrong:
-under `anchor_ref` with `NOT NULL` it would have had **no row at all**, and the
-state it maps to is the legacy one, not the waiting-on-a-pull one.
+A NULL `profile` on an anchor is `legacy_live_derivation`, **not**
+`legacy_no_receipt`. They look alike and their repairs differ: a legacy stored
+receipt needs re-witnessing, while a legacy live index needs the reader to reindex
+their own code. One label that maps to two actions is precisely the failure typed
+states were introduced to fix, so the reader must also carry which operand was
+missing, not only that something was.
+
+The earlier draft called this `missing_profile`, which was doubly wrong: under
+`anchor_ref` with `NOT NULL` an old store would have had **no row at all**, and the
+state is a legacy one rather than the waiting-on-a-pull one.
 
 ### Three levels, not two
 
@@ -446,7 +482,7 @@ So there is a middle level:
 ```
 scope    complete | partial | blocked        why an ANSWER SET may be short
 entity   complete | incomplete(reasons)      why THIS record may be wrong
-value    six states (below)                  why THIS field cannot be compared
+value    seven states (below)                why THIS field cannot be compared
 ```
 
 ```sql
@@ -465,7 +501,20 @@ CREATE TABLE IF NOT EXISTS shared_quarantine (
   reason TEXT NOT NULL, detail TEXT, at TEXT,
   PRIMARY KEY (scope, event_id)
 );
+
+-- Entity status is read by subject and only by subject; the primary key cannot
+-- serve it, so without this every such read scans the scope's quarantines.
+CREATE INDEX IF NOT EXISTS ix_shared_quarantine_subject
+  ON shared_quarantine(scope, subject) WHERE subject IS NOT NULL;
 ```
+
+**`subject` must be a protocol invariant, not a hope.** It is knowable today
+because it sits in the stable envelope rather than in `data`, and the entity level
+depends on that staying true: `sidecarProtocol` governs an envelope containing
+`id`, `subject`, generation and causal fields, and `eventSchema` governs **only**
+the payload. Without that split, a future schema could move `subject` and every
+unsupported-schema event would force scope-wide uncertainty instead of naming what
+it touched.
 
 `subject` is what makes the middle level derivable rather than a fourth thing to
 maintain: an entity is `incomplete` exactly when a quarantined event names it.
@@ -520,7 +569,8 @@ did cannot be trusted to be in the right order.
 
 | state | what happened | recovery |
 |---|---|---|
-| `legacy_no_receipt` | derived before receipts existed, or provenance genuinely unknown | re-witness at a current profile |
+| `legacy_no_receipt` | a stored receipt predates receipts existing | re-witness at a current profile |
+| `legacy_live_derivation` | the reader's own `@work`/snapshot rows have no provenance | **reindex** — the gap is on this machine, not in the record |
 | `missing_profile` | the profile it names is not here **yet** | none while the registry is incomplete — see below |
 | `dangling_profile` | the registry is complete and the profile is still absent | a person: the writer published a reference to something that does not exist |
 | `incompatible_anchor_scheme` | ids derived differently | re-witness; **never** relocate |
@@ -540,10 +590,12 @@ calling it self-healing would leave it invisible forever. The registry's own
 completeness is what distinguishes them, which is another reason it needs its own
 materialized state rather than living inside a scope's cache.
 
-Every recovery above except the last two is **re-witness, never relocate.** None of
-them is evidence the code moved — an anchor receipt carries no locator — so
-offering relocation for a derivation mismatch invites exactly the false
-re-targeting `witness`/`sourceRef` exist to prevent.
+Where a recovery is a person's action at all, it is **re-witness or reindex, never
+relocate.** `missing_profile` needs nothing, `dangling_profile` and
+`corrupt_receipt` need somebody to look, and the rest are "establish this fact at a
+profile I can read". None is evidence the code moved — an anchor receipt carries no
+locator — so offering relocation for a derivation mismatch invites exactly the
+false re-targeting `witness`/`sourceRef` exist to prevent.
 
 **Publication preserves receipts unchanged**, alongside the source version id and
 `createdAt`. Structural deduplication needs the id; *semantic* deduplication —
@@ -768,3 +820,11 @@ and the corrections are more instructive than the result.
    always the answer, and §1 already said so. Two open questions dissolved with the
    wrong design rather than being answered, and `blocked` turned out to be two
    situations wearing one name.
+
+8. **Round 8** — the first follow-up on a live thread, and it found the revision
+   worse than the thing it replaced in one respect: per-row provenance is right as
+   a data model and **physically impossible on the current seam**, because `Anchor`
+   carries no provenance and `replaceAnchors` reconstructs every row from it. Two
+   columns would be erased by the first incremental update. Also caught me leaving
+   the withdrawn design in force above the archive boundary — the exact hazard I
+   had filed against this document two rounds earlier and then committed myself.
