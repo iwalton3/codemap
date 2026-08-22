@@ -470,6 +470,26 @@ CREATE TABLE IF NOT EXISTS shared_quarantine (
 `subject` is what makes the middle level derivable rather than a fourth thing to
 maintain: an entity is `incomplete` exactly when a quarantined event names it.
 
+**Except that not every discard has a subject, or an id.** Found while writing
+this, not in review. `readShard` drops on three different paths and only the last
+can be recorded as written:
+
+| discard | has id? | has subject? | recordable |
+|---|---|---|---|
+| `JSON.parse` throws — torn or stitched line | no | no | **not at all** — it never became an event |
+| `wellFormed` fails — parsed, bad envelope | maybe | maybe | partially |
+| fold rejects it — unsupported schema, ratchet | yes | yes | fully |
+
+Two consequences. `shared_quarantine` is keyed `(scope, event_id)`, so a torn line
+has no key to file under; and both of the first two paths happen inside
+`readShard`, which returns only survivors, so the fold cannot count what it never
+saw. `seen` has to be counted at the READ layer and `readShard` has to report its
+discards — a signature change to a function every scope read goes through.
+
+That does not sink the model, but it does mean `seen - folded - quarantined` is a
+real quantity ("lines nobody can attribute") that the schema must name rather than
+leave as arithmetic. An unattributable line is still a reason a scope is `partial`.
+
 **`partial` no longer claims the remainder is sound** — that was the false part.
 It claims the remainder is *everything that could be applied*, and the entities a
 quarantined event named are individually marked. `corrupt_receipt` sits at both
