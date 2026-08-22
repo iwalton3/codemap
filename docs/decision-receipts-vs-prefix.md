@@ -44,10 +44,22 @@ inside a hash can describe it. Only a receipt beside the id can.
 `hashTokens` emits `h2:<fp>:sha256:<digest>`, where `fp` is a short digest over
 (`hashScheme`, `parserIntegrity`, `grammarDigest`).
 
-**Cost.** No durable schema changes at all — every shape above still holds strings.
-`hashTokens` changes in one place. The 16 sites that compare hashes with `===` or
-`.includes` must move behind one helper, because a legacy `h2:sha256:ABC` and a new
-`h2:<fp>:sha256:ABC` describe the *same body* and are not string-equal.
+**Cost.** No durable schema changes — every shape above still holds strings. The
+sites that compare hashes must move behind a helper, because a legacy
+`h2:sha256:ABC` and a new `h2:<fp>:sha256:ABC` describe the *same body* and are not
+string-equal.
+
+**The count in an earlier draft of this document was wrong, and wrong in a way
+worth recording.** It said sixteen sites, from a grep written around `===` and
+`.includes` — so it structurally could not see the eight that use `!==`, including
+`stale.ts:81`, which is the core staleness path. The enumeration was as good as its
+search pattern and was presented as if it were complete. There are about
+twenty-four, eight of them still unexamined.
+
+`hashTokens` also does not change "in one place": the fingerprint is
+grammar-specific and `hashTokens` receives only tokens, so the tag has to reach it,
+and `comparableHashes` has to start consuming the parsed annotation, which it does
+not yet.
 
 That refactor is worth doing on its own terms. Raw `===` on a hash string is
 precisely what makes any format change hazardous, and this session has already
@@ -55,9 +67,12 @@ shipped two.
 
 **What it buys that A does not, and cheaply.**
 
-- **Local universes.** Most stores have no sidecar and never will. They get
-  derivation-aware staleness under B and *never* get it under A, because A's
-  vehicle is a sidecar event.
+- **Local universes.** Most stores have no sidecar and never will. **Corrected:**
+  an earlier draft said they could never be protected under A. That is false — A
+  changes the three durable shapes, and two of them are local, so A can protect
+  them; it is more expensive there, not impossible. The honest claim is cost, not
+  capability, and "they are not alternatives" below is therefore overstated:
+  A-for-both remains a real option.
 - **The sidecar for free.** Shared doc citations store hashes as strings in event
   payloads. Under B those strings carry the fingerprint across machines with **no
   event-format change** — the cross-machine case falls out rather than being built.
@@ -88,11 +103,14 @@ The comparison above assumes A and B answer the same question. They do not.
 - **Anchor ids** — a shared target pointing at an id derived under another scheme.
   B cannot touch this. A must.
 
-So the shape that falls out is **B for hashes, A for ids only** — which deletes
-`HashReceipt` from §5 entirely and leaves `AnchorReceipt`. That is a genuine
-reduction of the specified design, in the same direction as the round-9 cut, and it
-arrives at the answer from the opposite side: not "what can we remove" but "what is
-each mechanism actually able to describe".
+So the shape that *may* fall out is **B for hashes, A for ids only** — which would
+delete `HashReceipt` from §5 and leave `AnchorReceipt`.
+
+Stated more carefully than the first draft did: B genuinely cannot describe an
+anchor id, so **A is irreducible for ids**. But A is not incapable for hashes, only
+dearer, so the mixed design is a cost argument rather than a forced decomposition.
+That distinction matters, because "they solve different problems" is exactly the
+conclusion that lets somebody keep both mechanisms and cut neither.
 
 It also unblocks §8's "the other comparison sites are blocked on the sidecar work".
 They were only ever blocked because provenance was made a parallel structure

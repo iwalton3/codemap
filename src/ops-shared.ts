@@ -513,7 +513,11 @@ export async function confirmSharedDoc(root: string, nodeId: string, versionId?:
   const added: string[] = [];
   for (const c of v.citations) {
     const hash = live.get(c.anchorId);
-    if (!hash || c.acceptedHashes.some((h) => sameBody(h, hash))) continue;
+    // EXACT, like the insert this feeds (`shared-docs.ts`). Skipping by BODY would
+    // suppress the event that carries a better-annotated spelling of a hash the set
+    // already holds — so the set could never upgrade, and protecting the insert
+    // while the producer stayed body-based would have been protection in name only.
+    if (!hash || c.acceptedHashes.includes(hash)) continue;
     await acceptDocHash(b.cfg.path, b.cfg.universe, b.actor, nodeId, v.versionId, c.anchorId, hash);
     added.push(c.anchorId);
   }

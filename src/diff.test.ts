@@ -6,9 +6,14 @@ import { join } from "node:path";
 import type { Anchor, DerivationTag, LogicalNode } from "./schema.js";
 import { writeSnapshot, writeNode, dropSnapshot } from "./store.js";
 import { computeDiff } from "./diff.js";
+import { fixtureHash } from "./fixture-hash.js";
 
 function anchor(id: string, symbol: string, bodyHash: string): Anchor {
-  return { id, file: "src/pay.ts", symbolPath: [symbol], kind: "function", bodyHash, lastVerifiedCommit: null };
+  // Through `fixtureHash`, because `sameBody` refuses a value that is not a hash —
+  // a bare tag like "h1" would compare unequal to itself and every symbol would
+  // read as changed. The tags stay readable; they just carry a real digest.
+  return { id, file: "src/pay.ts", symbolPath: [symbol], kind: "function",
+    bodyHash: fixtureHash(bodyHash), lastVerifiedCommit: null };
 }
 
 // computeDiff resolves each ref via `git rev-parse`; in a non-git temp dir that

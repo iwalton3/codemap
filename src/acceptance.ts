@@ -17,7 +17,7 @@
  */
 
 import type { AcceptedEntry, AcceptanceVia } from "./schema.js";
-import { comparableHashes, sameBody, bodyDigest } from "./normalize.js";
+import { comparableHashes, sameBody, bodyKey } from "./normalize.js";
 
 export interface Acceptance {
   via: AcceptanceVia;
@@ -157,11 +157,13 @@ export function recordAcceptance(entries: AcceptedEntry[], next: AcceptedEntry, 
   const out = [...kept, next];
   while (out.length > cap) {
     const counts = new Map<string, number>();
-    // Keyed by DIGEST, not by the string: two annotated spellings of one body must
-    // land on one key, or "how many distinct bodies are here" is wrong and the
-    // eviction below drops the wrong entry.
-    for (const e of out) { const k = bodyDigest(e.bodyHash) ?? e.bodyHash; counts.set(k, (counts.get(k) ?? 0) + 1); }
-    const dup = out.findIndex((e) => (counts.get(bodyDigest(e.bodyHash) ?? e.bodyHash) ?? 0) > 1);   // oldest-first
+    // Keyed by (scheme, digest), not by the raw string and not by the digest alone.
+    // Two annotated spellings of one body must land on one key or the count of
+    // distinct bodies is wrong; but the DIGEST alone merges two schemes, and a
+    // scheme-1 body is not the same body as a scheme-2 one — it is an older
+    // derivation of possibly-different code. Merging them evicts the wrong entry.
+    for (const e of out) { const k = bodyKey(e.bodyHash); counts.set(k, (counts.get(k) ?? 0) + 1); }
+    const dup = out.findIndex((e) => (counts.get(bodyKey(e.bodyHash)) ?? 0) > 1);   // oldest-first
     out.splice(dup >= 0 ? dup : 0, 1);
   }
   return out;

@@ -24,15 +24,17 @@ test("effectiveAttestation resolves the two legacy defaults", () => {
 });
 
 test("witnessDrift reports only the anchors whose live hash moved", () => {
+  // Real digests, because `sameBody` refuses a value that is not a hash: a bare
+  // tag would compare unequal to itself and every witness would read as drift.
   const witnesses: BugWitness[] = [
-    { anchorId: "a1", bodyHash: "h1" },
-    { anchorId: "a2", bodyHash: "h2" },
-    { anchorId: "a3", bodyHash: "h3" },
+    { anchorId: "a1", bodyHash: fixtureHash("h1") },
+    { anchorId: "a2", bodyHash: fixtureHash("h2") },
+    { anchorId: "a3", bodyHash: fixtureHash("h3") },
   ];
-  const live = new Map([["a1", "h1"], ["a2", "h2_NEW"]]); // a3 absent from live
+  const live = new Map([["a1", fixtureHash("h1")], ["a2", fixtureHash("h2_NEW")]]); // a3 absent from live
   const drift = witnessDrift(witnesses, live);
   assert.deepEqual(drift.map((d) => d.anchorId).sort(), ["a2", "a3"]);
-  assert.equal(drift.find((d) => d.anchorId === "a2")!.now, "h2_NEW");
+  assert.equal(drift.find((d) => d.anchorId === "a2")!.now, fixtureHash("h2_NEW"));
   assert.equal(drift.find((d) => d.anchorId === "a3")!.now, "sha256:absent");
 });
 

@@ -154,9 +154,26 @@ export function derivationMark(hash: string): string | null {
  * never acquire a better-annotated form of a hash it already holds.
  */
 export function sameBody(a: string, b: string): boolean {
-  if (a === b) return true;
+  // Identical strings are the same body — but only if they ARE a body. An
+  // unrestricted shortcut made two identical malformed values compare clean while
+  // `comparableHashes` refuses them, which is the fail-open this codebase has
+  // already closed once. `ABSENT_HASH` is the one deliberate non-digest sentinel.
+  if (a === b) return a === ABSENT_HASH || bodyDigest(a) !== null;
   const da = bodyDigest(a);
   return da !== null && da === bodyDigest(b) && hashSchemeOf(a) === hashSchemeOf(b);
+}
+
+/**
+ * A Map/Set key that treats two spellings of one body as one entry.
+ *
+ * `(scheme, digest)` rather than the digest alone: a scheme-1 body is not the same
+ * body as a scheme-2 one, it is an older derivation of possibly-different code, and
+ * merging them makes "how many distinct bodies" wrong. Unparseable values key as
+ * themselves so they neither merge nor vanish.
+ */
+export function bodyKey(hash: string): string {
+  const d = bodyDigest(hash);
+  return d === null ? hash : `${hashSchemeOf(hash)}:${d}`;
 }
 
 /** Hash of an arbitrary string (used for ids / disambiguators). */
