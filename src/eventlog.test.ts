@@ -241,6 +241,52 @@ test("a writer apart from another records BOTH heads, and neither is dropped", (
   assert.ok(causal.saw(c.id, b.id), "bob saw dana");
 });
 
+/**
+ * A late arrival INSERTS. It never reorders what is already folded.
+ *
+ * This is the property a materialized fold depends on
+ * (`PROPOSAL-sidecar-materialization.md` §2): if inserting one event could permute
+ * the events around it, a cached fold could not be reasoned about scope by scope.
+ *
+ * It is ENTAILED by the determinism above, not independent of it — it falls out of
+ * "repeatedly take the lowest eligible id" over an immutable parent relation. Two
+ * attempts to falsify it (reversing the id tiebreak, and the single greedy sweep
+ * the comment in `sortEvents` warns against) both broke `sorting is deterministic`
+ * and left this passing. It is here because the materialization design cites this
+ * property by name, so the citation should fail loudly if determinism is ever
+ * weakened in a way that keeps that test green.
+ *
+ * Random DAGs rather than a hand-built case: the shapes that would break this are
+ * the ones nobody thinks to write down.
+ */
+test("inserting a late event never reorders the events already there", () => {
+  // A tiny deterministic PRNG — the suite must not depend on Math.random.
+  let seed = 12345;
+  const rand = (n: number) => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) % n;
+  const people = ["a@x", "b@x", "c@x", "d@x"];
+  const mint = () => String(rand(9999)).padStart(10, "0") + "-" + String(rand(1e6)).padStart(6, "0");
+
+  let insertedMidway = 0;
+  for (let trial = 0; trial < 400; trial++) {
+    const evs: LogEvent[] = [];
+    for (let i = 0; i < 12; i++) {
+      const parents: string[] = [];
+      for (let k = 0; k < rand(3) && evs.length; k++) parents.push(evs[rand(evs.length)]!.id);
+      evs.push(ev(mint(), parents.length ? { after: parents } : {}, people[rand(people.length)]));
+    }
+    const before = sortEvents([...evs]).map((e) => e.id);
+
+    const late = ev(mint(), rand(2) ? { after: [evs[rand(evs.length)]!.id] } : {}, people[rand(people.length)]);
+    const after = sortEvents([...evs, late]).map((e) => e.id);
+
+    assert.deepEqual(after.filter((x) => x !== late.id), before, "the late event displaced its neighbours");
+    if (after.indexOf(late.id) < before.length) insertedMidway++;
+  }
+  // Not a coincidence worth asserting a ratio on, but worth failing if it becomes
+  // zero: a run where every late event lands at the END is testing nothing.
+  assert.ok(insertedMidway > 0, "no late event landed mid-sequence, so nothing was exercised");
+});
+
 test("a bare `after` string still reads, so logs written before it was a list fold", () => {
   const a = ev("0000000001-aa", {}, "alice@x.com");
   const b = ev("0000000002-bb", { after: a.id }, "dana@x.com");   // the old one-id form
