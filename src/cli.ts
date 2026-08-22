@@ -291,8 +291,11 @@ async function cmdSharedDocs(root: string, json: boolean): Promise<void> {
     // Fresh = every citation's live body is one this version was confirmed against.
     const present = v.citations.filter((c: any) => c.present);
     const fresh = present.length > 0 && present.every((c: any) => c.matches);
+    // Distinguished from `stale` on purpose: "the code changed" and "these hashes
+    // predate a scheme bump" call for completely different actions.
+    const unverifiable = !fresh && present.length > 0 && present.some((c: any) => c.unverifiable);
     const missing = v.citations.length - present.length;
-    console.log(`  [${fresh ? "fresh" : "stale"}] ${v.title}  ${d.nodeId}  v${d.versions}  by ${v.by ?? "?"}`);
+    console.log(`  [${fresh ? "fresh" : unverifiable ? "unverified" : "stale"}] ${v.title}  ${d.nodeId}  v${d.versions}  by ${v.by ?? "?"}`);
     if (missing) console.log(`      ${missing} cited symbol(s) are not in this checkout`);
   }
   if (!r.docs.length) console.log("  (nothing shared yet — try `codemap publish-docs`)");

@@ -303,6 +303,13 @@ const docFresh = (v) => {
   const present = (v.citations ?? []).filter(c => c.present);
   return present.length > 0 && present.every(c => c.matches);
 };
+/**
+ * Confirmed under an older HASH_SCHEME, so it cannot be compared to this body.
+ * Deliberately NOT shown as stale: a migration re-hashes everything, and reading
+ * that as "the code changed" is the false staleness the scheme exists to prevent.
+ */
+const docUnverified = (v) => !docFresh(v) && (v.citations ?? []).some(c => c.present && c.unverifiable);
+const docState = (v) => docFresh(v) ? 'fresh' : docUnverified(v) ? 'unverified' : 'stale';
 
 class SharedDocsPage extends Component {
   static props = { params: {}, query: {} };
@@ -335,7 +342,7 @@ class SharedDocsPage extends Component {
       ${each(d.docs, row => html`
         <div class="frow">
           <div class="row" on-click="${() => { st.open = st.open === row.nodeId ? null : row.nodeId; }}">
-            ${when(!!row.resolved, () => html`<span class="prbadge ${docFresh(row.resolved) ? 'ok' : 'warnb'}">${docFresh(row.resolved) ? 'fresh' : 'stale'}</span>`)}
+            ${when(!!row.resolved, () => html`<span class="prbadge ${docFresh(row.resolved) ? 'ok' : docUnverified(row.resolved) ? '' : 'warnb'}">${docState(row.resolved)}</span>`)}
             <span class="fcomment">${row.resolved ? row.resolved.title : row.nodeId}</span>
             <span class="dim">${row.resolved?.by ?? ''} · v${row.versions}</span>
           </div>
@@ -345,7 +352,7 @@ class SharedDocsPage extends Component {
               <div class="ftext">${row.resolved.body}</div>
               ${each(row.resolved.citations, c => html`
                 <div class="corr">
-                  <span class="${c.present ? (c.matches ? 'ok' : 'warn') : 'bad'}">${c.present ? (c.matches ? 'matches' : 'drifted') : 'not in this checkout'}</span>
+                  <span class="${c.present ? (c.matches ? 'ok' : c.unverifiable ? 'dim' : 'warn') : 'bad'}">${c.present ? (c.matches ? 'matches' : c.unverifiable ? 'confirmed under an older hash scheme' : 'drifted') : 'not in this checkout'}</span>
                   <span class="dim">${c.anchorId} · ${c.accepted} accepted hash(es)</span>
                 </div>`, c => c.anchorId)}
               <div class="row">

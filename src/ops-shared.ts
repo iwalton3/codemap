@@ -9,6 +9,7 @@
 
 import type { Actor } from "./schema.js";
 import { requireActor, isAgentActor } from "./identity.js";
+import { comparableHashes } from "./normalize.js";
 import { resolveSidecar, scopeFor, type SidecarConfig } from "./sidecar-config.js";
 import { originSlug, headCommit, currentBranch } from "./git.js";
 import { fetchReviewThreads } from "./pr-push.js";
@@ -388,14 +389,19 @@ export async function sharedDocs(root: string, opts: { nodeId?: string } = {}) {
         versionId: v.versionId, type: v.type, title: v.title, summary: v.summary, body: v.body,
         removed: !!v.removed, generatedBy: v.generatedBy,
         by: doc.authors.get(v.versionId)?.principal,
-        citations: v.citations.map((c) => ({
-          anchorId: c.anchorId,
-          accepted: c.acceptedHashes.length,
-          // `fresh` for this citation: the live body is one this version has been
-          // confirmed against. The node's overall status is the AND of these.
-          matches: c.acceptedHashes.includes(live.get(c.anchorId) ?? ""),
-          present: live.has(c.anchorId),
-        })),
+        citations: v.citations.map((c) => {
+          const now = live.get(c.anchorId);
+          const present = now !== undefined;
+          const matches = present && c.acceptedHashes.includes(now);
+          // A citation confirmed under an older HASH_SCHEME cannot be compared to
+          // this body at all, and calling that DRIFT is the false staleness the
+          // scheme exists to prevent: a migration re-hashes everything, so every
+          // doc in the store would read stale on the first reindex without anyone
+          // touching the code. Found doing exactly that on a real repo — 985 of 985.
+          const unverifiable = present && !matches
+            && !c.acceptedHashes.some((h) => comparableHashes(h, now));
+          return { anchorId: c.anchorId, accepted: c.acceptedHashes.length, present, matches, unverifiable };
+        }),
       } : undefined,
     });
   }

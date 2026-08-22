@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { Actor, NodeVersion } from "./schema.js";
 import { sortEvents, type LogEvent } from "./eventlog.js";
 import { publishDocVersion, acceptDocHash, readDocs, resolveDoc, foldDocs, docScope } from "./shared-docs.js";
+import { comparableHashes } from "./normalize.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
 const dana: Actor = { principal: "dana@x.com" };
@@ -149,4 +150,18 @@ test("a malformed version, or one claiming another node, is skipped", () => {
 
 test("scopes are per universe", () => {
   assert.notEqual(docScope("acme/api"), docScope("acme/settlement"));
+});
+
+test("a citation confirmed under an older HASH_SCHEME is unverifiable, not drifted", () => {
+  // The migration case, found on a real repo: reindexing re-hashes everything, so
+  // every doc in the store read `stale` without anyone touching the code — 985 of
+  // 985. "The code changed" and "these hashes predate a scheme bump" call for
+  // completely different actions, so they must not render the same.
+  const accepted: string = "sha256:old";  // scheme 1, as written before the bump
+  const live: string = "h2:sha256:new";   // scheme 2, as the reindex minted it
+  assert.equal(accepted === live, false, "a plain compare calls this drift");
+  assert.equal(comparableHashes(accepted, live), false, "…but they are not comparable at all");
+
+  // Whereas a genuine edit under one scheme IS comparable, and IS drift.
+  assert.equal(comparableHashes("h2:sha256:a", "h2:sha256:b"), true);
 });
