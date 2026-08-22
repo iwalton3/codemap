@@ -31,8 +31,8 @@
 
 import type { Actor, BugSeverity, BugWitness } from "./schema.js";
 import { isAgentActor, isIndependent } from "./identity.js";
-import { appendEvents, mintId, readScope, causalHeads, causality,
-  type LogEvent, type Causality } from "./eventlog.js";
+import { appendEvents, mintId, readScope, causalHeads, causality, type LogEvent } from "./eventlog.js";
+import { applyRevision, newContestState, type Contested } from "./contest.js";
 
 /**
  * Lifecycle. `issued` is an agent's proposal; `created` is a claim somebody stands
@@ -133,11 +133,7 @@ export interface SharedFinding {
    * resolves identically on every machine. Agents never clear it — same instinct
    * as the ack queue: a machine may propose, a person decides.
    */
-  contested?: {
-    field: string;
-    held: { value: unknown; by: string; at: string };
-    incoming: { value: unknown; by: string; at: string };
-  }[];
+  contested?: Contested[];
 }
 
 /**
@@ -184,75 +180,6 @@ const str = (d: Data | undefined, k: string): string | undefined => {
 const CONTESTABLE = ["text", "comment", "severity", "category", "line"] as const;
 
 /**
- * Detect two people setting the same scalar without having seen each other.
- *
- * Everything else in this design is append-only or a latch, and cannot conflict.
- * A revision is the exception: it rewrites a value, so two concurrent ones
- * genuinely disagree and the fold must not silently pick.
- *
- * "Concurrent" means the later writer's causal chain does not include the earlier
- * write — NOT that the timestamps are close. Two people editing the same finding
- * an hour apart, where the second pulled first, is ordinary collaboration and is
- * flagged by no wall-clock rule that would also catch the real case. Getting this
- * wrong in the eager direction is the failure that trains people to clear the
- * state without reading it, so the test is deliberately narrow: same field,
- * different value, neither saw the other, different people.
- */
-interface Held { value: unknown; by: Actor; at: string; id: string }
-/** The two writes a contest is between, so clearing can ask whether both were seen. */
-interface Raised { held: string; incoming: string }
-
-function noteContest(
-  f: SharedFinding, e: LogEvent, now: Record<string, unknown>,
-  owned: Map<string, Held>, raisedAt: Map<string, Raised>, causal: Causality,
-): void {
-  const saw = (target: string) => causal.saw(e.id, target);
-  for (const k of CONTESTABLE) {
-    const incoming = now[k];
-    if (incoming === undefined) continue;
-    const key = `${f.id}\0${k}`;
-    const held = owned.get(key);
-    owned.set(key, { value: incoming, by: e.actor, at: e.at, id: e.id });
-
-    // Settling is decided BEFORE the tests below, because every one of them asks
-    // whether this write STARTS a conflict and none of them bear on ending one.
-    // While they gated it, the only settlement that cleared anything was one
-    // naming a value neither participant had written, by somebody who was not
-    // the last writer — and the browser offers exactly the two values the
-    // participants wrote, so no button in the UI could settle anything.
-    //
-    // BOTH writes, not the moment the fold happened to notice them: a contest is
-    // between two people, and somebody who saw only one of them has not been
-    // shown the choice they would be deciding.
-    const raised = raisedAt.get(key);
-    if (raised && saw(raised.held) && saw(raised.incoming)) {
-      // Restating any value for a field you have seen contested settles it — the
-      // fold replays history on every read, so without this the disagreement is
-      // re-detected forever and nobody can ever clear it. An agent may not settle
-      // one (a disagreement between two people is the thing it must leave alone),
-      // but writing with the full picture does not raise a new one either.
-      if (!isAgentActor(e.actor)) {
-        f.contested = f.contested?.filter((c) => c.field !== k);
-        if (!f.contested?.length) f.contested = undefined;
-        raisedAt.delete(key);
-      }
-      continue;
-    }
-
-    if (!held) continue;
-    if (held.value === incoming) continue;                          // agreeing is not conflict
-    if (held.by.principal === e.actor.principal) continue;          // revising your own is not conflict
-    if (saw(held.id)) continue;                                     // written with the full picture
-    (f.contested ??= []).push({
-      field: k,
-      held: { value: held.value, by: held.by.principal, at: held.at },
-      incoming: { value: incoming, by: e.actor.principal, at: e.at },
-    });
-    raisedAt.set(key, { held: held.id, incoming: e.id });
-  }
-}
-
-/**
  * Every finding in a scope, folded from its events.
  *
  * Malformed events are skipped rather than fatal, and so are events that break the
@@ -265,8 +192,7 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
   // Who currently holds each contestable scalar, and which two writes each open
   // contest is between. Bookkeeping for the fold, not state anyone reads, so it
   // is kept out of SharedFinding.
-  const owned = new Map<string, Held>();
-  const raisedAt = new Map<string, Raised>();
+  const contest = newContestState();
 
   // What each writer had folded when they wrote — the log's own notion of
   // causality, so the fold and `causalHeads` cannot drift apart on it.
@@ -313,7 +239,7 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         const now = (d?.now as Record<string, unknown>) ?? {};
         // A person may revise anyone's; an agent only while it is still a proposal.
         if (isAgentActor(e.actor) && f.state !== "issued") break;
-        noteContest(f, e, now, owned, raisedAt, causal);
+        applyRevision(f, e, now, CONTESTABLE, contest, causal);
         f.revisions.push({ at: e.at, by: e.actor, was });
         // Assigned field by field rather than through a dynamic key: a revision is
         // the one event that rewrites the finding's substance, so what it is allowed

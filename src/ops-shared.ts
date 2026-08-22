@@ -321,6 +321,9 @@ export async function sharedNotes(root: string, targetId: string) {
       by: n.author.principal, model: n.author.via?.model, at: n.createdAt,
       resolved: n.resolved ? { by: n.resolved.by.principal, reason: n.resolved.reason } : undefined,
       answers: n.answers.map((a) => ({ by: a.actor.principal, model: a.actor.via?.model, at: a.at, body: a.body })),
+      // A disagreement nobody is shown is a disagreement nobody settles. Same
+      // shape as a finding's, so a reader that renders one renders both.
+      contested: n.contested?.map((c) => ({ field: c.field, held: c.held, incoming: c.incoming })),
     })),
   };
 }

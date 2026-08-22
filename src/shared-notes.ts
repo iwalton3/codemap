@@ -27,7 +27,8 @@
 import { createHash } from "node:crypto";
 import type { Actor, BugSeverity } from "./schema.js";
 import { isAgentActor } from "./identity.js";
-import { appendEvents, mintId, readScope, causalHeads, type LogEvent } from "./eventlog.js";
+import { appendEvents, mintId, readScope, causalHeads, causality, type LogEvent } from "./eventlog.js";
+import { applyRevision, newContestState, type Contested } from "./contest.js";
 
 export type NoteKind = "note" | "question" | "finding" | "pointer";
 
@@ -52,7 +53,24 @@ export interface SharedNote {
   answers: NoteAnswer[];
   resolved?: { at: string; by: Actor; reason?: string };
   revisions: { at: string; by: Actor; was: Record<string, unknown> }[];
+  /**
+   * Fields two people set differently without having seen each other.
+   *
+   * Same rule and the same code as a finding's — `note.revised` used to overwrite
+   * these scalars unconditionally, so two people editing one note concurrently
+   * resolved to whoever happened to fold last. Nothing was destroyed (`revisions`
+   * keeps both) but nobody was ever asked to arbitrate, which is the entire job of
+   * this field.
+   */
+  contested?: Contested[];
 }
+
+/**
+ * The scalars one person owns, and the only ones that can conflict.
+ *
+ * `answers` is append-only and `resolved` is a latch, so neither is here.
+ */
+const CONTESTABLE = ["text", "category", "severity", "line"] as const;
 
 /** Which of 256 buckets a target's notes live in. */
 export const bucketFor = (targetId: string): string =>
@@ -74,6 +92,8 @@ const KINDS: readonly string[] = ["note", "question", "finding", "pointer"];
 
 export function foldNotes(events: LogEvent[]): Map<string, SharedNote> {
   const out = new Map<string, SharedNote>();
+  const contest = newContestState();
+  const causal = causality(events);
   for (const e of events) {
     const d = e.data as Data | undefined;
 
@@ -106,6 +126,7 @@ export function foldNotes(events: LogEvent[]): Map<string, SharedNote> {
     switch (e.kind) {
       case "note.revised": {
         const now = (d?.now as Record<string, unknown>) ?? {};
+        applyRevision(n, e, now, CONTESTABLE, contest, causal);
         n.revisions.push({ at: e.at, by: e.actor, was: (d?.was as Record<string, unknown>) ?? {} });
         if (typeof now.text === "string") n.text = now.text;
         if (typeof now.category === "string") n.category = now.category;
