@@ -92,4 +92,32 @@ describe("every registered route", { skip: pw ? false : "playwright not resolvab
       }
     });
   }
+
+  /**
+   * A page whose load fails has to SAY so. Two different ways it did not:
+   *
+   * The three graph views fetch from a bare `async` method, so nothing caught the
+   * rejection at all. Every other page uses `createTask`, which never rejects — it
+   * parks the failure on `task.error` and resolves undefined — and not one of the
+   * eighteen read it, so the data stayed null and the spinner stayed up.
+   *
+   * Proven by failing the request rather than by reading the code.
+   */
+  for (const [route, api] of [
+    ["pipeline", "/api/pipeline*"], ["statemap", "/api/statemap*"], ["graph/n_transfer_flow", "/api/subgraph*"],
+    ["flows", "/api/flows*"], ["prs", "/api/prs*"], ["nodes", "/api/nodes*"], ["shared/1", "/api/shared*"],
+  ] as const) {
+    test(`${route} says why it is empty when its API fails`, async () => {
+      const page = await browser.newPage();
+      try {
+        await page.route(`**${api}`, (r: any) => r.fulfill({ status: 500, body: "boom" }));
+        await page.goto(`${server.url}/#/u/${universe}/${route}/`, { waitUntil: "networkidle" });
+        await page.waitForSelector("main .empty", { timeout: 15_000 });
+        assert.equal(await page.locator("main .loading").count(), 0, "still on its spinner");
+        assert.match(await page.textContent("main .empty"), /500/, "and it names the failure");
+      } finally {
+        await page.close();
+      }
+    });
+  }
 });

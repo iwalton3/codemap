@@ -46,7 +46,7 @@ lines we own beats another thing that can become a worm/rugpull vector.
 
 ```sh
 npm test         # tsc build + node --test over dist/**/*.test.js  (hermetic, ~2s)
-npm run test:e2e # dist/e2e/**/*.e2e.js — needs a browser and a real repo; ~60s
+npm run test:e2e # dist/e2e/**/*.e2e.js — needs a browser and a real repo; ~100s
 npm run build    # emit dist/
 node dist/serve.js <repo|workspace.json> [port]   # web UI (default :4310)
 ```

@@ -11,7 +11,7 @@
  */
 
 import { Component, defineComponent, html, when, each } from './vendor/vdx/framework.js';
-import { api, apiPost, pageShell, nav, go, errText } from './app.js';
+import { api, apiPost, pageShell, nav, go, errText, taskError } from './app.js';
 
 /**
  * The API shapes come from `ops-shared` ITSELF, not from a hand-written copy —
@@ -211,6 +211,8 @@ class SharedPage extends Component {
 
   template() {
     const u = this.props.params.universe, pr = this.props.params.pr, d = this.state.d, st = this.state;
+    const failed = taskError(this.load);
+    if (failed) return pageShell(null, failed, html``);
     if (!d) return html`<main><div class="loading">loading shared findings…</div></main>`;
     if (d.error) return pageShell(d, d.error, html``);
     return pageShell(d, null, html`
@@ -257,6 +259,8 @@ class SharedPeersPage extends Component {
 
   template() {
     const u = this.props.params.universe, d = this.state.d;
+    const failed = taskError(this.load);
+    if (failed) return pageShell(null, failed, html``);
     if (!d) return html`<main><div class="loading">loading…</div></main>`;
     if (d.error) return pageShell(d, d.error, html``);
     return pageShell(d, null, html`
@@ -392,6 +396,8 @@ class SharedDocsPage extends Component {
 
   template() {
     const u = this.props.params.universe, d = this.state.d, st = this.state;
+    const failed = taskError(this.load);
+    if (failed) return pageShell(null, failed, html``);
     if (!d) return html`<main><div class="loading">loading shared docs…</div></main>`;
     if (d.error) return pageShell(d, d.error, html``);
     return pageShell(d, null, html`

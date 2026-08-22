@@ -45,12 +45,111 @@ export async function apiPost(path, body) {
   if (!r.ok) throw new Error('HTTP ' + r.status);
   return r.json();
 }
+/**
+ * What each GET route actually returns, taken from the ops functions THEMSELVES.
+ *
+ * `serve.ts` returns these values verbatim, so this is the real contract rather
+ * than a description of one — a field ops stops returning becomes a typecheck
+ * failure at the page that reads it, instead of a panel that renders nothing and
+ * says nothing. `api()` is generic over this map, so every call site is typed
+ * without a single per-page annotation.
+ *
+ * It is derived from `serve.ts` and can drift from it; `src/api-map.test.ts`
+ * fails when it does, which is the only reason it is safe to keep by hand.
+ *
+ * @typedef {import('../dist/ops.js')} Ops
+ * @typedef {import('../dist/multi.js')} Multi
+ * @typedef {import('../dist/ops-shared.js')} Shared
+ *
+ * @typedef {{
+ *   '/api/universes':           Awaited<ReturnType<Multi['listUniverses']>>,
+ *   '/api/guide':               { methodology: string },
+ *   '/api/dashboard':           Awaited<ReturnType<Ops['dashboard']>>,
+ *   '/api/outline':             Awaited<ReturnType<Ops['outline']>>,
+ *   '/api/anchor':              Awaited<ReturnType<Ops['getAnchor']>>,
+ *   '/api/node':                Awaited<ReturnType<Multi['getNodeEnriched']>>,
+ *   '/api/neighborhood':        Awaited<ReturnType<Ops['neighborhood']>>,
+ *   '/api/subgraph':            Awaited<ReturnType<Ops['subgraph']>>,
+ *   '/api/nodes':               Awaited<ReturnType<Ops['nodeCatalog']>>,
+ *   '/api/node_versions':       Awaited<ReturnType<Ops['nodeVersions']>>,
+ *   '/api/node_review':         Awaited<ReturnType<Ops['nodeReview']>>,
+ *   '/api/file':                Awaited<ReturnType<Ops['fileSource']>>,
+ *   '/api/matrix':              Awaited<ReturnType<Ops['eventMatrix']>>,
+ *   '/api/pipeline':            Awaited<ReturnType<Ops['pipelineGraph']>>,
+ *   '/api/statemap':            Awaited<ReturnType<Ops['stateMap']>>,
+ *   '/api/flows':               Awaited<ReturnType<Ops['flows']>>,
+ *   '/api/flow':                Awaited<ReturnType<Ops['flow']>>,
+ *   '/api/search':              Awaited<ReturnType<Multi['searchAll']> | ReturnType<Ops['search']>>,
+ *   '/api/gaps':                Awaited<ReturnType<Ops['findGaps']>>,
+ *   '/api/context':             Awaited<ReturnType<Ops['context']>>,
+ *   '/api/lint':                Awaited<ReturnType<Ops['lintSummaries']>>,
+ *   '/api/bugs':                Awaited<ReturnType<Ops['listBugs']>>,
+ *   '/api/bug':                 Awaited<ReturnType<Ops['bugDetail']>>,
+ *   '/api/queue':               Awaited<ReturnType<Ops['reviewQueue']>>,
+ *   '/api/orphans':             Awaited<ReturnType<Ops['orphanedWork']>>,
+ *   '/api/questions':           Awaited<ReturnType<Ops['listQuestions']>>,
+ *   '/api/stale':               Awaited<ReturnType<Ops['checkStale']>>,
+ *   '/api/snapshots':           Awaited<ReturnType<Ops['snapshots']>>,
+ *   '/api/diff':                Awaited<ReturnType<Ops['diff']>>,
+ *   '/api/diff/code':           Awaited<ReturnType<Ops['diffCode']>>,
+ *   '/api/diff/doc':            Awaited<ReturnType<Ops['docDiff']>>,
+ *   '/api/pr':                  Awaited<ReturnType<Ops['pr']>>,
+ *   '/api/pr/story':            Awaited<ReturnType<Ops['prStoryFor']>>,
+ *   '/api/pr/promote_plan':     Awaited<ReturnType<Ops['prPromotePlan']>>,
+ *   '/api/pr/push_plan':        Awaited<ReturnType<Ops['prPushPlan']>>,
+ *   '/api/shared':              Awaited<ReturnType<Shared['sharedFindings']>>,
+ *   '/api/shared/peers':        Awaited<ReturnType<Shared['sharedStatus']>>,
+ *   '/api/shared/walkthroughs': Awaited<ReturnType<Shared['sharedWalkthroughs']>>,
+ *   '/api/shared/notes':        Awaited<ReturnType<Shared['sharedNotes']>>,
+ *   '/api/shared/docs':         Awaited<ReturnType<Shared['sharedDocs']>>,
+ *   '/api/shared/replies':      Awaited<ReturnType<Shared['inboundReplies']>>,
+ *   '/api/pr/code':             Awaited<ReturnType<Ops['prCode']>>,
+ *   '/api/prs':                 Awaited<ReturnType<Ops['prsFor']>>,
+ *   '/api/reverted':            { reverted: Awaited<ReturnType<typeof import('../dist/reviews.js').revertedMarks>> },
+ *   '/api/tripwires':           Awaited<ReturnType<Ops['tripwires']>>,
+ *   '/api/triage_drift':        Awaited<ReturnType<Ops['triageDriftList']>>,
+ *   '/api/changed_since':       Awaited<ReturnType<Ops['changedSince']>>,
+ * }} ApiMap
+ */
+
+/**
+ * @template {keyof ApiMap} P
+ * @param {P} path
+ * @param {Record<string, string|number|null|undefined>} [params]
+ * @returns {Promise<ApiMap[P]>}
+ */
 export async function api(path, params = {}) {
-  const qs = new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v != null && v !== '')));
+  const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== '').map(([k, v]) => [k, String(v)]));
   const r = await fetch(path + (qs.toString() ? '?' + qs : ''));
   if (!r.ok) throw new Error('HTTP ' + r.status);
   return r.json();
 }
+
+/**
+ * Run a load and turn a rejection into a rendered reason.
+ *
+ * The three graph pages fetch from a bare `async` method rather than through
+ * `createTask`, so nothing else catches one: a 500 left `loading` true forever
+ * and the only trace was a console error nobody was watching. Their templates
+ * already knew how to show `data.error` — there was just no way for it to be set.
+ *
+ * @template T
+ * @param {() => Promise<T>} fn
+ * @returns {Promise<T | { error: string }>}
+ */
+export const loaded = async (fn) => { try { return await fn(); } catch (e) { return { error: errText(e) }; } };
+
+/**
+ * Why a page's load failed, or null.
+ *
+ * `createTask` never rejects — it parks the failure on `task.error` and resolves
+ * undefined — so a page that does not read it leaves its data null and shows the
+ * spinner forever. None of the eighteen pages read it.
+ *
+ * @param {{ error?: unknown } | undefined} task
+ * @returns {string | null}
+ */
+export const taskError = (task) => (task && task.error ? errText(task.error) : null);
 
 // One stable <main> literal for every page. vdx tears down and rebuilds a
 // component's whole subtree whenever template()'s top-level literal changes
@@ -63,8 +162,8 @@ export async function api(path, params = {}) {
 // collapses the page and loses scroll; pages null out their data in propsChanged
 // so a genuine navigation still shows loading and starts back at the top.
 export const pageShell = (data, error, body) =>
-  html`<main>${when(!data, () => html`<div class="loading">loading…</div>`,
-    () => when(error, () => html`<div class="empty">${error}</div>`, body))}</main>`;
+  html`<main>${when(error, () => html`<div class="empty">${error}</div>`,
+    () => when(!data, () => html`<div class="loading">loading…</div>`, body))}</main>`;
 
 class NavStore extends Store {
   constructor() { super(); this.state = { universes: [], current: null }; }
@@ -614,7 +713,7 @@ class DashboardPage extends Component {
       ['pull requests', () => go(prsUrl(u)), 'prs'], ['browse files', () => goTree(u, '')],
     ];
     const nav2 = navAll.filter(x => viewEnabled(d, x[2]));
-    return pageShell(d, d && d.error, () => html`
+    return pageShell(d, taskError(this.load) ?? (d && d.error), () => html`
       <div class="crumbs"><b>${u}</b> <span class="sep">·</span> overview${when(d.tripwires && d.tripwires.armed && this.canEnableAlerts(), () => html` <span class="sep">·</span> <button title="get a browser notification when a watched tripwire fires" on-click="${() => this.enableAlerts()}">🔔 enable alerts</button>`)}</div>
       ${when(d.attention > 0, () => html`<div class="attn-banner">
         <span class="attn-n">⚠ ${d.attention}</span>
@@ -760,7 +859,7 @@ class AnchorPage extends Component {
   }
   template() {
     const u = this.props.params.universe, a = this.state.a;
-    return pageShell(a, a && a.error, () => html`<div class="detail">
+    return pageShell(a, taskError(this.load) ?? (a && a.error), () => html`<div class="detail">
       <div class="back" on-click="${() => goTree(u, a.file)}">← ${a.file}</div>
       <h2>${a.symbol}</h2>
       <div class="meta">${a.kind} · ${a.file}:${a.lines} · ${a.present ? 'present' : 'not found (lost)'}</div>
@@ -816,7 +915,7 @@ class NodePage extends Component {
   async ackHole() { await postAckHole(this.props.params.universe, this.props.params.id); this.load.run(); }
   template() {
     const u = this.props.params.universe, n = this.state.n, versions = this.state.versions;
-    return pageShell(n, n && n.error, () => {
+    return pageShell(n, taskError(this.load) ?? (n && n.error), () => {
     const cr = deriveCode(n.resolvedAnchors);
     return html`<div class="detail">
       <div class="meta">${n.type}${n.universe ? ' · ' + n.universe : ''} · ${n.id} ${statusChip(n.status)}${trustChip(n.trust)}${sevChip(n.triage)}<span class="viewlink" on-click="${() => go(graphUrl(u, n.id))}">◆ graph</span></div>
@@ -941,7 +1040,7 @@ class NodeReviewPage extends Component {
   }
   template() {
     const u = this.props.params.universe, d = this.state.d;
-    return pageShell(d, d && d.error, () => {
+    return pageShell(d, taskError(this.load) ?? (d && d.error), () => {
       const cr = d.codeReview || { signed: 0, total: 0, stale: 0 };
       const segs = d.segments || [];
       const pending = segs.filter(s => !s.missing && !this.isDone(s));
@@ -980,7 +1079,8 @@ class SearchPage extends Component {
     const q = this.props.query.q || '';
     if (!q) { this.state.groups = null; return; }
     if (this.scope() === 'all') {
-      this.state.groups = (await api('/api/search', { u: this.props.params.universe, q, all: 1 })).results || [];
+      const all = await api('/api/search', { u: this.props.params.universe, q, all: 1 });
+      this.state.groups = 'results' in all ? all.results : [];
     } else {
       const r = await api('/api/search', { u: this.props.params.universe, q });
       this.state.groups = [{ universe: this.props.params.universe, ...r }];
@@ -1029,8 +1129,8 @@ class GraphPage extends Component {
   async fetchData(ids, expand) {
     nav.current = this.props.params.universe;
     if (!this.state.data) this.state.loading = true; // keep the graph mounted on expand/reload
-    const d = await api('/api/subgraph', { u: this.props.params.universe, ids: ids.join(','), expand: expand || '' });
-    if (d.error) { this.state.data = d; this.state.loading = false; return; }
+    const d = await loaded(() => api('/api/subgraph', { u: this.props.params.universe, ids: ids.join(','), expand: expand || '' }));
+    if ('error' in d) { this.state.data = d; this.state.loading = false; return; }
     this._ids = new Set(d.nodes.map((n) => n.id));
     this.state.data = d; this.state.loading = false;
     this.ensurePositions(expand);
@@ -1190,7 +1290,7 @@ class FlowsPage extends Component {
   propsChanged() { this.state.data = null; this.load.run(); }
   template() {
     const u = this.props.params.universe, d = this.state.data;
-    return pageShell(d, null, () => html`
+    return pageShell(d, taskError(this.load), () => html`
       <div class="crumbs">${u} <span class="sep">·</span> flows (${d.flows.length})</div>
       ${when(!d.flows.length, () => html`<div class="empty">no flows (process nodes) documented in this universe yet</div>`)}
       ${each(d.flows, (f) => html`<div class="flow-card" on-click="${() => go(flowUrl(u, f.id))}">
@@ -1253,7 +1353,7 @@ class FlowPage extends Component {
   }
   template() {
     const u = this.props.params.universe, d = this.state.data;
-    return pageShell(d, d && d.error, () => {
+    return pageShell(d, taskError(this.load) ?? (d && d.error), () => {
     const ch = d.changed || { signed: [], viewed: [] };
     const nChanged = new Set([...ch.signed, ...ch.viewed]).size;
     // Targeted diff: only steps that drifted under a mark you'd made. Never-reviewed
@@ -1356,7 +1456,7 @@ class NodeCatalogPage extends Component {
   }
   template() {
     const u = this.props.params.universe, d = this.state.data;
-    return pageShell(d, null, () => {
+    return pageShell(d, taskError(this.load), () => {
     const list = this.filtered();
     const opts = (o) => Object.entries(o).sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ k, v }));
     const todo = this.view() === 'todo';
@@ -1425,7 +1525,7 @@ class MatrixPage extends Component {
   }
   template() {
     const u = this.props.params.universe, d = this.state.data;
-    return pageShell(d, null, () => {
+    return pageShell(d, taskError(this.load), () => {
     // Reachable by deep link even when the nav hides it — say why it's blank.
     if (!d.events.length) return html`
       <div class="crumbs">${u} <span class="sep">·</span> event matrix</div>
@@ -1466,7 +1566,7 @@ class PipelinePage extends Component {
   async fetchData() {
     this._adj = null; nav.current = this.props.params.universe;
     if (!this.state.data) this.state.loading = true; // don't blank an existing graph on reload
-    const data = await api('/api/pipeline', { u: this.props.params.universe, domain: this.state.domain || '' });
+    const data = await loaded(() => api('/api/pipeline', { u: this.props.params.universe, domain: this.state.domain || '' }));
     this.state.data = data; this.state.loading = false;
     await this.nextRender();
     this.setup();
@@ -1521,6 +1621,7 @@ class PipelinePage extends Component {
   template() {
     const u = this.props.params.universe, d = this.state.data;
     if (this.state.loading || !d) return html`<main><div class="loading">loading…</div></main>`;
+    if ('error' in d) return html`<main><div class="empty">${d.error}</div></main>`;
     // Reachable by deep link even when the nav hides it — say why it's blank.
     if (!d.nodes.length) return html`<main>
       <div class="crumbs">${u} <span class="sep">·</span> event pipeline</div>
@@ -1566,7 +1667,7 @@ class StatemapPage extends Component {
   async fetchData() {
     nav.current = this.props.params.universe;
     if (!this.state.data) this.state.loading = true;
-    const data = await api('/api/statemap', { u: this.props.params.universe });
+    const data = await loaded(() => api('/api/statemap', { u: this.props.params.universe }));
     this.state.data = data; this.state.loading = false;
     await this.nextRender();
     this.setup();
@@ -1652,6 +1753,9 @@ class StatemapPage extends Component {
   template() {
     const u = this.props.params.universe, d = this.state.data;
     if (this.state.loading || !d) return html`<main><div class="loading">loading…</div></main>`;
+    // Before the emptiness check, not after: a failed load has no `machines` either,
+    // and "no state machines yet" is a confident false statement about the repo.
+    if ('error' in d) return html`<main><div class="empty">${d.error}</div></main>`;
     if (!d.machines || !d.machines.length) return html`<main>
       <div class="crumbs">${u} <span class="sep">·</span> state map</div>
       <div class="empty">no state machines yet — run <code>codemap analyze marten --emit</code> on a repo whose aggregates carry a status enum</div>
@@ -2191,9 +2295,9 @@ class PrStoryPage extends Component {
     const u = this.props.params.universe; nav.current = u;
     const story = await api('/api/pr/story', { u, pr: this.props.params.pr });
     this.state.story = story;
-    this.state.prRef = story && story.refs ? story.refs.head : null;
+    this.state.prRef = story && 'refs' in story ? story.refs.head : null;
     // Open the first chapter that still has unsigned work — the queue, not chapter 1.
-    if (story && story.chapters && !Object.keys(this.state.open).length) {
+    if (story && 'chapters' in story && !Object.keys(this.state.open).length) {
       const first = story.chapters.find(c => c.steps.some(s => !s.reviewed));
       if (first) this.state.open = { [first.id]: true };
     }
@@ -2552,7 +2656,7 @@ class PrStoryPage extends Component {
     const r = await api('/api/pr/promote_plan', { u: this.props.params.universe, pr: this.props.params.pr, chapter: ch.id })
       .catch((e) => ({ error: `could not plan the promotion: ${e && e.message ? e.message : e}` }));
     if (this._promoteToken !== token) return;                       // superseded or dismissed
-    if (r.error) { this.state.promote = { chapter: ch.id, error: r.error }; return; }
+    if ('error' in r) { this.state.promote = { chapter: ch.id, error: r.error }; return; }
     this.state.promote = { chapter: ch.id, plan: r.promotion, existing: r.existing, id: r.promotion.id, title: r.promotion.title, summary: r.promotion.summarySource === 'title' ? '' : r.promotion.summary };
   }
   async confirmPromote(ch) {
@@ -3042,8 +3146,8 @@ class PrStoryPage extends Component {
 
   template() {
     const st = this.state.story, u = this.props.params.universe;
-    // pageShell renders `loading` whenever data is falsy, so passing null alongside
-    // an error made every failure here an eternal "loading…". Pass the payload.
+    const failed = taskError(this.load);
+    if (failed) return pageShell(null, failed, html``);
     if (!st) return html`<main><div class="loading">loading pull request…</div></main>`;
     if (st.error) return pageShell(st, st.error, html``);
     const signed = st.chapters.reduce((n, c) => n + c.steps.filter(s => s.reviewed).length, 0);
@@ -3124,6 +3228,8 @@ class PrInboxPage extends Component {
 
   template() {
     const u = this.props.params.universe, d = this.state.d;
+    const failed = taskError(this.load);
+    if (failed) return pageShell(null, failed, html``);
     if (!d) return html`<main><div class="loading">loading pull requests…</div></main>`;
     if (d.error) return pageShell(d, d.error, html``);
     return pageShell(d, null, html`
