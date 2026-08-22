@@ -1,0 +1,122 @@
+# Decision: receipts, or a fingerprint in the hash string?
+
+Status: **open.** Written to be decided, not to advocate. Blocks step 2 of
+`PROPOSAL-provenance.md` §7.
+
+## The exposure, stated once
+
+After a grammar or parser change, both sides of a staleness comparison carry the
+`h2:` prefix. `comparableHashes` answers *comparable*, the hashes differ, and every
+review witness and doc citation in the store reads as drift. Verified at
+`reviews.ts:460`; `doc-version.ts`, `acceptance.ts` and the bug witnesses share the
+shape. That is the 985-of-985 event, store-wide, and nothing built so far touches
+it — the diff work covers one consumer and not the important one.
+
+Three durable shapes hold a body hash:
+
+| shape | where | used by |
+|---|---|---|
+| `BugWitness { anchorId, bodyHash }` | local | bugs **and** reviews (one shape, both) |
+| `NodeCitation.acceptedHashes: string[]` | local `node_versions` **and** sidecar doc events | doc resolution |
+| `AcceptedEntry.bodyHash` | local | review acceptance |
+
+## A — receipts (what §5 currently specifies)
+
+Every stored hash gains a `DerivationTag` beside it.
+
+```ts
+interface HashReceipt { value: string; derivation: DerivationTag }
+```
+
+**Cost.** Three durable shapes change, two of them in two places (local schema and
+sidecar event payload). `acceptedHashes: string[]` becomes a set of receipts, and
+it is a *grow-only set per (version, anchor)* — so the merge rule changes too, not
+just the type. Roughly 20 call sites touch `acceptedHashes` alone. Every producer
+and consumer of all three shapes moves, and each needs a migration that must not
+stamp existing values (§6's rule).
+
+**What it buys that B does not.** Anchor **ids**. A teammate's finding targets
+`a_X`, derived under their `ANCHOR_SCHEME`; an id is not a hash and no prefix
+inside a hash can describe it. Only a receipt beside the id can.
+
+## B — a fingerprint in the hash string
+
+`hashTokens` emits `h2:<fp>:sha256:<digest>`, where `fp` is a short digest over
+(`hashScheme`, `parserIntegrity`, `grammarDigest`).
+
+**Cost.** No durable schema changes at all — every shape above still holds strings.
+`hashTokens` changes in one place. The 16 sites that compare hashes with `===` or
+`.includes` must move behind one helper, because a legacy `h2:sha256:ABC` and a new
+`h2:<fp>:sha256:ABC` describe the *same body* and are not string-equal.
+
+That refactor is worth doing on its own terms. Raw `===` on a hash string is
+precisely what makes any format change hazardous, and this session has already
+shipped two.
+
+**What it buys that A does not, and cheaply.**
+
+- **Local universes.** Most stores have no sidecar and never will. They get
+  derivation-aware staleness under B and *never* get it under A, because A's
+  vehicle is a sidecar event.
+- **The sidecar for free.** Shared doc citations store hashes as strings in event
+  payloads. Under B those strings carry the fingerprint across machines with **no
+  event-format change** — the cross-machine case falls out rather than being built.
+
+**What it gives up.** `fp` is one-way. A reader can tell *different* but not *what
+differed* — unless it has seen that tag before, which the local `derivations` table
+already records. For a foreign fingerprint the honest message is "derived
+differently, and I do not have theirs". Under the collapsed state table
+(`incompatible_derivation` + detail) that is all a reader needs to act on, since
+every branch of it recovers the same way.
+
+**The load-bearing migration decision.** Adding `fp` must **not** bump
+`HASH_SCHEME`. The digest is byte-identical — the token stream did not change, only
+the annotation riding beside it — so by §3's own rule ("only a change to hash
+derivation or its canonical encoding") this is an extension, not a new derivation.
+Bump it and every hash in every store becomes incomparable at once: a store-wide
+`unverifiable` event and a forced re-witness pass, for a change that altered
+nothing about how anything was hashed. `hashSchemeOf` keeps returning 2; an fp-less
+hash is legacy and falls back exactly as untagged values do everywhere else in this
+design.
+
+## They are not actually alternatives
+
+The comparison above assumes A and B answer the same question. They do not.
+
+- **Hashes** — witnesses, accepted hashes, acceptance. B covers these, locally and
+  in the sidecar, with no schema change.
+- **Anchor ids** — a shared target pointing at an id derived under another scheme.
+  B cannot touch this. A must.
+
+So the shape that falls out is **B for hashes, A for ids only** — which deletes
+`HashReceipt` from §5 entirely and leaves `AnchorReceipt`. That is a genuine
+reduction of the specified design, in the same direction as the round-9 cut, and it
+arrives at the answer from the opposite side: not "what can we remove" but "what is
+each mechanism actually able to describe".
+
+It also unblocks §8's "the other comparison sites are blocked on the sidecar work".
+They were only ever blocked because provenance was made a parallel structure
+instead of part of the value it describes. Under B they are not blocked at all, and
+the local exposure — which is the larger one — closes without the sidecar shipping.
+
+## What would change my mind
+
+- If `fp` collisions matter. An 8-hex fingerprint is 4 billion; a collision means
+  two different derivations read as one and a real drift is reported as clean.
+  16 hex is free and removes the question — there is no reason to be clever here.
+- If the 16-site refactor turns out to have a site where digest-equality is
+  genuinely wrong rather than merely different. I have not found one, but I have
+  read them rather than tested them.
+- If anchor-id receipts turn out to need the same plumbing as hash receipts anyway,
+  in which case building both is cheaper than building two mechanisms.
+
+## Recommendation
+
+Take B for hashes, keep A for ids, and do the equality-helper refactor first as a
+standalone change — it is safe, mechanical, valuable regardless of which design
+wins, and it is the part that would be riskiest to do under time pressure during a
+real grammar upgrade.
+
+Do not build either until the equality helper is in and its tests pass, because
+until then a hash-format change is a change to sixteen implicit contracts rather
+than one explicit one.

@@ -394,6 +394,14 @@ was.
   doing so is what triggers the flood. So the diff's `unverifiable` residue is not
   a quirk, it is a symptom of this same gap.
 
+- **A cheaper fix than receipts may exist** — now written up as a decision to take,
+  in `docs/decision-receipts-vs-prefix.md`. The short version is that the two are
+  not alternatives: a fingerprint in the hash string covers HASHES (witnesses,
+  accepted hashes, acceptance) locally and in the sidecar with no schema change,
+  while receipts remain irreducible for anchor IDS, which no prefix can describe.
+  Taking both in their own lanes deletes `HashReceipt` from §5 and leaves
+  `AnchorReceipt`. Original note kept below for the reasoning.
+
 - **A cheaper fix than receipts may exist**, raised by the Fable review and worth
   a round of its own. Put the derivation fingerprint IN the hash string —
   `h2:<fp>:<digest>` over (hashScheme, parserIntegrity, grammarDigest). Every site
