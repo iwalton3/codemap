@@ -2314,8 +2314,12 @@ class DiffPage extends Component {
           <span><b>${d.base.label}</b> <span class="dim">${(d.base.sha || '').slice(0, 8)}</span></span>
           <span class="arrow">→</span>
           <span><b>${d.head.label}</b></span>
-          <span class="dcounts"><i class="added">+${d.added.length}</i> <i class="removed">−${d.removed.length}</i> <i class="changed">~${d.changed.length}</i></span>
+          <span class="dcounts"><i class="added">+${d.added.length}</i> <i class="removed">−${d.removed.length}</i> <i class="changed">~${d.changed.length}</i>${when((d.unverifiable || []).length, () => html` <i class="unverifiable" title="indexed by a different grammar or parser build than the base, so a hash difference says nothing about the code — re-snapshot the base to decide it">?${d.unverifiable.length}</i>`)}</span>
         </div>
+        ${when((d.unverifiable || []).length, () => html`<div class="dsummary" style="border-top:1px solid #222;padding-top:6px;color:#c8a24a">
+          ${d.unverifiable.length} symbol(s) could not be compared — this working tree and the base were
+          indexed by different builds, so their hashes are not comparable. Nothing here is a claim that code changed.
+        </div>`)}
         ${when(d.coverage && d.coverage.total, () => html`<div class="dsummary" style="border-top:1px solid #222;padding-top:6px">${coverageBar(d.coverage)}</div>`)}
 
         <div class="dgrid">

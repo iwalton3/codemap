@@ -351,12 +351,25 @@ was.
   stamping is one line. Tags are interned locally in a `derivations` table — one
   to five rows against any number of anchors — which §3 permits because the local
   store is not the durable record.
-- ~~Nothing reads the tag.~~ **The diff does.** A pair whose hashes differ but whose
-  derivations differ too is reported `unverifiable` rather than `changed`, which
-  closes a failure the numeric schemes never covered: a re-vendored grammar moves
-  every body hash without touching `HASH_SCHEME`, so the gate passes and the whole
-  repository reads as rewritten. Unverifiable symbols stay OUT of `impacted` —
-  the recovery is to re-snapshot, not to re-review.
+- ~~Nothing reads the tag.~~ **The snapshot gate does, and repairs.** A cached
+  snapshot derived by another build now reads as NOT CACHED, so `ensureSnapshot`
+  regenerates it — the repair this codebase already performs for a scheme bump,
+  extended to the question the scheme numbers cannot ask. Reporting the mismatch
+  downstream instead, which an earlier slice did, leaves a repairable cache in
+  place and floods the diff.
+
+  A snapshot is minted atomically by one build, so it HAS a truthful derivation.
+  That is the correction to §1's rule as first written: provenance belongs at the
+  granularity of the MINTING EVENT — per row where rows are minted separately
+  (`@work`, `@orphan`), per ref where the ref is minted at once. "Never a
+  container" was over-generalized from three containers that genuinely were bags
+  of mixed moments.
+
+  `unverifiable` survives as a narrow residue: `@work` against a snapshot. An
+  incremental update preserves an existing anchor's hash, so a live index
+  legitimately holds pre-upgrade rows and cannot be rehashed without destroying
+  the baseline it exists to be. Those pairs are genuinely undecidable, stay out of
+  `impacted`, and are surfaced in the CLI and the web.
 - **The other comparison sites still ignore it**: doc citations
   (`doc-version.ts`), review witnesses (`reviews.ts`), acceptance
   (`acceptance.ts`). Those compare a STORED value against a live one, and no

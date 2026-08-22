@@ -77,44 +77,48 @@ test("the reserved refs cannot be dropped as if they were snapshots", async () =
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-const TAG_A: DerivationTag = { anchorScheme: 3, hashScheme: 2, parserIntegrity: "p1", grammarDigest: "g_old" };
-const TAG_B: DerivationTag = { anchorScheme: 3, hashScheme: 2, parserIntegrity: "p1", grammarDigest: "g_new" };
+/** A tag this build would never produce — a snapshot from another grammar or parser. */
+const FOREIGN: DerivationTag = { anchorScheme: 3, hashScheme: 2, parserIntegrity: "p_other", grammarDigest: "g_other" };
 const tagged = (a: Anchor, derivation: DerivationTag): Anchor => ({ ...a, derivation });
 
 /**
- * A re-vendored grammar tokenizes unchanged code differently, so every body hash
- * moves while `HASH_SCHEME` stays put. The numeric schemes agree, the hashes
- * differ, and without the derivation tag the diff reports the whole repository as
- * rewritten — the phantom-diff failure the schemes exist to prevent, arriving
- * through a door they do not cover.
+ * A snapshot derived by another build is NOT CACHED, so it is rebuilt.
+ *
+ * This is the repair the codebase already performs for a scheme bump, extended to
+ * the question the scheme numbers cannot ask: a re-vendored grammar moves every
+ * body hash without touching either number. A snapshot is minted atomically by one
+ * build, so unlike `@work` it has a truthful derivation and can simply be
+ * regenerated — `ensureSnapshot` does it in seconds, and its comment ("a hit here
+ * means genuinely usable") stays true only because of this check.
+ *
+ * Reporting the mismatch downstream instead would leave a repairable cache in
+ * place and flood the diff with symbols nobody can compare.
  */
-test("a grammar change is not reported as code drift", async () => {
+test("a snapshot from a different build reads as not cached, not as drift", async () => {
   const root = mkdtempSync(join(tmpdir(), "codemap-diff-tag-"));
   try {
-    const base = [tagged(anchor("a_keep", "keep", "h1"), TAG_A), tagged(anchor("a_real", "refund", "h2"), TAG_A)];
-    // Same code, re-tokenized: every hash moved. One symbol genuinely changed too,
-    // and it must still be reported — the point is separating them, not suppressing.
-    const head = [tagged(anchor("a_keep", "keep", "h1_RETOK"), TAG_B), tagged(anchor("a_real", "refund", "h2_REAL"), TAG_A)];
-    await writeSnapshot(root, "base_sha", "main", base, "2026-07-15T00:00:00Z");
-    await writeSnapshot(root, "head_sha", "feature", head, "2026-07-15T01:00:00Z");
+    await writeSnapshot(root, "base_sha", "main", [tagged(anchor("a_1", "pay", "h1"), FOREIGN)], "2026-07-15T00:00:00Z");
+    await writeSnapshot(root, "head_sha", "feature", [tagged(anchor("a_1", "pay", "h2"), FOREIGN)], "2026-07-15T01:00:00Z");
 
     const d = await computeDiff(root, "base_sha", "head_sha");
-    assert.ok(!("error" in d), "expected a diff result");
-    assert.deepEqual(d.changed.map((b) => b.id), ["a_real"], "the real change must survive");
-    assert.deepEqual(d.unverifiable.map((b) => b.id), ["a_keep"], "the re-tokenized one is not drift");
+    assert.ok("error" in d, "a foreign-derivation snapshot must not be silently compared");
+    assert.match(d.error, /no cached snapshot for base/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 /**
- * An untagged side falls back to comparing, which is today's behaviour and has to
- * be: every stored value predates tags, and answering "unverifiable" for all of
- * them would trade a rare false positive for a universal false negative.
+ * Untagged snapshots stay usable, which is deliberate and is the same answer
+ * `comparableDerivation` gives.
+ *
+ * Every snapshot cached before tags existed is untagged. Treating those as stale
+ * would rebuild every cache on upgrade to answer a question they cannot answer, and
+ * two different meanings for "untagged" would be worse than either one.
  */
-test("an untagged side still compares, rather than going silent", async () => {
+test("an untagged snapshot still diffs, rather than going silent", async () => {
   const root = mkdtempSync(join(tmpdir(), "codemap-diff-legacy-"));
   try {
     await writeSnapshot(root, "base_sha", "main", [anchor("a_1", "pay", "h1")], "2026-07-15T00:00:00Z");
-    await writeSnapshot(root, "head_sha", "feature", [tagged(anchor("a_1", "pay", "h2"), TAG_B)], "2026-07-15T01:00:00Z");
+    await writeSnapshot(root, "head_sha", "feature", [anchor("a_1", "pay", "h2")], "2026-07-15T01:00:00Z");
 
     const d = await computeDiff(root, "base_sha", "head_sha");
     assert.ok(!("error" in d), "expected a diff result");

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { Anchor, DerivationTag } from "./schema.js";
+import { comparableDerivation, type Anchor, type DerivationTag } from "./schema.js";
 import { writeAnchorStore, anchorsUnderRef, retainOrphans, readOrphans } from "./store.js";
 import { derivationTag } from "./grammars.js";
 import { fixtureHash } from "./fixture-hash.js";
@@ -123,4 +123,29 @@ test("the live tag identifies the runtime and the exact grammar blob", () => {
   assert.match(cs.grammarDigest, /^[0-9a-f]{64}$/);
   assert.equal(cs.parserIntegrity, tsx.parserIntegrity, "one runtime ran all of them");
   assert.notEqual(tsx.grammarDigest, ts.grammarDigest, "tsx and typescript are different blobs");
+});
+
+/**
+ * What the tag decides, in isolation.
+ *
+ * After the snapshot gate (`readSnapshot`) rebuilds any cache derived by another
+ * build, the only place two DIFFERING tags can still meet is `@work` against a
+ * snapshot: an incremental update preserves an existing anchor's hash, so a live
+ * index legitimately holds rows from before an upgrade and cannot be rehashed
+ * without destroying the baseline it exists to be. Those pairs are genuinely
+ * undecidable — which is what `unverifiable` is for, and why it survived the gate
+ * as a narrow residue rather than the main mechanism.
+ */
+test("differing derivations are not comparable; an absent one falls back", () => {
+  assert.equal(comparableDerivation(OLD, OLD), true);
+  assert.equal(comparableDerivation(OLD, NEW), false, "different builds say nothing about the code");
+  assert.equal(comparableDerivation({ ...OLD, grammarDigest: "g_other" }, OLD), false, "grammar alone is enough");
+  assert.equal(comparableDerivation({ ...OLD, parserIntegrity: "p_other" }, OLD), false, "so is the parser alone");
+
+  // The fallback, which is load-bearing: every value stored before tags existed is
+  // untagged, so answering "unverifiable" for those would trade a rare false
+  // positive for a universal false negative.
+  assert.equal(comparableDerivation(undefined, OLD), true);
+  assert.equal(comparableDerivation(OLD, undefined), true);
+  assert.equal(comparableDerivation(undefined, undefined), true);
 });

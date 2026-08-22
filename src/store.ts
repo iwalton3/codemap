@@ -17,6 +17,7 @@ import type { PrWalkthrough } from "./walkthrough.js";
 
 import type { DatabaseSync } from "node:sqlite";
 import type { DerivationTag } from "./schema.js";
+import { derivationTag, GRAMMAR_NAMES } from "./grammars.js";
 import { randomBytes } from "node:crypto";
 import { db, WORK_REF, ORPHAN_REF } from "./db.js";
 import { headCommit, currentBranch } from "./git.js";
@@ -59,10 +60,13 @@ interface AnchorRow {
  * travel on the object, and these two functions are the only place it is
  * flattened.
  */
+/** One canonical string per tag — fixed field order, so identical tags key identically. */
+const tagKey = (t: DerivationTag): string =>
+  JSON.stringify([t.anchorScheme, t.hashScheme, t.parserIntegrity, t.grammarDigest]);
+
 function internDerivation(d: DatabaseSync, tag: DerivationTag | undefined): number | null {
   if (!tag) return null;
-  // Key order is fixed by construction here, so identical tags intern identically.
-  const json = JSON.stringify([tag.anchorScheme, tag.hashScheme, tag.parserIntegrity, tag.grammarDigest]);
+  const json = tagKey(tag);
   const hit = d.prepare("SELECT id FROM derivations WHERE tag = ?").get(json) as { id: number } | undefined;
   if (hit) return hit.id;
   d.prepare("INSERT INTO derivations(tag) VALUES(?)").run(json);
@@ -369,7 +373,37 @@ export async function readSnapshot(root: string, ref: string): Promise<Anchor[] 
   // decide which of those pairs count as changed — so a snapshot carrying the right
   // ids and another scheme's hashes reports the whole commit as rewritten.
   if (!meta || meta.scheme !== ANCHOR_SCHEME || meta.hash_scheme !== HASH_SCHEME) return null;
+  // And the same question the scheme numbers cannot ask: a re-vendored grammar or a
+  // rebuilt parser moves every body hash without touching either number. A snapshot
+  // is minted atomically by one build, so unlike `@work` it HAS a truthful
+  // derivation, and the right answer is the one this codebase already gives for a
+  // stale cache — NOT CACHED, so `ensureSnapshot` rebuilds it in seconds. Reporting
+  // the mismatch downstream instead would leave a repairable cache in place and
+  // flood the diff.
+  if (staleDerivation(d, ref)) return null;
   return anchorsUnder(d, ref);
+}
+
+/**
+ * Does this ref hold anchors derived by a build that is not this one?
+ *
+ * Untagged rows do NOT count. Every snapshot cached before tags existed is
+ * untagged, and treating those as stale would rebuild every cache on upgrade for a
+ * question they cannot answer — the same reasoning `comparableDerivation` uses, and
+ * two different answers to "what does untagged mean" would be worse than either.
+ * The residue is honest and recorded: a pre-tag snapshot taken under an older
+ * grammar stays usable, exactly as it is today, until something re-snapshots it.
+ */
+function staleDerivation(d: DatabaseSync, ref: string): boolean {
+  const rows = d.prepare("SELECT DISTINCT derivation FROM anchors WHERE ref = ? AND derivation IS NOT NULL")
+    .all(ref) as unknown as { derivation: number }[];
+  if (!rows.length) return false;
+  const tags = derivationsById(d);
+  const current = new Set(GRAMMAR_NAMES.map((g) => tagKey(derivationTag(g))));
+  return rows.some((r) => {
+    const t = tags.get(r.derivation);
+    return !t || !current.has(tagKey(t));
+  });
 }
 
 

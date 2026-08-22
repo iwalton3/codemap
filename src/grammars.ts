@@ -6,7 +6,7 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -18,6 +18,9 @@ import { ANCHOR_SCHEME, HASH_SCHEME, type DerivationTag } from "./schema.js";
 const GRAMMARS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "grammars");
 
 export type GrammarName = "c_sharp" | "python" | "javascript" | "typescript" | "tsx";
+
+/** Every grammar this build ships. */
+export const GRAMMAR_NAMES: readonly GrammarName[] = ["c_sharp", "python", "javascript", "typescript", "tsx"];
 
 const WASM_FILE: Record<GrammarName, string> = {
   c_sharp: "tree-sitter-c_sharp.wasm",
@@ -54,10 +57,19 @@ export function grammarForPath(path: string): GrammarName | null {
  * version and tokenize differently, and then a reader reports real-looking drift
  * for a change nobody made. So we hash what we actually load.
  *
- * `parserIntegrity` comes from the runtime FILE rather than from
+ * `parserIntegrity` comes from the runtime FILES rather than from
  * `package-lock.json`, which is a development artifact and is not shipped to
- * somebody who installed this — the lockfile says what should be there, the file
- * is what is.
+ * somebody who installed this — the lockfile says what should be there, the files
+ * are what is.
+ *
+ * Plural, and that word is the whole correction: an earlier version hashed what
+ * `require.resolve` returned, which is the CommonJS loader — neither the ESM entry
+ * this actually imports nor `web-tree-sitter.wasm`, which is the lexing engine and
+ * therefore the thing that decides tokenization. A wasm-only difference — a
+ * hand-patch, a platform rebuild, or the supply-chain substitution this project is
+ * built to resist — would have tokenized differently under an identical tag. That
+ * is precisely the "two builds under one label" failure the tag exists to prevent,
+ * reproduced one file over.
  *
  * Computed once with sync reads: five grammar blobs plus the runtime is ~6ms, it
  * happens at most once per process, and `indexSource` needs the answer
@@ -68,11 +80,27 @@ let tags: Map<GrammarName, DerivationTag> | null = null;
 const sha256 = (file: string): string =>
   createHash("sha256").update(readFileSync(file)).digest("hex");
 
+/**
+ * Every shipped runtime artifact, hashed together.
+ *
+ * By extension rather than by name: which file is the loader and which is the
+ * engine is the package's business and has changed before. Sorted so the digest is
+ * stable, and `.map`/`.d.ts` are excluded because they cannot affect tokenization.
+ */
+function runtimeIntegrity(): string {
+  const dir = dirname(createRequire(import.meta.url).resolve("web-tree-sitter"));
+  const h = createHash("sha256");
+  for (const f of readdirSync(dir).filter((f) => /\.(js|cjs|mjs|wasm)$/.test(f)).sort()) {
+    h.update(f).update("\0").update(readFileSync(join(dir, f))).update("\0");
+  }
+  return h.digest("hex");
+}
+
 export function derivationTag(grammar: GrammarName): DerivationTag {
   if (!tags) {
     // The runtime we import, resolved the way the import resolves it — not a
     // guessed path into node_modules.
-    const parserIntegrity = sha256(createRequire(import.meta.url).resolve("web-tree-sitter"));
+    const parserIntegrity = runtimeIntegrity();
     tags = new Map();
     for (const name of Object.keys(WASM_FILE) as GrammarName[]) {
       tags.set(name, {
