@@ -4,14 +4,15 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, appendFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Actor } from "./schema.js";
-import { mintId, shardFor, appendEvents, readShard, readScope, sortEvents, causalHead, type LogEvent } from "./eventlog.js";
+import { mintId, shardFor, appendEvents, readShard, readScope, sortEvents, causalHeads, causality,
+  type LogEvent } from "./eventlog.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
 const dana: Actor = { principal: "dana@x.com" };
 const izzieAgent: Actor = { principal: "izzie@x.com", via: { kind: "agent", model: "claude-opus-5" } };
 
-const ev = (id: string, over: Partial<LogEvent> = {}): LogEvent =>
-  ({ id, kind: "noted", subject: "f_1", actor: izzie, at: "2026-08-21T00:00:00Z", ...over });
+const ev = (id: string, over: Partial<LogEvent> = {}, principal?: string): LogEvent =>
+  ({ id, kind: "noted", subject: "f_1", actor: principal ? { principal } : izzie, at: "2026-08-21T00:00:00Z", ...over });
 
 const tmp = () => mkdtempSync(join(tmpdir(), "codemap-log-"));
 
@@ -172,7 +173,7 @@ test("sorting is deterministic regardless of input order", () => {
   assert.deepEqual(one, ["0000000002-bb", "0000000001-aa", "0000000003-cc"], "cause before effect, id otherwise");
 });
 
-test("the causal head is the LAST event in fold order, not the highest id", () => {
+test("the causal head is what descends from everything, not the highest id", () => {
   // These differ whenever two events share a millisecond and are ordered by their
   // random suffix. Taking the highest id made a writer's own consecutive events
   // read as concurrent — the exact ambiguity `after` exists to remove — because the
@@ -181,11 +182,47 @@ test("the causal head is the LAST event in fold order, not the highest id", () =
   const second = ev("0000000002-aa", { after: first.id });
   const sorted = sortEvents([first, second]);
   assert.deepEqual(sorted.map((e) => e.id), [first.id, second.id], "causality put the low id last");
-  assert.equal(causalHead(sorted), second.id, "so the head is that one, not the max id");
+  assert.deepEqual(causalHeads(sorted), [second.id], "so the head is that one, not the max id");
 });
 
 test("the causal head of nothing is nothing", () => {
-  assert.equal(causalHead([]), undefined);
+  assert.deepEqual(causalHeads([]), []);
+});
+
+test("a writer apart from another records BOTH heads, and neither is dropped", () => {
+  // The whole reason `after` is a list. One id can only name one of two concurrent
+  // writers, and everything behind the other vanishes from the record of what this
+  // writer knew — which is how somebody who had read a disagreement in full could
+  // be judged never to have seen half of it.
+  const a = ev("0000000001-aa", {}, "alice@x.com");
+  const b = ev("0000000002-bb", {}, "dana@x.com");
+  const heads = causalHeads(sortEvents([a, b]));
+  assert.deepEqual([...heads].sort(), [a.id, b.id]);
+
+  const c = ev("0000000003-cc", { after: heads }, "bob@x.com");
+  const causal = causality(sortEvents([a, b, c]));
+  assert.ok(causal.saw(c.id, a.id), "bob saw alice");
+  assert.ok(causal.saw(c.id, b.id), "bob saw dana");
+});
+
+test("a bare `after` string still reads, so logs written before it was a list fold", () => {
+  const a = ev("0000000001-aa", {}, "alice@x.com");
+  const b = ev("0000000002-bb", { after: a.id }, "dana@x.com");   // the old one-id form
+  assert.deepEqual(sortEvents([b, a]).map((e) => e.id), [a.id, b.id]);
+  assert.ok(causality([a, b]).saw(b.id, a.id));
+});
+
+test("what a writer never pulled is not in their vector, whatever the fold order", () => {
+  // dana writes offline; her id sorts FIRST, so an index comparison against fold
+  // position concludes everyone later saw her. Nobody did until she pushed.
+  const dana = ev("0000000001-aa", {}, "dana@x.com");
+  const alice = ev("0000000005-bb", {}, "alice@x.com");
+  const bob = ev("0000000009-cc", { after: [alice.id] }, "bob@x.com");
+  const sorted = sortEvents([dana, alice, bob]);
+  assert.deepEqual(sorted.map((e) => e.id), [dana.id, alice.id, bob.id], "dana folds first");
+  const causal = causality(sorted);
+  assert.ok(causal.saw(bob.id, alice.id), "bob saw alice");
+  assert.ok(!causal.saw(bob.id, dana.id), "and did NOT see dana, despite her lower index");
 });
 
 test("a writer's own consecutive events keep their order even within one millisecond", () => {

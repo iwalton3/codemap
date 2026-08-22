@@ -29,7 +29,7 @@
 import type { Actor } from "./schema.js";
 import type { NodeVersion, NodeCitation, LogicalNodeType } from "./schema.js";
 import { winningVersionAt } from "./store.js";
-import { appendEvents, mintId, readScope, causalHead, type LogEvent } from "./eventlog.js";
+import { appendEvents, mintId, readScope, causalHeads, type LogEvent } from "./eventlog.js";
 
 export const docScope = (universe: string): string => `docs/${universe}`;
 
@@ -112,10 +112,10 @@ export function resolveDoc(doc: SharedDoc, liveHashes: Map<string, string>): Nod
 
 async function emit(logRoot: string, universe: string, actor: Actor, subject: string, kind: string, data: Data): Promise<LogEvent> {
   const scope = docScope(universe);
-  const seen = causalHead(await readScope(logRoot, scope));
+  const seen = causalHeads(await readScope(logRoot, scope));
   const event: LogEvent = {
     id: mintId(), kind, subject, actor, at: new Date().toISOString(),
-    ...(seen ? { after: seen } : {}),
+    ...(seen.length ? { after: seen } : {}),
     data,
   };
   await appendEvents(logRoot, scope, actor, [event]);

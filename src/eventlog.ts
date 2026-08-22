@@ -45,13 +45,19 @@ export interface LogEvent {
   actor: Actor;
   at: string;
   /**
-   * The highest event id this writer had already folded.
+   * The events this writer had already folded that nothing else descends from.
    *
-   * The causal edge. Two events where neither names the other are CONCURRENT, which
-   * is the only case a timestamp tiebreak is allowed to decide — and the only case
-   * that can be a genuine conflict.
+   * The causal edge. Two events where neither reaches the other are CONCURRENT,
+   * which is the only case a timestamp tiebreak is allowed to decide — and the
+   * only case that can be a genuine conflict.
+   *
+   * A list because a writer who has pulled from two people who were apart holds
+   * two heads, and a single id cannot say so: it drops one of them, and everything
+   * behind it, from the record of what they knew. Logs written before this was a
+   * list carry a bare string, which reads as a one-element list; their vectors are
+   * a lower bound, exactly as they were when they were written.
    */
-  after?: string;
+  after?: string | string[];
   /** Event-specific payload. Opaque here. */
   data?: Record<string, unknown>;
 }
@@ -162,6 +168,10 @@ export async function readScope(logRoot: string, scope: string): Promise<LogEven
  * that already existed) but the queue drains regardless, because anything still
  * blocked at the end is emitted in id order rather than dropped.
  */
+/** `after` normalised. A bare string is a log written before it became a list. */
+export const parentsOf = (e: LogEvent): string[] =>
+  e.after === undefined ? [] : Array.isArray(e.after) ? e.after : [e.after];
+
 export function sortEvents(events: LogEvent[]): LogEvent[] {
   const byId = new Map(events.map((e) => [e.id, e]));
   // Sorted by id, so "first eligible" is always "lowest id that is eligible".
@@ -174,7 +184,7 @@ export function sortEvents(events: LogEvent[]): LogEvent[] {
     // leave it behind whatever came after. That still produces a causally valid
     // order, but not the same one twice from differently-ordered input — and
     // "every reader folds identically" is the whole point.
-    let i = pending.findIndex((e) => !(e.after && byId.has(e.after) && !emitted.has(e.after)));
+    let i = pending.findIndex((e) => parentsOf(e).every((p) => !byId.has(p) || emitted.has(p)));
     // Nothing eligible means a cycle, which honest writers cannot produce (`after`
     // names an id that already existed). Take the lowest id and carry on: a log
     // that refuses to load is worse than one that orders a cycle arbitrarily.
@@ -187,14 +197,84 @@ export function sortEvents(events: LogEvent[]): LogEvent[] {
 }
 
 /**
- * What a new write should record as `after`: the last event in FOLD order.
+ * Who had seen what, for a whole scope.
  *
- * Not the highest id. Those differ whenever two events share a millisecond and are
- * ordered by their random suffix — and then the highest id is not the one the
- * writer most recently saw applied. Pointing `after` at that made a writer's own
- * consecutive events read as concurrent, which is exactly the ambiguity `after`
- * exists to remove. Pass events already in fold order (`readScope` returns them so).
+ * The question every conflict rule actually asks is "had this writer seen that
+ * write?", and for a long time the answer was an integer comparison: `after`'s
+ * position in fold order versus the other write's. That is unsound. `sortEvents`
+ * breaks ties by id and `mintId` stamps at WRITE time, so an edit made offline on
+ * Monday sits at a LOWER fold index than everything that reached the remote on
+ * Tuesday — and its author saw none of it. Three people writing while apart is
+ * enough to reach the bad case; see `contest-causality.test.ts`.
+ *
+ * The answer is a vector clock, and it is exact rather than a lower bound because
+ * shards are SINGLE-WRITER and append-only: a pull takes a whole shard, so holding
+ * one of a principal's events means holding every earlier one of theirs. One
+ * number per person is therefore a complete summary.
+ *
+ * That number is the event's ORDINAL among its principal's events in fold order,
+ * not its id. Ids are only a time order within one process — the same person
+ * writing from a laptop and a desktop can mint a later event with a lower id, and
+ * `sortEvents` exists precisely to put those back in causal order.
+ *
+ * Pass events in fold order (`readScope` returns them so).
  */
-export function causalHead(sortedEvents: LogEvent[]): string | undefined {
-  return sortedEvents.length ? sortedEvents[sortedEvents.length - 1]!.id : undefined;
+export interface Causality {
+  /** Had the writer of `from` already folded `target`? Unknown ids answer false. */
+  saw(from: string, target: string): boolean;
+  /** Every event nothing else descends from — what a new write records as `after`. */
+  heads(): string[];
 }
+
+export function causality(sortedEvents: LogEvent[]): Causality {
+  const byId = new Map(sortedEvents.map((e) => [e.id, e]));
+  /** principal -> how many of their events have been folded so far. */
+  const count = new Map<string, number>();
+  /** event -> its 1-based ordinal among its own principal's events. */
+  const seq = new Map<string, number>();
+  /** event -> the highest ordinal its writer had folded, per principal. */
+  const seen = new Map<string, Map<string, number>>();
+  /** principal -> their most recently folded event. */
+  const ownLast = new Map<string, string>();
+
+  for (const e of sortedEvents) {
+    const mine = e.actor.principal;
+    const v = new Map<string, number>();
+    const absorb = (id: string | undefined) => {
+      const parent = id !== undefined ? byId.get(id) : undefined;
+      if (!parent) return;
+      for (const [p, n] of seen.get(parent.id) ?? []) if ((v.get(p) ?? 0) < n) v.set(p, n);
+      const p = parent.actor.principal;
+      const n = seq.get(parent.id)!;
+      if ((v.get(p) ?? 0) < n) v.set(p, n);
+    };
+    for (const id of parentsOf(e)) absorb(id);
+    // A writer's own previous event is a causal parent as surely as `after` is:
+    // they had it by construction. Tracked separately because `after` names only
+    // the heads, and a writer whose own last event was not one would otherwise
+    // lose their own history.
+    absorb(ownLast.get(mine));
+
+    const n = (count.get(mine) ?? 0) + 1;
+    count.set(mine, n);
+    seq.set(e.id, n);
+    seen.set(e.id, v);
+    ownLast.set(mine, e.id);
+  }
+
+  return {
+    saw(from, target) {
+      const t = byId.get(target);
+      if (!t) return false;
+      return (seen.get(from)?.get(t.actor.principal) ?? 0) >= seq.get(target)!;
+    },
+    heads() {
+      const covered = new Map<string, number>();
+      for (const v of seen.values()) for (const [p, n] of v) if ((covered.get(p) ?? 0) < n) covered.set(p, n);
+      return sortedEvents.filter((e) => (covered.get(e.actor.principal) ?? 0) < seq.get(e.id)!).map((e) => e.id);
+    },
+  };
+}
+
+/** What a new write records as `after`. See `Causality.heads`. */
+export const causalHeads = (sortedEvents: LogEvent[]): string[] => causality(sortedEvents).heads();

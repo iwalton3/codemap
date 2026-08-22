@@ -27,7 +27,7 @@
 import { createHash } from "node:crypto";
 import type { Actor, BugSeverity } from "./schema.js";
 import { isAgentActor } from "./identity.js";
-import { appendEvents, mintId, readScope, causalHead, type LogEvent } from "./eventlog.js";
+import { appendEvents, mintId, readScope, causalHeads, type LogEvent } from "./eventlog.js";
 
 export type NoteKind = "note" | "question" | "finding" | "pointer";
 
@@ -141,10 +141,10 @@ async function emit(
   subject: string, kind: string, data?: Data,
 ): Promise<LogEvent> {
   const scope = noteScope(universe, bucketFor(targetId));
-  const seen = causalHead(await readScope(logRoot, scope));
+  const seen = causalHeads(await readScope(logRoot, scope));
   const event: LogEvent = {
     id: mintId(), kind, subject, actor, at: new Date().toISOString(),
-    ...(seen ? { after: seen } : {}),
+    ...(seen.length ? { after: seen } : {}),
     ...(data ? { data } : {}),
   };
   await appendEvents(logRoot, scope, actor, [event]);

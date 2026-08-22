@@ -89,7 +89,9 @@ test("a second write records what the writer had already seen", async () => {
     const first = await publishWalkthrough(root, izzie, wt(264, "h"));
     const second = await publishWalkthrough(root, dana, wt(264, "h"));
     assert.equal(first.after, undefined, "nothing to have seen");
-    assert.equal(second.after, first.id);
+    // A list, because a writer apart from two others holds two heads and one id
+    // cannot name both. Here there is exactly one.
+    assert.deepEqual(second.after, [first.id]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

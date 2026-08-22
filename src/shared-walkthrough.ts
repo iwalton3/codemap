@@ -14,7 +14,7 @@
 
 import type { Actor } from "./schema.js";
 import type { PrWalkthrough } from "./walkthrough.js";
-import { appendEvents, mintId, readScope, causalHead, type LogEvent } from "./eventlog.js";
+import { appendEvents, mintId, readScope, causalHeads, type LogEvent } from "./eventlog.js";
 
 /** One person's walkthrough of one pull request, with who wrote it. */
 export interface SharedWalkthrough {
@@ -44,14 +44,14 @@ export async function publishWalkthrough(
   key: number | string = w.pr,
 ): Promise<LogEvent> {
   const scope = walkthroughScope(key);
-  const seen = causalHead(await readScope(logRoot, scope));
+  const seen = causalHeads(await readScope(logRoot, scope));
   const event: LogEvent = {
     id: mintId(),
     kind: "walkthrough.published",
     subject: `pr-${w.pr}`,
     actor,
     at: new Date().toISOString(),
-    ...(seen ? { after: seen } : {}),
+    ...(seen.length ? { after: seen } : {}),
     data: { walkthrough: w as unknown as Record<string, unknown> },
   };
   await appendEvents(logRoot, scope, actor, [event]);

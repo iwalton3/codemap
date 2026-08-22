@@ -31,7 +31,8 @@
 
 import type { Actor, BugSeverity, BugWitness } from "./schema.js";
 import { isAgentActor, isIndependent } from "./identity.js";
-import { appendEvents, mintId, readScope, causalHead, type LogEvent } from "./eventlog.js";
+import { appendEvents, mintId, readScope, causalHeads, causality,
+  type LogEvent, type Causality } from "./eventlog.js";
 
 /**
  * Lifecycle. `issued` is an agent's proposal; `created` is a claim somebody stands
@@ -197,23 +198,21 @@ const CONTESTABLE = ["text", "comment", "severity", "category", "line"] as const
  * state without reading it, so the test is deliberately narrow: same field,
  * different value, neither saw the other, different people.
  */
-interface Held { value: unknown; by: Actor; at: string; index: number }
+interface Held { value: unknown; by: Actor; at: string; id: string }
+/** The two writes a contest is between, so clearing can ask whether both were seen. */
+interface Raised { held: string; incoming: string }
 
 function noteContest(
   f: SharedFinding, e: LogEvent, now: Record<string, unknown>,
-  owned: Map<string, Held>, raisedAt: Map<string, number>,
-  index: Map<string, number>, at: number,
+  owned: Map<string, Held>, raisedAt: Map<string, Raised>, causal: Causality,
 ): void {
-  // `after` is the causal HEAD — the last event in fold order the writer had
-  // applied — so they had necessarily seen everything at or before its index.
-  // That makes "did they see it?" an integer comparison rather than a graph walk.
-  const sawUpTo = e.after !== undefined ? (index.get(e.after) ?? -1) : -1;
+  const saw = (target: string) => causal.saw(e.id, target);
   for (const k of CONTESTABLE) {
     const incoming = now[k];
     if (incoming === undefined) continue;
     const key = `${f.id}\0${k}`;
     const held = owned.get(key);
-    owned.set(key, { value: incoming, by: e.actor, at: e.at, index: at });
+    owned.set(key, { value: incoming, by: e.actor, at: e.at, id: e.id });
 
     // Settling is decided BEFORE the tests below, because every one of them asks
     // whether this write STARTS a conflict and none of them bear on ending one.
@@ -222,11 +221,11 @@ function noteContest(
     // the last writer — and the browser offers exactly the two values the
     // participants wrote, so no button in the UI could settle anything.
     //
-    // Against the contest's own index, not `held`'s: a third concurrent write
-    // moves `held` past the contest, and the person settling must be judged on
-    // whether they saw the disagreement, not on who wrote most recently.
+    // BOTH writes, not the moment the fold happened to notice them: a contest is
+    // between two people, and somebody who saw only one of them has not been
+    // shown the choice they would be deciding.
     const raised = raisedAt.get(key);
-    if (raised !== undefined && raised <= sawUpTo) {
+    if (raised && saw(raised.held) && saw(raised.incoming)) {
       // Restating any value for a field you have seen contested settles it — the
       // fold replays history on every read, so without this the disagreement is
       // re-detected forever and nobody can ever clear it. An agent may not settle
@@ -241,15 +240,15 @@ function noteContest(
     }
 
     if (!held) continue;
-    if (held.value === incoming) continue;                  // agreeing is not conflict
-    if (held.by.principal === e.actor.principal) continue;  // revising your own is not conflict
-    if (held.index <= sawUpTo) continue;                    // written with the full picture
+    if (held.value === incoming) continue;                          // agreeing is not conflict
+    if (held.by.principal === e.actor.principal) continue;          // revising your own is not conflict
+    if (saw(held.id)) continue;                                     // written with the full picture
     (f.contested ??= []).push({
       field: k,
       held: { value: held.value, by: held.by.principal, at: held.at },
       incoming: { value: incoming, by: e.actor.principal, at: e.at },
     });
-    raisedAt.set(key, at);
+    raisedAt.set(key, { held: held.id, incoming: e.id });
   }
 }
 
@@ -263,17 +262,18 @@ function noteContest(
  */
 export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
   const out = new Map<string, SharedFinding>();
-  // Fold-order index per event, and who currently owns each contestable scalar.
-  // Kept out of SharedFinding: it is bookkeeping for the fold, not state anyone reads.
-  const index = new Map<string, number>();
+  // Who currently holds each contestable scalar, and which two writes each open
+  // contest is between. Bookkeeping for the fold, not state anyone reads, so it
+  // is kept out of SharedFinding.
   const owned = new Map<string, Held>();
-  // Where each open contest was raised, so settling can ask "did they see the
-  // disagreement?" rather than "did they see the last writer?".
-  const raisedAt = new Map<string, number>();
+  const raisedAt = new Map<string, Raised>();
+
+  // What each writer had folded when they wrote — the log's own notion of
+  // causality, so the fold and `causalHeads` cannot drift apart on it.
+  const causal = causality(events);
 
   for (let at = 0; at < events.length; at++) {
     const e = events[at]!;
-    index.set(e.id, at);
     const d = e.data as Data | undefined;
 
     if (e.kind === "finding.created") {
@@ -313,7 +313,7 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         const now = (d?.now as Record<string, unknown>) ?? {};
         // A person may revise anyone's; an agent only while it is still a proposal.
         if (isAgentActor(e.actor) && f.state !== "issued") break;
-        noteContest(f, e, now, owned, raisedAt, index, at);
+        noteContest(f, e, now, owned, raisedAt, causal);
         f.revisions.push({ at: e.at, by: e.actor, was });
         // Assigned field by field rather than through a dynamic key: a revision is
         // the one event that rewrites the finding's substance, so what it is allowed
@@ -450,10 +450,10 @@ async function emit(
   subject: string, kind: string, data?: Data,
 ): Promise<LogEvent> {
   const scope = findingScope(pr);
-  const seen = causalHead(await readScope(logRoot, scope));
+  const seen = causalHeads(await readScope(logRoot, scope));
   const event: LogEvent = {
     id: mintId(), kind, subject, actor, at: new Date().toISOString(),
-    ...(seen ? { after: seen } : {}),
+    ...(seen.length ? { after: seen } : {}),
     ...(data ? { data } : {}),
   };
   await appendEvents(logRoot, scope, actor, [event]);
