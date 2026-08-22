@@ -8,7 +8,7 @@
  */
 
 import type { Actor } from "./schema.js";
-import { requireActor } from "./identity.js";
+import { requireActor, isAgentActor } from "./identity.js";
 import { resolveSidecar, scopeFor, type SidecarConfig } from "./sidecar-config.js";
 import { originSlug } from "./git.js";
 import { fetchReviewThreads } from "./pr-push.js";
@@ -20,6 +20,8 @@ import {
   type SharedFinding, type Verdict, type Ask, type FindingState, type NewFinding,
 } from "./shared-findings.js";
 import { publishWalkthrough, readWalkthroughs, currentWalkthrough, staleWalkthroughs } from "./shared-walkthrough.js";
+import { createNote, answerNote, resolveNote, notesForTarget, allNotes, type NewNote } from "./shared-notes.js";
+import { readAnnotations } from "./store.js";
 import type { PrWalkthrough } from "./walkthrough.js";
 
 const NO_SIDECAR =
@@ -252,6 +254,98 @@ export async function inboundReplies(root: string, pr: number | string) {
     });
   }
   return { universe: cfg.universe, pr, findings: out };
+}
+
+// ---------------------------------------------------------------------------
+// Annotations — the codebase knowledge, not the pull-request findings
+// ---------------------------------------------------------------------------
+
+/**
+ * Mirror a locally-written annotation onto the sidecar.
+ *
+ * Called from `ops.annotate` after the local write, and silently a no-op when no
+ * sidecar is configured. Local FIRST and always: codemap worked without a sidecar
+ * for its whole life, and a note must never be lost because a shared repo was
+ * misconfigured. The sidecar is where the note goes to be useful to somebody else.
+ */
+export async function mirrorNote(root: string, n: NewNote): Promise<{ shared: boolean }> {
+  const cfg = resolveSidecar(root);
+  if (!cfg) return { shared: false };
+  const actor = requireActor(root);
+  if ("error" in actor) return { shared: false };
+  await ensureSidecar(cfg.path, actor);
+  await createNote(cfg.path, cfg.universe, actor, n);
+  return { shared: true };
+}
+
+/** What the team knows about one symbol — everyone's notes, not just yours. */
+export async function sharedNotes(root: string, targetId: string) {
+  const cfg = resolveSidecar(root);
+  if (!cfg) return { error: NO_SIDECAR };
+  const notes = await notesForTarget(cfg.path, cfg.universe, targetId);
+  return {
+    universe: cfg.universe,
+    target: targetId,
+    notes: notes.map((n) => ({
+      id: n.id, kind: n.kind, text: n.text, severity: n.severity, category: n.category, line: n.line,
+      by: n.author.principal, model: n.author.via?.model, at: n.createdAt,
+      resolved: n.resolved ? { by: n.resolved.by.principal, reason: n.resolved.reason } : undefined,
+      answers: n.answers.map((a) => ({ by: a.actor.principal, model: a.actor.via?.model, at: a.at, body: a.body })),
+    })),
+  };
+}
+
+export async function answerSharedNote(root: string, targetId: string, id: string, body: string) {
+  const b = bind(root);
+  if ("error" in b) return b;
+  if (!body.trim()) return { error: "an empty answer says nothing" };
+  await answerNote(b.cfg.path, b.cfg.universe, targetId, b.actor, id, body);
+  return { ok: true, id };
+}
+
+export async function resolveSharedNote(root: string, targetId: string, id: string, resolved: boolean, reason?: string) {
+  const b = bind(root);
+  if ("error" in b) return b;
+  if (isAgentActor(b.actor) && resolved) {
+    return { error: "an agent may answer a question, not declare it settled — reply instead and let a person close it" };
+  }
+  await resolveNote(b.cfg.path, b.cfg.universe, targetId, b.actor, id, resolved, reason);
+  return { ok: true, id, resolved };
+}
+
+/**
+ * Publish the annotations already in this universe's SQLite to the sidecar.
+ *
+ * The one-time step for a store that predates sharing. Idempotent by annotation
+ * id: a note already on the sidecar is skipped, so running it twice — or after
+ * somebody else has already published theirs — adds nothing.
+ *
+ * Attributed to whoever runs it, because the local `author` strings ("me",
+ * "agent") cannot be resolved to a person. That is honest rather than accurate,
+ * and it is the same reason legacy records were never back-filled.
+ */
+export async function publishLocalNotes(root: string, opts: { dryRun?: boolean } = {}) {
+  const b = bind(root);
+  if ("error" in b) return b;
+  await ensureSidecar(b.cfg.path, b.actor);
+  const local = (await readAnnotations(root)).annotations;
+  const already = new Set((await allNotes(b.cfg.path, b.cfg.universe)).map((n) => n.id));
+  const todo = local.filter((a) => !already.has(a.id));
+  if (opts.dryRun) {
+    return { universe: b.cfg.universe, local: local.length, alreadyShared: local.length - todo.length, wouldPublish: todo.length };
+  }
+  for (const a of todo) {
+    await createNote(b.cfg.path, b.cfg.universe, b.actor, {
+      id: a.id,
+      targetKind: a.target.kind, targetId: a.target.id,
+      kind: a.kind ?? "note", text: a.text,
+      severity: a.severity, category: a.category, line: a.line,
+    });
+  }
+  return {
+    universe: b.cfg.universe, published: todo.length, alreadyShared: local.length - todo.length,
+    note: todo.length ? "run `codemap sync` to send them" : "nothing new to publish",
+  };
 }
 
 export async function shareWalkthrough(root: string, w: PrWalkthrough) {

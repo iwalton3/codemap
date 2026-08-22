@@ -755,6 +755,19 @@ const tools: Tool[] = [
     handler: (a, c) => shared.reportOnFinding(c.universe.path, a.pr, a.id, a.result, a.detail, a.files),
   },
   {
+    name: "shared_notes",
+    description: "What the TEAM knows about a symbol — everyone's notes, questions and pointers on it, not just this store's. Read it before investigating: somebody may already have worked out why the obvious answer here is wrong, and that knowledge cost them real reading time. Answers to a question are listed with it.",
+    inputSchema: obj({ targetId: { type: "string", description: "The anchor or node id." } }, ["targetId"]),
+    handler: (a, c) => shared.sharedNotes(c.universe.path, a.targetId),
+  },
+  {
+    name: "answer_shared_note",
+    description: "Answer somebody's open question about a symbol. You may ANSWER; you may not mark it settled — that is a person's act, same as closing a finding. Say what you found and let them close it.",
+    inputSchema: obj({ targetId: { type: "string" }, id: { type: "string" }, body: { type: "string" } }, ["targetId", "id", "body"]),
+    mutates: true,
+    handler: (a, c) => shared.answerSharedNote(c.universe.path, a.targetId, a.id, a.body),
+  },
+  {
     name: "inbound_replies",
     description: "What the pull request's SUBMITTER said back about findings this team published. Read-only and one-directional: the reviewers' discussion lives on the sidecar (GitHub cannot host a conversation about code the branch never touched, or about an ABSENCE), but the person who has to fix it answers on the pull request and that answer exists nowhere else. Read it before acting on a finding — they may have already explained why it is not a defect.",
     inputSchema: obj({ pr: { type: "string" } }, ["pr"]),

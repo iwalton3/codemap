@@ -2756,7 +2756,21 @@ export async function annotate(
   const annStore = await readAnnotations(root);
   annStore.annotations.push(ann);
   await writeAnnotations(root, annStore.annotations);
-  return { ok: true, id: ann.id, target: ann.target };
+  // Mirrored onto the sidecar when one is configured, because an annotation is
+  // codebase knowledge that cost somebody real reading time — leaving it in one
+  // person's SQLite means the next person pays for it again.
+  //
+  // AFTER the local write and never in place of it: codemap worked without a
+  // sidecar for its whole life, and a note must not be lost because a shared repo
+  // was misconfigured. `mirrorNote` is a no-op when there is nothing to mirror to,
+  // and a throw here must not fail a write that has already succeeded locally.
+  const { mirrorNote } = await import("./ops-shared.js");
+  const mirrored = await mirrorNote(root, {
+    id: ann.id, targetKind: input.targetKind, targetId,
+    kind: kind ?? "note", text: input.text,
+    severity, category, line,
+  }).catch(() => ({ shared: false }));
+  return { ok: true, id: ann.id, target: ann.target, ...(mirrored.shared ? { shared: true } : {}) };
 }
 
 /**
