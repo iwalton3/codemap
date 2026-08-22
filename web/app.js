@@ -741,6 +741,7 @@ class AnchorPage extends Component {
       ${when(a.citedBy && a.citedBy.length, () => html`<div class="sec">documented by</div><div class="chips">${each(a.citedBy, n => html`<span class="chip" on-click="${() => go(nodeUrl(u, n.id))}">${n.title || n.id}</span>`)}</div>`)}
       ${when(a.bugs && a.bugs.length, () => html`<div class="sec">bugs</div><div class="chips">${each(a.bugs, b => html`<span class="chip">${b.status} · ${b.title}</span>`)}</div>`)}
       ${annoThread(this, u, 'anchor', a.id, a.annotations)}
+      <shared-notes-panel universe="${u}" target="${a.id}"></shared-notes-panel>
       <div class="sec">source</div>
       ${when(a.code, () => html`<pre class="hljs"><code>${raw(highlight(a.code, a.lang))}</code></pre>`, () => html`<pre class="code">(unavailable)</pre>`)}
     </div>`);
@@ -3137,4 +3138,5 @@ router = enableRouting(document.querySelector('router-outlet'), {
   '/u/:universe/search/': { component: 'search-page' },
   '/u/:universe/shared/:pr/': { component: 'shared-page' },
   '/u/:universe/shared/:pr/peers/': { component: 'shared-peers-page' },
+  '/u/:universe/shared-docs/': { component: 'shared-docs-page' },
 });

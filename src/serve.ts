@@ -180,6 +180,10 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return shared.sharedStatus(root);
     case "/api/shared/walkthroughs":
       return shared.sharedWalkthroughs(root, q.get("pr") ?? "", q.get("head") || undefined);
+    case "/api/shared/notes":
+      return shared.sharedNotes(root, q.get("target") ?? "");
+    case "/api/shared/docs":
+      return shared.sharedDocs(root, { nodeId: q.get("node") || undefined });
     case "/api/shared/replies":
       return shared.inboundReplies(root, q.get("pr") ?? "");
     case "/api/pr/code":
@@ -283,6 +287,11 @@ const server = createServer(async (req, res) => {
         case "settle": out = await shared.settleContest(root, pr, body.id, body.field, body.value); break;
         case "upstream": out = await shared.upstreamFinding(root, pr, body.id, { system: body.system, key: body.key, url: body.url }); break;
         case "to_bug": out = await shared.findingToBug(root, pr, body.id, body.bug); break;
+        // Notes and docs are not pull-request scoped, so they take a target/node
+        // rather than `pr`. Same handler because the guard is the same one.
+        case "note_answer": out = await shared.answerSharedNote(root, String(body.target ?? ""), body.id, body.body ?? ""); break;
+        case "note_resolve": out = await shared.resolveSharedNote(root, String(body.target ?? ""), body.id, body.resolved !== false, body.reason); break;
+        case "doc_confirm": out = await shared.confirmSharedDoc(root, body.nodeId, body.versionId); break;
         default: out = { error: `unknown shared action "${action}"` };
       }
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });

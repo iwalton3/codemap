@@ -20,12 +20,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { resolvePlaywright, launchPlaywright, startServer, type Server } from "./harness.js";
-import { shareFinding, promoteFinding, corroborateFinding, requestOnFinding } from "../ops-shared.js";
+import { shareFinding, promoteFinding, corroborateFinding, requestOnFinding, publishLocalDocs } from "../ops-shared.js";
 
 const pw = resolvePlaywright();
 
 describe("shared review UI", { skip: pw ? false : "playwright not resolvable (set CODEMAP_E2E_PLAYWRIGHT)" }, () => {
-  let root: string, side: string, server: Server, browser: any, universe: string;
+  let root: string, side: string, server: Server, browser: any, universe: string, anchorId: string;
 
   before(async () => {
     root = mkdtempSync(join(tmpdir(), "codemap-sui-"));
@@ -42,6 +42,8 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
 
     const { init } = await import("../ops.js");
     await init(root);
+    const { readAnchorStore } = await import("../store.js");
+    anchorId = (await readAnchorStore(root)).anchors[0]!.id;
 
     // One finding that needs a person, and one that does not — so the queue filter
     // has something to actually filter.
@@ -62,6 +64,21 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
     try {
       await requestOnFinding(root, 264, a.id, "resolve", "the guard landed in abc123");
     } finally { delete process.env.CODEMAP_AGENT_MODEL; }
+
+    // A shared note on that anchor, and a doc citing it — so the anchor page and
+    // the docs catalogue both have something real to render.
+    const { annotate, document: documentNode } = await import("../ops.js");
+    await annotate(root, {
+      targetKind: "anchor", targetId: anchorId, kind: "question", author: "izzie",
+      text: "is the retry idempotent, or does it double-post?",
+    });
+    await documentNode(root, {
+      type: "process", title: "Payments seam",
+      summary: "how a payment reaches the ledger",
+      body: "transfer() is the only entry point.",
+      anchors: [anchorId],
+    });
+    await publishLocalDocs(root);
 
     server = await startServer(root);
     browser = await launchPlaywright(pw);
@@ -188,6 +205,90 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
     await page.waitForSelector("main");
     const text = await page.textContent("main");
     assert.match(text, /nothing is waiting on a person|no shared findings/);
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+
+  // --- shared notes, where they are actually useful -----------------------------
+
+  test("the team's notes appear ON the anchor page, not one navigation away", async () => {
+    // The point of sharing a note is that the next person does not pay again to
+    // work something out — and they only avoid paying if it is in front of them
+    // while they are reading the code.
+    const { page, errors } = await open(`/u/${universe}/anchor/${anchorId}/`);
+    await page.waitForSelector(".sharednotes");
+    const text = await page.textContent(".sharednotes");
+    assert.match(text, /double-post/, "the question itself");
+    assert.match(text, /izzie@x\.com/, "and who asked it");
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+
+  test("a person can answer a shared question from the anchor page", async () => {
+    const { page, errors } = await open(`/u/${universe}/anchor/${anchorId}/`);
+    await page.waitForSelector(".snote .composer textarea");
+    await page.locator(".snote .composer textarea").fill("idempotent — the key is the ticket id");
+    await page.getByRole("button", { name: /^answer$/ }).click();
+    await page.waitForFunction(
+      () => !!document.querySelector(".snote .tcomment")?.textContent?.includes("ticket id"),
+      null, { timeout: 10_000 },
+    );
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+
+  test("an anchor nobody has written about renders no empty heading", async () => {
+    // An empty "what the team knows" on every page teaches people to stop looking.
+    const { page, errors } = await open(`/u/${universe}/anchor/a_does_not_exist/`);
+    await page.waitForSelector("main");
+    assert.equal(await page.locator(".sharednotes").count(), 0);
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+
+  // --- shared docs ----------------------------------------------------------------
+
+  test("the docs catalogue resolves each doc against this checkout", async () => {
+    const { page, errors } = await open(`/u/${universe}/shared-docs/`);
+    await page.waitForSelector(".frow");
+    const text = await page.textContent("main");
+    assert.match(text, /Payments seam/);
+    assert.match(text, /fresh/, "written against this very checkout");
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+
+  test("expanding a doc shows per-citation freshness, and it can be confirmed", async () => {
+    const { page, errors } = await open(`/u/${universe}/shared-docs/`);
+    await page.waitForSelector(".frow");
+    await page.locator(".frow .row").first().click();
+    await page.waitForSelector(".fdetail");
+    const detail = await page.textContent(".fdetail");
+    assert.match(detail, /matches/, "the citation's live body is one this version accepts");
+    assert.match(detail, /accepted hash/);
+
+    // Confirming is idempotent when it already matches — it must not error.
+    await page.getByRole("button", { name: /still true here/ }).click();
+    await page.waitForFunction(
+      () => !!document.querySelector(".empty")?.textContent?.includes("confirmed against"),
+      null, { timeout: 10_000 },
+    );
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+
+  // --- the sync button, end to end -------------------------------------------------
+
+  test("sync reports honestly when there is no remote to reach", async () => {
+    const { page, errors } = await open(`/u/${universe}/shared/264/`);
+    await page.waitForSelector("button");
+    await page.getByRole("button", { name: /^sync$/ }).click();
+    await page.waitForFunction(
+      () => !!document.querySelector(".empty")?.textContent?.includes("received"),
+      null, { timeout: 15_000 },
+    );
+    const note = await page.textContent(".empty");
+    assert.match(note, /received \d+ event/);
     assert.deepEqual(errors, []);
     await page.close();
   });

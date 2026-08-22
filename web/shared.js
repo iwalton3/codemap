@@ -220,3 +220,142 @@ class SharedPeersPage extends Component {
   }
 }
 defineComponent('shared-peers-page', SharedPeersPage);
+
+
+/**
+ * What the TEAM knows about one symbol, embedded on the anchor and node pages.
+ *
+ * Inline rather than on a page of its own, because the point of sharing notes is
+ * that the next person does not pay again to work something out — and they only
+ * avoid paying if the note is in front of them when they are reading the code,
+ * not one navigation away.
+ *
+ * Silent when there is no sidecar, and silent when nobody has written anything:
+ * an empty "shared notes" heading on every anchor page is noise that teaches
+ * people to stop looking.
+ */
+class SharedNotesPanel extends Component {
+  static props = { universe: '', target: '' };
+  constructor(props) { super(props); this.state = { d: null, draft: '', replyTo: null, busy: false, note: null }; }
+  load = this.createTask(async () => {
+    this.state.d = await api('/api/shared/notes', { u: this.props.universe, target: this.props.target });
+  });
+  mounted() { this.load.run(); }
+  propsChanged() { this.state.d = null; this.load.run(); }
+
+  async answer(id) {
+    const body = this.state.draft;
+    this.state.busy = true;
+    try {
+      const r = await apiPost('/api/shared/note_answer', { u: this.props.universe, target: this.props.target, id, body });
+      this.state.note = r.error ?? null;
+      this.state.draft = ''; this.state.replyTo = null;
+      await this.load.run();
+    } finally { this.state.busy = false; }
+  }
+
+  async resolve(id, resolved) {
+    const r = await apiPost('/api/shared/note_resolve', { u: this.props.universe, target: this.props.target, id, resolved });
+    this.state.note = r.error ?? null;
+    await this.load.run();
+  }
+
+  template() {
+    const st = this.state, d = st.d;
+    // `error` here is almost always "no sidecar configured", which is a normal
+    // state for a store that has never had one — not something to shout about.
+    if (!d || d.error || !d.notes.length) return html`<div></div>`;
+    return html`<div class="sharednotes">
+      <div class="sec">what the team knows <span class="dim">· ${d.notes.length}</span></div>
+      ${when(!!st.note, () => html`<div class="empty">${st.note}</div>`)}
+      ${each(d.notes, n => html`
+        <div class="snote">
+          <div class="row">
+            <span class="prbadge">${n.kind}</span>
+            ${when(!!n.severity, () => html`<span class="${n.severity === 'critical' || n.severity === 'high' ? 'bad' : 'dim'}">${n.severity}</span>`)}
+            <span class="dim">${n.by}${n.model ? ` (${n.model})` : ''}</span>
+            ${when(!!n.resolved, () => html`<span class="prbadge ok">resolved</span>`)}
+          </div>
+          <div class="ftext">${n.text}</div>
+          ${each(n.answers, a => html`<div class="tcomment">→ <b>${a.by}</b>: ${a.body}</div>`, (a, i) => `${a.by}:${i}`)}
+          <div class="composer">
+            <textarea placeholder="answer this"
+              value="${st.replyTo === n.id ? st.draft : ''}"
+              on-input="${(e) => { st.replyTo = n.id; st.draft = e.target.value; }}"></textarea>
+            <button disabled="${st.busy || !(st.replyTo === n.id && st.draft.trim())}"
+              on-click="${() => this.answer(n.id)}">answer</button>
+            ${when(!n.resolved, () => html`<button on-click="${() => this.resolve(n.id, true)}">resolve</button>`)}
+          </div>
+        </div>`, n => n.id)}
+    </div>`;
+  }
+}
+defineComponent('shared-notes-panel', SharedNotesPanel);
+
+/**
+ * The team's docs, each resolved against THIS checkout.
+ *
+ * The status is computed from the citations rather than taken from the fact that
+ * a version resolved: `winningVersionAt` returns the least-bad version and always
+ * returns one, so "a version came back" is not "this describes your code".
+ */
+const docFresh = (v) => {
+  const present = (v.citations ?? []).filter(c => c.present);
+  return present.length > 0 && present.every(c => c.matches);
+};
+
+class SharedDocsPage extends Component {
+  static props = { params: {}, query: {} };
+  constructor(props) { super(props); this.state = { d: null, busy: null, note: null, open: null }; }
+  load = this.createTask(async () => {
+    nav.current = this.props.params.universe;
+    this.state.d = await api('/api/shared/docs', { u: this.props.params.universe });
+  });
+  mounted() { this.load.run(); }
+  propsChanged(name) { if (name === 'params') { this.state.d = null; this.load.run(); } }
+
+  async confirm(nodeId) {
+    this.state.busy = nodeId;
+    try {
+      const r = await apiPost('/api/shared/doc_confirm', { u: this.props.params.universe, nodeId });
+      this.state.note = r.error ?? `confirmed against ${r.confirmed} symbol(s) here`;
+      await this.load.run();
+    } finally { this.state.busy = null; }
+  }
+
+  template() {
+    const u = this.props.params.universe, d = this.state.d, st = this.state;
+    if (!d) return html`<main><div class="loading">loading shared docs…</div></main>`;
+    if (d.error) return pageShell(d, d.error, html``);
+    return pageShell(d, null, html`
+      <div class="crumbs"><b>${u}</b> <span class="sep">·</span> shared docs
+        <span class="dim">· ${d.total}, resolved against this checkout</span></div>
+      ${when(!!st.note, () => html`<div class="empty">${st.note}</div>`)}
+      ${when(!d.docs.length, () => html`<div class="dim">nothing shared yet — run <code>codemap publish-docs</code>.</div>`)}
+      ${each(d.docs, row => html`
+        <div class="frow">
+          <div class="row" on-click="${() => { st.open = st.open === row.nodeId ? null : row.nodeId; }}">
+            ${when(!!row.resolved, () => html`<span class="prbadge ${docFresh(row.resolved) ? 'ok' : 'warnb'}">${docFresh(row.resolved) ? 'fresh' : 'stale'}</span>`)}
+            <span class="fcomment">${row.resolved ? row.resolved.title : row.nodeId}</span>
+            <span class="dim">${row.resolved?.by ?? ''} · v${row.versions}</span>
+          </div>
+          ${when(st.open === row.nodeId && !!row.resolved, () => html`
+            <div class="fdetail">
+              <div class="dim">${row.resolved.summary}</div>
+              <div class="ftext">${row.resolved.body}</div>
+              ${each(row.resolved.citations, c => html`
+                <div class="corr">
+                  <span class="${c.present ? (c.matches ? 'ok' : 'warn') : 'bad'}">${c.present ? (c.matches ? 'matches' : 'drifted') : 'not in this checkout'}</span>
+                  <span class="dim">${c.anchorId} · ${c.accepted} accepted hash(es)</span>
+                </div>`, c => c.anchorId)}
+              <div class="row">
+                <button disabled="${st.busy === row.nodeId}"
+                  on-click="${() => this.confirm(row.nodeId)}"
+                  >${st.busy === row.nodeId ? 'confirming…' : 'still true here'}</button>
+              </div>
+            </div>`)}
+        </div>`, row => row.nodeId)}
+    `);
+  }
+}
+defineComponent('shared-docs-page', SharedDocsPage);
