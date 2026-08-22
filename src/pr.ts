@@ -11,7 +11,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import type { Anchor } from "./schema.js";
+import type { Anchor, Annotation } from "./schema.js";
 import { computeDiff, lineDiff, stripCR, type DiffResult, type DiffLine } from "./diff.js";
 import { indexBlob, indexCommit } from "./repo.js";
 import { readSnapshot, writeSnapshot, readAnnotations, readAnchorStore, retainOrphans, referencedAnchorIds, anchorsUnderRef } from "./store.js";
@@ -558,7 +558,7 @@ export async function prStory(
   // be reopened — and the push panel reports them ("2 resolved locally, so not
   // sent"), which is unactionable if they are nowhere on the page.
   const anns = (await readAnnotations(root)).annotations.filter((a) => a.target.kind === "anchor");
-  const byAnchor = new Map<string, unknown[]>();
+  const byAnchor = new Map<string, Annotation[]>();
   for (const a of anns) (byAnchor.get(a.target.id) ?? byAnchor.set(a.target.id, []).get(a.target.id)!).push(a);
 
   const steps: StoryStep[] = t.worklist
@@ -610,7 +610,7 @@ export interface PrAnchorCode {
    * diff that quietly hid it.
    */
   lineEndingsChanged: boolean;
-  annotations: unknown[];
+  annotations: Annotation[];
 }
 
 /**

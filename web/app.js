@@ -151,6 +151,20 @@ export const loaded = async (fn) => { try { return await fn(); } catch (e) { ret
  */
 export const taskError = (task) => (task && task.error ? errText(task.error) : null);
 
+/**
+ * Narrow an ops reply to its failure arm.
+ *
+ * An ops function returns `{ error }` or a payload, and TypeScript normalises the
+ * two into arms that BOTH carry an `error` key (`error?: undefined` on the good
+ * one) — so `if (d.error)` reads fine and narrows nothing, and every field access
+ * after it stays an error. A predicate is what actually splits the union.
+ *
+ * @template T
+ * @param {T} v
+ * @returns {v is Extract<T, { error: string }>}
+ */
+export const isErr = (v) => !!v && typeof (/** @type {{ error?: unknown }} */ (v)).error === 'string';
+
 // One stable <main> literal for every page. vdx tears down and rebuilds a
 // component's whole subtree whenever template()'s top-level literal changes
 // identity (see the framework's isSameCompiled) — so returning a *distinct*
@@ -636,6 +650,23 @@ defineComponent('md-content', MdContent);
 // (url builders are wrapped in arrows: `diffUrl` is declared further down the
 // file, so naming it directly here would read the binding before its init.)
 /**
+ * Route parameters, across every route — optional because each route binds only
+ * its own. Naming them is what makes `params.univrse` a typo rather than a string.
+ *
+ * @typedef {{ universe: string, id?: string, pr?: string, path?: string }} RouteParams
+ * @typedef {{ params: RouteParams, query: Record<string, string> }} PageProps
+ *
+ * The inline finding form is driven by module-level helpers that take the hosting
+ * component, so these two live on whichever page hosts it.
+ * @typedef {{ finding: string | null, raiseErr?: { key: string, error: string } | null }} FindingFormState
+ *
+ * Search renders one group per universe. `all=1` makes the server call a
+ * different ops function, so the single-universe reply is wrapped into the same
+ * shape by hand — this is the type that says those two agree.
+ * @typedef {Extract<ApiMap['/api/search'], { results: unknown }>['results']} SearchGroups
+ */
+
+/**
  * A bare array literal infers `(string | ((u: string) => string))[]`, so `l[1](u)`
  * is not callable and an index typo is silent. Naming the tuple is what makes a
  * wrong position a compile error.
@@ -685,9 +716,18 @@ class HomePage extends Component {
 defineComponent('home-page', HomePage);
 
 // --- universe dashboard: the "needs attention" landing page -------------------
+/**
+ * @typedef {{ d: ApiMap['/api/dashboard'] | null, q: ApiMap['/api/questions'] | null, lint: ApiMap['/api/lint'] | null }} DashboardState
+ * @extends {Component<PageProps, DashboardState>}
+ */
 class DashboardPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { d: null, q: null, lint: null }; }
+  /** @param {PageProps} props */
+  constructor(props) {
+    super(props);
+    /** @type {DashboardState} */
+    this.state = { d: null, q: null, lint: null };
+  }
   load = this.createTask(async () => {
     const u = this.props.params.universe; nav.current = u;
     const [d, q, lint] = await Promise.all([api('/api/dashboard', { u }), api('/api/questions', { u }), api('/api/lint', { u })]);
@@ -713,7 +753,7 @@ class DashboardPage extends Component {
       ['pull requests', () => go(prsUrl(u)), 'prs'], ['browse files', () => goTree(u, '')],
     ];
     const nav2 = navAll.filter(x => viewEnabled(d, x[2]));
-    return pageShell(d, taskError(this.load) ?? (d && d.error), () => html`
+    return pageShell(d, taskError(this.load), () => html`
       <div class="crumbs"><b>${u}</b> <span class="sep">·</span> overview${when(d.tripwires && d.tripwires.armed && this.canEnableAlerts(), () => html` <span class="sep">·</span> <button title="get a browser notification when a watched tripwire fires" on-click="${() => this.enableAlerts()}">🔔 enable alerts</button>`)}</div>
       ${when(d.attention > 0, () => html`<div class="attn-banner">
         <span class="attn-n">⚠ ${d.attention}</span>
@@ -787,9 +827,18 @@ class DashboardPage extends Component {
 }
 defineComponent('dashboard-page', DashboardPage);
 
+/**
+ * @typedef {{ data: ApiMap['/api/outline'] | null }} OutlineState
+ * @extends {Component<PageProps, OutlineState>}
+ */
 class OutlinePage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { data: null }; }
+  /** @param {PageProps} props */
+  constructor(props) {
+    super(props);
+    /** @type {OutlineState} */
+    this.state = { data: null };
+  }
   load = this.createTask(async () => {
     nav.current = this.props.params.universe;
     this.state.data = await api('/api/outline', { u: this.props.params.universe, prefix: this.props.params.path || '' });
@@ -834,9 +883,18 @@ class OutlinePage extends Component {
 }
 defineComponent('outline-page', OutlinePage);
 
+/**
+ * @typedef {{ a: ApiMap['/api/anchor'] | null }} AnchorState
+ * @extends {Component<PageProps, AnchorState>}
+ */
 class AnchorPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { a: null }; }
+  /** @param {PageProps} props */
+  constructor(props) {
+    super(props);
+    /** @type {AnchorState} */
+    this.state = { a: null };
+  }
   load = this.createTask(async () => { nav.current = this.props.params.universe; this.state.a = await api('/api/anchor', { u: this.props.params.universe, id: this.props.params.id }); });
   mounted() { this.load.run(); }
   propsChanged() { this.state.a = null; this.load.run(); }
@@ -844,22 +902,29 @@ class AnchorPage extends Component {
   // and `signed` (I own it — green). A stale sign-off returns to the worklist and can
   // only be cleared by re-signing; clicking a stale mark re-approves at the live hash.
   async mark(attestation, state, actor) {
+    const a = this.loadedAnchor(); if (!a) return;
     const unmark = state === 'reviewed' && actor !== 'agent'; // upgrade an agent check to human, never clear it
-    await postReview(this.props.params.universe, 'anchor', this.state.a.id, 'code', unmark, attestation);
+    await postReview(this.props.params.universe, 'anchor', a.id, 'code', unmark, attestation);
     this.load.run();
   }
   // Human triage: sets a *confirmed* tier (raise or lower — a person owns lowering).
   async triage(patch) {
-    await postTriage(this.props.params.universe, 'anchor', this.state.a.id, patch);
+    const a = this.loadedAnchor(); if (!a) return;
+    await postTriage(this.props.params.universe, 'anchor', a.id, patch);
     this.load.run();
   }
   async armTripwire(on) {
-    await postTriage(this.props.params.universe, 'anchor', this.state.a.id, { importance: this.state.a.triage.importance, tripwire: on });
+    const a = this.loadedAnchor(); if (!a) return;
+    await postTriage(this.props.params.universe, 'anchor', a.id, { importance: a.triage.importance, tripwire: on });
     this.load.run();
   }
+  /** The anchor if one is on screen — these handlers hang off buttons it renders. */
+  loadedAnchor() { const a = this.state.a; return !a || isErr(a) ? null : a; }
   template() {
     const u = this.props.params.universe, a = this.state.a;
-    return pageShell(a, taskError(this.load) ?? (a && a.error), () => html`<div class="detail">
+    const err = taskError(this.load) ?? (isErr(a) ? a.error : null);
+    if (err || !a || isErr(a)) return pageShell(null, err, html``);
+    return pageShell(a, null, () => html`<div class="detail">
       <div class="back" on-click="${() => goTree(u, a.file)}">← ${a.file}</div>
       <h2>${a.symbol}</h2>
       <div class="meta">${a.kind} · ${a.file}:${a.lines} · ${a.present ? 'present' : 'not found (lost)'}</div>
@@ -876,11 +941,20 @@ class AnchorPage extends Component {
 }
 defineComponent('anchor-page', AnchorPage);
 
+/**
+ * @typedef {FindingFormState & { n: ApiMap['/api/node'] | null, versions: ApiMap['/api/node_versions']['versions'] | null, open: Record<string, boolean>, acode: Record<string, ApiMap['/api/anchor']> }} NodeState
+ * @extends {Component<PageProps, NodeState>}
+ */
 class NodePage extends Component {
   static props = { params: {}, query: {} };
   // `open`/`acode`: per-segment expand state + lazily-fetched source, kept OUT of
   // the node payload so a mark-and-reload never blows away an open code block.
-  constructor(props) { super(props); this.state = { n: null, versions: null, open: {}, acode: {}, finding: null }; }
+  /** @param {PageProps} props */
+  constructor(props) {
+    super(props);
+    /** @type {NodeState} */
+    this.state = { n: null, versions: null, open: {}, acode: {}, finding: null };
+  }
   load = this.createTask(async () => {
     const u = this.props.params.universe, id = this.props.params.id; nav.current = u;
     this.state.n = await api('/api/node', { u, id });
@@ -906,7 +980,9 @@ class NodePage extends Component {
         <span style="width:auto">${open ? '▾' : '▸'}</span>${sevDot(a.severity)}<span style="width:auto">${a.symbol ?? a.id}</span><span class="dim" style="width:auto">${a.file ?? ''}${a.lines ? ':' + a.lines : ''}</span>${when(nf, () => html`<span class="rvfbadge" title="${nf} open finding${nf === 1 ? '' : 's'}">⚑ ${nf}</span>`)}
         <span class="rev">${reviewRowEl(a.review, a.viewed, (att, st, actor) => this.markAnchor(a.id, att, st, actor))}<span class="viewlink" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); go(anchorUrl(u, a.id)); }}" title="open full anchor page">↗</span></span>
       </div>
-      ${when(open, () => !c ? html`<div class="loading" style="padding:6px 0">loading…</div>` : codeReviewLines(this, u, a.id, c.code, c.lang, presetLine, a.annotations))}
+      ${when(open, () => !c ? html`<div class="loading" style="padding:6px 0">loading…</div>`
+        : isErr(c) ? html`<div class="empty">${c.error}</div>`
+          : codeReviewLines(this, u, a.id, c.code, c.lang, presetLine, a.annotations))}
     </div>`;
   }
   async triageNode(patch) { await postTriage(this.props.params.universe, 'node', this.props.params.id, patch); this.load.run(); }
@@ -945,12 +1021,21 @@ defineComponent('node-page', NodePage);
 // are expanded (the queue); signed ones collapse GitHub-style but stay expandable.
 // "view file" opens the whole file in a modal with the file's anchors markable in a
 // side panel — read a segment in context, then sign it.
+/**
+ * @typedef {FindingFormState & { d: ApiMap['/api/node_review'] | null, open: Record<string, boolean>, hideSigned: boolean, file: ApiMap['/api/file'] | null, filePending: boolean, activeAnchor: string | null }} NodeReviewState
+ * @extends {Component<PageProps, NodeReviewState>}
+ */
 class NodeReviewPage extends Component {
   static props = { params: {}, query: {} };
   // `hideSigned` defaults on — the queue is what's left to review; signed segments
   // stay reachable via the toggle. Findings use the shared per-line helpers
   // (`c.state.finding` = open form key, `c._fdrafts` = per-line draft text).
-  constructor(props) { super(props); this.state = { d: null, open: {}, hideSigned: true, file: null, filePending: false, activeAnchor: null, finding: null }; }
+  /** @param {PageProps} props */
+  constructor(props) {
+    super(props);
+    /** @type {NodeReviewState} */
+    this.state = { d: null, open: {}, hideSigned: true, file: null, filePending: false, activeAnchor: null, finding: null };
+  }
   load = this.createTask(async () => { nav.current = this.props.params.universe; this.state.d = await api('/api/node_review', { u: this.props.params.universe, id: this.props.params.id }); });
   mounted() { this.load.run(); if (!this._escWired) { this._escWired = true; window.addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (this.state.finding) closeFindingForm(this); else if (this.state.file) this.closeFile(); } }); } }
   propsChanged() { this.state.d = null; this.state.open = {}; this.state.file = null; this.state.activeAnchor = null; this.state.finding = null; this.load.run(); }
@@ -1067,10 +1152,19 @@ class NodeReviewPage extends Component {
 }
 defineComponent('node-review-page', NodeReviewPage);
 
+/**
+ * @typedef {{ groups: SearchGroups | null }} SearchState
+ * @extends {Component<PageProps, SearchState>}
+ */
 class SearchPage extends Component {
   static props = { params: {}, query: {} };
   static stores = { nav };
-  constructor(props) { super(props); this.state = { groups: null }; }
+  /** @param {PageProps} props */
+  constructor(props) {
+    super(props);
+    /** @type {SearchState} */
+    this.state = { groups: null };
+  }
   // scope: "all" universes (default) or "one" (the current universe). In the URL
   // so back/forward and deep-links carry it.
   scope() { return this.props.query.scope === 'one' ? 'one' : 'all'; }
@@ -1078,13 +1172,12 @@ class SearchPage extends Component {
     nav.current = this.props.params.universe;
     const q = this.props.query.q || '';
     if (!q) { this.state.groups = null; return; }
-    if (this.scope() === 'all') {
-      const all = await api('/api/search', { u: this.props.params.universe, q, all: 1 });
-      this.state.groups = 'results' in all ? all.results : [];
-    } else {
-      const r = await api('/api/search', { u: this.props.params.universe, q });
-      this.state.groups = [{ universe: this.props.params.universe, ...r }];
-    }
+    // `all=1` makes the server answer with one group per universe; without it the
+    // reply is this universe's hits, wrapped into the same shape. Reading the shape
+    // rather than re-deriving it from `scope()` keeps the two branches honest.
+    const u = this.props.params.universe;
+    const r = await api('/api/search', { u, q, all: this.scope() === 'all' ? 1 : null });
+    this.state.groups = 'results' in r ? r.results : [{ universe: u, ...r }];
   });
   mounted() { nav.load(); this.load.run(); }
   propsChanged() { this.load.run(); }
@@ -1113,11 +1206,23 @@ class SearchPage extends Component {
 defineComponent('search-page', SearchPage);
 
 // Force-directed graph explorer — pan/zoom, hover-trace, type filters, click-to-expand.
+/**
+/**
+ * `err` is a field of its own rather than an `{ error }` value parked in `data`:
+ * every method here reads `data.nodes` directly, and a union there is a narrowing
+ * obligation at each one.
+ */
+/**
+ * @typedef {{ data: ApiMap['/api/subgraph'] | null, err: string | null, loading: boolean }} GraphState
+ * @extends {Component<PageProps, GraphState>}
+ */
 class GraphPage extends Component {
   static props = { params: {}, query: {} };
+  /** @param {PageProps} props */
   constructor(props) {
     super(props);
-    this.state = { data: null, loading: true };
+    /** @type {GraphState} */
+    this.state = { data: null, err: null, loading: true };
     this._pos = new Map(); this._view = { x: 0, y: 0, s: 1 };
     this._hidden = { edge: new Set(), node: new Set() };
     this._selected = null; this._ids = new Set();
@@ -1130,7 +1235,8 @@ class GraphPage extends Component {
     nav.current = this.props.params.universe;
     if (!this.state.data) this.state.loading = true; // keep the graph mounted on expand/reload
     const d = await loaded(() => api('/api/subgraph', { u: this.props.params.universe, ids: ids.join(','), expand: expand || '' }));
-    if ('error' in d) { this.state.data = d; this.state.loading = false; return; }
+    if (isErr(d)) { this.state.err = d.error; this.state.data = null; this.state.loading = false; return; }
+    this.state.err = null;
     this._ids = new Set(d.nodes.map((n) => n.id));
     this.state.data = d; this.state.loading = false;
     this.ensurePositions(expand);
@@ -1250,8 +1356,8 @@ class GraphPage extends Component {
   toggleFilter(kind, t, e) { const s = this._hidden[kind]; if (s.has(t)) s.delete(t); else s.add(t); if (e && e.currentTarget) e.currentTarget.classList.toggle('off'); this.applyFilters(); this.runSim(); }
   template() {
     const u = this.props.params.universe, d = this.state.data;
+    if (this.state.err) return html`<main><div class="empty">${this.state.err}</div></main>`;
     if (this.state.loading || !d) return html`<main><div class="loading">loading…</div></main>`;
-    if (d.error) return html`<main><div class="empty">${d.error}</div></main>`;
     const node = (n) => {
       const t = n.title.length > 30 ? n.title.slice(0, 29) + '…' : n.title;
       const w = Math.max(56, Math.round(t.length * 6.3) + 18), hw = w / 2;
@@ -1282,9 +1388,18 @@ class GraphPage extends Component {
 }
 defineComponent('graph-page', GraphPage);
 
+/**
+ * @typedef {{ data: ApiMap['/api/flows'] | null }} FlowsState
+ * @extends {Component<PageProps, FlowsState>}
+ */
 class FlowsPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { data: null }; }
+  /** @param {PageProps} props */
+  constructor(props) {
+    super(props);
+    /** @type {FlowsState} */
+    this.state = { data: null };
+  }
   load = this.createTask(async () => { nav.current = this.props.params.universe; this.state.data = await api('/api/flows', { u: this.props.params.universe }); });
   mounted() { this.load.run(); }
   propsChanged() { this.state.data = null; this.load.run(); }
@@ -1307,9 +1422,18 @@ class FlowsPage extends Component {
 }
 defineComponent('flows-page', FlowsPage);
 
+/**
+ * @typedef {FindingFormState & { data: ApiMap['/api/flow'] | null, onlyChanged: boolean }} FlowState
+ * @extends {Component<PageProps, FlowState>}
+ */
 class FlowPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { data: null, onlyChanged: false, finding: null }; }
+  /** @param {PageProps} props */
+  constructor(props) {
+    super(props);
+    /** @type {FlowState} */
+    this.state = { data: null, onlyChanged: false, finding: null };
+  }
   load = this.createTask(async () => { nav.current = this.props.params.universe; this.state.data = await api('/api/flow', { u: this.props.params.universe, id: this.props.params.id }); });
   mounted() { this.load.run(); }
   propsChanged() { this.state.data = null; this.load.run(); }
@@ -1353,7 +1477,9 @@ class FlowPage extends Component {
   }
   template() {
     const u = this.props.params.universe, d = this.state.data;
-    return pageShell(d, taskError(this.load) ?? (d && d.error), () => {
+    const err = taskError(this.load) ?? (isErr(d) ? d.error : null);
+    if (err || !d || isErr(d)) return pageShell(null, err, html``);
+    return pageShell(d, null, () => {
     const ch = d.changed || { signed: [], viewed: [] };
     const nChanged = new Set([...ch.signed, ...ch.viewed]).size;
     // Targeted diff: only steps that drifted under a mark you'd made. Never-reviewed
@@ -1385,9 +1511,18 @@ class FlowPage extends Component {
 defineComponent('flow-page', FlowPage);
 
 // --- node catalog: browse/filter/mark-reviewed every logical node -------------
+/**
+ * @typedef {{ data: ApiMap['/api/nodes'] | null, tw: ApiMap['/api/tripwires'] | null, f: { q: string, type: string, domain: string, status: string, gen: string, review: string, severity: string }, group: string }} NodeCatalogState
+ * @extends {Component<PageProps, NodeCatalogState>}
+ */
 class NodeCatalogPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { data: null, tw: null, f: { q: '', type: '', domain: '', gen: '', review: '', severity: '' }, group: 'type' }; }
+  /** @param {PageProps} props */
+  constructor(props) {
+    super(props);
+    /** @type {NodeCatalogState} */
+    this.state = { data: null, tw: null, f: { q: '', type: '', domain: '', status: '', gen: '', review: '', severity: '' }, group: 'type' };
+  }
   load = this.createTask(async () => { nav.current = this.props.params.universe; const u = this.props.params.universe; this.state.data = await api('/api/nodes', { u }); this.state.tw = await api('/api/tripwires', { u }); });
   mounted() { this._u = this.props.params.universe; this.load.run(); }
   // Reload only when the universe changes; the `view` toggle lives in the URL query
@@ -1500,9 +1635,18 @@ class NodeCatalogPage extends Component {
 defineComponent('node-catalog-page', NodeCatalogPage);
 
 // --- event wiring matrix: events × aggregates/projections, orphans surfaced ---
+/**
+ * @typedef {{ data: ApiMap['/api/matrix'] | null, f: { q: string, domain: string, orphan: boolean } }} MatrixState
+ * @extends {Component<PageProps, MatrixState>}
+ */
 class MatrixPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { data: null, f: { q: '', domain: '', orphan: false } }; }
+  /** @param {PageProps} props */
+  constructor(props) {
+    super(props);
+    /** @type {MatrixState} */
+    this.state = { data: null, f: { q: '', domain: '', orphan: false } };
+  }
   load = this.createTask(async () => { nav.current = this.props.params.universe; this.state.data = await api('/api/matrix', { u: this.props.params.universe }); });
   mounted() { this.load.run(); }
   propsChanged() { this.state.data = null; this.load.run(); }
@@ -1560,14 +1704,25 @@ defineComponent('matrix-page', MatrixPage);
 
 // --- layered event pipeline: command→handler→event→aggregate→projection -------
 const PIPE = { COLW: 300, NODEW: 224, ROWH: 22, NODEH: 16 };
+/**
+ * @typedef {{ data: ApiMap['/api/pipeline'] | null, err: string | null, loading: boolean, domain: string }} PipelineState
+ * @extends {Component<PageProps, PipelineState>}
+ */
 class PipelinePage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { data: null, loading: true, domain: '' }; this._view = { x: 10, y: 36, s: 1 }; }
+  /** @param {PageProps} props */
+  constructor(props) {
+    super(props);
+    /** @type {PipelineState} */
+    this.state = { data: null, err: null, loading: true, domain: '' };
+    this._view = { x: 10, y: 36, s: 1 };
+  }
   async fetchData() {
     this._adj = null; nav.current = this.props.params.universe;
     if (!this.state.data) this.state.loading = true; // don't blank an existing graph on reload
     const data = await loaded(() => api('/api/pipeline', { u: this.props.params.universe, domain: this.state.domain || '' }));
-    this.state.data = data; this.state.loading = false;
+    if (isErr(data)) { this.state.err = data.error; this.state.data = null; this.state.loading = false; return; }
+    this.state.err = null; this.state.data = data; this.state.loading = false;
     await this.nextRender();
     this.setup();
   }
@@ -1620,8 +1775,8 @@ class PipelinePage extends Component {
   onClick(e) { if (this._panned) return; const g = hitTarget(e, '.pn'); if (g) go(nodeUrl(this.props.params.universe, g.getAttribute('data-id'))); }
   template() {
     const u = this.props.params.universe, d = this.state.data;
+    if (this.state.err) return html`<main><div class="empty">${this.state.err}</div></main>`;
     if (this.state.loading || !d) return html`<main><div class="loading">loading…</div></main>`;
-    if ('error' in d) return html`<main><div class="empty">${d.error}</div></main>`;
     // Reachable by deep link even when the nav hides it — say why it's blank.
     if (!d.nodes.length) return html`<main>
       <div class="crumbs">${u} <span class="sep">·</span> event pipeline</div>
@@ -1661,14 +1816,25 @@ defineComponent('pipeline-page', PipelinePage);
 // COLW - NODEW must exceed TW so a transition fits between adjacent columns.
 const SMAP = { COLW: 380, NODEW: 170, NODEH: 34, ROWH: 64, TW: 150, TH: 22, GUT: 110 };
 const smapCurve = (sx, sy, tx, ty) => { const c = Math.max(30, Math.abs(tx - sx) * 0.4); return `M${sx},${sy} C${sx + c},${sy} ${tx - c},${ty} ${tx},${ty}`; };
+/**
+ * @typedef {{ data: ApiMap['/api/statemap'] | null, err: string | null, loading: boolean, agg: string }} StatemapState
+ * @extends {Component<PageProps, StatemapState>}
+ */
 class StatemapPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { data: null, loading: true, agg: '' }; this._view = { x: 10, y: 36, s: 1 }; }
+  /** @param {PageProps} props */
+  constructor(props) {
+    super(props);
+    /** @type {StatemapState} */
+    this.state = { data: null, err: null, loading: true, agg: '' };
+    this._view = { x: 10, y: 36, s: 1 };
+  }
   async fetchData() {
     nav.current = this.props.params.universe;
     if (!this.state.data) this.state.loading = true;
     const data = await loaded(() => api('/api/statemap', { u: this.props.params.universe }));
-    this.state.data = data; this.state.loading = false;
+    if (isErr(data)) { this.state.err = data.error; this.state.data = null; this.state.loading = false; return; }
+    this.state.err = null; this.state.data = data; this.state.loading = false;
     await this.nextRender();
     this.setup();
   }
@@ -1752,10 +1918,10 @@ class StatemapPage extends Component {
   onClick(e) { if (this._panned) return; const g = hitTarget(e, '.pn'); if (g) go(nodeUrl(this.props.params.universe, g.getAttribute('data-open'))); }
   template() {
     const u = this.props.params.universe, d = this.state.data;
-    if (this.state.loading || !d) return html`<main><div class="loading">loading…</div></main>`;
     // Before the emptiness check, not after: a failed load has no `machines` either,
     // and "no state machines yet" is a confident false statement about the repo.
-    if ('error' in d) return html`<main><div class="empty">${d.error}</div></main>`;
+    if (this.state.err) return html`<main><div class="empty">${this.state.err}</div></main>`;
+    if (this.state.loading || !d) return html`<main><div class="loading">loading…</div></main>`;
     if (!d.machines || !d.machines.length) return html`<main>
       <div class="crumbs">${u} <span class="sep">·</span> state map</div>
       <div class="empty">no state machines yet — run <code>codemap analyze marten --emit</code> on a repo whose aggregates carry a status enum</div>
@@ -1812,9 +1978,18 @@ defineComponent('statemap-page', StatemapPage);
 
 // --- bugs: triage MCP-reported findings, re-validate against live code --------
 const BUG_STATUSES = ['open', 'fixed', 'wontfix', 'invalid'];
+/**
+ * @typedef {{ data: ApiMap['/api/bugs'] | null, detail: ApiMap['/api/bug'] | null, detailPending: boolean }} BugsState
+ * @extends {Component<PageProps, BugsState>}
+ */
 class BugsPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { data: null, detail: null, detailPending: false }; }
+  /** @param {PageProps} props */
+  constructor(props) {
+    super(props);
+    /** @type {BugsState} */
+    this.state = { data: null, detail: null, detailPending: false };
+  }
   // Filter (status) and selection (bug) both live in the URL, so back/forward
   // walk the triage and any bug is deep-linkable.
   load = this.createTask(async () => {
@@ -1909,9 +2084,38 @@ defineComponent('bugs-page', BugsPage);
 const diffUrl = (u) => `/u/${u}/diff/`;
 const DTAG = { '+': 'added', '-': 'removed', '~': 'changed' };
 
+/**
+ * `sel` and `selDoc` are the right-hand selection — one changed symbol, or one
+ * doc the change may have staled. Both are entries out of the diff payload, so
+ * they are described structurally by what this page reads off them.
+ *
+ * @typedef {Extract<ApiMap['/api/diff'], { impact: unknown }>} DiffOk
+ * @typedef {DiffOk['impact']['nodes'][number]} DiffNode
+ * @typedef {DiffOk['changed'][number] & { tag: string }} DiffBrief
+ *
+ * @typedef {{
+ *   snaps: ApiMap['/api/snapshots']['snapshots'] | null,
+ *   diff: DiffOk | null,
+ *   diffErr: string | null,
+ *   sel: DiffBrief | null,
+ *   selCode: ApiMap['/api/diff/code'] | null,
+ *   codePending: boolean,
+ *   view: string,
+ *   selDoc: DiffNode | null,
+ *   docDiff: ApiMap['/api/diff/doc'] | null,
+ *   docPending?: boolean,
+ *   modal: boolean,
+ * }} DiffState
+ * @extends {Component<PageProps, DiffState>}
+ */
 class DiffPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { snaps: null, diff: null, sel: null, selCode: null, codePending: false, view: 'doc', selDoc: null, docDiff: null, modal: false }; }
+  /** @param {PageProps} props */
+  constructor(props) {
+    super(props);
+    /** @type {DiffState} */
+    this.state = { snaps: null, diff: null, diffErr: null, sel: null, selCode: null, codePending: false, view: 'doc', selDoc: null, docDiff: null, modal: false };
+  }
   // The base/head/sel selection lives entirely in the URL query, so the browser
   // back/forward buttons walk the review history and any drill-down is deep-linkable.
   // `load` (re)fetches the diff when base/head change; a sel-only change just
@@ -1921,7 +2125,9 @@ class DiffPage extends Component {
     if (!this.state.snaps) this.state.snaps = (await api('/api/snapshots', { u })).snapshots;
     this.state.sel = null; this.state.selCode = null; this.state.selDoc = null; this.state.docDiff = null;
     const base = this.props.query.base;
-    this.state.diff = base ? await api('/api/diff', { u, base, head: this.props.query.head || '' }) : null;
+    const got = base ? await api('/api/diff', { u, base, head: this.props.query.head || '' }) : null;
+    this.state.diffErr = isErr(got) ? got.error : null;
+    this.state.diff = isErr(got) ? null : got;
     await this.applySel();
   });
   mounted() { this._q = { ...this.props.query }; this._u = this.props.params.universe; this.load.run(); }
@@ -1947,7 +2153,7 @@ class DiffPage extends Component {
   async applySel() {
     const sel = this.props.query.sel || '', i = sel.indexOf(':');
     const type = i === -1 ? '' : sel.slice(0, i), id = i === -1 ? '' : sel.slice(i + 1);
-    if (!type || !id || !this.state.diff || this.state.diff.error) {
+    if (!type || !id || !this.state.diff) {
       this.state.sel = null; this.state.selCode = null; this.state.selDoc = null; this.state.docDiff = null;
       return;
     }
@@ -1956,7 +2162,12 @@ class DiffPage extends Component {
   }
   async loadCode(id) {
     const u = this.props.params.universe, d = this.state.diff;
-    const b = [...d.changed, ...d.removed, ...d.added].find(x => x.id === id) || { id, symbol: id.slice(0, 10), file: '', kind: '', tag: '~' };
+    const tagged = [
+      ...d.changed.map((x) => ({ ...x, tag: '~' })),
+      ...d.removed.map((x) => ({ ...x, tag: '-' })),
+      ...d.added.map((x) => ({ ...x, tag: '+' })),
+    ];
+    const b = tagged.find(x => x.id === id) || { id, symbol: id.slice(0, 10), file: '', kind: '', tag: '~' };
     this.state.selDoc = null; this.state.docDiff = null; this.state.sel = b; this.state.selCode = null; this.state.codePending = true;
     try {
       this.state.selCode = await api('/api/diff/code', { u, base: this.props.query.base, head: this.props.query.head || '', id: b.id, file: b.file });
@@ -1964,7 +2175,11 @@ class DiffPage extends Component {
   }
   async loadDoc(id) {
     const u = this.props.params.universe;
-    const n = (this.state.diff.impact.nodes || []).find(x => x.id === id) || { id, title: id, status: 'removed', anchors: [], review: {} };
+    const unreviewed = { logical: 'unreviewed', code: 'unreviewed' };
+    const n = (this.state.diff.impact.nodes || []).find(x => x.id === id) || {
+      id, title: id, type: '', summary: '', anchors: [], status: 'removed', versionCount: 0, severity: '',
+      review: { ...unreviewed }, reviewBy: { logical: null, code: null }, reviewVia: {}, viewed: { ...unreviewed },
+    };
     this.state.sel = null; this.state.selCode = null; this.state.selDoc = n; this.state.docDiff = null; this.state.docPending = true;
     try {
       this.state.docDiff = await api('/api/diff/doc', { u, base: this.props.query.base, head: this.props.query.head || '', id });
@@ -1978,7 +2193,11 @@ class DiffPage extends Component {
   docText(s) { return s.removed ? '_(removed on this branch)_' : `# ${s.title}\n\n${s.summary || ''}\n\n${s.body || ''}`; }
   async reloadDiff() {
     const u = this.props.params.universe, base = this.props.query.base;
-    if (base) this.state.diff = await api('/api/diff', { u, base, head: this.props.query.head || '' });
+    if (base) {
+      const got = await api('/api/diff', { u, base, head: this.props.query.head || '' });
+      this.state.diffErr = isErr(got) ? got.error : null;
+      this.state.diff = isErr(got) ? null : got;
+    }
   }
   async confirmDoc(id) { await postConfirm(this.props.params.universe, id); await this.reloadDiff(); }
   async ackDoc(id) { await postAckHole(this.props.params.universe, id); await this.reloadDiff(); }
@@ -2088,8 +2307,8 @@ class DiffPage extends Component {
         ${when(!snaps.length, () => html`<span class="dim">no snapshots yet — run <code>codemap init</code> / <code>snapshot</code> on the branches</span>`)}
       </div>
 
-      ${when(d && d.error, () => html`<div class="empty">${d.error}</div>`)}
-      ${when(d && !d.error, () => html`
+      ${when(!!this.state.diffErr, () => html`<div class="empty">${this.state.diffErr}</div>`)}
+      ${when(!!d, () => html`
         <div class="dsummary">
           <span><b>${d.base.label}</b> <span class="dim">${(d.base.sha || '').slice(0, 8)}</span></span>
           <span class="arrow">→</span>
@@ -2274,6 +2493,7 @@ if (typeof window !== 'undefined') window.__readingOrder = readingOrder;
 const CHANGE_COLOR = { added: '#7ee787', changed: '#f0a35e', removed: '#f85149' };
 const LAYER_NAME = ['command', 'handler', 'event', 'aggregate', 'read-model', 'job'];
 
+/** @extends {Component<PageProps, PrStoryState>} */
 class PrStoryPage extends Component {
   static props = { params: {}, query: {} };
   // Everything this page holds about ONE pull request. `propsChanged` restores it
@@ -2282,22 +2502,83 @@ class PrStoryPage extends Component {
   // `promoted` marked a chapter "✓ in the map" on a PR that never promoted it,
   // linking to the other PR's node. Chapter ids are `spec-<path>-<heading>` and
   // are NOT PR-scoped, so two pull requests touching one spec file share them.
+  /**
+   * `promote` and `push` are workflow objects built up across several steps —
+   * planned, edited, sent — so their fields are optional by construction rather
+   * than by accident.
+   *
+   * A findings row comes from one of two places, and they are not the same shape:
+   * a walkthrough step carries an `Annotation`, while a finding on code the pull
+   * request does not touch comes off the review queue and is the only one that
+   * knows its own file and symbol — hence the `in` test where those are read.
+   *
+   * @typedef {import('../dist/schema.js').Annotation} Annotation
+   * @typedef {import('../dist/ops.js').QueueItem} QueueItem
+   * @typedef {import('../dist/pr-story.js').StoryStep} StoryStep
+   * @typedef {import('../dist/pr-story.js').StoryChapter} StoryChapter
+   * @typedef {{ f: Annotation | QueueItem, step: StoryStep | null, chapter: StoryChapter | null }} FindingRow
+   *
+   * @typedef {Exclude<ApiMap['/api/pr/story'], { error: string }>} PrStory
+   * @typedef {Extract<ApiMap['/api/pr/promote_plan'], { promotion: unknown }>} PromotePlan
+   * @typedef {{ chapter: string, loading?: boolean, error?: string, plan?: PromotePlan['promotion'],
+   *   existing?: PromotePlan['existing'], id?: string, title?: string, summary?: string, saving?: boolean }} PromoteState
+   * @typedef {{ what: string, loading?: boolean, error?: string, plan?: any,
+   *   sending?: boolean, done?: any }} PushState
+   *
+   * @typedef {FindingFormState & {
+   *   story: PrStory | null,
+   *   storyErr: string | null,
+   *   open: Record<string, boolean>,
+   *   code: Record<string, ApiMap['/api/pr/code'] | null>,
+   *   pending: Record<string, boolean>,
+   *   prRef: string | null,
+   *   showDiff: Record<string, boolean>,
+   *   promote: PromoteState | null,
+   *   promoted: Record<string, unknown>,
+   *   showCovered: boolean,
+   *   deriving: boolean,
+   *   derived: any,
+   *   pulling: boolean,
+   *   pulled: any,
+   *   push: PushState | null,
+   *   markError: string | null,
+   *   showFindings: boolean,
+   *   chapterBusy: Record<string, boolean>,
+   *   allFindings: ApiMap['/api/queue'] | null,
+   *   pushDraft: { summary: string, event: string } | null,
+   *   pick: Set<string> | null,
+   *   editFinding: { id: string, comment: string, disposition: string, publishPath?: string } | null,
+   *   findingErr: { id: string, error: string } | null,
+   *   resolveSync: { loading?: boolean, error?: string, plan?: any, running?: boolean, done?: any, dir?: string } | null,
+   * }} PrStoryState
+   *
+   * @returns {PrStoryState}
+   */
   static blank() {
     return {
-      story: null, open: {}, code: {}, pending: {}, finding: null, prRef: null, showDiff: {},
+      story: null, storyErr: null, open: {}, code: {}, pending: {}, finding: null, prRef: null, showDiff: {},
       promote: null, promoted: {}, showCovered: false, deriving: false, derived: null,
       pulling: false, pulled: null, push: null, markError: null, showFindings: false, chapterBusy: {},
       allFindings: null,
+      // These five were assigned but never listed here, and `propsChanged` merges
+      // rather than replaces — so they were the fields that DID survive a move to
+      // another pull request. `pushDraft` is the summary and APPROVE/REQUEST_CHANGES
+      // verdict about to be published, and `pick` the findings selected to go with
+      // it; both are covered by the push fingerprint. `src/pr-story-state.test.ts`
+      // fails if a new field is added without one here.
+      pushDraft: null, pick: null, editFinding: null, findingErr: null, resolveSync: null,
     };
   }
   constructor(props) { super(props); this.state = PrStoryPage.blank(); }
   load = this.createTask(async () => {
     const u = this.props.params.universe; nav.current = u;
-    const story = await api('/api/pr/story', { u, pr: this.props.params.pr });
+    const got = await api('/api/pr/story', { u, pr: this.props.params.pr });
+    this.state.storyErr = isErr(got) ? got.error : null;
+    const story = isErr(got) ? null : got;
     this.state.story = story;
-    this.state.prRef = story && 'refs' in story ? story.refs.head : null;
+    this.state.prRef = story ? story.refs.head : null;
     // Open the first chapter that still has unsigned work — the queue, not chapter 1.
-    if (story && 'chapters' in story && !Object.keys(this.state.open).length) {
+    if (story && !Object.keys(this.state.open).length) {
       const first = story.chapters.find(c => c.steps.some(s => !s.reviewed));
       if (first) this.state.open = { [first.id]: true };
     }
@@ -2310,7 +2591,7 @@ class PrStoryPage extends Component {
   });
 
   async refreshOpenCode() {
-    const open = Object.entries(this.state.code).filter(([, v]) => v && !v.error).map(([id]) => id);
+    const open = Object.entries(this.state.code).filter(([, v]) => v && !isErr(v)).map(([id]) => id);
     if (!open.length) return;
     const fresh = { ...this.state.code };
     for (const id of open) {
@@ -2720,10 +3001,13 @@ class PrStoryPage extends Component {
    * or withdrawing an orphan changed nothing on screen.
    */
   async loadAllFindings() {
-    this.state.allFindings = await api('/api/queue', { u: this.props.params.universe, all: '1', resolved: '1' })
-      .catch(() => ({ queue: [] }));
+    // A stub `{ queue: [] }` on failure is a different shape from the real reply,
+    // and reading `.queue` off the union is what made every row here untyped.
+    const got = await api('/api/queue', { u: this.props.params.universe, all: '1', resolved: '1' }).catch(() => null);
+    this.state.allFindings = isErr(got) ? null : got;
   }
 
+  /** @returns {FindingRow[]} */
   offStoryFindings() {
     const rows = (this.state.allFindings && this.state.allFindings.queue) || [];
     if (!rows.length) return [];
@@ -2735,7 +3019,9 @@ class PrStoryPage extends Component {
       .map(q => ({ f: q, step: null, chapter: null }));
   }
 
+  /** @returns {FindingRow[]} */
   allFindings() {
+    /** @type {FindingRow[]} */
     const out = [];
     for (const c of (this.state.story && this.state.story.chapters) || []) {
       for (const st of c.steps) {
@@ -2779,7 +3065,8 @@ class PrStoryPage extends Component {
     // on-story finding does. Left in, the group asking for a publish path went on
     // counting the ones already dealt with, which is the same as not resolving them.
     const settled = all.concat(off.filter(e => e.f.resolved || e.f.withdrawn));
-    const groups = [
+    /** @type {[label: string, rows: FindingRow[]][]} */
+    const allGroups = [
       ['not on a symbol this pull request changes — these need a publish path, or their code is gone', off.filter(e => !e.f.resolved && !e.f.withdrawn)],
       ['goes out on the next push', elected.filter(e => PUBLISHABLE.has(e.f.disposition) && (e.f.comment || '').trim())],
       ['needs the submitter-facing version before it can go', elected.filter(e => PUBLISHABLE.has(e.f.disposition) && !(e.f.comment || '').trim())],
@@ -2789,7 +3076,8 @@ class PrStoryPage extends Component {
       ['already on the pull request', all.filter(e => e.f.postedRef)],
       ['withdrawn — kept here, not sent', settled.filter(e => e.f.withdrawn && !e.f.resolved)],
       ['resolved locally — not sent', settled.filter(e => e.f.resolved)],
-    ].filter(g => g[1].length);
+    ];
+    const groups = allGroups.filter(g => g[1].length);
     const picked = [...(this.state.pick || [])];
     return html`<div class="prfindings">
       ${when(picked.length, () => html`<div class="prfpicked">
@@ -2805,8 +3093,8 @@ class PrStoryPage extends Component {
             <span class="dim">${e.step.symbol.split(' › ').pop()}</span>
           </div>`)}
           ${when(!e.step, () => html`<div class="prfloc dim" title="not on a symbol this pull request changes — there is nothing here to open">
-            <code>${(e.f.file || '?').split('/').pop()}${e.f.line ? ':' + e.f.line : ''}</code>
-            <span>${(e.f.symbol || '').split(' › ').pop()}</span>
+            <code>${('file' in e.f && e.f.file || '?').split('/').pop()}${e.f.line ? ':' + e.f.line : ''}</code>
+            <span>${('symbol' in e.f && e.f.symbol || '').split(' › ').pop()}</span>
           </div>`)}
           <div class="prfbody">
             ${findingItemEl(this, u, e.f)}
@@ -3048,7 +3336,7 @@ class PrStoryPage extends Component {
   // have no meaningful "before", so those open on the source itself.
   showsDiff(step) {
     const code = this.state.code[step.anchorId];
-    if (!code || !code.lines || !code.lines.length) return false;
+    if (!code || isErr(code) || !code.lines || !code.lines.length) return false;
     const override = this.state.showDiff[step.anchorId];
     return override === undefined ? step.change === 'changed' : !!override;
   }
@@ -3063,7 +3351,10 @@ class PrStoryPage extends Component {
   }
 
   stepEl(u, step) {
-    const code = this.state.code[step.anchorId];
+    const held = this.state.code[step.anchorId];
+    // One narrowed binding, rather than the same union unpicked at each of the
+    // fourteen reads below.
+    const code = isErr(held) ? null : held;
     const finds = openFindingCount(step.annotations);
     const src = code ? this.sourceOf(code) : null;
     return html`<div class="prstep ${step.reviewed ? 'done' : ''}" id="step-${step.anchorId}">
@@ -3077,7 +3368,7 @@ class PrStoryPage extends Component {
         <span class="prrev" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">${reviewRowEl({ code: step.review || { state: step.reviewed ? 'reviewed' : 'unreviewed' } }, { code: step.viewedMark || { state: step.viewed ? 'reviewed' : 'unreviewed' } }, (att, st, actor) => this.markStep(step, att, st, actor), 'code', this.coverLabel(step))}</span>
       </div>
       ${when(this.state.pending[step.anchorId], () => html`<div class="dim prload">loading source…</div>`)}
-      ${when(code && !code.error, () => html`<div class="prsbody">
+      ${when(!!code, () => html`<div class="prsbody">
         <div class="prstools">
           <span class="dim">${code.file}</span>
           ${when(src && src.text != null && code.lines && code.lines.length, () => html`<button class="ghost" on-click="${() => { this.state.showDiff = { ...this.state.showDiff, [step.anchorId]: !this.showsDiff(step) }; }}">${this.showsDiff(step) ? 'show full source' : 'show diff'}</button>`)}
@@ -3088,7 +3379,7 @@ class PrStoryPage extends Component {
           () => diffReviewLines(this, u, step.anchorId, code.lines, code.lang, code.startLine, code.annotations),
           () => codeReviewLines(this, u, step.anchorId, src.text, code.lang, src.startLine, code.annotations))}
       </div>`)}
-      ${when(code && code.error, () => html`<div class="prsbody dim">${code.error}</div>`)}
+      ${when(isErr(held), () => html`<div class="prsbody dim">${isErr(held) ? held.error : ''}</div>`)}
     </div>`;
   }
 
@@ -3146,10 +3437,9 @@ class PrStoryPage extends Component {
 
   template() {
     const st = this.state.story, u = this.props.params.universe;
-    const failed = taskError(this.load);
+    const failed = taskError(this.load) ?? this.state.storyErr;
     if (failed) return pageShell(null, failed, html``);
     if (!st) return html`<main><div class="loading">loading pull request…</div></main>`;
-    if (st.error) return pageShell(st, st.error, html``);
     const signed = st.chapters.reduce((n, c) => n + c.steps.filter(s => s.reviewed).length, 0);
     return pageShell(st, null, html`
       <div class="prhead">
@@ -3216,9 +3506,18 @@ defineComponent('pr-story-page', PrStoryPage);
 // triaging a PR means snapshotting both its sides, and doing that for every open PR
 // just to draw a list would cost seconds per row. The numbers arrive on the
 // walkthrough itself.
+/**
+ * @typedef {{ d: ApiMap['/api/prs'] | null }} PrInboxState
+ * @extends {Component<PageProps, PrInboxState>}
+ */
 class PrInboxPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { d: null }; }
+  /** @param {PageProps} props */
+  constructor(props) {
+    super(props);
+    /** @type {PrInboxState} */
+    this.state = { d: null };
+  }
   load = this.createTask(async () => {
     const u = this.props.params.universe; nav.current = u;
     this.state.d = await api('/api/prs', { u });
@@ -3228,10 +3527,9 @@ class PrInboxPage extends Component {
 
   template() {
     const u = this.props.params.universe, d = this.state.d;
-    const failed = taskError(this.load);
+    const failed = taskError(this.load) ?? (isErr(d) ? d.error : null);
     if (failed) return pageShell(null, failed, html``);
-    if (!d) return html`<main><div class="loading">loading pull requests…</div></main>`;
-    if (d.error) return pageShell(d, d.error, html``);
+    if (!d || isErr(d)) return html`<main><div class="loading">loading pull requests…</div></main>`;
     return pageShell(d, null, html`
       <div class="crumbs"><b>${u}</b> <span class="sep">·</span> pull requests <span class="dim">· ${d.prs.length} open</span></div>
       ${when(!d.prs.length, () => html`<div class="dim">no open pull requests.</div>`)}

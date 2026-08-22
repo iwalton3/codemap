@@ -21,7 +21,7 @@
 
 import type { Lane } from "./lanes.js";
 import { scanMarkdown } from "./markdown.js";
-import type { Complexity } from "./schema.js";
+import type { Annotation, Complexity } from "./schema.js";
 
 export interface SpecSection { specPath: string; heading: string; level: number; text: string; durable: boolean }
 
@@ -177,7 +177,7 @@ export interface StoryStep {
   reviewed?: boolean; viewed?: boolean;
   /** The marks themselves, carrying `via` — a borrowed approval must not render as a plain tick. */
   review?: unknown; viewedMark?: unknown;
-  annotations?: unknown[];
+  annotations?: Annotation[];
 }
 
 export interface StoryChapter {
