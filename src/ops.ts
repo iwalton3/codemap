@@ -101,6 +101,7 @@ export type Trust = "verified" | "checked" | "unverified" | "stale" | "generated
 function trustOf(status: string | undefined, review?: { logical: ReviewLite; code: ReviewLite }): Trust {
   if (status === "generated") return "generated";
   if (status === "stale" || status === "dangling" || status === "removed") return "stale";
+  // `unverifiable` is deliberately NOT here: it is not a claim that anything drifted.
   if (!review) return "unverified";
   const { logical: L, code: C } = review;
   if (L.state === "stale" || C.state === "stale") return "stale";

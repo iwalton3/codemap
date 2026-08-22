@@ -14,6 +14,7 @@
 
 import * as ops from "./ops.js";
 import * as shared from "./ops-shared.js";
+import { markAgentSession } from "./identity.js";
 import * as multi from "./multi.js";
 import { loadWorkspace, type Workspace, type Universe } from "./workspace.js";
 import { METHODOLOGY } from "./guide.js";
@@ -891,6 +892,10 @@ async function handle(msg: any): Promise<void> {
 }
 
 let buffer = "";
+// Everything below this line is being driven by an agent, not a person — so the
+// ratchet in the shared store applies. See `markAgentSession`.
+markAgentSession();
+
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
   buffer += chunk;

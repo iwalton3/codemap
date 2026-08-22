@@ -21,12 +21,23 @@
 
 import { spawnSync } from "node:child_process";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { ANCHOR_SCHEME, HASH_SCHEME } from "./schema.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { gitBin } from "./git.js";
 import { SHARD_EXT, principalKey } from "./eventlog.js";
 import type { Actor } from "./schema.js";
+
+/**
+ * Two paths naming the same directory. `realpath` both: macOS `/tmp` is a symlink
+ * to `/private/tmp`, and git answers with the resolved form, so a string compare
+ * would decide a perfectly good sidecar was not its own repo.
+ */
+function samePath(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  try { return realpathSync(a) === realpathSync(b); } catch { return a === b; }
+}
 
 const g = (root: string, args: string[]) => {
   const r = spawnSync(gitBin(), args, { cwd: root, encoding: "utf8", maxBuffer: 1 << 28, timeout: 180_000 });
@@ -157,10 +168,26 @@ export function checkPeers(all: SidecarManifest[], mine: SidecarManifest): Incom
  */
 export async function ensureSidecar(root: string, actor?: Actor): Promise<{ created: boolean } | { error: string }> {
   await mkdir(root, { recursive: true });
-  const isRepo = g(root, ["rev-parse", "--is-inside-work-tree"]).out === "true";
-  if (!isRepo) {
+  // Is this path a repo ROOT — not "is it inside one". The difference is the whole
+  // safety of the operation: the documented zero-config layout puts the sidecar at
+  // `.codemap/sidecar` INSIDE the code repo, which is inside a work tree, so asking
+  // the weaker question skipped `init` and pointed every later git call at the
+  // user's own repository. `commitLocal` there is `git add -A` + commit, and `push`
+  // finds that repo's `origin` — one sync committed a developer's uncommitted work
+  // and pushed it to the team remote, while sharing nothing, because the shards sit
+  // under the `*`-ignored `.codemap/`. `pull` merged the sidecar's history into
+  // their working tree.
+  const top = g(root, ["rev-parse", "--show-toplevel"]);
+  const isRepoRoot = top.ok && samePath(top.out, root);
+  if (!isRepoRoot) {
     const init = g(root, ["init", "-q", "-b", "main"]);
     if (!init.ok) return { error: `could not init the sidecar at ${root}: ${init.err}` };
+    // `init` inside another repo succeeds and yields a real, separate repo — but if
+    // it somehow did not, every later call would operate on the enclosing one.
+    const after = g(root, ["rev-parse", "--show-toplevel"]);
+    if (!after.ok || !samePath(after.out, root)) {
+      return { error: `the sidecar at ${root} is not its own git repository — it resolves to ${after.out || "no repository"}. Refusing to use it: every write would land in that repository instead.` };
+    }
   }
   // Written by everyone, identically, so it never conflicts.
   await writeFile(join(root, ATTRIBUTES), `*${SHARD_EXT} merge=union\n`, "utf8");
@@ -172,7 +199,7 @@ export async function ensureSidecar(root: string, actor?: Actor): Promise<{ crea
       "utf8",
     );
   }
-  return { created: !isRepo };
+  return { created: !isRepoRoot };
 }
 
 /** Every event line currently on disk — the cheap way to say what a sync gained. */

@@ -19,6 +19,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { db, WORK_REF, ORPHAN_REF } from "./db.js";
 import { headCommit, currentBranch } from "./git.js";
+import { comparableHashes } from "./normalize.js";
 import {
   type Anchor, type AnchorStore, type State, type LogicalNode, type LogicalNodeType,
   type NodeVersion, type NodeCitation, type NodeStatus,
@@ -374,14 +375,27 @@ function evalVersion(v: NodeVersion, work: Map<string, string>) {
     const present = v.citations.filter((c) => work.has(c.anchorId)).map((c) => c.anchorId);
     return { status: "removed" as NodeStatus, stale: present, dangling: [] as string[], badness: present.length };
   }
-  const stale: string[] = [], dangling: string[] = [];
+  const stale: string[] = [], dangling: string[] = [], unverifiable: string[] = [];
   for (const c of v.citations) {
     const live = work.get(c.anchorId);
-    if (live === undefined) dangling.push(c.anchorId);
-    else if (!c.acceptedHashes.includes(live)) stale.push(c.anchorId);
+    if (live === undefined) { dangling.push(c.anchorId); continue; }
+    if (c.acceptedHashes.includes(live)) continue;
+    // Mismatched — but a hash minted under an older HASH_SCHEME cannot be compared
+    // to this one at all, so its inequality says the derivation changed, not the
+    // code. Counting that as drift makes a scheme bump flag EVERY doc in the store
+    // on the first reindex; `ops-shared` already draws this line for the sidecar's
+    // copy (985 of 985 on a real repo), and this is the same judgement locally.
+    if (!c.acceptedHashes.some((h) => comparableHashes(h, live))) unverifiable.push(c.anchorId);
+    else stale.push(c.anchorId);
   }
-  const status: NodeStatus = dangling.length ? "dangling" : stale.length ? "stale" : "fresh";
-  return { status, stale, dangling, badness: stale.length + dangling.length };
+  // Order is worst-first, and `unverifiable` sits below the two we can prove: it is
+  // "nobody can say", which must not outrank a hole or real drift, and must not be
+  // laundered into `fresh` either.
+  const status: NodeStatus = dangling.length ? "dangling" : stale.length ? "stale" : unverifiable.length ? "unverifiable" : "fresh";
+  // NOT in `badness`: badness picks which version fits this branch, and a scheme
+  // bump makes every version equally unverifiable — letting it score would shuffle
+  // the winner for a reason that has nothing to do with the branch.
+  return { status, stale, dangling, unverifiable, badness: stale.length + dangling.length };
 }
 
 /** The version that best fits the current branch: fewest problems, then most recent. */

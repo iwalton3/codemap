@@ -17,6 +17,7 @@
  */
 
 import type { AcceptedEntry, AcceptanceVia } from "./schema.js";
+import { comparableHashes } from "./normalize.js";
 
 export interface Acceptance {
   via: AcceptanceVia;
@@ -80,7 +81,17 @@ function newest(pool: AcceptedEntry[], anc: Ancestry): AcceptedEntry | undefined
 
 export function resolveAcceptance(entries: AcceptedEntry[], liveHash: string | undefined, anc: Ancestry): Acceptance {
   if (!liveHash || !entries.length) return { via: "none" };
-  if (!entries.some((e) => e.bodyHash === liveHash)) return { via: "none" };
+  if (!entries.some((e) => e.bodyHash === liveHash)) {
+    // Nothing matches — but "the code changed" and "we cannot tell" are different
+    // answers, and only one of them should turn a green check red. If not one entry
+    // is even COMPARABLE with the live hash, every stored hash predates a
+    // HASH_SCHEME bump and the mismatch is the derivation, not the body.
+    //
+    // Some comparable and none equal IS drift: a legacy entry alongside a current
+    // one that genuinely moved must still read stale.
+    if (!entries.some((e) => comparableHashes(e.bodyHash, liveHash))) return { via: "unverifiable" };
+    return { via: "none" };
+  }
 
   // An entry whose commit is gone cannot be placed on or off this history, so it
   // counts as on-ref — the same conservative reading a legacy `null` commit gets.

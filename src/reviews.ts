@@ -359,6 +359,13 @@ export async function reviewStatesFor(
     if (resolved.some((x) => x.via === "none")) return { state: "stale", ...base };
 
     const reverted = resolved.find((x) => x.via === "reverted");
+    // Checked after `reverted` and before the benign verdicts: a revert is the one
+    // thing a reviewer wants interrupting for, and it is established by a hash that
+    // DID match, so it outranks "cannot tell". Below it, an unverifiable segment
+    // must not be dressed up as a clean direct sign-off.
+    if (!reverted && resolved.some((x) => x.via === "unverifiable")) {
+      return { state: "reviewed", ...base, via: "unverifiable" };
+    }
     if (reverted) {
       return {
         state: "reviewed", ...base, via: "reverted",
@@ -541,7 +548,7 @@ export async function anchorReviewMap(
   // beats an agent one (verified > checked), so the anchor reads at the best trust.
   // `via` rides along with the state it belongs to; a weaker tick never overwrites
   // a stronger one, but a `reverted` among equals is kept — it is the loud case.
-  const VIA_RANK: Record<AcceptanceVia, number> = { reverted: 3, replayed: 2, direct: 1, none: 0 };
+  const VIA_RANK: Record<AcceptanceVia, number> = { reverted: 4, unverifiable: 3, replayed: 2, direct: 1, none: 0 };
   const bump = (m: Map<string, Cell>, id: string, state: ReviewState, actor: "human" | "agent", via: AcceptanceVia) => {
     const c = m.get(id);
     if (!c) { m.set(id, { state, actor, via }); return; }

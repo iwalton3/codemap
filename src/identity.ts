@@ -64,15 +64,31 @@ export interface ActorInput {
  * so it arrives from the client (env or per-call) or not at all; `agent: true`
  * with no model is honest, `agent: true` with a guessed one is not.
  */
+/**
+ * This process is an agent's session, whatever the environment says.
+ *
+ * The MCP server calls this at startup. Nothing else should: a person does not
+ * type newline-delimited JSON-RPC, so that surface is an agent by construction —
+ * whereas the CLI and the web UI are a person unless a harness says otherwise.
+ *
+ * Without it the ratchet was inert exactly where it matters. `via` came only from
+ * CODEMAP_AGENT_MODEL / _HARNESS, nothing in this repo sets either, so every write
+ * an agent made through MCP was recorded as the PERSON — free to close findings,
+ * and counted as independent corroboration of its own work.
+ */
+let agentSession = false;
+export function markAgentSession(): void { agentSession = true; }
+
 export function resolveActor(root: string, input: ActorInput = {}): Actor | null {
   const principal = input.principal?.trim() || resolvePrincipal(root);
   if (!principal) return null;
   const model = input.model?.trim() || process.env.CODEMAP_AGENT_MODEL?.trim();
   const harness = input.harness?.trim() || process.env.CODEMAP_AGENT_HARNESS?.trim();
-  // Env presence alone marks the session as an agent's: an MCP server started by a
-  // harness is never a person typing, and making every call site pass a flag is how
-  // one of them ends up not passing it.
-  const isAgent = input.agent ?? !!(model || harness);
+  // The SURFACE decides, not just the environment: `markAgentSession` covers MCP,
+  // whose caller is an agent by construction, and the env vars cover a harness
+  // driving the CLI. Making every call site pass a flag is how one ends up not
+  // passing it — which is what happened to MCP before `markAgentSession` existed.
+  const isAgent = input.agent ?? (agentSession || !!(model || harness));
   return {
     principal,
     ...(input.github?.trim() ? { github: input.github.trim() } : {}),

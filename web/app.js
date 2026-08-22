@@ -1000,6 +1000,7 @@ class NodePage extends Component {
       <div style="margin:6px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">${codeRollupEl(cr)}${when(cr.total, () => html`<button on-click="${() => go(nodeReviewUrl(u, n.id))}">open code review →</button>`)}</div>
       <div style="margin:6px 0">${triageRowEl(n.triage, (imp) => this.triageNode(imp), (on) => this.armTripwireNode(on))}</div>
       ${when(n.status === 'stale', () => html`<div class="vaction"><span>This doc cites code that changed since it was written.</span> <button on-click="${() => this.confirm()}">confirm still accurate</button> <span class="dim">— or edit it (forks a new version).</span></div>`)}
+      ${when(n.status === 'unverifiable', () => html`<div class="vaction"><span>This doc was confirmed under an older hashing scheme, so whether the code has changed since cannot be decided — it is not a claim that anything drifted.</span> <button on-click="${() => this.confirm()}">confirm at the current code</button> <span class="dim">— which re-witnesses it and clears this.</span></div>`)}
       ${when(n.status === 'dangling', () => html`<div class="vaction bad"><span>Cited code was removed here (${(n.danglingAnchors || []).length} anchor${(n.danglingAnchors || []).length === 1 ? '' : 's'}).</span> <button on-click="${() => this.ackHole()}">ack — remove doc here</button> <span class="dim">(kept on branches where the code exists).</span></div>`)}
       <md-content text="${n.summary}"></md-content>
       ${when(n.body && n.body.trim(), () => html`<md-content text="${n.body}"></md-content>`)}
@@ -2205,7 +2206,7 @@ class DiffPage extends Component {
   briefIndex() { const d = this.state.diff, m = new Map(); for (const b of [...d.changed, ...d.removed, ...d.added]) m.set(b.id, b); return m; }
   docActions(n) {
     return html`${statusChip(n.status)}${sevChip(n.triage || { severity: n.severity, importance: null })}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions">⑂${n.versionCount}</span>`)}<span class="ddacts">
-      ${when(n.status === 'stale', () => html`<button title="confirm the doc still holds at this code" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.confirmDoc(n.id); }}">confirm</button>`)}
+      ${when(n.status === 'stale' || n.status === 'unverifiable', () => html`<button title="${n.status === 'unverifiable' ? 're-witness at the current code — its hashes predate a scheme bump, so drift cannot be decided' : 'confirm the doc still holds at this code'}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.confirmDoc(n.id); }}">confirm</button>`)}
       ${when(n.status === 'dangling', () => html`<button class="bad" title="cited code was removed here — ack" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.ackDoc(n.id); }}">ack-hole</button>`)}
       <span class="rev">${this.revBtn('node', n.id, 'logical', n.review.logical, () => this.reloadDiff(), n.reviewBy && n.reviewBy.logical, n.reviewVia && n.reviewVia.logical)}</span></span>`;
   }

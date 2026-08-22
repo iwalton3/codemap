@@ -204,6 +204,7 @@ export interface NodeCitation {
 export type NodeStatus =
   | "fresh" // every cited anchor exists and its live hash is accepted here
   | "stale" // a cited anchor exists but its live hash isn't accepted (code drifted)
+  | "unverifiable" // a cited anchor exists, but every accepted hash predates a HASH_SCHEME bump
   | "dangling" // a cited anchor is absent from @work (code removed/renamed) — a hole
   | "removed" // a tombstone wins here — the doc's subject was intentionally removed
   | "generated"; // analyzer-emitted; not versioned (regenerated per branch)
@@ -729,7 +730,14 @@ export interface AcceptedCitation {
  *              different body, and the code has since moved back to it.
  *   none     — never approved.
  */
-export type AcceptanceVia = "direct" | "replayed" | "reverted" | "none";
+/**
+ * `unverifiable`: the stored hashes and the live one were minted under different
+ * HASH_SCHEMEs, so their inequality says the hashing rules changed, not that the
+ * code did. It must never be reported as `none` — that is read as staleness, and
+ * a scheme bump would then flag every mark in the store rather than the handful
+ * whose body actually moved.
+ */
+export type AcceptanceVia = "direct" | "replayed" | "reverted" | "unverifiable" | "none";
 
 /** Keep the accepted set from growing without bound on a much-revised symbol. */
 export const ACCEPTED_CAP = 24;

@@ -163,6 +163,10 @@
     .stchip.fresh { color: var(--accent2); border-color: var(--accent2); }
     .stchip.stale { color: var(--warn); border-color: var(--warn); }
     .stchip.dangling, .stchip.removed { color: var(--bad); border-color: var(--bad); }
+    /* Deliberately muted, not warning-coloured: "cannot be decided" is not a claim
+       that anything drifted, and colouring it like drift is the false alarm the
+       status exists to avoid. */
+    .stchip.unverifiable { color: var(--dim); border-color: var(--dim); }
     .stchip.generated { display: none; }
     .tchip { font-size: 10px; font-family: var(--mono); padding: 1px 6px; border-radius: 10px; border: 1px solid; text-transform: lowercase; flex: none; }
     .tchip.verified { color: var(--accent2); border-color: var(--accent2); background: rgba(126,231,135,0.08); }
