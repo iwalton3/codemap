@@ -472,9 +472,11 @@ was.
   fix is a third meaning for the derivation column, and this repository's own
   local DB corrupting is not the threat the design is for.
 
-- **Where the pull refusal is removed.** `sidecar.ts`'s `fatal` manifest check must
-  be deleted in the same change that lands receipts — not before, not after.
-  Neither document owns that edit.
+- ~~**Where the pull refusal is removed.**~~ **Cancelled** by
+  `docs/anchor-id-provenance.md`: there is no `AnchorReceipt` to land, and
+  `sidecar.ts`'s `fatal` manifest check becomes load-bearing rather than obsolete —
+  `anchorScheme` is the one id-gating field the derivation mark on a body hash does
+  not carry, so the refusal is what covers it. Keep it.
 - **How to show a value unverifiable for provenance reasons** rather than because
   code moved. Both are "cannot be decided", and conflating them repeats the mistake
   `unverifiable` was introduced to fix.
