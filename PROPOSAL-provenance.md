@@ -388,9 +388,24 @@ So:
 
 ```sql
 ALTER TABLE anchors ADD COLUMN profile  TEXT;   -- NULL = derived before receipts
-ALTER TABLE anchors ADD COLUMN language TEXT;   -- GrammarName selector; see below
-CHECK ((profile IS NULL) = (language IS NULL))  -- see "half a receipt", below
+ALTER TABLE anchors ADD COLUMN language TEXT    -- GrammarName selector; see below
+  CHECK ((profile IS NULL) = (language IS NULL));
 ```
+
+**The order is load-bearing**, and an earlier draft of this block was simply
+invalid SQL — it trailed a bare table-level `CHECK` after two `ALTER TABLE`s,
+attached to nothing. Checked against `node:sqlite` rather than assumed:
+
+- a bare table-level `CHECK` is a syntax error;
+- SQLite has **no `ALTER TABLE ... ADD CONSTRAINT`** at all, so a table-level check
+  cannot be added to an existing table without rebuilding it;
+- a **column-level** `CHECK` on `ADD COLUMN` is accepted, and SQLite permits it to
+  reference another column — so the constraint has to ride on the SECOND column
+  added, because it cannot be written until the first exists.
+
+It refuses both half-populated forms and admits both-NULL and both-set. Existing
+rows are **not** re-validated by `ALTER TABLE`, which is the behaviour this wants:
+legacy rows are both-NULL and pass regardless.
 
 Per-row costs a repeated short id on ~10k rows and buys correctness in both cases
 above. Read cost is not the objection: the hot lookup still goes through the
@@ -412,12 +427,13 @@ or write paths that update anchors in place instead of replacing them. The first
 honest and the second fights the existing design. Either way it is a change to the
 `store.ts` seam's currency, not an `ALTER TABLE`.
 
-**Half a receipt is not a receipt.** Two independent nullable columns admit
-`profile IS NULL, language IS NOT NULL` and its converse, which have no meaning —
-a crash, a partial migration or a buggy writer can produce one. The `CHECK` above
-makes it unrepresentable; where a migration cannot add the constraint, a reader
-must classify either half-populated form as `corrupt_receipt` rather than guessing
-which half to believe.
+**Half a receipt is not a receipt.** `profile IS NULL, language IS NOT NULL` and
+its converse have no meaning, and the `CHECK` above makes them unrepresentable
+going forward. A reader must still classify either half-populated form as
+`corrupt_receipt` rather than guessing which half to believe — because `ALTER
+TABLE` does not re-validate what is already there, so a store where the migration
+ran partially, or ran before this constraint existed, can hold rows the constraint
+would now refuse.
 
 `anchor_ref` disappears as a provenance mechanism.
 
