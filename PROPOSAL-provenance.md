@@ -361,6 +361,98 @@ can refuse an incompatible join before making it. Adding them later means a seco
 migration and, until then, keeping the `lost`-instead-of-`unverifiable` P1 alive on
 purpose.
 
+### The live side, concretely
+
+Both halves of what the reader needs already exist in the code; neither is
+persisted.
+
+`grammarForPath` (`grammars.ts:41`) returns a `GrammarName` — `c_sharp` |
+`python` | `javascript` | `typescript` | `tsx` — and the indexer already picks the
+grammar per file that way. That type IS the identity a receipt needs: `tsx` and
+`typescript` are separate grammars and separate blobs, and treating them as one
+"language" would be the coarsening this design exists to avoid. So `language` on
+an anchor is a column, not a new concept.
+
+The per-ref profile needs one small table rather than an extension of `snapshots`.
+`snapshots` already carries `scheme` and `hash_scheme` per ref and is exactly the
+right precedent — but it means "cached commit snapshot", `dropSnapshot` deletes
+rows from it, and `@work` has no row there and must never be droppable.
+
+```sql
+-- Which derivation produced the anchors under a ref. Covers '@work' and
+-- '@orphan' as well as every cached commit, because the reader compares against
+-- whichever of them the question is about.
+CREATE TABLE IF NOT EXISTS anchor_ref (
+  ref TEXT PRIMARY KEY, profile TEXT NOT NULL, indexed_at TEXT NOT NULL
+);
+ALTER TABLE anchors ADD COLUMN language TEXT;   -- GrammarName; NULL = indexed before this
+```
+
+A `@work` row with no profile is not an error and not an absence of drift: it is
+`missing_profile` **on the reader's side**, and it must say so rather than
+silently comparing. That is the case every existing store is in on the day this
+ships, so it is the default path, not an edge.
+
+### Scope status, and the seven states, are two different things
+
+Both answer "why can I not tell you", and conflating them is the mistake
+`unverifiable` already made once.
+
+**Scope status explains an ABSENCE.** It is the difference between "no findings"
+and "the finding event was skipped", and it belongs on the scope:
+
+```sql
+CREATE TABLE IF NOT EXISTS shared_scope (
+  scope TEXT PRIMARY KEY,
+  protocol INTEGER NOT NULL,       -- the sidecarProtocol this scope is written under
+  key TEXT NOT NULL,               -- the cache key: materialization proposal §3
+  folded_at TEXT NOT NULL,
+  status TEXT NOT NULL,            -- 'complete' | 'partial' | 'blocked'
+  seen INTEGER NOT NULL,           -- lines read
+  folded INTEGER NOT NULL,         -- events applied
+  quarantined INTEGER NOT NULL     -- preserved, not applied
+);
+
+CREATE TABLE IF NOT EXISTS shared_quarantine (
+  scope TEXT NOT NULL, event_id TEXT NOT NULL,
+  reason TEXT NOT NULL, detail TEXT, at TEXT,
+  PRIMARY KEY (scope, event_id)
+);
+```
+
+`blocked` is the fork case from §7 and the unsupported-protocol case: the scope
+has answers but must not give them authoritatively, and state-dependent writes are
+refused. `partial` means some events were quarantined and the rest are sound.
+Neither may be reported as `complete` with a smaller number.
+
+**The typed states explain a VALUE.** Six of the seven are properties of a
+receipt; the seventh is not a value state at all:
+
+| state | what happened | recovery |
+|---|---|---|
+| `legacy_no_receipt` | written before receipts existed | re-witness at a current profile |
+| `missing_profile` | the profile it names has not arrived | **none — wait.** It repairs itself on the next pull |
+| `incompatible_anchor_scheme` | ids derived differently | re-witness; **never** relocate |
+| `incompatible_hash_scheme` | hashes derived differently | re-witness |
+| `grammar_mismatch` | same scheme, different grammar for this language | re-witness |
+| `corrupt_receipt` | malformed, or disagrees with its own hash string | quarantine; a person looks |
+| ~~`unsupported_event_schema`~~ | *the event never decoded* | **scope-level** — the value is absent, not unverifiable |
+
+The last row is the refinement worth keeping: if an event is quarantined its values
+never enter the projection, so nothing can be "unverifiable because the schema was
+unsupported". What the reader sees is an entity that is missing or incomplete, and
+that is `shared_scope.status`'s job. Filing it as a value state would produce a
+`unverifiable` badge on something that is not there.
+
+`missing_profile` is the other one worth separating: it is the only state that
+resolves without anyone doing anything, so offering an action for it manufactures
+work and teaches people to click through the ones that matter.
+
+And **re-witness is never relocate.** Every recovery above is "establish a fact at
+a profile I can read". None of them is evidence the code moved — an anchor receipt
+carries no locator — so a UI that offers relocation for a derivation mismatch
+invites exactly the false re-targeting `witness`/`sourceRef` exist to prevent.
+
 Those columns do not re-open the materializer cache key: they are copied verbatim
 from events, like the anchor ids beside them, so nothing in the projection becomes
 anchors-derived. The criterion in `PROPOSAL-sidecar-materialization.md` §3 holds,
@@ -530,6 +622,17 @@ they apply, but they are a symptom, not the containment.
 - ~~The wire mechanism for the cutover.~~ **Resolved in §7** — `sidecarProtocol`
   in the manifest, enforced from the first generation-aware release, because
   nothing is deployed to be compatible with.
+- ~~Live-index provenance, and the partial/unverifiable contract.~~ **Resolved in
+  §6.** What is still open inside them:
+  - **Backfilling `anchor_ref` for `@work`.** Every existing store starts with no
+    profile on its live index, so on the day this ships every comparison is
+    `missing_profile` until a reindex writes one. A reindex is cheap and already
+    happens on connect — but "correct and useless for one run" needs to be a
+    decision, not a surprise.
+  - **Whether `blocked` should hide answers or show them marked.** Refusing
+    state-dependent WRITES is clear. Whether a blocked scope still renders its
+    findings read-only, or shows nothing but the reason, is a product call: one
+    risks being treated as authoritative anyway, the other hides work people did.
 - **Where the refusal is removed.** The `fatal` manifest check in `sidecar.ts` has
   to be deleted in the same change that lands receipts, not before and not after.
   Neither document currently owns that edit.
