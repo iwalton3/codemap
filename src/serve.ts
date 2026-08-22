@@ -287,12 +287,17 @@ const server = createServer(async (req, res) => {
         case "settle": out = await shared.settleContest(root, pr, body.id, body.field, body.value); break;
         case "upstream": out = await shared.upstreamFinding(root, pr, body.id, { system: body.system, key: body.key, url: body.url }); break;
         case "to_bug": out = await shared.findingToBug(root, pr, body.id, body.bug); break;
+        // Where a finding landed on the pull request. `inboundReplies` reads
+        // nothing else, so without this the replies view is permanently empty.
+        case "published": out = await shared.recordPublished(root, pr, body.id, { key: body.key, url: body.url }); break;
         // Notes and docs are not pull-request scoped, so they take a target/node
         // rather than `pr`. Same handler because the guard is the same one.
         case "note_answer": out = await shared.answerSharedNote(root, String(body.target ?? ""), body.id, body.body ?? ""); break;
         case "note_resolve": out = await shared.resolveSharedNote(root, String(body.target ?? ""), body.id, body.resolved !== false, body.reason); break;
+        case "doc_share": out = await shared.shareDoc(root, body.version ?? {}); break;
         case "doc_confirm": out = await shared.confirmSharedDoc(root, body.nodeId, body.versionId); break;
         case "doc_retire": out = await shared.retireSharedDoc(root, body.nodeId, body.rationale ?? ""); break;
+        case "walkthrough_share": out = await shared.shareWalkthrough(root, body.walkthrough); break;
         case "relocate": out = await shared.relocateFinding(root, pr, body.id, body.kind, body.rationale ?? "", { to: body.to, apply: body.apply === true }); break;
         default: out = { error: `unknown shared action "${action}"` };
       }

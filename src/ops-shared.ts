@@ -13,7 +13,7 @@ import { comparableHashes } from "./normalize.js";
 import { classifyCitations } from "./citation-state.js";
 import { resolveSidecar, scopeFor, type SidecarConfig } from "./sidecar-config.js";
 import { originSlug, headCommit, currentBranch } from "./git.js";
-import { fetchReviewThreads } from "./pr-push.js";
+import { fetchReviewThreads, type GhRunner } from "./pr-push.js";
 import { ensureSidecar, sync as sidecarSync, readManifests, checkPeers, currentManifest } from "./sidecar.js";
 import {
   createFinding, corroborate, comment, promote, request, setState, recordOutcome,
@@ -250,7 +250,7 @@ export async function sharedFindings(root: string, pr: number | string, opts: { 
  * system, and recording it as a sidecar event would make it look like it had been
  * said here, by an actor with a principal. It is presented alongside instead.
  */
-export async function inboundReplies(root: string, pr: number | string) {
+export async function inboundReplies(root: string, pr: number | string, opts: { gh?: GhRunner } = {}) {
   const cfg = resolveSidecar(root);
   if (!cfg) return { error: NO_SIDECAR };
   const slug = originSlug(root);
@@ -260,7 +260,7 @@ export async function inboundReplies(root: string, pr: number | string) {
   const published = all.filter((f) => f.posted?.key);
   if (!published.length) return { universe: cfg.universe, pr, findings: [], note: "nothing from here has been published to the pull request" };
 
-  const threads = fetchReviewThreads(`${slug.owner}/${slug.repo}`, Number(pr));
+  const threads = fetchReviewThreads(`${slug.owner}/${slug.repo}`, Number(pr), opts.gh);
   if ("error" in threads) return threads;
 
   // Ours is the ROOT comment of its thread; everything after it is the reply.

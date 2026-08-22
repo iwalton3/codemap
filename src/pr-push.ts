@@ -634,6 +634,9 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
   };
 }
 
+/** The `gh` shell-out, as a type callers can inject a fake for. See `executePrPush`. */
+export type GhRunner = (args: string[], input?: string) => { ok: boolean; out: string; err: string };
+
 function gh(args: string[], input?: string): { ok: boolean; out: string; err: string } {
   const r = spawnSync("gh", args, { encoding: "utf8", input, maxBuffer: 32 * 1024 * 1024, timeout: 120_000 });
   return { ok: r.status === 0, out: r.stdout ?? "", err: (r.stderr ?? "").trim() };

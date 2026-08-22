@@ -807,10 +807,35 @@ const tools: Tool[] = [
     handler: (a, c) => shared.inboundReplies(c.universe.path, a.pr),
   },
   {
+    name: "record_published",
+    description: "Record WHERE a shared finding landed on the pull request, after you posted it there. `inbound_replies` reads nothing else — a finding with no record here is one whose replies nobody will ever be shown, however loudly the submitter answers. `key` is the review comment's numeric id (the `id` field of the GitHub API's comment object, not the node id), which is what ties the thread back to this finding.",
+    inputSchema: obj({
+      pr: { type: "string" }, id: { type: "string", description: "The shared finding's id." },
+      key: { type: "string", description: "The review comment's numeric id on GitHub." },
+      url: { type: "string", description: "Its permalink, for people reading the finding." },
+    }, ["pr", "id"]),
+    mutates: true,
+    handler: (a, c) => shared.recordPublished(c.universe.path, a.pr, a.id, { key: a.key, url: a.url }),
+  },
+  {
     name: "shared_walkthroughs",
     description: "Walkthroughs of a pull request written by anyone on the team. Pass `head` to get the one written against the commit you are looking at — a walkthrough about another commit is reported as stale rather than shown, because it is about something else.",
     inputSchema: obj({ pr: { type: "string" }, head: { type: "string" } }, ["pr"]),
     handler: (a, c) => shared.sharedWalkthroughs(c.universe.path, a.pr, a.head),
+  },
+  {
+    name: "share_walkthrough",
+    description: "Publish a walkthrough of a pull request to the SIDECAR, where the rest of the team and their agents can read it. Nothing else writes one, so a walkthrough that is not shared from here exists only in your own store. It is witnessed against the head it was written for: a reader on a different commit is told it is stale rather than shown it.",
+    inputSchema: obj({ walkthrough: { type: "object", description: "The walkthrough, as `pr_walkthrough` returns it." } }, ["walkthrough"]),
+    mutates: true,
+    handler: (a, c) => shared.shareWalkthrough(c.universe.path, a.walkthrough),
+  },
+  {
+    name: "share_doc",
+    description: "Publish ONE doc version to the sidecar — the doc you just wrote, rather than the whole store. `publish_local_docs` is the bulk backfill for a store that predates its sidecar; this is the ordinary act. The version is immutable and records the commit and branch it was written on, so a later reader can tell whether it describes their checkout.",
+    inputSchema: obj({ version: { type: "object", description: "The doc version: `nodeId`, `type`, `title`, `summary`, `body`, `citations`." } }, ["version"]),
+    mutates: true,
+    handler: (a, c) => shared.shareDoc(c.universe.path, a.version),
   },
 ];
 
