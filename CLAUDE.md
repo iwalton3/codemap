@@ -148,10 +148,16 @@ generated file to drift. `npm test` runs it (`tsc -p web`, well under a second).
   types `this.props` only; `this.state` is typed by a `@type` on the constructor
   assignment, which shadows the inherited `state: S`. Do one and you get a page
   that looks typed and is half `any`.
-- **API shapes come from `ops-shared` itself** (`import('../dist/ops-shared.js')`
-  in a `@typedef`), never a hand-written copy — the HTTP layer returns those
-  values verbatim, so a field ops stopped returning fails the typecheck here
-  instead of rendering nothing. That is a bug this project has already shipped.
+- **API shapes come from the ops functions themselves.** `app.js` carries an
+  `ApiMap` typedef — every GET route to `Awaited<ReturnType<Ops['fn']>>` — and
+  `api()` is generic over it, so all call sites are typed with no per-page
+  annotation. `serve.ts` returns those values verbatim, so a field ops stopped
+  returning fails the typecheck at the page that reads it instead of rendering
+  nothing (a bug this project has already shipped). The map is derived and can
+  drift: `src/api-map.test.ts` fails when it does.
+- **A page that can fail must pass `taskError(this.load)` to `pageShell`.**
+  `createTask` never rejects — it parks the failure on `task.error` — so a page
+  that ignores it shows its spinner forever. That was all eighteen of them once.
 - `noImplicitAny` and `strictNullChecks` are **off**: on 3.5k lines of untyped JS
   they produced 1293 of 1345 errors and no defects. Turn them on per-file later
   if it earns its keep; leaving them on now just trains people to ignore output.
