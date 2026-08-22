@@ -87,6 +87,8 @@ test("an unparseable value is not a hash, and is comparable to nothing", () => {
     "garbage", "", "sha256", "sha256:", "h2:", "h2:md5:" + digest,
     "h0:sha256:" + digest,             // scheme numbers have one spelling
     "h01:sha256:" + digest,
+    "h1:sha256:" + digest,             // scheme 1 IS the unprefixed form
+    "h99999999999999999999:sha256:" + digest,
     "sha256:" + digest.slice(0, 63),   // truncated
     "sha256:" + digest.toUpperCase(),  // canonical form is lowercase
     "sha256:" + digest + "0",          // over-long
@@ -98,6 +100,27 @@ test("an unparseable value is not a hash, and is comparable to nothing", () => {
   }
   // Two things nobody can read are not thereby known to be equal.
   assert.equal(comparableHashes("garbage", "garbage"), false);
+});
+
+/**
+ * `h1:` is the trap the one-spelling rule exists for.
+ *
+ * It is well-formed, it is scheme 1, and nothing in this codebase mints it —
+ * `schemePrefix(1)` returns "". So it can only arrive from a client that got the
+ * encoding wrong, and if it parsed, `h1:sha256:X` and `sha256:X` would be the same
+ * body reading as comparable-and-different: a confident `stale` for code nobody
+ * touched. That is the exact false staleness the scheme numbers were added to
+ * prevent, reached through their own encoding.
+ */
+test("a scheme number has exactly one spelling", () => {
+  const d = fixtureHash("body").slice("sha256:".length);
+  assert.equal(hashSchemeOf("sha256:" + d), 1, "unprefixed is scheme 1");
+  assert.equal(hashSchemeOf("h1:sha256:" + d), null, "and h1: is not a second spelling of it");
+  assert.equal(comparableHashes("h1:sha256:" + d, "sha256:" + d), false);
+  // Large scheme numbers are legal — the bound is what a number can represent,
+  // not how many digits a regex happened to allow.
+  assert.equal(hashSchemeOf("h10000:sha256:" + d), 10000);
+  assert.equal(hashSchemeOf("h99999999999999999999:sha256:" + d), null, "past safe-integer");
 });
 
 test("the absent sentinel stays comparable to everything, including junk", () => {

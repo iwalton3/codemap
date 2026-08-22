@@ -54,14 +54,16 @@ export function hashTokens(tokens: string[]): string {
  * The one shape a body hash may have: an optional scheme prefix, the algorithm,
  * and exactly 64 lowercase hex characters.
  *
- * Canonical rather than permissive, in both directions. `h0:` and `h01:` are
- * refused so a scheme number has a single spelling, and the digest is length- and
- * charset-checked so a truncated or corrupted value cannot pass as a hash — which
- * matters because "passes as a hash" is what licenses comparing it and reporting
- * the difference as DRIFT. Tests use `fixtureHash`, which derives a real digest
- * from a readable label, so nothing needs a laxer parser to stay legible.
+ * The digest is length- and charset-checked because "passes as a hash" is what
+ * licenses comparing it and reporting the difference as DRIFT — a truncated or
+ * corrupted value must not buy that licence. Tests use `fixtureHash`, which
+ * derives a real digest from a readable label, so nothing needs a laxer parser
+ * to stay legible.
+ *
+ * The prefix is deliberately not bounded here; `hashSchemeOf` decides what is a
+ * legal scheme number, so the rule lives in one place rather than half in a regex.
  */
-const HASH_FORM = /^(?:h([1-9]\d{0,3}):)?sha256:([0-9a-f]{64})$/;
+const HASH_FORM = /^(?:h(\d+):)?sha256:[0-9a-f]{64}$/;
 
 /**
  * Which derivation minted a hash, or NULL when the string is not one this code
@@ -80,8 +82,14 @@ const HASH_FORM = /^(?:h([1-9]\d{0,3}):)?sha256:([0-9a-f]{64})$/;
 export function hashSchemeOf(hash: string): number | null {
   const m = HASH_FORM.exec(hash);
   if (!m) return null;
-  const scheme = Number(m[1] ?? "1");
-  return Number.isSafeInteger(scheme) && scheme > 0 ? scheme : null;
+  if (m[1] === undefined) return 1;              // scheme 1 IS the unprefixed form
+  // Exactly one spelling per scheme, because two spellings of one scheme compare
+  // as same-scheme-different-value — a confident `stale` for a body that never
+  // changed. `h1:` is the trap: it is well-formed, it is scheme 1, and nothing
+  // here mints it, so it can only arrive from a client that got this wrong.
+  if (!/^[1-9]\d*$/.test(m[1])) return null;    // no leading zeros
+  const scheme = Number(m[1]);
+  return Number.isSafeInteger(scheme) && scheme >= 2 ? scheme : null;
 }
 
 /**
