@@ -504,7 +504,13 @@ export async function readFindings(logRoot: string, pr: number | string): Promis
  * plus every outstanding request. This is the queue the whole design is for.
  */
 export function ackQueue(findings: Iterable<SharedFinding>): SharedFinding[] {
-  return [...findings].filter((f) => !isClosed(f.state) && !f.bug && (needsHumanAck(f) || !!f.pending));
+  return [...findings].filter((f) =>
+    !isClosed(f.state) && !f.bug
+    // A CONTESTED field is waiting on a person by construction: the fold refuses to
+    // pick and only a person may state the value. Leaving it out meant the one
+    // thing nobody else can resolve was the one thing the queue did not show —
+    // found by a browser test that could not make the badge appear.
+    && (needsHumanAck(f) || !!f.pending || !!f.contested?.length));
 }
 
 /**

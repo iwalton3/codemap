@@ -292,4 +292,63 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
     assert.deepEqual(errors, []);
     await page.close();
   });
+
+  // --- contested: the loudest thing on the page, so it had better be right -------
+
+  test("a contested field shows both values and refuses to pick", async () => {
+    // Built by hand rather than through `revise`, because "concurrent" has a precise
+    // meaning here — neither writer's `after` names the other's event — and the
+    // whole detector turns on it. Writing the events directly is the only way to be
+    // sure the fixture is testing that rather than two sequential edits.
+    const { appendEvents, mintId } = await import("../eventlog.js");
+    const { findingScope } = await import("../shared-findings.js");
+    // NOT the workspace universe id: `universeKey` lowercases, and a mkdtemp name
+    // contains uppercase, so the two namespaces differ. The sidecar scope is
+    // always the former.
+    const { universeKey } = await import("../sidecar-config.js");
+    const uKey = universeKey(root);
+    const izzie = { principal: "izzie@x.com" };
+    const dana = { principal: "dana@x.com" };
+    const scope = findingScope(`${uKey}/pr-900`);
+
+    const created = { id: mintId(), kind: "finding.created", subject: "f_contest", actor: izzie, at: "t",
+      data: { targetKind: "anchor", targetId: anchorId, text: "evidence", comment: "the ask", severity: "medium" } };
+    await appendEvents(side, scope, izzie, [created]);
+    // Both name `created` as what they had seen — and NOT each other.
+    await appendEvents(side, scope, izzie, [{ id: mintId(), kind: "finding.revised", subject: "f_contest",
+      actor: izzie, at: "t", after: created.id, data: { now: { severity: "critical" } } }]);
+    await appendEvents(side, scope, dana, [{ id: mintId(), kind: "finding.revised", subject: "f_contest",
+      actor: dana, at: "t", after: created.id, data: { now: { severity: "low" } } }]);
+
+    const { page, errors } = await open(`/u/${universe}/shared/900/`);
+    await page.waitForSelector(".prbadge.contested");
+    await page.locator(".frow .row").first().click();
+    await page.waitForSelector(".contest");
+    const text = await page.textContent(".contest");
+    assert.match(text, /severity/);
+    assert.match(text, /critical/, "izzie's value survives");
+    assert.match(text, /low/, "and so does dana's — nothing is arbitrated");
+    assert.match(text, /without seeing each other/, "and it says why this is a contest");
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+
+  test("a person settles a contest by choosing a value, and it stays settled", async () => {
+    const { page, errors } = await open(`/u/${universe}/shared/900/`);
+    await page.waitForSelector(".prbadge.contested");
+    await page.locator(".frow .row").first().click();
+    await page.waitForSelector(".contest");
+    await page.getByRole("button", { name: /keep izzie@x\.com's/ }).click();
+    // The fold replays history on every read, so "settled" has to survive a reload —
+    // that is the bug this would have shipped with.
+    await page.waitForFunction(() => !document.querySelector(".prbadge.contested"), null, { timeout: 10_000 });
+    await page.close();
+
+    const again = await open(`/u/${universe}/shared/900/`);
+    await again.page.waitForSelector("main");
+    assert.equal(await again.page.locator(".prbadge.contested").count(), 0, "still settled after a reload");
+    assert.deepEqual(again.errors, []);
+    await again.page.close();
+    assert.deepEqual(errors, []);
+  });
 });

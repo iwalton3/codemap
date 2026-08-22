@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { scenario, who, concurrently, inSequence, settle, views, assertConverged, asAgent, type Scenario } from "./scenario.js";
-import { createFinding, corroborate, revise, resolveContest, readFindings, promote } from "./shared-findings.js";
+import { createFinding, corroborate, revise, resolveContest, readFindings, promote, ackQueue } from "./shared-findings.js";
 
 const PR = "acme/api/pr-264";
 const NEW = { targetKind: "anchor" as const, targetId: "a_1", text: "the original text", comment: "the original ask", severity: "medium" as const };
@@ -207,5 +207,29 @@ test("a contested finding still works — nothing is blocked while it is unresol
     const f = (await readFindings(who(s, "izzie@x.com").sidecar, PR)).get(id)!;
     assert.ok(f.contested?.length);
     assert.equal(f.corroboration.length, 1, "work continues around the disagreement");
+  });
+});
+
+test("a contested finding is in the ack queue — only a person can settle it", async () => {
+  // It was not, and that is the one thing nobody else can resolve. The queue is
+  // what a person opens to see what needs them; omitting the one item that
+  // definitionally does made it the only thing they would never be shown.
+  await withTeam(async (s) => {
+    const id = await seeded(s);
+    await concurrently(
+      s,
+      "izzie@x.com", (p) => revise(p.sidecar, PR, p.actor, id, { severity: "critical" }),
+      "dana@x.com", (p) => revise(p.sidecar, PR, p.actor, id, { severity: "low" }),
+    );
+    const all = [...(await readFindings(who(s, "izzie@x.com").sidecar, PR)).values()];
+    assert.equal(all[0]!.contested?.length, 1);
+    assert.equal(ackQueue(all).length, 1, "contested belongs in the queue");
+
+    const izzie = who(s, "izzie@x.com");
+    await resolveContest(izzie.sidecar, PR, izzie.actor, id, "severity", "high");
+    await settle(s);
+    const after = [...(await readFindings(izzie.sidecar, PR)).values()];
+    assert.equal(after[0]!.contested, undefined);
+    assert.equal(ackQueue(after).length, 0, "and leaves it once settled");
   });
 });
