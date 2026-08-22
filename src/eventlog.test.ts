@@ -112,6 +112,42 @@ test("a torn final line is dropped and everything before it survives", async () 
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("appending AFTER a torn line does not glue onto it", async () => {
+  // The torn line is only harmless until the next append. `appendFile` starts
+  // exactly where the file ends, so without a separator the next event is
+  // concatenated onto the partial one, the glued line fails `JSON.parse`, and it
+  // is dropped — silently, after `emit` has already returned its id. `git add -A`
+  // then ships the glue to everyone.
+  const root = tmp();
+  try {
+    const file = join(root, shardFor("pr-264", izzie));
+    await appendEvents(root, "pr-264", izzie, [ev(mintId(1)), ev(mintId(2))]);
+    appendFileSync(file, '{"id":"zzz","kind":"not-final', "utf8");
+
+    const next = ev(mintId(3));
+    await appendEvents(root, "pr-264", izzie, [next]);
+    const got = await readScope(root, "pr-264");
+    assert.equal(got.length, 3, "the two whole events, plus the one just written");
+    assert.ok(got.some((e) => e.id === next.id), "the event written after the tear survives");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("and a BATCH after a torn line loses none of it", async () => {
+  // Only the first event of a batch is eaten, which is what makes this read as an
+  // intermittent lost write rather than a broken shard.
+  const root = tmp();
+  try {
+    const file = join(root, shardFor("pr-264", izzie));
+    await appendEvents(root, "pr-264", izzie, [ev(mintId(1))]);
+    appendFileSync(file, '{"id":"zzz","kind":"not-fi', "utf8");
+
+    const batch = [ev(mintId(2)), ev(mintId(3)), ev(mintId(4))];
+    await appendEvents(root, "pr-264", izzie, batch);
+    const ids = new Set((await readScope(root, "pr-264")).map((e) => e.id));
+    for (const e of batch) assert.ok(ids.has(e.id), `lost ${e.id}`);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("a line that parses but is not an event is skipped", async () => {
   const root = tmp();
   try {

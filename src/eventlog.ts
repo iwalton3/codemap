@@ -28,7 +28,7 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { appendFile, mkdir, readFile, readdir } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Actor } from "./schema.js";
 
@@ -99,16 +99,41 @@ export function shardFor(scope: string, actor: Actor): string {
 }
 
 /**
+ * Whether the shard is safe to append to as-is — nothing there, or a clean newline.
+ *
+ * A missing file answers true: there is nothing to run into.
+ */
+async function endsCleanly(file: string): Promise<boolean> {
+  let fh;
+  try { fh = await open(file, "r"); } catch { return true; }
+  try {
+    const { size } = await fh.stat();
+    if (size === 0) return true;
+    const last = Buffer.alloc(1);
+    await fh.read(last, 0, 1, size - 1);
+    return last[0] === 0x0a;
+  } catch { return true; } finally { await fh.close(); }
+}
+
+/**
  * Append events to their actor's shard.
  *
  * `appendFile` with whole lines: a torn write can only ever lose or truncate the
- * LAST line, which `readShard` discards. Anything already written stays valid.
+ * LAST line, which `readShard` discards.
+ *
+ * Which holds only until the next append. `appendFile` resumes at the byte the
+ * file ends on, so writing straight onto a torn line CONCATENATES the next event
+ * onto the fragment: the glued line fails `JSON.parse` and is dropped — silently,
+ * after `emit` has already handed back its id — and `git add -A` then ships the
+ * glue to every teammate. In a batch only the first event is eaten, so it reads
+ * as an intermittent lost write rather than as a damaged shard.
  */
 export async function appendEvents(logRoot: string, scope: string, actor: Actor, events: LogEvent[]): Promise<void> {
   if (!events.length) return;
   const file = join(logRoot, shardFor(scope, actor));
   await mkdir(dirname(file), { recursive: true });
-  await appendFile(file, events.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf8");
+  const lead = (await endsCleanly(file)) ? "" : "\n";
+  await appendFile(file, lead + events.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf8");
 }
 
 /**
