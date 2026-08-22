@@ -225,6 +225,16 @@ Matching the existing style in `db.ts` — real columns for what you filter and
 join on, JSON for nested structure, exactly as `nodes.anchors` and
 `node_versions.citations` already do.
 
+> **Incomplete as written.** These tables predate `PROPOSAL-provenance.md` and are
+> missing the provenance columns it requires: a derivation reference on every
+> anchor id, one row per accepted hash rather than a JSON list (one citation can
+> hold hashes from several profiles), the language each value was derived for, and
+> a derivation profile per anchor REF including `@work` — the live side of the
+> comparison has provenance too, and comparing against rows that carry none
+> recreates the relabeling defect on the reader's side.
+>
+> The shapes below are still the right skeleton; do not freeze them before step 3a.
+
 ```sql
 -- One row per materialized scope. `fingerprint` is the cache key; see §3.
 CREATE TABLE IF NOT EXISTS shared_scope (
@@ -301,6 +311,14 @@ WHERE c.universe = ?
 `LEFT JOIN` because a missing anchor is the signal, not an error — a `NULL`
 `body_hash` is `classifyCitations`'s `present: false`, and the `offTree` /
 `retained` / `lost` refinement stays exactly where it is.
+
+> **This join is the pre-provenance version.** It goes straight from citation to
+> anchor row, so a miss is indistinguishable from an incompatible derivation and
+> classifies as `lost` — claiming code is gone when the truth is that nobody can
+> compare it. The order must be: **validate derivation → establish comparability →
+> resolve anchor → classify absence or drift.** `ABSENT_HASH` is universally
+> comparable only *after* anchor derivation compatibility is established, not
+> before.
 
 These hashes are the LAST INDEXED ones, not the current files. That is unchanged
 by moving the join into SQL, and it is what `@work` has always meant on both sides
@@ -432,14 +450,11 @@ fine; claiming materialization as their completion is not.
   The DB can be deleted at any time and rebuilt from them.
 - **It does not make the fold incremental.** See §2. Anyone who "fixes" that has
   reintroduced the accumulator.
-- **It does not fix the same-principal-two-machines hole** in `causality()` —
-  `readScope` dedupes because one person can append from two machines, those writes
-  are not causally related, and `ownLast` fabricates an edge between them. That
-  needs a per-writer generation id in the event format and is orthogonal to where
-  the fold is stored.
-- **It does not add a lock.** The fingerprint makes the *cache* correct across
-  processes; it does not serialize two processes doing git operations on one
-  sidecar clone. That is a separate fix.
+- **It does not by itself fix the same-principal-two-machines hole** in
+  `causality()`, nor add a lock. Both are now steps 3a/3b of the plan above rather
+  than out of scope, because `PROPOSAL-provenance.md` made them prerequisites of
+  the final schema — but neither is delivered by materialization, and steps 0–1 do
+  not wait for them.
 
 ## 9. Open questions for review
 
@@ -480,6 +495,20 @@ fine; claiming materialization as their completion is not.
 9. ~~`comparableHashes` fails OPEN on an unparseable hash.~~ **Fixed in `6d4c40d`.**
    `hashSchemeOf` returns `number | null` and requires the whole form; an
    unparseable value is comparable to nothing, including another unparseable one.
+
+---
+
+# Review history (ARCHIVE — not normative)
+
+**Everything below is a transcript of four review rounds, kept for its reasoning
+and preserved verbatim. It contains SUPERSEDED designs.** In particular §13's
+receipt shape carries `anchorScheme` / `hashScheme` / `grammar` fields that were
+later replaced by a `DerivationRef` pointing at a content-addressed profile, and
+several recommendations were revised by the round that followed them.
+
+Where the archive and §§0–9 disagree, §§0–9 win. Where §§0–9 and
+`PROPOSAL-provenance.md` disagree about provenance, the provenance document wins.
+Do not implement from anything below this line.
 
 ## 10. Open questions/revisions
 

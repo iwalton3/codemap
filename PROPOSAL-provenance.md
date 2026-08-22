@@ -1,10 +1,10 @@
 # Proposal: immutable provenance — profiles, generations, and receipts
 
 Status: **draft.** Split out of `PROPOSAL-sidecar-materialization.md`, where it had
-grown from an open question into the larger of the two designs. Four review rounds
+grown from an open question into the larger of the two designs. Five review rounds
 are folded in; §9 records what each round changed.
 
-Reviewed against `worktree-shared-review-hashscheme` at `f723e78`.
+Reviewed against `worktree-shared-review-hashscheme` at `071a43d`.
 
 ## 1. The rule
 
@@ -57,14 +57,30 @@ derivations can be compared. It is immutable and content-addressed by its own
 digest.
 
 ```ts
-interface CompatibilityProfile {
-  eventSchema: number;
+/** How code is turned into ids and hashes. Referenced by VALUES. */
+interface DerivationProfile {
   anchorScheme: number;
   hashScheme: number;
+  /** The tree-sitter runtime participates in derivation as much as the grammar. */
+  parserRuntime: string;
   /** Language -> full SHA-256 of the vendored grammar blob. */
   grammars: Record<Language, string>;
 }
+
+/** Who wrote, and what they could read. Referenced by EVENTS. */
+interface GenerationRecord {
+  format: 1;
+  writer: WriterId;
+  eventSchema: number;
+  derivationProfile: ProfileId;
+}
 ```
+
+`eventSchema` is deliberately NOT in the derivation profile. It governs how an
+event is decoded, not how code is hashed, and conflating them means a receipt-format
+change would bump `HASH_SCHEME` and relabel every hash in the store as a different
+derivation. **Only a change to hash derivation or its canonical encoding bumps
+`HASH_SCHEME`;** receipt-format changes bump `eventSchema`.
 
 It holds only derivation-affecting values — **not** the release version. That is
 what keeps generation churn low: shipping a release does not change a profile,
@@ -79,6 +95,18 @@ build and checked. No registry, no version negotiation, no dependency.
 Profiles live in the sidecar as immutable content-addressed objects. A mutable
 "what this client currently runs" manifest may remain, but it must never be
 consulted to describe a historical event.
+
+Content-addressed means the encoding is normative, not incidental: canonical bytes,
+fixed key ordering, explicit integer bounds, a stated rule for unknown fields, and
+domain-separated hashes so a profile digest cannot collide with a generation digest.
+Readers must **verify** that an id matches the object it names rather than trusting
+the reference — an unverified content address is just a mutable pointer with extra
+steps, and the whole point is that history cannot be relabelled.
+
+For the same reason a **generation id must commit to both the writer identity and
+the profile id**. If it commits to only one, a generation record can be swapped to
+point at a different profile and relabel every event that references it — the
+mutable-manifest defect reintroduced through one more level of indirection.
 
 ## 4. Generations
 
@@ -130,6 +158,42 @@ generation and therefore the implicit causality. So:
 
 An unnecessary contest asks a person a question; an invented causal edge answers
 one for them.
+
+### Detecting a forked writer
+
+A copied seed is the one failure a user can cause by ordinary means, and neither
+documentation nor a rotation command *detects* it — two restored clones would share
+a generation and silently recreate the fabricated edge.
+
+So every event carries an explicit **`writerPrev`**: the previous event from this
+same generation. Then a fork is visible rather than inferred — two events naming
+the same predecessor are a writer fork, which is a fact worth surfacing, instead of
+being quietly linearized by `ownLast`. It also makes prefix closure checkable
+rather than assumed, which is what the sidecar lock was buying on trust.
+
+### Generation identity must reach the entity folds
+
+Sharding and the vector clock are not the only places one person is treated as one
+writer. Verified in the current code:
+
+- `shared-findings.ts:244` — `held.by.principal === e.actor.principal` suppresses a
+  contest, so two generations of one person silently last-write-wins.
+- `shared-findings.ts:335` — corroboration is keyed by principal, so one person's
+  second model replaces the first, disagreement included.
+- `shared-walkthrough.ts:81` — `byAuthor.set(e.actor.principal, …)` keeps one
+  walkthrough per principal.
+
+Fixing causality without fixing these leaves the collapse in place at the layer
+users actually see. Each needs the *writer* identity for concurrency and the
+*principal* for attribution and independence — the same split as everywhere else.
+
+**And notes have no contest detection at all.** `note.revised`
+(`shared-notes.ts:107`) overwrites `text`, `category`, `severity` and `line`
+unconditionally, with no `noteContest` equivalent — for any two people, not just two
+generations. Revisions survive in `n.revisions[]`, so nothing is destroyed, but
+nobody is ever asked to arbitrate. That is the same class of concurrent scalar
+rewrite `contested` exists for on findings, and it is a gap independent of this
+design.
 
 ### The seed
 
@@ -200,6 +264,26 @@ C#. That is shard churn, not invalidation, and it is cheap: vendored grammars
 change rarely. Paying it is better than separating writer identity from producer
 profile again, which is what the single-envelope-field design bought.
 
+### `unverifiable` is not one state
+
+One boolean cannot carry a recovery action, and these need different ones:
+
+```
+legacy_no_receipt          incompatible_hash_scheme     unsupported_event_schema
+missing_profile            grammar_mismatch             corrupt_receipt
+incompatible_anchor_scheme
+```
+
+Re-witnessing and relocation are **not** interchangeable. Provenance
+incompatibility does not prove the code moved — an anchor receipt carries no
+locator evidence — so offering "relocate" for a scheme mismatch invites exactly the
+false re-targeting that `witness`/`sourceRef` exist to prevent. `missing_profile`
+resolves itself when the profile arrives and needs no user action at all.
+
+This is also why the existing `unverifiable` status must not simply absorb these.
+It currently means "confirmed under an older hashing scheme", which is one of seven
+reasons and the only one a `confirm` button repairs.
+
 ### Comparability
 
 - `comparableHashes` requires matching `hashScheme` **and** matching grammar
@@ -227,6 +311,44 @@ for them.
 
 ## 6. Materialization, and migration
 
+**The live side of the comparison has provenance too.** A receipt is compared
+against `@work` anchor rows, and those rows carry no profile and no language today
+— so they may themselves have been minted under an older grammar or runtime, and
+comparing against them recreates the relabeling defect on the reader's side. So:
+
+- one derivation profile per anchor REF, `@work` and every snapshot;
+- the actual language on each anchor row;
+- an anchor receipt on every shared target;
+- **one row per accepted hash**, with its own receipt — a single citation can hold
+  hashes minted under several profiles, so a JSON list cannot carry them.
+
+**Evaluation order is part of the contract**, not an implementation detail:
+
+```
+validate derivation → establish comparability → resolve anchor → classify absence/drift
+```
+
+A join that goes straight from citation to anchor row cannot tell a missing symbol
+from an unreadable derivation, and defaults to `lost` — claiming code is gone when
+the truth is that nobody can compare it. `ABSENT_HASH` is universally comparable
+only *after* anchor derivation compatibility is established; before that, "there is
+no code here" is not yet a statement anyone is entitled to make.
+
+**Scope completeness is data, not an assumption.** `shared_scope` records
+seen/folded/quarantined counts with typed reasons, because otherwise "no findings"
+and "the finding event was skipped" are the same answer. An event whose
+`eventSchema` is unsupported is preserved and quarantined — never best-effort
+folded as authoritative — the scope is marked partial, and state-dependent writes
+are refused until the client understands it. Guessing at a payload you cannot
+decode is how a client corrupts everyone's state while reporting success.
+
+**Two kinds of missing profile, two kinds of repair.** A missing *receipt* profile
+only blocks comparability, so a read-time registry join repairs every affected row
+the moment it arrives — no re-fold. A missing *generation* profile means the
+payload could not be decoded at all, so when it arrives the scope must be
+**re-folded**. Treating them alike either wastes a rebuild or leaves undecodable
+events silently absent.
+
 **Receipt columns from the beginning.** `shared_doc_citation`, finding targets and
 note targets need profile/receipt columns in their first schema, so read-time SQL
 can refuse an incompatible join before making it. Adding them later means a second
@@ -250,6 +372,23 @@ forever for no reason — the cache concealing a resolvable state. Event rows st
 the profile REFERENCE and join the registry at read time, so a late-arriving
 profile fixes every row that referenced it without re-folding anything.
 
+**Refusing a pull is correct today and becomes wrong here.**
+`PROPOSAL-shared-review-state.md` says a pull under different schemes must be
+"refused, not merged", and `sidecar.ts:246` implements that: an `ANCHOR_SCHEME`
+mismatch is fatal and the pull errors out.
+
+That is right *without* receipts, because without them a reader genuinely cannot
+tell which of a teammate's values it can interpret — so the choice is refuse
+everything or mis-target silently, and refusing is the safe one. With receipts the
+third option exists: accept the events, interpret what is compatible, and mark the
+rest with a typed reason. Refusal then becomes strictly harmful, because it blocks
+the compatible majority to protect against the interpretable minority.
+
+So this supersedes that decision, and the cutover is not optional ordering: the
+refusal must stay until receipts land, and must be removed when they do. Leaving it
+in place afterwards means an upgraded team still cannot sync; removing it early
+means silent mis-targeting.
+
 **Migration must degrade, not block.** History is append-only, so incompatible old
 events are there forever and no sync may refuse on their account. Sync accepts
 them; operations that require interpreting code gate or degrade explicitly. Two
@@ -266,7 +405,13 @@ before receipts existed:
 
 1. **Extract the pure folds** into a storage-free module. Independent of
    everything here; unblocks `store.ts` without a dependency cycle.
-2. **Design profiles, generations and receipts** — this document.
+2. **Design profiles, generations and receipts** — this document. Including the
+   **protocol cutover**: an additive `generation` field does not protect an older
+   reader, because event parsing ignores unknown fields and a legacy client would
+   fold new shards with principal-keyed causality regardless. It needs a versioned
+   layout or namespace that old readers physically cannot mistake for their own —
+   a new shard extension or a scope-level format marker. This is the part that
+   cannot be retrofitted, so it is the part to settle first.
 3. **Generation-based sharding and causality, plus the sidecar-root lock.** The
    lock is part of this step, not a follow-up, because prefix closure depends on it.
 4. **Materialization tables, with receipt ownership built in.**
@@ -289,10 +434,14 @@ downstream of 3 should be finalized before 2 is settled.
   legacy value that is `unverifiable` for provenance reasons rather than because
   the code moved. Both are "cannot be decided", and conflating them would repeat
   the mistake the `unverifiable` status was introduced to fix.
-- **Event-schema evolution.** `eventSchema` sits in the profile but nothing yet
-  says what a reader does with an event whose schema is *newer* than its own —
-  quarantine, best-effort fold, or refuse the shard. It is the one profile field
-  whose mismatch is not about interpreting code.
+- ~~Event-schema evolution.~~ **Resolved in §6**: preserved, quarantined, scope
+  marked partial, state-dependent writes refused. What remains open is the wire
+  mechanism for the cutover itself (§7 step 2).
+- **Where the refusal is removed.** The `fatal` manifest check in `sidecar.ts` has
+  to be deleted in the same change that lands receipts, not before and not after.
+  Neither document currently owns that edit.
+- **Notes have no contest detection.** Independent of this design and worth its own
+  fix; recorded in §4 because that is where it was found.
 
 ---
 
@@ -316,3 +465,9 @@ and the corrections are more instructive than the result.
    strictness should not have been deferred. Both were me choosing the locally
    comfortable answer — extra fields "just in case", and readable fixtures over a
    correct parser — where the better one cost nothing once looked at properly.
+
+5. **Round 5** (three-angle pass) — the envelope is not a protocol boundary; a
+   copied seed needs *detection* (`writerPrev`), not documentation; the live index
+   has provenance too, and comparing against rows that carry none recreates the
+   defect on the reader's side; `unverifiable` is seven states, not one; and the
+   documents had begun to contradict each other, which is its own hazard.
