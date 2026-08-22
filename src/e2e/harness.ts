@@ -15,13 +15,55 @@
 import { createRequire } from "node:module";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const CHROMIUM = process.env.CODEMAP_E2E_CHROMIUM ?? "/usr/bin/chromium";
 const PUPPETEER_DIRS = [process.env.CODEMAP_E2E_PUPPETEER, "/working/vdx-web/tests/e2e/", resolve(".")].filter(Boolean) as string[];
+
+/**
+ * Playwright, resolved from wherever it happens to live — never a dependency of
+ * this project.
+ *
+ * Same contract as `resolvePuppeteer`: null when it is not there, and the suite
+ * SKIPS rather than fails. The golden rule applies to the test tree, so a
+ * browser driver is something the machine may have, not something the repo pulls
+ * in. `npx playwright` leaves one in the npx cache, which is why that is a
+ * candidate — it costs nothing to look and saves an install.
+ */
+const PLAYWRIGHT_DIRS = [
+  process.env.CODEMAP_E2E_PLAYWRIGHT,
+  resolve("."),
+  ...playwrightNpxCandidates(),
+].filter(Boolean) as string[];
+
+function playwrightNpxCandidates(): string[] {
+  const base = join(homedir(), ".npm", "_npx");
+  try {
+    return readdirSync(base).map((d) => join(base, d, "node_modules", "playwright"));
+  } catch { return []; }
+}
+
+export function resolvePlaywright(): any | null {
+  for (const dir of PLAYWRIGHT_DIRS) {
+    try {
+      return createRequire(dir.endsWith("/") ? dir : dir + "/")("playwright");
+    } catch { /* try the next candidate */ }
+  }
+  return null;
+}
+
+/**
+ * A playwright browser, using the same chromium the puppeteer suite does when one
+ * is present — a machine with a system chromium should not need a second copy.
+ */
+export async function launchPlaywright(pw: any) {
+  const opts: Record<string, unknown> = { args: ["--no-sandbox", "--disable-dev-shm-usage"] };
+  if (existsSync(CHROMIUM)) opts.executablePath = CHROMIUM;
+  return pw.chromium.launch(opts);
+}
 
 export function resolvePuppeteer(): any | null {
   for (const dir of PUPPETEER_DIRS) {

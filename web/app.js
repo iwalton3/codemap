@@ -12,14 +12,23 @@
  */
 import { defineComponent, Component, html, when, each, Store, raw } from './vendor/vdx/framework.js';
 import { enableRouting } from './vendor/vdx/router.js';
+// Split-out pages, imported for their `defineComponent` side effects so the route
+// table at the bottom can name them.
+//
+// STATIC, and it must stay static. `await import()` here deadlocks silently:
+// shared.js imports this module back, so a top-level await makes each wait for the
+// other and app.js never finishes evaluating — no error, no console output, an
+// entirely blank page. A static circular import is fine because shared.js only
+// touches this module's exports inside method bodies, never at evaluation time.
+import './shared.js';
 
 /** POST + JSON, for requests whose payload does not belong in a URL. */
-async function apiPost(path, body) {
+export async function apiPost(path, body) {
   const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   if (!r.ok) throw new Error('HTTP ' + r.status);
   return r.json();
 }
-async function api(path, params = {}) {
+export async function api(path, params = {}) {
   const qs = new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v != null && v !== '')));
   const r = await fetch(path + (qs.toString() ? '?' + qs : ''));
   if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -36,7 +45,7 @@ async function api(path, params = {}) {
 // there is no data yet, so an in-place refetch (mark / verify / triage) never
 // collapses the page and loses scroll; pages null out their data in propsChanged
 // so a genuine navigation still shows loading and starts back at the top.
-const pageShell = (data, error, body) =>
+export const pageShell = (data, error, body) =>
   html`<main>${when(!data, () => html`<div class="loading">loading…</div>`,
     () => when(error, () => html`<div class="empty">${error}</div>`, body))}</main>`;
 
@@ -44,10 +53,10 @@ class NavStore extends Store {
   constructor() { super(); this.state = { universes: [], current: null }; }
   async load() { if (this.state.universes.length) return; this.state.universes = (await api('/api/universes')).universes; }
 }
-const nav = new NavStore();
+export const nav = new NavStore();
 
 let router;
-const go = (path, query) => router.navigate(path, query);
+export const go = (path, query) => router.navigate(path, query);
 const dashUrl = (u) => `/u/${u}/`;
 const goTree = (u, prefix) => router.navigate(`/u/${u}/tree/` + (prefix ? prefix + '/' : ''));
 const anchorUrl = (u, id) => `/u/${u}/anchor/${id}/`;
@@ -3126,4 +3135,6 @@ router = enableRouting(document.querySelector('router-outlet'), {
   '/u/:universe/prs/': { component: 'pr-inbox-page' },
   '/u/:universe/pr/:pr/': { component: 'pr-story-page' },
   '/u/:universe/search/': { component: 'search-page' },
+  '/u/:universe/shared/:pr/': { component: 'shared-page' },
+  '/u/:universe/shared/:pr/peers/': { component: 'shared-peers-page' },
 });

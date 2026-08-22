@@ -687,6 +687,22 @@
     .pradd { color: #7ee787; } .prdel { color: #f85149; }
     .prswc { font-size: 12.5px; padding: 3px 0; }
     .prswc code { font-family: var(--mono); font-size: 12px; color: #f0a35e; }
+
+    /* --- shared review (web/shared.js) ------------------------------------ */
+    .frow { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 8px 0; background: var(--panel); }
+    .frow .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; cursor: pointer; }
+    .fcomment { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .fdetail { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; }
+    .ftext { white-space: pre-wrap; color: var(--dim); font-family: var(--mono); font-size: 12px; }
+    .corr, .tcomment { font-size: 12px; }
+    /* A contest is the one thing on this page that must not be skimmed past. */
+    .contest { border: 1px solid var(--warn); border-radius: 6px; padding: 8px; display: flex; flex-direction: column; gap: 4px; }
+    .prbadge.needsack { border-color: var(--accent); color: var(--accent); }
+    .prbadge.contested { border-color: var(--warn); color: var(--warn); }
+    .prbadge.ok { border-color: var(--accent2); color: var(--accent2); }
+    .prbadge.warnb { border-color: var(--warn); color: var(--warn); }
+    .prbadge.ask { border-color: var(--accent); color: var(--accent); }
+    .ok { color: var(--accent2); } .bad { color: var(--bad); } .warn { color: var(--warn); }
   </style>
   <!-- Absolute paths so deep-linked routes (e.g. /u/x/diff/?base=…) still resolve assets. -->
   <link rel="stylesheet" href="/vendor/github-dark.min.css">
