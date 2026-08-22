@@ -28,7 +28,7 @@
 
 import type { Actor } from "./schema.js";
 import type { NodeVersion, NodeCitation, LogicalNodeType } from "./schema.js";
-import { winningVersionAt } from "./store.js";
+import { winningVersionAt } from "./doc-version.js";
 import { appendEvents, mintId, readScope, causalHeads, type LogEvent } from "./eventlog.js";
 
 export const docScope = (universe: string): string => `docs/${universe}`;
@@ -102,9 +102,9 @@ export function foldDocs(events: LogEvent[]): Map<string, SharedDoc> {
 /**
  * The version that best fits the code in front of you.
  *
- * `winningVersionAt` is `store.ts`'s, unchanged — the selection rule is the same
- * whether the versions came from SQLite or from a shared log, and having two
- * copies of it is how they would drift.
+ * `winningVersionAt` is shared with `store.ts` rather than reimplemented — the
+ * selection rule is the same whether the versions came from SQLite or from a
+ * shared log, and two copies of it is how they would drift.
  *
  * It picks the LEAST-BAD version, so a doc with versions always resolves to one
  * even when none of them was written against this checkout. Whether the winner is
