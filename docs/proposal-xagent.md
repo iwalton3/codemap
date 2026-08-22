@@ -1,6 +1,6 @@
 # Proposal: `xagent` — external-model subagents
 
-Status: **draft.** Transport verified against  — see §6.
+Status: **draft.** Transport verified against `codex-cli 0.149.0` — see §6.
 
 Not a codemap feature. A general utility: spin up an agent from a *different*
 model vendor in the current directory and talk to it the way a Claude Code
