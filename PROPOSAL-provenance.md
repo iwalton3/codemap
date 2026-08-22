@@ -370,11 +370,37 @@ was.
   legitimately holds pre-upgrade rows and cannot be rehashed without destroying
   the baseline it exists to be. Those pairs are genuinely undecidable, stay out of
   `impacted`, and are surfaced in the CLI and the web.
-- **The other comparison sites still ignore it**: doc citations
-  (`doc-version.ts`), review witnesses (`reviews.ts`), acceptance
-  (`acceptance.ts`). Those compare a STORED value against a live one, and no
-  stored value carries a tag until receipts land — so tag-aware comparison there
-  is blocked on the sidecar work rather than being an oversight.
+- **The other comparison sites still ignore it, and that is the LARGER exposure.**
+  Doc citations (`doc-version.ts`), review witnesses (`reviews.ts:460`),
+  acceptance, bug witnesses. Verified: after a grammar re-vendor both sides carry
+  the `h2:` prefix, so `comparableHashes` answers *comparable*, the hashes differ,
+  and every review mark and doc citation in the store reads as drift. That is the
+  985-of-985 shape, store-wide, and nothing built so far touches it — the diff is
+  one consumer and not the important one.
+
+  It is also *why* `@work` cannot simply be reindexed when its derivation changes:
+  doing so is what triggers the flood. So the diff's `unverifiable` residue is not
+  a quirk, it is a symptom of this same gap.
+
+- **A cheaper fix than receipts may exist**, raised by the Fable review and worth
+  a round of its own. Put the derivation fingerprint IN the hash string —
+  `h2:<fp>:<digest>` over (hashScheme, parserIntegrity, grammarDigest). Every site
+  above already funnels through `comparableHashes`, and `hashSchemeOf` already
+  parses that prefix, so they would become derivation-aware with no receipts, no
+  sidecar dependency, and no per-site change. Local-only universes — which will
+  never have a sidecar — get grammar-aware staleness under this framing and never
+  get it under receipts.
+
+  The cost is real and bounded: about ten sites compare hash STRINGS with `===` or
+  `.includes`, so a format change needs them all moved to one comparison helper
+  first. Which is arguably worth doing regardless — raw equality on a hash string
+  is what makes any format change hazardous.
+
+- **Proportionality.** `git log --follow -- grammars/` shows the blobs committed
+  exactly once, in the initial commit: grammar drift has never happened here. That
+  argues for a DETECTOR rather than a mechanism — warn loudly when `@work`'s tags
+  stop matching the build — and against any further user-facing state until
+  somebody has actually been bitten.
 - **Untagged is comparable, on purpose.** A tag on only one side falls back to
   today's behaviour. It has to: every stored value predates tags, and answering
   `unverifiable` for all of them would trade a rare false positive for a universal
