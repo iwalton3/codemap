@@ -201,7 +201,8 @@ interface Held { value: unknown; by: Actor; at: string; index: number }
 
 function noteContest(
   f: SharedFinding, e: LogEvent, now: Record<string, unknown>,
-  owned: Map<string, Held>, index: Map<string, number>, at: number,
+  owned: Map<string, Held>, raisedAt: Map<string, number>,
+  index: Map<string, number>, at: number,
 ): void {
   // `after` is the causal HEAD — the last event in fold order the writer had
   // applied — so they had necessarily seen everything at or before its index.
@@ -213,25 +214,42 @@ function noteContest(
     const key = `${f.id}\0${k}`;
     const held = owned.get(key);
     owned.set(key, { value: incoming, by: e.actor, at: e.at, index: at });
-    if (!held) continue;
-    if (held.value === incoming) continue;                  // agreeing is not conflict
-    if (held.by.principal === e.actor.principal) continue;  // revising your own is not conflict
-    if (held.index <= sawUpTo) {
-      // Written with the full picture. If the field was contested, stating a value
-      // from here CLEARS it — the fold replays history on every read, so without
-      // this a resolved disagreement would be re-detected forever and the state
-      // could never be cleared by anyone. A person only, per the rule above.
-      if (!isAgentActor(e.actor) && f.contested?.length) {
-        f.contested = f.contested.filter((c) => c.field !== k);
-        if (!f.contested.length) f.contested = undefined;
+
+    // Settling is decided BEFORE the tests below, because every one of them asks
+    // whether this write STARTS a conflict and none of them bear on ending one.
+    // While they gated it, the only settlement that cleared anything was one
+    // naming a value neither participant had written, by somebody who was not
+    // the last writer — and the browser offers exactly the two values the
+    // participants wrote, so no button in the UI could settle anything.
+    //
+    // Against the contest's own index, not `held`'s: a third concurrent write
+    // moves `held` past the contest, and the person settling must be judged on
+    // whether they saw the disagreement, not on who wrote most recently.
+    const raised = raisedAt.get(key);
+    if (raised !== undefined && raised <= sawUpTo) {
+      // Restating any value for a field you have seen contested settles it — the
+      // fold replays history on every read, so without this the disagreement is
+      // re-detected forever and nobody can ever clear it. An agent may not settle
+      // one (a disagreement between two people is the thing it must leave alone),
+      // but writing with the full picture does not raise a new one either.
+      if (!isAgentActor(e.actor)) {
+        f.contested = f.contested?.filter((c) => c.field !== k);
+        if (!f.contested?.length) f.contested = undefined;
+        raisedAt.delete(key);
       }
       continue;
     }
+
+    if (!held) continue;
+    if (held.value === incoming) continue;                  // agreeing is not conflict
+    if (held.by.principal === e.actor.principal) continue;  // revising your own is not conflict
+    if (held.index <= sawUpTo) continue;                    // written with the full picture
     (f.contested ??= []).push({
       field: k,
       held: { value: held.value, by: held.by.principal, at: held.at },
       incoming: { value: incoming, by: e.actor.principal, at: e.at },
     });
+    raisedAt.set(key, at);
   }
 }
 
@@ -249,6 +267,9 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
   // Kept out of SharedFinding: it is bookkeeping for the fold, not state anyone reads.
   const index = new Map<string, number>();
   const owned = new Map<string, Held>();
+  // Where each open contest was raised, so settling can ask "did they see the
+  // disagreement?" rather than "did they see the last writer?".
+  const raisedAt = new Map<string, number>();
 
   for (let at = 0; at < events.length; at++) {
     const e = events[at]!;
@@ -292,7 +313,7 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         const now = (d?.now as Record<string, unknown>) ?? {};
         // A person may revise anyone's; an agent only while it is still a proposal.
         if (isAgentActor(e.actor) && f.state !== "issued") break;
-        noteContest(f, e, now, owned, index, at);
+        noteContest(f, e, now, owned, raisedAt, index, at);
         f.revisions.push({ at: e.at, by: e.actor, was });
         // Assigned field by field rather than through a dynamic key: a revision is
         // the one event that rewrites the finding's substance, so what it is allowed
