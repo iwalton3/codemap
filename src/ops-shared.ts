@@ -10,7 +10,7 @@
 import type { Actor } from "./schema.js";
 import { requireActor, isAgentActor } from "./identity.js";
 import { resolveSidecar, scopeFor, type SidecarConfig } from "./sidecar-config.js";
-import { originSlug } from "./git.js";
+import { originSlug, headCommit, currentBranch } from "./git.js";
 import { fetchReviewThreads } from "./pr-push.js";
 import { ensureSidecar, sync as sidecarSync, readManifests, checkPeers, currentManifest } from "./sidecar.js";
 import {
@@ -21,7 +21,8 @@ import {
 } from "./shared-findings.js";
 import { publishWalkthrough, readWalkthroughs, currentWalkthrough, staleWalkthroughs } from "./shared-walkthrough.js";
 import { createNote, answerNote, resolveNote, notesForTarget, allNotes, type NewNote } from "./shared-notes.js";
-import { readAnnotations } from "./store.js";
+import { readAnnotations, readAnchorStore, loadNodes, loadNodeVersions } from "./store.js";
+import { publishDocVersion, acceptDocHash, readDocs, resolveDoc, type NewDocVersion } from "./shared-docs.js";
 import type { PrWalkthrough } from "./walkthrough.js";
 
 const NO_SIDECAR =
@@ -344,6 +345,133 @@ export async function publishLocalNotes(root: string, opts: { dryRun?: boolean }
   }
   return {
     universe: b.cfg.universe, published: todo.length, alreadyShared: local.length - todo.length,
+    note: todo.length ? "run `codemap sync` to send them" : "nothing new to publish",
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Docs
+// ---------------------------------------------------------------------------
+
+/** Live body hashes for whatever this working tree currently has. */
+async function liveHashes(root: string): Promise<Map<string, string>> {
+  const store = await readAnchorStore(root);
+  return new Map(store.anchors.map((a) => [a.id, a.bodyHash]));
+}
+
+/**
+ * The team's docs, each resolved against THIS checkout.
+ *
+ * Resolution is `winningVersionAt` — the version whose accepted hashes match the
+ * code in front of you — so one linear sidecar serves every branch without branch
+ * tags and without consulting git. A doc written on a feature branch and one
+ * written on develop are both here, and each machine sees the one that describes
+ * what it has checked out.
+ */
+export async function sharedDocs(root: string, opts: { nodeId?: string } = {}) {
+  const cfg = resolveSidecar(root);
+  if (!cfg) return { error: NO_SIDECAR };
+  const docs = await readDocs(cfg.path, cfg.universe);
+  const live = await liveHashes(root);
+  const rows = [];
+  for (const doc of docs.values()) {
+    if (opts.nodeId && doc.nodeId !== opts.nodeId) continue;
+    const v = resolveDoc(doc, live);
+    rows.push({
+      nodeId: doc.nodeId,
+      versions: doc.versions.length,
+      // `winningVersionAt` picks the LEAST-BAD version and always returns one when
+      // versions exist — it never signals "none of these describe your checkout".
+      // The per-citation `matches`/`present` below are what actually say whether
+      // the winner is fresh here, so read those rather than the fact of a winner.
+      resolved: v ? {
+        versionId: v.versionId, type: v.type, title: v.title, summary: v.summary, body: v.body,
+        removed: !!v.removed, generatedBy: v.generatedBy,
+        by: doc.authors.get(v.versionId)?.principal,
+        citations: v.citations.map((c) => ({
+          anchorId: c.anchorId,
+          accepted: c.acceptedHashes.length,
+          // `fresh` for this citation: the live body is one this version has been
+          // confirmed against. The node's overall status is the AND of these.
+          matches: c.acceptedHashes.includes(live.get(c.anchorId) ?? ""),
+          present: live.has(c.anchorId),
+        })),
+      } : undefined,
+    });
+  }
+  return { universe: cfg.universe, total: rows.length, docs: rows };
+}
+
+export async function shareDoc(root: string, v: NewDocVersion) {
+  const b = bind(root);
+  if ("error" in b) return b;
+  await ensureSidecar(b.cfg.path, b.actor);
+  const versionId = await publishDocVersion(b.cfg.path, b.cfg.universe, b.actor, {
+    ...v,
+    createdCommit: v.createdCommit ?? headCommit(root),
+    createdBranch: v.createdBranch ?? currentBranch(root),
+  });
+  return { ok: true, nodeId: v.nodeId, versionId, note: "recorded locally — run `codemap sync` to send it" };
+}
+
+/**
+ * Confirm a doc against the body this checkout has.
+ *
+ * The act that lets one version be valid on several branches. Only for anchors
+ * the version already cites, and only for bodies that are actually here.
+ */
+export async function confirmSharedDoc(root: string, nodeId: string, versionId?: string) {
+  const b = bind(root);
+  if ("error" in b) return b;
+  const docs = await readDocs(b.cfg.path, b.cfg.universe);
+  const doc = docs.get(nodeId);
+  if (!doc) return { error: `no shared doc ${nodeId}` };
+  const live = await liveHashes(root);
+  const v = versionId ? doc.versions.find((x) => x.versionId === versionId) : resolveDoc(doc, live);
+  if (!v) return { error: versionId ? `no version ${versionId} on ${nodeId}` : `no version of ${nodeId} resolves against this checkout — say which one` };
+
+  const added: string[] = [];
+  for (const c of v.citations) {
+    const hash = live.get(c.anchorId);
+    if (!hash || c.acceptedHashes.includes(hash)) continue;
+    await acceptDocHash(b.cfg.path, b.cfg.universe, b.actor, nodeId, v.versionId, c.anchorId, hash);
+    added.push(c.anchorId);
+  }
+  return { ok: true, nodeId, versionId: v.versionId, confirmed: added.length, anchors: added };
+}
+
+/**
+ * Publish this store's existing docs to the sidecar.
+ *
+ * Idempotent by NODE: a node the sidecar already has is skipped rather than given
+ * a second copy of its history. Each local version is republished in order, so the
+ * accepted-hash sets that make branch resolution work survive the move — losing
+ * them would leave every doc reading `stale` on the branch it was written for.
+ */
+export async function publishLocalDocs(root: string, opts: { dryRun?: boolean } = {}) {
+  const b = bind(root);
+  if ("error" in b) return b;
+  await ensureSidecar(b.cfg.path, b.actor);
+  const nodes = await loadNodes(root);
+  const already = await readDocs(b.cfg.path, b.cfg.universe);
+  const todo = nodes.filter((n) => !already.has(n.id));
+  if (opts.dryRun) {
+    return { universe: b.cfg.universe, local: nodes.length, alreadyShared: nodes.length - todo.length, wouldPublish: todo.length };
+  }
+  let versions = 0;
+  for (const n of todo) {
+    for (const v of await loadNodeVersions(root, n.id)) {
+      await publishDocVersion(b.cfg.path, b.cfg.universe, b.actor, {
+        nodeId: n.id, type: v.type, title: v.title, summary: v.summary, body: v.body,
+        citations: v.citations, generatedBy: v.generatedBy, removed: v.removed,
+        createdCommit: v.createdCommit, createdBranch: v.createdBranch,
+      });
+      versions++;
+    }
+  }
+  return {
+    universe: b.cfg.universe, publishedNodes: todo.length, publishedVersions: versions,
+    alreadyShared: nodes.length - todo.length,
     note: todo.length ? "run `codemap sync` to send them" : "nothing new to publish",
   };
 }

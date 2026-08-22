@@ -755,6 +755,19 @@ const tools: Tool[] = [
     handler: (a, c) => shared.reportOnFinding(c.universe.path, a.pr, a.id, a.result, a.detail, a.files),
   },
   {
+    name: "shared_docs",
+    description: "The TEAM's documentation, each doc resolved against the code you have checked out. One sidecar serves every branch: a doc is a set of immutable versions, each recording the anchors it cites with the body hashes it was confirmed against, and the version whose hashes match your checkout is the one you get — no branch tags, no git. Read `citations[].matches` to tell fresh from stale; a version being returned does NOT mean it describes your code.",
+    inputSchema: obj({ nodeId: { type: "string", description: "Only this node (default: all)." } }),
+    handler: (a, c) => shared.sharedDocs(c.universe.path, { nodeId: a.nodeId }),
+  },
+  {
+    name: "confirm_shared_doc",
+    description: "Record that a shared doc is still true of the code YOU have checked out. This is what lets one version be valid on several branches at once: it adds your body hashes to the version's accepted set rather than writing a new version. Use it when you have read the doc against the code and it holds; write a new version instead when it does not.",
+    inputSchema: obj({ nodeId: { type: "string" }, versionId: { type: "string", description: "Defaults to the version that resolves here." } }, ["nodeId"]),
+    mutates: true,
+    handler: (a, c) => shared.confirmSharedDoc(c.universe.path, a.nodeId, a.versionId),
+  },
+  {
     name: "shared_notes",
     description: "What the TEAM knows about a symbol — everyone's notes, questions and pointers on it, not just this store's. Read it before investigating: somebody may already have worked out why the obvious answer here is wrong, and that knowledge cost them real reading time. Answers to a question are listed with it.",
     inputSchema: obj({ targetId: { type: "string", description: "The anchor or node id." } }, ["targetId"]),
