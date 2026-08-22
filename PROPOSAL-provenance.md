@@ -141,6 +141,12 @@ review filed as P2 is therefore a **correctness** requirement here, not git
 hygiene. Materialization tolerating its absence (deterministic re-folds make
 concurrent cache writes benign) does not extend to this.
 
+It must be held across **selecting the generation, reading the causal heads and
+`writerPrev`, and appending** — not merely around the final write. The race is
+between reading what came before and committing to it, so two processes that both
+read the same predecessor have already forked whatever order their writes land in.
+See §7 for how a fork that escapes the lock is detected and contained.
+
 **Keep id deduplication anyway**, as cheap hardening. Under this model a duplicate
 id is unexpected rather than routine — so if the same id appears with differing
 content, quarantine it instead of silently taking the first copy.
@@ -416,34 +422,94 @@ before receipts existed:
 Steps 1 and the basic cache mechanics can proceed in parallel with 2. Nothing
 downstream of 3 should be finalized before 2 is settled.
 
-### The cutover, measured
+### The cutover — settled
 
 Three candidate mechanisms, and what today's reader actually does with each. Run
-against `dist/` rather than reasoned about:
+against `dist/`, not reasoned about:
 
 | mechanism | today's reader | failure mode |
 |---|---|---|
-| additive `generation` field, same `.ndjson` | reads both events, folds both findings, keeps the unknown fields and ignores them | **wrong, silently** — principal-keyed causality applied to generation-keyed data |
-| new shard extension (`.ndjson2`) | reads only the legacy shard | **incomplete, silently** — a reviewer sees a PR missing everyone else's findings |
-| peer manifest with an `anchorScheme` it rejects | `pull` returns an error and merges nothing (`sidecar.ts:246`) | **loud** — but says "anchor derivation differs", which is not what happened |
+| additive `generation` field, same `.ndjson` | reads both events, folds both findings, keeps the unknown fields and ignores them | **wrong, silently** |
+| new shard extension (`.ndjson2`) | reads only the legacy shard | **incomplete, silently** |
+| peer manifest with an `anchorScheme` it rejects | `pull` errors and merges nothing (`sidecar.ts:246`) | loud, but false |
 
-The first is confirmed unusable. The second is a real physical boundary —
-`readScope` filters on `SHARD_EXT`, so a v2 shard is not merely ignored but
-unreadable — yet silence is a poor upgrade experience and, for a review tool,
-"you saw fewer findings than exist" is the specific failure the product is against.
+**The third is rejected.** `ANCHOR_SCHEME` has a precise invariant — anchor-id
+derivation changed — and a synthetic bump does not stay inside the sidecar.
+`staleSchemeSnapshots` (`store.ts:155`) selects every snapshot whose `scheme`
+differs from the constant, so a lie told to make old sidecar clients fail loudly
+would drop and rebuild the branch-diff cache in **every universe, including ones
+that have never had a sidecar**. It would also relabel receipts, diagnostics and
+future migrations. Lying through a field with an invariant does not create a
+compatibility signal; it moves the failure somewhere the reader cannot trace it.
 
-The third is the only lever that makes an old client fail loudly, because it is the
-only field old clients already check. Using it means saying something slightly
-false to say something true.
+A notice event is rejected too, for a smaller reason: protocol compatibility is not
+a domain fact, and it does not belong in anyone's finding list.
 
-**Proposed: the second and third together.** The extension makes misinterpretation
-impossible; the manifest refusal makes under-reading impossible. Neither alone is
-enough, and the pair has no silent mode. The wording of the refusal should be fixed
-at the same time so it describes the version gap rather than anchor derivation.
+**What settles it: there is nothing deployed to be compatible with.** `main` at
+`2519800` contains no `sidecar.ts`, no `eventlog.ts` and no `shared-*.ts` — the
+entire feature is on this unmerged branch. So the rolling-upgrade problem this
+section was trying to solve does not exist, and version checking simply ships as
+part of the first generation-aware format:
 
-Open: whether abusing `anchorScheme` for the loud half is acceptable, or whether an
-in-band notice event that old clients CAN read and display is better. The latter
-needs no false statement but puts a synthetic record in everyone's finding list.
+- The manifest carries **`sidecarProtocol`**, and clients enforce it.
+- A client that does not understand a scope's protocol refuses it, by name, and
+  says what to upgrade.
+
+If a rolling upgrade from a deployed client ever does have to be supported, the
+answer is a two-phase rollout — one release that understands and enforces
+`sidecarProtocol` while still writing v1, then a later one that begins writing v2
+— or a separate v2 sidecar root with a coordinated cutover. An ignorant client
+cannot be retrofitted into failing loudly through a contract it does not read.
+
+### Where the boundary sits
+
+**Per scope for the data.** The scope is the unit of folding, materialization and
+completeness, and mixing v1 and v2 shards inside one scope is the worst case: an
+old client returns a plausible, partial answer. Migrated scopes must read as
+absent, never as partially current.
+
+Migration is atomic under the sidecar lock:
+
+1. mark the scope v2;
+2. move the legacy shards into the v2 namespace **unchanged**;
+3. keep reading those events as legacy — no generation, per §4's rules;
+4. write everything new as generation shards;
+5. treat a v1 shard reappearing afterwards as a protocol violation needing
+   attention, not as data to merge.
+
+Step 2 matters for this repository specifically: the branch has real sidecar state
+from being used, so "nothing deployed" does not mean "nothing to migrate".
+
+**Sidecar-wide for the operation.** Per-scope migration leaves a window in which an
+old writer recreates a v1 shard in a scope already moved. If coexistence with old
+writers is ever real, a sidecar-wide protocol epoch is the safer operational unit.
+Per-scope is the correct data boundary; sidecar-wide is the cleaner rollout one.
+
+### Forks: three layers, not one
+
+I had asked whether `writerPrev` subsumes the sidecar lock. It does not — they
+address different failures, and a third mechanism is needed to contain what they
+find:
+
+```
+sidecar lock  -> PREVENTS local forks (two processes, one clone)
+writerPrev    -> DETECTS distributed forks (two clones, one copied seed)
+scope status  -> STOPS a detected fork producing authoritative answers
+```
+
+The lock is doing more than serializing a file write. It must be held across
+**selecting the generation, reading the causal heads and `writerPrev`, and
+appending** — not merely around the final write — because the race is between
+reading what came before and committing to it. Two processes that both read the
+same predecessor have already forked by the time either appends.
+
+And a detected fork is **not** an ordinary contest, which is where my framing was
+wrong. A contest is per-field residue on one entity; a fork invalidates the
+vector's single-writer compression for that whole generation, and the two sides
+may touch entirely different entities. So containment is scope-level: mark the
+affected scopes partial, block state-dependent writes, and force generation
+rotation or explicit recovery. Entity-level contests can still be derived where
+they apply, but they are a symptom, not the containment.
 
 ## 8. Open
 
@@ -460,8 +526,10 @@ needs no false statement but puts a synthetic record in everyone's finding list.
   the code moved. Both are "cannot be decided", and conflating them would repeat
   the mistake the `unverifiable` status was introduced to fix.
 - ~~Event-schema evolution.~~ **Resolved in §6**: preserved, quarantined, scope
-  marked partial, state-dependent writes refused. What remains open is the wire
-  mechanism for the cutover itself (§7 step 2).
+  marked partial, state-dependent writes refused.
+- ~~The wire mechanism for the cutover.~~ **Resolved in §7** — `sidecarProtocol`
+  in the manifest, enforced from the first generation-aware release, because
+  nothing is deployed to be compatible with.
 - **Where the refusal is removed.** The `fatal` manifest check in `sidecar.ts` has
   to be deleted in the same change that lands receipts, not before and not after.
   Neither document currently owns that edit.
@@ -496,3 +564,13 @@ and the corrections are more instructive than the result.
    has provenance too, and comparing against rows that carry none recreates the
    defect on the reader's side; `unverifiable` is seven states, not one; and the
    documents had begun to contradict each other, which is its own hazard.
+
+6. **Round 6** — `ANCHOR_SCHEME` must not be borrowed as a compatibility signal:
+   its invariant reaches `staleSchemeSnapshots`, so the lie would rebuild the
+   branch-diff cache in universes that have never had a sidecar. And the question
+   dissolved once someone checked whether there were any deployed clients — there
+   are none, the feature is entirely unmerged, so version checking ships as part
+   of the first format rather than being retrofitted into one. My "a detected fork
+   is just a contest" framing was also wrong: a fork invalidates a generation's
+   single-writer compression across every entity it touched, so containment is
+   scope-level and a contest is a symptom of it.
