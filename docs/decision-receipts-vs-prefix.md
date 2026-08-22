@@ -127,6 +127,19 @@ derivation — the `h1:` trap, one capture group over); and a future preimage
 correction is accepted as costing a bounded `unverifiable` flood, which at least
 fails in the safe direction.
 
+**Hashes are not an API surface, which closes one risk.** The concern was that they
+leave through MCP and the web and come back echoed, so mixed spellings could enter
+from outside the audited sites. Checked: `bodyHash` appears nowhere in `mcp.ts`,
+`serve.ts`, `cli.ts` or `web/app.js`. Hashes are minted by `hashTokens` and never
+accepted from, or rendered to, a client.
+
+They *are* a peer-to-peer wire format — sidecar `doc.accepted` events carry them
+between machines — so mixed spellings genuinely arrive from a teammate on an older
+build. That is the case this design is for, handled by the legacy fallback, and a
+far narrower surface than an open API. The rule still binds any future write path
+that accepts a hash from outside: it inherits the insert-versus-compare-versus-key
+trichotomy.
+
 **The one-way-ness is fixable without resurrecting profiles.** Record fp → tag in
 the existing local `derivations` table at mint time. Unlike the registry §9 cut,
 this dictionary is diagnostic only — the comparability *decision* is answerable
@@ -278,6 +291,36 @@ comes first:
 Do not let it wait *for* a re-vendor to be scheduled. Every day the switch is off,
 the population that can never be protected retroactively grows by one day's
 witnesses — and that cost belongs in the decision rather than in a later surprise.
+
+### The trigger was being watched in the file that never moves
+
+"Wait for a re-vendor" is only a plan if a re-vendor is plausible, so: **every
+vendored grammar is already at upstream's latest release** — c-sharp v0.23.5,
+python and javascript v0.25.0, typescript/tsx v0.23.2 — and all five blobs are
+byte-for-byte identical to the upstream assets, verified by downloading each one.
+Nothing is hand-patched. The `#region`/CRLF handling that forced `HASH_SCHEME` 2
+lives in `indexer.ts` as a workaround *above* the grammar, which is exactly what
+keeps the blobs checkable against upstream.
+
+So on the grammar side there is no pending re-vendor and no reason to expect one.
+
+But `parserIntegrity` is the other half of the tag, and **`web-tree-sitter` is
+0.26.10 installed against 0.26.12 published.** A runtime bump changes the tag
+exactly as a re-vendor does, and unlike a re-vendor — zero occurrences in this
+repository's life — a patch bump is routine dependency maintenance.
+
+The design handles it correctly where it counts, because comparability is consulted
+only *after* two digests differ:
+
+- tokenization unchanged → digests equal → `sameBody` true → no drift, tag unread;
+- tokenization changed → digests differ, tags differ → `unverifiable`, not false drift.
+
+The cost is that cached snapshots rebuild and the detector warns: conservative,
+automatic, bounded, and unavoidable, since whether a patch changed tokenization
+cannot be known without running it.
+
+**So the horizon for emitting is "before the next `web-tree-sitter` bump"** — ordinary
+maintenance rather than a hypothetical event.
 
 **That precondition is now met.** All fifteen operations are classified and
 converted, and `annotated-hash.test.ts` exercises the annotated form by hand —
