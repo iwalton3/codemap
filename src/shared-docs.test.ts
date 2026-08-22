@@ -7,6 +7,7 @@ import type { Actor, NodeVersion } from "./schema.js";
 import { sortEvents, type LogEvent } from "./eventlog.js";
 import { publishDocVersion, acceptDocHash, readDocs, resolveDoc, foldDocs, docScope } from "./shared-docs.js";
 import { comparableHashes } from "./normalize.js";
+import { fixtureHash } from "./fixture-hash.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
 const dana: Actor = { principal: "dana@x.com" };
@@ -19,7 +20,7 @@ const DOC = {
   title: "Payments seam",
   summary: "how a payment reaches the ledger",
   body: "The handler folds…",
-  citations: [{ anchorId: "a_1", acceptedHashes: ["h2:sha256:develop"] }],
+  citations: [{ anchorId: "a_1", acceptedHashes: [fixtureHash("develop", 2)] }],
 };
 
 // --- versions accumulate ---------------------------------------------------------
@@ -57,12 +58,12 @@ test("resolution picks the version matching the code in front of you", async () 
     await publishDocVersion(root, U, izzie, DOC);
     await publishDocVersion(root, U, dana, {
       ...DOC, body: "on the feature branch the fold is async",
-      citations: [{ anchorId: "a_1", acceptedHashes: ["h2:sha256:feature"] }],
+      citations: [{ anchorId: "a_1", acceptedHashes: [fixtureHash("feature", 2)] }],
     });
     const doc = (await readDocs(root, U)).get("n_payments")!;
 
-    const onDevelop = resolveDoc(doc, new Map([["a_1", "h2:sha256:develop"]]));
-    const onFeature = resolveDoc(doc, new Map([["a_1", "h2:sha256:feature"]]));
+    const onDevelop = resolveDoc(doc, new Map([["a_1", fixtureHash("develop", 2)]]));
+    const onFeature = resolveDoc(doc, new Map([["a_1", fixtureHash("feature", 2)]]));
     assert.match(onDevelop!.body, /handler folds/);
     assert.match(onFeature!.body, /fold is async/, "same log, two branches, no branch tags");
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -72,10 +73,10 @@ test("confirming a version against a second body makes it valid on both branches
   const root = tmp();
   try {
     const versionId = await publishDocVersion(root, U, izzie, DOC);
-    await acceptDocHash(root, U, dana, "n_payments", versionId, "a_1", "h2:sha256:feature");
+    await acceptDocHash(root, U, dana, "n_payments", versionId, "a_1", fixtureHash("feature", 2));
     const doc = (await readDocs(root, U)).get("n_payments")!;
-    assert.ok(resolveDoc(doc, new Map([["a_1", "h2:sha256:develop"]])));
-    assert.ok(resolveDoc(doc, new Map([["a_1", "h2:sha256:feature"]])), "one version, two branches");
+    assert.ok(resolveDoc(doc, new Map([["a_1", fixtureHash("develop", 2)]])));
+    assert.ok(resolveDoc(doc, new Map([["a_1", fixtureHash("feature", 2)]])), "one version, two branches");
     assert.equal(doc.versions[0]!.citations[0]!.acceptedHashes.length, 2);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -84,11 +85,13 @@ test("accepted hashes are a grow-only set — two people confirming both stick",
   const root = tmp();
   try {
     const versionId = await publishDocVersion(root, U, izzie, DOC);
-    await acceptDocHash(root, U, izzie, "n_payments", versionId, "a_1", "h2:sha256:x");
-    await acceptDocHash(root, U, dana, "n_payments", versionId, "a_1", "h2:sha256:y");
-    await acceptDocHash(root, U, dana, "n_payments", versionId, "a_1", "h2:sha256:x");
+    await acceptDocHash(root, U, izzie, "n_payments", versionId, "a_1", fixtureHash("x", 2));
+    await acceptDocHash(root, U, dana, "n_payments", versionId, "a_1", fixtureHash("y", 2));
+    await acceptDocHash(root, U, dana, "n_payments", versionId, "a_1", fixtureHash("x", 2));
     const c = (await readDocs(root, U)).get("n_payments")!.versions[0]!.citations[0]!;
-    assert.deepEqual([...c.acceptedHashes].sort(), ["h2:sha256:develop", "h2:sha256:x", "h2:sha256:y"], "deduped, none lost");
+    assert.deepEqual([...c.acceptedHashes].sort(),
+      [fixtureHash("develop", 2), fixtureHash("x", 2), fixtureHash("y", 2)].sort(),
+      "deduped, none lost");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -97,7 +100,7 @@ test("a hash for an anchor the version does not cite is ignored", async () => {
   const root = tmp();
   try {
     const versionId = await publishDocVersion(root, U, izzie, DOC);
-    await acceptDocHash(root, U, izzie, "n_payments", versionId, "a_UNRELATED", "h2:sha256:z");
+    await acceptDocHash(root, U, izzie, "n_payments", versionId, "a_UNRELATED", fixtureHash("z", 2));
     const v = (await readDocs(root, U)).get("n_payments")!.versions[0]!;
     assert.equal(v.citations.length, 1);
     assert.equal(v.citations[0]!.acceptedHashes.length, 1);
@@ -113,9 +116,9 @@ test("a doc still resolves on a checkout no version was written against", async 
   try {
     await publishDocVersion(root, U, izzie, DOC);
     const doc = (await readDocs(root, U)).get("n_payments")!;
-    const v = resolveDoc(doc, new Map([["a_1", "h2:sha256:drifted"]]));
+    const v = resolveDoc(doc, new Map([["a_1", fixtureHash("drifted", 2)]]));
     assert.ok(v, "a version is still returned");
-    assert.equal(v!.citations[0]!.acceptedHashes.includes("h2:sha256:drifted"), false, "…and it is NOT fresh here");
+    assert.equal(v!.citations[0]!.acceptedHashes.includes(fixtureHash("drifted", 2)), false, "…and it is NOT fresh here");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -157,11 +160,11 @@ test("a citation confirmed under an older HASH_SCHEME is unverifiable, not drift
   // every doc in the store read `stale` without anyone touching the code — 985 of
   // 985. "The code changed" and "these hashes predate a scheme bump" call for
   // completely different actions, so they must not render the same.
-  const accepted: string = "sha256:old";  // scheme 1, as written before the bump
-  const live: string = "h2:sha256:new";   // scheme 2, as the reindex minted it
+  const accepted: string = fixtureHash("old");  // scheme 1, as written before the bump
+  const live: string = fixtureHash("new", 2);   // scheme 2, as the reindex minted it
   assert.equal(accepted === live, false, "a plain compare calls this drift");
   assert.equal(comparableHashes(accepted, live), false, "…but they are not comparable at all");
 
   // Whereas a genuine edit under one scheme IS comparable, and IS drift.
-  assert.equal(comparableHashes("h2:sha256:a", "h2:sha256:b"), true);
+  assert.equal(comparableHashes(fixtureHash("a", 2), fixtureHash("b", 2)), true);
 });

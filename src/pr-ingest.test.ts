@@ -7,6 +7,7 @@ import type { Anchor, State } from "./schema.js";
 import { writeStore, writeSnapshot, readTriage } from "./store.js";
 import { setTriage } from "./triage.js";
 import { parseAgentLines, ingestAgentReview, type AgentLine } from "./pr-ingest.js";
+import { fixtureHash } from "./fixture-hash.js";
 
 test("parseAgentLines tolerates blanks and reports malformed lines without losing good ones", () => {
   const { lines, bad } = parseAgentLines([
@@ -90,7 +91,7 @@ test("a triage line the ratchet declines is reported as declined, not counted as
   // store was untouched.
   const root = mkdtempSync(join(tmpdir(), "codemap-ingest-"));
   try {
-    const anchor: Anchor = { id: "a_1", file: "src/x.cs", symbolPath: ["X"], kind: "function", bodyHash: "sha256:OLD", lastVerifiedCommit: null };
+    const anchor: Anchor = { id: "a_1", file: "src/x.cs", symbolPath: ["X"], kind: "function", bodyHash: fixtureHash("OLD"), lastVerifiedCommit: null };
     await writeStore(root, [anchor], { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State);
     await setTriage(root, { targetKind: "anchor", targetId: "a_1", importance: "business-critical", complexity: "deep", source: "human" });
 
@@ -115,7 +116,7 @@ test("an ingested triage proposal is witnessed against the PR head, not the work
   try {
     await writeStore(root, [], { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State);  // symbol not on this branch
     await writeSnapshot(root, "headsha", "feature",
-      [{ id: "a_new", file: "src/x.cs", symbolPath: ["X"], kind: "function", bodyHash: "sha256:NEW", lastVerifiedCommit: null }],
+      [{ id: "a_new", file: "src/x.cs", symbolPath: ["X"], kind: "function", bodyHash: fixtureHash("NEW"), lastVerifiedCommit: null }],
       "2026-08-19T00:00:00Z");
 
     const r = await ingestAgentReview(root, [
@@ -124,7 +125,7 @@ test("an ingested triage proposal is witnessed against the PR head, not the work
 
     assert.equal(r.triaged, 1);
     const t = (await readTriage(root)).triage.find((x) => x.target.id === "a_new")!;
-    assert.equal(t.witnesses[0]!.bodyHash, "sha256:NEW",
+    assert.equal(t.witnesses[0]!.bodyHash, fixtureHash("NEW"),
       "a symbol the branch ADDS must not be witnessed sha256:absent — that can never be told apart from drift");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

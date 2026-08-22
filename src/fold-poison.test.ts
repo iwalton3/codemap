@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { shardFor, causality, type LogEvent } from "./eventlog.js";
 import { readFindings } from "./shared-findings.js";
 import { publishDocVersion, readDocs } from "./shared-docs.js";
+import { fixtureHash } from "./fixture-hash.js";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "codemap-poison-"));
 const izzie = { principal: "izzie@x.com" };
@@ -81,7 +82,7 @@ test("a doc version with malformed citations does not poison the universe", asyn
     const U = "acme/api";
     await publishDocVersion(side, U, izzie, {
       nodeId: "n_good", type: "concept", title: "a real doc", summary: "s", body: "b",
-      citations: [{ anchorId: "a_1", acceptedHashes: ["h2:sha256:abc"] }],
+      citations: [{ anchorId: "a_1", acceptedHashes: [fixtureHash("abc", 2)] }],
     });
     await publishDocVersion(side, U, izzie, {
       nodeId: "n_bad", type: "concept", title: "t", summary: "s", body: "b",

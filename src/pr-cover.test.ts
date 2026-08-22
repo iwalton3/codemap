@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { Anchor, State } from "./schema.js";
 import { writeStore, writeSnapshot, readReviews } from "./store.js";
 import { containedAnchorIds, markReviewedBatch, unmarkCovered, reviewStatesFor } from "./reviews.js";
+import { fixtureHash } from "./fixture-hash.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 
@@ -16,10 +17,10 @@ const at = (id: string, path: string[], kind: Anchor["kind"], hash: string, star
 
 // A class and the two methods inside it, plus a second class in the same file whose
 // member happens to share the leaf name.
-const CLASS = at("a_cls", ["Orders", "Ledger"], "class", "sha256:cls", 100, 900);
-const M1 = at("a_m1", ["Orders", "Ledger", "Post"], "method", "sha256:m1", 200, 400);
-const M2 = at("a_m2", ["Orders", "Ledger", "Void"], "method", "sha256:m2", 500, 800);
-const OTHER = at("a_far", ["Orders", "Audit"], "class", "sha256:far", 1000, 1200);
+const CLASS = at("a_cls", ["Orders", "Ledger"], "class", fixtureHash("cls"), 100, 900);
+const M1 = at("a_m1", ["Orders", "Ledger", "Post"], "method", fixtureHash("m1"), 200, 400);
+const M2 = at("a_m2", ["Orders", "Ledger", "Void"], "method", fixtureHash("m2"), 500, 800);
+const OTHER = at("a_far", ["Orders", "Audit"], "class", fixtureHash("far"), 1000, 1200);
 
 test("containment is decided by the span, not by the symbol path alone", () => {
   const anchors = [CLASS, M1, M2, OTHER];
@@ -51,10 +52,10 @@ test("a cover marks each member at its own hash, so one member's edit stales onl
     const rows = (await readReviews(root)).reviews;
     assert.equal(rows.find((r) => r.target.id === "a_cls")!.coveredBy, undefined, "the symbol actually clicked is not a cover row");
     assert.equal(rows.find((r) => r.target.id === "a_m1")!.coveredBy, "a_cls");
-    assert.deepEqual(rows.find((r) => r.target.id === "a_m1")!.witnesses, [{ anchorId: "a_m1", bodyHash: "sha256:m1" }]);
+    assert.deepEqual(rows.find((r) => r.target.id === "a_m1")!.witnesses, [{ anchorId: "a_m1", bodyHash: fixtureHash("m1") }]);
 
     // The branch moves on: `Post` is rewritten, everything else stands.
-    await writeSnapshot(root, "head2", "feature", [CLASS, { ...M1, bodyHash: "sha256:m1b" }, M2], "2026-08-19T01:00:00Z");
+    await writeSnapshot(root, "head2", "feature", [CLASS, { ...M1, bodyHash: fixtureHash("m1b") }, M2], "2026-08-19T01:00:00Z");
     const now = await reviewStatesFor(root, [{ kind: "anchor", id: "a_cls" }, { kind: "anchor", id: "a_m1" }, { kind: "anchor", id: "a_m2" }], { ref: "head2" });
     assert.equal(now.get("anchor:a_m1")!.code.state, "stale", "the edited member returns to the worklist");
     assert.equal(now.get("anchor:a_m2")!.code.state, "reviewed");

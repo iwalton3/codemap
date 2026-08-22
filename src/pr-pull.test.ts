@@ -7,6 +7,7 @@ import type { Anchor, State } from "./schema.js";
 import { writeStore, writeSnapshot, readReviews } from "./store.js";
 import { markReviewedBatch, reviewStatesFor } from "./reviews.js";
 import { pullViewedFromGitHub } from "./pr-push.js";
+import { fixtureHash } from "./fixture-hash.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 const anchor = (id: string, hash: string): Anchor => ({ id, file: "src/pay.cs", symbolPath: [id], kind: "function", bodyHash: hash, lastVerifiedCommit: null });
@@ -64,13 +65,13 @@ test("batch marking keeps the accepted set and witnesses at the ref", async () =
   const root = mkdtempSync(join(tmpdir(), "codemap-pull-"));
   try {
     await writeStore(root, [], state);                                   // not on this branch
-    await writeSnapshot(root, "headsha", "feature", [anchor("a1", "sha256:NEW")], "2026-08-18T00:00:00Z");
+    await writeSnapshot(root, "headsha", "feature", [anchor("a1", fixtureHash("NEW"))], "2026-08-18T00:00:00Z");
     await markReviewedBatch(root, ["a1"], { level: "code", actor: "human", attestation: "viewed", ref: "headsha" });
 
     const row = (await readReviews(root)).reviews[0]!;
     assert.equal(row.attestation, "viewed");
-    assert.equal(row.witnesses[0]!.bodyHash, "sha256:NEW");
-    assert.equal(row.accepted![0]!.entries[0]!.bodyHash, "sha256:NEW");
+    assert.equal(row.witnesses[0]!.bodyHash, fixtureHash("NEW"));
+    assert.equal(row.accepted![0]!.entries[0]!.bodyHash, fixtureHash("NEW"));
 
     const st = await reviewStatesFor(root, [{ kind: "anchor", id: "a1" }], { viewed: true, ref: "headsha" });
     assert.equal(st.get("anchor:a1")!.code.state, "reviewed", "reads fresh against the code it covered");

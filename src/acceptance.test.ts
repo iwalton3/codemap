@@ -2,16 +2,17 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { resolveAcceptance, recordAcceptance, type Ancestry } from "./acceptance.js";
 import type { AcceptedEntry } from "./schema.js";
+import { fixtureHash } from "./fixture-hash.js";
 
 /**
  * A body hash in the real format.
  *
- * These fixtures used bare tags, which `hashSchemeOf` now correctly refuses to
- * read as hashes at all — so every comparison here was passing because BOTH sides
- * were unparseable and defaulted to scheme 1 together. The tags stay readable;
- * they just carry the algorithm the code actually mints.
+ * These fixtures used bare tags, which `hashSchemeOf` refuses to read as hashes at
+ * all — so every comparison here was passing because BOTH sides were unparseable
+ * and defaulted to scheme 1 together. `fixtureHash` derives a real digest from the
+ * label, so the tags stay readable and the values are what the code actually mints.
  */
-const h = (tag: string): string => `sha256:${tag}`;
+const h = fixtureHash;
 
 const e = (bodyHash: string, commit: string | null, at = "2026-08-18T00:00:00Z"): AcceptedEntry =>
   ({ bodyHash, commit, branch: null, at });

@@ -51,17 +51,17 @@ export function hashTokens(tokens: string[]): string {
 }
 
 /**
- * The shape a body hash has: an optional scheme prefix, then the algorithm, then
- * the digest. `h0:`/`h01:` are refused so a scheme number has one spelling.
+ * The one shape a body hash may have: an optional scheme prefix, the algorithm,
+ * and exactly 64 lowercase hex characters.
  *
- * The digest itself is not length- or charset-checked, which is a deliberate stop
- * short of "strictly parse everything": the suite carries ~100 readable fixtures
- * across 22 files (`sha256:OLD`, `sha256:NEW`) whose legibility is worth more than
- * catching a corrupt digest that would be reported as drift either way. That check
- * belongs with the derivation receipts, which is also when the fixtures can carry
- * real digests without becoming unreadable.
+ * Canonical rather than permissive, in both directions. `h0:` and `h01:` are
+ * refused so a scheme number has a single spelling, and the digest is length- and
+ * charset-checked so a truncated or corrupted value cannot pass as a hash — which
+ * matters because "passes as a hash" is what licenses comparing it and reporting
+ * the difference as DRIFT. Tests use `fixtureHash`, which derives a real digest
+ * from a readable label, so nothing needs a laxer parser to stay legible.
  */
-const HASH_FORM = /^(?:h([1-9]\d*):)?sha256:(.+)$/;
+const HASH_FORM = /^(?:h([1-9]\d{0,3}):)?sha256:([0-9a-f]{64})$/;
 
 /**
  * Which derivation minted a hash, or NULL when the string is not one this code
@@ -79,7 +79,9 @@ const HASH_FORM = /^(?:h([1-9]\d*):)?sha256:(.+)$/;
  */
 export function hashSchemeOf(hash: string): number | null {
   const m = HASH_FORM.exec(hash);
-  return m ? Number(m[1] ?? "1") : null;
+  if (!m) return null;
+  const scheme = Number(m[1] ?? "1");
+  return Number.isSafeInteger(scheme) && scheme > 0 ? scheme : null;
 }
 
 /**

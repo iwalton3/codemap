@@ -9,11 +9,12 @@ import { writeStore, writeSnapshot, retainOrphans } from "./store.js";
 import { classifyCitations, needsAttention } from "./citation-state.js";
 import { relocate, createFinding, readFindings, ackQueue } from "./shared-findings.js";
 import type { Actor } from "./schema.js";
+import { fixtureHash } from "./fixture-hash.js";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "codemap-cs-"));
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 const anchor = (id: string, file = "src/pay.cs"): Anchor =>
-  ({ id, file, symbolPath: ["C", id], kind: "function", bodyHash: "h2:sha256:x", lastVerifiedCommit: null });
+  ({ id, file, symbolPath: ["C", id], kind: "function", bodyHash: fixtureHash("x", 2), lastVerifiedCommit: null });
 
 test("an anchor in the working index is simply here", async () => {
   const root = tmp();

@@ -4,6 +4,7 @@ import {
   validateWalkthrough, walkCoverage, buildWalkthrough, staleChapters, citedAnchors,
   type WalkInput,
 } from "./walkthrough.js";
+import { fixtureHash } from "./fixture-hash.js";
 
 const sym = (anchorId: string) => ({ kind: "symbol" as const, anchorId });
 const prose = (text: string) => ({ kind: "prose" as const, text });
@@ -85,7 +86,7 @@ test("ids are derived from titles, so re-walking an unchanged structure keeps th
     pr: 264, head: "h", by: "agent", at: "2026-08-19T00:00:00Z",
     features: [feature("Confirmation axis", [{ title: "the state machine", blocks: [sym("a_1")] }])],
   };
-  const hashes = new Map([["a_1", "sha256:A"]]);
+  const hashes = new Map([["a_1", fixtureHash("A")]]);
   const a = buildWalkthrough(input, (id) => hashes.get(id));
   const b = buildWalkthrough(input, (id) => hashes.get(id));
   assert.equal(a.features[0]!.id, "confirmation-axis");
@@ -96,7 +97,7 @@ test("ids are derived from titles, so re-walking an unchanged structure keeps th
   const dup = buildWalkthrough({
     ...input,
     features: [feature("F", [{ title: "Notes", blocks: [sym("a_1")] }, { title: "Notes", blocks: [sym("a_2")] }])],
-  }, () => "sha256:x");
+  }, () => fixtureHash("x"));
   const ids = dup.features[0]!.chapters.map((c) => c.id);
   assert.equal(new Set(ids).size, 2, ids.join(","));
 });
@@ -110,11 +111,11 @@ test("a chapter is witnessed, so only the chapters whose code moved go stale", (
       { title: "untouched", blocks: [sym("a_1")] },
       { title: "moved", blocks: [prose("look here"), sym("a_2")] },
     ])],
-  }, (id) => ({ a_1: "sha256:A", a_2: "sha256:B" } as Record<string, string>)[id]);
+  }, (id) => ({ a_1: fixtureHash("A"), a_2: fixtureHash("B") } as Record<string, string>)[id]);
 
-  assert.deepEqual(staleChapters(w, new Map([["a_1", "sha256:A"], ["a_2", "sha256:B"]])), []);
-  assert.deepEqual(staleChapters(w, new Map([["a_1", "sha256:A"], ["a_2", "sha256:CHANGED"]])), ["moved"]);
-  assert.deepEqual(staleChapters(w, new Map([["a_1", "sha256:A"]])), ["moved"], "a symbol that vanished is drift too");
+  assert.deepEqual(staleChapters(w, new Map([["a_1", fixtureHash("A")], ["a_2", fixtureHash("B")]])), []);
+  assert.deepEqual(staleChapters(w, new Map([["a_1", fixtureHash("A")], ["a_2", fixtureHash("CHANGED")]])), ["moved"]);
+  assert.deepEqual(staleChapters(w, new Map([["a_1", fixtureHash("A")]])), ["moved"], "a symbol that vanished is drift too");
 });
 
 test("a drive-by is recorded as data, not buried in prose", () => {
@@ -126,7 +127,7 @@ test("a drive-by is recorded as data, not buried in prose", () => {
       feature("Supplier order confirmation", [{ title: "c1", blocks: [sym("a_1")] }]),
       feature("Airport reference data refresh", [{ title: "c2", blocks: [sym("a_2")] }], { unstated: true }),
     ],
-  }, () => "sha256:x");
+  }, () => fixtureHash("x"));
   assert.deepEqual(w.features.filter((f) => f.unstated).map((f) => f.title), ["Airport reference data refresh"]);
   assert.equal(w.features[0]!.unstated, undefined, "the flag is absent, not false, when it is stated");
 });

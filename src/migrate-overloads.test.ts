@@ -9,10 +9,11 @@ import { indexBlob } from "./repo.js";
 import { writeStore, readReviews, writeReviews, readAnchorStore } from "./store.js";
 import { markReviewed } from "./reviews.js";
 import { reindex } from "./ops.js";
+import { fixtureHash } from "./fixture-hash.js";
 
 const anchor = (over: Partial<Anchor> & { id: string; disambiguator?: string }): Anchor => ({
   file: "Agg.cs", symbolPath: ["D", "Agg", "Apply"], kind: "function",
-  bodyHash: "sha256:x", lastVerifiedCommit: null, ...over,
+  bodyHash: fixtureHash("x"), lastVerifiedCommit: null, ...over,
 });
 
 test("old ids are paired to new ones by body hash, so a reorder cannot mis-assign", () => {
@@ -22,15 +23,15 @@ test("old ids are paired to new ones by body hash, so a reorder cannot mis-assig
   // match while every pairing is off by a rotation, attaching somebody's sign-off to
   // a method they never read.
   const stored = [
-    anchor({ id: "old0", disambiguator: "0", bodyHash: "sha256:A" }),
-    anchor({ id: "old1", disambiguator: "1", bodyHash: "sha256:B" }),
-    anchor({ id: "old2", disambiguator: "2", bodyHash: "sha256:C" }),
+    anchor({ id: "old0", disambiguator: "0", bodyHash: fixtureHash("A") }),
+    anchor({ id: "old1", disambiguator: "1", bodyHash: fixtureHash("B") }),
+    anchor({ id: "old2", disambiguator: "2", bodyHash: fixtureHash("C") }),
   ];
   // the same three methods, reordered in the file, under the new scheme
   const fresh = [
-    anchor({ id: "new_c", disambiguator: "(OrderClosed)", bodyHash: "sha256:C" }),
-    anchor({ id: "new_a", disambiguator: "(OrderCreated)", bodyHash: "sha256:A" }),
-    anchor({ id: "new_b", disambiguator: "(TicketCreated)", bodyHash: "sha256:B" }),
+    anchor({ id: "new_c", disambiguator: "(OrderClosed)", bodyHash: fixtureHash("C") }),
+    anchor({ id: "new_a", disambiguator: "(OrderCreated)", bodyHash: fixtureHash("A") }),
+    anchor({ id: "new_b", disambiguator: "(TicketCreated)", bodyHash: fixtureHash("B") }),
   ];
   assert.deepEqual([...remapOverloadIds(stored, fresh)].sort(),
     [["old0", "new_a"], ["old1", "new_b"], ["old2", "new_c"]].sort(),
@@ -44,17 +45,17 @@ test("a group that cannot be paired beyond doubt is left alone", () => {
     anchor({ id: ids[0], disambiguator: dis[0], bodyHash: aHash }),
     anchor({ id: ids[1], disambiguator: dis[1], bodyHash: bHash }),
   ];
-  const stored = two("sha256:A", "sha256:B", ["old0", "old1"], ["0", "1"]);
+  const stored = two(fixtureHash("A"), fixtureHash("B"), ["old0", "old1"], ["0", "1"]);
 
   // a body changed since the index — we cannot tell which method it was
-  assert.equal(remapOverloadIds(stored, two("sha256:A", "sha256:CHANGED", ["n0", "n1"], ["(x)", "(y)"])).size, 0);
+  assert.equal(remapOverloadIds(stored, two(fixtureHash("A"), fixtureHash("CHANGED"), ["n0", "n1"], ["(x)", "(y)"])).size, 0);
   // two overloads sharing a body cannot be told apart by it
-  assert.equal(remapOverloadIds(two("sha256:S", "sha256:S", ["old0", "old1"], ["0", "1"]),
-    two("sha256:S", "sha256:S", ["n0", "n1"], ["(x)", "(y)"])).size, 0);
+  assert.equal(remapOverloadIds(two(fixtureHash("S"), fixtureHash("S"), ["old0", "old1"], ["0", "1"]),
+    two(fixtureHash("S"), fixtureHash("S"), ["n0", "n1"], ["(x)", "(y)"])).size, 0);
   // the shape moved
-  assert.equal(remapOverloadIds(stored, [anchor({ id: "n0", disambiguator: "(x)", bodyHash: "sha256:A" })]).size, 0);
+  assert.equal(remapOverloadIds(stored, [anchor({ id: "n0", disambiguator: "(x)", bodyHash: fixtureHash("A") })]).size, 0);
   // and a store already on the new scheme is a no-op
-  const already = two("sha256:A", "sha256:B", ["n0", "n1"], ["(x)", "(y)"]);
+  const already = two(fixtureHash("A"), fixtureHash("B"), ["n0", "n1"], ["(x)", "(y)"]);
   assert.equal(remapOverloadIds(already, already).size, 0);
 });
 
@@ -64,13 +65,13 @@ test("every kind of stored reference is carried across", () => {
   const reviews: Review[] = [{
     id: "r1", target: { kind: "anchor", id: "old0" }, level: "code", reviewer: "me",
     at: "2026-08-19T00:00:00Z", reviewedCommit: null,
-    witnesses: [{ anchorId: "old0", bodyHash: "sha256:a" }],
+    witnesses: [{ anchorId: "old0", bodyHash: fixtureHash("a") }],
     accepted: [{ anchorId: "old0", entries: [] }],
   } as Review];
   const triage: Triage[] = [{
     target: { kind: "anchor", id: "old0" }, importance: "important", likely: false,
     source: "human", at: "2026-08-19T00:00:00Z",
-    witnesses: [{ anchorId: "old0", bodyHash: "sha256:a" }],
+    witnesses: [{ anchorId: "old0", bodyHash: fixtureHash("a") }],
   } as Triage];
   const annotations: Annotation[] = [{
     id: "n1", target: { kind: "anchor", id: "old0" }, text: "x", author: "me", createdCommit: null,
@@ -80,7 +81,7 @@ test("every kind of stored reference is carried across", () => {
   // one store the first version of this migration forgot.
   const bugs = [{
     id: "b1", title: "t", body: "", status: "open", severity: "high",
-    anchors: ["old0", "untouched"], witnesses: [{ anchorId: "old0", bodyHash: "sha256:a" }],
+    anchors: ["old0", "untouched"], witnesses: [{ anchorId: "old0", bodyHash: fixtureHash("a") }],
   } as unknown as import("./schema.js").Bug];
 
   const counts = applyRemap(map, { reviews, triage, annotations, bugs, citations });

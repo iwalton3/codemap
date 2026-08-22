@@ -9,6 +9,7 @@ import { setTriageBatch, setTriage, ratchet, triageStatus } from "./triage.js";
 import { spineRole, backendSpineRole, layerOf } from "./pr-story.js";
 import { workShapes } from "./pr.js";
 import { spawnSync } from "node:child_process";
+import { fixtureHash } from "./fixture-hash.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 const anchor = (id: string, hash: string): Anchor => ({ id, file: "src/x.cs", symbolPath: ["X"], kind: "function", bodyHash: hash, lastVerifiedCommit: null });
@@ -26,11 +27,11 @@ test("batch triage witnesses against the given ref, not the working tree", async
   const root = mkdtempSync(join(tmpdir(), "codemap-prtri-"));
   try {
     await writeStore(root, [], state);                                    // symbol not on this branch
-    await writeSnapshot(root, "headsha", "feature", [anchor("a_new", "sha256:NEW")], "2026-08-18T00:00:00Z");
+    await writeSnapshot(root, "headsha", "feature", [anchor("a_new", fixtureHash("NEW"))], "2026-08-18T00:00:00Z");
 
     await setTriageBatch(root, [{ anchorId: "a_new", importance: "business-critical", complexity: "deep" }], { source: "agent", ref: "headsha" });
     const t = (await readTriage(root)).triage.find((x) => x.target.id === "a_new")!;
-    assert.equal(t.witnesses[0]!.bodyHash, "sha256:NEW", "a symbol only on the branch must not witness sha256:absent");
+    assert.equal(t.witnesses[0]!.bodyHash, fixtureHash("NEW"), "a symbol only on the branch must not witness sha256:absent");
     assert.equal(t.likely, true, "an agent proposes; it does not confirm");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -38,7 +39,7 @@ test("batch triage witnesses against the given ref, not the working tree", async
 test("batch triage obeys the same ratchet as a single set — agents never lower a human mark", async () => {
   const root = mkdtempSync(join(tmpdir(), "codemap-prtri-"));
   try {
-    await writeStore(root, [anchor("a_1", "sha256:H")], state);
+    await writeStore(root, [anchor("a_1", fixtureHash("H"))], state);
     await setTriage(root, { targetKind: "anchor", targetId: "a_1", importance: "business-critical", complexity: "deep", source: "human" });
 
     const r = await setTriageBatch(root, [{ anchorId: "a_1", importance: "low", complexity: "wiring" }], { source: "agent" });
@@ -53,7 +54,7 @@ test("batch triage obeys the same ratchet as a single set — agents never lower
 test("batch triage still escalates — raising is always allowed", async () => {
   const root = mkdtempSync(join(tmpdir(), "codemap-prtri-"));
   try {
-    await writeStore(root, [anchor("a_1", "sha256:H")], state);
+    await writeStore(root, [anchor("a_1", fixtureHash("H"))], state);
     await setTriage(root, { targetKind: "anchor", targetId: "a_1", importance: "low", complexity: "wiring", source: "agent" });
     const r = await setTriageBatch(root, [{ anchorId: "a_1", importance: "business-critical", complexity: "deep" }], { source: "agent" });
     assert.equal(r.applied, 1);
@@ -106,8 +107,8 @@ test("the batch ratchet is judged on BAR and severity, not just on importance", 
   // `viewed` and the severity from high to medium.
   const root = mkdtempSync(join(tmpdir(), "codemap-bar-"));
   try {
-    await writeStore(root, [anchor("a_1", "sha256:A")], state);
-    await writeSnapshot(root, "h", "feature", [anchor("a_1", "sha256:A")], "2026-08-19T00:00:00Z");
+    await writeStore(root, [anchor("a_1", fixtureHash("A"))], state);
+    await writeSnapshot(root, "h", "feature", [anchor("a_1", fixtureHash("A"))], "2026-08-19T00:00:00Z");
     await setTriage(root, { targetKind: "anchor", targetId: "a_1", importance: "business-critical", source: "human" });
     const before = await triageStatus(root, { kind: "anchor", id: "a_1" });
     assert.equal(before.bar, "signed");

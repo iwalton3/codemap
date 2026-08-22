@@ -9,6 +9,7 @@ import { markReviewed, unmarkReviewed } from "./reviews.js";
 import type { Anchor, Triage } from "./schema.js";
 import { setTriage, setTriageBatch, clearTriage, triageStatus, triageSeverity, deriveTriage, rollupCoverage, triageDrift, tripwires, reviewTriageFor } from "./triage.js";
 import type { TriageInfo } from "./triage.js";
+import { fixtureHash } from "./fixture-hash.js";
 
 const initRoot = () => {
   const root = mkdtempSync(join(tmpdir(), "codemap-triage-"));
@@ -140,7 +141,7 @@ test("deriveTriage: graph signals → likely stakes; human marks are preserved",
 // live reads "absent") — i.e. code that has drifted since the mark was set.
 const staleMark = (over: Partial<Triage>): Triage => ({
   target: { kind: "anchor", id: "a_x" }, importance: "business-critical", likely: false,
-  source: "human", at: "2026-07-16T00:00:00Z", witnesses: [{ anchorId: "a_x", bodyHash: "sha256:OLD" }], ...over,
+  source: "human", at: "2026-07-16T00:00:00Z", witnesses: [{ anchorId: "a_x", bodyHash: fixtureHash("OLD") }], ...over,
 });
 
 test("triageDrift + tripwires surface marks whose witnessed code moved", async () => {
@@ -148,8 +149,8 @@ test("triageDrift + tripwires surface marks whose witnessed code moved", async (
   try {
     await init(root);
     await writeTriage(root, [
-      staleMark({ target: { kind: "anchor", id: "a_moved" }, tripwire: true, witnesses: [{ anchorId: "a_moved", bodyHash: "sha256:OLD" }] }),
-      staleMark({ target: { kind: "anchor", id: "a_watch_only" }, tripwire: false, witnesses: [{ anchorId: "a_watch_only", bodyHash: "sha256:OLD" }] }),
+      staleMark({ target: { kind: "anchor", id: "a_moved" }, tripwire: true, witnesses: [{ anchorId: "a_moved", bodyHash: fixtureHash("OLD") }] }),
+      staleMark({ target: { kind: "anchor", id: "a_watch_only" }, tripwire: false, witnesses: [{ anchorId: "a_watch_only", bodyHash: fixtureHash("OLD") }] }),
     ]);
     const drift = await triageDrift(root);
     assert.equal(drift.length, 2); // both drifted (their witnessed hashes ≠ live)
@@ -168,7 +169,7 @@ test("re-triage on drift: a human mark escalates when its code changed AND stake
     await init(root);
     await writeNode(root, { id: "pay", type: "command", title: "Charge card", summary: "", anchors: ["a_p"], body: "" });
     // Human deliberately set `pay` mechanical — but its witnessed code has since drifted.
-    await writeTriage(root, [staleMark({ target: { kind: "node", id: "pay" }, importance: "low", witnesses: [{ anchorId: "a_p", bodyHash: "sha256:OLD" }] })]);
+    await writeTriage(root, [staleMark({ target: { kind: "node", id: "pay" }, importance: "low", witnesses: [{ anchorId: "a_p", bodyHash: fixtureHash("OLD") }] })]);
 
     const r = await deriveTriage(root);
     // The graph now derives business-critical (money name) > the human's mechanical, and

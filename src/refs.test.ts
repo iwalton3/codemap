@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { resolveAnchorRefs } from "./refs.js";
 import { type Anchor } from "./schema.js";
+import { fixtureHash } from "./fixture-hash.js";
 
 // Three overloads of GetExports plus one unrelated member — the shape that made
 // `file#Symbol` ambiguous on roughly a dozen symbols in an overload-heavy C# repo.
@@ -10,7 +11,7 @@ const anchor = (id: string, symbol: string, startLine: number, endLine: number):
   file: "Exporter.cs",
   symbolPath: ["Sample", "Exporter", symbol],
   kind: "method",
-  bodyHash: "sha256:x",
+  bodyHash: fixtureHash("x"),
   lastVerifiedCommit: null,
   loc: { startByte: 0, endByte: 0, startLine, endLine },
 });

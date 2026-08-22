@@ -8,6 +8,7 @@ import type { State } from "./schema.js";
 import { writeStore, readViewedImports, writeViewedImport } from "./store.js";
 import { surveyViewed, viewedPaths, changedSymbolsIn } from "./pr-bulk.js";
 import { prBaseCommit, mergeBase } from "./git.js";
+import { fixtureHash } from "./fixture-hash.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 
@@ -78,14 +79,14 @@ test("acceptances accumulate oldest-first, each stamped with its own PR head", a
     const { readReviews } = await import("./store.js");
 
     // as the importer now runs: oldest PR first, each with its own head sha
-    for (const [commit, hash] of [["c_old", "sha256:V1"], ["c_mid", "sha256:V2"], ["c_new", "sha256:V3"]] as const) {
+    for (const [commit, hash] of [["c_old", fixtureHash("V1")], ["c_mid", fixtureHash("V2")], ["c_new", fixtureHash("V3")]] as const) {
       await markReviewedBatch(root, ["a_1"], {
         level: "code", actor: "human", attestation: "viewed", reviewer: "github-import",
         ref: commit, hashes: new Map([["a_1", hash]]),
       });
     }
     const entries = (await readReviews(root)).reviews[0]!.accepted![0]!.entries;
-    assert.deepEqual(entries.map((e) => e.bodyHash), ["sha256:V1", "sha256:V2", "sha256:V3"], "oldest first");
+    assert.deepEqual(entries.map((e) => e.bodyHash), [fixtureHash("V1"), fixtureHash("V2"), fixtureHash("V3")], "oldest first");
     assert.deepEqual(entries.map((e) => e.commit), ["c_old", "c_mid", "c_new"], "each acceptance carries its own PR head, not the working tree's commit");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -167,7 +168,7 @@ test("a ticked file marks only the symbols the PR changed in it", async () => {
   const index = async (src: string, path: string) =>
     src ? src.split("\n").filter(Boolean).map((l) => {
       const [name, body] = l.split("=");
-      return { id: `${path}#${name}`, bodyHash: `sha256:${body}` };
+      return { id: `${path}#${name}`, bodyHash: fixtureHash(body ?? "") };
     }) : [];
 
   const r = await changedSymbolsIn(
@@ -176,7 +177,7 @@ test("a ticked file marks only the symbols the PR changed in it", async () => {
     index,
   );
   assert.deepEqual(r.ids, ["a.cs#two"], "only the method the PR touched");
-  assert.equal(r.hashes.get("a.cs#two"), "sha256:CHANGED", "witnessed at the HEAD body");
+  assert.equal(r.hashes.get("a.cs#two"), fixtureHash("CHANGED"), "witnessed at the HEAD body");
 
   // a file the branch adds has no base side, so every symbol in it is changed
   const added = await changedSymbolsIn(new Map([["b.cs", "x=1\ny=2"]]), new Map(), index);

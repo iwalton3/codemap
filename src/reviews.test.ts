@@ -8,6 +8,7 @@ import { readReviews, writeStore } from "./store.js";
 import { markReviewed, unmarkReviewed, changedSince, reviewStatesFor, witnessDrift, realDrift, effectiveAttestation, deriveCodeReview } from "./reviews.js";
 import { anchorMark } from "./ops.js";
 import { indexBlob } from "./repo.js";
+import { fixtureHash } from "./fixture-hash.js";
 
 const rev = (over: Partial<Review>): Review => ({
   id: "r", target: { kind: "anchor", id: "a" }, level: "code", reviewer: "me",
@@ -220,7 +221,7 @@ test("markReviewedBatch dedupes its ids — every reader assumes one row per tar
     const { readReviews } = await import("./store.js");
     const r = await markReviewedBatch(root, ["a_1", "a_1", "a_2"], {
       level: "code", actor: "human", attestation: "viewed", reviewer: "github-import",
-      ref: "h", hashes: new Map([["a_1", "sha256:A"], ["a_2", "sha256:B"]]),
+      ref: "h", hashes: new Map([["a_1", fixtureHash("A")], ["a_2", fixtureHash("B")]]),
     });
     assert.equal(r.marked, 2, "a repeated id is one mark");
     const rows = (await readReviews(root)).reviews.filter((x) => x.target.id === "a_1");
@@ -291,8 +292,8 @@ test("changedSince answers about the ref you ask about, not the working tree", a
 // --- a witness from an older HASH_SCHEME is not drift --------------------------
 
 test("a witness minted under another hash scheme reports unverifiable, not drift", () => {
-  const witnesses: BugWitness[] = [{ anchorId: "a1", bodyHash: "sha256:old" }];
-  const live = new Map([["a1", "h2:sha256:new"]]);
+  const witnesses: BugWitness[] = [{ anchorId: "a1", bodyHash: fixtureHash("old") }];
+  const live = new Map([["a1", fixtureHash("new", 2)]]);
   const d = witnessDrift(witnesses, live);
   assert.equal(d.length, 1, "it is still reported — the mark does need re-witnessing");
   assert.equal(d[0]!.unverifiable, true);
@@ -300,7 +301,7 @@ test("a witness minted under another hash scheme reports unverifiable, not drift
 });
 
 test("a real edit under one scheme is still drift", () => {
-  const d = witnessDrift([{ anchorId: "a1", bodyHash: "h2:sha256:aaa" }], new Map([["a1", "h2:sha256:bbb"]]));
+  const d = witnessDrift([{ anchorId: "a1", bodyHash: fixtureHash("aaa", 2) }], new Map([["a1", fixtureHash("bbb", 2)]]));
   assert.equal(d.length, 1);
   assert.notEqual(d[0]!.unverifiable, true);
   assert.equal(realDrift(d).length, 1);
@@ -308,12 +309,12 @@ test("a real edit under one scheme is still drift", () => {
 
 test("an anchor that vanished is drift under any scheme — absence is not a derivation", () => {
   // The dangerous reading: `lost` code looking like "just an old hash" and going quiet.
-  const d = witnessDrift([{ anchorId: "gone", bodyHash: "sha256:old" }], new Map());
+  const d = witnessDrift([{ anchorId: "gone", bodyHash: fixtureHash("old") }], new Map());
   assert.equal(d.length, 1);
   assert.notEqual(d[0]!.unverifiable, true, "a missing anchor must never read as unverifiable");
   assert.equal(realDrift(d).length, 1);
 });
 
 test("an unchanged witness is silent whatever the scheme", () => {
-  assert.deepEqual(witnessDrift([{ anchorId: "a1", bodyHash: "sha256:same" }], new Map([["a1", "sha256:same"]])), []);
+  assert.deepEqual(witnessDrift([{ anchorId: "a1", bodyHash: fixtureHash("same") }], new Map([["a1", fixtureHash("same")]])), []);
 });
