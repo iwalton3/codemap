@@ -406,12 +406,8 @@ before receipts existed:
 1. **Extract the pure folds** into a storage-free module. Independent of
    everything here; unblocks `store.ts` without a dependency cycle.
 2. **Design profiles, generations and receipts** — this document. Including the
-   **protocol cutover**: an additive `generation` field does not protect an older
-   reader, because event parsing ignores unknown fields and a legacy client would
-   fold new shards with principal-keyed causality regardless. It needs a versioned
-   layout or namespace that old readers physically cannot mistake for their own —
-   a new shard extension or a scope-level format marker. This is the part that
-   cannot be retrofitted, so it is the part to settle first.
+   **protocol cutover** (below), which is the part that cannot be retrofitted and
+   therefore the part to settle first.
 3. **Generation-based sharding and causality, plus the sidecar-root lock.** The
    lock is part of this step, not a follow-up, because prefix closure depends on it.
 4. **Materialization tables, with receipt ownership built in.**
@@ -419,6 +415,35 @@ before receipts existed:
 
 Steps 1 and the basic cache mechanics can proceed in parallel with 2. Nothing
 downstream of 3 should be finalized before 2 is settled.
+
+### The cutover, measured
+
+Three candidate mechanisms, and what today's reader actually does with each. Run
+against `dist/` rather than reasoned about:
+
+| mechanism | today's reader | failure mode |
+|---|---|---|
+| additive `generation` field, same `.ndjson` | reads both events, folds both findings, keeps the unknown fields and ignores them | **wrong, silently** — principal-keyed causality applied to generation-keyed data |
+| new shard extension (`.ndjson2`) | reads only the legacy shard | **incomplete, silently** — a reviewer sees a PR missing everyone else's findings |
+| peer manifest with an `anchorScheme` it rejects | `pull` returns an error and merges nothing (`sidecar.ts:246`) | **loud** — but says "anchor derivation differs", which is not what happened |
+
+The first is confirmed unusable. The second is a real physical boundary —
+`readScope` filters on `SHARD_EXT`, so a v2 shard is not merely ignored but
+unreadable — yet silence is a poor upgrade experience and, for a review tool,
+"you saw fewer findings than exist" is the specific failure the product is against.
+
+The third is the only lever that makes an old client fail loudly, because it is the
+only field old clients already check. Using it means saying something slightly
+false to say something true.
+
+**Proposed: the second and third together.** The extension makes misinterpretation
+impossible; the manifest refusal makes under-reading impossible. Neither alone is
+enough, and the pair has no silent mode. The wording of the refusal should be fixed
+at the same time so it describes the version gap rather than anchor derivation.
+
+Open: whether abusing `anchorScheme` for the loud half is acceptable, or whether an
+in-band notice event that old clients CAN read and display is better. The latter
+needs no false statement but puts a synthetic record in everyone's finding list.
 
 ## 8. Open
 
