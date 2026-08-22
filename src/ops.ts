@@ -2497,7 +2497,7 @@ export async function listBugs(root: string, opts: { status?: BugStatus } = {}) 
   return {
     counts: bugStore.bugs.reduce((m, b) => ((m[b.status] = (m[b.status] ?? 0) + 1), m), {} as Record<string, number>),
     bugs: bugs.map((b) => {
-      const changed = b.witnesses.filter((w) => live.get(w.anchorId)?.bodyHash !== w.bodyHash).map((w) => w.anchorId);
+      const changed = b.witnesses.filter((w) => !sameBody(live.get(w.anchorId)?.bodyHash ?? ABSENT_HASH, w.bodyHash)).map((w) => w.anchorId);
       return {
         id: b.id, title: b.title, status: b.status, severity: b.severity,
         anchors: b.anchors,
@@ -2537,7 +2537,7 @@ export async function bugDetail(root: string, id: string) {
       lines: loc ? `${loc.startLine}-${loc.endLine}` : null,
       present: !!liveA,
       // stale when we have a witness and the live code no longer matches it.
-      stale: witHash !== undefined && (liveA?.bodyHash ?? "sha256:absent") !== witHash,
+      stale: witHash !== undefined && !sameBody(liveA?.bodyHash ?? ABSENT_HASH, witHash),
     };
   });
   const changed = anchors.filter((a) => a.stale).length;
@@ -2930,6 +2930,10 @@ export async function reviseAnnotation(
   if (input.ref !== undefined && ann.target.kind === "anchor") {
     const w = await witnessAt(root, ann.target.id, input.ref || undefined);
     if (!w.witness) return { error: `could not read ${ann.target.id} at ${input.ref || "@work"} — nothing to witness against` };
+    // EXACT, deliberately — not `sameBody`. The assignment below is only
+    // PERSISTED if `changed` is non-empty (see the early return further down), so
+    // an annotation-only difference has to count as a change or the better-
+    // annotated witness is computed, assigned in memory, and dropped.
     if (w.witness.bodyHash !== ann.witness?.bodyHash) {
       was.witness = ann.witness; was.sourceRef = ann.sourceRef;
       changed.push("witness");

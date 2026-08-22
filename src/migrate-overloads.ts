@@ -21,6 +21,7 @@
  */
 
 import type { Anchor, Review, Triage, Annotation, Bug } from "./schema.js";
+import { bodyKey } from "./normalize.js";
 
 const groupKey = (a: { file: string; symbolPath: string[] }) => `${a.file} ${a.symbolPath.join(" ")}`;
 
@@ -55,12 +56,17 @@ export function remapOverloadIds(stored: Anchor[], fresh: Anchor[]): Map<string,
     //
     // The body hash is the same identity `resolveAcceptance` reasons about and does
     // not depend on the id, so it survives both the reorder and the scheme change.
-    const uniq = (list: Anchor[]) => new Set(list.map((a) => a.bodyHash)).size === list.length;
+    // Keyed by BODY, not by the hash string. This migration runs across an anchor
+    // scheme change, so the old side was written by an older build and the new side
+    // was just indexed by this one — precisely the pairing where two spellings of
+    // one body would otherwise miss, `byHash.has` would answer false, and the whole
+    // migration would bail and drop every sign-off it exists to carry across.
+    const uniq = (list: Anchor[]) => new Set(list.map((a) => bodyKey(a.bodyHash))).size === list.length;
     if (!uniq(olds) || !uniq(news)) continue;                      // identical bodies cannot be told apart
-    const byHash = new Map(news.map((n) => [n.bodyHash, n]));
-    if (!olds.every((o) => byHash.has(o.bodyHash))) continue;      // a body changed — cannot pair safely
+    const byHash = new Map(news.map((n) => [bodyKey(n.bodyHash), n]));
+    if (!olds.every((o) => byHash.has(bodyKey(o.bodyHash)))) continue;  // a body changed — cannot pair safely
     for (const o of olds) {
-      const n = byHash.get(o.bodyHash)!;
+      const n = byHash.get(bodyKey(o.bodyHash))!;
       if (o.id !== n.id) out.set(o.id, n.id);
     }
   }

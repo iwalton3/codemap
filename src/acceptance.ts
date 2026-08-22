@@ -110,7 +110,7 @@ export function resolveAcceptance(entries: AcceptedEntry[], liveHash: string | u
   // commits are both ancestors of the head while neither follows the other. Reading
   // the array as a timeline calls both of those a revert.
   const supersedersOf = (e: AcceptedEntry) =>
-    lineage.filter((o) => o.bodyHash !== liveHash && (
+    lineage.filter((o) => !sameBody(o.bodyHash, liveHash) && (
       anc.precedes(e.commit, o.commit)
       // `e`'s commit is gone (force-push, amend, squash), so NOTHING can be ordered
       // against it by ancestry — and without this it came out `standing`, i.e. a full

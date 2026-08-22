@@ -16,6 +16,7 @@ import { indexFile } from "./repo.js";
 import { changedFilesSince } from "./git.js";
 import { loadIgnore } from "./ignore.js";
 import { grammarForPath, } from "./grammars.js";
+import { sameBody } from "./normalize.js";
 
 export interface StalenessResult {
   scope: "git-diff" | "full-scan";
@@ -78,7 +79,7 @@ export async function computeStaleness(
       if (!now) {
         checks.push({ anchorId: a.id, status: "lost" });
         statusById.set(a.id, "lost");
-      } else if (now.bodyHash !== a.bodyHash) {
+      } else if (!sameBody(now.bodyHash, a.bodyHash)) {
         checks.push({ anchorId: a.id, status: "candidate_stale", newHash: now.bodyHash });
         statusById.set(a.id, "candidate_stale");
       } else {

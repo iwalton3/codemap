@@ -20,6 +20,7 @@
  */
 
 import type { BugWitness } from "./schema.js";
+import { sameBody, ABSENT_HASH } from "./normalize.js";
 
 export type WalkBlock =
   | { kind: "prose"; text: string }
@@ -184,6 +185,6 @@ export function buildWalkthrough(
 /** Chapters whose cited code has moved since the walkthrough was written. */
 export function staleChapters(w: PrWalkthrough, live: Map<string, string>): string[] {
   return w.features.flatMap((f) => f.chapters)
-    .filter((c) => c.witnesses.some((wit) => (live.get(wit.anchorId) ?? "sha256:absent") !== wit.bodyHash))
+    .filter((c) => c.witnesses.some((wit) => !sameBody(live.get(wit.anchorId) ?? ABSENT_HASH, wit.bodyHash)))
     .map((c) => c.id);
 }

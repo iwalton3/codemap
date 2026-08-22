@@ -49,12 +49,34 @@ sites that compare hashes must move behind a helper, because a legacy
 `h2:sha256:ABC` and a new `h2:<fp>:sha256:ABC` describe the *same body* and are not
 string-equal.
 
-**The count in an earlier draft of this document was wrong, and wrong in a way
-worth recording.** It said sixteen sites, from a grep written around `===` and
-`.includes` — so it structurally could not see the eight that use `!==`, including
-`stale.ts:81`, which is the core staleness path. The enumeration was as good as its
-search pattern and was presented as if it were complete. There are about
-twenty-four, eight of them still unexamined.
+**An earlier draft said sixteen sites, and was wrong in a way worth recording.**
+That count came from a grep written around `===` and `.includes`, so it
+structurally could not see the ones using `!==` — including `stale.ts:81`, the core
+staleness path. The enumeration was as good as its search pattern, and it was
+presented as complete.
+
+Redone by enumerating every line touching a hash-bearing name and classifying all
+of them, rather than by guessing a pattern. **Fifteen real operations**, now all
+accounted for:
+
+| kind | count | rule |
+|---|---|---|
+| comparison | 11 | `sameBody` — is this the same body? |
+| keying | 2 | `bodyKey` — two spellings must land on one key |
+| insertion | 2 | **exact** — a set must be able to acquire a better spelling |
+
+The two insertions are `shared-docs.ts` and the producer that feeds it; the two
+keys are the acceptance cap-eviction and the overload migration. One further
+comparison, `ops.ts:2933`, stays exact for a third reason again: its assignment is
+only persisted when something is marked changed, so an annotation-only difference
+has to count as one or the better-annotated witness is computed and dropped.
+
+The most consequential was the one furthest from where I was looking.
+`migrate-overloads.ts` pairs old anchors to new **by body hash**, across an
+anchor-scheme change — old side written by an older build, new side indexed by this
+one, which is exactly where two spellings meet. Keyed by raw string it finds no
+pairs, bails, and silently drops every sign-off the migration exists to carry
+across.
 
 `hashTokens` also does not change "in one place": the fingerprint is
 grammar-specific and `hashTokens` receives only tokens, so the tag has to reach it,
@@ -257,7 +279,9 @@ Do not let it wait *for* a re-vendor to be scheduled. Every day the switch is of
 the population that can never be protected retroactively grows by one day's
 witnesses — and that cost belongs in the decision rather than in a later surprise.
 
-Do not emit until the comparison helpers are complete and their tests pass. Right
-now they are not: eight `!==`-shaped sites remain unexamined (see above), and until
-they are, a format change is a change to two dozen implicit contracts rather than
-one explicit one.
+**That precondition is now met.** All fifteen operations are classified and
+converted, and `annotated-hash.test.ts` exercises the annotated form by hand —
+witness drift, walkthrough staleness, acceptance, and the overload migration —
+because nothing emits one yet and every other test in the suite would pass whether
+the conversion had happened or not. Each of those five fails on the unconverted
+code, which is the only evidence that the refactor did anything.

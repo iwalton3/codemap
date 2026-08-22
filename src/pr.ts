@@ -520,8 +520,13 @@ export async function prContainment(
   const baseHash = new Map(base.map((a) => [a.id, a.bodyHash]));
   const headHash = new Map(head.map((a) => [a.id, a.bodyHash]));
   // Added, removed and changed in one test: a side that does not hold the symbol
-  // answers undefined, which never equals a hash.
-  const touched = (id: string) => baseHash.get(id) !== headHash.get(id);
+  // answers undefined, which is not a hash and cannot be compared as one — so
+  // absence is still decided by identity, and only two present bodies go through
+  // `sameBody`.
+  const touched = (id: string) => {
+    const b = baseHash.get(id), h = headHash.get(id);
+    return b === undefined || h === undefined ? b !== h : !sameBody(b, h);
+  };
 
   const contained = new Map<string, string[]>();
   for (const id of ids) {

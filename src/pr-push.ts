@@ -20,6 +20,7 @@ import { readAnnotations, writeAnnotations, readAnchorStore, readPushes, writePu
 import { diffHunks } from "./git.js";
 import { prTriage, anchorSpans, fetchPrMeta, type PrMeta } from "./pr.js";
 import { LANE_POLICY } from "./lanes.js";
+import { sameBody } from "./normalize.js";
 
 export interface InlineComment {
   path: string; line: number; side: "RIGHT"; body: string; annotationId: string;
@@ -219,7 +220,7 @@ export function pushVerdict(
   // well-evidenced review of code that is not in this PR.
   if (filter.headHashOf && a.witness) {
     const head = filter.headHashOf(a.witness.anchorId);
-    if (head !== undefined && head !== a.witness.bodyHash) return "evidence-moved";
+    if (head !== undefined && !sameBody(head, a.witness.bodyHash)) return "evidence-moved";
   }
   return "push";
 }
