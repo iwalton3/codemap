@@ -697,6 +697,10 @@
     .corr, .tcomment { font-size: 12px; }
     /* A contest is the one thing on this page that must not be skimmed past. */
     .contest { border: 1px solid var(--warn); border-radius: 6px; padding: 8px; display: flex; flex-direction: column; gap: 4px; }
+    .composer { display: flex; gap: 6px; align-items: flex-start; }
+    .composer textarea { flex: 1; min-height: 52px; background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font: inherit; font-size: 12px; resize: vertical; }
+    /* An outstanding ask is the thing a person opened this page to answer. */
+    .askbox { border: 1px solid var(--accent); border-radius: 6px; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
     .prbadge.needsack { border-color: var(--accent); color: var(--accent); }
     .prbadge.contested { border-color: var(--warn); color: var(--warn); }
     .prbadge.ok { border-color: var(--accent2); color: var(--accent2); }

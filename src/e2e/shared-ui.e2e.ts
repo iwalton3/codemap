@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { resolvePlaywright, launchPlaywright, startServer, type Server } from "./harness.js";
-import { shareFinding, promoteFinding, corroborateFinding } from "../ops-shared.js";
+import { shareFinding, promoteFinding, corroborateFinding, requestOnFinding } from "../ops-shared.js";
 
 const pw = resolvePlaywright();
 
@@ -56,6 +56,12 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
       targetKind: "anchor", targetId: "a_2", severity: "low",
       text: "a nit about naming", comment: "rename this local for clarity",
     });
+    // An agent asking a person to close it — the case the queue exists for. Written
+    // with the agent env set, so the actor carries `via` and the ratchet applies.
+    process.env.CODEMAP_AGENT_MODEL = "claude-opus-5";
+    try {
+      await requestOnFinding(root, 264, a.id, "resolve", "the guard landed in abc123");
+    } finally { delete process.env.CODEMAP_AGENT_MODEL; }
 
     server = await startServer(root);
     browser = await launchPlaywright(pw);
@@ -134,6 +140,45 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
     const text = await page.textContent("main");
     assert.match(text, /izzie@x\.com/);
     assert.match(text, /anchor scheme \d+/);
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+
+  test("a person can reply to a finding from the browser", async () => {
+    // The other half of the loop. An agent files and asks; if the only answer
+    // available here is to close it silently, the reason is lost and the agent
+    // learns nothing.
+    const { page, errors } = await open(`/u/${universe}/shared/264/`);
+    await page.waitForSelector(".frow");
+    await page.locator(".frow .row").first().click();
+    await page.waitForSelector(".composer textarea");
+
+    await page.locator(".composer textarea").fill("checked the caller — it is guarded upstream");
+    await page.getByRole("button", { name: /^reply$/ }).click();
+    await page.waitForFunction(
+      () => !!document.querySelector(".tcomment")?.textContent?.includes("guarded upstream"),
+      null, { timeout: 10_000 },
+    );
+    const detail = await page.textContent(".fdetail");
+    assert.match(detail, /guarded upstream/, "the reply is in the thread");
+    assert.match(detail, /izzie@x\.com/, "attributed to the person who wrote it");
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+
+  test("an agent's ask is actionable, and says who asked and why", async () => {
+    const { page, errors } = await open(`/u/${universe}/shared/264/`);
+    await page.waitForSelector(".frow");
+    await page.locator(".frow .row").first().click();
+    await page.waitForSelector(".askbox");
+    const ask = await page.textContent(".askbox");
+    assert.match(ask, /asked to/);
+    assert.match(ask, /the guard landed in abc123/, "the rationale is what the human reads to decide");
+    // Agreeing performs the act the agent could not.
+    await page.getByRole("button", { name: /agree — resolve/ }).click();
+    await page.waitForFunction(
+      () => !document.querySelector(".askbox"), null, { timeout: 10_000 },
+    );
     assert.deepEqual(errors, []);
     await page.close();
   });

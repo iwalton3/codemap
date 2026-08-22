@@ -21,7 +21,7 @@ class SharedPage extends Component {
     super(props);
     // `queue` defaults on: the page exists to answer "what needs me", and showing
     // everything first buries that under findings somebody else already settled.
-    this.state = { d: null, queue: true, busy: null, note: null, open: null };
+    this.state = { d: null, queue: true, busy: null, note: null, open: null, draft: '', replyTo: null };
   }
 
   load = this.createTask(async () => {
@@ -89,12 +89,57 @@ class SharedPage extends Component {
       </div>`, c => c.field)}`;
   }
 
+  /**
+   * The human's half of the loop.
+   *
+   * An agent that may not close a finding ASKS instead, and until now the only
+   * answer available in the browser was to close it silently — which loses the
+   * reason and tells the agent nothing. Acting on the ask, or replying to it, is
+   * the whole point of the queue.
+   */
+  askEl(f) {
+    const p = f.pending;
+    // `invalidate` maps onto the `invalid` state; the others share their names.
+    const state = p.ask === 'invalidate' ? 'invalid' : p.ask === 'refute' ? 'refuted' : p.ask === 'resolve' ? 'resolved' : null;
+    return html`
+      <div class="askbox">
+        <div><b>${p.by}</b> asked to <b>${p.ask}</b>: ${p.rationale}</div>
+        <div class="row">
+          ${when(!!state, () => html`<button on-click="${() => this.act('close', { id: f.id, state, reason: `agreed: ${p.rationale}` })}">agree — ${p.ask}</button>`)}
+          ${when(p.ask === 'promote', () => html`<button on-click="${() => this.act('promote', { id: f.id })}">agree — promote</button>`)}
+          <button on-click="${() => this.reply(f.id, `declining: `)}">answer instead</button>
+        </div>
+      </div>`;
+  }
+
+  /** Focus the composer with a starting body — declining an ask needs a reason. */
+  reply(id, prefix) {
+    this.state.open = id;
+    this.state.draft = prefix;
+    this.state.replyTo = id;
+  }
+
+  composerEl(f) {
+    const st = this.state;
+    return html`
+      <div class="composer">
+        <textarea
+          placeholder="reply to this finding — answer the question, or say why you disagree"
+          value="${st.replyTo === f.id ? (st.draft ?? '') : ''}"
+          on-input="${(e) => { st.replyTo = f.id; st.draft = e.target.value; }}"></textarea>
+        <button
+          disabled="${st.busy === 'comment' || !(st.replyTo === f.id && (st.draft ?? '').trim())}"
+          on-click="${async () => { const body = st.draft; st.draft = ''; st.replyTo = null; await this.act('comment', { id: f.id, body }); }}"
+          >${st.busy === 'comment' ? 'sending…' : 'reply'}</button>
+      </div>`;
+  }
+
   detailEl(f) {
     return html`
       <div class="fdetail">
         <div class="ftext">${f.text}</div>
         ${this.contestEl(f)}
-        ${when(!!f.pending, () => html`<div class="dim">${f.pending.by} asked to <b>${f.pending.ask}</b>: ${f.pending.rationale}</div>`)}
+        ${when(!!f.pending, () => this.askEl(f))}
         ${when(!!f.outcome, () => html`<div class="dim">${f.outcome.by} reported <b>${f.outcome.result}</b>: ${f.outcome.detail}</div>`)}
         ${each(f.corroboration ?? [], c => html`
           <div class="corr">
@@ -105,6 +150,7 @@ class SharedPage extends Component {
           </div>`, (c, i) => `${c.by}:${i}`)}
         ${each(f.thread ?? [], t => html`
           <div class="tcomment"><b>${t.by}</b>${when(!!t.model, () => html` <span class="dim">(${t.model})</span>`)}: ${t.body}</div>`, t => t.id)}
+        ${this.composerEl(f)}
         <div class="row">
           <button on-click="${() => this.act('promote', { id: f.id })}">promote</button>
           <button on-click="${() => this.act('close', { id: f.id, state: 'resolved', reason: 'closed from the shared view' })}">resolve</button>
