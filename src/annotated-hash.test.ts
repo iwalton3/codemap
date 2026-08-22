@@ -10,10 +10,11 @@ import { remapOverloadIds } from "./migrate-overloads.js";
 /**
  * The behaviour every comparison site was moved onto `sameBody` FOR.
  *
- * Nothing emits an annotated hash yet, so every existing test compares identical
- * strings and would pass whether the sites had been converted or not. These
- * construct the annotated form by hand, which is the only way to exercise the case
- * before the format ships — and the only way to know the conversion did anything.
+ * These are the pairs the store will hold for years: a witness minted before
+ * emission against live code hashed after it. Every other test in the suite
+ * compares hashes minted the same way, and would pass whether the sites had been
+ * converted or not — so the annotated side is built by hand, which is also the only
+ * way to hold the LEGACY side fixed while the live one moves with the grammar.
  */
 const D = fixtureHash("a-body").slice("sha256:".length);
 const LEGACY = `h2:sha256:${D}`;                    // minted before annotations

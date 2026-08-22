@@ -22,10 +22,11 @@ const anchor = (id: string, derivation?: DerivationTag): Anchor => ({
  * The detector exists because the repair is unavailable.
  *
  * A cached snapshot derived by another build is simply rebuilt. `@work` cannot be:
- * reindexing it is precisely what turns a grammar change into a store-wide false
- * staleness event, because every review witness and doc citation holds an
- * old-derivation hash and `comparableHashes` sees two `h2:` values and calls them
- * comparable. So this reports and stops.
+ * reindexing it is what turns a grammar change into a store-wide staleness event,
+ * because every review witness and doc citation holds an old-derivation hash. Since
+ * emission, that reads as `unverifiable` rather than as drift, which is honest — but
+ * only for witnesses minted after it, and the ones minted before are the older and
+ * more numerous half. So this still reports and stops.
  */
 test("a live index built by another grammar is detected", async () => {
   const root = tmp();

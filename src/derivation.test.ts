@@ -7,7 +7,9 @@ import { DatabaseSync } from "node:sqlite";
 import { comparableDerivation, type Anchor, type DerivationTag } from "./schema.js";
 import { writeAnchorStore, anchorsUnderRef, retainOrphans, readOrphans, derivationFor } from "./store.js";
 import { derivationTag } from "./grammars.js";
-import { derivationFingerprint } from "./normalize.js";
+import { indexBlob } from "./repo.js";
+import { derivationFingerprint, derivationMark } from "./normalize.js";
+
 import { fixtureHash } from "./fixture-hash.js";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "codemap-deriv-"));
@@ -180,4 +182,23 @@ test("a fingerprint resolves back to its derivation, when this store has seen it
       "a derivation this machine has never used is unknown, not wrong");
     assert.equal(derivationFor(root, "0000000000000000"), null);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+/**
+ * The production path, end to end: a hash minted by the real indexer carries its
+ * grammar's fingerprint.
+ *
+ * Everything else about the annotation is tested against strings built by hand,
+ * which would pass just as well if `indexSource` never passed the tag along. This
+ * is the test that fails if emission is switched off — and the row's own tag would
+ * not catch it, because a witness copies the HASH out of the row and leaves the tag
+ * behind.
+ */
+test("a hash minted by the indexer carries its grammar's fingerprint", async () => {
+  const [cs] = await indexBlob("class C { void M() { } }", "a.cs");
+  const [py] = await indexBlob("def m():\n    pass\n", "a.py");
+  assert.equal(derivationMark(cs!.bodyHash), derivationFingerprint(derivationTag("c_sharp")));
+  assert.deepEqual(cs!.derivation, derivationTag("c_sharp"), "and the row agrees with the value");
+  assert.notEqual(derivationMark(py!.bodyHash), derivationMark(cs!.bodyHash),
+    "a different grammar is a different derivation — the case HASH_SCHEME cannot see");
 });

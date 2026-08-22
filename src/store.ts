@@ -412,10 +412,11 @@ export async function readSnapshot(root: string, ref: string): Promise<Anchor[] 
  *
  * A DETECTOR, not a repair, and deliberately so. A snapshot can simply be rebuilt;
  * `@work` cannot, because reindexing it is exactly what turns a grammar change into
- * a store-wide false-staleness event — every review witness and doc citation holds
- * an old-derivation hash, `comparableHashes` sees two `h2:` values and calls them
- * comparable, and the whole store reads as drift. So the honest response is to say
- * so and let a person decide, not to act.
+ * a store-wide staleness event — every review witness and doc citation holds an
+ * old-derivation hash, and the live ones no longer match. Since hashes carry a
+ * derivation fingerprint, annotated witnesses read as `unverifiable` rather than as
+ * false drift; the ones minted before emission cannot, and they are the older half.
+ * Either way the honest response is to say so and let a person decide, not to act.
  *
  * The vendored grammar blobs have been committed exactly once in this repository's
  * life, so this is sized for something that has never happened: one query, on

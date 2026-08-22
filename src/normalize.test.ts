@@ -2,32 +2,32 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { canonicalize, hashTokens, hashSchemeOf, comparableHashes, sameBody, bodyDigest,
   derivationMark, derivationFingerprint, ABSENT_HASH } from "./normalize.js";
-import { anchorId, HASH_SCHEME } from "./schema.js";
+import { anchorId, HASH_SCHEME, type DerivationTag } from "./schema.js";
 import { fixtureHash } from "./fixture-hash.js";
 
 test("hash is stable for identical token streams", () => {
-  assert.equal(hashTokens(["a", ".", "b"]), hashTokens(["a", ".", "b"]));
+  assert.equal(hashTokens(["a", ".", "b"], null), hashTokens(["a", ".", "b"], null));
 });
 
 test("comment/whitespace stripping is the indexer's job — hashing only sees tokens", () => {
   // The indexer would drop comments before calling us, so these are equal here.
   const withoutComment = ["return", "x", "+", "1"];
   const alsoWithoutComment = ["return", "x", "+", "1"];
-  assert.equal(hashTokens(withoutComment), hashTokens(alsoWithoutComment));
+  assert.equal(hashTokens(withoutComment, null), hashTokens(alsoWithoutComment, null));
 });
 
 test("a logic change flips the hash", () => {
-  assert.notEqual(hashTokens(["return", "x", "+", "1"]), hashTokens(["return", "x", "+", "2"]));
+  assert.notEqual(hashTokens(["return", "x", "+", "1"], null), hashTokens(["return", "x", "+", "2"], null));
 });
 
 test("length-prefixing prevents boundary collisions", () => {
   // "a b" as one token must not hash the same as ["a", "b"].
-  assert.notEqual(hashTokens(["a b"]), hashTokens(["a", "b"]));
+  assert.notEqual(hashTokens(["a b"], null), hashTokens(["a", "b"], null));
   assert.notEqual(canonicalize(["a b"]), canonicalize(["a", "b"]));
 });
 
 test("string-literal content is significant", () => {
-  assert.notEqual(hashTokens(['"hello"']), hashTokens(['"world"']));
+  assert.notEqual(hashTokens(['"hello"'], null), hashTokens(['"world"'], null));
 });
 
 test("anchorId is deterministic and path-sensitive", () => {
@@ -67,7 +67,7 @@ test("an absent anchor compares against any scheme — gone is gone under every 
 });
 
 test("hashTokens stamps the scheme in force, so a hash carries its own provenance", () => {
-  assert.equal(hashSchemeOf(hashTokens(["a"])), HASH_SCHEME);
+  assert.equal(hashSchemeOf(hashTokens(["a"], null)), HASH_SCHEME);
 });
 
 /**
@@ -160,10 +160,11 @@ test("the absent sentinel equals itself", () => {
 });
 
 /**
- * Read, never written. Nothing emits an annotated hash yet; a reader that could
- * not parse one would mishandle every hash the day something starts.
+ * The parser, exercised on hand-built strings — including the malformed ones the
+ * minter cannot produce, which is where a reader has to be strict rather than
+ * generous. What `hashTokens` actually mints is pinned separately, below.
  */
-test("an annotation is parsed without being minted", () => {
+test("the annotation is parsed, and near-misses are refused", () => {
   assert.equal(derivationMark(`h2:${FP}:sha256:${D}`), FP);
   // One spelling per derivation: a short or long annotation is not a shorter or
   // longer spelling of the same thing, it is not an annotation.
@@ -174,7 +175,7 @@ test("an annotation is parsed without being minted", () => {
   assert.equal(bodyDigest(`h2:sha256:${D}`), D);
   assert.equal(bodyDigest("garbage"), null);
   // `sha256` is not hex, so the un-annotated form cannot be misread as annotated.
-  assert.equal(derivationMark(hashTokens(["a"])), null, "nothing this build mints carries one");
+  assert.equal(derivationMark(hashTokens(["a"], null)), null, "an unannotated mint carries none");
   assert.equal(hashSchemeOf(`h2:${FP}:sha256:${D}`), 2, "the scheme still reads through it");
 });
 
@@ -201,13 +202,13 @@ test("an annotation is parsed without being minted", () => {
  */
 test("canonicalization is pinned, so changing it cannot be silent", () => {
   assert.equal(
-    hashTokens(["public", "void", "Apply", "(", ")"]),
+    hashTokens(["public", "void", "Apply", "(", ")"], null),
     "h2:sha256:c4b0a002464aa2e6e5b86bb22d1a6e06e510d70abcb22ed1c33d4645eeb07b12",
   );
   // Length-prefixed, so two tokens cannot be confused with one containing the
   // separator — the property the prefix exists for, stated as a test.
-  assert.notEqual(hashTokens(["a", "b"]), hashTokens(["a:b"]));
-  assert.notEqual(hashTokens(["a", "b"]), hashTokens(["ab"]));
+  assert.notEqual(hashTokens(["a", "b"], null), hashTokens(["a:b"], null));
+  assert.notEqual(hashTokens(["a", "b"], null), hashTokens(["ab"], null));
 });
 
 /**
@@ -242,4 +243,53 @@ test("the derivation fingerprint's preimage is pinned", () => {
     derivationFingerprint({ hashScheme: 2, parserIntegrity: "a", grammarDigest: "abb" }),
   ]);
   assert.equal(fps.size, 5, "a field boundary was ambiguous");
+});
+
+const TAG: DerivationTag = {
+  anchorScheme: 2, hashScheme: HASH_SCHEME,
+  parserIntegrity: "p".repeat(64), grammarDigest: "g".repeat(64),
+};
+
+/**
+ * Emission, stated as the property that licensed shipping it without a scheme bump.
+ *
+ * The annotation is an EXTENSION of scheme 2: it must leave the digest untouched
+ * and the scheme number readable. If it moved either, every hash in every store
+ * would be incomparable the day this landed — a forced store-wide re-witness for a
+ * change that hashed nothing differently.
+ */
+test("the annotation rides beside the digest without moving it", () => {
+  const tokens = ["public", "void", "Apply", "(", ")"];
+  const bare = hashTokens(tokens, null);
+  const annotated = hashTokens(tokens, TAG);
+  assert.notEqual(annotated, bare, "a different string");
+  assert.equal(bodyDigest(annotated), bodyDigest(bare), "of the same body");
+  assert.equal(hashSchemeOf(annotated), HASH_SCHEME, "still scheme 2 — extended, not bumped");
+  assert.equal(derivationMark(annotated), derivationFingerprint(TAG));
+  assert.equal(sameBody(annotated, bare), true,
+    "so a witness minted before emission does not read as drift after it");
+});
+
+/**
+ * The half without which emission is an annotation nothing honours.
+ *
+ * A re-vendored grammar or a rebuilt parser moves every token stream without
+ * touching `HASH_SCHEME` — the door the scheme number cannot close. Two builds'
+ * hashes therefore must not be compared however equal their scheme numbers are;
+ * before this, both read as scheme 2 and their differing digests reported as
+ * `stale` about code nobody had touched.
+ */
+test("two derivations are not comparable, and a legacy hash still falls back", () => {
+  const mine = hashTokens(["a"], TAG);
+  const theirs = hashTokens(["b"], { ...TAG, grammarDigest: "f".repeat(64) });
+  assert.equal(comparableHashes(mine, theirs), false, "a re-vendor is not a code change");
+  assert.equal(comparableHashes(mine, hashTokens(["b"], TAG)), true,
+    "same derivation, so the difference is the code");
+  assert.equal(comparableHashes(mine, hashTokens(["b"], null)), true,
+    "an unannotated hash asserts nothing about its derivation");
+  // The tax of two encodings of one concept: both paths must reduce to the SAME
+  // predicate. `comparableDerivation` compares the same three fields for the same
+  // reason — an id scheme decides which ids pair, not how a body was hashed.
+  assert.equal(comparableHashes(mine, hashTokens(["b"], { ...TAG, anchorScheme: TAG.anchorScheme + 1 })), true,
+    "anchorScheme is not part of a hash's derivation");
 });

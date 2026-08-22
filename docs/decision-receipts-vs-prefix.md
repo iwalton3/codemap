@@ -1,7 +1,9 @@
 # Decision: receipts, or a fingerprint in the hash string?
 
-Status: **open.** Written to be decided, not to advocate. Blocks step 2 of
-`PROPOSAL-provenance.md` §7.
+Status: **decided and landed (2026-08-22)** — B for hashes; A for anchor ids only,
+which is still open and is step 2 of `PROPOSAL-provenance.md` §7. Everything below
+was written to decide rather than to advocate, and is kept for the reasoning; where
+it says a thing "remains" or is "not yet", read the Outcome section at the end.
 
 ## The exposure, stated once
 
@@ -279,6 +281,9 @@ re-witness either way — only the label changes, from a lie to the truth.
 
 ## Recommendation
 
+*(Followed. The switch was flipped on 2026-08-22 under the first of these two
+conditions' spirit rather than its letter — see Outcome.)*
+
 **Build everything except emission now**, which is nearly done at HEAD: the parse
 side, `sameBody`/`bodyDigest`/`bodyKey`/`derivationMark`, and the comparison sites
 moved onto them. Then treat turning emission on as a switch, flipped at whichever
@@ -346,3 +351,47 @@ witness drift, walkthrough staleness, acceptance, and the overload migration —
 because nothing emits one yet and every other test in the suite would pass whether
 the conversion had happened or not. Each of those five fails on the unconverted
 code, which is the only evidence that the refactor did anything.
+
+## Outcome
+
+Emission is **on**, as of 2026-08-22, ahead of both named triggers and for the
+reason the section above gives for not waiting: the unprotected population grows by
+one day's witnesses per day, and no re-vendor has to be scheduled for that to be
+the dominant cost. `web-tree-sitter` sitting one patch behind published made the
+horizon concrete rather than hypothetical.
+
+The switch was the two changes it had to be, in one commit:
+
+- `hashTokens(tokens, derivation)` emits `h2:<fp>:sha256:<digest>`. The parameter is
+  required-and-nullable rather than optional, so a future caller declines to
+  annotate on purpose instead of by omission — a hash minted without one is
+  indistinguishable from a pre-provenance value forever after. One production
+  caller, `indexer.ts`, which already had the tag in scope.
+- `comparableHashes` consumes `derivationMark`: equal marks compare, differing marks
+  do not, and an unannotated side falls back exactly as every other legacy path
+  here does.
+
+`HASH_SCHEME` stays 2, per the load-bearing decision above.
+
+**What is now covered, and what is not.** Every hash minted from here on carries its
+derivation, so a future re-vendor or runtime bump reads as `unverifiable` on those
+witnesses instead of as `stale`. Witnesses minted before today cannot be
+retroactively annotated and will still flood — the bounded, one-time residue this
+document argued was worth accepting rather than growing.
+
+**Tests, and the mutation check that gives them their weight.** Three added:
+`hashTokens` leaves the digest untouched under annotation (the no-bump rule, made
+executable); two derivations are not comparable while a legacy hash still falls
+back; and, in `derivation.test.ts`, a hash minted by the real indexer carries its
+grammar's fingerprint — the one test that fails if emission is switched off, since
+everything else builds the annotated form by hand. Reverting each half of the switch
+independently fails the corresponding test, which is the only evidence that either
+half does anything.
+
+**Comments corrected in the same change**, because a confident stale comment is
+worse than none: `derivationMark` and `derivationFingerprint` no longer say nothing
+emits one; `liveDerivationDrift` and its test no longer say `comparableHashes` calls
+two `h2:` values comparable, which is now true only of unannotated ones.
+
+**Still open:** `AnchorReceipt` for shared anchor ids, which no fingerprint can
+cover — see "They are not actually alternatives".

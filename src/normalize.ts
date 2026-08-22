@@ -12,7 +12,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { HASH_SCHEME } from "./schema.js";
+import { HASH_SCHEME, type DerivationTag } from "./schema.js";
 
 /**
  * Canonical string for a token stream.
@@ -45,9 +45,27 @@ export const ABSENT_HASH = "sha256:absent";
 /** Prefix carried by hashes from scheme 2 onward; scheme 1 is the bare digest. */
 const schemePrefix = (scheme: number): string => (scheme === 1 ? "" : `h${scheme}:`);
 
-/** "sha256:..." digest of the canonicalized token stream, stamped with its scheme. */
-export function hashTokens(tokens: string[]): string {
-  return schemePrefix(HASH_SCHEME) + "sha256:" + createHash("sha256").update(canonicalize(tokens)).digest("hex");
+/**
+ * "sha256:..." digest of the canonicalized token stream, stamped with its scheme
+ * and with the derivation that produced the tokens.
+ *
+ * The annotation rides BESIDE the digest rather than changing it: the same tokens
+ * hash to the same 64 hex whether it is carried or not. That is what makes
+ * emitting it an extension of scheme 2 rather than a new scheme — bumping
+ * `HASH_SCHEME` here would make every stored hash in every store incomparable at
+ * once, for a change that hashed nothing differently. See
+ * `docs/decision-receipts-vs-prefix.md`.
+ *
+ * `derivation` is required-and-nullable rather than optional. A hash minted
+ * without one is indistinguishable from a pre-provenance value forever after, and
+ * a witness cannot be re-minted the way a snapshot can be rebuilt — so declining
+ * to annotate has to be a decision at the call site, not something a new caller
+ * can omit by accident.
+ */
+export function hashTokens(tokens: string[], derivation: DerivationTag | null): string {
+  const mark = derivation === null ? "" : derivationFingerprint(derivation) + ":";
+  return schemePrefix(HASH_SCHEME) + mark + "sha256:"
+    + createHash("sha256").update(canonicalize(tokens)).digest("hex");
 }
 
 /**
@@ -104,13 +122,27 @@ export function hashSchemeOf(hash: string): number | null {
  *
  * ABSENT_HASH is comparable to everything on purpose: it encodes the absence of
  * code, not a derivation of it.
+ *
+ * The scheme number is only the part of the derivation a person maintains by hand.
+ * A re-vendored grammar or a rebuilt parser moves every token stream without
+ * touching it — which is the door the annotation exists to close, so two annotated
+ * hashes carrying different fingerprints are NOT comparable however equal their
+ * scheme numbers are. Without this half, emission writes an annotation nothing
+ * honours and the drift it describes still reports as `stale`.
+ *
+ * An unannotated side falls back to comparing, as every other legacy path here
+ * does: it asserts nothing about its derivation, and answering "unverifiable" for
+ * the whole pre-emission store would trade a rare false positive for a universal
+ * false negative.
  */
 export function comparableHashes(a: string, b: string): boolean {
   if (a === ABSENT_HASH || b === ABSENT_HASH) return true;
   const scheme = hashSchemeOf(a);
   // Unparseable is not comparable to anything, including another unparseable value:
   // two things nobody can read are not thereby known to be equal.
-  return scheme !== null && scheme === hashSchemeOf(b);
+  if (scheme === null || scheme !== hashSchemeOf(b)) return false;
+  const ma = derivationMark(a), mb = derivationMark(b);
+  return ma === null || mb === null || ma === mb;
 }
 
 /**
@@ -128,11 +160,11 @@ export function bodyDigest(hash: string): string | null {
 /**
  * The derivation annotation a hash carries, if any.
  *
- * READ but never written, on purpose. Nothing emits an annotated hash yet — see
- * `docs/decision-receipts-vs-prefix.md`, where whether to is still open — but a
- * reader that cannot parse one would mishandle every hash the day something
- * starts. Understanding a form before producing it is the same two-phase shape the
- * sidecar protocol cutover settled on, and here it costs one capture group.
+ * Parsed for a whole release before anything minted one — the same two-phase shape
+ * the sidecar protocol cutover settled on — because a reader that could not read
+ * the form would mishandle every hash the day emission started. `hashTokens` now
+ * writes it and `comparableHashes` consumes it; see
+ * `docs/decision-receipts-vs-prefix.md`.
  *
  * Unambiguous against the un-annotated form because the group is hex and `sha256`
  * is not: `h2:sha256:…` cannot read `sha256` as an annotation.
@@ -177,10 +209,10 @@ export function sameBody(a: string, b: string): boolean {
 }
 
 /**
- * The derivation fingerprint that MAY ride inside a hash string.
+ * The derivation fingerprint that rides inside a hash string.
  *
- * Nothing emits one yet (see `docs/decision-receipts-vs-prefix.md`); this owns the
- * definition so that when something does, there is exactly one of it.
+ * One function owns the preimage so there is exactly one of it — a condition of
+ * emitting at all (see `docs/decision-receipts-vs-prefix.md`).
  *
  * The preimage is the hazard, not the digest. It is an unversioned canonicalization
  * — the founding problem of this design, aimed at its own solution — so the

@@ -326,10 +326,14 @@ export function indexSource(
       symbolPath,
       kind,
       disambiguator,
-      bodyHash: hashTokens(tokens),
+      bodyHash: hashTokens(tokens, tag),
       // Stamped at the ONE place anchors are born, so nothing downstream has to
       // remember to. What produced this id and hash is a fact about them, and a
       // later reader cannot recover it from anywhere else.
+      //
+      // Twice over, and not redundantly: the row's tag describes THIS row, while
+      // the fingerprint inside the hash travels with the value into witnesses and
+      // sidecar events, where no row of ours goes.
       derivation: tag,
       lastVerifiedCommit: null,
       loc: {
