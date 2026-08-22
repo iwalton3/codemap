@@ -343,6 +343,10 @@ async function cmdInit(root: string): Promise<void> {
           : `WARNING: submodule ${sm.path} is at ${sm.sha.slice(0, 12)}, which is not the commit this repo pins — the index describes code this commit does not ship. Run \`git submodule update ${sm.path}\` and re-run`,
     );
   }
+  const smErr = (r as { submoduleError?: string }).submoduleError;
+  if (smErr) {
+    console.log(`WARNING: could not check submodules (${smErr}) — if this repo has any, the index may describe code this commit does not ship`);
+  }
   const o = (r as { orphans?: { retained: number; recovered: number } }).orphans;
   if (o?.retained) console.log(`${o.retained} anchor(s) left the tree with findings or reviews on them — kept, run \`codemap orphans\` to see what and where`);
   if (o?.recovered) console.log(`${o.recovered} previously-missing anchor(s) are back in the tree`);

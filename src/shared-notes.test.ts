@@ -178,3 +178,70 @@ test("an agent cannot resolve a shared question through ops either", async () =>
     } finally { delete process.env.CODEMAP_AGENT_MODEL; }
   } finally { u.cleanup(); }
 });
+
+// --- retiring a doc whose subject is gone -----------------------------------------
+
+test("retiring refuses while the cited code is still here", async () => {
+  // A doc about code that is right there is not a doc whose subject was removed,
+  // and tombstoning it would hide something true.
+  const u = universe();
+  try {
+    const { init, document: documentNode } = await import("./ops.js");
+    mkdirSync(join(u.root, "src"), { recursive: true });
+    writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+    await init(u.root);
+    const { readAnchorStore } = await import("./store.js");
+    const anchorId = (await readAnchorStore(u.root)).anchors[0]!.id;
+    await documentNode(u.root, { type: "process", title: "Seam", summary: "s", body: "b", anchors: [anchorId] });
+    await shared.publishLocalDocs(u.root);
+
+    const nodeId = [...(await shared.sharedDocs(u.root) as any).docs][0].nodeId;
+    const r = await shared.retireSharedDoc(u.root, nodeId, "looks gone") as { error: string };
+    assert.match(r.error, /still in this checkout/);
+  } finally { u.cleanup(); }
+});
+
+test("an agent may not retire a doc — it is a closure", async () => {
+  const u = universe();
+  try {
+    process.env.CODEMAP_AGENT_MODEL = "claude-opus-5";
+    try {
+      const r = await shared.retireSharedDoc(u.root, "n_x", "gone") as { error: string };
+      assert.match(r.error, /may not/);
+      assert.match(r.error, /shared note/, "and it says what the agent CAN do instead");
+    } finally { delete process.env.CODEMAP_AGENT_MODEL; }
+  } finally { u.cleanup(); }
+});
+
+test("retiring needs a reason", async () => {
+  const u = universe();
+  try {
+    const r = await shared.retireSharedDoc(u.root, "n_x", "   ") as { error: string };
+    assert.match(r.error, /say why/);
+  } finally { u.cleanup(); }
+});
+
+test("a doc whose code is genuinely gone can be retired, and stays resolvable", async () => {
+  const u = universe();
+  try {
+    const { init, document: documentNode } = await import("./ops.js");
+    mkdirSync(join(u.root, "src"), { recursive: true });
+    writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+    await init(u.root);
+    const { readAnchorStore } = await import("./store.js");
+    const anchorId = (await readAnchorStore(u.root)).anchors[0]!.id;
+    await documentNode(u.root, { type: "process", title: "Seam", summary: "s", body: "b", anchors: [anchorId] });
+    await shared.publishLocalDocs(u.root);
+    const nodeId = [...(await shared.sharedDocs(u.root) as any).docs][0].nodeId;
+
+    // The code goes away entirely, and so does any record of it.
+    writeFileSync(join(u.root, "src", "pay.ts"), "export const nothing = 1;\n", "utf8");
+    await init(u.root);
+
+    const r = await shared.retireSharedDoc(u.root, nodeId, "the transfer entry point was deleted in v3") as any;
+    assert.ok(r.ok, JSON.stringify(r));
+    const after = (await shared.sharedDocs(u.root, { nodeId }) as any).docs[0];
+    assert.equal(after.versions, 2, "a tombstone is a version, not a deletion");
+    assert.equal(after.resolved.removed, true, "and it wins here, where the code is absent");
+  } finally { u.cleanup(); }
+});

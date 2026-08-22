@@ -176,6 +176,9 @@ function view(f: SharedFinding) {
     outcome: f.outcome ? { result: f.outcome.result, detail: f.outcome.detail, by: f.outcome.by.principal, files: f.outcome.files } : undefined,
     closed: f.closed ? { by: f.closed.by.principal, reason: f.closed.reason } : undefined,
     contested: f.contested?.map((c) => ({ field: c.field, held: c.held, incoming: c.incoming })),
+    relocation: f.relocation
+      ? { kind: f.relocation.kind, to: f.relocation.to, by: f.relocation.by.principal, model: f.relocation.by.via?.model, rationale: f.relocation.rationale, applied: !!f.relocation.applied }
+      : undefined,
   };
 }
 
@@ -497,6 +500,56 @@ export async function confirmSharedDoc(root: string, nodeId: string, versionId?:
  * accepted-hash sets that make branch resolution work survive the move — losing
  * them would leave every doc reading `stale` on the branch it was written for.
  */
+/**
+ * Retire a shared doc whose subject is gone.
+ *
+ * A tombstone version, which the resolver already understands: it is `fresh` on a
+ * branch where the cited anchors are ABSENT and loses to a live content version
+ * where they still exist. So "removed on main, still live on the release branch"
+ * resolves by presence, without branch tags and without deleting anything.
+ *
+ * A person's act. An agent may say a doc's subject looks gone — that is what a
+ * shared note on the node is for — but retiring it is a closure, and the same
+ * rule that stops an agent closing a finding applies here for the same reason.
+ *
+ * Refuses when the citations are still present: a doc about code that is right
+ * there is not a doc whose subject was removed, and tombstoning it would hide
+ * something true.
+ */
+export async function retireSharedDoc(root: string, nodeId: string, rationale: string) {
+  const b = bind(root);
+  if ("error" in b) return b;
+  if (isAgentActor(b.actor)) {
+    return { error: "retiring a doc is a closure — an agent may not. Leave a shared note on the node saying what you found and let a person retire it." };
+  }
+  if (!rationale.trim()) return { error: "say why the subject is gone — a tombstone with no reason is indistinguishable from a mistake" };
+
+  const doc = (await readDocs(b.cfg.path, b.cfg.universe)).get(nodeId);
+  if (!doc) return { error: `no shared doc ${nodeId}` };
+  const live = await liveHashes(root);
+  const v = resolveDoc(doc, live);
+  if (!v) return { error: `${nodeId} has no versions to retire` };
+  if (v.removed) return { error: `${nodeId} is already retired here` };
+
+  const places = await classifyCitations(root, v.citations.map((c) => c.anchorId));
+  const stillHere = v.citations.filter((c) => places.get(c.anchorId)?.state === "here");
+  if (stillHere.length) {
+    return { error: `${stillHere.length} of ${v.citations.length} cited symbols are still in this checkout — that is not a removed subject. Write a new version instead.` };
+  }
+  const offTree = v.citations.filter((c) => places.get(c.anchorId)?.state === "offTree");
+  if (offTree.length) {
+    return { error: `${offTree.length} cited symbol(s) are on another branch, not gone (${offTree.map((c) => places.get(c.anchorId)?.at).join(", ")}). A tombstone here would hide a doc that is correct there.` };
+  }
+
+  await publishDocVersion(b.cfg.path, b.cfg.universe, b.actor, {
+    nodeId, type: v.type, title: v.title, summary: v.summary, body: v.body,
+    citations: v.citations.map((c) => ({ anchorId: c.anchorId, acceptedHashes: [] })),
+    removed: true,
+    createdCommit: headCommit(root), createdBranch: currentBranch(root),
+  });
+  return { ok: true, nodeId, retired: true, rationale, note: "a tombstone version — the doc still resolves on branches that have the code" };
+}
+
 export async function publishLocalDocs(root: string, opts: { dryRun?: boolean } = {}) {
   const b = bind(root);
   if ("error" in b) return b;

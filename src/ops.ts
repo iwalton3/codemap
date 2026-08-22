@@ -366,7 +366,8 @@ export async function reindex(root: string) {
   const files = new Set(anchors.map((a) => a.file)).size;
   return {
     ok: true, anchors: anchors.length, files, commit, branch,
-    ...(submodules.length ? { submodules } : {}),
+    ...(submodules.drift.length ? { submodules: submodules.drift } : {}),
+    ...(submodules.error ? { submoduleError: submodules.error } : {}),
     ...(remapped ? { remapped } : {}),
     ...(retained || recovered ? { orphans: { retained, recovered } } : {}),
   };

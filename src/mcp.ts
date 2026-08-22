@@ -773,6 +773,13 @@ const tools: Tool[] = [
     handler: (a, c) => shared.sharedDocs(c.universe.path, { nodeId: a.nodeId }),
   },
   {
+    name: "retire_shared_doc",
+    description: "Retire a shared doc whose subject was genuinely removed. A PERSON's act — you may not, because it is a closure. What you CAN do is check `shared_docs` for citations reading `retained` or `lost`, verify the code really went away, and leave a shared note on the node saying what you found; a person retires it from there.\n\nNote that `offTree` citations are NOT gone — the symbol is on another branch and the doc is correct there.",
+    inputSchema: obj({ nodeId: { type: "string" }, rationale: { type: "string" } }, ["nodeId", "rationale"]),
+    mutates: true,
+    handler: (a, c) => shared.retireSharedDoc(c.universe.path, a.nodeId, a.rationale),
+  },
+  {
     name: "confirm_shared_doc",
     description: "Record that a shared doc is still true of the code YOU have checked out. This is what lets one version be valid on several branches at once: it adds your body hashes to the version's accepted set rather than writing a new version. Use it when you have read the doc against the code and it holds; write a new version instead when it does not.",
     inputSchema: obj({ nodeId: { type: "string" }, versionId: { type: "string", description: "Defaults to the version that resolves here." } }, ["nodeId"]),

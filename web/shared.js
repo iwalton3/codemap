@@ -145,7 +145,7 @@ class SharedPage extends Component {
         ${when(!!f.pending, () => this.askEl(f))}
         ${when(!!f.relocation && !f.relocation.applied, () => html`
           <div class="askbox">
-            <div><b>${f.relocation.by.principal ?? f.relocation.by}</b> says the target
+            <div><b>${f.relocation.by}</b>${f.relocation.model ? ` (${f.relocation.model})` : ''} says the target
               ${f.relocation.kind === 'moved' ? `moved to ${f.relocation.to}` : 'is gone'}: ${f.relocation.rationale}</div>
             <div class="row">
               <button on-click="${() => this.act('relocate', { id: f.id, kind: f.relocation.kind, to: f.relocation.to, rationale: f.relocation.rationale, apply: true })}"

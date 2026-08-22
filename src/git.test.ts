@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseSubmoduleStatus } from "./git.js";
+import { parseSubmoduleStatus, submoduleDrift } from "./git.js";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 
 test("an in-sync submodule is not reported", () => {
   const out = " d748b4537be9985d747673ced94abe5abd87423a Acme.BaseClasses (heads/main)\n";
@@ -48,4 +52,49 @@ test("a path containing spaces survives the describe-suffix strip", () => {
 test("empty output is not a failure", () => {
   assert.deepEqual(parseSubmoduleStatus(""), []);
   assert.deepEqual(parseSubmoduleStatus("\n\n"), []);
+});
+
+// --- the check failing is not the same as there being nothing to report --------
+
+const tmp = () => mkdtempSync(join(tmpdir(), "codemap-sm-"));
+
+test("a repo with no submodules reports no drift and no error", () => {
+  const root = tmp();
+  try {
+    spawnSync("git", ["init", "-q", "-b", "main"], { cwd: root });
+    const r = submoduleDrift(root);
+    assert.deepEqual(r.drift, []);
+    assert.equal(r.error, undefined, "empty output is a real answer, not a failure");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a directory that is not a repo is not a submodule problem", () => {
+  // A gitless universe is supported and has nothing to be out of sync with.
+  const root = tmp();
+  try {
+    const r = submoduleDrift(root);
+    assert.deepEqual(r.drift, []);
+    assert.equal(r.error, undefined);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a broken submodule gitdir is REPORTED, not silently read as nothing", () => {
+  // The case a snapshot copy produces, and the one the old code swallowed: the
+  // command fails, and a scan that cannot tell whether its submodules are in sync
+  // must say so — the index would otherwise describe code the commit does not ship.
+  const root = tmp();
+  try {
+    spawnSync("git", ["init", "-q", "-b", "main"], { cwd: root });
+    writeFileSync(join(root, ".gitmodules"), '[submodule "lib"]\n\tpath = lib\n\turl = ../lib.git\n', "utf8");
+    mkdirSync(join(root, "lib"), { recursive: true });
+    // A gitlink in the index whose gitdir does not exist.
+    writeFileSync(join(root, "lib", ".git"), "gitdir: /nonexistent/modules/lib\n", "utf8");
+    spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "add", ".gitmodules"], { cwd: root });
+    spawnSync("git", ["update-index", "--add", "--cacheinfo", "160000,0000000000000000000000000000000000000001,lib"], { cwd: root });
+
+    const r = submoduleDrift(root);
+    // Either it reports drift for `lib` or it reports an error — what it must NOT
+    // do is return a clean empty answer, which reads as "everything is in sync".
+    assert.ok(r.drift.length > 0 || !!r.error, `expected drift or an error, got ${JSON.stringify(r)}`);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

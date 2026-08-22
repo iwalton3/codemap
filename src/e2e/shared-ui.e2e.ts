@@ -351,4 +351,75 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
     await again.page.close();
     assert.deepEqual(errors, []);
   });
+
+  // --- relocation: the residue, in the browser ------------------------------------
+
+  test("a finding whose target is on another branch says so, and asks for nothing", async () => {
+    // The distinction the whole classification exists for. `offTree` must render as
+    // information, never as an action item, or the queue fills with other people's
+    // branches.
+    const { appendEvents, mintId } = await import("../eventlog.js");
+    const { findingScope } = await import("../shared-findings.js");
+    const { universeKey } = await import("../sidecar-config.js");
+    const { writeSnapshot } = await import("../store.js");
+    const { readAnchorStore } = await import("../store.js");
+    const izzie = { principal: "izzie@x.com" };
+    const uKey = universeKey(root);
+
+    // A symbol that exists only in a cached snapshot — i.e. on some other branch.
+    const live = (await readAnchorStore(root)).anchors[0]!;
+    await writeSnapshot(root, "cafebabe", "feature/elsewhere", [{ ...live, id: "a_only_on_branch" }], "2026-08-22T00:00:00Z");
+
+    const scope = findingScope(`${uKey}/pr-901`);
+    await appendEvents(side, scope, izzie, [{
+      id: mintId(), kind: "finding.created", subject: "f_offtree", actor: izzie, at: "t",
+      data: { targetKind: "anchor", targetId: "a_only_on_branch", text: "evidence", comment: "about a branch symbol" },
+    }]);
+
+    const { page, errors } = await open(`/u/${universe}/shared/901/?queue=0`);
+    await page.waitForSelector("main");
+    // It is not in the queue, because nobody has to do anything about it.
+    await page.getByRole("button", { name: /showing: needs a person/ }).click();
+    await page.waitForSelector(".frow");
+    const text = await page.textContent(".frow");
+    assert.match(text, /elsewhere/, "labelled as being on another branch");
+    assert.doesNotMatch(text, /target (retained|lost)/, "and NOT as something to fix");
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+
+  test("an agent's relocation proposal is visible and a person applies it", async () => {
+    const { appendEvents, mintId } = await import("../eventlog.js");
+    const { findingScope } = await import("../shared-findings.js");
+    const { universeKey } = await import("../sidecar-config.js");
+    const izzie = { principal: "izzie@x.com" };
+    const opus = { principal: "izzie@x.com", via: { kind: "agent" as const, model: "claude-opus-5" } };
+    const uKey = universeKey(root);
+    const scope = findingScope(`${uKey}/pr-902`);
+
+    const created = { id: mintId(), kind: "finding.created", subject: "f_moved", actor: izzie, at: "t",
+      data: { targetKind: "anchor", targetId: "a_vanished", text: "evidence", comment: "about a renamed symbol" } };
+    await appendEvents(side, scope, izzie, [created]);
+    await appendEvents(side, scope, opus, [{
+      id: mintId(), kind: "finding.relocation", subject: "f_moved", actor: opus, at: "t", after: created.id,
+      data: { kind: "moved", to: anchorId, rationale: "renamed in abc123; same body, new name" },
+    }]);
+
+    const { page, errors } = await open(`/u/${universe}/shared/902/`);
+    await page.waitForSelector(".prbadge.ask");
+    await page.locator(".frow .row").first().click();
+    await page.waitForSelector(".askbox");
+    const box = await page.textContent(".askbox");
+    assert.match(box, /moved to/, "what it proposes");
+    assert.match(box, /abc123/, "and the evidence a person judges it on");
+
+    await page.getByRole("button", { name: /^apply$/ }).click();
+    await page.waitForFunction(() => !document.querySelector(".prbadge.ask"), null, { timeout: 10_000 });
+    await page.close();
+
+    // Applied means applied — the target really moved, and survives a reload.
+    const after = await (await fetch(`${server.url}/api/shared?u=${universe}&pr=902`)).json() as any;
+    assert.equal(after.findings[0].target.id, anchorId, "the finding now points at the new symbol");
+    assert.deepEqual(errors, []);
+  });
 });
