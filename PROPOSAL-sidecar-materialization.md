@@ -462,9 +462,12 @@ fine; claiming materialization as their completion is not.
    was wrong in the other direction.
 7. ~~Authority and merge semantics for local plus shared rows.~~ **Closed: the
    outbox model in §7.** What replaces it as the largest open item is below.
-8. **Immutable per-event compatibility provenance.** Now a prerequisite rather than
-   a cache concern — see §12. This is the real remaining design work, and it
-   overlaps the static review's own P1 about the manifest being mutable.
+8. **Immutable producer provenance on every event, plus immutable derivation
+   receipts on every copied code identity or hash.** Broader than "event envelope
+   provenance" — see §13. This is the real remaining design work; it has outgrown
+   this document and should probably become its own.
+9. `comparableHashes` fails OPEN on an unparseable hash (§13). Small, live, and
+   separable from all of the above.
 
 ## 10. Open questions/revisions
 
@@ -792,3 +795,136 @@ now the prerequisite), grammar identity's absence from hash comparability, and t
 implementation of the outbox semantics themselves. The first two are both really
 "the event envelope does not record enough about how it was derived", which suggests
 they should be designed together rather than separately.
+
+---
+
+## 13. Response to review, round 3
+
+The core correction is accepted and it reframes the whole item: **an event's
+profile describes its producer, not the derivation of every value it carries.**
+
+Verified against the code. `publishLocalDocs` (`ops-shared.ts`) iterates
+`loadNodeVersions` and re-emits each historical version, `citations` and their
+`acceptedHashes` included. Those hashes were minted under whatever scheme was
+current when somebody confirmed them, sometimes years earlier. Stamp that event
+with today's profile and it asserts they were derived today — which is the mutable
+manifest defect exactly, one level further down, and now reachable through an
+ordinary migration rather than only through an upgrade.
+
+So: producer provenance on the envelope, derivation receipts on the values, and
+copied values keep their original receipts. Unknown legacy provenance stays
+explicitly unknown.
+
+### The two receipts are not symmetric
+
+Worth knowing before implementing, because it changes what each has to carry.
+
+**Hashes already self-describe their scheme.** `hashTokens` stamps
+`h<scheme>:sha256:…` (`normalize.ts:49`) and `hashSchemeOf` reads it back, which is
+the entire reason `comparableHashes` works across a bump without any side table.
+
+**Anchor ids do not.** `anchorId` is `"a_" + sha256(file \0 symbolPath \0
+disambiguator).slice(0,16)` (`schema.ts:177`) — no marker, no way to tell a
+scheme-1 id from a scheme-2 one by looking at it. `AnchorReceipt.anchorScheme` is
+therefore load-bearing in a way `HashReceipt.hashScheme` looks redundant.
+
+**But keep `hashScheme` on the receipt anyway**, for a reason that argues against my
+own first instinct here: scheme 1 is encoded as the ABSENCE of a prefix
+(`schemePrefix` returns `""` for 1), so in-band encoding cannot distinguish "scheme
+1" from "not a hash at all". That is a fail-open, and it is live:
+
+```
+hashSchemeOf("garbage")                      -> 1
+comparableHashes("garbage", "h2:sha256:aa")  -> false   (safe: unverifiable)
+comparableHashes("garbage", "sha256:aa")     -> true    (compared, mismatched, STALE)
+```
+
+A malformed value produces a confident `stale` against any scheme-1 hash. An
+explicit receipt field cannot be spoofed by absence, which is exactly the
+fail-closed property asked for. Filed as open question 9; the immediate two-line
+version is to make an unparseable hash answer `unverifiable` rather than scheme 1.
+
+Both receipts need `grammar` regardless, since neither the id nor the hash string
+encodes it.
+
+### Grammar identity as an exact digest is cheap here
+
+The blobs are vendored and committed on purpose, so the digest is already sitting
+in the repo:
+
+```
+tree-sitter-c_sharp.wasm       6f69e1cae44e1c32
+tree-sitter-javascript.wasm    5fb488d0cabb4775
+tree-sitter-python.wasm        16108b50df4ee9a3
+tree-sitter-tsx.wasm           79e5da75ea62855a
+tree-sitter-typescript.wasm    778025db5a8be0e7
+```
+
+Five sha256 prefixes computed at startup, or baked in at build and checked. No new
+dependency, no registry, no version-label negotiation — and `grammars/PROVENANCE.md`
+already records where each came from, so half the mapping exists.
+
+### One field, not two: fold the profile into the writer generation
+
+`writerGeneration` must stay distinct from the profile *as a concept* — two
+machines on identical schemes still need separate writer identities for causality.
+Agreed. But they need not be two fields on the wire.
+
+Define a generation as **(machine identity, compatibility profile)**, so an upgrade
+that changes any derivation-affecting value starts a new generation by definition.
+Then the event carries one short id, the generation record carries machine identity
+and profile, and the profile is content-addressed and immutable as proposed. Two
+machines on the same profile still get distinct generations, which was the point.
+
+Generation churn stays low because the profile holds only derivation-affecting
+parts — schemes and grammar digests — not the release version. Re-vendoring a
+grammar is rare; shipping a release is not.
+
+### Then shard by generation, not by principal
+
+This is the part I would most like challenged, because it makes an existing hole
+disappear rather than patching it.
+
+`readScope` dedupes by id today, and its comment says exactly why: *"`merge=union`
+can legitimately produce the same line twice: it is the case sharding does not
+cover, one person appending from two machines."* That same case is the hole in the
+causality vector — `ownLast` fabricates a causal edge between two genuinely
+concurrent writes by one person, which is recorded in `eventlog.ts` as a known
+limitation.
+
+Shard by generation and one person on two machines writes two files. No union merge
+of anyone's shard, so no dedup case; prefix-closure per writer becomes true rather
+than assumed; and the vector's premise is sound instead of nearly-sound. Attribution
+and independence keep using `principal`, unchanged.
+
+Cost is shard count: generations × scopes rather than principals × scopes. Bounded
+by machines and by rare profile changes, so it stays far from the file-count problem
+the bundling design exists to avoid — but it is the honest tradeoff and it should be
+stated when this is written up.
+
+### Receipt columns do not re-open the cache key
+
+Materialized rows carrying receipt/profile columns is right, and it is worth
+confirming it does not undo §3: those columns are copied verbatim from events, like
+the anchor ids beside them, so nothing in the projection becomes anchors-derived.
+The criterion holds and both scheme numbers stay out of the key. The receipts are
+in fact what lets read-time SQL refuse an incompatible join *without* invalidation.
+
+### Migration
+
+Agreed that append-only history means old incompatible events are there forever, so
+gating must degrade rather than block. Two precedents already exist and should be
+reused rather than reinvented: anchors that leave the tree are retained under
+`@orphan` and reported by `codemap orphans`, and the finding model already has
+relocation events that re-point a citation as a person's act. A current-profile
+re-witness or relocation is the migration path; the incompatible original stays
+readable and explicitly unverifiable.
+
+### Where this leaves the document
+
+The remaining design is now larger than the proposal that surfaced it, and it
+resolves at least five separately-filed problems — mutable manifests, grammar
+comparability, same-principal writer separation, legacy attribution, and cross-scheme
+read behaviour. It should become its own document rather than open question 8 of
+this one. This proposal's steps 0–5 do not depend on it; step 6 and the outbox
+model's *semantic* deduplication do.
