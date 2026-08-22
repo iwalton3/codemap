@@ -16,7 +16,7 @@
  */
 
 import type { NodeVersion, NodeStatus, LogicalNode } from "./schema.js";
-import { comparableHashes } from "./normalize.js";
+import { comparableHashes, sameBody } from "./normalize.js";
 
 /** Status of a version against the live @work anchors (fresh / stale / dangling / removed). */
 export function evalVersion(v: NodeVersion, work: Map<string, string>) {
@@ -31,7 +31,7 @@ export function evalVersion(v: NodeVersion, work: Map<string, string>) {
   for (const c of v.citations) {
     const live = work.get(c.anchorId);
     if (live === undefined) { dangling.push(c.anchorId); continue; }
-    if (c.acceptedHashes.includes(live)) continue;
+    if (c.acceptedHashes.some((h) => sameBody(h, live))) continue;
     // Mismatched — but a hash minted under an older HASH_SCHEME cannot be compared
     // to this one at all, so its inequality says the derivation changed, not the
     // code. Counting that as drift makes a scheme bump flag EVERY doc in the store

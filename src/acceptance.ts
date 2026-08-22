@@ -17,7 +17,7 @@
  */
 
 import type { AcceptedEntry, AcceptanceVia } from "./schema.js";
-import { comparableHashes } from "./normalize.js";
+import { comparableHashes, sameBody, bodyDigest } from "./normalize.js";
 
 export interface Acceptance {
   via: AcceptanceVia;
@@ -81,7 +81,7 @@ function newest(pool: AcceptedEntry[], anc: Ancestry): AcceptedEntry | undefined
 
 export function resolveAcceptance(entries: AcceptedEntry[], liveHash: string | undefined, anc: Ancestry): Acceptance {
   if (!liveHash || !entries.length) return { via: "none" };
-  if (!entries.some((e) => e.bodyHash === liveHash)) {
+  if (!entries.some((e) => sameBody(e.bodyHash, liveHash))) {
     // Nothing matches — but "the code changed" and "we cannot tell" are different
     // answers, and only one of them should turn a green check red. If not one entry
     // is even COMPARABLE with the live hash, every stored hash predates a
@@ -101,7 +101,7 @@ export function resolveAcceptance(entries: AcceptedEntry[], liveHash: string | u
   // is documented to stay conservative: it can neither supersede nor be superseded.
   const rewritten = (e: AcceptedEntry) => e.commit !== null && !anc.known(e.commit);
   const lineage = entries.filter((e) => !placeable(e) || anc.onRef(e.commit));
-  const mine = lineage.filter((e) => e.bodyHash === liveHash);
+  const mine = lineage.filter((e) => sameBody(e.bodyHash, liveHash));
 
   // An acceptance is superseded only by a *descendant* acceptance of a different
   // body: that is a commit on this history which knowingly moved past it. Position
@@ -132,7 +132,7 @@ export function resolveAcceptance(entries: AcceptedEntry[], liveHash: string | u
   }
 
   // Approved somewhere this ref does not descend from — a branch switch.
-  return { via: "replayed", entry: newest(entries.filter((e) => e.bodyHash === liveHash), anc) };
+  return { via: "replayed", entry: newest(entries.filter((e) => sameBody(e.bodyHash, liveHash)), anc) };
 }
 
 /**
@@ -153,12 +153,15 @@ export function resolveAcceptance(entries: AcceptedEntry[], liveHash: string | u
  */
 export function recordAcceptance(entries: AcceptedEntry[], next: AcceptedEntry, cap: number): AcceptedEntry[] {
   // Re-approving the same body on the same commit is a no-op rather than a new row.
-  const kept = entries.filter((e) => !(e.bodyHash === next.bodyHash && e.commit === next.commit));
+  const kept = entries.filter((e) => !(sameBody(e.bodyHash, next.bodyHash) && e.commit === next.commit));
   const out = [...kept, next];
   while (out.length > cap) {
     const counts = new Map<string, number>();
-    for (const e of out) counts.set(e.bodyHash, (counts.get(e.bodyHash) ?? 0) + 1);
-    const dup = out.findIndex((e) => (counts.get(e.bodyHash) ?? 0) > 1);   // oldest-first
+    // Keyed by DIGEST, not by the string: two annotated spellings of one body must
+    // land on one key, or "how many distinct bodies are here" is wrong and the
+    // eviction below drops the wrong entry.
+    for (const e of out) { const k = bodyDigest(e.bodyHash) ?? e.bodyHash; counts.set(k, (counts.get(k) ?? 0) + 1); }
+    const dup = out.findIndex((e) => (counts.get(bodyDigest(e.bodyHash) ?? e.bodyHash) ?? 0) > 1);   // oldest-first
     out.splice(dup >= 0 ? dup : 0, 1);
   }
   return out;

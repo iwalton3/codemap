@@ -24,6 +24,7 @@ import type { Complexity } from "./schema.js";
 import { revParse, mergeBase, hasObject, fetchRef, numstat, readBlobs, isGitRepo, originSlug, prBaseCommit, gitBin } from "./git.js";
 import { splitSpec, buildStory, layerOf, spineRole, type PrStory, type StoryStep, type StoryChapter, backendSpineRole } from "./pr-story.js";
 import { planPromotion, type Promotion } from "./pr-promote.js";
+import { sameBody } from "./normalize.js";
 
 export interface PrRef { owner: string; repo: string; number: number }
 
@@ -633,7 +634,7 @@ export async function prAnchorCode(root: string, input: string, id: string): Pro
   const inBase = baseSnap?.find((a) => a.id === id);
   // Same id on both sides with the same body means the PR did not touch it — which
   // is "not part of this PR", the same answer the worklist lookup used to give.
-  if ((!inHead && !inBase) || (inHead && inBase && inHead.bodyHash === inBase.bodyHash)) {
+  if ((!inHead && !inBase) || (inHead && inBase && sameBody(inHead.bodyHash, inBase.bodyHash))) {
     return { error: `anchor ${id} is not part of PR #${ctx.meta.number}` };
   }
   const item = {

@@ -11,7 +11,7 @@ import { readReviews, writeReviews, readAnchorStore, loadNodes, readSnapshot, sn
 import { resolveAcceptance, recordAcceptance, type Ancestry } from "./acceptance.js";
 import { ACCEPTED_CAP, type AcceptedCitation, type AcceptedEntry, type AcceptanceVia } from "./schema.js";
 import { isAncestor, isGitRepo, currentBranch as gitBranch, hasObject } from "./git.js";
-import { ABSENT_HASH, comparableHashes } from "./normalize.js";
+import { ABSENT_HASH, comparableHashes, sameBody } from "./normalize.js";
 import { resolveActor, actorLabel } from "./identity.js";
 import { indexFile } from "./repo.js";
 import { headCommit } from "./git.js";
@@ -453,7 +453,7 @@ export function witnessDrift(witnesses: BugWitness[], live: Map<string, string>)
   const out: AnchorChange[] = [];
   for (const w of witnesses) {
     const now = live.get(w.anchorId) ?? ABSENT_HASH;
-    if (now === w.bodyHash) continue;
+    if (sameBody(now, w.bodyHash)) continue;
     // Scheme first: an old-scheme witness differs from a live hash for a reason that
     // has nothing to do with the code, and calling that drift re-opens every review
     // in the store the moment normalization changes.

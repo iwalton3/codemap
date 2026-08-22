@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { canonicalize, hashTokens, hashSchemeOf, comparableHashes, ABSENT_HASH } from "./normalize.js";
+import { canonicalize, hashTokens, hashSchemeOf, comparableHashes, sameBody, bodyDigest,
+  derivationMark, ABSENT_HASH } from "./normalize.js";
 import { anchorId, HASH_SCHEME } from "./schema.js";
 import { fixtureHash } from "./fixture-hash.js";
 
@@ -128,4 +129,47 @@ test("the absent sentinel stays comparable to everything, including junk", () =>
   // CHANGED rather than unverifiable whatever it is compared against.
   assert.equal(comparableHashes(ABSENT_HASH, "garbage"), true);
   assert.equal(comparableHashes(ABSENT_HASH, ABSENT_HASH), true);
+});
+
+// --- body identity, which is not string identity ---------------------------------
+
+const D = "a".repeat(64), D2 = "b".repeat(64), FP = "deadbeef1234";
+
+/**
+ * A hash string is a digest plus annotations about how it was derived, so two
+ * strings can differ while describing byte-for-byte the same token stream.
+ * Comparing the strings then reports drift for a change to the annotation — the
+ * failure this codebase keeps re-finding under new names.
+ */
+test("the same body under different annotations is the same body", () => {
+  assert.equal(sameBody(`h2:sha256:${D}`, `h2:${FP}:sha256:${D}`), true);
+  assert.equal(sameBody(`h2:${FP}:sha256:${D}`, `h2:0badf00d5678:sha256:${D}`), true,
+    "an identical digest means an identical token stream, whoever produced it");
+  assert.equal(sameBody(`h2:sha256:${D}`, `h2:sha256:${D2}`), false, "different bodies");
+  assert.equal(sameBody(`sha256:${D}`, `h2:sha256:${D}`), false, "a scheme difference is not comparable");
+});
+
+/**
+ * The exact-match shortcut is load-bearing, not an optimization: `ABSENT_HASH` is
+ * deliberately not a digest, so it parses to nothing and would otherwise fail to
+ * equal itself — turning "no code here, still no code here" into drift.
+ */
+test("the absent sentinel equals itself", () => {
+  assert.equal(sameBody(ABSENT_HASH, ABSENT_HASH), true);
+  assert.equal(sameBody(ABSENT_HASH, `h2:sha256:${D}`), false);
+});
+
+/**
+ * Read, never written. Nothing emits an annotated hash yet; a reader that could
+ * not parse one would mishandle every hash the day something starts.
+ */
+test("an annotation is parsed without being minted", () => {
+  assert.equal(derivationMark(`h2:${FP}:sha256:${D}`), FP);
+  assert.equal(derivationMark(`h2:sha256:${D}`), null);
+  assert.equal(bodyDigest(`h2:${FP}:sha256:${D}`), D, "the digest survives the annotation");
+  assert.equal(bodyDigest(`h2:sha256:${D}`), D);
+  assert.equal(bodyDigest("garbage"), null);
+  // `sha256` is not hex, so the un-annotated form cannot be misread as annotated.
+  assert.equal(derivationMark(hashTokens(["a"])), null, "nothing this build mints carries one");
+  assert.equal(hashSchemeOf(`h2:${FP}:sha256:${D}`), 2, "the scheme still reads through it");
 });

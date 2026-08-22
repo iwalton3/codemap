@@ -63,7 +63,7 @@ export function hashTokens(tokens: string[]): string {
  * The prefix is deliberately not bounded here; `hashSchemeOf` decides what is a
  * legal scheme number, so the rule lives in one place rather than half in a regex.
  */
-const HASH_FORM = /^(?:h(\d+):)?sha256:[0-9a-f]{64}$/;
+const HASH_FORM = /^(?:h(\d+):)?(?:([0-9a-f]{8,32}):)?sha256:([0-9a-f]{64})$/;
 
 /**
  * Which derivation minted a hash, or NULL when the string is not one this code
@@ -105,6 +105,58 @@ export function comparableHashes(a: string, b: string): boolean {
   // Unparseable is not comparable to anything, including another unparseable value:
   // two things nobody can read are not thereby known to be equal.
   return scheme !== null && scheme === hashSchemeOf(b);
+}
+
+/**
+ * The digest a hash carries, with any annotation stripped — or null if it is not a
+ * hash this code could have minted.
+ *
+ * `HASH_FORM`'s second group. Kept separate from `sameBody` because a Map or Set
+ * keyed by a hash string wants THIS, not an equality predicate: two spellings of
+ * one body must land on one key or a count of distinct bodies is wrong.
+ */
+export function bodyDigest(hash: string): string | null {
+  return HASH_FORM.exec(hash)?.[3] ?? null;
+}
+
+/**
+ * The derivation annotation a hash carries, if any.
+ *
+ * READ but never written, on purpose. Nothing emits an annotated hash yet — see
+ * `docs/decision-receipts-vs-prefix.md`, where whether to is still open — but a
+ * reader that cannot parse one would mishandle every hash the day something
+ * starts. Understanding a form before producing it is the same two-phase shape the
+ * sidecar protocol cutover settled on, and here it costs one capture group.
+ *
+ * Unambiguous against the un-annotated form because the group is hex and `sha256`
+ * is not: `h2:sha256:…` cannot read `sha256` as an annotation.
+ */
+export function derivationMark(hash: string): string | null {
+  return HASH_FORM.exec(hash)?.[2] ?? null;
+}
+
+/**
+ * Do two hashes describe the same body?
+ *
+ * Not `===`, and the difference is the whole reason this exists. A hash string is
+ * a digest plus annotations about how it was derived, and annotations may be added
+ * without the digest moving — so two strings can differ while describing byte-for-
+ * byte the same token stream. Comparing the strings would then report drift for a
+ * change to the annotation, which is the failure this codebase keeps re-finding
+ * under different names.
+ *
+ * The exact-match shortcut is load-bearing rather than an optimization: it is what
+ * makes `ABSENT_HASH === ABSENT_HASH` answer true, since the sentinel is
+ * deliberately not a digest and would otherwise parse to null.
+ *
+ * INSERTING into a set is a different question and must not use this — see
+ * `docs/decision-receipts-vs-prefix.md`. A grow-only set that dedupes by body can
+ * never acquire a better-annotated form of a hash it already holds.
+ */
+export function sameBody(a: string, b: string): boolean {
+  if (a === b) return true;
+  const da = bodyDigest(a);
+  return da !== null && da === bodyDigest(b) && hashSchemeOf(a) === hashSchemeOf(b);
 }
 
 /** Hash of an arbitrary string (used for ids / disambiguators). */

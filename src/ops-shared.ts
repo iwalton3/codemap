@@ -9,7 +9,7 @@
 
 import type { Actor } from "./schema.js";
 import { requireActor, isAgentActor } from "./identity.js";
-import { comparableHashes } from "./normalize.js";
+import { comparableHashes, sameBody } from "./normalize.js";
 import { classifyCitations } from "./citation-state.js";
 import { resolveSidecar, scopeFor, type SidecarConfig } from "./sidecar-config.js";
 import { originSlug, headCommit, currentBranch } from "./git.js";
@@ -427,7 +427,7 @@ export async function sharedDocs(root: string, opts: { nodeId?: string } = {}) {
         citations: v.citations.map((c) => {
           const now = live.get(c.anchorId);
           const present = now !== undefined;
-          const matches = present && c.acceptedHashes.includes(now);
+          const matches = present && c.acceptedHashes.some((h) => sameBody(h, now!));
           // A citation confirmed under an older HASH_SCHEME cannot be compared to
           // this body at all, and calling that DRIFT is the false staleness the
           // scheme exists to prevent: a migration re-hashes everything, so every
@@ -513,7 +513,7 @@ export async function confirmSharedDoc(root: string, nodeId: string, versionId?:
   const added: string[] = [];
   for (const c of v.citations) {
     const hash = live.get(c.anchorId);
-    if (!hash || c.acceptedHashes.includes(hash)) continue;
+    if (!hash || c.acceptedHashes.some((h) => sameBody(h, hash))) continue;
     await acceptDocHash(b.cfg.path, b.cfg.universe, b.actor, nodeId, v.versionId, c.anchorId, hash);
     added.push(c.anchorId);
   }

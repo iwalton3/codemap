@@ -21,6 +21,7 @@ import { loadLanes, LANE_POLICY } from "./lanes.js";
 import { markReviewedBatch, reviewStatesFor } from "./reviews.js";
 import { readViewedImports, writeViewedImport } from "./store.js";
 import { withLock } from "./lock.js";
+import { sameBody } from "./normalize.js";
 
 function gh(args: string[]): { ok: boolean; out: string; err: string } {
   const r = spawnSync("gh", args, { encoding: "utf8", maxBuffer: 1 << 28, timeout: 120_000 });
@@ -124,7 +125,7 @@ export async function changedSymbolsIn(
   for (const [path, src] of headBlobs) {
     const before = new Map((await index(baseBlobs.get(path) ?? "", path)).map((a) => [a.id, a.bodyHash]));
     for (const a of await index(src, path)) {
-      if (before.get(a.id) === a.bodyHash) continue;   // unchanged by this PR
+      if (sameBody(before.get(a.id) ?? "", a.bodyHash)) continue;   // unchanged by this PR
       ids.push(a.id);
       hashes.set(a.id, a.bodyHash);
     }

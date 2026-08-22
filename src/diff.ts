@@ -21,6 +21,7 @@ import { reviewStatesFor } from "./reviews.js";
 import { reviewTriageFor, coverageFor, type Coverage } from "./triage.js";
 import { revParse, headCommit, currentBranch, showFile } from "./git.js";
 import { grammarForPath } from "./grammars.js";
+import { sameBody } from "./normalize.js";
 
 const HL_LANG: Record<string, string> = { c_sharp: "csharp", python: "python", javascript: "javascript", typescript: "typescript", tsx: "typescript" };
 const langFor = (file: string) => HL_LANG[grammarForPath(file) ?? ""] ?? "plaintext";
@@ -96,7 +97,7 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
     // here whatever they do elsewhere. Marking those unverifiable would flood a
     // grammar bump with every symbol it did not actually affect — which is the
     // failure this whole path exists to avoid, arrived at from the other side.
-    if (!b || b.bodyHash === a.bodyHash) continue;
+    if (!b || sameBody(b.bodyHash, a.bodyHash)) continue;
     // The hashes differ. Whether that is DRIFT depends on whether the two sides
     // were derived the same way — a re-vendored grammar tokenizes unchanged code
     // differently, and calling that "changed" reports the whole repository as

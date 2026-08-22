@@ -104,9 +104,32 @@ the local exposure — which is the larger one — closes without the sidecar sh
 - If `fp` collisions matter. An 8-hex fingerprint is 4 billion; a collision means
   two different derivations read as one and a real drift is reported as clean.
   16 hex is free and removes the question — there is no reason to be clever here.
-- If the 16-site refactor turns out to have a site where digest-equality is
-  genuinely wrong rather than merely different. I have not found one, but I have
-  read them rather than tested them.
+- ~~If a site turns out where digest-equality is genuinely wrong.~~ **Checked, and
+  two turned up** — but they are not comparisons, which is the part I had wrong.
+  Fourteen of the sixteen are genuine comparisons and digest-equality is right at
+  every one. The other two are a *set insert* and a *map key*:
+
+  - `shared-docs.ts:96` — `if (!acceptedHashes.includes(h)) push(h)`. Under
+    digest-equality an annotated hash whose digest is already present would be
+    skipped, so the grow-only accepted set would never acquire the annotation and
+    that doc would stay unable to distinguish derivation drift from code drift,
+    permanently. Insertion wants EXACT identity, not body identity.
+  - `acceptance.ts:160` — the cap-eviction heuristic keys a `Map` by the raw hash
+    string to count distinct bodies. Two annotated forms of one body would count
+    as two, and the "once every body is down to one entry" rule would misjudge
+    what to evict. Keying wants the digest.
+
+  `recordAcceptance` (`acceptance.ts:156`) is fine and worth naming as the
+  contrast: it filters matching entries and then appends the new one, so an
+  annotated entry *replaces* a legacy one. It upgrades where the doc set would
+  not.
+
+  **So a single `sameBody` helper is the wrong shape.** Comparison, insertion and
+  keying are three operations on a hash string and conflating them is precisely
+  how a format change goes wrong quietly. The helper is a small family:
+  `sameBody` for comparison, the digest for keying, exact strings for insertion —
+  and the last one has to be a deliberate choice at each call site rather than a
+  default.
 - If anchor-id receipts turn out to need the same plumbing as hash receipts anyway,
   in which case building both is cheaper than building two mechanisms.
 

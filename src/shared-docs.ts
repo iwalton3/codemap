@@ -93,6 +93,13 @@ export function foldDocs(events: LogEvent[]): Map<string, SharedDoc> {
       // against code it never claimed anything about would make it read `fresh`
       // for a reason nobody wrote down.
       if (!cite) continue;
+      // EXACT, deliberately — not `sameBody`. This is an insert, not a comparison.
+      // A hash string is a digest plus annotations about how it was derived, and
+      // deduping by body would mean a better-annotated form of a hash already in
+      // the set is silently dropped: the set could never improve, and this doc
+      // would stay unable to tell derivation drift from code drift, permanently.
+      // Membership questions elsewhere DO use `sameBody`; see
+      // docs/decision-receipts-vs-prefix.md.
       if (!cite.acceptedHashes.includes(bodyHash)) cite.acceptedHashes.push(bodyHash);
     }
   }

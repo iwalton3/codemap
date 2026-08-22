@@ -51,6 +51,7 @@ import { applyIndexUpdate } from "./sync.js";
 import { grammarForPath } from "./grammars.js";
 import { reviewStatus, reviewStatesFor, anchorReviewMap, changedSince as reviewsChangedSince, deriveCodeReview, revertedMarks, markReviewedBatch, unmarkReviewed, unmarkCovered, type Attestation, type ReviewPair, type DerivedCodeReview } from "./reviews.js";
 import { setTriage as triageSet, clearTriage as triageClear, triageStatus, reviewTriageFor, deriveTriage as triageDerive, coverageFor as triageCoverageFor, rollupCoverage, tripwires as triageTripwires, triageDrift } from "./triage.js";
+import { sameBody, ABSENT_HASH } from "./normalize.js";
 
 const HL_LANG: Record<string, string> = { c_sharp: "csharp", python: "python", javascript: "javascript", typescript: "typescript", tsx: "typescript" };
 const langFor = (file: string) => HL_LANG[grammarForPath(file) ?? ""] ?? "plaintext";
@@ -235,7 +236,7 @@ export async function dashboard(root: string) {
   let openBugs = 0, possiblyFixed = 0;
   for (const b of bugStore.bugs) {
     bugCounts[b.status] = (bugCounts[b.status] ?? 0) + 1;
-    if (b.status === "open") { openBugs++; if (b.witnesses.some((w) => live.get(w.anchorId)?.bodyHash !== w.bodyHash)) possiblyFixed++; }
+    if (b.status === "open") { openBugs++; if (b.witnesses.some((w) => !sameBody(live.get(w.anchorId)?.bodyHash ?? ABSENT_HASH, w.bodyHash))) possiblyFixed++; }
   }
 
   const openQuestions = annStore.annotations.filter((a) => a.kind === "question" && !a.resolved).length;
@@ -2414,7 +2415,7 @@ export async function nodeVersions(root: string, id: string) {
     versions: versions.map((v) => {
       const stale = v.removed
         ? v.citations.filter((c) => work.has(c.anchorId)).map((c) => c.anchorId)
-        : v.citations.filter((c) => work.has(c.anchorId) && !c.acceptedHashes.includes(work.get(c.anchorId)!)).map((c) => c.anchorId);
+        : v.citations.filter((c) => work.has(c.anchorId) && !c.acceptedHashes.some((h) => sameBody(h, work.get(c.anchorId)!))).map((c) => c.anchorId);
       const dangling = v.removed ? [] : v.citations.filter((c) => !work.has(c.anchorId)).map((c) => c.anchorId);
       const status = v.generatedBy ? "generated" : v.removed ? "removed" : dangling.length ? "dangling" : stale.length ? "stale" : "fresh";
       return {
