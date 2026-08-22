@@ -71,6 +71,22 @@ interface DerivationTag {
 Four values, carried **inline** on everything derived. No registry, no
 content-addressed profile object, no reference to resolve.
 
+**Two of the three inputs are covered automatically; the third is discipline.** A
+body hash is decided by the grammar, the runtime, and *our own* tokenization —
+`indexer.ts`'s walk and `normalize.ts`'s canonicalization. The first two are opaque
+third-party artifacts where any change might matter and nobody can tell, so they
+are digested. The third cannot be: digesting our own source would invalidate every
+hash in every store on every release, and only a person can say which edits to it
+actually move a token stream. It is `hashScheme`, bumped by hand.
+
+That asymmetry is right and it is also the weak link, because a manual bump can be
+forgotten — and a forgotten one is silent and total. Demonstrated rather than
+assumed: changing one separator in `canonicalize` moves every hash while
+`parserIntegrity` stands still, so `comparableDerivation` calls the pair comparable
+and the whole store reads as drift. `normalize.test.ts` now pins the canonical
+output with a golden vector, which turns "did you mean to bump `HASH_SCHEME`?" into
+a question somebody is forced to answer rather than one they might not think to ask.
+
 Indirection through a published profile saved bytes and cost: an object that must
 be published before the values referencing it, a registry that must be
 materialized, an ordering constraint between them, and two reader states —

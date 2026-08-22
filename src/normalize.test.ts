@@ -177,3 +177,35 @@ test("an annotation is parsed without being minted", () => {
   assert.equal(derivationMark(hashTokens(["a"])), null, "nothing this build mints carries one");
   assert.equal(hashSchemeOf(`h2:${FP}:sha256:${D}`), 2, "the scheme still reads through it");
 });
+
+/**
+ * A golden vector for OUR half of the derivation.
+ *
+ * The `DerivationTag` covers two of the three things that decide a body hash — the
+ * grammar blob and the tree-sitter runtime — automatically, by digesting the
+ * artifacts. It cannot cover the third, which is this file and the indexer walk:
+ * digesting our own source would invalidate every hash in every store on every
+ * release, and only a person can tell which changes to it actually move a token
+ * stream. That third input is guarded by `HASH_SCHEME`, bumped by hand.
+ *
+ * Which makes it the weak link, because a manual bump can be forgotten — and a
+ * forgotten one is silent and total: every hash moves, the tag says nothing
+ * changed, so `comparableDerivation` calls them comparable and the entire store
+ * reads as drift. Demonstrated by changing one separator in `canonicalize` and
+ * watching the hash move while the tag stood still.
+ *
+ * So this pins the output. Change how tokens are canonicalized and this fails,
+ * which turns "did you mean to bump HASH_SCHEME?" into a question somebody is
+ * forced to answer rather than one they might not think to ask. If the change was
+ * deliberate, bump the scheme and update the vector in the same commit.
+ */
+test("canonicalization is pinned, so changing it cannot be silent", () => {
+  assert.equal(
+    hashTokens(["public", "void", "Apply", "(", ")"]),
+    "h2:sha256:c4b0a002464aa2e6e5b86bb22d1a6e06e510d70abcb22ed1c33d4645eeb07b12",
+  );
+  // Length-prefixed, so two tokens cannot be confused with one containing the
+  // separator — the property the prefix exists for, stated as a test.
+  assert.notEqual(hashTokens(["a", "b"]), hashTokens(["a:b"]));
+  assert.notEqual(hashTokens(["a", "b"]), hashTokens(["ab"]));
+});
