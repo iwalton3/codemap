@@ -161,7 +161,6 @@ them:
 ```
 key(scope) = sorted [ (filename, size, mtime_ns) ] over scope/*.ndjson
            + MATERIALIZER_VERSION      -- bumped when fold or projection changes
-           + ANCHOR_SCHEME             -- the rows are keyed BY anchor id; see below
            + resolved sidecar identity -- so pointing at another sidecar cannot reuse rows
            + universe qualification
 ```
@@ -170,12 +169,27 @@ The file half is a change **signal**, not a content address: it does not identif
 the input set, it detects that the input set moved. Everything else in this
 document assumes only the latter, but the distinction should not be blurred.
 
-`ANCHOR_SCHEME` is in the key because the materialized rows store anchor ids
-(`shared_doc_citation.anchor_id`, `shared_finding.target_id`). A scheme bump
-rewrites the anchor table with different ids while every shard stays
-byte-identical — unchanged files, no re-fold, and every citation edge now joins to
-nothing. `snapshots` already carries a `scheme` column for exactly this, and one
-written under another value reads as NOT CACHED.
+### Neither scheme number belongs in this key
+
+An earlier round of this document put `ANCHOR_SCHEME` in the key, arguing that the
+rows store anchor ids and a bump rewrites the anchor table underneath them.
+**Withdrawn.** The criterion that settles it covers both scheme numbers at once:
+
+> A scheme belongs in the cache key **if and only if the projection stores
+> something DERIVED from the anchors table.**
+
+The projection stores anchor ids *copied verbatim from events* and nothing derived;
+the join to `anchors` happens at read time. So a scheme bump changes the join
+result and cannot change the rows — re-folding after one produces byte-identical
+output. Invalidating on it buys nothing and costs a rebuild. The same reasoning
+keeps `HASH_SCHEME` out: accepted hash strings are preserved verbatim and compared
+at read time by `comparableHashes`.
+
+**The trap this opens:** §6 proposes one authoritative document verdict. That
+verdict must be **computed at read time from the join, never stored as a column.**
+The moment a `where`/`fresh` column exists for indexed filtering, both scheme
+numbers re-enter the key by the criterion above — and the failure would be silent,
+because the rows would look perfectly well-formed.
 
 Stored on the scope row; re-stat on read. A scope has one file per teammate, so
 this is a handful of `stat` calls — microseconds — and it is correct across
@@ -328,21 +342,63 @@ Each step is shippable and independently revertible.
    `shared-docs.ts`'s existing import of `winningVersionAt` — and this repo's
    import cycles fail with no diagnostic at all.
 1. **Tables, key, re-fold-on-miss, behind `store.ts`.** No caller changes.
-   The fold stays the authority; the view is pure cache, so a bug here is slow, not
-   wrong. Ship with an equivalence test: fold N random event sets directly and
-   assert the view matches, including after inserting a late event.
+   The fold stays the authority and the view is rebuildable — which is *not* the
+   same as correctness-irrelevant. A materializer bug returns wrong state, and
+   "it's only a cache" is exactly the sentence that would stop someone testing it
+   properly. What protects it is the equivalence test and transactional
+   replacement, not its disposability: fold N random event sets directly and assert
+   the projection matches, including after a late parent arrives and reorders the
+   scope.
 2. **Point `ops-shared` reads at the store functions.** `ops-shared` becomes thin,
    which is what it should have been.
 3. **Lift the citation edges and do the anchor join in SQL.** Delete `liveHashes`
    and the `Set`-of-everything in `classifyCitations`. This is the performance win.
 4. **Single doc verdict from `evalVersion`;** delete the three re-derivations.
 5. **Expose shared docs/notes through the ordinary read ops.** The consistency win.
-6. *(Separate decision)* Unify `Bug`/`SharedFinding` and `Annotation`/`SharedNote`,
-   per the original proposal's Decision 5. Not required by 1–5 and much riskier —
-   the shapes genuinely differ (corroboration, contest residue, agent ratchet vs
-   severity/witness/status). Deferring it is not deferring the benefit.
+6. *(Separate decision)* Unify the **machinery** behind `Bug`/`SharedFinding` and
+   `Annotation`/`SharedNote` — Actor and compatibility provenance, witnesses and
+   freshness, threads and corroboration, external refs, the event envelope, one
+   acknowledgement surface — while leaving the entities distinct. Their ratchets
+   and shapes genuinely differ and merging them would flatten that. Not required by
+   0–5; deferring it is not deferring the benefit.
 
 Steps 0–1 pay for themselves; steps 3 and 4 are the ones the stated goals ask for.
+
+### Authority: the outbox model (prerequisite for step 5, not part of it)
+
+With a sidecar configured, **its local event log is authoritative for shared
+entities from the moment of the write** — before any git sync. SQLite's shared
+tables are projections of it and nothing else. Without a sidecar, today's local
+behaviour is authoritative and none of this applies.
+
+Local-only rows written before publication become an explicitly marked **pending
+overlay**, not a second authority. Ordinary reads union the projection with
+pending rows; a pending row disappears the moment its event materializes; a failed
+publication stays visible as pending *with a warning* rather than vanishing or
+silently masquerading as shared.
+
+That makes exact deduplication the load-bearing requirement, and it is broken
+today: `publishDocVersion` (`shared-docs.ts:149`) mints `"nv_" + mintId()`
+unconditionally, discarding the caller's version id. So the same content has one id
+locally and a different one on the sidecar, and nothing can tell the copies apart.
+
+It also stamps `createdAt: new Date().toISOString()`, which `publishLocalDocs`
+never overrides — so backfilling a node's history rewrites every version's
+authorship time to the moment of migration. `selectWinner` (`store.ts:402`)
+tiebreaks equal-badness versions on `createdAt`, so after a backfill that tiebreak
+ranks by *publication* order rather than authorship. It happens to agree while the
+backfill iterates in order, which is exactly the kind of accident that survives
+until someone republishes.
+
+**Publication must preserve the source version id and the original `createdAt`.**
+Both are one-line changes and both are prerequisites for the overlay to work.
+
+For concurrent docs: two independently written versions coexist. If both are
+equally fresh against the same code and their content differs, that is
+**contested**, and should surface as such rather than resolving to the newest
+timestamp. Findings already have `contested` for precisely this; docs have no
+equivalent, and inventing a silent winner is the failure the finding model was
+built to avoid.
 
 **Completeness.** Sync materializes every changed scope for the universe, rather
 than each query materializing what it needs. It is bounded by what the pull brought,
@@ -380,11 +436,11 @@ fine; claiming materialization as their completion is not.
    §10: physical.** One transactional `replaceScope(scope, fingerprint, rows)`, no
    per-row API, scope ownership on every table so replacement cannot orphan
    citation edges.
-2. Is the file fingerprint the right change signal, or should the sidecar get a
-   real lock first and use a git sha? The fingerprint works without the lock, which
-   is why I chose it, but it is the weaker guarantee. §3 now argues the determinism
-   of the fold makes the missing lock tolerable *for the cache*; that argument does
-   not extend to the git operations themselves.
+2. ~~Fingerprint or lock?~~ **Closed: both, for different jobs.** The fingerprint
+   sees uncommitted and externally appended events, which a git sha cannot; the
+   lock protects one clone's mutable index, merge state and commits, which the
+   fingerprint cannot. Neither substitutes for the other, and the
+   fingerprint–fold–refingerprint loop stays the cache protocol.
 3. ~~Should `needs_ack` and `contested` be stored columns at all?~~ **Closed by
    §10: yes**, and for the reason that resolves the `Disposition` worry — under
    physical enforcement nothing but a whole-scope replacement can write them, so
@@ -393,16 +449,22 @@ fine; claiming materialization as their completion is not.
    no.** The scenario tests keep their coverage through the pure folds or an
    in-memory materializer (`node:sqlite` takes `:memory:`); a DB-free production
    path would preserve the second read implementation this exists to remove.
-5. Step 6 (entity unification) — worth doing at all, or is the materialized view
-   the right permanent bridge between two genuinely different entities?
-6. **Does `HASH_SCHEME` belong in the cache key alongside `ANCHOR_SCHEME`?** My
-   reading is no: ids survive a hash-scheme bump, and `comparableHashes` already
-   draws the boundary at read time. But it is the same class of mistake as leaving
-   `ANCHOR_SCHEME` out, and I would rather be told than assume.
-7. Authority and merge semantics for local plus shared rows (§10). The largest
-   remaining unknown, and a prerequisite for step 5 rather than part of it —
-   including what a *conflict* between a local and a shared version looks like to a
-   reader. Findings have `contested` for this; docs have nothing equivalent.
+5. ~~Entity unification — worth doing at all?~~ **Closed: unify the machinery,
+   keep the entities.** `Bug`/`SharedFinding` and `Annotation`/`SharedNote` have
+   genuinely different ratchets and shapes, and merging them would flatten that.
+   What should be shared is the plumbing: Actor and immutable compatibility
+   provenance, witnesses and freshness evaluation, threads and corroboration,
+   external references, the event envelope and materialization, and one combined
+   acknowledgement surface. That is the original proposal's direction, correctly
+   read — step 6 is rewritten accordingly.
+6. ~~Does `HASH_SCHEME` belong in the cache key?~~ **Closed: no — and neither does
+   `ANCHOR_SCHEME`.** See §3; one criterion covers both, and my answer last round
+   was wrong in the other direction.
+7. ~~Authority and merge semantics for local plus shared rows.~~ **Closed: the
+   outbox model in §7.** What replaces it as the largest open item is below.
+8. **Immutable per-event compatibility provenance.** Now a prerequisite rather than
+   a cache concern — see §12. This is the real remaining design work, and it
+   overlaps the static review's own P1 about the manifest being mutable.
 
 ## 10. Open questions/revisions
 
@@ -659,3 +721,74 @@ The precedent is right there — `snapshots` already carries a `scheme` column, 
 a snapshot written under another value reads as NOT CACHED. The materialized scopes
 should do the same with `ANCHOR_SCHEME`. Worth a second opinion on whether
 `HASH_SCHEME` genuinely stays out.
+
+---
+
+## 12. Response to review, round 2
+
+Accepted in full, and one of the corrections lands on something I contributed last
+round rather than on the original draft.
+
+### The `ANCHOR_SCHEME` correction goes further than stated
+
+The point made — that including `ANCHOR_SCHEME` in the cache key is *necessary but
+not sufficient*, because historical events still carry old-scheme ids and
+re-folding reproduces them — is right, and following it through says the key does
+not need it **at all**.
+
+Re-folding after a scheme bump produces byte-identical rows: the projection stores
+ids copied verbatim from events, and the join to `anchors` happens at read time. So
+invalidating on the scheme buys nothing and costs a rebuild — which is exactly the
+argument made for keeping `HASH_SCHEME` out. One criterion covers both, and §3 now
+carries it: *a scheme belongs in the key iff the projection stores something
+derived from the anchors table.* Today nothing is.
+
+I have withdrawn my own addition rather than leaving it standing with a caveat, and
+recorded the trap it exposes: §6's single doc verdict must be computed at read time.
+Store it as a column and both scheme numbers re-enter the key, silently, because the
+rows would still look well-formed.
+
+What the scheme problem actually needs is what was said: **immutable per-event or
+per-writer-generation compatibility provenance**, so a reader on scheme 2 can tell
+that an event's target id was minted under scheme 1 and report it `unverifiable`
+rather than `lost`. That is the same shape as the `HASH_SCHEME` → `unverifiable`
+work already landed for review marks and doc status, and it is the same defect the
+static review filed as P1 *"compatibility metadata is mutable and relabels
+historical events"* — the manifest is per-principal and overwritten in place, so a
+writer's upgrade silently relabels their own history. One fix, two findings. It is
+now open question 8, and the largest remaining item after authority.
+
+### Verified while writing up the outbox model
+
+Two things that strengthen the dedup requirement, both checked rather than assumed:
+
+- `publishDocVersion` (`shared-docs.ts:149`) mints `"nv_" + mintId()`
+  unconditionally and discards the caller's version id. The same content therefore
+  has one id locally and another on the sidecar, so exact deduplication is not
+  merely unimplemented — it is currently impossible.
+- It also stamps `createdAt: new Date()`, which `publishLocalDocs` never overrides.
+  Backfilling a node rewrites every historical version's authorship time to the
+  migration moment, and `selectWinner` (`store.ts:402`) tiebreaks equal-badness
+  versions on `createdAt` — so that tiebreak silently becomes publication order.
+  It agrees with authorship order only because the backfill happens to iterate in
+  order, which is the kind of accident that survives until the first republish.
+
+Both are one-line fixes and both are prerequisites for the overlay, so they are
+named in §7 rather than left to be discovered during step 5.
+
+### On "a bug here is slow, not wrong"
+
+Fair, and worth more than a wording fix. That sentence would have discouraged
+exactly the testing the design depends on — a confident claim of harmlessness
+raises the reader's prior that the thing below it is safe, which is how a wrong
+comment ends up protecting the bug it sits on. §7 now says the view is rebuildable,
+that rebuildable is not correctness-irrelevant, and that what protects it is the
+equivalence test and transactional replacement.
+
+### Remaining
+
+With 2, 5, 6 and 7 closed, the open list is: immutable compatibility provenance (8,
+now the prerequisite), grammar identity's absence from hash comparability, and the
+implementation of the outbox semantics themselves. The first two are both really
+"the event envelope does not record enough about how it was derived", which suggests
+they should be designed together rather than separately.
