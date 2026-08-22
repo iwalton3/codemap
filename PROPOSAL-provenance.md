@@ -2,9 +2,9 @@
 
 Status: **draft.** Split out of `PROPOSAL-sidecar-materialization.md`, where it had
 grown from an open question into the larger of the two designs. Four review rounds
-are folded in; §7 records what each round changed.
+are folded in; §9 records what each round changed.
 
-Reviewed against `worktree-shared-review-hashscheme` at `6d4c40d`.
+Reviewed against `worktree-shared-review-hashscheme` at `f723e78`.
 
 ## 1. The rule
 
@@ -117,11 +117,36 @@ concurrent cache writes benign) does not extend to this.
 id is unexpected rather than routine — so if the same id appears with differing
 content, quarantine it instead of silently taking the first copy.
 
-**Legacy events without a generation** must not be collapsed into one synthetic
-writer per principal: that recreates the false edge this exists to remove. Treat an
-explicit `after` as authoritative and otherwise degrade conservatively, accepting
-extra contests rather than inventing causality. An unnecessary contest asks a
-person a question; an invented causal edge answers one for them.
+**Legacy events without a generation** keep their principal as authoritative
+ATTRIBUTION — the author is not what is unknown. What is unknown is the writer
+generation and therefore the implicit causality. So:
+
+- Use explicit `after` edges only; infer nothing from a shared principal.
+- Treat otherwise-unordered contestable writes as concurrent.
+- Never collapse a principal's legacy events into one synthetic writer, which
+  recreates the false edge this exists to remove.
+- Legacy values with no receipt stay `unverifiable`. Do not rewrite them with
+  present-day provenance — that is the §2 defect, performed deliberately.
+
+An unnecessary contest asks a person a question; an invented causal edge answers
+one for them.
+
+### The seed
+
+Store a random clone-local seed under the sidecar's real git directory, located
+with `git rev-parse --git-path` so it lands correctly in a worktree or a separate
+`.git` file, created atomically with restrictive permissions.
+
+It is deliberately **not** in the tree and **not** derivable. Losing it — a wiped
+directory, a restored backup — correctly starts a new generation, which is cheap;
+old events stay attributable through their principals. Reconstructing it from the
+principal, the hostname, or old events would defeat the entire point.
+
+Copying a seed into two clones that are both live recreates exactly the
+single-generation-multiple-writers problem this design removes, and it is the one
+failure mode a user can cause by ordinary means (cloning a machine image, syncing a
+home directory). So: document the seed as clone-local, provide an explicit rotation
+command, and rotate automatically whenever it is absent.
 
 Honest cost: shard count becomes generations × scopes rather than principals ×
 scopes. Bounded by machines and by rare profile changes, so it stays far from the
@@ -129,54 +154,76 @@ file-count problem that motivated bundling — but it should be stated, not buri
 
 ## 5. Receipts
 
-Every durable code-derived value carries how it was derived.
+Every durable code-derived value carries a reference to how it was derived — and
+only a reference.
 
 ```ts
-interface AnchorReceipt { id: string;    profile: string; anchorScheme: number; grammar: string }
-interface HashReceipt   { value: string; profile: string; hashScheme: number;   grammar: string }
+interface DerivationRef { profile: ProfileId; language: Language }
+
+interface AnchorReceipt { id: AnchorId;    derivation: DerivationRef }
+interface HashReceipt   { value: string;   derivation: DerivationRef }
 ```
+
+`anchorScheme`, `hashScheme` and the grammar digest are **resolved from the
+profile**, never copied alongside it. An earlier draft duplicated them, arguing
+that an explicit field cannot be spoofed by absence the way an in-band scheme
+prefix can. That reasoning does not transfer: the profile is content-addressed and
+therefore authenticated, so a copy adds consistency states to validate without
+improving the one case it was meant to help — an absent profile is `unverifiable`
+either way. Materialized SQL rows may denormalize these fields **after**
+validation; the event may not.
 
 **Receipts reference the PROFILE, not the producing generation.** A hash outlives
 the generation that minted it and passes through many that merely copy it.
 
 **Every receipt is explicit at serialization time.** No "same profile as this
-event" default in durable data — that default is precisely what lets a later copy
+event" default in durable data — that default is exactly what lets a later copy
 relabel a value, which is the defect in §2.
 
-### Why both fields, when the string already says
+### `language` is what makes granularity work
 
-Worth knowing, because the two are not symmetric and it looks like redundancy.
+Recording the language actually used is not bookkeeping; it is what lets one
+profile serve a polyglot repo without over-invalidating:
 
-*Hashes self-describe their scheme.* `hashTokens` stamps `h<scheme>:sha256:…` and
-`hashSchemeOf` reads it back — the entire reason `comparableHashes` works across a
-bump with no side table.
+- The producer profile carries the **full** grammar map.
+- Each receipt records the language its value was derived for.
+- Comparability checks the relevant scheme and **that language's** grammar digest.
+- **Unequal profile ids never mean incompatible on their own.** Two profiles
+  differing only in the Python grammar are fully comparable for a C# value.
 
-*Anchor ids do not.* `anchorId` is `"a_" + sha256(file \0 symbolPath \0
-disambiguator).slice(0,16)`. No marker; nothing distinguishes a scheme-1 id from a
-scheme-2 one by inspection. `anchorScheme` on the receipt is load-bearing.
+That last rule is the one an implementation is most likely to get wrong, because
+comparing profile ids is the cheap thing to reach for and it is wrong in the
+direction that manufactures false staleness.
 
-*And `hashScheme` stays anyway*, because scheme 1 is encoded as the ABSENCE of a
-prefix — so in-band encoding could not distinguish "scheme 1" from "not a hash",
-and defaulted to 1. That fail-open was live and is fixed in `6d4c40d`; an explicit
-field cannot be spoofed by absence, which is the property that matters.
-
-**Where both exist, cross-validate them.** Duplicated metadata that nobody checks
-is a new fail-open: if a hash string says `h2:` and its receipt says `hashScheme:
-1`, that is a corrupt record, not a choice between two answers.
-
-Neither an id nor a hash string encodes its grammar, so `grammar` is needed on
-both regardless.
+A Python grammar update rotates the generation even when the next event concerns
+C#. That is shard churn, not invalidation, and it is cheap: vendored grammars
+change rarely. Paying it is better than separating writer identity from producer
+profile again, which is what the single-envelope-field design bought.
 
 ### Comparability
 
 - `comparableHashes` requires matching `hashScheme` **and** matching grammar
-  identity for the relevant language.
-- Do not attempt an anchor join when the receipt's `anchorScheme` is incompatible
+  identity for the value's own language, both read from the profile.
+- Do not attempt an anchor join when the profile's `anchorScheme` is incompatible
   with the reader's. Report `unverifiable` / incompatible derivation — never
   `lost`, which claims the code is gone.
 - A missing or malformed referenced profile **fails closed** into
   quarantine/unverifiable. It must never default to the current client's profile.
 - Changing the receipt or hash encoding bumps `HASH_SCHEME`.
+
+### What the hash string still carries, and why it is not the mechanism
+
+`hashTokens` stamps `h<scheme>:sha256:…` and `hashSchemeOf` reads it back, which is
+how comparability works today with no side table. That stays — it is a useful
+self-description and the migration path for values written before receipts exist.
+But once receipts land it is a *hint*, and the profile is the authority. Where both
+are present and disagree, that is a corrupt record, not a choice between answers.
+
+Anchor ids, by contrast, have never carried anything: `anchorId` is `"a_" +
+sha256(file \0 symbolPath \0 disambiguator).slice(0,16)`, with no marker at all.
+Nothing distinguishes a scheme-1 id from a scheme-2 one by inspection, which is why
+they cannot be handled the way hashes were and why the receipt is the only answer
+for them.
 
 ## 6. Materialization, and migration
 
@@ -195,6 +242,13 @@ anything.
 **Publication preserves receipts unchanged**, alongside the source version id and
 `createdAt`. Structural deduplication needs the id; *semantic* deduplication —
 knowing two copies are the same claim — needs the receipts to survive the trip.
+
+**Profiles and generations need their own materialized registry**, complete and
+independent of any scope's cache. Otherwise a scope folded while a profile was
+missing stays valid after the profile arrives, and its values stay `unverifiable`
+forever for no reason — the cache concealing a resolvable state. Event rows store
+the profile REFERENCE and join the registry at read time, so a late-arriving
+profile fixes every row that referenced it without re-folding anything.
 
 **Migration must degrade, not block.** History is append-only, so incompatible old
 events are there forever and no sync may refuse on their account. Sync accepts
@@ -223,19 +277,42 @@ downstream of 3 should be finalized before 2 is settled.
 
 ## 8. Open
 
-- **Legacy attribution.** §4 says degrade conservatively; what a reader is *shown*
-  for an event with no generation still needs designing. "Unknown writer" is
-  honest; whether it suppresses contests, or raises them liberally, is a product
-  call with real ergonomic cost either way.
-- **Digest strictness.** `hashSchemeOf` currently validates the form but not the
-  digest's length or charset, because ~100 readable fixtures across 22 files use
-  short synthetic digests. That check should land with receipts, together with a
-  fixture helper that keeps tags legible while carrying real digests.
-- **Profile granularity per language.** `grammars` is a map, but a C# repo does not
-  care that the Python grammar changed. Comparability should require matching
-  grammar identity *for the relevant language* — which means a profile change in
-  one language should not invalidate another's values. Not yet designed.
-- **Seed durability.** The clone seed is local and uncommitted by design. What
-  happens when it is lost — a wiped `.codemap`, a restored backup — needs an
-  answer: a new generation is correct and cheap, but the old one's events must
-  remain attributable.
+- ~~Digest strictness.~~ **Done in `f723e78`** — canonical form required, and
+  `fixtureHash` derives real digests from readable labels. My deferral was the
+  wrong trade; the helper made the premise false as well.
+- ~~Profile granularity per language.~~ **Resolved in §5** by putting the full
+  grammar map in the profile and the language in the receipt, so comparability
+  checks only the relevant language. No per-language profiles.
+- ~~Seed durability.~~ **Resolved in §4.**
+- ~~Legacy attribution.~~ **Resolved in §4** for causality and attribution. What
+  remains is narrower and genuinely a product call: how a reader is *shown* a
+  legacy value that is `unverifiable` for provenance reasons rather than because
+  the code moved. Both are "cannot be decided", and conflating them would repeat
+  the mistake the `unverifiable` status was introduced to fix.
+- **Event-schema evolution.** `eventSchema` sits in the profile but nothing yet
+  says what a reader does with an event whose schema is *newer* than its own —
+  quarantine, best-effort fold, or refuse the shard. It is the one profile field
+  whose mismatch is not about interpreting code.
+
+---
+
+## 9. What each round changed
+
+Recorded because the design's shape came from being wrong in public four times,
+and the corrections are more instructive than the result.
+
+1. **Insertion-only ordering was false.** A late-arriving *parent* reorders events
+   already folded; my property test could not generate that shape because it drew
+   parents only from events already present. Replaced with the counterexample plus
+   a determinism property that includes forward references.
+2. **`ANCHOR_SCHEME` in the materializer cache key was unnecessary**, not merely
+   insufficient. Re-folding reproduces the same ids, so nothing changes. One
+   criterion covers both scheme numbers: a scheme belongs in the key iff the
+   projection stores something *derived* from the anchors table.
+3. **An event's profile is not its values' provenance.** The correction that
+   produced this document: a backfill republishes values minted years earlier, so
+   the envelope cannot speak for them.
+4. **Receipts should not copy what the profile authenticates**, and digest
+   strictness should not have been deferred. Both were me choosing the locally
+   comfortable answer — extra fields "just in case", and readable fixtures over a
+   correct parser — where the better one cost nothing once looked at properly.
