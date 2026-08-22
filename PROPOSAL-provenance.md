@@ -344,9 +344,20 @@ was.
 
 ## 8. Open
 
-- **The seam change is the real work.** Threading `Anchor.derivation` through the
-  indexer, sync, store and orphan retention is larger than everything else here and
-  has not been scoped.
+- ~~The seam change.~~ **Done.** `Anchor.derivation` is threaded through the
+  indexer, store and orphan retention; `sync.ts` needed no change, because
+  preserving an existing anchor's provenance falls out of preserving the object.
+  Anchors turned out to be constructed in exactly ONE place (`indexer.ts`), so
+  stamping is one line. Tags are interned locally in a `derivations` table — one
+  to five rows against any number of anchors — which §3 permits because the local
+  store is not the durable record.
+- **Nothing READS the tag yet.** It is recorded and preserved; comparability (§5)
+  still ignores it, so `parser_mismatch` and `grammar_mismatch` cannot yet be
+  reported. That is the next slice and it is where the behaviour changes.
+- **Before this is called feature-complete**, a Claude Fable 5 subagent should
+  review the design and the surrounding changes. Nine rounds with one external reviewer
+  is one perspective repeated, and the failures this design exists to prevent are
+  exactly the ones a single vantage point does not see.
 - **Publication must preserve receipts unchanged**, alongside the source version id
   and `createdAt`. `publishDocVersion` mints a fresh `nv_` id and stamps
   `createdAt: new Date()`, so exact deduplication is impossible today rather than

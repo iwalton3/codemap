@@ -69,6 +69,12 @@ export interface Anchor {
   disambiguator?: string;
   /** "sha256:..." over the normalized, comment-stripped token stream. */
   bodyHash: string;
+  /**
+   * How `id` and `bodyHash` were derived. Absent on rows indexed before this
+   * existed, which reads as `legacy_live_derivation` — the reader's own index
+   * cannot say, which is a different problem from a stored receipt that cannot.
+   */
+  derivation?: DerivationTag;
   /** Commit at which bodyHash was last confirmed to match reality. */
   lastVerifiedCommit: string | null;
   /**
@@ -137,6 +143,22 @@ export interface Actor {
  *   2  signature disambiguators, parameter TYPES only
  *   3  …plus parameter modifiers (`this`, `ref`, `out`, `in`, `params`)
  */
+/**
+ * How a durable code-derived value was produced — see PROPOSAL-provenance.md.
+ *
+ * Carried BY THE VALUE, never by the container holding it: a ref, a file or an
+ * event is a bag of things derived at different moments, and three earlier
+ * designs failed by attaching provenance to one.
+ */
+export interface DerivationTag {
+  anchorScheme: number;
+  hashScheme: number;
+  /** SHA-256 of the tree-sitter runtime actually loaded. */
+  parserIntegrity: string;
+  /** SHA-256 of the vendored grammar blob that produced this. */
+  grammarDigest: string;
+}
+
 export const ANCHOR_SCHEME = 3;
 
 /**

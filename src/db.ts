@@ -82,6 +82,15 @@ function migrate(d: DatabaseSync): void {
       PRIMARY KEY (ref, id)
     );
     CREATE INDEX IF NOT EXISTS ix_anchors_reffile ON anchors(ref, file);
+    -- Derivation tags, interned. There are as many distinct tags as there are
+    -- grammars in use (one to five), against up to hundreds of thousands of
+    -- anchors, so storing the JSON per row would add tens of megabytes to say
+    -- the same five things. The DURABLE record — a sidecar event — stays
+    -- self-contained; this is the local store normalising its own copy, which
+    -- PROPOSAL-provenance.md §3 permits precisely because it is not durable.
+    CREATE TABLE IF NOT EXISTS derivations (
+      id INTEGER PRIMARY KEY, tag TEXT NOT NULL UNIQUE
+    );
     CREATE TABLE IF NOT EXISTS nodes (
       id TEXT PRIMARY KEY, type TEXT, title TEXT, summary TEXT, body TEXT,
       anchors TEXT, generated_by TEXT
@@ -106,6 +115,9 @@ function migrate(d: DatabaseSync): void {
     -- a commit maps to an immutable anchor set, and old-branch data is never lost.
     CREATE TABLE IF NOT EXISTS snapshots (ref TEXT PRIMARY KEY, branch TEXT, at TEXT, count INTEGER);
   `);
+  // anchors.derivation — NULL on rows indexed before provenance existed, which is
+  // `legacy_live_derivation`: this machine cannot say how its own index was made.
+  try { d.exec("ALTER TABLE anchors ADD COLUMN derivation INTEGER"); } catch { /* already present */ }
   // node_versions.removed (Phase 2) — add to tables created before it existed.
   try { d.exec("ALTER TABLE node_versions ADD COLUMN removed INTEGER DEFAULT 0"); } catch { /* already present */ }
   // Which anchor-id derivation a snapshot was written under. NULL means "before this

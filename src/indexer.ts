@@ -14,7 +14,7 @@
 import type { Node } from "web-tree-sitter";
 import { type Anchor, type AnchorKind, anchorId } from "./schema.js";
 import { hashTokens } from "./normalize.js";
-import type { GrammarName } from "./grammars.js";
+import { derivationTag, type GrammarName } from "./grammars.js";
 
 interface LangConfig {
   /** Type declarations: emit a shell anchor AND recurse into as a container. */
@@ -310,6 +310,7 @@ export function indexSource(
   root: Node,
 ): Anchor[] {
   const cfg = CONFIG[grammar];
+  const tag = derivationTag(grammar);
   const anchors: Anchor[] = [];
 
   const push = (
@@ -326,6 +327,10 @@ export function indexSource(
       kind,
       disambiguator,
       bodyHash: hashTokens(tokens),
+      // Stamped at the ONE place anchors are born, so nothing downstream has to
+      // remember to. What produced this id and hash is a fact about them, and a
+      // later reader cannot recover it from anywhere else.
+      derivation: tag,
       lastVerifiedCommit: null,
       loc: {
         startByte: locNode.startIndex,

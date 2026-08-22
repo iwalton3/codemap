@@ -6,9 +6,13 @@
  */
 
 import { readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { dirname, join, extname } from "node:path";
 import { Parser, Language } from "web-tree-sitter";
+import { ANCHOR_SCHEME, HASH_SCHEME, type DerivationTag } from "./schema.js";
 
 // dist/grammars.js -> repo root -> grammars/
 const GRAMMARS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "grammars");
@@ -40,6 +44,46 @@ const EXT_TO_GRAMMAR: Record<string, GrammarName> = {
 /** Grammar for a path, or null if the extension isn't one we map. */
 export function grammarForPath(path: string): GrammarName | null {
   return EXT_TO_GRAMMAR[extname(path).toLowerCase()] ?? null;
+}
+
+/**
+ * How this build derives ids and hashes, for one grammar.
+ *
+ * The two digests are what make it an identity rather than a label. A version
+ * string authenticates nothing: two `web-tree-sitter` builds can carry the same
+ * version and tokenize differently, and then a reader reports real-looking drift
+ * for a change nobody made. So we hash what we actually load.
+ *
+ * `parserIntegrity` comes from the runtime FILE rather than from
+ * `package-lock.json`, which is a development artifact and is not shipped to
+ * somebody who installed this — the lockfile says what should be there, the file
+ * is what is.
+ *
+ * Computed once with sync reads: five grammar blobs plus the runtime is ~6ms, it
+ * happens at most once per process, and `indexSource` needs the answer
+ * synchronously while building each anchor.
+ */
+let tags: Map<GrammarName, DerivationTag> | null = null;
+
+const sha256 = (file: string): string =>
+  createHash("sha256").update(readFileSync(file)).digest("hex");
+
+export function derivationTag(grammar: GrammarName): DerivationTag {
+  if (!tags) {
+    // The runtime we import, resolved the way the import resolves it — not a
+    // guessed path into node_modules.
+    const parserIntegrity = sha256(createRequire(import.meta.url).resolve("web-tree-sitter"));
+    tags = new Map();
+    for (const name of Object.keys(WASM_FILE) as GrammarName[]) {
+      tags.set(name, {
+        anchorScheme: ANCHOR_SCHEME,
+        hashScheme: HASH_SCHEME,
+        parserIntegrity,
+        grammarDigest: sha256(join(GRAMMARS_DIR, WASM_FILE[name])),
+      });
+    }
+  }
+  return tags.get(grammar)!;
 }
 
 let initPromise: Promise<void> | null = null;

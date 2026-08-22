@@ -16,6 +16,7 @@ import type { PrWalkthrough } from "./walkthrough.js";
  */
 
 import type { DatabaseSync } from "node:sqlite";
+import type { DerivationTag } from "./schema.js";
 import { randomBytes } from "node:crypto";
 import { db, WORK_REF, ORPHAN_REF } from "./db.js";
 import { headCommit, currentBranch } from "./git.js";
@@ -45,11 +46,42 @@ function setMeta(d: DatabaseSync, key: string, val: unknown): void {
 
 interface AnchorRow {
   id: string; file: string; symbol_path: string; kind: string; disambiguator: string | null;
-  body_hash: string; last_commit: string | null;
+  body_hash: string; last_commit: string | null; derivation: number | null;
   start_byte: number | null; end_byte: number | null; start_line: number | null; end_line: number | null;
 }
 
-function rowToAnchor(r: AnchorRow): Anchor {
+/**
+ * Intern a derivation tag, and read them back.
+ *
+ * Anchors round-trip through `Anchor[]` on every incremental update —
+ * `replaceAnchors` deletes the ref and re-inserts from objects — so provenance
+ * that lives only in a column would be erased by the first `check`. It has to
+ * travel on the object, and these two functions are the only place it is
+ * flattened.
+ */
+function internDerivation(d: DatabaseSync, tag: DerivationTag | undefined): number | null {
+  if (!tag) return null;
+  // Key order is fixed by construction here, so identical tags intern identically.
+  const json = JSON.stringify([tag.anchorScheme, tag.hashScheme, tag.parserIntegrity, tag.grammarDigest]);
+  const hit = d.prepare("SELECT id FROM derivations WHERE tag = ?").get(json) as { id: number } | undefined;
+  if (hit) return hit.id;
+  d.prepare("INSERT INTO derivations(tag) VALUES(?)").run(json);
+  return (d.prepare("SELECT id FROM derivations WHERE tag = ?").get(json) as { id: number }).id;
+}
+
+/** Every interned tag, by id. Five rows at most, so it is read whole. */
+function derivationsById(d: DatabaseSync): Map<number, DerivationTag> {
+  const out = new Map<number, DerivationTag>();
+  for (const r of d.prepare("SELECT id, tag FROM derivations").all() as unknown as { id: number; tag: string }[]) {
+    try {
+      const [anchorScheme, hashScheme, parserIntegrity, grammarDigest] = JSON.parse(r.tag);
+      out.set(r.id, { anchorScheme, hashScheme, parserIntegrity, grammarDigest });
+    } catch { /* a row nothing can read is the same as no row */ }
+  }
+  return out;
+}
+
+function rowToAnchor(r: AnchorRow, tags?: Map<number, DerivationTag>): Anchor {
   return {
     id: r.id,
     file: r.file,
@@ -57,6 +89,7 @@ function rowToAnchor(r: AnchorRow): Anchor {
     kind: r.kind as Anchor["kind"],
     ...(r.disambiguator != null ? { disambiguator: r.disambiguator } : {}),
     bodyHash: r.body_hash,
+    ...(r.derivation != null && tags?.has(r.derivation) ? { derivation: tags.get(r.derivation)! } : {}),
     lastVerifiedCommit: r.last_commit,
     ...(r.start_byte != null
       ? { loc: { startByte: r.start_byte, endByte: r.end_byte!, startLine: r.start_line!, endLine: r.end_line! } }
@@ -67,14 +100,18 @@ function rowToAnchor(r: AnchorRow): Anchor {
 /** Replace all anchors under a ref in one transaction. */
 function replaceAnchors(d: DatabaseSync, ref: string, anchors: Anchor[]): void {
   const ins = d.prepare(
-    "INSERT OR REPLACE INTO anchors(ref,id,file,symbol_path,kind,disambiguator,body_hash,last_commit,start_byte,end_byte,start_line,end_line) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+    "INSERT OR REPLACE INTO anchors(ref,id,file,symbol_path,kind,disambiguator,body_hash,last_commit,derivation,start_byte,end_byte,start_line,end_line) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
   );
+  // Interned before the transaction: identical tags are the norm, so this is a
+  // handful of lookups even for a full reindex.
+  const tagId = new Map<Anchor, number | null>();
+  for (const a of anchors) tagId.set(a, internDerivation(d, a.derivation));
   d.exec("BEGIN");
   try {
     d.prepare("DELETE FROM anchors WHERE ref = ?").run(ref);
     for (const a of anchors) {
       ins.run(ref, a.id, a.file, JSON.stringify(a.symbolPath), a.kind, a.disambiguator ?? null,
-        a.bodyHash, a.lastVerifiedCommit ?? null,
+        a.bodyHash, a.lastVerifiedCommit ?? null, tagId.get(a) ?? null,
         a.loc?.startByte ?? null, a.loc?.endByte ?? null, a.loc?.startLine ?? null, a.loc?.endLine ?? null);
     }
     d.exec("COMMIT");
@@ -85,8 +122,9 @@ function replaceAnchors(d: DatabaseSync, ref: string, anchors: Anchor[]): void {
 }
 
 function anchorsUnder(d: DatabaseSync, ref: string): Anchor[] {
+  const tags = derivationsById(d);
   const rows = d.prepare("SELECT * FROM anchors WHERE ref = ?").all(ref) as unknown as AnchorRow[];
-  return rows.map(rowToAnchor);
+  return rows.map((r) => rowToAnchor(r, tags));
 }
 
 // --- anchors + state ---------------------------------------------------------
@@ -231,14 +269,19 @@ export function retainOrphans(root: string, anchors: Anchor[]): number {
   if (!anchors.length) return 0;
   const d = db(root);
   const ins = d.prepare(
-    "INSERT OR IGNORE INTO anchors(ref,id,file,symbol_path,kind,disambiguator,body_hash,last_commit,start_byte,end_byte,start_line,end_line) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+    "INSERT OR IGNORE INTO anchors(ref,id,file,symbol_path,kind,disambiguator,body_hash,last_commit,derivation,start_byte,end_byte,start_line,end_line) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
   );
+  // An orphan keeps the derivation it was EVICTED under, which is the whole point
+  // of `INSERT OR IGNORE` here: the first eviction holds the last state the anchor
+  // was really seen in, and re-deriving it later would be a claim nobody can check.
+  const tagId = new Map<Anchor, number | null>();
+  for (const a of anchors) tagId.set(a, internDerivation(d, a.derivation));
   let n = 0;
   d.exec("BEGIN");
   try {
     for (const a of anchors) {
       ins.run(ORPHAN_REF, a.id, a.file, JSON.stringify(a.symbolPath), a.kind, a.disambiguator ?? null,
-        a.bodyHash, a.lastVerifiedCommit ?? null,
+        a.bodyHash, a.lastVerifiedCommit ?? null, tagId.get(a) ?? null,
         a.loc?.startByte ?? null, a.loc?.endByte ?? null, a.loc?.startLine ?? null, a.loc?.endLine ?? null);
       n++;
     }
@@ -253,7 +296,8 @@ export function readOrphans(root: string, ids?: string[]): Map<string, Anchor> {
   const rows = (ids?.length
     ? d.prepare(`SELECT * FROM anchors WHERE ref = ? AND id IN (${ids.map(() => "?").join(",")})`).all(ORPHAN_REF, ...ids)
     : d.prepare("SELECT * FROM anchors WHERE ref = ?").all(ORPHAN_REF)) as unknown as AnchorRow[];
-  return new Map(rows.map((r) => [r.id, rowToAnchor(r)]));
+  const tags = derivationsById(d);
+  return new Map(rows.map((r) => [r.id, rowToAnchor(r, tags)]));
 }
 
 /**
@@ -282,8 +326,10 @@ export function findAnchorsOutsideWork(root: string, ids: string[]): Map<string,
   const q = `SELECT a.*, s.at AS snap_at FROM anchors a JOIN snapshots s ON s.ref = a.ref
              WHERE a.ref <> '@work' AND a.id IN (${ids.map(() => "?").join(",")})
              ORDER BY s.at DESC`;
-  for (const r of db(root).prepare(q).all(...ids) as unknown as (AnchorRow & { ref: string })[]) {
-    if (!out.has(r.id)) out.set(r.id, { ref: r.ref, anchor: rowToAnchor(r) });   // newest wins
+  const d = db(root);
+  const tags = derivationsById(d);
+  for (const r of d.prepare(q).all(...ids) as unknown as (AnchorRow & { ref: string })[]) {
+    if (!out.has(r.id)) out.set(r.id, { ref: r.ref, anchor: rowToAnchor(r, tags) });   // newest wins
   }
   return out;
 }
