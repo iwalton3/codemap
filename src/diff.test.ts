@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Anchor, LogicalNode } from "./schema.js";
+import type { Anchor, DerivationTag, LogicalNode } from "./schema.js";
 import { writeSnapshot, writeNode, dropSnapshot } from "./store.js";
 import { computeDiff } from "./diff.js";
 
@@ -74,5 +74,51 @@ test("the reserved refs cannot be dropped as if they were snapshots", async () =
       assert.throws(() => dropSnapshot(root, ref), /not a snapshot/, `${ref} was droppable`);
     }
     dropSnapshot(root, "some_sha"); // an actual snapshot still goes
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+const TAG_A: DerivationTag = { anchorScheme: 3, hashScheme: 2, parserIntegrity: "p1", grammarDigest: "g_old" };
+const TAG_B: DerivationTag = { anchorScheme: 3, hashScheme: 2, parserIntegrity: "p1", grammarDigest: "g_new" };
+const tagged = (a: Anchor, derivation: DerivationTag): Anchor => ({ ...a, derivation });
+
+/**
+ * A re-vendored grammar tokenizes unchanged code differently, so every body hash
+ * moves while `HASH_SCHEME` stays put. The numeric schemes agree, the hashes
+ * differ, and without the derivation tag the diff reports the whole repository as
+ * rewritten — the phantom-diff failure the schemes exist to prevent, arriving
+ * through a door they do not cover.
+ */
+test("a grammar change is not reported as code drift", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-diff-tag-"));
+  try {
+    const base = [tagged(anchor("a_keep", "keep", "h1"), TAG_A), tagged(anchor("a_real", "refund", "h2"), TAG_A)];
+    // Same code, re-tokenized: every hash moved. One symbol genuinely changed too,
+    // and it must still be reported — the point is separating them, not suppressing.
+    const head = [tagged(anchor("a_keep", "keep", "h1_RETOK"), TAG_B), tagged(anchor("a_real", "refund", "h2_REAL"), TAG_A)];
+    await writeSnapshot(root, "base_sha", "main", base, "2026-07-15T00:00:00Z");
+    await writeSnapshot(root, "head_sha", "feature", head, "2026-07-15T01:00:00Z");
+
+    const d = await computeDiff(root, "base_sha", "head_sha");
+    assert.ok(!("error" in d), "expected a diff result");
+    assert.deepEqual(d.changed.map((b) => b.id), ["a_real"], "the real change must survive");
+    assert.deepEqual(d.unverifiable.map((b) => b.id), ["a_keep"], "the re-tokenized one is not drift");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+/**
+ * An untagged side falls back to comparing, which is today's behaviour and has to
+ * be: every stored value predates tags, and answering "unverifiable" for all of
+ * them would trade a rare false positive for a universal false negative.
+ */
+test("an untagged side still compares, rather than going silent", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-diff-legacy-"));
+  try {
+    await writeSnapshot(root, "base_sha", "main", [anchor("a_1", "pay", "h1")], "2026-07-15T00:00:00Z");
+    await writeSnapshot(root, "head_sha", "feature", [tagged(anchor("a_1", "pay", "h2"), TAG_B)], "2026-07-15T01:00:00Z");
+
+    const d = await computeDiff(root, "base_sha", "head_sha");
+    assert.ok(!("error" in d), "expected a diff result");
+    assert.deepEqual(d.changed.map((b) => b.id), ["a_1"]);
+    assert.deepEqual(d.unverifiable, []);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

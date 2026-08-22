@@ -351,9 +351,22 @@ was.
   stamping is one line. Tags are interned locally in a `derivations` table — one
   to five rows against any number of anchors — which §3 permits because the local
   store is not the durable record.
-- **Nothing READS the tag yet.** It is recorded and preserved; comparability (§5)
-  still ignores it, so `parser_mismatch` and `grammar_mismatch` cannot yet be
-  reported. That is the next slice and it is where the behaviour changes.
+- ~~Nothing reads the tag.~~ **The diff does.** A pair whose hashes differ but whose
+  derivations differ too is reported `unverifiable` rather than `changed`, which
+  closes a failure the numeric schemes never covered: a re-vendored grammar moves
+  every body hash without touching `HASH_SCHEME`, so the gate passes and the whole
+  repository reads as rewritten. Unverifiable symbols stay OUT of `impacted` —
+  the recovery is to re-snapshot, not to re-review.
+- **The other comparison sites still ignore it**: doc citations
+  (`doc-version.ts`), review witnesses (`reviews.ts`), acceptance
+  (`acceptance.ts`). Those compare a STORED value against a live one, and no
+  stored value carries a tag until receipts land — so tag-aware comparison there
+  is blocked on the sidecar work rather than being an oversight.
+- **Untagged is comparable, on purpose.** A tag on only one side falls back to
+  today's behaviour. It has to: every stored value predates tags, and answering
+  `unverifiable` for all of them would trade a rare false positive for a universal
+  false negative. Snapshots rebuilt after this ships carry tags, so the tagged path
+  takes over as caches turn over.
 - **Before this is called feature-complete**, a Claude Fable 5 subagent should
   review the design and the surrounding changes. Nine rounds with one external reviewer
   is one perspective repeated, and the failures this design exists to prevent are

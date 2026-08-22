@@ -14,7 +14,7 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Anchor, Review } from "./schema.js";
+import { comparableDerivation, type Anchor, type Review } from "./schema.js";
 import { indexRepo, indexFile, indexBlob } from "./repo.js";
 import { readSnapshot, readAnchorStore, loadNodes, loadNodeVersions, winningVersionAt, readGraph, readReviews, readBugs } from "./store.js";
 import { reviewStatesFor } from "./reviews.js";
@@ -35,6 +35,12 @@ export interface DiffResult {
   added: Brief[];
   removed: Brief[];
   changed: Brief[];
+  /**
+   * Paired symbols whose hashes differ but were derived differently — a grammar or
+   * runtime change, not a code change. Nobody can say whether these moved, so they
+   * are reported apart from `changed` rather than inflating it.
+   */
+  unverifiable: Brief[];
   impact: {
     nodes: { id: string; title: string; type: string; summary: string; anchors: string[]; status: string; versionCount: number; review: { logical: string; code: string }; reviewBy: { logical: string | null; code: string | null }; reviewVia: { logical?: string; code?: string }; viewed: { logical: string; code: string }; severity: string }[];
     flows: { id: string; title: string; steps: { id: string; title: string; anchors: string[] }[] }[];
@@ -78,11 +84,18 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
   const added: Brief[] = [];
   const removed: Brief[] = [];
   const changed: Brief[] = [];
+  const unverifiable: Brief[] = [];
   for (const [id, a] of headById) if (!baseById.has(id)) added.push(brief(a));
   for (const [id, a] of baseById) if (!headById.has(id)) removed.push(brief(a));
   for (const [id, a] of headById) {
     const b = baseById.get(id);
-    if (b && b.bodyHash !== a.bodyHash) changed.push(brief(a));
+    if (!b || b.bodyHash === a.bodyHash) continue;
+    // The hashes differ. Whether that is DRIFT depends on whether the two sides
+    // were derived the same way — a re-vendored grammar tokenizes unchanged code
+    // differently, and calling that "changed" reports the whole repository as
+    // rewritten. Recovery is to re-snapshot, not to re-review, so these are kept
+    // out of `impacted` below: they are not evidence anything went stale.
+    (comparableDerivation(b.derivation, a.derivation) ? changed : unverifiable).push(brief(a));
   }
 
   // Impact = the anchors whose existing documentation/reviews may no longer hold:
@@ -168,6 +181,7 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
     added,
     removed,
     changed,
+    unverifiable,
     impact: { nodes: impactedNodes, flows, reviews: reviewImpact, bugs: bugImpact },
     coverage,
   };

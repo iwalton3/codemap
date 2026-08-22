@@ -159,6 +159,26 @@ export interface DerivationTag {
   grammarDigest: string;
 }
 
+/**
+ * Whether an inequality between two values derived this way means the CODE differs.
+ *
+ * A grammar re-vendor changes the token stream and therefore the body hash without
+ * touching `HASH_SCHEME` — so the numeric schemes agree, the hashes differ, and
+ * every symbol in the repository reads as changed. That is the phantom-diff failure
+ * the scheme numbers were introduced to prevent, arriving through a door they do
+ * not cover.
+ *
+ * An absent tag on either side falls back to comparing, which is today's behaviour.
+ * It has to: every stored value predates tags, and answering "unverifiable" for all
+ * of them would replace a rare false positive with a universal false negative. As
+ * untagged snapshots are rebuilt the tagged path takes over.
+ */
+export function comparableDerivation(a?: DerivationTag, b?: DerivationTag): boolean {
+  if (!a || !b) return true;
+  return a.anchorScheme === b.anchorScheme && a.hashScheme === b.hashScheme
+    && a.parserIntegrity === b.parserIntegrity && a.grammarDigest === b.grammarDigest;
+}
+
 export const ANCHOR_SCHEME = 3;
 
 /**

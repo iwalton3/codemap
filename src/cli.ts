@@ -47,6 +47,10 @@ async function cmdPr(root: string, input: string, opts: { fetch: boolean; json: 
   console.log(`  → ${totals.queueLines} of ${totals.changedLines} changed lines are in the review queue (${pct}%)`);
 
   console.log(`\nsymbols: ${diff.changed.length} changed, ${diff.added.length} added, ${diff.removed.length} removed`);
+  if (diff.unverifiable?.length) {
+    console.log(`  ${diff.unverifiable.length} could not be compared — the two sides were indexed with different grammars or`);
+    console.log(`  a different tree-sitter build, so a hash difference says nothing about the code. Re-snapshot to fix.`);
+  }
   if (diff.added.length > diff.changed.length * 3 && diff.changed.length >= 0) {
     console.log(`  (mostly new surface — the ${diff.changed.length} *changed* symbols carry the regression risk)`);
   }
@@ -368,7 +372,8 @@ async function cmdDiff(root: string, base: string, head?: string): Promise<void>
     process.exit(1);
   }
   console.log(`base ${r.base.label} (${(r.base.sha ?? "").slice(0, 12)}, ${r.base.anchors} anchors)  →  head ${r.head.label} (${r.head.anchors} anchors)`);
-  console.log(`symbols: +${r.added.length} added  -${r.removed.length} removed  ~${r.changed.length} changed`);
+  console.log(`symbols: +${r.added.length} added  -${r.removed.length} removed  ~${r.changed.length} changed`
+    + (r.unverifiable?.length ? `  ?${r.unverifiable.length} not comparable` : ""));
   const show = (label: string, xs: { file: string; symbol: string }[]) => {
     for (const b of xs.slice(0, 40)) console.log(`  ${label} ${b.file}  ${b.symbol}`);
     if (xs.length > 40) console.log(`  … +${xs.length - 40} more`);
