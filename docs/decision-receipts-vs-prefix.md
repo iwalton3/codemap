@@ -73,9 +73,12 @@ shipped two.
   them; it is more expensive there, not impossible. The honest claim is cost, not
   capability, and "they are not alternatives" below is therefore overstated:
   A-for-both remains a real option.
-- **The sidecar for free.** Shared doc citations store hashes as strings in event
-  payloads. Under B those strings carry the fingerprint across machines with **no
-  event-format change** — the cross-machine case falls out rather than being built.
+- **The grow-only set does not move.** An earlier draft said "the sidecar for
+  free, no event-format change", which is true per value and misleading per event:
+  `doc.accepted` carries `{versionId, anchorId, bodyHash}` — one payload holding
+  both an id and a hash — and the hybrid's `AnchorReceipt` changes that payload
+  anyway. What B actually saves is narrower and still real: `acceptedHashes` stays
+  `string[]`, so the grow-only merge rule and its ~20 call sites stay put.
 
 **What it gives up.** `fp` is one-way. A reader can tell *different* but not *what
 differed* — unless it has seen that tag before, which the local `derivations` table
@@ -83,6 +86,30 @@ already records. For a foreign fingerprint the honest message is "derived
 differently, and I do not have theirs". Under the collapsed state table
 (`incompatible_derivation` + detail) that is all a reader needs to act on, since
 every branch of it recovers the same way.
+
+**The fingerprint's preimage is itself an unversioned canonicalization**, which is
+the founding hazard of this whole design pointed at its own solution. The
+serialization of (`hashScheme`, `parserIntegrity`, `grammarDigest`) must be
+canonical across every build forever, with no scheme number guarding it — and this
+project has already redefined one of those inputs once. Round 10 caught
+`parserIntegrity` hashing the CommonJS loader rather than the wasm that lexes, and
+the fix changed its value. Had emission begun before that correction, every
+annotated hash would have silently turned foreign: a relabeling flood caused by
+*fixing a mistake*, indistinguishable from a real derivation change.
+
+Receipts do not have this failure mode, because fields are stored rather than
+digested and a definitional correction stays field-wise judgeable afterwards. So
+three conditions on B: one function owns the preimage, with a committed test
+vector; the length is exactly 16 hex (a range invites two spellings of one
+derivation — the `h1:` trap, one capture group over); and a future preimage
+correction is accepted as costing a bounded `unverifiable` flood, which at least
+fails in the safe direction.
+
+**The one-way-ness is fixable without resurrecting profiles.** Record fp → tag in
+the existing local `derivations` table at mint time. Unlike the registry §9 cut,
+this dictionary is diagnostic only — the comparability *decision* is answerable
+from the fingerprint alone, so a missing entry degrades an error message and never
+an answer. Worth stating, or somebody re-proposes profiles in a year to fix it.
 
 **The load-bearing migration decision.** Adding `fp` must **not** bump
 `HASH_SCHEME`. The digest is byte-identical — the token stream did not change, only
@@ -94,6 +121,20 @@ nothing about how anything was hashed. `hashSchemeOf` keeps returning 2; an fp-l
 hash is legacy and falls back exactly as untagged values do everywhere else in this
 design.
 
+**But the claim is conditional, and the first draft presented it as freestanding.**
+It is sound only *after* the comparison helpers are in. Emit without them and every
+raw `===` site ships false drift, because two spellings of one body are not
+string-equal; emit with a bump instead and the store goes universally unverifiable.
+"Must not bump" and "helpers first" are one decision, not two, and somebody
+cherry-picking emission without the refactor gets exactly the failure the no-bump
+rule appears to license.
+
+One documented invariant does break — not §3's, but `hashSchemeOf`'s own comment,
+which declares "exactly one spelling per scheme". B deliberately creates a second
+spelling of scheme 2 and moves that rule from the format into the helpers. Coherent,
+but the comment must be rewritten in the same change or it becomes a confident wrong
+comment sitting on top of the new behaviour.
+
 ## They are not actually alternatives
 
 The comparison above assumes A and B answer the same question. They do not.
@@ -103,14 +144,40 @@ The comparison above assumes A and B answer the same question. They do not.
 - **Anchor ids** — a shared target pointing at an id derived under another scheme.
   B cannot touch this. A must.
 
-So the shape that *may* fall out is **B for hashes, A for ids only** — which would
-delete `HashReceipt` from §5 and leave `AnchorReceipt`.
+So the shape is **B for hashes, A for ids only** — deleting `HashReceipt` from §5
+and leaving `AnchorReceipt`.
 
-Stated more carefully than the first draft did: B genuinely cannot describe an
-anchor id, so **A is irreducible for ids**. But A is not incapable for hashes, only
-dearer, so the mixed design is a cost argument rather than a forced decomposition.
-That distinction matters, because "they solve different problems" is exactly the
-conclusion that lets somebody keep both mechanisms and cut neither.
+**The reason it is forced, not chosen.** "An id is not a hash" is hand-waving, and
+invites the obvious rebuttal: annotate the id too, `a3_<sha>`. What actually
+forecloses that is **equality semantics you do not control.** A body hash is a leaf
+value compared by about two dozen sites of code in this repository, so its spelling
+may vary as long as comparison goes through a helper. An anchor id is an equality
+KEY — a SQL primary key and join column, a Map key, a URL parameter, an MCP tool
+argument. `WHERE anchor_id = ?` cannot call a helper. Annotating an id breaks joins
+inside a database engine that will never learn our comparison family.
+
+Which is §8's round-10 correction applied to transport rather than to minting:
+provenance travels in the medium the value travels in. Hashes travel as strings, so
+the tag goes in the string; ids travel as keys, so the tag goes beside them.
+
+For hashes, A remains *capable* — only dearer. So the split is forced on the id
+side and a cost argument on the hash side, and it is worth saying which is which:
+"they solve different problems" is exactly the conclusion that lets somebody keep
+both mechanisms and cut neither.
+
+### The tax for keeping both, made concrete
+
+One concept gets two encodings and a projection. The fingerprint digests three of
+`DerivationTag`'s four fields; `comparableDerivation` compared all four, including
+`anchorScheme` — so the struct path called a pair unverifiable where the fingerprint
+path would call it comparable, **and the fingerprint was right**: identical
+tokenization rules mean a differing digest is genuine drift. Reachable, too, since a
+symbol with no disambiguator keeps its id across a scheme bump.
+
+Fixed by making hash comparability the three-field projection and using it on both
+paths. Recorded because it is the tax: two encodings of one concept must reduce to
+ONE predicate, or the store's answer depends on which encoding happened to carry
+the tag.
 
 It also unblocks §8's "the other comparison sites are blocked on the sidecar work".
 They were only ever blocked because provenance was made a parallel structure
@@ -151,13 +218,46 @@ the local exposure — which is the larger one — closes without the sidecar sh
 - If anchor-id receipts turn out to need the same plumbing as hash receipts anyway,
   in which case building both is cheaper than building two mechanisms.
 
+## Why "wait until a grammar is actually re-vendored" fails
+
+The tempting answer, given that the blobs have been committed exactly once, is to
+defer. It does not work, for a reason the cache reasoning does not reach.
+
+**A witness is an attestation, not a derivation.** A snapshot rebuilds and `@work`
+reindexes, because a machine can re-derive them. Nobody can regenerate a review
+mark somebody made in 2026. So there is no repair-at-the-event: the tag has to be
+inside the witness *before* the re-vendor arrives. Protection accrues only to
+witnesses minted after emission begins, and witnesses are frozen for years — ship
+at re-vendor time and the protected population is zero, and every existing witness
+floods exactly as if nothing had been built.
+
+**And the failure is not an event you can respond to.** `applyIndexUpdate` never
+rehashes untouched anchors, so `@work` keeps old-derivation hashes and false stales
+leak out symbol by symbol as files happen to be edited — mixed indistinguishably
+with genuine drift, in files somebody really did touch. Unlike 985-of-985 it never
+looks systemic, so nobody diagnoses it.
+
+The honest counterweights, since they are real: re-vendors here are deliberate
+acts, the flood is bounded to symbols whose token streams actually changed
+(digest-equal pairs auto-clear through `sameBody`), and the recovery is the same
+re-witness either way — only the label changes, from a lie to the truth.
+
 ## Recommendation
 
-Take B for hashes, keep A for ids, and do the equality-helper refactor first as a
-standalone change — it is safe, mechanical, valuable regardless of which design
-wins, and it is the part that would be riskiest to do under time pressure during a
-real grammar upgrade.
+**Build everything except emission now**, which is nearly done at HEAD: the parse
+side, `sameBody`/`bodyDigest`/`bodyKey`/`derivationMark`, and the comparison sites
+moved onto them. Then treat turning emission on as a switch, flipped at whichever
+comes first:
 
-Do not build either until the equality helper is in and its tests pass, because
-until then a hash-format change is a change to sixteen implicit contracts rather
-than one explicit one.
+- the sidecar's first shipped format — clean, because no legacy shared events exist
+  to mix with; or
+- the first *planned* re-vendor, decided before it happens rather than during.
+
+Do not let it wait *for* a re-vendor to be scheduled. Every day the switch is off,
+the population that can never be protected retroactively grows by one day's
+witnesses — and that cost belongs in the decision rather than in a later surprise.
+
+Do not emit until the comparison helpers are complete and their tests pass. Right
+now they are not: eight `!==`-shaped sites remain unexamined (see above), and until
+they are, a format change is a change to two dozen implicit contracts rather than
+one explicit one.

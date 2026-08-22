@@ -198,7 +198,19 @@ export interface DerivationTag {
  */
 export function comparableDerivation(a?: DerivationTag, b?: DerivationTag): boolean {
   if (!a || !b) return true;
-  return a.anchorScheme === b.anchorScheme && a.hashScheme === b.hashScheme
+  // THREE fields, not four. `anchorScheme` governs whether two IDS name the same
+  // symbol; it says nothing about whether two hashes of that symbol's body can be
+  // compared, which is decided by the rules that produced the token stream.
+  //
+  // Including it was wrong in the direction that matters. A symbol whose id
+  // derivation did not change across a scheme bump — anything without a
+  // disambiguator — keeps its id, so a pair can differ on `anchorScheme` alone
+  // while its hashes are perfectly comparable. Real drift then reported as
+  // "cannot be decided", which a reviewer skips rather than reads.
+  //
+  // Ids are gated elsewhere and at the right granularity: `readSnapshot` refuses a
+  // cache from another derivation, and `liveDerivationDrift` warns about `@work`.
+  return a.hashScheme === b.hashScheme
     && a.parserIntegrity === b.parserIntegrity && a.grammarDigest === b.grammarDigest;
 }
 

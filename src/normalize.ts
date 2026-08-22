@@ -63,7 +63,7 @@ export function hashTokens(tokens: string[]): string {
  * The prefix is deliberately not bounded here; `hashSchemeOf` decides what is a
  * legal scheme number, so the rule lives in one place rather than half in a regex.
  */
-const HASH_FORM = /^(?:h(\d+):)?(?:([0-9a-f]{8,32}):)?sha256:([0-9a-f]{64})$/;
+const HASH_FORM = /^(?:h(\d+):)?(?:([0-9a-f]{16}):)?sha256:([0-9a-f]{64})$/;
 
 /**
  * Which derivation minted a hash, or NULL when the string is not one this code
@@ -130,6 +130,13 @@ export function bodyDigest(hash: string): string | null {
  *
  * Unambiguous against the un-annotated form because the group is hex and `sha256`
  * is not: `h2:sha256:…` cannot read `sha256` as an annotation.
+ *
+ * Exactly 16 hex, not a range. A range invites two builds to spell one derivation
+ * two ways, and two spellings of one thing compare as same-thing-different-value —
+ * the `h1:` trap `hashSchemeOf` warns about, one capture group over. There is also
+ * only ONE annotation slot in this format, and spending it on derivation identity
+ * is a decision rather than an accident: a second annotation later would parse as
+ * nothing on today's readers and read as incomparable, which is loud but total.
  */
 export function derivationMark(hash: string): string | null {
   return HASH_FORM.exec(hash)?.[2] ?? null;

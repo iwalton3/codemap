@@ -133,7 +133,7 @@ test("the absent sentinel stays comparable to everything, including junk", () =>
 
 // --- body identity, which is not string identity ---------------------------------
 
-const D = "a".repeat(64), D2 = "b".repeat(64), FP = "deadbeef1234";
+const D = "a".repeat(64), D2 = "b".repeat(64), FP = "deadbeef12345678";
 
 /**
  * A hash string is a digest plus annotations about how it was derived, so two
@@ -143,7 +143,7 @@ const D = "a".repeat(64), D2 = "b".repeat(64), FP = "deadbeef1234";
  */
 test("the same body under different annotations is the same body", () => {
   assert.equal(sameBody(`h2:sha256:${D}`, `h2:${FP}:sha256:${D}`), true);
-  assert.equal(sameBody(`h2:${FP}:sha256:${D}`, `h2:0badf00d5678:sha256:${D}`), true,
+  assert.equal(sameBody(`h2:${FP}:sha256:${D}`, `h2:0badf00d56781234:sha256:${D}`), true,
     "an identical digest means an identical token stream, whoever produced it");
   assert.equal(sameBody(`h2:sha256:${D}`, `h2:sha256:${D2}`), false, "different bodies");
   assert.equal(sameBody(`sha256:${D}`, `h2:sha256:${D}`), false, "a scheme difference is not comparable");
@@ -165,6 +165,10 @@ test("the absent sentinel equals itself", () => {
  */
 test("an annotation is parsed without being minted", () => {
   assert.equal(derivationMark(`h2:${FP}:sha256:${D}`), FP);
+  // One spelling per derivation: a short or long annotation is not a shorter or
+  // longer spelling of the same thing, it is not an annotation.
+  assert.equal(derivationMark(`h2:deadbeef:sha256:${D}`), null, "8 hex is not the format");
+  assert.equal(hashSchemeOf(`h2:deadbeef:sha256:${D}`), null, "and the whole hash is refused");
   assert.equal(derivationMark(`h2:sha256:${D}`), null);
   assert.equal(bodyDigest(`h2:${FP}:sha256:${D}`), D, "the digest survives the annotation");
   assert.equal(bodyDigest(`h2:sha256:${D}`), D);
