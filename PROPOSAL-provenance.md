@@ -1,9 +1,9 @@
 # Proposal: immutable provenance
 
-Status: **draft, restructured.** Nine review rounds are folded in; §10 records what
-each changed, and §8 lists what is still open.
+Status: **draft — design settled, implementation begun.** Ten review rounds are
+folded in; §10 records what each changed, and §8 lists what is still open.
 
-Reviewed against `worktree-shared-review-hashscheme` at `039fdce`.
+Reviewed against `worktree-shared-review-hashscheme` at `568bd07`.
 
 This is the ninth revision and the first that is *smaller* than the one before it.
 Round 9 asked whether the design had outgrown its value; it had, and two whole
@@ -220,24 +220,36 @@ which is the §2 defect.
 |---|---|---|
 | `legacy_no_receipt` | a stored receipt predates receipts existing | re-witness |
 | `legacy_live_derivation` | the reader's own `@work`/snapshot rows carry no tag | **reindex** — the gap is on this machine |
-| `incompatible_anchor_scheme` | ids derived differently | re-witness; **never** relocate |
-| `incompatible_hash_scheme` | hashes derived differently | re-witness |
-| `parser_mismatch` | a different tree-sitter runtime produced it | re-witness |
-| `grammar_mismatch` | a different grammar blob produced it | re-witness |
+| `incompatible_derivation` | the two tags disagree; `detail` says on what | re-witness; **never** relocate |
 | `corrupt_receipt` | malformed, or disagreeing with its own hash string | a person looks |
 
-Seven. `missing_profile` and `dangling_profile` went with the registry that created
-them; `parser_mismatch` is new, because the runtime is now identified rather than
-assumed.
+Four, not seven. An earlier draft split the third row into
+`incompatible_anchor_scheme`, `incompatible_hash_scheme`, `parser_mismatch` and
+`grammar_mismatch` — four labels whose recovery column read "re-witness" four
+times. A state whose only distinction is a better error message is a `detail`
+field, and separating them buys a taxonomy to maintain rather than a decision to
+make. Same move round 9 made twice, applied to a table I wrote after it.
 
-The two legacy states look alike and their repairs differ — one needs the record
-re-witnessed, the other needs the reader to reindex their own code — so a reader
-must carry **which operand** was untagged, not merely that something was. One label
-mapping to two actions is the failure typed states exist to fix.
+The two legacy states DO stay separate, because their repairs genuinely differ:
+one needs the record re-witnessed, the other needs the reader to reindex their own
+code. A reader must therefore carry **which operand** was untagged, not merely that
+something was. One label mapping to two actions is the failure typed states exist
+to fix — and it is the test for whether a split earns itself.
 
-Every recovery except `corrupt_receipt` is re-witness or reindex. None is evidence
-the code moved — a receipt carries no locator — so offering relocation for a
-derivation mismatch invites the false re-targeting `witness`/`sourceRef` prevent.
+Where a recovery is a person's action at all it is re-witness or reindex. None is
+evidence the code moved — a receipt carries no locator — so offering relocation for
+a derivation mismatch invites the false re-targeting `witness`/`sourceRef` prevent.
+
+### One deliberate exception to the evaluation order
+
+Equal hashes settle a pair as unchanged **before** comparability is consulted,
+which reads as inverting the order above. It is intentional: two derivations that
+produced the same digest for a symbol produced the same token stream for it, so
+they agree *there* whatever they do elsewhere. Marking those unverifiable would
+flood a grammar bump with every symbol it did not actually affect.
+
+Written down because it looks like a bug. Somebody implementing receipts will
+otherwise "fix" `diff.ts` to match the stated order and cause exactly that flood.
 
 ## 6. The live operand, and the seam
 
@@ -421,6 +433,21 @@ was.
   and `createdAt`. `publishDocVersion` mints a fresh `nv_` id and stamps
   `createdAt: new Date()`, so exact deduplication is impossible today rather than
   merely unimplemented.
+- **There is deliberately no forced reindex.** §6 once implied a migration marker
+  would drive one. It will not: reindexing `@work` is what converts a grammar
+  change into store-wide false staleness, so the response is
+  `liveDerivationDrift` warning and a person deciding. Snapshots are the opposite
+  case and do rebuild automatically, because they can be.
+
+- **A corrupt interned tag reads as untagged**, not as suspicious —
+  `derivationsById` skips a row it cannot parse, so the anchor arrives with no
+  derivation and falls into the legacy fallback. The two gates above catch the
+  consequential cases (`readSnapshot` rebuilds, `liveDerivationDrift` warns, both
+  because an unresolvable id is not a current tag), so what remains is a diff
+  pair reading as comparable when nobody can say. Recorded rather than fixed: the
+  fix is a third meaning for the derivation column, and this repository's own
+  local DB corrupting is not the threat the design is for.
+
 - **Where the pull refusal is removed.** `sidecar.ts`'s `fatal` manifest check must
   be deleted in the same change that lands receipts — not before, not after.
   Neither document owns that edit.
@@ -521,3 +548,16 @@ and the corrections are more instructive than the result.
    exist only to describe a registry that would no longer exist. It also caught a
    coupling I had introduced without noticing: generation = (seed, profile) meant
    re-vendoring the Python grammar rotated the shard of somebody writing only C#.
+
+10. **Round 10** (Claude Fable, a second external model rather than a tenth round
+    with the first) — found the thing nine rounds of one reviewer had not: the
+    rule from §1 was over-generalized. "Never attach provenance to a container"
+    came from three containers that were genuinely bags of mixed moments, and was
+    applied to a snapshot, which is minted atomically by one build and therefore
+    has a truthful derivation. That mattered because only ref-level identity can
+    qualify ABSENCE — a grammar that changes symbol recognition floods
+    added/removed, and an absent value carries no tag. It also caught
+    `parserIntegrity` hashing the CommonJS loader rather than the wasm that does
+    the lexing, and the web silently dropping a count the CLI printed. The cut it
+    proposed — four states whose recovery column all read "re-witness" — is
+    applied above.

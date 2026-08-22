@@ -89,12 +89,18 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
   for (const [id, a] of baseById) if (!headById.has(id)) removed.push(brief(a));
   for (const [id, a] of headById) {
     const b = baseById.get(id);
+    // Equal hashes end it, BEFORE comparability is consulted. That looks like it
+    // inverts the validate-then-compare order the design states, and it is a
+    // deliberate exception with a reason: two derivations that produced the same
+    // digest for this symbol produced the same token stream for it, so they agree
+    // here whatever they do elsewhere. Marking those unverifiable would flood a
+    // grammar bump with every symbol it did not actually affect — which is the
+    // failure this whole path exists to avoid, arrived at from the other side.
     if (!b || b.bodyHash === a.bodyHash) continue;
     // The hashes differ. Whether that is DRIFT depends on whether the two sides
     // were derived the same way — a re-vendored grammar tokenizes unchanged code
     // differently, and calling that "changed" reports the whole repository as
-    // rewritten. Recovery is to re-snapshot, not to re-review, so these are kept
-    // out of `impacted` below: they are not evidence anything went stale.
+    // rewritten. Kept out of `impacted` below: not evidence anything went stale.
     (comparableDerivation(b.derivation, a.derivation) ? changed : unverifiable).push(brief(a));
   }
 

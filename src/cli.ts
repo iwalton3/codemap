@@ -48,8 +48,9 @@ async function cmdPr(root: string, input: string, opts: { fetch: boolean; json: 
 
   console.log(`\nsymbols: ${diff.changed.length} changed, ${diff.added.length} added, ${diff.removed.length} removed`);
   if (diff.unverifiable?.length) {
-    console.log(`  ${diff.unverifiable.length} could not be compared — the two sides were indexed with different grammars or`);
-    console.log(`  a different tree-sitter build, so a hash difference says nothing about the code. Re-snapshot to fix.`);
+    console.log(`  ${diff.unverifiable.length} could not be compared — this working tree and the base were indexed by`);
+    console.log(`  different builds, so a hash difference says nothing about the code. Neither side is wrong;`);
+    console.log(`  they are not comparable. \`codemap check\` will say whether your live index is the older one.`);
   }
   if (diff.added.length > diff.changed.length * 3 && diff.changed.length >= 0) {
     console.log(`  (mostly new surface — the ${diff.changed.length} *changed* symbols carry the regression risk)`);
