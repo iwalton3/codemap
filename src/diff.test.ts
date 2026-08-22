@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Anchor, LogicalNode } from "./schema.js";
-import { writeSnapshot, writeNode } from "./store.js";
+import { writeSnapshot, writeNode, dropSnapshot } from "./store.js";
 import { computeDiff } from "./diff.js";
 
 function anchor(id: string, symbol: string, bodyHash: string): Anchor {
@@ -55,4 +55,24 @@ test("diff against an uncached base ref returns a helpful error", async () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+/**
+ * The reserved refs are not snapshots and dropping one is not a cache eviction.
+ *
+ * `dropSnapshot` deletes anchors BY REF, so `@work` would take the live index and
+ * `@orphan` would take the retained state of anchors that have already left the
+ * tree — which nothing rebuilds, because neither came from a commit.
+ * `writeSnapshot` has refused `@work` since it was written; this side was
+ * unguarded, and had no callers, which is how the asymmetry survived.
+ */
+test("the reserved refs cannot be dropped as if they were snapshots", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-drop-"));
+  try {
+    await writeSnapshot(root, "some_sha", "main", [anchor("a_1", "pay", "h1")], "2026-07-15T00:00:00Z");
+    for (const ref of ["@work", "@orphan"]) {
+      assert.throws(() => dropSnapshot(root, ref), /not a snapshot/, `${ref} was droppable`);
+    }
+    dropSnapshot(root, "some_sha"); // an actual snapshot still goes
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

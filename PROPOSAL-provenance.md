@@ -1,10 +1,10 @@
 # Proposal: immutable provenance — profiles, generations, and receipts
 
 Status: **draft.** Split out of `PROPOSAL-sidecar-materialization.md`, where it had
-grown from an open question into the larger of the two designs. Five review rounds
+grown from an open question into the larger of the two designs. Six review rounds
 are folded in; §9 records what each round changed.
 
-Reviewed against `worktree-shared-review-hashscheme` at `071a43d`.
+Reviewed against `worktree-shared-review-hashscheme` at `6bf3686`.
 
 ## 1. The rule
 
@@ -361,103 +361,169 @@ can refuse an incompatible join before making it. Adding them later means a seco
 migration and, until then, keeping the `lost`-instead-of-`unverifiable` P1 alive on
 purpose.
 
-### The live side, concretely
+### The live side: provenance per ANCHOR, not per ref
 
-Both halves of what the reader needs already exist in the code; neither is
-persisted.
+An earlier draft of this section proposed `anchor_ref(ref, profile, indexed_at)` —
+one profile per ref, covering `@work`, `@orphan` and each snapshot. **Withdrawn.**
+It is unsound, and it is unsound for the reason §1 already states, which I failed
+to apply one layer down:
 
-`grammarForPath` (`grammars.ts:41`) returns a `GrammarName` — `c_sharp` |
-`python` | `javascript` | `typescript` | `tsx` — and the indexer already picks the
-grammar per file that way. That type IS the identity a receipt needs: `tsx` and
-`typescript` are separate grammars and separate blobs, and treating them as one
-"language" would be the coarsening this design exists to avoid. So `language` on
-an anchor is a column, not a new concept.
+> Derivation provenance must travel explicitly with every durable code-derived
+> value.
 
-The per-ref profile needs one small table rather than an extension of `snapshots`.
-`snapshots` already carries `scheme` and `hash_scheme` per ref and is exactly the
-right precedent — but it means "cached commit snapshot", `dropSnapshot` deletes
-rows from it, and `@work` has no row there and must never be droppable.
+An anchor id and a body hash **are** durable code-derived values. A ref is not a
+derivation; it is a bag of rows that were derived at different times. Two places in
+the current code make that concrete:
+
+- **Incremental update mixes profiles inside one ref.** `sync.ts` refreshes an
+  existing anchor's location but deliberately **preserves its `bodyHash`** as the
+  baseline, while newly discovered anchors are indexed fresh. So after a profile
+  change, `@work` legitimately holds rows derived under two profiles. Stamping the
+  ref with the new profile relabels the old rows; keeping the old one relabels the
+  new rows. There is no correct single value.
+- **`@orphan` is additive and never overwritten** (`store.ts`, `INSERT OR IGNORE`),
+  and its own comment says why: the FIRST eviction holds the last state the anchor
+  was really seen in, and a later reindex must not replace it with something
+  re-derived. Its rows are frozen at different moments by design, so one profile
+  for the ref is definitionally wrong.
+
+So:
 
 ```sql
--- Which derivation produced the anchors under a ref. Covers '@work' and
--- '@orphan' as well as every cached commit, because the reader compares against
--- whichever of them the question is about.
-CREATE TABLE IF NOT EXISTS anchor_ref (
-  ref TEXT PRIMARY KEY, profile TEXT NOT NULL, indexed_at TEXT NOT NULL
-);
-ALTER TABLE anchors ADD COLUMN language TEXT;   -- GrammarName; NULL = indexed before this
+ALTER TABLE anchors ADD COLUMN profile  TEXT;   -- NULL = derived before receipts
+ALTER TABLE anchors ADD COLUMN language TEXT;   -- GrammarName selector; see below
 ```
 
-A `@work` row with no profile is not an error and not an absence of drift: it is
-`missing_profile` **on the reader's side**, and it must say so rather than
-silently comparing. That is the case every existing store is in on the day this
-ships, so it is the default path, not an edge.
+Per-row costs a repeated short id on ~10k rows and buys correctness in both cases
+above: an incremental update leaves old rows' provenance alone and stamps only what
+it derived, and an orphan keeps the profile it was evicted under. `anchor_ref`
+disappears as a provenance mechanism.
 
-### Scope status, and the seven states, are two different things
+`snapshots` keeps its `scheme`/`hash_scheme` columns as the cheap "is this whole
+cache stale" check it already is — that is a different question from "what derived
+this row" and it is answered correctly by a ref-level value, because
+`writeSnapshot` replaces a snapshot wholesale.
 
-Both answer "why can I not tell you", and conflating them is the mistake
-`unverifiable` already made once.
+**`GrammarName` is a selector, not the identity.** An earlier line here said it
+*is* the identity, which contradicts §3 two hundred lines earlier: identity is the
+full blob digest, and renaming `tsx` while shipping identical bytes would change no
+derivation. What the anchor row stores is the key used to look the digest up in the
+profile. `typescript` and `tsx` still stay distinct — they map to separate blobs
+with different digests — but that is a fact about the blobs, not about the names.
 
-**Scope status explains an ABSENCE.** It is the difference between "no findings"
-and "the finding event was skipped", and it belongs on the scope:
+### Migration: never stamp, reindex, and be honest about legacy
+
+Existing rows **cannot** be truthfully backfilled. A profile needs `parserRuntime`
+and full grammar digests; what a store actually has is `State.grammarVersions`
+(friendly version strings) and, on snapshots, two integers. Nothing there
+reconstructs a profile, so:
+
+- **Never stamp existing rows with the current profile.** That is the §2 defect
+  performed deliberately.
+- **Reindex `@work`** to populate it. Cheap, and `check` already does it on
+  connect. If the reindex fails, the rows stay NULL rather than being guessed at.
+- **Rebuild cached snapshots lazily** under the current profile, which
+  `staleSchemeSnapshots` already drives.
+- **Leave orphans legacy forever.** Their source may not exist any more, so their
+  provenance is genuinely unknown and must read that way.
+
+A NULL `profile` is `legacy_no_receipt` — not `missing_profile`. The earlier draft
+said an existing store would have "a row with no profile", which was doubly wrong:
+under `anchor_ref` with `NOT NULL` it would have had **no row at all**, and the
+state it maps to is the legacy one, not the waiting-on-a-pull one.
+
+### Three levels, not two
+
+An earlier draft split this in two — scope status for absence, value states for
+comparability — and that split leaks. A quarantined `finding.revised` leaves the
+finding **present and materially wrong**: `finding.created` produced the entity,
+and the revision that would have corrected its text or severity never applied. The
+scope is not merely missing something; a specific entity is stale in a way nothing
+on it says.
+
+So there is a middle level:
+
+```
+scope    complete | partial | blocked        why an ANSWER SET may be short
+entity   complete | incomplete(reasons)      why THIS record may be wrong
+value    six states (below)                  why THIS field cannot be compared
+```
 
 ```sql
 CREATE TABLE IF NOT EXISTS shared_scope (
   scope TEXT PRIMARY KEY,
-  protocol INTEGER NOT NULL,       -- the sidecarProtocol this scope is written under
+  protocol INTEGER NOT NULL,
   key TEXT NOT NULL,               -- the cache key: materialization proposal §3
   folded_at TEXT NOT NULL,
   status TEXT NOT NULL,            -- 'complete' | 'partial' | 'blocked'
-  seen INTEGER NOT NULL,           -- lines read
-  folded INTEGER NOT NULL,         -- events applied
-  quarantined INTEGER NOT NULL     -- preserved, not applied
+  seen INTEGER NOT NULL, folded INTEGER NOT NULL, quarantined INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS shared_quarantine (
   scope TEXT NOT NULL, event_id TEXT NOT NULL,
+  subject TEXT,                    -- the entity it would have touched, when known
   reason TEXT NOT NULL, detail TEXT, at TEXT,
   PRIMARY KEY (scope, event_id)
 );
 ```
 
-`blocked` is the fork case from §7 and the unsupported-protocol case: the scope
-has answers but must not give them authoritatively, and state-dependent writes are
-refused. `partial` means some events were quarantined and the rest are sound.
-Neither may be reported as `complete` with a smaller number.
+`subject` is what makes the middle level derivable rather than a fourth thing to
+maintain: an entity is `incomplete` exactly when a quarantined event names it.
 
-**The typed states explain a VALUE.** Six of the seven are properties of a
-receipt; the seventh is not a value state at all:
+**`partial` no longer claims the remainder is sound** — that was the false part.
+It claims the remainder is *everything that could be applied*, and the entities a
+quarantined event named are individually marked. `corrupt_receipt` sits at both
+levels for the same reason and that is not a contradiction: the value cannot be
+compared, and the record carrying it is one a person should look at.
+
+### `blocked` is two different situations
+
+Grouping forks with unsupported protocols was wrong, because they differ on the
+one question the status has to answer — is there anything to show?
+
+| | can the reader decode it? | what to render |
+|---|---|---|
+| unsupported protocol | **no** | nothing projected, plus the upgrade reason |
+| detected writer fork | yes | the rows, read-only and unmistakably non-authoritative |
+
+There is no single rendering rule, and asking for one is what made the earlier
+draft's open question look hard. It is not: **the answer depends on the reason,
+and the reason is already recorded.** An unsupported protocol has no answers to
+hide; a fork has answers whose authority is void, and hiding those hides work
+people did.
+
+This also settles the §7 contradiction: a fork's scopes are `blocked`, not
+`partial`. `partial` means some events did not apply; a fork means the ones that
+did cannot be trusted to be in the right order.
+
+### The value states
 
 | state | what happened | recovery |
 |---|---|---|
-| `legacy_no_receipt` | written before receipts existed | re-witness at a current profile |
-| `missing_profile` | the profile it names has not arrived | **none — wait.** It repairs itself on the next pull |
+| `legacy_no_receipt` | derived before receipts existed, or provenance genuinely unknown | re-witness at a current profile |
+| `missing_profile` | the profile it names is not here **yet** | none while the registry is incomplete — see below |
+| `dangling_profile` | the registry is complete and the profile is still absent | a person: the writer published a reference to something that does not exist |
 | `incompatible_anchor_scheme` | ids derived differently | re-witness; **never** relocate |
 | `incompatible_hash_scheme` | hashes derived differently | re-witness |
-| `grammar_mismatch` | same scheme, different grammar for this language | re-witness |
-| `corrupt_receipt` | malformed, or disagrees with its own hash string | quarantine; a person looks |
-| ~~`unsupported_event_schema`~~ | *the event never decoded* | **scope-level** — the value is absent, not unverifiable |
+| `grammar_mismatch` | same schemes, different grammar for this language | re-witness |
+| `corrupt_receipt` | malformed, or disagreeing with its own hash string | quarantine the record; a person looks |
 
-The last row is the refinement worth keeping: if an event is quarantined its values
-never enter the projection, so nothing can be "unverifiable because the schema was
-unsupported". What the reader sees is an entity that is missing or incomplete, and
-that is `shared_scope.status`'s job. Filing it as a value state would produce a
-`unverifiable` badge on something that is not there.
+`unsupported_event_schema` is not here: a quarantined event's values never enter
+the projection, so no value is unverifiable on its account. It appears as scope
+status and as an `incomplete` entity.
 
-`missing_profile` is the other one worth separating: it is the only state that
-resolves without anyone doing anything, so offering an action for it manufactures
-work and teaches people to click through the ones that matter.
+**`missing_profile` splits.** The earlier draft promised it repairs itself on the
+next pull and needs no action. That holds only while the profile registry is known
+incomplete. Once a pull has completed and the referenced object is still absent,
+this is a dangling reference — an integrity failure someone has to act on — and
+calling it self-healing would leave it invisible forever. The registry's own
+completeness is what distinguishes them, which is another reason it needs its own
+materialized state rather than living inside a scope's cache.
 
-And **re-witness is never relocate.** Every recovery above is "establish a fact at
-a profile I can read". None of them is evidence the code moved — an anchor receipt
-carries no locator — so a UI that offers relocation for a derivation mismatch
-invites exactly the false re-targeting `witness`/`sourceRef` exist to prevent.
-
-Those columns do not re-open the materializer cache key: they are copied verbatim
-from events, like the anchor ids beside them, so nothing in the projection becomes
-anchors-derived. The criterion in `PROPOSAL-sidecar-materialization.md` §3 holds,
-and the receipts are what let the read-time join refuse work *without* invalidating
-anything.
+Every recovery above except the last two is **re-witness, never relocate.** None of
+them is evidence the code moved — an anchor receipt carries no locator — so
+offering relocation for a derivation mismatch invites exactly the false
+re-targeting `witness`/`sourceRef` exist to prevent.
 
 **Publication preserves receipts unchanged**, alongside the source version id and
 `createdAt`. Structural deduplication needs the id; *semantic* deduplication —
@@ -599,8 +665,9 @@ And a detected fork is **not** an ordinary contest, which is where my framing wa
 wrong. A contest is per-field residue on one entity; a fork invalidates the
 vector's single-writer compression for that whole generation, and the two sides
 may touch entirely different entities. So containment is scope-level: mark the
-affected scopes partial, block state-dependent writes, and force generation
-rotation or explicit recovery. Entity-level contests can still be derived where
+affected scopes **blocked** — not `partial`, which means "some events did not
+apply"; a fork means the ones that did cannot be trusted to be in the right order —
+block state-dependent writes, and force generation rotation or explicit recovery. Entity-level contests can still be derived where
 they apply, but they are a symptom, not the containment.
 
 ## 8. Open
@@ -623,16 +690,11 @@ they apply, but they are a symptom, not the containment.
   in the manifest, enforced from the first generation-aware release, because
   nothing is deployed to be compatible with.
 - ~~Live-index provenance, and the partial/unverifiable contract.~~ **Resolved in
-  §6.** What is still open inside them:
-  - **Backfilling `anchor_ref` for `@work`.** Every existing store starts with no
-    profile on its live index, so on the day this ships every comparison is
-    `missing_profile` until a reindex writes one. A reindex is cheap and already
-    happens on connect — but "correct and useless for one run" needs to be a
-    decision, not a surprise.
-  - **Whether `blocked` should hide answers or show them marked.** Refusing
-    state-dependent WRITES is clear. Whether a blocked scope still renders its
-    findings read-only, or shows nothing but the reason, is a product call: one
-    risks being treated as authoritative anyway, the other hides work people did.
+  §6**, and both of the questions left open under it turned out to be artefacts of
+  a wrong design rather than genuine choices: backfilling dissolves once provenance
+  is per-row (never stamp, reindex, leave legacy NULL), and hide-or-show dissolves
+  once `blocked` is split by reason (an unsupported protocol has nothing to show; a
+  fork has answers whose authority is void).
 - **Where the refusal is removed.** The `fatal` manifest check in `sidecar.ts` has
   to be deleted in the same change that lands receipts, not before and not after.
   Neither document currently owns that edit.
@@ -677,3 +739,12 @@ and the corrections are more instructive than the result.
    is just a contest" framing was also wrong: a fork invalidates a generation's
    single-writer compression across every entity it touched, so containment is
    scope-level and a contest is a symptom of it.
+
+7. **Round 7** — the first round conducted machine-to-machine rather than through a
+   human courier, and it caught me making the same mistake §1 exists to prevent.
+   Provenance was proposed per REF, when a ref is a bag of rows derived at
+   different moments: `sync.ts` preserves an existing anchor's hash while indexing
+   new ones fresh, and `@orphan` is `INSERT OR IGNORE` by design. Per-row was
+   always the answer, and §1 already said so. Two open questions dissolved with the
+   wrong design rather than being answered, and `blocked` turned out to be two
+   situations wearing one name.

@@ -159,8 +159,19 @@ export function staleSchemeSnapshots(root: string): string[] {
     .map((r) => r.ref);
 }
 
-/** Forget one cached snapshot. It rebuilds from the commit's own objects on next use. */
+/**
+ * Forget one cached snapshot. It rebuilds from the commit's own objects on next use.
+ *
+ * The reserved refs are refused for the same reason `writeSnapshot` refuses
+ * `@work`: this deletes anchors BY REF, so passing one would drop the live index
+ * or the orphan retention — neither of which rebuilds from a commit, because
+ * neither came from one. `@orphan` in particular is unrecoverable: it holds the
+ * last state of anchors that have already left the tree.
+ */
 export function dropSnapshot(root: string, ref: string): void {
+  if (ref === WORK_REF || ref === ORPHAN_REF) {
+    throw new Error(`${ref} is not a snapshot — dropping it would delete the live index, not a cache`);
+  }
   const d = db(root);
   d.exec("BEGIN");
   try {
