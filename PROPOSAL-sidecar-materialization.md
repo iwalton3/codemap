@@ -69,36 +69,44 @@ so a late event needs no special handler — it changes the input set, and the f
 is recomputed. That is why late arrival costs nothing today, and it is exactly the
 property a materialized view can destroy if it is built carelessly.
 
-### The measured property
+### The property I claimed, and why it was wrong
 
-I property-tested `sortEvents` over 4,000 random event DAGs (4 principals, 12
-events, 0–2 `after` parents each, random ids), inserting one late event into each:
+**Struck.** An earlier draft of this section claimed a late arrival only ever
+INSERTS and never reorders what is already folded, on the strength of 4,000 random
+DAGs with zero reorderings. Review supplied a counterexample; it reproduces:
 
 ```
-trials=4000   reorderings=0   late-event-landed-before-the-end=3515
+B  id=1  after=[A]     # A has not arrived yet
+C  id=2  independent
+sort(B, C)     = B, C
+
+A  id=3  arrives later
+sort(A, B, C)  = C, A, B      # B and C have swapped
 ```
 
-**A late arrival never reorders events already folded. It only inserts.** That is
-the guarantee the design rests on, and it is now pinned in `eventlog.test.ts`
-rather than left as a claim here.
+The shape is a **forward reference**. While A is absent, B is eligible —
+`sortEvents` waits only for parents it can see — and sorts by id. When A lands, B
+becomes blocked behind it and moves past events that had been sorting after it.
+Honest under cross-machine clock skew: B's writer really had seen A, but A's id can
+still sort later.
 
-Worth knowing how strong it is: it is *entailed* by the existing determinism
-guarantee, not independent of it — it follows from "repeatedly take the lowest
-eligible id" over an immutable parent relation. I tried to falsify it twice
-(reversing the id tiebreak; the single greedy sweep `sortEvents`' own comment warns
-against) and both mutations broke `sorting is deterministic regardless of input
-order` while leaving the new test green. So the design is resting on something
-structural, which is the good news, and the new test is a named citation rather
-than the real guard, which is the honest caveat.
+My generator could not produce it. It drew every parent from events already in the
+list, so "a named parent arrives later" was unreachable, and 4,000 clean trials
+were 4,000 trials of a restricted space. Worth recording as a method note rather
+than just a correction: I did mutation-test the checker, and both mutations left it
+green, which should have been read as *this test measures little* instead of *this
+property is robust*. Verifying that a test fails when the code breaks says nothing
+about whether the generator can reach the failing shape.
 
-The second number matters more for design than the first: the late event landed
-somewhere other than the end **88% of the time**. Real traffic is better behaved
-than random ids — a writer's own events are monotonic — but any teammate working
-concurrently produces exactly this shape. So:
+`eventlog.test.ts` now pins the counterexample directly, and the random test that
+replaced the false one asserts the property that IS true and IS worth depending on:
+**fold order is a function of the event set alone** — not of arrival order, not of
+input order — with forward references deliberately generated. It fails when
+`sortEvents` is made order-dependent.
 
-> **Do not design around "append to the end" being the fast path.** It is not the
-> common case, and a design that treats mid-sequence insertion as the exception
-> degrades to re-folding almost every time.
+None of this weakens the design; it removes a crutch it never needed. Any change to
+a scope's event set may reorder that scope, so the only safe operation was always
+to re-fold the whole scope and replace its rows atomically.
 
 ### The rule
 
@@ -126,24 +134,48 @@ PR's events, not the sidecar's. And the payoff is not "avoid re-folding" — it 
 
 The second is the larger win and it is unconditional.
 
+> **Do not design around "the event arrived in order" being a fast path.** Even
+> before the forward-reference case, a late event landed somewhere other than the
+> end 88% of the time in random DAGs; with forward references, arriving in order
+> does not even guarantee the rest of the scope keeps its positions. There is no
+> cheap case to special-case, and code that looks for one is how the accumulator
+> gets reintroduced.
+
 ### The three arrival regimes, named
 
-1. **In order** — the event sorts after everything folded. Still a scope re-fold,
-   by the rule above. Cheap.
-2. **Late (insertion)** — sorts before the head. Scope re-fold. Deterministic, so
-   the result equals what every other machine computes from the same set.
+1. **In order** — sorts after everything folded. Scope re-fold, by the rule above.
+2. **Late** — sorts before the head, and may move its neighbours. Scope re-fold.
+   Deterministic, so the result equals what every other machine computes.
 3. **Incomplete** — you hold B but not A, because A is still on somebody's laptop.
-   The fold is still well-defined; it is a fold of what you have. The causal vector
+   The fold is well-defined; it is a fold of what you have. The causal vector
    already encodes who had seen what, so contests are detected correctly. This is
-   not an error state and must never be reported as one.
+   not an error state and must never be reported as one. Note it is also regime 2's
+   precondition: the forward reference above is exactly an incomplete scope, and it
+   resolves into a reorder when the missing parent arrives.
 
 ## 3. Invalidation
 
-Not git. A per-scope fingerprint of its shard files:
+Not git. A per-scope key with two halves — what the events are, and what derived
+them:
 
 ```
-fingerprint(scope) = sorted [ (filename, size, mtime_ns) ] over scope/*.ndjson
+key(scope) = sorted [ (filename, size, mtime_ns) ] over scope/*.ndjson
+           + MATERIALIZER_VERSION      -- bumped when fold or projection changes
+           + ANCHOR_SCHEME             -- the rows are keyed BY anchor id; see below
+           + resolved sidecar identity -- so pointing at another sidecar cannot reuse rows
+           + universe qualification
 ```
+
+The file half is a change **signal**, not a content address: it does not identify
+the input set, it detects that the input set moved. Everything else in this
+document assumes only the latter, but the distinction should not be blurred.
+
+`ANCHOR_SCHEME` is in the key because the materialized rows store anchor ids
+(`shared_doc_citation.anchor_id`, `shared_finding.target_id`). A scheme bump
+rewrites the anchor table with different ids while every shard stays
+byte-identical — unchanged files, no re-fold, and every citation edge now joins to
+nothing. `snapshots` already carries a `scheme` column for exactly this, and one
+written under another value reads as NOT CACHED.
 
 Stored on the scope row; re-stat on read. A scope has one file per teammate, so
 this is a handful of `stat` calls — microseconds — and it is correct across
@@ -151,6 +183,16 @@ processes, which matters because the static review's P2 *"one sidecar clone has 
 lock shared by web, MCP, CLI"* is true: the HTTP path takes no lock, MCP locks the
 universe rather than the sidecar, and CLI sync takes none. A git-sha watermark
 would miss another process's uncommitted append; a file fingerprint does not.
+
+Fingerprint, fold, fingerprint again, and retry if it moved — that closes the
+ordinary append-during-fold race. The row replacement and the stored fingerprint
+must commit in the **same SQLite transaction**.
+
+Two processes re-folding one scope concurrently is then benign rather than a race
+to prevent: the fold is deterministic, so they compute identical rows and
+last-writer-wins inside a transaction is correct. That is worth stating explicitly,
+because it is the reason this design tolerates the sidecar having no cross-process
+lock — a real gap (static review P2) that this does not fix and does not need to.
 
 Residual risk: a union merge that produces byte-identical size *and* mtime would
 read as unchanged. Appends only grow the file and mtime moves, so this needs a
@@ -246,6 +288,13 @@ WHERE c.universe = ?
 `body_hash` is `classifyCitations`'s `present: false`, and the `offTree` /
 `retained` / `lost` refinement stays exactly where it is.
 
+These hashes are the LAST INDEXED ones, not the current files. That is unchanged
+by moving the join into SQL, and it is what `@work` has always meant on both sides
+of the seam — but the new store API must not make it harder to see. In particular
+a *confirmation* writes a durable claim, so it should re-index the cited files or
+refuse when it cannot establish that `@work` describes the source. Separable from
+materialization; tracked, not folded in.
+
 Ack queue: `WHERE scope = ? AND needs_ack = 1`, indexed, instead of folding a PR
 and filtering objects.
 
@@ -273,7 +322,12 @@ the product's north star running backwards.
 
 Each step is shippable and independently revertible.
 
-1. **Tables, fingerprint, re-fold-on-miss, behind `store.ts`.** No caller changes.
+0. **Split the pure folds out first.** A storage-free module holding the folds,
+   the shared model types, and version evaluation; `store.ts` above it owning
+   SQLite only. Without this, `store.ts` importing the folds closes a cycle against
+   `shared-docs.ts`'s existing import of `winningVersionAt` — and this repo's
+   import cycles fail with no diagnostic at all.
+1. **Tables, key, re-fold-on-miss, behind `store.ts`.** No caller changes.
    The fold stays the authority; the view is pure cache, so a bug here is slow, not
    wrong. Ship with an equivalence test: fold N random event sets directly and
    assert the view matches, including after inserting a late event.
@@ -288,7 +342,22 @@ Each step is shippable and independently revertible.
    the shapes genuinely differ (corroboration, contest residue, agent ratchet vs
    severity/witness/status). Deferring it is not deferring the benefit.
 
-Step 1 alone pays for itself; steps 3 and 4 are the ones the stated goals ask for.
+Steps 0–1 pay for themselves; steps 3 and 4 are the ones the stated goals ask for.
+
+**Completeness.** Sync materializes every changed scope for the universe, rather
+than each query materializing what it needs. It is bounded by what the pull brought,
+and it makes completeness a property of the store instead of a contract every query
+must remember — a cross-PR query like `WHERE target_id = ?` would otherwise return
+only the warmed scopes and look total. The store must also distinguish
+"materialized and empty" from "never materialized" and say which, rather than
+answering zero rows to both.
+
+**What this does not close.** Steps 0–5 cover materialization, one doc verdict, and
+ordinary read visibility for findings, docs and notes. They do not close the whole
+authoritative-store finding: shared doc EDGES have no events or table, Bugs and
+triage stay local, `finding.assigned` still has no writer, and walkthroughs and
+inbound replies stay outside the ordinary PR read. Staging those deliberately is
+fine; claiming materialization as their completion is not.
 
 ## 8. What this deliberately does not do
 
@@ -307,20 +376,286 @@ Step 1 alone pays for itself; steps 3 and 4 are the ones the stated goals ask fo
 
 ## 9. Open questions for review
 
-1. Is the cache-not-accumulator rule strong enough as a convention, or should the
-   view tables be physically prevented from partial update (e.g. every write goes
-   through one `replaceScope(scope, rows)` function, as `replaceAnchors` already
-   does for anchors)? I lean to the latter.
-2. Is the file fingerprint the right key, or should the sidecar get a real
-   lock first and use a git sha? The fingerprint works without the lock, which is
-   why I chose it, but it is the weaker guarantee.
-3. Should `needs_ack` and `contested` be stored columns at all? They are derived,
-   and storing derived state is how the `Disposition` enum went wrong. The argument
-   for is that they are recomputed wholesale on every re-fold and never mutated —
-   the same status `evalVersion` gives docs. The argument against is precedent.
-4. Does anything need the shared fold *without* a universe DB? `readFindings` today
-   works against a bare sidecar path with no `.codemap` anywhere — the scenario
-   tests rely on it. Keeping a DB-free path means keeping two implementations,
-   which is the thing this proposal exists to reduce.
+1. ~~Convention or physical enforcement for cache-not-accumulator?~~ **Closed by
+   §10: physical.** One transactional `replaceScope(scope, fingerprint, rows)`, no
+   per-row API, scope ownership on every table so replacement cannot orphan
+   citation edges.
+2. Is the file fingerprint the right change signal, or should the sidecar get a
+   real lock first and use a git sha? The fingerprint works without the lock, which
+   is why I chose it, but it is the weaker guarantee. §3 now argues the determinism
+   of the fold makes the missing lock tolerable *for the cache*; that argument does
+   not extend to the git operations themselves.
+3. ~~Should `needs_ack` and `contested` be stored columns at all?~~ **Closed by
+   §10: yes**, and for the reason that resolves the `Disposition` worry — under
+   physical enforcement nothing but a whole-scope replacement can write them, so
+   they are projection output rather than state a writer may update.
+4. ~~Does anything need the shared fold without a universe DB?~~ **Closed by §10:
+   no.** The scenario tests keep their coverage through the pure folds or an
+   in-memory materializer (`node:sqlite` takes `:memory:`); a DB-free production
+   path would preserve the second read implementation this exists to remove.
 5. Step 6 (entity unification) — worth doing at all, or is the materialized view
    the right permanent bridge between two genuinely different entities?
+6. **Does `HASH_SCHEME` belong in the cache key alongside `ANCHOR_SCHEME`?** My
+   reading is no: ids survive a hash-scheme bump, and `comparableHashes` already
+   draws the boundary at read time. But it is the same class of mistake as leaving
+   `ANCHOR_SCHEME` out, and I would rather be told than assume.
+7. Authority and merge semantics for local plus shared rows (§10). The largest
+   remaining unknown, and a prerequisite for step 5 rather than part of it —
+   including what a *conflict* between a local and a shared version looks like to a
+   reader. Findings have `contested` for this; docs have nothing equivalent.
+
+## 10. Open questions/revisions
+
+Review agrees with the materialized-cache direction: events remain authoritative,
+the DB is disposable, and a changed scope is re-folded and replaced wholesale.
+The following points need revising or deciding before implementation.
+
+### A late event can reorder events already folded
+
+The stronger claim in §2 — that a late arrival only inserts and never reorders
+existing events — is false when the late event is a missing causal parent. For
+example:
+
+```text
+B  id=1  after=A     # A is not present yet
+C  id=2  independent
+
+sort(B, C) = B, C
+
+A  id=3  arrives later
+sort(A, B, C) = C, A, B
+```
+
+B and C reversed relative order. This is an honest shape under cross-machine
+clock skew: B's writer had seen A, but A's id can still sort after B's. The
+property test added with this proposal does not generate this case; its new event
+is independent or a child of an event already present, never a missing parent
+already named by an existing event.
+
+This does **not** weaken the proposed materialization rule. It strengthens its
+rationale: any change to the input set may reorder the scope, so the only safe
+operation is still to re-fold the complete scope and atomically replace its rows.
+The insertion-only claim and test should be replaced with an equivalence test:
+after arbitrary additions, including a newly supplied missing parent, the
+materialized rows must equal a fresh direct fold of the complete set.
+
+### Define when a materialized view is complete
+
+“Each universe materializes only the scopes it reads” is sufficient for a known
+PR or a known note target, but not for the proposal's cross-PR query
+`shared_finding WHERE target_id = ?`. It would return only warmed PR scopes and
+silently omit the rest. Ordinary `search`, `outline`, and `find_gaps` have the
+same completeness problem if their shared doc/note scopes have not previously
+been visited.
+
+The implementation needs an explicit policy:
+
+- sync/startup enumerates and materializes every changed scope belonging to the
+  universe; or
+- a query materializes every scope required by its completeness contract before
+  answering.
+
+Known-target notes can derive one bucket. Universe docs have one known scope.
+Cross-PR findings require enumerating that universe's PR scope directories.
+
+### Define authority and merge semantics for local plus shared rows
+
+Materialization makes shared rows queryable; it does not by itself decide how
+they combine with existing local state. Before step 5, specify:
+
+- whether local `node_versions` and `shared_doc_version` participate in one
+  version selection set;
+- how a locally published version is recognized after the sidecar remints its
+  version id, so it is not presented twice;
+- whether ordinary `document()` and annotation writes automatically emit or
+  mirror sidecar events;
+- what a local unsynced version means after a shared version arrives; and
+- which path is authoritative for writes versus merely a local pending overlay.
+
+Without this, ordinary reads can see two stores but still have no single semantic
+answer.
+
+### The cache key needs more than scope file metadata
+
+The fingerprint must also include:
+
+- a `MATERIALIZER_VERSION`, bumped whenever fold or projection semantics change;
+- the resolved sidecar identity, so switching sidecar repositories cannot reuse
+  rows from the previous one; and
+- the universe qualification used for the scope.
+
+Otherwise unchanged shard metadata after a code upgrade can keep rows produced
+by an older fold indefinitely. Filename/size/mtime is a pragmatic invalidation
+signal, but it is not literally the input set; the document should describe that
+tradeoff without claiming content-addressed equivalence.
+
+Fingerprint before folding, fold, fingerprint again, and retry if it changed.
+That closes the ordinary append-during-fold race. The row replacement and the
+stored fingerprint must commit in the same SQLite transaction.
+
+### Enforce one replacement path physically
+
+The answer to open question 1 should be yes: expose one transactional
+`replaceScope(scope, fingerprint, rows)` operation and no per-event/per-row
+mutation API. Delete the scope's prior projection, insert the complete new fold,
+and update `shared_scope` atomically. Every materialized table should carry scope
+ownership, preferably with foreign keys/cascade semantics, so replacement cannot
+leave stale versions or citation edges behind.
+
+Storing `needs_ack` and `contested` as indexed columns is acceptable under this
+rule. They are disposable projection columns recomputed by the fold, not state
+that any writer may update independently.
+
+### Avoid introducing a dependency cycle around `store.ts`
+
+Today `shared-docs.ts` imports `winningVersionAt` from `store.ts`. If `store.ts`
+imports the shared folds to materialize them, the new seam becomes a cycle. Move
+pure event folds, shared model types, and document evaluation into a lower,
+storage-free module. `store.ts` should own SQLite persistence and queries; the
+pure folds should remain usable by property/scenario tests without creating a
+second production read implementation.
+
+A DB-free production path is not required merely because unit tests use bare
+sidecar directories. Pure fold tests or an in-memory SQLite materializer preserve
+that coverage without preserving two authorities.
+
+### `@work` still means last indexed, not current filesystem source
+
+The correction in §1 is valid: cached `@work` hashes are a design-wide behavior,
+not a divergence unique to shared docs. Moving the join into SQL does not change
+that behavior. The proposal should therefore avoid calling the joined hashes
+“live” without qualification.
+
+In particular, a confirmation operation makes a durable claim. It should
+re-index the cited files first, or refuse when it cannot establish that `@work`
+describes the current source. This is separable from materialization, but the new
+store API should not accidentally make the cached-hash meaning harder to see.
+
+### Scope of the P1 closure
+
+Steps 1–5 resolve materialization, shared-doc verdict consistency, and ordinary
+read visibility for the entities they cover. They do not yet close the whole
+authoritative-store finding from the static review:
+
+- shared doc edges have no sidecar events or materialized table;
+- Bugs and triage remain local;
+- `finding.assigned` still has no writer;
+- shared walkthroughs and inbound replies remain outside the ordinary PR read;
+  and
+- the normal shared write path remains to be defined above.
+
+Those may be staged deliberately. The implementation should claim the narrower
+closure explicitly and keep the remaining work tracked, rather than treating
+materialized rows alone as completion of the original P1.
+
+---
+
+## 11. Response to review (§10)
+
+Every point in §10 is accepted. Six are folded into the sections above; the rest
+are recorded here with what changes and what is still open. One addition the
+review did not raise is at the end, and it is the one I would most like a second
+opinion on.
+
+### Accepted and already applied
+
+**The reorder counterexample.** Verified, and §2 is rewritten around it. The false
+property test is deleted; `eventlog.test.ts` now pins the counterexample directly
+and asserts the true property — fold order is a function of the event set alone —
+with forward references deliberately generated. Confirmed it fails when
+`sortEvents` is made order-dependent. (It does *not* catch the single-greedy-sweep
+regression; the older hand-built `sorting is deterministic` test does. Complementary,
+so both stay.)
+
+**The `@work` naming.** §5's join comment stops calling the joined hashes "live".
+The separate point — that a *confirmation* makes a durable claim and should
+re-index the cited files or refuse — is right and is now the one place where the
+cached-hash meaning has real consequences. Tracked as its own item rather than
+folded in, because it changes behaviour and is separable from materialization.
+
+**`replaceScope` enforced physically.** Open question 1 is closed: one transactional
+`replaceScope(scope, fingerprint, rows)`, no per-row API, scope ownership on every
+materialized table so replacement cannot orphan citation edges. Which also closes
+open question 3 — `needs_ack` and `contested` are fine as indexed columns precisely
+*because* nothing but a whole-scope replacement can write them. They are projection
+output, not state.
+
+**The cache key.** §3 was under-specified and slightly dishonest. Adding
+`MATERIALIZER_VERSION`, the resolved sidecar identity, and the universe
+qualification; and dropping the implication that a filename/size/mtime fingerprint
+is the input set. It is a change *signal*, not a content address, and the document
+should say so plainly.
+
+The fingerprint–fold–refingerprint–retry loop is right and I had missed the
+append-during-fold race entirely. Worth noting what falls out of pairing it with a
+deterministic fold: if two processes re-fold the same scope concurrently, they
+compute the same rows, so last-writer-wins inside one transaction is benign rather
+than a race to be prevented. That is a reason the design tolerates having no
+sidecar lock, and it should be stated rather than left as luck.
+
+**Scope of the P1 closure.** Agreed, and steps 1–5 should say so. The remaining
+items — shared doc edges, Bugs and triage, `finding.assigned`'s missing writer,
+walkthroughs and inbound replies outside the ordinary PR read — stay tracked as
+open, not folded into "materialization done".
+
+### Accepted, and they change the plan
+
+**Completeness policy.** A real gap: "each universe materializes the scopes it
+reads" cannot answer `shared_finding WHERE target_id = ?` across PRs, and would
+silently return only the warmed scopes. Silently is the problem — a partial answer
+that looks total is worse here than a slow one.
+
+Of the two options offered I lean to the first: **sync materializes every changed
+scope for the universe**, enumerating the scope directories. It is bounded by what
+the pull actually brought, it is one `readdir` plus the scopes that moved, and it
+makes completeness a property of the store rather than a contract each query must
+remember to honour. Per-query materialization puts the obligation in the place
+most likely to forget it, and the failure mode is invisible.
+
+Neither option covers a scope nobody has ever synced. So the store also needs to
+know the difference between "materialized and empty" and "never materialized", and
+say so, rather than returning zero rows.
+
+**The dependency cycle.** The sharpest catch, and verified: `shared-docs.ts:31`
+imports `winningVersionAt` from `store.ts` today, so `store.ts` importing the folds
+closes a loop. This repo has already been bitten by import cycles in a way that
+produces no diagnostic at all — see the blank-page failures in the web UI — so it
+is worth avoiding structurally rather than watching for.
+
+So: a lower, storage-free module holding the pure folds, the shared model types,
+and version evaluation, with `store.ts` above it owning SQLite only. That also
+answers open question 4 better than I did. A DB-free *production* path is not
+needed to keep the scenario tests honest — they can exercise the pure folds, or an
+in-memory SQLite materializer (`node:sqlite` takes `:memory:`) — and keeping one
+would preserve exactly the second read implementation this proposal exists to
+remove.
+
+**Authority and merge semantics for local plus shared rows.** Accepted as stated,
+and it is the largest remaining unknown. Making rows queryable does not decide what
+they mean together, and step 5 waved at this. All five sub-questions need answering
+before step 5 is designed, not during it. I would add a sixth: what a *conflict*
+between a local version and a shared one looks like to a reader — the sidecar has
+`contested` for exactly this on findings, and docs have nothing equivalent.
+
+### One addition: the anchor schemes belong in the cache key
+
+`MATERIALIZER_VERSION` covers fold and projection changes. It does not cover the
+thing the materialized rows are keyed *against*.
+
+`shared_doc_citation.anchor_id` and `shared_finding.target_id` are anchor ids, and
+`CLAUDE.md` already carries the invariant that changing how an id is derived bumps
+`ANCHOR_SCHEME`. After such a bump, the anchor table is rewritten with different
+ids while every shard is byte-identical — so the fingerprint is unchanged, the
+scope is not re-folded, and every materialized citation edge now joins to nothing.
+The symptom is an entire universe's shared docs reading as `lost` for a reason
+having nothing to do with the code, which is the same false-staleness class the
+scheme numbers were introduced to prevent.
+
+`HASH_SCHEME` has the milder version of this: ids survive, but `body_hash`
+comparisons cross a derivation boundary, which is already handled by
+`comparableHashes` at read time and so probably needs nothing in the key.
+
+The precedent is right there — `snapshots` already carries a `scheme` column, and
+a snapshot written under another value reads as NOT CACHED. The materialized scopes
+should do the same with `ANCHOR_SCHEME`. Worth a second opinion on whether
+`HASH_SCHEME` genuinely stays out.

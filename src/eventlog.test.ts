@@ -242,49 +242,65 @@ test("a writer apart from another records BOTH heads, and neither is dropped", (
 });
 
 /**
- * A late arrival INSERTS. It never reorders what is already folded.
+ * A late arrival CAN reorder events already folded. Pinned, because I claimed the
+ * opposite and built a design paragraph on it.
  *
- * This is the property a materialized fold depends on
- * (`PROPOSAL-sidecar-materialization.md` §2): if inserting one event could permute
- * the events around it, a cached fold could not be reasoned about scope by scope.
+ * The shape is a forward reference: B names A as its parent, and A has not arrived
+ * yet. While A is absent, B is eligible (`sortEvents` waits only for parents it can
+ * SEE) and sorts by id. When A finally lands, B becomes blocked behind it and moves
+ * — past events that had been sorting after it. Honest under cross-machine clock
+ * skew: B's writer really had seen A, but A's id can still sort later.
  *
- * It is ENTAILED by the determinism above, not independent of it — it falls out of
- * "repeatedly take the lowest eligible id" over an immutable parent relation. Two
- * attempts to falsify it (reversing the id tiebreak, and the single greedy sweep
- * the comment in `sortEvents` warns against) both broke `sorting is deterministic`
- * and left this passing. It is here because the materialization design cites this
- * property by name, so the citation should fail loudly if determinism is ever
- * weakened in a way that keeps that test green.
- *
- * Random DAGs rather than a hand-built case: the shapes that would break this are
- * the ones nobody thinks to write down.
+ * So there is no incremental shortcut. Anything cached off a scope's fold must be
+ * rebuilt from the WHOLE scope when its event set changes, never patched with the
+ * arriving event — see `PROPOSAL-sidecar-materialization.md` §2.
  */
-test("inserting a late event never reorders the events already there", () => {
-  // A tiny deterministic PRNG — the suite must not depend on Math.random.
-  let seed = 12345;
+test("a parent arriving late reorders the events that were waiting on it", () => {
+  const A = ev("0000000003-aa");
+  const B = ev("0000000001-bb", { after: [A.id] });   // names A, which is not here yet
+  const C = ev("0000000002-cc");
+
+  assert.deepEqual(sortEvents([B, C]).map((e) => e.id), [B.id, C.id], "B first: its parent is invisible");
+  assert.deepEqual(sortEvents([A, B, C]).map((e) => e.id), [C.id, A.id, B.id], "and now B is last");
+});
+
+/**
+ * The property that IS true, and the only one worth depending on: fold order is a
+ * function of the event SET — not of arrival order, not of file order, not of which
+ * shard a line came from.
+ *
+ * Random DAGs including forward references, which is exactly what the earlier
+ * version of this test could not generate: it drew every parent from events already
+ * in the list, so the case above was unreachable and 4,000 clean trials meant
+ * nothing. The generator now emits some events whose parent arrives afterwards.
+ */
+test("fold order depends on the set alone, forward references included", () => {
+  let seed = 987654321;
   const rand = (n: number) => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) % n;
   const people = ["a@x", "b@x", "c@x", "d@x"];
   const mint = () => String(rand(9999)).padStart(10, "0") + "-" + String(rand(1e6)).padStart(6, "0");
 
-  let insertedMidway = 0;
-  for (let trial = 0; trial < 400; trial++) {
-    const evs: LogEvent[] = [];
-    for (let i = 0; i < 12; i++) {
+  let forwardRefs = 0;
+  for (let trial = 0; trial < 300; trial++) {
+    const ids = Array.from({ length: 14 }, mint);
+    const evs = ids.map((id, i) => {
       const parents: string[] = [];
-      for (let k = 0; k < rand(3) && evs.length; k++) parents.push(evs[rand(evs.length)]!.id);
-      evs.push(ev(mint(), parents.length ? { after: parents } : {}, people[rand(people.length)]));
+      // Backward refs from what exists, plus — the point of this test — forward
+      // refs to ids that will only appear later in the array.
+      if (i && rand(2)) parents.push(ids[rand(i)]!);
+      if (i < ids.length - 1 && rand(3) === 0) { parents.push(ids[i + 1 + rand(ids.length - i - 1)]!); forwardRefs++; }
+      return ev(id, parents.length ? { after: parents } : {}, people[rand(people.length)]);
+    });
+
+    const canonical = sortEvents([...evs]).map((e) => e.id);
+    // Three different arrival orders of the same set must fold identically.
+    for (let shuffle = 0; shuffle < 3; shuffle++) {
+      const mixed = [...evs];
+      for (let i = mixed.length - 1; i > 0; i--) { const j = rand(i + 1); [mixed[i], mixed[j]] = [mixed[j]!, mixed[i]!]; }
+      assert.deepEqual(sortEvents(mixed).map((e) => e.id), canonical, "input order changed the fold");
     }
-    const before = sortEvents([...evs]).map((e) => e.id);
-
-    const late = ev(mint(), rand(2) ? { after: [evs[rand(evs.length)]!.id] } : {}, people[rand(people.length)]);
-    const after = sortEvents([...evs, late]).map((e) => e.id);
-
-    assert.deepEqual(after.filter((x) => x !== late.id), before, "the late event displaced its neighbours");
-    if (after.indexOf(late.id) < before.length) insertedMidway++;
   }
-  // Not a coincidence worth asserting a ratio on, but worth failing if it becomes
-  // zero: a run where every late event lands at the END is testing nothing.
-  assert.ok(insertedMidway > 0, "no late event landed mid-sequence, so nothing was exercised");
+  assert.ok(forwardRefs > 0, "no forward reference generated, so the interesting case was not exercised");
 });
 
 test("a bare `after` string still reads, so logs written before it was a list fold", () => {
