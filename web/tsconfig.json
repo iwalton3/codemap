@@ -1,0 +1,26 @@
+{
+  // Typechecks the web app IN PLACE. `checkJs` + JSDoc, never a second emit
+  // target: the browser loads web/*.js directly, so there is no build step to
+  // break and nothing to keep in sync. `npm run typecheck:web`.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": true,
+    "noImplicitAny": false,
+    "strictNullChecks": false,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    // The seam: type positions reach into the backend's SOURCE, so the API
+    // shapes the pages read are the ones ops actually returns — and reach it
+    // without depending on `dist/` having been built.
+    "allowImportingTsExtensions": true
+  },
+  "include": ["**/*.js", "**/*.d.ts"],
+  "exclude": ["vendor/marked.min.js", "vendor/highlight.min.js"]
+}

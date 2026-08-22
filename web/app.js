@@ -22,6 +22,23 @@ import { enableRouting } from './vendor/vdx/router.js';
 // touches this module's exports inside method bodies, never at evaluation time.
 import './shared.js';
 
+/**
+ * A caught value is `unknown`, and a thrown non-Error has no `.message` — which
+ * reads as the literal string "undefined" in the banner the user sees.
+ * @param {unknown} e
+ */
+export const errText = (e) => (e instanceof Error ? e.message : String(e));
+
+/**
+ * Which node did this event land on? `e.target` is an `EventTarget`, which has no
+ * `closest` — and on a graph it is whatever child shape was under the cursor, so
+ * every hit test has to walk up to the node group.
+ * @param {Event} e
+ * @param {string} sel
+ * @returns {Element|null}
+ */
+export const hitTarget = (e, sel) => (e.target instanceof Element ? e.target.closest(sel) : null);
+
 /** POST + JSON, for requests whose payload does not belong in a URL. */
 export async function apiPost(path, body) {
   const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -494,8 +511,8 @@ class MdContent extends Component {
   // Syntax-highlight any fenced code blocks marked produced (it doesn't itself).
   hl() {
     if (!window.hljs) return;
-    this.querySelectorAll('pre code').forEach((el) => {
-      if (!el.dataset.highlighted) { try { window.hljs.highlightElement(el); } catch {} }
+    /** @type {NodeListOf<HTMLElement>} */ (this.querySelectorAll('pre code')).forEach((el) => {
+      if (!el.dataset.highlighted) { try { window.hljs?.highlightElement(el); } catch {} }
     });
   }
   afterRender() { this.hl(); }
@@ -519,6 +536,14 @@ defineComponent('md-content', MdContent);
 // a plain repo they're hidden rather than shown leading to empty scaffolding.
 // (url builders are wrapped in arrows: `diffUrl` is declared further down the
 // file, so naming it directly here would read the binding before its init.)
+/**
+ * A bare array literal infers `(string | ((u: string) => string))[]`, so `l[1](u)`
+ * is not callable and an index typo is silent. Naming the tuple is what makes a
+ * wrong position a compile error.
+ *
+ * @typedef {[label: string, href: (u: string) => string, gate?: string]} ViewLink
+ * @type {ViewLink[]}
+ */
 const VIEW_LINKS = [
   ['nodes', u => nodesUrl(u)], ['matrix', u => matrixUrl(u), 'matrix'], ['pipeline', u => pipelineUrl(u), 'pipeline'],
   ['states', u => stateMapUrl(u), 'states'], ['flows', u => flowsUrl(u)], ['bugs', u => bugsUrl(u)], ['diff', u => diffUrl(u)],
@@ -581,11 +606,14 @@ class DashboardPage extends Component {
     const u = this.props.params.universe, d = this.state.d;
     // Same gating as the header's view bar (`viewEnabled`): the event-graph views
     // only appear once this universe has the nodes behind them.
-    const nav2 = [
+    /** @type {[label: string, act: () => void, gate?: string][]} */
+    /** @type {[label: string, act: () => void, gate?: string][]} */
+    const navAll = [
       ['nodes', () => go(nodesUrl(u))], ['matrix', () => go(matrixUrl(u)), 'matrix'], ['pipeline', () => go(pipelineUrl(u)), 'pipeline'],
       ['states', () => go(stateMapUrl(u)), 'states'], ['flows', () => go(flowsUrl(u))], ['bugs', () => go(bugsUrl(u))], ['diff', () => go(diffUrl(u))],
       ['pull requests', () => go(prsUrl(u)), 'prs'], ['browse files', () => goTree(u, '')],
-    ].filter(x => viewEnabled(d, x[2]));
+    ];
+    const nav2 = navAll.filter(x => viewEnabled(d, x[2]));
     return pageShell(d, d && d.error, () => html`
       <div class="crumbs"><b>${u}</b> <span class="sep">·</span> overview${when(d.tripwires && d.tripwires.armed && this.canEnableAlerts(), () => html` <span class="sep">·</span> <button title="get a browser notification when a watched tripwire fires" on-click="${() => this.enableAlerts()}">🔔 enable alerts</button>`)}</div>
       ${when(d.attention > 0, () => html`<div class="attn-banner">
@@ -1018,7 +1046,7 @@ class GraphPage extends Component {
     }
   }
   cacheEls() {
-    const svg = this.querySelector('svg.explorer'); if (!svg) return;
+    const svg = /** @type {SVGSVGElement|null} */ (this.querySelector('svg.explorer')); if (!svg) return;
     this._nodeEls = new Map([...svg.querySelectorAll('.gn')].map((el) => [el.getAttribute('data-id'), el]));
     this._edgeEls = [...svg.querySelectorAll('.ge')].map((el) => ({ el, from: el.getAttribute('data-from'), to: el.getAttribute('data-to') }));
   }
@@ -1033,7 +1061,7 @@ class GraphPage extends Component {
   // left disconnected by a filter drops out too). Caches _visNodes/_visEdges for
   // the sim + hover, and hides the rest via display:none.
   applyFilters() {
-    const svg = this.querySelector('svg.explorer'); if (!svg) return;
+    const svg = /** @type {SVGSVGElement|null} */ (this.querySelector('svg.explorer')); if (!svg) return;
     const data = this.state.data;
     const typeOf = new Map(data.nodes.map((n) => [n.id, n.type]));
     const typeShown = (id) => !this._hidden.node.has(typeOf.get(id));
@@ -1043,11 +1071,11 @@ class GraphPage extends Component {
     const visNodes = data.nodes.filter((n) => typeShown(n.id) && connected.has(n.id));
     const visIds = new Set(visNodes.map((n) => n.id));
     this._visNodes = visNodes; this._visEdges = visEdges; this._visIds = visIds;
-    svg.querySelectorAll('.gn').forEach((el) => { el.style.display = visIds.has(el.getAttribute('data-id')) ? '' : 'none'; });
-    svg.querySelectorAll('.ge').forEach((el) => { el.style.display = (visIds.has(el.getAttribute('data-from')) && visIds.has(el.getAttribute('data-to')) && !this._hidden.edge.has(el.getAttribute('data-type'))) ? '' : 'none'; });
+    /** @type {NodeListOf<SVGElement>} */ (svg.querySelectorAll('.gn')).forEach((el) => { el.style.display = visIds.has(el.getAttribute('data-id')) ? '' : 'none'; });
+    /** @type {NodeListOf<SVGElement>} */ (svg.querySelectorAll('.ge')).forEach((el) => { el.style.display = (visIds.has(el.getAttribute('data-from')) && visIds.has(el.getAttribute('data-to')) && !this._hidden.edge.has(el.getAttribute('data-type'))) ? '' : 'none'; });
   }
   showSel() {
-    const panel = this.querySelector('.gsel'); if (!panel) return;
+    const panel = /** @type {HTMLElement|null} */ (this.querySelector('.gsel')); if (!panel) return;
     const n = this.state.data.nodes.find((x) => x.id === this._selected);
     if (!n) { panel.style.display = 'none'; return; }
     panel.style.display = '';
@@ -1055,13 +1083,13 @@ class GraphPage extends Component {
   }
   restore() { this.cacheEls(); this.fit(); this.applyFilters(); this.applyPositions(); this.showSel(); }
   fit() {
-    const svg = this.querySelector('svg.explorer'); if (!svg) return;
+    const svg = /** @type {SVGSVGElement|null} */ (this.querySelector('svg.explorer')); if (!svg) return;
     const cw = svg.clientWidth || 900, ch = svg.clientHeight || 620;
     if (!this._view.set) { this._view = { x: cw / 2, y: ch / 2, s: 1, set: true }; }
     this.applyTransform();
   }
   fitBounds() {
-    const svg = this.querySelector('svg.explorer'); if (!svg) return;
+    const svg = /** @type {SVGSVGElement|null} */ (this.querySelector('svg.explorer')); if (!svg) return;
     const nodes = this._visNodes && this._visNodes.length ? this._visNodes : this.state.data.nodes;
     if (!nodes.length) return;
     let mnx = 1e9, mny = 1e9, mxx = -1e9, mxy = -1e9;
@@ -1073,7 +1101,7 @@ class GraphPage extends Component {
   }
   adjacency() { const m = new Map(); const add = (a, b) => { let s = m.get(a); if (!s) { s = new Set(); m.set(a, s); } s.add(b); }; for (const e of (this._visEdges || this.state.data.edges)) { add(e.from, e.to); add(e.to, e.from); } return m; }
   hover(id) {
-    const svg = this.querySelector('svg.explorer'); if (!svg) return;
+    const svg = /** @type {SVGSVGElement|null} */ (this.querySelector('svg.explorer')); if (!svg) return;
     if (!id) { svg.classList.remove('hovering'); svg.querySelectorAll('.hl').forEach((el) => el.classList.remove('hl')); return; }
     const near = this.adjacency().get(id) || new Set();
     svg.classList.add('hovering');
@@ -1106,18 +1134,18 @@ class GraphPage extends Component {
     tick();
   }
   setup() {
-    const svg = this.querySelector('svg.explorer'); if (!svg) return;
+    const svg = /** @type {SVGSVGElement|null} */ (this.querySelector('svg.explorer')); if (!svg) return;
     if (!this._winWired) {
       this._winWired = true;
       window.addEventListener('mousemove', (e) => { const drag = this._drag; if (!drag) return; if (Math.abs(e.clientX - drag.sx) + Math.abs(e.clientY - drag.sy) > 3) drag.moved = true; this._view.x = drag.ox + (e.clientX - drag.sx); this._view.y = drag.oy + (e.clientY - drag.sy); this.applyTransform(); });
       window.addEventListener('mouseup', () => { const drag = this._drag; if (drag && drag.moved) { this._panned = true; setTimeout(() => { this._panned = false; }, 0); } this._drag = null; const s = this.querySelector('svg.explorer'); if (s) s.classList.remove('grabbing'); });
     }
     if (svg._cmWired) return; svg._cmWired = true;
-    svg.addEventListener('mousedown', (e) => { if (e.target.closest('.gn')) return; this._drag = { sx: e.clientX, sy: e.clientY, ox: this._view.x, oy: this._view.y, moved: false }; svg.classList.add('grabbing'); });
+    svg.addEventListener('mousedown', (e) => { if (hitTarget(e, '.gn')) return; this._drag = { sx: e.clientX, sy: e.clientY, ox: this._view.x, oy: this._view.y, moved: false }; svg.classList.add('grabbing'); });
     svg.addEventListener('wheel', (e) => { e.preventDefault(); const r = svg.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top, f = e.deltaY < 0 ? 1.12 : 0.89, v = this._view, ns = Math.max(0.15, Math.min(3, v.s * f)); v.x = mx - (mx - v.x) * (ns / v.s); v.y = my - (my - v.y) * (ns / v.s); v.s = ns; this.applyTransform(); }, { passive: false });
-    svg.addEventListener('mouseover', (e) => { const g = e.target.closest('.gn'); if (g) this.hover(g.getAttribute('data-id')); });
-    svg.addEventListener('mouseout', (e) => { const g = e.target.closest('.gn'); if (g) this.hover(null); });
-    svg.addEventListener('click', (e) => { if (this._panned) return; const g = e.target.closest('.gn'); if (!g) return; const id = g.getAttribute('data-id'); this._selected = id; this.showSel(); this.fetchData([...this._ids], id); });
+    svg.addEventListener('mouseover', (e) => { const g = hitTarget(e, '.gn'); if (g) this.hover(g.getAttribute('data-id')); });
+    svg.addEventListener('mouseout', (e) => { const g = hitTarget(e, '.gn'); if (g) this.hover(null); });
+    svg.addEventListener('click', (e) => { if (this._panned) return; const g = hitTarget(e, '.gn'); if (!g) return; const id = g.getAttribute('data-id'); this._selected = id; this.showSel(); this.fetchData([...this._ids], id); });
   }
   toggleFilter(kind, t, e) { const s = this._hidden[kind]; if (s.has(t)) s.delete(t); else s.add(t); if (e && e.currentTarget) e.currentTarget.classList.toggle('off'); this.applyFilters(); this.runSim(); }
   template() {
@@ -1466,7 +1494,7 @@ class PipelinePage extends Component {
     this._adj = m; return m;
   }
   hover(id) {
-    const svg = this.querySelector('svg.pipeline'); if (!svg) return;
+    const svg = /** @type {SVGSVGElement|null} */ (this.querySelector('svg.pipeline')); if (!svg) return;
     if (!id) { svg.classList.remove('hovering'); svg.querySelectorAll('.hl').forEach((el) => el.classList.remove('hl')); return; }
     const near = this.adjacency().get(id) || new Set();
     svg.classList.add('hovering');
@@ -1474,7 +1502,7 @@ class PipelinePage extends Component {
     svg.querySelectorAll('.pe').forEach((el) => el.classList.toggle('hl', el.getAttribute('data-from') === id || el.getAttribute('data-to') === id));
   }
   setup() {
-    const svg = this.querySelector('svg.pipeline'); if (!svg) return;
+    const svg = /** @type {SVGSVGElement|null} */ (this.querySelector('svg.pipeline')); if (!svg) return;
     this.fit();
     // Window listeners once per component; svg listeners keyed on the element so
     // they re-attach if the <svg> is ever recreated (drag state is shared).
@@ -1484,12 +1512,12 @@ class PipelinePage extends Component {
       window.addEventListener('mouseup', () => { const drag = this._drag; if (drag && drag.moved) { this._panned = true; setTimeout(() => { this._panned = false; }, 0); } this._drag = null; const s = this.querySelector('svg.pipeline'); if (s) s.classList.remove('grabbing'); });
     }
     if (svg._cmWired) return; svg._cmWired = true;
-    svg.addEventListener('mousedown', (e) => { if (e.target.closest('.pn')) return; this._drag = { sx: e.clientX, sy: e.clientY, ox: this._view.x, oy: this._view.y, moved: false }; svg.classList.add('grabbing'); });
+    svg.addEventListener('mousedown', (e) => { if (hitTarget(e, '.pn')) return; this._drag = { sx: e.clientX, sy: e.clientY, ox: this._view.x, oy: this._view.y, moved: false }; svg.classList.add('grabbing'); });
     svg.addEventListener('wheel', (e) => { e.preventDefault(); const r = svg.getBoundingClientRect(); const mx = e.clientX - r.left, my = e.clientY - r.top; const f = e.deltaY < 0 ? 1.12 : 0.89; const v = this._view; const ns = Math.max(0.15, Math.min(3, v.s * f)); v.x = mx - (mx - v.x) * (ns / v.s); v.y = my - (my - v.y) * (ns / v.s); v.s = ns; this.applyTransform(); }, { passive: false });
-    svg.addEventListener('mouseover', (e) => { const g = e.target.closest('.pn'); if (g) this.hover(g.getAttribute('data-id')); });
-    svg.addEventListener('mouseout', (e) => { const g = e.target.closest('.pn'); if (g) this.hover(null); });
+    svg.addEventListener('mouseover', (e) => { const g = hitTarget(e, '.pn'); if (g) this.hover(g.getAttribute('data-id')); });
+    svg.addEventListener('mouseout', (e) => { const g = hitTarget(e, '.pn'); if (g) this.hover(null); });
   }
-  onClick(e) { if (this._panned) return; const g = e.target.closest('.pn'); if (g) go(nodeUrl(this.props.params.universe, g.getAttribute('data-id'))); }
+  onClick(e) { if (this._panned) return; const g = hitTarget(e, '.pn'); if (g) go(nodeUrl(this.props.params.universe, g.getAttribute('data-id'))); }
   template() {
     const u = this.props.params.universe, d = this.state.data;
     if (this.state.loading || !d) return html`<main><div class="loading">loading…</div></main>`;
@@ -1588,7 +1616,7 @@ class StatemapPage extends Component {
   }
   applyTransform() { const g = this.querySelector('.vp'); if (g) { const v = this._view; g.setAttribute('transform', `translate(${v.x},${v.y}) scale(${v.s})`); } }
   fit() {
-    const svg = this.querySelector('svg.statemap'); if (!svg) return;
+    const svg = /** @type {SVGSVGElement|null} */ (this.querySelector('svg.statemap')); if (!svg) return;
     const L = this.layout(); if (!L) return;
     const cw = svg.clientWidth || 960, ch = svg.clientHeight || 640;
     let maxX = SMAP.NODEW, maxY = SMAP.NODEH;
@@ -1599,7 +1627,7 @@ class StatemapPage extends Component {
     this.applyTransform();
   }
   hover(id) {
-    const svg = this.querySelector('svg.statemap'); if (!svg) return;
+    const svg = /** @type {SVGSVGElement|null} */ (this.querySelector('svg.statemap')); if (!svg) return;
     if (!id) { svg.classList.remove('hovering'); svg.querySelectorAll('.hl').forEach((el) => el.classList.remove('hl')); return; }
     const near = (this._adj && this._adj.get(id)) || new Set();
     svg.classList.add('hovering');
@@ -1607,7 +1635,7 @@ class StatemapPage extends Component {
     svg.querySelectorAll('.pe').forEach((el) => el.classList.toggle('hl', el.getAttribute('data-from') === id || el.getAttribute('data-to') === id));
   }
   setup() {
-    const svg = this.querySelector('svg.statemap'); if (!svg) return;
+    const svg = /** @type {SVGSVGElement|null} */ (this.querySelector('svg.statemap')); if (!svg) return;
     this.fit();
     if (!this._winWired) {
       this._winWired = true;
@@ -1615,12 +1643,12 @@ class StatemapPage extends Component {
       window.addEventListener('mouseup', () => { const drag = this._drag; if (drag && drag.moved) { this._panned = true; setTimeout(() => { this._panned = false; }, 0); } this._drag = null; const s = this.querySelector('svg.statemap'); if (s) s.classList.remove('grabbing'); });
     }
     if (svg._cmWired) return; svg._cmWired = true;
-    svg.addEventListener('mousedown', (e) => { if (e.target.closest('.pn')) return; this._drag = { sx: e.clientX, sy: e.clientY, ox: this._view.x, oy: this._view.y, moved: false }; svg.classList.add('grabbing'); });
+    svg.addEventListener('mousedown', (e) => { if (hitTarget(e, '.pn')) return; this._drag = { sx: e.clientX, sy: e.clientY, ox: this._view.x, oy: this._view.y, moved: false }; svg.classList.add('grabbing'); });
     svg.addEventListener('wheel', (e) => { e.preventDefault(); const r = svg.getBoundingClientRect(); const mx = e.clientX - r.left, my = e.clientY - r.top; const f = e.deltaY < 0 ? 1.12 : 0.89; const v = this._view; const ns = Math.max(0.15, Math.min(3, v.s * f)); v.x = mx - (mx - v.x) * (ns / v.s); v.y = my - (my - v.y) * (ns / v.s); v.s = ns; this.applyTransform(); }, { passive: false });
-    svg.addEventListener('mouseover', (e) => { const g = e.target.closest('.pn'); if (g) this.hover(g.getAttribute('data-id')); });
-    svg.addEventListener('mouseout', (e) => { const g = e.target.closest('.pn'); if (g) this.hover(null); });
+    svg.addEventListener('mouseover', (e) => { const g = hitTarget(e, '.pn'); if (g) this.hover(g.getAttribute('data-id')); });
+    svg.addEventListener('mouseout', (e) => { const g = hitTarget(e, '.pn'); if (g) this.hover(null); });
   }
-  onClick(e) { if (this._panned) return; const g = e.target.closest('.pn'); if (g) go(nodeUrl(this.props.params.universe, g.getAttribute('data-open'))); }
+  onClick(e) { if (this._panned) return; const g = hitTarget(e, '.pn'); if (g) go(nodeUrl(this.props.params.universe, g.getAttribute('data-open'))); }
   template() {
     const u = this.props.params.universe, d = this.state.data;
     if (this.state.loading || !d) return html`<main><div class="loading">loading…</div></main>`;
@@ -2215,7 +2243,7 @@ class PrStoryPage extends Component {
       // left `code[id]` undefined and raised an unhandled rejection: "loading
       // source…" flashed and then nothing, which is indistinguishable from a symbol
       // that genuinely has no body.
-      this.state.code = { ...this.state.code, [id]: { error: `could not load this symbol's source: ${e && e.message ? e.message : e}` } };
+      this.state.code = { ...this.state.code, [id]: { error: `could not load this symbol's source: ${errText(e)}` } };
     } finally { this.state.pending = { ...this.state.pending, [id]: false }; }
   }
   /**

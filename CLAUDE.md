@@ -138,6 +138,27 @@ analyzers/*          OPT-IN framework plugins (Marten) — never in the agnostic
 - `index.html` asset paths are **absolute** (`/app.js`, `/vendor/*`) for
   deep-link robustness.
 
+### The web app is typechecked in place
+
+It stays plain `.js` that the browser loads directly — `web/tsconfig.json` is
+`allowJs` + `checkJs` + `noEmit`, so there is no second build target and no
+generated file to drift. `npm test` runs it (`tsc -p web`, well under a second).
+
+- **Type a page and you must do it twice.** `@extends {Component<Props, State>}`
+  types `this.props` only; `this.state` is typed by a `@type` on the constructor
+  assignment, which shadows the inherited `state: S`. Do one and you get a page
+  that looks typed and is half `any`.
+- **API shapes come from `ops-shared` itself** (`import('../dist/ops-shared.js')`
+  in a `@typedef`), never a hand-written copy — the HTTP layer returns those
+  values verbatim, so a field ops stopped returning fails the typecheck here
+  instead of rendering nothing. That is a bug this project has already shipped.
+- `noImplicitAny` and `strictNullChecks` are **off**: on 3.5k lines of untyped JS
+  they produced 1293 of 1345 errors and no defects. Turn them on per-file later
+  if it earns its keep; leaving them on now just trains people to ignore output.
+- The framework's own **template lint** covers the string-form bindings TS reads
+  as opaque text (Lit sigils, raw `.map()` in a slot, `ref=` typos). Run it when
+  re-vendoring — the command is in `web/vendor/vdx/PROVENANCE.md`.
+
 ## Analyzers (opt-in only)
 
 - Framework analyzers (currently Marten/Wolverine) live in `analyzers/` and are

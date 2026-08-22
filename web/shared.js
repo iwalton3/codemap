@@ -11,16 +11,50 @@
  */
 
 import { Component, defineComponent, html, when, each } from './vendor/vdx/framework.js';
-import { api, apiPost, pageShell, nav, go } from './app.js';
+import { api, apiPost, pageShell, nav, go, errText } from './app.js';
+
+/**
+ * The API shapes come from `ops-shared` ITSELF, not from a hand-written copy —
+ * the HTTP layer returns those values verbatim, so a field the ops function
+ * stopped returning becomes a typecheck failure here instead of a panel that
+ * silently never renders. (It already was one: `relocation` was in the model,
+ * the fold and this page, and `view()` never returned it.)
+ *
+ * `dist/` because a .d.ts costs nothing to read; `npm run typecheck:web` builds
+ * first. Each `Ok<>` drops the `{ error }` arm the page has already handled.
+ *
+ * @typedef {import('../dist/ops-shared.js')} Ops
+ * @typedef {Awaited<ReturnType<Ops['sharedFindings']>>} FindingsView
+ * @typedef {Exclude<FindingsView, { error: string }>} FindingsOk
+ * @typedef {FindingsOk['findings'][number]} Finding
+ * @typedef {Awaited<ReturnType<Ops['sharedStatus']>>} PeersView
+ * @typedef {Awaited<ReturnType<Ops['sharedNotes']>>} NotesView
+ * @typedef {Awaited<ReturnType<Ops['sharedDocs']>>} DocsView
+ */
+
+/**
+ * @typedef {{ params: { universe: string, pr: string }, query: Record<string, string> }} SharedProps
+ * @typedef {{ d: FindingsView | null, queue: boolean, busy: string | null, note: string | null, open: string | null, draft: string, replyTo: string | null }} SharedState
+ */
 
 const sevClass = (s) => (s === 'critical' || s === 'high' ? 'bad' : s === 'medium' ? 'warn' : 'dim');
 
+/**
+ * Typing a page takes BOTH annotations, and each one covers only its own half:
+ * `@extends` types `this.props`, while `this.state` is typed by the `@type` on
+ * the constructor assignment — which shadows the inherited `state: S`, so the
+ * type argument alone leaves every state read unchecked. Verified by probe;
+ * annotate one and you get a page that looks typed and is half `any`.
+ *
+ * @extends {Component<SharedProps, SharedState>}
+ */
 class SharedPage extends Component {
   static props = { params: {}, query: {} };
   constructor(props) {
     super(props);
     // `queue` defaults on: the page exists to answer "what needs me", and showing
     // everything first buries that under findings somebody else already settled.
+    /** @type {SharedState} */
     this.state = { d: null, queue: true, busy: null, note: null, open: null, draft: '', replyTo: null };
   }
 
@@ -43,7 +77,7 @@ class SharedPage extends Component {
       this.state.note = r.error ?? r.note ?? null;
       await this.load.run();
     } catch (e) {
-      this.state.note = String(e.message ?? e);
+      this.state.note = errText(e);
     } finally {
       this.state.busy = null;
     }
@@ -57,9 +91,10 @@ class SharedPage extends Component {
       const r = await apiPost('/api/shared/sync', { u: this.props.params.universe });
       this.state.note = r.error ?? `received ${r.gained} event(s)${r.pushed ? ', sent yours' : ''}${r.warning ? ` — ${r.warning}` : ''}`;
       await this.load.run();
-    } catch (e) { this.state.note = String(e.message ?? e); } finally { this.state.busy = null; }
+    } catch (e) { this.state.note = errText(e); } finally { this.state.busy = null; }
   }
 
+  /** @param {Finding} f */
   marksEl(f) {
     return html`
       ${when(f.needsAck, () => html`<span class="prbadge needsack">needs ack</span>`)}
@@ -137,6 +172,7 @@ class SharedPage extends Component {
       </div>`;
   }
 
+  /** @param {Finding} f */
   detailEl(f) {
     return html`
       <div class="fdetail">
@@ -207,9 +243,11 @@ class SharedPage extends Component {
 defineComponent('shared-page', SharedPage);
 
 /** Who else writes to this sidecar, and whether their codemap agrees with ours. */
+/** @extends {Component<SharedProps, { d: PeersView | null }>} */
 class SharedPeersPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { d: null }; }
+  /** @param {SharedProps} props */
+  constructor(props) { super(props); /** @type {{ d: PeersView | null }} */ this.state = { d: null }; }
   load = this.createTask(async () => {
     nav.current = this.props.params.universe;
     this.state.d = await api('/api/shared/peers', { u: this.props.params.universe });
@@ -248,9 +286,13 @@ defineComponent('shared-peers-page', SharedPeersPage);
  * an empty "shared notes" heading on every anchor page is noise that teaches
  * people to stop looking.
  */
+/**
+ * @typedef {{ d: NotesView | null, draft: string, replyTo: string | null, busy: boolean, note: string | null }} NotesState
+ * @extends {Component<{ universe: string, target: string }, NotesState>}
+ */
 class SharedNotesPanel extends Component {
   static props = { universe: '', target: '' };
-  constructor(props) { super(props); this.state = { d: null, draft: '', replyTo: null, busy: false, note: null }; }
+  constructor(props) { super(props); /** @type {NotesState} */ this.state = { d: null, draft: '', replyTo: null, busy: false, note: null }; }
   load = this.createTask(async () => {
     this.state.d = await api('/api/shared/notes', { u: this.props.universe, target: this.props.target });
   });
@@ -325,9 +367,13 @@ const docFresh = (v) => {
 const docUnverified = (v) => !docFresh(v) && (v.citations ?? []).some(c => c.present && c.unverifiable);
 const docState = (v) => docFresh(v) ? 'fresh' : docUnverified(v) ? 'unverified' : 'stale';
 
+/**
+ * @typedef {{ d: DocsView | null, busy: string | null, note: string | null, open: string | null }} DocsState
+ * @extends {Component<SharedProps, DocsState>}
+ */
 class SharedDocsPage extends Component {
   static props = { params: {}, query: {} };
-  constructor(props) { super(props); this.state = { d: null, busy: null, note: null, open: null }; }
+  constructor(props) { super(props); /** @type {DocsState} */ this.state = { d: null, busy: null, note: null, open: null }; }
   load = this.createTask(async () => {
     nav.current = this.props.params.universe;
     this.state.d = await api('/api/shared/docs', { u: this.props.params.universe });

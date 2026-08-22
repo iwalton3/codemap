@@ -9,10 +9,10 @@
   },
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit",
-    "test": "tsc && node --no-warnings --test --test-concurrency=1 \"dist/**/*.test.js\"",
+    "typecheck": "tsc && tsc -p web",
+    "test": "tsc && tsc -p web && node --no-warnings --test --test-concurrency=1 \"dist/**/*.test.js\"",
     "serve": "node dist/serve.js",
-    "test:e2e": "tsc && node --no-warnings --test --test-concurrency=1 \"dist/e2e/**/*.e2e.js\""
+    "test:e2e": "tsc && tsc -p web && node --no-warnings --test --test-concurrency=1 \"dist/e2e/**/*.e2e.js\""
   },
   "devDependencies": {
     "@types/node": "^26.1.0",
