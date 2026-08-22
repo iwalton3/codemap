@@ -26,6 +26,7 @@ import {
   readBugs, writeBugs, readAnnotations, writeAnnotations, readCoverage, writeCoverage, readReviews,
   writeSnapshot, readSnapshot, listSnapshots, deleteNode as storeDeleteNode, confirmNode, ackHole as storeAckHole, loadNodeVersions,
   writeReviews, remapNodeCitations, readTriage as triageRead, writeTriage as triageWrite, staleSchemeSnapshots, findAnchorsOutsideWork,
+  liveDerivationDrift,
   readWalkthroughs, writeWalkthrough, readPushes, bodyHashAt, snapshotBranch, retainOrphans, readOrphans, releaseRecoveredOrphans, referencedAnchorIds,
 } from "./store.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
@@ -583,6 +584,9 @@ export async function checkStale(root: string) {
   // then keep any analyzer-covered graph current.
   const indexUpdate = await applyIndexUpdate(root);
   const refreshed = await refreshAnalyzers(root, { changed });
+  // Said, not acted on. Reindexing is what would turn a grammar change into a
+  // store-wide false-staleness event, so this reports and stops.
+  const drift = liveDerivationDrift(root);
   return {
     scope: r.scope,
     ok: r.okCount,
@@ -596,6 +600,16 @@ export async function checkStale(root: string) {
     ...(refreshed.length ? { refreshedAnalyzers: refreshed } : {}),
     ...(rebaseline ? { rebaselined: rebaseline } : {}),
     ...(danglingDocs.length ? { danglingDocs } : {}),
+    ...(drift.stale ? {
+      derivationDrift: {
+        note: "this index was built with a different grammar or tree-sitter build than the one running now. "
+          + "Symbols indexed from here on will hash differently from the ones already stored, and a FULL REINDEX "
+          + "would make every existing review mark and doc citation read as stale — none of which would mean the "
+          + "code changed. Nothing is broken as it stands; re-witness deliberately if you reindex.",
+        tagged: drift.tagged,
+        untagged: drift.untagged,
+      },
+    } : {}),
   };
 }
 

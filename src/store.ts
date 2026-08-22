@@ -385,6 +385,37 @@ export async function readSnapshot(root: string, ref: string): Promise<Anchor[] 
 }
 
 /**
+ * Whether the live index was built by a different grammar or parser than this one.
+ *
+ * A DETECTOR, not a repair, and deliberately so. A snapshot can simply be rebuilt;
+ * `@work` cannot, because reindexing it is exactly what turns a grammar change into
+ * a store-wide false-staleness event — every review witness and doc citation holds
+ * an old-derivation hash, `comparableHashes` sees two `h2:` values and calls them
+ * comparable, and the whole store reads as drift. So the honest response is to say
+ * so and let a person decide, not to act.
+ *
+ * The vendored grammar blobs have been committed exactly once in this repository's
+ * life, so this is sized for something that has never happened: one query, on
+ * demand, and a sentence when it fires.
+ */
+export function liveDerivationDrift(root: string): { stale: boolean; tagged: number; untagged: number } {
+  const d = db(root);
+  const rows = d.prepare(
+    "SELECT derivation, count(*) AS n FROM anchors WHERE ref = ? GROUP BY derivation",
+  ).all(WORK_REF) as unknown as { derivation: number | null; n: number }[];
+  const tags = derivationsById(d);
+  const current = new Set(GRAMMAR_NAMES.map((g) => tagKey(derivationTag(g))));
+  let tagged = 0, untagged = 0, stale = false;
+  for (const r of rows) {
+    if (r.derivation == null) { untagged += r.n; continue; }
+    tagged += r.n;
+    const t = tags.get(r.derivation);
+    if (!t || !current.has(tagKey(t))) stale = true;
+  }
+  return { stale, tagged, untagged };
+}
+
+/**
  * Does this ref hold anchors derived by a build that is not this one?
  *
  * Untagged rows do NOT count. Every snapshot cached before tags existed is

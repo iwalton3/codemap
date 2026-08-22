@@ -396,11 +396,18 @@ was.
   first. Which is arguably worth doing regardless — raw equality on a hash string
   is what makes any format change hazardous.
 
-- **Proportionality.** `git log --follow -- grammars/` shows the blobs committed
-  exactly once, in the initial commit: grammar drift has never happened here. That
-  argues for a DETECTOR rather than a mechanism — warn loudly when `@work`'s tags
-  stop matching the build — and against any further user-facing state until
-  somebody has actually been bitten.
+- ~~Proportionality: build a detector, not a mechanism.~~ **Done**
+  (`liveDerivationDrift`). `check` reports when `@work` holds tags this build does
+  not produce, and the MCP connect path writes it to stderr, because the thing it
+  warns against — a full reindex — is a reasonable-looking next step that nothing
+  else would have flagged. It reports and stops: reindexing is what would flood the
+  store, so acting automatically would BE the failure.
+
+  Sized for something that has never happened. `git log --follow -- grammars/`
+  shows the blobs committed exactly once, in the initial commit. One query, on
+  demand, one sentence when it fires, and silence for untagged stores — which is
+  every store that exists today, and warning all of them about a question their
+  rows cannot answer would train people to ignore the case that means something.
 - **Untagged is comparable, on purpose.** A tag on only one side falls back to
   today's behaviour. It has to: every stored value predates tags, and answering
   `unverifiable` for all of them would trade a rare false positive for a universal

@@ -860,6 +860,12 @@ async function refreshOnConnect(): Promise<void> {
       const reb = r?.rebaselined ? ` rebaselined ${r.rebaselined.from}→${r.rebaselined.to} (${r.rebaselined.anchors} anchors)` : "";
       const add = r?.indexUpdate ? ` +${r.indexUpdate.added} anchors` : "";
       process.stderr.write(`codemap-mcp: check_stale on connect [${u.id}]: ok=${r?.ok ?? "?"}${reb}${add}\n`);
+      // Loud on connect, because the thing it warns against — a full reindex —
+      // is a reasonable-looking next step that would flood the store with false
+      // staleness, and nothing else would have told anyone.
+      if (r?.derivationDrift) {
+        process.stderr.write(`codemap-mcp: WARNING [${u.id}]: ${r.derivationDrift.note}\n`);
+      }
     } catch (e: any) {
       process.stderr.write(`codemap-mcp: check_stale on connect [${u.id}] skipped: ${e?.message ?? e}\n`);
     }
