@@ -10,6 +10,7 @@
 import type { Actor } from "./schema.js";
 import { requireActor, isAgentActor } from "./identity.js";
 import { comparableHashes } from "./normalize.js";
+import { classifyCitations } from "./citation-state.js";
 import { resolveSidecar, scopeFor, type SidecarConfig } from "./sidecar-config.js";
 import { originSlug, headCommit, currentBranch } from "./git.js";
 import { fetchReviewThreads } from "./pr-push.js";
@@ -17,7 +18,7 @@ import { ensureSidecar, sync as sidecarSync, readManifests, checkPeers, currentM
 import {
   createFinding, corroborate, comment, promote, request, setState, recordOutcome,
   markPosted, markUpstreamed, promoteToBug, readFindings, needsHumanAck, ackQueue,
-  revise, resolveContest,
+  revise, resolveContest, relocate,
   type SharedFinding, type Verdict, type Ask, type FindingState, type NewFinding,
 } from "./shared-findings.js";
 import { publishWalkthrough, readWalkthroughs, currentWalkthrough, staleWalkthroughs } from "./shared-walkthrough.js";
@@ -178,6 +179,28 @@ function view(f: SharedFinding) {
   };
 }
 
+/**
+ * Record where a finding's target went.
+ *
+ * Without `apply` this is a proposal and lands in the ack queue; an agent may only
+ * propose. Re-pointing a finding at the wrong symbol is the false-provenance
+ * failure `witness`/`sourceRef` exist to prevent, so applying one is a person's act.
+ */
+export async function relocateFinding(
+  root: string, pr: number | string, id: string,
+  kind: "moved" | "gone", rationale: string, opts: { to?: string; apply?: boolean } = {},
+) {
+  const b = bind(root);
+  if ("error" in b) return b;
+  if (!rationale.trim()) return { error: `saying a target ${kind === "moved" ? "moved" : "is gone"} without saying why leaves nothing to check` };
+  if (kind === "moved" && !opts.to?.trim()) return { error: "say WHICH anchor it moved to — \"it moved\" is not actionable" };
+  if (opts.apply && isAgentActor(b.actor)) {
+    return { error: "an agent may propose a relocation, not apply one — a mis-targeted finding is worse than an untriaged one" };
+  }
+  await relocate(b.cfg.path, prKey(b.cfg, pr), b.actor, id, kind, rationale, opts);
+  return { ok: true, id, kind, ...(opts.apply ? { applied: true } : { note: "queued for a person to apply" }) };
+}
+
 export async function reviseFinding(root: string, pr: number | string, id: string, now: Record<string, unknown>) {
   const b = bind(root);
   if ("error" in b) return b;
@@ -197,14 +220,16 @@ export async function sharedFindings(root: string, pr: number | string, opts: { 
   const cfg = resolveSidecar(root);
   if (!cfg) return { error: NO_SIDECAR };
   const all = [...(await readFindings(cfg.path, prKey(cfg, pr))).values()];
+  const places = await classifyCitations(root, [...new Set(all.filter((f) => f.target.kind === "anchor").map((f) => f.target.id))]);
   const chosen = opts.queue ? ackQueue(all) : all;
+  const place = (f: SharedFinding) => places.get(f.target.id) ?? { state: "unknown" as const };
   return {
     universe: cfg.universe,
     pr,
     total: all.length,
     waitingOnYou: ackQueue(all).length,
     contested: all.filter((f) => f.contested?.length).length,
-    findings: chosen.map(view),
+    findings: chosen.map((f) => ({ ...view(f), target: { ...f.target, where: place(f).state, at: place(f).at, lastFile: place(f).file } })),
   };
 }
 
@@ -374,6 +399,10 @@ export async function sharedDocs(root: string, opts: { nodeId?: string } = {}) {
   if (!cfg) return { error: NO_SIDECAR };
   const docs = await readDocs(cfg.path, cfg.universe);
   const live = await liveHashes(root);
+  // Classified once for every citation in the catalogue: the dry run had a
+  // thousand of them, and per-citation lookups would be a query each.
+  const cited = [...new Set([...docs.values()].flatMap((d) => d.versions.flatMap((v) => v.citations.map((c) => c.anchorId))))];
+  const places = await classifyCitations(root, cited);
   const rows = [];
   for (const doc of docs.values()) {
     if (opts.nodeId && doc.nodeId !== opts.nodeId) continue;
@@ -400,12 +429,26 @@ export async function sharedDocs(root: string, opts: { nodeId?: string } = {}) {
           // touching the code. Found doing exactly that on a real repo — 985 of 985.
           const unverifiable = present && !matches
             && !c.acceptedHashes.some((h) => comparableHashes(h, now));
-          return { anchorId: c.anchorId, accepted: c.acceptedHashes.length, present, matches, unverifiable };
+          // WHY it is not here, not merely that it is not. `offTree` is somebody
+          // else's branch and nobody's action item; the rest are the residue.
+          // `unknown`, never `lost`, when nothing was classified: claiming code is
+          // gone because this machine has no index is a confident lie.
+          const place = places.get(c.anchorId) ?? { state: present ? "here" : "unknown" as const };
+          return {
+            anchorId: c.anchorId, accepted: c.acceptedHashes.length, present, matches, unverifiable,
+            where: place.state, at: place.at, lastFile: place.file, lastSymbol: place.symbol,
+          };
         }),
       } : undefined,
     });
   }
-  return { universe: cfg.universe, total: rows.length, docs: rows };
+  return {
+    universe: cfg.universe, total: rows.length,
+    // The number worth acting on, as opposed to the number that merely mention
+    // code you do not have checked out.
+    needAttention: rows.filter((r) => r.resolved?.citations.some((c: any) => c.where === "retained" || c.where === "lost")).length,
+    docs: rows,
+  };
 }
 
 export async function shareDoc(root: string, v: NewDocVersion) {

@@ -292,6 +292,7 @@ const server = createServer(async (req, res) => {
         case "note_answer": out = await shared.answerSharedNote(root, String(body.target ?? ""), body.id, body.body ?? ""); break;
         case "note_resolve": out = await shared.resolveSharedNote(root, String(body.target ?? ""), body.id, body.resolved !== false, body.reason); break;
         case "doc_confirm": out = await shared.confirmSharedDoc(root, body.nodeId, body.versionId); break;
+        case "relocate": out = await shared.relocateFinding(root, pr, body.id, body.kind, body.rationale ?? "", { to: body.to, apply: body.apply === true }); break;
         default: out = { error: `unknown shared action "${action}"` };
       }
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });

@@ -755,6 +755,18 @@ const tools: Tool[] = [
     handler: (a, c) => shared.reportOnFinding(c.universe.path, a.pr, a.id, a.result, a.detail, a.files),
   },
   {
+    name: "relocate_finding",
+    description: "Say where a finding's target went, when its symbol is not in the checkout. FIRST check WHY it is missing: `shared_findings` reports `target.where` as `offTree` (the symbol is on another branch — nothing is wrong, do NOT relocate it), `retained` (gone from the tree, last known location recorded), or `lost`. Only the last two are yours to act on.\n\n`moved` needs the anchor id it moved TO — \"it moved\" is not actionable. `gone` says the code was genuinely removed. You may PROPOSE either, which queues it for a person; you may not apply one, because re-pointing a finding at the wrong symbol is worse than leaving it untriaged.",
+    inputSchema: obj({
+      pr: { type: "string" }, id: { type: "string" },
+      kind: { type: "string", enum: ["moved", "gone"] },
+      to: { type: "string", description: "For `moved`: the anchor id it is now." },
+      rationale: { type: "string", description: "What you checked — the commit that renamed it, or where the code went." },
+    }, ["pr", "id", "kind", "rationale"]),
+    mutates: true,
+    handler: (a, c) => shared.relocateFinding(c.universe.path, a.pr, a.id, a.kind, a.rationale, { to: a.to }),
+  },
+  {
     name: "shared_docs",
     description: "The TEAM's documentation, each doc resolved against the code you have checked out. One sidecar serves every branch: a doc is a set of immutable versions, each recording the anchors it cites with the body hashes it was confirmed against, and the version whose hashes match your checkout is the one you get — no branch tags, no git. Read `citations[].matches` to tell fresh from stale; a version being returned does NOT mean it describes your code.",
     inputSchema: obj({ nodeId: { type: "string", description: "Only this node (default: all)." } }),

@@ -110,6 +110,20 @@ export interface SharedFinding {
 
   revisions: { at: string; by: Actor; was: Record<string, unknown> }[];
   /**
+   * The target moved, or went away.
+   *
+   * A finding whose anchor is not in your checkout is usually not your problem —
+   * it is on another branch, and `classifyCitations` works that out without asking
+   * anyone. This records the residue: a symbol that was renamed (`moved`, with
+   * where to) or genuinely removed (`gone`).
+   *
+   * An agent may PROPOSE either; applying one is a person's act, because
+   * re-pointing a finding at the wrong symbol is the false-provenance failure
+   * `witness`/`sourceRef` exist to prevent, and a silent mis-target is worse than
+   * a finding nobody has triaged.
+   */
+  relocation?: { kind: "moved" | "gone"; to?: string; by: Actor; at: string; rationale: string; applied?: boolean };
+  /**
    * Fields two people set to different values without having seen each other.
    *
    * Nothing is lost and nothing is arbitrated: both values are here, both are in
@@ -374,6 +388,23 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         break;
       }
 
+      case "finding.relocation": {
+        const kind = str(d, "kind");
+        if (kind !== "moved" && kind !== "gone") break;
+        const to = str(d, "to");
+        if (kind === "moved" && !to) break;    // "it moved" without where is not a proposal
+        const apply = d?.apply === true;
+        // The same gate as everything else: an agent proposes, a person applies.
+        // A proposal from anyone is recorded; an APPLIED one from an agent is not.
+        if (apply && isAgentActor(e.actor)) break;
+        f.relocation = { kind, ...(to ? { to } : {}), by: e.actor, at: e.at, rationale: str(d, "rationale") ?? "", ...(apply ? { applied: true } : {}) };
+        if (apply) {
+          if (kind === "moved" && to) f.target = { ...f.target, id: to };
+          else if (kind === "gone") { f.state = "invalid"; f.closed = { at: e.at, by: e.actor, reason: str(d, "rationale") || "the code it was about is gone" }; }
+        }
+        break;
+      }
+
       case "finding.promotedToBug": {
         const bug = str(d, "bug");
         if (!bug) break;
@@ -451,6 +482,14 @@ export const markUpstreamed = (logRoot: string, pr: number | string, actor: Acto
 export const promoteToBug = (logRoot: string, pr: number | string, actor: Actor, id: string, bug: string) =>
   emit(logRoot, pr, actor, id, "finding.promotedToBug", { bug });
 
+/**
+ * Say where a finding's target went. `apply` performs it; without it this is a
+ * proposal that lands in the ack queue.
+ */
+export const relocate = (logRoot: string, pr: number | string, actor: Actor, id: string,
+  kind: "moved" | "gone", rationale: string, opts: { to?: string; apply?: boolean } = {}) =>
+  emit(logRoot, pr, actor, id, "finding.relocation", { kind, rationale, ...(opts.to ? { to: opts.to } : {}), ...(opts.apply ? { apply: true } : {}) });
+
 /** Rewrite a finding's substance. The one event that can contest. */
 export const revise = (logRoot: string, pr: number | string, actor: Actor, id: string, now: Record<string, unknown>, was: Record<string, unknown> = {}) =>
   emit(logRoot, pr, actor, id, "finding.revised", { now, was });
@@ -510,7 +549,9 @@ export function ackQueue(findings: Iterable<SharedFinding>): SharedFinding[] {
     // pick and only a person may state the value. Leaving it out meant the one
     // thing nobody else can resolve was the one thing the queue did not show —
     // found by a browser test that could not make the badge appear.
-    && (needsHumanAck(f) || !!f.pending || !!f.contested?.length));
+    && (needsHumanAck(f) || !!f.pending || !!f.contested?.length
+      // An unapplied relocation proposal is waiting on a person by the same rule.
+      || (!!f.relocation && !f.relocation.applied)));
 }
 
 /**

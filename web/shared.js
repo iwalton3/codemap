@@ -69,7 +69,10 @@ class SharedPage extends Component {
       ${when(f.refutes > 0, () => html`<span class="prbadge warnb">${f.refutes} refuted</span>`)}
       ${when(!!f.pending, () => html`<span class="prbadge ask">asked: ${f.pending.ask}</span>`)}
       ${when(!!f.upstream, () => html`<span class="prbadge">${f.upstream}</span>`)}
-      ${when(!!f.bug, () => html`<span class="prbadge">→ bug</span>`)}`;
+      ${when(!!f.bug, () => html`<span class="prbadge">→ bug</span>`)}
+      ${when(f.target?.where === 'offTree', () => html`<span class="prbadge" title="the symbol is on another branch — nothing to do here">elsewhere</span>`)}
+      ${when(f.target?.where === 'retained' || f.target?.where === 'lost', () => html`<span class="prbadge warnb">target ${f.target.where}</span>`)}
+      ${when(!!f.relocation && !f.relocation.applied, () => html`<span class="prbadge ask">relocation proposed</span>`)}`;
   }
 
   /**
@@ -140,6 +143,17 @@ class SharedPage extends Component {
         <div class="ftext">${f.text}</div>
         ${this.contestEl(f)}
         ${when(!!f.pending, () => this.askEl(f))}
+        ${when(!!f.relocation && !f.relocation.applied, () => html`
+          <div class="askbox">
+            <div><b>${f.relocation.by.principal ?? f.relocation.by}</b> says the target
+              ${f.relocation.kind === 'moved' ? `moved to ${f.relocation.to}` : 'is gone'}: ${f.relocation.rationale}</div>
+            <div class="row">
+              <button on-click="${() => this.act('relocate', { id: f.id, kind: f.relocation.kind, to: f.relocation.to, rationale: f.relocation.rationale, apply: true })}"
+                >apply</button>
+            </div>
+          </div>`)}
+        ${when(f.target?.where === 'retained' || f.target?.where === 'lost', () => html`
+          <div class="dim">target is ${f.target.where}${f.target.lastFile ? ` — last seen in ${f.target.lastFile}` : ''}</div>`)}
         ${when(!!f.outcome, () => html`<div class="dim">${f.outcome.by} reported <b>${f.outcome.result}</b>: ${f.outcome.detail}</div>`)}
         ${each(f.corroboration ?? [], c => html`
           <div class="corr">
