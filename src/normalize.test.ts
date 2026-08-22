@@ -67,3 +67,28 @@ test("an absent anchor compares against any scheme — gone is gone under every 
 test("hashTokens stamps the scheme in force, so a hash carries its own provenance", () => {
   assert.equal(hashSchemeOf(hashTokens(["a"])), HASH_SCHEME);
 });
+
+/**
+ * A value that is not a hash must not read as scheme 1.
+ *
+ * Scheme 1 is encoded as the ABSENCE of a prefix, so "unrecognized" and "the
+ * original derivation" looked identical. That failed open: an unparseable value
+ * compared equal-scheme against every legacy hash, mismatched, and produced a
+ * confident `stale` — drift asserted about code nothing had actually compared.
+ */
+test("an unparseable value is not a hash, and is comparable to nothing", () => {
+  for (const junk of ["garbage", "", "sha256", "sha256:", "h2:", "h2:md5:aaa", "h0:sha256:aaa", "h01:sha256:aaa"]) {
+    assert.equal(hashSchemeOf(junk), null, `${JSON.stringify(junk)} should not parse`);
+    assert.equal(comparableHashes(junk, "sha256:aaa"), false, `${JSON.stringify(junk)} vs a scheme-1 hash`);
+    assert.equal(comparableHashes("h2:sha256:aaa", junk), false, `a scheme-2 hash vs ${JSON.stringify(junk)}`);
+  }
+  // Two things nobody can read are not thereby known to be equal.
+  assert.equal(comparableHashes("garbage", "garbage"), false);
+});
+
+test("the absent sentinel stays comparable to everything, including junk", () => {
+  // "there is no code here" is true under every derivation, so it must read as
+  // CHANGED rather than unverifiable whatever it is compared against.
+  assert.equal(comparableHashes(ABSENT_HASH, "garbage"), true);
+  assert.equal(comparableHashes(ABSENT_HASH, ABSENT_HASH), true);
+});

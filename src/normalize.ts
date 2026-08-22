@@ -51,13 +51,35 @@ export function hashTokens(tokens: string[]): string {
 }
 
 /**
- * Which derivation minted a hash. An unprefixed digest is scheme 1 — that is what
- * every hash written before HASH_SCHEME existed looks like, and there is no way to
- * retrofit them, so "no prefix" has to mean "the original".
+ * The shape a body hash has: an optional scheme prefix, then the algorithm, then
+ * the digest. `h0:`/`h01:` are refused so a scheme number has one spelling.
+ *
+ * The digest itself is not length- or charset-checked, which is a deliberate stop
+ * short of "strictly parse everything": the suite carries ~100 readable fixtures
+ * across 22 files (`sha256:OLD`, `sha256:NEW`) whose legibility is worth more than
+ * catching a corrupt digest that would be reported as drift either way. That check
+ * belongs with the derivation receipts, which is also when the fixtures can carry
+ * real digests without becoming unreadable.
  */
-export function hashSchemeOf(hash: string): number {
-  const m = /^h(\d+):/.exec(hash);
-  return m ? Number(m[1]) : 1;
+const HASH_FORM = /^(?:h([1-9]\d*):)?sha256:(.+)$/;
+
+/**
+ * Which derivation minted a hash, or NULL when the string is not one this code
+ * could have produced.
+ *
+ * An unprefixed digest is scheme 1 — that is what every hash written before
+ * HASH_SCHEME existed looks like, and there is no way to retrofit them, so "no
+ * prefix" has to mean "the original".
+ *
+ * Which is exactly why this must be able to answer "not a hash". Scheme 1 is
+ * encoded as the ABSENCE of a prefix, so treating anything unrecognized as scheme 1
+ * fails OPEN: a malformed value used to compare equal-scheme against every legacy
+ * hash, mismatch, and report confident `stale` — drift asserted about code nobody
+ * had actually compared.
+ */
+export function hashSchemeOf(hash: string): number | null {
+  const m = HASH_FORM.exec(hash);
+  return m ? Number(m[1] ?? "1") : null;
 }
 
 /**
@@ -68,7 +90,11 @@ export function hashSchemeOf(hash: string): number {
  * code, not a derivation of it.
  */
 export function comparableHashes(a: string, b: string): boolean {
-  return a === ABSENT_HASH || b === ABSENT_HASH || hashSchemeOf(a) === hashSchemeOf(b);
+  if (a === ABSENT_HASH || b === ABSENT_HASH) return true;
+  const scheme = hashSchemeOf(a);
+  // Unparseable is not comparable to anything, including another unparseable value:
+  // two things nobody can read are not thereby known to be equal.
+  return scheme !== null && scheme === hashSchemeOf(b);
 }
 
 /** Hash of an arbitrary string (used for ids / disambiguators). */
