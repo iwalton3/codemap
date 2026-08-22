@@ -137,6 +137,26 @@ export async function appendEvents(logRoot: string, scope: string, actor: Actor,
 }
 
 /**
+ * The envelope every reader depends on, checked once at the door.
+ *
+ * `actor.principal` is the part worth spelling out: `causality()` keys its vector
+ * on it for EVERY event before any fold looks at any of them, so a line missing an
+ * actor is not a record one fold branch skips — it throws, and takes every finding
+ * in the scope with it. The events arrive from other people's clients, which may be
+ * older or buggy, so one such line would stop the whole team reading a pull request.
+ * A shared store that refuses to load is worse than one that ignores a record.
+ *
+ * `at` and `data` are deliberately not required: a fold branch that wants them
+ * already guards, and rejecting an event for a missing timestamp would discard
+ * meaning over presentation.
+ */
+function wellFormed(e: LogEvent): boolean {
+  return !!e && typeof e.id === "string" && !!e.id
+    && typeof e.kind === "string" && typeof e.subject === "string"
+    && !!e.actor && typeof e.actor.principal === "string" && !!e.actor.principal.trim();
+}
+
+/**
  * Every event in one shard, skipping anything unparseable.
  *
  * A partial trailing line is EXPECTED, not exceptional: a process killed
@@ -153,7 +173,7 @@ export async function readShard(file: string): Promise<LogEvent[]> {
     if (!line.trim()) continue;
     try {
       const e = JSON.parse(line) as LogEvent;
-      if (e && typeof e.id === "string" && typeof e.kind === "string" && typeof e.subject === "string") out.push(e);
+      if (wellFormed(e)) out.push(e);
     } catch { /* torn or stitched line — see above */ }
   }
   return out;
@@ -242,7 +262,17 @@ export function sortEvents(events: LogEvent[]): LogEvent[] {
  * writing from a laptop and a desktop can mint a later event with a lower id, and
  * `sortEvents` exists precisely to put those back in causal order.
  *
- * Pass events in fold order (`readScope` returns them so).
+ * The premise has one known hole, recorded rather than papered over: `readScope`
+ * dedupes because ONE PERSON CAN APPEND FROM TWO MACHINES, and those events are
+ * not causally related even though this keys them under one principal. Fold order
+ * then supplies an edge between them that never existed. Attribution and
+ * independence are unaffected — those want the human — but exact reachability for
+ * a writer working from two machines at once needs a per-writer generation id,
+ * which the event format does not carry.
+ *
+ * Pass events in fold order (`readScope` returns them so). Events without an
+ * actor are skipped rather than fatal: `readShard` rejects them at the door, and
+ * a caller folding a hand-built array must not be able to crash every reader.
  */
 export interface Causality {
   /** Had the writer of `from` already folded `target`? Unknown ids answer false. */
@@ -263,7 +293,8 @@ export function causality(sortedEvents: LogEvent[]): Causality {
   const ownLast = new Map<string, string>();
 
   for (const e of sortedEvents) {
-    const mine = e.actor.principal;
+    const mine = e.actor?.principal;
+    if (!mine) continue;
     const v = new Map<string, number>();
     const absorb = (id: string | undefined) => {
       const parent = id !== undefined ? byId.get(id) : undefined;
@@ -290,13 +321,18 @@ export function causality(sortedEvents: LogEvent[]): Causality {
   return {
     saw(from, target) {
       const t = byId.get(target);
-      if (!t) return false;
-      return (seen.get(from)?.get(t.actor.principal) ?? 0) >= seq.get(target)!;
+      const n = seq.get(target);
+      // No ordinal means the event was skipped as malformed, so nobody saw it.
+      if (!t?.actor?.principal || n === undefined) return false;
+      return (seen.get(from)?.get(t.actor.principal) ?? 0) >= n;
     },
     heads() {
       const covered = new Map<string, number>();
       for (const v of seen.values()) for (const [p, n] of v) if ((covered.get(p) ?? 0) < n) covered.set(p, n);
-      return sortedEvents.filter((e) => (covered.get(e.actor.principal) ?? 0) < seq.get(e.id)!).map((e) => e.id);
+      return sortedEvents.filter((e) => {
+        const n = seq.get(e.id);
+        return n !== undefined && (covered.get(e.actor!.principal) ?? 0) < n;
+      }).map((e) => e.id);
     },
   };
 }

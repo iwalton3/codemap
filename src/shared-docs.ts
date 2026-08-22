@@ -60,12 +60,21 @@ export function foldDocs(events: LogEvent[]): Map<string, SharedDoc> {
 
     if (e.kind === "doc.version") {
       const v = d?.version as NodeVersion | undefined;
-      // Skipped rather than fatal: it arrived from somebody else's client.
+      // Skipped rather than fatal: it arrived from somebody else's client. The
+      // citations check earns its place — `citations: "bad"` parses, passes every
+      // other test here, and then throws on `.map()`, which is not one bad doc but
+      // every shared doc in the universe becoming unreadable for everyone, forever.
       if (!v || typeof v.versionId !== "string" || v.nodeId !== e.subject) continue;
+      if (v.citations !== undefined && !Array.isArray(v.citations)) continue;
       let doc = out.get(e.subject);
       if (!doc) { doc = { nodeId: e.subject, versions: [], authors: new Map() }; out.set(e.subject, doc); }
       if (byVersion.has(v.versionId)) continue; // a version id is written once
-      const copy: NodeVersion = { ...v, citations: (v.citations ?? []).map((c) => ({ ...c, acceptedHashes: [...(c.acceptedHashes ?? [])] })) };
+      const copy: NodeVersion = {
+        ...v,
+        citations: (v.citations ?? [])
+          .filter((c) => c && typeof c.anchorId === "string")
+          .map((c) => ({ ...c, acceptedHashes: Array.isArray(c.acceptedHashes) ? [...c.acceptedHashes] : [] })),
+      };
       byVersion.set(v.versionId, copy);
       doc.versions.push(copy);
       doc.authors.set(v.versionId, e.actor);

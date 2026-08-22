@@ -454,9 +454,34 @@ export async function sharedDocs(root: string, opts: { nodeId?: string } = {}) {
   };
 }
 
+/** Why this doc version cannot be published, or null. Shape only — ids are checked live. */
+function badDocVersion(v: NewDocVersion | undefined): string | null {
+  if (!v || typeof v !== "object") return "no doc version given";
+  for (const k of ["nodeId", "type", "title", "body"] as const) {
+    if (typeof v[k] !== "string" || !v[k].trim()) return `\`${k}\` must be a non-empty string`;
+  }
+  if (!Array.isArray(v.citations)) return "`citations` must be an array";
+  if (!v.citations.length) return "a doc must cite at least one anchor — an uncited doc can never be found stale, which is the point of writing it here";
+  for (const c of v.citations) {
+    if (!c || typeof c.anchorId !== "string" || !c.anchorId.trim()) return "every citation needs an `anchorId`";
+  }
+  return null;
+}
+
 export async function shareDoc(root: string, v: NewDocVersion) {
   const b = bind(root);
   if ("error" in b) return b;
+  // The MCP tool takes this as an opaque object, so it is the only gate. NO
+  // FLOATING CLAIMS is the invariant that makes staleness detectable at all: a doc
+  // citing nothing can never go stale, and a doc citing an id that is not an anchor
+  // is a claim about code nobody can find.
+  const bad = badDocVersion(v);
+  if (bad) return { error: bad };
+  const anchors = new Set((await readAnchorStore(root)).anchors.map((a) => a.id));
+  const unknown = v.citations.map((c) => c.anchorId).filter((id) => !anchors.has(id));
+  if (unknown.length) {
+    return { error: `not anchors in this universe: ${unknown.slice(0, 5).join(", ")}${unknown.length > 5 ? ` (+${unknown.length - 5} more)` : ""}. A doc must cite code that exists — index it first, or cite the anchor it really describes.` };
+  }
   await ensureSidecar(b.cfg.path, b.actor);
   const versionId = await publishDocVersion(b.cfg.path, b.cfg.universe, b.actor, {
     ...v,
