@@ -210,7 +210,7 @@ function noteContest(
   for (const k of CONTESTABLE) {
     const incoming = now[k];
     if (incoming === undefined) continue;
-    const key = `${f.id} ${k}`;
+    const key = `${f.id}\0${k}`;
     const held = owned.get(key);
     owned.set(key, { value: incoming, by: e.actor, at: e.at, index: at });
     if (!held) continue;
