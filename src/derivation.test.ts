@@ -5,8 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { comparableDerivation, type Anchor, type DerivationTag } from "./schema.js";
-import { writeAnchorStore, anchorsUnderRef, retainOrphans, readOrphans } from "./store.js";
+import { writeAnchorStore, anchorsUnderRef, retainOrphans, readOrphans, derivationFor } from "./store.js";
 import { derivationTag } from "./grammars.js";
+import { derivationFingerprint } from "./normalize.js";
 import { fixtureHash } from "./fixture-hash.js";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "codemap-deriv-"));
@@ -156,4 +157,27 @@ test("differing derivations are not comparable; an absent one falls back", () =>
   assert.equal(comparableDerivation(undefined, OLD), true);
   assert.equal(comparableDerivation(OLD, undefined), true);
   assert.equal(comparableDerivation(undefined, undefined), true);
+});
+
+/**
+ * The fingerprint is one-way, so "derived differently" is all a reader can say
+ * from it alone. This turns that back into an explanation for any derivation the
+ * machine has itself used — which is most of the ones that matter, since the
+ * comparison is usually against something it indexed.
+ *
+ * Not the registry §9 cut: that one was consulted to DECIDE comparability, so a
+ * miss produced reader states and publication ordering. This is consulted only to
+ * phrase a message, and a miss costs detail rather than an answer.
+ */
+test("a fingerprint resolves back to its derivation, when this store has seen it", async () => {
+  const root = tmp();
+  try {
+    await writeAnchorStore(root, [anchor("a_1", OLD), anchor("a_2", derivationTag("python"))]);
+
+    assert.deepEqual(derivationFor(root, derivationFingerprint(OLD)), OLD);
+    assert.deepEqual(derivationFor(root, derivationFingerprint(derivationTag("python"))), derivationTag("python"));
+    assert.equal(derivationFor(root, derivationFingerprint(NEW)), null,
+      "a derivation this machine has never used is unknown, not wrong");
+    assert.equal(derivationFor(root, "0000000000000000"), null);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

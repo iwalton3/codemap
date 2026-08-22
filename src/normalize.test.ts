@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { canonicalize, hashTokens, hashSchemeOf, comparableHashes, sameBody, bodyDigest,
-  derivationMark, ABSENT_HASH } from "./normalize.js";
+  derivationMark, derivationFingerprint, ABSENT_HASH } from "./normalize.js";
 import { anchorId, HASH_SCHEME } from "./schema.js";
 import { fixtureHash } from "./fixture-hash.js";
 
@@ -208,4 +208,38 @@ test("canonicalization is pinned, so changing it cannot be silent", () => {
   // separator — the property the prefix exists for, stated as a test.
   assert.notEqual(hashTokens(["a", "b"]), hashTokens(["a:b"]));
   assert.notEqual(hashTokens(["a", "b"]), hashTokens(["ab"]));
+});
+
+/**
+ * A golden vector for the fingerprint preimage, for the same reason canonicalize
+ * has one — but with a sharper consequence.
+ *
+ * Changing how `canonicalize` works moves hashes and is caught by a scheme bump.
+ * Changing this function's ENCODING moves fingerprints, which turns every
+ * already-emitted annotation foreign — a store-wide derivation change caused by
+ * editing a serializer. There is no scheme number guarding it, so this vector is
+ * the guard.
+ *
+ * Fixed inputs rather than the live tag: the live one moves whenever a grammar or
+ * the runtime does, which is the thing the fingerprint is *supposed* to track.
+ */
+test("the derivation fingerprint's preimage is pinned", () => {
+  assert.equal(
+    derivationFingerprint({ hashScheme: 2, parserIntegrity: "p".repeat(64), grammarDigest: "g".repeat(64) }),
+    "bc45f3b175916060",
+  );
+  assert.equal(derivationFingerprint({ hashScheme: 2, parserIntegrity: "p".repeat(64), grammarDigest: "g".repeat(64) }).length, 16,
+    "exactly the width HASH_FORM accepts — a range would allow two spellings of one derivation");
+
+  // Every field participates, and the separators keep them apart: no reshuffling of
+  // one field's bytes into another can produce the same preimage.
+  const base = { hashScheme: 2, parserIntegrity: "aa", grammarDigest: "bb" };
+  const fps = new Set([
+    derivationFingerprint(base),
+    derivationFingerprint({ ...base, hashScheme: 3 }),
+    derivationFingerprint({ ...base, parserIntegrity: "aab" }),
+    derivationFingerprint({ ...base, grammarDigest: "bbb" }),
+    derivationFingerprint({ hashScheme: 2, parserIntegrity: "a", grammarDigest: "abb" }),
+  ]);
+  assert.equal(fps.size, 5, "a field boundary was ambiguous");
 });

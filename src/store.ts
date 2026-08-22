@@ -18,6 +18,7 @@ import type { PrWalkthrough } from "./walkthrough.js";
 import type { DatabaseSync } from "node:sqlite";
 import type { DerivationTag } from "./schema.js";
 import { derivationTag, GRAMMAR_NAMES } from "./grammars.js";
+import { derivationFingerprint } from "./normalize.js";
 import { randomBytes } from "node:crypto";
 import { db, WORK_REF, ORPHAN_REF } from "./db.js";
 import { headCommit, currentBranch } from "./git.js";
@@ -63,6 +64,28 @@ interface AnchorRow {
 /** One canonical string per tag — fixed field order, so identical tags key identically. */
 const tagKey = (t: DerivationTag): string =>
   JSON.stringify([t.anchorScheme, t.hashScheme, t.parserIntegrity, t.grammarDigest]);
+
+/**
+ * What a derivation fingerprint stood for, if this store has ever seen it.
+ *
+ * The fingerprint is one-way, so a reader can tell that two values were derived
+ * differently but not WHAT differed. This turns that back into an explanation for
+ * every derivation the machine has itself used — which is most of them in practice,
+ * since the interesting comparison is usually against something it indexed.
+ *
+ * Deliberately NOT the registry `PROPOSAL-provenance.md` §9 cut. That one was
+ * consulted to DECIDE comparability, so a missing entry produced its own reader
+ * states and its own publication ordering. This is consulted only to phrase a
+ * message: the decision is answerable from the fingerprint alone, and a miss costs
+ * detail rather than an answer.
+ */
+export function derivationFor(root: string, fingerprint: string): DerivationTag | null {
+  const d = db(root);
+  for (const t of derivationsById(d).values()) {
+    if (derivationFingerprint(t) === fingerprint) return t;
+  }
+  return null;
+}
 
 function internDerivation(d: DatabaseSync, tag: DerivationTag | undefined): number | null {
   if (!tag) return null;

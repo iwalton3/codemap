@@ -322,7 +322,19 @@ cannot be known without running it.
 **So the horizon for emitting is "before the next `web-tree-sitter` bump"** — ordinary
 maintenance rather than a hypothetical event.
 
-**That precondition is now met.** All fifteen operations are classified and
+**The mechanical preconditions are now met.** `derivationFingerprint` owns the
+preimage — domain-separated, fixed field order, exactly 16 hex, `anchorScheme`
+deliberately excluded — and is pinned by a golden vector, because correcting its
+encoding would turn every already-emitted annotation foreign and no scheme number
+guards it. `derivationFor` resolves a fingerprint back to its tag for any
+derivation this machine has used, so one-way-ness costs detail rather than an
+answer. `hashSchemeOf`'s comment now says what is actually true: the SCHEME NUMBER
+has one spelling, the string as a whole deliberately does not.
+
+What remains is the switch itself — teaching `hashTokens` to emit — and that is a
+decision about timing rather than code.
+
+**And the comparison precondition is met.** All fifteen operations are classified and
 converted, and `annotated-hash.test.ts` exercises the annotated form by hand —
 witness drift, walkthrough staleness, acceptance, and the overload migration —
 because nothing emits one yet and every other test in the suite would pass whether

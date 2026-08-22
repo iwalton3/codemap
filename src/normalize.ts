@@ -83,10 +83,16 @@ export function hashSchemeOf(hash: string): number | null {
   const m = HASH_FORM.exec(hash);
   if (!m) return null;
   if (m[1] === undefined) return 1;              // scheme 1 IS the unprefixed form
-  // Exactly one spelling per scheme, because two spellings of one scheme compare
-  // as same-scheme-different-value — a confident `stale` for a body that never
-  // changed. `h1:` is the trap: it is well-formed, it is scheme 1, and nothing
-  // here mints it, so it can only arrive from a client that got this wrong.
+  // Exactly one spelling of the SCHEME NUMBER. `h1:` is the trap: well-formed,
+  // scheme 1, and nothing here mints it, so it can only arrive from a client that
+  // got the encoding wrong — and two spellings of one scheme compare as
+  // same-scheme-different-value, a confident `stale` for a body that never changed.
+  //
+  // Note this is narrower than "one spelling per hash". A hash may also carry a
+  // derivation annotation, so `h2:sha256:X` and `h2:<fp>:sha256:X` are two
+  // spellings of one BODY — which is exactly why comparison goes through
+  // `sameBody` rather than `===`. The scheme number is the part with one spelling;
+  // the string as a whole is not, by design.
   if (!/^[1-9]\d*$/.test(m[1])) return null;    // no leading zeros
   const scheme = Number(m[1]);
   return Number.isSafeInteger(scheme) && scheme >= 2 ? scheme : null;
@@ -168,6 +174,39 @@ export function sameBody(a: string, b: string): boolean {
   if (a === b) return a === ABSENT_HASH || bodyDigest(a) !== null;
   const da = bodyDigest(a);
   return da !== null && da === bodyDigest(b) && hashSchemeOf(a) === hashSchemeOf(b);
+}
+
+/**
+ * The derivation fingerprint that MAY ride inside a hash string.
+ *
+ * Nothing emits one yet (see `docs/decision-receipts-vs-prefix.md`); this owns the
+ * definition so that when something does, there is exactly one of it.
+ *
+ * The preimage is the hazard, not the digest. It is an unversioned canonicalization
+ * — the founding problem of this design, aimed at its own solution — so the
+ * encoding here is normative and must never drift: a domain separator so this
+ * digest cannot collide with another use of sha256 over similar bytes, a fixed
+ * field order, decimal integers, and NUL separators that cannot occur in a hex
+ * digest. `anchorScheme` is deliberately absent: it decides which ids pair, not how
+ * a token stream was hashed, and including it would call comparable bodies
+ * incomparable across a scheme bump.
+ *
+ * Sixteen hex, matching `HASH_FORM` exactly. A range would let two builds spell one
+ * derivation two ways, which is the `h1:` trap one capture group over.
+ *
+ * Correcting this function's inputs is a REAL migration, not a bug fix: it turns
+ * every already-emitted annotation foreign. `parserIntegrity` was already redefined
+ * once, and had emission been on at the time, that correction would have read as a
+ * store-wide derivation change. Pinned by a golden vector for the same reason
+ * `canonicalize` is.
+ */
+export function derivationFingerprint(t: { hashScheme: number; parserIntegrity: string; grammarDigest: string }): string {
+  return createHash("sha256")
+    .update("codemap/derivation/v1\0")
+    .update(String(t.hashScheme)).update("\0")
+    .update(t.parserIntegrity).update("\0")
+    .update(t.grammarDigest).update("\0")
+    .digest("hex").slice(0, 16);
 }
 
 /**
