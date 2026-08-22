@@ -1,10 +1,10 @@
 # Proposal: immutable provenance — profiles, generations, and receipts
 
 Status: **draft.** Split out of `PROPOSAL-sidecar-materialization.md`, where it had
-grown from an open question into the larger of the two designs. Seven review rounds
+grown from an open question into the larger of the two designs. Eight review rounds
 are folded in; §9 records what each round changed.
 
-Reviewed against `worktree-shared-review-hashscheme` at `271e608`.
+Reviewed against `worktree-shared-review-hashscheme` at `4ef2a49`.
 
 ## 1. The rule
 
@@ -498,7 +498,7 @@ So there is a middle level:
 ```
 scope    complete | partial | blocked        why an ANSWER SET may be short
 entity   complete | incomplete(reasons)      why THIS record may be wrong
-value    seven states (below)                why THIS field cannot be compared
+value    eight states (below)                why THIS field cannot be compared
 ```
 
 ```sql
@@ -791,7 +791,56 @@ they apply, but they are a symptom, not the containment.
 
 ---
 
-## 9. What each round changed
+## 9. Recommended cut — READ BEFORE IMPLEMENTING
+
+Round 9 asked whether this had outgrown its value, and the answer was yes as **one
+coupled design**: it bundles a provenance core with two other correctness systems
+and one availability optimization.
+
+```
+1. derivation compatibility   profiles, receipts, live-anchor provenance   KEEP
+2. multi-writer causality     writer identity, sharding, lock, writerPrev  KEEP
+3. projection completeness    protocol boundary, read diagnostics          KEEP (trimmed)
+4. partial-scope salvage      three levels, subject, quarantine index      CUT for v1
+```
+
+Two things come out, and the rest of this document should be restructured around
+their absence before anyone builds it.
+
+**Inline the derivation tag; drop the content-addressed profile.** Every durable
+value carries `{anchorScheme, hashScheme, parserIntegrity, grammarDigest}`
+directly, rather than a reference into a registry. That deletes the registry, its
+publication ordering, `missing_profile`, `dangling_profile`, `language` as an
+indirection key, and the "who owns the local registry" problem entirely — those
+states exist *only because* of the indirection. It costs perhaps 100–200 bytes per
+receipt, which is the right trade at this scale, and SQLite may normalise identical
+tags after validating them so long as the durable event stays self-contained.
+
+**Decouple writer identity from derivation.** A clone-local random `writerId` in
+the envelope, sharded `(scope, writerId)`. `GenerationRecord` goes. This also fixes
+a coupling I introduced: with generation = (seed, profile), re-vendoring the Python
+grammar rotated the shard of somebody writing only C#. Once every value
+self-describes, a producer profile has no job.
+
+**Fail the scope closed for v1.** Unsupported protocol, unsupported schema, torn
+line, malformed envelope → `blocked`, render nothing. Fork → blocked, optionally
+rows marked non-authoritative. Known domain rejection → understood no-op, scope
+stays complete. Value mismatch → render the entity, mark that value.
+
+That removes the entity level, `shared_quarantine.subject` and its index, the
+partial answer-set semantics, and most discard accounting. What it gives up is
+availability: one bad event hides a scope until repaired. The trade is smaller than
+it looks, because `partial` already refused state-dependent writes — and it never
+silently lies, which is the guarantee that actually matters. Add salvage later if
+evidence says hiding a usable scope is worse than the machinery.
+
+**Not negotiable, per the same round:** per-value derivation provenance, exact
+grammar and runtime identity, provenance on the live operand, the
+validate→compare→resolve→classify order, the protocol boundary, clone-local writer
+identity, the sidecar lock, and `writerPrev`. Cutting the last three accepts
+fabricated causality and silent last-write errors.
+
+## 10. What each round changed
 
 Recorded because the design's shape came from being wrong in public four times,
 and the corrections are more instructive than the result.
@@ -844,3 +893,11 @@ and the corrections are more instructive than the result.
    columns would be erased by the first incremental update. Also caught me leaving
    the withdrawn design in force above the archive boundary — the exact hazard I
    had filed against this document two rounds earlier and then committed myself.
+
+9. **Round 9** — asked whether the design had outgrown its value, which is the one
+   question its author cannot answer. It had, as one coupled design: see §9. The
+   two cuts both dissolve states rather than hiding them — inlining the derivation
+   tag deletes `missing_profile` and `dangling_profile` outright, because those
+   exist only to describe a registry that would no longer exist. It also caught a
+   coupling I had introduced without noticing: generation = (seed, profile) meant
+   re-vendoring the Python grammar rotated the shard of somebody writing only C#.
