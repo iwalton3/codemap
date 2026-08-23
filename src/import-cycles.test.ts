@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, normalize } from "node:path";
 
 /**
  * The module graph must stay acyclic.
@@ -18,19 +18,31 @@ import { join } from "node:path";
  * pure half now lives in `doc-version.ts`, below both, so the cycle is not
  * available to be reintroduced by accident.
  */
+/**
+ * Nodes are paths under `src` (`ops/docs`, not `docs`), and the walk RECURSES.
+ * A flat, same-directory-only scan cannot see `src/ops/*` at all, so splitting a
+ * module into a subdirectory would have quietly emptied this test of the very
+ * case it was extended to cover — the guard would still pass while guarding
+ * nothing.
+ */
 function moduleGraph(): Map<string, string[]> {
-  const dir = "src";
   const g = new Map<string, string[]>();
-  for (const f of readdirSync(dir)) {
-    if (!f.endsWith(".ts") || f.endsWith(".test.ts") || f.endsWith(".d.ts")) continue;
-    const src = readFileSync(join(dir, f), "utf8");
-    // Every spelling: `from "./x.js"`, `await import("./x.js")`, and the bare
-    // side-effect `import "./x.js"`. The last one is easy to leave out and is the
-    // one a cycle can hide behind — an earlier version of this test did, and
-    // silently passed a probe that reintroduced the exact cycle it exists for.
-    const deps = [...src.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)"\.\/([\w-]+)\.js"/g)].map((m) => m[1]!);
-    g.set(f.replace(/\.ts$/, ""), [...new Set(deps)]);
-  }
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.isDirectory()) { walk(join(dir, e.name)); continue; }
+      if (!e.name.endsWith(".ts") || e.name.endsWith(".test.ts") || e.name.endsWith(".d.ts")) continue;
+      const rel = join(dir, e.name).replace(/^src\//, "").replace(/\.ts$/, "");
+      const src = readFileSync(join(dir, e.name), "utf8");
+      // Every spelling: `from "./x.js"`, `await import("./x.js")`, and the bare
+      // side-effect `import "./x.js"`. The last one is easy to leave out and is the
+      // one a cycle can hide behind — an earlier version of this test did, and
+      // silently passed a probe that reintroduced the exact cycle it exists for.
+      const deps = [...src.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)"(\.\.?\/[\w./-]+)\.js"/g)]
+        .map((m) => normalize(join(dirname(rel), m[1]!)));
+      g.set(rel, [...new Set(deps)]);
+    }
+  };
+  walk("src");
   return g;
 }
 

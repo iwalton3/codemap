@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 
 /**
  * Every op the sidecar exposes must be reachable from something.
@@ -26,7 +27,10 @@ test("every exported shared op is reachable from a front-end", () => {
   const ops = [...src.matchAll(/^export (?:async )?function (\w+)/gm)].map((m) => m[1]!);
   assert.ok(ops.length > 20, `expected the shared API, found ${ops.length} ops`);
 
-  const callers = ["src/serve.ts", "src/mcp.ts", "src/cli.ts", "src/ops.ts"]
+  // `src/ops.ts` is a barrel; the mirrors that hang off a local write live in the
+  // modules under it, so the scan has to reach them or every one reads as orphaned.
+  const callers = ["src/serve.ts", "src/mcp.ts", "src/cli.ts", "src/ops.ts",
+    ...readdirSync("src/ops").map((f) => join("src/ops", f))]
     .map((f) => readFileSync(f, "utf8")).join("\n");
 
   const orphans = ops.filter((op) => !new RegExp(`\\b${op}\\b`).test(callers));
