@@ -128,6 +128,11 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       // `locate` indexes a commit per stranded record's address, so it is opt-in
       // here too — a page load must not spend seconds per orphan.
       return ops.orphanedWork(root, { locate: q.get("locate") === "1" });
+    // Cheap and read-only on purpose — every page asks it on load, and a reviewer
+    // switching pull requests must be TOLD rather than silently answered from the
+    // branch they left. The re-baseline itself is POST /api/rebaseline.
+    case "/api/index-state":
+      return ops.indexFreshness(root);
     case "/api/questions":
       return ops.listQuestions(root, { includeResolved: q.get("all") === "1" });
     // Writes: `checkStale` re-indexes on a branch change, applies the index update
@@ -346,6 +351,21 @@ const server = createServer(async (req, res) => {
 
     // Importing GitHub's per-file viewed ticks: reaches the GitHub API and writes
     // `viewed` marks — never `signed`, since a tick is one click on a whole file.
+    // The act behind the banner `/api/index-state` raises. `checkStale` is what
+    // re-baselines on a branch change, and it also runs the staleness pass and
+    // refreshes analyzer graphs — which is what a reviewer arriving on a new branch
+    // wants anyway, and why this is not a narrower op.
+    if (req.method === "POST" && url.pathname === "/api/rebaseline") {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      const root = rootFor(body.u ?? null);
+      const out = await withLock<unknown>(root, () => ops.checkStale(root));
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(out));
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/api/pr/pull_viewed") {
       const chunks: Buffer[] = [];
       for await (const c of req) chunks.push(c as Buffer);

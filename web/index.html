@@ -733,6 +733,13 @@
     .prbadge.contested { border-color: var(--warn); color: var(--warn); }
     .prbadge.ok { border-color: var(--accent2); color: var(--accent2); }
     .prbadge.warnb { border-color: var(--warn); color: var(--warn); }
+    /* The index is baselined on a branch other than the one checked out. Loud:
+       it changes what every other number on the page means. */
+    .checkout-banner { border: 1px solid var(--warn); color: var(--warn); border-radius: 4px;
+                       padding: 10px 14px; margin: 10px 16px; font-size: 13px; line-height: 1.5; }
+    .checkout-banner b { text-transform: uppercase; letter-spacing: .05em; font-size: 11px; margin-right: 8px; }
+    .checkout-banner code { color: var(--fg); }
+    .checkout-banner button { margin-left: 10px; }
     /* A scope that may not be answered from. Loud on purpose: the rows below it
        are still rendered, so nothing else on the page says they are not the truth. */
     .blocked { border: 1px solid var(--warn); color: var(--warn); border-radius: 4px;
@@ -747,6 +754,7 @@
 </head>
 <body>
   <codemap-header></codemap-header>
+  <codemap-checkout></codemap-checkout>
   <router-outlet></router-outlet>
   <script src="/vendor/marked.min.js"></script>
   <script src="/vendor/highlight.min.js"></script>

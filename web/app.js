@@ -10,7 +10,7 @@
  *   /u/:universe/search/?q=    → search results
  * (the tree route uses a :path wildcard to capture multi-segment prefixes.)
  */
-import { defineComponent, Component, html, when, each, Store, raw } from './vendor/vdx/framework.js';
+import { defineComponent, Component, html, when, each, Store, raw, watch } from './vendor/vdx/framework.js';
 import { enableRouting } from './vendor/vdx/router.js';
 // Split-out pages, imported for their `defineComponent` side effects so the route
 // table at the bottom can name them.
@@ -89,6 +89,7 @@ export async function apiPost(path, body) {
  *   '/api/orphans':             Awaited<ReturnType<Ops['orphanedWork']>>,
  *   '/api/questions':           Awaited<ReturnType<Ops['listQuestions']>>,
  *   '/api/stale':               Awaited<ReturnType<Ops['checkStale']>>,
+ *   '/api/index-state':         Awaited<ReturnType<Ops['indexFreshness']>>,
  *   '/api/snapshots':           Awaited<ReturnType<Ops['snapshots']>>,
  *   '/api/diff':                Awaited<ReturnType<Ops['diff']>>,
  *   '/api/diff/code':           Awaited<ReturnType<Ops['diffCode']>>,
@@ -704,6 +705,68 @@ class CodemapHeader extends Component {
   }
 }
 defineComponent('codemap-header', CodemapHeader);
+
+/**
+ * "The index is baselined on another branch."
+ *
+ * Every doc verdict, review witness and finding placement on every page resolves
+ * against `@work`, so switching to a pull-request branch changes what the whole UI
+ * MEANS — silently, until now. `checkStale` has re-baselined on a branch change for
+ * a long time, but it writes, so nothing that merely renders could afford to call
+ * it; `/api/index-state` is the cheap read that lets a surface ask.
+ *
+ * Chrome rather than `pageShell`, deliberately. Putting it in the shell would make
+ * every page fetch and render it — the same per-surface bridge that the shared-doc
+ * reads turned into, one page at a time.
+ *
+ * @extends {Component<{}, {d: any, busy: boolean}>}
+ */
+class CheckoutBanner extends Component {
+  static stores = { nav };
+  constructor(props) {
+    super(props);
+    /** @type {{d: any, busy: boolean}} */
+    this.state = { d: null, busy: false };
+    /** Which universe the state above describes, so one fetch happens per switch. */
+    this.asked = null;
+  }
+  // `watch`, not a lifecycle hook. The universe arrives from the router rather than
+  // from a prop, so `propsChanged` never fires, and `afterRender` is ONE-SHOT — it
+  // ran before any page had set the universe and never again, which is a quiet way
+  // to ship a banner that can never appear.
+  mounted() {
+    watch(() => this.stores.nav.current, (u) => this.sync(u));
+    this.sync(this.stores.nav.current);
+  }
+  async sync(u) {
+    if (!u || u === this.asked) return;
+    this.asked = u;
+    this.state.d = await api('/api/index-state', { u }).catch(() => null);
+  }
+  async rebaseline() {
+    this.state.busy = true;
+    try {
+      await apiPost('/api/rebaseline', { u: this.stores.nav.current });
+      // A full reload, and it is the honest option: re-baselining changes the answer
+      // of every query on the page, and this component sits in the chrome with no
+      // way to re-run the current page's own load.
+      location.reload();
+    } finally { this.state.busy = false; }
+  }
+  template() {
+    const u = this.stores.nav.current;
+    const d = this.state.d, st = this.state;
+    if (!u || !d || !d.moved) return html`<div></div>`;
+    return html`<div class="checkout-banner">
+      <b>baselined elsewhere</b>
+      the index was built on <code>${d.baselinedOn}</code>; this checkout is on
+      <code>${d.branch}</code>. Every doc verdict, review mark and finding on these
+      pages is resolved against the code from <code>${d.baselinedOn}</code>.
+      <button on-click="${() => this.rebaseline()}" disabled="${st.busy}">${st.busy ? 're-baselining…' : `re-baseline on ${d.branch}`}</button>
+    </div>`;
+  }
+}
+defineComponent('codemap-checkout', CheckoutBanner);
 
 // --- pages -------------------------------------------------------------------
 class HomePage extends Component {

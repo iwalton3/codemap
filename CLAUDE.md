@@ -184,6 +184,13 @@ generated file to drift. `npm test` runs it (`tsc -p web`, well under a second).
 - `noImplicitAny` and `strictNullChecks` are **off**: on 3.5k lines of untyped JS
   they produced 1293 of 1345 errors and no defects. Turn them on per-file later
   if it earns its keep; leaving them on now just trains people to ignore output.
+- **Reactivity is READ-TRACKING, and lifecycle hooks are not a substitute.** A
+  store field consulted only inside a side effect is never a dependency, so the
+  component never re-renders when it changes. `afterRender` is **one-shot** — it
+  fires after the first render and never again, so using it to react to anything
+  gives you a component that works exactly once, before the data it needs exists.
+  For chrome that must follow the router (no props, so no `propsChanged`), use
+  `watch(() => store.field, fn)`. Cost a debugging round on `codemap-checkout`.
 - The framework's own **template lint** covers the string-form bindings TS reads
   as opaque text (Lit sigils, raw `.map()` in a slot, `ref=` typos). Run it when
   re-vendoring — the command is in `web/vendor/vdx/PROVENANCE.md`.

@@ -147,6 +147,47 @@ export async function init(root: string) {
 }
 
 /**
+ * Is the anchor index baselined on the code that is checked out right now?
+ *
+ * READ-ONLY and cheap — `git symbolic-ref`, `git rev-parse`, and one state row.
+ * That is the whole point: a reviewer switching between pull requests changes the
+ * meaning of every doc verdict, review witness and finding placement on the page,
+ * because all of them resolve against `@work`. The machinery to notice has existed
+ * since `maybeReindexOnBranchChange`, but it lives inside `checkStale`, which
+ * re-indexes and writes — so nothing that merely RENDERS could afford to ask.
+ * This can, which is what lets a surface say "this is baselined on another branch"
+ * instead of quietly answering from it.
+ *
+ * A moved COMMIT is reported and is deliberately not `moved`. Committing on the
+ * branch you are reviewing is the normal state of working, and a banner that is
+ * always on is a banner nobody reads; a branch switch is the discontinuity that
+ * makes the whole page describe different code. Same rule `maybeReindexOnBranchChange`
+ * already applies, so the offer a surface makes matches what the act would do.
+ */
+export async function indexFreshness(root: string): Promise<{
+  branch: string | null; baselinedOn: string | null; moved: boolean;
+  head: string | null; baselinedAt: string | null; commitMoved: boolean;
+  initialized: boolean;
+}> {
+  let state: State | null = null;
+  try { state = await readState(root); } catch { /* not initialized */ }
+  const branch = currentBranch(root);
+  const head = headCommit(root);
+  const baselinedOn = state?.branch ?? null;
+  const baselinedAt = state?.lastVerifiedCommit ?? null;
+  return {
+    branch, baselinedOn, head, baselinedAt,
+    initialized: !!state,
+    // Null on either side is "nothing to compare" — a detached HEAD, a gitless
+    // universe, or an index from before the field existed. Never `moved`: the
+    // fallback has to be silence, or every such universe grows a permanent banner
+    // it can do nothing about.
+    moved: !!state && !!branch && !!baselinedOn && branch !== baselinedOn,
+    commitMoved: !!state && !!head && !!baselinedAt && head !== baselinedAt,
+  };
+}
+
+/**
  * If the checked-out branch differs from the one the index was baselined on,
  * re-init to the new branch's HEAD and return a note. First-ever call just
  * records the current branch (older indexes predate the field) without the

@@ -25,7 +25,7 @@ export { type Trust } from "./ops/shared.js";
 
 export { availableViews, status, dashboard, lintSummaries, findGaps, cover } from "./ops/overview.js";
 
-export { reindex, init, checkStale, snapshot, snapshotAt, snapshots } from "./ops/indexing.js";
+export { reindex, init, checkStale, indexFreshness, snapshot, snapshotAt, snapshots } from "./ops/indexing.js";
 
 export { orphanedWork, type WhereWas, whereWas, whereWere } from "./ops/orphans.js";
 

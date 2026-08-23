@@ -48,9 +48,14 @@ claim to have seen everything just pulled, silently suppressing the contests
 `contest.ts` exists to make loud.
 
 **The log is not read during normal operation.** It is pull/push, like an email
-client. MCP tools and the web UI read SQLite. The log is touched when you sync,
-and when you write (an append, whose causal capture cannot be deferred — see
-below). No ordinary read parses NDJSON.
+client. The criterion, in the owner's words: *the app must not read and reconcile
+hundreds of JSON files for every query — only on a sync operation.* MCP tools and
+the web UI read SQLite. The log is touched on sync, and on write (an append, whose
+causal capture cannot be deferred — see below). No ordinary read parses NDJSON.
+
+That is what the projection BUYS, and it is worth stating as a cost rather than a
+nicety: folding a scope means parsing every shard in it, so a per-query fold puts
+the whole history of a pull request on the read path.
 
 ## What this means for the code
 

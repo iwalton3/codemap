@@ -28,6 +28,54 @@ describe("web UI", { skip: puppeteer ? false : "puppeteer not resolvable (set CO
     { name: "diff", hash: `#/u/${fixture.universe}/diff/` },
   ];
 
+  /**
+   * Switching to a pull-request branch changes what every number on every page
+   * MEANS — docs, review marks and findings all resolve against `@work`. The
+   * machinery to notice a branch switch has existed inside `checkStale` for a long
+   * time, and `checkStale` writes, so nothing that merely renders could call it.
+   * Nothing in the UI did, and the UI is where reviewers switch pull requests.
+   */
+  test("switching branches says so, and offers to re-baseline", async () => {
+    const { spawnSync } = await import("node:child_process");
+    const git = (...a: string[]) => spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...a], { cwd: fixture.root });
+
+    const before = await browser.newPage();
+    await before.goto(`${server.url}/#/u/${fixture.universe}/`, { waitUntil: "networkidle0", timeout: 20_000 });
+    assert.equal(await before.$(".checkout-banner"), null, "on the baselined branch there is nothing to say");
+    await before.close();
+
+    git("checkout", "-q", "-b", "pr-branch");
+    const page = await browser.newPage();
+    const seen = watchErrors(page);
+    await page.goto(`${server.url}/#/u/${fixture.universe}/`, { waitUntil: "networkidle0", timeout: 20_000 });
+    await page.waitForSelector(".checkout-banner", { timeout: 10_000 });
+    const text = await page.evaluate(() => document.querySelector(".checkout-banner")?.textContent ?? "");
+    assert.match(text, /main/, "names the branch it was baselined on");
+    assert.match(text, /pr-branch/, "and the one you are actually on");
+    assert.deepEqual(seen.errors, []);
+    await page.close();
+
+    // And the act clears it: re-baseline, and the same page has nothing to warn about.
+    const res = await fetch(`${server.url}/api/rebaseline`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ u: fixture.universe }),
+    });
+    assert.equal(res.status, 200);
+    const after = await browser.newPage();
+    await after.goto(`${server.url}/#/u/${fixture.universe}/`, { waitUntil: "networkidle0", timeout: 20_000 });
+    assert.equal(await after.$(".checkout-banner"), null, "re-baselined — the warning is gone");
+    await after.close();
+
+    // Put the fixture back. Every test here shares it, and this one is the only one
+    // that re-baselines — leaving the index pointed at `pr-branch` made a later
+    // walkthrough test fail for reasons that had nothing to do with walkthroughs.
+    git("checkout", "-q", "main");
+    await fetch(`${server.url}/api/rebaseline`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ u: fixture.universe }),
+    });
+  });
+
   test("every core route renders without a console error", async () => {
     for (const r of routes()) {
       const page = await browser.newPage();
