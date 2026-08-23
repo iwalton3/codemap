@@ -726,10 +726,14 @@ export async function publishLocalDocs(root: string, opts: { dryRun?: boolean } 
   let versions = 0;
   for (const n of todo) {
     for (const v of await loadNodeVersions(root, n.id)) {
+      // Its own id and its own authorship time. A backfill is a republication of
+      // history, not a new act: minting either here is what made the local and
+      // shared copies indistinguishable and reordered the version tiebreak.
       await publishDocVersion(b.cfg.path, b.cfg.universe, b.actor, {
         nodeId: n.id, type: v.type, title: v.title, summary: v.summary, body: v.body,
         citations: v.citations, generatedBy: v.generatedBy, removed: v.removed,
         createdCommit: v.createdCommit, createdBranch: v.createdBranch,
+        versionId: v.versionId, createdAt: v.createdAt,
       });
       versions++;
     }

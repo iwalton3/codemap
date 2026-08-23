@@ -216,3 +216,44 @@ test("an acceptance for a version this fold never saw is kept too", () => {
   ] as LogEvent[];
   assert.equal(foldDocs(ev).get("n1")!.unmatched?.[0]!.why, "no-version");
 });
+
+// --- publication preserves identity ---------------------------------------------
+
+test("publishing a version that already has an id keeps it, so the two copies are one thing", async () => {
+  // The pending overlay's load-bearing requirement: a local row disappears when its
+  // own event materializes, which it can only do if the copies share an id. Minting
+  // here unconditionally gave the same content two.
+  const root = tmp();
+  try {
+    const got = await publishDocVersion(root, U, izzie, { ...DOC, versionId: "nv_local1", createdAt: "2026-01-02T03:04:05.000Z" } as never);
+    assert.equal(got, "nv_local1");
+    const doc = (await readDocs(root, U)).get("n_payments")!;
+    assert.equal(doc.versions[0]!.versionId, "nv_local1");
+    assert.equal(doc.versions[0]!.createdAt, "2026-01-02T03:04:05.000Z", "and the time it was WRITTEN, not the time it was sent");
+
+    // Re-publishing it is idempotent — the fold writes a version id once.
+    await publishDocVersion(root, U, dana, { ...DOC, versionId: "nv_local1", body: "different" } as never);
+    const again = (await readDocs(root, U)).get("n_payments")!;
+    assert.equal(again.versions.length, 1, "a second copy of one version is not a second version");
+    assert.equal(again.versions[0]!.body, DOC.body, "and the first write is the one that stands");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a version with no id of its own still gets one, and it is this moment", async () => {
+  // The control: if the id and time were simply always taken from the caller, a
+  // fresh doc would publish with `versionId: undefined` and the fold would drop it.
+  const root = tmp();
+  try {
+    const before = new Date().toISOString();
+    const id = await publishDocVersion(root, U, izzie, DOC);
+    assert.match(id, /^nv_/);
+    const doc = (await readDocs(root, U)).get("n_payments")!;
+    assert.equal(doc.versions.length, 1, "it was not dropped by the fold");
+    assert.ok(doc.versions[0]!.createdAt >= before);
+
+    // An id that the fold would refuse must not be taken on trust either.
+    const minted = await publishDocVersion(root, U, izzie, { ...DOC, body: "b2", versionId: "   " } as never);
+    assert.match(minted, /^nv_/);
+    assert.equal((await readDocs(root, U)).get("n_payments")!.versions.length, 2);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

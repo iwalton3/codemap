@@ -178,11 +178,33 @@ export interface NewDocVersion {
   removed?: boolean;
   createdCommit?: string | null;
   createdBranch?: string | null;
+  /**
+   * The version's identity, when it already HAS one — a local version being
+   * published, not a new one being written.
+   *
+   * Minting here unconditionally gave the same content two ids, one local and one
+   * shared, and nothing downstream could tell the copies apart. That is the exact
+   * dedupe the pending overlay is built on: a local row disappears when its own
+   * event materializes, which it can only do if the two carry one id. The fold
+   * writes a version id once, so re-publishing is idempotent rather than doubling.
+   * See PROPOSAL-sidecar-materialization.md §7, "the outbox model".
+   */
+  versionId?: string;
+  /**
+   * When it was WRITTEN, when that is not now — a backfill republishes a node's
+   * whole history, and stamping each one at the moment of migration made
+   * `selectWinner`'s equal-badness tiebreak rank by publication order instead of
+   * authorship. It agrees with authorship only while the backfill happens to
+   * iterate in order.
+   */
+  createdAt?: string;
 }
 
 /** Publish a version. Every write is a new version — nothing is ever edited. */
 export async function publishDocVersion(logRoot: string, universe: string, actor: Actor, v: NewDocVersion): Promise<string> {
-  const versionId = "nv_" + mintId();
+  // A supplied id has to be usable as one: the fold drops a version whose id is not
+  // a string, so a bad one here is a write that silently never arrives.
+  const versionId = typeof v.versionId === "string" && v.versionId.trim() ? v.versionId : "nv_" + mintId();
   const version: NodeVersion = {
     versionId,
     nodeId: v.nodeId,
@@ -195,7 +217,7 @@ export async function publishDocVersion(logRoot: string, universe: string, actor
     ...(v.removed ? { removed: true } : {}),
     createdCommit: v.createdCommit ?? null,
     createdBranch: v.createdBranch ?? null,
-    createdAt: new Date().toISOString(),
+    createdAt: v.createdAt ?? new Date().toISOString(),
   };
   await emit(logRoot, universe, actor, v.nodeId, "doc.version", { version: version as unknown as Data });
   return versionId;
