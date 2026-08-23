@@ -422,4 +422,40 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
     assert.equal(after.findings[0].target.id, anchorId, "the finding now points at the new symbol");
     assert.deepEqual(errors, []);
   });
+
+  // --- a scope that may not be answered from --------------------------------------
+
+  test("a forked scope says so above the rows, and still shows them", async () => {
+    // §7 lets a blocked scope render its rows explicitly non-authoritative, which
+    // is only worth anything if the page actually says so — and the failure mode
+    // is a banner nobody notices, so this asserts on the rows too.
+    const { appendEvents, mintId } = await import("../eventlog.js");
+    const { findingScope } = await import("../shared-findings.js");
+    const { universeKey } = await import("../sidecar-config.js");
+    const scope = findingScope(`${universeKey(root)}/pr-903`);
+    const izzie = { principal: "izzie@x.com" };
+    const base = { kind: "finding.created", subject: "f_forked", actor: izzie, at: "t",
+      data: { targetKind: "anchor", targetId: anchorId, text: "evidence", comment: "the ask" } };
+    // Two events of ONE writer both opening the chain: a copied clone id.
+    await appendEvents(side, scope, "w_copied", [{ ...base, id: mintId(), writerPrev: "GENESIS", writer: "w_copied" }]);
+    await appendEvents(side, scope, "w_copied", [{
+      id: mintId(), kind: "finding.commented", subject: "f_forked", actor: izzie, at: "t",
+      writer: "w_copied", writerPrev: "GENESIS", data: { body: "from the other clone" },
+    }]);
+
+    const { page, errors } = await open(`/u/${universe}/shared/903/`);
+    await page.waitForSelector(".blocked");
+    const banner = await page.textContent(".blocked");
+    assert.match(banner, /not authoritative/);
+    assert.match(banner, /forked writer chain/, "and what to do about it");
+    // The page opens on "needs a person" and this finding needs nobody, so switch
+    // to everything: the claim being tested is that a blocked scope still RENDERS.
+    await page.getByRole("button", { name: /showing: needs a person/ }).click();
+    await page.waitForSelector(".frow");
+    assert.equal(await page.locator(".frow").count(), 1, "the rows are shown, not hidden");
+    assert.ok((await page.textContent(".blocked")).includes("not authoritative"),
+      "and the banner is still there beside them");
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
 });
