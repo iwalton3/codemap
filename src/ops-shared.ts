@@ -641,6 +641,29 @@ export async function sharedDocsCiting(
 }
 
 /**
+ * Does the team's sidecar hold a doc for this node? Nothing else about it.
+ *
+ * For `annotate`'s target guard, which exists to refuse a node that is nowhere —
+ * not one that is merely somewhere else. A doc that lives only on the sidecar has
+ * no local `node_versions` row and therefore could not be queued at all, which is
+ * blocker 5 of "Clearing a doc nobody can place".
+ *
+ * Deliberately not `sharedDocs`: that classifies every citation and re-hashes live
+ * code to do it, and this is a membership test on a write path. `false` when there
+ * is no sidecar, so a store without one behaves exactly as it always did.
+ */
+export async function sharedKnowsNode(root: string, nodeId: string): Promise<boolean> {
+  const cfg = resolveSidecar(root);
+  if (!cfg) return false;
+  const scope = docScope(cfg.universe);
+  const { fresh } = await ensureMaterialized(root, cfg.path, scope, sidecarIdentity(cfg), foldDocs, docsProjection);
+  if (fresh) return docsByNode(root, scope, [nodeId]).size > 0;
+  // The projection is behind, so ask the log rather than answer "no" from rows we
+  // have been told are stale — a false no here refuses a legitimate target.
+  return (await cachedDocs(root, cfg)).value.has(nodeId);
+}
+
+/**
  * Which of these anchors the team's docs cite at all — the cheap half of the answer.
  *
  * For a caller holding the whole index (`findGaps`). Asking `sharedDocsCiting` about

@@ -149,7 +149,18 @@ export async function annotate(
     sourceRef = w.sourceRef;
   } else {
     const nodes = await loadNodes(root);
-    if (!nodes.some((n) => n.id === input.targetId)) return { error: `unknown node "${input.targetId}"` };
+    // OR the sidecar. The guard refuses a target that exists NOWHERE; a doc the team
+    // published and this store never adopted exists, it is just not here — and it
+    // cannot be adopted either, because `document` refuses a node whose anchors do
+    // not resolve, which is exactly the doc being queued. Without this a shared-only
+    // doc had no path to the review queue at all. Dynamic, like every other core
+    // reach for the sidecar (`context`, `findGaps`): the agnostic core must not
+    // depend on it, and a missing or unreadable sidecar answers false.
+    if (!nodes.some((n) => n.id === input.targetId)) {
+      const shared = await import("../ops-shared.js")
+        .then((m) => m.sharedKnowsNode(root, input.targetId!)).catch(() => false);
+      if (!shared) return { error: `unknown node "${input.targetId}"` };
+    }
   }
   const line = Number.isFinite(input.line) && (input.line as number) > 0 ? Math.floor(input.line as number) : undefined;
   const KINDS = ["note", "question", "finding", "pointer"] as const;

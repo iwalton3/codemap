@@ -577,3 +577,54 @@ test("context with no sidecar is exactly what it always was", async () => {
     });
   } finally { u.cleanup(); }
 });
+
+/**
+ * Blocker 5 of "Clearing a doc nobody can place": a doc that exists only on the
+ * sidecar could not be queued at all.
+ *
+ * `annotate`'s guard refuses a node target absent from local `node_versions`, which
+ * is right — a claim about a node that is nowhere is a floating claim. A doc the
+ * team published and this store never adopted is not nowhere, and it cannot be
+ * adopted either: `document` refuses a node whose anchors do not resolve, which is
+ * precisely the doc being queued.
+ */
+test("a question can be filed on a doc that lives only on the sidecar", async () => {
+  const u = universe();
+  try {
+    const { publishDocVersion } = await import("./shared-docs.js");
+    const { init, annotate, reviewQueue } = await import("./ops.js");
+    const { readAnchorStore } = await import("./store.js");
+    const { resolveSidecar: rs } = await import("./sidecar-config.js");
+
+    mkdirSync(join(u.root, "src"), { recursive: true });
+    writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+    await init(u.root);
+    const anchorId = (await readAnchorStore(u.root)).anchors[0]!.id;
+
+    const cfg = rs(u.root)!;
+    await publishDocVersion(cfg.path, cfg.universe, { principal: "dana@x.com" }, {
+      nodeId: "n_theirs", type: "process", title: "Dana's doc", summary: "s", body: "b",
+      citations: [{ anchorId, acceptedHashes: ["sha256:whatever"] }],
+      createdCommit: null, createdBranch: null,
+    } as never);
+
+    const ok = await annotate(u.root, {
+      targetKind: "node", targetId: "n_theirs", kind: "question",
+      text: "cannot place this doc's citations here",
+    } as never) as Record<string, unknown>;
+    assert.equal(ok.error, undefined, "the team's node is a legitimate target");
+
+    // And it lands in the SAME queue a local doc's question lands in — which is the
+    // whole requirement: one queue, one shape, wherever the doc lives.
+    // `assignedOnly: false` lists every question; assignment is a separate act
+    // (`assign`), and what matters here is that the item exists on a shared node.
+    const q = await reviewQueue(u.root, { assignedOnly: false }) as Record<string, any>;
+    assert.ok(q.queue.some((i: any) => i.id === ok.id), "visible in the review queue");
+
+    // The control: the guard still refuses a node that is nowhere at all.
+    const bad = await annotate(u.root, {
+      targetKind: "node", targetId: "n_nowhere", kind: "question", text: "x",
+    } as never) as { error?: string };
+    assert.match(bad.error ?? "", /unknown node/);
+  } finally { u.cleanup(); }
+});
