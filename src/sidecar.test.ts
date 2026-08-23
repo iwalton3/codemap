@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import type { Actor } from "./schema.js";
-import { ensureSidecar, pull, push, sync, checkManifest, checkPeers, countEvents, currentManifest, readManifests, MANIFEST_DIR, ATTRIBUTES } from "./sidecar.js";
+import { ensureSidecar, pull, push, sync, checkManifest, checkPeers, countEvents, currentManifest, readManifests, withSidecarLock, MANIFEST_DIR, ATTRIBUTES } from "./sidecar.js";
 import { createFinding, corroborate, comment, readFindings, needsHumanAck } from "./shared-findings.js";
 import { publishWalkthrough, readWalkthroughs } from "./shared-walkthrough.js";
 import { principalKey } from "./eventlog.js";
@@ -228,4 +228,89 @@ test("countEvents counts event lines and ignores everything else", async () => {
     await createFinding(root, 264, izzie, NEW);
     assert.equal(await countEvents(root), 1);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// --- one machine, one sidecar, one writer at a time ------------------------------
+
+/**
+ * `sync` is `git add -A` + commit + fetch + merge + push against a working tree.
+ * Two of those at once in one repository is index.lock contention at best; nothing
+ * serialized them before (the HTTP path takes no lock, MCP locks the universe
+ * rather than the sidecar, the CLI takes none).
+ */
+test("two holders of one sidecar's lock do not overlap", async () => {
+  const t = await team();
+  try {
+    let running = 0, overlapped = false;
+    const hold = () => withSidecarLock(t.a, async () => {
+      running++;
+      if (running > 1) overlapped = true;
+      await new Promise((r) => setTimeout(r, 40));
+      running--;
+    });
+    await Promise.all([hold(), hold()]);
+    assert.equal(overlapped, false, "the second waited");
+  } finally { t.cleanup(); }
+});
+
+test("`sync` takes that lock, so it waits for whoever is holding it", async () => {
+  // NOT reentrant, deliberately: `sync` is a whole transaction and takes the lock
+  // itself, so a caller must not wrap it. Wrapping it deadlocks for the full 30s
+  // timeout — which is how this test was written the first time.
+  const t = await team();
+  try {
+    await createFinding(t.a, "pr-1", izzie, { targetKind: "anchor", targetId: "a_1", text: "e", comment: "c" });
+    let release = () => {};
+    const held = new Promise<void>((r) => { release = r; });
+    const holder = withSidecarLock(t.a, () => held);
+    await new Promise((r) => setTimeout(r, 30));
+
+    let done = false;
+    const syncing = sync(t.a, izzie).then((r) => { done = true; return r; });
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(done, false, "sync is waiting on the lock somebody else holds");
+
+    release();
+    await holder;
+    const r = await syncing as { error?: string };
+    assert.equal(r.error, undefined, "…and goes through once it is free");
+  } finally { t.cleanup(); }
+});
+
+test("the lock is not inside the sidecar, so a sync cannot ship it to the team", async () => {
+  // `commitLocal` is `git add -A`, and it skips only when `git status` is empty —
+  // so a lock file anywhere under the sidecar would be committed AND would be
+  // enough on its own to produce a commit containing nothing else.
+  const t = await team();
+  try {
+    await createFinding(t.a, "pr-1", izzie, { targetKind: "anchor", targetId: "a_1", text: "e", comment: "c" });
+    let sawInside: string[] = [];
+    await withSidecarLock(t.a, async () => {
+      // While the lock is HELD, nothing untracked may have appeared in the repo.
+      sawInside = git(t.a, "status", "--porcelain", "--untracked-files=all").stdout
+        .split("\n").filter((l) => l.includes(".lock"));
+    });
+    assert.deepEqual(sawInside, [], "no lock file inside the sidecar while the lock is held");
+    await sync(t.a, izzie);
+    const tracked = git(t.a, "ls-files").stdout.split("\n").filter((l) => l.includes(".lock"));
+    assert.deepEqual(tracked, [], "and none committed");
+  } finally { t.cleanup(); }
+});
+
+test("two different sidecars do not block each other", async () => {
+  // The control: a lock keyed on the wrong thing — or on nothing — would serialize
+  // unrelated repositories and this would still pass the two tests above.
+  const t = await team();
+  const other = tmp("other");
+  try {
+    let running = 0, both = false;
+    const hold = (root: string) => withSidecarLock(root, async () => {
+      running++;
+      await new Promise((r) => setTimeout(r, 60));
+      if (running > 1) both = true;
+      running--;
+    });
+    await Promise.all([hold(t.a), hold(other)]);
+    assert.equal(both, true, "they overlapped — the lock is per sidecar, not global");
+  } finally { t.cleanup(); rmSync(other, { recursive: true, force: true }); }
 });

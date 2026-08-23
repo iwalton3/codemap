@@ -18,6 +18,24 @@ import { join, dirname } from "node:path";
 const lockPath = (root: string) => join(root, ".codemap", ".lock");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * The same lock, at a path the caller chooses.
+ *
+ * For a root whose CONTENTS are shared. A sidecar is a git repo that syncs with
+ * `git add -A`, so a lock file anywhere inside it is committed and pushed to the
+ * whole team — and `commitLocal` skips only when `git status` is empty, so the lock
+ * appearing is itself enough to make a commit of nothing else. `withSidecarLock`
+ * puts it outside the repo for that reason.
+ *
+ * `label` names the thing being locked in the timeout error; the lock file's own
+ * path is rarely what the reader is holding.
+ */
+export function withLockAt<T>(lockFile: string, label: string, fn: () => Promise<T>, opts: LockOpts = {}): Promise<T> {
+  return hold(lockFile, label, fn, opts);
+}
+
+export interface LockOpts { timeoutMs?: number; staleMs?: number }
+
 function pidAlive(pid: number): boolean {
   if (!pid || pid === process.pid) return true; // ours / unknown — don't steal
   try {
@@ -28,10 +46,13 @@ function pidAlive(pid: number): boolean {
   }
 }
 
-export async function withLock<T>(root: string, fn: () => Promise<T>, opts: { timeoutMs?: number; staleMs?: number } = {}): Promise<T> {
+export function withLock<T>(root: string, fn: () => Promise<T>, opts: LockOpts = {}): Promise<T> {
+  return hold(lockPath(root), root, fn, opts);
+}
+
+async function hold<T>(p: string, label: string, fn: () => Promise<T>, opts: LockOpts = {}): Promise<T> {
   const timeoutMs = opts.timeoutMs ?? 30_000;
   const staleMs = opts.staleMs ?? 60_000;
-  const p = lockPath(root);
   await mkdir(dirname(p), { recursive: true });
   const deadline = Date.now() + timeoutMs;
 
@@ -62,7 +83,7 @@ export async function withLock<T>(root: string, fn: () => Promise<T>, opts: { ti
         }
         continue;
       }
-      if (Date.now() > deadline) throw new Error(`codemap: ${root} is locked by another writer (timed out after ${timeoutMs}ms)`);
+      if (Date.now() > deadline) throw new Error(`codemap: ${label} is locked by another writer (timed out after ${timeoutMs}ms)`);
       await sleep(60);
       continue;
     }

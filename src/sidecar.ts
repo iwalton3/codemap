@@ -22,10 +22,13 @@
 import { spawnSync } from "node:child_process";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ANCHOR_SCHEME, HASH_SCHEME } from "./schema.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { gitBin } from "./git.js";
+import { withLockAt } from "./lock.js";
 import { SHARD_EXT, principalKey } from "./eventlog.js";
 import type { Actor } from "./schema.js";
 
@@ -80,6 +83,39 @@ function commitLocal(root: string, message: string): boolean {
  * "does this sidecar match me" but "who on this team does not".
  */
 export const MANIFEST_DIR = "manifests";
+
+/**
+ * Serialize everything one machine does to one sidecar.
+ *
+ * `sync` is `git add -A` + commit + fetch + merge + push against a working tree.
+ * Two of those at once in one repository is not a subtle race — it is index.lock
+ * contention at best and a half-merged tree at worst — and nothing serialized them:
+ * the HTTP path takes no lock, MCP locks the UNIVERSE rather than the sidecar, and
+ * the CLI takes none. `PROPOSAL-sidecar-materialization.md` §8 records the gap.
+ *
+ * **The lock file lives outside the sidecar**, keyed on its real path. Anywhere
+ * inside it would be committed and pushed to the whole team by that same
+ * `git add -A` — and `commitLocal` returns early only when `git status` is empty,
+ * so the lock file appearing is itself enough to produce a commit containing
+ * nothing else. `realpath` rather than the given path so two pointers at one
+ * sidecar take one lock.
+ *
+ * Machine-scoped by construction, which is all it can be: the sidecar's other
+ * writers are other people's clones, and they are serialized by git's own merge,
+ * not by this.
+ *
+ * **NOT reentrant.** `sync` takes it itself, because it is one whole transaction
+ * and there is no legitimate reason to hold this across a sync plus something else.
+ * A caller that wraps `sync` in it deadlocks for the full timeout — the same
+ * convention the universe lock already follows: it is taken at the entry to a
+ * complete operation, never nested.
+ */
+export function withSidecarLock<T>(root: string, fn: () => Promise<T>): Promise<T> {
+  let real = root;
+  try { real = realpathSync(root); } catch { /* not created yet — the given path is all there is */ }
+  const key = createHash("sha256").update(real).digest("hex").slice(0, 16);
+  return withLockAt(join(tmpdir(), `codemap-sidecar-${key}.lock`), root, fn);
+}
 export const ATTRIBUTES = ".gitattributes";
 
 /**
@@ -310,6 +346,13 @@ export interface SyncResult { gained: number; pushed: boolean; retries: number; 
 
 /** Send and receive, in the order that makes the publish guard trustworthy. */
 export async function sync(root: string, actor?: Actor, message = "codemap: review state"): Promise<SyncResult | { error: string }> {
+  // The WHOLE sequence, not each git call: commit-then-pull-then-push is one
+  // transaction against one working tree, and interleaving two of them is how you
+  // get a push that carries half of somebody else's merge. See `withSidecarLock`.
+  return withSidecarLock(root, () => syncHeld(root, actor, message));
+}
+
+async function syncHeld(root: string, actor?: Actor, message = "codemap: review state"): Promise<SyncResult | { error: string }> {
   const ready = await ensureSidecar(root, actor);
   if ("error" in ready) return ready;
   // Pull FIRST, always. `alreadyPosted` is only a guard against double-publishing

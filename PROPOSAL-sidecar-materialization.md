@@ -388,7 +388,52 @@ have to do, below.
    imports `readDocs`, `readFindings` or `notesForTarget`. The trap was
    `SharedDoc.authors`: a `Map`, which `JSON.stringify` renders `{}` silently, so
    it and the version ORDER get columns.
-3a. **Generation-based sharding and the sidecar-root lock.** ~~Profiles,
+3a. **The sidecar-root lock, and per-writer identity.** **PARTLY DONE — the lock,
+   and only around `sync`.**
+
+   **Read §4 of `PROPOSAL-provenance.md`, not the archived §13 below.** §13 designed
+   a "generation" as (machine identity, compatibility profile); that is superseded.
+   A writer is a clone-local random `writerId`, independent of derivation — the
+   profile-coupled version rotated the shard of somebody writing only C# when the
+   Python grammar was re-vendored.
+
+   **The hole this closes is reachable, and I had convinced myself it was not.** The
+   argument was: `causality().saw()` is consulted in three places, all in
+   `contest.ts`, and the raising path short-circuits on `held.by.principal ===
+   e.actor.principal` BEFORE consulting it — so one person's two machines never
+   reach it. That is wrong, because the fabricated edge does not have to be between
+   the two conflicting writes. Verified against `causality()` directly:
+
+   ```
+   H  Dana revises severity=critical
+   O  Izzie's laptop AGENT comments, having seen H      (principal izzie, via agent)
+   E  Izzie's stale desktop, a human, revises to low    (saw neither)
+
+   fold order H, O, E  →  ownLast[izzie] = O, so E absorbs O's vector
+   held.by is DANA, so the same-principal guard does not fire
+   saw(E, H) = true   →  a real contest between two people is suppressed
+   ```
+
+   Swap `O`'s principal for a third teammate's and `saw(E, H)` is `false` and the
+   contest is raised. The agent makes it unambiguous rather than a philosophical
+   human-versus-machine question: `contest.ts` explicitly forbids an agent from
+   settling a human disagreement, so an agent having seen something cannot establish
+   that the human did. The clearing path breaks the same way.
+
+   **What is built:** `withSidecarLock` (`sidecar.ts`), around `sync`. Its lock file
+   lives OUTSIDE the sidecar, keyed on the realpath — `commitLocal` is `git add -A`
+   and returns early only when `git status` is empty, so a lock file anywhere inside
+   would be committed, pushed to the whole team, and be enough on its own to produce
+   a commit containing nothing else. It is deliberately NOT reentrant.
+
+   **What is not:** §4 requires the lock be held across *selecting the writer,
+   reading the causal heads and `writerPrev`, and appending* — the race is between
+   reading what came before and committing to it. A sync-only lock protects git
+   operations and nothing else. Then `writerId` itself, sharding and vector-keying by
+   it, `writerPrev`/GENESIS fork detection, and writer identity reaching the entity
+   folds (`contest.ts`'s principal guard, corroboration keyed by principal).
+
+3a-archived. ~~**Generation-based sharding and the sidecar-root lock.**~~ ~~Profiles,
    generations, receipts.~~ **No receipt columns.** There are no receipts, and a
    materialized row does not need one: it already carries the body hash, and the
    derivation fingerprint rides inside that string. What the first schema does need
