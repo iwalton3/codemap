@@ -1,9 +1,9 @@
 # Handoff — `worktree-shared-review-hashscheme`
 
 Written at `bec6d1e`; updated at `0499657` after another session and two review
-rounds. Everything below is committed and green (573 tests, `tsc -p .` and
-`tsc -p web` both clean). Read this, then the two documents it points at; do not
-read the whole branch history.
+rounds, and again after the session that finished §4. Everything below is
+committed and green (645 tests, `tsc -p .` and `tsc -p web` both clean). Read
+this, then the two documents it points at; do not read the whole branch history.
 
 ## What to run
 
@@ -191,27 +191,53 @@ contradiction and is not: 3b's "do the anchor join in SQL" versus provenance's
      laptop agent lending their stale desktop knowledge it never had, which
      suppressed a real contest between two other people.
 
-     **Not built, in the order §4 puts them:**
-     - **`writerPrev` and the GENESIS rule.** Each event names its predecessor in
-       its own `(scope, writerId)` chain. Two events naming the same predecessor
-       are a FORK — including two naming `GENESIS`, which is the clause an
-       implementation will drop and must not: two clones copied before either had
-       written both open with `GENESIS` and evade the detector entirely. The lock
-       prevents local forks; this DETECTS distributed ones (a copied clone id).
-     - **Scope status**, so a detected fork stops answering authoritatively. A fork
-       is not a contest: a contest is per-field residue on one entity, a fork
-       invalidates the vector's single-writer compression for a whole writer across
-       every entity it touched, and containment is scope-level.
-     - **Writer identity reaching the entity folds.** §4 names two, both verified
-       against current code: `contest.ts` suppresses on
-       `held.by.principal === e.actor.principal`, and `shared-findings.ts` keys
-       corroboration by principal, so one person's second model replaces the
-       first — disagreement included. Deciding which of those should key on the
-       writer instead is a design question, not a mechanical change.
-     - **`sidecarProtocol` / `eventSchema`** on the envelope.
+     **Now built — all four.** §4 is updated to say so; read it rather than this.
+
+     - **`writerPrev` and the GENESIS rule.** `emitEvent` stamps it, `detectForks`
+       reads it. Two rules the sketch did not have, both nearly got wrong: an absent
+       `writerPrev` is NOT an implicit GENESIS (every pre-chain log would fork on
+       its writer's second event), and a chain claim needs a `writer`, not
+       `causality`'s principal fallback (which files two machines' chains under one
+       person). The predecessor comes from the writer's own SHARD's last line, not
+       from fold order — a shard is single-writer and append-only, so its last line
+       is the chain head by construction, where fold order has to be trusted to
+       agree with append order and that is what a fork breaks.
+     - **Scope status.** §7's fail-closed rule: `status` + one `diagnostic` on
+       `shared_scope`, stored beside the fingerprint so a cache HIT answers it.
+       `readCached` returns it WITH the value, deliberately — a signature that lets
+       a caller take the rows and forget to ask is how a fail-closed rule fails.
+       `sharedCoverage` needed `scopeVerdict` instead, because it takes the QUERY
+       path and is where a silent verdict costs most: coverage DROPS gaps.
+     - **Writer identity in the folds — and the three resolved differently.**
+       `contest.ts` keys on the WRITER (its principal test was subsumed by `saw` for
+       one clone, so its only live effect was suppressing a real two-machine
+       disagreement). Corroboration keys on `(principal, model)`, NOT the writer: a
+       verdict is an opinion and which model formed it is part of whose it is, but a
+       person re-reviewing from their desktop has changed their mind. Walkthroughs
+       stay per principal. Izzie's calls, recorded in §4.
+     - **`sidecarProtocol` / `eventSchema`** on the envelope, with §7's rule that a
+       HIGHER number blocks the scope and a lower or absent one reads fine.
+
+     **What this cost that was not on the list.** The fold's OUTPUT changed shape,
+     and nothing about a code change touches the materializer's cache key — so
+     every store that had already folded a scope would have served the old answer
+     forever. `MATERIALIZER_VERSION` is 3, and a golden vector over a fixed log now
+     fails when the fold moves, which is the guard `normalize.test.ts` gives
+     `HASH_SCHEME`. **If you change a fold, that test is the question, not a
+     defect.**
    - **3b** — the anchor-table scans are gone but `shared_doc_citation`'s §5 join is
      the one that landed, not the doc-freshness one. `shared_scope.folded_at` and
-     `events` are still written and never read.
+     `events` are still written and never read; `status` and `diagnostic` are read.
+
+   **What is left of 3a, and it is small.** `ensureMaterialized` still returns a
+   bare boolean, so `sharedDocsCiting` and `sharedDocCandidates` cannot carry a
+   verdict of their own — `sharedCoverage` covers the one caller that matters by
+   re-reading the row. There is no rotation command for a writer id yet (§4 asks
+   for one), so the repair for a detected fork is manual: delete
+   `<sidecar git dir>/codemap-writer` on one clone. And nothing REFUSES a write to
+   a blocked scope; the choice was deliberate — a fork is in history and cannot be
+   un-forked, so refusing writes would wedge the scope permanently rather than
+   contain it.
 
 4. ~~**There is no orphans page.**~~ **DONE.** `/u/:u/orphans/` reads `/api/orphans`,
    which had been served since the sweep was built and consumed by nothing — the

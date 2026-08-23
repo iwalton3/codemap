@@ -176,6 +176,18 @@ chain head by construction — where fold order is a total order over the whole
 scope, and trusting it to agree with append order for one writer is the very thing
 a fork breaks.
 
+**What could make the detector fire on an honest team**, since a false positive
+blocks a whole scope and is the failure that matters here. It needs one clone to
+append twice from the same shard state, and the shard only grows: the lock
+serializes two processes, sync is one branch with fetch-and-merge and never
+rewinds, and `merge=union` can only stitch somebody else into my shard if they
+hold my writer id — the case being detected. The route that remains is a **restored
+backup of the sidecar clone**, which rewinds the shard while the writer id, living
+in the same git directory, is restored with it. That is the same class §4 already
+names under *Losing the id*, and the same remedy applies: rotate. `contested.test.ts`
+pins the negative — a real team, a real remote, two rounds of concurrent writes and
+merges in both directions, and every clone still reads `complete`.
+
 ### The lock, and what it is for
 
 The sidecar-root lock is a **correctness** requirement, not git hygiene, and it must

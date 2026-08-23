@@ -121,9 +121,13 @@ export function applyRevision(
     // fold picked last-writer-wins and the person was never told a value had been
     // dropped. That is the residue this module exists to make loud.
     //
-    // For a single clone the test is subsumed by `saw` below — a writer's own
-    // history is always in its own causal vector — so this line's only live effect
-    // was ever the two-machine case. See PROPOSAL-provenance.md §4.
+    // Where both writes carry a writer, this is subsumed by `saw` below — a
+    // writer's own history is always in its own causal vector — so between two
+    // tagged events its only effect is the two-machine case. It is NOT subsumed
+    // when one side is a pre-writer event: those key on the principal in
+    // `causality` and the tagged one keys on the clone, so `saw` is false between
+    // them and this is what stops your own upgrade contesting your own old write.
+    // See PROPOSAL-provenance.md §4.
     if (sameWriter(held, e)) continue;
     if (saw(held.id)) continue;                                     // written with the full picture
     (entity.contested ??= []).push({

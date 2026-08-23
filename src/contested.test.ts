@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { scenario, who, concurrently, inSequence, settle, views, assertConverged, asAgent, type Scenario } from "./scenario.js";
-import { createFinding, corroborate, revise, resolveContest, readFindings, promote, ackQueue } from "./shared-findings.js";
+import { createFinding, corroborate, revise, resolveContest, readFindings, promote, ackQueue, findingScope } from "./shared-findings.js";
+import { readScopeChecked, appendEvents, emitEvent, writerFor } from "./eventlog.js";
 
 const PR = "acme/api/pr-264";
 const NEW = { targetKind: "anchor" as const, targetId: "a_1", text: "the original text", comment: "the original ask", severity: "medium" as const };
@@ -277,5 +278,56 @@ test("and a person is not their own agent", async () => {
     await corroborate(izzie.sidecar, PR, agent, id, "confirm", "reproduced");
     await corroborate(izzie.sidecar, PR, human, id, "refute", "I read it differently");
     assert.equal((await readFindings(izzie.sidecar, PR)).get(id)!.corroboration.length, 2);
+  } finally { s.dispose(); }
+});
+
+/**
+ * A real team, a real remote, real union merges — and no fork.
+ *
+ * The detector blocks a WHOLE SCOPE, so a false positive is far worse than a
+ * missed detection, and the shape most likely to produce one is exactly what sync
+ * does: fetch, merge, and `merge=union` stitching shards together. Every clone
+ * mints its own writer id, so nobody else ever writes to my shard and its last
+ * line stays my chain's head — but that is an argument, and this is the check.
+ */
+test("an ordinary team syncing does not fork anybody's chain", async () => {
+  await withTeam(async (s) => {
+    const id = await seeded(s);
+    const izzie = who(s, "izzie@x.com"), dana = who(s, "dana@x.com");
+    // Concurrent writes on both sides, then merges in both directions, twice.
+    for (let round = 0; round < 2; round++) {
+      await corroborate(izzie.sidecar, PR, izzie.actor, id, "confirm", `round ${round}`);
+      await corroborate(dana.sidecar, PR, dana.actor, id, "refute", `round ${round}`);
+      await revise(izzie.sidecar, PR, izzie.actor, id, { comment: `izzie ${round}` });
+      await revise(dana.sidecar, PR, dana.actor, id, { comment: `dana ${round}` });
+      await settle(s);
+    }
+    for (const p of s.all) {
+      const read = await readScopeChecked(p.sidecar, findingScope(PR));
+      assert.equal(read.status, "complete",
+        `${p.actor.principal}'s clone reads blocked: ${JSON.stringify(read.diagnostic)}`);
+    }
+  });
+});
+
+test("a shard that predates the chain is linked onto, not restarted", async () => {
+  // The migration case: events already in this writer's shard from before
+  // `writerPrev` existed. The next event must continue from the last of them —
+  // restarting at GENESIS would be fine too (nothing forks, because untagged
+  // events make no chain claim), but it would silently drop the link, so pin it.
+  const s = await scenario(["izzie@x.com"]);
+  try {
+    const izzie = who(s, "izzie@x.com");
+    const scope = findingScope(PR);
+    const writer = await writerFor(izzie.sidecar);
+    const legacy = {
+      id: "0000000001-legacy", kind: "finding.created", subject: "f_old", actor: izzie.actor,
+      at: "2026-01-01T00:00:00Z", writer,
+      data: { targetKind: "anchor", targetId: "a_1", text: "written before the chain" },
+    };
+    await appendEvents(izzie.sidecar, scope, writer, [legacy]);
+    const next = await emitEvent(izzie.sidecar, scope, izzie.actor, "finding.commented", "f_old", { body: "after" });
+    assert.equal(next.writerPrev, legacy.id);
+    assert.equal((await readScopeChecked(izzie.sidecar, scope)).status, "complete");
   } finally { s.dispose(); }
 });

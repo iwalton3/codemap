@@ -359,7 +359,7 @@ async function readShardLines(file: string): Promise<{ event: LogEvent; line: st
  * dropping the later sighting loses nothing.
  */
 export async function readScope(logRoot: string, scope: string): Promise<LogEvent[]> {
-  return (await readScopeChecked(logRoot, scope)).events;
+  return (await collect(logRoot, scope)).events;
 }
 
 /** A scope's events, plus whether they can be answered from authoritatively. */
@@ -375,9 +375,19 @@ export interface ScopeRead extends ScopeStatus { events: LogEvent[] }
  * What `blocked` forbids is presenting it as settled.
  */
 export async function readScopeChecked(logRoot: string, scope: string): Promise<ScopeRead> {
+  const { events, collisions } = await collect(logRoot, scope);
+  return { events, ...scopeStatus(events, collisions) };
+}
+
+/**
+ * The read itself. Separate from the verdict because `emitEvent` takes this path
+ * on every single write, under the lock, and only wants the causal heads — judging
+ * the scope there would put a fork scan on the hot end of every append.
+ */
+async function collect(logRoot: string, scope: string): Promise<{ events: LogEvent[]; collisions: string[] }> {
   const dir = join(logRoot, scope);
   let names: string[];
-  try { names = await readdir(dir); } catch { return { events: [], status: "complete" }; }
+  try { names = await readdir(dir); } catch { return { events: [], collisions: [] }; }
   const seen = new Map<string, string>();
   const collisions: string[] = [];
   const all: LogEvent[] = [];
@@ -394,8 +404,7 @@ export async function readScopeChecked(logRoot: string, scope: string): Promise<
       all.push(event);
     }
   }
-  const events = sortEvents(all);
-  return { events, ...scopeStatus(events, collisions) };
+  return { events: sortEvents(all), collisions };
 }
 
 /** Why a scope may not be answered from. One diagnostic, not a taxonomy. */
@@ -428,8 +437,11 @@ export interface WriterFork {
 }
 
 export function detectForks(events: LogEvent[]): WriterFork[] {
-  /** `writer \0 prev` -> the distinct event ids naming it. */
-  const chains = new Map<string, Set<string>>();
+  // `writer \0 prev` -> the ids naming it: the first one as a bare string, and an
+  // array only once a second arrives. A well-behaved scope has exactly one id per
+  // chain link, so a container per link would allocate one per event in the log
+  // and this runs on every read of every scope.
+  const chains = new Map<string, string | string[]>();
   const ids = new Set<string>();
   for (const e of events) {
     const w = e.writer;
@@ -439,15 +451,16 @@ export function detectForks(events: LogEvent[]): WriterFork[] {
     if (ids.has(e.id)) continue; // one event, however many times it was stitched in
     ids.add(e.id);
     const key = w + "\0" + e.writerPrev;
-    let at = chains.get(key);
-    if (!at) chains.set(key, at = new Set());
-    at.add(e.id);
+    const at = chains.get(key);
+    if (at === undefined) chains.set(key, e.id);
+    else if (typeof at === "string") chains.set(key, [at, e.id]);
+    else at.push(e.id);
   }
   const out: WriterFork[] = [];
-  for (const [key, set] of chains) {
-    if (set.size < 2) continue;
+  for (const [key, at] of chains) {
+    if (typeof at === "string") continue;
     const [writer, prev] = key.split("\0") as [string, string];
-    out.push({ writer, prev, events: [...set].sort() });
+    out.push({ writer, prev, events: [...at].sort() });
   }
   return out.sort((a, b) => (a.writer + a.prev < b.writer + b.prev ? -1 : 1));
 }
