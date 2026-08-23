@@ -386,3 +386,37 @@ test("no sidecar leaves the local read exactly as it was", async () => {
     });
   } finally { u.cleanup(); }
 });
+
+test("share_doc cannot choose its own version id or its own time", async () => {
+  // Version ids are unique per SCOPE, not per node. An id colliding with another
+  // node's makes `foldDocs` drop the newcomer and leaves that node an empty doc for
+  // everybody; a `createdAt` in the future wins `selectWinner`'s tiebreak against
+  // every later version forever. `share_doc` takes an opaque object, so neither
+  // field can be taken on trust — and a NEW version has no identity to preserve.
+  const u = universe();
+  try {
+    const { init } = await import("./ops.js");
+    const { readAnchorStore } = await import("./store.js");
+    mkdirSync(join(u.root, "src"), { recursive: true });
+    writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+    await init(u.root);
+    const id = (await readAnchorStore(u.root)).anchors[0]!.id;
+
+    const r = await shared.shareDoc(u.root, {
+      nodeId: "n_theirs", type: "process", title: "T", summary: "s", body: "b",
+      citations: [{ anchorId: id, acceptedHashes: [] }],
+      versionId: "nv_hijack", createdAt: "9999-01-01T00:00:00.000Z",
+    } as never) as any;
+    assert.equal(r.error, undefined);
+    assert.notEqual(r.versionId, "nv_hijack");
+    assert.match(r.versionId, /^nv_/);
+
+    const out = await shared.sharedDocs(u.root, { nodeId: "n_theirs" }) as any;
+    assert.notEqual(out.docs[0].resolved.versionId, "nv_hijack");
+    const { readDocs } = await import("./shared-docs.js");
+    const { resolveSidecar: rs } = await import("./sidecar-config.js");
+    const cfg = rs(u.root)!;
+    const doc = (await readDocs(cfg.path, cfg.universe)).get("n_theirs")!;
+    assert.notEqual(doc.versions[0]!.createdAt, "9999-01-01T00:00:00.000Z", "and not its own place in the order");
+  } finally { u.cleanup(); }
+});

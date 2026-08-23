@@ -649,8 +649,17 @@ export async function shareDoc(root: string, v: NewDocVersion) {
     return { error: `not anchors in this universe: ${unknown.slice(0, 5).join(", ")}${unknown.length > 5 ? ` (+${unknown.length - 5} more)` : ""}. A doc must cite code that exists — index it first, or cite the anchor it really describes.` };
   }
   await ensureSidecar(b.cfg.path, b.actor);
+  // `versionId` and `createdAt` are dropped, not honoured. This is a NEW version, so
+  // there is no prior identity to preserve — the field exists for `publishLocalDocs`,
+  // which republishes versions that already have one.
+  //
+  // Taking them here would be an unowned identity from an opaque object: version ids
+  // are unique per SCOPE, not per node, so a colliding one makes `foldDocs` drop the
+  // newcomer — losing that node's doc for the whole team — and a `createdAt` in the
+  // future wins `selectWinner`'s tiebreak against every later version forever.
+  const { versionId: _vid, createdAt: _at, ...fresh } = v as NewDocVersion & { createdAt?: string };
   const versionId = await publishDocVersion(b.cfg.path, b.cfg.universe, b.actor, {
-    ...v,
+    ...fresh,
     createdCommit: v.createdCommit ?? headCommit(root),
     createdBranch: v.createdBranch ?? currentBranch(root),
   });

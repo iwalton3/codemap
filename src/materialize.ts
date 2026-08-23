@@ -32,7 +32,7 @@ import { readScope, SHARD_EXT, type LogEvent } from "./eventlog.js";
  * That holds only while nothing derived from the anchors table is stored. See the
  * guard comment on the tables in `db.ts`.
  */
-export const MATERIALIZER_VERSION = 1;
+export const MATERIALIZER_VERSION = 2;
 
 /**
  * What the events in a scope are, cheaply.

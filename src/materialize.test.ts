@@ -145,14 +145,16 @@ test("a doc's authors Map and version order survive the round trip", async () =>
   try {
     const { publishDocVersion, readDocs, foldDocs, docScope } = await import("./shared-docs.js");
     const U = "acme/api";
-    const v = (id: string, title: string) => ({
-      nodeId: "n_pay", versionId: id, type: "process" as const, title, summary: "s", body: "b",
+    const v = (title: string) => ({
+      nodeId: "n_pay", type: "process" as const, title, summary: "s", body: "b",
       citations: [{ anchorId: "a_1", acceptedHashes: [] }],
-      createdCommit: null, createdBranch: null, createdAt: "2026-01-01T00:00:00Z",
+      createdCommit: null, createdBranch: null,
     });
-    // publishDocVersion MINTS the id; the caller does not choose it.
-    const id1 = await publishDocVersion(logRoot, U, izzie, v("ignored", "first") as never);
-    const id2 = await publishDocVersion(logRoot, U, dana, v("ignored", "second") as never);
+    // No id passed, so each is minted. Passing one is for republishing a version
+    // that already HAS an identity, and two versions cannot share it: this test read
+    // `versionId: "ignored"` twice and became the canary that caught it.
+    const id1 = await publishDocVersion(logRoot, U, izzie, v("first") as never);
+    const id2 = await publishDocVersion(logRoot, U, dana, v("second") as never);
 
     const scope = docScope(U);
     const direct = foldDocs(await readScope(logRoot, scope));

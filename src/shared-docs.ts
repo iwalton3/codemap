@@ -89,9 +89,14 @@ export function foldDocs(events: LogEvent[]): Map<string, SharedDoc> {
       // every shared doc in the universe becoming unreadable for everyone, forever.
       if (!v || typeof v.versionId !== "string" || v.nodeId !== e.subject) continue;
       if (v.citations !== undefined && !Array.isArray(v.citations)) continue;
+      // A version id is written once, and once per SCOPE — not per node, because
+      // `doc.accepted` carries no node and resolves the id globally. So the drop
+      // has to come BEFORE the doc is created: a node whose every version collides
+      // with another node's used to be left as an existing doc with no versions,
+      // which reads as "written and empty" rather than "never arrived".
+      if (byVersion.has(v.versionId)) continue;
       let doc = out.get(e.subject);
       if (!doc) { doc = { nodeId: e.subject, versions: [], authors: new Map() }; out.set(e.subject, doc); }
-      if (byVersion.has(v.versionId)) continue; // a version id is written once
       const copy: NodeVersion = {
         ...v,
         citations: (v.citations ?? [])
@@ -109,7 +114,11 @@ export function foldDocs(events: LogEvent[]): Map<string, SharedDoc> {
       const anchorId = typeof d?.anchorId === "string" ? d.anchorId : null;
       const bodyHash = typeof d?.bodyHash === "string" ? d.bodyHash : null;
       if (!versionId || !anchorId || !bodyHash) continue;
-      const v = byVersion.get(versionId);
+      // Its OWN node's version. The id resolves globally, so an acceptance under a
+      // colliding id would otherwise reach into another node's version and add a
+      // hash nobody claimed there — the false-provenance direction, and silent.
+      const found = byVersion.get(versionId);
+      const v = found?.nodeId === e.subject ? found : undefined;
       const cite = v?.citations.find((c) => c.anchorId === anchorId);
       // Only a hash for an anchor this version already cites: confirming a doc
       // against code it never claimed anything about would make it read `fresh`
@@ -181,6 +190,11 @@ export interface NewDocVersion {
   /**
    * The version's identity, when it already HAS one — a local version being
    * published, not a new one being written.
+   *
+   * ONLY for an id this machine's own store minted. Version ids are unique per
+   * SCOPE and not per node: `foldDocs` drops any repeat, so an id that collides
+   * with another node's costs that node its doc for the whole team. Never pass one
+   * through from an opaque caller — see `shareDoc`, which strips it.
    *
    * Minting here unconditionally gave the same content two ids, one local and one
    * shared, and nothing downstream could tell the copies apart. That is the exact

@@ -257,3 +257,56 @@ test("a version with no id of its own still gets one, and it is this moment", as
     assert.equal((await readDocs(root, U)).get("n_payments")!.versions.length, 2);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+// --- a colliding version id cannot reach across nodes ----------------------------
+
+test("a version id claimed by two nodes takes one down, not two", async () => {
+  // A version id is unique per SCOPE — `doc.accepted` carries no node and resolves
+  // the id globally — so a repeat has to be dropped. Dropping it AFTER creating the
+  // doc left the second node present with no versions, which reads as "written and
+  // empty" rather than "never arrived". Reachable only from an old or buggy client
+  // now that `shareDoc` strips caller ids, which is exactly the input this fold is
+  // written to survive.
+  const ev = (nodeId: string, body: string, i: number): LogEvent => ({
+    id: "e" + i, scope: "docs/u", subject: nodeId, kind: "doc.version",
+    actor: { principal: "p@x.com" }, at: "2026-01-0" + i + "T00:00:00Z",
+    data: { version: { versionId: "nv_same", nodeId, type: "process", title: nodeId, summary: "", body, citations: [{ anchorId: "a_1", acceptedHashes: [] }], createdCommit: null, createdBranch: null, createdAt: "2026-01-01T00:00:00Z" } },
+  } as unknown as LogEvent);
+
+  const docs = foldDocs([ev("n_first", "FIRST", 1), ev("n_second", "SECOND", 2)]);
+  assert.equal(docs.get("n_first")!.versions.length, 1, "the first write stands");
+  assert.equal(docs.get("n_first")!.versions[0]!.body, "FIRST");
+  assert.equal(docs.get("n_second"), undefined, "and the loser is absent, not present-and-empty");
+});
+
+test("an acceptance cannot reach into another node's version", async () => {
+  // The false-provenance direction: an acceptance under a colliding id would add a
+  // hash to a version whose author never claimed it, and silently.
+  const version: LogEvent = {
+    id: "e1", scope: "docs/u", subject: "n_first", kind: "doc.version",
+    actor: { principal: "p@x.com" }, at: "2026-01-01T00:00:00Z",
+    data: { version: { versionId: "nv_same", nodeId: "n_first", type: "process", title: "t", summary: "", body: "b", citations: [{ anchorId: "a_1", acceptedHashes: [] }], createdCommit: null, createdBranch: null, createdAt: "2026-01-01T00:00:00Z" } },
+  } as unknown as LogEvent;
+  const accept = (subject: string, i: number): LogEvent => ({
+    id: "e" + i, scope: "docs/u", subject, kind: "doc.accepted",
+    actor: { principal: "q@x.com" }, at: "2026-01-02T00:00:00Z",
+    data: { versionId: "nv_same", anchorId: "a_1", bodyHash: fixtureHash("THEIRS") },
+  } as unknown as LogEvent);
+
+  // `n_other` has a doc of its own, so the misdirected acceptance has somewhere to
+  // be retained. (An acceptance whose subject has no doc at all is dropped, as any
+  // acceptance for an unknown node always has been.)
+  const other: LogEvent = {
+    ...version, id: "e0", subject: "n_other",
+    data: { version: { ...(version.data as any).version, versionId: "nv_other", nodeId: "n_other" } },
+  } as unknown as LogEvent;
+  const stolen = foldDocs([version, other, accept("n_other", 2)]);
+  assert.deepEqual(stolen.get("n_first")!.versions[0]!.citations[0]!.acceptedHashes, [],
+    "another node's acceptance adds nothing here");
+  assert.equal(stolen.get("n_other")?.unmatched?.[0]?.why, "no-version",
+    "and it is retained rather than vanishing — the fold never drops evidence silently");
+
+  // The control: its OWN node's acceptance still lands.
+  const own = foldDocs([version, accept("n_first", 2)]);
+  assert.deepEqual(own.get("n_first")!.versions[0]!.citations[0]!.acceptedHashes, [fixtureHash("THEIRS")]);
+});
