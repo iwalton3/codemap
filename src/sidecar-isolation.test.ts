@@ -84,7 +84,7 @@ test("syncing a nested sidecar does not commit or push the code repo", async () 
     const headBefore = c.head(), remoteBefore = c.remoteLog(), statusBefore = c.status();
 
     // Real traffic, so commitLocal has something to do.
-    await appendEvents(side, "findings/acme/pr-1", izzie, [{
+    await appendEvents(side, "findings/acme/pr-1", "w_test_clone", [{
       id: mintId(), kind: "finding.created", subject: "f_1", actor: izzie, at: "t",
       data: { targetKind: "anchor", targetId: "a_1", text: "evidence" },
     }]);

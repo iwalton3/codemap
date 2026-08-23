@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, appendFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, appendFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Actor } from "./schema.js";
-import { mintId, shardFor, appendEvents, readShard, readScope, sortEvents, causalHeads, causality,
+import { mintId, shardFor, appendEvents, readShard, readScope, sortEvents, causalHeads, causality, writerFor,
   type LogEvent } from "./eventlog.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
@@ -35,26 +35,47 @@ test("ids minted in the same millisecond are still distinct", () => {
 
 // --- sharding -----------------------------------------------------------------
 
-test("two actors never share a shard — that is where conflict-freedom comes from", () => {
-  assert.notEqual(shardFor("pr-264", izzie), shardFor("pr-264", dana));
+const W_A = "w_aaaaaaaaaaaaaaaa", W_B = "w_bbbbbbbbbbbbbbbb";
+
+test("two writers never share a shard — that is where conflict-freedom comes from", () => {
+  assert.notEqual(shardFor("pr-264", W_A), shardFor("pr-264", W_B));
 });
 
-test("an agent writes to its principal's shard, not one of its own", () => {
-  // The alternative would fragment one person's log per model and defeat the point:
-  // the shard is a WRITER, and the writer is the person.
-  assert.equal(shardFor("pr-264", izzie), shardFor("pr-264", izzieAgent));
+test("a shard is a CLONE, not a person — one person on two machines writes two", () => {
+  // It used to be the person, and that is the hole this closes: the causal vector
+  // compresses each writer's history to one ordinal, which is only sound if a
+  // writer is one sequential thing. One person on two machines is not.
+  assert.notEqual(shardFor("pr-264", W_A), shardFor("pr-264", W_B));
+  assert.equal(shardFor("pr-264", W_A), shardFor("pr-264", W_A),
+    "and everything from one clone still lands together, whoever is driving it");
 });
 
-test("a principal never reaches the path — an email is not a portable filename", () => {
-  // `:` `\` `<` `>` `|` `?` `*` are all legal in an email address and none of them
-  // can appear in a Windows path, so the principal is hashed rather than used raw.
-  const odd: Actor = { principal: 'a+b/c:d\\e<weird>|x?y*z@example.com' };
-  const name = shardFor("pr-1", odd).slice("pr-1/".length);
-  assert.match(name, /^[0-9a-f]{12}\.ndjson$/, `got ${name}`);
+test("a writer id is already a portable filename", () => {
+  // The principal had to be hashed — `:` `\` `<` `>` `|` `?` `*` are all legal in an
+  // email and none can appear in a Windows path. A writer id is minted, not given.
+  const name = shardFor("pr-1", W_A).slice("pr-1/".length);
+  assert.match(name, /^w_[0-9a-f]{16}\.ndjson$/, `got ${name}`);
 });
 
-test("the same principal always lands on the same shard", () => {
-  assert.equal(shardFor("pr-1", izzie), shardFor("pr-1", { principal: "izzie@x.com", github: "izzie" }));
+test("a clone's writer id is minted once and then stable", async () => {
+  const root = tmp();
+  try {
+    mkdirSync(join(root, ".git"), { recursive: true });
+    const first = await writerFor(root);
+    assert.match(first, /^w_[0-9a-f]{16}$/);
+    assert.equal(await writerFor(root), first, "same process");
+    // …and durable: it lives in the git dir, which `git add -A` can never reach.
+    assert.equal(readFileSync(join(root, ".git", "codemap-writer"), "utf8").trim(), first);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("two clones mint different writer ids", async () => {
+  const a = tmp(), b = tmp();
+  try {
+    mkdirSync(join(a, ".git"), { recursive: true });
+    mkdirSync(join(b, ".git"), { recursive: true });
+    assert.notEqual(await writerFor(a), await writerFor(b));
+  } finally { [a, b].forEach((r) => rmSync(r, { recursive: true, force: true })); }
 });
 
 // --- appending and reading ----------------------------------------------------
@@ -62,7 +83,7 @@ test("the same principal always lands on the same shard", () => {
 test("events round-trip through a shard", async () => {
   const root = tmp();
   try {
-    await appendEvents(root, "pr-264", izzie, [ev(mintId(1)), ev(mintId(2))]);
+    await appendEvents(root, "pr-264", W_A, [ev(mintId(1)), ev(mintId(2))]);
     const got = await readScope(root, "pr-264");
     assert.equal(got.length, 2);
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -71,8 +92,8 @@ test("events round-trip through a shard", async () => {
 test("appending twice extends the shard rather than replacing it", async () => {
   const root = tmp();
   try {
-    await appendEvents(root, "pr-264", izzie, [ev(mintId(1))]);
-    await appendEvents(root, "pr-264", izzie, [ev(mintId(2))]);
+    await appendEvents(root, "pr-264", W_A, [ev(mintId(1))]);
+    await appendEvents(root, "pr-264", W_A, [ev(mintId(2))]);
     assert.equal((await readScope(root, "pr-264")).length, 2);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -80,8 +101,8 @@ test("appending twice extends the shard rather than replacing it", async () => {
 test("a scope collects every actor's shard", async () => {
   const root = tmp();
   try {
-    await appendEvents(root, "pr-264", izzie, [ev(mintId(1))]);
-    await appendEvents(root, "pr-264", dana, [ev(mintId(2), { actor: dana })]);
+    await appendEvents(root, "pr-264", W_A, [ev(mintId(1))]);
+    await appendEvents(root, "pr-264", W_A, [ev(mintId(2), { actor: dana })]);
     const got = await readScope(root, "pr-264");
     assert.equal(got.length, 2);
     assert.deepEqual([...new Set(got.map((e) => e.actor.principal))].sort(), ["dana@x.com", "izzie@x.com"]);
@@ -91,8 +112,8 @@ test("a scope collects every actor's shard", async () => {
 test("scopes are isolated", async () => {
   const root = tmp();
   try {
-    await appendEvents(root, "pr-264", izzie, [ev(mintId(1))]);
-    await appendEvents(root, "pr-227", izzie, [ev(mintId(2))]);
+    await appendEvents(root, "pr-264", W_A, [ev(mintId(1))]);
+    await appendEvents(root, "pr-227", W_A, [ev(mintId(2))]);
     assert.equal((await readScope(root, "pr-264")).length, 1);
     assert.equal((await readScope(root, "pr-999")).length, 0, "an unknown scope is empty, not an error");
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -105,8 +126,8 @@ test("a torn final line is dropped and everything before it survives", async () 
   // shared store that will not load because somebody closed a laptop.
   const root = tmp();
   try {
-    await appendEvents(root, "pr-264", izzie, [ev(mintId(1)), ev(mintId(2))]);
-    appendFileSync(join(root, shardFor("pr-264", izzie)), '{"id":"zzz","kind":"not-final', "utf8");
+    await appendEvents(root, "pr-264", W_A, [ev(mintId(1)), ev(mintId(2))]);
+    appendFileSync(join(root, shardFor("pr-264", W_A)), '{"id":"zzz","kind":"not-final', "utf8");
     const got = await readScope(root, "pr-264");
     assert.equal(got.length, 2, "the two whole events stand");
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -120,12 +141,12 @@ test("appending AFTER a torn line does not glue onto it", async () => {
   // then ships the glue to everyone.
   const root = tmp();
   try {
-    const file = join(root, shardFor("pr-264", izzie));
-    await appendEvents(root, "pr-264", izzie, [ev(mintId(1)), ev(mintId(2))]);
+    const file = join(root, shardFor("pr-264", W_A));
+    await appendEvents(root, "pr-264", W_A, [ev(mintId(1)), ev(mintId(2))]);
     appendFileSync(file, '{"id":"zzz","kind":"not-final', "utf8");
 
     const next = ev(mintId(3));
-    await appendEvents(root, "pr-264", izzie, [next]);
+    await appendEvents(root, "pr-264", W_A, [next]);
     const got = await readScope(root, "pr-264");
     assert.equal(got.length, 3, "the two whole events, plus the one just written");
     assert.ok(got.some((e) => e.id === next.id), "the event written after the tear survives");
@@ -137,12 +158,12 @@ test("and a BATCH after a torn line loses none of it", async () => {
   // intermittent lost write rather than a broken shard.
   const root = tmp();
   try {
-    const file = join(root, shardFor("pr-264", izzie));
-    await appendEvents(root, "pr-264", izzie, [ev(mintId(1))]);
+    const file = join(root, shardFor("pr-264", W_A));
+    await appendEvents(root, "pr-264", W_A, [ev(mintId(1))]);
     appendFileSync(file, '{"id":"zzz","kind":"not-fi', "utf8");
 
     const batch = [ev(mintId(2)), ev(mintId(3)), ev(mintId(4))];
-    await appendEvents(root, "pr-264", izzie, batch);
+    await appendEvents(root, "pr-264", W_A, batch);
     const ids = new Set((await readScope(root, "pr-264")).map((e) => e.id));
     for (const e of batch) assert.ok(ids.has(e.id), `lost ${e.id}`);
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -151,7 +172,7 @@ test("and a BATCH after a torn line loses none of it", async () => {
 test("a line that parses but is not an event is skipped", async () => {
   const root = tmp();
   try {
-    const f = join(root, shardFor("pr-264", izzie));
+    const f = join(root, shardFor("pr-264", W_A));
     mkdirSync(join(root, "pr-264"), { recursive: true });
     writeFileSync(f, '{"id":"a"}\nnull\n123\n' + JSON.stringify(ev(mintId(5))) + "\n", "utf8");
     assert.equal((await readScope(root, "pr-264")).length, 1);
@@ -164,8 +185,8 @@ test("a duplicated line — what merge=union produces — is folded once", async
   const root = tmp();
   try {
     const e = ev(mintId(1));
-    await appendEvents(root, "pr-264", izzie, [e]);
-    appendFileSync(join(root, shardFor("pr-264", izzie)), JSON.stringify(e) + "\n", "utf8");
+    await appendEvents(root, "pr-264", W_A, [e]);
+    appendFileSync(join(root, shardFor("pr-264", W_A)), JSON.stringify(e) + "\n", "utf8");
     assert.equal((await readScope(root, "pr-264")).length, 1);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -328,4 +349,64 @@ test("a writer's own consecutive events keep their order even within one millise
   // replacing the first. Same ms, so only `mintId`'s monotonicity separates them.
   const ids = Array.from({ length: 50 }, () => mintId(1_760_000_000_000));
   assert.deepEqual([...ids].sort(), ids, "minted in strictly increasing order");
+});
+
+// --- the vector is per WRITER, and that is not a detail ------------------------
+
+/**
+ * The hole this closes, which I had convinced myself was unreachable.
+ *
+ * `causality` compresses each writer's history to one ordinal, and `ownLast` treats
+ * a writer's own previous event as a causal parent — true by construction for ONE
+ * sequential writer. Keyed on the principal it is false for one person on two
+ * machines, and the damage is not to that person's own record: it launders an
+ * unrelated same-principal event's knowledge into the incoming one, so a real
+ * contest between two OTHER people is silently suppressed.
+ *
+ * The agent is what makes it unambiguous rather than a human-versus-machine
+ * question. `contest.ts` forbids an agent from settling a human disagreement, so an
+ * agent having seen something cannot establish that the human did.
+ */
+const ago = (id: string, principal: string, writer?: string, after?: string[], via?: unknown): LogEvent => ({
+  id, kind: "finding.revised", subject: "f_1",
+  actor: (via ? { principal, via } : { principal }) as Actor,
+  at: "2026-01-01T00:00:00Z",
+  ...(after ? { after } : {}),
+  ...(writer ? { writer } : {}),
+} as LogEvent);
+
+test("one person's two machines do not lend each other knowledge they never had", () => {
+  //  H  Dana revises.
+  //  O  Izzie's LAPTOP agent comments, having seen H.
+  //  E  Izzie's stale DESKTOP revises, having seen neither.
+  const H = ago("0000000001-aa", "dana@x.com", "w_dana");
+  const O = ago("0000000002-bb", "izzie@x.com", "w_laptop", [H.id], { kind: "agent", model: "m" });
+  const E = ago("0000000003-cc", "izzie@x.com", "w_desktop");
+  assert.equal(causality([H, O, E]).saw(E.id, H.id), false,
+    "the desktop never saw Dana's revision, and the laptop agent's sighting is not its own");
+});
+
+test("…but one machine's own history is still its own", () => {
+  // The control. Keying by writer must not simply make everything unseen: on ONE
+  // clone the previous event genuinely IS a causal parent, which is the whole
+  // reason `ownLast` exists.
+  const H = ago("0000000001-aa", "dana@x.com", "w_dana");
+  const O = ago("0000000002-bb", "izzie@x.com", "w_laptop", [H.id]);
+  const E = ago("0000000003-cc", "izzie@x.com", "w_laptop");
+  assert.equal(causality([H, O, E]).saw(E.id, H.id), true);
+});
+
+test("an event written before writer ids folds exactly as it did", () => {
+  // Backward compatibility is the whole reason `writer` is optional. Untagged
+  // events fall back to the principal — which is the old behaviour, hole included.
+  const H = ago("0000000001-aa", "dana@x.com");
+  const O = ago("0000000002-bb", "izzie@x.com", undefined, [H.id]);
+  const E = ago("0000000003-cc", "izzie@x.com");
+  assert.equal(causality([H, O, E]).saw(E.id, H.id), true, "as it always did");
+
+  // And a mixed log is safe rather than merely tolerable: an old event and a new
+  // one from the same person land under different keys, so the fabricated edge
+  // between them is not available in the first place.
+  const mixed = ago("0000000003-cc", "izzie@x.com", "w_desktop");
+  assert.equal(causality([H, O, mixed]).saw(mixed.id, H.id), false);
 });

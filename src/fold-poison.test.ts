@@ -34,7 +34,7 @@ const good: LogEvent = {
 test("an event with no actor is skipped, not fatal", async () => {
   const root = tmp();
   try {
-    const file = join(root, shardFor(SCOPE, izzie));
+    const file = join(root, shardFor(SCOPE, "w_test_clone"));
     mkdirSync(join(root, SCOPE), { recursive: true });
     writeFileSync(file, JSON.stringify(good) + "\n", "utf8");
     appendFileSync(file, JSON.stringify({ id: "0000000002-bb", kind: "finding.created", subject: "f_2" }) + "\n", "utf8");
@@ -47,7 +47,7 @@ test("an event with no actor is skipped, not fatal", async () => {
 test("and neither is one with a blank principal, or no id", async () => {
   const root = tmp();
   try {
-    const file = join(root, shardFor(SCOPE, izzie));
+    const file = join(root, shardFor(SCOPE, "w_test_clone"));
     mkdirSync(join(root, SCOPE), { recursive: true });
     writeFileSync(file, JSON.stringify(good) + "\n", "utf8");
     for (const bad of [

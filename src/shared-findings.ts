@@ -31,7 +31,7 @@
 
 import type { Actor, BugSeverity, BugWitness } from "./schema.js";
 import { isAgentActor, isIndependent } from "./identity.js";
-import { appendEvents, mintId, readScope, causalHeads, causality, type LogEvent } from "./eventlog.js";
+import { emitEvent, mintId, readScope, causality, type LogEvent } from "./eventlog.js";
 import { applyRevision, newContestState, type Contested } from "./contest.js";
 
 /**
@@ -371,20 +371,10 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
 // Writing
 // ---------------------------------------------------------------------------
 
-async function emit(
+const emit = (
   logRoot: string, pr: number | string, actor: Actor,
   subject: string, kind: string, data?: Data,
-): Promise<LogEvent> {
-  const scope = findingScope(pr);
-  const seen = causalHeads(await readScope(logRoot, scope));
-  const event: LogEvent = {
-    id: mintId(), kind, subject, actor, at: new Date().toISOString(),
-    ...(seen.length ? { after: seen } : {}),
-    ...(data ? { data } : {}),
-  };
-  await appendEvents(logRoot, scope, actor, [event]);
-  return event;
-}
+): Promise<LogEvent> => emitEvent(logRoot, findingScope(pr), actor, kind, subject, data);
 
 export interface NewFinding {
   id?: string;

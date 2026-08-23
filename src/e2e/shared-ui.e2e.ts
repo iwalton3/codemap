@@ -313,11 +313,11 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
 
     const created = { id: mintId(), kind: "finding.created", subject: "f_contest", actor: izzie, at: "t",
       data: { targetKind: "anchor", targetId: anchorId, text: "evidence", comment: "the ask", severity: "medium" } };
-    await appendEvents(side, scope, izzie, [created]);
+    await appendEvents(side, scope, "w_izzie_clone_a", [created]);
     // Both name `created` as what they had seen — and NOT each other.
-    await appendEvents(side, scope, izzie, [{ id: mintId(), kind: "finding.revised", subject: "f_contest",
+    await appendEvents(side, scope, "w_izzie_clone_a", [{ id: mintId(), kind: "finding.revised", subject: "f_contest",
       actor: izzie, at: "t", after: created.id, data: { now: { severity: "critical" } } }]);
-    await appendEvents(side, scope, dana, [{ id: mintId(), kind: "finding.revised", subject: "f_contest",
+    await appendEvents(side, scope, "w_dana_clone_a", [{ id: mintId(), kind: "finding.revised", subject: "f_contest",
       actor: dana, at: "t", after: created.id, data: { now: { severity: "low" } } }]);
 
     const { page, errors } = await open(`/u/${universe}/shared/900/`);
@@ -371,7 +371,7 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
     await writeSnapshot(root, "cafebabe", "feature/elsewhere", [{ ...live, id: "a_only_on_branch" }], "2026-08-22T00:00:00Z");
 
     const scope = findingScope(`${uKey}/pr-901`);
-    await appendEvents(side, scope, izzie, [{
+    await appendEvents(side, scope, "w_izzie_clone_a", [{
       id: mintId(), kind: "finding.created", subject: "f_offtree", actor: izzie, at: "t",
       data: { targetKind: "anchor", targetId: "a_only_on_branch", text: "evidence", comment: "about a branch symbol" },
     }]);
@@ -399,8 +399,8 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
 
     const created = { id: mintId(), kind: "finding.created", subject: "f_moved", actor: izzie, at: "t",
       data: { targetKind: "anchor", targetId: "a_vanished", text: "evidence", comment: "about a renamed symbol" } };
-    await appendEvents(side, scope, izzie, [created]);
-    await appendEvents(side, scope, opus, [{
+    await appendEvents(side, scope, "w_izzie_clone_a", [created]);
+    await appendEvents(side, scope, "w_izzie_clone_a", [{
       id: mintId(), kind: "finding.relocation", subject: "f_moved", actor: opus, at: "t", after: created.id,
       data: { kind: "moved", to: anchorId, rationale: "renamed in abc123; same body, new name" },
     }]);

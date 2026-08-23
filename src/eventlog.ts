@@ -28,9 +28,10 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { appendFile, mkdir, open, readFile, readdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { appendFile, mkdir, open, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import type { Actor } from "./schema.js";
+import { withSidecarLock } from "./lock.js";
 
 /** Line-delimited JSON: one event per line, appended, never rewritten. */
 export const SHARD_EXT = ".ndjson";
@@ -58,6 +59,24 @@ export interface LogEvent {
    * a lower bound, exactly as they were when they were written.
    */
   after?: string | string[];
+  /**
+   * WHICH CLONE wrote this — a random id minted on first use, never derived from
+   * the principal, the hostname, or anything reconstructible.
+   *
+   * The causal vector compresses each writer's history to one ordinal, which is
+   * only sound if a writer is one sequential thing. Keyed on `actor.principal` it
+   * is not: one person on two machines produces genuinely concurrent events, and
+   * fold order then supplies an edge between them that never existed. That is not
+   * a theoretical hole — it silently suppresses a real contest between two OTHER
+   * people. See `causality`, and PROPOSAL-provenance.md §4.
+   *
+   * Optional, because every event written before this is missing it and must keep
+   * folding. Those fall back to the principal, which is exactly today's behaviour.
+   *
+   * Attribution and independence keep using `actor.principal`: they want the human,
+   * and always did.
+   */
+  writer?: string;
   /** Event-specific payload. Opaque here. */
   data?: Record<string, unknown>;
 }
@@ -94,8 +113,22 @@ export function principalKey(principal: string): string {
   return createHash("sha256").update(principal).digest("hex").slice(0, 12);
 }
 
-export function shardFor(scope: string, actor: Actor): string {
-  return join(scope, principalKey(actor.principal) + SHARD_EXT);
+/**
+ * Where a WRITER's events for a scope go.
+ *
+ * By writer rather than by principal, so one person on two machines writes two
+ * files. Nothing then union-merges anyone's shard, `readScope`'s dedupe stops
+ * having a case to cover, and prefix-closure per shard is true rather than assumed.
+ * See `LogEvent.writer`.
+ *
+ * A writer id is already opaque and path-safe, so it is used as-is; the principal
+ * had to be hashed because it is an email and emails hold characters that are legal
+ * in one filesystem and not another. Shards written before this are named by that
+ * hash and keep being READ — `readScope` takes every `*.ndjson` in the directory
+ * and does not care what produced the name.
+ */
+export function shardFor(scope: string, writer: string): string {
+  return join(scope, writer + SHARD_EXT);
 }
 
 /**
@@ -128,12 +161,85 @@ async function endsCleanly(file: string): Promise<boolean> {
  * glue to every teammate. In a batch only the first event is eaten, so it reads
  * as an intermittent lost write rather than as a damaged shard.
  */
-export async function appendEvents(logRoot: string, scope: string, actor: Actor, events: LogEvent[]): Promise<void> {
+export async function appendEvents(logRoot: string, scope: string, writer: string, events: LogEvent[]): Promise<void> {
   if (!events.length) return;
-  const file = join(logRoot, shardFor(scope, actor));
+  const file = join(logRoot, shardFor(scope, writer));
   await mkdir(dirname(file), { recursive: true });
   const lead = (await endsCleanly(file)) ? "" : "\n";
   await appendFile(file, lead + events.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf8");
+}
+
+/**
+ * This clone's writer id — random, minted once, never derived from anything.
+ *
+ * Kept in the sidecar's own GIT DIRECTORY, which is the one durable place a clone
+ * has that git can never track: the sidecar syncs with `git add -A`, so anything in
+ * the work tree would be pushed to the whole team, and a writer id is the one value
+ * that must NOT be shared — two clones holding one id is precisely the fork
+ * `writerPrev` exists to detect.
+ *
+ * A root with no resolvable git directory (a scratch sidecar in a test) gets an
+ * id for the life of the process only. Nothing is written where a later `git init`
+ * could pick it up.
+ *
+ * MINT UNDER THE LOCK. Two processes reaching a cold cache together would mint two
+ * ids for one clone, which is the same fork by a shorter route — `emitEvent` holds
+ * `withSidecarLock` across this and the append, which is what §4 means by the lock
+ * covering "selecting the writer".
+ */
+const writers = new Map<string, string>();
+
+async function gitDirOf(root: string): Promise<string | null> {
+  const dot = join(root, ".git");
+  try {
+    const st = await stat(dot);
+    if (st.isDirectory()) return dot;
+    // A linked worktree: `.git` is a file holding `gitdir: <path>`.
+    const text = await readFile(dot, "utf8");
+    const m = /^gitdir:\s*(.+)$/m.exec(text);
+    return m ? resolve(root, m[1]!.trim()) : null;
+  } catch { return null; }
+}
+
+export async function writerFor(logRoot: string): Promise<string> {
+  const hit = writers.get(logRoot);
+  if (hit) return hit;
+  const dir = await gitDirOf(logRoot);
+  const file = dir ? join(dir, "codemap-writer") : null;
+  if (file) {
+    try {
+      const existing = (await readFile(file, "utf8")).trim();
+      if (/^w_[0-9a-f]{16}$/.test(existing)) { writers.set(logRoot, existing); return existing; }
+    } catch { /* not minted yet */ }
+  }
+  const minted = "w_" + randomBytes(8).toString("hex");
+  if (file) await writeFile(file, minted + "\n", "utf8").catch(() => {});
+  writers.set(logRoot, minted);
+  return minted;
+}
+
+/**
+ * Read the heads and append, as ONE act under the sidecar lock.
+ *
+ * The four shared entities each had this sequence written out, and the sequence is
+ * the race: `causalHeads` reads what came before and the append commits to it, so
+ * two processes that both read the same heads have already forked whichever order
+ * their writes land in. A lock around the append alone would not have helped.
+ */
+export async function emitEvent(
+  logRoot: string, scope: string, actor: Actor, kind: string, subject: string, data?: Record<string, unknown>,
+): Promise<LogEvent> {
+  return withSidecarLock(logRoot, async () => {
+    const writer = await writerFor(logRoot);
+    const seen = causalHeads(await readScope(logRoot, scope));
+    const event: LogEvent = {
+      id: mintId(), kind, subject, actor, at: new Date().toISOString(), writer,
+      ...(seen.length ? { after: seen } : {}),
+      ...(data ? { data } : {}),
+    };
+    await appendEvents(logRoot, scope, writer, [event]);
+    return event;
+  });
 }
 
 /**
@@ -281,27 +387,38 @@ export interface Causality {
   heads(): string[];
 }
 
+/**
+ * The key the vector compresses on: the WRITER, falling back to the principal.
+ *
+ * The fallback is what lets an event written before writer ids fold exactly as it
+ * did. Mixing the two is safe rather than merely tolerable: an old event and a new
+ * one from the same person land under different keys, so the fabricated own-edge
+ * between them is not available in the first place.
+ */
+const writerOf = (e: LogEvent): string | undefined => e.writer ?? e.actor?.principal;
+
 export function causality(sortedEvents: LogEvent[]): Causality {
   const byId = new Map(sortedEvents.map((e) => [e.id, e]));
-  /** principal -> how many of their events have been folded so far. */
+  /** writer -> how many of their events have been folded so far. */
   const count = new Map<string, number>();
-  /** event -> its 1-based ordinal among its own principal's events. */
+  /** event -> its 1-based ordinal among its own writer's events. */
   const seq = new Map<string, number>();
-  /** event -> the highest ordinal its writer had folded, per principal. */
+  /** event -> the highest ordinal its writer had folded, per writer. */
   const seen = new Map<string, Map<string, number>>();
-  /** principal -> their most recently folded event. */
+  /** writer -> their most recently folded event. */
   const ownLast = new Map<string, string>();
 
   for (const e of sortedEvents) {
-    const mine = e.actor?.principal;
+    const mine = writerOf(e);
     if (!mine) continue;
     const v = new Map<string, number>();
     const absorb = (id: string | undefined) => {
       const parent = id !== undefined ? byId.get(id) : undefined;
       if (!parent) return;
       for (const [p, n] of seen.get(parent.id) ?? []) if ((v.get(p) ?? 0) < n) v.set(p, n);
-      const p = parent.actor.principal;
-      const n = seq.get(parent.id)!;
+      const p = writerOf(parent);
+      const n = seq.get(parent.id);
+      if (p === undefined || n === undefined) return;
       if ((v.get(p) ?? 0) < n) v.set(p, n);
     };
     for (const id of parentsOf(e)) absorb(id);
@@ -322,16 +439,18 @@ export function causality(sortedEvents: LogEvent[]): Causality {
     saw(from, target) {
       const t = byId.get(target);
       const n = seq.get(target);
+      const w = t ? writerOf(t) : undefined;
       // No ordinal means the event was skipped as malformed, so nobody saw it.
-      if (!t?.actor?.principal || n === undefined) return false;
-      return (seen.get(from)?.get(t.actor.principal) ?? 0) >= n;
+      if (w === undefined || n === undefined) return false;
+      return (seen.get(from)?.get(w) ?? 0) >= n;
     },
     heads() {
       const covered = new Map<string, number>();
       for (const v of seen.values()) for (const [p, n] of v) if ((covered.get(p) ?? 0) < n) covered.set(p, n);
       return sortedEvents.filter((e) => {
         const n = seq.get(e.id);
-        return n !== undefined && (covered.get(e.actor!.principal) ?? 0) < n;
+        const w = writerOf(e);
+        return n !== undefined && w !== undefined && (covered.get(w) ?? 0) < n;
       }).map((e) => e.id);
     },
   };

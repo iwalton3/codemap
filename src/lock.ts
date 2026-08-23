@@ -12,7 +12,9 @@
  */
 
 import { open, readFile, writeFile, rm, rename, mkdir, stat } from "node:fs/promises";
-import { randomBytes } from "node:crypto";
+import { realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { createHash, randomBytes } from "node:crypto";
 import { join, dirname } from "node:path";
 
 const lockPath = (root: string) => join(root, ".codemap", ".lock");
@@ -117,4 +119,37 @@ async function hold<T>(p: string, label: string, fn: () => Promise<T>, opts: Loc
       if (mine) await rm(p, { force: true }).catch(() => {});
     }
   }
+}
+
+/**
+ * Serialize everything one machine does to one sidecar.
+ *
+ * `sync` is `git add -A` + commit + fetch + merge + push against a working tree.
+ * Two of those at once in one repository is not a subtle race — it is index.lock
+ * contention at best and a half-merged tree at worst — and nothing serialized them:
+ * the HTTP path takes no lock, MCP locks the UNIVERSE rather than the sidecar, and
+ * the CLI takes none. `PROPOSAL-sidecar-materialization.md` §8 records the gap.
+ *
+ * **The lock file lives outside the sidecar**, keyed on its real path. Anywhere
+ * inside it would be committed and pushed to the whole team by that same
+ * `git add -A` — and `commitLocal` returns early only when `git status` is empty,
+ * so the lock file appearing is itself enough to produce a commit containing
+ * nothing else. `realpath` rather than the given path so two pointers at one
+ * sidecar take one lock.
+ *
+ * Machine-scoped by construction, which is all it can be: the sidecar's other
+ * writers are other people's clones, and they are serialized by git's own merge,
+ * not by this.
+ *
+ * **NOT reentrant.** `sync` takes it itself, because it is one whole transaction
+ * and there is no legitimate reason to hold this across a sync plus something else.
+ * A caller that wraps `sync` in it deadlocks for the full timeout — the same
+ * convention the universe lock already follows: it is taken at the entry to a
+ * complete operation, never nested.
+ */
+export function withSidecarLock<T>(root: string, fn: () => Promise<T>): Promise<T> {
+  let real = root;
+  try { real = realpathSync(root); } catch { /* not created yet — the given path is all there is */ }
+  const key = createHash("sha256").update(real).digest("hex").slice(0, 16);
+  return withLockAt(join(tmpdir(), `codemap-sidecar-${key}.lock`), root, fn);
 }

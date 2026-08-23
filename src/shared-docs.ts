@@ -30,7 +30,7 @@ import type { Actor } from "./schema.js";
 import type { NodeVersion, NodeCitation, LogicalNodeType } from "./schema.js";
 import { winningVersionAt } from "./doc-version.js";
 import type { AnchorIndex } from "./anchor-resolve.js";
-import { appendEvents, mintId, readScope, causalHeads, type LogEvent } from "./eventlog.js";
+import { emitEvent, mintId, readScope, type LogEvent } from "./eventlog.js";
 
 export const docScope = (universe: string): string => `docs/${universe}`;
 
@@ -164,17 +164,8 @@ export function resolveDoc(doc: SharedDoc, liveHashes: AnchorIndex): NodeVersion
 // Writing
 // ---------------------------------------------------------------------------
 
-async function emit(logRoot: string, universe: string, actor: Actor, subject: string, kind: string, data: Data): Promise<LogEvent> {
-  const scope = docScope(universe);
-  const seen = causalHeads(await readScope(logRoot, scope));
-  const event: LogEvent = {
-    id: mintId(), kind, subject, actor, at: new Date().toISOString(),
-    ...(seen.length ? { after: seen } : {}),
-    data,
-  };
-  await appendEvents(logRoot, scope, actor, [event]);
-  return event;
-}
+const emit = (logRoot: string, universe: string, actor: Actor, subject: string, kind: string, data: Data): Promise<LogEvent> =>
+  emitEvent(logRoot, docScope(universe), actor, kind, subject, data);
 
 export interface NewDocVersion {
   nodeId: string;

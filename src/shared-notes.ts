@@ -27,7 +27,7 @@
 import { createHash } from "node:crypto";
 import type { Actor, BugSeverity } from "./schema.js";
 import { isAgentActor } from "./identity.js";
-import { appendEvents, mintId, readScope, causalHeads, causality, type LogEvent } from "./eventlog.js";
+import { emitEvent, mintId, readScope, causality, type LogEvent } from "./eventlog.js";
 import { applyRevision, newContestState, type Contested } from "./contest.js";
 
 export type NoteKind = "note" | "question" | "finding" | "pointer";
@@ -157,20 +157,10 @@ export function foldNotes(events: LogEvent[]): Map<string, SharedNote> {
 // Writing
 // ---------------------------------------------------------------------------
 
-async function emit(
+const emit = (
   logRoot: string, universe: string, targetId: string, actor: Actor,
   subject: string, kind: string, data?: Data,
-): Promise<LogEvent> {
-  const scope = noteScope(universe, bucketFor(targetId));
-  const seen = causalHeads(await readScope(logRoot, scope));
-  const event: LogEvent = {
-    id: mintId(), kind, subject, actor, at: new Date().toISOString(),
-    ...(seen.length ? { after: seen } : {}),
-    ...(data ? { data } : {}),
-  };
-  await appendEvents(logRoot, scope, actor, [event]);
-  return event;
-}
+): Promise<LogEvent> => emitEvent(logRoot, noteScope(universe, bucketFor(targetId)), actor, kind, subject, data);
 
 export interface NewNote {
   id?: string;
