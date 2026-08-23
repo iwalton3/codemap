@@ -235,7 +235,10 @@ export async function context(root: string, refs: string[]) {
       // Ranked BELOW every local verdict and above `gap`: a teammate's doc is real
       // coverage, but it is not in this store, so the honest instruction is to go and
       // read it rather than to rely on it sight unseen.
-      : team?.docs.length ? `documented by the team — ${team.docs.length} shared doc(s) cover this; read them with \`shared_docs\` before exploring`
+      // Not when the scope is blocked. The docs are still listed above so a reader
+      // can go and look, but "covered" is a decision, and a blocked scope does not
+      // get to make one — the gaps it would have removed are back in the list.
+      : team?.docs.length && !team.scope ? `documented by the team — ${team.docs.length} shared doc(s) cover this; read them with \`shared_docs\` before exploring`
       : gaps.length ? "gap — no docs cover this code; explore, then document the reusable claims"
       : "no docs and no open gaps (this code may be intentionally deferred/trivial)",
     ...(errors.length ? { errors } : {}),

@@ -2,7 +2,7 @@
 
 Written at `bec6d1e`; updated at `0499657` after another session and two review
 rounds, and again after the session that finished §4. Everything below is
-committed and green (645 tests, `tsc -p .` and `tsc -p web` both clean). Read
+committed and green (639 tests, `tsc -p .` and `tsc -p web` both clean). Read
 this, then the two documents it points at; do not read the whole branch history.
 
 ## What to run
@@ -42,6 +42,16 @@ things out:
 So: nothing in this tree, and nothing you can bisect. Kill leftovers by pid first
 (`ps -eo pid,pcpu,etime,args | grep test-concurrency`), and if a run parks on one
 file at 0% CPU, kill that child and re-run the file on its own.
+
+**One more correlation, offered as a habit rather than a cause.** Every wedge in
+the session that finished §4 happened while `npx tsc` was rewriting `dist/*.js`
+UNDER the running suite. The one run nobody disturbed finished all 639 tests in
+33 seconds. That does not explain a child that has already passed every test and
+will not exit, so it is not the mechanism — but "do not rebuild under a live run"
+costs nothing and the difference was 33 seconds against 28 minutes.
+
+And use `~/.claude/bin/safe-pkill`, not `pkill -f`, when killing by pattern: this
+session lost a shell to exit 144 doing exactly what the note below warns about.
 
 ## The two arcs that landed
 
