@@ -166,6 +166,33 @@ record `after` and `writerPrev` at write time, which makes its row an event stor
 somewhere other than the log, i.e. two authorities and a drain protocol in place of
 an append.
 
+## R1 — sync lies about pushing. Reproduced, unfixed.
+
+`commitLocal` returns whether the commit succeeded and **both call sites drop it**
+(`src/sidecar.ts`, in `push` and in `syncHeld`). When the commit fails the shards
+stay staged, the merge still succeeds, and `git push HEAD:branch` pushes a tip the
+remote already has — which exits 0. So `sync` returns `pushed: true` and the
+finding never left the machine. Every later sync repeats it.
+
+Reproduced end to end with `commit.gpgsign=true` and an unusable signing key — an
+ordinary global git config:
+
+```
+first sync    : {"gained":0,"pushed":true,"retries":0}
+second sync   : {"gained":0,"pushed":true,"retries":0}
+pr-1 on remote: []
+```
+
+This is the failure the whole design exists to prevent, stated in
+`PROPOSAL-shared-review-state.md` as *"a sync that loses a finding … is worse than
+no sync at all"*. Fix at the source (set `user.email`/`user.name` and
+`commit.gpgsign=false` locally in the sidecar — it is a machine artifact, not
+authored history) AND at the check: a commit failure must abort sync, and a no-op
+push must never be reported as having pushed.
+
+`src/scenario.ts` cannot catch it today because its git wrapper passes
+`-c user.email=…` on every call, which masks the whole class.
+
 ## Where the code deviates today
 
 - **Materialization is per-query, not per-sync.** `readCached` fingerprints the
