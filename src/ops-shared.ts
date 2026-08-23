@@ -639,6 +639,16 @@ export async function shareDoc(root: string, v: NewDocVersion) {
   // is a claim about code nobody can find.
   const bad = badDocVersion(v);
   if (bad) return { error: bad };
+  // Refused, not stripped. Retiring a doc is a closure and `retireSharedDoc` makes
+  // it a person's act; this route takes an opaque object, so without this an agent
+  // publishes `removed: true` and has tombstoned it. Not inert either, though it
+  // looks it: the citations must be live anchors to get past the check below, so
+  // such a tombstone loses to any content version — until that code is deleted,
+  // at which point it starts winning. A planted tombstone is worse than a refused
+  // one. Stripping it silently would be its own lie: the caller asked to retire.
+  if ((v as { removed?: unknown }).removed) {
+    return { error: "a tombstone is not published through this route — retiring a doc is a closure, and `retire_shared_doc` is where a person makes it. This publishes a version that DESCRIBES code; one that claims code is gone has to say why." };
+  }
   const anchors = new Set((await readAnchorStore(root)).anchors.map((a) => a.id));
   const unknown = v.citations.map((c) => c.anchorId).filter((id) => !anchors.has(id));
   if (unknown.length) {

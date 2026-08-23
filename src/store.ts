@@ -18,7 +18,7 @@ import type { PrWalkthrough } from "./walkthrough.js";
 import type { DatabaseSync } from "node:sqlite";
 import type { DerivationTag } from "./schema.js";
 import { derivationTag, GRAMMAR_NAMES } from "./grammars.js";
-import { derivationFingerprint } from "./normalize.js";
+import { derivationFingerprint, derivationMark } from "./normalize.js";
 import { anchorIndex, derivationsOf, legacyIndex, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
 import { randomBytes } from "node:crypto";
 import { db, WORK_REF, ORPHAN_REF } from "./db.js";
@@ -779,13 +779,78 @@ export async function confirmNode(root: string, id: string): Promise<{ ok?: true
  * absent, so the doc disappears from this branch's map while its content version
  * still wins on branches where the code exists.
  */
-export async function ackHole(root: string, id: string): Promise<{ ok?: true; removedAnchors?: string[]; on?: string | null; error?: string }> {
+export interface UnplaceableCitation {
+  anchorId: string;
+  /** The derivations its accepted hashes were minted under — what this index does not have. */
+  marks: string[];
+  /** Where a snapshot or the retained set last saw it, when either does. */
+  file?: string;
+  symbol?: string;
+}
+
+export interface AckHoleResult {
+  ok?: true;
+  removedAnchors?: string[];
+  on?: string | null;
+  error?: string;
+  /** The winning version's status when this refused — the caller's reason to branch. */
+  status?: NodeStatus;
+  /** Set with `status: "unverifiable"`: what could not be placed, and its address. */
+  unplaceable?: UnplaceableCitation[];
+  createdCommit?: string | null;
+  versionId?: string;
+  /** Citations that DID resolve and are gone — the part of the doc that is decidable. */
+  alsoGone?: string[];
+}
+
+export async function ackHole(root: string, id: string): Promise<AckHoleResult> {
   const d = db(root);
   const versions = versionsOf(d, id);
   if (!versions.length) return { error: `no node "${id}"` };
   const work = workHashes(d, root);
   const { v, e } = selectWinner(versions, work);
-  if (e.status !== "dangling") return { error: `node "${id}" is not a hole here (status: ${e.status})` };
+  // The guard is on the FACTS, not on the headline status. `evalVersion` ranks
+  // dangling over stale over unverifiable, so a version with one absent citation and
+  // one incomparable one reads `dangling` — and the tombstone is built from
+  // `e.dangling` alone, silently dropping the citation nobody could place. That
+  // retires the whole doc on the strength of the comparable subset while the code
+  // behind the foreign ids may be sitting right there. No tombstone while ANY
+  // citation is unplaceable.
+  const ids = e.unverifiable ?? [];
+  if (ids.length) {
+    // A live citation means the doc still has a subject, whether it matches or has
+    // drifted. Refused the way `retireSharedDoc` refuses it, and NOT queued: the
+    // answer is a new version, not an investigation.
+    const here = v.citations.filter((c) => resolveAnchor(c.anchorId, c.acceptedHashes, work).at === "found");
+    if (here.length) {
+      return {
+        error: `node "${id}" is not a hole here — ${here.length} of ${v.citations.length} cited symbols are still in this checkout, and ${ids.length} cannot be placed by this build at all. That is not a removed subject; write a new version.`,
+        status: e.status,
+      };
+    }
+    // Nobody can say whether any of this code is there. The evidence goes back with
+    // the refusal so the caller can file the question rather than re-derive it — see
+    // docs/anchor-id-provenance.md § "Clearing a doc nobody can place".
+    const off = findAnchorsOutsideWork(root, ids);
+    const kept = readOrphans(root, ids);
+    const accepted = new Map(v.citations.map((c) => [c.anchorId, c.acceptedHashes]));
+    return {
+      error: `node "${id}" is not a hole here — ${ids.length} of its ${v.citations.length} citations cannot be placed by this build at all (status: ${e.status})`,
+      status: e.status,
+      versionId: v.versionId,
+      createdCommit: v.createdCommit,
+      ...(e.dangling.length ? { alsoGone: e.dangling } : {}),
+      unplaceable: ids.map((aid) => {
+        const a = off.get(aid)?.anchor ?? kept.get(aid);
+        return {
+          anchorId: aid,
+          marks: [...new Set((accepted.get(aid) ?? []).map(derivationMark).filter((m): m is string => m !== null))],
+          ...(a ? { file: a.file, symbol: a.symbolPath.join(" › ") } : {}),
+        };
+      }),
+    };
+  }
+  if (e.status !== "dangling") return { error: `node "${id}" is not a hole here (status: ${e.status})`, status: e.status };
   // Carry each dangling citation's accepted hashes onto the tombstone. Same reason
   // as the shared path (`retireSharedDoc`): the removal claim is an inference from
   // absence, and only the derivation these hashes carry says whether this index

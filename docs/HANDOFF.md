@@ -98,29 +98,33 @@ contradiction and is not: 3b's "do the anchor join in SQL" versus provenance's
 
    That narrows the surface. It does not place the ids, which is still this arc.
 
-2. **The un-clearable doc.** Unchanged, and now the top item. A doc whose citations
-   read `incomparable` cannot be cleared: `confirmNode` has no live hash to add, and
-   `ackHole` refuses because the status is not `dangling`. And `ackHole` could not
-   help if it ran — `e.dangling` is empty for an unverifiable doc, so the tombstone
-   would cite nothing at all, and one carrying the prior version's hashes is judged
-   foreign by §6's inversion. **The tombstone judges its own author foreign.**
+2. **The un-clearable doc — decided, half built.** Izzie chose the synthesis:
+   refuse the removal (B), queue it for triage instead of leaving it stuck, and
+   record the judgment so a retire-after-triage is attributable (A). The design and
+   what is left are in `docs/anchor-id-provenance.md` § "Clearing a doc nobody can
+   place".
 
-   **There is a design fork here and it is worth Izzie's minute**, because it
-   decides what a doc's status MEANS:
+   **Built:** `ackHole` on an `unverifiable` doc files a `question` on the node,
+   assigned `investigate`, carrying the ids, the commit they were written at, the
+   derivation that minted them and their last-known file. It lands in the existing
+   `review_queue`, and it is mirrored to the sidecar deliberately — "this build
+   cannot place these ids" is a fact about ONE build, and a teammate whose build
+   minted them can answer it outright. Entered by the ACT, never by the state: a
+   `HASH_SCHEME` bump made 985 of 985 docs unverifiable at once.
 
-   - **A.** Give `NodeVersion` the derivation of the build that wrote it, so a
-     tombstone is believed by builds like its author: "a build like me looked and
-     did not find it" makes the absence evidence. A schema addition.
-   - **B.** Refuse to tombstone an unverifiable doc at all. §6's own principle is
-     that an id this index could not have minted is not evidence of absence — so
-     letting the build retire the doc launders "cannot see" into "is gone". The
-     clearing act becomes re-citation, which is the recovery arc, and the doc stays
-     `unverifiable` until then.
-   - **C.** A third state: acknowledged-unplaceable. Not a removal claim, just "a
-     person has seen this and does not want to be told again". Also a schema
-     addition, with different semantics from A.
+   **Not built, and deliberately:** the tombstone rule. A review round found five
+   things that have to be settled first — the `anchorScheme` under-rejection routes
+   the commonest case to `absent` and never reaches the rule; `judgedBy` is a SET
+   and the aggregation rule is unstated (any/any authorizes an unrelated language,
+   all/all resurrects on a missing one); "the reader is in exactly D's position" is
+   too strong; the no-tag fallback ties rather than favouring the content version,
+   and `anyUntagged` must not defeat a positive match; and a shared-only doc has no
+   path to the queue at all. All five are written up. **Until it lands the doc is
+   queued, not clearable — and that is the point of the queue.**
 
-   This is a regression from this branch's work; `main` always answered `dangling`.
+   Landing it should also carry the investigation, not only the build:
+   `removalJudgment { indexDerivations, triageId, rationale }`. `retireSharedDoc`
+   already demands a rationale and then drops it from the durable event.
 
 3. **Materialization.** Step 5 has started and 3b's question is answered.
 

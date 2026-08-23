@@ -2507,13 +2507,73 @@ export async function confirm(root: string, id: string) {
   return confirmNode(root, id);
 }
 
+/** Marks a queued question as one of these, so a second `ackHole` finds it. */
+export const UNPLACEABLE_CATEGORY = "unplaceable-doc";
+
 /**
  * Ack a hole: the doc's cited code was removed here and that's correct → tombstone
  * it on this branch (disappears from this branch's map; still live on branches
  * where the code exists). Only valid when the doc is `dangling`.
+ *
+ * A doc whose citations this build cannot place at all is a different answer and
+ * gets a different one: the removal is refused — an incomparable absence is not
+ * evidence of absence, and hiding is the direction with no recovery — and the
+ * attempt is FILED as work instead of returned as an error. See
+ * docs/anchor-id-provenance.md § "Clearing a doc nobody can place".
+ *
+ * Entered by the ACT, never by the state. A `HASH_SCHEME` bump made 985 of 985 docs
+ * unverifiable at once, so queueing every such doc would deliver that store's whole
+ * catalogue as a work list; queueing one person's attempt to clear one doc is
+ * bounded by attempts.
  */
 export async function ackHole(root: string, id: string) {
-  return storeAckHole(root, id);
+  const r = await storeAckHole(root, id);
+  // On the evidence, not the headline status — the store refuses a tombstone
+  // whenever anything is unplaceable, and a version with one gone citation and one
+  // foreign one reads `dangling`.
+  if (!r.unplaceable?.length) return r;
+
+  const open = (await readAnnotations(root)).annotations.find((a) =>
+    a.target.kind === "node" && a.target.id === id && a.category === UNPLACEABLE_CATEGORY && !a.resolved);
+  if (open) {
+    // Filing and assigning are two writes, so an item can exist unassigned — and the
+    // dedupe would then keep answering `alreadyQueued` about something no queue
+    // shows. Repair it rather than file a second.
+    if (!open.assignment) await assignAnnotation(root, { id: open.id, kind: "investigate", by: "ack_hole" });
+    return { ...r, queued: open.id, alreadyQueued: true };
+  }
+
+  const where = (c: { anchorId: string; file?: string; symbol?: string; marks: string[] }) =>
+    `  ${c.anchorId}${c.file ? ` — last seen at ${c.file} › ${c.symbol}` : " — no record of it anywhere"}`
+    + `${c.marks.length ? `, minted under ${c.marks.join(", ")}` : ""}`;
+  // `annotate` mirrors to the sidecar, and that is wanted here rather than tolerated:
+  // "this build cannot place these ids" is a fact about ONE build, and a teammate
+  // whose build minted them can answer it outright. A question only the asker can
+  // see is the one shape this is least useful in.
+  const filed = await annotate(root, {
+    targetKind: "node", targetId: id, kind: "question", category: UNPLACEABLE_CATEGORY,
+    author: "ack_hole",
+    text: [
+      `This doc cannot be retired: its citations were minted by a build whose anchor derivation this one cannot reproduce, so "the code is gone" is not something anybody here can establish.`,
+      ``,
+      `Version ${r.versionId}, written at ${r.createdCommit ?? "an unrecorded commit"}.`,
+      ``,
+      `Cannot be placed:`,
+      ...r.unplaceable.map(where),
+      ...(r.alsoGone?.length
+        ? [``, `Also cited, resolved, and gone from this tree: ${r.alsoGone.join(", ")}. Those are decidable; the ones above are what block retiring it.`]
+        : []),
+      ``,
+      `Work out where that code went — index the commit above and read the symbol path off your own snapshot of it, then let git say what happened to the file since. Re-cite the doc against ids THIS build mints and it becomes an ordinary doc again. If the subject is genuinely gone, report that: retiring is a person's act.`,
+    ].join("\n"),
+  }) as { id?: string; error?: string };
+  // Said, not swallowed: the caller asked for this doc to be dealt with, and a
+  // refusal that also failed to file the work is a different answer from one that
+  // filed it.
+  if (!filed.id) return { ...r, queueError: filed.error ?? "could not file the question" };
+  const handed = await assignAnnotation(root, { id: filed.id, kind: "investigate", by: "ack_hole" }) as { error?: string };
+  if (handed.error) return { ...r, queued: filed.id, queueError: handed.error };
+  return { ...r, queued: filed.id };
 }
 
 /** All versions of a node, each with its per-branch status (for the version UI). */

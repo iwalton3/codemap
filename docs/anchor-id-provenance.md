@@ -654,6 +654,140 @@ out records `sourceRef: "@work"` and is tied by its file or not at all. Both are
 `sourceRef` questions with an address, which is the input the commit-graph
 derivation above takes.
 
+## Clearing a doc nobody can place
+
+A doc whose citations all resolve `incomparable` reads `unverifiable`, and there is
+no way to clear it. `confirmNode` has no live hash to add and says so
+(`unconfirmable`). `ackHole` refuses, because the status is not `dangling` — and
+could not help if it ran: `e.dangling` is empty for such a doc, so the tombstone
+would cite nothing at all, and one carrying the prior version's hashes is judged
+foreign by §6's inversion and loses to the content version. **The tombstone judges
+its own author foreign.**
+
+A regression from this branch's work; `main` always answered `dangling` here.
+
+**Decided 2026-08-23 (Izzie): the build does not get to assert a removal it cannot
+see, the refusal files triage work instead of erroring, and a `NodeVersion` gets
+somewhere to put the judgment.** Three parts, and the middle one is what stops the
+first from meaning "the doc is lost".
+
+### 1. The refusal stands
+
+Retiring the doc on an incomparable absence launders *cannot see* into *is gone*,
+which §6's own rule forbids: an id this index could not have minted is not evidence
+of absence. Hiding is the direction with no recovery.
+
+### 2. The refusal files triage instead of erroring
+
+`ackHole` on an `unverifiable` doc files a `question` annotation on the node,
+assigned `investigate`. Nothing new is built for it — the queue, the assignment, the
+agent-proposes/person-closes ratchet and the MCP surface all exist, and this is
+`review_queue`'s own shape: work a person handed to an agent.
+
+**Entered by an ACT, not by a state.** Every unverifiable doc is not queued work: a
+`HASH_SCHEME` bump made 985 of 985 docs unverifiable at once, and
+`sharedDocs.needAttention` already excludes them for exactly that reason. What is
+queued is one person's attempt to clear one doc, so the queue is bounded by acts
+rather than by the store.
+
+The item carries the address the recovery arc above takes as input: the unplaceable
+ids, their last-known file and symbol wherever a snapshot or the retained set has
+one, the version's `createdCommit`, and the marks the ids were minted under.
+
+**The guard is on the evidence, never on the headline status.** `evalVersion` ranks
+`dangling` over `stale` over `unverifiable`, so a version with one absent citation
+and one incomparable one reads `dangling` — and `ackHole` built its tombstone from
+`e.dangling` alone, silently dropping the citation nobody could place. That retired
+the whole doc on the strength of the comparable subset while the code behind the
+foreign id might be sitting right there. **No tombstone while ANY citation is
+unplaceable**, whatever the status says.
+
+Which of the two refusals it gets then depends on whether the doc still has a
+subject:
+
+- **Something resolves** (matching or drifted) — refused the way `retireSharedDoc`
+  refuses it, *"still in this checkout — write a new version"*, and NOT queued. The
+  answer is a new version, not an investigation.
+- **Nothing resolves** — queued, and the item names the citations that ARE decidably
+  gone alongside the ones that block it, so the agent is not sent hunting for code
+  the doc itself can account for.
+
+### 3. Recording the judgment — DESIGNED, NOT LANDED
+
+The third part is what would let triage conclude "it is genuinely gone" and retire
+the doc anyway. A tombstone written out of an unverifiable state inherits the prior
+version's hashes, so §6's inversion counts them against it and the content version
+wins: **the tombstone judges its own author foreign.** The fix is to record the
+judgment's own provenance and let a like reader honour it.
+
+The rule as drafted was:
+
+> An incomparable citation SUPPORTS a tombstone when the tombstone's own `judgedBy`
+> is comparable with this index's derivations, and counts against it otherwise.
+
+**It is not landing in that form.** A review round took it apart, and five things
+have to be settled first. They are recorded here rather than solved on the way past,
+because each one is a decision and not a detail:
+
+1. **The `anchorScheme` under-rejection bypasses the rule entirely.** A citation
+   minted under `ANCHOR_SCHEME` 2, read by a scheme-3 index, resolves **`absent`**
+   rather than `incomparable` — `derivationMark` excludes `anchorScheme` from the
+   fingerprint, and `matches` says so about itself (`anchor-resolve.ts`). So
+   `ackHole` is already permitted, the tombstone is already written, and `judgedBy`
+   never participates. Scheme is gated out of band (`checkManifest`, `readSnapshot`,
+   `migrateOverloads`) — this is a pre-existing hole, not one the rule opens, but a
+   rule that cannot see the commonest cause of a re-minted id is worth less than it
+   looks.
+2. **There is no singular "the build's derivation".** An index holds one tag per
+   grammar and an incrementally updated ref legitimately holds several generations,
+   so `judgedBy` is a SET and the aggregation rule has to be stated. "Any writer tag
+   matches any reader tag" is unsafe — a matching C# tag would authorize an
+   incomparable Python citation. "All must match" resurrects every tombstone on a
+   branch that merely lacks an unrelated language. Per-citation is better and the
+   citation's own marks name its grammar, but an id with no marks at all has no
+   language to test.
+3. **"The reader is in exactly D's position" is too strong.** Comparability gives
+   the same minting function, not the same checkout: a later D-compatible checkout
+   can hold a renamed incarnation of the subject under another id. True of tombstones
+   already; `judgedBy` does not strengthen it, so the claim should not be made.
+4. **The index fallback does not do what it says.** With no tags at all,
+   `resolveAnchor` returns `absent`, so the incomparable branch is never reached —
+   and even if it were, charging the tombstone for uncertainty only TIES it with the
+   content version, which `selectWinner` breaks by recency, normally in the
+   tombstone's favour. "The doc appears" needs the tie broken deliberately, not
+   assumed. Separately, `anyUntagged` must not defeat a positive match: one legacy
+   row beside a tagged one would resurrect every new tombstone during exactly the
+   partially-upgraded window this is for.
+5. **A shared-only doc has no path.** `ackHole` is local and `annotate` validates a
+   node target against `loadNodes`, which reads local `node_versions`. A doc that
+   exists only on the sidecar cannot be queued by this route at all.
+
+The carrier, when it lands, should be tombstone-only and carry the investigation
+rather than only the build — `removalJudgment { indexDerivations, triageId,
+rationale }`. A content version already has finer provenance per citation, and its
+accepted set accrues confirmations from several builds over time, so one
+creation-time stamp on it would be misleading the moment anyone confirms it
+elsewhere. `retireSharedDoc` already demands a rationale and then drops it from the
+durable event; a judgment that licenses hiding should keep its reason.
+
+**Until then the doc is not clearable — and that is the point of part 2.** It is
+queued, not lost, and the queue holds the evidence a retire would need.
+
+### What triage can conclude
+
+- **Re-cite it.** The commit-graph derivation above turns `createdCommit` plus a
+  symbol path into ids this build can mint. The doc becomes ordinary again and every
+  existing path works — the outcome to want, and the reason the recovery arc is
+  upstream of this rather than replaced by it. **Available today.**
+- **It is genuinely gone.** Retiring needs part 3, which is not built.
+
+An agent may not retire in any case: it is a closure, the rule `retireSharedDoc`
+already enforces — and which `shareDoc` now enforces too, because publishing a
+version with `removed: true` through the opaque route was a way round it. Such a
+tombstone had to cite live anchors to pass validation, so it lost to any content
+version — until that code was deleted, at which point it began winning. A planted
+tombstone is worse than a refused one.
+
 ## What would change my mind
 
 - **If the pairing invariant cannot be pinned.** The whole design rests on an id and

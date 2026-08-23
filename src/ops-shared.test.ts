@@ -420,3 +420,32 @@ test("share_doc cannot choose its own version id or its own time", async () => {
     assert.notEqual(doc.versions[0]!.createdAt, "9999-01-01T00:00:00.000Z", "and not its own place in the order");
   } finally { u.cleanup(); }
 });
+
+test("a tombstone cannot be published through share_doc", async () => {
+  // `retireSharedDoc` makes retiring a person's act; this route takes an opaque
+  // object, so without a refusal an agent publishes `removed: true` and has done it.
+  // It looks inert — a tombstone must cite live anchors to pass validation, so it
+  // loses to any content version — but it starts winning the day that code is
+  // deleted. A planted tombstone is worse than a refused one.
+  const u = universe();
+  try {
+    const { init } = await import("./ops.js");
+    const { readAnchorStore } = await import("./store.js");
+    mkdirSync(join(u.root, "src"), { recursive: true });
+    writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+    await init(u.root);
+    const id = (await readAnchorStore(u.root)).anchors[0]!.id;
+    const v = { nodeId: "n_x", type: "process", title: "T", summary: "s", body: "b", citations: [{ anchorId: id, acceptedHashes: [] }] };
+
+    const bad = await shared.shareDoc(u.root, { ...v, removed: true } as never) as any;
+    assert.ok(bad.error);
+    assert.match(bad.error, /retire_shared_doc/);
+    const { readDocs } = await import("./shared-docs.js");
+    const { resolveSidecar: rs } = await import("./sidecar-config.js");
+    const cfg = rs(u.root)!;
+    assert.equal((await readDocs(cfg.path, cfg.universe)).size, 0, "and nothing was published");
+
+    // The control: the same version without the flag publishes fine.
+    assert.equal((await shared.shareDoc(u.root, v as never) as any).error, undefined);
+  } finally { u.cleanup(); }
+});

@@ -431,7 +431,7 @@ const tools: Tool[] = [
   },
   {
     name: "ack_hole",
-    description: "Acknowledge a hole: the code a doc cited was removed ON THIS BRANCH and that's correct → tombstone the doc here (it disappears from this branch's map, but its content version still wins on branches where the code exists). Only valid when the doc is `dangling`. This is the branch-scoped 'delete' (vs delete_node which removes it everywhere).",
+    description: "Acknowledge a hole: the code a doc cited was removed ON THIS BRANCH and that's correct → tombstone the doc here (it disappears from this branch's map, but its content version still wins on branches where the code exists). Only valid when the doc is `dangling`. This is the branch-scoped 'delete' (vs delete_node which removes it everywhere).\n\nA doc reading `unverifiable` is REFUSED and queued instead. Its citations were minted by a build whose anchor derivation this one cannot reproduce, so nobody here can establish that the code is gone — and hiding a doc whose subject may be sitting right there is the direction with no recovery. The reply carries `queued`, the id of a question filed on the node with the ids, the commit they were written at and the derivation that minted them. Work that out and re-cite the doc; if the subject really is gone, say so and leave the retiring to a person.",
     inputSchema: obj({ id: { type: "string" } }, ["id"]),
     mutates: true,
     handler: (a, c) => ops.ackHole(c.universe.path, a.id),
