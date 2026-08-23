@@ -194,9 +194,12 @@ export async function findGaps(
   // work queue that predates it.
   const shared = await import("../ops-shared.js").catch(() => null);
   const candidates = shared ? await shared.sharedDocCandidates(root, open.map((a) => a.id)).catch(() => null) : null;
-  const theirs = candidates?.length ? await shared!.sharedDocsCiting(root, candidates).catch(() => null) : null;
+  const theirs = candidates?.ids.length ? await shared!.sharedDocsCiting(root, candidates.ids).catch(() => null) : null;
+  // A blocked doc scope may SHOW what the team wrote and may not decide there is no
+  // work here — so a gap it would have removed stays in the queue. See §7.
+  const trusted = theirs?.status === "blocked" || candidates?.status === "blocked" ? [] : theirs?.docs ?? [];
   const byAnchor = new Map<string, { nodeId: string; title: string; by?: string; status: string }[]>();
-  for (const d of theirs ?? []) {
+  for (const d of trusted) {
     for (const id of d.covers) (byAnchor.get(id) ?? byAnchor.set(id, []).get(id)!).push(
       { nodeId: d.nodeId, title: d.title, by: d.by, status: d.status });
   }

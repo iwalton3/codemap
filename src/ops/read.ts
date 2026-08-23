@@ -316,7 +316,10 @@ export async function getAnchor(root: string, id: string) {
     // Separate from `citedBy` rather than merged: one is this machine's store and
     // the other is the sidecar's, and merging them makes "who says so"
     // unanswerable from the reply.
-    ...(sharedCites?.length ? { sharedDocs: sharedCites } : {}),
+    ...(sharedCites?.docs.length ? { sharedDocs: sharedCites.docs } : {}),
+    // A read, not a decision: `getAnchor` shows the team's docs and suppresses
+    // nothing, so a blocked scope is reported rather than emptied. See §7.
+    ...(sharedCites?.status === "blocked" ? { sharedScope: { status: "blocked" as const, diagnostic: sharedCites.diagnostic } } : {}),
     bugs: bugStore.bugs.filter((b) => b.anchors.includes(id)).map((b) => ({ id: b.id, title: b.title, status: b.status })),
     annotations: annStore.annotations.filter((a) => a.target.kind === "anchor" && a.target.id === id),
     lang: langFor(anchor.file),

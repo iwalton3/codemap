@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -348,16 +348,17 @@ test("a teammate's doc is visible on the anchor it describes", async () => {
     } as never);
 
     const hit = await shared.sharedDocsCiting(u.root, [transfer.id]);
-    assert.equal(hit!.length, 1);
-    assert.equal(hit![0]!.nodeId, "n_transfer");
-    assert.equal(hit![0]!.by, "dana@x.com", "and who on the team said it");
-    assert.equal(hit![0]!.status, "fresh", "the verdict is evalVersion's, not a fourth re-derivation");
-    assert.deepEqual(hit![0]!.covers, [transfer.id]);
+    assert.equal(hit!.docs.length, 1);
+    assert.equal(hit!.status, "complete", "and the scope it came from is answerable");
+    assert.equal(hit!.docs[0]!.nodeId, "n_transfer");
+    assert.equal(hit!.docs[0]!.by, "dana@x.com", "and who on the team said it");
+    assert.equal(hit!.docs[0]!.status, "fresh", "the verdict is evalVersion's, not a fourth re-derivation");
+    assert.deepEqual(hit!.docs[0]!.covers, [transfer.id]);
 
     // The control: the reverse lookup must select, not just return everything.
-    assert.deepEqual(await shared.sharedDocsCiting(u.root, [post.id]), [],
+    assert.deepEqual((await shared.sharedDocsCiting(u.root, [post.id]))!.docs, [],
       "a doc that cites another symbol is not this symbol's documentation");
-    assert.deepEqual(await shared.sharedDocsCiting(u.root, []), []);
+    assert.deepEqual((await shared.sharedDocsCiting(u.root, []))!.docs, []);
 
     const a = await getAnchor(u.root, transfer.id) as any;
     assert.equal(a.sharedDocs.length, 1);
@@ -486,8 +487,27 @@ test("a symbol a teammate documented is not offered as a gap", async () => {
     assert.equal(after.documentedByTeam.anchors[0].anchorId, transfer.id);
     assert.equal(after.documentedByTeam.anchors[0].docs[0].title, "How a transfer settles");
     assert.equal(after.documentedByTeam.anchors[0].docs[0].by, "dana@x.com", "with who to go and read");
+
+    // And now fork that scope. A blocked scope may SHOW what the team wrote and may
+    // not decide there is no work here — suppressing a gap is an authoritative act,
+    // which is exactly what §7 says a blocked scope may not perform.
+    forkDocScope(cfg.path, cfg.universe);
+    const forked = await findGaps(u.root) as any;
+    assert.equal(forked.openCount, 2, "the gap the team's doc had removed is back");
+    assert.equal(forked.documentedByTeam, undefined);
   } finally { u.cleanup(); }
 });
+
+/** Fork the doc scope's chain in place: a second event of one writer at GENESIS. */
+function forkDocScope(sidecar: string, universe: string): void {
+  const dir = join(sidecar, "docs", universe);
+  const name = readdirSync(dir).find((n) => n.endsWith(".ndjson"))!;
+  appendFileSync(join(dir, name), JSON.stringify({
+    id: "9999999999-ffffffffff", kind: "doc.published", subject: "n_other",
+    actor: { principal: "dana@x.com" }, at: "2026-08-23T00:00:00Z",
+    writer: name.replace(/\.ndjson$/, ""), writerPrev: "GENESIS",
+  }) + "\n");
+}
 
 test("with no sidecar the work queue is exactly what it always was", async () => {
   const u = universe(false);

@@ -13,7 +13,7 @@ import { comparableHashes, sameBody } from "./normalize.js";
 import { realpathSync } from "node:fs";
 import { classifyCitations } from "./citation-state.js";
 import { evalVersion } from "./doc-version.js";
-import { readCached, ensureMaterialized, scopeVerdict } from "./materialize.js";
+import { readCached, ensureMaterialized } from "./materialize.js";
 import type { ScopeStatus, ScopeDiagnostic } from "./eventlog.js";
 import { findingsProjection, docsProjection, notesProjection, docsCiting, docsByNode, sharedCitedAnchors } from "./shared-projections.js";
 import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
@@ -593,26 +593,34 @@ export async function sharedDocs(root: string, opts: { nodeId?: string } = {}) {
  * `null`, not an error, with no sidecar: every caller is a local read that worked
  * before shared docs existed and must keep working.
  */
-export async function sharedDocsCiting(root: string, anchorIds: string[]) {
+/** One shared doc that claims some of the anchors asked about. */
+export interface DocCitingHit {
+  nodeId: string; versionId: string; title: string; summary?: string;
+  type: string; removed: boolean; by?: string; status: string; covers: string[];
+}
+
+export async function sharedDocsCiting(
+  root: string, anchorIds: string[],
+): Promise<({ docs: DocCitingHit[] } & ScopeStatus) | null> {
   const cfg = resolveSidecar(root);
   if (!cfg) return null;
   const ids = [...new Set(anchorIds)];
-  if (!ids.length) return [];
+  if (!ids.length) return { docs: [], status: "complete" as const };
   const scope = docScope(cfg.universe);
 
   // The rows are a projection. Querying one that is behind gives a confident answer
   // from the wrong input set, so a scope that will not converge falls back to the
   // fold rather than under-reporting what the team has written.
-  const fresh = await ensureMaterialized(root, cfg.path, scope, sidecarIdentity(cfg), foldDocs, docsProjection);
+  const { fresh, ...status } = await ensureMaterialized(root, cfg.path, scope, sidecarIdentity(cfg), foldDocs, docsProjection);
   const docs = fresh
     ? docsByNode(root, scope, docsCiting(root, scope, ids))
     : new Map([...(await cachedDocs(root, cfg)).value].filter(([, d]) =>
       d.versions.some((v) => v.citations.some((c) => ids.includes(c.anchorId)))));
-  if (!docs.size) return [];
+  if (!docs.size) return { docs: [] as DocCitingHit[], ...status };
 
   const cited = [...new Set([...docs.values()].flatMap((d) => d.versions.flatMap((v) => v.citations.map((c) => c.anchorId))))];
   const live = await liveHashes(root, cited);
-  const out = [];
+  const out: DocCitingHit[] = [];
   for (const doc of docs.values()) {
     const v = resolveDoc(doc, live);
     if (!v) continue;
@@ -629,7 +637,7 @@ export async function sharedDocsCiting(root: string, anchorIds: string[]) {
       covers,
     });
   }
-  return out;
+  return { docs: out, ...status };
 }
 
 /**
@@ -641,17 +649,19 @@ export async function sharedDocsCiting(root: string, anchorIds: string[]) {
  * set to resolve properly. Candidates, not an answer: the citation rows cover EVERY
  * version, and only the winning one's citations are a claim about this checkout.
  */
-export async function sharedDocCandidates(root: string, anchorIds: Iterable<string>): Promise<string[] | null> {
+export async function sharedDocCandidates(
+  root: string, anchorIds: Iterable<string>,
+): Promise<({ ids: string[] } & ScopeStatus) | null> {
   const cfg = resolveSidecar(root);
   if (!cfg) return null;
   const scope = docScope(cfg.universe);
-  const fresh = await ensureMaterialized(root, cfg.path, scope, sidecarIdentity(cfg), foldDocs, docsProjection);
+  const { fresh, ...status } = await ensureMaterialized(root, cfg.path, scope, sidecarIdentity(cfg), foldDocs, docsProjection);
   const cited = fresh
     ? sharedCitedAnchors(root, scope)
     : new Set([...(await cachedDocs(root, cfg)).value.values()].flatMap((d) => d.versions.flatMap((v) => v.citations.map((c) => c.anchorId))));
-  const out: string[] = [];
-  for (const id of anchorIds) if (cited.has(id)) out.push(id);
-  return out;
+  const ids: string[] = [];
+  for (const id of anchorIds) if (cited.has(id)) ids.push(id);
+  return { ids, ...status };
 }
 
 /**
@@ -676,19 +686,23 @@ const PREFILTER_ABOVE = 200;
  */
 export async function sharedCoverage(root: string, anchorIds: Iterable<string>) {
   const ids = [...new Set(anchorIds)];
-  const ask = ids.length > PREFILTER_ABOVE ? await sharedDocCandidates(root, ids) : ids;
-  if (ask === null) return null;                       // no sidecar
-  const docs = ask.length ? await sharedDocsCiting(root, ask) : [];
-  if (docs === null) return null;
-  // Both calls above take the QUERY path, so no `Cached` envelope came back with a
-  // verdict on it — and this is the surface where a silent one does the most
-  // damage: coverage DROPS gaps, so a blocked scope quietly talks an agent out of
-  // documenting code. Read the verdict those calls just stored.
-  const cfg = resolveSidecar(root);
-  const verdict = cfg
-    ? await scopeVerdict(root, cfg.path, docScope(cfg.universe), sidecarIdentity(cfg))
-    : null;
-  return { docs, covered: new Set(docs.flatMap((d) => d.covers)), scope: nonAuthoritative(verdict ?? { status: "complete" }) };
+  const pre = ids.length > PREFILTER_ABOVE ? await sharedDocCandidates(root, ids) : null;
+  if (pre === null && ids.length > PREFILTER_ABOVE) return null;   // no sidecar
+  const ask = pre ? pre.ids : ids;
+  const hit = ask.length ? await sharedDocsCiting(root, ask) : { docs: [], status: "complete" as const };
+  if (hit === null) return null;                                   // no sidecar
+  // The verdict rides with the answer rather than being looked up afterwards. This
+  // is the surface where a lost one costs most: coverage DROPS gaps, so a blocked
+  // scope quietly talks an agent out of documenting code — and a second lookup can
+  // answer "unknown", which §7 does not let anyone round to "fine".
+  const blocked = hit.status === "blocked" ? hit : pre?.status === "blocked" ? pre : undefined;
+  return {
+    docs: hit.docs,
+    // A blocked scope may show what the team wrote and may NOT decide there is no
+    // work here. `covered` is the suppressing half, so it goes empty.
+    covered: new Set(blocked ? [] : hit.docs.flatMap((d) => d.covers)),
+    scope: blocked ? nonAuthoritative(blocked) : undefined,
+  };
 }
 
 /** Why this doc version cannot be published, or null. Shape only — ids are checked live. */

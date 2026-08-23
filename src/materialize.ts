@@ -174,26 +174,6 @@ export async function readCached<T>(
 }
 
 /**
- * The stored verdict for a scope somebody else has just materialized.
- *
- * For a caller that took the QUERY path — `ensureMaterialized` then SQL — and so
- * never held the `Cached` envelope the status normally rides in.
- *
- * `null` when the stored row does not describe the shards on disk right now. That
- * is the whole reason this re-fingerprints rather than reading the row: a verdict
- * is about an input set, and one that has moved says nothing about the answer the
- * caller is holding. Unknown is reported as unknown.
- */
-export async function scopeVerdict(
-  root: string, logRoot: string, scope: string, identity: string,
-): Promise<ScopeStatus | null> {
-  const row = db(root).prepare("SELECT fingerprint, status, diagnostic FROM shared_scope WHERE scope = ?").get(scope) as
-    { fingerprint: string; status: string; diagnostic: string | null } | undefined;
-  if (!row) return null;
-  return row.fingerprint === await scopeFingerprint(logRoot, scope, identity) ? storedStatus(row) : null;
-}
-
-/**
  * The stored verdict, read back.
  *
  * A row whose `diagnostic` will not parse is treated as blocked WITHOUT one rather
@@ -201,7 +181,10 @@ export async function scopeVerdict(
  * the damage is to the explanation, not to the judgement.
  */
 function storedStatus(row: { status: string; diagnostic: string | null }): ScopeStatus {
-  if (row.status !== "blocked") return { status: "complete" };
+  // Only the exact string is complete. A value this build does not recognise is a
+  // row some other version wrote, and §7 is a fail-CLOSED rule: reading an unknown
+  // verdict as "fine" is the one interpretation the rule forbids.
+  if (row.status === "complete") return { status: "complete" };
   try {
     return row.diagnostic ? { status: "blocked", diagnostic: JSON.parse(row.diagnostic) } : { status: "blocked" };
   } catch { return { status: "blocked" }; }
@@ -222,16 +205,23 @@ export async function ensureMaterialized<T>(
   identity: string,
   fold: (events: LogEvent[]) => T,
   proj: Projection<T>,
-): Promise<boolean> {
-  const current = async () => {
+): Promise<{ fresh: boolean } & ScopeStatus> {
+  /** The stored verdict, or null if the row does not describe the shards on disk. */
+  const current = async (): Promise<ScopeStatus | null> => {
     const before = await scopeFingerprint(logRoot, scope, identity);
-    const row = db(root).prepare("SELECT fingerprint FROM shared_scope WHERE scope = ?").get(scope) as
-      { fingerprint: string } | undefined;
-    return row?.fingerprint === before;
+    const row = db(root).prepare("SELECT fingerprint, status, diagnostic FROM shared_scope WHERE scope = ?").get(scope) as
+      { fingerprint: string; status: string; diagnostic: string | null } | undefined;
+    return row?.fingerprint === before ? storedStatus(row) : null;
   };
-  if (await current()) return true;
-  await readCached(root, logRoot, scope, identity, fold, proj);
+  const hit = await current();
+  if (hit) return { fresh: true, ...hit };
+  // The status comes back even when the rows do not: `readCached` folds the log
+  // directly on its give-up path, and that fold saw the scope. Returning
+  // `fresh: false` with no verdict would make a blocked scope indistinguishable
+  // from a healthy one exactly when the caller is about to query rows anyway.
+  const { value: _rows, ...status } = await readCached(root, logRoot, scope, identity, fold, proj);
   // Asked again rather than assumed: `readCached` gives up after three attempts and
   // answers from the log, and its return value cannot tell you which happened.
-  return current();
+  const after = await current();
+  return after ? { fresh: true, ...after } : { fresh: false, ...status };
 }
