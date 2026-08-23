@@ -26,8 +26,17 @@ import { readFindings, type SharedFinding } from "./shared-findings.js";
 import { readScope, type LogEvent } from "./eventlog.js";
 import { findingScope } from "./shared-findings.js";
 
+/**
+ * Setup-only git. **No `-c user.email=…` injection**, deliberately.
+ *
+ * It used to pass an identity on every call, which masked R1 for the whole suite:
+ * a sidecar with no usable committer identity is the condition under which commits
+ * fail and `sync` used to report `pushed: true` anyway. `ensureSidecar` configures
+ * the sidecar's own identity now, so a scenario exercises the real path — and a test
+ * that wants the broken condition can unset it.
+ */
 const git = (root: string, ...args: string[]) =>
-  spawnSync(gitBin(), ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd: root, encoding: "utf8" });
+  spawnSync(gitBin(), args, { cwd: root, encoding: "utf8" });
 
 export interface Person {
   actor: Actor;
@@ -63,8 +72,6 @@ export async function scenario(principals: string[]): Promise<Scenario> {
     const sidecar = mk(principal.replace(/[^a-z0-9]/gi, ""));
     const actor: Actor = { principal };
     await ensureSidecar(sidecar, actor);
-    git(sidecar, "config", "user.email", principal);
-    git(sidecar, "config", "user.name", principal);
     git(sidecar, "remote", "add", "origin", origin);
     const p = { actor, sidecar };
     people.set(principal, p);

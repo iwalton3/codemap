@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile, mkdir, readFile, rm } from "node:fs/promises";
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { withLock } from "./lock.js";
+import { withLock, touchHeldLocks, SIDECAR_LOCK_STALE_MS } from "./lock.js";
+import { GIT_CALL_TIMEOUT_MS } from "./sidecar.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -70,4 +71,66 @@ test("a holder that outlives staleMs is not stolen from, and never deletes anoth
     assert.deepEqual(inside, ["A-in", "A-out", "B-in"], "B waits for A rather than running beside it");
     assert.equal(existsSync(join(root, ".codemap", ".lock")), false, "and the lock is released at the end");
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the sidecar's stale window outlasts one git call", () => {
+  // Not a tautology, and not a style rule. `staleMs` narrower than a single git call
+  // means a slow fetch is stolen from mid-merge no matter what the heartbeat does,
+  // because nothing at all runs while `spawnSync` blocks. These two numbers live in
+  // different files and drifted apart once already — 60s against a 180s timeout.
+  assert.ok(
+    SIDECAR_LOCK_STALE_MS > GIT_CALL_TIMEOUT_MS,
+    `the sidecar lock goes stale in ${SIDECAR_LOCK_STALE_MS}ms but one git call may block for ${GIT_CALL_TIMEOUT_MS}ms`,
+  );
+});
+
+test("a held lock can be refreshed from inside a synchronous block", async () => {
+  // The heartbeat is a `setInterval`, and git is `spawnSync`. A run of git calls
+  // never turns the event loop, so the timer cannot fire — not during a call and not
+  // between two of them. `touchHeldLocks` is the only thing that executes in that
+  // window, which is why it is synchronous.
+  const root = mkdtempSync(join(tmpdir(), "codemap-lock-"));
+  try {
+    const lockFile = join(root, ".codemap", ".lock");
+    // `readFileSync`, and nothing awaited between the reads. An `await` here turns
+    // the event loop, and a timer whose deadline passed during the block fires the
+    // instant it does — so an async read measures the catch-up rather than the
+    // window, and the control below passes for the wrong reason. (It did.)
+    const stampedAt = () => JSON.parse(readFileSync(lockFile, "utf8")).at as number;
+    // Busy-wait, NOT `sleep`: sleeping yields, and yielding is precisely what a
+    // blocking subprocess does not do. This reproduces the real window.
+    const block = (ms: number) => { const until = Date.now() + ms; while (Date.now() < until) { /* spin */ } };
+
+    await withLock(root, async () => {
+      const before = stampedAt();
+
+      // CONTROL: the timer is genuinely dead across a synchronous block. Without
+      // this, the assertion below would pass just as well if the heartbeat worked
+      // and `touchHeldLocks` did nothing at all.
+      block(150);
+      assert.equal(stampedAt(), before, "no timer fires while the event loop is blocked");
+
+      touchHeldLocks();
+      assert.ok(stampedAt() > before, "touchHeldLocks refreshed the lock from inside the block");
+    }, { staleMs: 100 });
+
+    assert.equal(existsSync(lockFile), false, "and the lock is still released normally");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a released lock is no longer refreshed", async () => {
+  // The held-lock registry must not leak: a stamp after release would rewrite a lock
+  // that now belongs to somebody else, which is the failure the token check exists
+  // to prevent on the delete side.
+  const root = mkdtempSync(join(tmpdir(), "codemap-lock-"));
+  try {
+    const lockFile = join(root, ".codemap", ".lock");
+    await withLock(root, async () => { assert.ok(existsSync(lockFile)); });
+    touchHeldLocks();
+    assert.equal(existsSync(lockFile), false, "touchHeldLocks did not resurrect a released lock");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

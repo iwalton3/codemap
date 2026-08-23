@@ -11,8 +11,8 @@
  * (older than staleMs) — so a crashed writer never wedges the map. Zero deps.
  */
 
-import { open, readFile, writeFile, rm, rename, mkdir, stat } from "node:fs/promises";
-import { realpathSync } from "node:fs";
+import { open, readFile, rm, rename, mkdir, stat } from "node:fs/promises";
+import { realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
 import { join, dirname } from "node:path";
@@ -37,6 +37,43 @@ export function withLockAt<T>(lockFile: string, label: string, fn: () => Promise
 }
 
 export interface LockOpts { timeoutMs?: number; staleMs?: number }
+
+/**
+ * The sidecar lock's stale window, which MUST exceed the longest a single git call
+ * can block — see `GIT_CALL_TIMEOUT_MS` in `sidecar.ts`, and `lock.test.ts`, which
+ * fails if the two ever cross.
+ *
+ * A crashed holder does not wait this out: `pidAlive` steals from a dead pid
+ * immediately, and the lock is machine-local (outside the sidecar, keyed on its
+ * realpath) so that check is meaningful. The window only governs a holder that is
+ * alive and slow, plus the rare live-pid-reuse case.
+ */
+export const SIDECAR_LOCK_STALE_MS = 240_000;
+
+/**
+ * Locks this process holds right now, so a blocking subprocess can refresh them.
+ *
+ * @see touchHeldLocks
+ */
+const heldLocks = new Map<string, string>();
+
+/**
+ * Refresh every lock this process holds. **Synchronous on purpose.**
+ *
+ * The heartbeat below is a `setInterval`, and git is `spawnSync` — so no timer can
+ * fire while a git call is running, and none fires *between* consecutive git calls
+ * either, because a run of `spawnSync`s never turns the event loop. A sync wrapper
+ * that stamps here is the only thing that executes in that window; an async write
+ * would merely queue behind the block it is meant to survive.
+ *
+ * Callers are subprocess wrappers, not ordinary code. Failure is ignored: a lock we
+ * could not refresh is exactly the lock a stale check should be allowed to steal.
+ */
+export function touchHeldLocks(): void {
+  for (const [p, token] of heldLocks) {
+    try { writeFileSync(p, JSON.stringify({ pid: process.pid, at: Date.now(), token })); } catch { /* see above */ }
+  }
+}
 
 function pidAlive(pid: number): boolean {
   if (!pid || pid === process.pid) return true; // ours / unknown — don't steal
@@ -98,18 +135,23 @@ async function hold<T>(p: string, label: string, fn: () => Promise<T>, opts: Loc
     // `gh` call per viewed file at a 120s timeout each, and a first `/api/pr` on a
     // large repo holds this across a fetch and two full-tree indexes.
     const token = randomBytes(8).toString("hex");
-    const stamp = () => writeFile(p, JSON.stringify({ pid: process.pid, at: Date.now(), token }));
     try {
       await fh.writeFile(JSON.stringify({ pid: process.pid, at: Date.now(), token }));
       await fh.close();
+      heldLocks.set(p, token);
       // Well inside `staleMs`, whatever it is set to — a floor that exceeded it would
       // leave the heartbeat useless exactly where the window is tightest.
-      const beat = setInterval(() => { void stamp().catch(() => {}); }, Math.max(50, Math.floor(staleMs / 3)));
+      //
+      // This timer covers long work that yields. It CANNOT cover a run of `spawnSync`
+      // git calls, which is why `touchHeldLocks` exists and why the sidecar's stale
+      // window is wider than one git call.
+      const beat = setInterval(touchHeldLocks, Math.max(50, Math.floor(staleMs / 3)));
       beat.unref?.();
       try {
         return await fn();
       } finally {
         clearInterval(beat);
+        heldLocks.delete(p);
       }
     } finally {
       // Only ever remove OUR lock. If it was stolen while we ran, the file now
@@ -151,5 +193,5 @@ export function withSidecarLock<T>(root: string, fn: () => Promise<T>): Promise<
   let real = root;
   try { real = realpathSync(root); } catch { /* not created yet — the given path is all there is */ }
   const key = createHash("sha256").update(real).digest("hex").slice(0, 16);
-  return withLockAt(join(tmpdir(), `codemap-sidecar-${key}.lock`), root, fn);
+  return withLockAt(join(tmpdir(), `codemap-sidecar-${key}.lock`), root, fn, { staleMs: SIDECAR_LOCK_STALE_MS });
 }

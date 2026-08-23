@@ -26,7 +26,7 @@ import { join } from "node:path";
 import { ANCHOR_SCHEME, HASH_SCHEME } from "./schema.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { gitBin } from "./git.js";
-import { withSidecarLock } from "./lock.js";
+import { withSidecarLock, touchHeldLocks } from "./lock.js";
 import { SHARD_EXT, principalKey } from "./eventlog.js";
 import type { Actor } from "./schema.js";
 
@@ -40,8 +40,26 @@ function samePath(a: string, b: string): boolean {
   try { return realpathSync(a) === realpathSync(b); } catch { return a === b; }
 }
 
+/**
+ * The longest a single git call can block. The sidecar lock's stale window is set
+ * wider than this on purpose; `lock.test.ts` fails if they ever cross.
+ */
+export const GIT_CALL_TIMEOUT_MS = 180_000;
+
+/**
+ * Every git call goes through here, and every git call refreshes the sidecar lock.
+ *
+ * `spawnSync` blocks the event loop, so the lock's `setInterval` heartbeat cannot
+ * fire during a call — and a run of consecutive calls never turns the loop either,
+ * so it cannot fire between them. Stamping here is what keeps a legitimately-slow
+ * holder from being stolen from mid-merge. Before AND after: before, so the clock
+ * starts fresh against the block about to happen; after, so a long call is not
+ * followed by an unrefreshed gap.
+ */
 const g = (root: string, args: string[]) => {
-  const r = spawnSync(gitBin(), args, { cwd: root, encoding: "utf8", maxBuffer: 1 << 28, timeout: 180_000 });
+  touchHeldLocks();
+  const r = spawnSync(gitBin(), args, { cwd: root, encoding: "utf8", maxBuffer: 1 << 28, timeout: GIT_CALL_TIMEOUT_MS });
+  touchHeldLocks();
   return { ok: r.status === 0, out: (r.stdout ?? "").trim(), err: (r.stderr ?? "").trim() };
 };
 
@@ -57,17 +75,29 @@ const g = (root: string, args: string[]) => {
 const branchOf = (root: string): string => g(root, ["symbolic-ref", "--short", "HEAD"]).out || "main";
 
 /**
- * Commit whatever is in the tree. Returns false when there was nothing to commit.
+ * Commit whatever is in the tree.
  *
  * Called BEFORE a merge as well as before a push: a fresh sidecar's scaffold
  * (.gitattributes, the manifest) is untracked, and git refuses a merge that would
  * overwrite untracked files — so a new person's first pull failed on the files
  * their own setup had just written.
+ *
+ * **Three outcomes, not two.** This returned a bare boolean that was `false` both
+ * for "nothing to commit" and for "the commit failed", so no caller could tell a
+ * clean no-op from a lost finding — and both call sites dropped it anyway. With a
+ * failing commit the shards stay staged, the merge still succeeds, and the push is
+ * a no-op that exits 0, so `sync` reported `pushed: true` while nothing left the
+ * machine. Reproduced with `commit.gpgsign=true` and an unusable key, which is an
+ * ordinary global git config. See the architecture doc's R1.
  */
-function commitLocal(root: string, message: string): boolean {
-  if (!g(root, ["status", "--porcelain"]).out) return false;
+type CommitOutcome = "nothing" | "committed" | { error: string };
+
+function commitLocal(root: string, message: string): CommitOutcome {
+  if (!g(root, ["status", "--porcelain"]).out) return "nothing";
   g(root, ["add", "-A"]);
-  return g(root, ["commit", "-q", "-m", message]).ok;
+  const c = g(root, ["commit", "-q", "-m", message]);
+  if (!c.ok) return { error: `the sidecar commit failed, so nothing can be pushed: ${(c.err || c.out).slice(0, 300)}` };
+  return "committed";
 }
 
 /**
@@ -163,6 +193,20 @@ export function checkPeers(all: SidecarManifest[], mine: SidecarManifest): Incom
 }
 
 /**
+ * Is this sidecar's committer config already what we would write?
+ *
+ * A fast path only — reading the file rather than asking git, because `ensureSidecar`
+ * runs on every sync and three `git config` spawns there cost the test suite ~19%.
+ * Being wrong is cheap in the safe direction: a false negative just writes the same
+ * values again, and the write is idempotent. Never treat this as the source of truth.
+ */
+async function gitConfigLooksSet(root: string, identity: string): Promise<boolean> {
+  const cfg = await readFile(join(root, ".git", "config"), "utf8").catch(() => "");
+  return new RegExp(`^\\s*email\\s*=\\s*${identity.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "m").test(cfg)
+    && /^\s*gpgsign\s*=\s*false\s*$/m.test(cfg);
+}
+
+/**
  * Make `root` a usable sidecar: a git repo, with the union merge driver in place
  * and a manifest.
  *
@@ -193,6 +237,19 @@ export async function ensureSidecar(root: string, actor?: Actor): Promise<{ crea
     if (!after.ok || !samePath(after.out, root)) {
       return { error: `the sidecar at ${root} is not its own git repository — it resolves to ${after.out || "no repository"}. Refusing to use it: every write would land in that repository instead.` };
     }
+  }
+  // The sidecar is a machine artifact, not authored history, so it carries its own
+  // committer identity and signs nothing. Without this it inherits the user's global
+  // config — and a `commit.gpgsign=true` with a key git cannot use makes every commit
+  // fail, which is one half of R1. Local config, so nothing about the user's own
+  // repositories changes. Checked on every ensure rather than only on `init`, because
+  // a sidecar cloned from a teammate never goes through `init` and would otherwise
+  // never be configured at all — which is precisely the clone R1 bites.
+  const identity = actor?.principal?.trim() || "codemap@localhost";
+  if (!(await gitConfigLooksSet(root, identity))) {
+    g(root, ["config", "user.email", identity]);
+    g(root, ["config", "user.name", "codemap"]);
+    g(root, ["config", "commit.gpgsign", "false"]);
   }
   // Written by everyone, identically, so it never conflicts.
   await writeFile(join(root, ATTRIBUTES), `*${SHARD_EXT} merge=union\n`, "utf8");
@@ -287,7 +344,24 @@ function remoteManifests(root: string, branch: string): SidecarManifest[] {
   return out;
 }
 
-export interface PushResult { pushed: boolean; retries: number }
+export interface PushResult { pushed: boolean; committed: boolean; retries: number }
+
+/**
+ * Did the remote branch actually take our tip?
+ *
+ * `git push` exiting 0 does not mean it did. A push of a tip the remote already has
+ * is a successful no-op, which is exactly what a sync whose commit failed performs —
+ * so the exit code cannot tell "I sent my findings" from "I sent nothing". Push
+ * updates the remote-tracking ref on success, so this costs no network.
+ *
+ * Note what this does NOT catch: a commit that never happened leaves HEAD at an old
+ * commit the remote does have, and this passes. That is why the commit failure is
+ * raised at its source rather than inferred here. The two checks cover different
+ * lies and both are needed.
+ */
+function remoteHasHead(root: string, branch: string): boolean {
+  return g(root, ["merge-base", "--is-ancestor", "HEAD", `refs/remotes/origin/${branch}`]).ok;
+}
 
 /**
  * Commit whatever is on disk and push it, pulling and retrying on rejection.
@@ -298,20 +372,27 @@ export interface PushResult { pushed: boolean; retries: number }
  */
 export async function push(root: string, message: string, opts: { attempts?: number; actor?: Actor } = {}): Promise<PushResult | { error: string }> {
   const attempts = opts.attempts ?? 3;
-  commitLocal(root, message);
-  if (!g(root, ["remote"]).out) return { pushed: false, retries: 0 };
+  const commit = commitLocal(root, message);
+  if (typeof commit === "object") return commit;
+  const committed = commit === "committed";
+  if (!g(root, ["remote"]).out) return { pushed: false, committed, retries: 0 };
 
   const branch = branchOf(root);
   for (let i = 0; i < attempts; i++) {
     const p = g(root, ["push", "--quiet", "origin", `HEAD:${branch}`]);
-    if (p.ok) return { pushed: true, retries: i };
+    if (p.ok) {
+      if (!remoteHasHead(root, branch)) {
+        return { error: `git push reported success but origin/${branch} does not contain this commit — nothing was sent. The sidecar is intact; retry, and check the remote's refusal (a hook, or a protected branch).` };
+      }
+      return { pushed: true, committed, retries: i };
+    }
     const pulled = await pull(root, opts.actor);
     if ("error" in pulled) return { error: `push rejected and the follow-up pull failed: ${pulled.error}` };
   }
   return { error: `push still rejected after ${attempts} attempts — someone is pushing continuously, or the remote refuses this branch` };
 }
 
-export interface SyncResult { gained: number; pushed: boolean; retries: number; warning?: string }
+export interface SyncResult { gained: number; pushed: boolean; committed: boolean; retries: number; warning?: string }
 
 /** Send and receive, in the order that makes the publish guard trustworthy. */
 export async function sync(root: string, actor?: Actor, message = "codemap: review state"): Promise<SyncResult | { error: string }> {
@@ -331,10 +412,17 @@ async function syncHeld(root: string, actor?: Actor, message = "codemap: review 
   // Commit BEFORE pulling: the scaffold ensureSidecar just wrote is untracked, and
   // git refuses a merge that would overwrite untracked files — so without this the
   // first pull a new person ever runs fails on their own setup's files.
-  commitLocal(root, message);
+  const pre = commitLocal(root, message);
+  if (typeof pre === "object") return pre;
   const pulled = await pull(root, actor);
   if ("error" in pulled) return pulled;
   const pushed = await push(root, message, { actor });
   if ("error" in pushed) return pushed;
-  return { gained: pulled.gained, pushed: pushed.pushed, retries: pushed.retries, ...(pulled.warning ? { warning: pulled.warning } : {}) };
+  return {
+    gained: pulled.gained,
+    pushed: pushed.pushed,
+    committed: pre === "committed" || pushed.committed,
+    retries: pushed.retries,
+    ...(pulled.warning ? { warning: pulled.warning } : {}),
+  };
 }

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -24,13 +24,18 @@ async function team() {
   git(origin, "init", "-q", "--bare", "-b", "main");
   const a = tmp("a"), b = tmp("b");
   for (const [r, who] of [[a, izzie], [b, dana]] as const) {
+    // No `git config user.email` here on purpose: `ensureSidecar` configures the
+    // sidecar's own identity, and setting it in the harness masked R1 for years.
     await ensureSidecar(r, who);
-    git(r, "config", "user.email", "t@t");
-    git(r, "config", "user.name", "t");
     git(r, "remote", "add", "origin", origin);
   }
   return { origin, a, b, cleanup: () => [origin, a, b].forEach((r) => rmSync(r, { recursive: true, force: true })) };
 }
+
+/** Every file the team's remote actually holds. */
+const onRemote = (origin: string): string[] =>
+  spawnSync("git", ["ls-tree", "-r", "--name-only", "main"], { cwd: origin, encoding: "utf8" })
+    .stdout.split("\n").map((l) => l.trim()).filter(Boolean);
 
 const NEW = { targetKind: "anchor" as const, targetId: "a_1", text: "evidence", comment: "the ask" };
 
@@ -313,4 +318,76 @@ test("two different sidecars do not block each other", async () => {
     await Promise.all([hold(t.a), hold(other)]);
     assert.equal(both, true, "they overlapped — the lock is per sidecar, not global");
   } finally { t.cleanup(); rmSync(other, { recursive: true, force: true }); }
+});
+
+// --- R1: a sync that loses a finding is worse than no sync at all ----------------
+
+test("a sidecar configures its own committer identity and signs nothing", async () => {
+  // Half of R1 at the source. A sidecar is a machine artifact, so it must not
+  // inherit a global `commit.gpgsign=true` whose key git cannot use — that made
+  // every commit fail while sync went on reporting success.
+  const root = tmp("ident");
+  try {
+    await ensureSidecar(root, izzie);
+    // `--local` specifically: reading the effective value would pass on an inherited
+    // global and prove nothing about what this code wrote.
+    const local = (k: string) => git(root, "config", "--local", "--get", k).stdout.trim();
+    assert.equal(local("commit.gpgsign"), "false", "signing is off in the sidecar's own config");
+    assert.equal(local("user.email"), izzie.principal, "and it commits as the person who owns it");
+    assert.ok(local("user.name"), "with a name, which git also demands");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a commit that cannot succeed fails the sync instead of reporting a push", async () => {
+  // R1, reproduced. When the commit fails the shards stay staged, the merge still
+  // succeeds, and `git push HEAD:branch` pushes a tip the remote already has — which
+  // exits 0. So sync returned `pushed: true` and the finding never left the machine,
+  // and every later sync repeated it.
+  //
+  // A failing pre-commit hook stands in for the original trigger (an unusable signing
+  // key) because `ensureSidecar` now repairs the signing config on every sync — which
+  // is the source fix working, and would quietly undo the sabotage.
+  const t = await team();
+  try {
+    const hooks = join(t.a, "..", "hooks-" + process.pid);
+    mkdirSync(hooks, { recursive: true });
+    writeFileSync(join(hooks, "pre-commit"), "#!/bin/sh\nexit 1\n");
+    chmodSync(join(hooks, "pre-commit"), 0o755);
+    git(t.a, "config", "core.hooksPath", hooks);
+
+    await createFinding(t.a, "pr-1", izzie, NEW);
+    const r = await sync(t.a, izzie) as { error?: string; pushed?: boolean };
+
+    assert.ok(r.error, "sync reports the failure");
+    assert.match(r.error!, /commit failed/i);
+    assert.notEqual(r.pushed, true, "and never claims to have pushed");
+    assert.deepEqual(onRemote(t.origin), [], "nothing reached the remote, which is the point");
+
+    // CONTROL — the same finding, the same sync, with the commit working. Without
+    // this the test above passes just as well against a sync that always fails.
+    git(t.a, "config", "--unset", "core.hooksPath");
+    const ok = await sync(t.a, izzie) as { error?: string; pushed?: boolean; committed?: boolean };
+    assert.equal(ok.error, undefined, "the control sync succeeds");
+    assert.equal(ok.pushed, true);
+    assert.equal(ok.committed, true, "and says it had something of its own to send");
+    assert.ok(onRemote(t.origin).some((f) => f.startsWith("findings/pr-1/")), "the finding is on the remote now");
+
+    rmSync(hooks, { recursive: true, force: true });
+  } finally { t.cleanup(); }
+});
+
+test("a sync with nothing of its own to send says so rather than claiming a push", async () => {
+  // The obvious phrasing of the R1 fix — "a no-op push must not report as pushed" —
+  // is wrong, and this pins the distinction. `pushed` asserts the remote holds our
+  // commits, which is honestly true here; `committed` is what says whether this sync
+  // had anything of its own. Conflating them would trade a lie for a false alarm.
+  const t = await team();
+  try {
+    const first = await sync(t.a, izzie) as { committed?: boolean };
+    const again = await sync(t.a, izzie) as { error?: string; pushed?: boolean; committed?: boolean };
+    assert.equal(again.error, undefined);
+    assert.equal(again.pushed, true, "the remote does contain our commits");
+    assert.equal(again.committed, false, "but this sync committed nothing");
+    assert.ok(first !== undefined);
+  } finally { t.cleanup(); }
 });
