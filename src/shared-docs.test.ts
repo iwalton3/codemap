@@ -169,3 +169,50 @@ test("a citation confirmed under an older HASH_SCHEME is unverifiable, not drift
   // Whereas a genuine edit under one scheme IS comparable, and IS drift.
   assert.equal(comparableHashes(fixtureHash("a", 2), fixtureHash("b", 2)), true);
 });
+
+/**
+ * An acceptance that matches no citation is RETAINED, not dropped.
+ *
+ * This is the design's one record-against-record join: `doc.accepted` carries an
+ * anchor id and finds the citation to attach it to by exact equality. Anchor ids are
+ * derived from the parse, so a teammate on another build confirms `a_theirs` against
+ * a version citing `a_mine` — the same symbol, spelled two ways, which nothing here
+ * can know. Merging would be a guess; dropping meant their acceptance never
+ * happened, with no trace. The fold recomputes from the log on every read, so
+ * keeping it costs nothing durable and a later reader that CAN pair them recovers it.
+ *
+ * See docs/anchor-id-provenance.md §3 and §6.
+ */
+test("an acceptance that matches no citation is kept, not silently dropped", () => {
+  const version = {
+    versionId: "v1", nodeId: "n1", type: "process", title: "t", summary: "s", body: "b",
+    citations: [{ anchorId: "a_mine", acceptedHashes: [] }],
+    createdCommit: null, createdBranch: null, createdAt: "2026-01-01T00:00:00Z",
+  } as unknown as NodeVersion;
+  const ev: LogEvent[] = [
+    { id: "1", kind: "doc.version", subject: "n1", actor: izzie, at: "t1", data: { version: version as never } },
+    { id: "2", kind: "doc.accepted", subject: "n1", actor: dana, at: "t2",
+      data: { versionId: "v1", anchorId: "a_theirs", bodyHash: fixtureHash("body", 2) } },
+  ] as LogEvent[];
+
+  const doc = foldDocs(ev).get("n1")!;
+  assert.deepEqual(doc.versions[0]!.citations[0]!.acceptedHashes, [],
+    "it must NOT be merged — the two ids are not known to name one symbol");
+  assert.equal(doc.unmatched?.length, 1, "and it must not vanish either");
+  assert.equal(doc.unmatched![0]!.anchorId, "a_theirs");
+  assert.equal(doc.unmatched![0]!.why, "no-citation");
+});
+
+test("an acceptance for a version this fold never saw is kept too", () => {
+  const version = {
+    versionId: "v1", nodeId: "n1", type: "process", title: "t", summary: "s", body: "b",
+    citations: [{ anchorId: "a_mine", acceptedHashes: [] }],
+    createdCommit: null, createdBranch: null, createdAt: "2026-01-01T00:00:00Z",
+  } as unknown as NodeVersion;
+  const ev: LogEvent[] = [
+    { id: "1", kind: "doc.version", subject: "n1", actor: izzie, at: "t1", data: { version: version as never } },
+    { id: "2", kind: "doc.accepted", subject: "n1", actor: dana, at: "t2",
+      data: { versionId: "v_unknown", anchorId: "a_mine", bodyHash: fixtureHash("body", 2) } },
+  ] as LogEvent[];
+  assert.equal(foldDocs(ev).get("n1")!.unmatched?.[0]!.why, "no-version");
+});

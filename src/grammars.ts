@@ -15,14 +15,14 @@ import { Parser, Language } from "web-tree-sitter";
 import { ANCHOR_SCHEME, HASH_SCHEME, type DerivationTag } from "./schema.js";
 
 // dist/grammars.js -> repo root -> grammars/
-const GRAMMARS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "grammars");
+export const GRAMMARS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "grammars");
 
 export type GrammarName = "c_sharp" | "python" | "javascript" | "typescript" | "tsx";
 
 /** Every grammar this build ships. */
 export const GRAMMAR_NAMES: readonly GrammarName[] = ["c_sharp", "python", "javascript", "typescript", "tsx"];
 
-const WASM_FILE: Record<GrammarName, string> = {
+export const WASM_FILE: Record<GrammarName, string> = {
   c_sharp: "tree-sitter-c_sharp.wasm",
   python: "tree-sitter-python.wasm",
   javascript: "tree-sitter-javascript.wasm",

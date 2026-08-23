@@ -462,12 +462,25 @@ Ordered so that each step is testable before the next depends on it:
      with a ref, and for `@work` and snapshots, it is *the stored rows*. Taking the
      tags off whatever a re-index happened to produce would call a deleted file's
      symbols undecidable.
-5. **`foldDocs` retaining rather than discarding**, and the relocation apply-time
-   gate.
-6. **The two invariants pinned by tests** (§4), and a one-page v1 format note: ids
-   stay bare, their evidence is the adjacent mark, the pairing is an invariant,
-   `anchorScheme` stays gated, and the parent's "delete the fatal manifest check"
-   item is cancelled.
+5. ~~**`foldDocs` retaining rather than discarding**, and the relocation apply-time
+   gate.~~ **Done.** An acceptance that matches no citation is kept on
+   `SharedDoc.unmatched` with why — `no-citation` or `no-version` — rather than
+   dropped, and surfaced as a count so the retention is not itself silent. It is
+   still not MERGED: two ids are not known to name one symbol, and guessing is the
+   ladder again. Applying a relocation now checks the proposed id against the
+   applier's own index first, because that is the one place a foreign id is written
+   INTO shared state, where "cannot tell" is not enough — the write outlives the
+   reader. Proposing stays ungated: telling a teammate about a symbol they may not
+   have yet is the point.
+6. ~~**The two invariants pinned by tests**~~ **Done**, in
+   `derivation-invariants.test.ts`: an anchor's hash carries the same derivation as
+   its row, and a grammar's tag digests the blob `loadLanguage` loads. Both were true
+   by construction and neither was enforced by a type — which is the whole reason the
+   design gets to rest on them.
+
+   Still open: **a one-page v1 format note** — ids stay bare, their evidence is the
+   adjacent mark, the pairing is an invariant, `anchorScheme` stays gated, and the
+   parent's "delete the fatal manifest check" item is cancelled.
 
 Steps 1–4 are local-only and need no format decision. Step 5 is the shared half.
 The note shard (§5) is not on this list — it is a separate record.

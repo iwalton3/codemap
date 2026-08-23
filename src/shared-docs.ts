@@ -40,6 +40,28 @@ export interface SharedDoc {
   versions: NodeVersion[];
   /** Who wrote each version, which `NodeVersion` itself has no room for. */
   authors: Map<string, Actor>;
+  /**
+   * Acceptances that found no citation to attach to.
+   *
+   * Kept OUT of the citation sets on purpose (see the fold) and kept out of the bin
+   * as well. A teammate whose build derives anchor ids differently confirms
+   * `a_theirs` against a version that cites `a_mine`, and the two ids name the same
+   * symbol — which nothing here can know, so merging would be a guess. Dropping was
+   * the other extreme: their acceptance simply never happened, with no trace.
+   *
+   * The fold recomputes from the log on every read, so retention costs nothing
+   * durable and a later reader that CAN pair them recovers what this one could not.
+   */
+  unmatched?: UnmatchedAcceptance[];
+}
+
+export interface UnmatchedAcceptance {
+  versionId: string;
+  anchorId: string;
+  bodyHash: string;
+  /** `no-version` — this fold never saw that version; `no-citation` — it did, and
+   *  the version does not cite that anchor id. */
+  why: "no-version" | "no-citation";
 }
 
 type Data = Record<string, unknown>;
@@ -88,12 +110,18 @@ export function foldDocs(events: LogEvent[]): Map<string, SharedDoc> {
       const bodyHash = typeof d?.bodyHash === "string" ? d.bodyHash : null;
       if (!versionId || !anchorId || !bodyHash) continue;
       const v = byVersion.get(versionId);
-      if (!v) continue;
-      const cite = v.citations.find((c) => c.anchorId === anchorId);
+      const cite = v?.citations.find((c) => c.anchorId === anchorId);
       // Only a hash for an anchor this version already cites: confirming a doc
       // against code it never claimed anything about would make it read `fresh`
-      // for a reason nobody wrote down.
-      if (!cite) continue;
+      // for a reason nobody wrote down. But RETAINED rather than dropped — see
+      // `SharedDoc.unmatched`. This is the one join in the design that is
+      // record-against-record, so it fails before any reader-side resolution could
+      // run, and it used to fail by leaving nothing behind.
+      if (!cite) {
+        const doc = out.get(e.subject);
+        if (doc) (doc.unmatched ??= []).push({ versionId, anchorId, bodyHash, why: v ? "no-citation" : "no-version" });
+        continue;
+      }
       // EXACT, deliberately — not `sameBody`. This is an insert, not a comparison.
       // A hash string is a digest plus annotations about how it was derived, and
       // deduping by body would mean a better-annotated form of a hash already in

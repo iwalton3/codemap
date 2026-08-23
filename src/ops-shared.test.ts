@@ -236,3 +236,44 @@ test("a workspace with no sidecar field configures nothing", async () => {
     });
   } finally { rmSync(ws, { recursive: true, force: true }); }
 });
+
+/**
+ * Applying a relocation is the one place a FOREIGN anchor id is written INTO shared
+ * state: `f.target.id` becomes whatever the proposer's machine minted. Anchor ids
+ * are derived from the parse, so their `a_X` and ours can name different symbols —
+ * and everywhere else in this design such an id is read and answered "cannot tell",
+ * which is not enough here because the write outlives the reader.
+ *
+ * So the applier checks it against their own index first. See
+ * docs/anchor-id-provenance.md §4.
+ */
+test("an applied relocation must name an anchor THIS checkout has", async () => {
+  const u = universe();
+  try {
+    const { init, document: documentNode } = await import("./ops.js");
+    const { readAnchorStore } = await import("./store.js");
+    mkdirSync(join(u.root, "src"), { recursive: true });
+    writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+    await init(u.root);
+    const here = (await readAnchorStore(u.root)).anchors[0]!.id;
+
+    const filed = await shared.shareFinding(u.root, 264, {
+      targetKind: "anchor", targetId: here, text: "evidence", comment: "the ask",
+    } as never) as { id?: string; error?: string };
+    assert.ok(filed.id, JSON.stringify(filed));
+
+    const foreign = await shared.relocateFinding(u.root, 264, filed.id, "moved", "their build spells it differently",
+      { to: "a_deadbeefdeadbeef", apply: true }) as { error?: string };
+    assert.match(foreign.error ?? "", /not an anchor in this checkout/,
+      "a bare foreign id must not become the target");
+
+    // The control: a real local anchor still applies, and a PROPOSAL is never gated —
+    // proposing is how a teammate tells you about a symbol you may not have yet.
+    const proposal = await shared.relocateFinding(u.root, 264, filed.id, "moved", "seen elsewhere",
+      { to: "a_deadbeefdeadbeef" }) as { ok?: true; error?: string };
+    assert.ok(proposal.ok, `a proposal is not a write to the target: ${JSON.stringify(proposal)}`);
+    const applied = await shared.relocateFinding(u.root, 264, filed.id, "moved", "it is right here",
+      { to: here, apply: true }) as { ok?: true; error?: string };
+    assert.ok(applied.ok, JSON.stringify(applied));
+  } finally { u.cleanup(); }
+});

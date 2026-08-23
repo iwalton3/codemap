@@ -201,6 +201,23 @@ export async function relocateFinding(
   if (opts.apply && isAgentActor(b.actor)) {
     return { error: "an agent may propose a relocation, not apply one — a mis-targeted finding is worse than an untriaged one" };
   }
+  // An applied relocation is the ONE place a foreign anchor id gets written INTO
+  // shared state: `f.target.id` becomes whatever the proposer's machine minted, and
+  // ids are derived from the parse, so their `a_X` and ours can name different
+  // symbols. Everything else in this design reads such an id and says "cannot tell";
+  // here that is not enough, because the write outlives the reader. So the applier
+  // checks it against their own index before it becomes the target.
+  // See docs/anchor-id-provenance.md §4.
+  if (opts.apply && kind === "moved" && opts.to) {
+    const here = await liveHashes(root);
+    if (!here.has(opts.to)) {
+      return {
+        error: `${opts.to.slice(0, 12)} is not an anchor in this checkout, so applying it would point the finding at nothing. `
+          + `Either the symbol is on another branch — index it and try again — or the proposal came from a build whose anchor ids are derived differently, `
+          + `in which case re-target it by symbol here rather than by their id.`,
+      };
+    }
+  }
   await relocate(b.cfg.path, prKey(b.cfg, pr), b.actor, id, kind, rationale, opts);
   return { ok: true, id, kind, ...(opts.apply ? { applied: true } : { note: "queued for a person to apply" }) };
 }
@@ -423,6 +440,9 @@ export async function sharedDocs(root: string, opts: { nodeId?: string } = {}) {
     rows.push({
       nodeId: doc.nodeId,
       versions: doc.versions.length,
+      // Acceptances that matched no citation — retained by the fold rather than
+      // dropped. Surfaced as a count so the retention is not itself silent.
+      unmatchedAcceptances: doc.unmatched?.length ?? 0,
       // `winningVersionAt` picks the LEAST-BAD version and always returns one when
       // versions exist — it never signals "none of these describe your checkout".
       // The per-citation `matches`/`present` below are what actually say whether
