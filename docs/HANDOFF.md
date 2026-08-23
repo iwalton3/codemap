@@ -13,45 +13,54 @@ node --no-warnings --test --test-concurrency=1 "dist/**/*.test.js"
 ```
 
 **Use that rather than `npm test`.** `npm test` runs the same three commands and
-stalls intermittently under the agent harness. Two separate bisects blamed code for
-it and both were wrong. **A run that blocks with near-zero CPU is a wait, not work
-— check what else is running before suspecting the diff.**
+stalls intermittently. Two separate bisects blamed code for it and both were
+wrong — see below; the cause is in Node, not here. **A run that blocks with
+near-zero CPU is a wait, not work.**
 
-The stall was caught in the act once and is worth writing down, because it rules
-things out:
+### The stall: it is Node's own exit path
 
-- It lands on `dist/pr-ingest.test.js`, and that file's seven tests have all PASSED
-  when it happens. The child process simply never exits; its event loop is idle in
-  `epoll_wait` and every libuv worker is parked.
-- It is not SQLite at exit. `db()` caches connections and never closes them, so a
-  test process ends holding a dozen WAL databases on deleted files — a plausible
-  culprit, and refuted: 40 of them open and delete in 0.24s with a clean exit.
-- It is load-dependent and does not reproduce on demand. Three stale runs from
-  earlier sessions were still alive and wedged at the same file; killing them and
-  running two full suites concurrently, with and without `--test-concurrency=1`,
-  came out green all four times.
+Reproducible now, and answered — it had been open across three sessions.
 
-- **It is the channel between parent and child, not either end's work.** Caught
-  twice, from both sides: once with the child alive and idle in `epoll_wait` after
-  passing every test, once with the child already EXITED and the parent idle in
-  `epoll_wait` still holding its three stdio sockets. Killing the wedged process
-  unblocks the run — the parent moves straight to the next file and finishes
-  normally; only the killed file's results are lost (it reports as one failed
-  FILE, with no failing test inside it).
+```sh
+# ~50% on this machine. All seven tests PASS, then the child never exits.
+for i in $(seq 1 12); do timeout 25 node --no-warnings --test dist/pr-ingest.test.js; done
+```
 
-So: nothing in this tree, and nothing you can bisect. Kill leftovers by pid first
-(`ps -eo pid,pcpu,etime,args | grep test-concurrency`), and if a run parks on one
-file at 0% CPU, kill that child and re-run the file on its own.
+`eu-stack` on a parked child, every time:
 
-**One more correlation, offered as a habit rather than a cause.** Every wedge in
-the session that finished §4 happened while `npx tsc` was rewriting `dist/*.js`
-UNDER the running suite. The one run nobody disturbed finished all 639 tests in
-33 seconds. That does not explain a child that has already passed every test and
-will not exit, so it is not the mechanism — but "do not rebuild under a live run"
-costs nothing and the difference was 33 seconds against 28 minutes.
+```
+uv_cond_wait
+node::NodePlatform::DrainTasks(v8::Isolate*)
+node::SpinEventLoopInternal(node::Environment*)
+node::NodeMainInstance::Run()
+```
 
-And use `~/.claude/bin/safe-pkill`, not `pkill -f`, when killing by pattern: this
-session lost a shell to exit 144 doing exactly what the note below warns about.
+That is Node (v23.11.1) waiting for its platform's background tasks to drain
+*after* the event loop has finished — a shutdown hang in the runtime, reached
+only through the test runner's per-file CHILD. Three hypotheses died on the way,
+and each is worth not re-testing:
+
+- **Not our code, and not the tests.** `node --test <file>` hung 6 of 12;
+  `node <file>` — the same tests, in process, no runner child — hung **0 of 12**.
+- **Not SQLite at exit.** Already refuted by an earlier session; the stack
+  confirms it.
+- **Not `io_uring`** (the child's fd table has rings, so it is the obvious
+  suspect): `UV_USE_IO_URING=0` hung 10 of 20 against 11 of 20 with it on.
+- **Not "a rebuild under the running suite"**, which this session recorded as a
+  habit on one run's evidence and then refuted on the next. Left here as the
+  correction, because a wrong note in a handoff is worse than no note.
+
+**What to do about it.** Nothing in this tree fixes it. Keep the documented
+workaround — kill the parked child by pid and the parent moves straight on,
+losing only that file's results (it reports as one failed FILE with no failing
+test inside it).
+
+`--test-isolation=none` runs every file in ONE process, takes 38 seconds instead
+of 28 minutes, and cannot hang because there is no child. It is **not** a drop-in:
+8 of 639 fail under it, because some files depend on per-process isolation (an
+agent actor set from the environment leaks across them). Worth fixing those eight
+if the stall becomes intolerable; that is the cheapest route to a suite that
+cannot wedge.
 
 ## The two arcs that landed
 
