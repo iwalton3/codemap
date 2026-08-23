@@ -17,20 +17,35 @@
 
 import type { NodeVersion, NodeStatus, LogicalNode } from "./schema.js";
 import { comparableHashes, sameBody } from "./normalize.js";
+import { resolveAnchor, type AnchorIndex } from "./anchor-resolve.js";
 
 /** Status of a version against the live @work anchors (fresh / stale / dangling / removed). */
-export function evalVersion(v: NodeVersion, work: Map<string, string>) {
+export function evalVersion(v: NodeVersion, work: AnchorIndex) {
   if (v.generatedBy) return { status: "generated" as NodeStatus, stale: [] as string[], dangling: [] as string[], badness: 0 };
   if (v.removed) {
     // A tombstone is fresh where its cited anchors are ABSENT (the removal holds);
     // if any still exist here, the code came back → it doesn't apply (badness).
-    const present = v.citations.filter((c) => work.has(c.anchorId)).map((c) => c.anchorId);
-    return { status: "removed" as NodeStatus, stale: present, dangling: [] as string[], badness: present.length };
+    // A tombstone INVERTS the polarity, so an undecidable citation counts AGAINST it
+    // rather than being excluded like everywhere else in this function. Its claim is
+    // "these are gone", inferred from absence — and an id this index could not have
+    // minted is not evidence of absence. Letting it win on that would HIDE a doc
+    // whose code may be sitting right there, and hiding is the direction with no
+    // recovery. See docs/anchor-id-provenance.md §6.
+    const unresolved = v.citations
+      .filter((c) => resolveAnchor(c.anchorId, c.acceptedHashes, work).at !== "absent")
+      .map((c) => c.anchorId);
+    return { status: "removed" as NodeStatus, stale: unresolved, dangling: [] as string[], badness: unresolved.length };
   }
   const stale: string[] = [], dangling: string[] = [], unverifiable: string[] = [];
   for (const c of v.citations) {
-    const live = work.get(c.anchorId);
-    if (live === undefined) { dangling.push(c.anchorId); continue; }
+    const r = resolveAnchor(c.anchorId, c.acceptedHashes, work);
+    // An id no build behind this index could have minted is not a hole in the doc.
+    // `dangling` scores in `badness`, which picks which version wins and decides
+    // whether `documentNode` edits in place or forks — so this used to make a
+    // derivation change take a durable write.
+    if (r.at === "incomparable") { unverifiable.push(c.anchorId); continue; }
+    if (r.at === "absent") { dangling.push(c.anchorId); continue; }
+    const live = r.hash;
     if (c.acceptedHashes.some((h) => sameBody(h, live))) continue;
     // Mismatched — but a hash minted under an older HASH_SCHEME cannot be compared
     // to this one at all, so its inequality says the derivation changed, not the
@@ -51,7 +66,7 @@ export function evalVersion(v: NodeVersion, work: Map<string, string>) {
 }
 
 /** The version that best fits the current branch: fewest problems, then most recent. */
-export function selectWinner(versions: NodeVersion[], work: Map<string, string>): { v: NodeVersion; e: ReturnType<typeof evalVersion> } {
+export function selectWinner(versions: NodeVersion[], work: AnchorIndex): { v: NodeVersion; e: ReturnType<typeof evalVersion> } {
   let best = versions[0]!, bestE = evalVersion(best, work);
   for (const v of versions.slice(1)) {
     const e = evalVersion(v, work);
@@ -61,7 +76,7 @@ export function selectWinner(versions: NodeVersion[], work: Map<string, string>)
   return { v: best, e: bestE };
 }
 
-export function resolveNode(versions: NodeVersion[], work: Map<string, string>): LogicalNode {
+export function resolveNode(versions: NodeVersion[], work: AnchorIndex): LogicalNode {
   const { v, e } = selectWinner(versions, work);
   return {
     id: v.nodeId, type: v.type, title: v.title, summary: v.summary, body: v.body,
@@ -73,7 +88,7 @@ export function resolveNode(versions: NodeVersion[], work: Map<string, string>):
 }
 
 /** The version that wins against a given anchor-hash map (e.g. a base/head snapshot). */
-export function winningVersionAt(versions: NodeVersion[], hashes: Map<string, string>): NodeVersion | undefined {
+export function winningVersionAt(versions: NodeVersion[], hashes: AnchorIndex): NodeVersion | undefined {
   return versions.length ? selectWinner(versions, hashes).v : undefined;
 }
 

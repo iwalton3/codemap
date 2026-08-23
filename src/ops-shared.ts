@@ -11,6 +11,7 @@ import type { Actor } from "./schema.js";
 import { requireActor, isAgentActor } from "./identity.js";
 import { comparableHashes, sameBody } from "./normalize.js";
 import { classifyCitations } from "./citation-state.js";
+import { anchorIndex, derivationsOf, type AnchorIndex } from "./anchor-resolve.js";
 import { resolveSidecar, scopeFor, type SidecarConfig } from "./sidecar-config.js";
 import { originSlug, headCommit, currentBranch } from "./git.js";
 import { fetchReviewThreads, type GhRunner } from "./pr-push.js";
@@ -23,7 +24,7 @@ import {
 } from "./shared-findings.js";
 import { publishWalkthrough, readWalkthroughs, currentWalkthrough, staleWalkthroughs } from "./shared-walkthrough.js";
 import { createNote, answerNote, resolveNote, notesForTarget, allNotes, type NewNote } from "./shared-notes.js";
-import { readAnnotations, readAnchorStore, loadNodes, loadNodeVersions } from "./store.js";
+import { readAnnotations, readAnchorStore, loadNodes, loadNodeVersions, derivationFor} from "./store.js";
 import { publishDocVersion, acceptDocHash, readDocs, resolveDoc, type NewDocVersion } from "./shared-docs.js";
 import type { PrWalkthrough } from "./walkthrough.js";
 
@@ -386,9 +387,15 @@ export async function publishLocalNotes(root: string, opts: { dryRun?: boolean }
 // ---------------------------------------------------------------------------
 
 /** Live body hashes for whatever this working tree currently has. */
-async function liveHashes(root: string): Promise<Map<string, string>> {
+async function liveHashes(root: string): Promise<AnchorIndex> {
   const store = await readAnchorStore(root);
-  return new Map(store.anchors.map((a) => [a.id, a.bodyHash]));
+  // The stored rows' own derivations: `@work` was written by whichever build indexed
+  // it, which after an upgrade is legitimately not the running one.
+  return anchorIndex(
+    new Map(store.anchors.map((a) => [a.id, a.bodyHash])),
+    derivationsOf(store.anchors),
+    (mark) => derivationFor(root, mark),
+  );
 }
 
 /**

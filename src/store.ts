@@ -19,6 +19,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { DerivationTag } from "./schema.js";
 import { derivationTag, GRAMMAR_NAMES } from "./grammars.js";
 import { derivationFingerprint } from "./normalize.js";
+import { anchorIndex, derivationsOf, legacyIndex, type AnchorIndex } from "./anchor-resolve.js";
 import { randomBytes } from "node:crypto";
 import { db, WORK_REF, ORPHAN_REF } from "./db.js";
 import { headCommit, currentBranch } from "./git.js";
@@ -507,10 +508,23 @@ function versionsOf(d: DatabaseSync, nodeId: string): NodeVersion[] {
   return (d.prepare("SELECT * FROM node_versions WHERE node_id = ?").all(nodeId) as unknown as VersionRow[]).map(rowToVersion);
 }
 
-function workHashes(d: DatabaseSync): Map<string, string> {
+/**
+ * `@work`'s hashes, with what its rows say about the build(s) that minted them.
+ *
+ * The rows' OWN derivations, not this build's: `@work` is stored, so an id had to
+ * be minted by whatever indexed it to appear here — and after an upgrade that is
+ * legitimately not the running build. (Contrast `liveHashes` with no ref, which
+ * re-parses in process and is therefore this build's output.)
+ */
+function workHashes(d: DatabaseSync, root?: string): AnchorIndex {
   const m = new Map<string, string>();
-  for (const r of d.prepare("SELECT id, body_hash FROM anchors WHERE ref = ?").all(WORK_REF) as any[]) m.set(r.id, r.body_hash);
-  return m;
+  const tags = derivationsById(d);
+  const seen: { derivation?: DerivationTag }[] = [];
+  for (const r of d.prepare("SELECT id, body_hash, derivation FROM anchors WHERE ref = ?").all(WORK_REF) as any[]) {
+    m.set(r.id, r.body_hash);
+    seen.push({ derivation: r.derivation == null ? undefined : tags.get(r.derivation) });
+  }
+  return anchorIndex(m, derivationsOf(seen), root ? (mark) => derivationFor(root, mark) : undefined);
 }
 
 export async function loadNodes(root: string): Promise<LogicalNode[]> {
@@ -584,7 +598,7 @@ const nowISO = () => new Date().toISOString();
 export async function writeNode(
   root: string,
   node: LogicalNode,
-  opts: { hashes?: Map<string, string>; commit?: string | null; branch?: string | null } = {},
+  opts: { hashes?: AnchorIndex; commit?: string | null; branch?: string | null } = {},
 ): Promise<void> {
   const d = db(root);
   const existing = versionsOf(d, node.id);
@@ -604,7 +618,7 @@ export async function writeNode(
     return;
   }
 
-  const work = opts.hashes ?? workHashes(d);
+  const work = opts.hashes ?? workHashes(d, root);
   const commit = opts.commit !== undefined ? opts.commit : headCommit(root);
   const branch = opts.branch !== undefined ? opts.branch : currentBranch(root);
   const capture = (ids: string[]): NodeCitation[] => ids.map((id) => ({ anchorId: id, acceptedHashes: work.has(id) ? [work.get(id)!] : [] }));

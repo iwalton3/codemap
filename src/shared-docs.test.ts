@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { legacyIndex } from "./anchor-resolve.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -62,8 +63,8 @@ test("resolution picks the version matching the code in front of you", async () 
     });
     const doc = (await readDocs(root, U)).get("n_payments")!;
 
-    const onDevelop = resolveDoc(doc, new Map([["a_1", fixtureHash("develop", 2)]]));
-    const onFeature = resolveDoc(doc, new Map([["a_1", fixtureHash("feature", 2)]]));
+    const onDevelop = resolveDoc(doc, legacyIndex(new Map([["a_1", fixtureHash("develop", 2)]])));
+    const onFeature = resolveDoc(doc, legacyIndex(new Map([["a_1", fixtureHash("feature", 2)]])));
     assert.match(onDevelop!.body, /handler folds/);
     assert.match(onFeature!.body, /fold is async/, "same log, two branches, no branch tags");
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -75,8 +76,8 @@ test("confirming a version against a second body makes it valid on both branches
     const versionId = await publishDocVersion(root, U, izzie, DOC);
     await acceptDocHash(root, U, dana, "n_payments", versionId, "a_1", fixtureHash("feature", 2));
     const doc = (await readDocs(root, U)).get("n_payments")!;
-    assert.ok(resolveDoc(doc, new Map([["a_1", fixtureHash("develop", 2)]])));
-    assert.ok(resolveDoc(doc, new Map([["a_1", fixtureHash("feature", 2)]])), "one version, two branches");
+    assert.ok(resolveDoc(doc, legacyIndex(new Map([["a_1", fixtureHash("develop", 2)]]))));
+    assert.ok(resolveDoc(doc, legacyIndex(new Map([["a_1", fixtureHash("feature", 2)]]))), "one version, two branches");
     assert.equal(doc.versions[0]!.citations[0]!.acceptedHashes.length, 2);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -116,7 +117,7 @@ test("a doc still resolves on a checkout no version was written against", async 
   try {
     await publishDocVersion(root, U, izzie, DOC);
     const doc = (await readDocs(root, U)).get("n_payments")!;
-    const v = resolveDoc(doc, new Map([["a_1", fixtureHash("drifted", 2)]]));
+    const v = resolveDoc(doc, legacyIndex(new Map([["a_1", fixtureHash("drifted", 2)]])));
     assert.ok(v, "a version is still returned");
     assert.equal(v!.citations[0]!.acceptedHashes.includes(fixtureHash("drifted", 2)), false, "…and it is NOT fresh here");
   } finally { rmSync(root, { recursive: true, force: true }); }

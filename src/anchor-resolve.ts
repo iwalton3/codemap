@@ -38,6 +38,24 @@ export interface IndexDerivations {
   anyUntagged: boolean;
 }
 
+/**
+ * KNOWN LIMIT, recorded rather than fixed: "this index has no tag matching your
+ * mark" is ambiguous between *a different build produced it* and *that language is
+ * not in this index at all*. Without a locator on the record — see
+ * docs/anchor-id-provenance.md §4 for why there isn't one — nothing here can tell
+ * which grammar an id belonged to, so the two cases look identical.
+ *
+ * It leans the safe way in the common case: when a grammar changes, the code is
+ * still there, so the index still carries a tag for that language under the new
+ * digest and the mismatch is real. The false reading needs every file of a language
+ * to be gone at once, which is itself the deletion case — where the cost is a
+ * record reading "cannot tell" instead of "removed", not a wrong claim about code.
+ */
+/**
+ * Three values rather than a boolean beside a hash, so that a caller which forgets
+ * the third does not compile: reading `.hash` off the union without narrowing is a
+ * type error, which is a stronger guarantee than remembering to write the branch.
+ */
 export type Resolved =
   /** The id is here. */
   | { at: "found"; hash: string }
@@ -121,16 +139,23 @@ export function resolveAnchor(
   if (hash !== undefined) return { at: "found", hash };
 
   const marks = [...new Set(evidence.map(derivationMark).filter((m): m is string => m !== null))];
-  // No evidence, or an index that predates provenance: fall back to today's answer.
-  // Every stored value predates tags, and answering "cannot decide" for all of them
-  // would trade a rare false positive for a universal false negative.
-  if (!marks.length || index.derivations.anyUntagged) return { at: "absent" };
+  // No evidence, or an index that cannot give any: fall back to today's answer.
+  //
+  // Three ways to have none. No marks — a pre-emission record asserts nothing about
+  // its derivation. Untagged rows — a pre-provenance index could have minted
+  // anything. And NO TAGS AT ALL, which is an index with no rows: it did not mint
+  // this id, but it did not mint anything, so it is not evidence about how ids are
+  // derived. That last one is not hypothetical — deleting the last anchored symbol
+  // in a repo produces it, and calling every record undecidable at that moment would
+  // stop `ackHole` from ever acknowledging a hole.
+  const d = index.derivations;
+  if (!marks.length || d.anyUntagged || !d.tags.length) return { at: "absent" };
 
   // ANY match is enough, and the asymmetry is deliberate: a hash only enters an
   // accepted set when the id RESOLVED under that derivation (`store.ts`, `capture`),
   // so one matching mark is positive proof that a build like this one joined this id
   // before — which outranks any number of derivations that never saw it.
-  for (const m of marks) if (matches(m, index.derivations, index.knownTag)) return { at: "absent" };
+  for (const m of marks) if (matches(m, d, index.knownTag)) return { at: "absent" };
 
   return {
     at: "incomparable",

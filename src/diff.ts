@@ -16,12 +16,13 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { comparableHashDerivation, type Anchor, type Review } from "./schema.js";
 import { indexRepo, indexFile, indexBlob } from "./repo.js";
-import { readSnapshot, readAnchorStore, loadNodes, loadNodeVersions, winningVersionAt, readGraph, readReviews, readBugs } from "./store.js";
+import { readSnapshot, readAnchorStore, loadNodes, loadNodeVersions, winningVersionAt, readGraph, readReviews, readBugs, derivationFor} from "./store.js";
 import { reviewStatesFor } from "./reviews.js";
 import { reviewTriageFor, coverageFor, type Coverage } from "./triage.js";
 import { revParse, headCommit, currentBranch, showFile } from "./git.js";
 import { grammarForPath } from "./grammars.js";
 import { sameBody } from "./normalize.js";
+import { anchorIndex, derivationsOf, type AnchorIndex } from "./anchor-resolve.js";
 
 const HL_LANG: Record<string, string> = { c_sharp: "csharp", python: "python", javascript: "javascript", typescript: "typescript", tsx: "typescript" };
 const langFor = (file: string) => HL_LANG[grammarForPath(file) ?? ""] ?? "plaintext";
@@ -267,10 +268,14 @@ export interface AnchorCodeDiff {
 }
 
 /** Anchor-hash map for a ref: a cached snapshot's hashes, or @work for the working tree. */
-async function hashesAt(root: string, ref: string | undefined): Promise<Map<string, string> | null> {
-  if (!ref) return new Map((await readAnchorStore(root).catch(() => ({ anchors: [] as Anchor[] }))).anchors.map((a) => [a.id, a.bodyHash]));
+async function hashesAt(root: string, ref: string | undefined): Promise<AnchorIndex | null> {
+  const index = (anchors: Anchor[]) =>
+    anchorIndex(new Map(anchors.map((a) => [a.id, a.bodyHash])), derivationsOf(anchors), (m) => derivationFor(root, m));
+  // Stored rows on both paths — `@work` and a cached snapshot alike — so the
+  // derivations are the rows' own, whichever build wrote them.
+  if (!ref) return index((await readAnchorStore(root).catch(() => ({ anchors: [] as Anchor[] }))).anchors);
   const anchors = await readSnapshot(root, revParse(root, ref) ?? ref);
-  return anchors ? new Map(anchors.map((a) => [a.id, a.bodyHash])) : null;
+  return anchors ? index(anchors) : null;
 }
 
 export interface DocSide {

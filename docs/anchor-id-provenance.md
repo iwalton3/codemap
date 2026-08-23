@@ -442,11 +442,26 @@ Ordered so that each step is testable before the next depends on it:
    were only prose before: the raw mark **over**-rejects on `hashScheme` and
    **under**-rejects on `anchorScheme`, so the manifest gate is load-bearing and the
    local dictionary is the only thing that closes either gap.
-3. **The five `?? ABSENT_HASH` sites**, one at a time. `witnessDrift` first: it
-   already has the `unverifiable` flag, so it is the smallest diff and the clearest
-   proof the resolution works.
-4. **`evalVersion` and the index-view seam**, which is where the durable
-   consequences are — and where the typecheck enumerates the callers.
+3. ~~**The five `?? ABSENT_HASH` sites**~~ **Done.** The idiom no longer appears in
+   production code; `ABSENT_HASH` is synthesized only inside an `absent` branch.
+4. ~~**`evalVersion` and the index-view seam**~~ **Done.** An incomparable citation
+   goes to the existing `unverifiable` list and out of `badness`, so it can no
+   longer reshuffle which version wins or make `documentNode` fork. A **tombstone
+   inverts that**: its claim is about absence, so an undecidable citation counts
+   against it rather than being excluded — letting it win would hide a doc whose
+   code may be present, and hiding has no recovery.
+
+   Two things the wiring turned up that the design had not:
+
+   - **An index with no rows has no tags**, so "no tag matches your mark" read as
+     *incomparable* for every record the moment a repo's last anchored symbol was
+     deleted — which stopped `ackHole` from acknowledging a hole. An empty index is
+     not evidence about how ids are derived; it now falls back.
+   - **The operand differs per site and the rule has to be applied, not quoted.**
+     `liveHashes` with no ref re-parses in process, so the operand is *this build*;
+     with a ref, and for `@work` and snapshots, it is *the stored rows*. Taking the
+     tags off whatever a re-index happened to produce would call a deleted file's
+     symbols undecidable.
 5. **`foldDocs` retaining rather than discarding**, and the relocation apply-time
    gate.
 6. **The two invariants pinned by tests** (§4), and a one-page v1 format note: ids

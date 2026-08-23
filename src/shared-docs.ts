@@ -29,6 +29,7 @@
 import type { Actor } from "./schema.js";
 import type { NodeVersion, NodeCitation, LogicalNodeType } from "./schema.js";
 import { winningVersionAt } from "./doc-version.js";
+import type { AnchorIndex } from "./anchor-resolve.js";
 import { appendEvents, mintId, readScope, causalHeads, type LogEvent } from "./eventlog.js";
 
 export const docScope = (universe: string): string => `docs/${universe}`;
@@ -118,7 +119,7 @@ export function foldDocs(events: LogEvent[]): Map<string, SharedDoc> {
  * actually fresh is a separate question, answered per citation by comparing its
  * accepted hashes to the live body. Undefined only when there are no versions.
  */
-export function resolveDoc(doc: SharedDoc, liveHashes: Map<string, string>): NodeVersion | undefined {
+export function resolveDoc(doc: SharedDoc, liveHashes: AnchorIndex): NodeVersion | undefined {
   return winningVersionAt(doc.versions, liveHashes);
 }
 
