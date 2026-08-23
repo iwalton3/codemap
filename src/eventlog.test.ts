@@ -4,7 +4,8 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, appendFileSync, readFile
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Actor } from "./schema.js";
-import { mintId, shardFor, appendEvents, readShard, readScope, sortEvents, causalHeads, causality, writerFor,
+import { mintId, shardFor, appendEvents, readShard, readScope, readScopeChecked, sortEvents, causalHeads,
+  causality, writerFor, detectForks, scopeStatus, emitEvent, GENESIS, SIDECAR_PROTOCOL, EVENT_SCHEMA,
   type LogEvent } from "./eventlog.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
@@ -409,4 +410,189 @@ test("an event written before writer ids folds exactly as it did", () => {
   // between them is not available in the first place.
   const mixed = ago("0000000003-cc", "izzie@x.com", "w_desktop");
   assert.equal(causality([H, O, mixed]).saw(mixed.id, H.id), false);
+});
+
+// --- the writer chain: writerPrev, GENESIS, and forks ---------------------------
+
+/** An event that makes a chain claim. `prev` defaults to opening the chain. */
+const link = (id: string, writer: string, prev: string = GENESIS, over: Partial<LogEvent> = {}): LogEvent =>
+  ({ id, kind: "noted", subject: "f_1", actor: izzie, at: "2026-01-01T00:00:00Z",
+     writer, writerPrev: prev, ...over });
+
+test("a chain that never branches is not a fork", () => {
+  const a = link("0000000001-aa", "w_one");
+  const b = link("0000000002-bb", "w_one", a.id);
+  const c = link("0000000003-cc", "w_one", b.id);
+  assert.deepEqual(detectForks([a, b, c]), []);
+});
+
+test("two events naming one predecessor are a fork", () => {
+  const a = link("0000000001-aa", "w_one");
+  const b = link("0000000002-bb", "w_one", a.id);
+  const b2 = link("0000000003-cc", "w_one", a.id);
+  assert.deepEqual(detectForks([a, b, b2]),
+    [{ writer: "w_one", prev: a.id, events: [b.id, b2.id] }]);
+});
+
+test("two clones that both open with GENESIS are a fork — the clause an implementation drops", () => {
+  // Copy a clone BEFORE it has written anything and neither side has a predecessor
+  // to disagree about. Treating the first event of a chain as unremarkable lets
+  // exactly this pair through, and it is the commonest way one writer id ends up
+  // in two places: a machine image, a synced home directory.
+  const a = link("0000000001-aa", "w_copied");
+  const b = link("0000000002-bb", "w_copied");
+  assert.deepEqual(detectForks([a, b]),
+    [{ writer: "w_copied", prev: GENESIS, events: [a.id, b.id] }]);
+});
+
+test("two writers each opening their own chain are not a fork", () => {
+  // The control for the GENESIS rule. Every clone's first event names GENESIS, so
+  // a detector keyed on the predecessor alone would call an ordinary team a fork.
+  assert.deepEqual(detectForks([link("0000000001-aa", "w_one"), link("0000000002-bb", "w_two")]), []);
+});
+
+test("one event stitched in twice is not a fork", () => {
+  // `merge=union` produces duplicate lines, and an id is minted once, so both
+  // sightings are the same event making one chain claim.
+  const a = link("0000000001-aa", "w_one");
+  assert.deepEqual(detectForks([a, { ...a }]), []);
+});
+
+test("events written before the chain existed are not judged", () => {
+  // No `writerPrev` is not an implicit GENESIS. Reading it as one would make every
+  // pre-chain log in the wild a fork on its second event.
+  const a = ev("0000000001-aa", { writer: "w_one" });
+  const b = ev("0000000002-bb", { writer: "w_one" });
+  assert.deepEqual(detectForks([a, b]), []);
+  // …and the control: the same two events, once they make the claim.
+  assert.equal(detectForks([link(a.id, "w_one"), link(b.id, "w_one")]).length, 1);
+});
+
+test("a chain claim needs a writer, not a principal", () => {
+  // `causality` falls back to the principal so an old event still folds. A fork is
+  // a claim about a CLONE, and the fallback would attribute two machines' chains to
+  // one person and call their independent GENESIS events a fork.
+  const a = { ...link("0000000001-aa", "w_x"), writer: undefined };
+  const b = { ...link("0000000002-bb", "w_y"), writer: undefined };
+  assert.deepEqual(detectForks([a, b]), []);
+});
+
+// --- scope status ---------------------------------------------------------------
+
+test("an ordinary scope is complete", () => {
+  assert.deepEqual(scopeStatus([link("0000000001-aa", "w_one")]), { status: "complete" });
+});
+
+test("a fork blocks the scope", () => {
+  const st = scopeStatus([link("0000000001-aa", "w_c"), link("0000000002-bb", "w_c")]);
+  assert.equal(st.status, "blocked");
+  assert.equal(st.diagnostic?.reason, "fork");
+  assert.deepEqual(st.diagnostic?.evidence, ["0000000001-aa", "0000000002-bb"]);
+});
+
+test("an envelope from a newer codemap blocks the scope", () => {
+  const st = scopeStatus([ev("0000000001-aa", { sidecarProtocol: SIDECAR_PROTOCOL + 1 })]);
+  assert.equal(st.status, "blocked");
+  assert.equal(st.diagnostic?.reason, "protocol");
+});
+
+test("a newer payload schema blocks it too, and separately", () => {
+  const st = scopeStatus([ev("0000000001-aa", { eventSchema: EVENT_SCHEMA + 1 })]);
+  assert.equal(st.diagnostic?.reason, "protocol");
+  assert.match(st.diagnostic!.detail, new RegExp(`schema ${EVENT_SCHEMA + 1}`));
+});
+
+test("a missing protocol number is an older writer, not a newer one", () => {
+  assert.equal(scopeStatus([ev("0000000001-aa")]).status, "complete");
+});
+
+test("an unreadable envelope is reported ahead of a fork it makes unjudgeable", () => {
+  // Precedence, not severity: this reader cannot know what a newer envelope means,
+  // so every judgement downstream of it — the fork included — is unreliable.
+  const st = scopeStatus(
+    [link("0000000001-aa", "w_c"), link("0000000002-bb", "w_c", GENESIS, { sidecarProtocol: 99 })]);
+  assert.equal(st.diagnostic?.reason, "protocol");
+});
+
+test("one id with two different bodies blocks the scope; the same body twice does not", async () => {
+  const root = tmp();
+  try {
+    const dir = join(root, "s");
+    mkdirSync(dir, { recursive: true });
+    const a = link("0000000001-aa", "w_one");
+    // Byte-identical, in two shards: exactly what `merge=union` produces.
+    writeFileSync(join(dir, "w_one.ndjson"), JSON.stringify(a) + "\n");
+    writeFileSync(join(dir, "w_two.ndjson"), JSON.stringify(a) + "\n");
+    let read = await readScopeChecked(root, "s");
+    assert.equal(read.status, "complete");
+    assert.equal(read.events.length, 1, "and still deduped");
+
+    // Same id, different content: two writers have claimed one identity.
+    writeFileSync(join(dir, "w_two.ndjson"), JSON.stringify({ ...a, subject: "f_2" }) + "\n");
+    read = await readScopeChecked(root, "s");
+    assert.equal(read.status, "blocked");
+    assert.equal(read.diagnostic?.reason, "duplicate-id");
+    assert.deepEqual(read.diagnostic?.evidence, [a.id]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a blocked scope still hands back its events", async () => {
+  // Non-authoritative, not hidden. A reviewer who can see what the team wrote is
+  // better placed to repair a fork than one staring at an empty page.
+  const root = tmp();
+  try {
+    const dir = join(root, "s");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "w_c.ndjson"),
+      [link("0000000001-aa", "w_c"), link("0000000002-bb", "w_c")].map((e) => JSON.stringify(e)).join("\n") + "\n");
+    const read = await readScopeChecked(root, "s");
+    assert.equal(read.status, "blocked");
+    assert.equal(read.events.length, 2);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("emitting builds a chain: GENESIS, then each event naming the last", async () => {
+  const root = tmp();
+  try {
+    mkdirSync(join(root, ".git"), { recursive: true });
+    const a = await emitEvent(root, "s", izzie, "noted", "f_1");
+    const b = await emitEvent(root, "s", izzie, "noted", "f_1");
+    const c = await emitEvent(root, "s", dana, "noted", "f_1");
+    assert.equal(a.writerPrev, GENESIS);
+    assert.equal(b.writerPrev, a.id);
+    // One CLONE, two people: the chain is the clone's, so Dana's event continues it.
+    assert.equal(c.writerPrev, b.id);
+    assert.equal(a.sidecarProtocol, SIDECAR_PROTOCOL);
+    assert.equal(a.eventSchema, EVENT_SCHEMA);
+    const read = await readScopeChecked(root, "s");
+    assert.equal(read.status, "complete", "a clone writing its own chain never forks it");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a chain is per scope, so a writer's first event in a new scope opens a new one", async () => {
+  const root = tmp();
+  try {
+    mkdirSync(join(root, ".git"), { recursive: true });
+    await emitEvent(root, "s1", izzie, "noted", "f_1");
+    const other = await emitEvent(root, "s2", izzie, "noted", "f_1");
+    // `readScope` reads one scope at a time, so a global predecessor could not be
+    // validated from there — see PROPOSAL-provenance.md §4.
+    assert.equal(other.writerPrev, GENESIS);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a copied clone id forks the chain, and that is what the detector is for", async () => {
+  const root = tmp();
+  try {
+    mkdirSync(join(root, ".git"), { recursive: true });
+    await emitEvent(root, "s", izzie, "noted", "f_1");
+    const writer = await writerFor(root);
+    // The other clone, holding the same id, having pulled nothing: it opens with
+    // GENESIS because ITS shard is empty. Union-merged in as a second line.
+    appendFileSync(join(root, "s", writer + ".ndjson"),
+      JSON.stringify(link("0000000009-zz", writer)) + "\n");
+    const read = await readScopeChecked(root, "s");
+    assert.equal(read.status, "blocked");
+    assert.equal(read.diagnostic?.reason, "fork");
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

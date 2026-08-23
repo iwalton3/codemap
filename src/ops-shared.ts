@@ -13,7 +13,8 @@ import { comparableHashes, sameBody } from "./normalize.js";
 import { realpathSync } from "node:fs";
 import { classifyCitations } from "./citation-state.js";
 import { evalVersion } from "./doc-version.js";
-import { readCached, ensureMaterialized } from "./materialize.js";
+import { readCached, ensureMaterialized, scopeVerdict } from "./materialize.js";
+import type { ScopeStatus, ScopeDiagnostic } from "./eventlog.js";
 import { findingsProjection, docsProjection, notesProjection, docsCiting, docsByNode, sharedCitedAnchors } from "./shared-projections.js";
 import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
 import { resolveSidecar, scopeFor, type SidecarConfig } from "./sidecar-config.js";
@@ -224,7 +225,7 @@ export async function relocateFinding(
   // the anchor index would refuse a legitimate node-to-node relocation, with a
   // message about anchors that would not even be true.
   const targetKind = opts.apply && kind === "moved" && opts.to
-    ? (await cachedFindings(root, b.cfg, pr)).get(id)?.target.kind
+    ? (await cachedFindings(root, b.cfg, pr)).value.get(id)?.target.kind
     : undefined;
   if (targetKind === "anchor" && opts.to) {
     // ONE id, one indexed lookup. This read the entire anchor store to answer a
@@ -280,6 +281,17 @@ const sidecarIdentity = (cfg: { path: string }): string => {
   try { return realpathSync(cfg.path); } catch { return cfg.path; }   // not created yet
 };
 
+/**
+ * What a surface says about the scope it just answered from.
+ *
+ * Present only when the answer is NOT authoritative, so an ordinary read keeps the
+ * shape it had — a `scope: {status: "complete"}` on every response for every team
+ * is noise, and noise is what a warning has to outrank. A blocked scope still
+ * returns its rows: see `readScopeChecked` and PROPOSAL-provenance.md §7.
+ */
+const nonAuthoritative = (s: ScopeStatus): { status: "blocked"; diagnostic?: ScopeDiagnostic } | undefined =>
+  s.status === "blocked" ? { status: "blocked", diagnostic: s.diagnostic } : undefined;
+
 const cachedFindings = (root: string, cfg: { path: string; universe: string }, pr: number | string) =>
   readCached(root, cfg.path, findingScope(prKey(cfg, pr)), sidecarIdentity(cfg), foldFindings, findingsProjection);
 
@@ -294,18 +306,20 @@ const cachedDocs = (root: string, cfg: { path: string; universe: string }) =>
  * which is what `notesForTarget` does, with the fold now cached per bucket.
  */
 const cachedNotes = async (root: string, cfg: { path: string; universe: string }, targetId: string) => {
-  const all = await readCached(root, cfg.path, noteScope(cfg.universe, bucketFor(targetId)), sidecarIdentity(cfg), foldNotes, notesProjection);
-  return [...all.values()].filter((n) => n.target.id === targetId);
+  const { value, ...status } = await readCached(root, cfg.path, noteScope(cfg.universe, bucketFor(targetId)), sidecarIdentity(cfg), foldNotes, notesProjection);
+  return { notes: [...value.values()].filter((n) => n.target.id === targetId), ...status };
 };
 
 export async function sharedFindings(root: string, pr: number | string, opts: { queue?: boolean } = {}) {
   const cfg = resolveSidecar(root);
   if (!cfg) return { error: NO_SIDECAR };
-  const all = [...(await cachedFindings(root, cfg, pr)).values()];
+  const { value: folded, ...scope } = await cachedFindings(root, cfg, pr);
+  const all = [...folded.values()];
   const places = await classifyCitations(root, [...new Set(all.filter((f) => f.target.kind === "anchor").map((f) => f.target.id))]);
   const chosen = opts.queue ? ackQueue(all) : all;
   const place = (f: SharedFinding) => places.get(f.target.id) ?? { state: "unknown" as const };
   return {
+    scope: nonAuthoritative(scope),
     universe: cfg.universe,
     pr,
     total: all.length,
@@ -335,7 +349,7 @@ export async function inboundReplies(root: string, pr: number | string, opts: { 
   const slug = originSlug(root);
   if (!slug) return { error: "no GitHub remote on this universe, so there is no pull request to read replies from" };
 
-  const all = [...(await cachedFindings(root, cfg, pr)).values()];
+  const all = [...(await cachedFindings(root, cfg, pr)).value.values()];
   const published = all.filter((f) => f.posted?.key);
   if (!published.length) return { universe: cfg.universe, pr, findings: [], note: "nothing from here has been published to the pull request" };
 
@@ -391,8 +405,9 @@ export async function mirrorNote(root: string, n: NewNote): Promise<{ shared: bo
 export async function sharedNotes(root: string, targetId: string) {
   const cfg = resolveSidecar(root);
   if (!cfg) return { error: NO_SIDECAR };
-  const notes = await cachedNotes(root, cfg, targetId);
+  const { notes, ...scope } = await cachedNotes(root, cfg, targetId);
   return {
+    scope: nonAuthoritative(scope),
     universe: cfg.universe,
     target: targetId,
     notes: notes.map((n) => ({
@@ -487,7 +502,7 @@ const liveHashes = async (root: string, ids: Iterable<string>): Promise<AnchorIn
 export async function sharedDocs(root: string, opts: { nodeId?: string } = {}) {
   const cfg = resolveSidecar(root);
   if (!cfg) return { error: NO_SIDECAR };
-  const docs = await cachedDocs(root, cfg);
+  const { value: docs, ...scope } = await cachedDocs(root, cfg);
   // Classified once for every citation in the catalogue: the dry run had a
   // thousand of them, and per-citation lookups would be a query each.
   const cited = [...new Set([...docs.values()].flatMap((d) => d.versions.flatMap((v) => v.citations.map((c) => c.anchorId))))];
@@ -554,6 +569,7 @@ export async function sharedDocs(root: string, opts: { nodeId?: string } = {}) {
     });
   }
   return {
+    scope: nonAuthoritative(scope),
     universe: cfg.universe, total: rows.length,
     // The number worth acting on, as opposed to the number that merely mention
     // code you do not have checked out.
@@ -590,7 +606,7 @@ export async function sharedDocsCiting(root: string, anchorIds: string[]) {
   const fresh = await ensureMaterialized(root, cfg.path, scope, sidecarIdentity(cfg), foldDocs, docsProjection);
   const docs = fresh
     ? docsByNode(root, scope, docsCiting(root, scope, ids))
-    : new Map([...(await cachedDocs(root, cfg))].filter(([, d]) =>
+    : new Map([...(await cachedDocs(root, cfg)).value].filter(([, d]) =>
       d.versions.some((v) => v.citations.some((c) => ids.includes(c.anchorId)))));
   if (!docs.size) return [];
 
@@ -632,7 +648,7 @@ export async function sharedDocCandidates(root: string, anchorIds: Iterable<stri
   const fresh = await ensureMaterialized(root, cfg.path, scope, sidecarIdentity(cfg), foldDocs, docsProjection);
   const cited = fresh
     ? sharedCitedAnchors(root, scope)
-    : new Set([...(await cachedDocs(root, cfg)).values()].flatMap((d) => d.versions.flatMap((v) => v.citations.map((c) => c.anchorId))));
+    : new Set([...(await cachedDocs(root, cfg)).value.values()].flatMap((d) => d.versions.flatMap((v) => v.citations.map((c) => c.anchorId))));
   const out: string[] = [];
   for (const id of anchorIds) if (cited.has(id)) out.push(id);
   return out;
@@ -664,7 +680,15 @@ export async function sharedCoverage(root: string, anchorIds: Iterable<string>) 
   if (ask === null) return null;                       // no sidecar
   const docs = ask.length ? await sharedDocsCiting(root, ask) : [];
   if (docs === null) return null;
-  return { docs, covered: new Set(docs.flatMap((d) => d.covers)) };
+  // Both calls above take the QUERY path, so no `Cached` envelope came back with a
+  // verdict on it — and this is the surface where a silent one does the most
+  // damage: coverage DROPS gaps, so a blocked scope quietly talks an agent out of
+  // documenting code. Read the verdict those calls just stored.
+  const cfg = resolveSidecar(root);
+  const verdict = cfg
+    ? await scopeVerdict(root, cfg.path, docScope(cfg.universe), sidecarIdentity(cfg))
+    : null;
+  return { docs, covered: new Set(docs.flatMap((d) => d.covers)), scope: nonAuthoritative(verdict ?? { status: "complete" }) };
 }
 
 /** Why this doc version cannot be published, or null. Shape only — ids are checked live. */
@@ -732,7 +756,7 @@ export async function shareDoc(root: string, v: NewDocVersion) {
 export async function confirmSharedDoc(root: string, nodeId: string, versionId?: string) {
   const b = bind(root);
   if ("error" in b) return b;
-  const docs = await cachedDocs(root, b.cfg);
+  const docs = (await cachedDocs(root, b.cfg)).value;
   const doc = docs.get(nodeId);
   if (!doc) return { error: `no shared doc ${nodeId}` };
   const live = await liveHashes(root, doc.versions.flatMap((x) => x.citations.map((c) => c.anchorId)));
@@ -799,7 +823,7 @@ export async function retireSharedDoc(root: string, nodeId: string, rationale: s
   }
   if (!rationale.trim()) return { error: "say why the subject is gone — a tombstone with no reason is indistinguishable from a mistake" };
 
-  const doc = (await cachedDocs(root, b.cfg)).get(nodeId);
+  const doc = (await cachedDocs(root, b.cfg)).value.get(nodeId);
   if (!doc) return { error: `no shared doc ${nodeId}` };
   const live = await liveHashes(root, doc.versions.flatMap((x) => x.citations.map((c) => c.anchorId)));
   const v = resolveDoc(doc, live);
@@ -838,7 +862,7 @@ export async function publishLocalDocs(root: string, opts: { dryRun?: boolean } 
   if ("error" in b) return b;
   await ensureSidecar(b.cfg.path, b.actor);
   const nodes = await loadNodes(root);
-  const already = await cachedDocs(root, b.cfg);
+  const already = (await cachedDocs(root, b.cfg)).value;
   const todo = nodes.filter((n) => !already.has(n.id));
   if (opts.dryRun) {
     return { universe: b.cfg.universe, local: nodes.length, alreadyShared: nodes.length - todo.length, wouldPublish: todo.length };

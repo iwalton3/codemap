@@ -733,6 +733,12 @@
     .prbadge.contested { border-color: var(--warn); color: var(--warn); }
     .prbadge.ok { border-color: var(--accent2); color: var(--accent2); }
     .prbadge.warnb { border-color: var(--warn); color: var(--warn); }
+    /* A scope that may not be answered from. Loud on purpose: the rows below it
+       are still rendered, so nothing else on the page says they are not the truth. */
+    .blocked { border: 1px solid var(--warn); color: var(--warn); border-radius: 4px;
+               padding: 10px 12px; margin: 10px 0; font-size: 13px; }
+    .blocked b { text-transform: uppercase; letter-spacing: .05em; font-size: 11px; }
+    .blocked code { color: var(--dim); }
     .prbadge.ask { border-color: var(--accent); color: var(--accent); }
     .ok { color: var(--accent2); } .bad { color: var(--bad); } .warn { color: var(--warn); }
   </style>

@@ -130,7 +130,14 @@ function migrate(d: DatabaseSync): void {
       scope TEXT PRIMARY KEY,
       fingerprint TEXT NOT NULL,
       folded_at TEXT NOT NULL,
-      events INTEGER NOT NULL
+      events INTEGER NOT NULL,
+      -- Whether the fold may be presented as the truth: 'complete' | 'blocked',
+      -- with one diagnostic as JSON. Stored beside the fingerprint on purpose —
+      -- the fingerprint is what says the verdict still describes these shards, so
+      -- a cache hit answers the status without re-reading the log.
+      -- See PROPOSAL-provenance.md section 7, and scopeStatus() in eventlog.ts.
+      status TEXT NOT NULL DEFAULT 'complete',
+      diagnostic TEXT
     );
     CREATE TABLE IF NOT EXISTS shared_finding (
       scope TEXT NOT NULL, id TEXT NOT NULL,
@@ -196,6 +203,11 @@ function migrate(d: DatabaseSync): void {
   // which symbols pair up across two snapshots, the hashes say which pairs changed,
   // so a mismatch on either makes the whole diff meaningless.
   try { d.exec("ALTER TABLE snapshots ADD COLUMN hash_scheme INTEGER"); } catch { /* already present */ }
+  // shared_scope.status — rows folded before §7's fail-closed rule existed. The
+  // default is 'complete', which is what they were assumed to be; the next fold of
+  // that scope replaces it with a judgement.
+  try { d.exec("ALTER TABLE shared_scope ADD COLUMN status TEXT NOT NULL DEFAULT 'complete'"); } catch { /* already present */ }
+  try { d.exec("ALTER TABLE shared_scope ADD COLUMN diagnostic TEXT"); } catch { /* already present */ }
 }
 
 // --- one-time migration of a legacy JSON .codemap/ into the DB ---------------

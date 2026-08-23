@@ -220,6 +220,10 @@ export async function context(root: string, refs: string[]) {
     gaps,              // scope anchors with no readable doc (the explore-then-document list)
     docs,
     ...(team?.docs.length ? { sharedDocs: team.docs } : {}),
+    // The team's half of this answer came from a scope that cannot be answered
+    // from. Said out loud because coverage SUPPRESSES gaps — the harm is what is
+    // missing from the list above, which nothing else here can hint at.
+    ...(team?.scope ? { sharedScope: team.scope } : {}),
     flows,
     bugs,
     // A one-line read for the agent: is this area answered by something, and how much to trust it?

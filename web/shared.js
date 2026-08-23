@@ -14,6 +14,22 @@ import { Component, defineComponent, html, when, each } from './vendor/vdx/frame
 import { api, apiPost, pageShell, nav, go, errText, taskError } from './app.js';
 
 /**
+ * The banner for a scope that cannot be answered from authoritatively.
+ *
+ * The rows are still shown — see PROPOSAL-provenance.md §7: a reviewer who can see
+ * what the team wrote is better placed to repair a fork than one staring at an
+ * empty page. Which is exactly why this has to be impossible to miss.
+ *
+ * @param {{status: string, diagnostic?: {reason: string, detail: string, evidence: string[]}}} [scope]
+ */
+const blockedBanner = (scope) => when(!!scope, () => html`
+  <div class="blocked">
+    <b>not authoritative</b> — ${scope.diagnostic?.detail ?? 'this scope is blocked'}
+    ${when(!!scope.diagnostic?.evidence?.length, () => html`
+      <div><code>${scope.diagnostic.evidence.join(', ')}</code></div>`)}
+  </div>`);
+
+/**
  * The API shapes come from `ops-shared` ITSELF, not from a hand-written copy —
  * the HTTP layer returns those values verbatim, so a field the ops function
  * stopped returning becomes a typecheck failure here instead of a panel that
@@ -226,6 +242,7 @@ class SharedPage extends Component {
         <button on-click="${() => this.toggleQueue()}">${st.queue ? 'showing: needs a person' : 'showing: everything'}</button>
         <a href="#/u/${u}/shared/${pr}/peers/">peers</a>
       </div>
+      ${blockedBanner(d.scope)}
       ${when(!!st.note, () => html`<div class="empty">${st.note}</div>`)}
       ${when(!d.findings.length, () => html`<div class="dim">${st.queue ? 'nothing is waiting on a person.' : 'no shared findings for this pull request.'}</div>`)}
       ${each(d.findings, f => html`
@@ -327,6 +344,7 @@ class SharedNotesPanel extends Component {
     if (!d || d.error || !d.notes.length) return html`<div></div>`;
     return html`<div class="sharednotes">
       <div class="sec">what the team knows <span class="dim">· ${d.notes.length}</span></div>
+      ${blockedBanner(d.scope)}
       ${when(!!st.note, () => html`<div class="empty">${st.note}</div>`)}
       ${each(d.notes, n => html`
         <div class="snote">
@@ -407,6 +425,7 @@ class SharedDocsPage extends Component {
     return pageShell(d, null, html`
       <div class="crumbs"><b>${u}</b> <span class="sep">·</span> shared docs
         <span class="dim">· ${d.total}, resolved against this checkout</span></div>
+      ${blockedBanner(d.scope)}
       ${when(!!st.note, () => html`<div class="empty">${st.note}</div>`)}
       ${when(!d.docs.length, () => html`<div class="dim">nothing shared yet — run <code>codemap publish-docs</code>.</div>`)}
       ${each(d.docs, row => html`

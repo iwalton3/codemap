@@ -1,12 +1,24 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, appendFileSync } from "node:fs";
+import { mkdtempSync, rmSync, appendFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Actor } from "./schema.js";
-import { readScope } from "./eventlog.js";
+import { readScope, type LogEvent } from "./eventlog.js";
 import { createFinding, foldFindings, findingScope, comment } from "./shared-findings.js";
-import { readCached, scopeFingerprint } from "./materialize.js";
+import { readCached as readCachedChecked, scopeFingerprint, type Projection } from "./materialize.js";
+
+/**
+ * The value half of a cached read.
+ *
+ * `readCached` returns the scope's STATUS with its value, deliberately, so no
+ * surface can answer from a blocked scope without having seen that it is one. Most
+ * tests here are about the caching itself; the status has its own, at the bottom.
+ */
+const readCached = async <T>(
+  root: string, logRoot: string, scope: string, identity: string,
+  fold: (events: LogEvent[]) => T, proj: Projection<T>,
+): Promise<T> => (await readCachedChecked(root, logRoot, scope, identity, fold, proj)).value;
 import { findingsProjection, docsProjection } from "./shared-projections.js";
 
 /**
@@ -260,5 +272,79 @@ test("a late parent that reorders the scope is re-folded, not patched", async ()
     const direct = foldFindings(await readScope(f.logRoot, scope));
     same(after, direct, "the cache must agree with a fold of the settled input");
     assert.equal(order(after), order(direct), "including the order the fold produces");
+  } finally { f.cleanup(); }
+});
+
+// --- the scope's status rides with its value ------------------------------------
+
+/**
+ * §7 of PROPOSAL-provenance.md is a FAIL-CLOSED rule, and the way a fail-closed
+ * rule fails in practice is a surface that never asked. So the status comes back
+ * from `readCached` with the value, and — the part that needs testing — it survives
+ * a cache HIT, where nothing re-reads the log to work it out again.
+ */
+
+/** Fork the writer's chain in place: a second event of theirs opening at GENESIS. */
+const forkShard = (logRoot: string, scope: string) => {
+  const dir = join(logRoot, scope);
+  const name = readdirSync(dir).find((n) => n.endsWith(".ndjson"))!;
+  const writer = name.replace(/\.ndjson$/, "");
+  appendFileSync(join(dir, name), JSON.stringify({
+    id: "9999999999-ffffffffff", kind: "finding.commented", subject: "f_x",
+    actor: izzie, at: "2026-08-23T00:00:00Z", writer, writerPrev: "GENESIS",
+    data: { body: "from the copied clone" },
+  }) + "\n");
+};
+
+test("a fork blocks the scope, and the value still comes back", async () => {
+  const f = await fixture();
+  try {
+    const scope = findingScope(PR);
+    forkShard(f.logRoot, scope);
+    const read = await readCachedChecked(f.root, f.logRoot, scope, ID, foldFindings, findingsProjection);
+    assert.equal(read.status, "blocked");
+    assert.equal(read.diagnostic?.reason, "fork");
+    assert.ok(read.value.size > 0, "non-authoritative, not hidden");
+  } finally { f.cleanup(); }
+});
+
+test("the verdict survives a cache hit — the rows do not re-fold to find it again", async () => {
+  const f = await fixture();
+  try {
+    const scope = findingScope(PR);
+    forkShard(f.logRoot, scope);
+    await readCachedChecked(f.root, f.logRoot, scope, ID, foldFindings, findingsProjection);
+    let folds = 0;
+    const hit = await readCachedChecked(f.root, f.logRoot, scope, ID,
+      (e) => { folds++; return foldFindings(e); }, findingsProjection);
+    assert.equal(folds, 0, "served from rows");
+    assert.equal(hit.status, "blocked", "and the verdict came with them");
+    assert.equal(hit.diagnostic?.reason, "fork");
+  } finally { f.cleanup(); }
+});
+
+test("a healthy scope is complete, and says nothing else", async () => {
+  // The control. A status that were always `blocked` would pass both tests above.
+  const f = await fixture();
+  try {
+    const read = await readCachedChecked(f.root, f.logRoot, findingScope(PR), ID, foldFindings, findingsProjection);
+    assert.deepEqual({ status: read.status, diagnostic: read.diagnostic }, { status: "complete", diagnostic: undefined });
+  } finally { f.cleanup(); }
+});
+
+test("a scope that repairs itself stops being blocked", async () => {
+  // The fingerprint moves when a shard does, so a stored `blocked` is not sticky:
+  // it describes THOSE shards. Rewriting the shard without the second GENESIS is
+  // what a rotation-and-repair leaves behind.
+  const f = await fixture();
+  try {
+    const scope = findingScope(PR);
+    const dir = join(f.logRoot, scope);
+    const name = readdirSync(dir).find((n) => n.endsWith(".ndjson"))!;
+    const before = readFileSync(join(dir, name), "utf8");
+    forkShard(f.logRoot, scope);
+    assert.equal((await readCachedChecked(f.root, f.logRoot, scope, ID, foldFindings, findingsProjection)).status, "blocked");
+    writeFileSync(join(dir, name), before);
+    assert.equal((await readCachedChecked(f.root, f.logRoot, scope, ID, foldFindings, findingsProjection)).status, "complete");
   } finally { f.cleanup(); }
 });

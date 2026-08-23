@@ -18,7 +18,7 @@ import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { db } from "./db.js";
-import { readScope, SHARD_EXT, type LogEvent } from "./eventlog.js";
+import { readScopeChecked, SHARD_EXT, type LogEvent, type ScopeStatus } from "./eventlog.js";
 
 /**
  * Bumped whenever the FOLD or the PROJECTION changes shape.
@@ -92,6 +92,15 @@ export interface Projection<T> {
 export class CorruptProjection extends Error {}
 
 /**
+ * A folded scope and whether it may be answered from.
+ *
+ * The status rides WITH the value rather than beside it, so a caller cannot take
+ * the rows and forget to ask. §7 is a fail-closed rule and the one way it fails in
+ * practice is a surface that never looked.
+ */
+export interface Cached<T> extends ScopeStatus { value: T }
+
+/**
  * Read a scope through the cache, re-folding on a miss.
  *
  * Fingerprint, fold, fingerprint AGAIN, and retry if it moved — that closes the
@@ -111,15 +120,15 @@ export async function readCached<T>(
   identity: string,
   fold: (events: LogEvent[]) => T,
   proj: Projection<T>,
-): Promise<T> {
+): Promise<Cached<T>> {
   const d = db(root);
   for (let attempt = 0; attempt < 3; attempt++) {
     const before = await scopeFingerprint(logRoot, scope, identity);
-    const row = d.prepare("SELECT fingerprint FROM shared_scope WHERE scope = ?").get(scope) as
-      { fingerprint: string } | undefined;
+    const row = d.prepare("SELECT fingerprint, status, diagnostic FROM shared_scope WHERE scope = ?").get(scope) as
+      { fingerprint: string; status: string; diagnostic: string | null } | undefined;
     if (row?.fingerprint === before) {
       try {
-        return proj.read(d, scope);
+        return { value: proj.read(d, scope), ...storedStatus(row) };
       } catch (e) {
         if (!(e instanceof CorruptProjection)) throw e;
         // Damaged rows. Drop the key so this pass re-folds and replaces them —
@@ -129,7 +138,7 @@ export async function readCached<T>(
       }
     }
 
-    const events = await readScope(logRoot, scope);
+    const { events, ...status } = await readScopeChecked(logRoot, scope);
     const value = fold(events);
     const after = await scopeFingerprint(logRoot, scope, identity);
     // Moved under us. Do NOT store: the rows describe an input set that no longer
@@ -139,19 +148,56 @@ export async function readCached<T>(
     d.exec("BEGIN");
     try {
       proj.write(d, scope, value);
-      d.prepare("INSERT INTO shared_scope(scope,fingerprint,folded_at,events) VALUES(?,?,?,?) "
-        + "ON CONFLICT(scope) DO UPDATE SET fingerprint=excluded.fingerprint, folded_at=excluded.folded_at, events=excluded.events")
-        .run(scope, after, new Date().toISOString(), events.length);
+      d.prepare("INSERT INTO shared_scope(scope,fingerprint,folded_at,events,status,diagnostic) VALUES(?,?,?,?,?,?) "
+        + "ON CONFLICT(scope) DO UPDATE SET fingerprint=excluded.fingerprint, folded_at=excluded.folded_at, "
+        + "events=excluded.events, status=excluded.status, diagnostic=excluded.diagnostic")
+        .run(scope, after, new Date().toISOString(), events.length,
+          status.status, status.diagnostic ? JSON.stringify(status.diagnostic) : null);
       d.exec("COMMIT");
     } catch (e) {
       d.exec("ROLLBACK");
       throw e;
     }
-    return value;
+    return { value, ...status };
   }
   // Somebody is appending faster than we can fold. Answer from the log directly
   // rather than failing or caching something we know is already behind.
-  return fold(await readScope(logRoot, scope));
+  const { events, ...status } = await readScopeChecked(logRoot, scope);
+  return { value: fold(events), ...status };
+}
+
+/**
+ * The stored verdict for a scope somebody else has just materialized.
+ *
+ * For a caller that took the QUERY path — `ensureMaterialized` then SQL — and so
+ * never held the `Cached` envelope the status normally rides in.
+ *
+ * `null` when the stored row does not describe the shards on disk right now. That
+ * is the whole reason this re-fingerprints rather than reading the row: a verdict
+ * is about an input set, and one that has moved says nothing about the answer the
+ * caller is holding. Unknown is reported as unknown.
+ */
+export async function scopeVerdict(
+  root: string, logRoot: string, scope: string, identity: string,
+): Promise<ScopeStatus | null> {
+  const row = db(root).prepare("SELECT fingerprint, status, diagnostic FROM shared_scope WHERE scope = ?").get(scope) as
+    { fingerprint: string; status: string; diagnostic: string | null } | undefined;
+  if (!row) return null;
+  return row.fingerprint === await scopeFingerprint(logRoot, scope, identity) ? storedStatus(row) : null;
+}
+
+/**
+ * The stored verdict, read back.
+ *
+ * A row whose `diagnostic` will not parse is treated as blocked WITHOUT one rather
+ * than as complete: the column is only ever written when the status is blocked, so
+ * the damage is to the explanation, not to the judgement.
+ */
+function storedStatus(row: { status: string; diagnostic: string | null }): ScopeStatus {
+  if (row.status !== "blocked") return { status: "complete" };
+  try {
+    return row.diagnostic ? { status: "blocked", diagnostic: JSON.parse(row.diagnostic) } : { status: "blocked" };
+  } catch { return { status: "blocked" }; }
 }
 
 /**

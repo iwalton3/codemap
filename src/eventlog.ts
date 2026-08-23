@@ -36,6 +36,25 @@ import { withSidecarLock } from "./lock.js";
 /** Line-delimited JSON: one event per line, appended, never rewritten. */
 export const SHARD_EXT = ".ndjson";
 
+/**
+ * The envelope's own version, and the payload's, kept apart on purpose.
+ *
+ * `sidecarProtocol` governs the fields THIS module reads — ids, ordering, the
+ * causal edge, the writer chain. `eventSchema` governs `data`, which this module
+ * never looks inside. They move independently: adding a field to a finding is not
+ * a reason for a reader to distrust the ordering it can still do perfectly well.
+ *
+ * A reader that meets a HIGHER number cannot know what it is missing, so §7 of
+ * PROPOSAL-provenance.md makes that `blocked` rather than a partial answer. A
+ * LOWER number, or none at all, is an older writer and reads fine — every field
+ * added here has been optional for exactly that reason.
+ */
+export const SIDECAR_PROTOCOL = 1;
+export const EVENT_SCHEMA = 1;
+
+/** The predecessor named by the first event of a `(scope, writer)` chain. */
+export const GENESIS = "GENESIS";
+
 export interface LogEvent {
   /** Sortable, unique, and self-describing: `<time36>-<rand>`. See `mintId`. */
   id: string;
@@ -77,6 +96,30 @@ export interface LogEvent {
    * and always did.
    */
   writer?: string;
+  /**
+   * The previous event of THIS `(scope, writer)` chain, or `GENESIS` for the first.
+   *
+   * The lock prevents two processes on one clone from forking a chain; this detects
+   * the case no lock can reach — two clones holding one writer id, which a machine
+   * image or a synced home directory produces by ordinary means. Two distinct events
+   * naming the same predecessor are a fork.
+   *
+   * **Including two naming `GENESIS`**, which is the clause worth stating twice: two
+   * clones copied BEFORE either had written anything both open their chain with
+   * `GENESIS`, and an implementation that treats the first event as unremarkable
+   * lets exactly that pair through. See `detectForks`.
+   *
+   * The chain key is per SCOPE, not global, because `readScope` reads one scope at
+   * a time and a global predecessor could not be validated from there.
+   *
+   * Optional: events written before this exist and must keep folding. They are not
+   * judged rather than assumed innocent — an absent chain says nothing either way.
+   */
+  writerPrev?: string;
+  /** Governs this envelope. Absent means an older writer; see `SIDECAR_PROTOCOL`. */
+  sidecarProtocol?: number;
+  /** Governs `data` only. Absent means an older writer; see `EVENT_SCHEMA`. */
+  eventSchema?: number;
   /** Event-specific payload. Opaque here. */
   data?: Record<string, unknown>;
 }
@@ -232,8 +275,16 @@ export async function emitEvent(
   return withSidecarLock(logRoot, async () => {
     const writer = await writerFor(logRoot);
     const seen = causalHeads(await readScope(logRoot, scope));
+    // The chain's own file, not fold order. A shard is single-writer and
+    // append-only, so its last line IS this chain's head by construction —
+    // whereas fold order is a total order over the whole scope and would have to
+    // be trusted to agree with append order for one writer, which is the very
+    // thing a fork breaks.
+    const own = await readShard(join(logRoot, shardFor(scope, writer)));
     const event: LogEvent = {
+      sidecarProtocol: SIDECAR_PROTOCOL, eventSchema: EVENT_SCHEMA,
       id: mintId(), kind, subject, actor, at: new Date().toISOString(), writer,
+      writerPrev: own.length ? own[own.length - 1]!.id : GENESIS,
       ...(seen.length ? { after: seen } : {}),
       ...(data ? { data } : {}),
     };
@@ -272,14 +323,28 @@ function wellFormed(e: LogEvent): boolean {
  * laptop, which is strictly worse than losing the last event.
  */
 export async function readShard(file: string): Promise<LogEvent[]> {
+  return (await readShardLines(file)).map((l) => l.event);
+}
+
+/**
+ * The same read, keeping each event's own bytes.
+ *
+ * Only `readScopeChecked` wants them, and only to answer one question: two lines
+ * sharing an id are `merge=union` doing its job when they are the same bytes, and
+ * two writers claiming one id when they are not. Comparing the PARSED objects
+ * would need a canonical form nobody has agreed on; comparing the text is exact
+ * for the case that matters, because an id is minted once and a writer never
+ * rewrites a line it has appended.
+ */
+async function readShardLines(file: string): Promise<{ event: LogEvent; line: string }[]> {
   let text: string;
   try { text = await readFile(file, "utf8"); } catch { return []; }
-  const out: LogEvent[] = [];
+  const out: { event: LogEvent; line: string }[] = [];
   for (const line of text.split("\n")) {
     if (!line.trim()) continue;
     try {
       const e = JSON.parse(line) as LogEvent;
-      if (wellFormed(e)) out.push(e);
+      if (wellFormed(e)) out.push({ event: e, line: line.trim() });
     } catch { /* torn or stitched line — see above */ }
   }
   return out;
@@ -294,19 +359,158 @@ export async function readShard(file: string): Promise<LogEvent[]> {
  * dropping the later sighting loses nothing.
  */
 export async function readScope(logRoot: string, scope: string): Promise<LogEvent[]> {
+  return (await readScopeChecked(logRoot, scope)).events;
+}
+
+/** A scope's events, plus whether they can be answered from authoritatively. */
+export interface ScopeRead extends ScopeStatus { events: LogEvent[] }
+
+/**
+ * The same read, saying whether the result may be presented as the truth.
+ *
+ * See PROPOSAL-provenance.md §7: for v1 a scope is readable or it is not. The
+ * events still come back — a blocked scope is rendered explicitly
+ * non-authoritative rather than hidden, because a reviewer who can see what the
+ * team wrote is better placed to repair it than one staring at an empty page.
+ * What `blocked` forbids is presenting it as settled.
+ */
+export async function readScopeChecked(logRoot: string, scope: string): Promise<ScopeRead> {
   const dir = join(logRoot, scope);
   let names: string[];
-  try { names = await readdir(dir); } catch { return []; }
-  const seen = new Set<string>();
+  try { names = await readdir(dir); } catch { return { events: [], status: "complete" }; }
+  const seen = new Map<string, string>();
+  const collisions: string[] = [];
   const all: LogEvent[] = [];
   for (const n of names.filter((n) => n.endsWith(SHARD_EXT)).sort()) {
-    for (const e of await readShard(join(dir, n))) {
-      if (seen.has(e.id)) continue;
-      seen.add(e.id);
-      all.push(e);
+    for (const { event, line } of await readShardLines(join(dir, n))) {
+      const first = seen.get(event.id);
+      if (first !== undefined) {
+        // Same id, same bytes: `merge=union` stitching one line in twice. Same id,
+        // different bytes: two events claiming one identity, and no fold can pick.
+        if (first !== line && !collisions.includes(event.id)) collisions.push(event.id);
+        continue;
+      }
+      seen.set(event.id, line);
+      all.push(event);
     }
   }
-  return sortEvents(all);
+  const events = sortEvents(all);
+  return { events, ...scopeStatus(events, collisions) };
+}
+
+/** Why a scope may not be answered from. One diagnostic, not a taxonomy. */
+export interface ScopeDiagnostic {
+  reason: "protocol" | "duplicate-id" | "fork";
+  /** One line a person can act on. */
+  detail: string;
+  /** The ids or writers the detail is about, so a repair does not have to search. */
+  evidence: string[];
+}
+
+export interface ScopeStatus {
+  status: "complete" | "blocked";
+  diagnostic?: ScopeDiagnostic;
+}
+
+/**
+ * Two events of one `(scope, writer)` chain naming the same predecessor.
+ *
+ * The chain is per writer AND per scope, so this takes a scope's events as they
+ * already arrive. Events with no `writerPrev` are not judged: they predate the
+ * chain, and an absent predecessor is not evidence either way.
+ */
+export interface WriterFork {
+  writer: string;
+  /** What both sides named — an event id, or `GENESIS`. */
+  prev: string;
+  /** The ids that named it, sorted. Two or more, by definition. */
+  events: string[];
+}
+
+export function detectForks(events: LogEvent[]): WriterFork[] {
+  /** `writer \0 prev` -> the distinct event ids naming it. */
+  const chains = new Map<string, Set<string>>();
+  const ids = new Set<string>();
+  for (const e of events) {
+    const w = e.writer;
+    // NOT `writerOf` — the principal fallback is for causality, where an old event
+    // must still fold. A chain claim needs a writer that actually made one.
+    if (!w || e.writerPrev === undefined) continue;
+    if (ids.has(e.id)) continue; // one event, however many times it was stitched in
+    ids.add(e.id);
+    const key = w + "\0" + e.writerPrev;
+    let at = chains.get(key);
+    if (!at) chains.set(key, at = new Set());
+    at.add(e.id);
+  }
+  const out: WriterFork[] = [];
+  for (const [key, set] of chains) {
+    if (set.size < 2) continue;
+    const [writer, prev] = key.split("\0") as [string, string];
+    out.push({ writer, prev, events: [...set].sort() });
+  }
+  return out.sort((a, b) => (a.writer + a.prev < b.writer + b.prev ? -1 : 1));
+}
+
+/**
+ * Whether a scope may be answered from, and if not, the one thing to say.
+ *
+ * Precedence is fixed rather than by severity: an envelope this reader does not
+ * understand makes every later judgement unreliable, a duplicated id makes the
+ * event set itself ambiguous, and a fork is a claim ABOUT that set. Reporting the
+ * outermost failure first is also what makes the diagnostic deterministic, which
+ * a stored one has to be.
+ *
+ * A ratchet or domain rejection is deliberately not here. The fold refuses
+ * forbidden transitions ON PURPOSE, and counting one as a reason the scope is
+ * unreadable would let any client wedge a scope by emitting an event the rules
+ * correctly refuse — a denial of service built out of a safety mechanism.
+ */
+export function scopeStatus(events: LogEvent[], duplicateIds: string[] = []): ScopeStatus {
+  const ahead = events.filter((e) =>
+    (e.sidecarProtocol ?? SIDECAR_PROTOCOL) > SIDECAR_PROTOCOL
+    || (e.eventSchema ?? EVENT_SCHEMA) > EVENT_SCHEMA);
+  if (ahead.length) {
+    const top = Math.max(...ahead.map((e) => e.sidecarProtocol ?? 0));
+    const schema = Math.max(...ahead.map((e) => e.eventSchema ?? 0));
+    return {
+      status: "blocked",
+      diagnostic: {
+        reason: "protocol",
+        detail: `${ahead.length} event(s) were written by a newer codemap `
+          + `(protocol ${top} / schema ${schema}; this build reads `
+          + `${SIDECAR_PROTOCOL} / ${EVENT_SCHEMA}). Upgrade to read this scope.`,
+        evidence: ahead.slice(0, 5).map((e) => e.id),
+      },
+    };
+  }
+  if (duplicateIds.length) {
+    return {
+      status: "blocked",
+      diagnostic: {
+        reason: "duplicate-id",
+        detail: `${duplicateIds.length} event id(s) appear twice with different `
+          + `content. An id is minted once, so two writers have claimed one — a `
+          + `person has to say which is real.`,
+        evidence: duplicateIds.slice(0, 5),
+      },
+    };
+  }
+  const forks = detectForks(events);
+  if (forks.length) {
+    return {
+      status: "blocked",
+      diagnostic: {
+        reason: "fork",
+        detail: `${forks.length} forked writer chain(s) in this scope: `
+          + `${forks[0]!.writer} has two events naming the predecessor `
+          + `${forks[0]!.prev}. That is one writer id in two clones (a copied `
+          + `machine image, a synced home directory); rotate it on one of them.`,
+        evidence: forks.flatMap((f) => f.events).slice(0, 6),
+      },
+    };
+  }
+  return { status: "complete" };
 }
 
 /**
