@@ -170,12 +170,12 @@ function migrate(d: DatabaseSync): void {
       PRIMARY KEY (scope, version_id)
     );
     CREATE INDEX IF NOT EXISTS ix_sdv_node ON shared_doc_version(scope, node_id);
-    -- The citation edge, lifted out of the JSON. WRITTEN AND NOT YET READ: the
-    -- anchor-table scans were removed by an indexed lookup over the cited ids
-    -- (workIndexFor), not by a join through this table. It exists for the query in
-    -- PROPOSAL-sidecar-materialization.md §5, which is not built. If that query
-    -- does not land, delete this table rather than leaving a write-only structure
-    -- that reads as an implemented join.
+    -- The citation edge, lifted out of the JSON. READ, by the section-5 reverse
+    -- lookup: sharedCitedAnchors takes a scope's distinct cited anchors and
+    -- docsCiting joins it to shared_doc_version to answer "which docs cite these
+    -- ids" (shared-projections.ts). Said plainly because this comment claimed
+    -- write-only for a release after the join landed, and two independent design
+    -- reviews then recommended deleting the table on the strength of it.
     CREATE TABLE IF NOT EXISTS shared_doc_citation (
       scope TEXT NOT NULL, version_id TEXT NOT NULL, anchor_id TEXT NOT NULL,
       PRIMARY KEY (scope, version_id, anchor_id)
