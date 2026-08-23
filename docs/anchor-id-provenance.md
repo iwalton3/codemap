@@ -617,12 +617,41 @@ the UI, and an agent then gets stuck re-citing them because they appear against
 unrelated pull requests — noise that compounds, on the surface whose whole job is to
 reduce a reviewer's load.
 
-**The mechanism is NOT established.** Findings are scoped per PR (`findings/<pr>`),
-`context` reads local bugs rather than shared findings, and this branch has no
-cross-PR per-anchor finding view — so nothing here explains it. Locating the actual
-surface is the first task of this arc, before any design: a recovery built on a
-guessed mechanism would repair something that is not broken and leave the thing
-that is.
+**The mechanism, located.** It is not the sidecar. Shared findings are scoped per
+PR (`findings/<pr>`) and nothing there explains it — which is where the search
+stopped the first time. **Local annotations carry no PR scope at all**, and the PR
+page's findings panel was reconstructing one client-side:
+
+```js
+// web/app.js, offStoryFindings() — before the fix
+.filter(q => (q.postedRef && q.postedRef.pr === pr) || q.targetResolved === false)
+```
+
+The rows come from `/api/queue?all=1&resolved=1`, which is universe-wide. The first
+disjunct is PR-scoped; **the second has no `pr` term in it**. So every finding on
+the map whose target is not in `@work` — every orphan, every finding raised on
+another branch — was listed on every pull request alike, under a heading saying it
+was this one's business. An agent handed that list re-cites them against whatever
+change is open, which is the reported symptom exactly.
+
+Two things made it hard to see. It reads as a *deliberate* second case (the comment
+above it named "something whose target has gone" as one of two cases that are "this
+PR's business"), and `targetResolved` is a true statement about the CODE — it just
+says nothing about which change is responsible for it.
+
+Fixed by `offStoryReason` (`src/pr.ts`) and `prOffStoryFindings` (`src/ops.ts`): a
+finding off the worklist is admitted only on a tie to this pull request — posted to
+it, aimed by `publishPath` at a file it changes, last seen in a file it changes, or
+witnessed at its head. What that leaves out is counted and reported (`unattributed`)
+rather than dropped silently, because the orphans are still real work — they are
+just nobody's pull request, and `codemap orphans` is where they are answered.
+
+**What this does NOT fix, and it is the half the recovery arc is for.** The finding
+is now off the wrong pull request; it is still unplaceable. `"at-head"` only ties a
+finding raised against a *snapshot* of the head — one raised with the branch checked
+out records `sourceRef: "@work"` and is tied by its file or not at all. Both are
+`sourceRef` questions with an address, which is the input the commit-graph
+derivation above takes.
 
 ## What would change my mind
 

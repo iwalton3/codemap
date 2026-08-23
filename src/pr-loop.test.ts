@@ -568,3 +568,28 @@ test("an agent may close the question it answered, not the finding it reported o
     assert.equal((await resolveAnnotation(root, annId, true) as any).ok, true);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("the queue can be asked for exactly a named set of findings", async () => {
+  // `prOffStoryFindings` decides WHICH findings a pull request owns and then asks
+  // for those rows. Without the filter it had to build every row on the map first
+  // — and the full form re-indexes a file per row.
+  const { root, anchorId, annId } = await fixture();
+  try {
+    const second = await annotate(root, {
+      targetKind: "anchor", targetId: anchorId, text: "second", comment: "c", kind: "finding", author: "me",
+    }) as { id: string };
+
+    const both = await reviewQueue(root, { assignedOnly: false });
+    assert.equal(both.queue.length, 2, "both are on the map");
+
+    const one = await reviewQueue(root, { assignedOnly: false, ids: [second.id] });
+    assert.deepEqual(one.queue.map((q) => q.id), [second.id]);
+    assert.equal(one.total, 1, "and the total counts what was asked for, not the map");
+
+    assert.deepEqual((await reviewQueue(root, { assignedOnly: false, ids: [] })).queue, [], "an empty set is empty, not everything");
+    assert.deepEqual(
+      (await reviewQueue(root, { assignedOnly: false, ids: [annId, "an_nope"] })).queue.map((q) => q.id), [annId],
+      "an id that is not there drops out rather than erroring",
+    );
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

@@ -781,3 +781,41 @@ export async function derivePrTriage(
   for (const i of items) if (i.importance) byImportance[i.importance] = (byImportance[i.importance] ?? 0) + 1;
   return { ...r, considered: items.length, byImportance };
 }
+
+/**
+ * Why a finding that sits on no symbol in this pull request is nonetheless this
+ * pull request's business.
+ */
+export type OffStoryReason = "posted" | "publish-path" | "in-diff" | "at-head";
+
+export interface OffStoryContext {
+  pr: number;
+  /** The PR head sha, as `sourceRef` records it when a finding is raised off a snapshot. */
+  head: string;
+  /** Every path this pull request changes. */
+  changed: Set<string>;
+  /** The target is not in the working tree, so it cannot be placed on the diff. */
+  unplaceable: boolean;
+  /** Where that target was last seen — a snapshot's copy or a retained one. */
+  file?: string;
+}
+
+/**
+ * A finding not on the worklist belongs to a pull request only if something TIES
+ * it to one. "Its target is not in the working tree" is not such a tie: it is true
+ * of every finding on every other branch, so admitting it put the whole map's
+ * orphans into every pull request's list, where agents re-cited them against
+ * changes that had nothing to do with them.
+ *
+ * The ties are the four ways a pull request can own code it does not contain:
+ * something already posted to it, somewhere a human aimed it, a file it changes,
+ * and a body it was read from.
+ */
+export function offStoryReason(a: Annotation, ctx: OffStoryContext): OffStoryReason | null {
+  if (a.postedRef && a.postedRef.pr === ctx.pr) return "posted";
+  if (!ctx.unplaceable) return null;
+  if (a.publishPath && ctx.changed.has(a.publishPath)) return "publish-path";
+  if (ctx.file && ctx.changed.has(ctx.file)) return "in-diff";
+  if (a.sourceRef && a.sourceRef === ctx.head) return "at-head";
+  return null;
+}

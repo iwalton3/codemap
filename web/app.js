@@ -95,6 +95,7 @@ export async function apiPost(path, body) {
  *   '/api/diff/doc':            Awaited<ReturnType<Ops['docDiff']>>,
  *   '/api/pr':                  Awaited<ReturnType<Ops['pr']>>,
  *   '/api/pr/story':            Awaited<ReturnType<Ops['prStoryFor']>>,
+ *   '/api/pr/findings':         Awaited<ReturnType<Ops['prOffStoryFindings']>>,
  *   '/api/pr/promote_plan':     Awaited<ReturnType<Ops['prPromotePlan']>>,
  *   '/api/pr/push_plan':        Awaited<ReturnType<Ops['prPushPlan']>>,
  *   '/api/shared':              Awaited<ReturnType<Shared['sharedFindings']>>,
@@ -2553,7 +2554,7 @@ class PrStoryPage extends Component {
    *   markError: string | null,
    *   showFindings: boolean,
    *   chapterBusy: Record<string, boolean>,
-   *   allFindings: ApiMap['/api/queue'] | null,
+   *   offStory: ApiMap['/api/pr/findings'] | null,
    *   pushDraft: { summary: string, event: string } | null,
    *   pick: Set<string> | null,
    *   editFinding: { id: string, comment: string, disposition: string, publishPath?: string } | null,
@@ -2568,7 +2569,7 @@ class PrStoryPage extends Component {
       story: null, storyErr: null, open: {}, code: {}, pending: {}, finding: null, prRef: null, showDiff: {},
       promote: null, promoted: {}, showCovered: false, deriving: false, derived: null,
       pulling: false, pulled: null, push: null, markError: null, showFindings: false, chapterBusy: {},
-      allFindings: null,
+      offStory: null,
       // These five were assigned but never listed here, and `propsChanged` merges
       // rather than replaces — so they were the fields that DID survive a move to
       // another pull request. `pushDraft` is the summary and APPROVE/REQUEST_CHANGES
@@ -2596,7 +2597,7 @@ class PrStoryPage extends Component {
     // just handed to an agent — invisible until the pane was collapsed and
     // reopened. Refresh whatever is open alongside it.
     await this.refreshOpenCode();
-    if (this.state.allFindings) await this.loadAllFindings();
+    if (this.state.offStory) await this.loadOffStory();
   });
 
   async refreshOpenCode() {
@@ -2981,15 +2982,6 @@ class PrStoryPage extends Component {
    * in turn to find them. Grouped by what the push would do with them, because that
    * is the question being answered.
    */
-  /**
-   * Findings that belong to this pull request but sit on no symbol in it.
-   *
-   * `allFindings` walks the story's steps, so a finding whose anchor is not in the
-   * PR's worklist — code the branch never touched, or code no longer in the tree —
-   * could not appear at all. That is how three orphans were found one at a time by
-   * tripping over them. Two cases are this PR's business: something already posted
-   * to it, and something whose target has gone.
-   */
   togglePick(id) {
     const next = new Set(this.state.pick || []);
     if (next.has(id)) next.delete(id); else next.add(id);
@@ -2999,8 +2991,8 @@ class PrStoryPage extends Component {
   /** Opening the list also loads the findings the story cannot show. */
   async toggleFindings() {
     this.state.showFindings = !this.state.showFindings;
-    if (!this.state.showFindings || this.state.allFindings) return;
-    await this.loadAllFindings();
+    if (!this.state.showFindings || this.state.offStory) return;
+    await this.loadOffStory();
   }
 
   /**
@@ -3009,23 +3001,24 @@ class PrStoryPage extends Component {
    * left this frozen at whatever it held when the list was opened meant resolving
    * or withdrawing an orphan changed nothing on screen.
    */
-  async loadAllFindings() {
-    // A stub `{ queue: [] }` on failure is a different shape from the real reply,
-    // and reading `.queue` off the union is what made every row here untyped.
-    const got = await api('/api/queue', { u: this.props.params.universe, all: '1', resolved: '1' }).catch(() => null);
-    this.state.allFindings = isErr(got) ? null : got;
+  async loadOffStory() {
+    // A stub on failure is a different shape from the real reply, and reading the
+    // rows off the union is what made every row here untyped.
+    const got = await api('/api/pr/findings', { u: this.props.params.universe, pr: this.props.params.pr }).catch(() => null);
+    this.state.offStory = isErr(got) ? null : got;
   }
 
-  /** @returns {FindingRow[]} */
+  /**
+   * Findings this pull request owns that sit on no symbol in it — already posted to
+   * it, aimed at a file it changes, or on code it moved away. Which those are is
+   * `prOffStoryFindings`'s decision, not this page's: the test that used to live
+   * here ("is the target missing?") is true of every orphan on the map.
+   *
+   * @returns {FindingRow[]}
+   */
   offStoryFindings() {
-    const rows = (this.state.allFindings && this.state.allFindings.queue) || [];
-    if (!rows.length) return [];
-    const onStory = new Set(this.allFindings().map(e => e.f.id));
-    const pr = Number(this.props.params.pr);
-    return rows
-      .filter(q => !onStory.has(q.id))
-      .filter(q => (q.postedRef && q.postedRef.pr === pr) || q.targetResolved === false)
-      .map(q => ({ f: q, step: null, chapter: null }));
+    const rows = (this.state.offStory && this.state.offStory.findings) || [];
+    return rows.map(q => ({ f: q, step: null, chapter: null }));
   }
 
   /** @returns {FindingRow[]} */
@@ -3067,7 +3060,14 @@ class PrStoryPage extends Component {
     if (!this.state.showFindings) return html``;
     const all = this.allFindings();
     const off = this.offStoryFindings();
-    if (!all.length && !off.length) return html`<div class="prfindings dim">No findings raised on this pull request yet.</div>`;
+    // Findings on code that is gone from the tree and tied to no pull request. They
+    // used to be listed here, on every PR alike; naming the count keeps them from
+    // going back to being found one at a time by tripping over them.
+    const stray = (this.state.offStory && this.state.offStory.unattributed) || 0;
+    const strayEl = () => html`<div class="prfstray dim" title="their target is not in the working tree and nothing ties them to this pull request — a rename, another branch, or code that is simply gone">
+      ${stray} finding${stray === 1 ? '' : 's'} point at code no longer in the tree and belong to no pull request — <code>codemap orphans</code>
+    </div>`;
+    if (!all.length && !off.length) return html`<div class="prfindings dim">No findings raised on this pull request yet.${when(stray, strayEl)}</div>`;
     const live = all.filter(e => !e.f.resolved && !e.f.withdrawn && !e.f.postedRef);
     const elected = live.filter(e => !isAgentFinding(e.f) || e.f.escalated);
     // An orphan you resolve or withdraw leaves the orphan group by the same route an
@@ -3094,6 +3094,7 @@ class PrStoryPage extends Component {
         <button class="on" on-click="${() => this.openPush('comments')}">review what would be sent</button>
         <button class="ghost" on-click="${() => { this.state.pick = new Set(); }}">clear</button>
       </div>`)}
+      ${when(stray, strayEl)}
       ${each(groups, g => html`<div class="prfgroup">
         <div class="prfgh">${g[0]} <b>${g[1].length}</b></div>
         ${each(g[1], e => html`<div class="prfrow">

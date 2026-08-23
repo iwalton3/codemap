@@ -158,6 +158,8 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return withLock(root, () => ops.pr(root, q.get("pr") ?? "", { fetch: q.get("fetch") !== "0" }));
     case "/api/pr/story":
       return withLock(root, () => ops.prStoryFor(root, q.get("pr") ?? "", { fetch: q.get("fetch") !== "0" }));
+    case "/api/pr/findings":
+      return withLock(root, () => ops.prOffStoryFindings(root, q.get("pr") ?? "", { fetch: q.get("fetch") !== "0" }));
     case "/api/pr/promote_plan":
       return withLock(root, () => ops.prPromotePlan(root, q.get("pr") ?? "", q.get("chapter") ?? ""));
     // What WOULD go to GitHub. Nothing leaves the machine on this route — see the

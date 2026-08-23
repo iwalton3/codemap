@@ -31,7 +31,7 @@ import {
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { resolveActor, requireActor, isAgentActor, actorLabel } from "./identity.js";
 import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "./diff.js";
-import { prTriage, listOpenPrs, prPacket, prStory, prAnchorCode, prPromotionPlan, derivePrTriage, prContainment } from "./pr.js";
+import { prTriage, listOpenPrs, prPacket, prStory, prAnchorCode, prPromotionPlan, derivePrTriage, prContainment, offStoryReason, type OffStoryReason } from "./pr.js";
 import { promotionOwns } from "./pr-promote.js";
 import { validateWalkthrough, buildWalkthrough, walkCoverage, staleChapters, type WalkInput } from "./walkthrough.js";
 import { LANE_POLICY } from "./lanes.js";
@@ -816,6 +816,67 @@ export async function prStoryFor(root: string, input: string, opts: { fetch?: bo
       stale: staleChapters(stored, live),
       coverage: walkCoverage(stored.features, queue, story.totals.steps - queue.size),
     },
+  };
+}
+
+/**
+ * The findings a pull request owns that sit on none of its symbols.
+ *
+ * The walkthrough is built from the worklist, so a finding whose anchor the
+ * worklist does not hold cannot appear on it at all — and some of those are
+ * squarely this pull request's business: one already posted to it, one aimed at a
+ * file it changes, one on the symbol it just renamed away.
+ *
+ * The rule for which is `offStoryReason`, and the reason it is a rule rather than
+ * "is the target missing?" is in the comment there: the map's orphans are missing
+ * from every branch, so the loose test put all of them into every pull request.
+ *
+ * `unattributed` counts what that leaves behind. It is deliberately reported
+ * rather than dropped silently — the orphans are still real work, they are just
+ * nobody's pull request. `orphanedWork` is where they are answered.
+ */
+export async function prOffStoryFindings(root: string, input: string, opts: { fetch?: boolean } = {}) {
+  const t = await prTriage(root, input, { fetch: opts.fetch });
+  if ("error" in t) return { error: t.error };
+
+  // What the walkthrough can show — its steps are the code lane, so a finding on
+  // anything else this pull request touches is off-story by construction.
+  const onStory = new Set(t.worklist.filter((w) => w.lane === "code").map((w) => w.id));
+  const changed = new Set(t.files.map((f) => f.path));
+  const anns = (await readAnnotations(root)).annotations
+    .filter((a) => a.kind === "finding" || a.kind === "question")
+    .filter((a) => !(a.target.kind === "anchor" && onStory.has(a.target.id)));
+
+  // Raw id membership, and it is the right test here: the question is whether the
+  // id can be PLACED on this diff, not whether the code still exists — which is
+  // `resolveAnchor`'s question and does not change the answer to this one.
+  const live = new Set((await readAnchorStore(root)).anchors.map((a) => a.id));
+  const unplaceable = (a: Annotation) => a.target.kind === "anchor" && !live.has(a.target.id);
+  const gone = [...new Set(anns.filter(unplaceable).map((a) => a.target.id))];
+  const offTree = findAnchorsOutsideWork(root, gone);
+  const kept = readOrphans(root, gone);
+  const lastFile = (id: string) => offTree.get(id)?.anchor.file ?? kept.get(id)?.file;
+
+  const why = new Map<string, OffStoryReason>();
+  let unattributed = 0;
+  for (const a of anns) {
+    const missing = unplaceable(a);
+    const r = offStoryReason(a, {
+      pr: t.pr.number, head: t.refs.head, changed,
+      unplaceable: missing, file: missing ? lastFile(a.target.id) : undefined,
+    });
+    if (r) why.set(a.id, r);
+    else if (missing) unattributed++;
+  }
+
+  // Full form, not brief: these rows are the ONLY ones that know their own file and
+  // symbol, because there is no step beside them to read it off — and `text` itself
+  // is `textPreview` under brief.
+  const q = await reviewQueue(root, { assignedOnly: false, includeResolved: true, brief: false, ids: [...why.keys()] });
+  return {
+    pr: t.pr.number,
+    unattributed,
+    findings: q.queue.map((f) => ({ ...f, why: why.get(f.id)! })),
   };
 }
 
@@ -3119,6 +3180,13 @@ export async function reviewQueue(
      */
     assignedOnly?: boolean;
     includeResolved?: boolean;
+    /**
+     * Exactly these annotations, in the queue's own shape. For a caller that has
+     * already decided WHICH findings it wants and needs the rows built — the full
+     * form re-indexes a file per item, so selecting first and asking second is the
+     * difference between reading this pull request's findings and reading the map's.
+     */
+    ids?: string[];
   } = {},
 ) {
   const store = await readAnnotations(root);
@@ -3128,6 +3196,7 @@ export async function reviewQueue(
   let pending = store.annotations.filter((a) => assignedOnly
     ? a.assignment && !a.resolved && (opts.includeAnswered || !a.outcome)
     : (a.kind === "finding" || a.kind === "question") && (opts.includeResolved || !a.resolved));
+  if (opts.ids) { const want = new Set(opts.ids); pending = pending.filter((a) => want.has(a.id)); }
   if (opts.disposition) pending = pending.filter((a) => (a.disposition ?? "open") === opts.disposition);
   if (opts.publishState) pending = pending.filter((a) => publishStateOf(a, pushedIds) === opts.publishState);
 
