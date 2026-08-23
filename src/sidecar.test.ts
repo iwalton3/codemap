@@ -506,3 +506,58 @@ test("a merge that adds to a shard is not mistaken for an erasure", async () => 
     assert.equal((await readFindings(t.b, "pr-1")).size, 2, "and both findings survive");
   } finally { t.cleanup(); }
 });
+
+test("push refuses when the remote already holds a peer this build cannot read", async () => {
+  // `pull` gates the merge and covers the sync path, since sync pulls first. This
+  // covers `push` on its own, which is exported and reachable without a pull.
+  const t = await team();
+  try {
+    const m = currentManifest("kai@x.com");
+    writeFileSync(
+      join(t.b, MANIFEST_DIR, principalKey("kai@x.com") + ".json"),
+      JSON.stringify({ ...m, anchorScheme: m.anchorScheme + 1 }), "utf8",
+    );
+    await sync(t.b, dana);          // kai's manifest is now on the remote
+
+    await createFinding(t.a, "pr-1", izzie, NEW);
+    git(t.a, "fetch", "-q", "origin");   // the gate reads the tracking ref, not the tree
+    const r = await push(t.a, "m", { actor: izzie }) as { error?: string };
+    assert.ok(r.error, "must refuse");
+    assert.match(r.error!, /ANCHOR_SCHEME/);
+  } finally { t.cleanup(); }
+});
+
+test("push into a remote it agrees with is not gated", async () => {
+  // CONTROL. Without it the test above passes against a gate that refuses every push,
+  // and against one that fires on our OWN tree — which would wedge the whole team the
+  // moment a single teammate upgraded.
+  const t = await team();
+  try {
+    await sync(t.b, dana);
+    await createFinding(t.a, "pr-1", izzie, NEW);
+    git(t.a, "fetch", "-q", "origin");
+    const r = await push(t.a, "m", { actor: izzie }) as { error?: string; pushed?: boolean };
+    assert.equal(r.error, undefined, "an agreeing peer pushes normally");
+    assert.equal(r.pushed, true);
+    assert.ok(onRemote(t.origin).some((f) => f.startsWith("findings/pr-1/")));
+  } finally { t.cleanup(); }
+});
+
+test("your own newer machine gates this one, but your own older machine does not", async () => {
+  // One person on two machines writes ONE manifest file from both, and skipping "my
+  // own entry" outright left that supported case ungated on the pull AND the push:
+  // the stale machine merged the newer log and could publish old-scheme events into
+  // it. The direction is what decides it.
+  const mine = currentManifest("izzie@x.com");
+
+  const ahead = checkManifest({ ...mine, anchorScheme: mine.anchorScheme + 1 }, mine);
+  assert.ok(ahead?.fatal, "a newer copy of my own manifest stops this machine");
+  assert.match(ahead!.message, /ANCHOR_SCHEME/);
+
+  // CONTROLS. Without these the rule reads as "never trust your own manifest", which
+  // would refuse the upgrade path — the normal way a machine writes over its own
+  // older claim — and would fire on every ordinary sync.
+  assert.equal(checkManifest({ ...mine, anchorScheme: mine.anchorScheme - 1 }, mine), null,
+    "an older copy is this machine upgrading over its own claim");
+  assert.equal(checkManifest({ ...mine }, mine), null, "and an identical one says nothing");
+});

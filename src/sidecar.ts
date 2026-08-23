@@ -149,7 +149,23 @@ export interface Incompat {
 
 /** Compare one peer's manifest to mine. Null = nothing worth saying. */
 export function checkManifest(theirs: SidecarManifest, mine: SidecarManifest): Incompat | null {
-  if (theirs.principal === mine.principal) return null; // my own entry
+  // My OWN entry, which is not automatically me: one person on two machines writes
+  // one manifest file from both, and skipping it outright left the supported
+  // two-machine case ungated on the pull AND the push. The direction is what decides
+  // it — if the remote copy is ahead, this machine is the stale one and its
+  // scheme-N events would land in a log that has moved on. If it is behind, this is
+  // the upgrade writing over its own older claim, which is the normal path.
+  if (theirs.principal === mine.principal) {
+    return theirs.anchorScheme > mine.anchorScheme
+      ? {
+        fatal: true,
+        message:
+          `your own manifest on this sidecar is ANCHOR_SCHEME ${theirs.anchorScheme} and this machine is ${mine.anchorScheme}. `
+          + `Another of your machines is on a newer codemap; anchor ids are derived differently, so anything written here `
+          + `would mis-target. Upgrade this machine before syncing.`,
+      }
+      : null;
+  }
   const who = theirs.principal;
   if (theirs.anchorScheme !== mine.anchorScheme) {
     return {
@@ -416,12 +432,35 @@ async function restoreErased(root: string, erased: Erasure[]): Promise<void> {
 }
 
 /**
+ * Fetch, and it is safe to do this OUTSIDE the sidecar lock.
+ *
+ * The lock exists to keep two commit-merge-push sequences from interleaving against
+ * one working tree. A fetch touches neither the working tree nor the index — it
+ * writes objects and `refs/remotes/*`, and git serializes those itself. It is also
+ * the slow part: network-bound, up to the full git timeout, during which holding the
+ * lock stalls every other local reader and writer of this sidecar for no reason.
+ *
+ * `false` means there is no remote, which is not an error: a sidecar with no remote
+ * is a perfectly good local one and the whole design works offline.
+ */
+/** What an already-attempted fetch left behind: done, not attempted, or its failure. */
+type FetchState = boolean | { error: string };
+
+function fetchRemote(root: string): { fetched: boolean } | { error: string } {
+  if (!g(root, ["remote"]).out) return { fetched: false };
+  const r = g(root, ["fetch", "--quiet", "origin"]);
+  return r.ok ? { fetched: true } : { error: `fetch failed: ${r.err.slice(0, 300)}` };
+}
+
+/**
  * Fetch and merge. A sidecar with no remote is a perfectly good local one, so
  * that is a no-op rather than an error — the whole design works offline and only
  * needs a remote to reach other people.
  */
 export async function pull(root: string, actor?: Actor): Promise<PullResult | { error: string }> {
-  return withSidecarLock(root, () => pullHeld(root, actor));
+  const f = fetchRemote(root);
+  if ("error" in f) return f;
+  return withSidecarLock(root, () => pullHeld(root, actor, f.fetched));
 }
 
 /**
@@ -432,21 +471,32 @@ export async function pull(root: string, actor?: Actor): Promise<PullResult | { 
  * must take the lock and the internal one must not, or every sync deadlocks against
  * itself. Same shape as `sync`/`syncHeld`, and the lock is not reentrant.
  */
-async function pullHeld(root: string, actor?: Actor): Promise<PullResult | { error: string }> {
+async function pullHeld(root: string, actor?: Actor, fetched: FetchState = false): Promise<PullResult | { error: string }> {
   if (!g(root, ["remote"]).out) return { gained: 0 };
+  if (typeof fetched === "object") return fetched;
   const before = await countEvents(root);
-  const fetch = g(root, ["fetch", "--quiet", "origin"]);
-  if (!fetch.ok) return { error: `fetch failed: ${fetch.err.slice(0, 300)}` };
+  // Only when the caller has not already fetched outside the lock. The in-lock fetch
+  // stays for the paths that cannot hoist it: a brand-new sidecar whose repo did not
+  // exist yet, and `pushHeld` re-pulling after a rejection.
+  if (!fetched) {
+    const r = g(root, ["fetch", "--quiet", "origin"]);
+    if (!r.ok) return { error: `fetch failed: ${r.err.slice(0, 300)}` };
+  }
 
   const branch = branchOf(root);
+  // PINNED to a sha, not left as `origin/<branch>`, and this matters more since the
+  // fetch moved outside the lock: another process's fetch does not take the lock, so
+  // the ref can advance between the manifest check and the merge — and then we would
+  // have vetted one state and merged another. Resolve once, use that sha for both.
+  const remoteSha = g(root, ["rev-parse", "--verify", "--quiet", `origin/${branch}`]).out;
   // Nothing fetched yet (an empty remote, or a first sync) — not an error.
-  if (!g(root, ["rev-parse", "--verify", "--quiet", `origin/${branch}`]).ok) return { gained: 0 };
+  if (!remoteSha) return { gained: 0 };
 
-  // Checked against the FETCHED ref, before merging. Reading the working tree
+  // Checked against the FETCHED commit, before merging. Reading the working tree
   // would compare my manifest to my own, and a fatal mismatch should refuse the
   // data rather than merge it and then complain.
   const mine = currentManifest(actor?.principal ?? "");
-  const incompatEarly = checkPeers(remoteManifests(root, branch), mine);
+  const incompatEarly = checkPeers(remoteManifests(root, remoteSha), mine);
   if (incompatEarly?.fatal) return { error: incompatEarly.message };
 
   // No `-c merge.union.driver=...`: `union` is one of git's BUILT-IN drivers, and
@@ -463,7 +513,7 @@ async function pullHeld(root: string, actor?: Actor): Promise<PullResult | { err
   // erase in that case either.
   const beforeSha = g(root, ["rev-parse", "--verify", "--quiet", "HEAD"]).out;
 
-  const merge = g(root, ["merge", "--no-edit", "--allow-unrelated-histories", `origin/${branch}`]);
+  const merge = g(root, ["merge", "--no-edit", "--allow-unrelated-histories", remoteSha]);
   if (!merge.ok) {
     // With union merging on the shards, the realistic causes are a genuine
     // conflict in the manifest or attributes — not in anyone's events.
@@ -488,13 +538,18 @@ async function pullHeld(root: string, actor?: Actor): Promise<PullResult | { err
   };
 }
 
-/** Peers' manifests as they exist on the fetched ref, without touching the tree. */
-function remoteManifests(root: string, branch: string): SidecarManifest[] {
-  const listing = g(root, ["ls-tree", "--name-only", `origin/${branch}:${MANIFEST_DIR}`]);
+/**
+ * Peers' manifests as they exist at a fetched COMMIT, without touching the tree.
+ *
+ * A sha rather than `origin/<branch>`: the ref can move under us now that fetching
+ * does not take the lock, and a caller that vets one state must merge that same one.
+ */
+function remoteManifests(root: string, rev: string): SidecarManifest[] {
+  const listing = g(root, ["ls-tree", "--name-only", `${rev}:${MANIFEST_DIR}`]);
   if (!listing.ok) return [];
   const out: SidecarManifest[] = [];
   for (const name of listing.out.split("\n").map((s) => s.trim()).filter((s) => s.endsWith(".json"))) {
-    const blob = g(root, ["show", `origin/${branch}:${MANIFEST_DIR}/${name}`]);
+    const blob = g(root, ["show", `${rev}:${MANIFEST_DIR}/${name}`]);
     if (!blob.ok) continue;
     try {
       const m = JSON.parse(blob.out) as SidecarManifest;
@@ -504,7 +559,21 @@ function remoteManifests(root: string, branch: string): SidecarManifest[] {
   return out;
 }
 
-export interface PushResult { pushed: boolean; committed: boolean; retries: number }
+export interface PushResult {
+  pushed: boolean;
+  committed: boolean;
+  retries: number;
+  /**
+   * What the retry pulls brought in.
+   *
+   * A rejected push re-pulls, and that pull can gain events, restore ones a merge
+   * deleted, and raise a warning — all of which were dropped on the floor, so a sync
+   * that repaired a deletion on its retry path reported nothing at all.
+   */
+  gained?: number;
+  restored?: Restored[];
+  warning?: string;
+}
 
 /**
  * Did the remote branch actually take our tip?
@@ -542,16 +611,44 @@ async function pushHeld(root: string, message: string, opts: { attempts?: number
   if (!g(root, ["remote"]).out) return { pushed: false, committed, retries: 0 };
 
   const branch = branchOf(root);
+
+  // The push-side gate, and it is deliberately against the REMOTE's manifests, not
+  // the ones in our tree. `pull` already refuses to merge a fatally incompatible
+  // peer, which covers the sync path; this covers `push` called on its own.
+  //
+  // Checking the local tree instead looks equivalent and is not: our tree holds every
+  // peer's manifest, so the moment one teammate upgrades, everybody else would refuse
+  // to push and the team would wedge on somebody else's version. The question a
+  // pusher must ask is "am I the one who disagrees with what is already there", which
+  // is what the fetched ref answers.
+  const gateSha = g(root, ["rev-parse", "--verify", "--quiet", `origin/${branch}`]).out;
+  const gate = gateSha ? checkPeers(remoteManifests(root, gateSha), currentManifest(opts.actor?.principal ?? "")) : null;
+  if (gate?.fatal) return { error: `refusing to push into a sidecar this build cannot agree with: ${gate.message}` };
+
+  // Accumulated across retries, not overwritten: two rejections mean two pulls, and
+  // the events or repairs from the first must not vanish when the second reports.
+  let gained = 0;
+  const restored: Restored[] = [];
+  let warning: string | undefined;
+
   for (let i = 0; i < attempts; i++) {
     const p = g(root, ["push", "--quiet", "origin", `HEAD:${branch}`]);
     if (p.ok) {
       if (!remoteHasHead(root, branch)) {
         return { error: `git push reported success but origin/${branch} does not contain this commit — nothing was sent. The sidecar is intact; retry, and check the remote's refusal (a hook, or a protected branch).` };
       }
-      return { pushed: true, committed, retries: i };
+      return {
+        pushed: true, committed, retries: i,
+        ...(gained ? { gained } : {}),
+        ...(restored.length ? { restored } : {}),
+        ...(warning ? { warning } : {}),
+      };
     }
     const pulled = await pullHeld(root, opts.actor);
     if ("error" in pulled) return { error: `push rejected and the follow-up pull failed: ${pulled.error}` };
+    gained += pulled.gained;
+    if (pulled.restored) restored.push(...pulled.restored);
+    warning = pulled.warning ?? warning;
   }
   return { error: `push still rejected after ${attempts} attempts — someone is pushing continuously, or the remote refuses this branch` };
 }
@@ -560,13 +657,24 @@ export interface SyncResult { gained: number; pushed: boolean; committed: boolea
 
 /** Send and receive, in the order that makes the publish guard trustworthy. */
 export async function sync(root: string, actor?: Actor, message = "codemap: review state"): Promise<SyncResult | { error: string }> {
-  // The WHOLE sequence, not each git call: commit-then-pull-then-push is one
-  // transaction against one working tree, and interleaving two of them is how you
+  // Fetch first and unlocked — see `fetchRemote`. A failure is NOT fatal here: the
+  // sidecar may be brand new (no repo yet, so nothing to fetch from) or offline, and
+  // both of those still have local work to commit. `syncHeld` fetches for itself when
+  // this did not, and reports the failure then.
+  const pre = fetchRemote(root);
+  // A failure here is NOT fatal: the sidecar may not be a repo yet (nothing to fetch
+  // from, reported as `fetched: false`, and `ensureSidecar` is about to create it).
+  // But a genuine fetch failure IS remembered rather than retried in the lock — the
+  // retry would fail the same way after another full git timeout, so a user with no
+  // network waited twice as long to be told once.
+  const fetched: FetchState = "error" in pre ? pre : pre.fetched;
+  // The WHOLE remaining sequence, not each git call: commit-then-merge-then-push is
+  // one transaction against one working tree, and interleaving two of them is how you
   // get a push that carries half of somebody else's merge. See `withSidecarLock`.
-  return withSidecarLock(root, () => syncHeld(root, actor, message));
+  return withSidecarLock(root, () => syncHeld(root, actor, message, fetched));
 }
 
-async function syncHeld(root: string, actor?: Actor, message = "codemap: review state"): Promise<SyncResult | { error: string }> {
+async function syncHeld(root: string, actor?: Actor, message = "codemap: review state", fetched: FetchState = false): Promise<SyncResult | { error: string }> {
   const ready = await ensureSidecar(root, actor);
   if ("error" in ready) return ready;
   // Pull FIRST, always. `alreadyPosted` is only a guard against double-publishing
@@ -578,16 +686,19 @@ async function syncHeld(root: string, actor?: Actor, message = "codemap: review 
   // first pull a new person ever runs fails on their own setup's files.
   const pre = commitLocal(root, message);
   if (typeof pre === "object") return pre;
-  const pulled = await pullHeld(root, actor);
+  const pulled = await pullHeld(root, actor, fetched);
   if ("error" in pulled) return pulled;
   const pushed = await pushHeld(root, message, { actor });
   if ("error" in pushed) return pushed;
+  // The push's own numbers are folded in, not dropped: its retry pulls are pulls too.
+  const restored = [...(pulled.restored ?? []), ...(pushed.restored ?? [])];
+  const warning = pulled.warning ?? pushed.warning;
   return {
-    gained: pulled.gained,
+    gained: pulled.gained + (pushed.gained ?? 0),
     pushed: pushed.pushed,
     committed: pre === "committed" || pushed.committed,
     retries: pushed.retries,
-    ...(pulled.warning ? { warning: pulled.warning } : {}),
-    ...(pulled.restored ? { restored: pulled.restored } : {}),
+    ...(warning ? { warning } : {}),
+    ...(restored.length ? { restored } : {}),
   };
 }

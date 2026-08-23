@@ -223,11 +223,42 @@ function usage(): never {
 }
 
 
+/**
+ * The one moment a person is watching, so this is where the integrity work reports.
+ *
+ * Everything below is a fact the sync already computed and used to throw away.
+ * Restored events and blocked scopes in particular are silent everywhere else: a
+ * blocked scope still answers reads, marked non-authoritative, and nothing would
+ * otherwise tell you it happened.
+ */
 async function cmdSync(root: string): Promise<void> {
-  const r = await shared.sharedSync(root) as Record<string, unknown>;
+  const r = await shared.sharedSync(root) as Record<string, any>;
   if (r.error) { console.error(r.error); process.exit(1); }
   console.log(`sidecar ${r.sidecar}  (${r.universe})`);
-  console.log(`  received ${r.gained} event(s)${r.pushed ? ", sent yours" : ", nothing to send"}${(r.retries as number) ? ` after ${r.retries} retry/retries` : ""}`);
+
+  // Three states, not two. `pushed` asserts the remote holds our commits and is
+  // honestly true on a sync with nothing to send; `committed` says whether we had
+  // anything of our own. Reading "sent yours" off `pushed` claimed a send on every
+  // empty sync — and reading it off `committed` alone claims a send on a sidecar with
+  // no remote at all, where the work is committed locally and goes nowhere.
+  const sent = !r.committed ? "nothing of your own to send"
+    : r.pushed ? "sent yours"
+    : "committed yours locally (no remote configured)";
+  const retries = r.retries ? ` after ${r.retries} retry/retries` : "";
+  console.log(`  received ${r.gained} event(s), ${sent}${retries}`);
+
+  for (const x of (r.restored ?? []) as { path: string; events: number }[]) {
+    console.log(`  RESTORED ${x.events} event(s) a merge had deleted from ${x.path}`);
+  }
+
+  const m = r.materialized as { scanned: number; folded: number; blocked: { scope: string; reason: string }[] } | undefined;
+  if (m?.scanned) {
+    // "rebuilt", not "stored": a scope can fold and still fail to land its rows —
+    // `ensureMaterialized` reports that as folded-but-not-fresh, and it appears in
+    // `blocked` below. Claiming it reached the store would contradict its own row.
+    console.log(`  rebuilt ${m.folded} of ${m.scanned} scope(s)`);
+    for (const b of m.blocked) console.log(`  BLOCKED ${b.scope}: ${b.reason}`);
+  }
   if (r.warning) console.log(`  WARNING: ${r.warning}`);
 }
 
