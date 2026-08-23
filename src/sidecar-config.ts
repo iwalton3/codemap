@@ -16,7 +16,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { CODEMAP_DIR } from "./schema.js";
 import { originSlug } from "./git.js";
@@ -39,9 +39,59 @@ export interface SidecarConfig {
  * into. The slash becomes a separator in the scope path, which is fine and reads
  * well: `acme/api/findings/pr-264`.
  */
+/**
+ * Cached briefly, because deriving it spawns `git remote get-url` and
+ * `resolveSidecar` is now on a per-ANCHOR read path (`getAnchor`), not only on the
+ * shared ops. Measured at ~0.97ms a call, essentially all of it the spawn; a burst
+ * of reads pays it once.
+ *
+ * A TTL rather than process lifetime, and the `db()` connection cache is NOT the
+ * precedent to copy: a root's database is a fixed relationship, while the origin
+ * is mutable configuration that decides the NAMESPACE everything shared is written
+ * under. `git init`, then `git remote add origin`, then keep using the running
+ * `serve.js` is an ordinary morning — and a permanent memo would keep writing that
+ * universe's scopes under the directory name while teammates read `owner/repo`,
+ * silently, until a restart. Same shape as `fetchPrMeta`'s TTL and for the same
+ * reason: the field genuinely moves.
+ */
+/**
+ * A backstop under the stamp below, not a substitute for it.
+ *
+ * `.git/config` is what `git remote add/set-url` writes, so the stamp catches the
+ * ordinary case the instant it happens. It does NOT catch every way the effective
+ * origin can move: `url.*.insteadOf` rewrites it from global or system config,
+ * `include.path`/`includeIf` can put `remote.origin.url` in another file entirely,
+ * and a coarse-resolution filesystem can hide a same-size rewrite inside one tick.
+ * Re-resolving once a minute costs one spawn and makes all of those self-heal.
+ */
+const KEY_TTL_MS = 60_000;
+const keyCache = new Map<string, { stamp: string; at: number; key: string }>();
+
+/**
+ * `.git/config` as a change signal — the file `git remote` writes.
+ *
+ * Null when there is no ordinary `.git` directory: a gitless universe (there is
+ * one in the guinea-pig set) or a worktree, where `.git` is a FILE pointing at a
+ * shared common dir. Resolving that needs another spawn, which is the cost being
+ * avoided, so those roots simply do not cache — the behaviour they had before.
+ * Nanosecond mtime for the same reason `scopeFingerprint` uses it: millisecond
+ * resolution collapses a write that lands in the same tick as the read.
+ */
+function configStamp(root: string): string | null {
+  try {
+    const st = statSync(join(root, ".git", "config"), { bigint: true });
+    return `${st.mtimeNs}:${st.size}`;
+  } catch { return null; }
+}
+
 export function universeKey(root: string): string {
+  const stamp = configStamp(root);
+  const hit = keyCache.get(root);
+  if (hit && stamp !== null && hit.stamp === stamp && Date.now() - hit.at < KEY_TTL_MS) return hit.key;
   const slug = originSlug(root);
-  return slug ? `${slug.owner}/${slug.repo}`.toLowerCase() : basename(resolve(root)).toLowerCase();
+  const key = slug ? `${slug.owner}/${slug.repo}`.toLowerCase() : basename(resolve(root)).toLowerCase();
+  if (stamp !== null) keyCache.set(root, { stamp, at: Date.now(), key });
+  return key;
 }
 
 /**
