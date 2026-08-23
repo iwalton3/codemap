@@ -82,8 +82,14 @@ Consequences that are decided, not open:
 
 ## The performance contract
 
-**A sync must stay under ten seconds** (owner's budget, 2026-08-23). That is the
-number to design against; nothing else here has a stated bound.
+Two budgets, both the owner's (2026-08-23), and they are the numbers to design
+against:
+
+- **A general web UI interaction: under 0.5s.** Anything a reviewer does by
+  clicking — opening a doc, a PR, an anchor, marking something.
+- **Push/pull: under 10s, EXCLUDING git's own fetch and push.** Network time is
+  not ours to spend or to hide behind; the ten seconds is for the work this
+  codebase does — folding scopes and writing projections.
 
 Measured on this machine, so the next person argues with numbers rather than
 intuition:
@@ -95,11 +101,12 @@ intuition:
 | …20,000 events | 61ms |
 | change-scan across 297 scopes / 891 shards (256 note buckets, 40 PR scopes, docs) | **9ms** |
 
-Two things follow. **A shared write can afford to append**, because a write is a
-user act — publish a doc, file a finding — and 61ms is against a scope far larger
-than anything the real target has. And **sync is dominated by git**, not by us:
-detecting which scopes changed costs single-digit milliseconds across a whole
-universe, so the fold budget is spent only on scopes a pull actually moved.
+Two things follow. **A shared write can afford to append** and stay inside the
+0.5s interaction budget by two orders of magnitude — a write is a user act
+(publish a doc, file a finding), and 61ms is against a scope far larger than
+anything the real target holds. And **the sync budget is nearly all unspent**:
+deciding which scopes a pull moved costs 9ms across the whole universe, so the
+folding is done only on those, against ten seconds that excludes the network.
 
 The per-write cost is O(scope) and will grow. The fix, when a scope reaches six
 figures, is to maintain causal heads incrementally instead of re-folding to get
