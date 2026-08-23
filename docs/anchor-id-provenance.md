@@ -563,6 +563,67 @@ rather than guessed at the end of a long session.
 Also still bypassing: `orphanedWork`'s `lost` bucket, and the shared citation
 presentation's `lost` label — both presentation over an already-resolved answer.
 
+## Recovery: the next arc
+
+Everything above makes an unplaceable id *legible*. It does not place it. That is
+the next piece of work, and it splits along a boundary that is worth stating before
+anyone designs against the wrong half.
+
+**Local ids are mine to rewrite. Shared ids are evidence I can only interpret.**
+
+- Locally, the repair exists: `reindex` calls `migrateOverloads`, which pairs old
+  ids to new by body hash within `file + symbolPath` groups and rewrites reviews,
+  triage, annotations, bugs and citations. A database migration is cheap. The gap is
+  what that pairing REFUSES — a `symbolPath` change (never covered, and it breaks
+  the group key), a group where a body also moved, and the fact that it runs on full
+  `reindex` only, not `applyIndexUpdate`.
+- On the sidecar it is not available, and a naive local remap makes things worse
+  rather than better: it moves local records onto new ids while the shared log still
+  holds the old ones, so it CREATES the divergence. Rewriting shared ids would also
+  mean asserting a pairing on everyone else's behalf — my body-hash evidence is a
+  fact about my checkout, not theirs.
+
+### Two mechanisms, and they compose
+
+**Derive the candidate from the commit graph.** A finding already carries
+`sourceRef` (a commit) beside its `witness.anchorId`. So an id that will not resolve
+is a question with an address: index *their* commit yourself, read the file and
+symbol path off your own snapshot of it, and let git say what happened to that file
+since. The locator this design refused to carry (§4) turns out to be re-derivable
+from the commit the record already names — and re-derived locally, which is strictly
+better than asserted by a build you do not trust.
+
+**Publish the result as a remap EVENT.** An append-only log cannot be migrated, but
+it can be *interpreted*: emit `remap` — under derivations D→D', `a_old` names the
+same symbol as `a_new` — and let the fold apply it to targets. History is not
+rewritten; an interpretation is appended, auditable, and retractable by a later
+event. Same ratchet as `finding.relocation`: an agent proposes, a person applies,
+and the evidence goes in the event, because a wrong remap is false provenance
+across the whole fleet rather than on one machine.
+
+The two halves are one workflow: the commit graph is how a candidate is *derived*,
+the remap event is how it is *published*. Fold-time application is a projection
+concern, which is where `PROPOSAL-sidecar-materialization.md` steps 1–2 put it.
+
+### The pain this is actually for — observed, mechanism not yet located
+
+Findings, not docs. A doc can be rewritten: its value is its prose, its citations
+are replaceable, and re-documenting against current symbols is a legitimate repair.
+A finding is a claim about specific code at a specific moment, and re-pointing it
+wrongly is the exact failure `witness`/`sourceRef` exist to prevent.
+
+**Reported from codemap as deployed off `master`:** unplaceable findings surface in
+the UI, and an agent then gets stuck re-citing them because they appear against
+unrelated pull requests — noise that compounds, on the surface whose whole job is to
+reduce a reviewer's load.
+
+**The mechanism is NOT established.** Findings are scoped per PR (`findings/<pr>`),
+`context` reads local bugs rather than shared findings, and this branch has no
+cross-PR per-anchor finding view — so nothing here explains it. Locating the actual
+surface is the first task of this arc, before any design: a recovery built on a
+guessed mechanism would repair something that is not broken and leave the thing
+that is.
+
 ## What would change my mind
 
 - **If the pairing invariant cannot be pinned.** The whole design rests on an id and
