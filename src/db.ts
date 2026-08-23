@@ -114,6 +114,38 @@ function migrate(d: DatabaseSync): void {
     -- anchors table under ref = the commit sha). This is the branch-diff cache:
     -- a commit maps to an immutable anchor set, and old-branch data is never lost.
     CREATE TABLE IF NOT EXISTS snapshots (ref TEXT PRIMARY KEY, branch TEXT, at TEXT, count INTEGER);
+
+    -- Materialized sidecar folds. The sidecar's event log stays authoritative;
+    -- these are a cache of the projection, rebuildable and gitignored with the rest
+    -- of the DB. See PROPOSAL-sidecar-materialization.md §3-§4.
+    --
+    -- NO column here may hold anything DERIVED from the anchors table. The cache
+    -- key deliberately excludes ANCHOR_SCHEME and HASH_SCHEME on the grounds that
+    -- the projection copies ids and hashes VERBATIM from events and joins to
+    -- the anchors table at read time, so a scheme bump changes the join result and
+    -- cannot change these rows. Store a derived verdict as a column and both schemes
+    -- silently belong in the key again, with well-formed-looking rows that are
+    -- wrong. That is the trap; this comment is the guard.
+    CREATE TABLE IF NOT EXISTS shared_scope (
+      scope TEXT PRIMARY KEY,
+      fingerprint TEXT NOT NULL,
+      folded_at TEXT NOT NULL,
+      events INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS shared_finding (
+      scope TEXT NOT NULL, id TEXT NOT NULL,
+      target_kind TEXT NOT NULL, target_id TEXT NOT NULL,
+      state TEXT NOT NULL, severity TEXT, category TEXT, line INTEGER,
+      author TEXT NOT NULL, created_at TEXT NOT NULL,
+      -- Derived by the FOLD, not by a join: recomputed whole on every re-fold and
+      -- never incremented, so the ack queue is a WHERE rather than a scan over
+      -- deserialized objects.
+      needs_ack INTEGER NOT NULL, contested INTEGER NOT NULL,
+      body TEXT NOT NULL,
+      PRIMARY KEY (scope, id)
+    );
+    CREATE INDEX IF NOT EXISTS ix_sf_target ON shared_finding(target_id);
+    CREATE INDEX IF NOT EXISTS ix_sf_queue  ON shared_finding(scope, needs_ack);
   `);
   // anchors.derivation — NULL on rows indexed before provenance existed, which is
   // `legacy_live_derivation`: this machine cannot say how its own index was made.

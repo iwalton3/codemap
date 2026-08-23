@@ -11,6 +11,8 @@ import type { Actor } from "./schema.js";
 import { requireActor, isAgentActor } from "./identity.js";
 import { comparableHashes, sameBody } from "./normalize.js";
 import { classifyCitations } from "./citation-state.js";
+import { readCached } from "./materialize.js";
+import { findingsProjection } from "./shared-projections.js";
 import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
 import { resolveSidecar, scopeFor, type SidecarConfig } from "./sidecar-config.js";
 import { originSlug, headCommit, currentBranch } from "./git.js";
@@ -20,6 +22,7 @@ import {
   createFinding, corroborate, comment, promote, request, setState, recordOutcome,
   markPosted, markUpstreamed, promoteToBug, readFindings, needsHumanAck, ackQueue,
   revise, resolveContest, relocate,
+  foldFindings, findingScope,
   type SharedFinding, type Verdict, type Ask, type FindingState, type NewFinding,
 } from "./shared-findings.js";
 import { publishWalkthrough, readWalkthroughs, currentWalkthrough, staleWalkthroughs } from "./shared-walkthrough.js";
@@ -213,7 +216,7 @@ export async function relocateFinding(
   // the anchor index would refuse a legitimate node-to-node relocation, with a
   // message about anchors that would not even be true.
   const targetKind = opts.apply && kind === "moved" && opts.to
-    ? (await readFindings(b.cfg.path, prKey(b.cfg, pr))).get(id)?.target.kind
+    ? (await cachedFindings(root, b.cfg, pr)).get(id)?.target.kind
     : undefined;
   if (targetKind === "anchor" && opts.to) {
     const here = await liveHashes(root);
@@ -244,10 +247,24 @@ export async function settleContest(root: string, pr: number | string, id: strin
   return "error" in r ? r : { ok: true, id, field };
 }
 
+/**
+ * A PR's findings, through the materialized cache.
+ *
+ * The sidecar's log stays authoritative; this is the projection of it. Reads that
+ * miss re-fold and store; reads that hit answer from rows. The sidecar PATH is the
+ * identity half of the cache key, so pointing a universe at a different sidecar
+ * cannot reuse rows folded from the first one.
+ *
+ * Write paths inside `shared-findings.ts` still fold the log directly, and should:
+ * they need the freshest state at the moment they append, not a projection of it.
+ */
+const cachedFindings = (root: string, cfg: { path: string; universe: string }, pr: number | string) =>
+  readCached(root, cfg.path, findingScope(prKey(cfg, pr)), cfg.path, foldFindings, findingsProjection);
+
 export async function sharedFindings(root: string, pr: number | string, opts: { queue?: boolean } = {}) {
   const cfg = resolveSidecar(root);
   if (!cfg) return { error: NO_SIDECAR };
-  const all = [...(await readFindings(cfg.path, prKey(cfg, pr))).values()];
+  const all = [...(await cachedFindings(root, cfg, pr)).values()];
   const places = await classifyCitations(root, [...new Set(all.filter((f) => f.target.kind === "anchor").map((f) => f.target.id))]);
   const chosen = opts.queue ? ackQueue(all) : all;
   const place = (f: SharedFinding) => places.get(f.target.id) ?? { state: "unknown" as const };
@@ -281,7 +298,7 @@ export async function inboundReplies(root: string, pr: number | string, opts: { 
   const slug = originSlug(root);
   if (!slug) return { error: "no GitHub remote on this universe, so there is no pull request to read replies from" };
 
-  const all = [...(await readFindings(cfg.path, prKey(cfg, pr))).values()];
+  const all = [...(await cachedFindings(root, cfg, pr)).values()];
   const published = all.filter((f) => f.posted?.key);
   if (!published.length) return { universe: cfg.universe, pr, findings: [], note: "nothing from here has been published to the pull request" };
 
