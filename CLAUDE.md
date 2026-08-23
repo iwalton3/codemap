@@ -188,6 +188,16 @@ generated file to drift. `npm test` runs it (`tsc -p web`, well under a second).
   as opaque text (Lit sigils, raw `.map()` in a slot, `ref=` typos). Run it when
   re-vendoring — the command is in `web/vendor/vdx/PROVENANCE.md`.
 
+## The sidecar — read `docs/sidecar-architecture.md` before touching shared state
+
+It is short and it is normative; the two proposal documents predate it and lose
+where they disagree. The three things it settles, so a reader knows whether they
+need it: the **log is authoritative** for shared state and SQLite is its
+projection; the log is **pull/push, never read on an ordinary MCP or web read**;
+and there is **one canonical table per entity kind**, so a teammate's doc is a
+`node_versions` row with an origin marker rather than a parallel table needing a
+bridge onto every surface.
+
 ## Analyzers (opt-in only)
 
 - Framework analyzers (currently Marten/Wolverine) live in `analyzers/` and are
