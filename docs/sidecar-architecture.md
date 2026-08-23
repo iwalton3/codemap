@@ -57,6 +57,42 @@ That is what the projection BUYS, and it is worth stating as a cost rather than 
 nicety: folding a scope means parsing every shard in it, so a per-query fold puts
 the whole history of a pull request on the read path.
 
+## The ownership rule
+
+Same rule as "the log is authoritative", seen from the SQLite side, and it is
+normative:
+
+> **A fold-owned row (`origin IS NOT NULL`) is written only by the fold. Every
+> local mutation is either an `origin IS NULL` operation or an event append.**
+
+This sentence did not exist when the first unification plan was written, and a
+review found ten defects in that plan of which nine were consequences of its
+absence — five existing write paths (`writeNode`'s analyzer delete and its
+in-place edit, `deleteNode`, `confirmNode`, `remapNodeCitations`, `ackHole`'s
+tombstone) would each have mutated projection rows the moment docs unified. The
+failures are quiet in a specific way worth knowing: **nothing about a local
+mutation moves the scope fingerprint**, so the cache keeps serving the corrupted
+rows indefinitely, and missing rows do not raise `CorruptProjection`, so that
+escape hatch never fires either.
+
+The cheap structural enforcement is one helper that every local `node_versions`
+mutation goes through, appending `AND origin IS NULL` — or a SQLite trigger that
+raises unless a fold is active, which is zero-dependency and converts every one of
+those bugs into a loud error instead of silent cache rot.
+
+**A blocked scope's rows still SHOW.** Filtering them out of `loadNodes` looks
+safer and is not: an agent that cannot see a teammate's doc re-documents over it
+and manufactures the contest the design exists to make loud. §7's rule holds —
+return the rows, mark the answer non-authoritative, suppress nothing on their
+strength. The carrier is a field on the value (`origin: { scope, status }`), so a
+caller that ignores it shows the doc, which is the safe default.
+
+**Sidecar unavailability must fail closed, not fail crashed.** Every core surface
+reaches the sidecar today through a dynamic import with `.catch(() => null)`
+precisely so an unreadable sidecar cannot break a local read. Once `loadNodes`
+folds the docs scope, an I/O error would otherwise throw inside outline, search,
+context, diff and the analyzer. It must degrade to `status: "blocked"`, never throw.
+
 ## What this means for the code
 
 Consequences that are decided, not open:
