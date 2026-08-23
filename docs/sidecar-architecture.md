@@ -193,6 +193,68 @@ push must never be reported as having pushed.
 `src/scenario.ts` cannot catch it today because its git wrapper passes
 `-c user.email=…` on every call, which masks the whole class.
 
+## Conflict repair, without deleting anything
+
+A fork and a differing-content duplicate id are facts about immutable history.
+Append-only means the evidence cannot be removed, so today `scopeStatus` returns
+`blocked` **forever** — and the diagnostic's advice ("rotate the writer id") stops
+future forked events without touching the two that exist. One synced home
+directory permanently marks a pull request's findings non-authoritative. Fail
+closed with no exit is not fail closed; it is a dead scope.
+
+Repair is therefore two mechanisms, and only the second involves a person.
+
+### 1. Degrade the vector, automatically — this is the soundness fix
+
+A fork means one `(scope, writer)` chain is not sequential, which is exactly the
+premise the causal vector's single-writer compression rests on. `causality` treats
+a writer's own previous event as a parent (`ownLast`), which is true by
+construction for a sequential writer and **false for a forked one**.
+
+So: **for a writer with a detected fork, drop the `ownLast` edge.** Their events
+then know only what their own `after` explicitly names — which is what they
+actually recorded having seen. This makes `saw()` return false in cases where it
+previously returned true, so the vector becomes a lower bound instead of an exact
+answer.
+
+That direction is the safe one and it is the whole argument: a lower bound errs
+toward **raising** contests, never toward suppressing them, and a suppressed
+contest is the failure this system exists to prevent. Nothing is deleted, nothing
+is rewritten, and the scope keeps answering. The unforked case is untouched, which
+`eventlog.test.ts`'s "one machine's own history is still its own" already pins.
+
+### 2. Acknowledge the evidence, by a person — this only silences the warning
+
+Soundness is handled above; what remains is that the scope is still *reported*
+non-authoritative, and someone has to be able to say "I have seen this fork and it
+is understood". An append-only event does that:
+
+- Kind `scope.acknowledged`, subject the scope, carrying **a digest of the
+  evidence** — the fork's `(writer, prev, event ids)` or the duplicated ids.
+- **Identity is the evidence digest, not the prose.** Same rule `ackHole` already
+  applies: comparing rendered text makes a copy edit look like new evidence. A
+  LATER fork produces a different digest and blocks the scope again, which is the
+  property that makes acknowledging safe.
+- **A person, never an agent.** Consistent with `retireSharedDoc` and with the
+  contest rule that an agent may not settle a disagreement between two people.
+- `scopeStatus` reports `complete` once every current piece of blocking evidence is
+  acknowledged, and keeps the diagnostic so the history stays visible.
+
+An unsupported `sidecarProtocol` needs no repair mechanism: it resolves when the
+reader upgrades, and acknowledging it would be a way to read data you cannot
+interpret.
+
+### Why not the alternatives
+
+**Rewriting history** (dropping the losing shard, rebasing the log) breaks the one
+guarantee everything else rests on — that a shard is append-only, so a pull can
+only add. It also races: two people repairing produce divergent histories that
+`merge=union` cannot reconcile.
+
+**Auto-acknowledging after N days** silently restores authority to a scope nobody
+looked at, which is the "trains people to clear the state without reading it"
+failure the contest design is explicitly tuned against.
+
 ## Where the code deviates today
 
 - **Materialization is per-query, not per-sync.** `readCached` fingerprints the
