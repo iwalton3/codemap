@@ -211,10 +211,23 @@ contradiction and is not: 3b's "do the anchor join in SQL" versus provenance's
    is placement on a diff, not existence). `retireSharedDoc` classifies raw ids and
    would need the same treatment if the shared path is ever queued.
 
-6. **`src/ops.ts` is ~3400 lines** and wants splitting. A prose audit measured the
-   tree: ratio climbing 0.15 → 0.28, but 66% of prose is skippable boundary
-   comments and only 4.3% is in over-budget blocks. `ops.ts` is the one file where
-   length is a real problem, and prose trimming cannot fix it — it is code.
+6. ~~**`src/ops.ts` is ~3400 lines**~~ **DONE.** It is a 59-line barrel; the
+   operations live in twelve modules under `src/ops/`, split along the seams the
+   file already had (its own section banners, plus the call graph). No call site
+   moved — `mcp.ts`, `serve.ts`, `cli.ts`, every test and `web/app.js`'s `ApiMap`
+   import `ops.js` exactly as before, and the 85 runtime exports are identical.
+
+   **Nothing under `src/ops/` may import the barrel.** The barrel imports all of
+   them, so a module reaching back closes a cycle — and an ES-module cycle here
+   fails with a blank page and an empty console. Shared helpers go DOWN into
+   `src/ops/shared.ts`; `resolveRefs` alone is used by five surfaces and is why a
+   naive split cycles immediately.
+
+   **`src/import-cycles.test.ts` was silently not guarding this.** It walked
+   `src/*.ts` non-recursively and matched only same-directory `"./x.js"`, so it saw
+   **0** modules under `src/ops/` and **no** dependencies for the barrel — it would
+   have stayed green while guarding nothing. It recurses and resolves relative paths
+   now, and a planted `shared → docs` back-edge fails it by name.
 
 ## Working notes that cost something to learn
 
