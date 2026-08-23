@@ -865,6 +865,56 @@ continuation. Until that residue shows repetition, a general step-2 engine is
 mechanism ahead of observed pain — which is the failure this whole document was
 written to avoid making twice.
 
+#### Measured (2026-08-23), and it says DO NOT BUILD IT YET
+
+Against the two live C# universes, read-only: `whereWere` run over every stranded
+record's own address. 2,641 records, 2,532 of them stranded reviews.
+
+| | records | placed by step 1 | absent | ambiguous | no address |
+|---|---|---|---|---|---|
+| `Acme.API` bulk import | 1,070 | 4 (0.4%) | 1,066 | 0 | 0 |
+| `Acme.API` organic | 82 | 5 (6.1%) | 77 | 0 | 0 |
+| `Acme.React` bulk import | 1,371 | 0 (0.0%) | 1,371 | 0 | 0 |
+| `Acme.React` organic | 99 | 49 (49.5%) | 50 | 0 | 0 |
+
+Four things follow, and only the first was expected.
+
+**Every record carries an address, and every address answered.** 2,641 of 2,641,
+with zero `unaddressed` — so both of that branch's arms (no commit to ask about,
+cannot resolve it here) are correctness guards rather than paths anything takes.
+
+**The overall rate is worthless, because the bulk population is a FIXED BUG.**
+4,928 of `Acme.API`'s 5,061 reviews are `github-import` `viewed` marks, and every
+one carries the same `reviewedCommit` — the working tree's HEAD at import time,
+not the PR head each mark was made against. `pr-bulk.ts` passes `ref: headRefOid`
+now and its comment describes this exact symptom. The commit that added it landed
+**one minute after** that import ran (fix 21:04, import 21:03, same evening). So
+the denominator is contaminated by sixty seconds, and the honest rate is the
+organic one: **6% to 50%, not 0.4%.**
+
+**The residue is genuine absence, not drifted ids.** Of the 67 organic absences in
+`Acme.API` with a witness to check, ZERO have their witnessed body present under
+any other id at that commit. Evidence rather than proof — a symbol renamed *and*
+edited would not match either — but a remap protocol re-points an id at a symbol
+that is still there, and nothing here says one is.
+
+**Zero ambiguous, in 2,641.** The partial-class collision this document reports as
+a latent bug does not appear in the population that would meet it.
+
+So: **the back-catalogue import wants re-running with the current build** — a data
+repair, not code — and step 2 stays unbuilt. Re-measure after that; it is the only
+thing that moves this table.
+
+One trap the measurement cost a round to find: `locate` on a `--no-checkout` clone
+answers `unaddressed` for everything. `indexCommit` recurses into a gitlink through
+the WORKING TREE, and a missing submodule directory correctly collapses the whole
+index to null. Measure on a repo with its submodules checked out.
+
+One gap it found and did not fix: `whereWere` returns a bare `absent` without
+asking whether this build could have minted that id at all — the classification
+`resolveAnchor` exists to make. It changed no number here (no drift was present),
+but the rule holds and the code does not apply it.
+
 ### The pain this is actually for — observed, and located
 
 Findings, not docs. A doc can be rewritten: its value is its prose, its citations

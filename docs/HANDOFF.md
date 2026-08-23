@@ -142,9 +142,29 @@ contradiction and is not: 3b's "do the anchor join in SQL" versus provenance's
    **Left, and why.** Step 2 — what is that symbol NOW — is a judgement no digest can
    confirm, and `migrateOverloads` already does its strongest form for the case it can
    prove. A remap protocol for the minority this build cannot mint is designed in the
-   doc and NOT built. **The denominator to measure before building more is the queue
-   itself**: how many records reaching it carry a commit, how many step 1 places, how
-   many stay foreign.
+   doc and NOT built.
+
+   **The denominator has now been MEASURED, and it says do not build it.** The table
+   is in the doc under "Measured (2026-08-23)". 2,641 stranded records across the two
+   live C# universes; every one carries an address and every address answered. Step 1
+   places 6%–50% of records written by ordinary use. It places 0.4% of the bulk
+   `github-import` marks — and that is a bug that was already fixed: the importer
+   stamped the tree's HEAD rather than each PR's head, and the commit that fixed it
+   landed ONE MINUTE after that import ran. Of the organic absences, zero have their
+   witnessed body present under any other id at that commit, so the residue looks like
+   genuine absence rather than the drifted ids a remap protocol re-points. Zero
+   ambiguous in 2,641.
+
+   **So the next move on this arc is a DATA repair, not code:** re-run the
+   back-catalogue import with the current build so those 4,928 marks get real
+   addresses, then re-measure. Nothing else moves the table.
+
+   Two things the measurement found on the way. `locate` on a `--no-checkout` clone
+   answers `unaddressed` for everything — `indexCommit` reaches a submodule through
+   the working tree, and a missing one correctly collapses the index to null; measure
+   on a checkout. And `whereWere` returns a bare `absent` without asking whether this
+   build could have minted that id — the classification `resolveAnchor` exists to
+   make. It changed no number here, and the code still does not apply the rule.
 
    **One latent bug found on the way.** Two `partial` declarations of one class in one
    file give their members the same id, and `INSERT OR REPLACE` drops one silently.
