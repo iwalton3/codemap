@@ -76,6 +76,15 @@ the log is the authority).
 Existing `shared_doc*` rows are the one non-issue: they are a cache, and the
 version bump re-folds them into the new shape.
 
+## Migration is from `main`, which has no sidecar
+
+`main` carries no event log and no `shared_*` tables, and this branch has never
+been used for real. So none of the ten defects above is a data-repair problem —
+they are all forward-design constraints. Defect (a) in particular still bites, but
+as a rule to get right rather than a store to fix: the first time a `main`-era
+store publishes its local docs and folds them back, the preserved version id
+collides with the local row unless the adoption rule in step 1 exists.
+
 ## Corrections to earlier claims in this repo
 
 - **`Cached<T>` is not a compile-time guarantee.** It was described that way,
