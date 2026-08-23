@@ -30,7 +30,7 @@
  */
 
 import type { Actor, BugSeverity, BugWitness } from "./schema.js";
-import { isAgentActor, isIndependent } from "./identity.js";
+import { isAgentActor, isIndependent, reviewerKey } from "./identity.js";
 import { emitEvent, mintId, readScope, causality, type LogEvent } from "./eventlog.js";
 import { applyRevision, newContestState, type Contested } from "./contest.js";
 
@@ -256,9 +256,12 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
       case "finding.corroborated": {
         const verdict = str(d, "verdict") as Verdict | undefined;
         if (verdict !== "confirm" && verdict !== "refute" && verdict !== "unsure") break;
-        // One entry per actor: a re-review replaces that actor's own opinion and
-        // nobody else's. Never collapsed — the disagreement IS the signal.
-        const i = f.corroboration.findIndex((c) => c.actor.principal === e.actor.principal);
+        // One entry per REVIEWER — the person, plus the model if one spoke for
+        // them. A re-review replaces that reviewer's own opinion and nobody else's,
+        // and never collapses two: the disagreement IS the signal, and keying on
+        // the principal alone let one person's second model quietly overwrite their
+        // first. See `reviewerKey`.
+        const i = f.corroboration.findIndex((c) => reviewerKey(c.actor) === reviewerKey(e.actor));
         const entry: Corroboration = {
           actor: e.actor, verdict, at: e.at,
           rationale: str(d, "rationale") ?? "",

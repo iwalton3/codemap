@@ -233,3 +233,49 @@ test("a contested finding is in the ack queue — only a person can settle it", 
     assert.equal(ackQueue(after).length, 0, "and leaves it once settled");
   });
 });
+
+/**
+ * One person, two models, two opinions.
+ *
+ * Keyed on the principal alone, the second run silently replaced the first — so a
+ * reviewer whose two models DISAGREED published one verdict and never learned the
+ * other existed. A verdict is an opinion, and whose opinion it is includes which
+ * model formed it. See PROPOSAL-provenance.md §4 and `reviewerKey`.
+ */
+test("a reviewer's second model does not overwrite their first", async () => {
+  const s = await scenario(["izzie@x.com"]);
+  try {
+    const izzie = who(s, "izzie@x.com");
+    const opus = { principal: "izzie@x.com", via: { kind: "agent" as const, model: "claude-opus-5" } };
+    const sonnet = { principal: "izzie@x.com", via: { kind: "agent" as const, model: "claude-sonnet-5" } };
+    const id = await createFinding(izzie.sidecar, PR, { principal: "dana@x.com" }, NEW);
+    await corroborate(izzie.sidecar, PR, opus, id, "confirm", "reproduced on the retry path");
+    await corroborate(izzie.sidecar, PR, sonnet, id, "refute", "the caller already guards it");
+
+    const f = (await readFindings(izzie.sidecar, PR)).get(id)!;
+    assert.equal(f.corroboration.length, 2, "two models are two opinions");
+    assert.deepEqual(f.corroboration.map((c) => c.verdict).sort(), ["confirm", "refute"]);
+
+    // The control, and the half that must not regress: the SAME reviewer changing
+    // their mind is a replacement, not a third voice.
+    await corroborate(izzie.sidecar, PR, opus, id, "unsure", "cannot reproduce it now");
+    const again = (await readFindings(izzie.sidecar, PR)).get(id)!;
+    assert.equal(again.corroboration.length, 2);
+    assert.equal(again.corroboration.find((c) => c.actor.via?.model === "claude-opus-5")!.verdict, "unsure");
+  } finally { s.dispose(); }
+});
+
+test("and a person is not their own agent", async () => {
+  // A human verdict and their agent's are two reviewers, not one — which the
+  // principal key also collapsed.
+  const s = await scenario(["izzie@x.com"]);
+  try {
+    const izzie = who(s, "izzie@x.com");
+    const human = { principal: "izzie@x.com" };
+    const agent = { principal: "izzie@x.com", via: { kind: "agent" as const, model: "claude-opus-5" } };
+    const id = await createFinding(izzie.sidecar, PR, { principal: "dana@x.com" }, NEW);
+    await corroborate(izzie.sidecar, PR, agent, id, "confirm", "reproduced");
+    await corroborate(izzie.sidecar, PR, human, id, "refute", "I read it differently");
+    assert.equal((await readFindings(izzie.sidecar, PR)).get(id)!.corroboration.length, 2);
+  } finally { s.dispose(); }
+});

@@ -143,6 +143,9 @@ shard and prefix-closure becomes true rather than assumed.
 
 ### `writerPrev`, and the genesis rule
 
+**Built.** `emitEvent` stamps it, `detectForks` reads it, `eventlog.test.ts` covers
+the GENESIS clause and its control.
+
 The chain key is `(scope, writerId)` — not global. A global predecessor could not
 be validated from `readScope`, which reads one scope at a time, and materialization
 is per scope for the same reason.
@@ -156,6 +159,23 @@ That last clause is the one an implementation will drop and must not: two clones
 copied *before* either had written anything both open with `GENESIS`, and without
 the rule they evade the detector entirely.
 
+Two rules the implementation had to add, neither of which is in the sketch above:
+
+- **An absent `writerPrev` is not an implicit `GENESIS`.** Every event written
+  before the chain existed lacks one, and reading those as genesis makes each of
+  them a fork on the writer's second event — every log in the wild, at once.
+  They are **not judged**.
+- **A chain claim needs a `writer`, not the principal fallback.** `causality`
+  falls back to `actor.principal` so an old event still folds; a fork is a claim
+  about a CLONE, and the same fallback here would file two machines' independent
+  chains under one person and call their genesis events a fork.
+
+The predecessor an event names comes from **its own shard's last line**, not from
+fold order. A shard is single-writer and append-only, so its last line IS the
+chain head by construction — where fold order is a total order over the whole
+scope, and trusting it to agree with append order for one writer is the very thing
+a fork breaks.
+
 ### The lock, and what it is for
 
 The sidecar-root lock is a **correctness** requirement, not git hygiene, and it must
@@ -165,10 +185,25 @@ what came before and committing to it, so two processes that both read the same
 predecessor have already forked whichever order their writes land in.
 
 ```
-lock          PREVENTS local forks (two processes, one clone)
-writerPrev    DETECTS distributed forks (two clones, one copied id)
-scope status  STOPS a detected fork answering authoritatively
+lock          PREVENTS local forks (two processes, one clone)      — built
+writerPrev    DETECTS distributed forks (two clones, one copied id) — built
+scope status  STOPS a detected fork answering authoritatively       — built
 ```
+
+Scope status is §7's fail-closed rule, and it landed as §7 describes it: one
+`status` and one `diagnostic` on `shared_scope`, stored beside the fingerprint so
+a cache HIT answers the verdict without re-reading the log. `readCached` returns
+it WITH the value — a signature that lets a caller take the rows and forget to
+ask is how a fail-closed rule fails in practice. The surfaces that present team
+state carry it (`sharedFindings`, `sharedDocs`, `sharedNotes`, and `context` via
+`sharedCoverage`), and the web pages render it as a banner above the rows.
+
+`sharedCoverage` is the one that needed a second route. It takes the QUERY path —
+`ensureMaterialized`, then SQL — so no envelope comes back to carry a verdict, and
+it is also where a silent one does the most damage: coverage DROPS gaps, so a
+blocked scope quietly talks an agent out of documenting code. `scopeVerdict` reads
+the stored row and **re-fingerprints**, answering `null` rather than a verdict that
+no longer describes the shards on disk.
 
 A fork is **not** an ordinary contest. A contest is per-field residue on one entity;
 a fork invalidates the vector's single-writer compression for a whole writer across
@@ -187,6 +222,28 @@ writer. Verified in the current code:
 
 Each needs the *writer* for concurrency and the *principal* for attribution and
 independence. Fixing causality without these leaves the collapse where users see it.
+
+**Resolved, and they did not all resolve the same way.** The three look like one
+question and are three.
+
+- **`contest.ts` keys on the WRITER.** Its check meant "revising your own write",
+  and for a single clone it is subsumed by `saw` below it — a writer's own history
+  is always in its own causal vector. So the line's only live effect was ever the
+  two-machine case, where it suppressed a genuine disagreement and the fold picked
+  last-writer-wins in silence. `Contested` now carries the clone on each side as
+  well as the person: attribution still wants the human, but a disagreement whose
+  two sides show the same name is one nobody acts on.
+- **Corroboration keys on `(principal, model)`, not the writer.** A verdict is an
+  OPINION, and whose opinion it is includes which model formed it — two models
+  disagreeing is the signal, and the principal key overwrote it. But a person
+  re-reviewing from their desktop has *changed their mind*, which is a replacement,
+  not a second voice; keying on the clone would leave two entries for one opinion.
+  `reviewerKey` in `identity.ts`.
+- **Walkthroughs stay per principal.** A walkthrough is a whole authored document,
+  not a concurrency-sensitive scalar. One per person is the intended product rule,
+  and two clones publishing is last-writer-wins on a document a person can simply
+  republish — not the silent loss of somebody's disagreement that the other two
+  were.
 
 ### Losing the id
 

@@ -137,6 +137,17 @@ export function isIndependent(a: Actor | undefined, b: Actor | undefined): boole
 }
 
 /**
+ * Who formed an opinion — the person, and if a model spoke for them, which one.
+ *
+ * NOT the person alone. A reviewer running two models produces two verdicts, and
+ * they are two opinions rather than one revised one: collapsing them makes the
+ * second silently overwrite the first, disagreement included. NOT the clone
+ * either — a person re-reviewing from their desktop has changed their mind, and
+ * that is a replacement, not a second voice. See PROPOSAL-provenance.md §4.
+ */
+export const reviewerKey = (a: Actor): string => `${a.principal}\0${a.via?.model ?? ""}`;
+
+/**
  * A short human-readable form, for display and for the legacy string fields that
  * still exist alongside the structured actor.
  */

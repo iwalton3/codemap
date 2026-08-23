@@ -111,3 +111,53 @@ test("and a person who HAS seen it can still settle it", async () => {
     }
   });
 });
+
+/**
+ * One person, two machines, and a disagreement the fold used to swallow.
+ *
+ * `held.by.principal === e.actor.principal` read "revising your own write", and on
+ * ONE clone that is true and already covered by the causal test below it. Across
+ * two clones it is false: the writes are genuinely concurrent, each side dropped
+ * the other's value, and the person was never told. See PROPOSAL-provenance.md §4.
+ *
+ * Two clones, one principal — which is what a laptop and a desktop are.
+ */
+test("one person's two machines can disagree, and the fold must not pick", async () => {
+  const s = await scenario(["laptop@x.com", "desktop@x.com"]);
+  try {
+    const izzie = { principal: "izzie@x.com" };
+    const laptop = who(s, "laptop@x.com"), desktop = who(s, "desktop@x.com");
+    const id = await createFinding(laptop.sidecar, PR, izzie, NEW);
+    await settle(s);
+
+    // Apart, and neither pulls before writing.
+    await revise(laptop.sidecar, PR, izzie, id, { severity: "critical" });
+    await revise(desktop.sidecar, PR, izzie, id, { severity: "low" });
+    await settle(s);
+
+    for (const p of s.all) {
+      const f = (await readFindings(p.sidecar, PR)).get(id)!;
+      const c = (f.contested ?? []).find((c) => c.field === "severity");
+      assert.ok(c, `silently picked a winner on ${p.actor.principal}'s clone`);
+      assert.equal(c.held.by, "izzie@x.com", "attribution is still the person");
+      assert.notEqual(c.held.writer, c.incoming.writer, "and the clones tell the two sides apart");
+      assert.ok(c.held.writer && c.incoming.writer);
+    }
+  } finally { s.dispose(); }
+});
+
+test("…but one machine revising its own write is not a contest", async () => {
+  // The control. Keying on the writer must not make every revision a contest with
+  // itself — which is what dropping the check outright would do.
+  const s = await scenario(["laptop@x.com"]);
+  try {
+    const izzie = { principal: "izzie@x.com" };
+    const laptop = who(s, "laptop@x.com");
+    const id = await createFinding(laptop.sidecar, PR, izzie, NEW);
+    await revise(laptop.sidecar, PR, izzie, id, { severity: "critical" });
+    await revise(laptop.sidecar, PR, izzie, id, { severity: "low" });
+    const f = (await readFindings(laptop.sidecar, PR)).get(id)!;
+    assert.equal(f.contested, undefined);
+    assert.equal(f.severity, "low");
+  } finally { s.dispose(); }
+});
