@@ -293,14 +293,11 @@ async function cmdSharedDocs(root: string, json: boolean): Promise<void> {
   for (const d of r.docs) {
     const v = d.resolved;
     if (!v) { console.log(`  ${d.nodeId}  (no versions)`); continue; }
-    // Fresh = every citation's live body is one this version was confirmed against.
-    const present = v.citations.filter((c: any) => c.present);
-    const fresh = present.length > 0 && present.every((c: any) => c.matches);
-    // Distinguished from `stale` on purpose: "the code changed" and "these hashes
-    // predate a scheme bump" call for completely different actions.
-    const unverifiable = !fresh && present.length > 0 && present.some((c: any) => c.unverifiable);
-    const missing = v.citations.length - present.length;
-    console.log(`  [${fresh ? "fresh" : unverifiable ? "unverified" : "stale"}] ${v.title}  ${d.nodeId}  v${d.versions}  by ${v.by ?? "?"}`);
+    // The verdict comes from `evalVersion`, through the payload — not re-derived
+    // here. This was one of three copies of the rule, and copies drift: it could
+    // not tell an id this build cannot derive from a symbol that is gone.
+    const missing = v.citations.filter((c: any) => !c.present).length;
+    console.log(`  [${v.status ?? "?"}] ${v.title}  ${d.nodeId}  v${d.versions}  by ${v.by ?? "?"}`);
     if (missing) console.log(`      ${missing} cited symbol(s) are not in this checkout`);
   }
   if (!r.docs.length) console.log("  (nothing shared yet — try `codemap publish-docs`)");

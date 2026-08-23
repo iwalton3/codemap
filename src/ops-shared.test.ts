@@ -277,3 +277,44 @@ test("an applied relocation must name an anchor THIS checkout has", async () => 
     assert.ok(applied.ok, JSON.stringify(applied));
   } finally { u.cleanup(); }
 });
+
+/**
+ * One verdict, and an id this build cannot derive is not a symbol that is gone.
+ *
+ * `sharedDocs` used to hand callers per-citation parts with no document status, so
+ * the web, the CLI and `needAttention` each synthesized the verdict separately —
+ * and all three read a foreign anchor id as `lost`, a claim about the code, while
+ * `evalVersion` called the same doc `unverifiable`, a claim about the two builds.
+ *
+ * See PROPOSAL-sidecar-materialization.md §7.4 and docs/anchor-id-provenance.md §6.
+ */
+test("a doc citing an id from another build is unverifiable, not lost, and says so once", async () => {
+  const u = universe();
+  try {
+    const { publishDocVersion } = await import("./shared-docs.js");
+    const { hashTokens } = await import("./normalize.js");
+    const { derivationTag } = await import("./grammars.js");
+    const { init } = await import("./ops.js");
+    const { resolveSidecar: rs } = await import("./sidecar-config.js");
+
+    mkdirSync(join(u.root, "src"), { recursive: true });
+    writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+    await init(u.root);
+
+    const theirs = { ...derivationTag("typescript"), grammarDigest: "f".repeat(64) };
+    const cfg = rs(u.root)!;
+    await publishDocVersion(cfg.path, cfg.universe, { principal: "dana@x.com" }, {
+      nodeId: "n_theirs", type: "process", title: "Their doc", summary: "s", body: "b",
+      citations: [{ anchorId: "a_not_derivable_here", acceptedHashes: [hashTokens(["body"], theirs)] }],
+      createdCommit: null, createdBranch: null,
+    } as never);
+
+    const out = await shared.sharedDocs(u.root, { nodeId: "n_theirs" }) as any;
+    const row = out.docs[0];
+    assert.equal(row.resolved.status, "unverifiable", "one status, from evalVersion");
+    const c = row.resolved.citations[0];
+    assert.equal(c.unverifiable, true, "the id cause joins the hash-scheme cause");
+    assert.notEqual(c.where, "lost", "`lost` claims the code is gone; nobody established that");
+    assert.equal(out.needAttention, 0, "and it is not the reader's work — aligning builds is");
+  } finally { u.cleanup(); }
+});

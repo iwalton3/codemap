@@ -359,17 +359,21 @@ defineComponent('shared-notes-panel', SharedNotesPanel);
  * a version resolved: `winningVersionAt` returns the least-bad version and always
  * returns one, so "a version came back" is not "this describes your code".
  */
-const docFresh = (v) => {
-  const present = (v.citations ?? []).filter(c => c.present);
-  return present.length > 0 && present.every(c => c.matches);
-};
 /**
- * Confirmed under an older HASH_SCHEME, so it cannot be compared to this body.
- * Deliberately NOT shown as stale: a migration re-hashes everything, and reading
- * that as "the code changed" is the false staleness the scheme exists to prevent.
+ * The verdict comes from `evalVersion`, through the payload.
+ *
+ * This used to re-derive it here — one of three copies of the rule — and the copies
+ * drifted: this one filtered to PRESENT citations first, so one matching plus one
+ * missing rendered green, and none of them could tell an id this build cannot
+ * derive from a symbol that is gone.
+ *
+ * `unverifiable` is deliberately not `stale`: "the code changed" and "nobody can
+ * say" call for different actions, and only one of them is the reader's.
  */
-const docUnverified = (v) => !docFresh(v) && (v.citations ?? []).some(c => c.present && c.unverifiable);
-const docState = (v) => docFresh(v) ? 'fresh' : docUnverified(v) ? 'unverified' : 'stale';
+const docState = (v) => {
+  const s = v.status;
+  return s === 'fresh' ? 'fresh' : s === 'unverifiable' ? 'unverified' : s === 'removed' ? 'removed' : 'stale';
+};
 
 /**
  * @typedef {{ d: DocsView | null, busy: string | null, note: string | null, open: string | null }} DocsState
@@ -408,7 +412,7 @@ class SharedDocsPage extends Component {
       ${each(d.docs, row => html`
         <div class="frow">
           <div class="row" on-click="${() => { st.open = st.open === row.nodeId ? null : row.nodeId; }}">
-            ${when(!!row.resolved, () => html`<span class="prbadge ${docFresh(row.resolved) ? 'ok' : docUnverified(row.resolved) ? '' : 'warnb'}">${docState(row.resolved)}</span>`)}
+            ${when(!!row.resolved, () => html`<span class="prbadge ${docState(row.resolved) === 'fresh' ? 'ok' : docState(row.resolved) === 'stale' ? 'warnb' : ''}">${docState(row.resolved)}</span>`)}
             <span class="fcomment">${row.resolved ? row.resolved.title : row.nodeId}</span>
             <span class="dim">${row.resolved?.by ?? ''} · v${row.versions}</span>
           </div>

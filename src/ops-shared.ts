@@ -11,6 +11,7 @@ import type { Actor } from "./schema.js";
 import { requireActor, isAgentActor } from "./identity.js";
 import { comparableHashes, sameBody } from "./normalize.js";
 import { classifyCitations } from "./citation-state.js";
+import { evalVersion } from "./doc-version.js";
 import { readCached } from "./materialize.js";
 import { findingsProjection, docsProjection, notesProjection } from "./shared-projections.js";
 import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
@@ -482,6 +483,12 @@ export async function sharedDocs(root: string, opts: { nodeId?: string } = {}) {
   for (const doc of docs.values()) {
     if (opts.nodeId && doc.nodeId !== opts.nodeId) continue;
     const v = resolveDoc(doc, live);
+    // ONE verdict, from the same function the local path uses. Three separate
+    // re-derivations of it (web's `docFresh`, `needAttention` here, the CLI) had
+    // already drifted: none of them could tell an id this build cannot derive from
+    // a symbol that is gone, so this surface said `lost` where `evalVersion` said
+    // `unverifiable` about one doc. See PROPOSAL-sidecar-materialization.md §7.4.
+    const e = v ? evalVersion(v, live) : undefined;
     rows.push({
       nodeId: doc.nodeId,
       versions: doc.versions.length,
@@ -496,8 +503,10 @@ export async function sharedDocs(root: string, opts: { nodeId?: string } = {}) {
         versionId: v.versionId, type: v.type, title: v.title, summary: v.summary, body: v.body,
         removed: !!v.removed, generatedBy: v.generatedBy,
         by: doc.authors.get(v.versionId)?.principal,
+        status: e!.status,
         citations: v.citations.map((c) => {
-          const now = live.get(c.anchorId);
+          const at = resolveAnchor(c.anchorId, c.acceptedHashes, live);
+          const now = at.at === "found" ? at.hash : undefined;
           const present = now !== undefined;
           const matches = present && c.acceptedHashes.some((h) => sameBody(h, now!));
           // A citation confirmed under an older HASH_SCHEME cannot be compared to
@@ -505,13 +514,23 @@ export async function sharedDocs(root: string, opts: { nodeId?: string } = {}) {
           // scheme exists to prevent: a migration re-hashes everything, so every
           // doc in the store would read stale on the first reindex without anyone
           // touching the code. Found doing exactly that on a real repo — 985 of 985.
-          const unverifiable = present && !matches
-            && !c.acceptedHashes.some((h) => comparableHashes(h, now));
+          //
+          // The id-derivation cause joins it: an anchor id this build could not have
+          // minted is equally "cannot be decided", and it arrives as an ABSENCE
+          // rather than a mismatch, which is why it needs the resolution above and
+          // not a hash comparison. See docs/anchor-id-provenance.md §6.
+          const unverifiable = at.at === "incomparable"
+            || (present && !matches && !c.acceptedHashes.some((h) => comparableHashes(h, now)));
           // WHY it is not here, not merely that it is not. `offTree` is somebody
           // else's branch and nobody's action item; the rest are the residue.
           // `unknown`, never `lost`, when nothing was classified: claiming code is
           // gone because this machine has no index is a confident lie.
-          const place = places.get(c.anchorId) ?? { state: present ? "here" : "unknown" as const };
+          // Never `lost` for an incomparable id. `lost` means "no record anywhere",
+          // which is a claim about the code; not being able to derive the id is a
+          // fact about the two builds, and `unverifiable` above already carries it.
+          const place = at.at === "incomparable"
+            ? { state: "unknown" as const, at: undefined, file: undefined, symbol: undefined }
+            : places.get(c.anchorId) ?? { state: present ? "here" : "unknown" as const };
           return {
             anchorId: c.anchorId, accepted: c.acceptedHashes.length, present, matches, unverifiable,
             where: place.state, at: place.at, lastFile: place.file, lastSymbol: place.symbol,
@@ -524,7 +543,11 @@ export async function sharedDocs(root: string, opts: { nodeId?: string } = {}) {
     universe: cfg.universe, total: rows.length,
     // The number worth acting on, as opposed to the number that merely mention
     // code you do not have checked out.
-    needAttention: rows.filter((r) => r.resolved?.citations.some((c: any) => c.where === "retained" || c.where === "lost")).length,
+    // From the one verdict, not from a second scan of the citations. `unverifiable`
+    // is deliberately NOT work: its recovery is aligning builds or re-witnessing,
+    // neither of which is the reader's, and rendering it as a queue item is the
+    // 985-docs shape this codebase already learned once.
+    needAttention: rows.filter((r) => r.resolved?.status === "stale" || r.resolved?.status === "dangling").length,
     docs: rows,
   };
 }
