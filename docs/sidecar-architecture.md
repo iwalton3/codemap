@@ -6,6 +6,20 @@ they disagree with this, this wins. Settled 2026-08-23 after two independent
 architecture reviews (Fable 5 and codex), both of which argued the polarity below
 from the same evidence.
 
+## Nothing here is deployed yet
+
+`main` has no `eventlog.ts`, no `ops-shared.ts` and no `shared_*` tables — its
+schema is `anchors nodes node_versions edges meta snapshots`. The entire shared
+system is **134 commits on this branch that have never been used for real**.
+
+Two consequences, worth checking before anyone plans around compatibility. There
+is **no deployed schema to protect**, so reshaping the tables, the event envelope
+or the projection is free right now and will not be later. And the only migration
+that exists is from a `main`-era store, which holds local docs in `node_versions`
+and nothing else — no events, no shared rows, no publication history. Defects
+phrased as "existing logs may already contain X" are therefore forward-design
+constraints, not data-repair problems.
+
 ## Why a sidecar at all
 
 To avoid a deployment that has to be managed and secured. A second git repo the
