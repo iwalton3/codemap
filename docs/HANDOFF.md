@@ -1,46 +1,84 @@
 # Handoff — `worktree-shared-review-hashscheme`
 
-Written at `bec6d1e`; updated at `0499657` after another session and two review
-rounds, and again after the session that finished §4. Everything below is
-committed and green (639 tests, `tsc -p .` and `tsc -p web` both clean). Read
-this, then the two documents it points at; do not read the whole branch history.
+Everything here is committed and green (646 tests; `tsc -p .` and `tsc -p web`
+clean). Read the two documents START HERE points at; do not read the branch
+history — it is 134 commits and most of it is a sidequest this file explains.
 
-## Where this stands — read this before the open list
+Last updated 2026-08-23, at the end of the session that settled the architecture
+and stopped the drift.
 
-**The product is review, not provenance.** `CLAUDE.md`'s north star: reduce the
-reviewer's cognitive load and surface the context a raw diff hides. Judge every
-item below against that.
+## START HERE
 
-**`PROPOSAL-shared-review-state.md` — the original sidecar plan — is COMPLETE.**
-All eight of its sequencing steps landed. Nobody noticed for weeks, so nothing
-prompted "pick the next plan", and one risk bullet in it ("scheme drift across
-the team") grew into `PROPOSAL-provenance.md` and
-`docs/anchor-id-provenance.md` and then into most of the open list.
+**Read `docs/sidecar-architecture.md`.** It is short, normative, and settles the
+design. Then read `docs/plan-docs-unification.md`. Those two are the plan. This
+file is context.
 
-**That thread is now at a deliberate stopping point** (2026-08-23) and should not
-be resumed by default. Its measured incidence on the real targets is ~zero — 0
-ambiguous in 2,641 records, and the newest fix cannot fire on either live store
-because both report `tags: 0`. What it produced that WAS worth having is folded in
-and marked done.
+**The product is review.** `CLAUDE.md`'s north star: reduce the reviewer's
+cognitive load and surface the context a raw diff hides. Judge work against that.
 
-**The architecture is SETTLED — read `docs/sidecar-architecture.md` first.** It is
-short, it is normative, and both proposals lose to it where they differ. It exists
-because the last stretch felt like whack-a-mole for a structural reason: shared
-entities live in their own SQLite tables read by their own ops, so every surface
-needs a hand-written bridge.
+### What happened, so you do not repeat it
 
-What it settles: the log is authoritative for shared state and SQLite is its
-projection; the log is pull/push and is never read on an ordinary MCP or web read;
-one canonical table per entity kind, so a teammate's doc becomes a `node_versions`
-row with an origin marker. The **outbox overlay is cancelled** — with write-through
-it has no problem left to solve.
+`PROPOSAL-shared-review-state.md` — the original sidecar plan — **completed** at
+some point and nobody noticed. With no moment to ask "pick the next plan", one
+risk bullet in it grew into `PROPOSAL-provenance.md`, then
+`docs/anchor-id-provenance.md`, and then into most of several sessions. The
+measured incidence of what that thread addresses, on the real target, is near
+zero: 0 ambiguous in 2,641 records, and its newest fix cannot fire on either live
+store because both report `tags: 0`.
 
-**The live work is bringing the code to it**, and the first step is valuable alone:
-unify docs into `node_versions`, which ships step 5's remainder as a DELETION of
-the bridges rather than four more of them.
+**Do not resume the provenance thread.** What it produced that was worth having is
+landed and marked done. The tells that were available early, for next time: the
+originating proposal was complete; measurements kept coming back ~zero; and the
+owner redirected three consecutive design questions — *repeated redirection means
+the frame is wrong, not that the questions need to be narrower.*
 
-**The list below is ordered by tractability, not by value.** That ordering is how
-the sidequest kept winning. Re-sort it against the north star before working it.
+### The state of the design
+
+Settled with the owner and through two independent reviews (Fable 5, codex):
+
+- The log is the team's shared state and is authoritative for what it covers.
+  Local SQLite is three things: this user's witness marks, the deterministic
+  anchor/analyzer data, and the projection of the log against that anchor database.
+- The log is pull/push like an email client, never read on an ordinary query.
+- One canonical table per entity kind; **fold-owned rows are written only by the
+  fold** — the rule whose absence caused nine of ten defects in the first plan.
+- Budgets: a web UI interaction under 0.5s; push/pull under 10s excluding git.
+- Conflict repair is append-only and deletes nothing: automatic vector degradation
+  for a forked writer (sound, errs toward raising contests), plus a person-only
+  `scope.acknowledged` event keyed on an evidence digest.
+- **Nothing is deployed.** `main` has no sidecar at all — the whole system is ~134
+  unreleased commits here. Reshaping schema, envelope and projection is free NOW.
+
+Three questions closed with arguments, in the architecture doc: analyzer docs
+never sync, findings stay in `shared_finding`, `merge=union` stays.
+
+### The sequence to implement
+
+1. **Sync honesty and lock safety.** `sync` reports `pushed: true` while the
+   finding never left the machine — **reproduced**, see the architecture doc's R1.
+   And the sidecar lock's `setInterval` heartbeat cannot fire while `spawnSync` git
+   blocks, so a call over 60s lets a concurrent sync steal the lock mid-merge.
+   Note `src/scenario.ts` masks R1 for every test by passing `-c user.email=` on
+   every git call.
+2. **Sync does the integrity work.** Fetch outside the lock, push-side manifest
+   gate, append-only audit (a `git rm`'d shard propagates as a clean deletion),
+   materialize-at-sync, and a report a human reads at the one moment they are
+   watching.
+3. **Protocol-1 freeze.** Delete the backwards-compatibility surface — optional
+   `writer`/`writerPrev`, `after` as string-or-list, absent protocol numbers,
+   principal-hash shards, the `ALTER` ladder. It keeps faith with logs that have
+   never existed, and the principal-keyed fallback is the one place the vector is
+   documented as inexact. Add the repair mechanism here.
+4. **Docs unification** — `docs/plan-docs-unification.md`, whose step order was
+   itself reviewed. Ownership guard first; it is the fence.
+5. Write-through, bridge deletion, walkthroughs onto the checked path.
+
+### Verified defects, not yet fixed
+
+R1 (sync lies about pushing) and the lock heartbeat are the two with reproductions
+or precise mechanisms in the architecture doc. The full risk register — ten items,
+ranked by silence × damage — came from the direction review and the top of it is
+in that doc.
 
 ## What to run
 
