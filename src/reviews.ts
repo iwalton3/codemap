@@ -7,13 +7,15 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { type Anchor, type Review, type ReviewLevel, type ReviewState, type BugWitness } from "./schema.js";
-import { readReviews, writeReviews, readAnchorStore, loadNodes, readSnapshot, snapshotBranch } from "./store.js";
+import { readReviews, writeReviews, readAnchorStore, loadNodes, readSnapshot, snapshotBranch, derivationFor } from "./store.js";
 import { resolveAcceptance, recordAcceptance, type Ancestry } from "./acceptance.js";
 import { ACCEPTED_CAP, type AcceptedCitation, type AcceptedEntry, type AcceptanceVia } from "./schema.js";
 import { isAncestor, isGitRepo, currentBranch as gitBranch, hasObject } from "./git.js";
 import { ABSENT_HASH, comparableHashes, sameBody } from "./normalize.js";
 import { resolveActor, actorLabel } from "./identity.js";
 import { indexFile } from "./repo.js";
+import { currentDerivations } from "./grammars.js";
+import { anchorIndex, derivationsOf, resolveAnchor, type AnchorIndex } from "./anchor-resolve.js";
 import { headCommit } from "./git.js";
 
 /** The human review acts: exposure (`viewed`) vs liability-bearing sign-off (`signed`). */
@@ -87,14 +89,17 @@ async function coveredAnchorIds(root: string, target: Target, nodeAnchors?: Map<
  * moved. A caller that wants working-tree hashes passes no `ref`; one that names a
  * commit is asserting it has been indexed.
  */
-export async function liveHashes(root: string, anchorIds: Iterable<string>, ref?: string): Promise<Map<string, string>> {
+export async function liveHashes(root: string, anchorIds: Iterable<string>, ref?: string): Promise<AnchorIndex> {
+  const knownTag = (mark: string) => derivationFor(root, mark);
   if (ref) {
     const snap = await readSnapshot(root, ref);
     if (!snap) throw new Error(`no cached snapshot for ${ref.slice(0, 12)} — index that commit before witnessing against it`);
     const want = new Set(anchorIds);
     const out = new Map<string, string>();
     for (const a of snap) if (want.has(a.id)) out.set(a.id, a.bodyHash);
-    return out;
+    // The SNAPSHOT's rows, not this build's: a cached commit was minted by whatever
+    // build cached it, and that is the index an id had to come from to appear here.
+    return anchorIndex(out, derivationsOf(snap), knownTag);
   }
   const store = await readAnchorStore(root);
   const byId = new Map(store.anchors.map((a) => [a.id, a]));
@@ -111,7 +116,11 @@ export async function liveHashes(root: string, anchorIds: Iterable<string>, ref?
       /* file gone */
     }
   }
-  return live;
+  // THIS build's tags, not the store's rows'. These anchors were just minted in
+  // process by `indexFile`, so the index being searched is this build's output —
+  // and taking it from whatever survived the loop would call a genuinely deleted
+  // file's symbols undecidable, since nothing would have been indexed at all.
+  return anchorIndex(live, currentDerivations(), knownTag);
 }
 
 /** Witnesses (anchor id + current live hash) covering a target — the staleness snapshot. */
@@ -449,10 +458,19 @@ export interface AnchorChange {
 }
 
 /** Which of a mark's frozen witnesses no longer match the current live hashes. */
-export function witnessDrift(witnesses: BugWitness[], live: Map<string, string>): AnchorChange[] {
+export function witnessDrift(witnesses: BugWitness[], live: AnchorIndex): AnchorChange[] {
   const out: AnchorChange[] = [];
   for (const w of witnesses) {
-    const now = live.get(w.anchorId) ?? ABSENT_HASH;
+    const r = resolveAnchor(w.anchorId, [w.bodyHash], live);
+    // An id this index could not have minted is not a symbol that went away. Before
+    // this, the missing id became ABSENT_HASH — which is comparable to everything on
+    // purpose — so a witness from another build read as confident drift to "no code
+    // here". See docs/anchor-id-provenance.md §6.
+    if (r.at === "incomparable") {
+      out.push({ anchorId: w.anchorId, was: w.bodyHash, now: ABSENT_HASH, unverifiable: true });
+      continue;
+    }
+    const now = r.at === "found" ? r.hash : ABSENT_HASH;
     if (sameBody(now, w.bodyHash)) continue;
     // Scheme first: an old-scheme witness differs from a live hash for a reason that
     // has nothing to do with the code, and calling that drift re-opens every review

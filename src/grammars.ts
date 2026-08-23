@@ -96,6 +96,23 @@ function runtimeIntegrity(): string {
   return h.digest("hex");
 }
 
+/**
+ * What this build would mint, as an index's provenance.
+ *
+ * For a hash map produced by indexing IN PROCESS (`liveHashes` with no ref, which
+ * re-parses the files rather than reading stored rows): the index being searched is
+ * this build's output, so this build's tags are what an id must have been minted
+ * under to appear in it.
+ *
+ * All five grammars rather than the ones the files happen to use. A superset only
+ * ever makes a comparison MORE permissive — the direction that falls back to
+ * today's answer — where narrowing it wrongly would report a real deletion as
+ * undecidable.
+ */
+export function currentDerivations(): { tags: DerivationTag[]; anyUntagged: boolean } {
+  return { tags: GRAMMAR_NAMES.map(derivationTag), anyUntagged: false };
+}
+
 export function derivationTag(grammar: GrammarName): DerivationTag {
   if (!tags) {
     // The runtime we import, resolved the way the import resolves it — not a

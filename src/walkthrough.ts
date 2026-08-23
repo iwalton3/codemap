@@ -21,6 +21,7 @@
 
 import type { BugWitness } from "./schema.js";
 import { sameBody, ABSENT_HASH } from "./normalize.js";
+import { resolveAnchor, type AnchorIndex } from "./anchor-resolve.js";
 
 export type WalkBlock =
   | { kind: "prose"; text: string }
@@ -183,8 +184,15 @@ export function buildWalkthrough(
 }
 
 /** Chapters whose cited code has moved since the walkthrough was written. */
-export function staleChapters(w: PrWalkthrough, live: Map<string, string>): string[] {
+export function staleChapters(w: PrWalkthrough, live: AnchorIndex): string[] {
   return w.features.flatMap((f) => f.chapters)
-    .filter((c) => c.witnesses.some((wit) => !sameBody(live.get(wit.anchorId) ?? ABSENT_HASH, wit.bodyHash)))
+    .filter((c) => c.witnesses.some((wit) => {
+      const r = resolveAnchor(wit.anchorId, [wit.bodyHash], live);
+      // An id this index could not have minted says nothing about whether the
+      // chapter's code moved, and a chapter flagged stale for that reason is work
+      // nobody can do. `headMoved` already covers "the whole thing is suspect".
+      if (r.at === "incomparable") return false;
+      return !sameBody(r.at === "found" ? r.hash : ABSENT_HASH, wit.bodyHash);
+    }))
     .map((c) => c.id);
 }

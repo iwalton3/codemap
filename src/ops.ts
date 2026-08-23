@@ -27,8 +27,7 @@ import {
   writeSnapshot, readSnapshot, listSnapshots, deleteNode as storeDeleteNode, confirmNode, ackHole as storeAckHole, loadNodeVersions,
   writeReviews, remapNodeCitations, readTriage as triageRead, writeTriage as triageWrite, staleSchemeSnapshots, findAnchorsOutsideWork,
   liveDerivationDrift,
-  readWalkthroughs, writeWalkthrough, readPushes, bodyHashAt, snapshotBranch, retainOrphans, readOrphans, releaseRecoveredOrphans, referencedAnchorIds,
-} from "./store.js";
+  readWalkthroughs, writeWalkthrough, readPushes, bodyHashAt, snapshotBranch, retainOrphans, readOrphans, releaseRecoveredOrphans, referencedAnchorIds, derivationFor } from "./store.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { resolveActor, requireActor, isAgentActor, actorLabel } from "./identity.js";
 import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "./diff.js";
@@ -49,9 +48,11 @@ import { resolveAnchorRefs } from "./refs.js";
 import { refreshAnalyzers } from "./analyzers/run.js";
 import { applyIndexUpdate } from "./sync.js";
 import { grammarForPath } from "./grammars.js";
-import { reviewStatus, reviewStatesFor, anchorReviewMap, changedSince as reviewsChangedSince, deriveCodeReview, revertedMarks, markReviewedBatch, unmarkReviewed, unmarkCovered, type Attestation, type ReviewPair, type DerivedCodeReview } from "./reviews.js";
+import { reviewStatus, reviewStatesFor, anchorReviewMap, changedSince as reviewsChangedSince, deriveCodeReview, revertedMarks, markReviewedBatch, unmarkReviewed, unmarkCovered, type Attestation, type ReviewPair, type DerivedCodeReview, witnessDrift, realDrift} from "./reviews.js";
 import { setTriage as triageSet, clearTriage as triageClear, triageStatus, reviewTriageFor, deriveTriage as triageDerive, coverageFor as triageCoverageFor, rollupCoverage, tripwires as triageTripwires, triageDrift } from "./triage.js";
 import { sameBody, ABSENT_HASH } from "./normalize.js";
+import { anchorIndex, legacyIndex, derivationsOf, type AnchorIndex } from "./anchor-resolve.js";
+import { currentDerivations } from "./grammars.js";
 
 const HL_LANG: Record<string, string> = { c_sharp: "csharp", python: "python", javascript: "javascript", typescript: "typescript", tsx: "typescript" };
 const langFor = (file: string) => HL_LANG[grammarForPath(file) ?? ""] ?? "plaintext";
@@ -61,6 +62,23 @@ function genId(prefix: string): string {
 }
 
 /** Re-index the given files and return current anchors by id (source of truth for "now"). */
+/**
+ * The hash index behind a `liveAnchors` map.
+ *
+ * `currentDerivations()`, not the tags on the anchors in the map: those were minted
+ * in process by THIS build, so this build's tags are what an id must have been
+ * minted under to appear here — and reading them off the map instead would call a
+ * genuinely deleted file's symbols undecidable, because an empty map has no tags to
+ * read. See docs/anchor-id-provenance.md §6.
+ */
+function liveIndex(root: string, live: Map<string, Anchor>): AnchorIndex {
+  return anchorIndex(
+    new Map([...live].map(([id, a]) => [id, a.bodyHash])),
+    currentDerivations(),
+    (mark) => derivationFor(root, mark),
+  );
+}
+
 async function liveAnchors(root: string, files: Iterable<string>): Promise<Map<string, Anchor>> {
   const map = new Map<string, Anchor>();
   for (const f of new Set(files)) {
@@ -232,11 +250,16 @@ export async function dashboard(root: string) {
   const bugFiles = new Set<string>();
   for (const b of bugStore.bugs) for (const id of b.anchors) { const a = store.anchors.find((x) => x.id === id); if (a) bugFiles.add(a.file); }
   const live = await liveAnchors(root, bugFiles);
+  const bugIndex = liveIndex(root, live);
   const bugCounts: Record<string, number> = {};
   let openBugs = 0, possiblyFixed = 0;
   for (const b of bugStore.bugs) {
     bugCounts[b.status] = (bugCounts[b.status] ?? 0) + 1;
-    if (b.status === "open") { openBugs++; if (b.witnesses.some((w) => !sameBody(live.get(w.anchorId)?.bodyHash ?? ABSENT_HASH, w.bodyHash))) possiblyFixed++; }
+    // Through `witnessDrift` rather than an inline `sameBody`, which also fixes a
+    // second conflation this line had: a witness from another HASH_SCHEME counted as
+    // possibly-fixed too. `realDrift` is what separates "the code moved" from
+    // "nobody can say", and this rollup is a count people act on.
+    if (b.status === "open") { openBugs++; if (realDrift(witnessDrift(b.witnesses, bugIndex)).length) possiblyFixed++; }
   }
 
   const openQuestions = annStore.annotations.filter((a) => a.kind === "question" && !a.resolved).length;
@@ -1031,9 +1054,19 @@ export async function docDiff(root: string, base: string, head: string | undefin
 }
 
 /** Anchor→hash map for a cached commit — the hash source when documenting a branch. */
-async function snapshotHashes(root: string, ref: string): Promise<Map<string, string>> {
+async function snapshotHashes(root: string, ref: string): Promise<AnchorIndex> {
   const snap = await readSnapshot(root, ref);
-  return new Map((snap ?? []).map((a) => [a.id, a.bodyHash]));
+  // No cached snapshot: nothing is on record about which build would have minted
+  // these ids, so every absence falls back to today's answer rather than to
+  // "cannot tell" — the same legacy rule the rest of this design uses.
+  if (!snap) return legacyIndex(new Map());
+  // The SNAPSHOT's own rows: a cached commit was minted by whatever build cached it,
+  // and that is the index an id had to come from to appear here.
+  return anchorIndex(
+    new Map(snap.map((a) => [a.id, a.bodyHash])),
+    derivationsOf(snap),
+    (mark) => derivationFor(root, mark),
+  );
 }
 
 /** Before/after source for one anchor between two refs (the code drill-down) + its review state. */
@@ -2494,10 +2527,11 @@ export async function listBugs(root: string, opts: { status?: BugStatus } = {}) 
     if (a) files.add(a.file);
   }
   const live = await liveAnchors(root, files);
+  const idx = liveIndex(root, live);
   return {
     counts: bugStore.bugs.reduce((m, b) => ((m[b.status] = (m[b.status] ?? 0) + 1), m), {} as Record<string, number>),
     bugs: bugs.map((b) => {
-      const changed = b.witnesses.filter((w) => !sameBody(live.get(w.anchorId)?.bodyHash ?? ABSENT_HASH, w.bodyHash)).map((w) => w.anchorId);
+      const changed = realDrift(witnessDrift(b.witnesses, idx)).map((c) => c.anchorId);
       return {
         id: b.id, title: b.title, status: b.status, severity: b.severity,
         anchors: b.anchors,
@@ -2524,6 +2558,7 @@ export async function bugDetail(root: string, id: string) {
   const files = new Set<string>();
   for (const aid of bug.anchors) { const a = byId.get(aid); if (a) files.add(a.file); }
   const live = await liveAnchors(root, files);
+  const idx = liveIndex(root, live);
   const witness = new Map(bug.witnesses.map((w) => [w.anchorId, w.bodyHash]));
   const anchors = bug.anchors.map((aid) => {
     const a = byId.get(aid);
@@ -2536,8 +2571,10 @@ export async function bugDetail(root: string, id: string) {
       file: a?.file ?? null,
       lines: loc ? `${loc.startLine}-${loc.endLine}` : null,
       present: !!liveA,
-      // stale when we have a witness and the live code no longer matches it.
-      stale: witHash !== undefined && !sameBody(liveA?.bodyHash ?? ABSENT_HASH, witHash),
+      // Stale when we have a witness and the live code no longer matches it — but
+      // an id this build could not have minted is not a body that moved, and saying
+      // so needs the resolution rather than `?? ABSENT_HASH`.
+      stale: witHash !== undefined && realDrift(witnessDrift([{ anchorId: aid, bodyHash: witHash }], idx)).length > 0,
     };
   });
   const changed = anchors.filter((a) => a.stale).length;

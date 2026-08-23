@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { legacyIndex } from "./anchor-resolve.js";
 import type { Anchor, BugWitness } from "./schema.js";
 import { fixtureHash } from "./fixture-hash.js";
 import { witnessDrift } from "./reviews.js";
@@ -23,9 +24,9 @@ const OTHER = `h2:sha256:${fixtureHash("another-body").slice("sha256:".length)}`
 
 test("a witness written before annotations does not read as drift after them", () => {
   const witnesses: BugWitness[] = [{ anchorId: "a1", bodyHash: LEGACY }];
-  assert.deepEqual(witnessDrift(witnesses, new Map([["a1", TAGGED]])), [],
+  assert.deepEqual(witnessDrift(witnesses, legacyIndex(new Map([["a1", TAGGED]]))), [],
     "the body did not change — only how the hash describes itself");
-  assert.equal(witnessDrift([{ anchorId: "a1", bodyHash: LEGACY }], new Map([["a1", OTHER]])).length, 1,
+  assert.equal(witnessDrift([{ anchorId: "a1", bodyHash: LEGACY }], legacyIndex(new Map([["a1", OTHER]]))).length, 1,
     "and a real change is still a change");
 });
 
@@ -37,8 +38,8 @@ test("a walkthrough chapter is not stale because the annotation arrived", () => 
       chapters: [{ id: "c", title: "c", blocks: [], witnesses: [{ anchorId: "a1", bodyHash: LEGACY }] }],
     }],
   } as never;
-  assert.deepEqual(staleChapters(wt, new Map([["a1", TAGGED]])), []);
-  assert.deepEqual(staleChapters(wt, new Map([["a1", OTHER]])), ["c"], "a real move still stales it");
+  assert.deepEqual(staleChapters(wt, legacyIndex(new Map([["a1", TAGGED]]))), []);
+  assert.deepEqual(staleChapters(wt, legacyIndex(new Map([["a1", OTHER]]))), ["c"], "a real move still stales it");
 });
 
 test("an acceptance made before annotations still stands after them", () => {

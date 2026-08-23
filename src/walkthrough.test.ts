@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { legacyIndex, anchorIndex } from "./anchor-resolve.js";
+import { hashTokens } from "./normalize.js";
+import type { DerivationTag } from "./schema.js";
 import {
   validateWalkthrough, walkCoverage, buildWalkthrough, staleChapters, citedAnchors,
   type WalkInput,
@@ -113,9 +116,9 @@ test("a chapter is witnessed, so only the chapters whose code moved go stale", (
     ])],
   }, (id) => ({ a_1: fixtureHash("A"), a_2: fixtureHash("B") } as Record<string, string>)[id]);
 
-  assert.deepEqual(staleChapters(w, new Map([["a_1", fixtureHash("A")], ["a_2", fixtureHash("B")]])), []);
-  assert.deepEqual(staleChapters(w, new Map([["a_1", fixtureHash("A")], ["a_2", fixtureHash("CHANGED")]])), ["moved"]);
-  assert.deepEqual(staleChapters(w, new Map([["a_1", fixtureHash("A")]])), ["moved"], "a symbol that vanished is drift too");
+  assert.deepEqual(staleChapters(w, legacyIndex(new Map([["a_1", fixtureHash("A")], ["a_2", fixtureHash("B")]]))), []);
+  assert.deepEqual(staleChapters(w, legacyIndex(new Map([["a_1", fixtureHash("A")], ["a_2", fixtureHash("CHANGED")]]))), ["moved"]);
+  assert.deepEqual(staleChapters(w, legacyIndex(new Map([["a_1", fixtureHash("A")]]))), ["moved"], "a symbol that vanished is drift too");
 });
 
 test("a drive-by is recorded as data, not buried in prose", () => {
@@ -130,4 +133,35 @@ test("a drive-by is recorded as data, not buried in prose", () => {
   }, () => fixtureHash("x"));
   assert.deepEqual(w.features.filter((f) => f.unstated).map((f) => f.title), ["Airport reference data refresh"]);
   assert.equal(w.features[0]!.unstated, undefined, "the flag is absent, not false, when it is stated");
+});
+
+/**
+ * A chapter is not stale because a teammate's build spells the ids differently.
+ *
+ * `staleChapters` used to read a missing id as ABSENT_HASH, which is comparable to
+ * everything, so a walkthrough witnessed by another build flagged every chapter —
+ * work nobody could do, on a surface whose whole point is showing a reviewer what
+ * actually changed. `headMoved` already covers "the whole thing is suspect".
+ */
+test("a chapter whose ids this build could not have minted is not stale", () => {
+  const MINE: DerivationTag = {
+    anchorScheme: 3, hashScheme: 2, parserIntegrity: "p".repeat(64), grammarDigest: "g".repeat(64),
+  };
+  const THEIRS: DerivationTag = { ...MINE, grammarDigest: "f".repeat(64) };
+  const theirHash = hashTokens(["body"], THEIRS);
+  const w = buildWalkthrough({
+    pr: 1, head: "h", by: "agent", at: "t",
+    features: [feature("F", [{ title: "theirs", blocks: [sym("a_theirs")] }])],
+  }, () => theirHash);
+
+  const mineIdx = anchorIndex(new Map(), { tags: [MINE], anyUntagged: false });
+  assert.deepEqual(staleChapters(w, mineIdx), [], "cannot tell is not the same as moved");
+
+  // The control: an id this build DID mint, now gone, is still drift.
+  const mineHash = hashTokens(["body"], MINE);
+  const w2 = buildWalkthrough({
+    pr: 1, head: "h", by: "agent", at: "t",
+    features: [feature("F", [{ title: "mine", blocks: [sym("a_mine")] }])],
+  }, () => mineHash);
+  assert.deepEqual(staleChapters(w2, mineIdx), ["mine"]);
 });

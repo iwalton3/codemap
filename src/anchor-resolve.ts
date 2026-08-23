@@ -46,9 +46,58 @@ export type Resolved =
   /** Not here, and it could not have been minted by this index either way. */
   | { at: "incomparable"; detail: string };
 
-export interface AnchorIndex {
-  hash(anchorId: string): string | undefined;
+/**
+ * A live-hash map that also knows which build(s) produced it.
+ *
+ * An intersection rather than a wrapper, deliberately: every consumer in this
+ * codebase already holds a `Map<string, string>` and calls `.get`, and forcing ~20
+ * of them through a new accessor to reach two extra fields would be churn with its
+ * own transcription risk. What the type DOES buy is that a bare `Map` no longer
+ * satisfies a signature that needs provenance, so building one is a decision.
+ */
+export type AnchorIndex = Map<string, string> & {
   derivations: IndexDerivations;
+  /**
+   * Resolve a fingerprint back to the tag it was made from — `derivationFor`, over
+   * the local `derivations` table. Rides on the index because that is where store
+   * access exists; without it the comparison falls back to matching fingerprints,
+   * which errs in both directions (see `matches`).
+   */
+  knownTag?: (mark: string) => DerivationTag | null;
+};
+
+/** Attach what a ref's rows say about their build to the hashes read out of it. */
+export function anchorIndex(
+  hashes: Map<string, string>,
+  derivations: IndexDerivations,
+  knownTag?: (mark: string) => DerivationTag | null,
+): AnchorIndex {
+  return Object.assign(hashes, { derivations, ...(knownTag ? { knownTag } : {}) }) as AnchorIndex;
+}
+
+/**
+ * An index that cannot answer the provenance question, so every absence reads as
+ * real — today's behaviour, exactly.
+ *
+ * For hashes read from somewhere with no derivation on record, and for tests whose
+ * subject is not provenance. NOT a default: a site that needs the real answer and
+ * gets this one is silently back where it started, which is why `anchorIndex` takes
+ * the derivations rather than defaulting them.
+ */
+export const legacyIndex = (hashes: Map<string, string>): AnchorIndex =>
+  anchorIndex(hashes, { tags: [], anyUntagged: true });
+
+/** What a set of already-loaded anchors says about the build(s) that minted them. */
+export function derivationsOf(anchors: Iterable<{ derivation?: DerivationTag }>): IndexDerivations {
+  const tags: DerivationTag[] = [];
+  const seen = new Set<string>();
+  let anyUntagged = false;
+  for (const a of anchors) {
+    if (!a.derivation) { anyUntagged = true; continue; }
+    const k = derivationFingerprint(a.derivation) + "\0" + a.derivation.anchorScheme;
+    if (!seen.has(k)) { seen.add(k); tags.push(a.derivation); }
+  }
+  return { tags, anyUntagged };
 }
 
 /**
@@ -59,17 +108,13 @@ export interface AnchorIndex {
  * a tombstone that empties its accepted set arrives with none (see `ackHole` and
  * `retireSharedDoc`).
  *
- * `knownTag` resolves a fingerprint back to the tag it was made from — `derivationFor`,
- * over the local `derivations` table. Optional because this module does not touch the
- * store; when it can answer, the comparison is the honest one.
  */
 export function resolveAnchor(
   anchorId: string,
   evidence: readonly string[],
   index: AnchorIndex,
-  knownTag?: (mark: string) => DerivationTag | null,
 ): Resolved {
-  const hash = index.hash(anchorId);
+  const hash = index.get(anchorId);
   // Equality first, provenance second — the ordering the hash side already uses
   // ("comparability is consulted only after two digests differ"). An id that
   // resolved needs no argument about which build minted it.
@@ -85,7 +130,7 @@ export function resolveAnchor(
   // accepted set when the id RESOLVED under that derivation (`store.ts`, `capture`),
   // so one matching mark is positive proof that a build like this one joined this id
   // before — which outranks any number of derivations that never saw it.
-  for (const m of marks) if (matches(m, index.derivations, knownTag)) return { at: "absent" };
+  for (const m of marks) if (matches(m, index.derivations, index.knownTag)) return { at: "absent" };
 
   return {
     at: "incomparable",

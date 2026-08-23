@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { comparableAnchorDerivation, type DerivationTag } from "./schema.js";
 import { hashTokens, derivationFingerprint } from "./normalize.js";
-import { resolveAnchor, type AnchorIndex } from "./anchor-resolve.js";
+import { resolveAnchor, anchorIndex, derivationsOf, type AnchorIndex } from "./anchor-resolve.js";
 
 const MINE: DerivationTag = {
   anchorScheme: 3, hashScheme: 2,
@@ -13,10 +13,11 @@ const tag = (over: Partial<DerivationTag>): DerivationTag => ({ ...MINE, ...over
 /** A body hash minted under `t` — the evidence a record carries beside an id. */
 const evidence = (t: DerivationTag | null, body = "same") => hashTokens([body], t);
 
-const index = (tags: DerivationTag[], opts: { have?: Record<string, string>; untagged?: boolean } = {}): AnchorIndex => ({
-  hash: (id) => opts.have?.[id],
-  derivations: { tags, anyUntagged: !!opts.untagged },
-});
+const index = (
+  tags: DerivationTag[],
+  opts: { have?: Record<string, string>; untagged?: boolean; knownTag?: (m: string) => DerivationTag | null } = {},
+): AnchorIndex =>
+  anchorIndex(new Map(Object.entries(opts.have ?? {})), { tags, anyUntagged: !!opts.untagged }, opts.knownTag);
 
 // --- the projection ---------------------------------------------------------
 
@@ -105,7 +106,7 @@ test("without the local dictionary the mark over-rejects on hashScheme", () => {
     "conservative: a different fingerprint, though nothing that decides an id moved");
 
   const knownTag = (m: string) => (m === derivationFingerprint(otherHashScheme) ? otherHashScheme : null);
-  assert.deepEqual(resolveAnchor("a_gone", [evidence(otherHashScheme)], index([MINE]), knownTag), { at: "absent" },
+  assert.deepEqual(resolveAnchor("a_gone", [evidence(otherHashScheme)], index([MINE], { knownTag })), { at: "absent" },
     "and the dictionary upgrades it to the honest three-field test");
 });
 
@@ -117,6 +118,25 @@ test("and UNDER-rejects on anchorScheme, which is why the manifest gate stays", 
     "so the raw mark cannot see an anchor-scheme change at all");
 
   const knownTag = (m: string) => (m === derivationFingerprint(otherAnchorScheme) ? otherAnchorScheme : null);
-  assert.equal(resolveAnchor("a_gone", [evidence(otherAnchorScheme)], index([MINE]), knownTag).at, "incomparable",
+  assert.equal(resolveAnchor("a_gone", [evidence(otherAnchorScheme)], index([MINE], { knownTag })).at, "incomparable",
     "only the dictionary closes it — nothing in this module does");
+});
+
+/**
+ * The index's derivations come from the rows themselves, and one ref legitimately
+ * holds rows from two builds — `applyIndexUpdate` adds incrementally.
+ */
+test("derivationsOf collects distinct tags and notices untagged rows", () => {
+  const older = tag({ grammarDigest: "f".repeat(64) });
+  const d = derivationsOf([{ derivation: MINE }, { derivation: older }, { derivation: MINE }]);
+  assert.equal(d.tags.length, 2, "distinct, not one per row");
+  assert.equal(d.anyUntagged, false);
+
+  const mixed = derivationsOf([{ derivation: MINE }, {}]);
+  assert.equal(mixed.anyUntagged, true, "a pre-provenance row cannot rule anything out");
+
+  // anchorScheme is not in the fingerprint, so it needs its own place in the key —
+  // otherwise two derivations that differ only there collapse into one tag and the
+  // honest comparison never sees the second.
+  assert.equal(derivationsOf([{ derivation: MINE }, { derivation: tag({ anchorScheme: 4 }) }]).tags.length, 2);
 });

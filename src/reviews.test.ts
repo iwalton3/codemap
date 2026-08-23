@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { legacyIndex, anchorIndex } from "./anchor-resolve.js";
+import { hashTokens } from "./normalize.js";
+import type { DerivationTag } from "./schema.js";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,7 +35,7 @@ test("witnessDrift reports only the anchors whose live hash moved", () => {
     { anchorId: "a3", bodyHash: fixtureHash("h3") },
   ];
   const live = new Map([["a1", fixtureHash("h1")], ["a2", fixtureHash("h2_NEW")]]); // a3 absent from live
-  const drift = witnessDrift(witnesses, live);
+  const drift = witnessDrift(witnesses, legacyIndex(live));
   assert.deepEqual(drift.map((d) => d.anchorId).sort(), ["a2", "a3"]);
   assert.equal(drift.find((d) => d.anchorId === "a2")!.now, fixtureHash("h2_NEW"));
   assert.equal(drift.find((d) => d.anchorId === "a3")!.now, "sha256:absent");
@@ -296,14 +299,14 @@ test("changedSince answers about the ref you ask about, not the working tree", a
 test("a witness minted under another hash scheme reports unverifiable, not drift", () => {
   const witnesses: BugWitness[] = [{ anchorId: "a1", bodyHash: fixtureHash("old") }];
   const live = new Map([["a1", fixtureHash("new", 2)]]);
-  const d = witnessDrift(witnesses, live);
+  const d = witnessDrift(witnesses, legacyIndex(live));
   assert.equal(d.length, 1, "it is still reported — the mark does need re-witnessing");
   assert.equal(d[0]!.unverifiable, true);
   assert.deepEqual(realDrift(d), [], "but it is NOT drift, so nothing escalates on it");
 });
 
 test("a real edit under one scheme is still drift", () => {
-  const d = witnessDrift([{ anchorId: "a1", bodyHash: fixtureHash("aaa", 2) }], new Map([["a1", fixtureHash("bbb", 2)]]));
+  const d = witnessDrift([{ anchorId: "a1", bodyHash: fixtureHash("aaa", 2) }], legacyIndex(new Map([["a1", fixtureHash("bbb", 2)]])));
   assert.equal(d.length, 1);
   assert.notEqual(d[0]!.unverifiable, true);
   assert.equal(realDrift(d).length, 1);
@@ -311,12 +314,48 @@ test("a real edit under one scheme is still drift", () => {
 
 test("an anchor that vanished is drift under any scheme — absence is not a derivation", () => {
   // The dangerous reading: `lost` code looking like "just an old hash" and going quiet.
-  const d = witnessDrift([{ anchorId: "gone", bodyHash: fixtureHash("old") }], new Map());
+  const d = witnessDrift([{ anchorId: "gone", bodyHash: fixtureHash("old") }], legacyIndex(new Map()));
   assert.equal(d.length, 1);
   assert.notEqual(d[0]!.unverifiable, true, "a missing anchor must never read as unverifiable");
   assert.equal(realDrift(d).length, 1);
 });
 
 test("an unchanged witness is silent whatever the scheme", () => {
-  assert.deepEqual(witnessDrift([{ anchorId: "a1", bodyHash: fixtureHash("same") }], new Map([["a1", fixtureHash("same")]])), []);
+  assert.deepEqual(witnessDrift([{ anchorId: "a1", bodyHash: fixtureHash("same") }], legacyIndex(new Map([["a1", fixtureHash("same")]]))), []);
+});
+
+// --- a witness whose id another build minted ---------------------------------
+
+const MINE_D: DerivationTag = {
+  anchorScheme: 3, hashScheme: 2,
+  parserIntegrity: "p".repeat(64), grammarDigest: "g".repeat(64),
+};
+const THEIRS_D: DerivationTag = { ...MINE_D, grammarDigest: "f".repeat(64) };
+const mine = anchorIndex(new Map(), { tags: [MINE_D], anyUntagged: false });
+
+/**
+ * An anchor id is derived from the parse — two grammars mint different ids for the
+ * same overload — so a witness can name an id this build would never produce.
+ *
+ * `live.get(id) ?? ABSENT_HASH` turned that into a confident claim that the code is
+ * gone, because ABSENT_HASH is comparable to everything on purpose. The witness has
+ * to say "cannot tell" instead, which is the answer `unverifiable` already exists
+ * for. See docs/anchor-id-provenance.md §6.
+ */
+test("a witness minted by another build is unverifiable, not drift to absent", () => {
+  const d = witnessDrift([{ anchorId: "a_theirs", bodyHash: hashTokens(["body"], THEIRS_D) }], mine);
+  assert.equal(d.length, 1, "still reported — the mark does need attention");
+  assert.equal(d[0]!.unverifiable, true, "but it is not evidence the code moved");
+  assert.deepEqual(realDrift(d), [], "so nothing that escalates on drift escalates on it");
+});
+
+/**
+ * The control, and the reason the test above is not just "absence was suppressed".
+ * A symbol THIS build did mint, now missing, is a deletion and must still say so.
+ */
+test("a symbol this build minted, now absent, is still real drift", () => {
+  const d = witnessDrift([{ anchorId: "a_mine", bodyHash: hashTokens(["body"], MINE_D) }], mine);
+  assert.equal(d.length, 1);
+  assert.ok(!d[0]!.unverifiable, "this index could have resolved it, so its absence is real");
+  assert.equal(realDrift(d).length, 1);
 });
