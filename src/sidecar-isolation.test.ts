@@ -18,6 +18,7 @@
  */
 
 import { test } from "node:test";
+import { testEvent } from "./test-events.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -84,10 +85,11 @@ test("syncing a nested sidecar does not commit or push the code repo", async () 
     const headBefore = c.head(), remoteBefore = c.remoteLog(), statusBefore = c.status();
 
     // Real traffic, so commitLocal has something to do.
-    await appendEvents(side, "findings/acme/pr-1", "w_test_clone", [{
-      id: mintId(), kind: "finding.created", subject: "f_1", actor: izzie, at: "t",
+    await appendEvents(side, "findings/acme/pr-1", "w_test_clone", [testEvent({
+      id: mintId(), kind: "finding.created", subject: "f_1", actor: izzie,
+      writer: "w_test_clone",
       data: { targetKind: "anchor", targetId: "a_1", text: "evidence" },
-    }]);
+    })]);
     await sync(side, izzie);
 
     assert.equal(c.head(), headBefore, "the code repo gained a commit");

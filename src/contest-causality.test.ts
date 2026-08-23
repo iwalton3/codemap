@@ -163,24 +163,3 @@ test("…but one machine revising its own write is not a contest", async () => {
   } finally { s.dispose(); }
 });
 
-test("an upgrade does not contest your own pre-writer write", () => {
-  // The case the subsumption claim does NOT cover, and the reason `sameWriter`
-  // falls back to the principal. A legacy event keys on the principal in
-  // `causality` and a tagged one keys on the clone, so `saw` is false between
-  // them — without the fallback, the first revision after upgrading would contest
-  // the author's own last revision from before it.
-  const izzie = { principal: "izzie@x.com" };
-  const rev = (id: string, writer: string | undefined, severity: string): LogEvent => ({
-    id, kind: "finding.revised", subject: "f_1", actor: izzie, at: "2026-01-01T00:00:00Z",
-    ...(writer ? { writer } : {}), data: { now: { severity }, was: {} },
-  });
-  const created: LogEvent = {
-    id: "0000000001-aa", kind: "finding.created", subject: "f_1", actor: { principal: "dana@x.com" },
-    at: "2026-01-01T00:00:00Z", data: { targetKind: "anchor", targetId: "a_1", text: "t" },
-  };
-  const before = rev("0000000002-bb", undefined, "high");
-  const after = rev("0000000003-cc", "w_laptop", "low");
-  const f = foldFindings([created, before, after]).get("f_1")!;
-  assert.equal(f.contested, undefined, "your own write from before the upgrade is still your own");
-  assert.equal(f.severity, "low");
-});

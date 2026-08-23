@@ -77,7 +77,7 @@ export interface LogEvent {
    * list carry a bare string, which reads as a one-element list; their vectors are
    * a lower bound, exactly as they were when they were written.
    */
-  after?: string | string[];
+  after: string[];
   /**
    * WHICH CLONE wrote this — a random id minted on first use, never derived from
    * the principal, the hostname, or anything reconstructible.
@@ -95,7 +95,7 @@ export interface LogEvent {
    * Attribution and independence keep using `actor.principal`: they want the human,
    * and always did.
    */
-  writer?: string;
+  writer: string;
   /**
    * The previous event of THIS `(scope, writer)` chain, or `GENESIS` for the first.
    *
@@ -115,11 +115,11 @@ export interface LogEvent {
    * Optional: events written before this exist and must keep folding. They are not
    * judged rather than assumed innocent — an absent chain says nothing either way.
    */
-  writerPrev?: string;
+  writerPrev: string;
   /** Governs this envelope. Absent means an older writer; see `SIDECAR_PROTOCOL`. */
-  sidecarProtocol?: number;
+  sidecarProtocol: number;
   /** Governs `data` only. Absent means an older writer; see `EVENT_SCHEMA`. */
-  eventSchema?: number;
+  eventSchema: number;
   /** Event-specific payload. Opaque here. */
   data?: Record<string, unknown>;
 }
@@ -166,9 +166,10 @@ export function principalKey(principal: string): string {
  *
  * A writer id is already opaque and path-safe, so it is used as-is; the principal
  * had to be hashed because it is an email and emails hold characters that are legal
- * in one filesystem and not another. Shards written before this are named by that
- * hash and keep being READ — `readScope` takes every `*.ndjson` in the directory
- * and does not care what produced the name.
+ * in one filesystem and not another. Principal-named shards are not a case any more —
+ * nothing ever wrote one outside this branch, and the protocol-1 freeze stopped
+ * keeping faith with them. `readScope` still takes every `*.ndjson` in the directory
+ * because that is simply how a directory is read, not as an accommodation.
  */
 export function shardFor(scope: string, writer: string): string {
   return join(scope, writer + SHARD_EXT);
@@ -285,7 +286,9 @@ export async function emitEvent(
       sidecarProtocol: SIDECAR_PROTOCOL, eventSchema: EVENT_SCHEMA,
       id: mintId(), kind, subject, actor, at: new Date().toISOString(), writer,
       writerPrev: own.length ? own[own.length - 1]!.id : GENESIS,
-      ...(seen.length ? { after: seen } : {}),
+      // Always present, even empty: `after` is a list in protocol 1, and an absent
+      // one used to be indistinguishable from "saw nothing".
+      after: seen,
       ...(data ? { data } : {}),
     };
     await appendEvents(logRoot, scope, writer, [event]);
@@ -310,7 +313,16 @@ export async function emitEvent(
 function wellFormed(e: LogEvent): boolean {
   return !!e && typeof e.id === "string" && !!e.id
     && typeof e.kind === "string" && typeof e.subject === "string"
-    && !!e.actor && typeof e.actor.principal === "string" && !!e.actor.principal.trim();
+    && !!e.actor && typeof e.actor.principal === "string" && !!e.actor.principal.trim()
+    // Protocol 1. These were optional so that events written before them could keep
+    // folding — events that never existed, because nothing was ever deployed. They
+    // are mandatory now, and the causal vector depends on it: `writerPrev` is the
+    // chain edge it derives segments from, and an absent one is not a missing
+    // convenience, it is an event whose place in its own writer's history is unknown.
+    && typeof e.writer === "string" && !!e.writer
+    && typeof e.writerPrev === "string" && !!e.writerPrev
+    && Array.isArray(e.after)
+    && typeof e.sidecarProtocol === "number" && typeof e.eventSchema === "number";
 }
 
 /**
@@ -561,8 +573,13 @@ export function scopeStatus(events: LogEvent[], duplicateIds: string[] = []): Sc
  * blocked at the end is emitted in id order rather than dropped.
  */
 /** `after` normalised. A bare string is a log written before it became a list. */
-export const parentsOf = (e: LogEvent): string[] =>
-  e.after === undefined ? [] : Array.isArray(e.after) ? e.after : [e.after];
+/**
+ * The causal parents an event names.
+ *
+ * A list, always, since the protocol-1 freeze. It used to accept a bare string too,
+ * for logs written before `after` became a list — logs that have never existed.
+ */
+export const parentsOf = (e: LogEvent): string[] => e.after ?? [];
 
 export function sortEvents(events: LogEvent[]): LogEvent[] {
   const byId = new Map(events.map((e) => [e.id, e]));
@@ -629,14 +646,14 @@ export interface Causality {
 }
 
 /**
- * The key the vector compresses on: the WRITER, falling back to the principal.
+ * The key the vector compresses on: the WRITER, and only the writer.
  *
- * The fallback is what lets an event written before writer ids fold exactly as it
- * did. Mixing the two is safe rather than merely tolerable: an old event and a new
- * one from the same person land under different keys, so the fabricated own-edge
- * between them is not available in the first place.
+ * The principal fallback is gone with the protocol-1 freeze. It existed for events
+ * written before writer ids, and it was the one place the vector was documented as
+ * inexact — keying on a person files two machines' concurrent chains under one key,
+ * which is precisely the compression a fork invalidates.
  */
-const writerOf = (e: LogEvent): string | undefined => e.writer ?? e.actor?.principal;
+const writerOf = (e: LogEvent): string | undefined => e.writer;
 
 export function causality(sortedEvents: LogEvent[]): Causality {
   const byId = new Map(sortedEvents.map((e) => [e.id, e]));

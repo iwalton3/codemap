@@ -203,11 +203,10 @@ function migrate(d: DatabaseSync): void {
   // which symbols pair up across two snapshots, the hashes say which pairs changed,
   // so a mismatch on either makes the whole diff meaningless.
   try { d.exec("ALTER TABLE snapshots ADD COLUMN hash_scheme INTEGER"); } catch { /* already present */ }
-  // shared_scope.status — rows folded before §7's fail-closed rule existed. The
-  // default is 'complete', which is what they were assumed to be; the next fold of
-  // that scope replaces it with a judgement.
-  try { d.exec("ALTER TABLE shared_scope ADD COLUMN status TEXT NOT NULL DEFAULT 'complete'"); } catch { /* already present */ }
-  try { d.exec("ALTER TABLE shared_scope ADD COLUMN diagnostic TEXT"); } catch { /* already present */ }
+  // The `shared_scope.status` / `.diagnostic` rungs are GONE with the protocol-1
+  // freeze: both columns are in the CREATE above, and the only stores that ever
+  // lacked them were dev stores on this branch. The four rungs that remain are core
+  // tables with real stores behind them and are NOT part of the freeze.
 }
 
 // --- one-time migration of a legacy JSON .codemap/ into the DB ---------------

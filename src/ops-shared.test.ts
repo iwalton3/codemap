@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { testEvent } from "./test-events.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -503,11 +504,14 @@ test("a symbol a teammate documented is not offered as a gap", async () => {
 function forkDocScope(sidecar: string, universe: string): void {
   const dir = join(sidecar, "docs", universe);
   const name = readdirSync(dir).find((n) => n.endsWith(".ndjson"))!;
-  appendFileSync(join(dir, name), JSON.stringify({
+  // Through `testEvent`, so this is a well-formed protocol-1 event that forks rather
+  // than a malformed one the reader drops at the door — which would make the test
+  // pass by finding no fork in a scope that has none.
+  appendFileSync(join(dir, name), JSON.stringify(testEvent({
     id: "9999999999-ffffffffff", kind: "doc.published", subject: "n_other",
     actor: { principal: "dana@x.com" }, at: "2026-08-23T00:00:00Z",
     writer: name.replace(/\.ndjson$/, ""), writerPrev: "GENESIS",
-  }) + "\n");
+  })) + "\n");
 }
 
 test("with no sidecar the work queue is exactly what it always was", async () => {

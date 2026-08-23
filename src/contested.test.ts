@@ -310,24 +310,3 @@ test("an ordinary team syncing does not fork anybody's chain", async () => {
   });
 });
 
-test("a shard that predates the chain is linked onto, not restarted", async () => {
-  // The migration case: events already in this writer's shard from before
-  // `writerPrev` existed. The next event must continue from the last of them —
-  // restarting at GENESIS would be fine too (nothing forks, because untagged
-  // events make no chain claim), but it would silently drop the link, so pin it.
-  const s = await scenario(["izzie@x.com"]);
-  try {
-    const izzie = who(s, "izzie@x.com");
-    const scope = findingScope(PR);
-    const writer = await writerFor(izzie.sidecar);
-    const legacy = {
-      id: "0000000001-legacy", kind: "finding.created", subject: "f_old", actor: izzie.actor,
-      at: "2026-01-01T00:00:00Z", writer,
-      data: { targetKind: "anchor", targetId: "a_1", text: "written before the chain" },
-    };
-    await appendEvents(izzie.sidecar, scope, writer, [legacy]);
-    const next = await emitEvent(izzie.sidecar, scope, izzie.actor, "finding.commented", "f_old", { body: "after" });
-    assert.equal(next.writerPrev, legacy.id);
-    assert.equal((await readScopeChecked(izzie.sidecar, scope)).status, "complete");
-  } finally { s.dispose(); }
-});

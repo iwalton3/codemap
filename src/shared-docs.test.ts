@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { testEvent } from "./test-events.js";
 import assert from "node:assert/strict";
 import { legacyIndex } from "./anchor-resolve.js";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -125,8 +126,8 @@ test("a doc still resolves on a checkout no version was written against", async 
 
 // --- fold contract ----------------------------------------------------------------
 
-const vEvent = (id: string, actor: Actor, v: Partial<NodeVersion> & { versionId: string }, after?: string): LogEvent => ({
-  id, kind: "doc.version", subject: "n_1", actor, at: "t", ...(after ? { after } : {}),
+const vEvent = (id: string, actor: Actor, v: Partial<NodeVersion> & { versionId: string }, after?: string): LogEvent => testEvent({
+  id, kind: "doc.version", subject: "n_1", actor, ...(after ? { after: [after] } : {}),
   data: { version: { nodeId: "n_1", type: "module", title: "t", summary: "s", body: "b", citations: [], createdCommit: null, createdBranch: null, createdAt: "t", ...v } as never },
 });
 
@@ -190,9 +191,9 @@ test("an acceptance that matches no citation is kept, not silently dropped", () 
     createdCommit: null, createdBranch: null, createdAt: "2026-01-01T00:00:00Z",
   } as unknown as NodeVersion;
   const ev: LogEvent[] = [
-    { id: "1", kind: "doc.version", subject: "n1", actor: izzie, at: "t1", data: { version: version as never } },
-    { id: "2", kind: "doc.accepted", subject: "n1", actor: dana, at: "t2",
-      data: { versionId: "v1", anchorId: "a_theirs", bodyHash: fixtureHash("body", 2) } },
+    testEvent({ id: "1", kind: "doc.version", subject: "n1", actor: izzie, at: "t1", data: { version: version as never } }),
+    testEvent({ id: "2", kind: "doc.accepted", subject: "n1", actor: dana, at: "t2",
+      data: { versionId: "v1", anchorId: "a_theirs", bodyHash: fixtureHash("body", 2) } }),
   ] as LogEvent[];
 
   const doc = foldDocs(ev).get("n1")!;
@@ -210,7 +211,7 @@ test("an acceptance for a version this fold never saw is kept too", () => {
     createdCommit: null, createdBranch: null, createdAt: "2026-01-01T00:00:00Z",
   } as unknown as NodeVersion;
   const ev: LogEvent[] = [
-    { id: "1", kind: "doc.version", subject: "n1", actor: izzie, at: "t1", data: { version: version as never } },
+    testEvent({ id: "1", kind: "doc.version", subject: "n1", actor: izzie, at: "t1", data: { version: version as never } }),
     { id: "2", kind: "doc.accepted", subject: "n1", actor: dana, at: "t2",
       data: { versionId: "v_unknown", anchorId: "a_mine", bodyHash: fixtureHash("body", 2) } },
   ] as LogEvent[];
@@ -267,11 +268,11 @@ test("a version id claimed by two nodes takes one down, not two", async () => {
   // empty" rather than "never arrived". Reachable only from an old or buggy client
   // now that `shareDoc` strips caller ids, which is exactly the input this fold is
   // written to survive.
-  const ev = (nodeId: string, body: string, i: number): LogEvent => ({
-    id: "e" + i, scope: "docs/u", subject: nodeId, kind: "doc.version",
+  const ev = (nodeId: string, body: string, i: number): LogEvent => testEvent({
+    id: "e" + i, subject: nodeId, kind: "doc.version",
     actor: { principal: "p@x.com" }, at: "2026-01-0" + i + "T00:00:00Z",
-    data: { version: { versionId: "nv_same", nodeId, type: "process", title: nodeId, summary: "", body, citations: [{ anchorId: "a_1", acceptedHashes: [] }], createdCommit: null, createdBranch: null, createdAt: "2026-01-01T00:00:00Z" } },
-  } as unknown as LogEvent);
+    data: { version: { versionId: "nv_same", nodeId, type: "process", title: nodeId, summary: "", body, citations: [{ anchorId: "a_1", acceptedHashes: [] }], createdCommit: null, createdBranch: null, createdAt: "2026-01-01T00:00:00Z" } as unknown as Record<string, unknown> },
+  });
 
   const docs = foldDocs([ev("n_first", "FIRST", 1), ev("n_second", "SECOND", 2)]);
   assert.equal(docs.get("n_first")!.versions.length, 1, "the first write stands");

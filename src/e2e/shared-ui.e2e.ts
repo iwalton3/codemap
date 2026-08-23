@@ -14,6 +14,7 @@
  */
 
 import { test, describe, before, after } from "node:test";
+import { testEvent } from "../test-events.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -311,14 +312,15 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
     const dana = { principal: "dana@x.com" };
     const scope = findingScope(`${uKey}/pr-900`);
 
-    const created = { id: mintId(), kind: "finding.created", subject: "f_contest", actor: izzie, at: "t",
-      data: { targetKind: "anchor", targetId: anchorId, text: "evidence", comment: "the ask", severity: "medium" } };
+    const created = testEvent({ id: mintId(), kind: "finding.created", subject: "f_contest", actor: izzie,
+      writer: "w_izzie_clone_a",
+      data: { targetKind: "anchor", targetId: anchorId, text: "evidence", comment: "the ask", severity: "medium" } });
     await appendEvents(side, scope, "w_izzie_clone_a", [created]);
     // Both name `created` as what they had seen — and NOT each other.
-    await appendEvents(side, scope, "w_izzie_clone_a", [{ id: mintId(), kind: "finding.revised", subject: "f_contest",
-      actor: izzie, at: "t", after: created.id, data: { now: { severity: "critical" } } }]);
-    await appendEvents(side, scope, "w_dana_clone_a", [{ id: mintId(), kind: "finding.revised", subject: "f_contest",
-      actor: dana, at: "t", after: created.id, data: { now: { severity: "low" } } }]);
+    await appendEvents(side, scope, "w_izzie_clone_a", [testEvent({ id: mintId(), kind: "finding.revised", subject: "f_contest",
+      actor: izzie, writer: "w_izzie_clone_a", writerPrev: created.id, after: [created.id], data: { now: { severity: "critical" } } })]);
+    await appendEvents(side, scope, "w_dana_clone_a", [testEvent({ id: mintId(), kind: "finding.revised", subject: "f_contest",
+      actor: dana, writer: "w_dana_clone_a", after: [created.id], data: { now: { severity: "low" } } })]);
 
     const { page, errors } = await open(`/u/${universe}/shared/900/`);
     await page.waitForSelector(".prbadge.contested");
@@ -371,10 +373,10 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
     await writeSnapshot(root, "cafebabe", "feature/elsewhere", [{ ...live, id: "a_only_on_branch" }], "2026-08-22T00:00:00Z");
 
     const scope = findingScope(`${uKey}/pr-901`);
-    await appendEvents(side, scope, "w_izzie_clone_a", [{
-      id: mintId(), kind: "finding.created", subject: "f_offtree", actor: izzie, at: "t",
+    await appendEvents(side, scope, "w_izzie_clone_a", [testEvent({
+      id: mintId(), kind: "finding.created", subject: "f_offtree", actor: izzie, writer: "w_izzie_clone_a",
       data: { targetKind: "anchor", targetId: "a_only_on_branch", text: "evidence", comment: "about a branch symbol" },
-    }]);
+    })]);
 
     const { page, errors } = await open(`/u/${universe}/shared/901/?queue=0`);
     await page.waitForSelector("main");
@@ -397,13 +399,15 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
     const uKey = universeKey(root);
     const scope = findingScope(`${uKey}/pr-902`);
 
-    const created = { id: mintId(), kind: "finding.created", subject: "f_moved", actor: izzie, at: "t",
-      data: { targetKind: "anchor", targetId: "a_vanished", text: "evidence", comment: "about a renamed symbol" } };
+    const created = testEvent({ id: mintId(), kind: "finding.created", subject: "f_moved", actor: izzie,
+      writer: "w_izzie_clone_a",
+      data: { targetKind: "anchor", targetId: "a_vanished", text: "evidence", comment: "about a renamed symbol" } });
     await appendEvents(side, scope, "w_izzie_clone_a", [created]);
-    await appendEvents(side, scope, "w_izzie_clone_a", [{
-      id: mintId(), kind: "finding.relocation", subject: "f_moved", actor: opus, at: "t", after: created.id,
+    await appendEvents(side, scope, "w_izzie_clone_a", [testEvent({
+      id: mintId(), kind: "finding.relocation", subject: "f_moved", actor: opus,
+      writer: "w_izzie_clone_a", writerPrev: created.id, after: [created.id],
       data: { kind: "moved", to: anchorId, rationale: "renamed in abc123; same body, new name" },
-    }]);
+    })]);
 
     const { page, errors } = await open(`/u/${universe}/shared/902/`);
     await page.waitForSelector(".prbadge.ask");
@@ -437,11 +441,11 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
     const base = { kind: "finding.created", subject: "f_forked", actor: izzie, at: "t",
       data: { targetKind: "anchor", targetId: anchorId, text: "evidence", comment: "the ask" } };
     // Two events of ONE writer both opening the chain: a copied clone id.
-    await appendEvents(side, scope, "w_copied", [{ ...base, id: mintId(), writerPrev: "GENESIS", writer: "w_copied" }]);
-    await appendEvents(side, scope, "w_copied", [{
-      id: mintId(), kind: "finding.commented", subject: "f_forked", actor: izzie, at: "t",
+    await appendEvents(side, scope, "w_copied", [testEvent({ ...base, id: mintId(), writerPrev: "GENESIS", writer: "w_copied" })]);
+    await appendEvents(side, scope, "w_copied", [testEvent({
+      id: mintId(), kind: "finding.commented", subject: "f_forked", actor: izzie,
       writer: "w_copied", writerPrev: "GENESIS", data: { body: "from the other clone" },
-    }]);
+    })]);
 
     const { page, errors } = await open(`/u/${universe}/shared/903/`);
     await page.waitForSelector(".blocked");

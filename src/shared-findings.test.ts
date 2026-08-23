@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { testEvent } from "./test-events.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -99,8 +100,8 @@ test("a person may close anything", async () => {
 test("THE FOLD enforces the ratchet, not just the write path", () => {
   // A write-time check protects the honest writer and nobody else. This event is
   // what an older or buggy client would emit; every reader must ignore it.
-  const created: LogEvent = { id: "0000000001-a", kind: "finding.created", subject: "f1", actor: izzie, at: "t", data: { targetKind: "anchor", targetId: "a_1", text: "e" } };
-  const forged: LogEvent = { id: "0000000002-b", kind: "finding.stateChanged", subject: "f1", actor: opus, at: "t", data: { state: "resolved" } };
+  const created = testEvent({ id: "0000000001-a", kind: "finding.created", subject: "f1", actor: izzie, data: { targetKind: "anchor", targetId: "a_1", text: "e" } });
+  const forged = testEvent({ id: "0000000002-b", kind: "finding.stateChanged", subject: "f1", actor: opus, data: { state: "resolved" } });
   const f = foldFindings([created, forged]).get("f1")!;
   assert.equal(f.state, "created", "an agent cannot close a person's finding, however the event was produced");
 });
@@ -306,12 +307,12 @@ test("the fold is order-independent", async () => {
 });
 
 test("an event about an unknown finding is ignored, not fatal", () => {
-  const orphan: LogEvent = { id: "0000000001-a", kind: "finding.commented", subject: "nope", actor: izzie, at: "t", data: { body: "hi" } };
+  const orphan = testEvent({ id: "0000000001-a", kind: "finding.commented", subject: "nope", actor: izzie, data: { body: "hi" } });
   assert.equal(foldFindings([orphan]).size, 0);
 });
 
 test("a malformed creation is skipped", () => {
-  const bad: LogEvent = { id: "0000000001-a", kind: "finding.created", subject: "f1", actor: izzie, at: "t", data: { text: "no target" } };
+  const bad = testEvent({ id: "0000000001-a", kind: "finding.created", subject: "f1", actor: izzie, data: { text: "no target" } });
   assert.equal(foldFindings([bad]).size, 0);
 });
 

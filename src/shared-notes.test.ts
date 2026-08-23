@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { testEvent } from "./test-events.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -88,7 +89,7 @@ test("an agent may answer a question and may not declare it settled", async () =
 
 test("the fold is order-independent", () => {
   const ev = (id: string, kind: string, actor: Actor, data: Record<string, unknown>, after?: string): LogEvent =>
-    ({ id, kind, subject: "n_1", actor, at: "t", ...(after ? { after } : {}), data });
+    testEvent({ id, kind, subject: "n_1", actor, ...(after ? { after: [after] } : {}), data });
   const a = ev("0000000001-a", "note.created", izzie, { targetKind: "anchor", targetId: "a_1", text: "x" });
   const b = ev("0000000002-b", "note.answered", dana, { body: "first" }, a.id);
   const c = ev("0000000003-c", "note.answered", izzie, { body: "second" }, b.id);

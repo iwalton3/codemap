@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { testEvent } from "./test-events.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -88,7 +89,9 @@ test("a second write records what the writer had already seen", async () => {
   try {
     const first = await publishWalkthrough(root, izzie, wt(264, "h"));
     const second = await publishWalkthrough(root, dana, wt(264, "h"));
-    assert.equal(first.after, undefined, "nothing to have seen");
+    // Empty, not absent: `after` is a mandatory list since the protocol-1 freeze, so
+    // "saw nothing" and "did not say" are no longer the same value.
+    assert.deepEqual(first.after, [], "nothing to have seen");
     // A list, because a writer apart from two others holds two heads and one id
     // cannot name both. Here there is exactly one.
     assert.deepEqual(second.after, [first.id]);
@@ -98,7 +101,7 @@ test("a second write records what the writer had already seen", async () => {
 // --- the fold's actual contract ------------------------------------------------
 
 const ev = (id: string, actor: Actor, w: PrWalkthrough, after?: string): LogEvent =>
-  ({ id, kind: "walkthrough.published", subject: `pr-${w.pr}`, actor, at: "2026-08-21T00:00:00Z", ...(after ? { after } : {}), data: { walkthrough: w as never } });
+  testEvent({ id, kind: "walkthrough.published", subject: `pr-${w.pr}`, actor, ...(after ? { after: [after] } : {}), data: { walkthrough: w as never } });
 
 test("the fold is order-independent — every reader lands on the same state", () => {
   const a = ev("0000000001-aa", izzie, wt(264, "h", "first"));

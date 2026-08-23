@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { testEvent } from "./test-events.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, appendFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -290,11 +291,15 @@ const forkShard = (logRoot: string, scope: string) => {
   const dir = join(logRoot, scope);
   const name = readdirSync(dir).find((n) => n.endsWith(".ndjson"))!;
   const writer = name.replace(/\.ndjson$/, "");
-  appendFileSync(join(dir, name), JSON.stringify({
+  // Through `testEvent`, so the line is a WELL-FORMED protocol-1 event that happens
+  // to fork. A hand-written literal missing the mandatory envelope is dropped at the
+  // door instead, and the test then proves nothing — it passed for a while by
+  // detecting no fork in a scope that had none.
+  appendFileSync(join(dir, name), JSON.stringify(testEvent({
     id: "9999999999-ffffffffff", kind: "finding.commented", subject: "f_x",
     actor: izzie, at: "2026-08-23T00:00:00Z", writer, writerPrev: "GENESIS",
     data: { body: "from the copied clone" },
-  }) + "\n");
+  })) + "\n");
 };
 
 test("a fork blocks the scope, and the value still comes back", async () => {
@@ -376,7 +381,7 @@ const GOLDEN_LOG: LogEvent[] = (() => {
   const opus: Actor = { principal: "izzie@x.com", via: { kind: "agent", model: "claude-opus-5" } };
   const sonnet: Actor = { principal: "izzie@x.com", via: { kind: "agent", model: "claude-sonnet-5" } };
   const e = (n: number, kind: string, actor: Actor, writer: string,
-             data?: Record<string, unknown>, after?: string[]): LogEvent => ({
+             data?: Record<string, unknown>, after?: string[]): LogEvent => testEvent({
     id: `000000000${n}-x`, kind, subject: "f_gold", actor,
     at: `2026-01-0${n}T00:00:00.000Z`, writer,
     ...(after ? { after } : {}), ...(data ? { data } : {}),

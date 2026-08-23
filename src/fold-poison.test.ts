@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { testEvent } from "./test-events.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,10 +14,10 @@ const izzie = { principal: "izzie@x.com" };
 const SCOPE = "findings/acme/api/pr-264";
 const PR = "acme/api/pr-264";
 
-const good: LogEvent = {
-  id: "0000000001-aa", kind: "finding.created", subject: "f_1", actor: izzie, at: "2026-08-21T00:00:00Z",
+const good: LogEvent = testEvent({
+  id: "0000000001-aa", kind: "finding.created", subject: "f_1", actor: izzie,
   data: { text: "a real finding", targetId: "a_1", targetKind: "anchor" },
-};
+});
 
 /**
  * One malformed line from one client must not take a whole scope down.
