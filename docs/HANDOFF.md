@@ -204,10 +204,10 @@ contradiction and is not: 3b's "do the anchor join in SQL" versus provenance's
        agree with append order and that is what a fork breaks.
      - **Scope status.** §7's fail-closed rule: `status` + one `diagnostic` on
        `shared_scope`, stored beside the fingerprint so a cache HIT answers it.
-       `readCached` returns it WITH the value, deliberately — a signature that lets
-       a caller take the rows and forget to ask is how a fail-closed rule fails.
-       `sharedCoverage` needed `scopeVerdict` instead, because it takes the QUERY
-       path and is where a silent verdict costs most: coverage DROPS gaps.
+       `readCached` returns it WITH the value and `ensureMaterialized` returns it
+       with `fresh`, deliberately — a signature that lets a caller take the rows
+       and forget to ask is how a fail-closed rule fails, and that is exactly how
+       it first failed here.
      - **Writer identity in the folds — and the three resolved differently.**
        `contest.ts` keys on the WRITER (its principal test was subsumed by `saw` for
        one clone, so its only live effect was suppressing a real two-machine
@@ -229,15 +229,28 @@ contradiction and is not: 3b's "do the anchor join in SQL" versus provenance's
      the one that landed, not the doc-freshness one. `shared_scope.folded_at` and
      `events` are still written and never read; `status` and `diagnostic` are read.
 
-   **What is left of 3a, and it is small.** `ensureMaterialized` still returns a
-   bare boolean, so `sharedDocsCiting` and `sharedDocCandidates` cannot carry a
-   verdict of their own — `sharedCoverage` covers the one caller that matters by
-   re-reading the row. There is no rotation command for a writer id yet (§4 asks
-   for one), so the repair for a detected fork is manual: delete
-   `<sidecar git dir>/codemap-writer` on one clone. And nothing REFUSES a write to
-   a blocked scope; the choice was deliberate — a fork is in history and cannot be
-   un-forked, so refusing writes would wedge the scope permanently rather than
-   contain it.
+   **What is left of 3a, and it is small.** There is no rotation command for a
+   writer id yet (§4 asks for one), so the repair for a detected fork is manual:
+   delete `<sidecar git dir>/codemap-writer` on one clone. And nothing REFUSES a
+   write to a blocked scope; the choice was deliberate — a fork is in history and
+   cannot be un-forked, so refusing writes would wedge the scope permanently
+   rather than contain it.
+
+   **Two codex rounds, and the second was worth more than the first.** Round one
+   refuted a comment in `contest.ts` that claimed more than it could: the writer
+   test is subsumed by `saw` between two TAGGED events, and not between a tagged
+   one and a pre-writer one. Round two found the real hole and named the cut in
+   the same breath — `ensureMaterialized` returned a bare boolean, so the two
+   surfaces on the QUERY path dropped the verdict, and `scopeVerdict` was a second
+   route bolted on to recover it for one caller with an "unknown" state §7 does
+   not permit. One route now carries it. **Ask it what to cut.**
+
+   **The rule that came out of round two and is easy to get wrong:** a blocked
+   scope must stop DECIDING, not merely stop claiming. Suppressing a gap is an
+   authoritative act and the harm is invisible — it is what is missing from the
+   list. So `findGaps` and `context` keep the gap and show the team's doc beside
+   it; `getAnchor`, which suppresses nothing, reports the verdict and its docs
+   unchanged.
 
 4. ~~**There is no orphans page.**~~ **DONE.** `/u/:u/orphans/` reads `/api/orphans`,
    which had been served since the sweep was built and consumed by nothing — the
