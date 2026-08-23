@@ -80,6 +80,35 @@ Consequences that are decided, not open:
   pushed" — one boolean derived from git, not a mechanism. Its two prerequisites
   (preserved version id, preserved `createdAt`) were worth landing anyway and have.
 
+## The performance contract
+
+**A sync must stay under ten seconds** (owner's budget, 2026-08-23). That is the
+number to design against; nothing else here has a stated bound.
+
+Measured on this machine, so the next person argues with numbers rather than
+intuition:
+
+| | cost |
+|---|---|
+| one `emitEvent` into a scope of 100 events | 2ms |
+| …5,000 events | 15ms |
+| …20,000 events | 61ms |
+| change-scan across 297 scopes / 891 shards (256 note buckets, 40 PR scopes, docs) | **9ms** |
+
+Two things follow. **A shared write can afford to append**, because a write is a
+user act — publish a doc, file a finding — and 61ms is against a scope far larger
+than anything the real target has. And **sync is dominated by git**, not by us:
+detecting which scopes changed costs single-digit milliseconds across a whole
+universe, so the fold budget is spent only on scopes a pull actually moved.
+
+The per-write cost is O(scope) and will grow. The fix, when a scope reaches six
+figures, is to maintain causal heads incrementally instead of re-folding to get
+them — a change inside `emitEvent`, not an architecture. **Do not pre-emptively
+build an outbox for this**: an outbox that captures causality correctly has to
+record `after` and `writerPrev` at write time, which makes its row an event stored
+somewhere other than the log, i.e. two authorities and a drain protocol in place of
+an append.
+
 ## Where the code deviates today
 
 - **Materialization is per-query, not per-sync.** `readCached` fingerprints the
