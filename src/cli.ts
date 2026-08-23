@@ -159,11 +159,11 @@ async function cmdPrResolve(root: string, prInput: string, o: { confirm: boolean
 }
 
 /** What is pointing at code the tree no longer has. See ops.orphanedWork. */
-async function cmdOrphans(root: string): Promise<void> {
-  const r = await ops.orphanedWork(root);
+async function cmdOrphans(root: string, locate: boolean): Promise<void> {
+  const r = await ops.orphanedWork(root, { locate });
   if (!r.total) { console.log("nothing is pointing at missing code."); return; }
-  const k = r.byKind as Record<string, { offTree: number; retained: number; lost: number }>;
-  const work = Object.entries(k).filter(([n]) => n !== "review").reduce((n, [, v]) => n + v.offTree + v.retained + v.lost, 0);
+  const k = r.byKind as Record<string, { offTree: number; retained: number; located: number; lost: number }>;
+  const work = Object.entries(k).filter(([n]) => n !== "review").reduce((n, [, v]) => n + v.offTree + v.retained + v.located + v.lost, 0);
   console.log(`${r.total} reference(s) to code the working tree does not have — ${work} of them findings or bugs:\n`);
   const show = (label: string, rows: any[], note: string) => {
     // Reviews are counted, not listed. A repository's history necessarily strands
@@ -183,7 +183,16 @@ async function cmdOrphans(root: string): Promise<void> {
   };
   show("off-tree", r.offTree as any[], "exists on a branch — check that ref out, or work against it");
   show("retained", r.retained as any[], "gone from the tree; last known state kept, still re-anchorable");
-  show("lost", r.lost as any[], "no record anywhere — the finding's own text is all that survives");
+  show("located", (r as any).located ?? [], "no copy here, but its own commit still names it — read there, above");
+  show("lost", r.lost as any[], "no copy here, and nothing found — the record's own text is what survives");
+  const l = (r as any).locatable as { records: number; commits: number; notAsked?: number; cap?: number } | undefined;
+  // Never a bare `lost` count. What was not checked is the difference between "we
+  // looked" and "we did not", and printing only the first would be a lie of omission.
+  if (l && !locate) {
+    console.log(`  ${l.records} of them name a commit — \`codemap orphans --locate\` reads those ${l.commits} commit(s) and says what each id was.\n`);
+  } else if (l?.notAsked) {
+    console.log(`  ${l.notAsked} more commit(s) not read (cap ${l.cap}) — raise it to check the rest.\n`);
+  }
 }
 
 async function cmdPrIngest(root: string, prInput: string, files: string[], dryRun: boolean): Promise<void> {
@@ -434,7 +443,7 @@ async function cmdCheck(root: string): Promise<void> {
   }
 }
 
-const { positionals, values } = parseArgs({ allowPositionals: true, options: { verbose: { type: "boolean" }, emit: { type: "boolean" }, repo: { type: "string" }, "no-fetch": { type: "boolean" }, json: { type: "boolean" }, limit: { type: "string" }, offset: { type: "string" }, "dry-run": { type: "boolean" }, confirm: { type: "boolean" }, viewed: { type: "boolean" }, all: { type: "boolean" }, "min-severity": { type: "string" }, force: { type: "boolean" }, "max-prs": { type: "string" }, summary: { type: "string" }, approve: { type: "boolean" }, "request-changes": { type: "boolean" }, pull: { type: "boolean" }, anyone: { type: "boolean" }, only: { type: "string" }, queue: { type: "boolean" } } });
+const { positionals, values } = parseArgs({ allowPositionals: true, options: { verbose: { type: "boolean" }, emit: { type: "boolean" }, repo: { type: "string" }, "no-fetch": { type: "boolean" }, json: { type: "boolean" }, limit: { type: "string" }, offset: { type: "string" }, "dry-run": { type: "boolean" }, confirm: { type: "boolean" }, viewed: { type: "boolean" }, all: { type: "boolean" }, "min-severity": { type: "string" }, force: { type: "boolean" }, "max-prs": { type: "string" }, summary: { type: "string" }, approve: { type: "boolean" }, "request-changes": { type: "boolean" }, pull: { type: "boolean" }, anyone: { type: "boolean" }, only: { type: "string" }, queue: { type: "boolean" }, locate: { type: "boolean" } } });
 
 if (positionals[0] === "analyze") {
   const analyzer = positionals[1] ?? "";
@@ -556,7 +565,7 @@ if (positionals[0] === "analyze") {
   } else if (positionals[0] === "publish-docs") {
     await cmdPublishDocs(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."), Boolean(values["dry-run"]));
   } else if (positionals[0] === "orphans") {
-    await cmdOrphans(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."));
+    await cmdOrphans(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."), !!values.locate);
   } else if (positionals[0] === "prs") {
     cmdPrs(positionals[1] ?? "");
   } else if (positionals[0] === "diff") {

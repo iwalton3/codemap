@@ -190,14 +190,26 @@ contradiction and is not: 3b's "do the anchor join in SQL" versus provenance's
    - `shared_scope.folded_at` and `events` are still written and never read. The
      review that would delete them stands; §5 landing does not save them.
 
-4. **There is no orphans page.** `/api/orphans` is served and no page consumes it.
-   The PR panel now reports a `stranded` COUNT pointing at `codemap orphans`, which
-   is honest and is not a workflow. This is the smallest real gap on the list.
+4. ~~**There is no orphans page.**~~ **DONE.** `/u/:u/orphans/` reads `/api/orphans`,
+   which had been served since the sweep was built and consumed by nothing — the
+   `stranded` count on the PR findings panel pointed at a CLI command from inside a
+   browser. Four buckets, a kind filter, and `locate` as a button rather than part
+   of the load, because it indexes a commit per stranded record's address.
 
-5. **Two surfaces still bypass the resolution**: `orphanedWork`'s `lost` bucket, and
-   anything else that classifies by raw id membership. Note that
-   `prOffStoryFindings` deliberately uses raw membership and says why: its question
-   is whether an id can be PLACED on a diff, not whether the code exists.
+5. ~~**`orphanedWork`'s `lost` bucket**~~ **DONE.** It meant "no record anywhere",
+   which it never did: raw id membership in two local tables, presented as a claim
+   about the CODE. Records carry their own address (an annotation's `sourceRef`, a
+   bug's `createdCommit`, a review's `reviewedCommit`), so `locate` runs `whereWere`
+   grouped BY COMMIT and a record whose own commit still names its id moves to a new
+   `located` bucket with the file, symbol and line. What stays `lost` carries `why`
+   — *no address to ask*, *not asked*, *absent*, *ambiguous* are four situations and
+   only some are fixable. Capped at 25 commits with the remainder reported, never
+   dropped.
+
+   **What is left of this item:** other surfaces that still classify by raw id
+   membership. `prOffStoryFindings` does so deliberately and says why (its question
+   is placement on a diff, not existence). `retireSharedDoc` classifies raw ids and
+   would need the same treatment if the shared path is ever queued.
 
 6. **`src/ops.ts` is ~3400 lines** and wants splitting. A prose audit measured the
    tree: ratio climbing 0.15 → 0.28, but 66% of prose is skippable boundary

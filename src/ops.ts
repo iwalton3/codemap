@@ -458,31 +458,57 @@ export async function reindex(root: string) {
  * What is pointing at code the working tree no longer has — "what did that refactor
  * break?", which there was previously no way to ask.
  *
- * Three outcomes, and the difference is the whole point of asking:
+ * Four outcomes, and the difference is the whole point of asking:
  *   `offTree`   the symbol exists in a cached commit snapshot — a PR branch, most
  *               likely. Nothing is lost; the tree is just on a different branch.
  *   `retained`  gone from the tree and from every snapshot, but its last known
  *               state was kept because work pointed at it. Readable, re-anchorable.
- *   `lost`      no record anywhere. Filed before retention existed, or the record
- *               was evicted. This is the irrecoverable bucket.
+ *   `located`   no copy here, but the record's OWN commit still produces the id, so
+ *               this build read that commit and can say what the id named. Only
+ *               with `locate` — see below.
+ *   `lost`      no copy here, and nothing to ask or nothing found when asked.
+ *
+ * **`lost` used to mean "no record anywhere", which it never did.** It was raw id
+ * membership in two local tables, presented as a claim about the CODE — the same
+ * shape `resolveAnchor` exists to stop. A record usually carries its own address
+ * (an annotation's `sourceRef`, a bug's `createdCommit`, a review's
+ * `reviewedCommit`), and indexing that commit answers what the id named.
+ *
+ * That answer costs an index of a whole commit, so it is an ACT rather than a page
+ * load: without `locate` this reports how many records could be asked about and how
+ * many commits that would open, and asserts nothing it has not checked.
  */
-export async function orphanedWork(root: string) {
+export async function orphanedWork(root: string, opts: { locate?: boolean; maxCommits?: number } = {}) {
   const [annStore, bugStore, reviewStore, store] = await Promise.all([
     readAnnotations(root), readBugs(root), readReviews(root), readAnchorStore(root),
   ]);
   const live = new Set(store.anchors.map((a) => a.id));
 
-  const refs: { id: string; kind: "annotation" | "bug" | "review"; ref: string; label: string; posted?: Annotation["postedRef"] }[] = [];
+  // The record's own address, when it has one. `@work` and `@orphan` are not
+  // commits, so they are no address at all — `whereWere` says so rather than
+  // answering a question nobody asked.
+  const addressOf = (v: string | null | undefined): string | undefined =>
+    v && v !== "@work" && v !== "@orphan" ? v : undefined;
+
+  const refs: { id: string; kind: "annotation" | "bug" | "review"; ref: string; label: string; posted?: Annotation["postedRef"]; sourceRef?: string }[] = [];
   for (const a of annStore.annotations) {
     if (a.target.kind !== "anchor" || live.has(a.target.id)) continue;
     refs.push({
       id: a.target.id, kind: "annotation", ref: a.id,
       label: (a.comment || a.text || "").split("\n")[0]?.slice(0, 120) ?? "",
       ...(a.postedRef ? { posted: a.postedRef } : {}),
+      // `sourceRef` is the ref the anchor was RESOLVED and witnessed at, which is
+      // the address; `createdCommit` is only ever the tree's HEAD at filing time and
+      // says nothing about what was read.
+      ...(addressOf(a.sourceRef) ?? addressOf(a.createdCommit)
+        ? { sourceRef: (addressOf(a.sourceRef) ?? addressOf(a.createdCommit))! } : {}),
     });
   }
   for (const b of bugStore.bugs) {
-    for (const id of b.anchors) if (!live.has(id)) refs.push({ id, kind: "bug", ref: b.id, label: b.title });
+    for (const id of b.anchors) {
+      if (live.has(id)) continue;
+      refs.push({ id, kind: "bug", ref: b.id, label: b.title, ...(addressOf(b.createdCommit) ? { sourceRef: b.createdCommit! } : {}) });
+    }
   }
   // Reviews too: a stranded sign-off is a lost attestation, and retention protects
   // them, so leaving them out of the sweep would report less than was kept.
@@ -491,9 +517,17 @@ export async function orphanedWork(root: string) {
     refs.push({
       id: r.target.id, kind: "review", ref: r.target.id,
       label: `${r.level} ${r.attestation ?? (r.actor === "agent" ? "checked" : "signed")} by ${r.reviewer || r.actor || "?"}`,
+      ...(addressOf(r.reviewedCommit) ? { sourceRef: r.reviewedCommit! } : {}),
     });
   }
-  if (!refs.length) return { total: 0, offTree: [] as any[], retained: [] as any[], lost: [] as any[], byKind: {} as Record<string, { offTree: number; retained: number; lost: number }> };
+  const empty = {
+    total: 0, offTree: [] as any[], retained: [] as any[], located: [] as any[], lost: [] as any[],
+    byKind: {} as Record<string, OrphanCounts>,
+    // Present-and-absent rather than missing, so the two return shapes are one type
+    // and a reader does not have to narrow a union to ask what was not checked.
+    locatable: undefined as undefined | { records: number; commits: number; notAsked?: number; cap?: number },
+  };
+  if (!refs.length) return empty;
 
   const ids = [...new Set(refs.map((r) => r.id))];
   const inSnapshots = findAnchorsOutsideWork(root, ids);
@@ -509,7 +543,7 @@ export async function orphanedWork(root: string) {
 
   const out = {
     total: refs.length,
-    offTree: [] as any[], retained: [] as any[], lost: [] as any[],
+    offTree: [] as any[], retained: [] as any[], located: [] as any[], lost: [] as any[],
     /**
      * Counts per bucket per kind, because the buckets do not mean the same thing for
      * every kind. A stranded FINDING is work somebody did that is now unreachable. A
@@ -518,19 +552,67 @@ export async function orphanedWork(root: string) {
      * they were made. Reporting one total would bury six real losses under nine
      * hundred routine ones.
      */
-    byKind: {} as Record<string, { offTree: number; retained: number; lost: number }>,
+    byKind: {} as Record<string, OrphanCounts>,
   };
+  const strays: typeof refs = [];
   for (const r of refs) {
     const w = where(r.id);
-    out[w.bucket].push({
+    const row = {
       ...r, at: w.at,
       ...(w.anchor ? { file: w.anchor.file, symbol: w.anchor.symbolPath.join(" › "), line: w.anchor.loc?.startLine } : {}),
-    });
-    const k = (out.byKind[r.kind] ??= { offTree: 0, retained: 0, lost: 0 });
-    k[w.bucket]++;
+    };
+    if (w.bucket === "lost") { strays.push(row); continue; }   // bucketed below
+    out[w.bucket].push(row);
+    (out.byKind[r.kind] ??= { offTree: 0, retained: 0, located: 0, lost: 0 })[w.bucket]++;
   }
-  return out;
+
+  // Everything with no copy here. Grouped BY COMMIT because the expensive part is
+  // reading a tree, and several records routinely share one address.
+  const byCommit = new Map<string, typeof strays>();
+  for (const r of strays) if (r.sourceRef) (byCommit.get(r.sourceRef) ?? byCommit.set(r.sourceRef, []).get(r.sourceRef)!).push(r);
+
+  const cap = Math.max(0, Math.floor(opts.maxCommits ?? 25));
+  const asking = opts.locate ? [...byCommit.keys()].slice(0, cap) : [];
+  const answers = new Map<string, WhereWas>();
+  for (const commit of asking) {
+    const ids = [...new Set(byCommit.get(commit)!.map((r) => r.id))];
+    for (const [id, w] of await whereWere(root, ids, commit).catch(() => new Map<string, WhereWas>())) {
+      answers.set(`${commit}\0${id}`, w);
+    }
+  }
+
+  for (const r of strays) {
+    const w = r.sourceRef ? answers.get(`${r.sourceRef}\0${r.id}`) : undefined;
+    const bucket = w?.at === "found" ? "located" as const : "lost" as const;
+    out[bucket].push(w?.at === "found"
+      ? { ...r, at: w.ref, file: w.file, symbol: w.symbol, line: w.startLine }
+      // WHY it is lost, never a bare "lost". Not asked / asked and it was not there /
+      // asked and this build mints that id for two symbols there are four different
+      // situations, and only the first is fixable by asking again.
+      : { ...r, why: !r.sourceRef ? "no address to ask" : !opts.locate ? "not asked — pass `locate`" : w?.at ?? "not asked — over the commit cap" });
+    (out.byKind[r.kind] ??= { offTree: 0, retained: 0, located: 0, lost: 0 })[bucket]++;
+  }
+
+  // Only what the CAP refused. Not asking at all is a different thing, and reporting
+  // it as `notAsked` beside a `cap` would read as "the limit stopped us" when
+  // nothing was attempted — `records` and `commits` are what say the question is
+  // available.
+  const truncated = opts.locate ? byCommit.size - asking.length : 0;
+  return {
+    ...out,
+    // What has NOT been checked, always, so a `lost` count is never read as a
+    // finding. Silent truncation here would read as "we looked" when we did not.
+    locatable: truncated || (!opts.locate && byCommit.size)
+      ? {
+        records: strays.filter((r) => r.sourceRef).length,
+        commits: byCommit.size,
+        ...(truncated ? { notAsked: truncated, cap } : {}),
+      }
+      : undefined,
+  };
 }
+
+interface OrphanCounts { offTree: number; retained: number; located: number; lost: number }
 
 
 /**

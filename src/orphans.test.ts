@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { annotate, reindex, orphanedWork, getAnchor, reviewQueue, assignAnnotation, resolveAnnotation, withdrawAnnotation } from "./ops.js";
+import { spawnSync } from "node:child_process";
 import { readAnnotations } from "./store.js";
 
 /**
@@ -251,3 +252,184 @@ test("the queue reports triage state, or a finding on stranded code cannot be cl
     assert.equal(byId(await reviewQueue(root, opts)).get(done.id)!.resolved, undefined);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+/**
+ * `lost` used to mean "no record anywhere", which it never did. It was raw id
+ * membership in two local tables, presented as a claim about the CODE — the shape
+ * `resolveAnchor` exists to stop. A record carries its own address, and indexing
+ * that commit answers what the id named.
+ */
+const gitIn = (root: string, ...args: string[]) =>
+  spawnSync("git", ["-c", "user.email=t@x", "-c", "user.name=t", ...args], { cwd: root, encoding: "utf8" });
+
+/**
+ * A repo whose FIRST commit was never indexed here, so nothing holds a copy of the
+ * symbol it had: no `@work` row, no snapshot, and — because the record is written
+ * after the last reindex — no retention either. That is the only way to reach the
+ * `lost` path, and it is the ordinary shape of a finding ingested against a branch
+ * whose snapshot has since been evicted.
+ */
+async function committedRepo() {
+  const root = mkdtempSync(join(tmpdir(), "codemap-orphan-loc-"));
+  mkdirSync(join(root, "src"));
+  writeFileSync(join(root, "src/pay.ts"), "export function transfer(cents: number) {\n  return cents;\n}\n");
+  gitIn(root, "init", "-q", "-b", "main");
+  gitIn(root, "add", "-A");
+  gitIn(root, "commit", "-qm", "first");
+  const first = gitIn(root, "rev-parse", "HEAD").stdout.trim();
+  writeFileSync(join(root, "src/pay.ts"), "export function settle(cents: number) {\n  return cents;\n}\n");
+  gitIn(root, "commit", "-qam", "renamed");
+  await reindex(root);
+  return { root, first };
+}
+
+test("a stranded record whose own commit still names its id is not lost", async () => {
+  const { root, first } = await committedRepo();
+  try {
+    const { indexBlob } = await import("./repo.js");
+    const { readBugs, writeBugs } = await import("./store.js");
+    // The id as it was at `first`, taken WITHOUT storing it — so nothing retains it
+    // and nothing snapshots it, which is what makes this the `lost` path rather
+    // than `retained` or `offTree`.
+    const gone = (await indexBlob("export function transfer(cents: number) {\n  return cents;\n}\n", "src/pay.ts"))
+      .find((a) => a.symbolPath.join(".") === "transfer")!;
+
+    // Filed AFTER the reindex, so retention never saw it — as an ingested finding
+    // against a branch whose snapshot has since been evicted would be.
+    const bugs = await readBugs(root);
+    bugs.bugs.push({
+      id: "b_1", title: "no guard on negatives", status: "open", severity: "high", description: "d",
+      anchors: [gone.id], witnesses: [{ anchorId: gone.id, bodyHash: gone.bodyHash }],
+      createdCommit: first, history: [],
+    } as never);
+    await writeBugs(root, bugs.bugs);
+
+    const before = await orphanedWork(root) as any;
+    assert.equal(before.located.length, 0, "nothing is claimed without asking");
+    assert.equal(before.lost.length, 1);
+    assert.equal(before.lost[0].why, "not asked — pass `locate`");
+    assert.equal(before.locatable.records, 1, "…but it says the question can be asked");
+    assert.equal(before.locatable.notAsked, undefined,
+      "and not as though a cap had stopped it — nothing was attempted");
+
+    const after = await orphanedWork(root, { locate: true }) as any;
+    assert.equal(after.lost.length, 0, "asked, and answered");
+    assert.equal(after.located.length, 1);
+    assert.equal(after.located[0].file, "src/pay.ts");
+    assert.equal(after.located[0].symbol, "transfer");
+    assert.equal(after.located[0].at, first, "read at the commit the record itself names");
+    assert.equal(after.byKind.bug.located, 1);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("asking and finding nothing is a different answer from not asking", async () => {
+  // The control for the one above. Without it, `locate` could report `located` for
+  // anything and both would pass.
+  const { root, first } = await committedRepo();
+  try {
+    const { readBugs, writeBugs } = await import("./store.js");
+    const { fixtureHash } = await import("./fixture-hash.js");
+    const bugs = await readBugs(root);
+    bugs.bugs.push({
+      id: "b_ghost", title: "an id that commit never produced", status: "open", severity: "low", description: "d",
+      anchors: ["a_0000000000000000"], witnesses: [{ anchorId: "a_0000000000000000", bodyHash: fixtureHash("X") }],
+      createdCommit: first, history: [],
+    } as never);
+    await writeBugs(root, bugs.bugs);
+
+    const r = await orphanedWork(root, { locate: true }) as any;
+    assert.equal(r.located.length, 0);
+    assert.equal(r.lost.length, 1);
+    assert.equal(r.lost[0].why, "absent", "this build read that commit and does not produce it");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a record with nothing to ask says so, rather than claiming the code is gone", async () => {
+  // The control, and the honest half: `lost` now carries WHY, because *nothing to
+  // ask*, *not asked* and *asked and absent* are three different situations.
+  const root = mkdtempSync(join(tmpdir(), "codemap-orphan-why-"));
+  try {
+    const { writeStore, readBugs, writeBugs } = await import("./store.js");
+    const { fixtureHash } = await import("./fixture-hash.js");
+    await writeStore(root, [], { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as any);
+    const bugs = await readBugs(root);
+    bugs.bugs.push({
+      id: "b_1", title: "old bug", status: "open", severity: "high", description: "d",
+      anchors: ["a_nowhere"], witnesses: [{ anchorId: "a_nowhere", bodyHash: fixtureHash("X") }],
+      createdCommit: null, history: [],
+    } as any);
+    await writeBugs(root, bugs.bugs);
+
+    const r = await orphanedWork(root, { locate: true }) as any;
+    assert.equal(r.lost.length, 1);
+    assert.equal(r.lost[0].why, "no address to ask");
+    assert.equal(r.locatable, undefined, "and nothing is offered that cannot be done");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("what `locate` did not reach is reported, never dropped", async () => {
+  // A silent cap reads as "we looked" when we did not — the same lie the `lost`
+  // bucket used to tell.
+  const { root, first } = await committedRepo();
+  try {
+    const { indexBlob } = await import("./repo.js");
+    const { readBugs, writeBugs } = await import("./store.js");
+
+    // A second symbol, at a second commit, and gone again — so the two records have
+    // two different addresses and `locate` has two trees to open.
+    writeFileSync(join(root, "src/led.ts"), "export function post(cents: number) {\n  return cents;\n}\n");
+    gitIn(root, "add", "-A");
+    gitIn(root, "commit", "-qm", "ledger");
+    const second = gitIn(root, "rev-parse", "HEAD").stdout.trim();
+    rmSync(join(root, "src/led.ts"));
+    gitIn(root, "commit", "-qam", "ledger gone");
+    await reindex(root);
+
+    const at = async (src: string, file: string, name: string) =>
+      (await indexBlob(src, file)).find((a) => a.symbolPath.join(".") === name)!;
+    const one = await at("export function transfer(cents: number) {\n  return cents;\n}\n", "src/pay.ts", "transfer");
+    const two = await at("export function post(cents: number) {\n  return cents;\n}\n", "src/led.ts", "post");
+
+    const bugs = await readBugs(root);
+    bugs.bugs.push(
+      { id: "b_1", title: "one", status: "open", severity: "low", description: "d", anchors: [one.id], witnesses: [{ anchorId: one.id, bodyHash: one.bodyHash }], createdCommit: first, history: [] } as never,
+      { id: "b_2", title: "two", status: "open", severity: "low", description: "d", anchors: [two.id], witnesses: [{ anchorId: two.id, bodyHash: two.bodyHash }], createdCommit: second, history: [] } as never,
+    );
+    await writeBugs(root, bugs.bugs);
+
+    const all = await orphanedWork(root, { locate: true }) as any;
+    assert.equal(all.located.length, 2, "both are findable when both commits are read");
+    assert.equal(all.locatable, undefined, "and nothing is left unsaid");
+
+    const capped = await orphanedWork(root, { locate: true, maxCommits: 1 }) as any;
+    assert.equal(capped.located.length, 1);
+    assert.equal(capped.lost.length, 1);
+    assert.equal(capped.lost[0].why, "not asked — over the commit cap");
+    assert.equal(capped.locatable.notAsked, 1, "the count of what it did not read");
+    assert.equal(capped.locatable.cap, 1);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a record with nothing to ask says so, rather than claiming the code is gone", async () => {
+  // The control, and the honest half: `lost` now carries WHY, because *nothing to
+  // ask*, *not asked* and *asked and absent* are three different situations.
+  const root = mkdtempSync(join(tmpdir(), "codemap-orphan-why-"));
+  try {
+    const { writeStore, readBugs, writeBugs } = await import("./store.js");
+    const { fixtureHash } = await import("./fixture-hash.js");
+    await writeStore(root, [], { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as any);
+    const bugs = await readBugs(root);
+    bugs.bugs.push({
+      id: "b_1", title: "old bug", status: "open", severity: "high", description: "d",
+      anchors: ["a_nowhere"], witnesses: [{ anchorId: "a_nowhere", bodyHash: fixtureHash("X") }],
+      createdCommit: null, history: [],
+    } as any);
+    await writeBugs(root, bugs.bugs);
+
+    const r = await orphanedWork(root, { locate: true }) as any;
+    assert.equal(r.lost.length, 1);
+    assert.equal(r.lost[0].why, "no address to ask");
+    assert.equal(r.locatable, undefined, "and nothing is offered that cannot be done");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+

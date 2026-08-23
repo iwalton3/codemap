@@ -618,13 +618,18 @@ const tools: Tool[] = [
     description:
       "What is pointing at code the working tree no longer has — \"what did that refactor break?\"\n\n"
       + "An anchor id is derived from file + symbol path + signature, so it survives a line move or a body rewrite, but NOT a rename, a deletion, or a change to an overload's parameter list. Reindex replaces the live index wholesale, so an annotation whose target the new index does not produce used to be silently stranded.\n\n"
-      + "Three buckets, and the difference is the point:\n"
+      + "Four buckets, and the difference is the point:\n"
       + "  • `offTree` — the symbol is in a cached commit snapshot, almost always a PR branch. Nothing is lost; the working tree is just on another branch. Re-run against that ref.\n"
       + "  • `retained` — gone from the tree and every snapshot, but its last known file/symbol/line/hash was kept because work pointed at it. Readable and re-anchorable.\n"
-      + "  • `lost` — no record anywhere. Filed before retention existed. Irrecoverable; the finding's own `comment` and `text` are all that survive.\n\n"
+      + "  • `located` — no copy here, but the record's OWN commit still produces that id, so this build read that commit and can say what the symbol was. Only appears with `locate`.\n"
+      + "  • `lost` — no copy here and nothing found. Each row carries `why`, because *nothing to ask*, *not asked*, *asked and absent* and *asked and ambiguous* are four different situations and only some are fixable.\n\n"
+      + "`locate` is an ACT, not a default: it indexes the commit each stranded record names, which is seconds per commit. Without it the reply carries `locatable` — how many records could be asked about and how many commits that would open — and claims nothing it has not checked.\n\n"
       + "Items carrying `posted` are live on a pull request as review comments — a third party can see them, so the map disagreeing with GitHub about them is the worst case.",
-    inputSchema: obj({}),
-    handler: (_a, c) => ops.orphanedWork(c.universe.path),
+    inputSchema: obj({
+      locate: { type: "boolean", description: "Index each stranded record's own commit and say what its id named there. Seconds per distinct commit." },
+      maxCommits: { type: "number", description: "How many distinct commits `locate` may open (default 25). Whatever it does not reach is reported as `notAsked`, never dropped." },
+    }),
+    handler: (a, c) => ops.orphanedWork(c.universe.path, { locate: !!a.locate, maxCommits: a.maxCommits as number | undefined }),
   },
   {
     name: "findings",

@@ -677,7 +677,7 @@ defineComponent('md-content', MdContent);
  */
 const VIEW_LINKS = [
   ['nodes', u => nodesUrl(u)], ['matrix', u => matrixUrl(u), 'matrix'], ['pipeline', u => pipelineUrl(u), 'pipeline'],
-  ['states', u => stateMapUrl(u), 'states'], ['flows', u => flowsUrl(u)], ['bugs', u => bugsUrl(u)], ['diff', u => diffUrl(u)],
+  ['states', u => stateMapUrl(u), 'states'], ['flows', u => flowsUrl(u)], ['bugs', u => bugsUrl(u)], ['orphans', u => orphansUrl(u)], ['diff', u => diffUrl(u)],
   ['pull requests', u => prsUrl(u), 'prs'],
 ];
 // Ungated links always show. A gated one needs the universe's `views` to say so —
@@ -750,7 +750,7 @@ class DashboardPage extends Component {
     /** @type {[label: string, act: () => void, gate?: string][]} */
     const navAll = [
       ['nodes', () => go(nodesUrl(u))], ['matrix', () => go(matrixUrl(u)), 'matrix'], ['pipeline', () => go(pipelineUrl(u)), 'pipeline'],
-      ['states', () => go(stateMapUrl(u)), 'states'], ['flows', () => go(flowsUrl(u))], ['bugs', () => go(bugsUrl(u))], ['diff', () => go(diffUrl(u))],
+      ['states', () => go(stateMapUrl(u)), 'states'], ['flows', () => go(flowsUrl(u))], ['bugs', () => go(bugsUrl(u))], ['orphans', () => go(orphansUrl(u))], ['diff', () => go(diffUrl(u))],
       ['pull requests', () => go(prsUrl(u)), 'prs'], ['browse files', () => goTree(u, '')],
     ];
     const nav2 = navAll.filter(x => viewEnabled(d, x[2]));
@@ -2086,6 +2086,107 @@ class BugsPage extends Component {
   }
 }
 defineComponent('bugs-page', BugsPage);
+
+const orphansUrl = (u) => `/u/${u}/orphans/`;
+
+/**
+ * What is pointing at code the working tree no longer has.
+ *
+ * `/api/orphans` has been served since the sweep was built and nothing consumed it,
+ * so the only way to see this was the CLI — which is also what the PR findings
+ * panel's `stranded` count pointed at, from inside the browser.
+ *
+ * `locate` is a button rather than part of the load: it indexes the commit each
+ * stranded record names, seconds per commit, and a page must not spend that
+ * unasked. What it has NOT checked is on screen either way.
+ *
+ * @typedef {{ data: ApiMap['/api/orphans'] | null, locating: boolean, kind: string }} OrphansState
+ * @extends {Component<PageProps, OrphansState>}
+ */
+class OrphansPage extends Component {
+  static props = { params: {}, query: {} };
+  /** @param {PageProps} props */
+  constructor(props) {
+    super(props);
+    /** @type {OrphansState} */
+    this.state = { data: null, locating: false, kind: '' };
+  }
+  load = this.createTask(async () => {
+    nav.current = this.props.params.universe;
+    this.state.data = await api('/api/orphans', { u: this.props.params.universe });
+  });
+  mounted() { this.load.run(); }
+  propsChanged(name) { if (name === 'params') { this.state.data = null; this.load.run(); } }
+
+  async locate() {
+    this.state.locating = true;
+    try {
+      const got = await api('/api/orphans', { u: this.props.params.universe, locate: '1' }).catch(() => null);
+      if (got && !isErr(got)) this.state.data = got;
+    } finally { this.state.locating = false; }
+  }
+
+  row(x) {
+    const u = this.props.params.universe;
+    return html`<div class="orow">
+      <div class="oloc">
+        <code>${x.file ? x.file.split('/').pop() + (x.line ? ':' + x.line : '') : '—'}</code>
+        <span class="dim">${x.symbol ? x.symbol.split(' › ').pop() : x.id}</span>
+      </div>
+      <div class="obody">
+        <span class="okind k-${x.kind}">${x.kind}</span>
+        <span class="olabel">${x.label}</span>
+        ${when(x.posted, () => html`<span class="bchip poss" title="live on pull request #${x.posted.pr} as a review comment — a third party can see it">posted #${x.posted.pr}</span>`)}
+        ${when(x.why, () => html`<span class="dim owhy" title="why nothing was found for it">${x.why}</span>`)}
+        ${when(x.at, () => html`<span class="dim oat" title="where it was read">${String(x.at).slice(0, 12)}</span>`)}
+      </div>
+      ${when(x.file && x.symbol, () => html`<button class="ghost" title="open the anchor if this build still has it" on-click="${() => go(anchorUrl(u, x.id))}">open</button>`)}
+    </div>`;
+  }
+
+  group(label, rows, note) {
+    const f = this.state.kind;
+    const shown = f ? rows.filter(x => x.kind === f) : rows;
+    // Reviews are counted, not listed, unless asked for by name: a repository's
+    // history necessarily strands `viewed` marks, and hundreds of them would bury
+    // the handful of findings that are actually unreachable work.
+    const work = f ? shown : shown.filter(x => x.kind !== 'review');
+    const marks = shown.length - work.length;
+    if (!shown.length) return html``;
+    return html`<div class="ogroup">
+      <div class="ogh">${label} <b>${shown.length}</b> <span class="dim">${note}</span></div>
+      ${each(work, x => this.row(x), x => x.kind + x.ref + x.id)}
+      ${when(marks, () => html`<div class="dim orest">…and ${marks} review mark${marks === 1 ? '' : 's'}, not listed — mostly imported history over deleted or renamed code</div>`)}
+    </div>`;
+  }
+
+  template() {
+    const d = this.state.data;
+    return pageShell(d, taskError(this.load), () => {
+      if (!d.total) return html`<div class="empty">nothing is pointing at missing code.</div>`;
+      const l = d.locatable;
+      const KINDS = ['annotation', 'bug', 'review'];
+      return html`<div class="orphans">
+        <div class="ohead">
+          <b>${d.total}</b> reference${d.total === 1 ? '' : 's'} to code the working tree does not have
+          <span class="ofilters">
+            <button class="${this.state.kind ? 'ghost' : 'on'}" on-click="${() => { this.state.kind = ''; }}">all</button>
+            ${each(KINDS, k => html`<button class="${this.state.kind === k ? 'on' : 'ghost'}" on-click="${() => { this.state.kind = k; }}">${k}</button>`, k => k)}
+          </span>
+        </div>
+        ${when(l, () => html`<div class="olocate">
+          <span>${l.records} of them name a commit${l.notAsked ? ` — ${l.notAsked} not read (cap ${l.cap})` : ''}.</span>
+          <button class="on" disabled="${this.state.locating}" title="index each of those commits and say what its id named there — seconds per commit" on-click="${() => this.locate()}">${this.state.locating ? 'reading…' : `read those ${l.commits} commit${l.commits === 1 ? '' : 's'}`}</button>
+        </div>`)}
+        ${this.group('off-tree', d.offTree, 'exists on a branch — check that ref out, or work against it')}
+        ${this.group('retained', d.retained, 'gone from the tree; last known state kept, still re-anchorable')}
+        ${this.group('located', d.located || [], 'no copy here, but its own commit still names it')}
+        ${this.group('lost', d.lost, 'no copy here, and nothing found')}
+      </div>`;
+    });
+  }
+}
+defineComponent('orphans-page', OrphansPage);
 
 const diffUrl = (u) => `/u/${u}/diff/`;
 const DTAG = { '+': 'added', '-': 'removed', '~': 'changed' };
@@ -3573,6 +3674,7 @@ router = enableRouting(document.querySelector('router-outlet'), {
   '/u/:universe/pipeline/': { component: 'pipeline-page' },
   '/u/:universe/statemap/': { component: 'statemap-page' },
   '/u/:universe/bugs/': { component: 'bugs-page' },
+  '/u/:universe/orphans/': { component: 'orphans-page' },
   '/u/:universe/diff/': { component: 'diff-page' },
   '/u/:universe/prs/': { component: 'pr-inbox-page' },
   '/u/:universe/pr/:pr/': { component: 'pr-story-page' },

@@ -125,7 +125,9 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
         includeResolved: q.get("resolved") === "1",
       });
     case "/api/orphans":
-      return ops.orphanedWork(root);
+      // `locate` indexes a commit per stranded record's address, so it is opt-in
+      // here too — a page load must not spend seconds per orphan.
+      return ops.orphanedWork(root, { locate: q.get("locate") === "1" });
     case "/api/questions":
       return ops.listQuestions(root, { includeResolved: q.get("all") === "1" });
     // Writes: `checkStale` re-indexes on a branch change, applies the index update
