@@ -892,18 +892,44 @@ now and its comment describes this exact symptom. The commit that added it lande
 the denominator is contaminated by sixty seconds, and the honest rate is the
 organic one: **6% to 50%, not 0.4%.**
 
-**The residue is genuine absence, not drifted ids.** Of the 67 organic absences in
-`Acme.API` with a witness to check, ZERO have their witnessed body present under
-any other id at that commit. Evidence rather than proof — a symbol renamed *and*
-edited would not match either — but a remap protocol re-points an id at a symbol
-that is still there, and nothing here says one is.
+**What actually decides placement is the SCHEME the record's ids were minted
+under** — not the address, and not whether the code is gone. Splitting the same
+population by whether it was written before or after `ANCHOR_SCHEME` went to 3:
+
+| | records | placed |
+|---|---|---|
+| `Acme.React` organic, written AFTER the bump | 49 | **49 (100%)** |
+| `Acme.React` organic, written before | 61 | 6 (9.8%) |
+| `Acme.API` organic, written after | 5 | 1 (20%) |
+| `Acme.API` organic, written before | 80 | 4 (5.0%) |
+
+Step 1 places essentially everything whose ids this build can mint, and almost
+nothing older. **That is blocker 1 of "Clearing a doc nobody can place", measured:**
+a pre-bump id resolves `absent` when the honest answer is `incomparable`, because
+`derivationFingerprint` excludes `anchorScheme`. The doc guessed that a rule which
+cannot see the commonest cause of a re-minted id is worth less than it looks. It is
+the commonest cause — by an order of magnitude over everything else here.
+
+> **A wrong claim this section made first, kept because the method matters.** An
+> earlier pass concluded "the residue is genuine absence, not drifted ids", from a
+> test that looked for each record's witnessed body under a different id at its
+> address and found none in 67. That test could not have found one: the stored
+> witnesses are `HASH_SCHEME` 1 (unprefixed) and today's index mints scheme-2
+> digests, so it was comparing values from two tokenizers. It proved nothing, and
+> the scheme split above says the opposite.
 
 **Zero ambiguous, in 2,641.** The partial-class collision this document reports as
 a latent bug does not appear in the population that would meet it.
 
-So: **the back-catalogue import wants re-running with the current build** — a data
-repair, not code — and step 2 stays unbuilt. Re-measure after that; it is the only
-thing that moves this table.
+So: **step 2 stays unbuilt, and for a better reason than "not enough pain".** The
+population it would serve is not code that moved — it is ids this build cannot
+mint, and a remap protocol re-points an id at a symbol that is still there. What
+those records need is to be CLASSIFIED honestly (`incomparable`, not `absent`),
+which is blocker 1, and which the out-of-band gates already half-cover.
+
+The back-catalogue import also wants re-running with the current build — its
+addresses are the working tree's HEAD, which is a genuine second defect — but it
+is now clearly the smaller one, and a data repair rather than code.
 
 One trap the measurement cost a round to find: `locate` on a `--no-checkout` clone
 answers `unaddressed` for everything. `indexCommit` recurses into a gitlink through

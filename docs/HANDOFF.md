@@ -144,20 +144,30 @@ contradiction and is not: 3b's "do the anchor join in SQL" versus provenance's
    prove. A remap protocol for the minority this build cannot mint is designed in the
    doc and NOT built.
 
-   **The denominator has now been MEASURED, and it says do not build it.** The table
-   is in the doc under "Measured (2026-08-23)". 2,641 stranded records across the two
-   live C# universes; every one carries an address and every address answered. Step 1
-   places 6%–50% of records written by ordinary use. It places 0.4% of the bulk
-   `github-import` marks — and that is a bug that was already fixed: the importer
-   stamped the tree's HEAD rather than each PR's head, and the commit that fixed it
-   landed ONE MINUTE after that import ran. Of the organic absences, zero have their
-   witnessed body present under any other id at that commit, so the residue looks like
-   genuine absence rather than the drifted ids a remap protocol re-points. Zero
-   ambiguous in 2,641.
+   **The denominator has now been MEASURED.** The tables are in the doc under
+   "Measured (2026-08-23)". 2,641 stranded records across the two live C# universes;
+   every one carries an address, every address resolved and indexed, zero ambiguous.
 
-   **So the next move on this arc is a DATA repair, not code:** re-run the
-   back-catalogue import with the current build so those 4,928 marks get real
-   addresses, then re-measure. Nothing else moves the table.
+   **What decides placement is the SCHEME, not the address.** Split by whether the
+   record was written before or after `ANCHOR_SCHEME` went to 3: records written
+   after place at 100% (49 of 49 on `Acme.React`), records written before place at
+   5–10%. That is blocker 1 of item 2, measured — a pre-bump id resolves `absent`
+   when the honest answer is `incomparable`, because `derivationFingerprint`
+   excludes `anchorScheme`. The doc guessed it might matter; it is the dominant
+   cause by an order of magnitude.
+
+   **So step 2 stays unbuilt, for a better reason than "not enough pain."** A remap
+   protocol re-points an id at a symbol that is still there. These records are not
+   code that moved — they are ids this build cannot mint, and what they need is
+   honest classification, which is blocker 1. The bulk importer's wrong address is
+   a real second defect and a data repair, but it is the smaller one.
+
+   **One wrong turn, kept because the method is the lesson.** An earlier pass
+   concluded the residue was genuine absence, from a test that looked for each
+   record's witnessed body under another id and found none in 67. That test could
+   not have found one — the stored witnesses are `HASH_SCHEME` 1 and this build
+   mints scheme-2 digests, so it compared two tokenizers. **Check that a negative
+   result COULD have been positive before believing it.**
 
    Two things the measurement found on the way. `locate` on a `--no-checkout` clone
    answers `unaddressed` for everything — `indexCommit` reaches a submodule through
