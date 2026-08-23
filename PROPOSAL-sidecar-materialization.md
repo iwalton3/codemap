@@ -430,7 +430,19 @@ have to do, below.
    "does anybody's doc describe THIS symbol"), `docsByNode` parses only the matched
    nodes, and `ensureMaterialized` converges the rows without deserializing them.
    `get_anchor` carries `sharedDocs`; `find_gaps` no longer offers a symbol a
-   teammate documented. Left: `outline`, `context`, `search`, and notes.
+   teammate documented; `context` — the call an agent makes first — reports the
+   team's docs, drops them from `gaps`, and has a verdict for them ranked below
+   every local one, because a colleague's doc is real coverage that is not in your
+   store and the honest instruction is to go and read it.
+
+   `sharedCoverage` is the ONE entry point those reads use. It picks a strategy by
+   size (the prefilter is for a caller holding the whole index, not for a scope) and
+   both paths end at `sharedDocsCiting`, so there is one place the verdict comes
+   from — three re-derivations of "is this doc fresh" had already drifted once.
+
+   Left: `outline`, `search`, `get_node`, and notes. Those are browse polish rather
+   than the north star; §6's own example is `find_gaps`, and `context` is what an
+   agent asks before exploring.
 6. *(Separate decision)* Unify the **machinery** behind `Bug`/`SharedFinding` and
    `Annotation`/`SharedNote` — Actor and compatibility provenance, witnesses and
    freshness, threads and corroboration, external refs, the event envelope, one

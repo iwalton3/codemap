@@ -503,3 +503,57 @@ test("with no sidecar the work queue is exactly what it always was", async () =>
     });
   } finally { u.cleanup(); }
 });
+
+test("context answers for the team, not just for this machine", async () => {
+  // `context` is the call an agent makes FIRST, which makes it the worst place to be
+  // blind to a colleague's doc: it would report a gap and send the agent to explore
+  // code somebody already wrote about.
+  const u = universe();
+  try {
+    const { publishDocVersion } = await import("./shared-docs.js");
+    const { init, context } = await import("./ops.js");
+    const { readAnchorStore } = await import("./store.js");
+    const { resolveSidecar: rs } = await import("./sidecar-config.js");
+
+    mkdirSync(join(u.root, "src"), { recursive: true });
+    writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+    await init(u.root);
+    const transfer = (await readAnchorStore(u.root)).anchors.find((a) => a.file === "src/pay.ts")!;
+
+    const before = await context(u.root, ["src/pay.ts"]) as any;
+    assert.match(before.verdict, /^gap/, "precondition: nobody here has documented it");
+    assert.equal(before.gaps.length, 1);
+    assert.equal(before.sharedDocs, undefined);
+
+    const cfg = rs(u.root)!;
+    await publishDocVersion(cfg.path, cfg.universe, { principal: "dana@x.com" }, {
+      nodeId: "n_transfer", type: "process", title: "How a transfer settles", summary: "s", body: "b",
+      citations: [{ anchorId: transfer.id, acceptedHashes: [transfer.bodyHash] }],
+      createdCommit: null, createdBranch: null,
+    } as never);
+
+    const after = await context(u.root, ["src/pay.ts"]) as any;
+    assert.equal(after.gaps.length, 0, "not a gap — somebody documented it");
+    assert.equal(after.withDoc, 1);
+    assert.equal(after.sharedDocs.length, 1);
+    assert.equal(after.sharedDocs[0].title, "How a transfer settles");
+    assert.match(after.verdict, /documented by the team/);
+    assert.match(after.verdict, /read them/, "…and says to read theirs rather than trust them unseen");
+  } finally { u.cleanup(); }
+});
+
+test("context with no sidecar is exactly what it always was", async () => {
+  const u = universe(false);
+  try {
+    const { init, context } = await import("./ops.js");
+    mkdirSync(join(u.root, "src"), { recursive: true });
+    writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+    await init(u.root);
+    await withEnv({ CODEMAP_SIDECAR: undefined }, async () => {
+      const c = await context(u.root, ["src/pay.ts"]) as any;
+      assert.match(c.verdict, /^gap/);
+      assert.equal(c.gaps.length, 1);
+      assert.equal(c.sharedDocs, undefined, "absent, not an empty list");
+    });
+  } finally { u.cleanup(); }
+});

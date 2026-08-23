@@ -156,7 +156,7 @@ const tools: Tool[] = [
   },
   {
     name: "context",
-    description: "ANSWER-FIRST: before exploring code, ask what codemap already knows about it. Given refs (files, dirs, `file#Symbol`, `file:line`, or anchor ids), returns a `verdict` (covered/partial/stale/gap), the covering docs with trust level, flows/open-bugs on that code, and the still-undocumented `gaps`. Read `trusted` docs instead of re-reading the code; explore only the gaps.",
+    description: "ANSWER-FIRST: before exploring code, ask what codemap already knows about it. Given refs (files, dirs, `file#Symbol`, `file:line`, or anchor ids), returns a `verdict` (covered/partial/stale/gap), the covering docs with trust level, flows/open-bugs on that code, and the still-undocumented `gaps`. Read `trusted` docs instead of re-reading the code; explore only the gaps.\n\nWith a sidecar configured it also answers for the TEAM: `sharedDocs` is what colleagues have written about this code, and anything they cover is not reported as a gap. Those are not in your store — read them with `shared_docs` rather than relying on them unseen, and do not write a second doc about code somebody already documented.",
     inputSchema: obj({ refs: { type: "array", items: { type: "string" }, description: "Files, dirs, file#Symbol, file:line, or anchor ids — the code you're about to work in." } }, ["refs"]),
     handler: (a, c) => ops.context(c.universe.path, a.refs),
   },

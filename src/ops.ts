@@ -1744,11 +1744,17 @@ export async function context(root: string, refs: string[]) {
   // Gaps = scope anchors with no readable doc that aren't intentionally excluded:
   // `open`, or `covered`-by-a-rule but no doc actually cites anything in the file.
   // (`cited`/`trivial`/`deferred`/`owned` are not gaps.)
+  // What the TEAM has written about this scope. `covering` is this machine's nodes,
+  // so without it the answer to "is this documented" is one person's half of it —
+  // and `context` is the call an agent makes FIRST, which makes it the worst place
+  // to be blind to a colleague's doc. See `sharedCoverage`.
+  const team = await import("./ops-shared.js").then((m) => m.sharedCoverage(root, scopeIds)).catch(() => null);
   const gaps = scopeIds.filter((id) => {
     const st = result.state.get(id);
+    if (team?.covered.has(id)) return false;   // somebody documented it; reading theirs is the work
     return st === "open" || (st === "covered" && !docFiles.has(fileOf(id) ?? ""));
   }).map((id) => anchorBrief(anchorsById.get(id)!));
-  const withDoc = scopeIds.filter((id) => covering.some((n) => n.anchors.includes(id))).length;
+  const withDoc = scopeIds.filter((id) => covering.some((n) => n.anchors.includes(id)) || team?.covered.has(id)).length;
 
   const bugs = bugStore.bugs
     .filter((b) => b.status === "open" && b.anchors.some((id) => scope.has(id)))
@@ -1759,6 +1765,7 @@ export async function context(root: string, refs: string[]) {
     withDoc,           // scope anchors a doc directly cites
     gaps,              // scope anchors with no readable doc (the explore-then-document list)
     docs,
+    ...(team?.docs.length ? { sharedDocs: team.docs } : {}),
     flows,
     bugs,
     // A one-line read for the agent: is this area answered by something, and how much to trust it?
@@ -1767,6 +1774,10 @@ export async function context(root: string, refs: string[]) {
       : docs.some((d) => d.trust === "checked") ? "covered — agent-checked docs exist; solid, spot-check if critical"
       : docs.some((d) => d.trust === "unverified") ? "partial — docs exist but unchecked; use as hypotheses, verify against code (and sanity_check what holds)"
       : docs.some((d) => d.trust === "stale") ? "stale — docs here need re-validation against current code"
+      // Ranked BELOW every local verdict and above `gap`: a teammate's doc is real
+      // coverage, but it is not in this store, so the honest instruction is to go and
+      // read it rather than to rely on it sight unseen.
+      : team?.docs.length ? `documented by the team — ${team.docs.length} shared doc(s) cover this; read them with \`shared_docs\` before exploring`
       : gaps.length ? "gap — no docs cover this code; explore, then document the reusable claims"
       : "no docs and no open gaps (this code may be intentionally deferred/trivial)",
     ...(errors.length ? { errors } : {}),

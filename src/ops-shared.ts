@@ -638,6 +638,35 @@ export async function sharedDocCandidates(root: string, anchorIds: Iterable<stri
   return out;
 }
 
+/**
+ * How many ids `sharedDocsCiting` will be asked about directly before the cheap
+ * prefilter is worth a second query. It binds one parameter per id, which is right
+ * for a scope and wrong for a whole index.
+ */
+const PREFILTER_ABOVE = 200;
+
+/**
+ * The team's docs over a set of anchors, and which of those anchors they cover.
+ *
+ * The one entry point for an ordinary read that wants to know what the team has
+ * written — `context`, `outline`, `search`, `find_gaps`. It picks its own strategy
+ * by size and both paths end at `sharedDocsCiting`, so there is ONE place the
+ * verdict comes from. Three separate re-derivations of "is this doc fresh" had
+ * already drifted once (PROPOSAL-sidecar-materialization.md §7.4); a second way to
+ * ask "does the team cover this" is how that happens again.
+ *
+ * `null` when there is no sidecar. Not an error: every caller is a local read that
+ * worked before shared docs existed and must keep working.
+ */
+export async function sharedCoverage(root: string, anchorIds: Iterable<string>) {
+  const ids = [...new Set(anchorIds)];
+  const ask = ids.length > PREFILTER_ABOVE ? await sharedDocCandidates(root, ids) : ids;
+  if (ask === null) return null;                       // no sidecar
+  const docs = ask.length ? await sharedDocsCiting(root, ask) : [];
+  if (docs === null) return null;
+  return { docs, covered: new Set(docs.flatMap((d) => d.covers)) };
+}
+
 /** Why this doc version cannot be published, or null. Shape only — ids are checked live. */
 function badDocVersion(v: NewDocVersion | undefined): string | null {
   if (!v || typeof v !== "object") return "no doc version given";
