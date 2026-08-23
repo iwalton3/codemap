@@ -41,13 +41,13 @@ const NEW = { targetKind: "anchor" as const, targetId: "a_1", text: "evidence", 
 
 // --- setup ----------------------------------------------------------------------
 
-test("a sidecar is a git repo with the union driver and the writer's manifest", async () => {
+test("a sidecar is a git repo that conflicts a shared shard, plus the writer's manifest", async () => {
   const root = tmp("solo");
   try {
     const r = await ensureSidecar(root, izzie);
     assert.ok(!("error" in r) && r.created);
     assert.ok(existsSync(join(root, ".git")));
-    assert.match(readFileSync(join(root, ATTRIBUTES), "utf8"), /\*\.ndjson merge=union/);
+    assert.match(readFileSync(join(root, ATTRIBUTES), "utf8"), /\*\.ndjson -merge/);
     const ms = await readManifests(root);
     assert.equal(ms.length, 1);
     assert.equal(ms[0]!.principal, "izzie@x.com");
@@ -106,10 +106,41 @@ test("a push rejected by someone else's push retries and succeeds", async () => 
   } finally { t.cleanup(); }
 });
 
-test("one person on two machines — the case sharding does not cover — merges by union", async () => {
+test("a shared writer id fails the sync closed instead of merging quietly", async () => {
+  // The whole point of cutting `merge=union`. Two clones hold ONE writer id — a
+  // copied machine image, a synced home directory — so they write the same shard
+  // file. Union stitched both sides together and called it a clean merge, and the
+  // fork surfaced later as a team-wide blocked scope. `-merge` refuses it here, on
+  // the guilty clone, with a person present because sync is a user act.
   const t = await team();
   try {
-    // Same principal, so both write the SAME shard file. Only merge=union saves this.
+    // Copy a's writer id into b, which is exactly how the real thing happens.
+    const idFile = (r: string) => join(r, ".git", "codemap-writer");
+    await createFinding(t.a, "pr-1", izzie, NEW);
+    await sync(t.a, izzie);
+    writeFileSync(idFile(t.b), readFileSync(idFile(t.a), "utf8"), "utf8");
+
+    await createFinding(t.b, "pr-1", dana, { ...NEW, targetId: "a_2" });
+    const r = await sync(t.b, dana) as { error?: string };
+
+    assert.ok(r.error, "the sync fails rather than laundering the fork");
+    assert.match(r.error!, /diverged/);
+    assert.match(r.error!, /sidecar heal/, "and says what to do about it");
+    // Nothing was lost on either side: the abort leaves this clone untouched, and
+    // the remote still holds a's work.
+    assert.equal((await readFindings(t.b, "pr-1")).size, 1, "b keeps its own finding");
+    assert.ok(onRemote(t.origin).some((f) => f.startsWith("findings/pr-1/")), "and a's is still there");
+  } finally { t.cleanup(); }
+});
+
+test("one person on two machines is two shards, and nothing conflicts", async () => {
+  // CONTROL, and load-bearing: this is what catches `-merge` breaking the ORDINARY
+  // team flow. It also corrects the claim this test used to make. It was called "the
+  // case sharding does not cover — merges by union", and that was already stale:
+  // shards are per WRITER, so one person's two clones write two files and the merge
+  // never invokes a driver at all. Union was doing nothing here.
+  const t = await team();
+  try {
     const f1 = await createFinding(t.a, 264, izzie, { ...NEW, text: "from the laptop" });
     await sync(t.a, izzie);
     const f2 = await createFinding(t.b, 264, izzie, { ...NEW, targetId: "a_2", text: "from the desktop" });

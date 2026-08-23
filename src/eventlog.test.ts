@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, appendFileSync, readFile
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Actor } from "./schema.js";
-import { chainCycles, wellFormed, mintId, shardFor, appendEvents, readShard, readScope, readScopeChecked, sortEvents, causalHeads,
+import { ACK_KIND, evidenceDigest, chainCycles, wellFormed, mintId, shardFor, appendEvents, readShard, readScope, readScopeChecked, sortEvents, causalHeads,
   causality, writerFor, detectForks, scopeStatus, emitEvent, GENESIS, SIDECAR_PROTOCOL, EVENT_SCHEMA,
   type LogEvent } from "./eventlog.js";
 
@@ -807,4 +807,79 @@ test("an event may not be named GENESIS", () => {
   // CONTROL — an ordinary chain opening is still well formed and still opens a chain.
   const ok = testEvent({ id: "0000000001-a", writer: "W", writerPrev: GENESIS });
   assert.equal(wellFormed(ok), true);
+});
+
+// --- acknowledging blocking evidence ---------------------------------------------
+
+test("an acknowledgment covers exactly its own evidence, and nothing later", () => {
+  // Identity is a digest of the EVIDENCE, not of the prose describing it — so a copy
+  // edit to the message does not look like new evidence, and a LATER fork does. That
+  // second half is what makes acknowledging safe rather than a permanent mute.
+  const f1 = testEvent({ id: "0000000001-a", writer: "W" });
+  const f2 = testEvent({ id: "0000000002-b", writer: "W" });
+  const forked = [f1, f2];
+  const before = scopeStatus(forked);
+  assert.equal(before.status, "blocked");
+  assert.equal(before.diagnostic?.reason, "fork");
+
+  const ack = testEvent({
+    id: "0000000003-c", writer: "V", kind: ACK_KIND, subject: "s",
+    after: [f1.id, f2.id],
+    data: { acknowledges: [{ reason: "fork", digest: evidenceDigest(before.diagnostic!) }] },
+  });
+  const after = scopeStatus([...forked, ack]);
+  assert.equal(after.status, "complete", "a person has seen this fork");
+  assert.equal(after.acknowledged, true);
+  assert.ok(after.diagnostic, "and the evidence stays visible rather than vanishing");
+
+  // A NEW fork by another writer is different evidence, so the same ack does not
+  // cover it. CONTROL against an implementation that stores "acked" per scope.
+  const g1 = testEvent({ id: "0000000004-d", writer: "U" });
+  const g2 = testEvent({ id: "0000000005-e", writer: "U" });
+  assert.equal(scopeStatus([...forked, ack, g1, g2]).status, "blocked", "new evidence blocks again");
+});
+
+test("an agent cannot acknowledge, and neither can a digest written before its evidence", () => {
+  const f1 = testEvent({ id: "0000000001-a", writer: "W" });
+  const f2 = testEvent({ id: "0000000002-b", writer: "W" });
+  const d = scopeStatus([f1, f2]).diagnostic!;
+  const payload = { acknowledges: [{ reason: "fork", digest: evidenceDigest(d) }] };
+
+  const byAgent = testEvent({
+    id: "0000000003-c", writer: "V", kind: ACK_KIND, subject: "s", after: [f1.id, f2.id],
+    actor: { principal: "izzie@x.com", via: { kind: "agent", model: "claude-opus-5" } },
+    data: payload,
+  });
+  assert.equal(scopeStatus([f1, f2, byAgent]).status, "blocked",
+    "settling a disagreement between two people is not an agent's call");
+
+  // Planted: the right digest, but written without having seen the evidence. Without
+  // the causal gate this lies dormant and activates the moment the fork appears.
+  const planted = testEvent({
+    id: "0000000000-z", writer: "V", kind: ACK_KIND, subject: "s", data: payload,
+  });
+  assert.equal(scopeStatus([f1, f2, planted]).status, "blocked",
+    "an acknowledgment must have seen what it acknowledges");
+
+  // CONTROL — the same digest, by a person, naming both branch heads. This is the
+  // one that must WORK, and it only can because the segment vector keeps both
+  // branches of a fork in `heads()`.
+  const good = testEvent({
+    id: "0000000009-y", writer: "V", kind: ACK_KIND, subject: "s", after: [f1.id, f2.id], data: payload,
+  });
+  assert.equal(scopeStatus([f1, f2, good]).status, "complete");
+});
+
+test("a newer protocol can never be acknowledged away", () => {
+  // Clearing it would be agreeing to read data this build cannot interpret. It
+  // resolves by upgrading, and there is no person-shaped way around that.
+  const ahead = testEvent({ id: "0000000001-a", writer: "W", sidecarProtocol: 99 });
+  const d = scopeStatus([ahead]).diagnostic!;
+  const ack = testEvent({
+    id: "0000000002-b", writer: "V", kind: ACK_KIND, subject: "s", after: [ahead.id],
+    data: { acknowledges: [{ reason: d.reason, digest: evidenceDigest(d) }] },
+  });
+  // The ack is well formed and covers the digest; `sharedHeal` is what refuses to
+  // write it. Pinned here so the refusal is not quietly dropped later.
+  assert.equal(scopeStatus([ahead, ack]).diagnostic?.reason, "protocol");
 });

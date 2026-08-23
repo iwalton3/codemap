@@ -218,7 +218,7 @@ async function cmdPrIngest(root: string, prInput: string, files: string[], dryRu
 }
 
 function usage(): never {
-  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap orphans  [repo]              findings/reviews pointing at code the tree no longer has\n  codemap pr-resolve <pr> [--repo path] [--confirm] [--pull] [--anyone]\n                                              sync which review conversations are settled\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n                     [--only id,id,…]  publish exactly these, whatever their disposition\n                     [--summary TEXT] [--approve | --request-changes]\n  codemap pr-triage <pr> [--repo path]        derive stakes+complexity for the PR's symbols\n  codemap pr-pull-viewed <pr|--all> [--repo path] [--dry-run] [--force] [--limit N] [--max-prs N]\n                                              import GitHub's viewed ticks as `viewed`\n  codemap analyze marten [repo] [--verbose] [--emit]\n\n  Shared review (a sidecar repo; set CODEMAP_SIDECAR or .codemap/sidecar):\n  codemap sync     [repo]              send and receive shared review state\n  codemap shared   <pr> [repo] [--queue] [--json]   findings on the sidecar\n  codemap peers    [repo]              who else is on this sidecar, and scheme drift\n  codemap replies  <pr> [repo]         what the PR submitter said back about published findings\n  codemap notes    <anchor|node id> [repo]   what the TEAM knows about a symbol\n  codemap publish-notes [repo] [--dry-run]   put this store's existing annotations on the sidecar\n  codemap shared-docs [repo] [--json]  the team's docs, resolved against THIS checkout\n  codemap publish-docs [repo] [--dry-run]    put this store's docs on the sidecar");
+  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap orphans  [repo]              findings/reviews pointing at code the tree no longer has\n  codemap pr-resolve <pr> [--repo path] [--confirm] [--pull] [--anyone]\n                                              sync which review conversations are settled\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n                     [--only id,id,…]  publish exactly these, whatever their disposition\n                     [--summary TEXT] [--approve | --request-changes]\n  codemap pr-triage <pr> [--repo path]        derive stakes+complexity for the PR's symbols\n  codemap pr-pull-viewed <pr|--all> [--repo path] [--dry-run] [--force] [--limit N] [--max-prs N]\n                                              import GitHub's viewed ticks as `viewed`\n  codemap analyze marten [repo] [--verbose] [--emit]\n\n  Shared review (a sidecar repo; set CODEMAP_SIDECAR or .codemap/sidecar):\n  codemap sync     [repo]              send and receive shared review state\n  codemap sidecar heal [repo]          repair a forked sidecar (a person, not an agent)\n  codemap shared   <pr> [repo] [--queue] [--json]   findings on the sidecar\n  codemap peers    [repo]              who else is on this sidecar, and scheme drift\n  codemap replies  <pr> [repo]         what the PR submitter said back about published findings\n  codemap notes    <anchor|node id> [repo]   what the TEAM knows about a symbol\n  codemap publish-notes [repo] [--dry-run]   put this store's existing annotations on the sidecar\n  codemap shared-docs [repo] [--json]  the team's docs, resolved against THIS checkout\n  codemap publish-docs [repo] [--dry-run]    put this store's docs on the sidecar");
   process.exit(2);
 }
 
@@ -260,6 +260,30 @@ async function cmdSync(root: string): Promise<void> {
     for (const b of m.blocked) console.log(`  BLOCKED ${b.scope}: ${b.reason}`);
   }
   if (r.warning) console.log(`  WARNING: ${r.warning}`);
+}
+
+/**
+ * Repair a forked sidecar. A person runs this; there is no agent path and no web
+ * button, because acknowledging without rotating leaves the fork growing under a
+ * scope that has started reporting itself healthy.
+ */
+async function cmdHeal(root: string): Promise<void> {
+  const r = await shared.sharedHeal(root) as Record<string, any>;
+  if (r.error) { console.error(r.error); process.exit(1); }
+  console.log(`sidecar ${r.sidecar}  (${r.universe})`);
+  for (const x of r.resolved as { path: string; events: number }[]) {
+    console.log(`  unioned ${x.path} — ${x.events} event(s), both sides kept`);
+  }
+  if (r.rotated) console.log(`  rotated this clone's writer id to ${r.rotated}; the fork stops here`);
+  for (const a of r.acknowledged as { scope: string; reason: string }[]) {
+    console.log(`  acknowledged ${a.reason} in ${a.scope}`);
+  }
+  for (const b of r.blocked as { scope: string; reason: string }[]) {
+    console.log(`  STILL BLOCKED ${b.scope}: ${b.reason}`);
+  }
+  if (!r.resolved.length && !r.acknowledged.length && !r.blocked.length) {
+    console.log("  nothing to heal — no scope in this universe is blocked");
+  }
 }
 
 async function cmdPeers(root: string): Promise<void> {
@@ -579,6 +603,8 @@ if (positionals[0] === "analyze") {
     }));
   } else if (positionals[0] === "sync") {
     await cmdSync(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."));
+  } else if (positionals[0] === "sidecar" && positionals[1] === "heal") {
+    await cmdHeal(resolve((values.repo as string | undefined) ?? positionals[2] ?? "."));
   } else if (positionals[0] === "peers") {
     await cmdPeers(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."));
   } else if (positionals[0] === "shared") {

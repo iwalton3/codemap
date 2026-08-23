@@ -223,13 +223,22 @@ async function gitConfigLooksSet(root: string, identity: string): Promise<boolea
 }
 
 /**
- * Make `root` a usable sidecar: a git repo, with the union merge driver in place
+ * Make `root` a usable sidecar: a git repo, with the shard merge policy in place
  * and a manifest.
  *
- * `merge=union` is what covers the one case single-writer sharding does not — the
- * same person appending from two machines. Git takes the lines from both sides,
- * which is exactly right for an append-only line file, and the fold sorts and
- * dedupes afterwards so neither reordering nor duplication survives.
+ * **`-merge`, not `merge=union`.** Union was justified as covering "the same person
+ * appending from two machines", and this branch's own code retired that reason:
+ * shards are per-WRITER (`shardFor`), so two clones write one shard file only when
+ * they share a writer id — which IS the fork. Union did not prevent that fork, it
+ * laundered its evidence into a clean-looking merge, to be discovered later as a
+ * team-wide blocked scope instead of at sync time on the two guilty clones. It also
+ * ADDED a damage mode: a stitched union is one of the ways a glued line appears.
+ *
+ * `-merge` conflicts a both-sides-changed shard with no interleaving and no conflict
+ * markers written into the file, so a conflicted shard can never poison `readShard`;
+ * a one-side-changed shard never invokes a driver and merges clean, so the ordinary
+ * team flow of disjoint per-writer files is untouched. `codemap sidecar heal` is the
+ * way out, and it is a person.
  */
 export async function ensureSidecar(root: string, actor?: Actor): Promise<{ created: boolean } | { error: string }> {
   await mkdir(root, { recursive: true });
@@ -268,7 +277,7 @@ export async function ensureSidecar(root: string, actor?: Actor): Promise<{ crea
     g(root, ["config", "commit.gpgsign", "false"]);
   }
   // Written by everyone, identically, so it never conflicts.
-  await writeFile(join(root, ATTRIBUTES), `*${SHARD_EXT} merge=union\n`, "utf8");
+  await writeFile(join(root, ATTRIBUTES), `*${SHARD_EXT} -merge\n`, "utf8");
   if (actor) {
     await mkdir(join(root, MANIFEST_DIR), { recursive: true });
     await writeFile(
@@ -499,15 +508,12 @@ async function pullHeld(root: string, actor?: Actor, fetched: FetchState = false
   const incompatEarly = checkPeers(remoteManifests(root, remoteSha), mine);
   if (incompatEarly?.fatal) return { error: incompatEarly.message };
 
-  // No `-c merge.union.driver=...`: `union` is one of git's BUILT-IN drivers, and
-  // defining one by that name would replace it with whatever was named instead.
-  //
   // `--allow-unrelated-histories` because the ordinary way a team arrives here is
   // that everybody ran `ensureSidecar` locally and then pointed it at the same
   // remote, so the second person's history is genuinely unrelated to the first's.
-  // Safe for this content specifically: the shards union-merge, and the only other
-  // files are the manifest and .gitattributes, which are generated identically by
-  // the same code. Compatibility is checked below, on the merged result.
+  // Safe for this content specifically: per-writer shards are disjoint between
+  // clones, and the only other files are the manifest and .gitattributes, which are
+  // generated identically by the same code. Compatibility is checked below.
   // Our tip BEFORE the merge, so the append-only audit below has something to
   // compare against. `HEAD` on an unborn branch has no sha, and there is nothing to
   // erase in that case either.
@@ -515,9 +521,21 @@ async function pullHeld(root: string, actor?: Actor, fetched: FetchState = false
 
   const merge = g(root, ["merge", "--no-edit", "--allow-unrelated-histories", remoteSha]);
   if (!merge.ok) {
-    // With union merging on the shards, the realistic causes are a genuine
-    // conflict in the manifest or attributes — not in anyone's events.
+    // A conflicted SHARD is the interesting case and it has exactly one cause: two
+    // clones sharing a writer id, since per-writer shards are otherwise disjoint.
+    // Diagnose it before aborting — the abort is what keeps the promise that the
+    // sidecar is untouched, and it also destroys the conflict stages, which is why
+    // `heal` re-runs the merge for itself rather than trying to consume this one.
+    const conflicted = g(root, ["diff", "--name-only", "--diff-filter=U", "-z"]).out
+      .split("\0").map((f) => f.trim()).filter(Boolean);
+    const shards = conflicted.filter((f) => f.endsWith(SHARD_EXT));
     g(root, ["merge", "--abort"]);
+    if (shards.length) {
+      const writer = shards[0]!.split("/").pop()!.replace(SHARD_EXT, "");
+      return { error: `shard ${shards[0]} diverged: writer id ${writer} exists in two clones `
+        + `(a copied machine image, or a synced home directory). Both sides are intact and the `
+        + `sidecar is untouched. Run \`codemap sidecar heal\` on this clone.` };
+    }
     return { error: `merge failed and was aborted, the sidecar is untouched: ${merge.err.slice(0, 300)}` };
   }
   const incompat = checkPeers(await readManifests(root), mine);
@@ -651,6 +669,83 @@ async function pushHeld(root: string, message: string, opts: { attempts?: number
     warning = pulled.warning ?? warning;
   }
   return { error: `push still rejected after ${attempts} attempts — someone is pushing continuously, or the remote refuses this branch` };
+}
+
+export interface HealedMerge { resolved: { path: string; events: number }[] }
+
+/**
+ * Re-run the merge and resolve conflicted shards by unioning their lines.
+ *
+ * **Its own merge, deliberately.** `pull` aborts on conflict, and the abort is what
+ * keeps its promise that the sidecar is untouched — it also destroys the `:2:`/`:3:`
+ * stages. A heal that tried to consume the conflict `pull` reported would find none
+ * left, so it makes its own and consumes that. Loosening `pull`'s abort instead would
+ * trade a clear failure for a half-merged tree on every ordinary sync.
+ *
+ * The union is the correct content resolution for two append-only line files, and it
+ * is the same answer `merge=union` used to give — the difference is everything around
+ * it. This runs once, loudly, by a person, with the writer rotated and the evidence
+ * acknowledged in the same act. The driver did it silently, forever, and hid the fork.
+ *
+ * Lines from both sides, byte-identical duplicates collapsed, differing-content lines
+ * that claim one id BOTH kept: that pair is the duplicate-id evidence, and G3 forbids
+ * resolving it by deleting one. `readScope` reports it and a person decides.
+ */
+async function healMergeHeld(root: string, actor?: Actor): Promise<HealedMerge | { error: string }> {
+  const ready = await ensureSidecar(root, actor);
+  if ("error" in ready) return ready;
+  const pre = commitLocal(root, "codemap: local state before heal");
+  if (typeof pre === "object") return pre;
+  if (!g(root, ["remote"]).out) return { resolved: [] };
+
+  const f = fetchRemote(root);
+  if ("error" in f) return f;
+  const branch = branchOf(root);
+  const remoteSha = g(root, ["rev-parse", "--verify", "--quiet", `origin/${branch}`]).out;
+  if (!remoteSha) return { resolved: [] };
+
+  const merge = g(root, ["merge", "--no-edit", "--allow-unrelated-histories", remoteSha]);
+  if (merge.ok) return { resolved: [] };   // nothing to heal; the merge simply worked
+
+  const conflicted = g(root, ["diff", "--name-only", "--diff-filter=U", "-z"]).out
+    .split("\0").map((x) => x.trim()).filter(Boolean);
+  const shards = conflicted.filter((x) => x.endsWith(SHARD_EXT));
+  // Anything else conflicting is not ours to resolve by union — a manifest or the
+  // attributes file, which are generated identically and should never conflict at all.
+  if (!shards.length || shards.length !== conflicted.length) {
+    g(root, ["merge", "--abort"]);
+    return { error: `heal only resolves shard conflicts, and this merge conflicts on `
+      + `${conflicted.filter((x) => !x.endsWith(SHARD_EXT)).join(", ") || "nothing it can see"}. `
+      + `The sidecar is untouched.` };
+  }
+
+  const resolved: { path: string; events: number }[] = [];
+  for (const path of shards) {
+    // `git show :2:` / `:3:` — the conflict stages. With `-merge` no conflict markers
+    // are ever written into the file, so the working-tree copy is simply "ours" and
+    // the other side is only reachable here.
+    const ours = g(root, ["show", `:2:${path}`]);
+    const theirs = g(root, ["show", `:3:${path}`]);
+    const lines = [...ours.out.split("\n"), ...theirs.out.split("\n")].filter((l) => l.trim());
+    const union = [...new Set(lines)];
+    await mkdir(dirname(join(root, path)), { recursive: true });
+    await writeFile(join(root, path), union.join("\n") + "\n", "utf8");
+    const add = g(root, ["add", "--", path]);
+    if (!add.ok) { g(root, ["merge", "--abort"]); return { error: `could not stage ${path}: ${add.err.slice(0, 200)}` }; }
+    resolved.push({ path, events: union.length });
+  }
+
+  const commit = g(root, ["commit", "-q", "--no-edit"]);
+  if (!commit.ok) {
+    g(root, ["merge", "--abort"]);
+    return { error: `resolved every shard but the merge commit failed, so nothing changed: ${(commit.err || commit.out).slice(0, 300)}` };
+  }
+  return { resolved };
+}
+
+/** `healMergeHeld` with the sidecar lock taken. See the note on `pull`. */
+export async function healMerge(root: string, actor?: Actor): Promise<HealedMerge | { error: string }> {
+  return withSidecarLock(root, () => healMergeHeld(root, actor));
 }
 
 export interface SyncResult { gained: number; pushed: boolean; committed: boolean; retries: number; warning?: string; restored?: Restored[] }

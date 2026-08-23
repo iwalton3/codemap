@@ -15,13 +15,13 @@ import { classifyCitations } from "./citation-state.js";
 import { evalVersion } from "./doc-version.js";
 import { readCached, ensureMaterialized, type Projection } from "./materialize.js";
 import type { ScopeStatus, ScopeDiagnostic, LogEvent } from "./eventlog.js";
-import { scopesOnDisk } from "./eventlog.js";
+import { scopesOnDisk, readScopeChecked, writerFor, rotateWriter, acknowledgeScope } from "./eventlog.js";
 import { findingsProjection, docsProjection, notesProjection, docsCiting, docsByNode, sharedCitedAnchors } from "./shared-projections.js";
 import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
 import { resolveSidecar, scopeFor, type SidecarConfig } from "./sidecar-config.js";
 import { originSlug, headCommit, currentBranch } from "./git.js";
 import { fetchReviewThreads, type GhRunner } from "./pr-push.js";
-import { ensureSidecar, sync as sidecarSync, readManifests, checkPeers, currentManifest } from "./sidecar.js";
+import { ensureSidecar, sync as sidecarSync, healMerge, readManifests, checkPeers, currentManifest } from "./sidecar.js";
 import {
   createFinding, corroborate, comment, promote, request, setState, recordOutcome,
   markPosted, markUpstreamed, promoteToBug, needsHumanAck, ackQueue,
@@ -139,6 +139,88 @@ export async function sharedSync(root: string) {
   // which is why the blocked scopes are reported rather than discovered later.
   const materialized = await materializeUniverse(root, b.cfg);
   return { ok: true, universe: b.cfg.universe, sidecar: b.cfg.path, ...r, materialized };
+}
+
+export interface HealResult {
+  ok: true;
+  universe: string;
+  sidecar: string;
+  /** Shards whose two sides were unioned back together. */
+  resolved: { path: string; events: number }[];
+  /** The new writer id, when this clone was the one holding a forked one. */
+  rotated?: string;
+  /** Scopes whose blocking evidence this person has now acknowledged. */
+  acknowledged: { scope: string; reason: string }[];
+  /** Scopes still blocked, and why — evidence heal cannot clear on its own. */
+  blocked: { scope: string; reason: string }[];
+}
+
+/**
+ * Repair a forked sidecar: union the divided shard, stop the fork growing, and record
+ * that a person has seen the evidence.
+ *
+ * **A person, never an agent.** Same rule as `retireSharedDoc`: acknowledging is
+ * saying "I have looked at this disagreement and it is understood", which is not an
+ * agent's to say. With no server and no auth the gate is cooperative — see
+ * `acknowledged` in `eventlog.ts`.
+ *
+ * **Three separately-locked steps, not one.** The sidecar lock is not reentrant, and
+ * `emitEvent` and `sync` each take it — so a heal that held the lock across the whole
+ * sequence would deadlock against itself for the full timeout. Sequencing is safe
+ * where nesting is not: each step is individually consistent, and if another sync
+ * interleaves, the acknowledgment is keyed on evidence, so anything new simply blocks
+ * again.
+ *
+ * Rotation is what actually stops the fork; acknowledgment only silences the warning.
+ * They are one command because doing either alone is a trap — acknowledging without
+ * rotating leaves the fork growing under a scope that now reports itself healthy.
+ */
+export async function sharedHeal(root: string): Promise<HealResult | { error: string }> {
+  const b = bind(root);
+  if ("error" in b) return b;
+  if (isAgentActor(b.actor)) {
+    return { error: "an agent may not acknowledge a fork. A fork means two people's clones "
+      + "disagree about one writer's history, and saying that is understood is a person's call. "
+      + "Ask them to run `codemap sidecar heal`." };
+  }
+
+  // 1. Union the divided shard. Its own merge — `pull` aborts and destroys the stages.
+  const merged = await healMerge(b.cfg.path, b.actor);
+  if ("error" in merged) return merged;
+
+  // 2. Stop it growing. Only when THIS clone holds the forked id: if the fork is
+  //    somebody else's, rotating here changes nothing and loses our own chain.
+  const mine = await writerFor(b.cfg.path);
+  let rotated: string | undefined;
+
+  const acknowledged: { scope: string; reason: string }[] = [];
+  const blocked: { scope: string; reason: string }[] = [];
+
+  for (const scope of await scopesOnDisk(b.cfg.path)) {
+    if (!inUniverse(scope, b.cfg.universe)) continue;
+    const checked = await readScopeChecked(b.cfg.path, scope);
+    if (checked.status === "complete") continue;
+    const d = checked.diagnostic;
+    if (!d) { blocked.push({ scope, reason: checked.status }); continue; }
+    // A newer protocol is never acknowledgeable: clearing it would be agreeing to
+    // read data this build cannot interpret. It resolves by upgrading.
+    if (d.reason === "protocol") { blocked.push({ scope, reason: d.detail }); continue; }
+
+    if (!rotated && d.reason === "fork" && checked.events.some((e) => e.writer === mine)) {
+      rotated = await rotateWriter(b.cfg.path);
+    }
+    // 3. Record that a person has seen exactly THIS evidence. A later fork digests
+    //    differently and blocks again, which is what makes acknowledging safe.
+    await acknowledgeScope(b.cfg.path, scope, b.actor, d);
+    acknowledged.push({ scope, reason: d.reason });
+  }
+
+  const synced = await sidecarSync(b.cfg.path, b.actor, `codemap: heal ${b.cfg.universe}`);
+  if ("error" in synced) return synced;
+  return {
+    ok: true, universe: b.cfg.universe, sidecar: b.cfg.path,
+    resolved: merged.resolved, ...(rotated ? { rotated } : {}), acknowledged, blocked,
+  };
 }
 
 /** Who else is on this sidecar, and whether their codemap agrees with ours. */
