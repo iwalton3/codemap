@@ -19,7 +19,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { DerivationTag } from "./schema.js";
 import { derivationTag, GRAMMAR_NAMES } from "./grammars.js";
 import { derivationFingerprint } from "./normalize.js";
-import { anchorIndex, derivationsOf, legacyIndex, type AnchorIndex } from "./anchor-resolve.js";
+import { anchorIndex, derivationsOf, legacyIndex, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
 import { randomBytes } from "node:crypto";
 import { db, WORK_REF, ORPHAN_REF } from "./db.js";
 import { headCommit, currentBranch } from "./git.js";
@@ -673,7 +673,7 @@ const INS_VERSION_T = "INSERT INTO node_versions(version_id,node_id,type,title,s
  * still accepted). Dangling citations can't be confirmed (no live hash) — those
  * need a rewrite or ack-hole.
  */
-export async function confirmNode(root: string, id: string): Promise<{ ok?: true; status?: NodeStatus; error?: string }> {
+export async function confirmNode(root: string, id: string): Promise<{ ok?: true; status?: NodeStatus; unconfirmable?: string[]; error?: string }> {
   const d = db(root);
   const versions = versionsOf(d, id);
   if (!versions.length) return { error: `no node "${id}"` };
@@ -681,14 +681,24 @@ export async function confirmNode(root: string, id: string): Promise<{ ok?: true
   const { v } = selectWinner(versions, work);
   if (v.generatedBy) return { error: "generated node — regenerated, not confirmable" };
   if (v.removed) return { error: "node is tombstoned here" };
+  // "Nothing to confirm" and "cannot confirm" are different answers. A citation
+  // whose id this build cannot derive has no live hash to add, so confirming is a
+  // no-op on it forever — and the caller was told only a status. Named, because the
+  // UI offers this as the button that clears `unverifiable`, and for this cause it
+  // does not. See docs/anchor-id-provenance.md §6.
+  const unconfirmable: string[] = [];
   const cites: NodeCitation[] = v.citations.map((c) => {
     const set = new Set(c.acceptedHashes);
     const live = work.get(c.anchorId);
     if (live) set.add(live);
+    else if (resolveAnchor(c.anchorId, c.acceptedHashes, work).at === "incomparable") unconfirmable.push(c.anchorId);
     return { anchorId: c.anchorId, acceptedHashes: [...set] };
   });
   d.prepare("UPDATE node_versions SET citations=? WHERE version_id=?").run(JSON.stringify(cites), v.versionId);
-  return { ok: true, status: evalVersion({ ...v, citations: cites }, work).status };
+  return {
+    ok: true, status: evalVersion({ ...v, citations: cites }, work).status,
+    ...(unconfirmable.length ? { unconfirmable } : {}),
+  };
 }
 
 /**

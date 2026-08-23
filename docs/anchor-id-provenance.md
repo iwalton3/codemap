@@ -510,18 +510,58 @@ are worth recording because three are about the *seam*, not the logic:
    `incomparable`. An unannotated hash still proves the id resolved under *some*
    derivation, so it now preserves the fallback.
 
-And one performance defect the review did not find but the test suite did: the
-whole suite began hanging. The tempting explanation was this project's known
-load-dependent deadlock; a stash-and-rerun showed the suite green at HEAD and stuck
-with the changes, so it was not. `derivationsOf` was hashing **per anchor row** to
-dedupe, on a helper `loadNodes`/`confirmNode`/`ackHole` all call. Tags are interned,
-so identity dedup comes first now and the hashing is once per distinct tag.
+And one performance defect the review did not find: `derivationsOf` was hashing
+**per anchor row** to dedupe, on a helper `loadNodes`/`confirmNode`/`ackHole` all
+call. Tags are interned, so identity dedup comes first now and the hashing is once
+per distinct tag. Real, and worth fixing on its own terms.
 
-**Still bypassing the resolution**, recorded rather than fixed: the dashboard's
-dangling-doc count recomputes membership from raw ids (`ops.ts`), and the shared
-citation presentation (`ops-shared.ts`) labels an incomparable missing id `lost`.
-Both are presentation over an already-resolved answer, and both belong with the
-`incompatible_derivation` detail decision in §5.
+**The diagnosis attached to it was wrong, and the mistake is the more useful half.**
+It was found because the test suite started hanging, and a stash-and-rerun appeared
+to show the suite green at HEAD and stuck with the changes — so it was recorded as
+*caused* by the change rather than by this project's known load-dependent flake.
+Neither was true. `sh -c 'tsc && tsc -p web && node --test "dist/**/*.test.js"'` —
+npm's own command, run directly — completes in ~32s green, while `npm test` blocks
+with almost no CPU. The hangs tracked which other processes were running, not which
+code was checked out: two review agents were running the suite concurrently
+throughout. A bisect is only as good as the noise floor, and A/B runs minutes apart
+on a shared machine do not have one. When a run blocks with near-zero CPU, that is
+a wait, and the first question is who else is running.
+
+### The perimeter, after two more reviews
+
+A `/code-review` pass and a Fable round over the implementation agreed on the shape
+of what was left: the resolution core was faithful and test-pinned, and the
+*perimeter* was wider than this document recorded. Fixed since:
+
+- `reviewStatesFor` still handed `undefined` to `resolveAcceptance`, which reads it
+  as `none` — the red tick. On the surface this product leads with, and in a
+  function whose input (`liveHashes`) the work had already changed.
+- `bugDetail`'s `present: !!liveA` moved the confident claim rather than removing it:
+  absent-and-not-stale renders as "removed, and the bug is unaffected".
+- `checkStale` recomputed dangling docs from raw id membership, so one doc could read
+  `unverifiable` through `evalVersion` and "code no longer exists" through
+  `check_stale` — two surfaces disagreeing about one doc.
+- `evalVersion`'s removed branch reported an undecidable citation in `stale`, which
+  on a tombstone means "the code came back".
+- Both confirm paths said neither "nothing to confirm" nor "cannot confirm", while
+  the web offered a button that, for the id cause, clears nothing. They now name
+  what they could not confirm, and the copy says so.
+- The relocation gate fired on `node`-kind targets, refusing a legitimate relocation
+  with a message about anchors.
+
+**Still open, and now the sharpest thing here.** A doc whose citations read
+`incomparable` cannot be cleared: `confirmNode` has no live hash to add, and
+`ackHole` refuses because the status is not `dangling`. Worse, `ackHole` could not
+help even if it ran — the tombstone it writes inherits the prior version's
+old-derivation hashes, so §6's inversion counts them against it and the content
+version wins. The tombstone judges its own author foreign.
+
+That is not a patch. The evidence a tombstone needs is *the derivation of the build
+that made the removal judgment*, and a `NodeVersion` has nowhere to put it. Recorded
+rather than guessed at the end of a long session.
+
+Also still bypassing: `orphanedWork`'s `lost` bucket, and the shared citation
+presentation's `lost` label — both presentation over an already-resolved answer.
 
 ## What would change my mind
 

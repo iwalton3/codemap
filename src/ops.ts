@@ -51,7 +51,6 @@ import { evalVersion } from "./doc-version.js";
 import { grammarForPath } from "./grammars.js";
 import { reviewStatus, reviewStatesFor, anchorReviewMap, changedSince as reviewsChangedSince, deriveCodeReview, revertedMarks, markReviewedBatch, unmarkReviewed, unmarkCovered, type Attestation, type ReviewPair, type DerivedCodeReview, witnessDrift, realDrift} from "./reviews.js";
 import { setTriage as triageSet, clearTriage as triageClear, triageStatus, reviewTriageFor, deriveTriage as triageDerive, coverageFor as triageCoverageFor, rollupCoverage, tripwires as triageTripwires, triageDrift } from "./triage.js";
-import { sameBody, ABSENT_HASH } from "./normalize.js";
 import { anchorIndex, legacyIndex, derivationsOf, type AnchorIndex } from "./anchor-resolve.js";
 import { currentDerivations } from "./grammars.js";
 
@@ -609,9 +608,12 @@ export async function checkStale(root: string) {
   // deleted/renamed so the anchor never made it into @work). computeStaleness
   // only inspects anchors that ARE in @work, so these otherwise stay hidden —
   // the doc looks "clean" while pointing at code that no longer exists.
-  const anchorIds = new Set(store.anchors.map((a) => a.id));
+  // Through the same resolution `evalVersion` uses, not raw id membership. "Points
+  // at code that no longer exists" is a claim, and an id this index could not have
+  // minted does not support it — reporting it here while `loadNodes` reports the
+  // same doc as `unverifiable` is two surfaces disagreeing about one doc.
   const danglingDocs = nodes
-    .map((n) => ({ n, missing: n.anchors.filter((a) => !anchorIds.has(a)) }))
+    .map((n) => ({ n, missing: n.danglingAnchors ?? [] }))
     .filter((x) => x.missing.length > 0)
     .map(({ n, missing }) => ({ node: n.id, title: n.title, missingAnchors: missing }));
   // Bring the anchor store up to date (new anchors resolve; moved locs refreshed),
@@ -2583,6 +2585,7 @@ export async function bugDetail(root: string, id: string) {
     const liveA = live.get(aid);
     const witHash = witness.get(aid);
     const loc = liveA?.loc ?? a?.loc;
+    const w = witHash === undefined ? [] : [{ anchorId: aid, bodyHash: witHash }];
     return {
       id: aid,
       symbol: a ? a.symbolPath.join(" › ") : aid.slice(0, 12),
@@ -2592,7 +2595,12 @@ export async function bugDetail(root: string, id: string) {
       // Stale when we have a witness and the live code no longer matches it — but
       // an id this build could not have minted is not a body that moved, and saying
       // so needs the resolution rather than `?? ABSENT_HASH`.
-      stale: witHash !== undefined && realDrift(witnessDrift([{ anchorId: aid, bodyHash: witHash }], idx)).length > 0,
+      stale: witHash !== undefined && realDrift(witnessDrift(w, idx)).length > 0,
+      // And `present: false` alone would move the confident claim rather than remove
+      // it: absent + not-stale renders as "renamed or removed, and the bug is
+      // unaffected". This says which of the two absences it is.
+      unverifiable: witHash !== undefined && !liveA
+        && witnessDrift(w, idx).some((c) => c.unverifiable),
     };
   });
   const changed = anchors.filter((a) => a.stale).length;

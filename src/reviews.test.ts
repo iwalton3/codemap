@@ -359,3 +359,48 @@ test("a symbol this build minted, now absent, is still real drift", () => {
   assert.ok(!d[0]!.unverifiable, "this index could have resolved it, so its absence is real");
   assert.equal(realDrift(d).length, 1);
 });
+
+/**
+ * A green check must go stale when the code it covered changes — and must NOT go
+ * stale because a teammate's build spells anchor ids differently.
+ *
+ * This is the surface the product leads with, and it was the last one still faking
+ * absence: `live.get(id)` returns undefined both for "the symbol is gone" and for
+ * "that id is not derivable here", and `resolveAcceptance` reads undefined as
+ * `none`, which is the red tick. See docs/anchor-id-provenance.md §6.
+ */
+test("a mark whose accepted ids came from another build reads unverifiable, not stale", async () => {
+  const { mkdtempSync: mk, rmSync: rm } = await import("node:fs");
+  const { tmpdir: td } = await import("node:os");
+  const { join: jn } = await import("node:path");
+  const { writeReviews } = await import("./store.js");
+  const { hashTokens } = await import("./normalize.js");
+  const { derivationTag } = await import("./grammars.js");
+
+  const root = mk(jn(td(), "codemap-rsf-"));
+  try {
+    await writeStore(root, [], { schemaVersion: 1, lastVerifiedCommit: null, grammarVersions: {} });
+    const mine = derivationTag("typescript");
+    const theirs = { ...mine, grammarDigest: "f".repeat(64) };
+    const accepted = (h: string) => ({
+      anchorId: "a_absent", entries: [{ bodyHash: h, commit: "c1", branch: null, at: "2026-01-01T00:00:00Z" }],
+    });
+
+    const mark = (accHash: string): Review => ({
+      id: "r1", target: { kind: "anchor", id: "a_absent" }, level: "code", reviewer: "izzie",
+      actor: "human", attestation: "signed", at: "2026-01-01T00:00:00Z", reviewedCommit: null,
+      witnesses: [], accepted: [accepted(accHash)] as never,
+    } as Review);
+
+    // Their build's id, their build's hash: this index could not have minted it.
+    await writeReviews(root, [mark(hashTokens(["body"], theirs))]);
+    let st = (await reviewStatesFor(root, [{ kind: "anchor", id: "a_absent" }])).get("anchor:a_absent")!;
+    assert.equal(st.code.state, "reviewed", "the tick stays green — nothing says the code moved");
+    assert.equal((st.code as { via?: string }).via, "unverifiable", "and it says why it cannot be checked");
+
+    // The control: an id THIS build could have minted, now absent, is a real stale.
+    await writeReviews(root, [mark(hashTokens(["body"], mine))]);
+    st = (await reviewStatesFor(root, [{ kind: "anchor", id: "a_absent" }])).get("anchor:a_absent")!;
+    assert.equal(st.code.state, "stale", "this index would have resolved it, so its absence is drift");
+  } finally { rm(root, { recursive: true, force: true }); }
+});

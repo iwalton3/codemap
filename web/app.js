@@ -794,6 +794,7 @@ class DashboardPage extends Component {
           <div class="dstats">
             ${this.stat('open', d.bugs.open)}
             ${this.stat('possibly fixed', d.bugs.possiblyFixed, d.bugs.possiblyFixed ? 're-validate' : '')}
+            ${when(d.bugs.unverifiable, () => this.stat("can't check", d.bugs.unverifiable, 'ids from another build'))}
             ${this.stat('total', d.bugs.total)}
           </div>
           <div class="dclink" on-click="${() => go(bugsUrl(u))}">triage bugs ›</div>
@@ -1002,7 +1003,7 @@ class NodePage extends Component {
       <div style="margin:6px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">${codeRollupEl(cr)}${when(cr.total, () => html`<button on-click="${() => go(nodeReviewUrl(u, n.id))}">open code review →</button>`)}</div>
       <div style="margin:6px 0">${triageRowEl(n.triage, (imp) => this.triageNode(imp), (on) => this.armTripwireNode(on))}</div>
       ${when(n.status === 'stale', () => html`<div class="vaction"><span>This doc cites code that changed since it was written.</span> <button on-click="${() => this.confirm()}">confirm still accurate</button> <span class="dim">— or edit it (forks a new version).</span></div>`)}
-      ${when(n.status === 'unverifiable', () => html`<div class="vaction"><span>This doc was confirmed under an older hashing scheme, so whether the code has changed since cannot be decided — it is not a claim that anything drifted.</span> <button on-click="${() => this.confirm()}">confirm at the current code</button> <span class="dim">— which re-witnesses it and clears this.</span></div>`)}
+      ${when(n.status === 'unverifiable', () => html`<div class="vaction"><span>Whether the code changed since this was written cannot be decided here — it is not a claim that anything drifted. Either it was confirmed under an older hashing scheme, or it cites anchor ids a different build derived.</span> <button on-click="${() => this.confirm()}">confirm at the current code</button> <span class="dim">— which clears the first cause. For the second there is no live hash to add: re-document it against the symbols you have.</span></div>`)}
       ${when(n.status === 'dangling', () => html`<div class="vaction bad"><span>Cited code was removed here (${(n.danglingAnchors || []).length} anchor${(n.danglingAnchors || []).length === 1 ? '' : 's'}).</span> <button on-click="${() => this.ackHole()}">ack — remove doc here</button> <span class="dim">(kept on branches where the code exists).</span></div>`)}
       <md-content text="${n.summary}"></md-content>
       ${when(n.body && n.body.trim(), () => html`<md-content text="${n.body}"></md-content>`)}
@@ -2054,8 +2055,9 @@ class BugsPage extends Component {
       ${each(b.anchors, a => html`<div class="banchor ${a.stale ? 'stale' : ''} ${a.present ? '' : 'gone'}" on-click="${() => go(anchorUrl(u, a.id))}">
         <span class="basym">${a.symbol}</span>
         <span class="bafile">${a.file || '(unresolved)'}${a.lines ? ':' + a.lines : ''}</span>
-        ${when(!a.present, () => html`<span class="bchip changed" title="anchor no longer found (renamed/removed)">lost</span>`,
-          () => when(a.stale, () => html`<span class="bchip changed" title="code changed since the bug's witness — re-validate">stale</span>`))}
+        ${when(a.unverifiable, () => html`<span class="bchip" title="this anchor id was minted by a build whose ids are derived differently — it is not resolvable here, which is not the same as gone">can't check</span>`,
+          () => when(!a.present, () => html`<span class="bchip changed" title="anchor no longer found (renamed/removed)">lost</span>`,
+            () => when(a.stale, () => html`<span class="bchip changed" title="code changed since the bug's witness — re-validate">stale</span>`)))}
       </div>`, a => a.id)}
       ${when(b.history && b.history.length, () => html`<div class="sec">history</div>
         <div class="bhist">${each(b.history, (h, i) => html`<div class="hline">${h}</div>`, (h, i) => i + h)}</div>`)}

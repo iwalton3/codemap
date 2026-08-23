@@ -438,7 +438,7 @@ const tools: Tool[] = [
   },
   {
     name: "node_versions",
-    description: "List all versions of a node with each version's per-branch status (fresh/stale/dangling/removed), created commit/branch, and cited anchors — for understanding a forked doc.",
+    description: "List all versions of a node with each version's per-branch status (fresh/stale/unverifiable/dangling/removed), created commit/branch, and cited anchors — for understanding a forked doc.",
     inputSchema: obj({ id: { type: "string" } }, ["id"]),
     handler: (a, c) => ops.nodeVersions(c.universe.path, a.id),
   },

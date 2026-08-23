@@ -11,7 +11,7 @@ import type { Actor } from "./schema.js";
 import { requireActor, isAgentActor } from "./identity.js";
 import { comparableHashes, sameBody } from "./normalize.js";
 import { classifyCitations } from "./citation-state.js";
-import { anchorIndex, derivationsOf, type AnchorIndex } from "./anchor-resolve.js";
+import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
 import { resolveSidecar, scopeFor, type SidecarConfig } from "./sidecar-config.js";
 import { originSlug, headCommit, currentBranch } from "./git.js";
 import { fetchReviewThreads, type GhRunner } from "./pr-push.js";
@@ -208,7 +208,14 @@ export async function relocateFinding(
   // here that is not enough, because the write outlives the reader. So the applier
   // checks it against their own index before it becomes the target.
   // See docs/anchor-id-provenance.md §4.
-  if (opts.apply && kind === "moved" && opts.to) {
+  // ANCHOR targets only. A finding may target a node (`{kind: "node"}`), whose ids
+  // are minted locally and are not derived from the parse at all — gating those on
+  // the anchor index would refuse a legitimate node-to-node relocation, with a
+  // message about anchors that would not even be true.
+  const targetKind = opts.apply && kind === "moved" && opts.to
+    ? (await readFindings(b.cfg.path, prKey(b.cfg, pr))).get(id)?.target.kind
+    : undefined;
+  if (targetKind === "anchor" && opts.to) {
     const here = await liveHashes(root);
     if (!here.has(opts.to)) {
       return {
@@ -538,8 +545,16 @@ export async function confirmSharedDoc(root: string, nodeId: string, versionId?:
   if (!v) return { error: versionId ? `no version ${versionId} on ${nodeId}` : `no version of ${nodeId} resolves against this checkout — say which one` };
 
   const added: string[] = [];
+  // "Nothing to confirm" and "cannot confirm" are different answers, and this used
+  // to give neither: a citation whose id is not resolvable here has no live hash to
+  // add, so it was skipped and the caller was told how many succeeded. The UI then
+  // offers a button that clears nothing. See docs/anchor-id-provenance.md §6.
+  const unconfirmable: string[] = [];
   for (const c of v.citations) {
     const hash = live.get(c.anchorId);
+    if (!hash && resolveAnchor(c.anchorId, c.acceptedHashes, live).at === "incomparable") {
+      unconfirmable.push(c.anchorId);
+    }
     // EXACT, like the insert this feeds (`shared-docs.ts`). Skipping by BODY would
     // suppress the event that carries a better-annotated spelling of a hash the set
     // already holds — so the set could never upgrade, and protecting the insert
@@ -548,7 +563,13 @@ export async function confirmSharedDoc(root: string, nodeId: string, versionId?:
     await acceptDocHash(b.cfg.path, b.cfg.universe, b.actor, nodeId, v.versionId, c.anchorId, hash);
     added.push(c.anchorId);
   }
-  return { ok: true, nodeId, versionId: v.versionId, confirmed: added.length, anchors: added };
+  return {
+    ok: true, nodeId, versionId: v.versionId, confirmed: added.length, anchors: added,
+    ...(unconfirmable.length ? {
+      unconfirmable,
+      note: `${unconfirmable.length} citation(s) name ids this build cannot derive — confirming cannot clear those, and re-documenting against the current symbols is what would`,
+    } : {}),
+  };
 }
 
 /**

@@ -31,10 +31,20 @@ export function evalVersion(v: NodeVersion, work: AnchorIndex) {
     // minted is not evidence of absence. Letting it win on that would HIDE a doc
     // whose code may be sitting right there, and hiding is the direction with no
     // recovery. See docs/anchor-id-provenance.md §6.
-    const unresolved = v.citations
-      .filter((c) => resolveAnchor(c.anchorId, c.acceptedHashes, work).at !== "absent")
-      .map((c) => c.anchorId);
-    return { status: "removed" as NodeStatus, stale: unresolved, dangling: [] as string[], badness: unresolved.length };
+    const present: string[] = [], undecided: string[] = [];
+    for (const c of v.citations) {
+      const at = resolveAnchor(c.anchorId, c.acceptedHashes, work).at;
+      if (at === "found") present.push(c.anchorId);
+      else if (at === "incomparable") undecided.push(c.anchorId);
+    }
+    // Both count against the tombstone, but they are NOT the same thing to a reader:
+    // `stale` on a removed version means "the code came back", and reporting an
+    // undecidable citation there says the symbol is present when nobody established
+    // that. Same badness, different sentence.
+    return {
+      status: "removed" as NodeStatus, stale: present, dangling: [] as string[],
+      unverifiable: undecided, badness: present.length + undecided.length,
+    };
   }
   const stale: string[] = [], dangling: string[] = [], unverifiable: string[] = [];
   for (const c of v.citations) {

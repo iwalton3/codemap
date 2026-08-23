@@ -86,7 +86,14 @@ export type AnchorIndex = Map<string, string> & {
   knownTags?: (mark: string) => DerivationTag[];
 };
 
-/** Attach what a ref's rows say about their build to the hashes read out of it. */
+/**
+ * Attach what a ref's rows say about their build to the hashes read out of it.
+ *
+ * CONSUMES `hashes` — the properties are assigned onto the map you pass, not a copy.
+ * Every caller builds a fresh map for the purpose; hand it a cached or shared one
+ * and you smuggle provenance onto something else's object, and a second call over
+ * one map silently overwrites the first's derivations.
+ */
 export function anchorIndex(
   hashes: Map<string, string>,
   derivations: IndexDerivations,

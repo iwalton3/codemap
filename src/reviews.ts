@@ -361,7 +361,16 @@ export async function reviewStatesFor(
     const base = { by: r.reviewer, actor: r.actor ?? "agent", at: r.at, coveredBy: r.coveredBy } as const;
 
     const cites = acceptedOf(r);
-    const resolved = cites.map((c) => resolveAcceptance(c.entries, live.get(c.anchorId), ancestry));
+    const resolved = cites.map((c) => {
+      // The same rule as everywhere else, on the surface this product leads with:
+      // a green check must go stale when the code it covered changes, and must NOT
+      // go stale because a teammate's build spells the id differently. `live.get`
+      // alone returns undefined for both, and `resolveAcceptance` reads undefined as
+      // `none`, which is the red tick. See docs/anchor-id-provenance.md §6.
+      const at = resolveAnchor(c.anchorId, c.entries.map((e) => e.bodyHash), live);
+      if (at.at === "incomparable") return { via: "unverifiable" as const };
+      return resolveAcceptance(c.entries, at.at === "found" ? at.hash : undefined, ancestry);
+    });
     if (!resolved.length) return { state: "reviewed", ...base, via: "direct" };
     // A mark covers several anchors; the weakest one decides, so a single drifted
     // segment cannot hide behind the others.
