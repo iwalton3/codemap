@@ -10,6 +10,7 @@
 import type { Actor } from "./schema.js";
 import { requireActor, isAgentActor } from "./identity.js";
 import { comparableHashes, sameBody } from "./normalize.js";
+import { realpathSync } from "node:fs";
 import { classifyCitations } from "./citation-state.js";
 import { evalVersion } from "./doc-version.js";
 import { readCached } from "./materialize.js";
@@ -267,12 +268,24 @@ export async function settleContest(root: string, pr: number | string, id: strin
  * Write paths inside `shared-findings.ts` still fold the log directly, and should:
  * they need the freshest state at the moment they append, not a projection of it.
  */
+/**
+ * The identity half of the cache key: the sidecar as the filesystem resolves it.
+ *
+ * `resolveSidecar` normalizes and absolutizes but does not follow symlinks, so a
+ * stable pointer retargeted at a different sidecar keeps one lexical path — and
+ * with matching shard stats the first sidecar's rows would be served for the
+ * second's log indefinitely. `realpath` is what makes "cannot reuse rows" true.
+ */
+const sidecarIdentity = (cfg: { path: string }): string => {
+  try { return realpathSync(cfg.path); } catch { return cfg.path; }   // not created yet
+};
+
 const cachedFindings = (root: string, cfg: { path: string; universe: string }, pr: number | string) =>
-  readCached(root, cfg.path, findingScope(prKey(cfg, pr)), cfg.path, foldFindings, findingsProjection);
+  readCached(root, cfg.path, findingScope(prKey(cfg, pr)), sidecarIdentity(cfg), foldFindings, findingsProjection);
 
 /** A universe's shared docs, through the cache. Same shape as findings above. */
 const cachedDocs = (root: string, cfg: { path: string; universe: string }) =>
-  readCached(root, cfg.path, docScope(cfg.universe), cfg.path, foldDocs, docsProjection);
+  readCached(root, cfg.path, docScope(cfg.universe), sidecarIdentity(cfg), foldDocs, docsProjection);
 
 /**
  * One target's notes, through the cache.
@@ -281,7 +294,7 @@ const cachedDocs = (root: string, cfg: { path: string; universe: string }) =>
  * which is what `notesForTarget` does, with the fold now cached per bucket.
  */
 const cachedNotes = async (root: string, cfg: { path: string; universe: string }, targetId: string) => {
-  const all = await readCached(root, cfg.path, noteScope(cfg.universe, bucketFor(targetId)), cfg.path, foldNotes, notesProjection);
+  const all = await readCached(root, cfg.path, noteScope(cfg.universe, bucketFor(targetId)), sidecarIdentity(cfg), foldNotes, notesProjection);
   return [...all.values()].filter((n) => n.target.id === targetId);
 };
 

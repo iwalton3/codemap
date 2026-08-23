@@ -190,3 +190,75 @@ test("the citation edge table is populated for the step-3b join", async () => {
       "lifted out of the JSON so an anchor lookup can be an index seek");
   } finally { [logRoot, root].forEach((r) => rmSync(r, { recursive: true, force: true })); }
 });
+
+/**
+ * A row the projection cannot read must NOT be silently skipped.
+ *
+ * The fingerprint is over the sidecar's shards, so nothing about a damaged DB row
+ * moves it: a `read` that drops what it cannot parse serves an incomplete answer on
+ * every subsequent hit, forever, while looking like a cache hit. The comment used to
+ * claim the fold would rerun and replace it. It would not.
+ */
+test("a corrupt projection row invalidates the scope instead of vanishing", async () => {
+  const f = await fixture();
+  try {
+    const { db } = await import("./db.js");
+    const scope = findingScope(PR);
+    const first = await readCached(f.root, f.logRoot, scope, ID, foldFindings, findingsProjection);
+    assert.equal(first.size, 2);
+
+    // Damage a row without touching the log.
+    db(f.root).prepare("UPDATE shared_finding SET body = ? WHERE scope = ?").run("{not json", scope);
+
+    let folds = 0;
+    const after = await readCached(f.root, f.logRoot, scope, ID, (e) => { folds++; return foldFindings(e); }, findingsProjection);
+    assert.equal(folds, 1, "unreadable rows are a miss, not an empty answer");
+    same(after, foldFindings(await readScope(f.logRoot, scope)), "and the re-fold restores the whole scope");
+  } finally { f.cleanup(); }
+});
+
+/** The third projection. Notes had no round-trip test; §7 asks for one per entity. */
+test("notes round-trip through the projection", async () => {
+  const logRoot = tmp("nlog"), root = tmp("nrepo");
+  try {
+    const { createNote, foldNotes, noteScope, bucketFor } = await import("./shared-notes.js");
+    const { notesProjection } = await import("./shared-projections.js");
+    const U = "acme/api";
+    const target = "a_1";
+    await createNote(logRoot, U, izzie, { targetKind: "anchor", targetId: target, text: "costly to work out", kind: "note" } as never);
+    await createNote(logRoot, U, dana, { targetKind: "anchor", targetId: target, text: "and a question", kind: "question" } as never);
+
+    const scope = noteScope(U, bucketFor(target));
+    const direct = foldNotes(await readScope(logRoot, scope));
+    const cached = await readCached(root, logRoot, scope, ID, foldNotes, notesProjection);
+    same(cached, direct, "a miss folds and returns the same answer");
+
+    let folds = 0;
+    const hit = await readCached(root, logRoot, scope, ID, (e) => { folds++; return foldNotes(e); }, notesProjection);
+    assert.equal(folds, 0);
+    same(hit, direct, "and the rows rebuild it");
+  } finally { [logRoot, root].forEach((r) => rmSync(r, { recursive: true, force: true })); }
+});
+
+/**
+ * §7's other named case: a late parent arrives and REORDERS a scope that was
+ * already folded. The projection has to match a fold of the settled input, not the
+ * order the events happened to be written in.
+ */
+test("a late parent that reorders the scope is re-folded, not patched", async () => {
+  const f = await fixture();
+  try {
+    const scope = findingScope(PR);
+    const before = await readCached(f.root, f.logRoot, scope, ID, foldFindings, findingsProjection);
+    const order = (m: Map<string, unknown>) => [...m.keys()].join(",");
+
+    // A comment on the first finding, written to a shard as if it had arrived late.
+    const a = [...before.keys()][0]!;
+    await comment(f.logRoot, PR, izzie, a, "arriving after the others");
+
+    const after = await readCached(f.root, f.logRoot, scope, ID, foldFindings, findingsProjection);
+    const direct = foldFindings(await readScope(f.logRoot, scope));
+    same(after, direct, "the cache must agree with a fold of the settled input");
+    assert.equal(order(after), order(direct), "including the order the fold produces");
+  } finally { f.cleanup(); }
+});

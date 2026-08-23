@@ -70,9 +70,26 @@ export async function scopeFingerprint(logRoot: string, scope: string, identity:
 export interface Projection<T> {
   /** Replace every row for this scope. Runs INSIDE the transaction. */
   write(d: DatabaseSync, scope: string, value: T): void;
-  /** Rebuild the value from rows. Must equal what `fold` produced. */
+  /**
+   * Rebuild the value from rows.
+   *
+   * THROW `CorruptProjection` rather than skipping a row you cannot read. The
+   * fingerprint is over the sidecar's SHARDS, so nothing about a damaged row moves
+   * it — a projection that quietly drops what it cannot parse serves an incomplete
+   * answer on every subsequent hit, indefinitely, and looks like a cache hit while
+   * doing it. `readCached` turns the throw into a miss and re-folds.
+   *
+   * Equal to what `fold` produced UP TO JSON: the projection stores JSON, so a
+   * property whose value is `undefined` comes back absent rather than present-and-
+   * undefined. Anything JSON cannot carry at all — a `Map`, a `Date`, insertion
+   * order that a caller depends on — needs a column instead. See
+   * `SharedDoc.authors` in `shared-projections.ts` for the one that bit.
+   */
   read(d: DatabaseSync, scope: string): T;
 }
+
+/** A stored row that cannot be read back. Not fatal: it means re-fold. */
+export class CorruptProjection extends Error {}
 
 /**
  * Read a scope through the cache, re-folding on a miss.
@@ -100,7 +117,17 @@ export async function readCached<T>(
     const before = await scopeFingerprint(logRoot, scope, identity);
     const row = d.prepare("SELECT fingerprint FROM shared_scope WHERE scope = ?").get(scope) as
       { fingerprint: string } | undefined;
-    if (row?.fingerprint === before) return proj.read(d, scope);
+    if (row?.fingerprint === before) {
+      try {
+        return proj.read(d, scope);
+      } catch (e) {
+        if (!(e instanceof CorruptProjection)) throw e;
+        // Damaged rows. Drop the key so this pass re-folds and replaces them —
+        // otherwise the damage is permanent, because only the shards move the
+        // fingerprint and they have not.
+        d.prepare("DELETE FROM shared_scope WHERE scope = ?").run(scope);
+      }
+    }
 
     const events = await readScope(logRoot, scope);
     const value = fold(events);

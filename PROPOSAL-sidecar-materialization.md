@@ -1,6 +1,6 @@
 # Proposal: materialize the sidecar fold into SQLite, behind `store.ts`
 
-Status: **draft for review; steps 0, 1, 2, 3b and 4 landed. 3a and 5 open.** Written in response
+Status: **draft for review; steps 0, 1, 2 and 4 landed, 3b partly. 3a and 5 open.** Written in response
 to the `store.ts`-seam finding in `COLLABORATION-STATIC-REVIEW.md`, and to two
 goals stated more narrowly than that finding did: **consistency** and
 **performance**.
@@ -395,9 +395,13 @@ have to do, below.
    is that the hash column is **stored whole** — never split into a bare digest for
    indexing convenience, which would throw away the annotation the join's fallback
    reads.
-3b. ~~**Lift the citation edges and do the anchor join in SQL.**~~ **DONE.** Both
-   full scans are indexed lookups now: 9.8ms x2 -> 0.93ms on a real 4,983-anchor
-   store, and the cost scales with the citations asked about rather than the repo.
+3b. **PARTLY DONE — the scans are gone; the join is not.** Both full scans are
+   indexed lookups now (`workIndexFor`, `workHas`): 9.8ms x2 -> 0.93ms on a real
+   4,983-anchor store, and the cost scales with the citations asked about rather
+   than the repo. But that is an `IN` over ids parsed out of the citation JSON, NOT
+   the §5 join through `shared_doc_citation`. That table is populated and indexed
+   and **no production read consumes it** — so either §5's query lands, or the
+   table should be deleted rather than left looking like an implemented join.
    The ref's derivations stay a separate DISTINCT — see the note in `workIndexFor`
    for why taking them from the matched rows is a bug, not an optimisation.
 

@@ -6,14 +6,18 @@
  * knows the entities and nothing about when they are folded. Keeping them apart is
  * what lets the fold be a parameter rather than an import — see the note there.
  *
- * The equivalence obligation lives here: `read(write(x))` must equal `x` for every
- * fold output, or the cache is a second, quieter implementation of the fold. It is
- * a cache, and "it's only a cache" is exactly the sentence that stops someone
- * testing it — so `materialize.test.ts` asserts the round trip against real folds.
+ * The equivalence obligation lives here: `read(write(x))` must equal `x` UP TO JSON
+ * for every fold output, or the cache is a second, quieter implementation of the
+ * fold. "Up to JSON" is exact, not a hedge — a property whose value is `undefined`
+ * comes back absent rather than present-and-undefined, which no caller here depends
+ * on. What JSON cannot carry AT ALL needs a column: a `Map`, or an order a caller
+ * reads. It is a cache, and "it's only a cache" is exactly the sentence that stops
+ * someone testing it — so `materialize.test.ts` asserts the round trip against real
+ * folds.
  */
 
 import type { DatabaseSync } from "node:sqlite";
-import type { Projection } from "./materialize.js";
+import { CorruptProjection, type Projection } from "./materialize.js";
 import { needsHumanAck, type SharedFinding } from "./shared-findings.js";
 import type { SharedDoc, UnmatchedAcceptance } from "./shared-docs.js";
 import type { SharedNote } from "./shared-notes.js";
@@ -56,8 +60,7 @@ export const findingsProjection: Projection<Map<string, SharedFinding>> = {
       try {
         out.set(r.id, JSON.parse(r.body) as SharedFinding);
       } catch {
-        // A row nothing can parse is the same as no row: the scope's fingerprint
-        // will not match on the next read either, so the fold reruns and replaces it.
+        throw new CorruptProjection(`shared_finding ${scope}/${r.id} is unreadable`);
       }
     }
     return out;
@@ -107,7 +110,9 @@ export const docsProjection: Projection<Map<string, SharedDoc>> = {
       try {
         doc.versions.push(JSON.parse(r.body) as NodeVersion);
         if (r.author) doc.authors.set(r.version_id, JSON.parse(r.author) as Actor);
-      } catch { /* unparseable row: the fingerprint will miss and the fold replaces it */ }
+      } catch {
+        throw new CorruptProjection(`shared_doc_version ${scope}/${r.version_id} is unreadable`);
+      }
     }
     return out;
   },
@@ -127,7 +132,8 @@ export const notesProjection: Projection<Map<string, SharedNote>> = {
     const out = new Map<string, SharedNote>();
     for (const r of d.prepare("SELECT id, body FROM shared_note WHERE scope = ? ORDER BY rowid").all(scope) as unknown as
       { id: string; body: string }[]) {
-      try { out.set(r.id, JSON.parse(r.body) as SharedNote); } catch { /* as above */ }
+      try { out.set(r.id, JSON.parse(r.body) as SharedNote); }
+      catch { throw new CorruptProjection(`shared_note ${scope}/${r.id} is unreadable`); }
     }
     return out;
   },
