@@ -524,7 +524,7 @@ test("the skip counts add up to what was held back, and say why", () => {
   assert.equal(set.comments.length, 1, "only p1");
   assert.deepEqual(set.skipped, {
     alreadyPushed: 0, resolved: 1, notElected: 1, belowSeverity: 1,
-    withdrawn: 1, noComment: 0, notPublishable: 1, evidenceMoved: 0,
+    withdrawn: 1, noComment: 0, notPublishable: 1, evidenceMoved: 0, evidenceUnverifiable: 0,
   });
 });
 
@@ -563,6 +563,39 @@ test("a finding written against a different body does not reach the submitter", 
     line: 12, witness: { anchorId: "a_1", bodyHash: fixtureHash("DEVELOP") }, sourceRef: "@work",
   })], w);
   assert.match(fromWorktree.blocked[0]!.why, /the working tree, not this pull request/);
+});
+
+/**
+ * The same gate, reached for a reason that is not about the code at all.
+ *
+ * A hash-scheme bump or a re-vendored grammar changes every hash in the store, so
+ * a witness minted before it and a PR head minted after it differ — and a bare
+ * `sameBody` reads that as "the submitter pushed" and withholds the finding. What
+ * a reader never sees is what is missing from the pull request, which is why this
+ * is separated rather than counted as drift. Still withheld: the gate exists to
+ * stop a confident review landing on code that is not in this PR, and "nobody can
+ * tell" is not clearance to send it.
+ */
+test("a witness this build cannot compare is not called drift, and says so", () => {
+  const onHead = new Map([["a_1", fixtureHash("HEAD", 2)]]);
+  const w = world({ headHashOf: (id: string) => onHead.get(id) });
+
+  const older = buildComments([ann({
+    line: 12, witness: { anchorId: "a_1", bodyHash: fixtureHash("HEAD", 1) },
+  })], w);
+  assert.equal(older.comments.length, 0, "not published — nobody can say it describes this PR");
+  assert.equal(older.skipped.evidenceMoved, 0, "and NOT counted as the submitter having pushed");
+  assert.equal(older.skipped.evidenceUnverifiable, 1);
+  assert.match(older.blocked[0]!.why, /cannot compare/);
+  assert.match(older.blocked[0]!.why, /re-witness/, "and says how to clear it");
+
+  // The control: same scheme, same body, still publishes. Without it this test
+  // would pass just as well if every witness were called unverifiable.
+  const same = buildComments([ann({
+    line: 12, witness: { anchorId: "a_1", bodyHash: fixtureHash("HEAD", 2) },
+  })], w);
+  assert.equal(same.comments.length, 1);
+  assert.equal(same.skipped.evidenceUnverifiable, 0);
 });
 
 test("findings filed before witnessing are sent, but named as unchecked", () => {
@@ -658,7 +691,7 @@ test("a verdict is posted as one, and is reason enough to open a review", () => 
       fingerprint: "f", pr: { number: 7, title: "t", url: "u", owner: "o", repo: "r" }, head: "h",
       body: "my summary\n\n---\n### codemap review", summary: "my summary", event: "REQUEST_CHANGES" as const,
       comments: [], deferred: [], blocked: [], unverified: [], viewedPaths: [],
-      skipped: { alreadyPushed: 0, resolved: 0, notElected: 0, belowSeverity: 0, withdrawn: 0, noComment: 0, notPublishable: 0, evidenceMoved: 0 },
+      skipped: { alreadyPushed: 0, resolved: 0, notElected: 0, belowSeverity: 0, withdrawn: 0, noComment: 0, notPublishable: 0, evidenceMoved: 0, evidenceUnverifiable: 0 },
     };
     return executePrPush(root, plan as any, { gh: fakeGh as any }).then((r) => {
       assert.equal(payload.event, "REQUEST_CHANGES");
@@ -681,7 +714,7 @@ test("GitHub refusing a self-review says the comments were lost with it", () => 
       body: "b", event: "APPROVE" as const,
       comments: [{ path: "a.ts", line: 2, side: "RIGHT" as const, body: "x", annotationId: "n1" }],
       deferred: [], blocked: [], unverified: [], viewedPaths: [],
-      skipped: { alreadyPushed: 0, resolved: 0, notElected: 0, belowSeverity: 0, withdrawn: 0, noComment: 0, notPublishable: 0, evidenceMoved: 0 },
+      skipped: { alreadyPushed: 0, resolved: 0, notElected: 0, belowSeverity: 0, withdrawn: 0, noComment: 0, notPublishable: 0, evidenceMoved: 0, evidenceUnverifiable: 0 },
     };
     return executePrPush(root, plan as any, { gh: fakeGh as any }).then((r) => {
       assert.match(r.errors[0]!, /will not let you approve your own pull request/);

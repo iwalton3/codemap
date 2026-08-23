@@ -42,6 +42,36 @@ test("a walkthrough chapter is not stale because the annotation arrived", () => 
   assert.deepEqual(staleChapters(wt, legacyIndex(new Map([["a1", OTHER]]))), ["c"], "a real move still stales it");
 });
 
+/**
+ * Two builds that BOTH annotate, which the pairs above do not reach.
+ *
+ * `comparableHashes` answers true whenever either side is unannotated, so a legacy
+ * witness is covered by the rule that more evidence cannot make an answer worse.
+ * Two different marks is the other case: the tokenizer changed, so the digest moved
+ * without the body moving, and after a re-vendored grammar that is EVERY chapter at
+ * once. `resolveAnchor` does not reach it — it classifies an absent id, so a found
+ * one hands its hash back unexamined.
+ */
+const MINE = `h2:0badf00d5678abcd:sha256:${fixtureHash("moved-body").slice("sha256:".length)}`;
+const THEIRS = `h2:1111222233334444:sha256:${fixtureHash("moved-body-2").slice("sha256:".length)}`;
+
+const chapter = (bodyHash: string) => ({
+  pr: 1, head: "h", by: "izzie", at: "t",
+  features: [{
+    id: "f", title: "f", summary: "",
+    chapters: [{ id: "c", title: "c", blocks: [], witnesses: [{ anchorId: "a1", bodyHash }] }],
+  }],
+}) as never;
+
+test("a chapter is not stale because another build hashed the code", () => {
+  assert.deepEqual(staleChapters(chapter(TAGGED), legacyIndex(new Map([["a1", THEIRS]]))), [],
+    "two derivations disagreeing about a digest is not the chapter moving");
+  // The control, and it is the one that matters: keying on comparability must not
+  // simply silence staleness. Same derivation, different body — still stale.
+  assert.deepEqual(staleChapters(chapter(MINE), legacyIndex(new Map([["a1", TAGGED]]))), ["c"],
+    "one build, two bodies — that is a real move");
+});
+
 test("an acceptance made before annotations still stands after them", () => {
   const anc = { onRef: () => true, precedes: () => false, known: () => true };
   const entries = [{ bodyHash: LEGACY, commit: "c1", branch: null, at: "t" }];

@@ -20,7 +20,7 @@ import { readAnnotations, writeAnnotations, readAnchorStore, readPushes, writePu
 import { diffHunks } from "./git.js";
 import { prTriage, anchorSpans, fetchPrMeta, type PrMeta } from "./pr.js";
 import { LANE_POLICY } from "./lanes.js";
-import { sameBody } from "./normalize.js";
+import { sameBody, comparableHashes } from "./normalize.js";
 
 export interface InlineComment {
   path: string; line: number; side: "RIGHT"; body: string; annotationId: string;
@@ -74,7 +74,7 @@ export interface PushPlan {
   deferred: DeferredComment[];
   blocked: BlockedComment[];
   viewedPaths: string[];
-  skipped: { alreadyPushed: number; resolved: number; notElected: number; belowSeverity: number; withdrawn: number; noComment: number; notPublishable: number; evidenceMoved: number };
+  skipped: { alreadyPushed: number; resolved: number; notElected: number; belowSeverity: number; withdrawn: number; noComment: number; notPublishable: number; evidenceMoved: number; evidenceUnverifiable: number };
   /** Published findings codemap could not confirm were written against this PR. */
   unverified: string[];
   /**
@@ -170,7 +170,7 @@ export function publishStateOf(a: Annotation, pushed: ReadonlySet<string>): Publ
  */
 export type PushVerdict =
   | "push" | "not-in-pr" | "resolved" | "already-pushed" | "not-elected" | "below-severity"
-  | "withdrawn" | "no-comment" | "not-publishable" | "evidence-moved";
+  | "withdrawn" | "no-comment" | "not-publishable" | "evidence-moved" | "evidence-unverifiable";
 
 export function pushVerdict(
   a: Annotation,
@@ -220,6 +220,13 @@ export function pushVerdict(
   // well-evidenced review of code that is not in this PR.
   if (filter.headHashOf && a.witness) {
     const head = filter.headHashOf(a.witness.anchorId);
+    // Two hashes from different derivations differ for a reason that has nothing to
+    // do with the code, so a bare `sameBody` here reads a grammar re-vendor as "the
+    // submitter pushed" and WITHHOLDS the finding — silently, because what a reader
+    // never sees is what is missing from the pull request. Separated rather than
+    // published: this gate exists to stop a confident review landing on code that is
+    // not in this PR, and "nobody can tell" is not clearance to send it.
+    if (head !== undefined && !comparableHashes(head, a.witness.bodyHash)) return "evidence-unverifiable";
     if (head !== undefined && !sameBody(head, a.witness.bodyHash)) return "evidence-moved";
   }
   return "push";
@@ -404,7 +411,7 @@ export function buildComments(
   const deferred: DeferredComment[] = [];
   const blocked: BlockedComment[] = [];
   const unverified: string[] = [];
-  let resolved = 0, already = 0, notElected = 0, belowSeverity = 0, withdrawn = 0, noComment = 0, notPublishable = 0, evidenceMoved = 0;
+  let resolved = 0, already = 0, notElected = 0, belowSeverity = 0, withdrawn = 0, noComment = 0, notPublishable = 0, evidenceMoved = 0, evidenceUnverifiable = 0;
   const electedOnly = filter.electedOnly !== false;
   const ids = filter.ids?.length ? new Set(filter.ids) : undefined;
   const { pushed, inDiff, commentable, firstHunkLine } = ctx;
@@ -443,6 +450,17 @@ export function buildComments(
       blocked.push({
         annotationId: a.id, severity: a.severity, file: subject.file, symbol: subject.symbol, label: labelOf(a),
         why: `written against a different version of this code${a.sourceRef && a.sourceRef !== "@work" ? ` (${a.sourceRef.slice(0, 12)})` : a.sourceRef === "@work" ? " (the working tree, not this pull request)" : ""}. Re-read it at this PR's head and revise — or, if it describes another branch that touches the same file, it belongs on that one.`,
+      });
+      continue;
+    }
+
+    if (verdict === "evidence-unverifiable") {
+      evidenceUnverifiable++;
+      blocked.push({
+        annotationId: a.id, severity: a.severity, file: subject.file, symbol: subject.symbol, label: labelOf(a),
+        why: "this build cannot compare the witness to the code on this pull request — the two hashes were "
+          + "derived differently (a hash-scheme bump, or a re-vendored grammar). Nothing here says the code "
+          + "moved. Re-read it at this PR's head and re-witness, and it will publish.",
       });
       continue;
     }
@@ -487,7 +505,7 @@ export function buildComments(
       blocked.push({ annotationId: a.id, severity: a.severity, file: subject.file, symbol: subject.symbol, label: labelOf(a), why: place.why });
     }
   }
-  return { comments, deferred, blocked, unverified, skipped: { alreadyPushed: already, resolved, notElected, belowSeverity, withdrawn, noComment, notPublishable, evidenceMoved } };
+  return { comments, deferred, blocked, unverified, skipped: { alreadyPushed: already, resolved, notElected, belowSeverity, withdrawn, noComment, notPublishable, evidenceMoved, evidenceUnverifiable } };
 }
 
 export async function planPrPush(root: string, input: string, filter: PushFilterExt = {}): Promise<PushPlan | { error: string }> {

@@ -20,7 +20,7 @@
  */
 
 import type { BugWitness } from "./schema.js";
-import { sameBody, ABSENT_HASH } from "./normalize.js";
+import { sameBody, comparableHashes, ABSENT_HASH } from "./normalize.js";
 import { resolveAnchor, type AnchorIndex } from "./anchor-resolve.js";
 
 export type WalkBlock =
@@ -192,7 +192,14 @@ export function staleChapters(w: PrWalkthrough, live: AnchorIndex): string[] {
       // chapter's code moved, and a chapter flagged stale for that reason is work
       // nobody can do. `headMoved` already covers "the whole thing is suspect".
       if (r.at === "incomparable") return false;
-      return !sameBody(r.at === "found" ? r.hash : ABSENT_HASH, wit.bodyHash);
+      // The same rule one level down, and `resolveAnchor` does not reach it: it
+      // classifies an ABSENT id, so a FOUND one hands back a hash unexamined. Two
+      // hashes from different derivations differ because the tokenizer changed, not
+      // because the chapter did — which after a grammar re-vendor is every chapter
+      // at once. This is what `witnessDrift` does for reviews and bugs.
+      const now = r.at === "found" ? r.hash : ABSENT_HASH;
+      if (!comparableHashes(now, wit.bodyHash)) return false;
+      return !sameBody(now, wit.bodyHash);
     }))
     .map((c) => c.id);
 }

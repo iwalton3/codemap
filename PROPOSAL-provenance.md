@@ -479,17 +479,31 @@ was.
   legitimately holds pre-upgrade rows and cannot be rehashed without destroying
   the baseline it exists to be. Those pairs are genuinely undecidable, stay out of
   `impacted`, and are surfaced in the CLI and the web.
-- **The other comparison sites still ignore it, and that is the LARGER exposure.**
-  Doc citations (`doc-version.ts`), review witnesses (`reviews.ts:460`),
-  acceptance, bug witnesses. Verified: after a grammar re-vendor both sides carry
-  the `h2:` prefix, so `comparableHashes` answers *comparable*, the hashes differ,
-  and every review mark and doc citation in the store reads as drift. That is the
-  985-of-985 shape, store-wide, and nothing built so far touches it — the diff is
-  one consumer and not the important one.
+- ~~**The other comparison sites still ignore it, and that is the LARGER exposure.**~~
+  **Closed**, and it was the largest thing left. Doc citations (`doc-version.ts`),
+  review witnesses (`witnessDrift`/`realDrift`), acceptance and bug witnesses all
+  ask `comparableHashes` before calling a difference drift — the annotation in the
+  hash string is what made that answerable without a schema change.
 
-  It is also *why* `@work` cannot simply be reindexed when its derivation changes:
-  doing so is what triggers the flood. So the diff's `unverifiable` residue is not
-  a quirk, it is a symptom of this same gap.
+  A sweep of every remaining bare `sameBody` found two more the section never
+  named, and they are the same defect one level out: `pr-push.ts` gated PUBLICATION
+  on it, so an incomparable witness read as "the submitter pushed" and the finding
+  was withheld from the pull request silently — it is `evidence-unverifiable` now,
+  still withheld but counted and explained, because "nobody can tell" is not
+  clearance to send a confident review. And `staleChapters` re-implemented
+  `witnessDrift` without the check: `resolveAnchor` classifies an ABSENT id, so a
+  FOUND one hands its hash back unexamined.
+
+  Three sites were checked and are SAFE, so nobody re-audits them: `pr.ts` and
+  `diff.ts` compare two snapshots, and `readSnapshot` returns null for a snapshot
+  from another derivation, so both sides are always current; `pr-bulk.ts` indexes
+  both sides in one process. `stale.ts` compares stored anchors against a fresh
+  re-index and is the `check` path — the reindex IS the repair there, not a
+  comparison to protect.
+
+  What has NOT changed is why `@work` cannot simply be reindexed when its
+  derivation changes: doing so is what triggers the flood. So the diff's
+  `unverifiable` residue is not a quirk, it is a symptom of the same gap.
 
 - **A cheaper fix than receipts may exist** — now written up as a decision to take,
   in `docs/decision-receipts-vs-prefix.md`. The short version is that the two are
