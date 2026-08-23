@@ -79,6 +79,17 @@ export interface ActorInput {
 let agentSession = false;
 export function markAgentSession(): void { agentSession = true; }
 
+/**
+ * Give the process back. **For tests, and there is no production caller.**
+ *
+ * Nothing un-becomes an agent mid-session, so this is not a state the design has
+ * — it exists because the flag is PROCESS-wide and the suite runs every file in
+ * one process. Without it, the file that proves the latch works makes every later
+ * file's writes an agent's: eight unrelated tests failed that way, all of them
+ * about a person doing something an agent may not.
+ */
+export function clearAgentSession(): void { agentSession = false; }
+
 export function resolveActor(root: string, input: ActorInput = {}): Actor | null {
   const principal = input.principal?.trim() || resolvePrincipal(root);
   if (!principal) return null;

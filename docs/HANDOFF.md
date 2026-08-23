@@ -8,14 +8,16 @@ this, then the two documents it points at; do not read the whole branch history.
 ## What to run
 
 ```sh
-npx tsc && npx tsc -p web
-node --no-warnings --test --test-concurrency=1 "dist/**/*.test.js"
+npm test         # ~60s, and it no longer stalls
 ```
 
-**Use that rather than `npm test`.** `npm test` runs the same three commands and
-stalls intermittently. Two separate bisects blamed code for it and both were
-wrong — see below; the cause is in Node, not here. **A run that blocks with
-near-zero CPU is a wait, not work.**
+**`npm test` is the command again.** It was unusable for three sessions — the
+same suite took 28 minutes because the runner's per-file child intermittently
+never exits. It runs in ONE process now (`--test-isolation=none`), which cannot
+hit that. The stall is diagnosed below, and `CLAUDE.md` § "The suite runs in ONE
+process" has the two rules that come with sharing a process.
+
+To debug a single file, `node --no-warnings dist/x.test.js`.
 
 ### The stall: it is Node's own exit path
 
@@ -50,17 +52,28 @@ and each is worth not re-testing:
   habit on one run's evidence and then refuted on the next. Left here as the
   correction, because a wrong note in a handoff is worse than no note.
 
-**What to do about it.** Nothing in this tree fixes it. Keep the documented
-workaround — kill the parked child by pid and the parent moves straight on,
-losing only that file's results (it reports as one failed FILE with no failing
-test inside it).
+**Two fixes that look like fixes and are not**, both measured, both discarded:
 
-`--test-isolation=none` runs every file in ONE process, takes 38 seconds instead
-of 28 minutes, and cannot hang because there is no child. It is **not** a drop-in:
-8 of 639 fail under it, because some files depend on per-process isolation (an
-agent actor set from the environment leaks across them). Worth fixing those eight
-if the stall becomes intolerable; that is the cheapest route to a suite that
-cannot wedge.
+- **Splitting `pr-ingest.test.js`.** Works — 0/12 for each half. But so does
+  appending a test that does nothing at all (`await setTimeout(0)`), and so does
+  removing ANY ONE of the seven. Seven hangs, six does not, eight does not. It is
+  a threshold that any perturbation clears, so a split would read as a fix and
+  stop working the next time somebody touched the file.
+- **Chasing the mechanism further.** Not SQLite (a probe opening a dozen stores
+  on deleted dirs: 0/12), not `io_uring`, not `--v8-pool-size=0`, and not any
+  single test. No other file comes near it — `contested`, `ops-shared`,
+  `indexer`, `diff` are all 0/8 as children, and several are far heavier.
+
+**What actually fixed it:** `--test-isolation=none`. No child, so the bug is
+unreachable, and 639 tests run in 60 seconds. The eight tests that failed under
+it had ONE cause — `markAgentSession()` was a latch with no way back, so the file
+proving the MCP surface is an agent made every later file's writes an agent's.
+`clearAgentSession()` exists for that and has no production caller.
+
+The old per-file mode still works and is still what wedges, so if you run
+`node --test dist/<file>.test.js` and it parks at 0% CPU: kill the child by pid,
+the parent moves straight on, and only that file's results are lost (it reports
+as one failed FILE with no failing test inside).
 
 ## The two arcs that landed
 

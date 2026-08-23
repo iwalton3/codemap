@@ -45,7 +45,7 @@ lines we own beats another thing that can become a worm/rugpull vector.
 ## Build & test
 
 ```sh
-npm test         # tsc build + node --test over dist/**/*.test.js  (hermetic, ~2s)
+npm test         # tsc build + node --test over dist/**/*.test.js  (hermetic, ~60s)
 npm run test:e2e # dist/e2e/**/*.e2e.js — needs a browser and a real repo; ~100s
 npm run build    # emit dist/
 node dist/serve.js <repo|workspace.json> [port]   # web UI (default :4310)
@@ -56,6 +56,29 @@ prerequisite goes in `src/e2e/` and *skips* when the prerequisite is absent —
 puppeteer for the UI suite, a `jellyfin/jellyfin` clone for the PR suite (see
 Guinea-pig repos). The golden rule applies to the test tree too: no runtime deps,
 and no test that fails because a browser or a repo is missing.
+
+### The suite runs in ONE process, and that is deliberate
+
+`--test-isolation=none`. The runner's default is a child process per file, and
+that child intermittently never exits — parked in Node's own
+`NodePlatform::DrainTasks` after every test in it has passed, wedging the run for
+as long as you let it. One process cannot hit it. See `docs/HANDOFF.md` § "The
+stall" for the stack and the four hypotheses that died.
+
+Two rules follow, and neither is optional now that nothing separates the files:
+
+- **Leave no process-global state set.** A test that flips a module-level latch
+  must restore it in `finally` — `markAgentSession()` had no way back, and one
+  file marking the session made eight later tests fail as "an agent may not".
+  That is what `clearAgentSession()` is for, and it has no production caller.
+- **`--test-concurrency=1` is load-bearing, not leftover.** A few tests set
+  `CODEMAP_AGENT_MODEL` around a call because the op resolves its own actor and
+  takes no override. Serialized files make that safe; concurrent ones would let
+  it leak into whatever else is running.
+
+To debug one file, `node --no-warnings dist/x.test.js` runs it in process and is
+the fastest loop. `node --test dist/x.test.js` also works and is what wedges —
+if it parks at 0% CPU, that is the bug above, not your change.
 
 Requires **Node ≥ 23.4** — the store uses `node:sqlite` (`DatabaseSync`)
 unflagged, which lands there (emits an ExperimentalWarning; harmless).

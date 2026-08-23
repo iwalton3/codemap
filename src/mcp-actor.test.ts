@@ -21,7 +21,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { resolveActor, markAgentSession, isAgentActor, isIndependent } from "./identity.js";
+import { resolveActor, markAgentSession, clearAgentSession, isAgentActor, isIndependent } from "./identity.js";
 
 function repo() {
   const root = mkdtempSync(join(tmpdir(), "codemap-mcpid-"));
@@ -55,6 +55,9 @@ test("a marked session is an agent even with no model in the environment", () =>
     assert.ok(isAgentActor(a), "and the act is the agent's");
     assert.equal(a.via?.model, undefined, "a model is never guessed — absent is honest");
   } finally {
+    // The latch is PROCESS-wide and the suite shares one process, so a test that
+    // marks the session has to give it back — see `clearAgentSession`.
+    clearAgentSession();
     if (saved.m !== undefined) process.env.CODEMAP_AGENT_MODEL = saved.m;
     if (saved.h !== undefined) process.env.CODEMAP_AGENT_HARNESS = saved.h;
     r.cleanup();
@@ -73,5 +76,5 @@ test("an agent's support of its own principal's finding is still not independent
     assert.equal(isIndependent(agent, { principal: "izzie@x.com" }), false,
       "one person's agent cannot corroborate that person's own finding");
     assert.equal(isIndependent(agent, { principal: "dana@x.com" }), true);
-  } finally { r.cleanup(); }
+  } finally { clearAgentSession(); r.cleanup(); }
 });
