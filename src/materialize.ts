@@ -31,8 +31,15 @@ import { readScopeChecked, SHARD_EXT, type LogEvent, type ScopeStatus } from "./
  *
  * That holds only while nothing derived from the anchors table is stored. See the
  * guard comment on the tables in `db.ts`.
+ *
+ * 2 -> 3: the folds changed what they PRODUCE, not merely how it is stored.
+ * Contest suppression keys on the writer rather than the principal, so a scope
+ * with one person's two machines in it folds to a different contested set; and
+ * corroboration keys on (principal, model), so a scope where somebody ran two
+ * models folds to a different verdict list. Rows folded under 2 are answers to a
+ * question this build no longer asks.
  */
-export const MATERIALIZER_VERSION = 2;
+export const MATERIALIZER_VERSION = 3;
 
 /**
  * What the events in a scope are, cheaply.

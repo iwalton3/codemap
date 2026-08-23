@@ -131,11 +131,17 @@ class SharedPage extends Component {
    * the fold refuses to pick, and so does this — a person re-states the value.
    */
   contestEl(f) {
+    // One person's two machines can disagree, and then both sides carry the same
+    // name. Say which clone, or the reader is shown a disagreement they cannot
+    // tell apart. See PROPOSAL-provenance.md §4.
+    const side = (x, other) => x.by === other.by && x.writer ? `${x.by} · ${x.writer}` : x.by;
     return html`${each(f.contested ?? [], c => html`
       <div class="contest">
-        <div class="dim">${c.field} — two people set this without seeing each other</div>
-        <div><b>${c.held.by}</b>: ${String(c.held.value)}</div>
-        <div><b>${c.incoming.by}</b>: ${String(c.incoming.value)}</div>
+        <div class="dim">${c.field} — ${c.held.by === c.incoming.by
+          ? 'set on two machines without either seeing the other'
+          : 'two people set this without seeing each other'}</div>
+        <div><b>${side(c.held, c.incoming)}</b>: ${String(c.held.value)}</div>
+        <div><b>${side(c.incoming, c.held)}</b>: ${String(c.incoming.value)}</div>
         <div class="row">
           <button on-click="${() => this.act('settle', { id: f.id, field: c.field, value: c.held.value })}">keep ${c.held.by}'s</button>
           <button on-click="${() => this.act('settle', { id: f.id, field: c.field, value: c.incoming.value })}">keep ${c.incoming.by}'s</button>

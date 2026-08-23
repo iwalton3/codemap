@@ -6,7 +6,8 @@ import { join } from "node:path";
 import type { Actor } from "./schema.js";
 import { readScope, type LogEvent } from "./eventlog.js";
 import { createFinding, foldFindings, findingScope, comment } from "./shared-findings.js";
-import { readCached as readCachedChecked, scopeFingerprint, type Projection } from "./materialize.js";
+import { createHash } from "node:crypto";
+import { readCached as readCachedChecked, scopeFingerprint, MATERIALIZER_VERSION, type Projection } from "./materialize.js";
 
 /**
  * The value half of a cached read.
@@ -347,4 +348,67 @@ test("a scope that repairs itself stops being blocked", async () => {
     writeFileSync(join(dir, name), before);
     assert.equal((await readCachedChecked(f.root, f.logRoot, scope, ID, foldFindings, findingsProjection)).status, "complete");
   } finally { f.cleanup(); }
+});
+
+// --- the fold's output, pinned ---------------------------------------------------
+
+/**
+ * A golden vector for the FOLD, guarding `MATERIALIZER_VERSION`.
+ *
+ * The cache key is the shards plus that number, so a fold that starts producing
+ * something different while the number stands still serves stale rows to everyone
+ * who has already folded that scope — indefinitely, because only the shards move
+ * the fingerprint and they have not. Nothing about a code change touches the key.
+ *
+ * So this pins what the fold produces from a fixed log, and a failure here is a
+ * QUESTION, not a defect: either the fold broke, or it legitimately changed and
+ * `MATERIALIZER_VERSION` has to be bumped in the same commit. That is exactly the
+ * shape `normalize.test.ts`'s golden vector gives `HASH_SCHEME`, and for the same
+ * reason — a manual version number that can be forgotten is silent and total.
+ *
+ * The log deliberately exercises the two rules that a fold change is most likely
+ * to touch: one person's two clones disagreeing (a contest, keyed on the writer)
+ * and one person's two models disagreeing (two corroborations, keyed on the model).
+ */
+const GOLDEN_LOG: LogEvent[] = (() => {
+  const dana: Actor = { principal: "dana@x.com" };
+  const human: Actor = { principal: "izzie@x.com" };
+  const opus: Actor = { principal: "izzie@x.com", via: { kind: "agent", model: "claude-opus-5" } };
+  const sonnet: Actor = { principal: "izzie@x.com", via: { kind: "agent", model: "claude-sonnet-5" } };
+  const e = (n: number, kind: string, actor: Actor, writer: string,
+             data?: Record<string, unknown>, after?: string[]): LogEvent => ({
+    id: `000000000${n}-x`, kind, subject: "f_gold", actor,
+    at: `2026-01-0${n}T00:00:00.000Z`, writer,
+    ...(after ? { after } : {}), ...(data ? { data } : {}),
+  });
+  return [
+    e(1, "finding.created", dana, "w_dana",
+      { targetKind: "anchor", targetId: "a_1", text: "the retry is not idempotent", comment: "look", severity: "medium" }),
+    e(2, "finding.corroborated", opus, "w_laptop", { verdict: "confirm", rationale: "reproduced" }, ["0000000001-x"]),
+    e(3, "finding.corroborated", sonnet, "w_laptop", { verdict: "refute", rationale: "guarded upstream" }, ["0000000002-x"]),
+    e(4, "finding.revised", human, "w_laptop", { now: { severity: "critical" }, was: { severity: "medium" } }, ["0000000003-x"]),
+    // Not descended from 4: the desktop never saw it.
+    e(5, "finding.revised", human, "w_desktop", { now: { severity: "low" }, was: { severity: "medium" } }, ["0000000001-x"]),
+    e(6, "finding.commented", dana, "w_dana", { body: "which is it" }, ["0000000004-x", "0000000005-x"]),
+  ];
+})();
+
+test("the fold's output is pinned — change it and bump MATERIALIZER_VERSION", () => {
+  const folded = [...foldFindings(GOLDEN_LOG)];
+  assert.equal(
+    createHash("sha256").update(JSON.stringify(folded)).digest("hex").slice(0, 32),
+    "f63820fba9d809da8d285f86eb81e0dc",
+    "the fold produces something different from what MATERIALIZER_VERSION "
+    + `${MATERIALIZER_VERSION} was set for — bump it, or fix the fold`,
+  );
+});
+
+test("…and the vector actually contains the two rules it claims to", () => {
+  // A golden hash that covered nothing interesting would pass forever. These are
+  // the assertions the digest is standing in for.
+  const f = foldFindings(GOLDEN_LOG).get("f_gold")!;
+  assert.equal(f.corroboration.length, 2, "two models, two opinions");
+  const c = (f.contested ?? []).find((c) => c.field === "severity");
+  assert.ok(c, "two clones, one contest");
+  assert.deepEqual([c.held.writer, c.incoming.writer], ["w_laptop", "w_desktop"]);
 });
