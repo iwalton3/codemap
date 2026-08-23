@@ -364,6 +364,78 @@ export function releaseRecoveredOrphans(root: string): number {
   return Number(r.changes ?? 0);
 }
 
+/**
+ * `@work` hashes for JUST these ids, as an index.
+ *
+ * The point of the query is what it does NOT do: `liveHashes` and
+ * `classifyCitations` each built a structure over EVERY anchor in the universe to
+ * answer about a handful, and `sharedDocs` called both — two full table scans per
+ * call, ~150ms on a 10k-anchor repo before folding anything.
+ *
+ * The derivations are a SEPARATE query over the whole ref on purpose, and this is
+ * the trap: taking them from the matched rows would mean an id that matched nothing
+ * yields an empty tag set, and an index with no tags rules nothing out — so every
+ * absence would read `incomparable` exactly when it is most likely to be a real
+ * deletion. There is a handful of distinct derivations, so the DISTINCT is cheap.
+ */
+export function workIndexFor(root: string, ids: Iterable<string>): AnchorIndex {
+  const d = requireIndex(root);
+  const want = [...new Set(ids)];
+  const hashes = new Map<string, string>();
+  // Chunked: SQLite caps host parameters per statement, and a catalogue view asks
+  // about every citation of every doc — the dry run had a thousand.
+  for (let i = 0; i < want.length; i += 400) {
+    const chunk = want.slice(i, i + 400);
+    const q = `SELECT id, body_hash FROM anchors WHERE ref = ? AND id IN (${chunk.map(() => "?").join(",")})`;
+    for (const r of d.prepare(q).all(WORK_REF, ...chunk) as unknown as { id: string; body_hash: string }[]) {
+      hashes.set(r.id, r.body_hash);
+    }
+  }
+  return anchorIndex(hashes, workDerivations(d), derivationLookup(root));
+}
+
+/**
+ * The DB, but only if this universe has actually been indexed.
+ *
+ * `db()` CREATES an empty store on demand, so a query against an uninitialized
+ * universe succeeds and returns nothing — which would classify every shared
+ * citation as `lost`, i.e. "the code is gone", to somebody who has merely pulled
+ * the sidecar and not run `init` yet. `readAnchorStore` has always thrown here for
+ * that reason and callers handle it; these lookups replaced it and must keep the
+ * guard, or the answer degrades from "cannot say" to a confident lie.
+ */
+function requireIndex(root: string): DatabaseSync {
+  const d = db(root);
+  if (!getMeta(d, "state")) throw new Error(notInitialized(root));
+  return d;
+}
+
+/** Every derivation `@work` holds, and whether any row predates provenance. */
+function workDerivations(d: DatabaseSync): { tags: DerivationTag[]; anyUntagged: boolean } {
+  const tags = derivationsById(d);
+  const out: DerivationTag[] = [];
+  let anyUntagged = false;
+  for (const r of d.prepare("SELECT DISTINCT derivation FROM anchors WHERE ref = ?").all(WORK_REF) as unknown as
+    { derivation: number | null }[]) {
+    if (r.derivation == null) { anyUntagged = true; continue; }
+    const t = tags.get(r.derivation);
+    if (t) out.push(t); else anyUntagged = true;   // unreadable row: rules nothing out
+  }
+  return { tags: out, anyUntagged };
+}
+
+/** Which of these ids `@work` actually holds — membership without materializing it. */
+export function workHas(root: string, ids: string[]): Set<string> {
+  const d = requireIndex(root);
+  const out = new Set<string>();
+  for (let i = 0; i < ids.length; i += 400) {
+    const chunk = ids.slice(i, i + 400);
+    const q = `SELECT id FROM anchors WHERE ref = ? AND id IN (${chunk.map(() => "?").join(",")})`;
+    for (const r of d.prepare(q).all(WORK_REF, ...chunk) as unknown as { id: string }[]) out.add(r.id);
+  }
+  return out;
+}
+
 export function findAnchorsOutsideWork(root: string, ids: string[]): Map<string, { ref: string; anchor: Anchor }> {
   const out = new Map<string, { ref: string; anchor: Anchor }>();
   if (!ids.length) return out;

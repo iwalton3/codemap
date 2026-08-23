@@ -25,7 +25,7 @@
  */
 
 import type { Anchor } from "./schema.js";
-import { readAnchorStore, findAnchorsOutsideWork, readOrphans } from "./store.js";
+import { readAnchorStore, findAnchorsOutsideWork, readOrphans, workHas} from "./store.js";
 
 export type CitationState = "here" | "offTree" | "retained" | "lost" | "unknown";
 
@@ -50,7 +50,11 @@ export async function classifyCitations(root: string, anchorIds: string[]): Prom
 
   let work: Set<string>;
   try {
-    work = new Set((await readAnchorStore(root)).anchors.map((a) => a.id));
+    // Membership for the ids ASKED ABOUT, not a Set of every anchor in the universe.
+    // A catalogue view asks about every citation of every doc — the dry run had a
+    // thousand — and building the whole set to test a handful was one of the two
+    // full table scans `sharedDocs` paid on every call.
+    work = workHas(root, [...new Set(anchorIds)]);
   } catch {
     // No index in this universe yet. Reading shared state must not require one.
     for (const id of anchorIds) out.set(id, { state: "unknown" });

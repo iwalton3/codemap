@@ -31,7 +31,7 @@ import {
   createNote, answerNote, resolveNote, allNotes, foldNotes, noteScope, bucketFor,
   type NewNote,
 } from "./shared-notes.js";
-import { readAnnotations, readAnchorStore, loadNodes, loadNodeVersions, derivationLookup} from "./store.js";
+import { readAnnotations, readAnchorStore, loadNodes, loadNodeVersions, derivationLookup, workIndexFor} from "./store.js";
 import {
   publishDocVersion, acceptDocHash, resolveDoc, foldDocs, docScope,
   type NewDocVersion,
@@ -226,7 +226,9 @@ export async function relocateFinding(
     ? (await cachedFindings(root, b.cfg, pr)).get(id)?.target.kind
     : undefined;
   if (targetKind === "anchor" && opts.to) {
-    const here = await liveHashes(root);
+    // ONE id, one indexed lookup. This read the entire anchor store to answer a
+    // membership question — the shape that produced the last performance cliff.
+    const here = await liveHashes(root, [opts.to]);
     if (!here.has(opts.to)) {
       return {
         error: `${opts.to.slice(0, 12)} is not an anchor in this checkout, so applying it would point the finding at nothing. `
@@ -450,16 +452,15 @@ export async function publishLocalNotes(root: string, opts: { dryRun?: boolean }
 // ---------------------------------------------------------------------------
 
 /** Live body hashes for whatever this working tree currently has. */
-async function liveHashes(root: string): Promise<AnchorIndex> {
-  const store = await readAnchorStore(root);
-  // The stored rows' own derivations: `@work` was written by whichever build indexed
-  // it, which after an upgrade is legitimately not the running one.
-  return anchorIndex(
-    new Map(store.anchors.map((a) => [a.id, a.bodyHash])),
-    derivationsOf(store.anchors),
-    derivationLookup(root),
-  );
-}
+/**
+ * `@work` hashes for the ids a read actually cites.
+ *
+ * Was a Map over EVERY anchor in the universe, built to answer about a handful.
+ * `workIndexFor` is the indexed lookup, and it takes the ref's derivations from a
+ * DISTINCT over the whole ref rather than from the matched rows — see the note
+ * there for why the difference matters.
+ */
+const liveHashes = async (root: string, ids: Iterable<string>): Promise<AnchorIndex> => workIndexFor(root, ids);
 
 /**
  * The team's docs, each resolved against THIS checkout.
@@ -474,10 +475,10 @@ export async function sharedDocs(root: string, opts: { nodeId?: string } = {}) {
   const cfg = resolveSidecar(root);
   if (!cfg) return { error: NO_SIDECAR };
   const docs = await cachedDocs(root, cfg);
-  const live = await liveHashes(root);
   // Classified once for every citation in the catalogue: the dry run had a
   // thousand of them, and per-citation lookups would be a query each.
   const cited = [...new Set([...docs.values()].flatMap((d) => d.versions.flatMap((v) => v.citations.map((c) => c.anchorId))))];
+  const live = await liveHashes(root, cited);
   const places = await classifyCitations(root, cited);
   const rows = [];
   for (const doc of docs.values()) {
@@ -601,7 +602,7 @@ export async function confirmSharedDoc(root: string, nodeId: string, versionId?:
   const docs = await cachedDocs(root, b.cfg);
   const doc = docs.get(nodeId);
   if (!doc) return { error: `no shared doc ${nodeId}` };
-  const live = await liveHashes(root);
+  const live = await liveHashes(root, doc.versions.flatMap((x) => x.citations.map((c) => c.anchorId)));
   const v = versionId ? doc.versions.find((x) => x.versionId === versionId) : resolveDoc(doc, live);
   if (!v) return { error: versionId ? `no version ${versionId} on ${nodeId}` : `no version of ${nodeId} resolves against this checkout — say which one` };
 
@@ -667,7 +668,7 @@ export async function retireSharedDoc(root: string, nodeId: string, rationale: s
 
   const doc = (await cachedDocs(root, b.cfg)).get(nodeId);
   if (!doc) return { error: `no shared doc ${nodeId}` };
-  const live = await liveHashes(root);
+  const live = await liveHashes(root, doc.versions.flatMap((x) => x.citations.map((c) => c.anchorId)));
   const v = resolveDoc(doc, live);
   if (!v) return { error: `${nodeId} has no versions to retire` };
   if (v.removed) return { error: `${nodeId} is already retired here` };

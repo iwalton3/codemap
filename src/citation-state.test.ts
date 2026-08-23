@@ -139,3 +139,21 @@ test("`moved` without a destination is not a proposal", async () => {
     assert.equal((await readFindings(root, PR)).get(id)!.relocation, undefined);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+/**
+ * Somebody who has pulled the sidecar but not run `init` must read the team's
+ * findings and be told the question CANNOT BE ANSWERED — not that the code is gone.
+ *
+ * This nearly regressed when the full-table scans became indexed lookups: `db()`
+ * creates an empty store on demand, so a query against an uninitialized universe
+ * succeeds and returns nothing, and every citation would have classified `lost`.
+ * `readAnchorStore` threw here; `workHas` has to as well.
+ */
+test("an uninitialized universe answers `unknown`, never `lost`", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-cs-noinit-"));
+  try {
+    const places = await classifyCitations(root, ["a_1", "a_2"]);
+    assert.deepEqual([...places.values()].map((p) => p.state), ["unknown", "unknown"],
+      "no index here is not evidence about anybody's code");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
