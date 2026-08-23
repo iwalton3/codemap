@@ -1,10 +1,13 @@
 # Proposal: materialize the sidecar fold into SQLite, behind `store.ts`
 
-Status: **draft for review.** Written in response to the `store.ts`-seam finding in
-`COLLABORATION-STATIC-REVIEW.md`, and to two goals stated more narrowly than that
-finding did: **consistency** and **performance**.
+Status: **draft for review; step 0 landed, 1–5 not started.** Written in response
+to the `store.ts`-seam finding in `COLLABORATION-STATIC-REVIEW.md`, and to two
+goals stated more narrowly than that finding did: **consistency** and
+**performance**.
 
-Reviewed against `worktree-shared-review-hashscheme` at `54da307`.
+Reviewed against `worktree-shared-review-hashscheme` at `54da307`; §7's sequencing
+re-checked against the tree at `9a14923`, where receipts turned out to be cancelled
+and step 0 turned out to be done.
 
 ## 0. The claim in one paragraph
 
@@ -354,17 +357,23 @@ the product's north star running backwards.
 
 Each step is shippable and independently revertible.
 
-**Order corrected.** An earlier draft finalized the schema before receipts
+**Order corrected twice.** An earlier draft finalized the schema before receipts
 existed, which would have meant a second migration and would have kept the
-`lost`-instead-of-`unverifiable` P1 alive on purpose in the interim. Steps 4 and 5
-now sit behind `PROPOSAL-provenance.md`; steps 0–1 do not, and can proceed in
-parallel with it.
+`lost`-instead-of-`unverifiable` P1 alive on purpose in the interim.
 
-0. **Split the pure folds out first.** A storage-free module holding the folds,
-   the shared model types, and version evaluation; `store.ts` above it owning
-   SQLite only. Without this, `store.ts` importing the folds closes a cycle against
-   `shared-docs.ts`'s existing import of `winningVersionAt` — and this repo's
-   import cycles fail with no diagnostic at all.
+**Then receipts were cancelled** (`docs/anchor-id-provenance.md`, landed): anchor
+ids stay bare and their derivation evidence is the fingerprint on the body hash
+minted beside them, which a materialized row already carries as a column. So the
+dependency that pushed steps 4–5 behind the provenance work is gone. **Nothing in
+0–5 is now blocked on provenance**; what changed instead is what steps 3a and 3b
+have to do, below.
+
+0. ~~**Split the pure folds out first.**~~ **DONE** — `doc-version.ts` holds the
+   folds, the shared model types and version evaluation; `store.ts` sits above it
+   owning SQLite. The cycle it exists to prevent is real and was load-bearing all
+   through the provenance work. Without it, `store.ts` importing the folds closes a
+   cycle against `shared-docs.ts`'s existing import of `winningVersionAt` — and this
+   repo's import cycles fail with no diagnostic at all.
 1. **Tables, key, re-fold-on-miss, behind `store.ts`.** No caller changes.
    *(Basic cache mechanics only — the table SHAPES wait for step 3a.)*
    The fold stays the authority and the view is rebuildable — which is *not* the
@@ -376,13 +385,36 @@ parallel with it.
    scope.
 2. **Point `ops-shared` reads at the store functions.** `ops-shared` becomes thin,
    which is what it should have been.
-3a. **Profiles, generations, receipts** (`PROPOSAL-provenance.md`), then
-   generation-based sharding and the sidecar-root lock. Materialized citation,
-   finding and note rows need receipt columns in their FIRST schema so read-time
-   SQL can refuse an incompatible join before making it.
+3a. **Generation-based sharding and the sidecar-root lock.** ~~Profiles,
+   generations, receipts.~~ **No receipt columns.** There are no receipts, and a
+   materialized row does not need one: it already carries the body hash, and the
+   derivation fingerprint rides inside that string. What the first schema does need
+   is that the hash column is **stored whole** — never split into a bare digest for
+   indexing convenience, which would throw away the annotation the join's fallback
+   reads.
 3b. **Lift the citation edges and do the anchor join in SQL.** Delete `liveHashes`
    and the `Set`-of-everything in `classifyCitations`. This is the performance win.
-4. **Single doc verdict from `evalVersion`;** delete the three re-derivations.
+
+   **This looks like it contradicts the provenance conclusion, and does not — but
+   only in one order.** That design's whole argument for leaving ids bare is that
+   `WHERE anchor_id = ?` cannot call a comparison helper. It does not need to:
+   `docs/anchor-id-provenance.md` §2 settles that the derivation gate is consulted
+   *only after id equality fails*. So SQL does the equality join, which is the
+   correct fast path on its own, and the **misses** — a small set, and the only rows
+   whose absence has to be classified — go through `resolveAnchor` in JS afterwards.
+
+   Write it the other way round, gating before joining, and you get a query that
+   cannot express the predicate and a reimplementation of it in SQL that will drift
+   from the one in `anchor-resolve.ts`. The seam is: **join by equality in the
+   database, classify absence in the resolver.**
+4. **Single doc verdict from `evalVersion`;** delete the three re-derivations
+   (`web/shared.js`'s `docFresh`, `ops-shared.ts`'s `needAttention`, the CLI).
+   **Stronger now than when this was written.** Those three were merely duplicated
+   then; they are now *behind*. `evalVersion` distinguishes an id this build could
+   not have minted from a symbol that is gone, and none of the three does — so
+   `ops-shared` labels an incomparable citation `lost` while `evalVersion` calls the
+   same doc `unverifiable`. That is a live disagreement about one doc, not a
+   latent one, and this step is its fix.
 5. **Expose shared docs/notes through the ordinary read ops.** The consistency win.
 6. *(Separate decision)* Unify the **machinery** behind `Bug`/`SharedFinding` and
    `Annotation`/`SharedNote` — Actor and compatibility provenance, witnesses and
@@ -489,9 +521,11 @@ fine; claiming materialization as their completion is not.
 7. ~~Authority and merge semantics for local plus shared rows.~~ **Closed: the
    outbox model in §7.** What replaces it as the largest open item is below.
 8. ~~Immutable producer provenance, plus derivation receipts.~~ **Moved to
-   `PROPOSAL-provenance.md`.** It outgrew this document. Steps 1 and the basic
-   cache mechanics do not depend on it; steps 4–5 do, which is why the sequencing
-   below changed.
+   `PROPOSAL-provenance.md`, and then RESOLVED there and in
+   `docs/anchor-id-provenance.md`: receipts are cancelled.** Ids stay bare; the
+   evidence is the fingerprint on the hash beside them. No step here is blocked on
+   it any more — see §7, where 3a lost its receipt columns and 3b gained the
+   equality-join-then-classify rule.
 9. ~~`comparableHashes` fails OPEN on an unparseable hash.~~ **Fixed in `6d4c40d`.**
    `hashSchemeOf` returns `number | null` and requires the whole form; an
    unparseable value is comparable to nothing, including another unparseable one.
@@ -506,8 +540,11 @@ receipt shape carries `anchorScheme` / `hashScheme` / `grammar` fields that were
 later replaced by a `DerivationRef` pointing at a content-addressed profile, and
 several recommendations were revised by the round that followed them.
 
-Where the archive and §§0–9 disagree, §§0–9 win. Where §§0–9 and
-`PROPOSAL-provenance.md` disagree about provenance, the provenance document wins.
+Where the archive and §§0–9 disagree, §§0–9 win. Where §§0–9 and the provenance
+documents disagree about provenance, those win — and for anchor ids specifically
+that is `docs/anchor-id-provenance.md`, which supersedes `PROPOSAL-provenance.md`
+§5 and cancels both receipt shapes. **Every mention of a receipt below this line is
+superseded**, including §13's shape and the `DerivationRef`/profile revision of it.
 Do not implement from anything below this line.
 
 ## 10. Open questions/revisions
