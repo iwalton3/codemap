@@ -1,6 +1,6 @@
 # Proposal: materialize the sidecar fold into SQLite, behind `store.ts`
 
-Status: **draft for review; step 0 landed, 1–5 not started.** Written in response
+Status: **draft for review; steps 0, 1, 2, 3b and 4 landed. 3a and 5 open.** Written in response
 to the `store.ts`-seam finding in `COLLABORATION-STATIC-REVIEW.md`, and to two
 goals stated more narrowly than that finding did: **consistency** and
 **performance**.
@@ -374,7 +374,8 @@ have to do, below.
    through the provenance work. Without it, `store.ts` importing the folds closes a
    cycle against `shared-docs.ts`'s existing import of `winningVersionAt` — and this
    repo's import cycles fail with no diagnostic at all.
-1. **Tables, key, re-fold-on-miss, behind `store.ts`.** No caller changes.
+1. ~~**Tables, key, re-fold-on-miss, behind `store.ts`.**~~ **DONE** (`materialize.ts` +
+   `shared-projections.ts`). No caller changes.
    *(Basic cache mechanics only — the table SHAPES wait for step 3a.)*
    The fold stays the authority and the view is rebuildable — which is *not* the
    same as correctness-irrelevant. A materializer bug returns wrong state, and
@@ -383,8 +384,10 @@ have to do, below.
    replacement, not its disposability: fold N random event sets directly and assert
    the projection matches, including after a late parent arrives and reorders the
    scope.
-2. **Point `ops-shared` reads at the store functions.** `ops-shared` becomes thin,
-   which is what it should have been.
+2. ~~**Point `ops-shared` reads at the store functions.**~~ **DONE** — it no longer
+   imports `readDocs`, `readFindings` or `notesForTarget`. The trap was
+   `SharedDoc.authors`: a `Map`, which `JSON.stringify` renders `{}` silently, so
+   it and the version ORDER get columns.
 3a. **Generation-based sharding and the sidecar-root lock.** ~~Profiles,
    generations, receipts.~~ **No receipt columns.** There are no receipts, and a
    materialized row does not need one: it already carries the body hash, and the
@@ -392,8 +395,11 @@ have to do, below.
    is that the hash column is **stored whole** — never split into a bare digest for
    indexing convenience, which would throw away the annotation the join's fallback
    reads.
-3b. **Lift the citation edges and do the anchor join in SQL.** Delete `liveHashes`
-   and the `Set`-of-everything in `classifyCitations`. This is the performance win.
+3b. ~~**Lift the citation edges and do the anchor join in SQL.**~~ **DONE.** Both
+   full scans are indexed lookups now: 9.8ms x2 -> 0.93ms on a real 4,983-anchor
+   store, and the cost scales with the citations asked about rather than the repo.
+   The ref's derivations stay a separate DISTINCT — see the note in `workIndexFor`
+   for why taking them from the matched rows is a bug, not an optimisation.
 
    **This looks like it contradicts the provenance conclusion, and does not — but
    only in one order.** That design's whole argument for leaving ids bare is that
@@ -407,7 +413,7 @@ have to do, below.
    cannot express the predicate and a reimplementation of it in SQL that will drift
    from the one in `anchor-resolve.ts`. The seam is: **join by equality in the
    database, classify absence in the resolver.**
-4. **Single doc verdict from `evalVersion`;** delete the three re-derivations
+4. ~~**Single doc verdict from `evalVersion`;**~~ **DONE** — deleted the three re-derivations
    (`web/shared.js`'s `docFresh`, `ops-shared.ts`'s `needAttention`, the CLI).
    **Stronger now than when this was written.** Those three were merely duplicated
    then; they are now *behind*. `evalVersion` distinguishes an id this build could
