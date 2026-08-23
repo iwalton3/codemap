@@ -166,7 +166,7 @@ record `after` and `writerPrev` at write time, which makes its row an event stor
 somewhere other than the log, i.e. two authorities and a drain protocol in place of
 an append.
 
-## R1 — sync lies about pushing. Reproduced, unfixed.
+## R1 — sync lied about pushing. Reproduced, FIXED in `a7933a7`.
 
 `commitLocal` returns whether the commit succeeded and **both call sites drop it**
 (`src/sidecar.ts`, in `push` and in `syncHeld`). When the commit fails the shards
@@ -200,7 +200,7 @@ that checked the boolean could not tell a clean no-op from a lost finding.
 `src/scenario.ts` cannot catch it today because its git wrapper passes
 `-c user.email=…` on every call, which masks the whole class.
 
-## R2 — the lock heartbeat cannot fire. Verified.
+## R2 — the lock heartbeat could not fire. Verified, FIXED in `a7933a7`.
 
 `withSidecarLock` keeps a live holder from being stolen from by stamping the lock on
 a `setInterval` (`src/lock.ts:107`). Git is `spawnSync` (`src/sidecar.ts:44`), which
@@ -271,13 +271,12 @@ the contest design is tuned against.
 
 ## Where the code deviates today
 
-- **Materialization is per-query, not per-sync.** `readCached` fingerprints the shard
-  directory on every read and folds on a miss; sync materializes nothing. A cache hit
-  does not parse NDJSON, so the read path is close to the rule above — but
-  completeness is a property each query earns rather than one the store has. This is
-  the deviation that most directly contradicts "the log is not read during normal
-  operation", and **docs unification cannot land before it is fixed**: once the
-  bridges are gone, a pulled version reaches SQLite only if sync put it there.
+- ~~**Materialization is per-query, not per-sync.**~~ **FIXED** in `faf0367`:
+  `sharedSync` folds every scope of its universe after the transport. `readCached`
+  keeps folding on a miss as a self-heal, which is the correctness fallback rather
+  than the mechanism. One real exception remains: **`walkthrough/` scopes have no
+  projection at all** and fold on every read. That is step 5's item and the last place
+  an ordinary query parses NDJSON.
 - **Docs, findings and notes live in parallel `shared_*` tables**, which is the
   duality the ownership rule exists to end.
 - **Bugs and triage are still local**, though the original table put them in the

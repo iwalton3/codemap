@@ -62,33 +62,38 @@ context.
 
 ### The sequence to implement
 
-1. **Sync honesty and lock safety.** `sync` reports `pushed: true` while the
-   finding never left the machine — **reproduced**, architecture doc R1. And the
-   sidecar lock's `setInterval` heartbeat cannot fire while `spawnSync` git blocks —
-   **verified**, R2, and worse than first written: `staleMs` is 60s against a 180s git
-   timeout, and a live pid is no protection, so one slow fetch can be stolen from at
-   three times the window. Note `src/scenario.ts` masks R1 for every test by passing
-   `-c user.email=` on every git call.
-2. **Sync does the integrity work.** Fetch outside the lock, push-side manifest
-   gate, append-only audit (a `git rm`'d shard propagates today as a clean deletion —
-   the one live hole in "nothing is deleted once pushed"), **materialize-at-sync**,
-   and a report a human reads at the one moment they are watching.
-   Materialize-at-sync is a hard prerequisite for step 4, not an improvement: once
-   the bridges are gone, a pulled version reaches SQLite only if sync put it there.
-3. **Protocol-1 freeze, with the fork repair.** Delete the backwards-compatibility
-   surface — optional `writer`/`writerPrev`, `after` as string-or-list, absent
-   protocol numbers, principal-hash shards, the `ALTER` ladder. These two belong in
-   one change and not by preference: the repair makes `writerPrev` the causal
-   own-edge, so it has to be mandatory. `docs/fork-repair.md`.
-4. **Docs unification** — `docs/plan-docs-unification.md`. Blocked on step 2.
-5. Write-through, bridge deletion, walkthroughs onto the checked path.
+Steps 1-3 are **DONE** (2026-08-23). What each actually took is in its commit message;
+the short version, because two of them changed the design:
+
+1. ~~**Sync honesty and lock safety.**~~ `a7933a7`. R1 needed fixing at the source AND
+   at the check, and the obvious phrasing of the check ("a no-op push must not report
+   as pushed") is wrong — it fires falsely on an honest empty sync. `pushed` and
+   `committed` are separate now. R2 could not be fixed by any timer: a run of
+   `spawnSync` git calls never turns the event loop, so the git wrapper stamps the
+   lock synchronously and the stale window is wider than one git call.
+2. ~~**Sync does the integrity work.**~~ `faf0367` and `3b8e0d0`. The deletion audit
+   scans the incoming RANGE, not the endpoints — an endpoint diff is blind to an event
+   added and deleted between them. `--full-history` is load-bearing and mutation-
+   checked. Materialize-at-sync landed with it.
+3. ~~**Protocol-1 freeze, with the fork repair.**~~ `fe13d5e`, `0da3b61`, `786644b`.
+   The freeze deleted five tests along with the behaviour they covered. The vector is
+   derived from the `writerPrev` chain now; `sameWriter` is gone; `merge=union` is cut;
+   `codemap sidecar heal` is the repair. See `docs/fork-repair.md`, whose header lists
+   the four things that changed between design and implementation.
+
+4. **Docs unification** — `docs/plan-docs-unification.md`. Unblocked: its prerequisite
+   (materialize-at-sync) landed in step 2.
+5. Write-through, bridge deletion, walkthroughs onto the checked path. **`walkthrough/`
+   scopes have no projection and fold on every read** — the last place an ordinary
+   query parses NDJSON, and the remaining violation of "the log is not read during
+   normal operation".
 
 ### Verified defects, not yet fixed
 
-R1 (sync lies about pushing) and R2 (the lock heartbeat cannot fire) are both
-reproduced in the architecture doc. A third, verified the same way: the causal vector
-fabricates knowledge under a fork, suppressing exactly the contests the system exists
-to raise — `docs/fork-repair.md` opens with the counterexample.
+All three that were open here are fixed: R1 (sync lied about pushing), R2 (the lock
+heartbeat could not fire), and the causal vector fabricating knowledge under a fork.
+Each is still written up where it was found, with its reproduction, because the
+reproductions are what make the fixes checkable.
 
 The full risk register — ten items, ranked by silence × damage — came from the
 direction review, and the top of it is in the architecture doc.

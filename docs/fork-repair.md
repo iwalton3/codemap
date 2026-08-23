@@ -1,8 +1,30 @@
 # Causal vectors under a fork, and repairing one
 
-**Status: designed and prototyped, NOT built.** `docs/sidecar-architecture.md` is
-the architecture; this is the mechanism behind its "Conflict repair" section and
-wins on detail wherever that document is only summarising.
+**Status: BUILT** (2026-08-23, commits `0da3b61` and `786644b`).
+`docs/sidecar-architecture.md` is the architecture; this is the mechanism behind its
+"Conflict repair" section and wins on detail wherever that document is only
+summarising.
+
+**Four things changed between the design below and what shipped.** All four were
+found by attacking the design rather than by writing it, and each is recorded at the
+point it applies:
+
+1. Segment keys are **interned integers**, not `writer + NUL + root`. That key is not
+   injective and the collision reproduces the bug segments exist to fix.
+2. A `writerPrev` **cycle** had to be detected explicitly, not inferred from "never
+   got a segment" — a cycle with a branch hanging off it makes one of its own members
+   look like a fork point and reports nothing. And excluding cyclic events from
+   `heads()` was itself a bug: it made them unnameable, so a cycle-only scope handed
+   the next append `after: []`, which is the same total loss by another route. They
+   are heads, and credit nobody.
+3. The own-edge absorbs the **validated same-writer parent**, not the raw field. A
+   `writerPrev` naming another writer's event otherwise inherited their whole vector.
+4. `heal` does **not** hold the lock across the whole sequence — the lock is not
+   reentrant and `emitEvent` and `sync` each take it. Three separately-locked steps.
+
+Also shipped and not in the design: `wellFormed` refuses an event whose id is
+`GENESIS`, which otherwise aliases the sentinel and becomes the apparent predecessor
+of every chain opening.
 
 A **fork** is two clones holding one writer id — a machine image, a synced home
 directory — so one `(scope, writer)` chain is not sequential. Everything here is
