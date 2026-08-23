@@ -305,24 +305,153 @@ Scope names are the shard layout, so this is free today and a sidecar-structure
 migration once a client ships. It is orthogonal to everything above and should be
 its own record.
 
-## 6. What is left to build
+## 6. The mechanism
 
-The mint side is substantially done. The remaining work is join-side, and it is one
-body of work spanning both stores identically — `evalVersion` does not care whether
-a citation came from the sidecar or the local DB. That, not "the local half", is the
-right seam for a child document.
+### The failure has a one-line signature
 
-1. **`comparableAnchorDerivation`**, reading the neighboring mark, with
-   `derivationFor` upgrading known fingerprints to the honest three-field test.
-2. **The §3 sinks consuming it**: `evalVersion` excluding incomparables from
-   `badness` exactly as it already does for hashes; `foldDocs` retaining rather than
-   discarding; tombstones not claiming to hold on incomparable absence.
-3. **The two carrier fixes**: tombstone citations keep their hashes; relocation gets
-   an apply-time gate.
-4. **The two invariants pinned by tests** (§4).
-5. **A one-page v1 format note**: ids stay bare, their evidence is the adjacent
-   mark, the pairing is an invariant, `anchorScheme` stays gated — and the parent's
-   "delete the fatal manifest check" item is cancelled.
+The whole record → live-index class is one idiom:
+
+```
+live.get(anchorId) ?? ABSENT_HASH
+```
+
+Five occurrences — `reviews.ts:455` (`witnessDrift`), `walkthrough.ts:188`
+(`staleChapters`), `ops.ts:239` (the `possiblyFixed` rollup), `ops.ts:2500`, and
+`ops.ts:2540` — plus `evalVersion`'s `work.get(c.anchorId)` (`doc-version.ts:32`)
+and the tombstone branch's `work.has` (`:27`).
+
+Every one of them conflates *not there* with *could not look it up*, and the
+conflation is invisible downstream because `ABSENT_HASH` is deliberately comparable
+to everything:
+
+```sh
+node --no-warnings -e 'import("./dist/normalize.js").then(m =>
+  console.log(m.comparableHashes(m.ABSENT_HASH, "h2:sha256:"+"a".repeat(64))))'   # true
+```
+
+That is correct for "the code is gone" and wrong for "I could not resolve the id",
+and the parent already wrote the rule that separates them — nothing implements it:
+
+> `ABSENT_HASH` is universally comparable only *after* anchor compatibility is
+> established; before that, "there is no code here" is not a statement anyone is
+> entitled to make.
+
+### The resolution is three-valued
+
+```ts
+type Resolved =
+  | { at: "found"; hash: string }
+  | { at: "absent" }                          // it would have resolved here; the absence is real
+  | { at: "incomparable"; detail: string };   // it could not have been minted by this index
+```
+
+`ABSENT_HASH` is then synthesized only in the `absent` branch, which is exactly the
+evaluation order the parent specified.
+
+### The operand is the index, not the running build
+
+This is the part that is easy to get backwards, and draft 3 did. The question a sink
+asks is *"could this id have been minted by the build that produced the index I am
+searching?"* — not *"does it match the build I am running."*
+
+If `@work` was indexed by an older grammar and a newer one is running, an id from a
+record minted by that older build **would** match the rows in `@work`. Comparing
+against the running build's tags would call it incomparable and suppress an answer
+that was available. `liveDerivationDrift` compares `@work`'s tags to the build's
+tags, but that is a different question — *is my index stale* — and reusing its
+operand here would be borrowing the right shape for the wrong purpose.
+
+So the operand is the index's own tag set: `SELECT DISTINCT derivation FROM anchors
+WHERE ref = ?`, resolved through the interned table. A **set**, not a value:
+`applyIndexUpdate` adds rows incrementally, so one ref legitimately holds rows minted
+by two builds — which is the granularity rule the parent settled, arriving where it
+matters.
+
+### The evidence, and the accrual rule
+
+The record side carries zero or more marks — one for a `BugWitness`, up to *n* for a
+citation's `acceptedHashes`:
+
+| evidence | answer | why |
+|---|---|---|
+| no marks at all | fall back to today's behaviour | legacy, and the same fallback every other path in this design uses. A pre-emission record asserts nothing about its derivation |
+| **any** mark in the index's set | `absent` | the accrual rule: a hash only enters `acceptedHashes` when the id *resolved* (`store.ts:610`), so a matching mark means a build like this one joined this id before. Its absence now is deletion |
+| all marks outside the set | `incomparable` | nothing here could have minted it |
+
+The asymmetry is deliberate: **one positive proof of resolvability outranks any
+number of negatives.** A record that has been confirmed under three derivations and
+matches on one of them is answerable, and treating it as incomparable because two
+others do not match would be the over-broad failure again.
+
+This is also why the tombstone carrier fix (§4) is load-bearing rather than
+cosmetic: `retireSharedDoc` emits `acceptedHashes: []`, so a tombstone arrives with
+**no evidence**, falls into the legacy row, and keeps reading as holding. Carrying
+the prior version's hashes through is what supplies the evidence the rule needs.
+
+### What each sink does with it
+
+| sink | today | with the resolution |
+|---|---|---|
+| `evalVersion` | absent → `dangling` → scores in `badness` | `incomparable` → the **existing** `unverifiable` list, already excluded from `badness`. No new bucket and no new vocabulary: the file made this exact judgement for hashes and this extends it to ids |
+| `evalVersion`, tombstone branch | fresh precisely where cited anchors are absent | an incomparable absence is not evidence of removal, so it must not make a tombstone read as holding |
+| `witnessDrift` | `?? ABSENT_HASH`, then `comparableHashes` — always decidable | it *already* emits `unverifiable: true` for hash-incomparability; route incomparable absence to the same flag |
+| `staleChapters` | `sameBody(live.get(…) ?? ABSENT_HASH, …)` | a chapter is not stale because its ids are foreign |
+| bugs `possiblyFixed` (`ops.ts:239`, `:2500`) | absence counts as possibly-fixed | it does not, when the id was unresolvable |
+| `confirmNode` / `confirmSharedDoc` | silently add nothing | *nothing to confirm* and *cannot confirm* are different answers and both are worth saying |
+
+`witnessDrift` is the encouraging one: the shape is already there, the flag is
+already there, and only the ABSENT_HASH short-circuit stands between them.
+
+### `foldDocs` is a different class and gets a different answer
+
+Do not attempt to match a `doc.accepted` to a citation whose id differs. Pairing
+records to records with no group information is draft 1's ladder one level over, and
+it fails the same way. **Retain instead**: keep the unmatched acceptance on the
+version rather than dropping it. The fold recomputes from the log on every read, so
+retention costs nothing durable and a corrected fold recovers what a naive one could
+not. The requirement is only that the discard stop being silent.
+
+### The seam
+
+`evalVersion`, `selectWinner`, `resolveNode` and `winningVersionAt` all take
+`work: Map<string, string>`, and `workHashes` (`store.ts:510`) selects only
+`id, body_hash` from a table whose `derivation` column is right there. The change is
+to pass an index *view* — the hashes plus the ref's tag set — instead of a bare map.
+
+That is also the audit method (§3) in its cheapest form: change the carrier type and
+let the typecheck enumerate the consumers. The five `?? ABSENT_HASH` sites are found
+by grep; the map-shaped ones are found by the compiler.
+
+## 7. Build order
+
+The mint side is substantially done. What remains is join-side, and it spans both
+stores identically — `evalVersion` does not care whether a citation came from the
+sidecar or the local DB. That, not "the local half", is the seam if this needs a
+child document.
+
+Ordered so that each step is testable before the next depends on it:
+
+1. **The tombstone carrier fix.** First, because §6's rule is evidence-driven and a
+   tombstone currently arrives with none — every later step is untestable on the
+   sharpest case until its citations keep their hashes.
+2. **`comparableAnchorDerivation` + `resolveAnchor`**, against a ref's tag set, with
+   `derivationFor` upgrading known fingerprints to the honest three-field test. Pure
+   functions over an index view; unit-testable with hand-built marks, the way
+   `annotated-hash.test.ts` already exercises the annotated form.
+3. **The five `?? ABSENT_HASH` sites**, one at a time. `witnessDrift` first: it
+   already has the `unverifiable` flag, so it is the smallest diff and the clearest
+   proof the resolution works.
+4. **`evalVersion` and the index-view seam**, which is where the durable
+   consequences are — and where the typecheck enumerates the callers.
+5. **`foldDocs` retaining rather than discarding**, and the relocation apply-time
+   gate.
+6. **The two invariants pinned by tests** (§4), and a one-page v1 format note: ids
+   stay bare, their evidence is the adjacent mark, the pairing is an invariant,
+   `anchorScheme` stays gated, and the parent's "delete the fatal manifest check"
+   item is cancelled.
+
+Steps 1–4 are local-only and need no format decision. Step 5 is the shared half.
+The note shard (§5) is not on this list — it is a separate record.
 
 ## What would change my mind
 
