@@ -203,10 +203,12 @@ const tools: Tool[] = [
   },
   {
     name: "snapshot",
-    description: "Cache the current commit's anchors as an immutable snapshot (a fresh full index), so this branch can be diffed later WITHOUT checking it out again. Run it on a branch before switching away. `init` snapshots automatically; use this to (re)cache the current commit on demand.",
-    inputSchema: obj({}),
+    description: "Cache a commit's anchors as an immutable snapshot (a fresh full index), so it can be diffed or read later WITHOUT checking it out. Defaults to the current commit — run it on a branch before switching away; `init` does it automatically.\n\nPass `ref` to index ANY commit straight from git objects, no checkout and no effect on the working tree. Already-cached shas are left alone.\n\nThat is how you READ a commit you are not on — its files, symbols and locations. It is not by itself an answer to \"where did this foreign id live\": the new index mints ids under THIS build's derivation, so it gives you that commit's symbols to judge against, not a pairing to the old id.",
+    inputSchema: obj({
+      ref: { type: "string", description: "A commit sha or anything `git rev-parse` accepts. Omit for the current commit." },
+    }),
     mutates: true,
-    handler: (_a, c) => ops.snapshot(c.universe.path),
+    handler: (a, c) => (a.ref ? ops.snapshotAt(c.universe.path, String(a.ref)) : ops.snapshot(c.universe.path)),
   },
   {
     name: "snapshots",

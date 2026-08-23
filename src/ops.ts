@@ -18,6 +18,7 @@ import {
   type Disposition, DISPOSITIONS, COMMENT_MAX,
   SCHEMA_VERSION,
 } from "./schema.js";
+import { createHash } from "node:crypto";
 import { indexFile, indexBlob, indexRepo, indexCommit } from "./repo.js";
 import { headCommit, currentBranch, isDirty, revParse, mergeBase, originSlug, readBlobs, submoduleDrift } from "./git.js";
 import { computeStaleness } from "./stale.js";
@@ -2526,46 +2527,106 @@ export const UNPLACEABLE_CATEGORY = "unplaceable-doc";
  * catalogue as a work list; queueing one person's attempt to clear one doc is
  * bounded by attempts.
  */
+type Unplaceable = { anchorId: string; file?: string; symbol?: string; marks: string[] };
+type Refusal = { versionId?: string; createdCommit?: string | null; unplaceable?: Unplaceable[] };
+
+/**
+ * The question's identity, derived from the EVIDENCE and nothing else.
+ *
+ * A re-attempt has to know whether the open item still describes the doc, and
+ * comparing rendered text answers a different question: the text carries
+ * instructions and wording too, so a copy edit here would read as new evidence,
+ * revise the item and re-assign it — and re-assigning CLEARS the outcome, throwing
+ * away an answer nobody has read. Prose can change freely; this cannot.
+ */
+function evidenceKey(r: Refusal): string {
+  const canonical = JSON.stringify({
+    v: r.versionId ?? null,
+    c: r.createdCommit ?? null,
+    u: [...(r.unplaceable ?? [])]
+      .map((x) => ({ a: x.anchorId, f: x.file ?? null, s: x.symbol ?? null, m: [...x.marks].sort() }))
+      .sort((a, b) => a.a.localeCompare(b.a)),
+  });
+  return createHash("sha256").update(canonical).digest("hex").slice(0, 12);
+}
+
+/** Reads the key back off a filed question. Absent on anything not filed by this. */
+const keyOf = (text: string): string | null => /^\[evidence ([0-9a-f]{12})\]$/m.exec(text)?.[1] ?? null;
+
+/** What the queued question says. The key line is the contract; the rest is prose. */
+function unplaceableQuestion(r: Refusal): string {
+  const where = (c: Unplaceable) =>
+    `  ${c.anchorId}${c.file ? ` — last seen at ${c.file} › ${c.symbol}` : " — no record of it anywhere"}`
+    + `${c.marks.length ? `, minted under ${c.marks.join(", ")}` : ""}`;
+  const cites = r.unplaceable ?? [];
+  const located = cites.filter((c) => c.file);
+  const blind = cites.filter((c) => !c.file);
+  return [
+    `This doc cannot be retired: its citations were minted by a build whose anchor derivation this one cannot reproduce, so "the code is gone" is not something anybody here can establish.`,
+    ``,
+    `Version ${r.versionId}, written at ${r.createdCommit ?? "an unrecorded commit"}.`,
+    ``,
+    `Cannot be placed:`,
+    ...cites.map(where),
+    ``,
+    // Two different jobs, and a set can need both. An id is an opaque digest of file
+    // plus symbol path, so a last-known location is something to follow and no
+    // location leaves the commit as the only handle.
+    ...(located.length ? [
+      `For the ones with a last-known location: let git say what happened to that file and symbol since, find what the code is now, and re-cite the doc with \`update_node\` — add the current anchor, drop the old id. That makes it an ordinary doc again.`,
+    ] : []),
+    ...(blind.length ? [
+      `For the ones with none, the commit above is the only handle. \`snapshot\` takes a \`ref\`, so you can index that commit without checking it out — but it mints ids under THIS build's derivation, so it gives you that commit's files and symbols to read, not a pairing to the old ids. Working out which symbol an id named is a judgement, and if you cannot make it, say so: that blocker is the answer.`,
+    ] : []),
+    ``,
+    `If the subject is genuinely gone, report that and stop: retiring is a person's act, and the tombstone that would record it is not built yet — your answer is what it will be built on.`,
+    ``,
+    `[evidence ${evidenceKey(r)}]`,
+  ].join("\n");
+}
+
 export async function ackHole(root: string, id: string) {
   const r = await storeAckHole(root, id);
   // On the evidence, not the headline status — the store refuses a tombstone
   // whenever anything is unplaceable, and a version with one gone citation and one
   // foreign one reads `dangling`.
   if (!r.unplaceable?.length) return r;
+  const text = unplaceableQuestion(r);
+  const key = evidenceKey(r);
 
+  // One evolving investigation per doc, not one question per version. But the ids,
+  // the commit and the locations ARE the question, so an item describing a version
+  // that no longer wins would send an agent to repair citations the doc does not
+  // have any more — it is revised, not left alone.
   const open = (await readAnnotations(root)).annotations.find((a) =>
     a.target.kind === "node" && a.target.id === id && a.category === UNPLACEABLE_CATEGORY && !a.resolved);
   if (open) {
+    const moved = keyOf(open.text) !== key;
+    // Answered and still accurate: waiting on a person, not on an agent. Saying
+    // `alreadyQueued` about it would point at something `review_queue` hides by
+    // default, and re-assigning would throw away an answer nobody has read.
+    if (open.outcome && !moved) return { ...r, queued: open.id, alreadyAnswered: true };
+    if (moved) {
+      const rev = await reviseAnnotation(root, { id: open.id, text, by: "ack_hole" }) as { error?: string };
+      if (rev.error) return { ...r, queued: open.id, queueError: rev.error };
+    }
     // Filing and assigning are two writes, so an item can exist unassigned — and the
-    // dedupe would then keep answering `alreadyQueued` about something no queue
-    // shows. Repair it rather than file a second.
-    if (!open.assignment) await assignAnnotation(root, { id: open.id, kind: "investigate", by: "ack_hole" });
-    return { ...r, queued: open.id, alreadyQueued: true };
+    // dedupe would keep answering `alreadyQueued` about something no queue shows.
+    // A revision re-asks, so it re-assigns too (which clears the stale outcome).
+    if (moved || !open.assignment) {
+      const again = await assignAnnotation(root, { id: open.id, kind: "investigate", by: "ack_hole" }) as { error?: string };
+      if (again.error) return { ...r, queued: open.id, queueError: again.error };
+    }
+    return { ...r, queued: open.id, alreadyQueued: true, ...(moved ? { revised: true } : {}) };
   }
 
-  const where = (c: { anchorId: string; file?: string; symbol?: string; marks: string[] }) =>
-    `  ${c.anchorId}${c.file ? ` — last seen at ${c.file} › ${c.symbol}` : " — no record of it anywhere"}`
-    + `${c.marks.length ? `, minted under ${c.marks.join(", ")}` : ""}`;
   // `annotate` mirrors to the sidecar, and that is wanted here rather than tolerated:
   // "this build cannot place these ids" is a fact about ONE build, and a teammate
   // whose build minted them can answer it outright. A question only the asker can
   // see is the one shape this is least useful in.
   const filed = await annotate(root, {
     targetKind: "node", targetId: id, kind: "question", category: UNPLACEABLE_CATEGORY,
-    author: "ack_hole",
-    text: [
-      `This doc cannot be retired: its citations were minted by a build whose anchor derivation this one cannot reproduce, so "the code is gone" is not something anybody here can establish.`,
-      ``,
-      `Version ${r.versionId}, written at ${r.createdCommit ?? "an unrecorded commit"}.`,
-      ``,
-      `Cannot be placed:`,
-      ...r.unplaceable.map(where),
-      ...(r.alsoGone?.length
-        ? [``, `Also cited, resolved, and gone from this tree: ${r.alsoGone.join(", ")}. Those are decidable; the ones above are what block retiring it.`]
-        : []),
-      ``,
-      `Work out where that code went — index the commit above and read the symbol path off your own snapshot of it, then let git say what happened to the file since. Re-cite the doc against ids THIS build mints and it becomes an ordinary doc again. If the subject is genuinely gone, report that: retiring is a person's act.`,
-    ].join("\n"),
+    author: "ack_hole", text,
   }) as { id?: string; error?: string };
   // Said, not swallowed: the caller asked for this doc to be dealt with, and a
   // refusal that also failed to file the work is a different answer from one that

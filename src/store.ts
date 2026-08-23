@@ -799,8 +799,6 @@ export interface AckHoleResult {
   unplaceable?: UnplaceableCitation[];
   createdCommit?: string | null;
   versionId?: string;
-  /** Citations that DID resolve and are gone — the part of the doc that is decidable. */
-  alsoGone?: string[];
 }
 
 export async function ackHole(root: string, id: string): Promise<AckHoleResult> {
@@ -839,7 +837,6 @@ export async function ackHole(root: string, id: string): Promise<AckHoleResult> 
       status: e.status,
       versionId: v.versionId,
       createdCommit: v.createdCommit,
-      ...(e.dangling.length ? { alsoGone: e.dangling } : {}),
       unplaceable: ids.map((aid) => {
         const a = off.get(aid)?.anchor ?? kept.get(aid);
         return {

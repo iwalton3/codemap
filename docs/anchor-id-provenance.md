@@ -692,7 +692,22 @@ rather than by the store.
 
 The item carries the address the recovery arc above takes as input: the unplaceable
 ids, their last-known file and symbol wherever a snapshot or the retained set has
-one, the version's `createdCommit`, and the marks the ids were minted under.
+one, the version's `createdCommit`, and the marks the ids were minted under. It asks
+for different work depending on whether a locator survived, because those are not
+the same job and one of them is not solvable yet.
+
+**One evolving investigation per doc, not one question per version.** The ids and
+the commit ARE the question, so an item describing a version that no longer wins
+would send an agent to repair citations the doc no longer has: a later attempt
+revises the open item rather than filing beside it or leaving it stale. An item that
+has been ANSWERED and is still accurate is left alone — it is waiting on a person,
+and re-asking would discard an answer nobody has read.
+
+Identity is a digest of the EVIDENCE — version, commit, and the sorted ids with
+their marks and locations — written into the item as one line. Not the rendered
+text: that carries instructions and wording too, so a copy edit would read as new
+evidence, revise an answered item and re-assign it, and re-assigning clears the
+outcome. Prose can change freely; the key cannot.
 
 **The guard is on the evidence, never on the headline status.** `evalVersion` ranks
 `dangling` over `stale` over `unverifiable`, so a version with one absent citation
@@ -708,9 +723,10 @@ subject:
 - **Something resolves** (matching or drifted) — refused the way `retireSharedDoc`
   refuses it, *"still in this checkout — write a new version"*, and NOT queued. The
   answer is a new version, not an investigation.
-- **Nothing resolves** — queued, and the item names the citations that ARE decidably
-  gone alongside the ones that block it, so the agent is not sent hunting for code
-  the doc itself can account for.
+- **Nothing resolves** — queued, and the item asks only about the citations that
+  cannot be placed. The decidably-gone ones are not in it: they are not what blocks
+  retiring, and carrying them would make the question checkout-sensitive, so
+  switching branches could revise it and discard an answer.
 
 ### 3. Recording the judgment — DESIGNED, NOT LANDED
 
@@ -775,11 +791,24 @@ queued, not lost, and the queue holds the evidence a retire would need.
 
 ### What triage can conclude
 
-- **Re-cite it.** The commit-graph derivation above turns `createdCommit` plus a
-  symbol path into ids this build can mint. The doc becomes ordinary again and every
-  existing path works — the outcome to want, and the reason the recovery arc is
-  upstream of this rather than replaced by it. **Available today.**
-- **It is genuinely gone.** Retiring needs part 3, which is not built.
+- **Re-cite it** with `update_node` — add the current anchor, drop the old id — and
+  the doc is ordinary again. Every existing path then works. This is the outcome to
+  want, and the reason the recovery arc is upstream of this rather than replaced
+  by it.
+
+  **Available today only when the replacement can be found**, and that splits on
+  whether a locator survived. With a last-known file and symbol (a snapshot or the
+  retained set kept one) git answers the rest, and the queue item says so. Without
+  one, `createdCommit` plus an opaque `a_<digest>` is not enough on its own: the id
+  is a digest OF file plus symbol path, so the commit has to be indexed and read.
+  `snapshot` takes a `ref` for exactly that — it indexes any commit straight from
+  git objects, no checkout. It does not pair anything: that index mints ids under
+  THIS build's derivation, so it yields that commit's symbols to judge against, not
+  a match for the old id. Making the judgement automatic is the recovery arc, and
+  it is not built — an agent that cannot make it by hand should report the blocker,
+  which is a useful answer.
+- **It is genuinely gone.** Retiring needs part 3, which is not built. The agent's
+  answer is preserved for it rather than being rediscovered later.
 
 An agent may not retire in any case: it is a closure, the rule `retireSharedDoc`
 already enforces — and which `shareDoc` now enforces too, because publishing a

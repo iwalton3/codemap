@@ -15,8 +15,9 @@ import { join } from "node:path";
 import type { DerivationTag, LogicalNode } from "./schema.js";
 import { hashTokens } from "./normalize.js";
 import { anchorIndex } from "./anchor-resolve.js";
-import { writeNode, readAnchorStore, readAnnotations, loadNodes } from "./store.js";
-import { init, ackHole, reviewQueue, UNPLACEABLE_CATEGORY } from "./ops.js";
+import { spawnSync } from "node:child_process";
+import { writeNode, writeAnnotations, readAnchorStore, readAnnotations, loadNodes, readSnapshot } from "./store.js";
+import { init, ackHole, reviewQueue, closeAssignment, snapshotAt, UNPLACEABLE_CATEGORY } from "./ops.js";
 
 const THEIRS: DerivationTag = {
   anchorScheme: 3, hashScheme: 2, parserIntegrity: "p".repeat(64), grammarDigest: "f".repeat(64),
@@ -70,6 +71,63 @@ test("acking a hole nobody can see files the question instead of refusing", asyn
 
     const inQueue = (await reviewQueue(root)).queue.find((x) => x.id === r.queued);
     assert.ok(inQueue, "and it is in the queue an agent already reads");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("an answered question is not re-asked, and a changed doc revises the one open item", async () => {
+  const root = await repo();
+  try {
+    await writeNode(root, node(), { hashes: foreign(), commit: "c0ffee", branch: "main" });
+    const first = await ackHole(root, "n_pay") as any;
+
+    // The agent reports back. Now it is waiting on a person, and `review_queue`
+    // hides it by default — so calling it "queued" would point at nothing.
+    await closeAssignment(root, { id: first.queued, result: "answered", detail: "the file was split in two; both halves are live" });
+    const answered = await ackHole(root, "n_pay") as any;
+    assert.equal(answered.alreadyAnswered, true);
+    assert.equal(answered.alreadyQueued, undefined);
+    assert.ok((await readAnnotations(root)).annotations.find((a) => a.id === first.queued)!.outcome,
+      "and the answer nobody has read is still there");
+
+    // A new version, citing something else this build cannot place. The ids in the
+    // open question now describe a doc that no longer wins.
+    const other = anchorIndex(new Map([["a_elsewhere", hashTokens(["b2"], THEIRS)]]), { tags: [THEIRS], anyUntagged: false });
+    await writeNode(root, node({ anchors: ["a_elsewhere"], body: "rewritten" }), { hashes: other, commit: "beef", branch: "main" });
+
+    const again = await ackHole(root, "n_pay") as any;
+    assert.equal(again.queued, first.queued, "still one investigation per doc");
+    assert.equal(again.revised, true);
+    const q = (await readAnnotations(root)).annotations.find((a) => a.id === first.queued)!;
+    assert.match(q.text, /a_elsewhere/, "it describes the version that wins now");
+    assert.doesNotMatch(q.text, /a_theirs/);
+    assert.ok(q.revisions?.length, "and what it used to say is kept");
+    assert.equal(q.outcome, undefined, "the stale answer is cleared — it answered a different question");
+    assert.equal(q.assignment?.kind, "investigate", "and it is asked again");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("rewording the question does not throw away an answer", async () => {
+  // The revise loop keys on an EVIDENCE digest, not on the rendered text. Comparing
+  // prose would make a copy edit read as new evidence — revising an answered item
+  // and re-assigning it, which clears the outcome nobody has read.
+  const root = await repo();
+  try {
+    await writeNode(root, node(), { hashes: foreign(), commit: "c0ffee", branch: "main" });
+    const first = await ackHole(root, "n_pay") as any;
+    await closeAssignment(root, { id: first.queued, result: "answered", detail: "split in two; both halves live" });
+
+    const store = await readAnnotations(root);
+    const q = store.annotations.find((a) => a.id === first.queued)!;
+    const key = /\[evidence ([0-9a-f]{12})\]/.exec(q.text)![1]!;
+    // Every word except the key line rewritten, as a copy edit would.
+    q.text = `Completely different wording.\n\n[evidence ${key}]`;
+    await writeAnnotations(root, store.annotations);
+
+    const again = await ackHole(root, "n_pay") as any;
+    assert.equal(again.alreadyAnswered, true, "same evidence — still waiting on a person");
+    assert.equal(again.revised, undefined);
+    assert.ok((await readAnnotations(root)).annotations.find((a) => a.id === first.queued)!.outcome,
+      "and the answer survived the rewording");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -136,9 +194,9 @@ test("one absent citation does not license retiring the ones nobody could place"
     const r = await ackHole(root, "n_pay") as any;
     assert.ok(r.error, "no tombstone while anything is unplaceable");
     assert.ok(r.queued, "queued instead");
-    assert.deepEqual(r.alsoGone, [live.id], "and the decidable half is reported, not hidden");
     const q = (await readAnnotations(root)).annotations.find((a) => a.id === r.queued)!;
-    assert.match(q.text, /Also cited, resolved, and gone/);
+    assert.match(q.text, /a_theirs/, "it asks about the one nobody can place…");
+    assert.doesNotMatch(q.text, new RegExp(live.id), "…and not about the one that is decidably gone");
     assert.ok((await loadNodes(root)).find((n) => n.id === "n_pay"),
       "the doc is still on the map — hiding it is the direction with no recovery");
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -162,5 +220,29 @@ test("a real hole is still acked, and the doc really is retired", async () => {
     assert.deepEqual((await readAnnotations(root)).annotations, [], "and nothing was queued");
     assert.equal((await loadNodes(root)).find((n) => n.id === "n_pay"), undefined,
       "the tombstone was actually written and actually wins — the doc is off this branch's map");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a commit that is not HEAD can be indexed without checking it out", async () => {
+  // The queue item tells an agent to do this when no locator survived, so the tool
+  // has to actually reach a commit other than the one on disk.
+  const root = await repo();
+  try {
+    const git = (...a: string[]) =>
+      spawnSync("git", ["-c", "user.email=t@x", "-c", "user.name=t", ...a], { cwd: root, encoding: "utf8" });
+    git("init", "-q", "-b", "main");
+    git("add", "-A");
+    git("commit", "-qm", "first");
+    const first = git("rev-parse", "HEAD").stdout.trim();
+    writeFileSync(join(root, "src/pay.ts"), "export function renamed(c: number) { return c; }\n");
+    git("commit", "-qam", "second");
+
+    const r = await snapshotAt(root, first) as any;
+    assert.equal(r.ok, true);
+    assert.equal(r.ref, first);
+    assert.ok(r.anchors > 0, "it read the tree at that commit, not the one on disk");
+    const snap = await readSnapshot(root, first);
+    assert.ok(snap!.some((a) => a.symbolPath.join(".") === "transfer"),
+      "the symbol as it was there — which is the whole point of asking a commit you are not on");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

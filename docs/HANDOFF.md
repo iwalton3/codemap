@@ -104,13 +104,32 @@ contradiction and is not: 3b's "do the anchor join in SQL" versus provenance's
    what is left are in `docs/anchor-id-provenance.md` § "Clearing a doc nobody can
    place".
 
-   **Built:** `ackHole` on an `unverifiable` doc files a `question` on the node,
-   assigned `investigate`, carrying the ids, the commit they were written at, the
-   derivation that minted them and their last-known file. It lands in the existing
-   `review_queue`, and it is mirrored to the sidecar deliberately — "this build
-   cannot place these ids" is a fact about ONE build, and a teammate whose build
-   minted them can answer it outright. Entered by the ACT, never by the state: a
-   `HASH_SCHEME` bump made 985 of 985 docs unverifiable at once.
+   **Built:** `ackHole` files a `question` on the node, assigned `investigate`,
+   carrying the ids, the commit they were written at, the derivation that minted
+   them and their last-known file. It lands in the existing `review_queue`, and it
+   is mirrored to the sidecar deliberately — "this build cannot place these ids" is
+   a fact about ONE build, and a teammate whose build minted them can answer it
+   outright. Entered by the ACT, never by the state: a `HASH_SCHEME` bump made 985
+   of 985 docs unverifiable at once. One evolving investigation per doc — a later
+   attempt revises the open item, an answered-and-still-accurate one is left alone.
+   Identity is a digest of the EVIDENCE, written into the item as one line, not the
+   rendered text: comparing prose would make a copy edit look like new evidence,
+   revise an answered item and re-assign it, and re-assigning clears the outcome.
+
+   **And it fixed a live bug on the way.** `evalVersion` ranks dangling over
+   unverifiable, so a version with one absent citation and one incomparable one read
+   `dangling` — and `ackHole` built its tombstone from `e.dangling` alone, dropping
+   the citation nobody could place. It retired the whole doc on the comparable
+   subset. The guard is on the evidence now, never on the status. `shareDoc` also
+   refuses `removed: true`, which was a way round `retireSharedDoc`'s person-only
+   rule; such a tombstone had to cite live anchors so it lost to any content
+   version — until that code was deleted, at which point it began winning.
+
+   **Honest about its reach.** Re-citing is available today only when a locator
+   survived; without one, `createdCommit` plus an opaque `a_<digest>` needs the
+   commit indexed and read, which is what the recovery arc does and it is not built.
+   `snapshot` now takes a `ref` (any commit, straight from git objects) so the first
+   step at least exists.
 
    **Not built, and deliberately:** the tombstone rule. A review round found five
    things that have to be settled first — the `anchorScheme` under-rejection routes
