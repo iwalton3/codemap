@@ -7,7 +7,7 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { type Anchor, type Review, type ReviewLevel, type ReviewState, type BugWitness } from "./schema.js";
-import { readReviews, writeReviews, readAnchorStore, loadNodes, readSnapshot, snapshotBranch, derivationFor } from "./store.js";
+import { readReviews, writeReviews, readAnchorStore, loadNodes, readSnapshot, snapshotBranch, derivationLookup } from "./store.js";
 import { resolveAcceptance, recordAcceptance, type Ancestry } from "./acceptance.js";
 import { ACCEPTED_CAP, type AcceptedCitation, type AcceptedEntry, type AcceptanceVia } from "./schema.js";
 import { isAncestor, isGitRepo, currentBranch as gitBranch, hasObject } from "./git.js";
@@ -90,7 +90,7 @@ async function coveredAnchorIds(root: string, target: Target, nodeAnchors?: Map<
  * commit is asserting it has been indexed.
  */
 export async function liveHashes(root: string, anchorIds: Iterable<string>, ref?: string): Promise<AnchorIndex> {
-  const knownTag = (mark: string) => derivationFor(root, mark);
+  const knownTags = derivationLookup(root);
   if (ref) {
     const snap = await readSnapshot(root, ref);
     if (!snap) throw new Error(`no cached snapshot for ${ref.slice(0, 12)} — index that commit before witnessing against it`);
@@ -99,7 +99,7 @@ export async function liveHashes(root: string, anchorIds: Iterable<string>, ref?
     for (const a of snap) if (want.has(a.id)) out.set(a.id, a.bodyHash);
     // The SNAPSHOT's rows, not this build's: a cached commit was minted by whatever
     // build cached it, and that is the index an id had to come from to appear here.
-    return anchorIndex(out, derivationsOf(snap), knownTag);
+    return anchorIndex(out, derivationsOf(snap), knownTags);
   }
   const store = await readAnchorStore(root);
   const byId = new Map(store.anchors.map((a) => [a.id, a]));
@@ -120,7 +120,7 @@ export async function liveHashes(root: string, anchorIds: Iterable<string>, ref?
   // process by `indexFile`, so the index being searched is this build's output —
   // and taking it from whatever survived the loop would call a genuinely deleted
   // file's symbols undecidable, since nothing would have been indexed at all.
-  return anchorIndex(live, currentDerivations(), knownTag);
+  return anchorIndex(live, currentDerivations(), knownTags);
 }
 
 /** Witnesses (anchor id + current live hash) covering a target — the staleness snapshot. */

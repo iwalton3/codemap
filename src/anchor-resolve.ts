@@ -17,12 +17,10 @@
  * Kept free of the store so the policy is unit-testable in isolation, the same
  * reason `normalize.ts` holds no tree-sitter. See docs/anchor-id-provenance.md §6.
  *
- * NOTHING CALLS THIS YET — the five sites are steps 3-4 of that document's build
- * order. Landing the reader first is the safe half of a two-part change (unused code
- * decides nothing, where an unhonoured annotation would have decided wrongly), and
- * it is the same two-phase shape `derivationMark` used: understand the form, then
- * produce it. `anchor-resolve.test.ts` therefore builds its indexes by hand, because
- * no production path constructs one.
+ * The consumers are `evalVersion`, `witnessDrift`, `staleChapters`, the bug rollups
+ * and `nodeVersions`. `anchor-resolve.test.ts` still builds its indexes by hand,
+ * because the interesting inputs — an index built by another grammar — cannot be
+ * produced by this build at all.
  */
 
 import { comparableAnchorDerivation, type DerivationTag } from "./schema.js";
@@ -76,21 +74,25 @@ export type Resolved =
 export type AnchorIndex = Map<string, string> & {
   derivations: IndexDerivations;
   /**
-   * Resolve a fingerprint back to the tag it was made from — `derivationFor`, over
-   * the local `derivations` table. Rides on the index because that is where store
-   * access exists; without it the comparison falls back to matching fingerprints,
-   * which errs in both directions (see `matches`).
+   * Every tag this machine has recorded under that fingerprint — `derivationsFor`,
+   * over the local `derivations` table. Rides on the index because that is where
+   * store access exists; without it the comparison falls back to matching
+   * fingerprints, which errs in both directions (see `matches`).
+   *
+   * A LIST, because the fingerprint excludes `anchorScheme`: one fingerprint can
+   * name two retained tags, and picking one of them would make the answer depend on
+   * row order.
    */
-  knownTag?: (mark: string) => DerivationTag | null;
+  knownTags?: (mark: string) => DerivationTag[];
 };
 
 /** Attach what a ref's rows say about their build to the hashes read out of it. */
 export function anchorIndex(
   hashes: Map<string, string>,
   derivations: IndexDerivations,
-  knownTag?: (mark: string) => DerivationTag | null,
+  knownTags?: (mark: string) => DerivationTag[],
 ): AnchorIndex {
-  return Object.assign(hashes, { derivations, ...(knownTag ? { knownTag } : {}) }) as AnchorIndex;
+  return Object.assign(hashes, { derivations, ...(knownTags ? { knownTags } : {}) }) as AnchorIndex;
 }
 
 /**
@@ -108,12 +110,21 @@ export const legacyIndex = (hashes: Map<string, string>): AnchorIndex =>
 /** What a set of already-loaded anchors says about the build(s) that minted them. */
 export function derivationsOf(anchors: Iterable<{ derivation?: DerivationTag }>): IndexDerivations {
   const tags: DerivationTag[] = [];
-  const seen = new Set<string>();
+  // Identity first, and it is not a micro-optimization: tags are INTERNED, so every
+  // row of one derivation carries the same object. Hashing per row instead made this
+  // a SHA-256 per anchor on `workHashes` — which `loadNodes`, `confirmNode` and
+  // `ackHole` all call — and on a real store that is thousands of digests per call.
+  const byRef = new Set<DerivationTag>();
+  const byValue = new Set<string>();
   let anyUntagged = false;
   for (const a of anchors) {
     if (!a.derivation) { anyUntagged = true; continue; }
+    if (byRef.has(a.derivation)) continue;
+    byRef.add(a.derivation);
+    // `anchorScheme` is not in the fingerprint but does decide an id, so it needs
+    // its own place in the key or two derivations collapse into one tag.
     const k = derivationFingerprint(a.derivation) + "\0" + a.derivation.anchorScheme;
-    if (!seen.has(k)) { seen.add(k); tags.push(a.derivation); }
+    if (!byValue.has(k)) { byValue.add(k); tags.push(a.derivation); }
   }
   return { tags, anyUntagged };
 }
@@ -138,7 +149,8 @@ export function resolveAnchor(
   // resolved needs no argument about which build minted it.
   if (hash !== undefined) return { at: "found", hash };
 
-  const marks = [...new Set(evidence.map(derivationMark).filter((m): m is string => m !== null))];
+  const parsed = evidence.map(derivationMark);
+  const marks = [...new Set(parsed.filter((m): m is string => m !== null))];
   // No evidence, or an index that cannot give any: fall back to today's answer.
   //
   // Three ways to have none. No marks — a pre-emission record asserts nothing about
@@ -149,13 +161,18 @@ export function resolveAnchor(
   // in a repo produces it, and calling every record undecidable at that moment would
   // stop `ackHole` from ever acknowledging a hole.
   const d = index.derivations;
-  if (!marks.length || d.anyUntagged || !d.tags.length) return { at: "absent" };
+  // An UNANNOTATED hash in the set is itself evidence, and dropping it was a bug:
+  // it proves the id resolved under some derivation nobody recorded, which could be
+  // this index's. So accruing a foreign annotated hash beside a legacy one must not
+  // turn `absent` into `incomparable` — more evidence cannot make an answer worse.
+  if (!marks.length || parsed.some((m) => m === null)) return { at: "absent" };
+  if (d.anyUntagged || !d.tags.length) return { at: "absent" };
 
   // ANY match is enough, and the asymmetry is deliberate: a hash only enters an
   // accepted set when the id RESOLVED under that derivation (`store.ts`, `capture`),
   // so one matching mark is positive proof that a build like this one joined this id
   // before — which outranks any number of derivations that never saw it.
-  for (const m of marks) if (matches(m, d, index.knownTag)) return { at: "absent" };
+  for (const m of marks) if (matches(m, d, index.knownTags)) return { at: "absent" };
 
   return {
     at: "incomparable",
@@ -180,15 +197,23 @@ export function resolveAnchor(
  * deleted when this lands: `anchorScheme` is gated out of band, by that refusal, by
  * `readSnapshot`, and by `migrateOverloads`. Nothing in this file covers it.
  *
- * `knownTag` closes both gaps whenever the fingerprint is one this machine has seen,
- * which is why it is worth threading through.
+ * `knownTags` closes the FIRST gap whenever the fingerprint is one this machine has
+ * seen, which is why it is worth threading through. It does not close the second:
+ * two tags differing only on `anchorScheme` share a fingerprint, so a lookup can
+ * return both and the permissive reading calls them comparable. `anchorScheme` stays
+ * gated out of band, and that is not a shortcut — it is where it belongs.
  */
 function matches(
   mark: string,
   derivations: IndexDerivations,
-  knownTag?: (mark: string) => DerivationTag | null,
+  knownTags?: (mark: string) => DerivationTag[],
 ): boolean {
-  const theirs = knownTag?.(mark) ?? null;
-  if (theirs) return derivations.tags.some((t) => comparableAnchorDerivation(theirs, t));
+  const theirs = knownTags?.(mark) ?? [];
+  // Any candidate comparable to any of the index's tags is enough. Permissive on
+  // purpose: a fingerprint can name two retained tags that differ on `anchorScheme`,
+  // and a stricter reading would have the answer turn on which row came back first.
+  if (theirs.length) {
+    return theirs.some((t) => derivations.tags.some((x) => comparableAnchorDerivation(t, x)));
+  }
   return derivations.tags.some((t) => derivationFingerprint(t) === mark);
 }

@@ -74,18 +74,33 @@ const tagKey = (t: DerivationTag): string =>
  * every derivation the machine has itself used — which is most of them in practice,
  * since the interesting comparison is usually against something it indexed.
  *
- * Deliberately NOT the registry `PROPOSAL-provenance.md` §9 cut. That one was
- * consulted to DECIDE comparability, so a missing entry produced its own reader
- * states and its own publication ordering. This is consulted only to phrase a
- * message: the decision is answerable from the fingerprint alone, and a miss costs
- * detail rather than an answer.
+ * PLURAL, and that is not a detail. The fingerprint excludes `anchorScheme`, so two
+ * retained tags can share one — and returning "the first" would make a comparability
+ * answer depend on SELECT order. Every candidate is returned and the caller takes
+ * the permissive reading, which is the safe direction and keeps `anchorScheme` where
+ * it already is: gated out of band by `checkManifest`, `readSnapshot` and
+ * `migrateOverloads`.
+ *
+ * Deliberately NOT the registry `PROPOSAL-provenance.md` §9 cut. That one was a
+ * PUBLISHED registry with its own ordering constraint and its own reader states for
+ * an incomplete one. This is local and derived: a miss costs precision — the caller
+ * falls back to matching fingerprints — never an answer.
  */
-export function derivationFor(root: string, fingerprint: string): DerivationTag | null {
-  const d = db(root);
-  for (const t of derivationsById(d).values()) {
-    if (derivationFingerprint(t) === fingerprint) return t;
-  }
-  return null;
+export function derivationLookup(root: string): (fingerprint: string) => DerivationTag[] {
+  let byMark: Map<string, DerivationTag[]> | null = null;
+  return (fingerprint) => {
+    // Built once per index, LAZILY. Per-call it was a full table read, a JSON parse
+    // and a SHA-256 per row — for every unresolved anchor in a pass, which on a
+    // store with real content is thousands of scans of a handful of rows.
+    if (!byMark) {
+      byMark = new Map();
+      for (const t of derivationsById(db(root)).values()) {
+        const fp = derivationFingerprint(t);
+        (byMark.get(fp) ?? byMark.set(fp, []).get(fp)!).push(t);
+      }
+    }
+    return byMark.get(fingerprint) ?? [];
+  };
 }
 
 function internDerivation(d: DatabaseSync, tag: DerivationTag | undefined): number | null {
@@ -97,7 +112,8 @@ function internDerivation(d: DatabaseSync, tag: DerivationTag | undefined): numb
   return (d.prepare("SELECT id FROM derivations WHERE tag = ?").get(json) as { id: number }).id;
 }
 
-/** Every interned tag, by id. Five rows at most, so it is read whole. */
+/** Every interned tag, by id. A handful of rows — one per grammar per build this
+ *  store has seen, retained across upgrades — so it is read whole. */
 function derivationsById(d: DatabaseSync): Map<number, DerivationTag> {
   const out = new Map<number, DerivationTag>();
   for (const r of d.prepare("SELECT id, tag FROM derivations").all() as unknown as { id: number; tag: string }[]) {
@@ -516,7 +532,7 @@ function versionsOf(d: DatabaseSync, nodeId: string): NodeVersion[] {
  * legitimately not the running build. (Contrast `liveHashes` with no ref, which
  * re-parses in process and is therefore this build's output.)
  */
-function workHashes(d: DatabaseSync, root?: string): AnchorIndex {
+function workHashes(d: DatabaseSync, root: string): AnchorIndex {
   const m = new Map<string, string>();
   const tags = derivationsById(d);
   const seen: { derivation?: DerivationTag }[] = [];
@@ -524,12 +540,12 @@ function workHashes(d: DatabaseSync, root?: string): AnchorIndex {
     m.set(r.id, r.body_hash);
     seen.push({ derivation: r.derivation == null ? undefined : tags.get(r.derivation) });
   }
-  return anchorIndex(m, derivationsOf(seen), root ? (mark) => derivationFor(root, mark) : undefined);
+  return anchorIndex(m, derivationsOf(seen), derivationLookup(root));
 }
 
 export async function loadNodes(root: string): Promise<LogicalNode[]> {
   const d = db(root);
-  const work = workHashes(d);
+  const work = workHashes(d, root);
   const byNode = new Map<string, NodeVersion[]>();
   for (const r of d.prepare("SELECT * FROM node_versions").all() as unknown as VersionRow[]) {
     const v = rowToVersion(r);
@@ -661,7 +677,7 @@ export async function confirmNode(root: string, id: string): Promise<{ ok?: true
   const d = db(root);
   const versions = versionsOf(d, id);
   if (!versions.length) return { error: `no node "${id}"` };
-  const work = workHashes(d);
+  const work = workHashes(d, root);
   const { v } = selectWinner(versions, work);
   if (v.generatedBy) return { error: "generated node — regenerated, not confirmable" };
   if (v.removed) return { error: "node is tombstoned here" };
@@ -685,7 +701,7 @@ export async function ackHole(root: string, id: string): Promise<{ ok?: true; re
   const d = db(root);
   const versions = versionsOf(d, id);
   if (!versions.length) return { error: `no node "${id}"` };
-  const work = workHashes(d);
+  const work = workHashes(d, root);
   const { v, e } = selectWinner(versions, work);
   if (e.status !== "dangling") return { error: `node "${id}" is not a hole here (status: ${e.status})` };
   // Carry each dangling citation's accepted hashes onto the tombstone. Same reason

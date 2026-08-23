@@ -765,7 +765,9 @@ class DashboardPage extends Component {
         ${when(d.tripwires && d.tripwires.fired.length, () => html`<span class="attn-pill bad" title="business-critical code you're watching changed" on-click="${() => go(nodesUrl(u))}">🔔 ${d.tripwires.fired.length} tripwire${d.tripwires.fired.length === 1 ? '' : 's'} fired</span>`)}
         ${when(d.openQuestions, () => html`<span class="attn-pill q">${d.openQuestions} open question${d.openQuestions === 1 ? '' : 's'}</span>`)}
         <span class="attn-hint">re-validate via <code>check_stale</code> / the bugs tab</span>
-      </div>`, () => html`<div class="attn-banner ok"><span class="attn-n">✓</span> <span>nothing stale — docs and bugs are current with the code</span></div>`)}
+      </div>`, () => html`<div class="attn-banner ok"><span class="attn-n">✓</span> <span>${d.bugs.unverifiable
+        ? `nothing stale — but ${d.bugs.unverifiable} bug${d.bugs.unverifiable === 1 ? '' : 's'} cannot be checked against this index`
+        : 'nothing stale — docs and bugs are current with the code'}</span></div>`)}
 
       <div class="dcards">
         <div class="dcard">

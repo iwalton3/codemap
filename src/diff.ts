@@ -16,7 +16,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { comparableHashDerivation, type Anchor, type Review } from "./schema.js";
 import { indexRepo, indexFile, indexBlob } from "./repo.js";
-import { readSnapshot, readAnchorStore, loadNodes, loadNodeVersions, winningVersionAt, readGraph, readReviews, readBugs, derivationFor} from "./store.js";
+import { readSnapshot, readAnchorStore, loadNodes, loadNodeVersions, winningVersionAt, readGraph, readReviews, readBugs, derivationLookup} from "./store.js";
 import { reviewStatesFor } from "./reviews.js";
 import { reviewTriageFor, coverageFor, type Coverage } from "./triage.js";
 import { revParse, headCommit, currentBranch, showFile } from "./git.js";
@@ -270,7 +270,7 @@ export interface AnchorCodeDiff {
 /** Anchor-hash map for a ref: a cached snapshot's hashes, or @work for the working tree. */
 async function hashesAt(root: string, ref: string | undefined): Promise<AnchorIndex | null> {
   const index = (anchors: Anchor[]) =>
-    anchorIndex(new Map(anchors.map((a) => [a.id, a.bodyHash])), derivationsOf(anchors), (m) => derivationFor(root, m));
+    anchorIndex(new Map(anchors.map((a) => [a.id, a.bodyHash])), derivationsOf(anchors), derivationLookup(root));
   // Stored rows on both paths — `@work` and a cached snapshot alike — so the
   // derivations are the rows' own, whichever build wrote them.
   if (!ref) return index((await readAnchorStore(root).catch(() => ({ anchors: [] as Anchor[] }))).anchors);

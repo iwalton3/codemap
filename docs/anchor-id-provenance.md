@@ -472,6 +472,44 @@ Ordered so that each step is testable before the next depends on it:
 Steps 1–4 are local-only and need no format decision. Step 5 is the shared half.
 The note shard (§5) is not on this list — it is a separate record.
 
+## What the implementation review found
+
+A Codex round over `eacb1c3..HEAD` produced five findings, four of them real. They
+are worth recording because three are about the *seam*, not the logic:
+
+1. **Three `workHashes(d)` calls omitted the store root**, so `loadNodes`,
+   `confirmNode` and `ackHole` compared fingerprints without the local dictionary
+   while `writeNode` used it — reads and writes disagreeing about one doc. The
+   parameter is now required.
+2. **The dictionary is not an inverse.** A fingerprint excludes `anchorScheme`, so
+   two retained tags can share one and "the first match" made the answer depend on
+   row order. It returns every candidate now, and the caller takes the permissive
+   reading. This *narrows* what the dictionary claims: it closes the `hashScheme`
+   over-rejection, not the `anchorScheme` under-rejection — which stays gated by
+   `checkManifest`, exactly as §4 said.
+3. **A typed seam does not enumerate a duplicated implementation.** `nodeVersions`
+   had its own copy of `evalVersion`'s rule written in raw `work.has`/`sameBody`, so
+   it was the one document surface the change did not reach. It calls `evalVersion`
+   now. Two remaining bypasses are recorded below.
+4. **More evidence made the answer worse.** `resolveAnchor` dropped unannotated
+   hashes before counting marks, so a legacy-only citation read `absent` while the
+   same citation with one foreign annotated hash accrued beside it read
+   `incomparable`. An unannotated hash still proves the id resolved under *some*
+   derivation, so it now preserves the fallback.
+
+And one performance defect the review did not find but the test suite did: the
+whole suite began hanging. The tempting explanation was this project's known
+load-dependent deadlock; a stash-and-rerun showed the suite green at HEAD and stuck
+with the changes, so it was not. `derivationsOf` was hashing **per anchor row** to
+dedupe, on a helper `loadNodes`/`confirmNode`/`ackHole` all call. Tags are interned,
+so identity dedup comes first now and the hashing is once per distinct tag.
+
+**Still bypassing the resolution**, recorded rather than fixed: the dashboard's
+dangling-doc count recomputes membership from raw ids (`ops.ts`), and the shared
+citation presentation (`ops-shared.ts`) labels an incomparable missing id `lost`.
+Both are presentation over an already-resolved answer, and both belong with the
+`incompatible_derivation` detail decision in §5.
+
 ## What would change my mind
 
 - **If the pairing invariant cannot be pinned.** The whole design rests on an id and

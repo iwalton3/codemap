@@ -24,7 +24,7 @@ import {
 } from "./shared-findings.js";
 import { publishWalkthrough, readWalkthroughs, currentWalkthrough, staleWalkthroughs } from "./shared-walkthrough.js";
 import { createNote, answerNote, resolveNote, notesForTarget, allNotes, type NewNote } from "./shared-notes.js";
-import { readAnnotations, readAnchorStore, loadNodes, loadNodeVersions, derivationFor} from "./store.js";
+import { readAnnotations, readAnchorStore, loadNodes, loadNodeVersions, derivationLookup} from "./store.js";
 import { publishDocVersion, acceptDocHash, readDocs, resolveDoc, type NewDocVersion } from "./shared-docs.js";
 import type { PrWalkthrough } from "./walkthrough.js";
 
@@ -394,7 +394,7 @@ async function liveHashes(root: string): Promise<AnchorIndex> {
   return anchorIndex(
     new Map(store.anchors.map((a) => [a.id, a.bodyHash])),
     derivationsOf(store.anchors),
-    (mark) => derivationFor(root, mark),
+    derivationLookup(root),
   );
 }
 
@@ -583,7 +583,8 @@ export async function retireSharedDoc(root: string, nodeId: string, rationale: s
   await publishDocVersion(b.cfg.path, b.cfg.universe, b.actor, {
     nodeId, type: v.type, title: v.title, summary: v.summary, body: v.body,
     // The hashes ride along, and they are NOT an acceptance claim — `evalVersion`'s
-    // removed branch never reads them. They are the derivation evidence: a tombstone
+    // removed branch reads their DERIVATION and never compares their bodies. They
+    // are the evidence, not the assertion: a tombstone
     // asserts "this was removed", which is an inference from absence, and absence is
     // only evidence when the id could have resolved here at all. Emptied, the
     // tombstone arrives with nothing to judge that by and reads as holding against

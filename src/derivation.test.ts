@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { comparableHashDerivation, type Anchor, type DerivationTag } from "./schema.js";
-import { writeAnchorStore, anchorsUnderRef, retainOrphans, readOrphans, derivationFor } from "./store.js";
+import { writeAnchorStore, anchorsUnderRef, retainOrphans, readOrphans, derivationLookup } from "./store.js";
 import { derivationTag } from "./grammars.js";
 import { indexBlob } from "./repo.js";
 import { derivationFingerprint, derivationMark } from "./normalize.js";
@@ -176,11 +176,11 @@ test("a fingerprint resolves back to its derivation, when this store has seen it
   try {
     await writeAnchorStore(root, [anchor("a_1", OLD), anchor("a_2", derivationTag("python"))]);
 
-    assert.deepEqual(derivationFor(root, derivationFingerprint(OLD)), OLD);
-    assert.deepEqual(derivationFor(root, derivationFingerprint(derivationTag("python"))), derivationTag("python"));
-    assert.equal(derivationFor(root, derivationFingerprint(NEW)), null,
+    assert.deepEqual(derivationLookup(root)(derivationFingerprint(OLD)), [OLD]);
+    assert.deepEqual(derivationLookup(root)(derivationFingerprint(derivationTag("python"))), [derivationTag("python")]);
+    assert.deepEqual(derivationLookup(root)(derivationFingerprint(NEW)), [],
       "a derivation this machine has never used is unknown, not wrong");
-    assert.equal(derivationFor(root, "0000000000000000"), null);
+    assert.deepEqual(derivationLookup(root)("0000000000000000"), []);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

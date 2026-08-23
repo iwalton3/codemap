@@ -15,9 +15,9 @@ const evidence = (t: DerivationTag | null, body = "same") => hashTokens([body], 
 
 const index = (
   tags: DerivationTag[],
-  opts: { have?: Record<string, string>; untagged?: boolean; knownTag?: (m: string) => DerivationTag | null } = {},
+  opts: { have?: Record<string, string>; untagged?: boolean; knownTags?: (m: string) => DerivationTag[] } = {},
 ): AnchorIndex =>
-  anchorIndex(new Map(Object.entries(opts.have ?? {})), { tags, anyUntagged: !!opts.untagged }, opts.knownTag);
+  anchorIndex(new Map(Object.entries(opts.have ?? {})), { tags, anyUntagged: !!opts.untagged }, opts.knownTags);
 
 // --- the projection ---------------------------------------------------------
 
@@ -105,8 +105,8 @@ test("without the local dictionary the mark over-rejects on hashScheme", () => {
   assert.equal(resolveAnchor("a_gone", [evidence(otherHashScheme)], index([MINE])).at, "incomparable",
     "conservative: a different fingerprint, though nothing that decides an id moved");
 
-  const knownTag = (m: string) => (m === derivationFingerprint(otherHashScheme) ? otherHashScheme : null);
-  assert.deepEqual(resolveAnchor("a_gone", [evidence(otherHashScheme)], index([MINE], { knownTag })), { at: "absent" },
+  const knownTags = (m: string) => (m === derivationFingerprint(otherHashScheme) ? [otherHashScheme] : []);
+  assert.deepEqual(resolveAnchor("a_gone", [evidence(otherHashScheme)], index([MINE], { knownTags })), { at: "absent" },
     "and the dictionary upgrades it to the honest three-field test");
 });
 
@@ -117,9 +117,15 @@ test("and UNDER-rejects on anchorScheme, which is why the manifest gate stays", 
   assert.deepEqual(resolveAnchor("a_gone", [evidence(otherAnchorScheme)], index([MINE])), { at: "absent" },
     "so the raw mark cannot see an anchor-scheme change at all");
 
-  const knownTag = (m: string) => (m === derivationFingerprint(otherAnchorScheme) ? otherAnchorScheme : null);
-  assert.equal(resolveAnchor("a_gone", [evidence(otherAnchorScheme)], index([MINE], { knownTag })).at, "incomparable",
-    "only the dictionary closes it — nothing in this module does");
+  const knownTags = (m: string) => (m === derivationFingerprint(otherAnchorScheme) ? [otherAnchorScheme] : []);
+  assert.equal(resolveAnchor("a_gone", [evidence(otherAnchorScheme)], index([MINE], { knownTags })).at, "incomparable",
+    "the dictionary closes it only while it holds one candidate");
+
+  // And it stops closing it as soon as the store has seen both, because they share a
+  // fingerprint: the permissive reading wins, so `anchorScheme` stays gated by
+  // `checkManifest` / `readSnapshot` / `migrateOverloads` rather than by this.
+  const both = (m: string) => (m === derivationFingerprint(MINE) ? [otherAnchorScheme, MINE] : []);
+  assert.deepEqual(resolveAnchor("a_gone", [evidence(otherAnchorScheme)], index([MINE], { knownTags: both })), { at: "absent" });
 });
 
 /**
@@ -139,4 +145,21 @@ test("derivationsOf collects distinct tags and notices untagged rows", () => {
   // otherwise two derivations that differ only there collapse into one tag and the
   // honest comparison never sees the second.
   assert.equal(derivationsOf([{ derivation: MINE }, { derivation: tag({ anchorScheme: 4 }) }]).tags.length, 2);
+});
+
+/**
+ * More evidence must never make the answer worse.
+ *
+ * An unannotated hash in an accepted set still proves the id RESOLVED under some
+ * derivation nobody recorded — possibly this one. Dropping it before counting marks
+ * meant a legacy-only citation read `absent` while the same citation, after
+ * accruing one foreign annotated hash, read `incomparable`.
+ */
+test("a legacy hash beside a foreign one keeps the fallback", () => {
+  const foreign = evidence(tag({ grammarDigest: "f".repeat(64) }));
+  assert.deepEqual(resolveAnchor("a_gone", [evidence(null)], index([MINE])), { at: "absent" });
+  assert.deepEqual(resolveAnchor("a_gone", [evidence(null), foreign], index([MINE])), { at: "absent" },
+    "accruing a mark cannot revoke what the unannotated hash already proved");
+  assert.equal(resolveAnchor("a_gone", [foreign], index([MINE])).at, "incomparable",
+    "control: foreign evidence alone is still undecidable");
 });

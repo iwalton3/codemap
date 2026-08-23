@@ -27,7 +27,7 @@ import {
   writeSnapshot, readSnapshot, listSnapshots, deleteNode as storeDeleteNode, confirmNode, ackHole as storeAckHole, loadNodeVersions,
   writeReviews, remapNodeCitations, readTriage as triageRead, writeTriage as triageWrite, staleSchemeSnapshots, findAnchorsOutsideWork,
   liveDerivationDrift,
-  readWalkthroughs, writeWalkthrough, readPushes, bodyHashAt, snapshotBranch, retainOrphans, readOrphans, releaseRecoveredOrphans, referencedAnchorIds, derivationFor } from "./store.js";
+  readWalkthroughs, writeWalkthrough, readPushes, bodyHashAt, snapshotBranch, retainOrphans, readOrphans, releaseRecoveredOrphans, referencedAnchorIds, derivationLookup } from "./store.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { resolveActor, requireActor, isAgentActor, actorLabel } from "./identity.js";
 import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "./diff.js";
@@ -47,6 +47,7 @@ import { resolveCoverage, selectAnchors, docPct as computeDocPct, citedPct as co
 import { resolveAnchorRefs } from "./refs.js";
 import { refreshAnalyzers } from "./analyzers/run.js";
 import { applyIndexUpdate } from "./sync.js";
+import { evalVersion } from "./doc-version.js";
 import { grammarForPath } from "./grammars.js";
 import { reviewStatus, reviewStatesFor, anchorReviewMap, changedSince as reviewsChangedSince, deriveCodeReview, revertedMarks, markReviewedBatch, unmarkReviewed, unmarkCovered, type Attestation, type ReviewPair, type DerivedCodeReview, witnessDrift, realDrift} from "./reviews.js";
 import { setTriage as triageSet, clearTriage as triageClear, triageStatus, reviewTriageFor, deriveTriage as triageDerive, coverageFor as triageCoverageFor, rollupCoverage, tripwires as triageTripwires, triageDrift } from "./triage.js";
@@ -75,7 +76,7 @@ function liveIndex(root: string, live: Map<string, Anchor>): AnchorIndex {
   return anchorIndex(
     new Map([...live].map(([id, a]) => [id, a.bodyHash])),
     currentDerivations(),
-    (mark) => derivationFor(root, mark),
+    derivationLookup(root),
   );
 }
 
@@ -252,14 +253,23 @@ export async function dashboard(root: string) {
   const live = await liveAnchors(root, bugFiles);
   const bugIndex = liveIndex(root, live);
   const bugCounts: Record<string, number> = {};
-  let openBugs = 0, possiblyFixed = 0;
+  let openBugs = 0, possiblyFixed = 0, unverifiableBugs = 0;
   for (const b of bugStore.bugs) {
     bugCounts[b.status] = (bugCounts[b.status] ?? 0) + 1;
     // Through `witnessDrift` rather than an inline `sameBody`, which also fixes a
     // second conflation this line had: a witness from another HASH_SCHEME counted as
     // possibly-fixed too. `realDrift` is what separates "the code moved" from
     // "nobody can say", and this rollup is a count people act on.
-    if (b.status === "open") { openBugs++; if (realDrift(witnessDrift(b.witnesses, bugIndex)).length) possiblyFixed++; }
+    if (b.status === "open") {
+      openBugs++;
+      const changes = witnessDrift(b.witnesses, bugIndex);
+      // Counted apart, not dropped. `realDrift` is right to keep an undecidable
+      // witness out of "possibly fixed" — it is not evidence the code moved — but
+      // dropping it entirely let the dashboard say everything was current with the
+      // code while some of it could not be checked at all.
+      if (realDrift(changes).length) possiblyFixed++;
+      else if (changes.length) unverifiableBugs++;
+    }
   }
 
   const openQuestions = annStore.annotations.filter((a) => a.kind === "question" && !a.resolved).length;
@@ -272,7 +282,7 @@ export async function dashboard(root: string) {
     coverage: { docPct: computeDocPct(result.breakdown), citedPct: computeCitedPct(result.breakdown), open: result.breakdown.open, anchors: store.anchors.length, nodes: nodes.length, edges: graph.edges.length, breakdown: result.breakdown },
     views: availableViews(tallyTypes(nodes), { prs: !!originSlug(root) }), // which extra views this map can offer
     docs: { total: nodes.length, stale: staleDocs, dangling: danglingDocs, fresh: nodes.length - staleDocs - danglingDocs },
-    bugs: { total: bugStore.bugs.length, open: openBugs, possiblyFixed, byStatus: bugCounts },
+    bugs: { total: bugStore.bugs.length, open: openBugs, possiblyFixed, unverifiable: unverifiableBugs, byStatus: bugCounts },
     annotations: annStore.annotations.length,
     openQuestions,
     tripwires: { fired: tw.fired.map((f) => ({ kind: f.target.kind, id: f.target.id, importance: f.importance, reason: f.reason })), armed: tw.armedCount },
@@ -1065,7 +1075,7 @@ async function snapshotHashes(root: string, ref: string): Promise<AnchorIndex> {
   return anchorIndex(
     new Map(snap.map((a) => [a.id, a.bodyHash])),
     derivationsOf(snap),
-    (mark) => derivationFor(root, mark),
+    derivationLookup(root),
   );
 }
 
@@ -2442,19 +2452,27 @@ export async function ackHole(root: string, id: string) {
 export async function nodeVersions(root: string, id: string) {
   const versions = await loadNodeVersions(root, id);
   const store = await readAnchorStore(root);
-  const work = new Map(store.anchors.map((a) => [a.id, a.bodyHash]));
+  // `evalVersion`, not a second copy of it. This function used to reimplement the
+  // rule with raw `work.has` / `sameBody` — which is why it was the one surface the
+  // provenance work did NOT reach when the type of the index changed: a duplicate
+  // implementation is invisible to a typed seam. Two copies of a status rule is how
+  // the version UI and the version selection start disagreeing about one doc.
+  const work = anchorIndex(
+    new Map(store.anchors.map((a) => [a.id, a.bodyHash])),
+    derivationsOf(store.anchors),
+    derivationLookup(root),
+  );
   return {
     id,
     versions: versions.map((v) => {
-      const stale = v.removed
-        ? v.citations.filter((c) => work.has(c.anchorId)).map((c) => c.anchorId)
-        : v.citations.filter((c) => work.has(c.anchorId) && !c.acceptedHashes.some((h) => sameBody(h, work.get(c.anchorId)!))).map((c) => c.anchorId);
-      const dangling = v.removed ? [] : v.citations.filter((c) => !work.has(c.anchorId)).map((c) => c.anchorId);
-      const status = v.generatedBy ? "generated" : v.removed ? "removed" : dangling.length ? "dangling" : stale.length ? "stale" : "fresh";
+      const e = evalVersion(v, work);
       return {
         versionId: v.versionId, title: v.title, summary: v.summary, removed: !!v.removed,
         createdCommit: v.createdCommit, createdBranch: v.createdBranch, createdAt: v.createdAt,
-        anchors: v.citations.map((c) => c.anchorId), status, staleAnchors: stale, danglingAnchors: dangling,
+        anchors: v.citations.map((c) => c.anchorId),
+        status: v.generatedBy ? "generated" : e.status,
+        staleAnchors: e.stale, danglingAnchors: e.dangling,
+        unverifiableAnchors: e.unverifiable ?? [],
       };
     }),
   };
