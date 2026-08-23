@@ -47,7 +47,7 @@ test("an index built by this build is not flagged", async () => {
 });
 
 /**
- * Untagged rows do not fire it, which is the same answer `comparableDerivation`
+ * Untagged rows do not fire it, which is the same answer `comparableHashDerivation`
  * and `readSnapshot` give. Every store that exists today is entirely untagged, and
  * warning all of them about a question their rows cannot answer would train people
  * to ignore the one case that means something.

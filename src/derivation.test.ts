@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { comparableDerivation, type Anchor, type DerivationTag } from "./schema.js";
+import { comparableHashDerivation, type Anchor, type DerivationTag } from "./schema.js";
 import { writeAnchorStore, anchorsUnderRef, retainOrphans, readOrphans, derivationFor } from "./store.js";
 import { derivationTag } from "./grammars.js";
 import { indexBlob } from "./repo.js";
@@ -140,25 +140,25 @@ test("the live tag identifies the runtime and the exact grammar blob", () => {
  * as a narrow residue rather than the main mechanism.
  */
 test("differing derivations are not comparable; an absent one falls back", () => {
-  assert.equal(comparableDerivation(OLD, OLD), true);
-  assert.equal(comparableDerivation(OLD, NEW), false, "different builds say nothing about the code");
-  assert.equal(comparableDerivation({ ...OLD, grammarDigest: "g_other" }, OLD), false, "grammar alone is enough");
-  assert.equal(comparableDerivation({ ...OLD, parserIntegrity: "p_other" }, OLD), false, "so is the parser alone");
+  assert.equal(comparableHashDerivation(OLD, OLD), true);
+  assert.equal(comparableHashDerivation(OLD, NEW), false, "different builds say nothing about the code");
+  assert.equal(comparableHashDerivation({ ...OLD, grammarDigest: "g_other" }, OLD), false, "grammar alone is enough");
+  assert.equal(comparableHashDerivation({ ...OLD, parserIntegrity: "p_other" }, OLD), false, "so is the parser alone");
 
   // But NOT anchorScheme. It decides whether two ids name the same symbol, not
   // whether two hashes of that symbol's body can be compared. A symbol with no
   // disambiguator keeps its id across a scheme bump, so this pair is reachable —
   // and calling it unverifiable would report real drift as undecidable, which a
   // reviewer skips rather than reads.
-  assert.equal(comparableDerivation({ ...OLD, anchorScheme: OLD.anchorScheme + 1 }, OLD), true,
+  assert.equal(comparableHashDerivation({ ...OLD, anchorScheme: OLD.anchorScheme + 1 }, OLD), true,
     "a scheme difference does not make two hashes incomparable");
 
   // The fallback, which is load-bearing: every value stored before tags existed is
   // untagged, so answering "unverifiable" for those would trade a rare false
   // positive for a universal false negative.
-  assert.equal(comparableDerivation(undefined, OLD), true);
-  assert.equal(comparableDerivation(OLD, undefined), true);
-  assert.equal(comparableDerivation(undefined, undefined), true);
+  assert.equal(comparableHashDerivation(undefined, OLD), true);
+  assert.equal(comparableHashDerivation(OLD, undefined), true);
+  assert.equal(comparableHashDerivation(undefined, undefined), true);
 });
 
 /**

@@ -196,7 +196,7 @@ export interface DerivationTag {
  * of them would replace a rare false positive with a universal false negative. As
  * untagged snapshots are rebuilt the tagged path takes over.
  */
-export function comparableDerivation(a?: DerivationTag, b?: DerivationTag): boolean {
+export function comparableHashDerivation(a?: DerivationTag, b?: DerivationTag): boolean {
   if (!a || !b) return true;
   // THREE fields, not four. `anchorScheme` governs whether two IDS name the same
   // symbol; it says nothing about whether two hashes of that symbol's body can be
@@ -211,6 +211,30 @@ export function comparableDerivation(a?: DerivationTag, b?: DerivationTag): bool
   // Ids are gated elsewhere and at the right granularity: `readSnapshot` refuses a
   // cache from another derivation, and `liveDerivationDrift` warns about `@work`.
   return a.hashScheme === b.hashScheme
+    && a.parserIntegrity === b.parserIntegrity && a.grammarDigest === b.grammarDigest;
+}
+
+/**
+ * Whether an inequality between two ANCHOR IDS derived this way means they name
+ * different symbols.
+ *
+ * The other three-field projection of the same tag, and the sibling above is why it
+ * needs a name of its own rather than a shared `comparableDerivation`: the two
+ * questions exclude DIFFERENT fields, so a call site that picks by name rather than
+ * by question gets a confident wrong answer.
+ *
+ *   hash comparability  = everything but `anchorScheme`
+ *   id   comparability  = everything but `hashScheme`
+ *
+ * `hashScheme` is out because an id contains no body hash — `anchorId` sees only
+ * file, symbol path and disambiguator. `grammarDigest` and `parserIntegrity` are IN
+ * because two of those three inputs are read off the parse: two C# grammars mint
+ * different ids for `M(ref string)` under one ANCHOR_SCHEME, which is the failure
+ * this exists for. See docs/anchor-id-provenance.md §1-§2.
+ */
+export function comparableAnchorDerivation(a?: DerivationTag, b?: DerivationTag): boolean {
+  if (!a || !b) return true;   // untagged falls back to comparing, as everywhere else here
+  return a.anchorScheme === b.anchorScheme
     && a.parserIntegrity === b.parserIntegrity && a.grammarDigest === b.grammarDigest;
 }
 

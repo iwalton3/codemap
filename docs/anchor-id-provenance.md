@@ -431,13 +431,17 @@ child document.
 
 Ordered so that each step is testable before the next depends on it:
 
-1. **The tombstone carrier fix.** First, because §6's rule is evidence-driven and a
-   tombstone currently arrives with none — every later step is untestable on the
-   sharpest case until its citations keep their hashes.
-2. **`comparableAnchorDerivation` + `resolveAnchor`**, against a ref's tag set, with
-   `derivationFor` upgrading known fingerprints to the honest three-field test. Pure
-   functions over an index view; unit-testable with hand-built marks, the way
-   `annotated-hash.test.ts` already exercises the annotated form.
+1. ~~**The tombstone carrier fix.**~~ **Done.** Both paths — `retireSharedDoc` and
+   `ackHole`, the local one this document had missed — now carry the prior version's
+   accepted hashes onto the tombstone. First, because §6's rule is evidence-driven
+   and a tombstone arrived with none.
+2. ~~**`comparableAnchorDerivation` + `resolveAnchor`**~~ **Done**, in
+   `src/anchor-resolve.ts`. `comparableDerivation` is now
+   `comparableHashDerivation`, so neither projection can be picked by name. The
+   resolver has no callers yet, deliberately — see step 3. Two facts it pins that
+   were only prose before: the raw mark **over**-rejects on `hashScheme` and
+   **under**-rejects on `anchorScheme`, so the manifest gate is load-bearing and the
+   local dictionary is the only thing that closes either gap.
 3. **The five `?? ABSENT_HASH` sites**, one at a time. `witnessDrift` first: it
    already has the `unverifiable` flag, so it is the smallest diff and the clearest
    proof the resolution works.

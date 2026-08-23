@@ -1,0 +1,122 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { comparableAnchorDerivation, type DerivationTag } from "./schema.js";
+import { hashTokens, derivationFingerprint } from "./normalize.js";
+import { resolveAnchor, type AnchorIndex } from "./anchor-resolve.js";
+
+const MINE: DerivationTag = {
+  anchorScheme: 3, hashScheme: 2,
+  parserIntegrity: "p".repeat(64), grammarDigest: "g".repeat(64),
+};
+const tag = (over: Partial<DerivationTag>): DerivationTag => ({ ...MINE, ...over });
+
+/** A body hash minted under `t` — the evidence a record carries beside an id. */
+const evidence = (t: DerivationTag | null, body = "same") => hashTokens([body], t);
+
+const index = (tags: DerivationTag[], opts: { have?: Record<string, string>; untagged?: boolean } = {}): AnchorIndex => ({
+  hash: (id) => opts.have?.[id],
+  derivations: { tags, anyUntagged: !!opts.untagged },
+});
+
+// --- the projection ---------------------------------------------------------
+
+/**
+ * The other three-field projection. It excludes `hashScheme`, where the hash side
+ * excludes `anchorScheme` — and a single `comparableDerivation` would have to pick
+ * one of those and be wrong for the other caller.
+ */
+test("id comparability excludes hashScheme and includes anchorScheme", () => {
+  assert.equal(comparableAnchorDerivation(MINE, tag({ hashScheme: 99 })), true,
+    "an id contains no body hash, so how bodies are hashed cannot move one");
+  assert.equal(comparableAnchorDerivation(MINE, tag({ anchorScheme: 4 })), false,
+    "which is the one field the hash projection drops");
+  assert.equal(comparableAnchorDerivation(MINE, tag({ grammarDigest: "f".repeat(64) })), false,
+    "the grammar reads symbolPath and the disambiguator off the parse");
+  assert.equal(comparableAnchorDerivation(MINE, tag({ parserIntegrity: "q".repeat(64) })), false);
+  assert.equal(comparableAnchorDerivation(undefined, MINE), true, "untagged still falls back to comparing");
+});
+
+// --- resolution -------------------------------------------------------------
+
+test("an id that resolves needs no argument about which build minted it", () => {
+  const h = evidence(MINE);
+  const r = resolveAnchor("a_1", [evidence(tag({ grammarDigest: "f".repeat(64) }))],
+    index([MINE], { have: { a_1: h } }));
+  assert.deepEqual(r, { at: "found", hash: h },
+    "equality first — a foreign-looking witness against a present id is still present");
+});
+
+test("absence is real when this index could have minted the id", () => {
+  assert.deepEqual(resolveAnchor("a_gone", [evidence(MINE)], index([MINE])), { at: "absent" },
+    "a build with this derivation joined it before, so its absence now is deletion");
+});
+
+test("absence is NOT decidable when the id came from another derivation", () => {
+  const foreign = evidence(tag({ grammarDigest: "f".repeat(64) }));
+  const r = resolveAnchor("a_theirs", [foreign], index([MINE]));
+  assert.equal(r.at, "incomparable", "this index has never minted ids that way");
+});
+
+/**
+ * The asymmetry, and it is the whole reason the accepted set is worth reading.
+ *
+ * A hash only enters an accepted set when the id RESOLVED under that derivation, so
+ * one matching mark is positive proof that a build like this one joined this id.
+ * Any number of derivations that never saw it prove nothing against that.
+ */
+test("one matching mark outranks any number of foreign ones", () => {
+  const marks = [
+    evidence(tag({ grammarDigest: "f".repeat(64) })),
+    evidence(tag({ parserIntegrity: "q".repeat(64) })),
+    evidence(MINE),
+  ];
+  assert.deepEqual(resolveAnchor("a_gone", marks, index([MINE])), { at: "absent" });
+});
+
+test("a pre-provenance record or index falls back to today's answer", () => {
+  assert.deepEqual(resolveAnchor("a_gone", [evidence(null)], index([MINE])), { at: "absent" },
+    "an unannotated hash asserts nothing about its derivation");
+  assert.deepEqual(resolveAnchor("a_gone", [], index([MINE])), { at: "absent" },
+    "and a record with no hashes at all — a tombstone that emptied its set — has no evidence");
+  assert.deepEqual(resolveAnchor("a_gone", [evidence(tag({ grammarDigest: "f".repeat(64) }))],
+    index([MINE], { untagged: true })), { at: "absent" },
+    "an index holding untagged rows could have minted anything, so it rules nothing out");
+});
+
+/**
+ * A ref legitimately holds rows from two builds — `applyIndexUpdate` adds
+ * incrementally — so the operand is a SET, and matching any member is enough.
+ */
+test("an index built by two builds is compared against both", () => {
+  const older = tag({ grammarDigest: "f".repeat(64) });
+  assert.deepEqual(resolveAnchor("a_gone", [evidence(older)], index([MINE, older])), { at: "absent" });
+});
+
+// --- what the raw mark can and cannot see -----------------------------------
+
+/**
+ * The fingerprint is not the id projection, and errs in BOTH directions. Pinned
+ * because only one of the two is safe, and the unsafe one is what keeps
+ * `checkManifest`'s fatal refusal load-bearing.
+ */
+test("without the local dictionary the mark over-rejects on hashScheme", () => {
+  const otherHashScheme = tag({ hashScheme: 3 });
+  assert.equal(resolveAnchor("a_gone", [evidence(otherHashScheme)], index([MINE])).at, "incomparable",
+    "conservative: a different fingerprint, though nothing that decides an id moved");
+
+  const knownTag = (m: string) => (m === derivationFingerprint(otherHashScheme) ? otherHashScheme : null);
+  assert.deepEqual(resolveAnchor("a_gone", [evidence(otherHashScheme)], index([MINE]), knownTag), { at: "absent" },
+    "and the dictionary upgrades it to the honest three-field test");
+});
+
+test("and UNDER-rejects on anchorScheme, which is why the manifest gate stays", () => {
+  const otherAnchorScheme = tag({ anchorScheme: 4 });
+  assert.equal(derivationFingerprint(otherAnchorScheme), derivationFingerprint(MINE),
+    "anchorScheme is deliberately not in the fingerprint — it decides ids, not hashes");
+  assert.deepEqual(resolveAnchor("a_gone", [evidence(otherAnchorScheme)], index([MINE])), { at: "absent" },
+    "so the raw mark cannot see an anchor-scheme change at all");
+
+  const knownTag = (m: string) => (m === derivationFingerprint(otherAnchorScheme) ? otherAnchorScheme : null);
+  assert.equal(resolveAnchor("a_gone", [evidence(otherAnchorScheme)], index([MINE]), knownTag).at, "incomparable",
+    "only the dictionary closes it — nothing in this module does");
+});

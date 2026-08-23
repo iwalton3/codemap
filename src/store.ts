@@ -444,7 +444,7 @@ export function liveDerivationDrift(root: string): { stale: boolean; tagged: num
  *
  * Untagged rows do NOT count. Every snapshot cached before tags existed is
  * untagged, and treating those as stale would rebuild every cache on upgrade for a
- * question they cannot answer — the same reasoning `comparableDerivation` uses, and
+ * question they cannot answer — the same reasoning `comparableHashDerivation` uses, and
  * two different answers to "what does untagged mean" would be worse than either.
  * The residue is honest and recorded: a pre-tag snapshot taken under an older
  * grammar stays usable, exactly as it is today, until something re-snapshots it.
@@ -674,7 +674,12 @@ export async function ackHole(root: string, id: string): Promise<{ ok?: true; re
   const work = workHashes(d);
   const { v, e } = selectWinner(versions, work);
   if (e.status !== "dangling") return { error: `node "${id}" is not a hole here (status: ${e.status})` };
-  const cites: NodeCitation[] = e.dangling.map((aid) => ({ anchorId: aid, acceptedHashes: [] }));
+  // Carry each dangling citation's accepted hashes onto the tombstone. Same reason
+  // as the shared path (`retireSharedDoc`): the removal claim is an inference from
+  // absence, and only the derivation these hashes carry says whether this index
+  // could have resolved the id in the first place. See docs/anchor-id-provenance.md §6.
+  const prior = new Map(v.citations.map((c) => [c.anchorId, c.acceptedHashes]));
+  const cites: NodeCitation[] = e.dangling.map((aid) => ({ anchorId: aid, acceptedHashes: [...(prior.get(aid) ?? [])] }));
   const branch = currentBranch(root);
   d.prepare(INS_VERSION_T).run(vid(), id, v.type, v.title, v.summary, v.body, null, headCommit(root), branch, nowISO(), JSON.stringify(cites), 1);
   return { ok: true, removedAnchors: e.dangling, on: branch };

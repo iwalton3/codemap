@@ -113,7 +113,7 @@ test("a snapshot from a different build reads as not cached, not as drift", asyn
 
 /**
  * Untagged snapshots stay usable, which is deliberate and is the same answer
- * `comparableDerivation` gives.
+ * `comparableHashDerivation` gives.
  *
  * Every snapshot cached before tags existed is untagged. Treating those as stale
  * would rebuild every cache on upgrade to answer a question they cannot answer, and

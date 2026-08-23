@@ -575,7 +575,14 @@ export async function retireSharedDoc(root: string, nodeId: string, rationale: s
 
   await publishDocVersion(b.cfg.path, b.cfg.universe, b.actor, {
     nodeId, type: v.type, title: v.title, summary: v.summary, body: v.body,
-    citations: v.citations.map((c) => ({ anchorId: c.anchorId, acceptedHashes: [] })),
+    // The hashes ride along, and they are NOT an acceptance claim — `evalVersion`'s
+    // removed branch never reads them. They are the derivation evidence: a tombstone
+    // asserts "this was removed", which is an inference from absence, and absence is
+    // only evidence when the id could have resolved here at all. Emptied, the
+    // tombstone arrives with nothing to judge that by and reads as holding against
+    // any index — including one whose build mints different ids for the same code.
+    // See docs/anchor-id-provenance.md §6.
+    citations: v.citations.map((c) => ({ anchorId: c.anchorId, acceptedHashes: [...c.acceptedHashes] })),
     removed: true,
     createdCommit: headCommit(root), createdBranch: currentBranch(root),
   });

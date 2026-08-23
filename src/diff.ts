@@ -14,7 +14,7 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { comparableDerivation, type Anchor, type Review } from "./schema.js";
+import { comparableHashDerivation, type Anchor, type Review } from "./schema.js";
 import { indexRepo, indexFile, indexBlob } from "./repo.js";
 import { readSnapshot, readAnchorStore, loadNodes, loadNodeVersions, winningVersionAt, readGraph, readReviews, readBugs } from "./store.js";
 import { reviewStatesFor } from "./reviews.js";
@@ -102,7 +102,7 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
     // were derived the same way — a re-vendored grammar tokenizes unchanged code
     // differently, and calling that "changed" reports the whole repository as
     // rewritten. Kept out of `impacted` below: not evidence anything went stale.
-    (comparableDerivation(b.derivation, a.derivation) ? changed : unverifiable).push(brief(a));
+    (comparableHashDerivation(b.derivation, a.derivation) ? changed : unverifiable).push(brief(a));
   }
 
   // Impact = the anchors whose existing documentation/reviews may no longer hold:

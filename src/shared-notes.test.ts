@@ -245,3 +245,43 @@ test("a doc whose code is genuinely gone can be retired, and stays resolvable", 
     assert.equal(after.resolved.removed, true, "and it wins here, where the code is absent");
   } finally { u.cleanup(); }
 });
+
+/**
+ * A tombstone's citations keep their accepted hashes.
+ *
+ * Not as an acceptance — `evalVersion`'s removed branch never reads them — but as
+ * the derivation evidence behind the removal CLAIM. "This was removed" is an
+ * inference from absence, and absence only means removal if the reader's index could
+ * have resolved the id at all. Emptied, the tombstone reads as holding against every
+ * index, including one whose build spells the same code's ids differently.
+ * See docs/anchor-id-provenance.md §6.
+ */
+test("a retired doc's tombstone carries the evidence its claim rests on", async () => {
+  const u = universe();
+  try {
+    const { init, document: documentNode } = await import("./ops.js");
+    const { readAnchorStore } = await import("./store.js");
+    const { resolveSidecar } = await import("./sidecar-config.js");
+    const { readDocs } = await import("./shared-docs.js");
+
+    mkdirSync(join(u.root, "src"), { recursive: true });
+    writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+    await init(u.root);
+    const anchorId = (await readAnchorStore(u.root)).anchors[0]!.id;
+    await documentNode(u.root, { type: "process", title: "Seam", summary: "s", body: "b", anchors: [anchorId] });
+    await shared.publishLocalDocs(u.root);
+    const nodeId = [...(await shared.sharedDocs(u.root) as any).docs][0].nodeId;
+
+    writeFileSync(join(u.root, "src", "pay.ts"), "export const nothing = 1;\n", "utf8");
+    await init(u.root);
+    const r = await shared.retireSharedDoc(u.root, nodeId, "the transfer entry point was deleted in v3") as any;
+    assert.ok(r.ok, JSON.stringify(r));
+
+    const cfg = resolveSidecar(u.root)!;
+    const doc = (await readDocs(cfg.path, cfg.universe)).get(nodeId)!;
+    const tomb = doc.versions.find((v) => v.removed);
+    assert.ok(tomb, "retiring writes a tombstone version");
+    assert.ok(tomb.citations[0]!.acceptedHashes.length > 0,
+      "the tombstone must not empty the set — that is the only evidence it could resolve the id");
+  } finally { u.cleanup(); }
+});

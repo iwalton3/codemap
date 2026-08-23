@@ -191,7 +191,7 @@ test("the annotation is parsed, and near-misses are refused", () => {
  *
  * Which makes it the weak link, because a manual bump can be forgotten — and a
  * forgotten one is silent and total: every hash moves, the tag says nothing
- * changed, so `comparableDerivation` calls them comparable and the entire store
+ * changed, so `comparableHashDerivation` calls them comparable and the entire store
  * reads as drift. Demonstrated by changing one separator in `canonicalize` and
  * watching the hash move while the tag stood still.
  *
@@ -288,7 +288,7 @@ test("two derivations are not comparable, and a legacy hash still falls back", (
   assert.equal(comparableHashes(mine, hashTokens(["b"], null)), true,
     "an unannotated hash asserts nothing about its derivation");
   // The tax of two encodings of one concept: both paths must reduce to the SAME
-  // predicate. `comparableDerivation` compares the same three fields for the same
+  // predicate. `comparableHashDerivation` compares the same three fields for the same
   // reason — an id scheme decides which ids pair, not how a body was hashed.
   assert.equal(comparableHashes(mine, hashTokens(["b"], { ...TAG, anchorScheme: TAG.anchorScheme + 1 })), true,
     "anchorScheme is not part of a hash's derivation");
