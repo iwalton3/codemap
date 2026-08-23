@@ -59,6 +59,17 @@ export type Resolved =
   | { at: "found"; hash: string }
   /** Not here, and it would have resolved if it existed — so the absence is real. */
   | { at: "absent" }
+  /**
+   * Not here, and this index cannot say whether it could ever have been.
+   *
+   * Distinct from `absent` for exactly ONE reader: a tombstone, whose claim is
+   * "these are gone" and which therefore reads absence as EVIDENCE. An index with
+   * no usable derivation tags produces absence for free, and letting a tombstone
+   * win on it hides a doc whose code may be sitting right there — the direction
+   * with no recovery. Every other caller treats this the same as `absent`, which
+   * is what they did before it existed.
+   */
+  | { at: "undetermined"; detail: string }
   /** Not here, and it could not have been minted by this index either way. */
   | { at: "incomparable"; detail: string };
 
@@ -173,13 +184,34 @@ export function resolveAnchor(
   // this index's. So accruing a foreign annotated hash beside a legacy one must not
   // turn `absent` into `incomparable` — more evidence cannot make an answer worse.
   if (!marks.length || parsed.some((m) => m === null)) return { at: "absent" };
-  if (d.anyUntagged || !d.tags.length) return { at: "absent" };
 
   // ANY match is enough, and the asymmetry is deliberate: a hash only enters an
   // accepted set when the id RESOLVED under that derivation (`store.ts`, `capture`),
   // so one matching mark is positive proof that a build like this one joined this id
   // before — which outranks any number of derivations that never saw it.
+  //
+  // BEFORE the no-tag fallback, not after. One legacy row beside a tagged one sets
+  // `anyUntagged`, and checking that first threw away a positive match — which is
+  // precisely the partially-upgraded window this whole mechanism is for.
   for (const m of marks) if (matches(m, d, index.knownTags)) return { at: "absent" };
+
+  // An index with NO ROWS AT ALL stays `absent`, and this is load-bearing rather
+  // than a leftover: an index scoped to a doc's citations is empty exactly when all
+  // of that code is gone, which is the situation a tombstone DESCRIBES. Calling it
+  // undecidable would make every legitimate retirement inert and stop `ackHole`
+  // acknowledging a hole — the case the paragraph above is about.
+  if (!d.tags.length) return { at: "absent" };
+
+  // Untagged rows beside tagged ones is the partially-upgraded window, and there the
+  // index genuinely cannot say. `absent` for everyone who asks "is the code here" —
+  // still the best answer, and the one they got before — but not proof of removal,
+  // which is the one reading that can hide a doc. See `Resolved.undetermined`.
+  if (d.anyUntagged) {
+    return {
+      at: "undetermined",
+      detail: "this index holds rows from before provenance, so it cannot say which builds minted its ids",
+    };
+  }
 
   return {
     at: "incomparable",

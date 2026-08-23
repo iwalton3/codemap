@@ -75,3 +75,35 @@ test("a tombstone whose citations this build resolved as gone still wins", () =>
   const content = version({ versionId: "v_content", citations: cites });
   assert.equal(selectWinner([tomb, content], mineEmpty).v.versionId, "v_tomb");
 });
+
+/**
+ * The same rule one step further out, and it is the case that could actually hide a
+ * doc today: an index with NO usable derivation tags.
+ *
+ * Such an index answers absence for free — it holds no rows that say what it could
+ * have minted. That absence used to be indistinguishable from an established one,
+ * so it cost a content version a `dangling` (badness 1) while being scored as
+ * positive evidence FOR the tombstone (badness 0), and the tombstone won outright.
+ * `undetermined` is what tells the two apart. See `Resolved.undetermined`.
+ */
+const legacyRows = anchorIndex(new Map(), { tags: [MINE], anyUntagged: true });
+
+for (const [what, idx] of [["untagged rows beside a tag", legacyRows]] as const) {
+  test(`a tombstone cannot win on an index with ${what}`, () => {
+    const cites = [{ anchorId: "a_x", acceptedHashes: [hashTokens(["body"], THEIRS)] }];
+    const tomb = version({ versionId: "v_tomb", citations: cites, removed: true } as Partial<NodeVersion>);
+    const content = version({ versionId: "v_content", citations: cites });
+    assert.equal(evalVersion(tomb, idx).badness, 1, "absence this index cannot establish is not evidence");
+    assert.equal(selectWinner([tomb, content], idx).v.versionId, "v_content", "so the doc stays visible");
+  });
+}
+
+test("…and a content version reads that absence exactly as it did before", () => {
+  // The half that must NOT change. `undetermined` was `absent` for every other
+  // caller, and a content version's question is still "is the code here".
+  const cites = [{ anchorId: "a_x", acceptedHashes: [hashTokens(["body"], THEIRS)] }];
+  const e = evalVersion(version({ versionId: "v_content", citations: cites }), legacyRows);
+  assert.deepEqual(e.dangling, ["a_x"]);
+  assert.equal(e.status, "dangling");
+  assert.equal(e.badness, 1);
+});

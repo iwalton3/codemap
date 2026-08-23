@@ -1131,18 +1131,48 @@ because each one is a decision and not a detail:
    branch that merely lacks an unrelated language. Per-citation is better and the
    citation's own marks name its grammar, but an id with no marks at all has no
    language to test.
-3. **"The reader is in exactly D's position" is too strong.** Comparability gives
+3. **"The reader is in exactly D's position" is too strong.** *(Decided 2026-08-23:
+   weaken the claim, keep the rule. A comparable reader shares the MINTING FUNCTION,
+   not the checkout and not the conclusion that the subject is gone. That limit is
+   already true of every tombstone — `dangling` deliberately includes renamed code —
+   so `judgedBy` neither adds it nor removes it, and the rule should stop claiming
+   otherwise.)* Comparability gives
    the same minting function, not the same checkout: a later D-compatible checkout
    can hold a renamed incarnation of the subject under another id. True of tombstones
    already; `judgedBy` does not strengthen it, so the claim should not be made.
-4. **The index fallback does not do what it says.** With no tags at all,
-   `resolveAnchor` returns `absent`, so the incomparable branch is never reached —
-   and even if it were, charging the tombstone for uncertainty only TIES it with the
-   content version, which `selectWinner` breaks by recency, normally in the
-   tombstone's favour. "The doc appears" needs the tie broken deliberately, not
-   assumed. Separately, `anyUntagged` must not defeat a positive match: one legacy
-   row beside a tagged one would resurrect every new tombstone during exactly the
-   partially-upgraded window this is for.
+4. ~~**The index fallback does not do what it says.**~~ **CLOSED (2026-08-23),** and
+   it was sharper than written. Both halves were real; one of them was real for a
+   different reason.
+
+   `resolveAnchor` gained a fourth answer, `undetermined`: not here, and this index
+   cannot say whether it could ever have been. An index with no usable derivation
+   tags produces absence for free, and only a POSITIVELY established absence is
+   evidence a removal holds. Every other caller treats `undetermined` exactly as it
+   treated `absent`, which is what they did before it existed — a content version's
+   question is still "is the code here", and the answer is still no.
+
+   **The tie was real after all, for this case.** An earlier read of this blocker
+   claimed the content version already won 0-vs-1, because `unverifiable` is out of
+   content badness while undecided is in tombstone badness. True for `incomparable`
+   — and false here, because `undetermined` is `dangling` for a content version and
+   therefore scores. Both sat at 1, and `selectWinner` broke it by recency, which a
+   removal wins by construction: it is written after the thing it removes. So
+   `selectWinner` now prefers SHOWN over hidden at equal badness. Hiding has to be
+   strictly better, never merely equal. A legitimate removal is unaffected — it
+   scores 0 against the content version's dangling and never reaches the tie.
+
+   The ordering half is fixed too: the positive-match loop now runs BEFORE the
+   `anyUntagged` fallback, so one legacy row beside a tagged one can no longer throw
+   away a match that had already been found.
+
+   **Where `undetermined` STOPS, and it is load-bearing.** An index with no rows at
+   all keeps answering `absent`. The first cut of this made it `undetermined` too,
+   which is defensible and broke a real test on the spot: an index scoped to a doc's
+   citations is empty exactly when all of that code is gone, which is the situation a
+   tombstone DESCRIBES. Every legitimate retirement went inert. `undetermined` is
+   therefore only the partially-upgraded window — untagged rows sitting beside tagged
+   ones — and the empty index stays the honest `absent` that `ackHole` needs to
+   acknowledge a hole at all.
 5. **A shared-only doc has no path.** `ackHole` is local and `annotate` validates a
    node target against `loadNodes`, which reads local `node_versions`. A doc that
    exists only on the sidecar cannot be queued by this route at all.

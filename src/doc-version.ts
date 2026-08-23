@@ -35,7 +35,12 @@ export function evalVersion(v: NodeVersion, work: AnchorIndex) {
     for (const c of v.citations) {
       const at = resolveAnchor(c.anchorId, c.acceptedHashes, work).at;
       if (at === "found") present.push(c.anchorId);
-      else if (at === "incomparable") undecided.push(c.anchorId);
+      // `undetermined` joins `incomparable` here and that is the whole point of the
+      // distinction: an index with no derivation tags produces absence for free, so
+      // reading it as proof of removal lets a tombstone win on nothing and hide a
+      // doc whose code may be right there. Only a POSITIVELY established absence
+      // (`absent`) is evidence the removal holds.
+      else if (at === "incomparable" || at === "undetermined") undecided.push(c.anchorId);
     }
     // Both count against the tombstone, but they are NOT the same thing to a reader:
     // `stale` on a removed version means "the code came back", and reporting an
@@ -54,7 +59,10 @@ export function evalVersion(v: NodeVersion, work: AnchorIndex) {
     // whether `documentNode` edits in place or forks — so this used to make a
     // derivation change take a durable write.
     if (r.at === "incomparable") { unverifiable.push(c.anchorId); continue; }
-    if (r.at === "absent") { dangling.push(c.anchorId); continue; }
+    // `undetermined` is dangling here, exactly as it was when it WAS `absent`. A
+    // content version's question is "is the code here", and the answer is still no;
+    // only the tombstone above needed the two absences told apart.
+    if (r.at === "absent" || r.at === "undetermined") { dangling.push(c.anchorId); continue; }
     const live = r.hash;
     if (c.acceptedHashes.some((h) => sameBody(h, live))) continue;
     // Mismatched — but a hash minted under an older HASH_SCHEME cannot be compared
@@ -75,13 +83,30 @@ export function evalVersion(v: NodeVersion, work: AnchorIndex) {
   return { status, stale, dangling, unverifiable, badness: stale.length + dangling.length };
 }
 
-/** The version that best fits the current branch: fewest problems, then most recent. */
+/**
+ * The version that best fits the current branch: fewest problems, then SHOWN over
+ * hidden, then most recent.
+ *
+ * The middle rule is deliberate and it is the whole of blocker 4. A tombstone and a
+ * content version citing the same code tie at equal badness whenever the index
+ * cannot establish the absence — and recency then decided it, normally for the
+ * tombstone, because a removal is written after the thing it removes. So a doc
+ * disappeared on a tie, and nobody goes looking for a doc they cannot see.
+ *
+ * Hiding has to be strictly better, never merely equal. This cannot suppress a
+ * legitimate removal: a tombstone whose citations this index resolved as gone
+ * scores 0 against the content version's dangling, and wins on badness before
+ * reaching here.
+ */
 export function selectWinner(versions: NodeVersion[], work: AnchorIndex): { v: NodeVersion; e: ReturnType<typeof evalVersion> } {
   let best = versions[0]!, bestE = evalVersion(best, work);
   for (const v of versions.slice(1)) {
     const e = evalVersion(v, work);
     // TODO: git-aware tiebreak (created_commit ancestry) — rare; most-recent for now.
-    if (e.badness < bestE.badness || (e.badness === bestE.badness && v.createdAt > best.createdAt)) { best = v; bestE = e; }
+    const better = e.badness !== bestE.badness ? e.badness < bestE.badness
+      : !!best.removed !== !!v.removed ? !v.removed
+      : v.createdAt > best.createdAt;
+    if (better) { best = v; bestE = e; }
   }
   return { v: best, e: bestE };
 }

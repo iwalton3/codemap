@@ -79,9 +79,34 @@ test("a pre-provenance record or index falls back to today's answer", () => {
     "an unannotated hash asserts nothing about its derivation");
   assert.deepEqual(resolveAnchor("a_gone", [], index([MINE])), { at: "absent" },
     "and a record with no hashes at all — a tombstone that emptied its set — has no evidence");
-  assert.deepEqual(resolveAnchor("a_gone", [evidence(tag({ grammarDigest: "f".repeat(64) }))],
-    index([MINE], { untagged: true })), { at: "absent" },
-    "an index holding untagged rows could have minted anything, so it rules nothing out");
+  const foreign = resolveAnchor("a_gone", [evidence(tag({ grammarDigest: "f".repeat(64) }))],
+    index([MINE], { untagged: true }));
+  assert.equal(foreign.at, "undetermined",
+    "an index holding untagged rows could have minted anything, so it rules nothing out — "
+    + "but that is 'cannot say', not the established absence a tombstone may win on");
+});
+
+/**
+ * The ordering, which is the half of this that can hide a doc.
+ *
+ * `anyUntagged` used to be tested BEFORE the positive-match loop, so one legacy row
+ * beside a tagged one threw away a match that had actually been found — during
+ * exactly the partially-upgraded window the mechanism exists for.
+ */
+test("a positive match survives a legacy row sitting beside it", () => {
+  assert.deepEqual(resolveAnchor("a_gone", [evidence(MINE)], index([MINE], { untagged: true })),
+    { at: "absent" }, "this index's own derivation minted that id before — the absence is established");
+  // The control: without the match it is still only 'cannot say'.
+  assert.equal(resolveAnchor("a_gone", [evidence(tag({ grammarDigest: "e".repeat(64) }))],
+    index([MINE], { untagged: true })).at, "undetermined");
+});
+
+test("an index with NO rows still establishes absence, and must", () => {
+  // The boundary of `undetermined`, and it is deliberate. An index scoped to a doc's
+  // citations is empty exactly when all of that code is gone — which is what a
+  // tombstone describes. Calling it undecidable makes every legitimate retirement
+  // inert. Deleting the last anchored symbol in a repo produces the same shape.
+  assert.deepEqual(resolveAnchor("a_gone", [evidence(MINE)], index([])), { at: "absent" });
 });
 
 /**
