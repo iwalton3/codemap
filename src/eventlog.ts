@@ -310,7 +310,7 @@ export async function emitEvent(
  * already guards, and rejecting an event for a missing timestamp would discard
  * meaning over presentation.
  */
-function wellFormed(e: LogEvent): boolean {
+export function wellFormed(e: LogEvent): boolean {
   return !!e && typeof e.id === "string" && !!e.id
     && typeof e.kind === "string" && typeof e.subject === "string"
     && !!e.actor && typeof e.actor.principal === "string" && !!e.actor.principal.trim()
@@ -320,6 +320,10 @@ function wellFormed(e: LogEvent): boolean {
     // chain edge it derives segments from, and an absent one is not a missing
     // convenience, it is an event whose place in its own writer's history is unknown.
     && typeof e.writer === "string" && !!e.writer
+    // An event may not BE the sentinel. `writerPrev: GENESIS` means "this opens the
+    // chain", so an event actually named `GENESIS` becomes the apparent predecessor
+    // of every chain opening and inherits their sight of it.
+    && e.id !== GENESIS
     && typeof e.writerPrev === "string" && !!e.writerPrev
     && Array.isArray(e.after)
     && typeof e.sidecarProtocol === "number" && typeof e.eventSchema === "number";
@@ -445,7 +449,7 @@ async function collect(logRoot: string, scope: string): Promise<{ events: LogEve
 
 /** Why a scope may not be answered from. One diagnostic, not a taxonomy. */
 export interface ScopeDiagnostic {
-  reason: "protocol" | "duplicate-id" | "fork";
+  reason: "protocol" | "duplicate-id" | "chain-cycle" | "fork";
   /** One line a person can act on. */
   detail: string;
   /** The ids or writers the detail is about, so a repair does not have to search. */
@@ -545,6 +549,27 @@ export function scopeStatus(events: LogEvent[], duplicateIds: string[] = []): Sc
       },
     };
   }
+  // Before forks, because a cycle is the more damaging shape and a forked-looking
+  // chain inside one is not a diagnosis worth printing. A cycle cannot be produced
+  // by any honest writer — `writerPrev` is the shard's own last line at append time —
+  // so this is corruption or a hand-edit, and it is fail-closed for the same reason
+  // everything else here is: left in the vector it makes every event cover every
+  // other, `heads()` returns nothing, and the next append silently records having
+  // seen nothing at all.
+  const cycles = chainCycles(events);
+  if (cycles.length) {
+    return {
+      status: "blocked",
+      diagnostic: {
+        reason: "chain-cycle",
+        detail: `${cycles.length} event(s) have a writerPrev chain that loops, so they `
+          + `have no place in their writer's history. No append can produce this — a `
+          + `shard has been hand-edited or corrupted. The events are readable; their `
+          + `causal position is not.`,
+        evidence: cycles.slice(0, 5),
+      },
+    };
+  }
   const forks = detectForks(events);
   if (forks.length) {
     return {
@@ -581,6 +606,18 @@ export function scopeStatus(events: LogEvent[], duplicateIds: string[] = []): Sc
  */
 export const parentsOf = (e: LogEvent): string[] => e.after ?? [];
 
+/**
+ * What must fold BEFORE an event: its causal parents, plus its own chain predecessor.
+ *
+ * Ordering only — `writerPrev` is not a causal claim about what the writer had seen
+ * from others, and `parentsOf` stays the answer to that. It is here so that "a chain
+ * parent folds before its child" is a property rather than a coincidence, which the
+ * segment vector's own-edge absorption relies on: absorbing a parent that has not
+ * been folded yet silently under-credits.
+ */
+const sortEdges = (e: LogEvent): string[] =>
+  e.writerPrev && e.writerPrev !== GENESIS ? [...parentsOf(e), e.writerPrev] : parentsOf(e);
+
 export function sortEvents(events: LogEvent[]): LogEvent[] {
   const byId = new Map(events.map((e) => [e.id, e]));
   // Sorted by id, so "first eligible" is always "lowest id that is eligible".
@@ -593,7 +630,7 @@ export function sortEvents(events: LogEvent[]): LogEvent[] {
     // leave it behind whatever came after. That still produces a causally valid
     // order, but not the same one twice from differently-ordered input — and
     // "every reader folds identically" is the whole point.
-    let i = pending.findIndex((e) => parentsOf(e).every((p) => !byId.has(p) || emitted.has(p)));
+    let i = pending.findIndex((e) => sortEdges(e).every((p) => !byId.has(p) || emitted.has(p)));
     // Nothing eligible means a cycle, which honest writers cannot produce (`after`
     // names an id that already existed). Take the lowest id and carry on: a log
     // that refuses to load is worse than one that orders a cycle arbitrarily.
@@ -616,23 +653,18 @@ export function sortEvents(events: LogEvent[]): LogEvent[] {
  * Tuesday — and its author saw none of it. Three people writing while apart is
  * enough to reach the bad case; see `contest-causality.test.ts`.
  *
- * The answer is a vector clock, and it is exact rather than a lower bound because
- * shards are SINGLE-WRITER and append-only: a pull takes a whole shard, so holding
- * one of a principal's events means holding every earlier one of theirs. One
- * number per person is therefore a complete summary.
+ * The answer is a vector clock, and what it compresses on is the SEGMENT — a
+ * maximal linear run of one writer's `writerPrev` chain. One number per segment is
+ * a complete summary because within a segment each event names its predecessor, so
+ * holding ordinal n really does mean holding 1..n.
  *
- * That number is the event's ORDINAL among its principal's events in fold order,
- * not its id. Ids are only a time order within one process — the same person
- * writing from a laptop and a desktop can mint a later event with a lower id, and
- * `sortEvents` exists precisely to put those back in causal order.
- *
- * The premise has one known hole, recorded rather than papered over: `readScope`
- * dedupes because ONE PERSON CAN APPEND FROM TWO MACHINES, and those events are
- * not causally related even though this keys them under one principal. Fold order
- * then supplies an edge between them that never existed. Attribution and
- * independence are unaffected — those want the human — but exact reachability for
- * a writer working from two machines at once needs a per-writer generation id,
- * which the event format does not carry.
+ * That ordinal is chain position, NOT fold position, and the difference is the whole
+ * soundness argument. Keyed per writer with fold-order ordinals — which is what this
+ * was — the prefix claim is false the moment one writer id exists on two clones: the
+ * two histories interleave, and absorbing either one credits the reader with the
+ * other. That silently suppressed a real contest between two OTHER people, and it is
+ * not a hole recorded and tolerated any more; see `buildSegments` and
+ * `docs/fork-repair.md`.
  *
  * Pass events in fold order (`readScope` returns them so). Events without an
  * actor are skipped rather than fatal: `readShard` rejects them at the door, and
@@ -655,64 +687,156 @@ export interface Causality {
  */
 const writerOf = (e: LogEvent): string | undefined => e.writer;
 
+/**
+ * The writer's events as a TREE, cut into maximal linear runs.
+ *
+ * A segment is a run of one writer's chain with no branch in it. Segments are what
+ * the causal vector compresses on, and the reason is the whole soundness argument:
+ * an ordinal is a PREFIX CLAIM — holding ordinal n asserts holding 1..n — and that
+ * is true within a segment by construction, because each event names its
+ * predecessor. Across a fork it is false, which is how the old per-writer ordinal
+ * credited a reader with a branch it had never seen. See `docs/fork-repair.md`.
+ *
+ * Segments are INTERNED to integers rather than keyed by a `writer + root` string.
+ * A concatenated key is not injective — writer `w` with root `a\0b` collides with
+ * writer `w\0a` with root `b` — and the collision reproduces the exact bug this
+ * function exists to fix. It is the third instance of that class in this repo; an
+ * integer cannot have it.
+ *
+ * `cyclic` is every event whose `writerPrev` chain never reaches a root. An honest
+ * writer cannot produce one, and it is not a curiosity: left in the vector it makes
+ * every event cover every other and `heads()` returns nothing at all, so the next
+ * append records having seen NOTHING. Those events are excluded here and reported as
+ * blocking evidence by `scopeStatus`.
+ */
+function buildSegments(events: LogEvent[], byId: Map<string, LogEvent>): {
+  segOf: Map<string, number>; ordOf: Map<string, number>; cyclic: string[];
+  chainParent: Map<string, string>;
+} {
+  const mine = events.filter((e) => writerOf(e) !== undefined);
+  /** event -> its predecessor IN THIS WRITER'S CHAIN, when the scope has it. */
+  const chainParent = new Map<string, string>();
+  const children = new Map<string, string[]>();
+  for (const e of mine) {
+    // The sentinel is a word, not an id — never look it up. `wellFormed` also refuses
+    // an event whose own id is `GENESIS`, so these two guards cover each other.
+    const p = e.writerPrev === GENESIS ? undefined : byId.get(e.writerPrev);
+    // Same writer only: a `writerPrev` naming somebody else's event is not a chain
+    // link, and treating it as one would splice two writers into one segment.
+    if (!p || writerOf(p) !== writerOf(e)) continue;
+    chainParent.set(e.id, p.id);
+    const kids = children.get(p.id);
+    if (kids) kids.push(e.id); else children.set(p.id, [e.id]);
+  }
+
+  // Cycles are detected EXPLICITLY, by walking each chain to its root. Inferring
+  // them from "never got a segment" is not enough and was wrong: a cycle with a
+  // branch hanging off it makes one of its own members look like a fork point, which
+  // turns the cycle into a segment with arbitrary ordinals and reports nothing. Found
+  // by probing A<->B with C also naming A: `saw(A, B)` came back true.
+  const onCycle = new Set<string>();
+  const done = new Set<string>();
+  for (const e of mine) {
+    if (done.has(e.id)) continue;
+    const path: string[] = [];
+    const onPath = new Set<string>();
+    let cur: string | undefined = e.id;
+    while (cur !== undefined && !done.has(cur) && !onPath.has(cur)) {
+      path.push(cur); onPath.add(cur);
+      cur = chainParent.get(cur);
+    }
+    // Stopped because we walked back onto our own path: everything from that point
+    // forward is the loop itself. Events that merely LEAD INTO a cycle are not in it
+    // and keep their own segment — their ordinal claims only themselves.
+    if (cur !== undefined && onPath.has(cur)) for (const id of path.slice(path.indexOf(cur))) onCycle.add(id);
+    for (const id of path) done.add(id);
+  }
+
+  const segOf = new Map<string, number>(), ordOf = new Map<string, number>();
+  let nextSeg = 0;
+  // A segment opens where the chain does — no predecessor in this scope — or right
+  // after a fork point, so each branch of a fork is its own segment and neither
+  // inherits the other's ordinals.
+  const opensSegment = (id: string): boolean => {
+    const p = chainParent.get(id);
+    return p === undefined || onCycle.has(p) || (children.get(p)?.length ?? 0) > 1;
+  };
+  /** Chain children, minus anything in a loop — a cycle is nobody's successor. */
+  const heirs = (id: string): string[] => (children.get(id) ?? []).filter((k) => !onCycle.has(k));
+  for (const e of mine) {
+    if (onCycle.has(e.id) || segOf.has(e.id) || !opensSegment(e.id)) continue;
+    const seg = nextSeg++;
+    let cur: string | undefined = e.id, ord = 1;
+    while (cur !== undefined && !segOf.has(cur)) {
+      segOf.set(cur, seg);
+      ordOf.set(cur, ord++);
+      const kids = heirs(cur);
+      cur = kids.length === 1 ? kids[0] : undefined;   // a branch ends the segment
+    }
+  }
+  return { segOf, ordOf, chainParent, cyclic: mine.filter((e) => !segOf.has(e.id)).map((e) => e.id) };
+}
+
 export function causality(sortedEvents: LogEvent[]): Causality {
   const byId = new Map(sortedEvents.map((e) => [e.id, e]));
-  /** writer -> how many of their events have been folded so far. */
-  const count = new Map<string, number>();
-  /** event -> its 1-based ordinal among its own writer's events. */
-  const seq = new Map<string, number>();
-  /** event -> the highest ordinal its writer had folded, per writer. */
-  const seen = new Map<string, Map<string, number>>();
-  /** writer -> their most recently folded event. */
-  const ownLast = new Map<string, string>();
+  const { segOf, ordOf, chainParent, cyclic } = buildSegments(sortedEvents, byId);
+  const cyclicSet = new Set(cyclic);
+  /** event -> the highest ordinal it holds, per SEGMENT. */
+  const seen = new Map<string, Map<number, number>>();
 
   for (const e of sortedEvents) {
-    const mine = writerOf(e);
-    if (!mine) continue;
-    const v = new Map<string, number>();
+    if (segOf.get(e.id) === undefined) continue;   // no writer, or in a chain cycle
+    const v = new Map<number, number>();
     const absorb = (id: string | undefined) => {
       const parent = id !== undefined ? byId.get(id) : undefined;
       if (!parent) return;
-      for (const [p, n] of seen.get(parent.id) ?? []) if ((v.get(p) ?? 0) < n) v.set(p, n);
-      const p = writerOf(parent);
-      const n = seq.get(parent.id);
-      if (p === undefined || n === undefined) return;
-      if ((v.get(p) ?? 0) < n) v.set(p, n);
+      for (const [s, n] of seen.get(parent.id) ?? []) if ((v.get(s) ?? 0) < n) v.set(s, n);
+      const s = segOf.get(parent.id), n = ordOf.get(parent.id);
+      if (s === undefined || n === undefined) return;
+      if ((v.get(s) ?? 0) < n) v.set(s, n);
     };
     for (const id of parentsOf(e)) absorb(id);
-    // A writer's own previous event is a causal parent as surely as `after` is:
-    // they had it by construction. Tracked separately because `after` names only
-    // the heads, and a writer whose own last event was not one would otherwise
-    // lose their own history.
-    absorb(ownLast.get(mine));
-
-    const n = (count.get(mine) ?? 0) + 1;
-    count.set(mine, n);
-    seq.set(e.id, n);
+    // The writer's own predecessor, taken from what the event RECORDED rather than
+    // from fold order. Fold order is a total order over the whole scope and had to be
+    // trusted to agree with append order for one writer — the very thing a fork
+    // breaks, and the reason the previous own-edge fabricated knowledge.
+    //
+    // The VALIDATED parent, not the raw field: `writerPrev` means "my own previous
+    // event", so one naming somebody else's is malformed. Absorbing it anyway let an
+    // event inherit another writer's whole vector and cover them in `heads()` — over-
+    // crediting, which is the direction that suppresses contests.
+    absorb(chainParent.get(e.id));
     seen.set(e.id, v);
-    ownLast.set(mine, e.id);
   }
 
   return {
     saw(from, target) {
-      const t = byId.get(target);
-      const n = seq.get(target);
-      const w = t ? writerOf(t) : undefined;
-      // No ordinal means the event was skipped as malformed, so nobody saw it.
-      if (w === undefined || n === undefined) return false;
-      return (seen.get(from)?.get(w) ?? 0) >= n;
+      const s = segOf.get(target), n = ordOf.get(target);
+      // No segment means malformed, writerless, or cyclic — nobody saw it.
+      if (s === undefined || n === undefined) return false;
+      return (seen.get(from)?.get(s) ?? 0) >= n;
     },
     heads() {
-      const covered = new Map<string, number>();
-      for (const v of seen.values()) for (const [p, n] of v) if ((covered.get(p) ?? 0) < n) covered.set(p, n);
+      const covered = new Map<number, number>();
+      for (const v of seen.values()) for (const [s, n] of v) if ((covered.get(s) ?? 0) < n) covered.set(s, n);
       return sortedEvents.filter((e) => {
-        const n = seq.get(e.id);
-        const w = writerOf(e);
-        return n !== undefined && w !== undefined && (covered.get(w) ?? 0) < n;
+        // A cyclic event is always a head. It gets no segment, so it grants nobody
+        // anything — but dropping it here would make it UNNAMEABLE, and `emitEvent`
+        // captures `heads()` as the next event's `after`. A cycle-only scope then
+        // produced `after: []`: the append recorded having seen nothing at all, which
+        // is the total causality loss the cycle handling exists to prevent, arriving
+        // by the other door. Nameable but crediting nothing is the conservative pair.
+        if (cyclicSet.has(e.id)) return true;
+        const s = segOf.get(e.id), n = ordOf.get(e.id);
+        return s !== undefined && n !== undefined && (covered.get(s) ?? 0) < n;
       }).map((e) => e.id);
     },
   };
 }
+
+/** Every event whose `writerPrev` chain loops and so has no place in any segment. */
+export const chainCycles = (events: LogEvent[]): string[] =>
+  buildSegments(events, new Map(events.map((e) => [e.id, e]))).cyclic;
 
 /** What a new write records as `after`. See `Causality.heads`. */
 export const causalHeads = (sortedEvents: LogEvent[]): string[] => causality(sortedEvents).heads();

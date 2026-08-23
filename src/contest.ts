@@ -58,19 +58,6 @@ export interface ContestState {
 export const newContestState = (): ContestState => ({ owned: new Map(), raisedAt: new Map() });
 
 /**
- * Whether these two writes came from one sequential writer.
- *
- * The principal is the FALLBACK, not the rule: events written before writer ids
- * existed carry none, and comparing an absent writer to a present one would call
- * an old event of yours somebody else's — turning every pre-upgrade revision into
- * a contest with its own author on the first read after upgrading.
- */
-const sameWriter = (held: { by: Actor; writer?: string }, e: LogEvent): boolean =>
-  held.writer !== undefined && e.writer !== undefined
-    ? held.writer === e.writer
-    : held.by.principal === e.actor.principal;
-
-/**
  * Apply one revision to the contest state, raising or clearing as it goes.
  *
  * `fields` is the entity's contestable scalars — the ones a single person owns.
@@ -115,20 +102,18 @@ export function applyRevision(
 
     if (!held) continue;
     if (held.value === incoming) continue;                          // agreeing is not conflict
-    // Revising your OWN write is not conflict — but "your own" is the CLONE's, not
-    // the person's. One person on two machines produces two genuinely concurrent
-    // writes, and the principal test suppressed the disagreement between them: the
-    // fold picked last-writer-wins and the person was never told a value had been
-    // dropped. That is the residue this module exists to make loud.
+    // Revising your OWN write is not conflict, and `saw` is the whole test for it.
     //
-    // Where both writes carry a writer, this is subsumed by `saw` below — a
-    // writer's own history is always in its own causal vector — so between two
-    // tagged events its only effect is the two-machine case. It is NOT subsumed
-    // when one side is a pre-writer event: those key on the principal in
-    // `causality` and the tagged one keys on the clone, so `saw` is false between
-    // them and this is what stops your own upgrade contesting your own old write.
-    // See PROPOSAL-provenance.md §4.
-    if (sameWriter(held, e)) continue;
+    // There used to be a `sameWriter` short-circuit here, ahead of this line. It was
+    // the bug: two branches of a fork share a writer id BY DEFINITION, so it
+    // suppressed exactly the intra-fork disagreement this module exists to make
+    // loud, and `saw` was never consulted. Its justification — "a writer's own
+    // history is always in its own causal vector" — is the premise a fork breaks.
+    //
+    // The segment vector makes `saw` sufficient: an honest writer's own chain is one
+    // segment and its prefix is credited, while two branches of a fork are separate
+    // segments that lend each other nothing. The pre-writer leg it also covered died
+    // with the protocol-1 freeze. See docs/fork-repair.md.
     if (saw(held.id)) continue;                                     // written with the full picture
     (entity.contested ??= []).push({
       field: k,

@@ -38,8 +38,14 @@ import { readScopeChecked, SHARD_EXT, type LogEvent, type ScopeStatus } from "./
  * corroboration keys on (principal, model), so a scope where somebody ran two
  * models folds to a different verdict list. Rows folded under 2 are answers to a
  * question this build no longer asks.
+ *
+ * 3 -> 4: the causal vector is derived from the `writerPrev` chain instead of fold
+ * order, and `contest.ts` lost its `sameWriter` short-circuit. A scope holding a
+ * forked writer now folds to a DIFFERENT contested set — the disagreement between
+ * two branches is raised where it used to be silently suppressed — and `scopeStatus`
+ * gained a `chain-cycle` verdict. See docs/fork-repair.md.
  */
-export const MATERIALIZER_VERSION = 3;
+export const MATERIALIZER_VERSION = 4;
 
 /**
  * What the events in a scope are, cheaply.

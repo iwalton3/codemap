@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { scenario, who, step, settle, type Scenario } from "./scenario.js";
 import { createFinding, revise, readFindings, ackQueue, foldFindings } from "./shared-findings.js";
 import type { LogEvent } from "./eventlog.js";
+import { testEvent } from "./test-events.js";
 
 const PR = "acme/api/pr-264";
 const NEW = { targetKind: "anchor" as const, targetId: "a_1", text: "the original text", comment: "the original ask", severity: "medium" as const };
@@ -163,3 +164,51 @@ test("…but one machine revising its own write is not a contest", async () => {
   } finally { s.dispose(); }
 });
 
+
+// --- a fork's two branches disagreeing -------------------------------------------
+
+test("two branches of one forked writer contest each other", () => {
+  // The (B) bug in docs/fork-repair.md. `applyRevision` short-circuited on
+  // `sameWriter` BEFORE consulting `saw` — and two branches of a fork share a writer
+  // id by definition, so the disagreement between two clones of one machine was
+  // never raised. The fold picked last-writer-wins and nobody was told.
+  //
+  // Deleting the short-circuit is only safe because the segment vector answers it:
+  // separate branches are separate segments and lend each other nothing.
+  const created = testEvent({
+    id: "0000000001-a", kind: "finding.created", subject: "f_1", writer: "w_seed",
+    data: { targetKind: "anchor", targetId: "a_1", text: "t" },
+  });
+  const branchA = testEvent({
+    id: "0000000002-b", kind: "finding.revised", subject: "f_1", writer: "w_copied",
+    after: [created.id], data: { now: { severity: "critical" }, was: {} },
+  });
+  const branchB = testEvent({
+    id: "0000000003-c", kind: "finding.revised", subject: "f_1", writer: "w_copied",
+    after: [created.id], data: { now: { severity: "low" }, was: {} },
+  });
+  const f = foldFindings([created, branchA, branchB]).get("f_1")!;
+  assert.ok(f.contested?.length, "a fork's two branches disagree and a person is asked");
+  assert.equal(f.contested![0]!.field, "severity");
+});
+
+test("but revising your own write along one chain is not a contest", () => {
+  // THE control, and the load-bearing one: it is what proves `saw` subsumes the
+  // deleted `sameWriter` rather than that contests simply stopped being suppressed.
+  // Same writer, same subject, same field — but chained, so it is one history.
+  const created = testEvent({
+    id: "0000000001-a", kind: "finding.created", subject: "f_1", writer: "w_one",
+    data: { targetKind: "anchor", targetId: "a_1", text: "t" },
+  });
+  const first = testEvent({
+    id: "0000000002-b", kind: "finding.revised", subject: "f_1", writer: "w_one",
+    writerPrev: created.id, after: [created.id], data: { now: { severity: "critical" }, was: {} },
+  });
+  const second = testEvent({
+    id: "0000000003-c", kind: "finding.revised", subject: "f_1", writer: "w_one",
+    writerPrev: first.id, after: [first.id], data: { now: { severity: "low" }, was: {} },
+  });
+  const f = foldFindings([created, first, second]).get("f_1")!;
+  assert.equal(f.contested, undefined, "changing your own mind in sequence is not a disagreement");
+  assert.equal(f.severity, "low", "and the later value stands");
+});
