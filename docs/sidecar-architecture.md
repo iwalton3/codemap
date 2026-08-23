@@ -130,6 +130,17 @@ an append.
 - **Bugs and triage are still local**, though the original table put them in the
   sidecar.
 
+## Contradictions found against this document, unresolved
+
+**Analyzer-generated docs ARE synced today.** This document says analyzer output
+is never synced (it is deterministic and regenerable by each party, so syncing it
+is churn). But `publishLocalDocs` passes `generatedBy: v.generatedBy` straight
+through to `publishDocVersion` (`src/ops-shared.ts`), so `generatedBy` nodes are
+published to the sidecar and existing logs may already hold them. Either this
+document is wrong or that line is. It is a decision that appears never to have
+been made deliberately, and it needs making before docs unify — a migration has to
+know whether to ignore, quarantine, or accept them.
+
 ## What is deliberately not decided here
 
 Whether findings follow docs into a canonical table. The two reviews split on it:
