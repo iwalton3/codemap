@@ -23,13 +23,21 @@ ambiguous in 2,641 records, and the newest fix cannot fire on either live store
 because both report `tags: 0`. What it produced that WAS worth having is folded in
 and marked done.
 
-**The live question is architectural**, and it is why the last stretch felt like
-whack-a-mole: shared entities live in their own SQLite tables read by their own
-ops, so every surface needs a hand-written bridge. `PROPOSAL-sidecar-materialization.md`
-already names the fix — the **outbox overlay**, still unbuilt, whose two
-prerequisites landed. The owner's framing of the target is tighter than the
-proposal's: *SQLite is the store; the event log is the wire between databases.*
-The proposal has the opposite polarity. Settling that is the next decision.
+**The architecture is SETTLED — read `docs/sidecar-architecture.md` first.** It is
+short, it is normative, and both proposals lose to it where they differ. It exists
+because the last stretch felt like whack-a-mole for a structural reason: shared
+entities live in their own SQLite tables read by their own ops, so every surface
+needs a hand-written bridge.
+
+What it settles: the log is authoritative for shared state and SQLite is its
+projection; the log is pull/push and is never read on an ordinary MCP or web read;
+one canonical table per entity kind, so a teammate's doc becomes a `node_versions`
+row with an origin marker. The **outbox overlay is cancelled** — with write-through
+it has no problem left to solve.
+
+**The live work is bringing the code to it**, and the first step is valuable alone:
+unify docs into `node_versions`, which ships step 5's remainder as a DELETION of
+the bridges rather than four more of them.
 
 **The list below is ordered by tractability, not by value.** That ordering is how
 the sidequest kept winning. Re-sort it against the north star before working it.
