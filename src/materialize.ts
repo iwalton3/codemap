@@ -155,19 +155,12 @@ export async function readCached<T>(
 }
 
 /**
- * Bring a scope's rows up to date, and say only whether that worked.
+ * `readCached` without the read — for a caller that is going to QUERY the rows, so
+ * deserializing the scope to hand it a value is the cost being avoided.
  *
- * `readCached` hands back the folded value, which means deserializing every row in
- * the scope. That is the right shape for "give me the catalogue" and the wrong one
- * for "which rows mention this id", where the answer is an indexed lookup and the
- * deserialization is exactly the cost being avoided. On a hit this reads one row;
- * on a miss it pays the fold that was owed anyway and throws away a value it
- * already had in memory.
- *
- * `false` means the rows could NOT be brought up to date — someone is appending
- * faster than the fold converges, and `readCached` answers from the log without
- * storing. A caller that then queried the tables would get a complete-looking
- * answer computed from rows it has been told are behind, so it must fall back.
+ * `false` means the rows are behind: `readCached` gives up after three attempts and
+ * answers from the log without storing. A caller that queried anyway would get a
+ * complete-looking answer from an input set it has been told is stale.
  */
 export async function ensureMaterialized<T>(
   root: string,

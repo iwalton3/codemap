@@ -642,9 +642,10 @@ says nothing about which change is responsible for it.
 Fixed by `offStoryReason` (`src/pr.ts`) and `prOffStoryFindings` (`src/ops.ts`): a
 finding off the worklist is admitted only on a tie to this pull request — posted to
 it, aimed by `publishPath` at a file it changes, last seen in a file it changes, or
-witnessed at its head. What that leaves out is counted and reported (`unattributed`)
-rather than dropped silently, because the orphans are still real work — they are
-just nobody's pull request, and `codemap orphans` is where they are answered.
+witnessed at its head. The residue is counted (`stranded`) rather than dropped
+silently — open findings this build cannot place, posted nowhere and settled by
+nobody. A count is not a workflow; `/api/orphans` is served and has no page. It is
+there so they do not go back to being found one at a time by tripping over them.
 
 **What this does NOT fix, and it is the half the recovery arc is for.** The finding
 is now off the wrong pull request; it is still unplaceable. `"at-head"` only ties a

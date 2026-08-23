@@ -2996,22 +2996,21 @@ class PrStoryPage extends Component {
   }
 
   /**
-   * The off-story rows come from the queue, not the story, so `load` has to refresh
-   * them too: every write on one falls back to a story reload, and a reload that
-   * left this frozen at whatever it held when the list was opened meant resolving
-   * or withdrawing an orphan changed nothing on screen.
+   * `load` has to refresh these too: every write on an off-story row falls back to a
+   * story reload, and leaving this frozen meant resolving or withdrawing an orphan
+   * changed nothing on screen.
    */
   async loadOffStory() {
-    // A stub on failure is a different shape from the real reply, and reading the
-    // rows off the union is what made every row here untyped.
+    // `null` on failure rather than a stub: a `{ findings: [] }` of our own is a
+    // different shape from the real reply, and reading rows off that union is what
+    // made every row here untyped.
     const got = await api('/api/pr/findings', { u: this.props.params.universe, pr: this.props.params.pr }).catch(() => null);
     this.state.offStory = isErr(got) ? null : got;
   }
 
   /**
-   * Findings this pull request owns that sit on no symbol in it — already posted to
-   * it, aimed at a file it changes, or on code it moved away. Which those are is
-   * `prOffStoryFindings`'s decision, not this page's: the test that used to live
+   * Findings this pull request owns that sit on no symbol in it. Which those are is
+   * `prOffStoryFindings`'s decision, not this page's — the test that used to live
    * here ("is the target missing?") is true of every orphan on the map.
    *
    * @returns {FindingRow[]}
@@ -3060,12 +3059,12 @@ class PrStoryPage extends Component {
     if (!this.state.showFindings) return html``;
     const all = this.allFindings();
     const off = this.offStoryFindings();
-    // Findings on code that is gone from the tree and tied to no pull request. They
-    // used to be listed here, on every PR alike; naming the count keeps them from
-    // going back to being found one at a time by tripping over them.
-    const stray = (this.state.offStory && this.state.offStory.unattributed) || 0;
-    const strayEl = () => html`<div class="prfstray dim" title="their target is not in the working tree and nothing ties them to this pull request — a rename, another branch, or code that is simply gone">
-      ${stray} finding${stray === 1 ? '' : 's'} point at code no longer in the tree and belong to no pull request — <code>codemap orphans</code>
+    // They used to be listed here, on every pull request alike. A count is not a
+    // workflow — `/api/orphans` has no page yet — but it keeps them from going back
+    // to being found one at a time by tripping over them.
+    const stray = (this.state.offStory && this.state.offStory.stranded) || 0;
+    const strayEl = () => html`<div class="prfstray dim" title="open findings whose target is not in the working tree, posted to no pull request and settled by nobody — a rename, another branch, or code that is simply gone">
+      ${stray} open finding${stray === 1 ? '' : 's'} point at code no longer in the tree and belong to no pull request — <code>codemap orphans</code>
     </div>`;
     if (!all.length && !off.length) return html`<div class="prfindings dim">No findings raised on this pull request yet.${when(stray, strayEl)}</div>`;
     const live = all.filter(e => !e.f.resolved && !e.f.withdrawn && !e.f.postedRef);

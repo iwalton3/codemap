@@ -101,13 +101,8 @@ export const docsProjection: Projection<Map<string, SharedDoc>> = {
   },
 };
 
-/**
- * The doc rows for a scope, optionally only for named nodes.
- *
- * The filtered form is what makes the reverse lookup worth having: `docsCiting`
- * narrows the universe to the handful of nodes that mention an anchor, and only
- * those versions' JSON is parsed. Unfiltered, this is the projection's `read`.
- */
+/** Unfiltered, this is the projection's `read`; filtered, it is what makes
+ *  `docsCiting` worth having — only the matched nodes' JSON is parsed. */
 function readDocRows(d: DatabaseSync, scope: string, nodeIds?: string[]): Map<string, SharedDoc> {
   const out = new Map<string, SharedDoc>();
   if (nodeIds && !nodeIds.length) return out;
@@ -141,30 +136,24 @@ export function docsByNode(root: string, scope: string, nodeIds: string[]): Map<
 /**
  * Which shared docs cite these anchors — the read `shared_doc_citation` exists for.
  *
- * The catalogue read (`sharedDocs`) does not need it: it wants every doc anyway, so
- * the citation ids are already in the JSON it is deserializing. This is the other
- * direction — "does anybody's doc describe THIS symbol" — which `get_anchor`,
- * `context` and `find_gaps` ask one anchor at a time, and answering it by
- * deserializing every shared doc in the universe is the cost materialization exists
- * to remove.
+ * The catalogue read wants every doc anyway, so its citation ids are already in the
+ * JSON it deserializes. This is the other direction — "does anybody's doc describe
+ * THIS symbol" — and answering it by deserializing the universe is the cost
+ * materialization exists to remove.
  *
- * Only the version's identity comes back, not its body. A caller that wants the doc
- * reads it; a caller that only wants to know one EXISTS — which is what a gap
- * report wants — never pays for the JSON. Callers must `ensureMaterialized` first:
- * these rows are a projection, and querying a stale one answers confidently from
- * the wrong input set.
+ * Node ids only, so nothing is parsed to find out. `ensureMaterialized` first:
+ * these are projection rows, and a stale one answers confidently from the wrong
+ * input set.
  */
-export interface DocCitationHit { nodeId: string; versionId: string; anchorId: string }
-
-export function docsCiting(root: string, scope: string, anchorIds: string[]): DocCitationHit[] {
+export function docsCiting(root: string, scope: string, anchorIds: string[]): string[] {
   const ids = [...new Set(anchorIds)];
   if (!ids.length) return [];
   const rows = db(root).prepare(
-    "SELECT v.node_id AS nodeId, c.version_id AS versionId, c.anchor_id AS anchorId "
+    "SELECT DISTINCT v.node_id AS nodeId "
     + "FROM shared_doc_citation c JOIN shared_doc_version v ON v.scope = c.scope AND v.version_id = c.version_id "
-    + `WHERE c.scope = ? AND c.anchor_id IN (${ids.map(() => "?").join(",")}) ORDER BY v.node_id, v.ord`,
-  ).all(scope, ...ids) as unknown as DocCitationHit[];
-  return rows;
+    + `WHERE c.scope = ? AND c.anchor_id IN (${ids.map(() => "?").join(",")})`,
+  ).all(scope, ...ids) as unknown as { nodeId: string }[];
+  return rows.map((r) => r.nodeId);
 }
 
 /** Shared notes, keyed by scope (`notes/<universe>/<bucket>`). */

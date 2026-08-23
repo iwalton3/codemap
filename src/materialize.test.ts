@@ -150,9 +150,7 @@ test("a doc's authors Map and version order survive the round trip", async () =>
       citations: [{ anchorId: "a_1", acceptedHashes: [] }],
       createdCommit: null, createdBranch: null,
     });
-    // No id passed, so each is minted. Passing one is for republishing a version
-    // that already HAS an identity, and two versions cannot share it: this test read
-    // `versionId: "ignored"` twice and became the canary that caught it.
+    // No id passed, so each is minted — two versions cannot share one.
     const id1 = await publishDocVersion(logRoot, U, izzie, v("first") as never);
     const id2 = await publishDocVersion(logRoot, U, dana, v("second") as never);
 

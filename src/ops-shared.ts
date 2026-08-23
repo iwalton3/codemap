@@ -567,19 +567,15 @@ export async function sharedDocs(root: string, opts: { nodeId?: string } = {}) {
 }
 
 /**
- * The team's docs describing these anchors — shared knowledge on an ordinary read.
+ * The team's docs describing these anchors. The local surfaces answer "what
+ * documents this code" from `nodes` alone, so a colleague's synced doc reads as a
+ * gap. PROPOSAL-sidecar-materialization.md step 5.
  *
- * Step 5 of PROPOSAL-sidecar-materialization.md, at its smallest useful size: the
- * local surfaces answer "what documents this code" from `nodes` alone and are blind
- * to anything a teammate synced, which is `find_gaps` reporting a gap a colleague
- * documented last week — the product's north star running backwards.
+ * The verdict is `evalVersion`'s. A fourth re-derivation of "is this doc fresh"
+ * must not appear here — the three that existed had already drifted (§7.4).
  *
- * The verdict comes from `evalVersion`, the same function the local path and the
- * catalogue use. There is no fourth re-derivation of "is this doc fresh" here, and
- * there must not be: three had already drifted (§7.4).
- *
- * `null` when there is no sidecar. Not an error — every caller is a local read that
- * worked perfectly well before shared docs existed, and must keep working.
+ * `null`, not an error, with no sidecar: every caller is a local read that worked
+ * before shared docs existed and must keep working.
  */
 export async function sharedDocsCiting(root: string, anchorIds: string[]) {
   const cfg = resolveSidecar(root);
@@ -593,7 +589,7 @@ export async function sharedDocsCiting(root: string, anchorIds: string[]) {
   // fold rather than under-reporting what the team has written.
   const fresh = await ensureMaterialized(root, cfg.path, scope, sidecarIdentity(cfg), foldDocs, docsProjection);
   const docs = fresh
-    ? docsByNode(root, scope, docsCiting(root, scope, ids).map((h) => h.nodeId))
+    ? docsByNode(root, scope, docsCiting(root, scope, ids))
     : new Map([...(await cachedDocs(root, cfg))].filter(([, d]) =>
       d.versions.some((v) => v.citations.some((c) => ids.includes(c.anchorId)))));
   if (!docs.size) return [];

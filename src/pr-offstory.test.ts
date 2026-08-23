@@ -1,11 +1,4 @@
-/**
- * Which findings a pull request owns that sit on none of its symbols.
- *
- * The bug this covers: the rule used to be "is the target missing from the working
- * tree?", which is true of every finding on every other branch. The whole map's
- * orphans were listed on every pull request alike, and an agent handed that list
- * re-cited them against changes they had nothing to do with.
- */
+/** Which findings a pull request owns that sit on none of its symbols. */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

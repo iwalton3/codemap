@@ -188,28 +188,20 @@ export interface NewDocVersion {
   createdCommit?: string | null;
   createdBranch?: string | null;
   /**
-   * The version's identity, when it already HAS one — a local version being
-   * published, not a new one being written.
+   * ONLY for an id this machine's own store minted — never from an opaque caller,
+   * which is why `shareDoc` strips it. Version ids are unique per SCOPE and not per
+   * node: `foldDocs` drops any repeat, so a colliding id costs THAT node its doc for
+   * the whole team.
    *
-   * ONLY for an id this machine's own store minted. Version ids are unique per
-   * SCOPE and not per node: `foldDocs` drops any repeat, so an id that collides
-   * with another node's costs that node its doc for the whole team. Never pass one
-   * through from an opaque caller — see `shareDoc`, which strips it.
-   *
-   * Minting here unconditionally gave the same content two ids, one local and one
-   * shared, and nothing downstream could tell the copies apart. That is the exact
-   * dedupe the pending overlay is built on: a local row disappears when its own
-   * event materializes, which it can only do if the two carry one id. The fold
-   * writes a version id once, so re-publishing is idempotent rather than doubling.
-   * See PROPOSAL-sidecar-materialization.md §7, "the outbox model".
+   * It exists because the pending overlay identifies a local row with its own
+   * published event, which needs the two to carry one id — see
+   * PROPOSAL-sidecar-materialization.md §7, "the outbox model".
    */
   versionId?: string;
   /**
-   * When it was WRITTEN, when that is not now — a backfill republishes a node's
-   * whole history, and stamping each one at the moment of migration made
-   * `selectWinner`'s equal-badness tiebreak rank by publication order instead of
-   * authorship. It agrees with authorship only while the backfill happens to
-   * iterate in order.
+   * When it was WRITTEN, when that is not now. A backfill republishes a node's whole
+   * history, and `selectWinner` tiebreaks equal badness on this — so stamping it at
+   * migration time ranks versions by publication order instead of authorship.
    */
   createdAt?: string;
 }

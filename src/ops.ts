@@ -820,20 +820,15 @@ export async function prStoryFor(root: string, input: string, opts: { fetch?: bo
 }
 
 /**
- * The findings a pull request owns that sit on none of its symbols.
+ * The findings a pull request owns that sit on none of its symbols — already posted
+ * to it, aimed at a file it changes, or on the symbol it just renamed away.
  *
- * The walkthrough is built from the worklist, so a finding whose anchor the
- * worklist does not hold cannot appear on it at all — and some of those are
- * squarely this pull request's business: one already posted to it, one aimed at a
- * file it changes, one on the symbol it just renamed away.
+ * `offStoryReason` is the rule, and why it is a rule is in the comment there.
  *
- * The rule for which is `offStoryReason`, and the reason it is a rule rather than
- * "is the target missing?" is in the comment there: the map's orphans are missing
- * from every branch, so the loose test put all of them into every pull request.
- *
- * `unattributed` counts what that leaves behind. It is deliberately reported
- * rather than dropped silently — the orphans are still real work, they are just
- * nobody's pull request. `orphanedWork` is where they are answered.
+ * `stranded` is the residue, counted so it does not go quiet: findings whose target
+ * this build cannot place, which nobody has posted anywhere and nobody has settled.
+ * It is NOT "everything the rule excluded" — a finding posted to another pull
+ * request is that one's, and a resolved one is nobody's. `orphanedWork` answers them.
  */
 export async function prOffStoryFindings(root: string, input: string, opts: { fetch?: boolean } = {}) {
   const t = await prTriage(root, input, { fetch: opts.fetch });
@@ -858,7 +853,7 @@ export async function prOffStoryFindings(root: string, input: string, opts: { fe
   const lastFile = (id: string) => offTree.get(id)?.anchor.file ?? kept.get(id)?.file;
 
   const why = new Map<string, OffStoryReason>();
-  let unattributed = 0;
+  let stranded = 0;
   for (const a of anns) {
     const missing = unplaceable(a);
     const r = offStoryReason(a, {
@@ -866,7 +861,7 @@ export async function prOffStoryFindings(root: string, input: string, opts: { fe
       unplaceable: missing, file: missing ? lastFile(a.target.id) : undefined,
     });
     if (r) why.set(a.id, r);
-    else if (missing) unattributed++;
+    else if (missing && !a.postedRef && !a.resolved && !a.withdrawn) stranded++;
   }
 
   // Full form, not brief: these rows are the ONLY ones that know their own file and
@@ -875,7 +870,7 @@ export async function prOffStoryFindings(root: string, input: string, opts: { fe
   const q = await reviewQueue(root, { assignedOnly: false, includeResolved: true, brief: false, ids: [...why.keys()] });
   return {
     pr: t.pr.number,
-    unattributed,
+    stranded,
     findings: q.queue.map((f) => ({ ...f, why: why.get(f.id)! })),
   };
 }
@@ -2126,13 +2121,9 @@ export async function getAnchor(root: string, id: string) {
       const rp = citeReviews.get(`node:${n.id}`);
       return { id: n.id, title: n.title, status: n.status ?? "fresh", trust: trustOf(n.status, rp) };
     }),
-    // What the TEAM has written about this symbol. `citedBy` is this machine's
-    // nodes, so without this the answer to "is this documented" was one person's
-    // half of it, and a colleague's doc from last week read as a gap.
-    //
-    // A separate field rather than merged into `citedBy`: the two have different
-    // authority (one is in your store, the other is the sidecar's) and merging them
-    // would make "who says so" unanswerable from the reply.
+    // Separate from `citedBy` rather than merged: one is this machine's store and
+    // the other is the sidecar's, and merging them makes "who says so"
+    // unanswerable from the reply.
     ...(sharedCites?.length ? { sharedDocs: sharedCites } : {}),
     bugs: bugStore.bugs.filter((b) => b.anchors.includes(id)).map((b) => ({ id: b.id, title: b.title, status: b.status })),
     annotations: annStore.annotations.filter((a) => a.target.kind === "anchor" && a.target.id === id),
@@ -3195,10 +3186,8 @@ export async function reviewQueue(
     assignedOnly?: boolean;
     includeResolved?: boolean;
     /**
-     * Exactly these annotations, in the queue's own shape. For a caller that has
-     * already decided WHICH findings it wants and needs the rows built — the full
-     * form re-indexes a file per item, so selecting first and asking second is the
-     * difference between reading this pull request's findings and reading the map's.
+     * Exactly these annotations, in the queue's own shape — restricted before
+     * paging and before the full form re-indexes a file per row.
      */
     ids?: string[];
   } = {},

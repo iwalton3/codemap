@@ -55,27 +55,29 @@ export interface SidecarConfig {
  * reason: the field genuinely moves.
  */
 /**
- * A backstop under the stamp below, not a substitute for it.
+ * Cached, because deriving this spawns `git remote get-url` and `resolveSidecar` is
+ * on a per-ANCHOR read path. Two invalidations, and both are needed:
  *
- * `.git/config` is what `git remote add/set-url` writes, so the stamp catches the
- * ordinary case the instant it happens. It does NOT catch every way the effective
- * origin can move: `url.*.insteadOf` rewrites it from global or system config,
- * `include.path`/`includeIf` can put `remote.origin.url` in another file entirely,
- * and a coarse-resolution filesystem can hide a same-size rewrite inside one tick.
- * Re-resolving once a minute costs one spawn and makes all of those self-heal.
+ * - `.git/config`'s stamp, the file `git remote add/set-url` writes, so the
+ *   ordinary case is caught the instant it happens.
+ * - A TTL under it, for the ways the effective origin moves without that file:
+ *   `url.*.insteadOf` from global or system config, `include.path`/`includeIf`
+ *   putting the remote elsewhere, a coarse-resolution filesystem hiding a same-size
+ *   rewrite inside one tick.
+ *
+ * NOT process-lifetime like `db()`'s connection: the origin decides the NAMESPACE
+ * everything shared is written under, and `git init` then `git remote add` then
+ * carrying on with the running server is an ordinary morning.
  */
 const KEY_TTL_MS = 60_000;
 const keyCache = new Map<string, { stamp: string; at: number; key: string }>();
 
 /**
- * `.git/config` as a change signal — the file `git remote` writes.
- *
- * Null when there is no ordinary `.git` directory: a gitless universe (there is
- * one in the guinea-pig set) or a worktree, where `.git` is a FILE pointing at a
- * shared common dir. Resolving that needs another spawn, which is the cost being
- * avoided, so those roots simply do not cache — the behaviour they had before.
- * Nanosecond mtime for the same reason `scopeFingerprint` uses it: millisecond
- * resolution collapses a write that lands in the same tick as the read.
+ * Null where there is no ordinary `.git` directory — a gitless universe, or a
+ * worktree where `.git` is a FILE pointing at a shared common dir. Resolving that
+ * needs the spawn this exists to avoid, so those roots do not cache at all.
+ * Nanosecond mtime for `scopeFingerprint`'s reason: milliseconds collapse a write
+ * that lands in the same tick as the read.
  */
 function configStamp(root: string): string | null {
   try {

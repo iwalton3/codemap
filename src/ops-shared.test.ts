@@ -389,7 +389,7 @@ test("no sidecar leaves the local read exactly as it was", async () => {
 
 test("share_doc cannot choose its own version id or its own time", async () => {
   // Version ids are unique per SCOPE, not per node. An id colliding with another
-  // node's makes `foldDocs` drop the newcomer and leaves that node an empty doc for
+  // node's makes `foldDocs` drop the newcomer, costing that node its doc for
   // everybody; a `createdAt` in the future wins `selectWinner`'s tiebreak against
   // every later version forever. `share_doc` takes an opaque object, so neither
   // field can be taken on trust — and a NEW version has no identity to preserve.
