@@ -12,7 +12,7 @@ import { requireActor, isAgentActor } from "./identity.js";
 import { comparableHashes, sameBody } from "./normalize.js";
 import { classifyCitations } from "./citation-state.js";
 import { readCached } from "./materialize.js";
-import { findingsProjection } from "./shared-projections.js";
+import { findingsProjection, docsProjection, notesProjection } from "./shared-projections.js";
 import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
 import { resolveSidecar, scopeFor, type SidecarConfig } from "./sidecar-config.js";
 import { originSlug, headCommit, currentBranch } from "./git.js";
@@ -20,15 +20,21 @@ import { fetchReviewThreads, type GhRunner } from "./pr-push.js";
 import { ensureSidecar, sync as sidecarSync, readManifests, checkPeers, currentManifest } from "./sidecar.js";
 import {
   createFinding, corroborate, comment, promote, request, setState, recordOutcome,
-  markPosted, markUpstreamed, promoteToBug, readFindings, needsHumanAck, ackQueue,
+  markPosted, markUpstreamed, promoteToBug, needsHumanAck, ackQueue,
   revise, resolveContest, relocate,
   foldFindings, findingScope,
   type SharedFinding, type Verdict, type Ask, type FindingState, type NewFinding,
 } from "./shared-findings.js";
 import { publishWalkthrough, readWalkthroughs, currentWalkthrough, staleWalkthroughs } from "./shared-walkthrough.js";
-import { createNote, answerNote, resolveNote, notesForTarget, allNotes, type NewNote } from "./shared-notes.js";
+import {
+  createNote, answerNote, resolveNote, allNotes, foldNotes, noteScope, bucketFor,
+  type NewNote,
+} from "./shared-notes.js";
 import { readAnnotations, readAnchorStore, loadNodes, loadNodeVersions, derivationLookup} from "./store.js";
-import { publishDocVersion, acceptDocHash, readDocs, resolveDoc, type NewDocVersion } from "./shared-docs.js";
+import {
+  publishDocVersion, acceptDocHash, resolveDoc, foldDocs, docScope,
+  type NewDocVersion,
+} from "./shared-docs.js";
 import type { PrWalkthrough } from "./walkthrough.js";
 
 const NO_SIDECAR =
@@ -261,6 +267,21 @@ export async function settleContest(root: string, pr: number | string, id: strin
 const cachedFindings = (root: string, cfg: { path: string; universe: string }, pr: number | string) =>
   readCached(root, cfg.path, findingScope(prKey(cfg, pr)), cfg.path, foldFindings, findingsProjection);
 
+/** A universe's shared docs, through the cache. Same shape as findings above. */
+const cachedDocs = (root: string, cfg: { path: string; universe: string }) =>
+  readCached(root, cfg.path, docScope(cfg.universe), cfg.path, foldDocs, docsProjection);
+
+/**
+ * One target's notes, through the cache.
+ *
+ * Notes shard by target into 256 buckets, so this folds ONE bucket and filters —
+ * which is what `notesForTarget` does, with the fold now cached per bucket.
+ */
+const cachedNotes = async (root: string, cfg: { path: string; universe: string }, targetId: string) => {
+  const all = await readCached(root, cfg.path, noteScope(cfg.universe, bucketFor(targetId)), cfg.path, foldNotes, notesProjection);
+  return [...all.values()].filter((n) => n.target.id === targetId);
+};
+
 export async function sharedFindings(root: string, pr: number | string, opts: { queue?: boolean } = {}) {
   const cfg = resolveSidecar(root);
   if (!cfg) return { error: NO_SIDECAR };
@@ -354,7 +375,7 @@ export async function mirrorNote(root: string, n: NewNote): Promise<{ shared: bo
 export async function sharedNotes(root: string, targetId: string) {
   const cfg = resolveSidecar(root);
   if (!cfg) return { error: NO_SIDECAR };
-  const notes = await notesForTarget(cfg.path, cfg.universe, targetId);
+  const notes = await cachedNotes(root, cfg, targetId);
   return {
     universe: cfg.universe,
     target: targetId,
@@ -451,7 +472,7 @@ async function liveHashes(root: string): Promise<AnchorIndex> {
 export async function sharedDocs(root: string, opts: { nodeId?: string } = {}) {
   const cfg = resolveSidecar(root);
   if (!cfg) return { error: NO_SIDECAR };
-  const docs = await readDocs(cfg.path, cfg.universe);
+  const docs = await cachedDocs(root, cfg);
   const live = await liveHashes(root);
   // Classified once for every citation in the catalogue: the dry run had a
   // thousand of them, and per-citation lookups would be a query each.
@@ -554,7 +575,7 @@ export async function shareDoc(root: string, v: NewDocVersion) {
 export async function confirmSharedDoc(root: string, nodeId: string, versionId?: string) {
   const b = bind(root);
   if ("error" in b) return b;
-  const docs = await readDocs(b.cfg.path, b.cfg.universe);
+  const docs = await cachedDocs(root, b.cfg);
   const doc = docs.get(nodeId);
   if (!doc) return { error: `no shared doc ${nodeId}` };
   const live = await liveHashes(root);
@@ -621,7 +642,7 @@ export async function retireSharedDoc(root: string, nodeId: string, rationale: s
   }
   if (!rationale.trim()) return { error: "say why the subject is gone — a tombstone with no reason is indistinguishable from a mistake" };
 
-  const doc = (await readDocs(b.cfg.path, b.cfg.universe)).get(nodeId);
+  const doc = (await cachedDocs(root, b.cfg)).get(nodeId);
   if (!doc) return { error: `no shared doc ${nodeId}` };
   const live = await liveHashes(root);
   const v = resolveDoc(doc, live);
@@ -660,7 +681,7 @@ export async function publishLocalDocs(root: string, opts: { dryRun?: boolean } 
   if ("error" in b) return b;
   await ensureSidecar(b.cfg.path, b.actor);
   const nodes = await loadNodes(root);
-  const already = await readDocs(b.cfg.path, b.cfg.universe);
+  const already = await cachedDocs(root, b.cfg);
   const todo = nodes.filter((n) => !already.has(n.id));
   if (opts.dryRun) {
     return { universe: b.cfg.universe, local: nodes.length, alreadyShared: nodes.length - todo.length, wouldPublish: todo.length };

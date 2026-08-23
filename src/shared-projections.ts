@@ -15,6 +15,9 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Projection } from "./materialize.js";
 import { needsHumanAck, type SharedFinding } from "./shared-findings.js";
+import type { SharedDoc, UnmatchedAcceptance } from "./shared-docs.js";
+import type { SharedNote } from "./shared-notes.js";
+import type { Actor, NodeVersion } from "./schema.js";
 
 /**
  * Findings, keyed by scope.
@@ -56,6 +59,75 @@ export const findingsProjection: Projection<Map<string, SharedFinding>> = {
         // A row nothing can parse is the same as no row: the scope's fingerprint
         // will not match on the next read either, so the fold reruns and replaces it.
       }
+    }
+    return out;
+  },
+};
+
+/**
+ * Shared docs, keyed by scope (`docs/<universe>` — universe-qualified already).
+ *
+ * Two fields do NOT survive a JSON round trip and therefore get columns:
+ * `versions` is ORDERED (oldest first) and row order is not a property of a table,
+ * and `authors` is a `Map`, which `JSON.stringify` renders as `{}` — silently, and
+ * a doc that forgot who wrote each version would look perfectly well formed. The
+ * equivalence test is what catches that class, which is why it compares serialized
+ * forms rather than spot-checking fields.
+ */
+export const docsProjection: Projection<Map<string, SharedDoc>> = {
+  write(d: DatabaseSync, scope: string, value: Map<string, SharedDoc>): void {
+    for (const t of ["shared_doc", "shared_doc_version", "shared_doc_citation"]) {
+      d.prepare(`DELETE FROM ${t} WHERE scope = ?`).run(scope);
+    }
+    const insDoc = d.prepare("INSERT INTO shared_doc(scope,node_id,unmatched) VALUES(?,?,?)");
+    const insVer = d.prepare("INSERT INTO shared_doc_version(scope,node_id,version_id,ord,author,body) VALUES(?,?,?,?,?,?)");
+    const insCite = d.prepare("INSERT OR IGNORE INTO shared_doc_citation(scope,version_id,anchor_id) VALUES(?,?,?)");
+    for (const doc of value.values()) {
+      insDoc.run(scope, doc.nodeId, doc.unmatched?.length ? JSON.stringify(doc.unmatched) : null);
+      doc.versions.forEach((v, i) => {
+        const a = doc.authors.get(v.versionId);
+        insVer.run(scope, doc.nodeId, v.versionId, i, a ? JSON.stringify(a) : null, JSON.stringify(v));
+        for (const c of v.citations ?? []) insCite.run(scope, v.versionId, c.anchorId);
+      });
+    }
+  },
+
+  read(d: DatabaseSync, scope: string): Map<string, SharedDoc> {
+    const out = new Map<string, SharedDoc>();
+    for (const r of d.prepare("SELECT node_id, unmatched FROM shared_doc WHERE scope = ? ORDER BY rowid").all(scope) as unknown as
+      { node_id: string; unmatched: string | null }[]) {
+      const doc: SharedDoc = { nodeId: r.node_id, versions: [], authors: new Map<string, Actor>() };
+      if (r.unmatched) doc.unmatched = JSON.parse(r.unmatched) as UnmatchedAcceptance[];
+      out.set(r.node_id, doc);
+    }
+    for (const r of d.prepare("SELECT node_id, version_id, author, body FROM shared_doc_version WHERE scope = ? ORDER BY node_id, ord").all(scope) as unknown as
+      { node_id: string; version_id: string; author: string | null; body: string }[]) {
+      const doc = out.get(r.node_id);
+      if (!doc) continue;
+      try {
+        doc.versions.push(JSON.parse(r.body) as NodeVersion);
+        if (r.author) doc.authors.set(r.version_id, JSON.parse(r.author) as Actor);
+      } catch { /* unparseable row: the fingerprint will miss and the fold replaces it */ }
+    }
+    return out;
+  },
+};
+
+/** Shared notes, keyed by scope (`notes/<universe>/<bucket>`). */
+export const notesProjection: Projection<Map<string, SharedNote>> = {
+  write(d: DatabaseSync, scope: string, value: Map<string, SharedNote>): void {
+    d.prepare("DELETE FROM shared_note WHERE scope = ?").run(scope);
+    const ins = d.prepare("INSERT INTO shared_note(scope,id,target_id,kind,author,created_at,resolved,body) VALUES(?,?,?,?,?,?,?,?)");
+    for (const n of value.values()) {
+      ins.run(scope, n.id, n.target.id, n.kind ?? null, n.author.principal, n.createdAt, n.resolved ? 1 : 0, JSON.stringify(n));
+    }
+  },
+
+  read(d: DatabaseSync, scope: string): Map<string, SharedNote> {
+    const out = new Map<string, SharedNote>();
+    for (const r of d.prepare("SELECT id, body FROM shared_note WHERE scope = ? ORDER BY rowid").all(scope) as unknown as
+      { id: string; body: string }[]) {
+      try { out.set(r.id, JSON.parse(r.body) as SharedNote); } catch { /* as above */ }
     }
     return out;
   },

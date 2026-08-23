@@ -146,6 +146,38 @@ function migrate(d: DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS ix_sf_target ON shared_finding(target_id);
     CREATE INDEX IF NOT EXISTS ix_sf_queue  ON shared_finding(scope, needs_ack);
+
+    CREATE TABLE IF NOT EXISTS shared_doc (
+      scope TEXT NOT NULL, node_id TEXT NOT NULL,
+      unmatched TEXT,                  -- JSON UnmatchedAcceptance[]; null when empty
+      PRIMARY KEY (scope, node_id)
+    );
+    -- ord and author are columns rather than part of the JSON because neither
+    -- survives a round trip through it: versions are ORDERED (oldest first) and a
+    -- Map key order is not a document property, and SharedDoc.authors is a Map,
+    -- which JSON.stringify turns into {}.
+    CREATE TABLE IF NOT EXISTS shared_doc_version (
+      scope TEXT NOT NULL, node_id TEXT NOT NULL, version_id TEXT NOT NULL,
+      ord INTEGER NOT NULL, author TEXT,
+      body TEXT NOT NULL,              -- the whole NodeVersion, as JSON
+      PRIMARY KEY (scope, version_id)
+    );
+    CREATE INDEX IF NOT EXISTS ix_sdv_node ON shared_doc_version(scope, node_id);
+    -- The citation edge, lifted out of the JSON. Written now, joined in step 3b:
+    -- without it the anchor comparison stays a full scan wherever the fold lives.
+    CREATE TABLE IF NOT EXISTS shared_doc_citation (
+      scope TEXT NOT NULL, version_id TEXT NOT NULL, anchor_id TEXT NOT NULL,
+      PRIMARY KEY (scope, version_id, anchor_id)
+    );
+    CREATE INDEX IF NOT EXISTS ix_sdc_anchor ON shared_doc_citation(anchor_id);
+
+    CREATE TABLE IF NOT EXISTS shared_note (
+      scope TEXT NOT NULL, id TEXT NOT NULL, target_id TEXT NOT NULL,
+      kind TEXT, author TEXT, created_at TEXT, resolved INTEGER DEFAULT 0,
+      body TEXT NOT NULL,
+      PRIMARY KEY (scope, id)
+    );
+    CREATE INDEX IF NOT EXISTS ix_sn_target ON shared_note(target_id);
   `);
   // anchors.derivation — NULL on rows indexed before provenance existed, which is
   // `legacy_live_derivation`: this machine cannot say how its own index was made.

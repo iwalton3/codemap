@@ -7,7 +7,7 @@ import type { Actor } from "./schema.js";
 import { readScope } from "./eventlog.js";
 import { createFinding, foldFindings, findingScope, comment } from "./shared-findings.js";
 import { readCached, scopeFingerprint } from "./materialize.js";
-import { findingsProjection } from "./shared-projections.js";
+import { findingsProjection, docsProjection } from "./shared-projections.js";
 
 /**
  * A materialized fold is a cache, and "it's only a cache" is exactly the sentence
@@ -130,4 +130,63 @@ test("an empty scope fingerprints without throwing", async () => {
     const empty = await readCached(f.root, f.logRoot, "findings/does-not-exist", ID, foldFindings, findingsProjection);
     assert.equal(empty.size, 0);
   } finally { f.cleanup(); }
+});
+
+/**
+ * Docs are the projection with something JSON cannot carry.
+ *
+ * `SharedDoc.authors` is a Map — `JSON.stringify` renders it `{}` — and `versions`
+ * is ordered, which a table is not. Both get columns. This is the test that would
+ * have caught storing them naively, and it is the reason the equivalence assertion
+ * compares serialized forms rather than spot-checking fields.
+ */
+test("a doc's authors Map and version order survive the round trip", async () => {
+  const logRoot = tmp("dlog"), root = tmp("drepo");
+  try {
+    const { publishDocVersion, readDocs, foldDocs, docScope } = await import("./shared-docs.js");
+    const U = "acme/api";
+    const v = (id: string, title: string) => ({
+      nodeId: "n_pay", versionId: id, type: "process" as const, title, summary: "s", body: "b",
+      citations: [{ anchorId: "a_1", acceptedHashes: [] }],
+      createdCommit: null, createdBranch: null, createdAt: "2026-01-01T00:00:00Z",
+    });
+    // publishDocVersion MINTS the id; the caller does not choose it.
+    const id1 = await publishDocVersion(logRoot, U, izzie, v("ignored", "first") as never);
+    const id2 = await publishDocVersion(logRoot, U, dana, v("ignored", "second") as never);
+
+    const scope = docScope(U);
+    const direct = foldDocs(await readScope(logRoot, scope));
+    const cached = await readCached(root, logRoot, scope, ID, foldDocs, docsProjection);
+
+    const doc = cached.get("n_pay")!;
+    assert.deepEqual(doc.versions.map((x) => x.title), ["first", "second"], "order is not a table property — it needs a column");
+    assert.equal(doc.authors.get(id1)?.principal, izzie.principal, "and a Map does not survive JSON.stringify");
+    assert.equal(doc.authors.get(id2)?.principal, dana.principal);
+    assert.equal(doc.authors.size, direct.get("n_pay")!.authors.size);
+
+    // Served from rows this time, and still the same.
+    let folds = 0;
+    const again = await readCached(root, logRoot, scope, ID, (e) => { folds++; return foldDocs(e); }, docsProjection);
+    assert.equal(folds, 0);
+    assert.deepEqual(again.get("n_pay")!.authors, doc.authors);
+    assert.equal(JSON.stringify(again.get("n_pay")!.versions), JSON.stringify(direct.get("n_pay")!.versions));
+  } finally { [logRoot, root].forEach((r) => rmSync(r, { recursive: true, force: true })); }
+});
+
+test("the citation edge table is populated for the step-3b join", async () => {
+  const logRoot = tmp("clog"), root = tmp("crepo");
+  try {
+    const { publishDocVersion, foldDocs, docScope } = await import("./shared-docs.js");
+    const { db } = await import("./db.js");
+    const U = "acme/api";
+    const vid = await publishDocVersion(logRoot, U, izzie, {
+      nodeId: "n_pay", type: "process", title: "t", summary: "s", body: "b",
+      citations: [{ anchorId: "a_1", acceptedHashes: [] }, { anchorId: "a_2", acceptedHashes: [] }],
+      createdCommit: null, createdBranch: null,
+    } as never);
+    await readCached(root, logRoot, docScope(U), ID, foldDocs, docsProjection);
+    const rows = db(root).prepare("SELECT anchor_id FROM shared_doc_citation WHERE version_id = ? ORDER BY anchor_id").all(vid) as unknown as { anchor_id: string }[];
+    assert.deepEqual(rows.map((r) => r.anchor_id), ["a_1", "a_2"],
+      "lifted out of the JSON so an anchor lookup can be an index seek");
+  } finally { [logRoot, root].forEach((r) => rmSync(r, { recursive: true, force: true })); }
 });
