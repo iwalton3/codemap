@@ -168,27 +168,50 @@ contradiction and is not: 3b's "do the anchor join in SQL" versus provenance's
    `removalJudgment { indexDerivations, triageId, rationale }`. `retireSharedDoc`
    already demands a rationale and then drops it from the durable event.
 
-3. **Materialization.** Step 5 has started and 3b's question is answered.
+3. **Materialization.** Step 5 is largely landed; 3a is half done and its remainder
+   is the biggest single thing left on this branch.
 
-   - **5 — landed in part** (`e3d77d6`). `shared_doc_citation` is READ now:
-     `docsCiting` is the reverse lookup ("does anybody's doc describe THIS symbol"),
-     `docsByNode` parses only the matched nodes, `ensureMaterialized` is
-     `readCached` without the read. `getAnchor` gains `sharedDocs`. So the table
-     stays — it earned its place, and 3b's "either the query lands or delete it" is
-     settled in favour of landing it.
-   - **`find_gaps` reads them now.** A symbol a teammate documented comes out of the
-     work queue and back under `documentedByTeam` with the node, its title and who
-     wrote it — the action there is to read theirs, not write a second. It asks
-     `sharedDocCandidates` first (one query over the scope's distinct citations,
-     intersected in memory) because asking `sharedDocsCiting` about every
-     undocumented anchor would bind one parameter per anchor.
-   - **Still to expose**: `outline`, `context`, `search`.
-   - **The outbox model** (§7, "prerequisite for step 5") has its two named
-     prerequisites done (`657232a`, `7e459af`): publication preserves the source
-     version id and the original `createdAt`. The overlay itself is not built.
-   - **3a** — generation sharding and the sidecar-root lock — untouched.
-   - `shared_scope.folded_at` and `events` are still written and never read. The
-     review that would delete them stands; §5 landing does not save them.
+   - **5 — landed for the reads that matter.** `shared_doc_citation` is READ
+     (`docsCiting`, the reverse lookup); `get_anchor` carries `sharedDocs`;
+     `find_gaps` no longer offers a symbol a teammate documented; `context` — the
+     call an agent makes first — reports the team's docs, drops them from `gaps` and
+     has a verdict ranked below every local one. `sharedCoverage` is the single
+     entry point those use. Left: `outline`, `search`, `get_node`, notes — browse
+     polish, not the north star.
+   - **The outbox model**'s two named prerequisites are done: publication preserves
+     the source version id and the original `createdAt`. The overlay itself is not
+     built.
+   - **3a — HALF DONE. Read `PROPOSAL-provenance.md` §4, not the archived §13.**
+
+     Built: `withSidecarLock` (lock file OUTSIDE the sidecar — `git add -A` would
+     otherwise push it to the team), around `sync` AND around `emitEvent`'s whole
+     read-heads-then-append sequence. `LogEvent.writer`, a clone-local random id in
+     the sidecar's git dir; shards and the causal vector key on it. That closes a
+     VERIFIED wrong answer — see the commit and `eventlog.test.ts`: one person's
+     laptop agent lending their stale desktop knowledge it never had, which
+     suppressed a real contest between two other people.
+
+     **Not built, in the order §4 puts them:**
+     - **`writerPrev` and the GENESIS rule.** Each event names its predecessor in
+       its own `(scope, writerId)` chain. Two events naming the same predecessor
+       are a FORK — including two naming `GENESIS`, which is the clause an
+       implementation will drop and must not: two clones copied before either had
+       written both open with `GENESIS` and evade the detector entirely. The lock
+       prevents local forks; this DETECTS distributed ones (a copied clone id).
+     - **Scope status**, so a detected fork stops answering authoritatively. A fork
+       is not a contest: a contest is per-field residue on one entity, a fork
+       invalidates the vector's single-writer compression for a whole writer across
+       every entity it touched, and containment is scope-level.
+     - **Writer identity reaching the entity folds.** §4 names two, both verified
+       against current code: `contest.ts` suppresses on
+       `held.by.principal === e.actor.principal`, and `shared-findings.ts` keys
+       corroboration by principal, so one person's second model replaces the
+       first — disagreement included. Deciding which of those should key on the
+       writer instead is a design question, not a mechanical change.
+     - **`sidecarProtocol` / `eventSchema`** on the envelope.
+   - **3b** — the anchor-table scans are gone but `shared_doc_citation`'s §5 join is
+     the one that landed, not the doc-freshness one. `shared_scope.folded_at` and
+     `events` are still written and never read.
 
 4. ~~**There is no orphans page.**~~ **DONE.** `/u/:u/orphans/` reads `/api/orphans`,
    which had been served since the sweep was built and consumed by nothing — the
