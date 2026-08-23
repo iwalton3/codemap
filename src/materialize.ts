@@ -205,7 +205,7 @@ export async function ensureMaterialized<T>(
   identity: string,
   fold: (events: LogEvent[]) => T,
   proj: Projection<T>,
-): Promise<{ fresh: boolean } & ScopeStatus> {
+): Promise<{ fresh: boolean; folded: boolean } & ScopeStatus> {
   /** The stored verdict, or null if the row does not describe the shards on disk. */
   const current = async (): Promise<ScopeStatus | null> => {
     const before = await scopeFingerprint(logRoot, scope, identity);
@@ -214,7 +214,10 @@ export async function ensureMaterialized<T>(
     return row?.fingerprint === before ? storedStatus(row) : null;
   };
   const hit = await current();
-  if (hit) return { fresh: true, ...hit };
+  // `folded` and `fresh` are different questions and were conflated by a caller once:
+  // `fresh` is "the rows are up to date", which is true both on a cache hit and right
+  // after a fold. Only this branch did no work.
+  if (hit) return { fresh: true, folded: false, ...hit };
   // The status comes back even when the rows do not: `readCached` folds the log
   // directly on its give-up path, and that fold saw the scope. Returning
   // `fresh: false` with no verdict would make a blocked scope indistinguishable
@@ -223,5 +226,5 @@ export async function ensureMaterialized<T>(
   // Asked again rather than assumed: `readCached` gives up after three attempts and
   // answers from the log, and its return value cannot tell you which happened.
   const after = await current();
-  return after ? { fresh: true, ...after } : { fresh: false, ...status };
+  return after ? { fresh: true, folded: true, ...after } : { fresh: false, folded: true, ...status };
 }

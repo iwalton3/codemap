@@ -6,6 +6,7 @@ import { basename, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { resolveSidecar, universeKey, scopeFor } from "./sidecar-config.js";
 import * as shared from "./ops-shared.js";
+import { db } from "./db.js";
 
 const git = (root: string, ...args: string[]) =>
   spawnSync("git", ["-c", "user.email=izzie@x.com", "-c", "user.name=t", ...args], { cwd: root, encoding: "utf8" });
@@ -627,4 +628,54 @@ test("a question can be filed on a doc that lives only on the sidecar", async ()
     } as never) as { error?: string };
     assert.match(bad.error ?? "", /unknown node/);
   } finally { u.cleanup(); }
+});
+
+// --- materialize at sync ---------------------------------------------------------
+
+test("sync folds the scopes a PULL moved, so a later query never touches the log", async () => {
+  // The rule this makes true rather than aspirational: the log is pull/push and is
+  // never read on an ordinary query. A locally written finding is already folded by
+  // write-through, so the case that matters is a teammate's — without this, a pulled
+  // scope sits in the log until whoever queries it first happens to fold it, and a
+  // cross-scope query returns only the warmed scopes while looking total.
+  //
+  // It is also the prerequisite for docs unification: once the bridges are gone, a
+  // pulled version reaches SQLite only if sync put it there.
+  const origin = tmp("origin");
+  git(origin, "init", "-q", "--bare", "-b", "main");
+  const a = universe(), b = universe();
+  // Two clones of ONE universe, not two universes: the universe key comes from the
+  // code repo's origin slug, and scopes are universe-qualified, so without this the
+  // two stores correctly ignore each other's scopes and nothing is pulled.
+  for (const r of [a.root, b.root]) git(r, "remote", "add", "origin", "https://github.com/acme/api.git");
+  git(a.side, "init", "-q", "-b", "main");
+  git(b.side, "init", "-q", "-b", "main");
+  try {
+    await withEnv({ CODEMAP_SIDECAR: undefined, CODEMAP_AGENT_MODEL: undefined }, async () => {
+      await shared.sharedSync(a.root);
+      await shared.sharedSync(b.root);
+      git(a.side, "remote", "add", "origin", origin);
+      git(b.side, "remote", "add", "origin", origin);
+
+      await shared.shareFinding(a.root, 264, NEW);
+      await shared.sharedSync(a.root);
+
+      // b has never seen this scope. Its sync must leave the rows in SQLite.
+      const r = await shared.sharedSync(b.root) as { materialized?: shared.Materialized };
+      assert.ok(r.materialized, "sync reports what it folded");
+      assert.ok(r.materialized!.folded >= 1, "it folded the scope the pull brought in");
+      assert.deepEqual(r.materialized!.blocked, [], "with nothing blocked");
+
+      const scope = `findings/${scopeFor(resolveSidecar(b.root)!, "pr", 264)}`;
+      const row = db(b.root).prepare("SELECT fingerprint FROM shared_scope WHERE scope = ?").get(scope) as { fingerprint?: string } | undefined;
+      assert.ok(row?.fingerprint, `the scope row is in SQLite after sync (${scope})`);
+
+      // CONTROL — a second sync with nothing new folds NOTHING. Without this the test
+      // passes just as well against an implementation that re-folds the universe on
+      // every sync, which is exactly what the fingerprint exists to avoid.
+      const again = await shared.sharedSync(b.root) as { materialized?: shared.Materialized };
+      assert.ok(again.materialized!.scanned >= 1, "it still scanned the scope");
+      assert.equal(again.materialized!.folded, 0, "but folded none of it");
+    });
+  } finally { a.cleanup(); b.cleanup(); rmSync(origin, { recursive: true, force: true }); }
 });

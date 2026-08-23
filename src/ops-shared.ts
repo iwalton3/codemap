@@ -13,8 +13,9 @@ import { comparableHashes, sameBody } from "./normalize.js";
 import { realpathSync } from "node:fs";
 import { classifyCitations } from "./citation-state.js";
 import { evalVersion } from "./doc-version.js";
-import { readCached, ensureMaterialized } from "./materialize.js";
-import type { ScopeStatus, ScopeDiagnostic } from "./eventlog.js";
+import { readCached, ensureMaterialized, type Projection } from "./materialize.js";
+import type { ScopeStatus, ScopeDiagnostic, LogEvent } from "./eventlog.js";
+import { scopesOnDisk } from "./eventlog.js";
 import { findingsProjection, docsProjection, notesProjection, docsCiting, docsByNode, sharedCitedAnchors } from "./shared-projections.js";
 import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
 import { resolveSidecar, scopeFor, type SidecarConfig } from "./sidecar-config.js";
@@ -59,13 +60,85 @@ function bind(root: string): Bound | { error: string } {
 /** `acme/api/pr-264` — the universe-qualified key every scope is built from. */
 const prKey = (cfg: SidecarConfig, pr: number | string) => scopeFor(cfg, "pr", pr);
 
+/**
+ * The fold and projection a scope is cached by, or null if its kind has none yet.
+ *
+ * Prefix-matched on the scope path, which is the same string `findingScope` /
+ * `docScope` / `noteScope` build. `walkthrough/` is deliberately absent: it has no
+ * `Projection` at all and folds on every read, which is the remaining violation of
+ * "the log is not read during normal operation" and is step 5's job, not this one.
+ */
+function projectionFor(scope: string): { fold: (e: LogEvent[]) => any; proj: Projection<any> } | null {
+  if (scope.startsWith("findings/")) return { fold: foldFindings, proj: findingsProjection };
+  if (scope.startsWith("docs/")) return { fold: foldDocs, proj: docsProjection };
+  if (scope.startsWith("notes/")) return { fold: foldNotes, proj: notesProjection };
+  return null;
+}
+
+/** Is this scope part of the universe we are syncing? One sidecar can carry several. */
+function inUniverse(scope: string, universe: string): boolean {
+  const rest = scope.slice(scope.indexOf("/") + 1);
+  return rest === universe || rest.startsWith(universe + "/");
+}
+
+export interface Materialized {
+  /** Scopes considered — the whole universe, not just the ones that moved. */
+  scanned: number;
+  /** Scopes whose rows this sync had to rebuild. */
+  folded: number;
+  /** Scopes that cannot answer authoritatively, with why. */
+  blocked: { scope: string; reason: string }[];
+}
+
+/**
+ * Fold every scope this pull moved, so ordinary queries never have to.
+ *
+ * This is what makes "the log is pull/push, never read on a query" true rather than
+ * aspirational. Without it the projection is filled in lazily by whoever happens to
+ * query first, so completeness is a property each query earns instead of one the
+ * store has — and a cross-scope query returns only the warmed scopes while looking
+ * total.
+ *
+ * Unchanged scopes cost a fingerprint of their shard directory and nothing else, so
+ * scanning all of them is how the changed ones are found; there is no separate
+ * change-scan to keep in step with the fold.
+ *
+ * Never throws. A sync that has already moved bytes must not fail because one scope
+ * would not fold — the log still holds everything, and the next sync tries again.
+ */
+async function materializeUniverse(root: string, cfg: SidecarConfig): Promise<Materialized> {
+  const identity = sidecarIdentity(cfg);
+  const out: Materialized = { scanned: 0, folded: 0, blocked: [] };
+  for (const scope of await scopesOnDisk(cfg.path)) {
+    const which = projectionFor(scope);
+    if (!which || !inUniverse(scope, cfg.universe)) continue;
+    out.scanned++;
+    try {
+      const { fresh, folded, status, diagnostic } = await ensureMaterialized(root, cfg.path, scope, identity, which.fold, which.proj);
+      if (folded) out.folded++;
+      // `fresh: false` means the rows are BEHIND the log — the fold kept losing a
+      // race with an append. Worth saying out loud here for the same reason a
+      // blocked scope is: this is the one moment a person is watching.
+      if (!fresh) out.blocked.push({ scope, reason: "rows are behind the log; the next sync will retry" });
+      else if (status !== "complete") out.blocked.push({ scope, reason: diagnostic?.detail ?? status });
+    } catch (e: any) {
+      out.blocked.push({ scope, reason: `could not fold: ${e?.message ?? e}` });
+    }
+  }
+  return out;
+}
+
 /** Send and receive. The whole point of the button. */
 export async function sharedSync(root: string) {
   const b = bind(root);
   if ("error" in b) return b;
   const r = await sidecarSync(b.cfg.path, b.actor, `codemap: ${b.cfg.universe}`);
   if ("error" in r) return r;
-  return { ok: true, universe: b.cfg.universe, sidecar: b.cfg.path, ...r };
+  // AFTER the transport, and only here: `sidecar.ts` is transport and knows nothing
+  // about folds or entity kinds. Sync is also the one moment a person is watching,
+  // which is why the blocked scopes are reported rather than discovered later.
+  const materialized = await materializeUniverse(root, b.cfg);
+  return { ok: true, universe: b.cfg.universe, sidecar: b.cfg.path, ...r, materialized };
 }
 
 /** Who else is on this sidecar, and whether their codemap agrees with ours. */

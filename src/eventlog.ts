@@ -380,6 +380,30 @@ export async function readScopeChecked(logRoot: string, scope: string): Promise<
 }
 
 /**
+ * Every scope that has shards on disk, as a scope path.
+ *
+ * A scope is any directory holding `*.ndjson`, which is the layout `shardFor` writes
+ * and `collect` reads — so this and the reader cannot disagree about what a scope is.
+ * `.git` is skipped: the sidecar's own object store is not the log.
+ *
+ * Used by sync to decide what to materialize. Cheap on purpose — it stats
+ * directories and never opens a shard.
+ */
+export async function scopesOnDisk(logRoot: string): Promise<string[]> {
+  const found: string[] = [];
+  const walk = async (rel: string): Promise<void> => {
+    let entries;
+    try { entries = await readdir(join(logRoot, rel), { withFileTypes: true }); } catch { return; }
+    if (entries.some((e) => e.isFile() && e.name.endsWith(SHARD_EXT))) found.push(rel);
+    for (const e of entries) {
+      if (e.isDirectory() && e.name !== ".git") await walk(rel ? join(rel, e.name) : e.name);
+    }
+  };
+  await walk("");
+  return found.sort();
+}
+
+/**
  * The read itself. Separate from the verdict because `emitEvent` takes this path
  * on every single write, under the lock, and only wants the causal heads — judging
  * the scope there would put a fork scan on the hot end of every append.

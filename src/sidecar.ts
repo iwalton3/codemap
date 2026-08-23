@@ -20,9 +20,9 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { ANCHOR_SCHEME, HASH_SCHEME } from "./schema.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { gitBin } from "./git.js";
@@ -283,7 +283,137 @@ export async function countEvents(root: string): Promise<number> {
   return total;
 }
 
-export interface PullResult { gained: number; warning?: string }
+export interface PullResult { gained: number; warning?: string; restored?: Restored[] }
+
+/** A shard whose lines a pull tried to delete, and how many were put back. */
+export interface Restored { path: string; events: number }
+
+/** A shard that came back from a merge with fewer lines than it went in with. */
+interface Erasure { path: string; restored: string[] }
+
+/**
+ * Every (commit, shard) in the incoming history that removed lines.
+ *
+ * **Scanning the range, not the endpoints, and that distinction is the whole fix.**
+ * Comparing our pre-merge tip with the merged tip is blind to an event that was added
+ * and deleted between them: it is absent at both ends, so the diff is empty and the
+ * loss is invisible. Same for a first pull, where every deletion in the incoming
+ * history happened before our endpoint existed. Verified — see the test that pushes an
+ * event and its deletion before the other clone ever fetches.
+ *
+ * `-z` so paths arrive NUL-terminated and raw; with `--numstat` alone git C-quotes any
+ * non-ASCII path, and the quoted form was then passed to `git show`, which fails, and
+ * the shard was skipped in silence. Directory-derived universe keys make that
+ * reachable. `core.quotePath=false` belts the same braces.
+ */
+function deletingCommits(root: string, range: string): { commit: string; path: string }[] | { error: string } {
+  // `--full-history` is LOAD-BEARING. With a pathspec, git's default history
+  // simplification prunes commits that are TREESAME to their parent — and when the
+  // path is absent from the final tree it prunes the entire side branch that added
+  // and removed it. Measured: an add-then-delete across a merge yields 0 numstat rows
+  // by default and 2 with this flag. Removing it silently restores the exact hole
+  // this function exists to close.
+  const log = g(root, ["-c", "core.quotePath=false", "log", "--full-history", "--numstat", "-z",
+                       "--no-renames", "--format=C%H", range, "--", `*${SHARD_EXT}`]);
+  // An audit that cannot run must not read as "nothing was erased". This guards a
+  // non-negotiable, so a failure here fails the pull.
+  if (!log.ok) return { error: `could not audit the incoming history for deletions: ${log.err.slice(0, 300)}` };
+  const out: { commit: string; path: string }[] = [];
+  let commit = "";
+  for (const rec of log.out.split("\0")) {
+    if (!rec) continue;
+    if (rec.startsWith("C")) { commit = rec.slice(1).trim(); continue; }
+    const [, deleted, path] = rec.split("\t");
+    // "-" is git's binary marker. A shard is never binary, and one we cannot count is
+    // one we cannot vouch for — so treat it as suspect rather than skipping it.
+    if (!path || deleted === "0") continue;
+    out.push({ commit, path });
+  }
+  return out;
+}
+
+/** Lines of a blob at a rev, or null when the path is not there. */
+function linesAt(root: string, rev: string, path: string): string[] | null {
+  const blob = g(root, ["show", `${rev}:${path}`]);
+  if (!blob.ok) return null;
+  return blob.out.split("\n").filter((l) => l.trim());
+}
+
+/**
+ * Lines the incoming history removed and the merge result no longer has.
+ *
+ * A shard is append-only, so its line set may only grow. Nothing enforced that:
+ * `git rm` a shard on any clone, push, and every teammate's next pull applied the
+ * deletion as a clean silent merge. That was the one live hole in "once state is
+ * pushed, nothing deletes it".
+ */
+function erasedByMerge(root: string, beforeSha: string): Erasure[] | { error: string } {
+  const deletions = deletingCommits(root, `${beforeSha}..HEAD`);
+  if ("error" in deletions) return deletions;
+
+  /** path -> every line that existed before something dropped it. */
+  const had = new Map<string, Set<string>>();
+  const remember = (path: string, lines: string[] | null) => {
+    if (!lines?.length) return;
+    let set = had.get(path);
+    if (!set) had.set(path, set = new Set());
+    for (const l of lines) set.add(l);
+  };
+
+  // Deletions in the incoming history.
+  for (const { commit, path } of deletions) {
+    // The first parent is the state the deleting commit removed FROM. A root commit
+    // has none, and then there was nothing to lose.
+    remember(path, linesAt(root, `${commit}^`, path));
+  }
+
+  // And lines OUR side had that the merge result no longer does. The range scan
+  // above cannot see these: `git log` omits diffs for merge commits, so a merge that
+  // resolved by dropping our lines contributes no numstat rows at all.
+  const ends = g(root, ["-c", "core.quotePath=false", "diff", "--numstat", "-z", "--no-renames",
+                        beforeSha, "HEAD", "--", `*${SHARD_EXT}`]);
+  if (!ends.ok) return { error: `could not audit the merge result for deletions: ${ends.err.slice(0, 300)}` };
+  for (const rec of ends.out.split("\0")) {
+    if (!rec) continue;
+    const [, deleted, path] = rec.split("\t");
+    if (!path || deleted === "0") continue;
+    remember(path, linesAt(root, beforeSha, path));
+  }
+
+  if (!had.size) return [];
+
+  const out: Erasure[] = [];
+  for (const [path, lines] of had) {
+    const now = new Set(linesAt(root, "HEAD", path) ?? []);
+    const lost = [...lines].filter((l) => !now.has(l));
+    if (lost.length) out.push({ path, restored: lost });
+  }
+  return out;
+}
+
+/**
+ * Put the erased lines back, by appending them.
+ *
+ * Restoring rather than refusing, on purpose. Refusing the merge would wedge pull
+ * permanently — the deletion is in history and history cannot be un-made, so there
+ * would be no way back, which is the dead-scope failure the architecture doc rejects.
+ * Appending is also the only repair consistent with the rule being defended: the fix
+ * for "somebody deleted state" is not a rollback, it is more append-only content.
+ *
+ * Appends rather than rewrites, so a concurrent writer's line cannot be read, held,
+ * and then clobbered by the write-back. The caller holds the sidecar lock regardless.
+ */
+async function restoreErased(root: string, erased: Erasure[]): Promise<void> {
+  for (const e of erased) {
+    const file = join(root, e.path);
+    await mkdir(dirname(file), { recursive: true });
+    const current = await readFile(file, "utf8").catch(() => "");
+    // A shard whose last line has no terminator would otherwise get the first
+    // restored line glued onto it, turning two events into one unreadable one.
+    const lead = current && !current.endsWith("\n") ? "\n" : "";
+    await appendFile(file, lead + e.restored.join("\n") + "\n", "utf8");
+  }
+}
 
 /**
  * Fetch and merge. A sidecar with no remote is a perfectly good local one, so
@@ -291,6 +421,18 @@ export interface PullResult { gained: number; warning?: string }
  * needs a remote to reach other people.
  */
 export async function pull(root: string, actor?: Actor): Promise<PullResult | { error: string }> {
+  return withSidecarLock(root, () => pullHeld(root, actor));
+}
+
+/**
+ * The pull itself, with the lock already held.
+ *
+ * Separate because the erasure repair reads a shard and writes it back, and `push`
+ * calls this after a rejection from inside `sync`'s lock — so the public entry point
+ * must take the lock and the internal one must not, or every sync deadlocks against
+ * itself. Same shape as `sync`/`syncHeld`, and the lock is not reentrant.
+ */
+async function pullHeld(root: string, actor?: Actor): Promise<PullResult | { error: string }> {
   if (!g(root, ["remote"]).out) return { gained: 0 };
   const before = await countEvents(root);
   const fetch = g(root, ["fetch", "--quiet", "origin"]);
@@ -316,6 +458,11 @@ export async function pull(root: string, actor?: Actor): Promise<PullResult | { 
   // Safe for this content specifically: the shards union-merge, and the only other
   // files are the manifest and .gitattributes, which are generated identically by
   // the same code. Compatibility is checked below, on the merged result.
+  // Our tip BEFORE the merge, so the append-only audit below has something to
+  // compare against. `HEAD` on an unborn branch has no sha, and there is nothing to
+  // erase in that case either.
+  const beforeSha = g(root, ["rev-parse", "--verify", "--quiet", "HEAD"]).out;
+
   const merge = g(root, ["merge", "--no-edit", "--allow-unrelated-histories", `origin/${branch}`]);
   if (!merge.ok) {
     // With union merging on the shards, the realistic causes are a genuine
@@ -325,7 +472,20 @@ export async function pull(root: string, actor?: Actor): Promise<PullResult | { 
   }
   const incompat = checkPeers(await readManifests(root), mine);
   if (incompat?.fatal) return { error: incompat.message };
-  return { gained: (await countEvents(root)) - before, ...(incompat ? { warning: incompat.message } : {}) };
+
+  const erased = beforeSha ? erasedByMerge(root, beforeSha) : [];
+  if ("error" in erased) return erased;
+  if (erased.length) {
+    await restoreErased(root, erased);
+    const c = commitLocal(root, "codemap: restore events a merge deleted");
+    if (typeof c === "object") return c;
+  }
+
+  return {
+    gained: (await countEvents(root)) - before,
+    ...(incompat ? { warning: incompat.message } : {}),
+    ...(erased.length ? { restored: erased.map((e) => ({ path: e.path, events: e.restored.length })) } : {}),
+  };
 }
 
 /** Peers' manifests as they exist on the fetched ref, without touching the tree. */
@@ -371,6 +531,10 @@ function remoteHasHead(root: string, branch: string): boolean {
  * their position, so a merge in between cannot change what this push says.
  */
 export async function push(root: string, message: string, opts: { attempts?: number; actor?: Actor } = {}): Promise<PushResult | { error: string }> {
+  return withSidecarLock(root, () => pushHeld(root, message, opts));
+}
+
+async function pushHeld(root: string, message: string, opts: { attempts?: number; actor?: Actor } = {}): Promise<PushResult | { error: string }> {
   const attempts = opts.attempts ?? 3;
   const commit = commitLocal(root, message);
   if (typeof commit === "object") return commit;
@@ -386,13 +550,13 @@ export async function push(root: string, message: string, opts: { attempts?: num
       }
       return { pushed: true, committed, retries: i };
     }
-    const pulled = await pull(root, opts.actor);
+    const pulled = await pullHeld(root, opts.actor);
     if ("error" in pulled) return { error: `push rejected and the follow-up pull failed: ${pulled.error}` };
   }
   return { error: `push still rejected after ${attempts} attempts — someone is pushing continuously, or the remote refuses this branch` };
 }
 
-export interface SyncResult { gained: number; pushed: boolean; committed: boolean; retries: number; warning?: string }
+export interface SyncResult { gained: number; pushed: boolean; committed: boolean; retries: number; warning?: string; restored?: Restored[] }
 
 /** Send and receive, in the order that makes the publish guard trustworthy. */
 export async function sync(root: string, actor?: Actor, message = "codemap: review state"): Promise<SyncResult | { error: string }> {
@@ -414,9 +578,9 @@ async function syncHeld(root: string, actor?: Actor, message = "codemap: review 
   // first pull a new person ever runs fails on their own setup's files.
   const pre = commitLocal(root, message);
   if (typeof pre === "object") return pre;
-  const pulled = await pull(root, actor);
+  const pulled = await pullHeld(root, actor);
   if ("error" in pulled) return pulled;
-  const pushed = await push(root, message, { actor });
+  const pushed = await pushHeld(root, message, { actor });
   if ("error" in pushed) return pushed;
   return {
     gained: pulled.gained,
@@ -424,5 +588,6 @@ async function syncHeld(root: string, actor?: Actor, message = "codemap: review 
     committed: pre === "committed" || pushed.committed,
     retries: pushed.retries,
     ...(pulled.warning ? { warning: pulled.warning } : {}),
+    ...(pulled.restored ? { restored: pulled.restored } : {}),
   };
 }

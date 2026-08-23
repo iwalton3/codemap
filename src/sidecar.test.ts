@@ -391,3 +391,118 @@ test("a sync with nothing of its own to send says so rather than claiming a push
     assert.ok(first !== undefined);
   } finally { t.cleanup(); }
 });
+
+// --- G3: once state is pushed, nothing deletes it -------------------------------
+
+test("a shard deleted on one clone is restored, not propagated", async () => {
+  // The one live hole in "nothing is deleted once pushed": shards are append-only by
+  // convention and nothing enforced it, so `git rm` on any clone travelled to every
+  // teammate as a clean, silent merge.
+  const t = await team();
+  try {
+    await createFinding(t.a, "pr-1", izzie, NEW);
+    await sync(t.a, izzie);
+    await sync(t.b, dana);           // dana now holds izzie's finding
+    const shard = onRemote(t.origin).find((f) => f.startsWith("findings/pr-1/"))!;
+    assert.ok(shard, "the finding is on the remote to begin with");
+
+    // Somebody rewrites history the one way append-only cannot survive. Sync first,
+    // so the deletion pushes as a fast-forward rather than being rejected.
+    await sync(t.a, izzie);
+    git(t.a, "rm", "-q", shard);
+    git(t.a, "commit", "-q", "-m", "drop a shard");
+    git(t.a, "push", "-q", "origin", "HEAD:main");
+    assert.equal(onRemote(t.origin).includes(shard), false, "the deletion really is on the remote");
+
+    const r = await sync(t.b, dana) as { error?: string; restored?: { path: string; events: number }[] };
+    assert.equal(r.error, undefined, "the pull still succeeds — refusing would wedge it forever");
+    assert.equal(r.restored?.length, 1, "and it reports what it put back");
+    assert.equal(r.restored![0]!.path, shard);
+    assert.ok(r.restored![0]!.events >= 1);
+
+    assert.equal((await readFindings(t.b, "pr-1")).size, 1, "dana still has the finding");
+    assert.ok(onRemote(t.origin).includes(shard), "and the restore reached the team");
+  } finally { t.cleanup(); }
+});
+
+test("an ordinary pull restores nothing", async () => {
+  // CONTROL. Without it, an audit that flagged every merge — or one that restored
+  // unconditionally — would pass the test above just as well.
+  const t = await team();
+  try {
+    await createFinding(t.a, "pr-1", izzie, NEW);
+    await sync(t.a, izzie);
+    const r = await sync(t.b, dana) as { error?: string; restored?: unknown; gained: number };
+    assert.equal(r.error, undefined);
+    assert.equal(r.restored, undefined, "a normal pull is not an erasure");
+    assert.ok(r.gained > 0, "and it did actually gain the events, so the path ran");
+  } finally { t.cleanup(); }
+});
+
+test("an event added and deleted before we ever fetch is still recovered", async () => {
+  // The endpoint-diff version of this audit missed exactly this: dana never holds the
+  // event, so it is absent from her pre-merge tip AND from the merged tip, the diff is
+  // empty, and the loss is invisible. Only scanning the incoming history sees it.
+  // Verified against git: `diff --numstat base..HEAD` prints nothing for add-then-delete.
+  const t = await team();
+  try {
+    await createFinding(t.a, "pr-1", izzie, NEW);
+    await sync(t.a, izzie);
+    const shard = onRemote(t.origin).find((f) => f.startsWith("findings/pr-1/"))!;
+    git(t.a, "rm", "-q", shard);
+    git(t.a, "commit", "-q", "-m", "drop a shard");
+    git(t.a, "push", "-q", "origin", "HEAD:main");
+
+    // dana's FIRST ever sync — she fetches the add and the delete in one go.
+    const r = await sync(t.b, dana) as { error?: string; restored?: { path: string; events: number }[] };
+    assert.equal(r.error, undefined);
+    assert.equal(r.restored?.length, 1, "the deletion is seen even though both ends lack the event");
+    assert.equal((await readFindings(t.b, "pr-1")).size, 1, "and dana ends up with the finding");
+  } finally { t.cleanup(); }
+});
+
+test("a shard that loses one line keeps its other lines, and gains the new one", async () => {
+  // Partial deletion, which a whole-file repair would pass by restoring the pre-merge
+  // file wholesale — and would then discard whatever was appended alongside.
+  const t = await team();
+  try {
+    await createFinding(t.a, "pr-1", izzie, NEW);
+    await createFinding(t.a, "pr-1", izzie, { ...NEW, targetId: "a_2" });
+    await sync(t.a, izzie);
+    await sync(t.b, dana);
+    await sync(t.a, izzie);   // dana's sync moved the remote; catch up so the push lands
+    const shard = onRemote(t.origin).find((f) => f.startsWith("findings/pr-1/"))!;
+
+    // Drop one event and append another, in the same shard, in one commit.
+    const path = join(t.a, shard);
+    const kept = readFileSync(path, "utf8").split("\n").filter(Boolean);
+    assert.ok(kept.length >= 2, "two events to work with");
+    writeFileSync(path, kept.slice(1).join("\n") + "\n", "utf8");
+    git(t.a, "commit", "-qam", "drop one line");
+    git(t.a, "push", "-q", "origin", "HEAD:main");
+
+    const r = await sync(t.b, dana) as { error?: string; restored?: { events: number }[] };
+    assert.equal(r.error, undefined);
+    assert.equal(r.restored?.length, 1);
+    assert.equal(r.restored![0]!.events, 1, "exactly the one line that went missing");
+
+    const lines = readFileSync(join(t.b, shard), "utf8").split("\n").filter(Boolean);
+    assert.equal(new Set(lines).size, kept.length, "every event is back, exactly once");
+    assert.equal((await readFindings(t.b, "pr-1")).size, 2, "and both findings resolve");
+  } finally { t.cleanup(); }
+});
+
+test("a merge that adds to a shard is not mistaken for an erasure", async () => {
+  // CONTROL. Two people appending concurrently must not look like a deletion — an
+  // audit comparing totals rather than per-shard content would fire here.
+  const t = await team();
+  try {
+    await createFinding(t.a, "pr-1", izzie, NEW);
+    await createFinding(t.b, "pr-1", dana, { ...NEW, targetId: "a_2" });
+    await sync(t.a, izzie);
+    const r = await sync(t.b, dana) as { error?: string; restored?: unknown };
+    assert.equal(r.error, undefined);
+    assert.equal(r.restored, undefined, "concurrent appends are not deletions");
+    assert.equal((await readFindings(t.b, "pr-1")).size, 2, "and both findings survive");
+  } finally { t.cleanup(); }
+});
