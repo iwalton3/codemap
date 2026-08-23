@@ -14,7 +14,7 @@ import { realpathSync } from "node:fs";
 import { classifyCitations } from "./citation-state.js";
 import { evalVersion } from "./doc-version.js";
 import { readCached, ensureMaterialized } from "./materialize.js";
-import { findingsProjection, docsProjection, notesProjection, docsCiting, docsByNode } from "./shared-projections.js";
+import { findingsProjection, docsProjection, notesProjection, docsCiting, docsByNode, sharedCitedAnchors } from "./shared-projections.js";
 import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
 import { resolveSidecar, scopeFor, type SidecarConfig } from "./sidecar-config.js";
 import { originSlug, headCommit, currentBranch } from "./git.js";
@@ -613,6 +613,28 @@ export async function sharedDocsCiting(root: string, anchorIds: string[]) {
       covers,
     });
   }
+  return out;
+}
+
+/**
+ * Which of these anchors the team's docs cite at all — the cheap half of the answer.
+ *
+ * For a caller holding the whole index (`findGaps`). Asking `sharedDocsCiting` about
+ * every undocumented anchor would bind one parameter per anchor; this reads the
+ * scope's distinct citations in one query and intersects in memory, leaving a small
+ * set to resolve properly. Candidates, not an answer: the citation rows cover EVERY
+ * version, and only the winning one's citations are a claim about this checkout.
+ */
+export async function sharedDocCandidates(root: string, anchorIds: Iterable<string>): Promise<string[] | null> {
+  const cfg = resolveSidecar(root);
+  if (!cfg) return null;
+  const scope = docScope(cfg.universe);
+  const fresh = await ensureMaterialized(root, cfg.path, scope, sidecarIdentity(cfg), foldDocs, docsProjection);
+  const cited = fresh
+    ? sharedCitedAnchors(root, scope)
+    : new Set([...(await cachedDocs(root, cfg)).values()].flatMap((d) => d.versions.flatMap((v) => v.citations.map((c) => c.anchorId))));
+  const out: string[] = [];
+  for (const id of anchorIds) if (cited.has(id)) out.push(id);
   return out;
 }
 

@@ -146,7 +146,7 @@ const tools: Tool[] = [
   },
   {
     name: "find_gaps",
-    description: "The documentation work queue: only `open` anchors (in-scope, uncited, not marked covered/trivial/deferred/owned), ranked by likely value. Filter by path prefix or kind.",
+    description: "The documentation work queue: only `open` anchors (in-scope, uncited, not marked covered/trivial/deferred/owned), ranked by likely value. Filter by path prefix or kind.\n\nWith a sidecar configured this reads the TEAM's docs too, so a symbol a colleague documented is not offered as a gap. Those come back under `documentedByTeam` with the node, its title and who wrote it: the action there is to READ theirs (`shared_docs`), not to write a second doc about the same code.",
     inputSchema: obj({
       pathPrefix: { type: "string" },
       kind: { type: "string" },

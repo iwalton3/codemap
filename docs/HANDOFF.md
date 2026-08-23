@@ -153,9 +153,13 @@ contradiction and is not: 3b's "do the anchor join in SQL" versus provenance's
      `readCached` without the read. `getAnchor` gains `sharedDocs`. So the table
      stays — it earned its place, and 3b's "either the query lands or delete it" is
      settled in favour of landing it.
-   - **Still to expose**: `outline`, `context`, `search`, `find_gaps`. `find_gaps`
-     is the one that matters most — reporting a gap a colleague documented last week
-     is the north star running backwards.
+   - **`find_gaps` reads them now.** A symbol a teammate documented comes out of the
+     work queue and back under `documentedByTeam` with the node, its title and who
+     wrote it — the action there is to read theirs, not write a second. It asks
+     `sharedDocCandidates` first (one query over the scope's distinct citations,
+     intersected in memory) because asking `sharedDocsCiting` about every
+     undocumented anchor would bind one parameter per anchor.
+   - **Still to expose**: `outline`, `context`, `search`.
    - **The outbox model** (§7, "prerequisite for step 5") has its two named
      prerequisites done (`657232a`, `7e459af`): publication preserves the source
      version id and the original `createdAt`. The overlay itself is not built.

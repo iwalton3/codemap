@@ -449,3 +449,57 @@ test("a tombstone cannot be published through share_doc", async () => {
     assert.equal((await shared.shareDoc(u.root, v as never) as any).error, undefined);
   } finally { u.cleanup(); }
 });
+
+test("a symbol a teammate documented is not offered as a gap", async () => {
+  // The north star running backwards: `find_gaps` read `nodes`, which is ONE
+  // person's store, so a doc synced last week came back as work to do.
+  const u = universe();
+  try {
+    const { publishDocVersion } = await import("./shared-docs.js");
+    const { init, findGaps } = await import("./ops.js");
+    const { readAnchorStore } = await import("./store.js");
+    const { resolveSidecar: rs } = await import("./sidecar-config.js");
+
+    mkdirSync(join(u.root, "src"), { recursive: true });
+    writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+    writeFileSync(join(u.root, "src", "ledger.ts"), "export function post(c: number) { return c; }\n", "utf8");
+    await init(u.root);
+    const anchors = (await readAnchorStore(u.root)).anchors;
+    const transfer = anchors.find((a) => a.file === "src/pay.ts")!;
+    const post = anchors.find((a) => a.file === "src/ledger.ts")!;
+
+    const before = await findGaps(u.root) as any;
+    assert.equal(before.openCount, 2, "precondition: nobody has documented either");
+    assert.equal(before.documentedByTeam, undefined);
+
+    const cfg = rs(u.root)!;
+    await publishDocVersion(cfg.path, cfg.universe, { principal: "dana@x.com" }, {
+      nodeId: "n_transfer", type: "process", title: "How a transfer settles", summary: "s", body: "b",
+      citations: [{ anchorId: transfer.id, acceptedHashes: [transfer.bodyHash] }],
+      createdCommit: null, createdBranch: null,
+    } as never);
+
+    const after = await findGaps(u.root) as any;
+    assert.equal(after.openCount, 1, "one gap left, not two");
+    assert.deepEqual(after.open.map((a: any) => a.id), [post.id], "and it is the one nobody wrote about");
+    assert.equal(after.documentedByTeam.count, 1);
+    assert.equal(after.documentedByTeam.anchors[0].anchorId, transfer.id);
+    assert.equal(after.documentedByTeam.anchors[0].docs[0].title, "How a transfer settles");
+    assert.equal(after.documentedByTeam.anchors[0].docs[0].by, "dana@x.com", "with who to go and read");
+  } finally { u.cleanup(); }
+});
+
+test("with no sidecar the work queue is exactly what it always was", async () => {
+  const u = universe(false);
+  try {
+    const { init, findGaps } = await import("./ops.js");
+    mkdirSync(join(u.root, "src"), { recursive: true });
+    writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+    await init(u.root);
+    await withEnv({ CODEMAP_SIDECAR: undefined }, async () => {
+      const g = await findGaps(u.root) as any;
+      assert.equal(g.openCount, 1);
+      assert.equal(g.documentedByTeam, undefined, "absent, not an empty bucket");
+    });
+  } finally { u.cleanup(); }
+});

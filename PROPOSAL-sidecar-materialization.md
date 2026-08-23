@@ -426,6 +426,11 @@ have to do, below.
    same doc `unverifiable`. That is a live disagreement about one doc, not a
    latent one, and this step is its fix.
 5. **Expose shared docs/notes through the ordinary read ops.** The consistency win.
+   **STARTED.** `shared_doc_citation` is read (`docsCiting` — the reverse lookup,
+   "does anybody's doc describe THIS symbol"), `docsByNode` parses only the matched
+   nodes, and `ensureMaterialized` converges the rows without deserializing them.
+   `get_anchor` carries `sharedDocs`; `find_gaps` no longer offers a symbol a
+   teammate documented. Left: `outline`, `context`, `search`, and notes.
 6. *(Separate decision)* Unify the **machinery** behind `Bug`/`SharedFinding` and
    `Annotation`/`SharedNote` — Actor and compatibility provenance, witnesses and
    freshness, threads and corroboration, external refs, the event envelope, one

@@ -101,6 +101,21 @@ export const docsProjection: Projection<Map<string, SharedDoc>> = {
   },
 };
 
+/**
+ * Every anchor any shared doc version cites in this scope.
+ *
+ * One query with one parameter, deliberately: `docsCiting` takes the ids it is
+ * asking about, which is right for a handful and wrong for a caller holding the
+ * whole index — a repo with thousands of undocumented anchors would bind thousands
+ * of parameters to ask a question whose answer is a few hundred rows. Intersect
+ * against this instead, then ask `docsCiting` about what survives.
+ */
+export function sharedCitedAnchors(root: string, scope: string): Set<string> {
+  const rows = db(root).prepare("SELECT DISTINCT anchor_id FROM shared_doc_citation WHERE scope = ?").all(scope) as unknown as
+    { anchor_id: string }[];
+  return new Set(rows.map((r) => r.anchor_id));
+}
+
 /** Unfiltered, this is the projection's `read`; filtered, it is what makes
  *  `docsCiting` worth having — only the matched nodes' JSON is parsed. */
 function readDocRows(d: DatabaseSync, scope: string, nodeIds?: string[]): Map<string, SharedDoc> {

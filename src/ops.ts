@@ -319,7 +319,20 @@ export async function lintSummaries(root: string) {
   return { count: candidates.length, candidates };
 }
 
-/** The documentation work queue: only `open` anchors, ranked by likely value. */
+/**
+ * The documentation work queue: only `open` anchors, ranked by likely value.
+ *
+ * A symbol a TEAMMATE has documented is not open work, and this used to say it was
+ * — the map read `nodes`, which is one person's store, so a doc synced last week
+ * came back as a gap. That is the product's north star running backwards, and it is
+ * what PROPOSAL-sidecar-materialization.md §6 means by exposing shared docs through
+ * the ordinary reads.
+ *
+ * They come out of `open` and are reported separately rather than merged into it:
+ * the action is different (read theirs, do not write a second) and so is the
+ * authority. Every match is an exact anchor-id equality, so a hit is a doc that
+ * really cites this symbol, not a guess.
+ */
 export async function findGaps(
   root: string,
   opts: { pathPrefix?: string; kind?: string; limit?: number } = {},
@@ -328,6 +341,20 @@ export async function findGaps(
   let open = store.anchors.filter((a) => result.state.get(a.id) === "open");
   if (opts.pathPrefix) open = open.filter((a) => a.file.startsWith(opts.pathPrefix!));
   if (opts.kind) open = open.filter((a) => a.kind === opts.kind);
+
+  // Dynamic, like `mirrorNote` and `getAnchor`: the agnostic core does not depend on
+  // the sidecar, and a shared store that is missing or unreadable must not break the
+  // work queue that predates it.
+  const shared = await import("./ops-shared.js").catch(() => null);
+  const candidates = shared ? await shared.sharedDocCandidates(root, open.map((a) => a.id)).catch(() => null) : null;
+  const theirs = candidates?.length ? await shared!.sharedDocsCiting(root, candidates).catch(() => null) : null;
+  const byAnchor = new Map<string, { nodeId: string; title: string; by?: string; status: string }[]>();
+  for (const d of theirs ?? []) {
+    for (const id of d.covers) (byAnchor.get(id) ?? byAnchor.set(id, []).get(id)!).push(
+      { nodeId: d.nodeId, title: d.title, by: d.by, status: d.status });
+  }
+  if (byAnchor.size) open = open.filter((a) => !byAnchor.has(a.id));
+
   // Rank: type shells first (documenting a type organizes its members), then
   // callables by size (more lines ≈ more logic worth capturing).
   const size = (a: Anchor) => (a.loc ? a.loc.endLine - a.loc.startLine : 0);
@@ -338,6 +365,12 @@ export async function findGaps(
     openCount: open.length,
     showing: Math.min(limit, open.length),
     open: open.slice(0, limit).map(anchorBrief),
+    ...(byAnchor.size ? {
+      documentedByTeam: {
+        count: byAnchor.size,
+        anchors: [...byAnchor].slice(0, limit).map(([anchorId, docs]) => ({ anchorId, docs })),
+      },
+    } : {}),
   };
 }
 
