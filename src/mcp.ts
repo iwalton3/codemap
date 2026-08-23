@@ -597,6 +597,23 @@ const tools: Tool[] = [
     }),
   },
   {
+    name: "where_was",
+    description:
+      "What an anchor id NAMED, at a commit that named it. The one question about an unplaceable id that can be ANSWERED rather than guessed.\n\n"
+      + "An anchor id is an opaque digest of file + symbol path + disambiguator, so it cannot be read backwards. But a commit can be indexed and the id looked for: what comes back is an anchor THIS build minted, from source at that commit, whose own id is the one you asked about. Nothing is trusted and nothing is inferred.\n\n"
+      + "Four answers, and they are not the same:\n"
+      + "  • `found` — that is where it was. The file, the symbol path and the line.\n"
+      + "  • `absent` — this build indexed that commit and does not produce that id. Either the code was not there, or another build's derivation spelled the id.\n"
+      + "  • `ambiguous` — this build mints that id for more than one symbol there, so it cannot say which. Refuses rather than picking.\n"
+      + "  • `unaddressed` — there is no commit to ask about. `@work` is the live index, not a commit.\n\n"
+      + "WHAT IT DOES NOT TELL YOU: where that symbol is NOW. A rename or a signature change gives it a different id by construction, so no digest can confirm the pairing — that step is a judgement, and if you cannot make it beyond doubt, say so instead of re-pointing the record.",
+    inputSchema: obj({
+      anchorId: { type: "string", description: "The id that will not resolve." },
+      ref: { type: "string", description: "The commit that named it — a finding's `sourceRef`, a doc version's `createdCommit`." },
+    }, ["anchorId", "ref"]),
+    handler: (a, c) => ops.whereWas(c.universe.path, String(a.anchorId ?? ""), a.ref ? String(a.ref) : undefined),
+  },
+  {
     name: "orphans",
     description:
       "What is pointing at code the working tree no longer has — \"what did that refactor break?\"\n\n"

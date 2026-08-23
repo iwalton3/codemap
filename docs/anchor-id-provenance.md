@@ -563,49 +563,309 @@ rather than guessed at the end of a long session.
 Also still bypassing: `orphanedWork`'s `lost` bucket, and the shared citation
 presentation's `lost` label — both presentation over an already-resolved answer.
 
-## Recovery: the next arc
+## Recovery: placing an id nobody can place
 
-Everything above makes an unplaceable id *legible*. It does not place it. That is
-the next piece of work, and it splits along a boundary that is worth stating before
-anyone designs against the wrong half.
+Everything above makes an unplaceable id *legible*. It does not place it. This is
+that arc, and it turned out to have a smaller centre than the framing it started
+with.
 
-**Local ids are mine to rewrite. Shared ids are evidence I can only interpret.**
+**The framing it started with — and why it is now only half right.** "Local ids are
+mine to rewrite; shared ids are evidence I can only interpret" is true about
+REWRITING: a local rewrite moves my records onto new ids while the shared log still
+holds the old ones, which creates the divergence rather than closing it, and pairing
+on everyone else's behalf asserts a fact about my checkout as though it were a fact
+about theirs. All of that stands.
 
-- Locally, the repair exists: `reindex` calls `migrateOverloads`, which pairs old
-  ids to new by body hash within `file + symbolPath` groups and rewrites reviews,
-  triage, annotations, bugs and citations. A database migration is cheap. The gap is
-  what that pairing REFUSES — a `symbolPath` change (never covered, and it breaks
-  the group key), a group where a body also moved, and the fact that it runs on full
-  `reindex` only, not `applyIndexUpdate`.
-- On the sidecar it is not available, and a naive local remap makes things worse
-  rather than better: it moves local records onto new ids while the shared log still
-  holds the old ones, so it CREATES the divergence. Rewriting shared ids would also
-  mean asserting a pairing on everyone else's behalf — my body-hash evidence is a
-  fact about my checkout, not theirs.
+What it got wrong is where the difficulty sits. The hard part is not shared versus
+local, and it is not working out what an id NAMED — for most records this build can
+do that alone. It is saying what that symbol is NOW, which no digest can confirm and
+which stays a judgement whoever makes it.
 
-### Two mechanisms, and they compose
+### The two causes need different work
 
-**Derive the candidate from the commit graph.** A finding already carries
-`sourceRef` (a commit) beside its `witness.anchorId`. So an id that will not resolve
-is a question with an address: index *their* commit yourself, read the file and
-symbol path off your own snapshot of it, and let git say what happened to that file
-since. The locator this design refused to carry (§4) turns out to be re-derivable
-from the commit the record already names — and re-derived locally, which is strictly
-better than asserted by a build you do not trust.
+An id that will not resolve is not one condition, and `resolveAnchor` already
+separates them:
 
-**Publish the result as a remap EVENT.** An append-only log cannot be migrated, but
-it can be *interpreted*: emit `remap` — under derivations D→D', `a_old` names the
-same symbol as `a_new` — and let the fold apply it to targets. History is not
-rewritten; an interpretation is appended, auditable, and retractable by a later
-event. Same ratchet as `finding.relocation`: an agent proposes, a person applies,
-and the evidence goes in the event, because a wrong remap is false provenance
-across the whole fleet rather than on one machine.
+- **`absent`** — this build COULD have minted that id and did not. The code moved: a
+  rename, a file move, a signature change. Derivation is not involved.
+- **`incomparable`** — this build could not have minted it at all. Another build's
+  derivation spelled it, and no amount of re-indexing here reproduces it.
 
-The two halves are one workflow: the commit graph is how a candidate is *derived*,
-the remap event is how it is *published*. Fold-time application is a projection
-concern, which is where `PROPOSAL-sidecar-materialization.md` steps 1–2 put it.
+`migrateOverloads` repairs a slice of the first: it pairs old rows to new by body
+hash inside a `file + symbolPath` group and rewrites reviews, triage, annotations,
+bugs and citations. It is destructive, it runs on full `reindex` only, and it
+refuses anything it cannot pair beyond doubt.
 
-### The pain this is actually for — observed, mechanism not yet located
+The measurement below says `incomparable` is also drawn too widely — it is reached
+from the BODY HASH's provenance and applied to the ID, and for most ids those are
+not the same question.
+
+### What the id is made of — and one claim about it that is false
+
+An anchor id is `sha256(file \0 symbolPath.join("\0") \0 disambiguator)`, truncated
+(`anchorId`, `schema.ts`). It cannot be inverted.
+
+**A first draft of this section claimed it could be CHECKED, and that this made a
+published locator verifiable by arithmetic with no trust in the publisher. That is
+wrong, and the way it is wrong is worth keeping.** The encoding is a flat NUL-joined
+byte string with no tagged field boundaries, so any re-partition at a NUL produces
+the same digest. Verified against HEAD:
+
+```
+anchorId("x.cs", ["N","C","M"])            === anchorId("x.cs", ["N","C"], "M")
+anchorId("x.cs", ["N","C","M"], "(int)")   === anchorId("x.cs", ["N","C","M","(int)"])
+anchorId("x.cs", ["N","C","M"])            === anchorId("x.cs\0N", ["C","M"])
+```
+
+So recomputing the digest proves a triple is *a* preimage, never *the* one. A false
+locator can verify without going anywhere near a SHA attack — no 2^64 anything, just
+a different split of the same bytes.
+
+Making the encoding injective is one length prefix per field, and `normalize.ts`
+already length-prefixes its token stream for exactly this reason. It is not
+scheduled: it changes every id in every store, which is an `ANCHOR_SCHEME` bump and
+the phantom-diff event the scheme numbers exist to contain. **Recorded as a known
+limit, and the design below is built so as not to need it.**
+
+The other thing the draft got wrong: it said the grammar's only contribution to an
+id is the disambiguator. §1 says otherwise and §1 is right — the grammar decides
+what counts as a declaration, what its name is, and how containers nest, all of
+which feed `symbolPath`. What is true is narrower and is the measurement below: the
+disambiguator is the field that varies most, and it is present on very few ids.
+
+### Measured: 96.6% of ids carry no disambiguator at all
+
+The indexer emits one only when a name COLLIDES in its scope (`indexer.ts`:
+`if ((totals.get(k) ?? 0) > 1)`). A symbol whose name is unique where it sits gets
+`undefined`, and `anchorId` skips the field.
+
+Counted in process, read-only:
+
+| store | anchors | with a disambiguator |
+|---|---|---|
+| this repo (TS) | 481 | 0 |
+| `FakeBankSimulator` (C#) | 227 | 2 — 0.9% |
+| the real event-sourced target (C#) | 10,111 | **347 — 3.4%** |
+
+All 347 are signature-derived; not one fell back to an ordinal. This does not make
+those 96.6% grammar-INDEPENDENT — `symbolPath` is still grammar-shaped — but it does
+mean the field two grammars most visibly disagree on (§1's `(refstring)`) is absent
+from all but a few of them.
+
+### Verify the READER's candidate, never the publisher's split
+
+The repair for the encoding problem is not to trust the split. It is to stop asking
+the publisher's triple to prove anything:
+
+> A candidate is accepted only when the READER's own anchor — file, symbol path and
+> disambiguator as the reader's own indexer produced them — reproduces `a_old`.
+
+The reader is then checking an id it minted itself, against a symbol that is
+actually there. A re-partitioned locator cannot survive that — and the reason is
+structural rather than lucky.
+
+**The two alphabets are disjoint.** Every disambiguator this indexer emits either
+starts with `(` (`signatureKey` always returns `(${parts})`) or contains `#` (the
+`${sig ?? ""}#${i}` fallback). No identifier in C#, TypeScript, JavaScript or Python
+can contain either. So the re-partition that breaks a crafted triple — moving the
+last path segment into the disambiguator or back — cannot describe two REAL anchors,
+because the string would have to be a valid symbol name and a valid disambiguator at
+once.
+
+Measured across four repositories and three languages, 16,093 anchors:
+
+| store | anchors | a name shaped like a disambiguator | a disambiguator shaped like a name | id collisions |
+|---|---|---|---|---|
+| this repo | 1,345 | 0 | 0 | 0 |
+| `FakeBankSimulator` | 1,268 | 0 | 0 | 0 |
+| the event-sourced target | 11,018 | 0 | 0 | 0 |
+| `mrepo-web` | 2,462 | 0 | 0 | 0 |
+
+That property is now load-bearing, so it wants a test rather than a paragraph: a
+grammar added later whose `signatureKey` returns something unparenthesized would
+re-open the ambiguity silently.
+
+**And one anchor per id is NOT currently guaranteed** — a review round found a case
+the measurement above was blind to, because it keyed on `file + path +
+disambiguator` and this collision has all three equal:
+
+```csharp
+partial class C { void M(int x) {} }   // one file
+partial class C { void M(string x) {} }
+```
+
+The two `C` shells are disambiguated `#0` and `#1`, but a container's disambiguator
+is not carried into its children's `symbolPath`, and each partial body is a separate
+scope in which `M` is unique — so both methods get `symbolPath: ["C","M"]`, no
+disambiguator, and `a_fc2ab97b04075e35` twice. `anchors` is keyed `(ref, id)` and
+written `INSERT OR REPLACE`, so one of the two methods silently ceases to exist for
+the whole map.
+
+Measured on fresh indexes, which is where it is visible (a store has already
+overwritten it): **0 colliding groups in 18,761 anchors** across this repo,
+`FakeBankSimulator`, both large C# targets and `mrepo-web`. Real `partial` classes
+live in different files, and the file is the first field of the digest.
+
+So: latent, not active. Carrying the container's disambiguator into the child path
+is the correct fix and it is an `ANCHOR_SCHEME` bump — disproportionate for zero
+observed instances, and it should ride along with the next one. **What is
+proportionate now is refusing to lose the row silently**, which is also what makes
+"the reader's own index has at most one anchor per id" an enforced invariant instead
+of a hoped-for one.
+
+And it collapses the mechanism to something nearly present: "does my own index of
+that commit contain `a_old`" is that check.
+
+**Nearly, not exactly — `findAnchorsOutsideWork` is not it.** It reads cached rows
+that another derivation may have minted, searching every snapshot and returning the
+NEWEST occurrence rather than the one at the commit the record names. And a
+persisted snapshot has already collapsed any duplicate id. Step 1 has to index the
+commit fresh (`indexCommit`) and check uniqueness in the unpersisted result.
+
+**So the locator is redundant for identification whenever the reader's build can
+mint the id, and that is the majority case.** What is left for a published locator
+is the minority where it cannot — and there, having given up the arithmetic, it is a
+trusted assertion like any other.
+
+### Two steps, and only the first can ever be verified
+
+1. **Identify.** What did `a_old` name? Freshly index the commit the record already
+   points at and look the id up. Verifiable when this build can mint it; a trusted
+   assertion otherwise.
+2. **Continue.** What is that symbol NOW? A rename, a moved file, a changed
+   signature — the current symbol has a different id BY CONSTRUCTION, so no digest
+   check can confirm the pairing. This step is a judgement and always will be.
+
+Everything hard is in step 2, and step 1 does not shrink it.
+
+**Not every record has an address.** `sourceRef` is optional and is often `@work`;
+`createdCommit` is nullable. Step 1's answer therefore has four shapes — *here it
+is*, *not in that commit under this build*, *ambiguous*, and *no historical address
+to ask about* — and the last must be said rather than implied.
+
+### What step 2 can actually stand on
+
+In descending strength, and the ordering matters more than the list:
+
+1. **An exact blob rename.** Git establishes that the file's content is unchanged
+   and only its path moved, so the two anchor sets pair by `symbolPath` and
+   disambiguator with nothing left to guess.
+2. **The commit where the id disappears.** The id is exact until one adjacent
+   transition; finding that transition and reading its diff is far stronger evidence
+   than comparing an old commit with today. Commit indexing, ancestry, blob reads
+   and the diff machinery all exist.
+3. **A complete-group body-hash bijection** — `migrateOverloads`' standard: a
+   constrained `file + symbolPath` group, unchanged cardinality, unique bodies,
+   every old body paired. A single matching body is much weaker, because trivial
+   implementations repeat.
+4. **Rename similarity, kind and signature likeness.** For RANKING candidates in
+   front of a person, never for applying one. Note that no rename-PAIR helper exists
+   yet: `changedFilesBetween` and `numstat` pass `-M` and then keep only the
+   head-side name.
+
+**Body hashes will not pair across a `hashScheme` change** — `sameBody` requires
+equal schemes and `bodyKey` includes it, which is exactly the guard that stops a
+scheme bump reading as universal drift. The only recovery is to re-index BOTH the
+old commit and the current tree under the running build so the hashes are
+commensurable, which is available only once step 1 has identified the old symbol.
+
+And body pairing is narrower than it looks even within one scheme: a callable's hash
+covers its declaration, so a rename or a signature change moves the body hash too.
+It is strongest for file moves and derivation-only id changes, weakest for exactly
+the edits people file findings about.
+
+### What this does to "Clearing a doc nobody can place" part 3
+
+Less than the first draft claimed. A locator can turn an incomparable id into an
+ordinary `dangling` one **mechanically**. It does not turn *the old identity is
+absent* into *the subject is genuinely gone* **epistemically** — and that judgement
+is what part 3 was for. `dangling` deliberately includes renamed code, so routing
+through it inherits that limit rather than removing it.
+
+| part 3 blocker | what the locator does |
+|---|---|
+| 1. `anchorScheme` under-rejection | bypassed for a record with a usable locator, not fixed. Everything without one keeps the hole |
+| 2. no singular build derivation | **genuinely removed.** Locator resolution never aggregates writer against reader derivation sets |
+| 3. same derivation ≠ same checkout | untouched. A locator gives the old address, not continuity to the new one |
+| 4. empty-index fallback, tombstone tie | bypassed only if ONE resolution view returns a decisive answer for both content and tombstone evaluation. Remains for locatorless and ambiguous records |
+| 5. shared-only doc has no queue path | untouched, and `retireSharedDoc` would need remap-aware resolution too — it classifies raw ids today |
+
+### The seam, when there is enough here to need one
+
+Read-time interpretation is right: the record is preserved and an append-only
+interpretation is applied over it. Rewriting an id string at each read site is not —
+it would miss the paths that never reach `resolveAnchor`:
+
+- `classifyCitations` tests raw id membership.
+- `liveHashes` discovers which FILES to reparse from the id, and filters snapshots
+  by requested ids — a foreign id supplies neither the locator's file nor a
+  candidate new id.
+- `retireSharedDoc` classifies citations rather than calling `evalVersion`.
+- `foldDocs` joins acceptances to citations by exact id, earlier than any read-time
+  resolution could reach.
+
+So the store-facing layer would load and validate the interpretations and build the
+secondary index they need, and the result would be one value passed into one pure
+resolver beside `resolveAnchor`, with the typecheck enumerating its consumers — the
+move `AnchorIndex` already makes for derivation evidence. Its result is not
+`oldId → currentId` but at least
+`exact | mapped(anchor) | absent | ambiguous | no-locator`, exact id equality wins
+before anything else is consulted, and a mapped result exposes the current ANCHOR
+rather than only a hash so navigation can use the placed symbol.
+
+**None of that is being built yet, and the reason is the next section.**
+
+### Proportion: what is worth building, and what has to be measured first
+
+The temptation here is a remap protocol, a resolution view and a continuation
+engine. Against that:
+
+- Step 1 is small, local, needs no protocol and covers the case where this build can
+  mint the id.
+- `migrateOverloads` already does the strongest form of step 2 for the case it can
+  prove, and refuses the rest.
+- The queue built in "Clearing a doc nobody can place" already routes the residue to
+  a person with its evidence attached.
+
+So: **build the step 1 diagnostic, feed it into that queue, and stop.**
+
+**Built** (`whereWas` / `whereWere` in `ops.ts`, MCP `where_was`). It indexes the
+commit fresh, groups the result by id, and answers `found` / `absent` / `ambiguous`
+/ `unaddressed`. `ackHole` runs it for every unplaceable citation before filing the
+question, so the queue item carries the address rather than instructions for finding
+one — and says in as many words which half is settled (what the id named) and which
+is not (what that symbol is now). `collidingAnchors` makes `ambiguous` reachable and
+`reindex` reports it, so the invariant it rests on is enforced rather than assumed.
+
+The 3.4% disambiguator rate is informative but it is the wrong denominator for the
+decision, and it would be dishonest to spend it as one. Disambiguated anchors are
+not the same set as ids another build cannot mint; a grammar change can move
+`symbolPath` on an undisambiguated anchor; some disambiguated ids are identical
+across grammars anyway; and an event-sourced codebase's docs and findings cite
+`Apply`/`Handle` overloads far out of proportion to their share of the tree.
+
+**The deferred piece, recorded so it is not redesigned from scratch.** When the
+minority that this build cannot mint turns out to matter, what gets published is a
+locator as an assertion, with the ratchet the arithmetic does not provide:
+
+```
+remap  { anchorId, file, symbolPath, disambiguator, anchorScheme, foundAt, by, applied? }
+```
+
+Proposed by whoever can reproduce the id, applied by a PERSON, recorded with its
+evidence and retractable by a later event — the same shape as `finding.relocation`,
+for the same reason: a wrong remap is false provenance across a fleet rather than on
+one machine. `anchorScheme` says how to READ the disambiguator and is explicitly not
+bound into the digest. Appended, never migrating anything.
+
+**The denominator to measure is the queue itself**: of the records that actually
+reach it, how many carry a concrete source commit, how many step 1 identifies
+uniquely, how many stay foreign, and how often a person finds an unambiguous
+continuation. Until that residue shows repetition, a general step-2 engine is
+mechanism ahead of observed pain — which is the failure this whole document was
+written to avoid making twice.
+
+### The pain this is actually for — observed, and located
 
 Findings, not docs. A doc can be rewritten: its value is its prose, its citations
 are replaceable, and re-documenting against current symbols is a legitimate repair.

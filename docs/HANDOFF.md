@@ -81,22 +81,45 @@ contradiction and is not: 3b's "do the anchor join in SQL" versus provenance's
 
 ## What is open, roughly in the order I would take it
 
-1. **The recovery arc** — `docs/anchor-id-provenance.md` § "Recovery". Design-first
-   and the reason the rest exists. Derive a candidate from the **commit graph** (a
-   finding carries `sourceRef`, so an unresolvable id is a question with an
-   address: index their commit and read the locator off your own snapshot), then
-   publish it as a **remap event** — an append-only log cannot be migrated but can
-   be interpreted, and an appended interpretation is auditable and retractable.
+1. **The recovery arc** — `docs/anchor-id-provenance.md` § "Recovery: placing an id
+   nobody can place". **Designed properly and step 1 is built; the rest is
+   deliberately not.** Three review rounds killed two of my central claims, and the
+   section records both as false rather than quietly dropping them.
 
-   **Its first task is done: the bug is located and fixed** (`e9e66f2`, and §
-   "Recovery" in the provenance doc records the mechanism). It was not the sidecar
-   — shared findings are per-PR scoped, which is where the last search stopped.
-   **Local annotations have no PR scope at all**, and the PR findings panel was
-   rebuilding one in the browser with a disjunct that had no `pr` term in it, over a
-   universe-wide `/api/queue`. Every orphan on the map was listed on every pull
-   request alike. `offStoryReason` is the rule now, server-side.
+   **What is true.** An anchor id is a digest of `file + symbolPath + disambiguator`.
+   A record's own commit (`sourceRef`, `createdCommit`) is an address, and indexing
+   that commit FRESH answers what the id named — an anchor this build minted itself,
+   whose own id is the one asked about. `whereWas` is that, with four answers
+   (`found` / `absent` / `ambiguous` / `unaddressed`), and `ackHole` runs it so the
+   queue item carries the address.
 
-   That narrows the surface. It does not place the ids, which is still this arc.
+   **What is false, and was in an earlier draft of this doc.** (a) That a published
+   locator is verifiable by arithmetic: `anchorId` joins its fields with NUL and
+   nothing else, so `["N","C","M"]` encodes identically to `["N","C"] + "M"` — a
+   crafted triple verifies against an id it never named. The repair is to verify the
+   READER's own anchor, never the publisher's split, which also collapses the
+   mechanism to "is this id in my own index of that commit". (b) That the grammar
+   contributes only the disambiguator: §1 says otherwise and §1 is right.
+
+   **Measured, because the numbers decided the scope.** 3.4% of ids in the real
+   event-sourced target carry a disambiguator at all (347 of 10,111); 0 colliding
+   ids in 18,761 anchors across five repositories; and the alphabets of a symbol name
+   and a disambiguator are disjoint, which is what makes reader-side verification
+   sound and is now a test.
+
+   **Left, and why.** Step 2 — what is that symbol NOW — is a judgement no digest can
+   confirm, and `migrateOverloads` already does its strongest form for the case it can
+   prove. A remap protocol for the minority this build cannot mint is designed in the
+   doc and NOT built. **The denominator to measure before building more is the queue
+   itself**: how many records reaching it carry a commit, how many step 1 places, how
+   many stay foreign.
+
+   **One latent bug found on the way.** Two `partial` declarations of one class in one
+   file give their members the same id, and `INSERT OR REPLACE` drops one silently.
+   Zero instances in five repos (real partials live in different files, and the file
+   is the first digest field), so `reindex` REPORTS it rather than refusing, and the
+   derivation fix — carry a container's disambiguator into its children's path —
+   waits for the next `ANCHOR_SCHEME` bump rather than forcing one.
 
 2. **The un-clearable doc — decided, half built.** Izzie chose the synthesis:
    refuse the removal (B), queue it for triage instead of leaving it stuck, and

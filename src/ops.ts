@@ -20,6 +20,7 @@ import {
 } from "./schema.js";
 import { createHash } from "node:crypto";
 import { indexFile, indexBlob, indexRepo, indexCommit } from "./repo.js";
+import { collidingAnchors } from "./indexer.js";
 import { headCommit, currentBranch, isDirty, revParse, mergeBase, originSlug, readBlobs, submoduleDrift } from "./git.js";
 import { computeStaleness } from "./stale.js";
 import {
@@ -433,8 +434,19 @@ export async function reindex(root: string) {
   const recovered = releaseRecoveredOrphans(root);
   if (commit) await writeSnapshot(root, commit, branch, anchors, new Date().toISOString());
   const files = new Set(anchors.map((a) => a.file)).size;
+  // Two symbols on one id. The store is keyed `(ref, id)` and written
+  // `INSERT OR REPLACE`, so the loser has just silently ceased to exist for the
+  // whole map — reported rather than refused, because wedging an index over a
+  // pattern measured at 0 in 18,761 anchors is worse than the loss it names. See
+  // `collidingAnchors`.
+  const collisions = collidingAnchors(anchors);
   return {
     ok: true, anchors: anchors.length, files, commit, branch,
+    ...(collisions.size ? {
+      idCollisions: [...collisions].map(([id, list]) => ({
+        id, file: list[0]!.file, symbols: list.map((a) => a.symbolPath.join(" › ")),
+      })),
+    } : {}),
     ...(submodules.drift.length ? { submodules: submodules.drift } : {}),
     ...(submodules.error ? { submoduleError: submodules.error } : {}),
     ...(remapped ? { remapped } : {}),
@@ -713,6 +725,81 @@ export async function snapshotAt(root: string, ref: string, opts: { force?: bool
   if (!anchors) return { error: `could not read tree for ${sha.slice(0, 12)} (fetch it first?)` };
   await writeSnapshot(root, sha, opts.label ?? (ref === sha ? null : ref), anchors, new Date().toISOString());
   return { ok: true, ref: sha, cached: false, anchors: anchors.length };
+}
+
+/**
+ * What an anchor id NAMED, at a commit that record points at.
+ *
+ * Step 1 of `docs/anchor-id-provenance.md` § Recovery, and the only half of it that
+ * can ever be verified: the answer is an anchor THIS build minted, from source at
+ * that commit, whose own id is the one being asked about. Nothing is trusted and
+ * nothing is guessed.
+ *
+ * Indexed FRESH rather than read from a cached snapshot, and the difference is not
+ * pedantry. A snapshot's rows may have been minted by another build; it is searched
+ * across every ref and answers with the newest occurrence rather than the one at the
+ * commit asked for; and it is keyed by id, so it has already collapsed any pair of
+ * symbols that collide on one — which is exactly the case this must not answer.
+ *
+ * The four shapes are the point. `ambiguous` and `absent` are different answers and
+ * so is having no commit to ask about, and a caller told only "no" cannot tell which
+ * of the three it got.
+ */
+export type WhereWas =
+  | { at: "found"; ref: string; file: string; symbol: string; symbolPath: string[]; disambiguator?: string; kind: string; startLine?: number }
+  /** That commit, indexed by this build, does not produce the id. */
+  | { at: "absent"; ref: string; indexed: number }
+  /** This build mints that id for more than one symbol there — see `collidingAnchors`. */
+  | { at: "ambiguous"; ref: string; candidates: { file: string; symbol: string }[] }
+  /** No commit to ask about, or the repo cannot answer for one. */
+  | { at: "unaddressed"; why: string };
+
+export async function whereWas(root: string, anchorId: string, ref?: string): Promise<WhereWas> {
+  return (await whereWere(root, [anchorId], ref)).get(anchorId)!;
+}
+
+/**
+ * The same question for several ids at once, because the expensive part — indexing
+ * the commit — is per COMMIT and not per id. Asking one at a time re-reads the whole
+ * tree for each.
+ */
+export async function whereWere(root: string, anchorIds: string[], ref?: string): Promise<Map<string, WhereWas>> {
+  const ids = [...new Set(anchorIds)];
+  const all = (answer: WhereWas) => new Map(ids.map((id) => [id, answer]));
+
+  const wanted = (ref ?? "").trim();
+  // `@work` is the live index, not a commit — a record witnessed there recorded no
+  // historical address at all, and saying "absent" about it would be an answer to a
+  // question nobody asked.
+  if (!wanted || wanted === "@work" || wanted === "@orphan") {
+    return all({ at: "unaddressed", why: `no commit to ask about — the record names "${wanted || "nothing"}", which is not one` });
+  }
+  const sha = revParse(root, wanted);
+  if (!sha) return all({ at: "unaddressed", why: `cannot resolve "${wanted}" in this repo — fetch it first?` });
+  const anchors = await indexCommit(root, sha);
+  if (!anchors) return all({ at: "unaddressed", why: `could not read the tree at ${sha.slice(0, 12)} — fetch it first?` });
+
+  // Grouped, not found-first: an id this build mints for two symbols there is the
+  // one answer that must never come back as a single confident location.
+  const byId = new Map<string, typeof anchors>();
+  for (const a of anchors) (byId.get(a.id) ?? byId.set(a.id, []).get(a.id)!).push(a);
+
+  const out = new Map<string, WhereWas>();
+  for (const id of ids) {
+    const hits = byId.get(id) ?? [];
+    if (!hits.length) { out.set(id, { at: "absent", ref: sha, indexed: anchors.length }); continue; }
+    if (hits.length > 1) {
+      out.set(id, { at: "ambiguous", ref: sha, candidates: hits.map((a) => ({ file: a.file, symbol: a.symbolPath.join(" › ") })) });
+      continue;
+    }
+    const a = hits[0]!;
+    out.set(id, {
+      at: "found", ref: sha, file: a.file, symbol: a.symbolPath.join(" › "),
+      symbolPath: a.symbolPath, ...(a.disambiguator !== undefined ? { disambiguator: a.disambiguator } : {}),
+      kind: a.kind, ...(a.loc ? { startLine: a.loc.startLine } : {}),
+    });
+  }
+  return out;
 }
 
 /** List cached commit snapshots available to diff. */
@@ -2560,7 +2647,7 @@ export const UNPLACEABLE_CATEGORY = "unplaceable-doc";
  * catalogue as a work list; queueing one person's attempt to clear one doc is
  * bounded by attempts.
  */
-type Unplaceable = { anchorId: string; file?: string; symbol?: string; marks: string[] };
+type Unplaceable = { anchorId: string; file?: string; symbol?: string; marks: string[]; was?: WhereWas };
 type Refusal = { versionId?: string; createdCommit?: string | null; unplaceable?: Unplaceable[] };
 
 /**
@@ -2577,7 +2664,7 @@ function evidenceKey(r: Refusal): string {
     v: r.versionId ?? null,
     c: r.createdCommit ?? null,
     u: [...(r.unplaceable ?? [])]
-      .map((x) => ({ a: x.anchorId, f: x.file ?? null, s: x.symbol ?? null, m: [...x.marks].sort() }))
+      .map((x) => ({ a: x.anchorId, f: x.file ?? null, s: x.symbol ?? null, m: [...x.marks].sort(), w: x.was ?? null }))
       .sort((a, b) => a.a.localeCompare(b.a)),
   });
   return createHash("sha256").update(canonical).digest("hex").slice(0, 12);
@@ -2588,12 +2675,21 @@ const keyOf = (text: string): string | null => /^\[evidence ([0-9a-f]{12})\]$/m.
 
 /** What the queued question says. The key line is the contract; the rest is prose. */
 function unplaceableQuestion(r: Refusal): string {
-  const where = (c: Unplaceable) =>
-    `  ${c.anchorId}${c.file ? ` — last seen at ${c.file} › ${c.symbol}` : " — no record of it anywhere"}`
-    + `${c.marks.length ? `, minted under ${c.marks.join(", ")}` : ""}`;
+  const where = (c: Unplaceable) => {
+    const w = c.was;
+    // The identified address first when there is one: it is the only line here that
+    // was CHECKED rather than remembered — an anchor this build minted itself, from
+    // source at that commit, whose own id is the one in question.
+    if (w?.at === "found") return `  ${c.anchorId} — WAS ${w.file} › ${w.symbol}${w.startLine ? `:${w.startLine}` : ""} at ${w.ref.slice(0, 12)}`;
+    if (w?.at === "ambiguous") return `  ${c.anchorId} — AMBIGUOUS at ${w.ref.slice(0, 12)}: this build mints that id for ${w.candidates.map((x) => `${x.file} › ${x.symbol}`).join(" and ")}`;
+    const tail = `${c.marks.length ? `, minted under ${c.marks.join(", ")}` : ""}`;
+    if (w?.at === "absent") return `  ${c.anchorId} — not produced by this build at ${w.ref.slice(0, 12)} (${w.indexed} anchors read there)${tail}`;
+    return `  ${c.anchorId}${c.file ? ` — last seen at ${c.file} › ${c.symbol}` : " — no record of it anywhere"}${tail}`;
+  };
   const cites = r.unplaceable ?? [];
-  const located = cites.filter((c) => c.file);
-  const blind = cites.filter((c) => !c.file);
+  const identified = cites.filter((c) => c.was?.at === "found");
+  const located = cites.filter((c) => c.was?.at !== "found" && c.file);
+  const blind = cites.filter((c) => c.was?.at !== "found" && !c.file);
   return [
     `This doc cannot be retired: its citations were minted by a build whose anchor derivation this one cannot reproduce, so "the code is gone" is not something anybody here can establish.`,
     ``,
@@ -2605,11 +2701,14 @@ function unplaceableQuestion(r: Refusal): string {
     // Two different jobs, and a set can need both. An id is an opaque digest of file
     // plus symbol path, so a last-known location is something to follow and no
     // location leaves the commit as the only handle.
+    ...(identified.length ? [
+      `The ones marked WAS are settled: that commit, indexed by this build, produces that id for that symbol and no other. What is NOT settled is what the symbol is now — a rename or a signature change gives it a different id by construction, and no digest can confirm the pairing. Ask git what happened to the file and symbol since, and if you can establish the continuation beyond doubt, re-cite the doc with \`update_node\` — add the current anchor, drop the old id.`,
+    ] : []),
     ...(located.length ? [
-      `For the ones with a last-known location: let git say what happened to that file and symbol since, find what the code is now, and re-cite the doc with \`update_node\` — add the current anchor, drop the old id. That makes it an ordinary doc again.`,
+      `For the ones with only a last-known location: same job, weaker starting point — that location is remembered rather than checked.`,
     ] : []),
     ...(blind.length ? [
-      `For the ones with none, the commit above is the only handle. \`snapshot\` takes a \`ref\`, so you can index that commit without checking it out — but it mints ids under THIS build's derivation, so it gives you that commit's files and symbols to read, not a pairing to the old ids. Working out which symbol an id named is a judgement, and if you cannot make it, say so: that blocker is the answer.`,
+      `For the ones with neither, this build cannot produce those ids from that commit at all, so it cannot say what they named — another build's derivation spelled them. Somebody whose build reproduces them can answer; you cannot check their answer, so if that is where this stops, say so. That blocker IS the answer.`,
     ] : []),
     ``,
     `If the subject is genuinely gone, report that and stop: retiring is a person's act, and the tombstone that would record it is not built yet — your answer is what it will be built on.`,
@@ -2624,8 +2723,16 @@ export async function ackHole(root: string, id: string) {
   // whenever anything is unplaceable, and a version with one gone citation and one
   // foreign one reads `dangling`.
   if (!r.unplaceable?.length) return r;
-  const text = unplaceableQuestion(r);
-  const key = evidenceKey(r);
+
+  // Step 1 of recovery, run HERE rather than left as an instruction: index the
+  // commit the version names once and look every unplaceable id up in it. That turns
+  // a queue item saying "go and find out where this was" into one that says where it
+  // was — the only part of the answer anybody can check.
+  const was = await whereWere(root, r.unplaceable.map((c) => c.anchorId), r.createdCommit ?? undefined)
+    .catch(() => new Map<string, WhereWas>());
+  const evidence = { ...r, unplaceable: r.unplaceable.map((c) => ({ ...c, ...(was.get(c.anchorId) ? { was: was.get(c.anchorId) } : {}) })) };
+  const text = unplaceableQuestion(evidence);
+  const key = evidenceKey(evidence);
 
   // One evolving investigation per doc, not one question per version. But the ids,
   // the commit and the locations ARE the question, so an item describing a version

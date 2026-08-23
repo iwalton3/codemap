@@ -405,3 +405,29 @@ export function indexSource(
   processScope(root, []);
   return anchors;
 }
+
+/**
+ * Anchors this index produced that share an id — which is supposed to be nobody.
+ *
+ * An id is a digest of `file + symbolPath + disambiguator`, and a container's
+ * disambiguator is NOT carried into its children's path. So two `partial class C`
+ * declarations in one file give their members `["C","M"]` with no disambiguator
+ * each — one id, two methods. `anchors` is keyed `(ref, id)` and written
+ * `INSERT OR REPLACE`, so the loser silently ceases to exist for the whole map.
+ *
+ * Measured at 0 groups in 18,761 anchors across five repositories: real `partial`
+ * classes live in different files, and the file is the first field of the digest.
+ * Latent rather than active — which is why this reports instead of refusing, and
+ * why the derivation fix (carry the container's disambiguator down) waits for the
+ * next `ANCHOR_SCHEME` bump rather than forcing one.
+ *
+ * It also makes "at most one anchor per id" checkable, which
+ * `docs/anchor-id-provenance.md` § Recovery needs: identifying what an old id named
+ * is only sound if the answer cannot be two symbols.
+ */
+export function collidingAnchors(anchors: readonly Anchor[]): Map<string, Anchor[]> {
+  const byId = new Map<string, Anchor[]>();
+  for (const a of anchors) (byId.get(a.id) ?? byId.set(a.id, []).get(a.id)!).push(a);
+  for (const [id, list] of byId) if (list.length < 2) byId.delete(id);
+  return byId;
+}

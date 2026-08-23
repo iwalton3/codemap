@@ -106,6 +106,43 @@ test("an answered question is not re-asked, and a changed doc revises the one op
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("the queued question carries the address, not instructions for finding it", async () => {
+  // Step 1 of recovery runs inside `ackHole`: the commit the version names is
+  // indexed once and every unplaceable id looked up in it. What comes back is an
+  // anchor THIS build minted from source at that commit, so the line is checked
+  // rather than remembered — and the item says so, in those words.
+  const root = mkdtempSync(join(tmpdir(), "codemap-unplaceable-addr-"));
+  try {
+    const git = (...a: string[]) =>
+      spawnSync("git", ["-c", "user.email=t@x", "-c", "user.name=t", ...a], { cwd: root, encoding: "utf8" });
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "src/pay.ts"), "export function transfer(c: number) { return c; }\n");
+    git("init", "-q", "-b", "main");
+    git("add", "-A");
+    git("commit", "-qm", "first");
+    const first = git("rev-parse", "HEAD").stdout.trim();
+    await init(root);
+    const gone = (await readAnchorStore(root)).anchors[0]!;
+
+    // The doc cites it with a foreign-derivation hash, and the symbol is renamed away.
+    await writeNode(root, node({ anchors: [gone.id] }), {
+      hashes: anchorIndex(new Map([[gone.id, hashTokens(["body"], THEIRS)]]), { tags: [THEIRS], anyUntagged: false }),
+      commit: first, branch: "main",
+    });
+    writeFileSync(join(root, "src/pay.ts"), "export function settle(c: number) { return c; }\n");
+    git("commit", "-qam", "renamed");
+    await init(root);
+
+    const r = await ackHole(root, "n_pay") as any;
+    assert.ok(r.queued, "still refused and still queued");
+    const q = (await readAnnotations(root)).annotations.find((a) => a.id === r.queued)!;
+    assert.match(q.text, /WAS src\/pay\.ts › transfer/, "the address it checked");
+    assert.match(q.text, new RegExp(first.slice(0, 12)), "and the commit it checked at");
+    assert.match(q.text, /marked WAS are settled/, "…and it says which part is settled and which is not");
+    assert.doesNotMatch(q.text, /no record of it anywhere/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("rewording the question does not throw away an answer", async () => {
   // The revise loop keys on an EVIDENCE digest, not on the rendered text. Comparing
   // prose would make a copy edit read as new evidence — revising an answered item
