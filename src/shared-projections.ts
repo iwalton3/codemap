@@ -17,6 +17,7 @@
  */
 
 import type { DatabaseSync } from "node:sqlite";
+import { db } from "./db.js";
 import { CorruptProjection, type Projection } from "./materialize.js";
 import { needsHumanAck, type SharedFinding } from "./shared-findings.js";
 import type { SharedDoc, UnmatchedAcceptance } from "./shared-docs.js";
@@ -96,27 +97,75 @@ export const docsProjection: Projection<Map<string, SharedDoc>> = {
   },
 
   read(d: DatabaseSync, scope: string): Map<string, SharedDoc> {
-    const out = new Map<string, SharedDoc>();
-    for (const r of d.prepare("SELECT node_id, unmatched FROM shared_doc WHERE scope = ? ORDER BY rowid").all(scope) as unknown as
-      { node_id: string; unmatched: string | null }[]) {
-      const doc: SharedDoc = { nodeId: r.node_id, versions: [], authors: new Map<string, Actor>() };
-      if (r.unmatched) doc.unmatched = JSON.parse(r.unmatched) as UnmatchedAcceptance[];
-      out.set(r.node_id, doc);
-    }
-    for (const r of d.prepare("SELECT node_id, version_id, author, body FROM shared_doc_version WHERE scope = ? ORDER BY node_id, ord").all(scope) as unknown as
-      { node_id: string; version_id: string; author: string | null; body: string }[]) {
-      const doc = out.get(r.node_id);
-      if (!doc) continue;
-      try {
-        doc.versions.push(JSON.parse(r.body) as NodeVersion);
-        if (r.author) doc.authors.set(r.version_id, JSON.parse(r.author) as Actor);
-      } catch {
-        throw new CorruptProjection(`shared_doc_version ${scope}/${r.version_id} is unreadable`);
-      }
-    }
-    return out;
+    return readDocRows(d, scope);
   },
 };
+
+/**
+ * The doc rows for a scope, optionally only for named nodes.
+ *
+ * The filtered form is what makes the reverse lookup worth having: `docsCiting`
+ * narrows the universe to the handful of nodes that mention an anchor, and only
+ * those versions' JSON is parsed. Unfiltered, this is the projection's `read`.
+ */
+function readDocRows(d: DatabaseSync, scope: string, nodeIds?: string[]): Map<string, SharedDoc> {
+  const out = new Map<string, SharedDoc>();
+  if (nodeIds && !nodeIds.length) return out;
+  const only = nodeIds ? ` AND node_id IN (${nodeIds.map(() => "?").join(",")})` : "";
+  const args = nodeIds ? [scope, ...nodeIds] : [scope];
+  for (const r of d.prepare(`SELECT node_id, unmatched FROM shared_doc WHERE scope = ?${only} ORDER BY rowid`).all(...args) as unknown as
+    { node_id: string; unmatched: string | null }[]) {
+    const doc: SharedDoc = { nodeId: r.node_id, versions: [], authors: new Map<string, Actor>() };
+    if (r.unmatched) doc.unmatched = JSON.parse(r.unmatched) as UnmatchedAcceptance[];
+    out.set(r.node_id, doc);
+  }
+  for (const r of d.prepare(`SELECT node_id, version_id, author, body FROM shared_doc_version WHERE scope = ?${only} ORDER BY node_id, ord`).all(...args) as unknown as
+    { node_id: string; version_id: string; author: string | null; body: string }[]) {
+    const doc = out.get(r.node_id);
+    if (!doc) continue;
+    try {
+      doc.versions.push(JSON.parse(r.body) as NodeVersion);
+      if (r.author) doc.authors.set(r.version_id, JSON.parse(r.author) as Actor);
+    } catch {
+      throw new CorruptProjection(`shared_doc_version ${scope}/${r.version_id} is unreadable`);
+    }
+  }
+  return out;
+}
+
+/** Just those nodes, built the same way the whole-scope read builds them. */
+export function docsByNode(root: string, scope: string, nodeIds: string[]): Map<string, SharedDoc> {
+  return readDocRows(db(root), scope, [...new Set(nodeIds)]);
+}
+
+/**
+ * Which shared docs cite these anchors — the read `shared_doc_citation` exists for.
+ *
+ * The catalogue read (`sharedDocs`) does not need it: it wants every doc anyway, so
+ * the citation ids are already in the JSON it is deserializing. This is the other
+ * direction — "does anybody's doc describe THIS symbol" — which `get_anchor`,
+ * `context` and `find_gaps` ask one anchor at a time, and answering it by
+ * deserializing every shared doc in the universe is the cost materialization exists
+ * to remove.
+ *
+ * Only the version's identity comes back, not its body. A caller that wants the doc
+ * reads it; a caller that only wants to know one EXISTS — which is what a gap
+ * report wants — never pays for the JSON. Callers must `ensureMaterialized` first:
+ * these rows are a projection, and querying a stale one answers confidently from
+ * the wrong input set.
+ */
+export interface DocCitationHit { nodeId: string; versionId: string; anchorId: string }
+
+export function docsCiting(root: string, scope: string, anchorIds: string[]): DocCitationHit[] {
+  const ids = [...new Set(anchorIds)];
+  if (!ids.length) return [];
+  const rows = db(root).prepare(
+    "SELECT v.node_id AS nodeId, c.version_id AS versionId, c.anchor_id AS anchorId "
+    + "FROM shared_doc_citation c JOIN shared_doc_version v ON v.scope = c.scope AND v.version_id = c.version_id "
+    + `WHERE c.scope = ? AND c.anchor_id IN (${ids.map(() => "?").join(",")}) ORDER BY v.node_id, v.ord`,
+  ).all(scope, ...ids) as unknown as DocCitationHit[];
+  return rows;
+}
 
 /** Shared notes, keyed by scope (`notes/<universe>/<bucket>`). */
 export const notesProjection: Projection<Map<string, SharedNote>> = {

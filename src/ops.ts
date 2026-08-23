@@ -2097,6 +2097,12 @@ export async function getAnchor(root: string, id: string) {
   }
   const citing = nodes.filter((n) => n.anchors.includes(id));
   const citeReviews = await reviewStatesFor(root, citing.map((n) => ({ kind: "node" as const, id: n.id })));
+  // Dynamic, like `mirrorNote`: the agnostic core does not depend on the sidecar,
+  // and a shared store that is missing or unreadable must not fail a local read
+  // that worked before shared docs existed.
+  const sharedCites = await import("./ops-shared.js")
+    .then((m) => m.sharedDocsCiting(root, [id]))
+    .catch(() => null);
   return {
     ...anchorBrief(anchor),
     present,
@@ -2120,6 +2126,14 @@ export async function getAnchor(root: string, id: string) {
       const rp = citeReviews.get(`node:${n.id}`);
       return { id: n.id, title: n.title, status: n.status ?? "fresh", trust: trustOf(n.status, rp) };
     }),
+    // What the TEAM has written about this symbol. `citedBy` is this machine's
+    // nodes, so without this the answer to "is this documented" was one person's
+    // half of it, and a colleague's doc from last week read as a gap.
+    //
+    // A separate field rather than merged into `citedBy`: the two have different
+    // authority (one is in your store, the other is the sidecar's) and merging them
+    // would make "who says so" unanswerable from the reply.
+    ...(sharedCites?.length ? { sharedDocs: sharedCites } : {}),
     bugs: bugStore.bugs.filter((b) => b.anchors.includes(id)).map((b) => ({ id: b.id, title: b.title, status: b.status })),
     annotations: annStore.annotations.filter((a) => a.target.kind === "anchor" && a.target.id === id),
     lang: langFor(anchor.file),

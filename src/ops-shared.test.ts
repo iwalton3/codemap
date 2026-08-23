@@ -318,3 +318,71 @@ test("a doc citing an id from another build is unverifiable, not lost, and says 
     assert.equal(out.needAttention, 0, "and it is not the reader's work — aligning builds is");
   } finally { u.cleanup(); }
 });
+
+/**
+ * Step 5, at its smallest useful size: the ordinary per-anchor read can see what
+ * the team wrote. Before this, `get_anchor` answered "what documents this code"
+ * from local nodes alone, so a colleague's synced doc read as a gap.
+ */
+test("a teammate's doc is visible on the anchor it describes", async () => {
+  const u = universe();
+  try {
+    const { publishDocVersion } = await import("./shared-docs.js");
+    const { init, getAnchor } = await import("./ops.js");
+    const { readAnchorStore } = await import("./store.js");
+    const { resolveSidecar: rs } = await import("./sidecar-config.js");
+
+    mkdirSync(join(u.root, "src"), { recursive: true });
+    writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+    writeFileSync(join(u.root, "src", "ledger.ts"), "export function post(c: number) { return c; }\n", "utf8");
+    await init(u.root);
+    const anchors = (await readAnchorStore(u.root)).anchors;
+    const transfer = anchors.find((a) => a.file === "src/pay.ts")!;
+    const post = anchors.find((a) => a.file === "src/ledger.ts")!;
+
+    const cfg = rs(u.root)!;
+    await publishDocVersion(cfg.path, cfg.universe, { principal: "dana@x.com" }, {
+      nodeId: "n_transfer", type: "process", title: "How a transfer settles", summary: "s", body: "b",
+      citations: [{ anchorId: transfer.id, acceptedHashes: [transfer.bodyHash] }],
+      createdCommit: null, createdBranch: null,
+    } as never);
+
+    const hit = await shared.sharedDocsCiting(u.root, [transfer.id]);
+    assert.equal(hit!.length, 1);
+    assert.equal(hit![0]!.nodeId, "n_transfer");
+    assert.equal(hit![0]!.by, "dana@x.com", "and who on the team said it");
+    assert.equal(hit![0]!.status, "fresh", "the verdict is evalVersion's, not a fourth re-derivation");
+    assert.deepEqual(hit![0]!.covers, [transfer.id]);
+
+    // The control: the reverse lookup must select, not just return everything.
+    assert.deepEqual(await shared.sharedDocsCiting(u.root, [post.id]), [],
+      "a doc that cites another symbol is not this symbol's documentation");
+    assert.deepEqual(await shared.sharedDocsCiting(u.root, []), []);
+
+    const a = await getAnchor(u.root, transfer.id) as any;
+    assert.equal(a.sharedDocs.length, 1);
+    assert.equal(a.sharedDocs[0]!.title, "How a transfer settles");
+    assert.equal((await getAnchor(u.root, post.id) as any).sharedDocs, undefined,
+      "absent rather than empty — an anchor nobody documented says nothing about the team");
+  } finally { u.cleanup(); }
+});
+
+test("no sidecar leaves the local read exactly as it was", async () => {
+  // The whole tool worked without a sidecar for its life. `null` is that answer,
+  // and it must not read as an error or as an empty team.
+  const u = universe(false);
+  try {
+    const { init, getAnchor } = await import("./ops.js");
+    const { readAnchorStore } = await import("./store.js");
+    mkdirSync(join(u.root, "src"), { recursive: true });
+    writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+    await init(u.root);
+    const id = (await readAnchorStore(u.root)).anchors[0]!.id;
+    await withEnv({ CODEMAP_SIDECAR: undefined }, async () => {
+      assert.equal(await shared.sharedDocsCiting(u.root, [id]), null);
+      const a = await getAnchor(u.root, id) as any;
+      assert.equal(a.error, undefined);
+      assert.equal(a.sharedDocs, undefined);
+    });
+  } finally { u.cleanup(); }
+});

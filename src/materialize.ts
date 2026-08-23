@@ -153,3 +153,39 @@ export async function readCached<T>(
   // rather than failing or caching something we know is already behind.
   return fold(await readScope(logRoot, scope));
 }
+
+/**
+ * Bring a scope's rows up to date, and say only whether that worked.
+ *
+ * `readCached` hands back the folded value, which means deserializing every row in
+ * the scope. That is the right shape for "give me the catalogue" and the wrong one
+ * for "which rows mention this id", where the answer is an indexed lookup and the
+ * deserialization is exactly the cost being avoided. On a hit this reads one row;
+ * on a miss it pays the fold that was owed anyway and throws away a value it
+ * already had in memory.
+ *
+ * `false` means the rows could NOT be brought up to date — someone is appending
+ * faster than the fold converges, and `readCached` answers from the log without
+ * storing. A caller that then queried the tables would get a complete-looking
+ * answer computed from rows it has been told are behind, so it must fall back.
+ */
+export async function ensureMaterialized<T>(
+  root: string,
+  logRoot: string,
+  scope: string,
+  identity: string,
+  fold: (events: LogEvent[]) => T,
+  proj: Projection<T>,
+): Promise<boolean> {
+  const current = async () => {
+    const before = await scopeFingerprint(logRoot, scope, identity);
+    const row = db(root).prepare("SELECT fingerprint FROM shared_scope WHERE scope = ?").get(scope) as
+      { fingerprint: string } | undefined;
+    return row?.fingerprint === before;
+  };
+  if (await current()) return true;
+  await readCached(root, logRoot, scope, identity, fold, proj);
+  // Asked again rather than assumed: `readCached` gives up after three attempts and
+  // answers from the log, and its return value cannot tell you which happened.
+  return current();
+}

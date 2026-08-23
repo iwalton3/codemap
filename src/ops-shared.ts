@@ -13,8 +13,8 @@ import { comparableHashes, sameBody } from "./normalize.js";
 import { realpathSync } from "node:fs";
 import { classifyCitations } from "./citation-state.js";
 import { evalVersion } from "./doc-version.js";
-import { readCached } from "./materialize.js";
-import { findingsProjection, docsProjection, notesProjection } from "./shared-projections.js";
+import { readCached, ensureMaterialized } from "./materialize.js";
+import { findingsProjection, docsProjection, notesProjection, docsCiting, docsByNode } from "./shared-projections.js";
 import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
 import { resolveSidecar, scopeFor, type SidecarConfig } from "./sidecar-config.js";
 import { originSlug, headCommit, currentBranch } from "./git.js";
@@ -564,6 +564,60 @@ export async function sharedDocs(root: string, opts: { nodeId?: string } = {}) {
     needAttention: rows.filter((r) => r.resolved?.status === "stale" || r.resolved?.status === "dangling").length,
     docs: rows,
   };
+}
+
+/**
+ * The team's docs describing these anchors — shared knowledge on an ordinary read.
+ *
+ * Step 5 of PROPOSAL-sidecar-materialization.md, at its smallest useful size: the
+ * local surfaces answer "what documents this code" from `nodes` alone and are blind
+ * to anything a teammate synced, which is `find_gaps` reporting a gap a colleague
+ * documented last week — the product's north star running backwards.
+ *
+ * The verdict comes from `evalVersion`, the same function the local path and the
+ * catalogue use. There is no fourth re-derivation of "is this doc fresh" here, and
+ * there must not be: three had already drifted (§7.4).
+ *
+ * `null` when there is no sidecar. Not an error — every caller is a local read that
+ * worked perfectly well before shared docs existed, and must keep working.
+ */
+export async function sharedDocsCiting(root: string, anchorIds: string[]) {
+  const cfg = resolveSidecar(root);
+  if (!cfg) return null;
+  const ids = [...new Set(anchorIds)];
+  if (!ids.length) return [];
+  const scope = docScope(cfg.universe);
+
+  // The rows are a projection. Querying one that is behind gives a confident answer
+  // from the wrong input set, so a scope that will not converge falls back to the
+  // fold rather than under-reporting what the team has written.
+  const fresh = await ensureMaterialized(root, cfg.path, scope, sidecarIdentity(cfg), foldDocs, docsProjection);
+  const docs = fresh
+    ? docsByNode(root, scope, docsCiting(root, scope, ids).map((h) => h.nodeId))
+    : new Map([...(await cachedDocs(root, cfg))].filter(([, d]) =>
+      d.versions.some((v) => v.citations.some((c) => ids.includes(c.anchorId)))));
+  if (!docs.size) return [];
+
+  const cited = [...new Set([...docs.values()].flatMap((d) => d.versions.flatMap((v) => v.citations.map((c) => c.anchorId))))];
+  const live = await liveHashes(root, cited);
+  const out = [];
+  for (const doc of docs.values()) {
+    const v = resolveDoc(doc, live);
+    if (!v) continue;
+    // WHICH of the asked-about anchors this doc claims. A doc can win on a version
+    // that no longer cites the anchor that found it, and reporting it under that
+    // anchor would be a claim the winning version does not make.
+    const covers = v.citations.map((c) => c.anchorId).filter((id) => ids.includes(id));
+    if (!covers.length) continue;
+    out.push({
+      nodeId: doc.nodeId, versionId: v.versionId, title: v.title, summary: v.summary,
+      type: v.type, removed: !!v.removed,
+      by: doc.authors.get(v.versionId)?.principal,
+      status: evalVersion(v, live).status,
+      covers,
+    });
+  }
+  return out;
 }
 
 /** Why this doc version cannot be published, or null. Shape only — ids are checked live. */
