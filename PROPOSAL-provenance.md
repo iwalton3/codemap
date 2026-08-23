@@ -202,6 +202,14 @@ provide an explicit rotation command, rotate automatically when absent, and rely
 
 ## 5. Receipts
 
+> **SUPERSEDED — do not build either of these.** `HashReceipt` was replaced by the
+> fingerprint inside the hash string (`docs/decision-receipts-vs-prefix.md`, landed).
+> `AnchorReceipt` was then CANCELLED by `docs/anchor-id-provenance.md`: the evidence
+> an id needs is already on the body hash minted beside it, so ids stay bare and the
+> work is join-side. That document is authoritative for everything below about
+> anchor ids, including the comparability rule in this section. The rest of §5 — the
+> state table, the evaluation order — still stands and is implemented.
+
 ```ts
 interface AnchorReceipt { id: AnchorId;  derivation: DerivationTag }
 interface HashReceipt   { value: string; derivation: DerivationTag }
@@ -217,8 +225,12 @@ which is the §2 defect.
   `parserIntegrity` and `grammarDigest`. The scheme prefix inside the hash string
   stays as a self-description and a migration path, but the tag is the authority;
   where they disagree that is a corrupt record, not a choice between answers.
-- Do not attempt an anchor join when the tags disagree on `anchorScheme`. Report the
-  mismatch — **never `lost`**, which claims the code is gone.
+- ~~Do not attempt an anchor join when the tags disagree on `anchorScheme`.~~
+  **Superseded**: id comparability is three fields — everything but `hashScheme` —
+  because `symbolPath` and the disambiguator are read off the parse, so a grammar
+  moves ids without `anchorScheme` moving. And the gate is consulted only AFTER id
+  equality fails, exactly as the hash side consults it only after two digests
+  differ. `docs/anchor-id-provenance.md` §2.
 - **Evaluation order is contract**, not implementation detail:
 
   ```
