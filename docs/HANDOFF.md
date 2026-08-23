@@ -5,6 +5,35 @@ rounds, and again after the session that finished §4. Everything below is
 committed and green (639 tests, `tsc -p .` and `tsc -p web` both clean). Read
 this, then the two documents it points at; do not read the whole branch history.
 
+## Where this stands — read this before the open list
+
+**The product is review, not provenance.** `CLAUDE.md`'s north star: reduce the
+reviewer's cognitive load and surface the context a raw diff hides. Judge every
+item below against that.
+
+**`PROPOSAL-shared-review-state.md` — the original sidecar plan — is COMPLETE.**
+All eight of its sequencing steps landed. Nobody noticed for weeks, so nothing
+prompted "pick the next plan", and one risk bullet in it ("scheme drift across
+the team") grew into `PROPOSAL-provenance.md` and
+`docs/anchor-id-provenance.md` and then into most of the open list.
+
+**That thread is now at a deliberate stopping point** (2026-08-23) and should not
+be resumed by default. Its measured incidence on the real targets is ~zero — 0
+ambiguous in 2,641 records, and the newest fix cannot fire on either live store
+because both report `tags: 0`. What it produced that WAS worth having is folded in
+and marked done.
+
+**The live question is architectural**, and it is why the last stretch felt like
+whack-a-mole: shared entities live in their own SQLite tables read by their own
+ops, so every surface needs a hand-written bridge. `PROPOSAL-sidecar-materialization.md`
+already names the fix — the **outbox overlay**, still unbuilt, whose two
+prerequisites landed. The owner's framing of the target is tighter than the
+proposal's: *SQLite is the store; the event log is the wire between databases.*
+The proposal has the opposite polarity. Settling that is the next decision.
+
+**The list below is ordered by tractability, not by value.** That ordering is how
+the sidequest kept winning. Re-sort it against the north star before working it.
+
 ## What to run
 
 ```sh
