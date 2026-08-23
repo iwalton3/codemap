@@ -10,8 +10,9 @@ and stopped the drift.
 ## START HERE
 
 **Read `docs/sidecar-architecture.md`.** It is short, normative, and settles the
-design. Then read `docs/plan-docs-unification.md`. Those two are the plan. This
-file is context.
+design. Then read `docs/plan-docs-unification.md` and `docs/fork-repair.md` — the two
+mechanisms it defers to. Those three are the plan. This file is context, and where it
+disagrees with them, they win.
 
 **The product is review.** `CLAUDE.md`'s north star: reduce the reviewer's
 cognitive load and surface the context a raw diff hides. Judge work against that.
@@ -43,42 +44,54 @@ Settled with the owner and through two independent reviews (Fable 5, codex):
 - One canonical table per entity kind; **fold-owned rows are written only by the
   fold** — the rule whose absence caused nine of ten defects in the first plan.
 - Budgets: a web UI interaction under 0.5s; push/pull under 10s excluding git.
-- Conflict repair is append-only and deletes nothing: automatic vector degradation
-  for a forked writer (sound, errs toward raising contests), plus a person-only
-  `scope.acknowledged` event keyed on an evidence digest.
+- Conflict repair is append-only and deletes nothing: the causal vector is derived
+  from the `writerPrev` chain so it stays correct under a fork, `merge=union` is cut,
+  and one person-run `sidecar heal` unions the shard, rotates the writer id and
+  appends a `scope.acknowledged` keyed on an evidence digest. `docs/fork-repair.md`.
 - **Nothing is deployed.** `main` has no sidecar at all — the whole system is ~134
   unreleased commits here. Reshaping schema, envelope and projection is free NOW.
 
-Three questions closed with arguments, in the architecture doc: analyzer docs
-never sync, findings stay in `shared_finding`, `merge=union` stays.
+Two questions are closed with arguments: **analyzer docs never sync** and
+**`merge=union` is cut**. One is genuinely open — whether findings follow docs into a
+canonical table — and it does not block docs-first.
+
+An earlier version of this file reported all three as settled, including
+`merge=union` as *staying*, while the architecture doc it defers to said the opposite.
+If this file and a design document disagree, the design document wins; this one is
+context.
 
 ### The sequence to implement
 
 1. **Sync honesty and lock safety.** `sync` reports `pushed: true` while the
-   finding never left the machine — **reproduced**, see the architecture doc's R1.
-   And the sidecar lock's `setInterval` heartbeat cannot fire while `spawnSync` git
-   blocks, so a call over 60s lets a concurrent sync steal the lock mid-merge.
-   Note `src/scenario.ts` masks R1 for every test by passing `-c user.email=` on
-   every git call.
+   finding never left the machine — **reproduced**, architecture doc R1. And the
+   sidecar lock's `setInterval` heartbeat cannot fire while `spawnSync` git blocks —
+   **verified**, R2, and worse than first written: `staleMs` is 60s against a 180s git
+   timeout, and a live pid is no protection, so one slow fetch can be stolen from at
+   three times the window. Note `src/scenario.ts` masks R1 for every test by passing
+   `-c user.email=` on every git call.
 2. **Sync does the integrity work.** Fetch outside the lock, push-side manifest
-   gate, append-only audit (a `git rm`'d shard propagates as a clean deletion),
-   materialize-at-sync, and a report a human reads at the one moment they are
-   watching.
-3. **Protocol-1 freeze.** Delete the backwards-compatibility surface — optional
-   `writer`/`writerPrev`, `after` as string-or-list, absent protocol numbers,
-   principal-hash shards, the `ALTER` ladder. It keeps faith with logs that have
-   never existed, and the principal-keyed fallback is the one place the vector is
-   documented as inexact. Add the repair mechanism here.
-4. **Docs unification** — `docs/plan-docs-unification.md`, whose step order was
-   itself reviewed. Ownership guard first; it is the fence.
+   gate, append-only audit (a `git rm`'d shard propagates today as a clean deletion —
+   the one live hole in "nothing is deleted once pushed"), **materialize-at-sync**,
+   and a report a human reads at the one moment they are watching.
+   Materialize-at-sync is a hard prerequisite for step 4, not an improvement: once
+   the bridges are gone, a pulled version reaches SQLite only if sync put it there.
+3. **Protocol-1 freeze, with the fork repair.** Delete the backwards-compatibility
+   surface — optional `writer`/`writerPrev`, `after` as string-or-list, absent
+   protocol numbers, principal-hash shards, the `ALTER` ladder. These two belong in
+   one change and not by preference: the repair makes `writerPrev` the causal
+   own-edge, so it has to be mandatory. `docs/fork-repair.md`.
+4. **Docs unification** — `docs/plan-docs-unification.md`. Blocked on step 2.
 5. Write-through, bridge deletion, walkthroughs onto the checked path.
 
 ### Verified defects, not yet fixed
 
-R1 (sync lies about pushing) and the lock heartbeat are the two with reproductions
-or precise mechanisms in the architecture doc. The full risk register — ten items,
-ranked by silence × damage — came from the direction review and the top of it is
-in that doc.
+R1 (sync lies about pushing) and R2 (the lock heartbeat cannot fire) are both
+reproduced in the architecture doc. A third, verified the same way: the causal vector
+fabricates knowledge under a fork, suppressing exactly the contests the system exists
+to raise — `docs/fork-repair.md` opens with the counterexample.
+
+The full risk register — ten items, ranked by silence × damage — came from the
+direction review, and the top of it is in the architecture doc.
 
 ## What to run
 

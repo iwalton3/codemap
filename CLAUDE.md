@@ -205,6 +205,14 @@ and there is **one canonical table per entity kind**, so a teammate's doc is a
 `node_versions` row with an origin marker rather than a parallel table needing a
 bridge onto every surface.
 
+It defers the mechanisms to two documents: `docs/plan-docs-unification.md` and
+`docs/fork-repair.md`. The second is worth knowing exists before touching
+`eventlog.ts` or `contest.ts` — the causal vector's per-writer ordinal is a **prefix
+claim** that a fork falsifies, and the fix derives the vector from the `writerPrev`
+chain instead of fold order. A design that looked like a soundness argument was wrong
+here for two reviews; both documents open with the counterexample rather than quietly
+dropping it.
+
 ## Analyzers (opt-in only)
 
 - Framework analyzers (currently Marten/Wolverine) live in `analyzers/` and are

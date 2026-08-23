@@ -187,108 +187,117 @@ This is the failure the whole design exists to prevent, stated in
 `PROPOSAL-shared-review-state.md` as *"a sync that loses a finding … is worse than
 no sync at all"*. Fix at the source (set `user.email`/`user.name` and
 `commit.gpgsign=false` locally in the sidecar — it is a machine artifact, not
-authored history) AND at the check: a commit failure must abort sync, and a no-op
-push must never be reported as having pushed.
+authored history) AND at the check.
+
+The check needs stating carefully, because the obvious phrasing is wrong. "A no-op
+push must not report as pushed" would fire falsely on an honest sync with nothing to
+send. The assertion is **the remote branch now contains my commits** — an ancestor
+check against `origin/<branch>` after the push, not an inference from git's exit
+code. And `commitLocal` must stop conflating its two failure modes: it returns
+`false` both for "nothing to commit" and for "the commit failed", so even a caller
+that checked the boolean could not tell a clean no-op from a lost finding.
 
 `src/scenario.ts` cannot catch it today because its git wrapper passes
 `-c user.email=…` on every call, which masks the whole class.
 
+## R2 — the lock heartbeat cannot fire. Verified.
+
+`withSidecarLock` keeps a live holder from being stolen from by stamping the lock on
+a `setInterval` (`src/lock.ts:107`). Git is `spawnSync` (`src/sidecar.ts:44`), which
+blocks the event loop, so **no timer can fire during any git call** — the heartbeat is
+dead exactly when the holder is slowest.
+
+The numbers make it reachable rather than theoretical: `staleMs` defaults to 60s
+(`src/lock.ts:57`) while the git timeout is 180s (`src/sidecar.ts:44`), and the steal
+condition is *stale OR pid-dead*, so a live process is no protection. One slow fetch
+or push can be stolen from at three times the stale window, mid-merge, by a
+concurrent sync.
+
+No timer-based heartbeat can fix this. The lock must be stamped around each blocking
+call — in the git wrapper itself, which is the one place that knows a call is about to
+block — or git must stop being synchronous.
+
 ## Conflict repair, without deleting anything
 
-A fork and a differing-content duplicate id are facts about immutable history.
-Append-only means the evidence cannot be removed, so today `scopeStatus` returns
-`blocked` **forever** — and the diagnostic's advice ("rotate the writer id") stops
-future forked events without touching the two that exist. One synced home
-directory permanently marks a pull request's findings non-authoritative. Fail
-closed with no exit is not fail closed; it is a dead scope.
+A fork — two clones holding one writer id — and a differing-content duplicate id are
+facts about immutable history. Append-only means the evidence cannot be removed, so
+repair may not rewrite or drop anything. The mechanism is
+**`docs/fork-repair.md`**; what is normative here is the shape.
 
-Repair is therefore two mechanisms, and only the second involves a person.
+**The causal vector is derived from the `writerPrev` chain, not from fold order.**
+Segments — maximal linear runs of that chain — are the vector's key, so the
+compression's prefix claim is true by construction and stays true under a fork. This
+is not a degradation grudgingly accepted: for a forked writer the segment vector is
+*correct*, not a lower bound. It is automatic, it touches no history, and the scope
+keeps computing while blocked.
 
-### 1. Degrade the vector, automatically — this is the soundness fix
+> An earlier version of this document claimed that dropping the `ownLast` edge for a
+> forked writer made `saw()` a lower bound and therefore sound. **That was false** —
+> the false knowledge lives in the ordinal prefix comparison, which that edge never
+> touches, and it was reproduced end to end. `docs/fork-repair.md` opens with the
+> counterexample. It is recorded rather than quietly deleted because it read exactly
+> like a soundness argument and survived two reviews.
 
-A fork means one `(scope, writer)` chain is not sequential, which is exactly the
-premise the causal vector's single-writer compression rests on. `causality` treats
-a writer's own previous event as a parent (`ownLast`), which is true by
-construction for a sequential writer and **false for a forked one**.
+**`sameWriter` is deleted from contest detection**, not made fork-aware: under the
+segment vector `saw()` subsumes every legitimate case it covered, and its only
+residual effect was suppressing intra-fork disagreements.
 
-So: **for a writer with a detected fork, drop the `ownLast` edge.** Their events
-then know only what their own `after` explicitly names — which is what they
-actually recorded having seen. This makes `saw()` return false in cases where it
-previously returned true, so the vector becomes a lower bound instead of an exact
-answer.
+**`merge=union` is cut** — shards are per-writer, so the only file two clones ever
+both write is a shard whose writer id they share, which is the fork itself. Union
+laundered that evidence into a clean merge. `-merge` fails it closed at sync time on
+the guilty clones instead, and everyone else is untouched.
 
-That direction is the safe one and it is the whole argument: a lower bound errs
-toward **raising** contests, never toward suppressing them, and a suppressed
-contest is the failure this system exists to prevent. Nothing is deleted, nothing
-is rewritten, and the scope keeps answering. The unforked case is untouched, which
-`eventlog.test.ts`'s "one machine's own history is still its own" already pins.
+**Repair is one person-run act.** `codemap sidecar heal` unions the conflicted shard
+by tool, rotates the local writer id, and appends `scope.acknowledged` — in that
+order, because acknowledging without rotating leaves the fork growing. Identity is a
+digest of the **evidence**, under an injective encoding, and the acknowledgment must
+causally cover what it acknowledges; a later fork produces a digest no ack covers and
+blocks again, which is the property that makes acknowledging safe. A person, never an
+agent — though with no server and no auth that gate is cooperative, and this document
+does not pretend otherwise.
 
-### 2. Acknowledge the evidence, by a person — this only silences the warning
-
-Soundness is handled above; what remains is that the scope is still *reported*
-non-authoritative, and someone has to be able to say "I have seen this fork and it
-is understood". An append-only event does that:
-
-- Kind `scope.acknowledged`, subject the scope, carrying **a digest of the
-  evidence** — the fork's `(writer, prev, event ids)` or the duplicated ids.
-- **Identity is the evidence digest, not the prose.** Same rule `ackHole` already
-  applies: comparing rendered text makes a copy edit look like new evidence. A
-  LATER fork produces a different digest and blocks the scope again, which is the
-  property that makes acknowledging safe.
-- **A person, never an agent.** Consistent with `retireSharedDoc` and with the
-  contest rule that an agent may not settle a disagreement between two people.
-- `scopeStatus` reports `complete` once every current piece of blocking evidence is
-  acknowledged, and keeps the diagnostic so the history stays visible.
-
-An unsupported `sidecarProtocol` needs no repair mechanism: it resolves when the
-reader upgrades, and acknowledging it would be a way to read data you cannot
-interpret.
+An unsupported `sidecarProtocol` needs no repair: it resolves when the reader
+upgrades, and acknowledging it would be reading data you cannot interpret.
 
 ### Why not the alternatives
 
 **Rewriting history** (dropping the losing shard, rebasing the log) breaks the one
-guarantee everything else rests on — that a shard is append-only, so a pull can
-only add. It also races: two people repairing produce divergent histories that
-`merge=union` cannot reconcile.
+guarantee everything else rests on — that a shard is append-only, so a pull can only
+add. It also races: two people repairing produce divergent histories.
 
 **Auto-acknowledging after N days** silently restores authority to a scope nobody
-looked at, which is the "trains people to clear the state without reading it"
-failure the contest design is explicitly tuned against.
+looked at, which is the "trains people to clear the state without reading it" failure
+the contest design is tuned against.
 
 ## Where the code deviates today
 
-- **Materialization is per-query, not per-sync.** `readCached` fingerprints the
-  shard directory on every read and folds on a miss; `sidecar.ts` sync materializes
-  nothing. A cache hit does not parse NDJSON, so the read path is close to the rule
-  above — but completeness is a property each query has to earn rather than one the
-  store has. The proposal already called this out: a cross-scope query "would
-  otherwise return only the warmed scopes and look total", and `db.ts` already
-  carries `ix_sf_target`, an unscoped index inviting exactly that query.
+- **Materialization is per-query, not per-sync.** `readCached` fingerprints the shard
+  directory on every read and folds on a miss; sync materializes nothing. A cache hit
+  does not parse NDJSON, so the read path is close to the rule above — but
+  completeness is a property each query earns rather than one the store has. This is
+  the deviation that most directly contradicts "the log is not read during normal
+  operation", and **docs unification cannot land before it is fixed**: once the
+  bridges are gone, a pulled version reaches SQLite only if sync put it there.
 - **Docs, findings and notes live in parallel `shared_*` tables**, which is the
-  duality above.
+  duality the ownership rule exists to end.
 - **Bugs and triage are still local**, though the original table put them in the
   sidecar.
 
-## Contradictions found against this document, unresolved
+## Questions this document leaves open
 
-**Analyzer-generated docs ARE synced today.** This document says analyzer output
-is never synced (it is deterministic and regenerable by each party, so syncing it
-is churn). But `publishLocalDocs` passes `generatedBy: v.generatedBy` straight
-through to `publishDocVersion` (`src/ops-shared.ts`), so `generatedBy` nodes are
-published to the sidecar and existing logs may already hold them. Either this
-document is wrong or that line is. It is a decision that appears never to have
-been made deliberately, and it needs making before docs unify — a migration has to
-know whether to ignore, quarantine, or accept them.
+**Whether findings follow docs into a canonical table.** Two reviews split on it: one
+keeps `shared_finding` (genuinely different shape, no local twin, attestation local by
+design), the other canonicalises it later. Docs-first is unaffected either way, so it
+does not need settling until docs land.
 
-## What is deliberately not decided here
+That is the only one. Two questions this document previously left open are now
+decided, and both are recorded where they bind:
 
-Whether findings follow docs into a canonical table. The two reviews split on it:
-one keeps `shared_finding` (genuinely different shape, no local twin, attestation
-local by design), the other canonicalises it later. Docs-first is unaffected either
-way, so it does not need settling until docs land.
-
-Whether `merge=union` stays. Per-writer shards mean two clones never write one file
-unless they share a writer id — which is a fork that should block rather than be
-disguised by a union merge. Existing sidecars still need the duplicate and torn-line
-tolerance. This interacts with the writer-chain fork detection and deserves its own
-decision.
+- **Analyzer-generated docs never sync.** They are deterministic and regenerated by
+  each party, they are the bulk, and — the argument that settled it — a published
+  generated doc has *no refresh path*, since `publishLocalDocs` skips nodes the
+  sidecar already has, while every local copy keeps tracking the code. They also
+  carry no accepted hashes, so a synced one can never be judged stale. The line that
+  published them was a mistake, not a policy. Enforced per version at the publish
+  surface and at the fold; see `docs/plan-docs-unification.md`.
+- **`merge=union` is cut**, above.
