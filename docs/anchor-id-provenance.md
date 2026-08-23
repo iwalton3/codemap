@@ -931,6 +931,36 @@ The back-catalogue import also wants re-running with the current build — its
 addresses are the working tree's HEAD, which is a genuine second defect — but it
 is now clearly the smaller one, and a data repair rather than code.
 
+#### The repair, run end-to-end on an isolated copy
+
+`prPullViewedAll(root, { force: true })` against a clone of `Acme.API`: 269 PRs
+surveyed, 151 with ticks, **5,375 marks, 0 errors, 202 seconds**. Measured before
+and after:
+
+| | before | after |
+|---|---|---|
+| distinct addresses across the bulk marks | **1** | **107** |
+| stranded bulk marks placed by step 1 | 0.4% | **46.8%** |
+
+The single address was the importer's HEAD; each mark now carries the PR head it
+was actually made against. It is not 100% because the population is *defined* as
+marks whose id is missing from the store's existing `@work` index, so it is a
+biased subset by construction — the honest reading is the delta, not the level.
+
+**A reindex is NOT the repair, and it is worth saying because it looks like one.**
+Reindexing `@work` re-mints the live index under the current scheme; it does not
+touch the id already frozen inside a record. Pre-bump records keep pre-bump ids
+forever. Only re-CREATING the records — which the import does — gives them ids
+this build can mint. The ~140 organic pre-bump records have no such path and are
+exactly the residue the queue exists for.
+
+**Two traps that cost a round each, for whoever reproduces this.** `indexCommit`
+reaches a submodule through the WORKING TREE, so a `--no-checkout` clone collapses
+the whole index to null and every record answers `unaddressed`. And
+`.codemapignore` is untracked in both live universes (kept in `.git/info/exclude`),
+so a fresh clone without it indexed 9,828 anchors where the live repo indexed
+4,412 — a 2.2x difference that silently invalidates any comparison.
+
 One trap the measurement cost a round to find: `locate` on a `--no-checkout` clone
 answers `unaddressed` for everything. `indexCommit` recurses into a gitlink through
 the WORKING TREE, and a missing submodule directory correctly collapses the whole
@@ -1090,7 +1120,10 @@ because each one is a decision and not a detail:
    `migrateOverloads`) — this is a pre-existing hole, not one the rule opens, but a
    rule that cannot see the commonest cause of a re-minted id is worth less than it
    looks.
-2. **There is no singular "the build's derivation".** An index holds one tag per
+2. **There is no singular "the build's derivation".** *(Decided 2026-08-23: the
+   aggregation rule is PER-CITATION, judged against the derivation the citation's
+   own marks name. A citation with no marks at all has no language to test and
+   counts against the tombstone.)* An index holds one tag per
    grammar and an incrementally updated ref legitimately holds several generations,
    so `judgedBy` is a SET and the aggregation rule has to be stated. "Any writer tag
    matches any reader tag" is unsafe — a matching C# tag would authorize an

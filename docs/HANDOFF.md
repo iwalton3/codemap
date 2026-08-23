@@ -162,6 +162,20 @@ contradiction and is not: 3b's "do the anchor join in SQL" versus provenance's
    honest classification, which is blocker 1. The bulk importer's wrong address is
    a real second defect and a data repair, but it is the smaller one.
 
+   **The repair is validated on a copy and is Izzie's to run on the live stores**
+   (`/working/` is edited by another agent — never write there). `codemap`'s
+   `prPullViewedAll(root, { force: true })` on a clone of `Acme.API`: 269 PRs, 151
+   with ticks, 5,375 marks, 0 errors, 202 seconds. Distinct addresses across the
+   bulk marks went **1 → 107**, and step 1's placement of them **0.4% → 46.8%**.
+   Not 100% because the measured population is by definition the marks missing
+   from the existing `@work` index; the delta is the result, not the level.
+
+   Reproducing it needs two things or the numbers are nonsense: the clone must
+   have its **submodules checked out** (`indexCommit` reaches a gitlink through the
+   working tree, and a missing one collapses the index to null), and it must carry
+   the **untracked `.codemapignore`** (kept in `.git/info/exclude`; without it the
+   same commit indexed 9,828 anchors instead of 4,412).
+
    **One wrong turn, kept because the method is the lesson.** An earlier pass
    concluded the residue was genuine absence, from a test that looked for each
    record's witnessed body under another id and found none in 67. That test could
@@ -215,6 +229,14 @@ contradiction and is not: 3b's "do the anchor join in SQL" versus provenance's
    commit indexed and read, which is what the recovery arc does and it is not built.
    `snapshot` now takes a `ref` (any commit, straight from git objects) so the first
    step at least exists.
+
+   **Blocker 2 is decided (2026-08-23): per-citation.** Each incomparable citation
+   is judged against the derivation its own marks name, so a C# tag can never
+   authorize a Python citation; a citation with no marks has no language to test
+   and counts against the tombstone. Blocker 1 is now MEASURED as the dominant
+   cause of unplaceable ids — see item 1 — and the call there was data repair
+   first, re-measure, before any code change to the fingerprint. The other three
+   are still open.
 
    **Not built, and deliberately:** the tombstone rule. A review round found five
    things that have to be settled first — the `anchorScheme` under-rejection routes
