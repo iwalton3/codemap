@@ -7,7 +7,7 @@
 
 import { randomBytes } from "node:crypto";
 import { type Importance, type Complexity, type TriageSource, type Triage, type BugSeverity } from "./schema.js";
-import { readTriage, writeTriage, loadNodes, readGraph, readAnchorStore } from "./store.js";
+import { readTriage, readLocalTriage, replaceLocalTriage, replaceLocalGraphTriage, upsertLocalTriage, loadNodes, readGraph, readAnchorStore } from "./store.js";
 import { reviewStatesFor, witnessesFor, liveHashes, witnessDrift, realDrift, deriveCodeReview, type Target, type ReviewPair, type AnchorChange } from "./reviews.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -191,18 +191,28 @@ export async function setTriage(
     at: new Date().toISOString(),
     witnesses: await witnessesFor(root, target, input.ref),
   };
-  ts.triage = ts.triage.filter((t) => !sameTarget(t, input.targetKind, input.targetId)).concat(rec);
-  await writeTriage(root, ts.triage);
+  // ONE target, and only this clone's row for it. The ratchet decided against the MERGED
+  // value above — that is what makes "agents may only raise" mean anything once a
+  // teammate's mark exists — but the write is local, because a local write may never
+  // reach a row the fold owns. See `docs/shared-triage.md`.
+  await upsertLocalTriage(root, rec);
   return { ok: true, importance: rec.importance, complexity: rec.complexity, likely: rec.likely };
 }
 
-/** Remove a target's triage (back to untriaged). Human-only in practice — it lowers. */
+/**
+ * Remove a target's triage (back to untriaged). Human-only in practice — it lowers.
+ *
+ * LOCAL rows only. Filtering the merged list and rewriting it would do two wrong things
+ * at once: it would not remove a teammate's mark (the next merged read returns it), and
+ * it would copy every OTHER teammate's mark into this clone's partition on the way past.
+ * Clearing a shared mark is an append — `triage.cleared` — and is not built yet.
+ */
 export async function clearTriage(root: string, input: { targetKind: "node" | "anchor"; targetId: string }) {
-  const ts = await readTriage(root);
-  const before = ts.triage.length;
-  ts.triage = ts.triage.filter((t) => !sameTarget(t, input.targetKind, input.targetId));
-  await writeTriage(root, ts.triage);
-  return { ok: true, removed: before - ts.triage.length };
+  const ts = await readLocalTriage(root);
+  const kept = ts.triage.filter((t) => !sameTarget(t, input.targetKind, input.targetId));
+  const removed = ts.triage.length - kept.length;
+  if (removed) await replaceLocalTriage(root, kept);
+  return { ok: true, removed };
 }
 
 export interface TriageInfo {
@@ -498,7 +508,12 @@ export async function deriveTriage(root: string): Promise<{ derived: number; byI
   for (const [aid, imp] of citingImp) graphMark("anchor", aid, imp, anchorCx.get(aid), "inherited from a citing node");
 
   const triage = [...result.values()];
-  await writeTriage(root, triage);
+  // GRAPH rows only. `result` was seeded from the MERGED view so the ratchet could judge
+  // against a teammate's stakes, and writing it whole would copy their mark into this
+  // clone's partition — where the next fold produces it again alongside. `graphMark` is
+  // the only thing that mutates `result`, and it only ever writes `source: "graph"`, so
+  // everything else in here is already in the table untouched.
+  await replaceLocalGraphTriage(root, triage);
   const byImportance = triage.reduce<Record<string, number>>((m, t) => ((m[normImportance(t.importance)] = (m[normImportance(t.importance)] ?? 0) + 1), m), {});
   const derived = triage.filter((t) => t.source === "graph").length;
   return { derived, byImportance, escalated };
@@ -571,6 +586,8 @@ export async function setTriageBatch(
   const byId = new Map(ts.triage.filter((t) => t.target.kind === "anchor").map((t) => [t.target.id, t]));
   const hashes = await liveHashes(root, items.map((i) => i.anchorId), opts.ref);
   const at = new Date().toISOString();
+  /** Only what this batch actually WROTE — see the note at the write below. */
+  const touched = new Set<string>();
 
   let applied = 0, refused = 0;
   for (const item of items) {
@@ -592,9 +609,13 @@ export async function setTriageBatch(
       at,
       witnesses: [{ anchorId: item.anchorId, bodyHash: hashes.get(item.anchorId) ?? "sha256:absent" }],
     });
+    touched.add(item.anchorId);
     applied++;
   }
-  const kept = ts.triage.filter((t) => t.target.kind !== "anchor" || !byId.has(t.target.id));
-  await writeTriage(root, [...kept, ...byId.values()]);
+  // What this batch WROTE, one target at a time — never the whole list. `byId` was built
+  // from the merged view so the ratchet could judge against a teammate's stakes; writing
+  // it back wholesale would copy every one of their marks into this clone's partition,
+  // and would rewrite untouched local marks under a fresh timestamp for no reason.
+  for (const id of touched) await upsertLocalTriage(root, byId.get(id)!);
   return { applied, refused };
 }

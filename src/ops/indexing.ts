@@ -3,7 +3,7 @@ import { indexRepo, indexCommit } from "../repo.js";
 import { collidingAnchors } from "../indexer.js";
 import { headCommit, currentBranch, isDirty, revParse, submoduleDrift } from "../git.js";
 import { computeStaleness } from "../stale.js";
-import { readAnchorStore, readState, writeState, writeStore, loadNodes, readBugs, writeBugs, readAnnotations, writeAnnotations, readReviews, writeSnapshot, readSnapshot, listSnapshots, writeReviews, remapNodeCitations, readTriage as triageRead, writeTriage as triageWrite, staleSchemeSnapshots, liveDerivationDrift, retainOrphans, releaseRecoveredOrphans, referencedAnchorIds } from "../store.js";
+import { readAnchorStore, readState, writeState, writeStore, loadNodes, readBugs, writeBugs, readAnnotations, writeAnnotations, readReviews, writeSnapshot, readSnapshot, listSnapshots, writeReviews, remapNodeCitations, readLocalTriage as triageRead, replaceLocalTriage as triageWrite, staleSchemeSnapshots, liveDerivationDrift, retainOrphans, releaseRecoveredOrphans, referencedAnchorIds } from "../store.js";
 import { GRAMMAR_VERSIONS } from "../grammar-versions.js";
 import { remapOverloadIds, applyRemap } from "../migrate-overloads.js";
 import { refreshAnalyzers } from "../analyzers/run.js";
@@ -102,6 +102,10 @@ async function migrateOverloads(root: string, fresh: Anchor[]) {
   const droppedSnapshots = staleSchemeSnapshots(root).length;
   if (!map.size) return droppedSnapshots ? { anchors: 0, reviews: 0, triage: 0, annotations: 0, citations: 0, bugs: 0, droppedSnapshots } : null;
 
+  // LOCAL triage, deliberately. Remapping an id is this build re-deriving its OWN index;
+  // a teammate's mark names ids in THEIR claim, published from their machine, and
+  // rewriting those here would silently edit somebody else's record of what they marked.
+  // They remap on their own machine and republish; `whereWas` says where an id went.
   const [reviewStore, triageStore, annStore, bugStore] = await Promise.all([
     readReviews(root), triageRead(root), readAnnotations(root), readBugs(root),
   ]);

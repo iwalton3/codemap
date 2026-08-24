@@ -7,7 +7,9 @@ import { DatabaseSync } from "node:sqlite";
 import { db } from "./db.js";
 import {
   readTriage, readLocalTriage, replaceLocalTriage, replaceLocalGraphTriage, upsertLocalTriage,
+  writeStore,
 } from "./store.js";
+import { setTriage, clearTriage, setTriageBatch, deriveTriage } from "./triage.js";
 import type { Triage } from "./schema.js";
 
 /**
@@ -34,6 +36,20 @@ const mark = ({ id, ...over }: Partial<Triage> & { id: string }): Triage => ({
 const universe = (): string => {
   const root = mkdtempSync(join(tmpdir(), "codemap-triage-"));
   mkdirSync(join(root, ".codemap"), { recursive: true });
+  return root;
+};
+
+/**
+ * A universe with an anchor index, which the OPS need and the seam does not.
+ *
+ * `witnessesFor` reads the anchor store, so `setTriage` on an uninitialized root throws
+ * "codemap not initialized" — a real guard, and one the storage tests above are right to
+ * skip. Empty is enough: an anchor id nobody indexed witnesses as `sha256:absent`, which
+ * is exactly what these tests want, since none of them is about drift.
+ */
+const initialized = async (): Promise<string> => {
+  const root = universe();
+  await writeStore(root, [], { schemaVersion: 1, lastVerifiedCommit: null, grammarVersions: {} });
   return root;
 };
 
@@ -279,5 +295,131 @@ test("a blob this build cannot parse does not stop the store opening", async () 
       "and the unreadable blob is LEFT rather than dropped — nothing is destroyed, and a "
       + "later build can still look at it",
     );
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// --- the write PATHS, not just the seam ---------------------------------------------
+
+/**
+ * Every op that writes triage, against a store that already holds a teammate's mark.
+ *
+ * The seam tests above prove `replaceLocalTriage` cannot reach a fold-owned row. These
+ * prove the OPS go through it — which is a different claim, and the one that actually
+ * broke: each of these was a read-modify-write of the whole list, and the merged view is
+ * what makes that destructive rather than merely wasteful.
+ *
+ * Table-driven on purpose. The interesting property is the same for all of them, and
+ * writing it once means a new write path that forgets the rule fails by being added to
+ * the list rather than by being noticed.
+ */
+interface WritePath {
+  what: string;
+  run: (root: string) => Promise<unknown>;
+  /**
+   * Whether this path is EXPECTED to leave a local row for the teammate's target.
+   *
+   * Writing my own mark about a symbol a colleague also triaged is the point, not a
+   * violation — it is how two people disagree at all. What must never happen is a row
+   * appearing there as a side effect of writing something else.
+   */
+  ownsTheirTarget?: boolean;
+}
+
+const WRITE_PATHS: WritePath[] = [
+  { what: "setTriage", run: (root) => setTriage(root, {
+    targetKind: "anchor", targetId: "a_mine", importance: "business-critical", source: "human",
+  }) },
+  { what: "setTriage on the SAME target as the teammate's", ownsTheirTarget: true, run: (root) => setTriage(root, {
+    targetKind: "anchor", targetId: "a_theirs", importance: "business-critical", source: "human",
+  }) },
+  { what: "setTriageBatch", run: (root) => setTriageBatch(root, [
+    { anchorId: "a_mine", importance: "important" },
+  ], { source: "agent" }) },
+  { what: "clearTriage", run: (root) => clearTriage(root, { targetKind: "anchor", targetId: "a_mine" }) },
+  { what: "clearTriage on the teammate's target", run: (root) =>
+    clearTriage(root, { targetKind: "anchor", targetId: "a_theirs" }) },
+  { what: "deriveTriage", run: (root) => deriveTriage(root) },
+];
+
+for (const { what, run, ownsTheirTarget } of WRITE_PATHS) {
+  test(`${what} leaves a teammate's mark exactly where it was`, async () => {
+    const root = await initialized();
+    try {
+      const theirs = mark({ id: "a_theirs", importance: "low", complexity: "deep", reason: "they looked" });
+      plantShared(root, "triage/acme-api", theirs);
+      await replaceLocalTriage(root, [mark({ id: "a_mine" })]);
+
+      const d = db(root);
+      const shared = () => d.prepare(
+        "SELECT field, value, reason, origin, source_scope FROM triage WHERE source_scope IS NOT NULL ORDER BY field",
+      ).all() as unknown as { field: string; value: string; reason: string | null; origin: string; source_scope: string }[];
+      const before = shared();
+      assert.equal(before.length, 2, "precondition: the teammate has two field rows");
+
+      await run(root);
+
+      assert.deepEqual(shared(), before,
+        `${what} altered, removed or duplicated a row only the fold may own`);
+      // And it did not COPY one into the local partition either, which is the failure
+      // that looks harmless until the next fold produces the row again alongside.
+      const localForTheirs = d.prepare(
+        "SELECT value FROM triage WHERE source_scope IS NULL AND target_id = 'a_theirs' AND field = 'importance'",
+      ).get() as { value: string } | undefined;
+      if (ownsTheirTarget) {
+        assert.equal(localForTheirs?.value, "business-critical",
+          `${what} is supposed to write MY judgment about their target`);
+        assert.notEqual(localForTheirs?.value, theirs.importance,
+          "and it must be my value, not a copy of theirs");
+      } else {
+        assert.equal(localForTheirs, undefined,
+          `${what} copied the teammate's mark into this clone's own rows`);
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+}
+
+test("CONTROL: the write paths really do write — they are not all no-ops here", async () => {
+  // Without this, every assertion above passes on ops that silently did nothing, which
+  // is the shape "it did not touch the teammate's row" fails as.
+  const root = await initialized();
+  try {
+    plantShared(root, "triage/acme-api", mark({ id: "a_theirs", importance: "low" }));
+
+    const set = await setTriage(root, {
+      targetKind: "anchor", targetId: "a_mine", importance: "business-critical", source: "human",
+    });
+    assert.equal(set.ok, true, "setTriage reported a write");
+    assert.equal((await readLocalTriage(root)).triage.find((t) => t.target.id === "a_mine")?.importance,
+      "business-critical", "and it is in this clone's own rows");
+
+    const batch = await setTriageBatch(root, [{ anchorId: "a_b", importance: "important" }], { source: "agent" });
+    assert.equal(batch.applied, 1, "setTriageBatch applied one");
+    assert.ok((await readLocalTriage(root)).triage.some((t) => t.target.id === "a_b"));
+
+    const cleared = await clearTriage(root, { targetKind: "anchor", targetId: "a_mine" });
+    assert.equal(cleared.removed, 1, "clearTriage removed the local mark");
+    assert.equal((await readLocalTriage(root)).triage.some((t) => t.target.id === "a_mine"), false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the ratchet judges against the MERGED value, not this clone's own", async () => {
+  // The other half of the split, and the one a "did not touch their row" test cannot
+  // see: an agent may only RAISE, and raising is meaningless if the baseline it is
+  // compared against excludes the teammate who set the stakes.
+  const root = await initialized();
+  try {
+    plantShared(root, "triage/acme-api", mark({ id: "a_1", importance: "business-critical" }));
+    const r = await setTriage(root, {
+      targetKind: "anchor", targetId: "a_1", importance: "low", source: "agent",
+    }) as { ok: boolean; importance?: string };
+    assert.equal(r.ok, false, "an agent cannot lower a teammate's business-critical mark");
+    assert.equal(r.importance, "business-critical", "and the refusal reports the value that stands");
+
+    // CONTROL — the same agent CAN raise, so this is not "an agent may never write".
+    plantShared(root, "triage/acme-api", mark({ id: "a_2", importance: "low" }));
+    const up = await setTriage(root, {
+      targetKind: "anchor", targetId: "a_2", importance: "business-critical", source: "agent",
+    }) as { ok: boolean };
+    assert.equal(up.ok, true, "raising over a teammate's mark is allowed");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
