@@ -21,7 +21,7 @@ import { complexityOf, MONEY_RX, reviewTriageFor, setTriageBatch } from "./triag
 import { readTriage } from "./store.js";
 import type { Importance } from "./schema.js";
 import type { Complexity } from "./schema.js";
-import { revParse, mergeBase, hasObject, fetchRef, numstat, readBlobs, isGitRepo, originSlug, prBaseCommit, gitBin } from "./git.js";
+import { revParse, mergeBase, hasObject, fetchRef, numstat, readBlobs, isGitRepo, originSlug, prBaseCommit, isAncestor, gitBin } from "./git.js";
 import { splitSpec, buildStory, layerOf, spineRole, type PrStory, type StoryStep, type StoryChapter, backendSpineRole } from "./pr-story.js";
 import { planPromotion, type Promotion } from "./pr-promote.js";
 import { sameBody } from "./normalize.js";
@@ -53,6 +53,25 @@ export interface PrMeta {
   baseRef: string; headRef: string; baseSha: string; headSha: string;
   draft: boolean; state: string; createdAt: string; updatedAt: string;
   additions: number; deletions: number; changedFiles: number; commits: number;
+  /**
+   * Where these facts came from. `git` means the PR's own record was unavailable and
+   * the head commit's facts stand in for it — so `title`, `author`, `draft` and
+   * `state` are inferences, not GitHub's answer. Marked rather than hidden: a
+   * surface that presents a guess as the record is how a reviewer ends up trusting
+   * one.
+   */
+  source: "gh" | "git";
+  /**
+   * The base branch was GUESSED, not read from the pull request.
+   *
+   * `refs/pull/N/head` carries a head commit and nothing else, so a PR targeting
+   * `release` is indistinguishable from one targeting `main`. Guessing the remote's
+   * default is right most of the time and produces a WRONG DIFF the rest — every
+   * commit on the real base since the fork point shows up as part of the change.
+   * That is worse than unknown metadata, so it is flagged rather than absorbed:
+   * pass an explicit base when it is not the default.
+   */
+  baseInferred?: boolean;
 }
 
 const PR_FIELDS = "number,url,title,author,baseRefName,headRefName,baseRefOid,headRefOid,isDraft,state,createdAt,updatedAt,additions,deletions,changedFiles,commits";
@@ -83,6 +102,19 @@ const PR_LIST_FIELDS = "number,url,title,author,baseRefName,headRefName,baseRefO
 const META_TTL_MS = 60_000;
 const metaCache = new Map<string, { at: number; value: PrMeta }>();
 
+/**
+ * Drop every cached PR resolution.
+ *
+ * For tests, which move faster than the TTL: a scenario that pushes a commit and
+ * re-reads the pull request inside the same second would otherwise be handed the
+ * head from before its own push, and assert happily against state it did not
+ * produce. A whole class of tests that cannot see what they just did.
+ *
+ * No production caller — `fresh: true` is how a surface asks for a current answer,
+ * and the TTL is deliberate everywhere else.
+ */
+export function clearPrMetaCache(): void { metaCache.clear(); }
+
 export function fetchPrMeta(ref: PrRef, opts: { fresh?: boolean } = {}): PrMeta | { error: string } {
   const key = `${ref.owner}/${ref.repo}#${ref.number}`;
   const hit = metaCache.get(key);
@@ -97,6 +129,7 @@ export function fetchPrMeta(ref: PrRef, opts: { fresh?: boolean } = {}): PrMeta 
       draft: !!j.isDraft, state: j.state, createdAt: j.createdAt, updatedAt: j.updatedAt,
       additions: j.additions, deletions: j.deletions, changedFiles: j.changedFiles,
       commits: Array.isArray(j.commits) ? j.commits.length : 0,
+      source: "gh",
     };
     metaCache.set(key, { at: Date.now(), value: meta });
     return meta;
@@ -114,9 +147,135 @@ export function listOpenPrs(repoSlug: string): { prs: PrMeta[] } | { error: stri
       draft: !!j.isDraft, state: j.state, createdAt: j.createdAt, updatedAt: j.updatedAt,
       additions: j.additions ?? 0, deletions: j.deletions ?? 0, changedFiles: j.changedFiles ?? 0,
       commits: 0, // not queried for lists — see PR_LIST_FIELDS
+      source: "gh" as const,
     }));
     return { prs };
   } catch (e) { return { error: `could not parse gh output: ${(e as Error).message}` }; }
+}
+
+/**
+ * The branch a PR targets when nobody can be asked: the remote's own default.
+ *
+ * `git clone` records it as `refs/remotes/origin/HEAD`, so this is a local lookup
+ * rather than a guess in the overwhelming majority of repos. The fallbacks exist
+ * for a remote added by hand, which never gets the symbolic ref.
+ */
+export function defaultBaseRef(root: string, remote = "origin"): string {
+  const sym = spawnSync(gitBin(), ["symbolic-ref", "--short", `refs/remotes/${remote}/HEAD`], { cwd: root, encoding: "utf8" });
+  const name = sym.status === 0 ? (sym.stdout ?? "").trim() : "";
+  if (name.startsWith(`${remote}/`)) return name.slice(remote.length + 1);
+  for (const candidate of ["main", "master"]) {
+    if (revParse(root, `${remote}/${candidate}`)) return candidate;
+  }
+  return "main";
+}
+
+/**
+ * The base of a PR whose head has already been MERGED with a merge commit.
+ *
+ * Once that has happened the head is an ancestor of the base tip, so
+ * `merge-base(tip, head)` is the head itself and the PR reads as changing nothing —
+ * the collapse `prBaseCommit` refuses to return. GitHub's recorded `baseRefOid`
+ * solves it and is exactly what git has no access to, so recover it from the shape
+ * of history instead: the earliest merge on the ancestry path from head to tip is
+ * the merge that brought it in, and that commit's FIRST parent is the base side.
+ *
+ * Squash and rebase merges never reach here — they rewrite, so the head is not an
+ * ancestor of anything and the ordinary merge-base is already right.
+ */
+function mergedBaseFor(root: string, headSha: string, baseTip: string): string | null {
+  const r = spawnSync(gitBin(), ["rev-list", "--ancestry-path", "--merges", "--parents", `${headSha}..${baseTip}`], { cwd: root, encoding: "utf8" });
+  if (r.status !== 0) return null;
+  const lines = (r.stdout ?? "").trim().split("\n").filter(Boolean);
+  const earliest = lines[lines.length - 1];
+  if (!earliest) return null;
+  const [, firstParent, ...rest] = earliest.split(" ");
+  // Guard against picking up an unrelated merge that merely sits on the path.
+  if (!firstParent || ![firstParent, ...rest].includes(headSha)) return null;
+  return firstParent;
+}
+
+/**
+ * PR metadata from git alone, for when there is no `gh` to ask.
+ *
+ * `refs/pull/N/head` is a server-side ref that GitHub publishes for FORKS too, which
+ * is why this covers the case the API was thought to be needed for. What git cannot
+ * know is the PR's own record: its title, its author's login, whether it is a draft,
+ * and the base sha recorded when it opened. The head commit's own facts stand in,
+ * and `source: "git"` says so.
+ */
+export function prMetaFromGit(
+  root: string, number: number, slug: { owner: string; repo: string } | null,
+  remote = "origin", opts: { fresh?: boolean; base?: string } = {},
+): PrMeta | { error: string } {
+  // Cached on the same terms as the `gh` path, and for the same reason: EVERY PR
+  // endpoint starts with a resolution, so without this, expanding a walkthrough step
+  // pays a fetch and an ls-remote — two network round trips — per click. Keyed by
+  // root, since without a slug there is no owner/repo to name it by.
+  const key = `git\0${root}#${number}\0${opts.base ?? ""}`;
+  const hit = metaCache.get(key);
+  if (!opts.fresh && hit && Date.now() - hit.at < META_TTL_MS) return hit.value;
+
+  const local = `refs/remotes/${remote}/pr/${number}`;
+  fetchRef(root, remote, `+refs/pull/${number}/head:${local}`);
+  const headSha = revParse(root, local);
+  if (!headSha) {
+    return { error: `no refs/pull/${number}/head on ${remote} — the pull ref is how a PR is reachable without \`gh\`; check the number, or that ${remote} is the repository the PR is on` };
+  }
+
+  const baseRef = opts.base ?? defaultBaseRef(root, remote);
+  const baseTip = revParse(root, `${remote}/${baseRef}`);
+  const merged = baseTip ? isAncestor(root, headSha, baseTip) : false;
+  const baseSha = (merged && baseTip ? mergedBaseFor(root, headSha, baseTip) : null)
+    ?? (baseTip ? mergeBase(root, baseTip, headSha) : null)
+    ?? "";
+
+  const show = spawnSync(gitBin(), ["show", "-s", "--format=%s%x00%an%x00%ae%x00%aI%x00%cI", headSha], { cwd: root, encoding: "utf8" });
+  const [subject = "", authorName = "", authorEmail = "", authoredAt = "", committedAt = ""] = (show.stdout ?? "").trim().split("\0");
+
+  const stats = baseSha ? numstat(root, baseSha, headSha) ?? [] : [];
+  const commits = baseSha ? countCommits(root, baseSha, headSha) ?? 0 : 0;
+
+  const meta: PrMeta = {
+    number,
+    url: slug ? `https://github.com/${slug.owner}/${slug.repo}/pull/${number}` : "",
+    title: subject || `pull/${number}`,
+    author: authorEmail || authorName || "?",
+    baseRef,
+    // The head's BRANCH name is not in the pull ref, and inventing one would be a
+    // claim about where this came from. `prBranchFor` recovers it when the head is
+    // also a branch on this remote, which is precisely when it is not a fork.
+    headRef: prBranchFor(root, headSha, remote) ?? `pull/${number}/head`,
+    baseSha, headSha,
+    draft: false,
+    state: merged ? "MERGED" : "UNKNOWN",
+    createdAt: authoredAt, updatedAt: committedAt,
+    additions: stats.reduce((n, f) => n + f.adds, 0),
+    deletions: stats.reduce((n, f) => n + f.dels, 0),
+    changedFiles: stats.length,
+    commits,
+    source: "git",
+    ...(opts.base ? {} : { baseInferred: true }),
+  };
+  metaCache.set(key, { at: Date.now(), value: meta });
+  return meta;
+}
+
+/**
+ * The branch on `remote` whose tip is this sha, if there is one.
+ *
+ * This is the whole fork test, and it needs no API: a same-origin PR's head is also
+ * a branch here, and a fork's head is a branch on somebody else's repository and so
+ * appears in no line of this output.
+ */
+export function prBranchFor(root: string, sha: string, remote = "origin"): string | null {
+  const r = spawnSync(gitBin(), ["ls-remote", "--heads", remote], { cwd: root, encoding: "utf8", timeout: 120_000 });
+  if (r.status !== 0) return null;
+  for (const line of (r.stdout ?? "").split("\n")) {
+    const [got, ref] = line.split("\t");
+    if (got === sha && ref?.startsWith("refs/heads/")) return ref.slice("refs/heads/".length);
+  }
+  return null;
 }
 
 /** Make sure both sides of the PR exist locally, fetching only what's missing. */
@@ -183,14 +342,23 @@ const CX_RANK: Record<Complexity, number> = { deep: 0, standard: 1, rote: 2, wir
 async function prContext(
   root: string,
   input: string,
-  opts: { fetch?: boolean; fallbackRepo?: { owner: string; repo: string } } = {},
+  opts: { fetch?: boolean; fallbackRepo?: { owner: string; repo: string }; base?: string } = {},
 ): Promise<{ ref: PrRef; meta: PrMeta; mergeBase: string; baseTip: string; drift: number | null } | { error: string }> {
   if (!isGitRepo(root)) return { error: "not a git repository" };
-  if (!ghAvailable()) return { error: "the `gh` CLI is required for PR triage (not on PATH)" };
 
-  const ref = parsePrRef(input, opts.fallbackRepo ?? originSlug(root) ?? undefined);
+  const slug = opts.fallbackRepo ?? originSlug(root);
+  // `gh` is asked only when it can actually answer. It talks to GitHub, so a remote
+  // that is not GitHub has no PR for it to look up — and the pull ref this falls back
+  // to is served by the remote itself, which is why a fork needs no API either. The
+  // rule is a property of the remote rather than a flag, so nothing has to remember
+  // to set one.
+  const useGh = !!slug && ghAvailable();
+
+  // Without a slug there is no owner/repo to name, and a bare number is still a
+  // perfectly good reference — the pull ref is on the remote either way.
+  const ref = parsePrRef(input, slug ?? { owner: "", repo: "" });
   if (!ref) return { error: `could not read a PR reference from "${input}"` };
-  const meta = fetchPrMeta(ref);
+  const meta = useGh ? fetchPrMeta(ref) : prMetaFromGit(root, ref.number, slug, "origin", { base: opts.base });
   if ("error" in meta) return meta;
 
   if (opts.fetch !== false) {
@@ -223,7 +391,7 @@ async function prContext(
 export async function prTriage(
   root: string,
   input: string,
-  opts: { fetch?: boolean; fallbackRepo?: { owner: string; repo: string } } = {},
+  opts: { fetch?: boolean; fallbackRepo?: { owner: string; repo: string }; base?: string } = {},
 ): Promise<PrTriageResult | { error: string }> {
   const ctx = await prContext(root, input, opts);
   if ("error" in ctx) return ctx;

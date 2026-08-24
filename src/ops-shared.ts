@@ -16,7 +16,7 @@ import { evalVersion } from "./doc-version.js";
 import { readCached, ensureMaterialized, type Projection } from "./materialize.js";
 import type { ScopeStatus, ScopeDiagnostic, LogEvent } from "./eventlog.js";
 import { scopesOnDisk, readScopeChecked, writerFor, rotateWriter, acknowledgeScope } from "./eventlog.js";
-import { findingsProjection, docsProjection, notesProjection, walkthroughsProjection, docsByNode } from "./shared-projections.js";
+import { findingsProjection, docsProjection, notesProjection, walkthroughsProjection, docsByNode, projectionFor } from "./shared-projections.js";
 import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
 import { resolveSidecar, scopeFor, type SidecarConfig } from "./sidecar-config.js";
 import { originSlug, headCommit, currentBranch } from "./git.js";
@@ -60,21 +60,6 @@ function bind(root: string): Bound | { error: string } {
 /** `acme/api/pr-264` — the universe-qualified key every scope is built from. */
 const prKey = (cfg: SidecarConfig, pr: number | string) => scopeFor(cfg, "pr", pr);
 
-/**
- * The fold and projection a scope is cached by, or null if its kind has none yet.
- *
- * Prefix-matched on the scope path, which is the same string `findingScope` /
- * `docScope` / `noteScope` build. `walkthrough/` is deliberately absent: it has no
- * `Projection` at all and folds on every read, which is the remaining violation of
- * "the log is not read during normal operation" and is step 5's job, not this one.
- */
-function projectionFor(scope: string): { fold: (e: LogEvent[]) => any; proj: Projection<any> } | null {
-  if (scope.startsWith("findings/")) return { fold: foldFindings, proj: findingsProjection };
-  if (scope.startsWith("docs/")) return { fold: foldDocs, proj: docsProjection };
-  if (scope.startsWith("notes/")) return { fold: foldNotes, proj: notesProjection };
-  if (scope.startsWith("walkthrough/")) return { fold: foldWalkthroughs, proj: walkthroughsProjection };
-  return null;
-}
 
 /** Is this scope part of the universe we are syncing? One sidecar can carry several. */
 function inUniverse(scope: string, universe: string): boolean {

@@ -89,6 +89,19 @@ export async function scopeFingerprint(logRoot: string, scope: string, identity:
 }
 
 /** A projection's storage: how to write a folded value, and how to read it back. */
+let foldsRun = 0;
+
+/**
+ * How many times the log has been folded in this process.
+ *
+ * The instrument for one of the architecture's load-bearing claims: after a sync,
+ * an ordinary read is answered from rows and never folds. That is not observable
+ * from a return value — a fold and a cache hit produce the same answer, just at
+ * different cost — so without a counter the claim can only be argued. A test reads
+ * this either side of a query and asserts it did not move.
+ */
+export const foldCount = (): number => foldsRun;
+
 export interface Projection<T> {
   /** Replace every row for this scope. Runs INSIDE the transaction. */
   write(d: DatabaseSync, scope: string, value: T): void;
@@ -161,6 +174,7 @@ export async function readCached<T>(
     }
 
     const { events, ...status } = await readScopeChecked(logRoot, scope);
+    foldsRun++;
     const value = fold(events);
     const after = await scopeFingerprint(logRoot, scope, identity);
     // Moved under us. Do NOT store: the rows describe an input set that no longer
@@ -185,6 +199,7 @@ export async function readCached<T>(
   // Somebody is appending faster than we can fold. Answer from the log directly
   // rather than failing or caching something we know is already behind.
   const { events, ...status } = await readScopeChecked(logRoot, scope);
+  foldsRun++;
   return { value: fold(events), ...status };
 }
 

@@ -19,10 +19,11 @@
 import type { DatabaseSync } from "node:sqlite";
 import { db } from "./db.js";
 import { CorruptProjection, type Projection } from "./materialize.js";
-import type { SharedWalkthrough } from "./shared-walkthrough.js";
-import { needsHumanAck, type SharedFinding } from "./shared-findings.js";
-import type { SharedDoc, UnmatchedAcceptance } from "./shared-docs.js";
-import type { SharedNote } from "./shared-notes.js";
+import type { LogEvent } from "./eventlog.js";
+import { foldWalkthroughs, type SharedWalkthrough } from "./shared-walkthrough.js";
+import { needsHumanAck, foldFindings, type SharedFinding } from "./shared-findings.js";
+import { foldDocs, type SharedDoc, type UnmatchedAcceptance } from "./shared-docs.js";
+import { foldNotes, type SharedNote } from "./shared-notes.js";
 import type { Actor, NodeVersion } from "./schema.js";
 
 /**
@@ -287,3 +288,23 @@ export const walkthroughsProjection: Projection<SharedWalkthrough[]> = {
     return out;
   },
 };
+
+/**
+ * The fold and projection a scope is cached by, or null if its kind has none yet.
+ *
+ * Prefix-matched on the scope path, which is the same string `findingScope` /
+ * `docScope` / `noteScope` / `walkthroughScope` build. All four kinds are here now,
+ * which is what makes "the log is not read during normal operation" true rather
+ * than aspirational — a scope missing from this map folds on every read.
+ *
+ * Lives with the projections rather than with the ops: it is the mapping itself,
+ * and `ops-shared.ts` is an API surface whose every export must be reachable from a
+ * front-end (`src/ops-reach.test.ts`). This is not an op.
+ */
+export function projectionFor(scope: string): { fold: (e: LogEvent[]) => any; proj: Projection<any> } | null {
+  if (scope.startsWith("findings/")) return { fold: foldFindings, proj: findingsProjection };
+  if (scope.startsWith("docs/")) return { fold: foldDocs, proj: docsProjection };
+  if (scope.startsWith("notes/")) return { fold: foldNotes, proj: notesProjection };
+  if (scope.startsWith("walkthrough/")) return { fold: foldWalkthroughs, proj: walkthroughsProjection };
+  return null;
+}

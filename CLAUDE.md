@@ -45,17 +45,38 @@ lines we own beats another thing that can become a worm/rugpull vector.
 ## Build & test
 
 ```sh
-npm test         # tsc build + node --test over dist/**/*.test.js  (hermetic, ~60s)
-npm run test:e2e # dist/e2e/**/*.e2e.js — needs a browser and a real repo; ~100s
+npm test         # EVERYTHING — unit then e2e. The default keyword runs the whole suite
+npm run unit     # dist/**/*.test.js — hermetic, ~60s. The fast loop
+npm run e2e      # dist/e2e/**/*.e2e.js — needs a browser and a real repo; ~100s
 npm run build    # emit dist/
 node dist/serve.js <repo|workspace.json> [port]   # web UI (default :4310)
 ```
 
-**`npm test` must stay hermetic and fast.** Anything needing an external
+`npm test` runs both on purpose: a suite that is not in the default command is a
+suite that stops being run. `npm run unit` is the loop you iterate in.
+
+**`npm run unit` must stay hermetic and fast.** Anything needing an external
 prerequisite goes in `src/e2e/` and *skips* when the prerequisite is absent —
 puppeteer for the UI suite, a `jellyfin/jellyfin` clone for the PR suite (see
 Guinea-pig repos). The golden rule applies to the test tree too: no runtime deps,
 and no test that fails because a browser or a repo is missing.
+
+### The oracle: workflow tests as an oracle, not as assertions
+
+`src/oracle.ts` makes a team where each member is a WHOLE universe (code clone +
+`.codemap` store + sidecar clone); `src/oracle-properties.ts` holds six invariants
+checked after every step of a scenario. Use it for anything multi-person.
+
+- **Drive the OPS, never the plumbing under them.** `settle()` calling `sidecar.ts`'s
+  `sync` instead of the `sharedSync` op left every clone holding an unmaterialized
+  log — a state no real machine is in, and every read folded.
+- **Check that a passing property COULD have failed.** Four of the six were vacuous
+  at first: `ownership` passed after deleting every fold-owned row, `converged` never
+  read the projections it claims to be about, `determinism` was the identity for
+  exactly two events, and `NO SILENT OK` was not implemented at all.
+- **All clones share the directory basename `acme-api` on purpose.** A local origin
+  is never a GitHub URL, so `universeKey` takes its fallback; differently-named
+  clones would silently publish to different universes.
 
 ### The suite runs in ONE process, and that is deliberate
 
@@ -165,7 +186,7 @@ analyzers/*          OPT-IN framework plugins (Marten) — never in the agnostic
 
 It stays plain `.js` that the browser loads directly — `web/tsconfig.json` is
 `allowJs` + `checkJs` + `noEmit`, so there is no second build target and no
-generated file to drift. `npm test` runs it (`tsc -p web`, well under a second).
+generated file to drift. Both test targets run it (`tsc -p web`, well under a second).
 
 - **Type a page and you must do it twice.** `@extends {Component<Props, State>}`
   types `this.props` only; `this.state` is typed by a `@type` on the constructor

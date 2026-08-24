@@ -89,6 +89,11 @@ export function foldDocs(events: LogEvent[]): Map<string, SharedDoc> {
       // every shared doc in the universe becoming unreadable for everyone, forever.
       if (!v || typeof v.versionId !== "string" || v.nodeId !== e.subject) continue;
       if (v.citations !== undefined && !Array.isArray(v.citations)) continue;
+      // The discriminator, and there is nothing sensible to default it to. Dropped
+      // HERE rather than at the copy below, for the reason the version-id check
+      // spells out: past the `out.set` the node exists with no versions, which reads
+      // as "written and empty" rather than "never arrived".
+      if (typeof v.type !== "string") continue;
       // The load-bearing half of the narrowing. There is no server and no central
       // validation, so the FOLD is the only gate that binds every writer — including
       // an older client, a hand-written line, or a future one that forgets. The
@@ -108,6 +113,20 @@ export function foldDocs(events: LogEvent[]): Map<string, SharedDoc> {
       if (!doc) { doc = { nodeId: e.subject, versions: [], authors: new Map() }; out.set(e.subject, doc); }
       const copy: NodeVersion = {
         ...v,
+        // Narrowed for the same reason the citations check exists, and against a
+        // case that needs no hostile writer at all: `JSON.stringify` DROPS keys whose
+        // value is `undefined`, so a peer whose version carries an undefined
+        // `createdCommit` sends a line with no such key. The fold accepted it and the
+        // projection's INSERT then threw a raw bind error INSIDE `readCached`'s
+        // transaction — which is not one bad doc but every shared doc in the universe
+        // becoming unreadable, permanently, since nothing about the failure moves the
+        // scope's fingerprint. Absent is stored as absent; it is not invented.
+        title: typeof v.title === "string" ? v.title : "",
+        summary: typeof v.summary === "string" ? v.summary : "",
+        body: typeof v.body === "string" ? v.body : "",
+        createdCommit: typeof v.createdCommit === "string" ? v.createdCommit : null,
+        createdBranch: typeof v.createdBranch === "string" ? v.createdBranch : null,
+        createdAt: typeof v.createdAt === "string" ? v.createdAt : "",
         citations: (v.citations ?? [])
           .filter((c) => c && typeof c.anchorId === "string")
           .map((c) => ({ ...c, acceptedHashes: Array.isArray(c.acceptedHashes) ? [...c.acceptedHashes] : [] })),

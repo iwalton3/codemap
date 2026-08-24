@@ -265,6 +265,19 @@ export async function writerFor(logRoot: string): Promise<string> {
 }
 
 /**
+ * Forget the memoised writer id for a log root.
+ *
+ * `writerFor` memoises per root, so installing a forked identity by writing
+ * `.git/codemap-writer` only works on a clone that has never APPENDED — after that
+ * the cache keeps handing out the old id and the "fork" quietly is not one. That is
+ * a test whose subject cannot occur, which is worse than no test.
+ *
+ * No production caller: `rotateWriter` resets the cache itself, the same way
+ * `clearAgentSession` exists only so a test can undo a latch.
+ */
+export function forgetWriter(logRoot: string): void { writers.delete(logRoot); }
+
+/**
  * Append a person's acknowledgment of one piece of blocking evidence.
  *
  * An ordinary event in the acknowledging writer's own shard, so it syncs like any

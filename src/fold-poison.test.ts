@@ -109,3 +109,66 @@ test("and neither does a citation that is not an object", async () => {
     assert.deepEqual(v.citations[0]!.acceptedHashes, [], "and a non-array hash list reads as none");
   } finally { rmSync(side, { recursive: true, force: true }); }
 });
+
+/**
+ * The same class, reached without a hostile writer or an odd type.
+ *
+ * `JSON.stringify` DROPS keys whose value is `undefined`, so a version carrying an
+ * undefined `createdCommit` — required but NULLABLE, and easy to leave unset —
+ * travels as a line with no such key. This build's `publishDocVersion` coerces them,
+ * so the line has to come from somewhere else: a peer on a build that does not, or a
+ * hand-written shard. That is precisely the population the FOLD exists to gate.
+ *
+ * The fold used to accept it and the projection's INSERT then threw a raw SQLite
+ * bind error inside `readCached`'s transaction — not one bad doc but every shared
+ * doc in the universe unreadable, permanently, because nothing about the failure
+ * moves the scope's fingerprint.
+ *
+ * Found by the oracle's COMPLETENESS property while it was being written.
+ */
+const DOCS = "docs/acme/api";
+
+const docLine = (id: string, node: string, version: Record<string, unknown>) => JSON.stringify(testEvent({
+  id, kind: "doc.version", subject: node, actor: izzie, data: { version },
+})) + "\n";
+
+test("a doc version missing a nullable scalar does not poison the universe", async () => {
+  const root = tmp();
+  try {
+    mkdirSync(join(root, DOCS), { recursive: true });
+    const file = join(root, shardFor(DOCS, "w_test_clone"));
+    writeFileSync(file, docLine("0000000001-aa", "n_good", {
+      versionId: "nv_good", nodeId: "n_good", type: "concept", title: "a real doc",
+      summary: "s", body: "b", citations: [], createdCommit: null, createdBranch: null, createdAt: "2026-01-01T00:00:00Z",
+    }), "utf8");
+    // No `createdCommit`, `createdBranch` or `createdAt` keys at all — what the wire
+    // carries when they were undefined at the source.
+    appendFileSync(file, docLine("0000000002-bb", "n_thin", {
+      versionId: "nv_thin", nodeId: "n_thin", type: "concept", title: "t", summary: "s", body: "b", citations: [],
+    }), "utf8");
+
+    const docs = await readDocs(root, "acme/api");
+    assert.deepEqual([...docs.keys()].sort(), ["n_good", "n_thin"], "both docs read");
+    const thin = docs.get("n_thin")!.versions[0]!;
+    // Absent is stored as absent. The point is that it BINDS, not that it is invented.
+    assert.equal(thin.createdCommit, null);
+    assert.equal(thin.createdBranch, null);
+    assert.equal(thin.createdAt, "");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a doc version whose type is not a string never arrives at all", async () => {
+  // CONTROL for the coercion above: the discriminator has no sensible default, and
+  // inventing one files somebody's doc under a type they did not choose. It must be
+  // dropped BEFORE the node entry is created, too — a node left existing with no
+  // versions reads as "written and empty" rather than "never arrived".
+  const root = tmp();
+  try {
+    mkdirSync(join(root, DOCS), { recursive: true });
+    writeFileSync(join(root, shardFor(DOCS, "w_test_clone")), docLine("0000000001-aa", "n_1", {
+      versionId: "nv_1", nodeId: "n_1", type: 7, title: "t", summary: "s", body: "b",
+      citations: [], createdCommit: null, createdBranch: null, createdAt: "2026-01-01T00:00:00Z",
+    }), "utf8");
+    assert.equal((await readDocs(root, "acme/api")).size, 0, "no node, not an empty one");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

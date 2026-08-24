@@ -103,9 +103,15 @@ the whole job rather than its first two steps.
 Kept because the reasoning is still why those items exist:
 
 1. **Old-store fixtures** (§1). Small, mechanical, and it closes the class that just
-   bit. Do this first because every later item risks another schema change.
-2. **Concurrent sync test** (§2). The lock is the least-exercised safety mechanism in
-   the system and the one whose failure is quietest.
+   bit. Do this first because every later item risks another schema change. **STILL
+   OPEN** — decided 2026-08-23 to build these as per-era SQL generators rather than
+   committed `.db` blobs, checked against `db.ts`'s own history so the fixture is a
+   shape that really existed.
+2. ~~**Concurrent sync test** (§2).~~ **DONE** (`src/oracle-race.test.ts`). Two real
+   processes, gated on each other so they overlap by construction, both writing one
+   shard: both land, both reach the teammate, and a held lock is waited for rather
+   than stolen. The overlap itself is asserted — without that control the test passes
+   while proving nothing, since two sequential writes converge trivially.
 3. **~~Use it for real, on one repo, for a week.~~** Moved to LAST. The point of the
    oracle is that the break/fix happens in tests instead of in the owner's hands.
 4. **Decide bugs/triage** (§3). Either design them into the sidecar or write down that
