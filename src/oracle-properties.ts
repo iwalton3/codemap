@@ -26,7 +26,8 @@ import { readScope, scopesOnDisk, sortEvents, type LogEvent } from "./eventlog.j
 import { projectionFor } from "./shared-projections.js";
 import { foldCount } from "./materialize.js";
 import { docScope, foldDocs } from "./shared-docs.js";
-import { sharedDocs, sharedFindings, sharedNotes, sharedWalkthroughs } from "./ops-shared.js";
+import { triageScope, foldTriage } from "./shared-triage.js";
+import { sharedDocs, sharedFindings, sharedNotes, sharedWalkthroughs, sharedTriage } from "./ops-shared.js";
 import { universeKey } from "./sidecar-config.js";
 import { db } from "./db.js";
 import type { Member, Team } from "./oracle.js";
@@ -329,6 +330,80 @@ export async function ownership(m: Member): Promise<void> {
   for (const r of rows) {
     assert.ok(r.origin, `OWNERSHIP violated: row ${r.version_id} is owned by ${scope} but carries no origin`);
   }
+
+  await triageOwnership(m, universe);
+}
+
+/**
+ * The same rule for the TRIAGE table, which is the second canonical table and so the
+ * second place a local write can reach a row only the fold may own.
+ *
+ * Its own function rather than a second copy of the docs walk: the identity is
+ * (target, field) and not a version id, and the five whole-list write paths in
+ * `triage.ts` are exactly the shape this exists to catch — `clearTriage` filtering the
+ * MERGED list and writing it back would delete a teammate's row and clone every other
+ * one into the local partition, in a single call.
+ */
+async function triageOwnership(m: Member, universe: string): Promise<void> {
+  const scope = triageScope(universe);
+  const folded = foldTriage(await readScope(m.sidecar, scope));
+  const d = db(m.repo);
+
+  const key = (kind: string, id: string, field: string) => `${kind}/${id}/${field}`;
+  const rows = d.prepare(
+    "SELECT target_kind, target_id, field, value, source, likely, reason, at, actor, origin, detail "
+    + "FROM triage WHERE source_scope = ?",
+  ).all(scope) as unknown as {
+    target_kind: string; target_id: string; field: string; value: string; source: string;
+    likely: number; reason: string | null; at: string; actor: string | null;
+    origin: string | null; detail: string | null;
+  }[];
+
+  const actual = new Map(rows.map((r) => [key(r.target_kind, r.target_id, r.field), stable({
+    value: r.value, source: r.source, likely: !!r.likely, reason: r.reason, at: r.at,
+    actor: r.actor ? JSON.parse(r.actor) : null, detail: r.detail ? JSON.parse(r.detail) : null,
+  })]));
+
+  const expected = new Map<string, string>();
+  for (const t of folded.values()) {
+    for (const field of ["importance", "complexity", "tripwire"] as const) {
+      const axis = t[field];
+      if (!axis) continue;
+      const e = axis.effective;
+      expected.set(key(t.target.kind, t.target.id, field), stable({
+        value: field === "tripwire" ? (e.value ? "1" : "0") : String(e.value),
+        source: e.source, likely: e.likely, reason: e.reason ?? null, at: e.at,
+        actor: e.actor, detail: axis,
+      }));
+    }
+  }
+
+  const missing = [...expected.keys()].filter((k) => !actual.has(k));
+  assert.deepEqual(
+    missing, [],
+    `OWNERSHIP violated: ${m.actor.principal} is missing ${missing.length} triage row(s) the log `
+    + `produces (${missing.slice(0, 3).join(" · ")}). A local write deleted rows only the fold may own.`,
+  );
+  const extra = [...actual.keys()].filter((k) => !expected.has(k));
+  assert.deepEqual(
+    extra, [],
+    `OWNERSHIP violated: ${m.actor.principal} holds ${extra.length} fold-owned triage row(s) no event `
+    + `in ${scope} produces (${extra.slice(0, 3).join(" · ")}).`,
+  );
+  for (const [k, want] of expected) {
+    assert.equal(
+      actual.get(k), want,
+      `OWNERSHIP violated: ${m.actor.principal}'s triage row ${k} differs from what the log folds to. `
+      + `A local write reached a row the fold owns; the next fold will silently undo it.`,
+    );
+  }
+  for (const r of rows) {
+    assert.ok(
+      r.origin,
+      `OWNERSHIP violated: triage row ${key(r.target_kind, r.target_id, r.field)} is owned by ${scope} `
+      + `but carries no origin — cleared provenance is how a fold-owned row becomes an untraceable local one`,
+    );
+  }
 }
 
 /**
@@ -424,6 +499,11 @@ export async function readsDoNotFold(t: Team): Promise<void> {
     // it, and the first read folds its zero events and caches that. Counting it as a
     // violation would report every store that has not used a feature yet.
     if (scopes.includes(docScope(universe))) await sharedDocs(m.repo);
+    // And triage, which is FIVE surfaces now. It is the one whose ordinary read is not
+    // a shared op at all: `readTriage` answers from rows, so the way this regresses is
+    // a fold that never materializes — the shared read would then be the only thing
+    // folding, and it would fold on every call.
+    if (scopes.includes(triageScope(universe))) await sharedTriage(m.repo);
     // All FOUR public read surfaces. Checking two of them left notes and walkthroughs
     // free to fold on every read with the property still green — and a scope kind
     // missing from materialization is exactly the defect this is watching for.

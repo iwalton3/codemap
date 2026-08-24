@@ -7,7 +7,7 @@
  * failing. A sidecar is additive.
  */
 
-import type { Actor } from "./schema.js";
+import type { Actor, Triage } from "./schema.js";
 import { requireActor, isAgentActor } from "./identity.js";
 import { comparableHashes, sameBody } from "./normalize.js";
 import { realpathSync } from "node:fs";
@@ -16,7 +16,7 @@ import { evalVersion } from "./doc-version.js";
 import { readCached, ensureMaterialized, type Projection } from "./materialize.js";
 import type { ScopeStatus, ScopeDiagnostic, LogEvent } from "./eventlog.js";
 import { scopesOnDisk, readScopeChecked, writerFor, rotateWriter, acknowledgeScope } from "./eventlog.js";
-import { findingsProjection, docsProjection, notesProjection, walkthroughsProjection, docsByNode, projectionFor } from "./shared-projections.js";
+import { findingsProjection, docsProjection, notesProjection, walkthroughsProjection, triageProjection, docsByNode, projectionFor } from "./shared-projections.js";
 import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
 import { resolveSidecar, scopeFor, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
 import { originSlug, headCommit, currentBranch } from "./git.js";
@@ -34,7 +34,10 @@ import {
   createNote, answerNote, resolveNote, allNotes, foldNotes, noteScope, bucketFor,
   type NewNote,
 } from "./shared-notes.js";
-import { readAnnotations, readAnchorStore, loadNodes, loadNodeVersions, derivationLookup, workIndexFor} from "./store.js";
+import { assertTriageBatch, triageScope, triageOf, type SharedTriage } from "./shared-triage.js";
+import { cachedTriage, materializeTriage } from "./triage-publish.js";
+export { mirrorTriage, mirrorTriageBatch, mirrorTriageClear } from "./triage-publish.js";
+import { readAnnotations, readAnchorStore, loadNodes, loadNodeVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage } from "./store.js";
 import {
   publishDocVersion, acceptDocHash, resolveDoc, foldDocs, docScope,
   type NewDocVersion,
@@ -418,9 +421,9 @@ export async function settleContest(root: string, pr: number | string, id: strin
  * with matching shard stats the first sidecar's rows would be served for the
  * second's log indefinitely. `realpath` is what makes "cannot reuse rows" true.
  */
-// Moved to `sidecar-config.ts` so a second module can share the exact string — see the
-// note there. Re-exported: it was module-private and several call sites below read
-// better with the short name.
+// Moved to `sidecar-config.ts` so `triage-publish.ts` can share the exact string —
+// see the note there. Re-exported: it was module-private and several call sites below
+// read better with the short name.
 
 /**
  * What a surface says about the scope it just answered from.
@@ -1123,5 +1126,118 @@ export async function sharedWalkthroughs(root: string, pr: number | string, head
     // Named rather than hidden: a walkthrough about another commit is not wrong,
     // it is about something else, and saying so is the point of the head stamp.
     stale: head ? staleWalkthroughs(all, head).map((s) => ({ by: s.actor.principal, head: s.walkthrough.head })) : [],
+  };
+}
+
+
+// --- triage -------------------------------------------------------------------
+//
+// `docs/shared-triage.md` is normative; `shared-triage.ts` holds the fold. What lives
+// here is the binding to a universe's sidecar and the write-through, because a mark
+// that is only in the log until the next sync is invisible to the surface that just
+// wrote it.
+
+/**
+ * What the team says about a target's stakes — everyone's receipts, not just the
+ * effective value the ordinary triage surfaces show.
+ *
+ * The read that makes a contested mark actionable: `importance.contested` says two
+ * people crossed the business-critical line, and `concurrent` names the other side.
+ */
+export async function sharedTriage(root: string, targetKind?: "node" | "anchor", targetId?: string) {
+  const cfg = resolveSidecar(root);
+  if (!cfg) return { error: NO_SIDECAR };
+  const { value, ...status } = await cachedTriage(root, cfg);
+  const all = [...value.values()].filter((t) =>
+    (!targetKind || t.target.kind === targetKind) && (!targetId || t.target.id === targetId));
+  return {
+    scope: nonAuthoritative(status),
+    universe: cfg.universe,
+    count: all.length,
+    marks: all.map(describeTriage),
+  };
+}
+
+/** Every target where two people crossed the business-critical line. */
+export async function contestedTriage(root: string) {
+  const cfg = resolveSidecar(root);
+  if (!cfg) return { error: NO_SIDECAR };
+  const { value, ...status } = await cachedTriage(root, cfg);
+  const contested = [...value.values()].filter((t) => t.importance.contested);
+  return {
+    scope: nonAuthoritative(status),
+    universe: cfg.universe,
+    count: contested.length,
+    marks: contested.map(describeTriage),
+    note: contested.length
+      ? "a person settles these: mark the target again having seen both sides"
+      : "nothing outstanding",
+  };
+}
+
+/** One folded mark, flattened for a front end. Receipts kept — they are the point. */
+function describeTriage(t: SharedTriage) {
+  const axis = (a: { effective: any; baseline?: any; escalation?: any; concurrent?: any[]; contested?: boolean } | undefined) => a && ({
+    value: a.effective.value,
+    by: a.effective.actor.principal,
+    model: a.effective.actor.via?.model,
+    at: a.effective.at,
+    reason: a.effective.reason,
+    likely: a.effective.likely,
+    ...(a.escalation ? { escalatedByAgent: true, humanBaseline: a.baseline?.value } : {}),
+    ...(a.concurrent?.length ? { alsoSaid: a.concurrent.map((c) => ({ value: c.value, by: c.actor.principal })) } : {}),
+    ...(a.contested ? { contested: true } : {}),
+  });
+  return {
+    ...triageOf(t),
+    target: t.target,
+    importance: axis(t.importance),
+    complexity: axis(t.complexity),
+    tripwire: axis(t.tripwire),
+  };
+}
+
+/**
+ * Publish this clone's own triage marks — the explicit act, attributed to the person
+ * running it.
+ *
+ * Never automatic, and the reason is recoverable attribution rather than fastidiousness:
+ * a legacy `Triage` carries a `source` but no `Actor`, so publishing on somebody's
+ * behalf would put every historical judgment under whoever upgraded first. Docs made
+ * the same choice for the same reason (`publishLocalDocs`).
+ *
+ * `graph` rows are skipped and COUNTED. They are regenerated per machine by
+ * `deriveTriage`, and a silent narrowing reads, from the other side, exactly like a
+ * mark that did travel.
+ */
+export async function publishLocalTriage(root: string, opts: { dryRun?: boolean } = {}) {
+  const b = bind(root);
+  if ("error" in b) return b;
+  const local = (await readLocalTriage(root)).triage;
+  const publishable = local.filter((t: Triage) => t.source !== "graph");
+  const skippedGraph = local.length - publishable.length;
+  if (opts.dryRun) {
+    return { universe: b.cfg.universe, local: local.length, wouldPublish: publishable.length, skippedGraph };
+  }
+  if (!publishable.length) {
+    return { universe: b.cfg.universe, published: 0, skippedGraph, note: "nothing local left to publish" };
+  }
+  await ensureSidecar(b.cfg.path, b.actor);
+  await assertTriageBatch(b.cfg.path, triageScope(b.cfg.universe), b.actor, publishable.map((t: Triage) => ({
+    targetKind: t.target.kind, targetId: t.target.id,
+    importance: t.importance, complexity: t.complexity, tripwire: t.tripwire,
+    // A legacy mark's `source` is all the provenance there is, and it is preserved:
+    // an agent's proposal republished as a human's would confirm a tier nobody set.
+    source: t.source === "human" ? "human" : "agent",
+    reason: t.reason, witnesses: t.witnesses,
+  })));
+  const folded = await materializeTriage(root, b.cfg);
+  // The log owns them now. Left behind, they would keep filling the gap they no longer
+  // fill — and `readTriage` prefers the fold, so the stale copy would be invisible
+  // until the day somebody cleared the shared one and it reappeared.
+  await replaceLocalTriage(root, local.filter((t: Triage) => t.source === "graph"));
+  return {
+    universe: b.cfg.universe, published: publishable.length, skippedGraph,
+    note: folded ? "run `codemap sync` to send them" : "recorded in the log; the next sync will fold them",
   };
 }

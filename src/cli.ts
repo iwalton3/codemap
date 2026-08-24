@@ -218,7 +218,7 @@ async function cmdPrIngest(root: string, prInput: string, files: string[], dryRu
 }
 
 function usage(): never {
-  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap orphans  [repo]              findings/reviews pointing at code the tree no longer has\n  codemap pr-resolve <pr> [--repo path] [--confirm] [--pull] [--anyone]\n                                              sync which review conversations are settled\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n                     [--only id,id,…]  publish exactly these, whatever their disposition\n                     [--summary TEXT] [--approve | --request-changes]\n  codemap pr-triage <pr> [--repo path]        derive stakes+complexity for the PR's symbols\n  codemap pr-pull-viewed <pr|--all> [--repo path] [--dry-run] [--force] [--limit N] [--max-prs N]\n                                              import GitHub's viewed ticks as `viewed`\n  codemap analyze marten [repo] [--verbose] [--emit]\n\n  Shared review (a sidecar repo; set CODEMAP_SIDECAR or .codemap/sidecar):\n  codemap sync     [repo]              send and receive shared review state\n  codemap sidecar heal [repo]          repair a forked sidecar (a person, not an agent)\n  codemap shared   <pr> [repo] [--queue] [--json]   findings on the sidecar\n  codemap peers    [repo]              who else is on this sidecar, and scheme drift\n  codemap replies  <pr> [repo]         what the PR submitter said back about published findings\n  codemap notes    <anchor|node id> [repo]   what the TEAM knows about a symbol\n  codemap publish-notes [repo] [--dry-run]   put this store's existing annotations on the sidecar\n  codemap shared-docs [repo] [--json]  the team's docs, resolved against THIS checkout\n  codemap publish-docs [repo] [--dry-run]    put this store's docs on the sidecar");
+  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap orphans  [repo]              findings/reviews pointing at code the tree no longer has\n  codemap pr-resolve <pr> [--repo path] [--confirm] [--pull] [--anyone]\n                                              sync which review conversations are settled\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n                     [--only id,id,…]  publish exactly these, whatever their disposition\n                     [--summary TEXT] [--approve | --request-changes]\n  codemap pr-triage <pr> [--repo path]        derive stakes+complexity for the PR's symbols\n  codemap pr-pull-viewed <pr|--all> [--repo path] [--dry-run] [--force] [--limit N] [--max-prs N]\n                                              import GitHub's viewed ticks as `viewed`\n  codemap analyze marten [repo] [--verbose] [--emit]\n\n  Shared review (a sidecar repo; set CODEMAP_SIDECAR or .codemap/sidecar):\n  codemap sync     [repo]              send and receive shared review state\n  codemap sidecar heal [repo]          repair a forked sidecar (a person, not an agent)\n  codemap shared   <pr> [repo] [--queue] [--json]   findings on the sidecar\n  codemap peers    [repo]              who else is on this sidecar, and scheme drift\n  codemap replies  <pr> [repo]         what the PR submitter said back about published findings\n  codemap notes    <anchor|node id> [repo]   what the TEAM knows about a symbol\n  codemap publish-notes [repo] [--dry-run]   put this store's existing annotations on the sidecar\n  codemap shared-docs [repo] [--json]  the team's docs, resolved against THIS checkout\n  codemap publish-docs [repo] [--dry-run]    put this store's docs on the sidecar\n  codemap shared-triage [anchor|node id] [repo] [--json]   the team's stakes, with receipts\n  codemap contested [repo] [--json] [--queue]   stakes two people disagree about ACROSS business-critical\n  codemap publish-triage [repo] [--dry-run]  put this store's own triage marks on the sidecar");
   process.exit(2);
 }
 
@@ -260,6 +260,14 @@ async function cmdSync(root: string): Promise<void> {
     for (const b of m.blocked) console.log(`  BLOCKED ${b.scope}: ${b.reason}`);
   }
   if (r.warning) console.log(`  WARNING: ${r.warning}`);
+
+  // A sync is the moment a teammate's disagreement actually arrives, so it is where a
+  // stakes contest becomes a queue item. Everything else the fold settles silently;
+  // only a disagreement ACROSS the business-critical line reaches a person.
+  const q = await ops.queueContestedTriage(root) as Record<string, any>;
+  if (!q.error && (q.filed || q.revised)) {
+    console.log(`  ${q.filed + q.revised} stakes disagreement(s) crossing business-critical — queued for you (\`codemap contested\`)`);
+  }
 }
 
 /**
@@ -369,6 +377,55 @@ async function cmdSharedDocs(root: string, json: boolean): Promise<void> {
 
 async function cmdPublishDocs(root: string, dryRun: boolean): Promise<void> {
   const r = await shared.publishLocalDocs(root, { dryRun }) as Record<string, any>;
+  if (r.error) { console.error(r.error); process.exit(1); }
+  console.log(JSON.stringify(r));
+}
+
+/**
+ * The team's stakes on a target, or across the universe.
+ *
+ * Reads the receipts rather than the effective value — the ordinary triage surfaces
+ * already show that. What is only visible here is WHO said what, and where an agent
+ * escalated over a human baseline.
+ */
+async function cmdSharedTriage(root: string, target: string, json: boolean): Promise<void> {
+  const r = await shared.sharedTriage(root, undefined, target || undefined) as Record<string, any>;
+  if (r.error) { console.error(r.error); process.exit(1); }
+  if (json) { console.log(JSON.stringify(r, null, 2)); return; }
+  console.log(`${r.universe}: ${r.count} shared triage mark(s)`);
+  for (const m of r.marks) {
+    const i = m.importance;
+    const extra = [
+      i.escalatedByAgent ? `agent raised from ${i.humanBaseline ?? "nothing"}` : "",
+      i.alsoSaid?.length ? `also: ${i.alsoSaid.map((a: any) => `${a.value} (${a.by})`).join(", ")}` : "",
+      i.contested ? "CONTESTED — a person settles this" : "",
+    ].filter(Boolean).join(" · ");
+    console.log(`  ${m.target.id}  ${i.value}${m.complexity ? "/" + m.complexity.value : ""}  by ${i.by}${extra ? "  [" + extra + "]" : ""}`);
+  }
+  if (!r.count) console.log("  (nothing shared yet — try `codemap publish-triage`)");
+}
+
+/** Only the disagreements worth a person: one side business-critical, another lower. */
+async function cmdContestedTriage(root: string, json: boolean, queue: boolean): Promise<void> {
+  const r = await shared.contestedTriage(root) as Record<string, any>;
+  if (r.error) { console.error(r.error); process.exit(1); }
+  // Filing is opt-in from here because it WRITES — a question on the map, mirrored to
+  // the sidecar. `codemap sync` does it on its own, which is the moment a teammate's
+  // disagreement actually arrives.
+  if (queue) {
+    const q = await ops.queueContestedTriage(root) as Record<string, any>;
+    if (!q.error) console.log(`queued: ${q.filed} new, ${q.revised} revised, ${q.alreadyQueued} already open`);
+  }
+  if (json) { console.log(JSON.stringify(r, null, 2)); return; }
+  console.log(`${r.universe}: ${r.count} contested mark(s) — ${r.note}`);
+  for (const m of r.marks) {
+    console.log(`  ${m.target.id}  ${m.importance.value} (${m.importance.by})`);
+    for (const a of m.importance.alsoSaid ?? []) console.log(`      vs ${a.value} (${a.by})`);
+  }
+}
+
+async function cmdPublishTriage(root: string, dryRun: boolean): Promise<void> {
+  const r = await shared.publishLocalTriage(root, { dryRun }) as Record<string, any>;
   if (r.error) { console.error(r.error); process.exit(1); }
   console.log(JSON.stringify(r));
 }
@@ -619,6 +676,12 @@ if (positionals[0] === "analyze") {
     await cmdPublishNotes(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."), Boolean(values["dry-run"]));
   } else if (positionals[0] === "shared-docs") {
     await cmdSharedDocs(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."), Boolean(values.json));
+  } else if (positionals[0] === "shared-triage") {
+    await cmdSharedTriage(resolve((values.repo as string | undefined) ?? positionals[2] ?? "."), positionals[1] ?? "", Boolean(values.json));
+  } else if (positionals[0] === "contested") {
+    await cmdContestedTriage(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."), Boolean(values.json), Boolean(values.queue));
+  } else if (positionals[0] === "publish-triage") {
+    await cmdPublishTriage(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."), Boolean(values["dry-run"]));
   } else if (positionals[0] === "publish-docs") {
     await cmdPublishDocs(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."), Boolean(values["dry-run"]));
   } else if (positionals[0] === "orphans") {

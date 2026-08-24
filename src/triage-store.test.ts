@@ -16,10 +16,11 @@ import type { Triage } from "./schema.js";
  * Triage as one canonical table, and the seam that keeps a local write off a teammate's
  * row.
  *
- * `docs/shared-triage.md` is normative. Nothing is shared yet — no fold writes
- * `source_scope` — so what is under test here is the STORAGE being right before anything
- * depends on it, which is the order the docs unification proved out: the ownership rule
- * has to be true of the table before the fold that relies on it exists.
+ * `docs/shared-triage.md` is normative. What is under test here is the STORAGE — the
+ * ownership rule and the read merge — separately from the fold that fills the shared
+ * partition, which is `shared-triage.test.ts`. Rows are planted directly for the same
+ * reason the docs unification proved its table first: the ownership rule has to be true
+ * of the table independently of whatever wrote into it.
  */
 
 /** `id` is the target's, and is deliberately NOT spread into the record. */
@@ -136,17 +137,35 @@ test("a local write never reaches a row the fold owns", async () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("a local mark wins over a teammate's for the same target", async () => {
-  // Not the real merge rule — that lands with the fold. This is the trivial one the
-  // storage answers with today, and it is asserted so the change is visible when the
-  // rule arrives rather than being absorbed silently.
+test("the fold-owned row wins, per FIELD, and a local row fills what the scope never says", async () => {
+  // The real merge rule (`docs/shared-triage.md`, and the note on `readTriage`). The
+  // fold has already weighed this clone's own published marks against everyone else's,
+  // so a local row outranking it would silently reinstate a value a teammate superseded
+  // — and would do it only on this machine.
   const root = universe();
   try {
     plantShared(root, "triage/acme-api", mark({ id: "a_1", importance: "low" }));
-    await replaceLocalTriage(root, [mark({ id: "a_1", importance: "business-critical" })]);
+    await replaceLocalTriage(root, [mark({ id: "a_1", importance: "business-critical", complexity: "deep" })]);
     const back = (await readTriage(root)).triage;
     assert.equal(back.length, 1, "one answer for one target");
-    assert.equal(back[0]!.importance, "business-critical");
+    assert.equal(back[0]!.importance, "low", "the team's answer, not this clone's unpublished one");
+    assert.equal(
+      back[0]!.complexity, "deep",
+      "PER FIELD: the scope says nothing about complexity, so the local row still fills it",
+    );
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("and a local mark on a target the scope has never heard of is untouched", async () => {
+  // The control. Without it the rule above passes just as well if fold-owned rows
+  // suppressed every local row in the table.
+  const root = universe();
+  try {
+    plantShared(root, "triage/acme-api", mark({ id: "a_theirs", importance: "low" }));
+    await replaceLocalTriage(root, [mark({ id: "a_mine", importance: "business-critical" })]);
+    const back = new Map((await readTriage(root)).triage.map((t) => [t.target.id, t.importance]));
+    assert.equal(back.get("a_mine"), "business-critical");
+    assert.equal(back.get("a_theirs"), "low");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

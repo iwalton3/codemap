@@ -45,6 +45,7 @@ export { outline, search, context, getAnchor, nodeReview, fileSource } from "./o
 
 export {
   setTriage, anchorMark, clearTriage, deriveTriage, tripwires, triageDriftList, changedSince,
+  queueContestedTriage,
 } from "./ops/triage.js";
 
 export {

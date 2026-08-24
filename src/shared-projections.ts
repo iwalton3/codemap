@@ -24,6 +24,7 @@ import { foldWalkthroughs, type SharedWalkthrough } from "./shared-walkthrough.j
 import { needsHumanAck, foldFindings, type SharedFinding } from "./shared-findings.js";
 import { foldDocs, type SharedDoc, type UnmatchedAcceptance } from "./shared-docs.js";
 import { foldNotes, type SharedNote } from "./shared-notes.js";
+import { foldTriage, triageSubject, type SharedTriage, type Axis, type TriageField } from "./shared-triage.js";
 import type { Actor, NodeVersion } from "./schema.js";
 
 /**
@@ -290,6 +291,77 @@ export const walkthroughsProjection: Projection<SharedWalkthrough[]> = {
 };
 
 /**
+ * Shared triage, into the ONE canonical `triage` table.
+ *
+ * A teammate's stakes are an ordinary row carrying an `origin`, not a row in a parallel
+ * table — the rule that removed `shared_doc_*`. So every surface that already reads
+ * triage reads a teammate's without knowing it exists, and nothing needs a bridge.
+ *
+ * **Replaces only what it owns.** `DELETE ... WHERE source_scope = ?`, never by target:
+ * a bare delete would take the local rows, which are the one thing here the log cannot
+ * put back.
+ *
+ * One row per (target, FIELD), because that is what the fold produces and what the
+ * table is keyed on. The columns hold the EFFECTIVE receipt — what ranking and severity
+ * use — and `detail` holds that field's whole `Axis`, which is what makes the round trip
+ * exact rather than approximately right.
+ */
+export const triageProjection: Projection<Map<string, SharedTriage>> = {
+  write(d: DatabaseSync, scope: string, value: Map<string, SharedTriage>): void {
+    d.prepare("DELETE FROM triage WHERE source_scope = ?").run(scope);
+    const ins = d.prepare(
+      "INSERT INTO triage(target_kind,target_id,field,value,source,likely,generated_by,reason,at,"
+      + "actor,asserted_commit,witnesses,origin,source_scope,detail) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    );
+    const put = (t: SharedTriage, field: TriageField, axis: Axis<any> | undefined): void => {
+      if (!axis) return;
+      const r = axis.effective;
+      ins.run(
+        t.target.kind, t.target.id, field,
+        // `tripwire` is stored as "1"/"0", the same encoding `triageToRows` uses for a
+        // local row — one column, one reading, whoever wrote the row.
+        field === "tripwire" ? (r.value ? "1" : "0") : String(r.value),
+        r.source, r.likely ? 1 : 0, null, r.reason ?? null, r.at,
+        JSON.stringify(r.actor), r.assertedCommit ?? null, JSON.stringify(r.witnesses ?? []),
+        "sync", scope, JSON.stringify(axis),
+      );
+    };
+    for (const t of value.values()) {
+      put(t, "importance", t.importance);
+      put(t, "complexity", t.complexity);
+      put(t, "tripwire", t.tripwire);
+    }
+  },
+
+  read(d: DatabaseSync, scope: string): Map<string, SharedTriage> {
+    const out = new Map<string, SharedTriage>();
+    // `rowid`, so the fold's own Map order survives the round trip — `foldTriage`
+    // returns targets in first-event order and the contract is `read(write(x)) === x`.
+    for (const r of d.prepare(
+      "SELECT target_kind, target_id, field, detail FROM triage WHERE source_scope = ? ORDER BY rowid",
+    ).all(scope) as unknown as { target_kind: string; target_id: string; field: string; detail: string | null }[]) {
+      const kind = r.target_kind as "node" | "anchor";
+      const key = triageSubject(kind, r.target_id);
+      let t = out.get(key);
+      if (!t) {
+        // `importance` is written first for every target, so the partial object is only
+        // ever missing it between this line and the assignment below.
+        t = { target: { kind, id: r.target_id } } as SharedTriage;
+        out.set(key, t);
+      }
+      try {
+        const axis = JSON.parse(r.detail ?? "null") as Axis<any> | null;
+        if (!axis) throw new Error("no detail");
+        (t as any)[r.field] = axis;
+      } catch {
+        throw new CorruptProjection(`triage ${scope}/${key}/${r.field} is unreadable`);
+      }
+    }
+    return out;
+  },
+};
+
+/**
  * The fold and projection a scope is cached by, or null if its kind has none yet.
  *
  * Prefix-matched on the scope path, which is the same string `findingScope` /
@@ -306,5 +378,6 @@ export function projectionFor(scope: string): { fold: (e: LogEvent[]) => any; pr
   if (scope.startsWith("docs/")) return { fold: foldDocs, proj: docsProjection };
   if (scope.startsWith("notes/")) return { fold: foldNotes, proj: notesProjection };
   if (scope.startsWith("walkthrough/")) return { fold: foldWalkthroughs, proj: walkthroughsProjection };
+  if (scope.startsWith("triage/")) return { fold: foldTriage, proj: triageProjection };
   return null;
 }

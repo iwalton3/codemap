@@ -280,7 +280,13 @@ function migrate(d: DatabaseSync): void {
       asserted_commit TEXT,
       witnesses TEXT NOT NULL DEFAULT '[]',
       -- Provenance, exactly as node_versions: NULL origin = this user wrote it.
-      origin TEXT, source_scope TEXT
+      origin TEXT, source_scope TEXT,
+      -- The fold's whole answer for THIS field, as a JSON Axis: the human baseline,
+      -- the agent escalation over it, the concurrent receipts it won against. The
+      -- columns above carry the EFFECTIVE receipt so every ordinary reader works
+      -- unchanged; this is what makes the projection's read/write round trip exact,
+      -- and it is NULL on a local row, which has no baseline but itself.
+      detail TEXT
     );
     -- PARTIAL indexes, and they are not interchangeable with one composite UNIQUE.
     -- SQLite does not conflict NULLs, so UNIQUE(target_kind,target_id,field,source_scope)
@@ -328,6 +334,12 @@ function migrate(d: DatabaseSync): void {
   // because every test starts from an empty database.
   // A per-fold `DELETE WHERE source_scope = ?` is a table scan without it.
   try { d.exec("CREATE INDEX IF NOT EXISTS ix_nv_scope ON node_versions(source_scope)"); } catch { /* fine */ }
+  // triage.detail — added with the fold, for stores created between the table landing
+  // and it. Same ladder rule as everything above: the CREATE block has it on a fresh
+  // database, and an existing one needs the ALTER or `no such column` fails `migrate`.
+  try { d.exec("ALTER TABLE triage ADD COLUMN detail TEXT"); } catch { /* already present */ }
+  // A per-fold `DELETE WHERE source_scope = ?` is a table scan without it.
+  try { d.exec("CREATE INDEX IF NOT EXISTS ix_triage_scope ON triage(source_scope)"); } catch { /* fine */ }
   // The `shared_scope.status` / `.diagnostic` rungs are GONE with the protocol-1
   // freeze: both columns are in the CREATE above, and the only stores that ever
   // lacked them were dev stores on this branch. The four rungs that remain are core

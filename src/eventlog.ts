@@ -352,6 +352,43 @@ export async function emitEvent(
 }
 
 /**
+ * Many events from one writer, in one lock and one append.
+ *
+ * `emitEvent` re-reads the whole scope to find its causal heads, so calling it in a
+ * loop is quadratic — fine for a button click, and not fine for a pull request that
+ * triages 531 symbols. This reads once and chains `writerPrev` across the batch.
+ *
+ * Every event records the SAME `after`, which is the honest description: they were all
+ * written knowing the same thing. Their order relative to each other is carried by the
+ * chain, exactly as it is for two separate writes by one writer.
+ */
+export async function emitEvents(
+  logRoot: string, scope: string, actor: Actor,
+  items: { kind: string; subject: string; data?: Record<string, unknown> }[],
+): Promise<LogEvent[]> {
+  if (!items.length) return [];
+  return withSidecarLock(logRoot, async () => {
+    const writer = await writerFor(logRoot);
+    const seen = causalHeads(await readScope(logRoot, scope));
+    const own = await readShard(join(logRoot, shardFor(scope, writer)));
+    let prev = own.length ? own[own.length - 1]!.id : GENESIS;
+    const out: LogEvent[] = [];
+    for (const it of items) {
+      const event: LogEvent = {
+        sidecarProtocol: SIDECAR_PROTOCOL, eventSchema: EVENT_SCHEMA,
+        id: mintId(), kind: it.kind, subject: it.subject, actor, at: new Date().toISOString(),
+        writer, writerPrev: prev, after: seen,
+        ...(it.data ? { data: it.data } : {}),
+      };
+      out.push(event);
+      prev = event.id;
+    }
+    await appendEvents(logRoot, scope, writer, out);
+    return out;
+  });
+}
+
+/**
  * The envelope every reader depends on, checked once at the door.
  *
  * `actor.principal` is the part worth spelling out: `causality()` keys its vector

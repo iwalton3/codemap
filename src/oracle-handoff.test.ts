@@ -2,13 +2,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { team, who, edit, commit, branch, pushBranch, openPr, settle, type Team, type Member } from "./oracle.js";
 import { Ledger, checkAlways, checkSettled, verified } from "./oracle-properties.js";
-import { pr, prWalkthroughSet, prWalkthroughGet, setTriage, anchorMark } from "./ops.js";
+import { pr, prWalkthroughSet, prWalkthroughGet, setTriage, anchorMark, document } from "./ops.js";
 import {
   shareFinding, sharedFindings, corroborateFinding, reportOnFinding,
-  shareWalkthrough, sharedWalkthroughs,
+  shareWalkthrough, sharedWalkthroughs, sharedTriage, contestedTriage, publishLocalTriage,
 } from "./ops-shared.js";
 import { markReviewedBatch } from "./reviews.js";
-import { triageStatus } from "./triage.js";
+import { triageStatus, deriveTriage, clearTriage } from "./triage.js";
+import { readLocalTriage } from "./store.js";
 
 /**
  * WORKFLOW 1 — the hand-off arc, which is the product's whole point.
@@ -239,20 +240,97 @@ test("the hand-off arc: a teammate reviews their own branch, the owner signs off
     });
 
     // 10 — the walls -------------------------------------------------------------
-    await step("WALL: triage does not travel", async () => {
-      // Ben triaged `worklist[0]` as business-critical in step 3. Izzie cannot see it,
-      // so "residual findings" reach him without the stakes that produced them.
-      //
-      // INVERTED ON PURPOSE. When triage starts syncing this fails, and the fix is to
-      // assert the real thing here — not to delete the test. Owner's call, 2026-08-23:
-      // triage IS to be shared; it is a build, not a decision.
+    await step("triage travels: izzie inherits the stakes ben's agent set", async () => {
+      // This was a WALL until the fold landed. It was the gap that mattered most: the
+      // hand-off transferred findings without the stakes used to rank them, so izzie
+      // got a residual finding with no idea it sat on a business-critical path.
       const his = await triageStatus(ben.repo, { kind: "anchor", id: worklist[0]! });
       const hers = await triageStatus(izzie.repo, { kind: "anchor", id: worklist[0]! });
       assert.equal(his.importance, "business-critical", "ben's own triage is where he left it");
-      assert.notEqual(
-        hers.importance, "business-critical",
-        "TRIAGE NOW TRAVELS — good. Replace this wall with the real assertion.",
+      assert.equal(hers.importance, "business-critical", "and it reached izzie");
+      assert.equal(hers.complexity, "standard", "with the other axis, which decides the review BAR");
+      assert.equal(hers.likely, true, "still an agent's proposal on her side — travelling is not confirming");
+
+      // THE RECEIPTS, which are the half a bare value cannot carry. Izzie has to be
+      // able to see it was ben's agent that said so, and why.
+      const shared = await sharedTriage(izzie.repo, "anchor", worklist[0]!) as any;
+      assert.equal(shared.error, undefined, `shared triage failed: ${shared.error}`);
+      assert.equal(shared.count, 1);
+      assert.equal(shared.marks[0].importance.by, MATE, "attributed to ben, not to whoever pulled");
+      assert.equal(shared.marks[0].importance.reason, "money moves through here");
+      assert.equal(shared.marks[0].importance.contested, undefined, "nobody has disagreed");
+    });
+
+    await step("and izzie can lower it, because she has now SEEN it", async () => {
+      // The rule that makes the whole merge tractable: causally-seen supersedes. It is
+      // a decision, not a conflict, and it does not go anywhere near the review queue.
+      const r = await setTriage(izzie.repo, {
+        targetKind: "anchor", targetId: worklist[0]!,
+        importance: "important", source: "human", reason: "guarded now",
+      }) as any;
+      assert.equal(r.error, undefined, `izzie could not re-triage: ${r.error}`);
+      assert.equal(r.shared, true, "her mark went to the log, not to a local row the team cannot see");
+
+      const hers = await triageStatus(izzie.repo, { kind: "anchor", id: worklist[0]! });
+      assert.equal(hers.importance, "important");
+      assert.equal(hers.likely, false, "a human set it, so it is no longer a proposal");
+      const contested = await contestedTriage(izzie.repo) as any;
+      assert.equal(contested.count, 0, "a decision made having seen the other side is not a contest");
+    });
+
+    await step("graph-derived stakes stay local, beside the shared ones", async () => {
+      // The coexistence case, and the one that makes OWNERSHIP mean something here:
+      // until now every mark izzie made went to the log, so the local partition was
+      // empty and no local write could reach a fold-owned row even if it tried.
+      // `deriveTriage` is the path that fills it — graph output is regenerated per
+      // machine and never travels, which is exactly why it is written locally.
+      const before = (await sharedTriage(izzie.repo, "anchor", worklist[0]!) as any).count;
+      // A doc first, because the derive works off NODES — with none, it marks nothing
+      // and this step would pass over an empty local partition, proving nothing.
+      const doc = await document(izzie.repo, {
+        id: "n_payments", type: "concept", title: "Payments",
+        summary: "moves money between accounts", anchors: ["src/pay.ts#transfer"],
+      }) as any;
+      assert.equal(doc.error, undefined, `document failed: ${doc.error}`);
+      const r = await deriveTriage(izzie.repo) as any;
+      assert.equal(r.error, undefined, `derive failed: ${r.error}`);
+      assert.ok(r.derived > 0, "the derive marked something — otherwise the assertions below are over nothing");
+      const localRows = (await readLocalTriage(izzie.repo)).triage;
+      assert.ok(localRows.length > 0, "the derive produced local rows — otherwise this step proves nothing");
+      assert.ok(localRows.every((t) => t.source === "graph"), "and only graph ones: the rest are events now");
+      assert.equal(
+        (await sharedTriage(izzie.repo, "anchor", worklist[0]!) as any).count, before,
+        "a whole-list local rewrite did not disturb the fold's partition",
       );
+    });
+
+    await step("clearing a local mark leaves the fold's partition alone", async () => {
+      // `clearTriage` filters a list and writes it back — done against the MERGED view
+      // it would delete a teammate's row and clone every other one into the local
+      // partition, in one call.
+      //
+      // What this step CAN see, said plainly because the difference decides where the
+      // real guard lives: a clear appends an event, so the fingerprint moves and the
+      // next read re-folds — a local write that flattened the shared rows would be
+      // repaired before anything here looked. The permanent case is a local rewrite
+      // with no event behind it, where the cache is a HIT and nothing ever re-folds;
+      // that is `triage-store.test.ts`, which plants a fold-owned row and calls the
+      // local writers directly. Both mutations of the seam fail it.
+      const before = (await sharedTriage(izzie.repo) as any).count;
+      assert.ok(before > 0, "there are fold-owned rows to disturb");
+      const r = await clearTriage(izzie.repo, { targetKind: "node", targetId: "n_payments" }) as any;
+      assert.equal(r.removed, 1, "her own derived mark went");
+      assert.equal((await sharedTriage(izzie.repo) as any).count, before, "and the team's marks did not");
+    });
+
+    await step("publishing local marks skips the graph ones, and says so", async () => {
+      // What the owner runs to get an existing store's marks onto a new sidecar. The
+      // graph rows must NOT go: they are regenerated on every machine, and a silent
+      // narrowing reads from the other side exactly like a mark that did travel.
+      const dry = await publishLocalTriage(izzie.repo, { dryRun: true }) as any;
+      assert.equal(dry.error, undefined, `publish failed: ${dry.error}`);
+      assert.equal(dry.wouldPublish, 0, "everything she asserted is already an event");
+      assert.ok(dry.skippedGraph > 0, "and the graph rows are counted rather than quietly dropped");
     });
 
     await step("WALL: a process doc still cannot be published", async () => {

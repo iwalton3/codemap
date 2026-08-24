@@ -12,11 +12,16 @@ import { reviewStatesFor, witnessesFor, liveHashes, witnessDrift, realDrift, der
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { indexFile } from "./repo.js";
+import { headCommit } from "./git.js";
 // The pure rules live one layer down so the shared fold can replay through the SAME
 // ratchet without importing this module — see `triage-rules.ts`. Re-exported, because
 // every existing caller imports them from here.
 import { IMPORTANCE_RANK, COMPLEXITY_RANK, DEFAULT_COMPLEXITY, normImportance, ratchet } from "./triage-rules.js";
 export { IMPORTANCE_RANK, COMPLEXITY_RANK, DEFAULT_COMPLEXITY, normImportance, ratchet } from "./triage-rules.js";
+// The publish half. A LEAF on purpose — it holds the fold and the projection and never
+// the op surface, because reaching `ops-shared.ts` from here closes an import cycle by
+// four different routes. See the note at the top of `triage-publish.ts`.
+import { mirrorTriage, mirrorTriageBatch, mirrorTriageClear } from "./triage-publish.js";
 
 /** `complete` = meets the tier's bar; `untriaged` = no stakes assigned yet (escalates). */
 export type Severity = BugSeverity | "complete" | "untriaged";
@@ -126,12 +131,45 @@ export async function setTriage(
     at: new Date().toISOString(),
     witnesses: await witnessesFor(root, target, input.ref),
   };
-  // ONE target, and only this clone's row for it. The ratchet decided against the MERGED
-  // value above — that is what makes "agents may only raise" mean anything once a
-  // teammate's mark exists — but the write is local, because a local write may never
-  // reach a row the fold owns. See `docs/shared-triage.md`.
-  await upsertLocalTriage(root, rec);
-  return { ok: true, importance: rec.importance, complexity: rec.complexity, likely: rec.likely };
+  // Where the mark GOES. The ratchet decided against the MERGED value above — that is
+  // what makes "agents may only raise" mean anything once a teammate's mark exists —
+  // and the destination follows from whether this universe has a sidecar.
+  //
+  // With one, the mark is an EVENT: the log is authoritative for shared state, and a
+  // local row alongside it would be a second copy that no supersession can ever reach
+  // (see `readTriage`). Without one — or if publishing fails — it is a local row,
+  // exactly as it has always been. A mark must never be lost because a shared repo is
+  // missing, so the fallback is the old path and not an error.
+  //
+  // `graph` never travels: it is regenerated per machine by `deriveTriage`.
+  const shared = input.source === "graph" ? { shared: false } : await mirror(root, rec, input);
+  if (!shared.shared) await upsertLocalTriage(root, rec);
+  return {
+    ok: true, importance: rec.importance, complexity: rec.complexity, likely: rec.likely,
+    ...(shared.shared ? { shared: true } : {}),
+  };
+}
+
+/**
+ * Publish a mark, when there is a sidecar to publish it to.
+ *
+ * A throw here must not fail a write that is about to succeed locally: the caller falls
+ * back to a local row, which is what codemap did for its whole life before the sidecar.
+ */
+async function mirror(root: string, rec: Triage, input: TriageInput): Promise<{ shared: boolean }> {
+  try {
+    return await mirrorTriage(root, {
+      targetKind: rec.target.kind, targetId: rec.target.id,
+      importance: rec.importance, complexity: rec.complexity,
+      // Only when the caller SET it. An omitted field means "did not touch", and an
+      // invented `false` is an alarm silently turned off.
+      ...(input.tripwire !== undefined ? { tripwire: input.tripwire } : {}),
+      source: rec.source === "human" ? "human" : "agent",
+      reason: rec.reason,
+      assertedCommit: input.ref ?? headCommit(root) ?? undefined,
+      witnesses: rec.witnesses,
+    });
+  } catch { return { shared: false }; }
 }
 
 /**
@@ -147,7 +185,17 @@ export async function clearTriage(root: string, input: { targetKind: "node" | "a
   const kept = ts.triage.filter((t) => !sameTarget(t, input.targetKind, input.targetId));
   const removed = ts.triage.length - kept.length;
   if (removed) await replaceLocalTriage(root, kept);
-  return { ok: true, removed };
+  // And the shared half, which cannot be a deletion: the log is append-only and NO LOSS
+  // forbids removing an event once observed, so a clear is an appended `triage.cleared`
+  // carrying an explicit `present: false`. Encoded as an absent importance it would be
+  // indistinguishable from an event that simply did not mention the field.
+  const shared = await mirrorTriageClear(root, input)
+    .catch(() => ({ shared: false }) as { shared: boolean; error?: string });
+  return {
+    ok: true, removed,
+    ...(shared.shared ? { shared: true } : {}),
+    ...(shared.error ? { note: shared.error } : {}),
+  };
 }
 
 export interface TriageInfo {
@@ -547,10 +595,20 @@ export async function setTriageBatch(
     touched.add(item.anchorId);
     applied++;
   }
+  // Published in ONE append and folded ONCE — `emitEvent` re-reads the scope per call,
+  // which is quadratic on a pull request that marks 531 symbols. `graph` never travels,
+  // so it keeps the local path it has always had.
+  const marks = [...touched].map((id) => byId.get(id)!);
+  const shared = opts.source === "graph" ? { shared: false } : await mirrorTriageBatch(root, marks.map((t) => ({
+    targetKind: t.target.kind, targetId: t.target.id,
+    importance: t.importance, complexity: t.complexity,
+    source: (t.source === "human" ? "human" : "agent") as TriageSource,
+    reason: t.reason, assertedCommit: opts.ref, witnesses: t.witnesses,
+  }))).catch(() => ({ shared: false }));
   // What this batch WROTE, one target at a time — never the whole list. `byId` was built
   // from the merged view so the ratchet could judge against a teammate's stakes; writing
   // it back wholesale would copy every one of their marks into this clone's partition,
   // and would rewrite untouched local marks under a fresh timestamp for no reason.
-  for (const id of touched) await upsertLocalTriage(root, byId.get(id)!);
-  return { applied, refused };
+  if (!shared.shared) for (const t of marks) await upsertLocalTriage(root, t);
+  return { applied, refused, ...(shared.shared ? { shared: true } : {}) };
 }

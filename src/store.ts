@@ -1165,20 +1165,36 @@ function triageToRows(t: Triage): [string, string, string, string, string, numbe
 }
 
 /**
- * Every mark this store answers with: the local rows, and a teammate's where there is no
- * local one for that target.
+ * Every mark this store answers with: the team's, and this clone's where the team has
+ * nothing to say.
  *
  * What every READER wants. Nothing folds a log here — these are rows, so `COMPLETENESS`
  * still holds; the fold's job is to have written the shared rows at sync time.
  *
- * The merge is deliberately the trivial one for now: no fold writes `source_scope` yet,
- * so there is nothing to merge and this is exactly the previous behaviour. The rule that
- * decides a real merge is in `docs/shared-triage.md` and lands with the fold.
+ * **Per FIELD, and the fold-owned row wins.** Both halves are deliberate:
+ *
+ * Per field, because that is what the table is keyed on and what the design turns on —
+ * a record whose importance is a teammate's and whose complexity is yours is two
+ * assertions, and collapsing them to whichever record "wins" throws one away.
+ *
+ * The fold wins because the LOG is authoritative. Your own published marks are events,
+ * so the fold has already weighed them against everyone else's by the documented rule
+ * (`docs/shared-triage.md`) — including a teammate lowering something you raised, which
+ * is a decision they made having SEEN yours. Letting a local row outrank that would
+ * silently reinstate the value they superseded, and it would do it only on your machine.
+ *
+ * What that leaves is the honest case: a local row the log has never heard of, from
+ * before there was a sidecar. It fills the gap, and `publishLocalTriage` is how it stops
+ * being a gap. That is the same explicit act `publishLocalDocs` is, for the same reason
+ * — a legacy `Triage` carries a `source` but no `Actor`, so publishing it automatically
+ * would attribute every historical judgment to whoever upgraded first.
  */
 export async function readTriage(root: string): Promise<TriageStore> {
   const rows = db(root).prepare(`SELECT ${TRIAGE_COLS} FROM triage`).all() as unknown as TriageRow[];
-  const local = new Set(rows.filter((r) => r.source_scope === null).map((r) => `${r.target_kind}\0${r.target_id}`));
-  const merged = rows.filter((r) => r.source_scope === null || !local.has(`${r.target_kind}\0${r.target_id}`));
+  const shared = new Set(rows.filter((r) => r.source_scope !== null)
+    .map((r) => `${r.target_kind}\0${r.target_id}\0${r.field}`));
+  const merged = rows.filter((r) => r.source_scope !== null
+    || !shared.has(`${r.target_kind}\0${r.target_id}\0${r.field}`));
   return { schemaVersion: SCHEMA_VERSION, triage: triageFromRows(merged) };
 }
 
