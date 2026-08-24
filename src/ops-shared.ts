@@ -1234,3 +1234,53 @@ export async function publishLocalTriage(root: string, opts: { dryRun?: boolean 
     note: folded ? "run `codemap sync` to send them" : "recorded in the log; the next sync will fold them",
   };
 }
+
+
+/**
+ * The onboarding and recovery view: is this universe connected, and what of mine has
+ * the team never seen?
+ *
+ * The shape of the CLI-only gap was not random — everything needed to JOIN a team and
+ * to RECOVER from a fork was a terminal command, while day-to-day review was fully
+ * covered on every surface. So a beta user could work in the browser only after
+ * somebody ran three publish commands for them, and was stuck in a terminal the first
+ * time a writer id forked.
+ *
+ * Every count here comes from the publish ops' own DRY RUN rather than a second
+ * implementation of "what is publishable" — those rules have real exclusions (graph
+ * triage never travels, `process` docs are refused, a target the team already answered
+ * differently is held back) and a page that recomputed them would drift from what the
+ * button actually does.
+ */
+export async function sharedHub(root: string) {
+  const cfg = resolveSidecar(root);
+  if (!cfg) return { configured: false as const, error: NO_SIDECAR };
+  const status = await sharedStatus(root);
+  if ("error" in status) return { configured: true as const, error: status.error };
+
+  const [docs, notes, triage] = await Promise.all([
+    publishLocalDocs(root, { dryRun: true }).catch((e: any) => ({ error: String(e?.message ?? e) })),
+    publishLocalNotes(root, { dryRun: true }).catch((e: any) => ({ error: String(e?.message ?? e) })),
+    publishLocalTriage(root, { dryRun: true }).catch((e: any) => ({ error: String(e?.message ?? e) })),
+  ]);
+
+  // Which scopes cannot be answered from. A blocked scope is rendered explicitly rather
+  // than hidden: a reviewer who can see what the tool cannot read is in a better
+  // position than one shown a confident empty list.
+  const blocked: { scope: string; reason: string }[] = [];
+  for (const scope of await scopesOnDisk(cfg.path)) {
+    if (!projectionFor(scope) || !inUniverse(scope, cfg.universe)) continue;
+    const st = await readScopeChecked(cfg.path, scope);
+    if (st.status !== "complete") blocked.push({ scope, reason: st.diagnostic?.detail ?? st.status });
+  }
+
+  return {
+    configured: true as const,
+    ...status,
+    unpublished: { docs, notes, triage },
+    blocked,
+    // A fork is the one thing here a person must act on, and `heal` is theirs alone —
+    // there is no MCP tool for it, deliberately.
+    forked: blocked.some((b) => /fork/i.test(b.reason)),
+  };
+}

@@ -101,6 +101,9 @@ export async function apiPost(path, body) {
  *   '/api/pr/push_plan':        Awaited<ReturnType<Ops['prPushPlan']>>,
  *   '/api/shared':              Awaited<ReturnType<Shared['sharedFindings']>>,
  *   '/api/shared/peers':        Awaited<ReturnType<Shared['sharedStatus']>>,
+ *   '/api/shared/hub':          Awaited<ReturnType<Shared['sharedHub']>>,
+ *   '/api/shared/triage':       Awaited<ReturnType<Shared['sharedTriage']>>,
+ *   '/api/shared/contested':    Awaited<ReturnType<Shared['contestedTriage']>>,
  *   '/api/shared/walkthroughs': Awaited<ReturnType<Shared['sharedWalkthroughs']>>,
  *   '/api/shared/notes':        Awaited<ReturnType<Shared['sharedNotes']>>,
  *   '/api/shared/docs':         Awaited<ReturnType<Shared['sharedDocs']>>,
@@ -714,7 +717,7 @@ defineComponent('md-content', MdContent);
  */
 const VIEW_LINKS = [
   ['nodes', u => nodesUrl(u)], ['matrix', u => matrixUrl(u), 'matrix'], ['pipeline', u => pipelineUrl(u), 'pipeline'],
-  ['states', u => stateMapUrl(u), 'states'], ['flows', u => flowsUrl(u)], ['bugs', u => bugsUrl(u)], ['orphans', u => orphansUrl(u)], ['diff', u => diffUrl(u)],
+  ['states', u => stateMapUrl(u), 'states'], ['flows', u => flowsUrl(u)], ['bugs', u => bugsUrl(u)], ['orphans', u => orphansUrl(u)], ['diff', u => diffUrl(u)], ['shared', u => `/u/${u}/shared/`],
   ['pull requests', u => prsUrl(u), 'prs'],
 ];
 // Ungated links always show. A gated one needs the universe's `views` to say so —
@@ -849,7 +852,7 @@ class DashboardPage extends Component {
     /** @type {[label: string, act: () => void, gate?: string][]} */
     const navAll = [
       ['nodes', () => go(nodesUrl(u))], ['matrix', () => go(matrixUrl(u)), 'matrix'], ['pipeline', () => go(pipelineUrl(u)), 'pipeline'],
-      ['states', () => go(stateMapUrl(u)), 'states'], ['flows', () => go(flowsUrl(u))], ['bugs', () => go(bugsUrl(u))], ['orphans', () => go(orphansUrl(u))], ['diff', () => go(diffUrl(u))],
+      ['states', () => go(stateMapUrl(u)), 'states'], ['flows', () => go(flowsUrl(u))], ['bugs', () => go(bugsUrl(u))], ['orphans', () => go(orphansUrl(u))], ['diff', () => go(diffUrl(u))], ['shared', () => go(`/u/${u}/shared/`)],
       ['pull requests', () => go(prsUrl(u)), 'prs'], ['browse files', () => goTree(u, '')],
     ];
     const nav2 = navAll.filter(x => viewEnabled(d, x[2]));
@@ -2292,6 +2295,108 @@ class OrphansPage extends Component {
   }
 }
 defineComponent('orphans-page', OrphansPage);
+
+/**
+ * The shared hub — is this universe connected, and what of mine has the team not seen?
+ *
+ * The two things a browser user could not previously do: JOIN a team (publish the docs,
+ * notes and stakes this store already holds) and RECOVER from a fork. Both were terminal
+ * commands, while day-to-day review was already on every surface.
+ *
+ * Counts come from the publish ops' own DRY RUN, never recomputed here — those rules
+ * have real exclusions (graph triage never travels; `process` docs are refused; a target
+ * the team already answered differently is held back) and a second implementation would
+ * drift from what the button does.
+ *
+ * @typedef {{ d: ApiMap['/api/shared/hub'] | null, busy: string | null, result: any }} HubState
+ * @extends {Component<PageProps, HubState>}
+ */
+class SharedHubPage extends Component {
+  static props = { params: {}, query: {} };
+  /** @param {PageProps} props */
+  constructor(props) {
+    super(props);
+    /** @type {HubState} */
+    this.state = { d: null, busy: null, result: null };
+  }
+  load = this.createTask(async () => {
+    nav.current = this.props.params.universe;
+    this.state.d = await api('/api/shared/hub', { u: this.props.params.universe });
+  });
+  mounted() { this.load.run(); }
+  propsChanged() { this.state.d = null; this.state.result = null; this.load.run(); }
+
+  async act(action, label) {
+    this.state.busy = action;
+    this.state.result = null;
+    try {
+      const r = await fetch(`/api/shared/${action}`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ u: this.props.params.universe }),
+      }).then(x => x.json()).catch(() => ({ error: 'the request did not reach the server' }));
+      this.state.result = { label, ...r };
+    } finally {
+      this.state.busy = null;
+      await this.load.run();
+    }
+  }
+
+  /** One publishable kind. `n` is from the op's dry run, so it is what the button does. */
+  kindRow(kind, label, info, action) {
+    if (info && info.error) return html`<div class="hubrow"><b>${label}</b> <span class="bad">${info.error}</span></div>`;
+    const n = info ? (info.wouldPublish ?? 0) : 0;
+    const held = info && info.heldBack ? info.heldBack.length : 0;
+    const skipped = info ? (info.skippedGraph ?? 0) : 0;
+    return html`<div class="hubrow">
+      <b>${label}</b>
+      <span class="${n ? 'warn' : 'dim'}">${n} unpublished</span>
+      ${when(skipped, () => html`<span class="dim" title="regenerated on every machine, so it never travels">· ${skipped} local-only</span>`)}
+      ${when(held, () => html`<span class="warn" title="the team already answered these differently — publishing them would silently supersede a mark nobody compared">· ${held} need a per-target decision</span>`)}
+      ${when(n, () => html`<button disabled="${!!this.state.busy}" on-click="${() => this.act(action, label)}">publish ${n}</button>`)}
+    </div>`;
+  }
+
+  template() {
+    const u = this.props.params.universe, d = this.state.d;
+    // Narrowed here rather than inside the slots: `when(...)` takes a callback, so TS
+    // cannot carry a guard into it, and the ApiMap union has an error arm without any
+    // of these fields. That union is the point — it is what fails the build at the page
+    // when an op stops returning something.
+    const ok = d && !isErr(d) ? d : null;
+    return pageShell(d, taskError(this.load), () => html`
+      <div class="crumbs">${u} <span class="sep">·</span> shared</div>
+      ${when(!ok, () => html`<div class="empty">${(d && d.error) || 'no sidecar configured for this universe'}</div>`)}
+      ${when(!!ok, () => html`
+        <div class="hubhead">
+          <div><span class="dim">sidecar</span> <code>${ok.sidecar}</code></div>
+          <div><span class="dim">you</span> ${ok.you || '—'} <span class="sep">·</span>
+            <span class="dim">team</span> ${(ok.peers || []).length} <a on-click="${() => go(`/u/${u}/shared/0/peers/`)}">peers ›</a></div>
+          <button disabled="${!!this.state.busy}" on-click="${() => this.act('sync', 'sync')}">${this.state.busy === 'sync' ? 'syncing…' : 'sync now'}</button>
+        </div>
+
+        ${when(ok.blocked && ok.blocked.length, () => html`<div class="hubblocked">
+          <b class="bad">${ok.blocked.length} scope(s) cannot be read</b>
+          ${each(ok.blocked, b => html`<div class="hubrow dim"><code>${b.scope}</code> — ${b.reason}</div>`, b => b.scope)}
+          ${when(ok.forked, () => html`<div class="hubheal">
+            <b>This sidecar has forked</b> — two clones wrote under one writer id. Repairing unions
+            both sides (nothing is discarded), rotates this clone's id and acknowledges the evidence.
+            <button class="bad" disabled="${!!this.state.busy}" on-click="${() => this.act('heal', 'repair')}">${this.state.busy === 'heal' ? 'repairing…' : 'repair this fork'}</button>
+          </div>`)}
+        </div>`)}
+
+        <div class="sec">what the team has not seen</div>
+        ${this.kindRow('docs', 'docs', ok.unpublished && ok.unpublished.docs, 'publish_docs')}
+        ${this.kindRow('notes', 'notes', ok.unpublished && ok.unpublished.notes, 'publish_notes')}
+        ${this.kindRow('triage', 'stakes', ok.unpublished && ok.unpublished.triage, 'publish_triage')}
+
+        ${when(this.state.result, () => html`<div class="hubresult ${this.state.result.error ? 'err' : ''}">
+          <b>${this.state.result.label}</b>: ${this.state.result.error || this.state.result.note || 'done'}
+        </div>`)}
+      `)}
+    `);
+  }
+}
+defineComponent('shared-hub-page', SharedHubPage);
 
 const diffUrl = (u) => `/u/${u}/diff/`;
 const DTAG = { '+': 'added', '-': 'removed', '~': 'changed' };
@@ -3803,5 +3908,6 @@ router = enableRouting(document.querySelector('router-outlet'), {
   '/u/:universe/search/': { component: 'search-page' },
   '/u/:universe/shared/:pr/': { component: 'shared-page' },
   '/u/:universe/shared/:pr/peers/': { component: 'shared-peers-page' },
+  '/u/:universe/shared/': { component: 'shared-hub-page' },
   '/u/:universe/shared-docs/': { component: 'shared-docs-page' },
 });

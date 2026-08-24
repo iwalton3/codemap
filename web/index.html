@@ -573,6 +573,18 @@
     .viaflag.rev-back { border-color: #8a5a2b; color: #f0a35e; }
     .viaflag.rev-replay { border-color: #2d4a63; color: #79c0ff; }
     .viaflag.unverifiable { border-color: var(--warn); color: var(--warn); }
+    /* The shared hub: joining a team, and repairing a fork. */
+    .hubhead { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 10px 0; border-bottom: 1px solid var(--border); margin-bottom: 10px; font-size: 13px; }
+    .hubrow { display: flex; align-items: center; gap: 10px; padding: 6px 0; font-size: 13px; }
+    .hubrow b { min-width: 70px; }
+    .hubrow .warn { color: var(--warn); }
+    .hubblocked { border: 1px solid #6b2d2d; border-radius: 6px; padding: 10px; margin: 10px 0; }
+    .hubheal { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 13px; line-height: 1.5; }
+    .hubheal button { margin-top: 8px; }
+    .hubresult { margin-top: 12px; padding: 8px 10px; border: 1px solid #2f5d3a; border-radius: 6px; font-size: 13px; }
+    .hubresult.err { border-color: #6b2d2d; color: var(--bad); }
+    .pushelsewhere { margin: 8px 0; font-size: 12px; }
+    .pushelsewhere button { margin-left: 8px; }
     .rd.reverted { background: #f0a35e; }
     .rheat.has-reverted { outline: 1px solid #8a5a2b; outline-offset: 1px; }
     .prbadge.promoted { border-color: #2f5d3a; color: #7ee787; cursor: pointer; }

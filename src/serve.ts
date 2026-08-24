@@ -187,6 +187,12 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return shared.sharedFindings(root, q.get("pr") ?? "", { queue: q.get("queue") === "1" });
     case "/api/shared/peers":
       return shared.sharedStatus(root);
+    case "/api/shared/hub":
+      return shared.sharedHub(root);
+    case "/api/shared/triage":
+      return shared.sharedTriage(root, (q.get("kind") as "node" | "anchor") || undefined, q.get("target") || undefined);
+    case "/api/shared/contested":
+      return shared.contestedTriage(root);
     case "/api/shared/walkthroughs":
       return shared.sharedWalkthroughs(root, q.get("pr") ?? "", q.get("head") || undefined);
     case "/api/shared/notes":
@@ -287,6 +293,18 @@ const server = createServer(async (req, res) => {
       let out: unknown;
       switch (action) {
         case "sync": out = await shared.sharedSync(root); break;
+        // Publishing this store's existing state, and repairing a fork. These were
+        // terminal-only, which made JOINING a team and RECOVERING from one the two
+        // things a browser user could not do.
+        case "publish_docs": out = await shared.publishLocalDocs(root, { dryRun: body.dryRun === true }); break;
+        case "publish_notes": out = await shared.publishLocalNotes(root, { dryRun: body.dryRun === true }); break;
+        case "publish_triage": out = await shared.publishLocalTriage(root, { dryRun: body.dryRun === true }); break;
+        // A person's act, and there is deliberately no MCP tool for it: an agent
+        // repairing a fork it may itself have caused is the case the person-gate is
+        // for. `sharedHeal` IS the complete operation — union, rotate, acknowledge,
+        // sync — and it must be called once, not wrapped: the sidecar lock is not
+        // reentrant, so a wrapper that took it around the four steps would deadlock.
+        case "heal": out = await shared.sharedHeal(root); break;
         case "corroborate": out = await shared.corroborateFinding(root, pr, body.id, body.verdict, body.rationale ?? ""); break;
         case "comment": out = await shared.commentOnFinding(root, pr, body.id, body.body ?? "", body.inReplyTo); break;
         case "promote": out = await shared.promoteFinding(root, pr, body.id); break;

@@ -812,6 +812,21 @@ const tools: Tool[] = [
     handler: (a, c) => shared.confirmSharedDoc(c.universe.path, a.nodeId, a.versionId),
   },
   {
+    name: "shared_triage",
+    description: "What the TEAM says a symbol is worth — everyone's stakes, with the receipt for each. Read it before you triage: somebody may already have decided this is business-critical, and the ordinary triage surfaces show you only the effective value, not who set it or why.\n\nEach field carries its own receipt, because a mark whose importance is a person's and whose complexity is an agent's has no single author. `escalatedByAgent` means an agent raised it above the human baseline, which is shown beside it — that is a proposal awaiting confirmation, not a decision. `contested` means two people disagree ACROSS the business-critical line and a person has to settle it; you may investigate and PROPOSE, and you may not settle it yourself.\n\nOmit both arguments for the whole universe.",
+    inputSchema: obj({
+      targetKind: { type: "string", enum: ["node", "anchor"], description: "Optional filter." },
+      targetId: { type: "string", description: "Optional: one anchor or node id." },
+    }, []),
+    handler: (a, c) => shared.sharedTriage(c.universe.path, a.targetKind, a.targetId),
+  },
+  {
+    name: "contested_triage",
+    description: "Stakes two people disagree about across the business-critical line — the only triage disagreement worth interrupting somebody for, and the one a person must settle.\n\nEverything else the fold settles silently: two people who never saw each other disagreeing about `low` versus `important` is not worth anyone's attention, and the higher value holds meanwhile so nothing is under-reviewed. These are the exceptions.\n\nYour job here is to INVESTIGATE and propose — read the code, weigh both stated reasons, and report what you found through `report_finding` on the queued question. The person settles by triaging the symbol again having seen both sides; that mark supersedes both and the item closes itself.",
+    inputSchema: obj({}, []),
+    handler: (_a, c) => shared.contestedTriage(c.universe.path),
+  },
+  {
     name: "shared_notes",
     description: "What the TEAM knows about a symbol — everyone's notes, questions and pointers on it, not just this store's. Read it before investigating: somebody may already have worked out why the obvious answer here is wrong, and that knowledge cost them real reading time. Answers to a question are listed with it.",
     inputSchema: obj({ targetId: { type: "string", description: "The anchor or node id." } }, ["targetId"]),

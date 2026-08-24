@@ -36,3 +36,54 @@ test("every exported shared op is reachable from a front-end", () => {
   const orphans = ops.filter((op) => !new RegExp(`\\b${op}\\b`).test(callers));
   assert.deepEqual(orphans, [], "wire these to a front-end, or delete them");
 });
+
+/**
+ * "Reachable from SOMETHING" is not enough for the flows a beta user depends on.
+ *
+ * The test above passed while six shared ops were CLI-only — and the shape of that gap
+ * was not random: everything needed to JOIN a team and to RECOVER from a fork was a
+ * terminal command, while day-to-day review was on every surface. So a browser user
+ * could work only after somebody ran three publish commands for them, and was stuck in
+ * a terminal the first time a writer id forked.
+ *
+ * Two lists, because the surfaces are deliberately NOT symmetric. Publishing this
+ * store's existing state and repairing a fork are person-run: an MCP session is an
+ * agent actor, so bulk-publishing a human's legacy marks through it would republish
+ * them as agent claims — `likely`, with tripwires dropped, since tripwires are
+ * human-only. That is not publication, it is rewriting the record.
+ */
+const WEB_REQUIRED = [
+  "sharedHub", "sharedHeal",
+  "publishLocalDocs", "publishLocalNotes", "publishLocalTriage",
+  "sharedTriage", "contestedTriage",
+];
+/** Reads only. An agent must SEE the team's stakes; it may not republish or heal. */
+const MCP_REQUIRED = ["sharedTriage", "contestedTriage"];
+/** And these must NOT be agent-reachable, for the reason in the note above. */
+const MCP_FORBIDDEN = ["sharedHeal", "publishLocalDocs", "publishLocalNotes", "publishLocalTriage"];
+
+test("the join and recover flows are reachable from the web, not just a terminal", () => {
+  const web = readFileSync("src/serve.ts", "utf8");
+  for (const op of WEB_REQUIRED) {
+    assert.match(
+      web, new RegExp(`\\b${op}\\b`),
+      `\`${op}\` is not reachable from the web UI. It is one of the JOIN/RECOVER flows, which `
+      + `is exactly the set that was terminal-only while every day-to-day op was not.`,
+    );
+  }
+});
+
+test("an agent can read the team's stakes, and cannot republish or heal", () => {
+  const mcp = readFileSync("src/mcp.ts", "utf8");
+  for (const op of MCP_REQUIRED) {
+    assert.match(mcp, new RegExp(`\\b${op}\\b`), `\`${op}\` is a read an agent needs and cannot reach`);
+  }
+  for (const op of MCP_FORBIDDEN) {
+    assert.doesNotMatch(
+      mcp, new RegExp(`\\b${op}\\b`),
+      `\`${op}\` is reachable from MCP. An MCP session is an AGENT actor, so publishing a human's `
+      + `legacy marks through it rewrites them as agent claims and drops their tripwires; healing a `
+      + `fork is a person's act by the same rule. If this is deliberate, the note above has to change first.`,
+    );
+  }
+});
