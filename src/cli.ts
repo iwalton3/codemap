@@ -100,9 +100,26 @@ async function cmdPrPush(
   for (const d of plan.deferred) console.log(`    [body] ${d.path}${d.line ? ":" + d.line : ""}  (${d.why})`);
   // Loud, and never folded into a count: these are findings the human vouched for
   // that this plan is NOT sending, which used to happen without anything saying so.
-  if (plan.blocked.length) {
-    console.log(`\n  ${plan.blocked.length} finding(s) you elected cannot be placed on this diff and are NOT in this review:`);
-    for (const b of plan.blocked) console.log(`    ${b.file ?? b.symbol ?? "?"}  ${b.label}\n      → ${b.why}`);
+  // Split, because they are two different messages. The ones raised while reading THIS
+  // change and not placeable are the reviewer's problem to fix now. The ones from other
+  // reviews are a standing backlog — they stay on the map until their reporter resolves
+  // them, which is the lifecycle working, not an error — and listing them in full here
+  // trains people to skim the list that must not be skimmed.
+  const mine = plan.blocked.filter((b) => !b.elsewhere);
+  const other = plan.blocked.filter((b) => b.elsewhere);
+  if (mine.length) {
+    console.log(`\n  ${mine.length} finding(s) you elected cannot be placed on this diff and are NOT in this review:`);
+    for (const b of mine) console.log(`    ${b.file ?? b.symbol ?? "?"}  ${b.label}\n      → ${b.why}`);
+  }
+  if (other.length) {
+    const prs = [...new Set(other.map((b) => b.elsewhere?.pr).filter(Boolean))];
+    console.log(
+      `\n  (${other.length} open finding(s) from ${prs.length ? `PR ${prs.join(", ")}` : "other reviews"} are also on this map `
+      + `and not in this diff — untouched, and still yours to resolve. \`--show-elsewhere\` lists them.)`,
+    );
+    if (values["show-elsewhere"]) {
+      for (const b of other) console.log(`    ${b.file ?? b.symbol ?? "?"}  ${b.label}`);
+    }
   }
 
   if (!confirm) {
@@ -555,7 +572,7 @@ async function cmdCheck(root: string): Promise<void> {
   }
 }
 
-const { positionals, values } = parseArgs({ allowPositionals: true, options: { verbose: { type: "boolean" }, emit: { type: "boolean" }, repo: { type: "string" }, "no-fetch": { type: "boolean" }, json: { type: "boolean" }, limit: { type: "string" }, offset: { type: "string" }, "dry-run": { type: "boolean" }, confirm: { type: "boolean" }, viewed: { type: "boolean" }, all: { type: "boolean" }, "min-severity": { type: "string" }, force: { type: "boolean" }, "max-prs": { type: "string" }, summary: { type: "string" }, approve: { type: "boolean" }, "request-changes": { type: "boolean" }, pull: { type: "boolean" }, anyone: { type: "boolean" }, only: { type: "string" }, queue: { type: "boolean" }, locate: { type: "boolean" } } });
+const { positionals, values } = parseArgs({ allowPositionals: true, options: { verbose: { type: "boolean" }, emit: { type: "boolean" }, repo: { type: "string" }, "no-fetch": { type: "boolean" }, json: { type: "boolean" }, limit: { type: "string" }, offset: { type: "string" }, "dry-run": { type: "boolean" }, confirm: { type: "boolean" }, viewed: { type: "boolean" }, all: { type: "boolean" }, "min-severity": { type: "string" }, force: { type: "boolean" }, "max-prs": { type: "string" }, summary: { type: "string" }, approve: { type: "boolean" }, "request-changes": { type: "boolean" }, pull: { type: "boolean" }, anyone: { type: "boolean" }, only: { type: "string" }, queue: { type: "boolean" }, locate: { type: "boolean" }, "show-elsewhere": { type: "boolean" } } });
 
 if (positionals[0] === "analyze") {
   const analyzer = positionals[1] ?? "";

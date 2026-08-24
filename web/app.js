@@ -420,6 +420,13 @@ const codeTip = (cr) => (!cr || !cr.total) ? 'no reviewable code segments'
     + (cr.unverifiable ? ` · ${cr.unverifiable} hashed by another build, so they cannot be checked here — open and re-sign` : '')
     + (cr.replayed ? ` · ${cr.replayed} borrowed from another branch` : '')
     + ' — open to read & sign each';
+// A push plan's held-back findings are two different messages. Raised while reading
+// THIS change and unplaceable: the reviewer's problem, now. Raised during another
+// review: a standing backlog that stays on the map until its reporter resolves it —
+// which is the lifecycle working, not an error. Listing both together buries the first
+// under the second, and on a store with real history the second is most of them.
+const blockedHere = (plan) => (plan.blocked || []).filter(b => !b.elsewhere);
+const blockedElsewhere = (plan) => (plan.blocked || []).filter(b => b.elsewhere);
 const codeCellBtn = (cr, onOpen) => {
   const st = cr ? cr.state : 'unreviewed';
   const cls = st === 'reviewed' ? (cr && cr.reverted ? 'reverted' : cr && cr.unverifiable ? 'unverifiable' : 'on') : st === 'stale' ? 'stale' : '';
@@ -2759,6 +2766,7 @@ class PrStoryPage extends Component {
    *   editFinding: { id: string, comment: string, disposition: string, publishPath?: string } | null,
    *   findingErr: { id: string, error: string } | null,
    *   resolveSync: { loading?: boolean, error?: string, plan?: any, running?: boolean, done?: any, dir?: string } | null,
+   *   showElsewhere: boolean,
    * }} PrStoryState
    *
    * @returns {PrStoryState}
@@ -2776,6 +2784,8 @@ class PrStoryPage extends Component {
       // it; both are covered by the push fingerprint. `src/pr-story-state.test.ts`
       // fails if a new field is added without one here.
       pushDraft: null, pick: null, editFinding: null, findingErr: null, resolveSync: null,
+      // Other reviews' held-back findings are collapsed by default; this opens them.
+      showElsewhere: false,
     };
   }
   constructor(props) { super(props); this.state = PrStoryPage.blank(); }
@@ -3494,10 +3504,16 @@ class PrStoryPage extends Component {
           ${when(c.citesLine, () => html`<span class="warn" title="the comment's own text points at a different line — check it before posting; GitHub will not let you move it afterwards">⚠ body says :${c.citesLine}</span>`)}
         </div>`, c => c.annotationId)}
         ${each(plan.deferred, d => html`<div class="pushrow"><code>${d.path}</code> <span class="dim">[body] ${d.why}</span></div>`, d => d.annotationId)}
-        ${when(plan.blocked && plan.blocked.length, () => html`
+        ${when(blockedHere(plan).length, () => html`
           <div class="pushblocked">
-            <b>${plan.blocked.length} finding(s) you elected cannot be placed on this diff</b> — they stay on the map, and are NOT in this review.
-            ${each(plan.blocked, b => html`<div class="pushrow"><code>${b.file || b.symbol || '?'}</code> ${b.label} <span class="dim">— ${b.why}</span></div>`, b => b.annotationId)}
+            <b>${blockedHere(plan).length} finding(s) you elected cannot be placed on this diff</b> — they stay on the map, and are NOT in this review.
+            ${each(blockedHere(plan), b => html`<div class="pushrow"><code>${b.file || b.symbol || '?'}</code> ${b.label} <span class="dim">— ${b.why}</span></div>`, b => b.annotationId)}
+          </div>`)}
+        ${when(blockedElsewhere(plan).length, () => html`
+          <div class="pushelsewhere">
+            <span class="dim">${blockedElsewhere(plan).length} open finding(s) from other reviews are on this map and not in this diff — untouched, and still yours to resolve.</span>
+            <button class="ghost" on-click="${() => { this.state.showElsewhere = !this.state.showElsewhere; }}">${this.state.showElsewhere ? 'hide' : 'show'}</button>
+            ${when(this.state.showElsewhere, () => html`${each(blockedElsewhere(plan), b => html`<div class="pushrow dim"><code>${b.file || b.symbol || '?'}</code> ${b.label}${b.elsewhere && b.elsewhere.pr ? ` · PR #${b.elsewhere.pr}` : ''}</div>`, b => b.annotationId)}`)}
           </div>`)}
         <div class="dim">
           ${when(sk.notElected, () => html`${sk.notElected} held back — an agent raised them and you have not. Use <b>▲ raise</b> on a finding to include it.<br>`)}

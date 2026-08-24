@@ -17,7 +17,8 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { PUBLISHABLE, type Annotation, type Disposition } from "./schema.js";
 import { readAnnotations, writeAnnotations, readAnchorStore, readPushes, writePush, readSnapshot, readOrphans } from "./store.js";
-import { diffHunks } from "./git.js";
+import { WORK_REF } from "./db.js";
+import { diffHunks, isAncestor } from "./git.js";
 import { prTriage, anchorSpans, fetchPrMeta, type PrMeta } from "./pr.js";
 import { LANE_POLICY } from "./lanes.js";
 import { sameBody, comparableHashes } from "./normalize.js";
@@ -48,6 +49,21 @@ export interface DeferredComment { annotationId: string; path: string; line?: nu
  */
 export interface BlockedComment {
   annotationId: string; severity?: string; file?: string; symbol?: string; why: string;
+  /**
+   * This finding belongs to a DIFFERENT review, and is listed only for completeness.
+   *
+   * `isElected` is "a human wrote it", which is true forever and everywhere — so every
+   * finding anyone ever wrote by hand is elected on every pull request, and each one
+   * the diff cannot place is reported as held back. On a store with real history that
+   * is a wall of other reviews' work every time you push, which trains people to skim
+   * the one list that must not be skimmed: the findings that were about THIS change and
+   * genuinely could not be placed.
+   *
+   * Nothing is dropped — the classification is presentational, because silently
+   * discarding a finding somebody vouched for is the failure this whole list exists to
+   * prevent, and it is worse than the noise.
+   */
+  elsewhere?: { pr?: number; ref?: string };
   /** Enough of the finding to recognise it — a plan that names only ids is not readable. */
   label: string;
 }
@@ -404,6 +420,9 @@ export function buildComments(
     headHashOf: (anchorId: string) => string | undefined;
     /** Which pull request this is for; `postedRef` is scoped to one. */
     pr?: number;
+    /** For asking git whether a finding's `sourceRef` is in this pull request. */
+    root?: string;
+    head?: string;
   },
   filter: PushFilterExt = {},
 ): CommentSet {
@@ -413,6 +432,30 @@ export function buildComments(
   const unverified: string[] = [];
   let resolved = 0, already = 0, notElected = 0, belowSeverity = 0, withdrawn = 0, noComment = 0, notPublishable = 0, evidenceMoved = 0, evidenceUnverifiable = 0;
   const electedOnly = filter.electedOnly !== false;
+  /**
+   * Was this finding raised while reading some OTHER change?
+   *
+   * Two signals, both definite rather than heuristic. It was published to a different
+   * pull request — that is a receipt. Or it was witnessed at a ref this pull request
+   * does not contain, which is what `sourceRef` records and is precisely "I was looking
+   * at something else when I wrote this". A finding with no `sourceRef` is not
+   * classified: absence of evidence is not evidence, and the safe answer is to leave it
+   * in the main list.
+   */
+  const reachable = new Map<string, boolean>();
+  const fromAnotherReview = (a: Annotation): boolean => {
+    if (a.postedRef && ctx.pr !== undefined && a.postedRef.pr !== ctx.pr) return true;
+    const ref = a.sourceRef;
+    if (!ref || ref === WORK_REF || !ctx.head || !ctx.root) return false;
+    let hit = reachable.get(ref);
+    if (hit === undefined) {
+      // `isAncestor` shells out, so this is memoised per REF — a store's findings share
+      // very few of them, and the uncached version was one `git` per finding.
+      hit = isAncestor(ctx.root, ref, ctx.head);
+      reachable.set(ref, hit);
+    }
+    return !hit;
+  };
   const ids = filter.ids?.length ? new Set(filter.ids) : undefined;
   const { pushed, inDiff, commentable, firstHunkLine } = ctx;
 
@@ -502,7 +545,11 @@ export function buildComments(
         body: renderAnnotation(a, subject.symbol ?? subject.file!),
       });
     } else {
-      blocked.push({ annotationId: a.id, severity: a.severity, file: subject.file, symbol: subject.symbol, label: labelOf(a), why: place.why });
+      blocked.push({
+        annotationId: a.id, severity: a.severity, file: subject.file, symbol: subject.symbol,
+        label: labelOf(a), why: place.why,
+        ...(fromAnotherReview(a) ? { elsewhere: { pr: a.postedRef?.pr, ref: a.sourceRef } } : {}),
+      });
     }
   }
   return { comments, deferred, blocked, unverified, skipped: { alreadyPushed: already, resolved, notElected, belowSeverity, withdrawn, noComment, notPublishable, evidenceMoved, evidenceUnverifiable } };
@@ -569,6 +616,7 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
 
   const set = buildComments(anns, {
     pr: t.pr.number,
+    root, head: t.refs.head,
     headHashOf: (id) => headBodies.get(id),
     inPr: (id) => { const w = byAnchor.get(id); return w ? { file: w.file, symbol: w.symbol } : undefined; },
     anchorOf: (id) => { const x = allAnchors.get(id); return x ? { file: x.file, symbol: x.symbolPath.join(" › ") } : undefined; },

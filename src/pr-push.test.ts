@@ -856,3 +856,58 @@ test("a missing author is null rather than a fabricated name", () => {
   assert.equal(r[0]!.comments[0]!.author, null);
   assert.equal(r[0]!.truncated, false);
 });
+
+test("another review's findings do not bury this one's held-back list", async () => {
+  // The owner hit this on a real push: twelve findings from an unrelated pull request
+  // listed as "cannot be placed on this diff", each with the same advice, above the
+  // findings that were actually about the change in hand.
+  //
+  // `isElected` is "a human wrote it", and that is DELIBERATE and stays — a finding is
+  // reportable until its reporter resolves it, whatever an agent did to it in between.
+  // So nothing here changes what is elected, published or resolved. The classification
+  // is presentational: it says which review a held-back finding belongs to, so the list
+  // that must not be skimmed is not buried under a standing backlog.
+  const root = mkdtempSync(join(tmpdir(), "codemap-elsewhere-"));
+  try {
+    const git = (...a: string[]) => spawnSync("git", a, { cwd: root, encoding: "utf8" });
+    git("init", "-q");
+    writeFileSync(join(root, "f.txt"), "one\n");
+    git("add", "-A"); git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "one");
+    const base = git("rev-parse", "HEAD").stdout.trim();
+    writeFileSync(join(root, "f.txt"), "two\n");
+    git("add", "-A"); git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "two");
+    const head = git("rev-parse", "HEAD").stdout.trim();
+    // A commit on a branch this pull request does not contain — another review.
+    git("checkout", "-q", "-b", "other", base);
+    writeFileSync(join(root, "g.txt"), "elsewhere\n");
+    git("add", "-A"); git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "other");
+    const otherRef = git("rev-parse", "HEAD").stdout.trim();
+
+    const ann = (id: string, sourceRef: string): Annotation => ({
+      id, target: { kind: "anchor", id: "a_out" }, text: "evidence",
+      comment: "the submitter version", kind: "finding", disposition: "confirmed",
+      at: "2026-08-24T00:00:00Z", author: "izzie", sourceRef, createdCommit: sourceRef,
+    } as Annotation);
+
+    const set = buildComments([ann("an_here", head), ann("an_other", otherRef)], {
+      pr: 264, root, head,
+      inPr: () => undefined,
+      anchorOf: () => ({ file: "src/elsewhere.ts", symbol: "thing" }),
+      pushed: new Set<string>(),
+      inDiff: () => false,
+      commentable: () => false,
+      firstHunkLine: () => undefined,
+      firstChangedLineOfSymbol: () => undefined,
+      firstAddedLineOfSymbol: () => undefined,
+      headHashOf: () => undefined,
+    });
+
+    const by = new Map(set.blocked.map((b) => [b.annotationId, b]));
+    assert.equal(set.blocked.length, 2, "nothing is DROPPED — every one is still reported");
+    assert.equal(
+      by.get("an_here")?.elsewhere, undefined,
+      "raised while reading THIS change: stays in the loud list, which is what it is for",
+    );
+    assert.equal(by.get("an_other")?.elsewhere?.ref, otherRef, "and one witnessed on another branch is marked as such");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

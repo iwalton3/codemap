@@ -1171,13 +1171,46 @@ export async function publishLocalTriage(root: string, opts: { dryRun?: boolean 
   const b = bind(root);
   if ("error" in b) return b;
   const local = (await readLocalTriage(root)).triage;
-  const publishable = local.filter((t: Triage) => t.source !== "graph");
-  const skippedGraph = local.length - publishable.length;
+  const notGraph = local.filter((t: Triage) => t.source !== "graph");
+  const skippedGraph = local.length - notGraph.length;
+
+  // HELD BACK: a target the log already covers with a DIFFERENT value.
+  //
+  // `after` records what this clone had FOLDED, not what the person had READ. That gap
+  // is tolerable for one interactive `setTriage` — you are looking at the thing — and
+  // false for a backfill of hundreds: publishing them all would mint events that
+  // causally saw a teammate's mark, so the fold would read each as a decision made
+  // having compared, and silently supersede work nobody actually weighed.
+  //
+  // Refusing to fabricate supersession is the same rule that forbids reconstructing
+  // events from projections. These want a per-target act, made after seeing both.
+  const covered = new Map<string, string>();
+  for (const t of (await cachedTriage(root, b.cfg)).value.values()) {
+    if (!isTombstone(t)) covered.set(`${t.target.kind}\0${t.target.id}`, t.importance.effective.value);
+  }
+  const differs = (t: Triage) => {
+    const shared = covered.get(`${t.target.kind}\0${t.target.id}`);
+    return shared !== undefined && shared !== t.importance;
+  };
+  const publishable = notGraph.filter((t) => !differs(t));
+  const held = notGraph.filter(differs);
+  const heldList = held.map((t) => ({
+    target: t.target, yours: t.importance, theirs: covered.get(`${t.target.kind}\0${t.target.id}`),
+  }));
   if (opts.dryRun) {
-    return { universe: b.cfg.universe, local: local.length, wouldPublish: publishable.length, skippedGraph };
+    return {
+      universe: b.cfg.universe, local: local.length, wouldPublish: publishable.length, skippedGraph,
+      ...(held.length ? { heldBack: heldList } : {}),
+    };
   }
   if (!publishable.length) {
-    return { universe: b.cfg.universe, published: 0, skippedGraph, note: "nothing local left to publish" };
+    return {
+      universe: b.cfg.universe, published: 0, skippedGraph,
+      ...(held.length ? { heldBack: heldList } : {}),
+      note: held.length
+        ? `nothing publishable — ${held.length} target(s) the team already answered differently need a per-target decision`
+        : "nothing local left to publish",
+    };
   }
   await ensureSidecar(b.cfg.path, b.actor);
   await assertTriageBatch(b.cfg.path, triageScope(b.cfg.universe), b.actor, publishable.map((t: Triage) => ({
@@ -1189,12 +1222,15 @@ export async function publishLocalTriage(root: string, opts: { dryRun?: boolean 
     reason: t.reason, witnesses: t.witnesses,
   })));
   const folded = await materializeTriage(root, b.cfg);
-  // The log owns them now. Left behind, they would keep filling the gap they no longer
-  // fill — and `readTriage` prefers the fold, so the stale copy would be invisible
-  // until the day somebody cleared the shared one and it reappeared.
-  await replaceLocalTriage(root, local.filter((t: Triage) => t.source === "graph"));
+  // The log owns the published ones now. Left behind they would keep filling a gap they
+  // no longer fill. The HELD BACK rows stay: they are still this clone's only record of
+  // a judgement the team has not seen.
+  const publishedKeys = new Set(publishable.map((t) => `${t.target.kind}\0${t.target.id}`));
+  await replaceLocalTriage(root, local.filter((t: Triage) =>
+    t.source === "graph" || !publishedKeys.has(`${t.target.kind}\0${t.target.id}`)));
   return {
     universe: b.cfg.universe, published: publishable.length, skippedGraph,
+    ...(held.length ? { heldBack: heldList } : {}),
     note: folded ? "run `codemap sync` to send them" : "recorded in the log; the next sync will fold them",
   };
 }
