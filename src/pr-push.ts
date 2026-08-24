@@ -493,7 +493,8 @@ export function buildComments(
       blocked.push({
         annotationId: a.id, severity: a.severity, file: subject.file, symbol: subject.symbol, label: labelOf(a),
         why: `written against a different version of this code${a.sourceRef && a.sourceRef !== "@work" ? ` (${a.sourceRef.slice(0, 12)})` : a.sourceRef === "@work" ? " (the working tree, not this pull request)" : ""}. Re-read it at this PR's head and revise — or, if it describes another branch that touches the same file, it belongs on that one.`,
-      });
+              ...(fromAnotherReview(a) ? { elsewhere: { pr: a.postedRef?.pr, ref: a.sourceRef } } : {}),
+});
       continue;
     }
 
@@ -504,7 +505,8 @@ export function buildComments(
         why: "this build cannot compare the witness to the code on this pull request — the two hashes were "
           + "derived differently (a hash-scheme bump, or a re-vendored grammar). Nothing here says the code "
           + "moved. Re-read it at this PR's head and re-witness, and it will publish.",
-      });
+              ...(fromAnotherReview(a) ? { elsewhere: { pr: a.postedRef?.pr, ref: a.sourceRef } } : {}),
+});
       continue;
     }
 
@@ -513,7 +515,8 @@ export function buildComments(
       blocked.push({
         annotationId: a.id, severity: a.severity, file: subject.file, symbol: subject.symbol, label: labelOf(a),
         why: "no `comment` — write the submitter-facing version (what is broken, the file:line proving it, the ask). Publishing `text` would send the investigation.",
-      });
+              ...(fromAnotherReview(a) ? { elsewhere: { pr: a.postedRef?.pr, ref: a.sourceRef } } : {}),
+});
       continue;
     }
 

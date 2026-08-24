@@ -212,22 +212,27 @@ async function mirror(root: string, rec: Triage, input: TriageInput): Promise<{ 
  * Clearing a shared mark is an append — `triage.cleared` — and is not built yet.
  */
 export async function clearTriage(root: string, input: { targetKind: "node" | "anchor"; targetId: string }) {
+  // THE SHARED HALF FIRST, and the order is the whole correctness of this function.
+  // Removing the local row first and appending second means a failed append leaves the
+  // op returning `{ok:false}` with the mark already gone — "a failed append writes
+  // nothing" broken by the very function that reports it.
+  //
+  // The clear cannot be a deletion: the log is append-only and NO LOSS forbids removing
+  // an event once observed, so it is an appended `triage.cleared` carrying an explicit
+  // `present: false`. Encoded as an absent importance it would be indistinguishable
+  // from an event that simply did not mention the field.
+  const shared = await mirrorTriageClear(root, input)
+    .catch((e: any) => ({ shared: false, configured: !!resolveSidecar(root), error: e?.message ?? String(e) }));
+  // NO SILENT OK, and nothing removed either. A target that lives only in shared state
+  // removes no local row, so if the clear event did not land the op changed NOTHING and
+  // must not report success — the failure the oracle's own property exists for.
+  if (shared.configured && !shared.shared) {
+    return { ok: false, removed: 0, reason: shared.error ?? "the clear could not be appended to the sidecar log — nothing was cleared" };
+  }
   const ts = await readLocalTriage(root);
   const kept = ts.triage.filter((t) => !sameTarget(t, input.targetKind, input.targetId));
   const removed = ts.triage.length - kept.length;
   if (removed) await replaceLocalTriage(root, kept);
-  // And the shared half, which cannot be a deletion: the log is append-only and NO LOSS
-  // forbids removing an event once observed, so a clear is an appended `triage.cleared`
-  // carrying an explicit `present: false`. Encoded as an absent importance it would be
-  // indistinguishable from an event that simply did not mention the field.
-  const shared = await mirrorTriageClear(root, input)
-    .catch((e: any) => ({ shared: false, configured: !!resolveSidecar(root), error: e?.message ?? String(e) }));
-  // NO SILENT OK. A target that lives only in shared state removes no local row, so if
-  // the clear event did not land either, this op changed NOTHING and must not report
-  // success — the same failure the oracle's own `NO SILENT OK` property exists for.
-  if (shared.configured && !shared.shared) {
-    return { ok: false, removed, reason: shared.error ?? "the clear could not be appended to the sidecar log — nothing was cleared" };
-  }
   return {
     ok: true, removed,
     ...(shared.shared ? { shared: true } : {}),

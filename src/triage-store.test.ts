@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -497,6 +498,45 @@ test("`likely` is DERIVED from every effective field, not read off importance", 
     assert.equal(
       back.likely, true,
       "an agent supplied one of the effective values, so the mark is not a confirmed human one",
+    );
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a bulk publish holds back EVERY target the log already answers", async () => {
+  // Comparing only importance left three holes, all the same shape. Shared
+  // `{important, wiring}` against a legacy `{important, deep}` matched on importance
+  // and published — and the new event, having causally seen the teammate's mark,
+  // superseded a complexity nobody compared. A TOMBSTONE was not in the map at all, so
+  // a legacy mark republished over a target the team had deliberately cleared and
+  // resurrected it as a decision. `after` records what a clone FOLDED, not what a
+  // person READ, so a backfill must never be allowed to look like a comparison.
+  const { publishLocalTriage } = await import("./ops-shared.js");
+  const { triageProjection } = await import("./shared-projections.js");
+  const root = universe();
+  try {
+    writeFileSync(join(root, ".codemap", "sidecar"), join(root, "sidecar"));
+    mkdirSync(join(root, "sidecar"), { recursive: true });
+    spawnSync("git", ["init", "-q"], { cwd: join(root, "sidecar") });
+
+    await replaceLocalTriage(root, [
+      mark({ id: "a_same_imp", importance: "important", complexity: "deep" }),
+      mark({ id: "a_cleared", importance: "business-critical" }),
+      mark({ id: "a_untouched", importance: "low" }),
+    ]);
+    const rc = (v: string) => ({ value: v, actor: { principal: "ben@x" }, source: "human", likely: false, at: "t", witnesses: [], eventId: "e" + v });
+    triageProjection.write(db(root), "triage/acme-api", new Map<string, any>([
+      // Same importance, DIFFERENT complexity — the hole that published.
+      ["anchor:a_same_imp", { target: { kind: "anchor", id: "a_same_imp" }, importance: { effective: rc("important"), baseline: rc("important") }, complexity: { effective: rc("wiring"), baseline: rc("wiring") } }],
+      // Deliberately cleared by the team.
+      ["anchor:a_cleared", { target: { kind: "anchor", id: "a_cleared" }, cleared: { actor: { principal: "ben@x" }, at: "t", eventId: "e2" } }],
+    ]));
+
+    const r = await publishLocalTriage(root, { dryRun: true }) as
+      { wouldPublish: number; heldBack?: { target: { id: string } }[] };
+    assert.equal(r.wouldPublish, 1, "only the target the log has never answered");
+    assert.deepEqual(
+      (r.heldBack ?? []).map((h) => h.target.id).sort(), ["a_cleared", "a_same_imp"],
+      "the matching-importance one AND the tombstoned one both need a per-target decision",
     );
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

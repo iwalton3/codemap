@@ -494,3 +494,36 @@ test("but with NO sidecar the local row is still the whole story", async () => {
     assert.equal((await readLocalTriage(root)).triage[0]?.importance, "business-critical");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("a failed shared clear does not delete the local row on its way out", async () => {
+  // The order IS the correctness. Removing the local row first and appending second
+  // leaves a failed append returning `{ok:false}` with the mark already gone — "a
+  // failed append writes nothing", broken by the function that reports it.
+  const { mkdtempSync, mkdirSync, rmSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { writeStore, readLocalTriage, replaceLocalTriage } = await import("./store.js");
+  const { clearTriage } = await import("./triage.js");
+
+  const root = mkdtempSync(join(tmpdir(), "codemap-clearfail-"));
+  try {
+    mkdirSync(join(root, ".codemap"), { recursive: true });
+    await writeStore(root, [], { schemaVersion: 1, lastVerifiedCommit: null, grammarVersions: {} } as any);
+    await replaceLocalTriage(root, [{
+      target: { kind: "anchor", id: "a_1" }, importance: "business-critical",
+      likely: false, source: "human", at: "t", witnesses: [],
+    }]);
+    // A sidecar that cannot work: the path is a FILE, so the append throws.
+    writeFileSync(join(root, "not-a-dir"), "x");
+    writeFileSync(join(root, ".codemap", "sidecar"), join(root, "not-a-dir"));
+
+    const r = await clearTriage(root, { targetKind: "anchor", targetId: "a_1" }) as
+      { ok: boolean; removed: number };
+    assert.equal(r.ok, false, "the clear did not land, so it must not report success");
+    assert.equal(r.removed, 0, "and must not claim to have removed anything");
+    assert.equal(
+      (await readLocalTriage(root)).triage.length, 1,
+      "the mark is STILL THERE — a failed clear that deleted it locally is the worst of both",
+    );
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

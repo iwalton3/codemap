@@ -22,6 +22,7 @@ import { derivationFingerprint, derivationMark } from "./normalize.js";
 import { anchorIndex, derivationsOf, legacyIndex, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
 import { randomBytes } from "node:crypto";
 import { db, WORK_REF, ORPHAN_REF } from "./db.js";
+import { ABSENT_FIELD } from "./shared-triage.js";
 import { headCommit, currentBranch } from "./git.js";
 import { evalVersion, selectWinner, resolveNode, winningVersionAt } from "./doc-version.js";
 export { winningVersionAt } from "./doc-version.js";
@@ -1229,6 +1230,27 @@ export async function readTriage(root: string): Promise<TriageStore> {
   const merged = rows.filter((r) => r.source_scope !== null
     || !covered.has(`${r.target_kind}\0${r.target_id}`));
   return { schemaVersion: SCHEMA_VERSION, triage: triageFromRows(merged) };
+}
+
+/**
+ * Every target the LOG answers, as `kind\0id` — a mark or an asserted absence.
+ *
+ * Rows, not a fold. `readTriage` answers from the table and so must anything asking the
+ * same question, or the two disagree about what is covered; and `COMPLETENESS` is the
+ * rule that an ordinary read never folds. The fold's job was to have written these at
+ * sync time.
+ */
+export async function coveredTriageTargets(root: string): Promise<Map<string, string>> {
+  const rows = db(root).prepare(
+    "SELECT target_kind, target_id, field, value FROM triage WHERE source_scope IS NOT NULL",
+  ).all() as unknown as { target_kind: string; target_id: string; field: string; value: string }[];
+  const out = new Map<string, string>();
+  for (const r of rows) {
+    const k = `${r.target_kind}\0${r.target_id}`;
+    if (r.field === "importance") out.set(k, r.value);
+    else if (!out.has(k)) out.set(k, r.field === ABSENT_FIELD ? "cleared by the team" : r.value);
+  }
+  return out;
 }
 
 /** This clone's OWN marks. What every WRITER must read before it writes. */

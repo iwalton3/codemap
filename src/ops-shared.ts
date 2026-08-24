@@ -14,6 +14,7 @@ import { realpathSync } from "node:fs";
 import { classifyCitations } from "./citation-state.js";
 import { evalVersion } from "./doc-version.js";
 import { readCached, ensureMaterialized, type Projection } from "./materialize.js";
+import { db } from "./db.js";
 import type { ScopeStatus, ScopeDiagnostic, LogEvent } from "./eventlog.js";
 import { scopesOnDisk, readScopeChecked, writerFor, rotateWriter, acknowledgeScope } from "./eventlog.js";
 import { findingsProjection, docsProjection, notesProjection, walkthroughsProjection, triageProjection, docsByNode, projectionFor } from "./shared-projections.js";
@@ -41,7 +42,7 @@ export { sharedKnowsNode, docsVerdict, type DocsVerdict } from "./docs-lookup.js
 import { docsVerdict } from "./docs-lookup.js";
 import { queueContestedTriage } from "./ops/triage.js";
 export { mirrorTriage, mirrorTriageBatch, mirrorTriageClear } from "./triage-publish.js";
-import { readAnnotations, readAnchorStore, loadNodes, loadNodeVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage } from "./store.js";
+import { readAnnotations, readAnchorStore, loadNodes, loadNodeVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets } from "./store.js";
 import {
   publishDocVersion, acceptDocHash, resolveDoc, foldDocs, docScope,
   type NewDocVersion,
@@ -1184,16 +1185,23 @@ export async function publishLocalTriage(root: string, opts: { dryRun?: boolean 
   //
   // Refusing to fabricate supersession is the same rule that forbids reconstructing
   // events from projections. These want a per-target act, made after seeing both.
-  const covered = new Map<string, string>();
-  for (const t of (await cachedTriage(root, b.cfg)).value.values()) {
-    if (!isTombstone(t)) covered.set(`${t.target.kind}\0${t.target.id}`, t.importance.effective.value);
-  }
-  const differs = (t: Triage) => {
-    const shared = covered.get(`${t.target.kind}\0${t.target.id}`);
-    return shared !== undefined && shared !== t.importance;
-  };
-  const publishable = notGraph.filter((t) => !differs(t));
-  const held = notGraph.filter(differs);
+  // Held back: EVERY target the log already answers, whatever it answers.
+  //
+  // Comparing only importance was not enough, and the holes all had the same shape.
+  // Shared `{important, wiring}` against a legacy `{important, deep}` matched on
+  // importance and published — and the new event, having causally seen the teammate's
+  // mark, superseded a complexity nobody compared. A TOMBSTONE was not in the map at
+  // all, so a legacy mark republished over a target the team had deliberately cleared
+  // and resurrected it as a decision. Tripwire had the hole too, and there the silent
+  // outcome is a disarmed alarm.
+  //
+  // So the test is coverage, not difference. A target the log answers needs a
+  // per-target act made after seeing both; a target it has never answered publishes
+  // freely, which is the genesis case and the only one that matters on day one.
+  const covered = await coveredTriageTargets(root);
+  const isCovered = (t: Triage) => covered.has(`${t.target.kind}\0${t.target.id}`);
+  const publishable = notGraph.filter((t) => !isCovered(t));
+  const held = notGraph.filter(isCovered);
   const heldList = held.map((t) => ({
     target: t.target, yours: t.importance, theirs: covered.get(`${t.target.kind}\0${t.target.id}`),
   }));
@@ -1258,20 +1266,29 @@ export async function sharedHub(root: string) {
   const status = await sharedStatus(root);
   if ("error" in status) return { configured: true as const, error: status.error };
 
-  const [docs, notes, triage] = await Promise.all([
-    publishLocalDocs(root, { dryRun: true }).catch((e: any) => ({ error: String(e?.message ?? e) })),
-    publishLocalNotes(root, { dryRun: true }).catch((e: any) => ({ error: String(e?.message ?? e) })),
-    publishLocalTriage(root, { dryRun: true }).catch((e: any) => ({ error: String(e?.message ?? e) })),
-  ]);
+  // Sequential, not `Promise.all`: these read and fold shared scopes, and two folds of
+  // one scope racing is wasted work rather than a correctness problem — but the notes
+  // dry run walks all 256 buckets, so running the three concurrently triples the peak
+  // rather than the throughput.
+  const docs = await publishLocalDocs(root, { dryRun: true }).catch((e: any) => ({ error: String(e?.message ?? e) }));
+  const notes = await publishLocalNotes(root, { dryRun: true }).catch((e: any) => ({ error: String(e?.message ?? e) }));
+  const triage = await publishLocalTriage(root, { dryRun: true }).catch((e: any) => ({ error: String(e?.message ?? e) }));
 
   // Which scopes cannot be answered from. A blocked scope is rendered explicitly rather
   // than hidden: a reviewer who can see what the tool cannot read is in a better
   // position than one shown a confident empty list.
+  //
+  // Read from the STORED verdict, not by re-reading every shard. `shared_scope` holds
+  // the status the last fold reached, and materialization writes it — so this is a
+  // table scan rather than a walk over every event byte in the sidecar on every page
+  // load. A scope with no row has never been folded here, which is not blocked.
   const blocked: { scope: string; reason: string }[] = [];
-  for (const scope of await scopesOnDisk(cfg.path)) {
-    if (!projectionFor(scope) || !inUniverse(scope, cfg.universe)) continue;
-    const st = await readScopeChecked(cfg.path, scope);
-    if (st.status !== "complete") blocked.push({ scope, reason: st.diagnostic?.detail ?? st.status });
+  for (const r of db(root).prepare("SELECT scope, status, diagnostic FROM shared_scope WHERE status != 'complete'")
+    .all() as unknown as { scope: string; status: string; diagnostic: string | null }[]) {
+    if (!inUniverse(r.scope, cfg.universe)) continue;
+    let reason = r.status;
+    try { reason = r.diagnostic ? (JSON.parse(r.diagnostic).detail ?? r.status) : r.status; } catch { /* keep the status */ }
+    blocked.push({ scope: r.scope, reason });
   }
 
   return {

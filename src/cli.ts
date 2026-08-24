@@ -278,13 +278,15 @@ async function cmdSync(root: string): Promise<void> {
   }
   if (r.warning) console.log(`  WARNING: ${r.warning}`);
 
-  // A sync is the moment a teammate's disagreement actually arrives, so it is where a
-  // stakes contest becomes a queue item. Everything else the fold settles silently;
-  // only a disagreement ACROSS the business-critical line reaches a person.
-  const q = await ops.queueContestedTriage(root) as Record<string, any>;
-  if (!q.error && (q.filed || q.revised)) {
+  // `sharedSync` now does the queueing itself, so every surface gets it. Read its
+  // result rather than running the pass AGAIN: a second call finds the items already
+  // filed and reports `alreadyQueued`, so the sync printed nothing and the one moment a
+  // person is watching said nothing about a contest that had just arrived.
+  const q = r.contests as { filed: number; revised: number; closed: number } | undefined;
+  if (q && (q.filed || q.revised)) {
     console.log(`  ${q.filed + q.revised} stakes disagreement(s) crossing business-critical — queued for you (\`codemap contested\`)`);
   }
+  if (q && q.closed) console.log(`  ${q.closed} settled disagreement(s) closed`);
 }
 
 /**

@@ -278,10 +278,19 @@ const server = createServer(async (req, res) => {
      * Every shared-review write, and the sync.
      *
      * One handler because they share a shape and a guard: each is a call into
-     * `ops-shared`, which resolves the sidecar and the actor and refuses when
-     * either is missing. No lock — the sidecar is its own repo with its own
-     * arbiter (git's non-fast-forward rejection), and `withLock` guards this
-     * universe's `.codemap/`, which none of these touch.
+     * `ops-shared`, which resolves the sidecar and the actor and refuses when either is
+     * missing.
+     *
+     * **Most take this universe's lock, and the exceptions are listed rather than
+     * assumed.** This comment used to say none of them touched `.codemap/` — true when
+     * it was written and false the moment `sharedSync` began reconciling the contest
+     * queue (which writes annotations) and `publish_*` began rewriting the local
+     * partition. Both are whole-blob read-modify-writes, so a concurrent locked
+     * `/api/annotate` and an unlocked sync would each write back a blob missing the
+     * other's change.
+     *
+     * The sidecar's own concurrency is a separate arbiter (git's non-fast-forward
+     * rejection, plus `withSidecarLock`); this lock is only about `.codemap/`.
      */
     if (req.method === "POST" && url.pathname.startsWith("/api/shared/")) {
       const chunks: Buffer[] = [];
@@ -290,21 +299,26 @@ const server = createServer(async (req, res) => {
       const root = rootFor(body.u ?? null);
       const pr = String(body.pr ?? "");
       const action = url.pathname.slice("/api/shared/".length);
+      // Which of these write `.codemap/`. Named explicitly: a new action that mutates
+      // and is not listed here races the rest of the server silently.
+      const TOUCHES_LOCAL = new Set(["sync", "publish_docs", "publish_notes", "publish_triage", "heal"]);
+      const run = <T>(fn: () => Promise<T>): Promise<T> =>
+        TOUCHES_LOCAL.has(action) ? withLock(root, fn) : fn();
       let out: unknown;
       switch (action) {
-        case "sync": out = await shared.sharedSync(root); break;
+        case "sync": out = await run(() => shared.sharedSync(root)); break;
         // Publishing this store's existing state, and repairing a fork. These were
         // terminal-only, which made JOINING a team and RECOVERING from one the two
         // things a browser user could not do.
-        case "publish_docs": out = await shared.publishLocalDocs(root, { dryRun: body.dryRun === true }); break;
-        case "publish_notes": out = await shared.publishLocalNotes(root, { dryRun: body.dryRun === true }); break;
-        case "publish_triage": out = await shared.publishLocalTriage(root, { dryRun: body.dryRun === true }); break;
+        case "publish_docs": out = await run(() => shared.publishLocalDocs(root, { dryRun: body.dryRun === true })); break;
+        case "publish_notes": out = await run(() => shared.publishLocalNotes(root, { dryRun: body.dryRun === true })); break;
+        case "publish_triage": out = await run(() => shared.publishLocalTriage(root, { dryRun: body.dryRun === true })); break;
         // A person's act, and there is deliberately no MCP tool for it: an agent
         // repairing a fork it may itself have caused is the case the person-gate is
         // for. `sharedHeal` IS the complete operation — union, rotate, acknowledge,
         // sync — and it must be called once, not wrapped: the sidecar lock is not
         // reentrant, so a wrapper that took it around the four steps would deadlock.
-        case "heal": out = await shared.sharedHeal(root); break;
+        case "heal": out = await run(() => shared.sharedHeal(root)); break;
         case "corroborate": out = await shared.corroborateFinding(root, pr, body.id, body.verdict, body.rationale ?? ""); break;
         case "comment": out = await shared.commentOnFinding(root, pr, body.id, body.body ?? "", body.inReplyTo); break;
         case "promote": out = await shared.promoteFinding(root, pr, body.id); break;
