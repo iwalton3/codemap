@@ -224,20 +224,34 @@ const matrixUrl = (u) => `/u/${u}/matrix/`;
 const pipelineUrl = (u) => `/u/${u}/pipeline/`;
 const stateMapUrl = (u) => `/u/${u}/statemap/`;
 const REV_COLOR = { reviewed: '#7ee787', stale: '#f0a35e', unreviewed: '#3a4250' };
+// A sign-off whose witness was hashed by ANOTHER build (an older HASH_SCHEME, a
+// different grammar) — there is no comparison to make, so it cannot vouch for the
+// code on screen. It stays `reviewed` in the store on purpose: a scheme bump must
+// not rewrite what people signed. On the review surfaces it is an outstanding job
+// all the same — warning-coloured, counted as unsigned, and stopped at by the
+// walkthrough — because the recovery is one click (`unmarkOn`) and a reviewer who
+// is never sent there never takes it.
+const isUnverifiable = (info) => !!info && info.state === 'reviewed' && info.via === 'unverifiable';
+// Clicking a mark clears it, with two exceptions: an agent `checked` mark upgrades
+// to a human sign-off, and an unverifiable one re-signs at the live hash — which is
+// what its tooltip has always promised. Clearing it would lose the acceptance
+// history for a mark that is not even claimed to be wrong.
+const unmarkOn = (state, actor, via) => state === 'reviewed' && actor !== 'agent' && via !== 'unverifiable';
 // Actor-aware review rendering: human review = green (`on`), agent `checked` = blue.
 // `via` says how a tick was earned (see markBtnEl): direct, ↻ borrowed from a
 // lineage this ref does not descend from, or ⟲ sitting on top of a revert. Every
 // surface that draws a review mark takes it, or the summaries quietly disagree
 // with the buttons they summarise.
-// `unverifiable` is checked BEFORE `reverted`/agent, and it is not `stale`: nothing
-// drifted, the two builds simply hash bodies differently, so the mark stands and says
-// it could not be confirmed. Rendering it as a plain vouch is the silent green check
-// CLAUDE.md's north star forbids; rendering it as stale is the 985-of-985 failure in
-// the other direction.
+// `unverifiable` is checked BEFORE `reverted`/agent. It keeps its own class and its
+// own glyph — nothing drifted, so it must not claim drift — but it is drawn in the
+// warning colour and clicks through to a re-sign, because a mark that cannot be
+// checked is work the reviewer still owes. Rendering it as a plain vouch is the
+// silent green check CLAUDE.md's north star forbids; rendering it as a MUTED tick
+// was the same failure a shade quieter, since nothing ever routed anyone back to it.
 const revCls = (state, actor, via) => state === 'reviewed' ? (via === 'unverifiable' ? 'unverifiable' : via === 'reverted' ? 'reverted' : actor === 'agent' ? 'checked' : 'on') : state === 'stale' ? 'stale' : '';
 const revColorA = (info) => {
   const s = info && info.state, a = info && info.actor, v = info && info.via;
-  return s === 'reviewed' ? (v === 'unverifiable' ? '#8b95a3' : v === 'reverted' ? '#f0a35e' : a === 'agent' ? '#58a6ff' : '#7ee787') : s === 'stale' ? '#f0a35e' : '#3a4250';
+  return s === 'reviewed' ? (v === 'unverifiable' ? '#f0a35e' : v === 'reverted' ? '#f0a35e' : a === 'agent' ? '#58a6ff' : '#7ee787') : s === 'stale' ? '#f0a35e' : '#3a4250';
 };
 const revMark = (state, actor, via) => state === 'reviewed'
   ? (via === 'unverifiable' ? ' ?' : via === 'reverted' ? ' ⟲' : via === 'replayed' ? ' ↻' : actor === 'agent' ? ' ·' : ' ✓')
@@ -330,7 +344,7 @@ const markBtnEl = (attestation, info, onMark, coverLabel) => {
   const cover = st === 'reviewed' && info && info.coveredBy;
   // A human sign-off is green; an agent-checked vouch (or a viewed mark) is blue.
   const cls = st === 'reviewed'
-    ? (via === 'reverted' ? 'reverted' : on && !agent ? 'on' : 'checked')
+    ? (via === 'unverifiable' ? 'unverifiable' : via === 'reverted' ? 'reverted' : on && !agent ? 'on' : 'checked')
     : st === 'stale' ? 'stale' : '';
   const mk = st === 'reviewed' ? (VIA_MARK[via] || (cover ? ' ↳' : ' ✓')) : st === 'stale' ? ' ⚠' : '';
   const tip = st !== 'reviewed'
@@ -345,7 +359,7 @@ const markBtnEl = (attestation, info, onMark, coverLabel) => {
         : cover
           ? `${attestation}: covered — you ${attestation === 'signed' ? 'signed' : 'viewed'} ${coverLabel || 'the symbol that contains this one'}, whose pane shows these lines. Witnessed at this symbol's own hash, so a later edit here stales this mark alone. Click to clear just this one.`
           : `${attestation}: ${st}${agent ? ' (agent-checked — click to confirm as human)' : ' — click to clear'}`;
-  return html`<button class="${cls}" title="${tip}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onMark(attestation, st, actor); }}">${attestation}${mk}</button>`;
+  return html`<button class="${cls}" title="${tip}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onMark(attestation, st, actor, via); }}">${attestation}${mk}</button>`;
 };
 const reviewRowEl = (review, viewed, onMark, level = 'code', coverLabel) => {
   const sign = review && review[level], view = viewed && viewed[level];
@@ -353,15 +367,18 @@ const reviewRowEl = (review, viewed, onMark, level = 'code', coverLabel) => {
   // once human-signed, drop the now-redundant viewed button. An agent `checked` vouch
   // is not a human sign-off — keep viewed available so the human can still mark/sign.
   const humanSigned = sign && sign.state === 'reviewed' && sign.actor !== 'agent';
-  return html`<span class="rev">${when(!humanSigned, () => markBtnEl('viewed', view, onMark, coverLabel))}${markBtnEl('signed', sign, onMark, coverLabel)}${when(sign && sign.state === 'stale', () => html`<span class="hint" style="margin-left:6px;color:#f0a35e">⚠ sign-off stale</span>`)}</span>`;
+  return html`<span class="rev">${when(!humanSigned, () => markBtnEl('viewed', view, onMark, coverLabel))}${markBtnEl('signed', sign, onMark, coverLabel)}${when(sign && (sign.state === 'stale' || isUnverifiable(sign)), () => html`<span class="hint" style="margin-left:6px;color:#f0a35e">⚠ ${isUnverifiable(sign) ? 'sign-off cannot be verified — click to re-sign' : 'sign-off stale'}</span>`)}</span>`;
 };
 // A node's code review is DERIVED from the code reviews of the segments it cites
 // (server: deriveCodeReview) — a read-only rollup, never a one-click "I signed the
 // node's code". You reach "code reviewed" only by reading & signing each segment.
 const codeRollupEl = (cr) => {
   if (!cr || !cr.total) return html`<span class="dim" style="font-size:12px">code: no reviewable segments</span>`;
-  const c = cr.state === 'reviewed' ? '#7ee787' : cr.state === 'stale' ? '#f0a35e' : '#8b949e';
-  const label = cr.state === 'reviewed' ? `code reviewed — all ${cr.total} segment${cr.total === 1 ? '' : 's'} signed`
+  const c = cr.state === 'reviewed' ? (cr.unverifiable ? '#f0a35e' : '#7ee787') : cr.state === 'stale' ? '#f0a35e' : '#8b949e';
+  const label = cr.state === 'reviewed'
+    ? (cr.unverifiable
+      ? `code signed, but ${cr.unverifiable} of ${cr.total} segment${cr.total === 1 ? '' : 's'} cannot be checked against this build`
+      : `code reviewed — all ${cr.total} segment${cr.total === 1 ? '' : 's'} signed`)
     : `code: ${cr.signed}/${cr.total} segment${cr.total === 1 ? '' : 's'} signed${cr.stale ? ` · ${cr.stale} stale` : ''}`;
   return html`<span class="rev" style="align-items:center;gap:6px"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${c}"></span><span style="color:${c}">${label}</span>${viaNote(cr)}${when(cr.state !== 'reviewed', () => html`<span class="dim" style="font-size:12px">— read &amp; sign each segment below</span>`)}</span>`;
 };
@@ -370,6 +387,7 @@ const codeRollupEl = (cr) => {
 // borrowed approval is fine, approval sitting on undone work is not.
 const viaNote = (cr) => {
   if (!cr) return html``;
+  if (cr.unverifiable) return html`<span class="viaflag unverifiable" title="${cr.unverifiable} segment(s) whose witness was hashed by another build — the approval stands but cannot be checked here; open and re-sign">? ${cr.unverifiable} unverifiable</span>`;
   if (cr.reverted) return html`<span class="viaflag rev-back" title="${cr.reverted} segment(s) approved before the code moved BACK to that body on this branch — someone undid work">⟲ ${cr.reverted} reverted</span>`;
   if (cr.replayed) return html`<span class="viaflag rev-replay" title="${cr.replayed} segment(s) whose approval is borrowed from a branch this one does not descend from">↻ ${cr.replayed} replayed</span>`;
   return html``;
@@ -386,21 +404,25 @@ const deriveCode = (anchors) => {
   const stale = seg.filter(a => a.review.code.state === 'stale').length;
   const replayed = seg.filter(a => a.review.code.state === 'reviewed' && a.review.code.via === 'replayed').length;
   const reverted = seg.filter(a => a.review.code.state === 'reviewed' && a.review.code.via === 'reverted').length;
-  return { state: total === 0 ? 'unreviewed' : stale ? 'stale' : signed === total ? 'reviewed' : 'unreviewed', signed, total, stale, replayed, reverted };
+  const unverifiable = seg.filter(a => isUnverifiable(a.review.code)).length;
+  return { state: total === 0 ? 'unreviewed' : stale ? 'stale' : signed === total ? 'reviewed' : 'unreviewed', signed, total, stale, replayed, reverted, unverifiable };
 };
 // Compact derived-code indicator for dense list rows (catalog, matrix). Read-only
 // rollup — code review is per-segment, so it opens the node rather than signing.
+// Same ranking as a single mark's `via` (reviews.ts `forLevel`): a revert is the one
+// worth interrupting for, then an approval that cannot be checked, then a borrowed one.
 const codeMark = (cr) => (!cr || !cr.total) ? 'C'
-  : cr.state === 'reviewed' ? (cr.reverted ? 'C⟲' : cr.replayed ? 'C↻' : 'C✓')
+  : cr.state === 'reviewed' ? (cr.reverted ? 'C⟲' : cr.unverifiable ? 'C?' : cr.replayed ? 'C↻' : 'C✓')
     : cr.state === 'stale' ? 'C⚠' : `C ${cr.signed}/${cr.total}`;
 const codeTip = (cr) => (!cr || !cr.total) ? 'no reviewable code segments'
   : `code: ${cr.signed}/${cr.total} segment${cr.total === 1 ? '' : 's'} signed${cr.stale ? ' · ' + cr.stale + ' stale' : ''}`
     + (cr.reverted ? ` · ${cr.reverted} sitting on a revert (code moved back to a body signed before it was superseded here)` : '')
+    + (cr.unverifiable ? ` · ${cr.unverifiable} hashed by another build, so they cannot be checked here — open and re-sign` : '')
     + (cr.replayed ? ` · ${cr.replayed} borrowed from another branch` : '')
     + ' — open to read & sign each';
 const codeCellBtn = (cr, onOpen) => {
   const st = cr ? cr.state : 'unreviewed';
-  const cls = st === 'reviewed' ? (cr && cr.reverted ? 'reverted' : 'on') : st === 'stale' ? 'stale' : '';
+  const cls = st === 'reviewed' ? (cr && cr.reverted ? 'reverted' : cr && cr.unverifiable ? 'unverifiable' : 'on') : st === 'stale' ? 'stale' : '';
   return html`<button class="${cls}" title="${codeTip(cr)}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onOpen(); }}">${codeMark(cr)}</button>`;
 };
 // Two axes: `stakes` (blast radius) and `complexity` (verification difficulty) — set
@@ -975,9 +997,9 @@ class AnchorPage extends Component {
   // Two independent human marks on the source: `viewed` (I've laid eyes on it — blue)
   // and `signed` (I own it — green). A stale sign-off returns to the worklist and can
   // only be cleared by re-signing; clicking a stale mark re-approves at the live hash.
-  async mark(attestation, state, actor) {
+  async mark(attestation, state, actor, via) {
     const a = this.loadedAnchor(); if (!a) return;
-    const unmark = state === 'reviewed' && actor !== 'agent'; // upgrade an agent check to human, never clear it
+    const unmark = unmarkOn(state, actor, via); // upgrade an agent check to human, re-sign an unverifiable one, never clear either
     await postReview(this.props.params.universe, 'anchor', a.id, 'code', unmark, attestation);
     this.load.run();
   }
@@ -1002,7 +1024,7 @@ class AnchorPage extends Component {
       <div class="back" on-click="${() => goTree(u, a.file)}">← ${a.file}</div>
       <h2>${a.symbol}</h2>
       <div class="meta">${a.kind} · ${a.file}:${a.lines} · ${a.present ? 'present' : 'not found (lost)'}</div>
-      <div style="margin:8px 0">${reviewRowEl(a.review, a.viewed, (att, st, actor) => this.mark(att, st, actor))}</div>
+      <div style="margin:8px 0">${reviewRowEl(a.review, a.viewed, (att, st, actor, via) => this.mark(att, st, actor, via))}</div>
       <div style="margin:8px 0">${triageRowEl(a.triage, (imp) => this.triage(imp), (on) => this.armTripwire(on))}</div>
       ${when(a.citedBy && a.citedBy.length, () => html`<div class="sec">documented by</div><div class="chips">${each(a.citedBy, n => html`<span class="chip" on-click="${() => go(nodeUrl(u, n.id))}">${n.title || n.id}</span>`)}</div>`)}
       ${when(a.bugs && a.bugs.length, () => html`<div class="sec">bugs</div><div class="chips">${each(a.bugs, b => html`<span class="chip">${b.status} · ${b.title}</span>`)}</div>`)}
@@ -1038,9 +1060,9 @@ class NodePage extends Component {
   propsChanged() { this.state.n = null; this.state.versions = null; this.state.open = {}; this.state.acode = {}; this.load.run(); }
   // Signing the node vouches for the DOC (logical), not its code — code review is
   // derived from the per-segment signs below.
-  async signNode(attestation, state, actor) { const unmark = state === 'reviewed' && actor !== 'agent'; await postReview(this.props.params.universe, 'node', this.props.params.id, 'logical', unmark, attestation); this.load.run(); }
+  async signNode(attestation, state, actor, via) { const unmark = unmarkOn(state, actor, via); await postReview(this.props.params.universe, 'node', this.props.params.id, 'logical', unmark, attestation); this.load.run(); }
   // Sign an individual referenced code segment; reload recomputes the node's derived code rollup.
-  async markAnchor(id, attestation, state, actor) { const unmark = state === 'reviewed' && actor !== 'agent'; await postReview(this.props.params.universe, 'anchor', id, 'code', unmark, attestation); this.load.run(); }
+  async markAnchor(id, attestation, state, actor, via) { const unmark = unmarkOn(state, actor, via); await postReview(this.props.params.universe, 'anchor', id, 'code', unmark, attestation); this.load.run(); }
   toggleSeg(id) { this.state.open = { ...this.state.open, [id]: !this.state.open[id] }; if (this.state.open[id] && !this.state.acode[id]) this.loadSeg(id); }
   async loadSeg(id) { const a = await api('/api/anchor', { u: this.props.params.universe, id }); this.state.acode = { ...this.state.acode, [id]: a }; }
   // One referenced code segment: expand to read its live source, sign it inline.
@@ -1052,7 +1074,7 @@ class NodePage extends Component {
     return html`<div class="anchor-code">
       <div class="sym" on-click="${() => this.toggleSeg(a.id)}">
         <span style="width:auto">${open ? '▾' : '▸'}</span>${sevDot(a.severity)}<span style="width:auto">${a.symbol ?? a.id}</span><span class="dim" style="width:auto">${a.file ?? ''}${a.lines ? ':' + a.lines : ''}</span>${when(nf, () => html`<span class="rvfbadge" title="${nf} open finding${nf === 1 ? '' : 's'}">⚑ ${nf}</span>`)}
-        <span class="rev">${reviewRowEl(a.review, a.viewed, (att, st, actor) => this.markAnchor(a.id, att, st, actor))}<span class="viewlink" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); go(anchorUrl(u, a.id)); }}" title="open full anchor page">↗</span></span>
+        <span class="rev">${reviewRowEl(a.review, a.viewed, (att, st, actor, via) => this.markAnchor(a.id, att, st, actor, via))}<span class="viewlink" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); go(anchorUrl(u, a.id)); }}" title="open full anchor page">↗</span></span>
       </div>
       ${when(open, () => !c ? html`<div class="loading" style="padding:6px 0">loading…</div>`
         : isErr(c) ? html`<div class="empty">${c.error}</div>`
@@ -1070,7 +1092,7 @@ class NodePage extends Component {
     return html`<div class="detail">
       <div class="meta">${n.type}${n.universe ? ' · ' + n.universe : ''} · ${n.id} ${statusChip(n.status)}${trustChip(n.trust)}${sevChip(n.triage)}<span class="viewlink" on-click="${() => go(graphUrl(u, n.id))}">◆ graph</span></div>
       <h2>${n.title}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions (forked across branches)">⑂${n.versionCount}</span>`)}</h2>
-      <div style="margin:6px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="dim" style="font-size:12px">doc sign-off:</span>${reviewRowEl(n.review, n.viewed, (att, st, actor) => this.signNode(att, st, actor), 'logical')}<span class="dim" style="font-size:12px">— vouches for the doc, not its code</span></div>
+      <div style="margin:6px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="dim" style="font-size:12px">doc sign-off:</span>${reviewRowEl(n.review, n.viewed, (att, st, actor, via) => this.signNode(att, st, actor, via), 'logical')}<span class="dim" style="font-size:12px">— vouches for the doc, not its code</span></div>
       <div style="margin:6px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">${codeRollupEl(cr)}${when(cr.total, () => html`<button on-click="${() => go(nodeReviewUrl(u, n.id))}">open code review →</button>`)}</div>
       <div style="margin:6px 0">${triageRowEl(n.triage, (imp) => this.triageNode(imp), (on) => this.armTripwireNode(on))}</div>
       ${when(n.status === 'stale', () => html`<div class="vaction"><span>This doc cites code that changed since it was written.</span> <button on-click="${() => this.confirm()}">confirm still accurate</button> <span class="dim">— or edit it (forks a new version).</span></div>`)}
@@ -1116,7 +1138,7 @@ class NodeReviewPage extends Component {
   propsChanged() { this.state.d = null; this.state.open = {}; this.state.file = null; this.state.activeAnchor = null; this.state.finding = null; this.load.run(); }
   // "done" for the reviewer = a HUMAN sign-off. An agent `checked` mark is a helpful
   // first pass but still needs the human — it stays in the queue (and never hides).
-  isDone(s) { const c = s.review && s.review.code; return !!(c && c.state === 'reviewed' && c.actor === 'human'); }
+  isDone(s) { const c = s.review && s.review.code; return !!(c && c.state === 'reviewed' && c.actor === 'human' && !isUnverifiable(c)); }
   isChecked(s) { const c = s.review && s.review.code; return !!(c && c.state === 'reviewed' && c.actor === 'agent'); }
   // Effective expand state: signed segments collapse by default, unsigned expand;
   // an explicit toggle overrides.
@@ -1124,7 +1146,7 @@ class NodeReviewPage extends Component {
   toggle(id) { const s = (this.state.d.segments || []).find(x => x.id === id); this.state.open = { ...this.state.open, [id]: !this.isOpen(s) }; }
   setHide(v) { this.state.hideSigned = v; }
   // Only clear your own human vouch; an agent `checked` mark is upgraded to a human sign-off, never wiped.
-  async markSeg(id, att, st, actor) { const unmark = st === 'reviewed' && actor !== 'agent'; await postReview(this.props.params.universe, 'anchor', id, 'code', unmark, att); await this.load.run(); if (this.state.file) await this.refreshFile(); }
+  async markSeg(id, att, st, actor, via) { const unmark = unmarkOn(st, actor, via); await postReview(this.props.params.universe, 'anchor', id, 'code', unmark, att); await this.load.run(); if (this.state.file) await this.refreshFile(); }
   async openFile(path, anchorId) { this.state.activeAnchor = anchorId || null; this.state.filePending = true; try { this.state.file = await api('/api/file', { u: this.props.params.universe, path }); } finally { this.state.filePending = false; } this.scrollToAnchor(anchorId); }
   async refreshFile() { if (this.state.file && !this.state.file.error) this.state.file = await api('/api/file', { u: this.props.params.universe, path: this.state.file.file }); }
   closeFile() { this.state.file = null; this.state.activeAnchor = null; }
@@ -1146,7 +1168,7 @@ class NodeReviewPage extends Component {
         <span class="rvsym">${s.symbol}</span>
         <span class="dim rvfile">${s.file}:${s.lines || '?'}</span>
         ${when(nf, () => html`<span class="rvfbadge" title="${nf} open finding${nf === 1 ? '' : 's'}">⚑ ${nf}</span>`)}
-        <span class="rev" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">${reviewRowEl(s.review, s.viewed, (att, st, actor) => this.markSeg(s.id, att, st, actor))}<button title="read the whole file in context" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.openFile(s.file, s.id); }}">view file</button><span class="viewlink" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); go(anchorUrl(u, s.id)); }}" title="open anchor page">↗</span></span>
+        <span class="rev" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">${reviewRowEl(s.review, s.viewed, (att, st, actor, via) => this.markSeg(s.id, att, st, actor, via))}<button title="read the whole file in context" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.openFile(s.file, s.id); }}">view file</button><span class="viewlink" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); go(anchorUrl(u, s.id)); }}" title="open anchor page">↗</span></span>
       </div>
       ${when(open, () => codeReviewLines(this, u, s.id, s.code, s.lang, s.startLine, s.annotations))}
     </div>`;
@@ -1191,7 +1213,7 @@ class NodeReviewPage extends Component {
               <div class="sxs-h">segments in this file (${f.anchors.length})</div>
               ${each(f.anchors, a => { const nf = openFindingCount(a.annotations); return html`<div class="rvaside ${a.id === this.state.activeAnchor ? 'active' : ''}">
                 <div class="rvasym" on-click="${() => this.setActive(a.id)}">${a.symbol} <span class="dim">${a.startLine ?? '?'}-${a.endLine ?? '?'}</span>${when(nf, () => html`<span class="rvfbadge" title="${nf} open finding${nf === 1 ? '' : 's'}">⚑ ${nf}</span>`)}</div>
-                <div class="rvamarks">${reviewRowEl(a.review, a.viewed, (att, st, actor) => this.markSeg(a.id, att, st, actor))}</div>
+                <div class="rvamarks">${reviewRowEl(a.review, a.viewed, (att, st, actor, via) => this.markSeg(a.id, att, st, actor, via))}</div>
               </div>`; }, a => a.id)}
             </div>`)}
         </div>
@@ -1201,7 +1223,7 @@ class NodeReviewPage extends Component {
   template() {
     const u = this.props.params.universe, d = this.state.d;
     return pageShell(d, taskError(this.load) ?? (d && d.error), () => {
-      const cr = d.codeReview || { signed: 0, total: 0, stale: 0 };
+      const cr = d.codeReview || { signed: 0, total: 0, stale: 0, unverifiable: 0 };
       const segs = d.segments || [];
       const pending = segs.filter(s => !s.missing && !this.isDone(s));
       // Hide only human-signed segments with nothing left open — a signed segment that
@@ -1211,8 +1233,8 @@ class NodeReviewPage extends Component {
       return html`
         <div class="crumbs"><a on-click="${() => go(nodeUrl(u, d.id))}">← ${d.title}</a> <span class="sep">·</span> code review</div>
         <div class="rvbar">
-          <b style="color:${cr.stale ? '#f0a35e' : pct === 100 ? '#7ee787' : '#8b949e'}">${codeMark(cr)}</b>
-          <span>${cr.signed}/${cr.total} segment${cr.total === 1 ? '' : 's'} signed${cr.stale ? ` · ${cr.stale} stale` : ''}</span>
+          <b style="color:${cr.stale || cr.unverifiable ? '#f0a35e' : pct === 100 ? '#7ee787' : '#8b949e'}">${codeMark(cr)}</b>
+          <span>${cr.signed}/${cr.total} segment${cr.total === 1 ? '' : 's'} signed${cr.stale ? ` · ${cr.stale} stale` : ''}${cr.unverifiable ? ` · ${cr.unverifiable} unverifiable` : ''}</span>
           <span class="rvtrack"><i style="width:${pct}%"></i></span>
           ${when(d.openFindings, () => html`<span class="rvfcount" title="findings raised across this node's segments">⚑ ${d.openFindings} open finding${d.openFindings === 1 ? '' : 's'}</span>`)}
           ${when(pending.length, () => html`<button on-click="${() => this.jumpNext()}">next unsigned ↓</button>`)}
@@ -1516,7 +1538,7 @@ class FlowPage extends Component {
   // `actor` is passed only by the logical vouch button: only clear your own human
   // review — never wipe an agent's check (mark it human instead). Other callers
   // (viewed exposure, anchor code) leave it undefined → normal toggle.
-  async toggle(kind, id, level, state, attestation, actor) { const unmark = state === 'reviewed' && (actor === undefined || actor === 'human'); await postReview(this.props.params.universe, kind, id, level, unmark, attestation); this.load.run(); }
+  async toggle(kind, id, level, state, attestation, actor, via) { const unmark = state === 'reviewed' && (actor === undefined || actor === 'human') && via !== 'unverifiable'; await postReview(this.props.params.universe, kind, id, level, unmark, attestation); this.load.run(); }
   revBtn(kind, id, level, info) {
     // `via` is threaded through, and it had never been: this surface called
     // `revCls`/`revMark` with two arguments, so `reverted`, `replayed` and
@@ -1525,7 +1547,7 @@ class FlowPage extends Component {
     const st = (info && info.state) || 'unreviewed', actor = info && info.actor, via = info && info.via;
     const cls = revCls(st, actor, via);
     const tip = `${level} ${st}${st === 'reviewed' && actor === 'agent' ? ' (agent-checked — click to confirm as human)' : ''}${info && info.by ? ' · by ' + info.by : ''}${via && VIA_TIP[via] ? VIA_TIP[via] : ''}`;
-    return html`<button class="${cls}" title="${tip}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.toggle(kind, id, level, st, undefined, actor); }}">${level}${revMark(st, actor, via)}</button>`;
+    return html`<button class="${cls}" title="${tip}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.toggle(kind, id, level, st, undefined, actor, via); }}">${level}${revMark(st, actor, via)}</button>`;
   }
   // `viewed` exposure toggle (code level) alongside the signed-vouch level buttons.
   viewBtn(kind, id, info) {
@@ -1542,7 +1564,7 @@ class FlowPage extends Component {
   // buttons below are the real sign controls, so this is a read-only rollup.
   codeInd(cr) {
     const st = cr ? cr.state : 'unreviewed';
-    const col = st === 'reviewed' ? (cr && cr.actor === 'agent' ? '#58a6ff' : '#7ee787') : st === 'stale' ? '#f0a35e' : '#8b949e';
+    const col = st === 'reviewed' ? (cr && cr.unverifiable ? '#f0a35e' : cr && cr.actor === 'agent' ? '#58a6ff' : '#7ee787') : st === 'stale' ? '#f0a35e' : '#8b949e';
     return html`<span title="${codeTip(cr)}" style="border:1px solid ${col}55;color:${col};border-radius:6px;padding:3px 9px;font-size:12px;cursor:default">${codeMark(cr)}</span>`;
   }
   codeBlock(a) {
@@ -1550,7 +1572,7 @@ class FlowPage extends Component {
     if (!a.code) return html`<div class="anchor-code"><div class="sym">${a.symbol} — code unavailable</div></div>`;
     const nf = openFindingCount(a.annotations);
     return html`<div class="anchor-code">
-      <div class="sym">${a.symbol} · ${a.file}:${a.lines}${when(nf, () => html`<span class="rvfbadge" title="${nf} open finding${nf === 1 ? '' : 's'}">⚑ ${nf}</span>`)}${reviewRowEl(a.review, a.viewed, (att, st, actor) => this.toggle('anchor', a.id, 'code', st, att, actor))}</div>
+      <div class="sym">${a.symbol} · ${a.file}:${a.lines}${when(nf, () => html`<span class="rvfbadge" title="${nf} open finding${nf === 1 ? '' : 's'}">⚑ ${nf}</span>`)}${reviewRowEl(a.review, a.viewed, (att, st, actor, via) => this.toggle('anchor', a.id, 'code', st, att, actor, via))}</div>
       ${codeReviewLines(this, this.props.params.universe, a.id, a.code, a.lang, a.startLine, a.annotations)}
     </div>`;
   }
@@ -1614,15 +1636,16 @@ class NodeCatalogPage extends Component {
   async verify(id, act) { await postReview(this.props.params.universe, 'node', id, 'logical', act === 'unverify'); this.load.run(); }
   // Clicking a review button records a HUMAN vouch. Only clear when it's already
   // your own human review — never wipe an agent's check; mark it human instead.
-  async toggle(id, level, state, actor) { const unmark = state === 'reviewed' && actor === 'human'; await postReview(this.props.params.universe, 'node', id, level, unmark); this.load.run(); }
+  async toggle(id, level, state, actor, via) { const unmark = unmarkOn(state, actor, via); await postReview(this.props.params.universe, 'node', id, level, unmark); this.load.run(); }
   async deriveStakes() { await postTriage(this.props.params.universe, null, null, { derive: true }); this.load.run(); }
   // Human review = green (`on`); an agent `checked` review = blue, so it never reads
   // as fully-verified. A web toggle always records a human review.
-  revBtn(id, level, state, actor) {
+  revBtn(id, level, state, actor, via) {
     const agent = state === 'reviewed' && actor === 'agent';
-    const cls = state === 'reviewed' ? (agent ? 'checked' : 'on') : state === 'stale' ? 'stale' : '';
-    const mark = state === 'reviewed' ? (agent ? '·' : '✓') : state === 'stale' ? '⚠' : '';
-    return html`<button class="${cls}" title="${level}: ${state}${agent ? ' (agent-checked — click to confirm as human)' : ''}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.toggle(id, level, state, actor); }}">${level[0].toUpperCase()}${mark}</button>`;
+    const cls = revCls(state, actor, via);
+    const mark = revMark(state, actor, via).trim();
+    const tip = `${level}: ${state}${agent ? ' (agent-checked — click to confirm as human)' : ''}${via && VIA_TIP[via] ? VIA_TIP[via] : ''}`;
+    return html`<button class="${cls}" title="${tip}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.toggle(id, level, state, actor, via); }}">${level[0].toUpperCase()}${mark}</button>`;
   }
   // Code review is per-segment (derived) — the list can't read code, so this is a
   // read-only rollup that opens the node to review its referenced segments.
@@ -1665,7 +1688,7 @@ class NodeCatalogPage extends Component {
       <span class="ndom">${n.domain}</span>
       <span class="nmeta">${n.anchors}a · ${n.edgesIn}↓${n.edgesOut}↑</span>
       ${when(n.generatedBy, () => html`<span class="gen">${n.generatedBy}</span>`)}
-      <span class="nrev">${this.revBtn(n.id, 'logical', n.review.logical, n.reviewBy && n.reviewBy.logical)}${this.codeCell(n)}</span>
+      <span class="nrev">${this.revBtn(n.id, 'logical', n.review.logical, n.reviewBy && n.reviewBy.logical, n.reviewVia && n.reviewVia.logical)}${this.codeCell(n)}</span>
     </div>`;
   }
   template() {
@@ -1732,14 +1755,15 @@ class MatrixPage extends Component {
   set(k, v) { this.state.f = { ...this.state.f, [k]: v }; }
   // Clicking a review button records a HUMAN vouch. Only clear when it's already
   // your own human review — never wipe an agent's check; mark it human instead.
-  async toggle(id, level, state, actor) { const unmark = state === 'reviewed' && actor === 'human'; await postReview(this.props.params.universe, 'node', id, level, unmark); this.load.run(); }
+  async toggle(id, level, state, actor, via) { const unmark = unmarkOn(state, actor, via); await postReview(this.props.params.universe, 'node', id, level, unmark); this.load.run(); }
   // Human review = green (`on`); an agent `checked` review = blue, so it never reads
   // as fully-verified. A web toggle always records a human review.
-  revBtn(id, level, state, actor) {
+  revBtn(id, level, state, actor, via) {
     const agent = state === 'reviewed' && actor === 'agent';
-    const cls = state === 'reviewed' ? (agent ? 'checked' : 'on') : state === 'stale' ? 'stale' : '';
-    const mark = state === 'reviewed' ? (agent ? '·' : '✓') : state === 'stale' ? '⚠' : '';
-    return html`<button class="${cls}" title="${level}: ${state}${agent ? ' (agent-checked — click to confirm as human)' : ''}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.toggle(id, level, state, actor); }}">${level[0].toUpperCase()}${mark}</button>`;
+    const cls = revCls(state, actor, via);
+    const mark = revMark(state, actor, via).trim();
+    const tip = `${level}: ${state}${agent ? ' (agent-checked — click to confirm as human)' : ''}${via && VIA_TIP[via] ? VIA_TIP[via] : ''}`;
+    return html`<button class="${cls}" title="${tip}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.toggle(id, level, state, actor, via); }}">${level[0].toUpperCase()}${mark}</button>`;
   }
   filtered() {
     const f = this.state.f, q = f.q.toLowerCase();
@@ -1772,7 +1796,7 @@ class MatrixPage extends Component {
         ${each(rows, e => html`<div class="mrow ${e.orphan ? 'orphan' : ''}">
           <span class="mev" on-click="${() => go(nodeUrl(u, e.id))}"><b>${e.title}</b><small>${e.domain} · ${e.emitters}↑</small></span>
           ${each(d.sinks, s => html`<span class="mcell">${when(e.cells[s.id], () => html`<i class="cdot ${e.cells[s.id]}" title="${e.cells[s.id]}"></i>`)}</span>`, s => s.id)}
-          <span class="mrevh"><span class="nrev">${this.revBtn(e.id, 'logical', e.review.logical, e.reviewBy && e.reviewBy.logical)}${codeCellBtn(e.codeReview, () => go(nodeUrl(u, e.id)))}</span></span>
+          <span class="mrevh"><span class="nrev">${this.revBtn(e.id, 'logical', e.review.logical, e.reviewBy && e.reviewBy.logical, e.reviewVia && e.reviewVia.logical)}${codeCellBtn(e.codeReview, () => go(nodeUrl(u, e.id)))}</span></span>
         </div>`, e => e.id)}
       </div>
     `;
@@ -2393,7 +2417,7 @@ class DiffPage extends Component {
   revBtn(kind, id, level, state, after, actor, via) {
     const cls = revCls(state, actor, via);
     const tip = `${level}: ${state}${state === 'reviewed' && actor === 'agent' ? ' (agent-checked)' : ''}${via && VIA_TIP[via] ? VIA_TIP[via] : ''}`;
-    return html`<button class="${cls}" title="${tip}" on-click="${async (e) => { if (e.stopPropagation) e.stopPropagation(); await postReview(this.props.params.universe, kind, id, level, state === 'reviewed'); await after(); }}">${level}${revMark(state, actor, via)}</button>`;
+    return html`<button class="${cls}" title="${tip}" on-click="${async (e) => { if (e.stopPropagation) e.stopPropagation(); await postReview(this.props.params.universe, kind, id, level, state === 'reviewed' && via !== 'unverifiable'); await after(); }}">${level}${revMark(state, actor, via)}</button>`;
   }
 
   // Group the raw symbol changes by file for the structural view.
@@ -2453,7 +2477,7 @@ class DiffPage extends Component {
       <div class="meta">${b.file}${c ? ' · ' + (c.hasBase ? 'base' : '∅') + ' → ' + (c.hasHead ? 'head' : '∅') : ''}
         <span class="viewlink" on-click="${() => go(anchorUrl(u, b.id))}">open anchor ›</span></div>
       ${when(c && c.review, () => html`<div class="drev"><span class="dim">mark this change reviewed:</span>
-        <span class="rev">${this.revBtn('anchor', b.id, 'logical', c.review.logical, () => this.loadCode(b.id), c.reviewBy && c.reviewBy.logical)}${this.revBtn('anchor', b.id, 'code', c.review.code, () => this.loadCode(b.id), c.reviewBy && c.reviewBy.code)}</span></div>`)}
+        <span class="rev">${this.revBtn('anchor', b.id, 'logical', c.review.logical, () => this.loadCode(b.id), c.reviewBy && c.reviewBy.logical, c.reviewVia && c.reviewVia.logical)}${this.revBtn('anchor', b.id, 'code', c.review.code, () => this.loadCode(b.id), c.reviewBy && c.reviewBy.code, c.reviewVia && c.reviewVia.code)}</span></div>`)}
       <div class="sec">code diff</div>
       ${when(this.state.codePending, () => html`<div class="loading">loading code…</div>`)}
       ${when(c, () => html`<pre class="hljs cdiff">${each(diffCodeRows(c.lines, c.lang), row => html`<div class="cl ${DTAG[row.tag] || 'ctx'}"><span class="g">${row.tag}</span><code>${raw(row.html || ' ')}</code></div>`, (row, i) => i)}</pre>`)}
@@ -2764,7 +2788,7 @@ class PrStoryPage extends Component {
     this.state.prRef = story ? story.refs.head : null;
     // Open the first chapter that still has unsigned work — the queue, not chapter 1.
     if (story && !Object.keys(this.state.open).length) {
-      const first = story.chapters.find(c => c.steps.some(s => !s.reviewed));
+      const first = story.chapters.find(c => c.steps.some(s => !this.stepSigned(s)));
       if (first) this.state.open = { [first.id]: true };
     }
     // Expanded code panes carry their own copy of a step's annotations, so a
@@ -2865,7 +2889,7 @@ class PrStoryPage extends Component {
   walkChapterEl(u, ch, steps, stale) {
     const ids = ch.blocks.filter(b => b.kind === 'symbol').map(b => b.anchorId);
     const mine = ids.map(id => steps.get(id)).filter(Boolean);
-    const signed = mine.filter(s => s.reviewed).length;
+    const signed = mine.filter(s => this.stepSigned(s)).length;
     const viewed = mine.filter(s => s.viewed).length;
     const busy = !!this.state.chapterBusy[ch.id];
     const open = this.state.open[ch.id] !== false;          // chapters start open — this is the reading order
@@ -2913,11 +2937,19 @@ class PrStoryPage extends Component {
 
   walkOrder() { return readingOrder(this.state.story, this.stepsByAnchor()); }
 
+  /**
+   * Done with this symbol. `step.reviewed` alone is not it: an unverifiable
+   * sign-off is `reviewed` server-side (see `isUnverifiable`) yet vouches for a
+   * body this build cannot compare, so counting it as signed advances the
+   * walkthrough past the one symbol that still wants a click.
+   */
+  stepSigned(step) { return !!step && step.reviewed && !isUnverifiable(step.review); }
+
   /** The next symbol still needing attention, in reading order. */
   nextUnsignedAfter(anchorId, flat = this.walkOrder()) {
     const i = flat.findIndex(x => x.step.anchorId === anchorId);
     if (i < 0) return null;
-    return flat.slice(i + 1).find(x => !x.step.reviewed) || null;
+    return flat.slice(i + 1).find(x => !this.stepSigned(x.step)) || null;
   }
 
   /**
@@ -2955,9 +2987,9 @@ class PrStoryPage extends Component {
     )) };
   }
 
-  async markStep(step, attestation, state, actor) {
+  async markStep(step, attestation, state, actor, via) {
     const id = step.anchorId;
-    const unmark = state === 'reviewed' && actor !== 'agent';
+    const unmark = unmarkOn(state, actor, via);
     // No story reload. Re-deriving the whole pull request to learn one symbol's new
     // state is seconds of work on a big PR; the write hands the resulting marks back,
     // and they are the SERVER's marks rather than a guess — the state has nuance
@@ -2985,7 +3017,7 @@ class PrStoryPage extends Component {
     const open = { ...this.state.open };
     const here = flat.find(x => x.step.anchorId === id);
     const mine = here ? flat.filter(x => x.chapter.id === here.chapter.id) : [];
-    if (here && here.chapter.id !== UNCOVERED_ID && mine.every(x => x.step.reviewed))
+    if (here && here.chapter.id !== UNCOVERED_ID && mine.every(x => this.stepSigned(x.step)))
       open[here.chapter.id] = false;                                       // chapter finished — fold it away
     if (next) open[next.chapter.id] = true;
     this.state.code = code;
@@ -3541,7 +3573,7 @@ class PrStoryPage extends Component {
     const code = isErr(held) ? null : held;
     const finds = openFindingCount(step.annotations);
     const src = code ? this.sourceOf(code) : null;
-    return html`<div class="prstep ${step.reviewed ? 'done' : ''}" id="step-${step.anchorId}">
+    return html`<div class="prstep ${this.stepSigned(step) ? 'done' : ''}" id="step-${step.anchorId}">
       <div class="prsthead" on-click="${() => this.openStep(step)}">
         <span class="prlayer" title="position on the command → read-model spine">${LAYER_NAME[step.layer] || 'code'}</span>
         <span class="prchg" style="color:${CHANGE_COLOR[step.change] || '#8b949e'}">${step.change}</span>
@@ -3549,7 +3581,7 @@ class PrStoryPage extends Component {
         <code class="prsig">${step.signature || step.symbol}</code>
         <span class="dim prfile">${step.file.split('/').pop()}</span>
         ${when(finds, () => html`<span class="prfind" title="${finds} open finding(s)">⚑${finds}</span>`)}
-        <span class="prrev" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">${reviewRowEl({ code: step.review || { state: step.reviewed ? 'reviewed' : 'unreviewed' } }, { code: step.viewedMark || { state: step.viewed ? 'reviewed' : 'unreviewed' } }, (att, st, actor) => this.markStep(step, att, st, actor), 'code', this.coverLabel(step))}</span>
+        <span class="prrev" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">${reviewRowEl({ code: step.review || { state: step.reviewed ? 'reviewed' : 'unreviewed' } }, { code: step.viewedMark || { state: step.viewed ? 'reviewed' : 'unreviewed' } }, (att, st, actor, via) => this.markStep(step, att, st, actor, via), 'code', this.coverLabel(step))}</span>
       </div>
       ${when(this.state.pending[step.anchorId], () => html`<div class="dim prload">loading source…</div>`)}
       ${when(!!code, () => html`<div class="prsbody">
@@ -3569,7 +3601,7 @@ class PrStoryPage extends Component {
 
   chapterEl(u, ch) {
     const open = !!this.state.open[ch.id];
-    const done = ch.steps.filter(s => s.reviewed).length;
+    const done = ch.steps.filter(s => this.stepSigned(s)).length;
     return html`<section class="prchapter ${ch.source}">
       <div class="prchead" on-click="${() => this.toggleChapter(ch.id)}">
         <span class="prtwisty">${open ? '▾' : '▸'}</span>
@@ -3624,7 +3656,7 @@ class PrStoryPage extends Component {
     const failed = taskError(this.load) ?? this.state.storyErr;
     if (failed) return pageShell(null, failed, html``);
     if (!st) return html`<main><div class="loading">loading pull request…</div></main>`;
-    const signed = st.chapters.reduce((n, c) => n + c.steps.filter(s => s.reviewed).length, 0);
+    const signed = st.chapters.reduce((n, c) => n + c.steps.filter(s => this.stepSigned(s)).length, 0);
     return pageShell(st, null, html`
       <div class="prhead">
         <h2>#${st.pr.number} ${st.pr.title}</h2>

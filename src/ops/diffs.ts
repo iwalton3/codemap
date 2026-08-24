@@ -43,6 +43,9 @@ export async function diffCode(root: string, base: string, head: string | undefi
     ...code,
     review: { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" },
     reviewBy: { logical: rp?.logical.actor ?? null, code: rp?.code.actor ?? null },
+    // `via` travels with every mark a surface can DRAW, or that surface renders an
+    // unverifiable sign-off as an ordinary green tick and clears it on click.
+    reviewVia: { logical: rp?.logical.via, code: rp?.code.via },
     viewed: { logical: e?.viewed.logical.state ?? "unreviewed", code: e?.viewed.code.state ?? "unreviewed" },
     triage: e?.triage,
     severity: e?.triage.severity ?? "untriaged",

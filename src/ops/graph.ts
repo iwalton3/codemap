@@ -108,6 +108,7 @@ export async function nodeCatalog(root: string) {
       versionCount: n.versionCount ?? 1,
       review: { logical: review.logical.state, code: review.code.state },
       reviewBy: { logical: rp?.logical.actor ?? null, code: codeReview.actor },
+      reviewVia: { logical: rp?.logical.via, code: rp?.code.via },
       codeReview,
       viewed: { logical: e?.viewed.logical.state ?? "unreviewed", code: e?.viewed.code.state ?? "unreviewed" },
       trust: trustOf(n.status, review),
@@ -206,6 +207,7 @@ export async function eventMatrix(root: string) {
         orphan: folds === 0 && projects === 0,
         review: { logical: rp?.logical.state ?? "unreviewed", code: codeReview.state },
         reviewBy: { logical: rp?.logical.actor ?? null, code: codeReview.actor },
+        reviewVia: { logical: rp?.logical.via, code: rp?.code.via },
         codeReview,
       };
     })

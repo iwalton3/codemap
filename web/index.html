@@ -565,12 +565,14 @@
     .prload { padding: 6px 10px; font-size: 12px; }
     .prbase { border: 1px solid var(--border); border-radius: 6px; padding: 8px; overflow-x: auto; opacity: 0.85; }
     .rev button.reverted, button.reverted { border-color: #8a5a2b; color: #f0a35e; }
-    /* Not a warning colour: nothing drifted. The mark stands and cannot be checked. */
-    .rev button.unverifiable, .nrev button.unverifiable, button.unverifiable { border-color: var(--border); color: var(--dim); }
-    .rd.unverifiable { background: var(--dim); }
+    /* Warning colour, but its own glyph (?) and tooltip: nothing DRIFTED — the mark
+       simply cannot be checked against this build, and the fix is to click it. */
+    .rev button.unverifiable, .nrev button.unverifiable, button.unverifiable { border-color: var(--warn); color: var(--warn); background: rgba(240,163,94,0.08); }
+    .rd.unverifiable { background: var(--warn); }
     .viaflag { font-size: 11px; padding: 0 6px; border-radius: 10px; border: 1px solid var(--border); white-space: nowrap; }
     .viaflag.rev-back { border-color: #8a5a2b; color: #f0a35e; }
     .viaflag.rev-replay { border-color: #2d4a63; color: #79c0ff; }
+    .viaflag.unverifiable { border-color: var(--warn); color: var(--warn); }
     .rd.reverted { background: #f0a35e; }
     .rheat.has-reverted { outline: 1px solid #8a5a2b; outline-offset: 1px; }
     .prbadge.promoted { border-color: #2f5d3a; color: #7ee787; cursor: pointer; }

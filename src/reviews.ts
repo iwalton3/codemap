@@ -427,6 +427,13 @@ export interface DerivedCodeReview {
   replayed: number;
   /** Segments approved before the code moved BACK to that body on this history (⟲). */
   reverted: number;
+  /**
+   * Segments whose witness was hashed by another build, so the approval cannot be
+   * checked against this one (?). Counted, not folded into `stale`: nothing drifted.
+   * A rollup that omitted it read `signed === total` and drew a plain green tick
+   * over segments its own buttons were drawing in the warning colour.
+   */
+  unverifiable: number;
 }
 
 /**
@@ -450,7 +457,8 @@ export function deriveCodeReview(anchorCode: ReviewInfo[]): DerivedCodeReview {
   // per-anchor button and every summary above it shows a plain tick.
   const replayed = anchorCode.filter((a) => a.state === "reviewed" && a.via === "replayed").length;
   const reverted = anchorCode.filter((a) => a.state === "reviewed" && a.via === "reverted").length;
-  return { state, actor, signed, total, stale, replayed, reverted };
+  const unverifiable = anchorCode.filter((a) => a.state === "reviewed" && a.via === "unverifiable").length;
+  return { state, actor, signed, total, stale, replayed, reverted, unverifiable };
 }
 
 export interface AnchorChange {

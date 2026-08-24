@@ -95,3 +95,68 @@ test("every surface that draws a mark is PASSED the via", () => {
     );
   }
 });
+
+/**
+ * The other half of "a mark says why it is green": what the CLICK does.
+ *
+ * `unverifiable` is the one via whose mark is not a claim about the code — the two
+ * builds hash bodies differently, so nothing can be compared. Clearing it on click
+ * throws away an acceptance history that was never alleged to be wrong; re-signing
+ * it against this build is the recovery, and the tooltip has promised exactly that
+ * since the via was introduced. It was the promise, and not the behaviour, for as
+ * long as every handler computed `unmark` from `state` alone.
+ */
+test("clicking a mark that cannot be verified re-signs it instead of clearing it", () => {
+  const app = readFileSync(APP, "utf8");
+  const fn = /const unmarkOn = [^\n]*\n/.exec(app);
+  assert.ok(fn, "unmarkOn is gone or renamed — it is what makes the tooltip's promise true");
+  assert.match(fn![0]!, /via !== 'unverifiable'/, "unmarkOn no longer exempts the unverifiable case");
+
+  // Every surface computes its own `unmark` (the rules differ: some clear an agent
+  // check, some upgrade it), so the shared exemption has to appear in each one.
+  const decisions = [...app.matchAll(/const unmark = ([^;]+);/g)].map((m) => m[1]!);
+  assert.ok(decisions.length >= 5, `only ${decisions.length} unmark decisions found — the regex has drifted`);
+  for (const d of decisions) {
+    assert.match(
+      d, /unmarkOn\(|via !== 'unverifiable'/,
+      `\`const unmark = ${d}\` decides from the state alone, so on that surface a mark `
+      + "that could not be checked is CLEARED by the click that was supposed to re-sign it.",
+    );
+  }
+});
+
+test("and the via reaches the handler that decides it", () => {
+  // `markBtnEl` is the only place the click is wired, but every consumer passes its
+  // own callback — one that stops at `actor` silently drops the argument `unmarkOn`
+  // needs, and `via` arrives as undefined: a clear again, with no error anywhere.
+  const app = readFileSync(APP, "utf8");
+  assert.match(app, /onMark\(attestation, st, actor, via\)/, "markBtnEl no longer passes the via on click");
+  const short = [...app.matchAll(/\((?:att|attestation), (?:st|state), actor\)\s*=>/g)];
+  assert.deepEqual(
+    short.map((m) => m[0]!), [],
+    "a review-mark callback that stops at `actor` cannot tell a re-sign from a clear",
+  );
+});
+
+/**
+ * An unverifiable sign-off is `reviewed` server-side and stays that way — a scheme
+ * bump must not rewrite what people signed. The consequence is that every client
+ * counter reading `step.reviewed` retires it, and the walkthrough's advance walks
+ * the reviewer straight past the one symbol that still wants a click. `stepSigned`
+ * is the single predicate they all go through.
+ */
+test("the walkthrough does not retire a symbol whose sign-off it could not check", () => {
+  const app = readFileSync(APP, "utf8");
+  assert.match(app, /stepSigned\(step\) \{[^}]*isUnverifiable\(step\.review\)/, "stepSigned is gone, renamed, or no longer excludes the unverifiable case");
+  const next = /nextUnsignedAfter\(anchorId[\s\S]*?\n  \}/.exec(app);
+  assert.ok(next, "nextUnsignedAfter is gone or renamed");
+  assert.match(
+    next![0]!, /this\.stepSigned\(/,
+    "the advance reads `step.reviewed` directly again, which skips an unverifiable mark",
+  );
+  // The per-node code queue has the same rule under a different name: `hide signed`,
+  // the collapse default and "next unsigned ↓" all read `isDone`.
+  const done = /isDone\(s\) \{[^}]*\}/.exec(app);
+  assert.ok(done, "isDone is gone or renamed");
+  assert.match(done![0]!, /isUnverifiable\(/, "the code-review queue hides segments it could not verify");
+});

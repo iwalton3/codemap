@@ -121,7 +121,7 @@ test("changedSince finds the mark and reports no drift when code is unchanged", 
 });
 
 test("deriveCodeReview: a node is code-reviewed only when every segment is signed", () => {
-  const base = { replayed: 0, reverted: 0 };
+  const base = { replayed: 0, reverted: 0, unverifiable: 0 };
   // no segments → nothing to review
   assert.deepEqual(deriveCodeReview([]), { state: "unreviewed", actor: null, signed: 0, total: 0, stale: 0, ...base });
   // partial → unreviewed, but progress is reported
@@ -151,6 +151,17 @@ test("deriveCodeReview carries how its ticks were earned up to the rollup", () =
   assert.equal(r.signed, 3);
   assert.equal(r.replayed, 1);
   assert.equal(r.reverted, 1);
+
+  // And the one whose mark cannot be checked at all: counted here so the rollup can
+  // draw the same warning its own per-segment buttons do, rather than a green tick
+  // over a segment nobody can verify.
+  const u = deriveCodeReview([
+    { state: "reviewed", actor: "human", via: "direct" },
+    { state: "reviewed", actor: "human", via: "unverifiable" },
+  ]);
+  assert.equal(u.state, "reviewed", "a scheme bump does not un-sign what was signed");
+  assert.equal(u.signed, 2);
+  assert.equal(u.unverifiable, 1);
 
   // counts only reviewed segments — an unreviewed one has no `via` to report
   const q = deriveCodeReview([{ state: "unreviewed", via: "replayed" }, { state: "reviewed", actor: "human" }]);
