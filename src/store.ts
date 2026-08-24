@@ -590,7 +590,10 @@ function rowToVersion(r: VersionRow): NodeVersion {
     citations: JSON.parse(r.citations ?? "[]"),
     ...(r.generated_by ? { generatedBy: r.generated_by } : {}),
     ...(r.removed ? { removed: true } : {}),
-    ...(r.origin ? { origin: r.origin } : {}),
+    // The SCOPE, not the marker: "which teammate's scope owns this" is the useful
+    // fact, and `source_scope` is what the suppression rule keys on.
+    ...(r.origin ? { origin: r.source_scope ?? r.origin } : {}),
+    ...(r.author ? { author: (JSON.parse(r.author) as { principal?: string }).principal } : {}),
     createdCommit: r.created_commit, createdBranch: r.created_branch, createdAt: r.created_at,
   };
 }
@@ -689,11 +692,25 @@ function workHashes(d: DatabaseSync, root: string): AnchorIndex {
   return anchorIndex(m, derivationsOf(seen), derivationLookup(root));
 }
 
-export async function loadNodes(root: string): Promise<LogicalNode[]> {
+/**
+ * Every live node, local and folded, resolved together.
+ *
+ * `excludeScopes` is the ONE place gap suppression can be turned off, and it exists
+ * because "show the rows" and "let the rows decide" are different permissions. A
+ * blocked scope may SHOW what the team wrote — hiding it makes an agent re-document
+ * over a colleague and manufactures the very contest the design exists to surface —
+ * and it may NOT decide there is no work here, because suppressing a gap is an
+ * authoritative act whose harm is invisible: it is what is missing from a list.
+ *
+ * So callers that DISPLAY pass nothing; callers that DECIDE (the work queue, and
+ * coverage feeding it) pass the blocked scopes. See `docsVerdict` in ops-shared.
+ */
+export async function loadNodes(root: string, excludeScopes?: ReadonlySet<string>): Promise<LogicalNode[]> {
   const d = db(root);
   const work = workHashes(d, root);
   const byNode = new Map<string, NodeVersion[]>();
   for (const r of d.prepare(`SELECT * FROM node_versions ${VERSION_ORDER}`).all() as unknown as VersionRow[]) {
+    if (excludeScopes?.size && r.source_scope && excludeScopes.has(r.source_scope)) continue;
     const v = rowToVersion(r);
     (byNode.get(v.nodeId) ?? byNode.set(v.nodeId, []).get(v.nodeId)!).push(v);
   }

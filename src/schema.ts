@@ -307,6 +307,8 @@ export interface NodeVersion {
    * which says a machine wrote the prose.
    */
   origin?: string;
+  /** Who wrote it, when the fold owns this row. The principal, not the whole actor. */
+  author?: string;
   /**
    * A tombstone — the doc's subject was intentionally removed. A tombstone is
    * "fresh" on a branch where its cited anchors are ABSENT (the removal holds),
@@ -345,6 +347,16 @@ export interface LogicalNode {
   danglingAnchors?: string[];
   /** How many versions this node has (>1 = forked). */
   versionCount?: number;
+  /**
+   * The sidecar scope this node's WINNING version came from, if a teammate wrote it.
+   *
+   * A field on the value on purpose: a caller that ignores it shows the doc, which is
+   * the safe default. Whether that scope may be BELIEVED is a separate question with
+   * one answer per scope — `docsVerdict` — rather than a copy per node that can drift.
+   */
+  origin?: string;
+  /** Who wrote the winning version, when it is a teammate's. */
+  author?: string;
 }
 
 export type EdgeType =

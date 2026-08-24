@@ -184,26 +184,31 @@ export async function findGaps(
   root: string,
   opts: { pathPrefix?: string; kind?: string; limit?: number } = {},
 ) {
-  const { store, result } = await coverageFor(root);
-  let open = store.anchors.filter((a) => result.state.get(a.id) === "open");
-  if (opts.pathPrefix) open = open.filter((a) => a.file.startsWith(opts.pathPrefix!));
-  if (opts.kind) open = open.filter((a) => a.kind === opts.kind);
-
   // Dynamic, like `mirrorNote` and `getAnchor`: the agnostic core does not depend on
   // the sidecar, and a shared store that is missing or unreadable must not break the
   // work queue that predates it.
   const shared = await import("../ops-shared.js").catch(() => null);
-  const candidates = shared ? await shared.sharedDocCandidates(root, open.map((a) => a.id)).catch(() => null) : null;
-  const theirs = candidates?.ids.length ? await shared!.sharedDocsCiting(root, candidates.ids).catch(() => null) : null;
-  // A blocked doc scope may SHOW what the team wrote and may not decide there is no
-  // work here — so a gap it would have removed stays in the queue. See §7.
-  const trusted = theirs?.status === "blocked" || candidates?.status === "blocked" ? [] : theirs?.docs ?? [];
+  const verdict = shared ? await shared.docsVerdict(root).catch(() => null) : null;
+
+  // A teammate's doc is an ordinary node now, so coverage already counts it and there
+  // is no second path to keep in step. What DOES need saying is which scopes may not
+  // decide: a blocked one still shows its rows and may not remove work from the queue.
+  const { store, nodes, result } = await coverageFor(root, verdict?.excludeFromDecisions);
+  let open = store.anchors.filter((a) => result.state.get(a.id) === "open");
+  if (opts.pathPrefix) open = open.filter((a) => a.file.startsWith(opts.pathPrefix!));
+  if (opts.kind) open = open.filter((a) => a.kind === opts.kind);
+
+  // Reported so the action is "go and read theirs", not "write a second doc about the
+  // same code". Read off the same rows coverage used, so the list and the suppression
+  // cannot disagree.
   const byAnchor = new Map<string, { nodeId: string; title: string; by?: string; status: string }[]>();
-  for (const d of trusted) {
-    for (const id of d.covers) (byAnchor.get(id) ?? byAnchor.set(id, []).get(id)!).push(
-      { nodeId: d.nodeId, title: d.title, by: d.by, status: d.status });
+  if (!verdict?.excludeFromDecisions.size) {
+    for (const n of nodes) {
+      if (!n.origin) continue;
+      for (const id of n.anchors) (byAnchor.get(id) ?? byAnchor.set(id, []).get(id)!).push(
+        { nodeId: n.id, title: n.title ?? "", ...(n.author ? { by: n.author } : {}), status: n.status ?? "" });
+    }
   }
-  if (byAnchor.size) open = open.filter((a) => !byAnchor.has(a.id));
 
   // Rank: type shells first (documenting a type organizes its members), then
   // callables by size (more lines ≈ more logic worth capturing).

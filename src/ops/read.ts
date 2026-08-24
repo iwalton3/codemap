@@ -142,6 +142,10 @@ export async function search(root: string, query: string, limit = 30) {
  * doc already answers, and focus its reading on the gaps when it doesn't.
  */
 export async function context(root: string, refs: string[]) {
+  // BEFORE the nodes are loaded, not after. `docsVerdict` is what folds the docs
+  // scope into `node_versions`, so asking it later means the first `context` on a
+  // fresh store reads the rows that fold was about to write. Ordering, not taste.
+  const verdict = await import("../ops-shared.js").then((m) => m.docsVerdict(root)).catch(() => null);
   const { store, nodes, result } = await coverageFor(root);
   const [graph, bugStore] = await Promise.all([readGraph(root), readBugs(root)]);
   const anchorsById = new Map(store.anchors.map((a) => [a.id, a]));
@@ -198,17 +202,25 @@ export async function context(root: string, refs: string[]) {
   // Gaps = scope anchors with no readable doc that aren't intentionally excluded:
   // `open`, or `covered`-by-a-rule but no doc actually cites anything in the file.
   // (`cited`/`trivial`/`deferred`/`owned` are not gaps.)
-  // What the TEAM has written about this scope. `covering` is this machine's nodes,
-  // so without it the answer to "is this documented" is one person's half of it —
-  // and `context` is the call an agent makes FIRST, which makes it the worst place
-  // to be blind to a colleague's doc. See `sharedCoverage`.
-  const team = await import("../ops-shared.js").then((m) => m.sharedCoverage(root, scopeIds)).catch(() => null);
+  // A teammate's doc is an ordinary node now, so `covering` already holds it and
+  // there is no second lookup to keep in step — which is what stopped `context`, the
+  // call an agent makes FIRST, being blind to half the answer.
+  //
+  // What still needs deciding is which scopes may DECIDE. A blocked one shows its
+  // rows and may not remove a gap, so it is filtered out of the deciding set only.
+  const blocked = verdict?.excludeFromDecisions;
+  const deciding = blocked?.size ? covering.filter((n) => !n.origin || !blocked.has(n.origin)) : covering;
+  const decides = (id: string) => deciding.some((n) => n.anchors.includes(id));
   const gaps = scopeIds.filter((id) => {
     const st = result.state.get(id);
-    if (team?.covered.has(id)) return false;   // somebody documented it; reading theirs is the work
+    if (decides(id)) return false;   // somebody documented it; reading theirs is the work
     return st === "open" || (st === "covered" && !docFiles.has(fileOf(id) ?? ""));
   }).map((id) => anchorBrief(anchorsById.get(id)!));
-  const withDoc = scopeIds.filter((id) => covering.some((n) => n.anchors.includes(id)) || team?.covered.has(id)).length;
+  const withDoc = scopeIds.filter((id) => covering.some((n) => n.anchors.includes(id))).length;
+  const teamDocs = covering.filter((n) => n.origin).map((n) => ({
+    nodeId: n.id, title: n.title, ...(n.author ? { by: n.author } : {}), status: n.status,
+    covers: n.anchors.filter((id) => scope.has(id)),
+  }));
 
   const bugs = bugStore.bugs
     .filter((b) => b.status === "open" && b.anchors.some((id) => scope.has(id)))
@@ -219,11 +231,12 @@ export async function context(root: string, refs: string[]) {
     withDoc,           // scope anchors a doc directly cites
     gaps,              // scope anchors with no readable doc (the explore-then-document list)
     docs,
-    ...(team?.docs.length ? { sharedDocs: team.docs } : {}),
+    ...(teamDocs.length ? { sharedDocs: teamDocs } : {}),
+    ...(verdict && verdict.status !== "complete" ? { sharedDocsVerdict: verdict.status } : {}),
     // The team's half of this answer came from a scope that cannot be answered
     // from. Said out loud because coverage SUPPRESSES gaps — the harm is what is
     // missing from the list above, which nothing else here can hint at.
-    ...(team?.scope ? { sharedScope: team.scope } : {}),
+    ...(verdict && verdict.status !== "complete" && verdict.scope ? { sharedScope: verdict.scope } : {}),
     flows,
     bugs,
     // A one-line read for the agent: is this area answered by something, and how much to trust it?
@@ -232,13 +245,13 @@ export async function context(root: string, refs: string[]) {
       : docs.some((d) => d.trust === "checked") ? "covered — agent-checked docs exist; solid, spot-check if critical"
       : docs.some((d) => d.trust === "unverified") ? "partial — docs exist but unchecked; use as hypotheses, verify against code (and sanity_check what holds)"
       : docs.some((d) => d.trust === "stale") ? "stale — docs here need re-validation against current code"
-      // Ranked BELOW every local verdict and above `gap`: a teammate's doc is real
-      // coverage, but it is not in this store, so the honest instruction is to go and
-      // read it rather than to rely on it sight unseen.
-      // Not when the scope is blocked. The docs are still listed above so a reader
-      // can go and look, but "covered" is a decision, and a blocked scope does not
-      // get to make one — the gaps it would have removed are back in the list.
-      : team?.docs.length && !team.scope ? `documented by the team — ${team.docs.length} shared doc(s) cover this; read them with \`shared_docs\` before exploring`
+      // Below every trust-based verdict, and only when nothing else spoke: a
+      // teammate's doc IS in this store now, so how much to trust it is the same
+      // question as for any other doc and the branches above already answer it. This
+      // is the case where the team's doc is the only coverage and carries no trust
+      // signal yet. Not when the scope is blocked: the docs are still listed so a
+      // reader can look, but "covered" is a decision a blocked scope may not make.
+      : teamDocs.length && !blocked?.size ? `documented by the team — ${teamDocs.length} shared doc(s) cover this; read them with \`shared_docs\` before exploring`
       : gaps.length ? "gap — no docs cover this code; explore, then document the reusable claims"
       : "no docs and no open gaps (this code may be intentionally deferred/trivial)",
     ...(errors.length ? { errors } : {}),
@@ -246,6 +259,10 @@ export async function context(root: string, refs: string[]) {
 }
 
 export async function getAnchor(root: string, id: string) {
+  // BEFORE the nodes, for the same reason `context` does it: `docsVerdict` is what
+  // folds the docs scope into `node_versions`, so asking after would read the rows
+  // that fold was about to write.
+  const anchorVerdict = await import("../ops-shared.js").then((m) => m.docsVerdict(root)).catch(() => null);
   const [store, nodes, bugStore, annStore] = await Promise.all([
     readAnchorStore(root), loadNodes(root), readBugs(root), readAnnotations(root),
   ]);
@@ -290,9 +307,12 @@ export async function getAnchor(root: string, id: string) {
   // Dynamic, like `mirrorNote`: the agnostic core does not depend on the sidecar,
   // and a shared store that is missing or unreadable must not fail a local read
   // that worked before shared docs existed.
-  const sharedCites = await import("../ops-shared.js")
-    .then((m) => m.sharedDocsCiting(root, [id]))
-    .catch(() => null);
+  // `citing` already includes a teammate's doc — it is an ordinary node. Reported
+  // separately so a reader can tell whose it is; `getAnchor` suppresses nothing, so
+  // it needs no verdict to decide with, only one to report.
+  const sharedCites = citing.filter((n) => n.origin).map((n) => ({
+    nodeId: n.id, title: n.title, ...(n.author ? { by: n.author } : {}), status: n.status,
+  }));
   return {
     ...anchorBrief(anchor),
     present,
@@ -319,10 +339,11 @@ export async function getAnchor(root: string, id: string) {
     // Separate from `citedBy` rather than merged: one is this machine's store and
     // the other is the sidecar's, and merging them makes "who says so"
     // unanswerable from the reply.
-    ...(sharedCites?.docs.length ? { sharedDocs: sharedCites.docs } : {}),
+    ...(sharedCites.length ? { sharedDocs: sharedCites } : {}),
     // A read, not a decision: `getAnchor` shows the team's docs and suppresses
     // nothing, so a blocked scope is reported rather than emptied. See §7.
-    ...(sharedCites?.status === "blocked" ? { sharedScope: { status: "blocked" as const, diagnostic: sharedCites.diagnostic } } : {}),
+    ...(anchorVerdict && anchorVerdict.status !== "complete"
+      ? { sharedScope: { status: anchorVerdict.status, diagnostic: anchorVerdict.diagnostic } } : {}),
     bugs: bugStore.bugs.filter((b) => b.anchors.includes(id)).map((b) => ({ id: b.id, title: b.title, status: b.status })),
     annotations: annStore.annotations.filter((a) => a.target.kind === "anchor" && a.target.id === id),
     lang: langFor(anchor.file),

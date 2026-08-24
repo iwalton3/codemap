@@ -350,22 +350,19 @@ test("a teammate's doc is visible on the anchor it describes", async () => {
       createdCommit: null, createdBranch: null,
     } as never);
 
-    const hit = await shared.sharedDocsCiting(u.root, [transfer.id]);
-    assert.equal(hit!.docs.length, 1);
-    assert.equal(hit!.status, "complete", "and the scope it came from is answerable");
-    assert.equal(hit!.docs[0]!.nodeId, "n_transfer");
-    assert.equal(hit!.docs[0]!.by, "dana@x.com", "and who on the team said it");
-    assert.equal(hit!.docs[0]!.status, "fresh", "the verdict is evalVersion's, not a fourth re-derivation");
-    assert.deepEqual(hit!.docs[0]!.covers, [transfer.id]);
-
-    // The control: the reverse lookup must select, not just return everything.
-    assert.deepEqual((await shared.sharedDocsCiting(u.root, [post.id]))!.docs, [],
-      "a doc that cites another symbol is not this symbol's documentation");
-    assert.deepEqual((await shared.sharedDocsCiting(u.root, []))!.docs, []);
-
+    // Asked through the front door. `sharedDocsCiting` was the bridge that existed
+    // because a teammate's doc lived outside `node_versions`; it is an ordinary node
+    // now, so `getAnchor` answers this directly and there is no second path to keep
+    // in step. The QUESTION is what matters and it is the same one.
     const a = await getAnchor(u.root, transfer.id) as any;
     assert.equal(a.sharedDocs.length, 1);
+    assert.equal(a.sharedDocs[0]!.nodeId, "n_transfer");
     assert.equal(a.sharedDocs[0]!.title, "How a transfer settles");
+    assert.equal(a.sharedDocs[0]!.by, "dana@x.com", "and who on the team said it");
+    assert.equal(a.sharedDocs[0]!.status, "fresh", "the verdict is evalVersion's, not a re-derivation");
+    assert.equal(a.sharedScope, undefined, "a healthy scope says nothing extra");
+
+    // CONTROL — it must SELECT, not return everything.
     assert.equal((await getAnchor(u.root, post.id) as any).sharedDocs, undefined,
       "absent rather than empty — an anchor nobody documented says nothing about the team");
   } finally { u.cleanup(); }
@@ -383,7 +380,6 @@ test("no sidecar leaves the local read exactly as it was", async () => {
     await init(u.root);
     const id = (await readAnchorStore(u.root)).anchors[0]!.id;
     await withEnv({ CODEMAP_SIDECAR: undefined }, async () => {
-      assert.equal(await shared.sharedDocsCiting(u.root, [id]), null);
       const a = await getAnchor(u.root, id) as any;
       assert.equal(a.error, undefined);
       assert.equal(a.sharedDocs, undefined);
@@ -563,8 +559,14 @@ test("context answers for the team, not just for this machine", async () => {
     assert.equal(after.withDoc, 1);
     assert.equal(after.sharedDocs.length, 1);
     assert.equal(after.sharedDocs[0].title, "How a transfer settles");
-    assert.match(after.verdict, /documented by the team/);
-    assert.match(after.verdict, /read them/, "…and says to read theirs rather than trust them unseen");
+    // The verdict is the ordinary one now, and that is the change unification makes.
+    // "documented by the team — read them with `shared_docs`" existed because a
+    // teammate's doc was NOT in this store, so the only honest instruction was to go
+    // and fetch it. It is a `node_versions` row now: `get_node` shows it, coverage
+    // counts it, and how much to trust it is the same question as for any other doc.
+    // Whose it is has not been lost — `sharedDocs` above is what carries that.
+    assert.match(after.verdict, /^partial/, "trust ranking, not provenance ranking");
+    assert.equal(after.sharedDocs[0].by, "dana@x.com", "and it still says whose it is");
   } finally { u.cleanup(); }
 });
 

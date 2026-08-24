@@ -79,19 +79,61 @@ export const findingsProjection: Projection<Map<string, SharedFinding>> = {
  * forms rather than spot-checking fields.
  */
 export const docsProjection: Projection<Map<string, SharedDoc>> = {
+  /**
+   * Canonical rows: a teammate's doc is a `node_versions` row with an `origin`, not a
+   * row in a parallel table. Two tables holding one type, resolved by the same
+   * function and judged by the same verdict, is what forced a hand-written bridge
+   * onto every surface.
+   *
+   * **Replaces only what it owns.** `DELETE ... WHERE source_scope = ?` — never by
+   * `node_id`, which would take the user's own versions of a node they and a teammate
+   * both documented.
+   *
+   * **The adoption rule**, and without it this is a deterministic crash on the one
+   * store that matters. `publishLocalDocs` preserves the original `versionId` — it is
+   * a republication of history, not a new act — and the fold preserves ids from
+   * events. So on any store that authored a doc and then published it, the fold
+   * inserts a version id that already exists locally, `node_versions` keys on
+   * `version_id` alone, and the constraint violation happens INSIDE `readCached`'s
+   * transaction. The fold throws, every docs read on that store fails, and nothing
+   * about the failure moves the fingerprint, so it never self-heals.
+   *
+   * The row is the same row. So the fold ADOPTS it: stamps the provenance onto the
+   * existing local row rather than colliding with it. That is the truth of the
+   * situation — the local copy and the published copy are one version, which is
+   * exactly why the id was preserved.
+   */
   write(d: DatabaseSync, scope: string, value: Map<string, SharedDoc>): void {
-    for (const t of ["shared_doc", "shared_doc_version", "shared_doc_citation"]) {
-      d.prepare(`DELETE FROM ${t} WHERE scope = ?`).run(scope);
-    }
-    const insDoc = d.prepare("INSERT INTO shared_doc(scope,node_id,unmatched) VALUES(?,?,?)");
-    const insVer = d.prepare("INSERT INTO shared_doc_version(scope,node_id,version_id,ord,author,body) VALUES(?,?,?,?,?,?)");
-    const insCite = d.prepare("INSERT OR IGNORE INTO shared_doc_citation(scope,version_id,anchor_id) VALUES(?,?,?)");
+    d.prepare("DELETE FROM node_versions WHERE source_scope = ?").run(scope);
+    d.prepare("DELETE FROM shared_doc_unmatched WHERE scope = ?").run(scope);
+
+    const ins = d.prepare(
+      "INSERT INTO node_versions(version_id,node_id,type,title,summary,body,generated_by,created_commit,"
+      + "created_branch,created_at,citations,removed,origin,source_scope,ord,author) "
+      + "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    );
+    // Adoption: the local row IS this version. Stamped, not duplicated.
+    const adopt = d.prepare(
+      "UPDATE node_versions SET type=?,title=?,summary=?,body=?,created_commit=?,created_branch=?,"
+      + "created_at=?,citations=?,removed=?,origin=?,source_scope=?,ord=?,author=? WHERE version_id=?",
+    );
+    const exists = d.prepare("SELECT version_id FROM node_versions WHERE version_id = ?");
+    const insUnmatched = d.prepare("INSERT INTO shared_doc_unmatched(scope,node_id,body) VALUES(?,?,?)");
+
     for (const doc of value.values()) {
-      insDoc.run(scope, doc.nodeId, doc.unmatched?.length ? JSON.stringify(doc.unmatched) : null);
+      if (doc.unmatched?.length) insUnmatched.run(scope, doc.nodeId, JSON.stringify(doc.unmatched));
       doc.versions.forEach((v, i) => {
         const a = doc.authors.get(v.versionId);
-        insVer.run(scope, doc.nodeId, v.versionId, i, a ? JSON.stringify(a) : null, JSON.stringify(v));
-        for (const c of v.citations ?? []) insCite.run(scope, v.versionId, c.anchorId);
+        const author = a ? JSON.stringify(a) : null;
+        const cites = JSON.stringify(v.citations ?? []);
+        if (exists.get(v.versionId)) {
+          adopt.run(v.type, v.title, v.summary, v.body, v.createdCommit, v.createdBranch,
+            v.createdAt, cites, v.removed ? 1 : 0, "sync", scope, i, author, v.versionId);
+        } else {
+          ins.run(v.versionId, doc.nodeId, v.type, v.title, v.summary, v.body, v.generatedBy ?? null,
+            v.createdCommit, v.createdBranch, v.createdAt, cites, v.removed ? 1 : 0,
+            "sync", scope, i, author);
+        }
       });
     }
   },
@@ -111,9 +153,13 @@ export const docsProjection: Projection<Map<string, SharedDoc>> = {
  * against this instead, then ask `docsCiting` about what survives.
  */
 export function sharedCitedAnchors(root: string, scope: string): Set<string> {
-  const rows = db(root).prepare("SELECT DISTINCT anchor_id FROM shared_doc_citation WHERE scope = ?").all(scope) as unknown as
-    { anchor_id: string }[];
-  return new Set(rows.map((r) => r.anchor_id));
+  const out = new Set<string>();
+  for (const r of db(root).prepare("SELECT citations FROM node_versions WHERE source_scope = ?").all(scope) as unknown as
+    { citations: string }[]) {
+    try { for (const c of JSON.parse(r.citations ?? "[]") as { anchorId: string }[]) out.add(c.anchorId); }
+    catch { /* one unreadable row must not blind the whole answer */ }
+  }
+  return out;
 }
 
 /** Unfiltered, this is the projection's `read`; filtered, it is what makes
@@ -123,24 +169,50 @@ function readDocRows(d: DatabaseSync, scope: string, nodeIds?: string[]): Map<st
   if (nodeIds && !nodeIds.length) return out;
   const only = nodeIds ? ` AND node_id IN (${nodeIds.map(() => "?").join(",")})` : "";
   const args = nodeIds ? [scope, ...nodeIds] : [scope];
-  for (const r of d.prepare(`SELECT node_id, unmatched FROM shared_doc WHERE scope = ?${only} ORDER BY rowid`).all(...args) as unknown as
-    { node_id: string; unmatched: string | null }[]) {
-    const doc: SharedDoc = { nodeId: r.node_id, versions: [], authors: new Map<string, Actor>() };
-    if (r.unmatched) doc.unmatched = JSON.parse(r.unmatched) as UnmatchedAcceptance[];
-    out.set(r.node_id, doc);
-  }
-  for (const r of d.prepare(`SELECT node_id, version_id, author, body FROM shared_doc_version WHERE scope = ?${only} ORDER BY node_id, ord`).all(...args) as unknown as
-    { node_id: string; version_id: string; author: string | null; body: string }[]) {
-    const doc = out.get(r.node_id);
-    if (!doc) continue;
+  // `ord` is the fold's own order and is why it is a column: `versions` is oldest
+  // first and row order is not a property of a table.
+  for (const r of d.prepare(
+    `SELECT * FROM node_versions WHERE source_scope = ?${only} ORDER BY node_id, ord`,
+  ).all(...args) as unknown as (VersionRow & { author: string | null })[]) {
+    let doc = out.get(r.node_id);
+    if (!doc) { doc = { nodeId: r.node_id, versions: [], authors: new Map<string, Actor>() }; out.set(r.node_id, doc); }
     try {
-      doc.versions.push(JSON.parse(r.body) as NodeVersion);
+      doc.versions.push(versionFromRow(r));
       if (r.author) doc.authors.set(r.version_id, JSON.parse(r.author) as Actor);
     } catch {
-      throw new CorruptProjection(`shared_doc_version ${scope}/${r.version_id} is unreadable`);
+      throw new CorruptProjection(`node_versions ${scope}/${r.version_id} is unreadable`);
     }
   }
+  for (const r of d.prepare(`SELECT node_id, body FROM shared_doc_unmatched WHERE scope = ?`).all(scope) as unknown as
+    { node_id: string; body: string }[]) {
+    const doc = out.get(r.node_id);
+    if (!doc || (nodeIds && !nodeIds.includes(r.node_id))) continue;
+    try { doc.unmatched = JSON.parse(r.body) as UnmatchedAcceptance[]; }
+    catch { throw new CorruptProjection(`shared_doc_unmatched ${scope}/${r.node_id} is unreadable`); }
+  }
   return out;
+}
+
+/** A `node_versions` row as the `NodeVersion` the fold put in. */
+interface VersionRow {
+  version_id: string; node_id: string; type: string; title: string; summary: string; body: string;
+  generated_by: string | null; created_commit: string | null; created_branch: string | null;
+  created_at: string; citations: string; removed: number | null; origin: string | null;
+}
+
+function versionFromRow(r: VersionRow): NodeVersion {
+  return {
+    versionId: r.version_id, nodeId: r.node_id, type: r.type as NodeVersion["type"],
+    title: r.title ?? "", summary: r.summary ?? "", body: r.body ?? "",
+    citations: JSON.parse(r.citations ?? "[]"),
+    ...(r.generated_by ? { generatedBy: r.generated_by } : {}),
+    ...(r.removed ? { removed: true as const } : {}),
+    // NOT `origin`. The projection's contract is `read(write(x)) === x`, and origin is
+    // a fact about the ROW rather than part of the version the fold produced. The
+    // store's own `rowToVersion` does carry it, because store-level resolution is
+    // asking a different question: whose row is this.
+    createdCommit: r.created_commit, createdBranch: r.created_branch, createdAt: r.created_at,
+  };
 }
 
 /** Just those nodes, built the same way the whole-scope read builds them. */
@@ -163,12 +235,22 @@ export function docsByNode(root: string, scope: string, nodeIds: string[]): Map<
 export function docsCiting(root: string, scope: string, anchorIds: string[]): string[] {
   const ids = [...new Set(anchorIds)];
   if (!ids.length) return [];
-  const rows = db(root).prepare(
-    "SELECT DISTINCT v.node_id AS nodeId "
-    + "FROM shared_doc_citation c JOIN shared_doc_version v ON v.scope = c.scope AND v.version_id = c.version_id "
-    + `WHERE c.scope = ? AND c.anchor_id IN (${ids.map(() => "?").join(",")})`,
-  ).all(scope, ...ids) as unknown as { nodeId: string }[];
-  return rows.map((r) => r.nodeId);
+  // Over canonical rows now. The citation table is gone with the duality it served,
+  // and `citations` is JSON here exactly as it is for a local doc — so this scans the
+  // scope's rows rather than joining an index. That is the same shape the local
+  // coverage path already has, at the same scale (one universe's docs), and it is
+  // what removes the second table this function existed to bridge.
+  const want = new Set(ids);
+  const out = new Set<string>();
+  for (const r of db(root).prepare("SELECT node_id, citations FROM node_versions WHERE source_scope = ?")
+    .all(scope) as unknown as { node_id: string; citations: string }[]) {
+    try {
+      for (const c of JSON.parse(r.citations ?? "[]") as { anchorId: string }[]) {
+        if (want.has(c.anchorId)) { out.add(r.node_id); break; }
+      }
+    } catch { /* one unreadable row must not blind the whole answer */ }
+  }
+  return [...out];
 }
 
 /** Shared notes, keyed by scope (`notes/<universe>/<bucket>`). */

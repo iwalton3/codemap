@@ -128,6 +128,8 @@ export function resolveNode(versions: NodeVersion[], work: AnchorIndex, allVersi
     id: v.nodeId, type: v.type, title: v.title, summary: v.summary, body: v.body,
     anchors: v.citations.map((c) => c.anchorId),
     ...(v.generatedBy ? { generatedBy: v.generatedBy } : {}),
+    ...(v.origin ? { origin: v.origin } : {}),
+    ...(v.author ? { author: v.author } : {}),
     versionId: v.versionId, status: e.status, staleAnchors: e.stale, danglingAnchors: e.dangling,
     // The UNFILTERED count. A caller may hand `versions` a narrowed pool — the store
     // drops local tombstones from a node a teammate has documented — and counting

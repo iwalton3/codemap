@@ -222,3 +222,31 @@ test("removing a node that is only a teammate's does not report a deletion", asy
     assert.equal((await loadNodes(r.root)).some((n) => n.id === "n_mine"), false);
   } finally { r.cleanup(); }
 });
+
+test("a teammate's doc is an ordinary node, and a blocked scope may show but not decide", async () => {
+  // The whole point of the unification, end to end: the fold writes a canonical row,
+  // so `loadNodes` sees it with no bridge, and gap suppression follows from ordinary
+  // coverage. And the rule that keeps it honest — a blocked scope's rows still SHOW
+  // (hiding them makes an agent re-document over a colleague) but may not remove
+  // work from anybody's queue, because suppressing a gap is an authoritative act
+  // whose harm is invisible.
+  const r = await repo();
+  try {
+    foldRow(r.root, { versionId: "nv_team", nodeId: "n_pay",
+      citations: [{ anchorId: r.anchorId, acceptedHashes: [] }] });
+
+    const shown = await loadNodes(r.root);
+    assert.ok(shown.some((n) => n.id === "n_pay"), "it is just a node");
+    assert.equal(shown.find((n) => n.id === "n_pay")!.origin, "docs/acme/api", "carrying whose it is");
+    assert.equal(shown.find((n) => n.id === "n_pay")!.author, "dana@x.com");
+
+    // Deciding with that scope excluded — what a blocked verdict produces.
+    const deciding = await loadNodes(r.root, new Set(["docs/acme/api"]));
+    assert.equal(deciding.some((n) => n.id === "n_pay"), false, "it does not get to decide");
+
+    // CONTROL — excluding an unrelated scope changes nothing, so the mechanism is
+    // keyed on the scope rather than on "is it a teammate's".
+    const other = await loadNodes(r.root, new Set(["docs/somewhere/else"]));
+    assert.ok(other.some((n) => n.id === "n_pay"), "a healthy scope still decides");
+  } finally { r.cleanup(); }
+});

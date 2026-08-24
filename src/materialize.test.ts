@@ -187,11 +187,16 @@ test("a doc's authors Map and version order survive the round trip", async () =>
   } finally { [logRoot, root].forEach((r) => rmSync(r, { recursive: true, force: true })); }
 });
 
-test("the citation edge table is populated for the step-3b join", async () => {
+test("a folded doc lands as a canonical row, and its citations are answerable", async () => {
+  // This used to assert a separate `shared_doc_citation` table was populated. That
+  // table existed to bridge the duality — a teammate's doc living somewhere other
+  // than `node_versions` — and the duality is what the unification removes. The
+  // question it answered has to keep working, so that is what is asserted now.
   const logRoot = tmp("clog"), root = tmp("crepo");
   try {
     const { publishDocVersion, foldDocs, docScope } = await import("./shared-docs.js");
     const { db } = await import("./db.js");
+    const { docsCiting, sharedCitedAnchors } = await import("./shared-projections.js");
     const U = "acme/api";
     const vid = await publishDocVersion(logRoot, U, izzie, {
       nodeId: "n_pay", type: "concept", title: "t", summary: "s", body: "b",
@@ -199,9 +204,17 @@ test("the citation edge table is populated for the step-3b join", async () => {
       createdCommit: null, createdBranch: null,
     } as never);
     await readCached(root, logRoot, docScope(U), ID, foldDocs, docsProjection);
-    const rows = db(root).prepare("SELECT anchor_id FROM shared_doc_citation WHERE version_id = ? ORDER BY anchor_id").all(vid) as unknown as { anchor_id: string }[];
-    assert.deepEqual(rows.map((r) => r.anchor_id), ["a_1", "a_2"],
-      "lifted out of the JSON so an anchor lookup can be an index seek");
+
+    const row = db(root).prepare("SELECT node_id, origin, source_scope, ord FROM node_versions WHERE version_id = ?")
+      .get(vid) as { node_id: string; origin: string; source_scope: string; ord: number } | undefined;
+    assert.ok(row, "the teammate's version is a node_versions row");
+    assert.equal(row!.node_id, "n_pay");
+    assert.equal(row!.origin, "sync", "marked fold-owned, which is what fences local writes off it");
+    assert.equal(row!.source_scope, docScope(U), "and tagged with the scope that owns it");
+
+    assert.deepEqual([...sharedCitedAnchors(root, docScope(U))].sort(), ["a_1", "a_2"]);
+    assert.deepEqual(docsCiting(root, docScope(U), ["a_2"]), ["n_pay"]);
+    assert.deepEqual(docsCiting(root, docScope(U), ["a_nope"]), [], "and it does not match everything");
   } finally { [logRoot, root].forEach((r) => rmSync(r, { recursive: true, force: true })); }
 });
 

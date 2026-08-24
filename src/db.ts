@@ -155,6 +155,14 @@ function migrate(d: DatabaseSync): void {
       status TEXT NOT NULL DEFAULT 'complete',
       diagnostic TEXT
     );
+    -- Acceptances that could not be joined to any version or citation. Per NODE, not
+    -- per version, and a different entity kind from a doc — "an acceptance that could
+    -- not land" — so its own table is the one-canonical-table rule applied rather than
+    -- violated. Entirely fold-owned; no local writer exists.
+    CREATE TABLE IF NOT EXISTS shared_doc_unmatched (
+      scope TEXT NOT NULL, node_id TEXT NOT NULL, body TEXT NOT NULL,
+      PRIMARY KEY (scope, node_id)
+    );
     CREATE TABLE IF NOT EXISTS shared_finding (
       scope TEXT NOT NULL, id TEXT NOT NULL,
       target_kind TEXT NOT NULL, target_id TEXT NOT NULL,

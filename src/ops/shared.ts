@@ -86,8 +86,8 @@ export function trustOf(status: string | undefined, review?: { logical: ReviewLi
 }
 
 /** Effective coverage state per anchor, from citation + stored rules. */
-export async function coverageFor(root: string): Promise<{ store: Awaited<ReturnType<typeof readAnchorStore>>; nodes: LogicalNode[]; result: CoverageResult }> {
-  const [store, nodes, cov] = await Promise.all([readAnchorStore(root), loadNodes(root), readCoverage(root)]);
+export async function coverageFor(root: string, excludeScopes?: ReadonlySet<string>): Promise<{ store: Awaited<ReturnType<typeof readAnchorStore>>; nodes: LogicalNode[]; result: CoverageResult }> {
+  const [store, nodes, cov] = await Promise.all([readAnchorStore(root), loadNodes(root, excludeScopes), readCoverage(root)]);
   const cited = new Set(nodes.flatMap((n) => n.anchors));
   return { store, nodes, result: resolveCoverage(store.anchors, cited, cov.rules) };
 }
