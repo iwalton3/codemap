@@ -118,8 +118,6 @@ function migrate(d: DatabaseSync): void {
       ord INTEGER, author TEXT
     );
     CREATE INDEX IF NOT EXISTS ix_nv_node ON node_versions(node_id);
-    -- A per-fold DELETE WHERE source_scope = ? is a table scan without this.
-    CREATE INDEX IF NOT EXISTS ix_nv_scope ON node_versions(source_scope);
     CREATE TABLE IF NOT EXISTS edges (
       rowid INTEGER PRIMARY KEY, from_id TEXT, to_id TEXT, type TEXT, ord INTEGER, generated_by TEXT
     );
@@ -165,9 +163,12 @@ function migrate(d: DatabaseSync): void {
     );
     -- One row per author per pull request: a later publication by the same person
     -- replaces their earlier one, and two people's walkthroughs are two answers.
+    -- No at or head column. Both are already in body and neither is queried, and
+    -- "at NOT NULL" was a domain mismatch with the envelope, which does not require
+    -- at — one accepted event without it poisoned materialization of the whole
+    -- scope. A column that stores nothing anybody asks for can only be wrong.
     CREATE TABLE IF NOT EXISTS shared_walkthrough (
-      scope TEXT NOT NULL, author TEXT NOT NULL, event_id TEXT NOT NULL,
-      at TEXT NOT NULL, head TEXT NOT NULL, body TEXT NOT NULL,
+      scope TEXT NOT NULL, author TEXT NOT NULL, event_id TEXT NOT NULL, body TEXT NOT NULL,
       PRIMARY KEY (scope, author)
     );
     CREATE TABLE IF NOT EXISTS shared_finding (
@@ -218,6 +219,14 @@ function migrate(d: DatabaseSync): void {
   for (const col of ["origin TEXT", "source_scope TEXT", "publication_state TEXT", "ord INTEGER", "author TEXT"]) {
     try { d.exec(`ALTER TABLE node_versions ADD COLUMN ${col}`); } catch { /* already present */ }
   }
+  // AFTER the ladder, never in the CREATE block above. On a fresh database the
+  // `CREATE TABLE` already has `source_scope`, so an index on it there works and the
+  // whole suite passes. On an EXISTING one the table is a no-op, the column does not
+  // arrive until the ALTER below, and indexing it throws `no such column` — which
+  // fails `migrate`, which fails `db()`, which means the build cannot open any store
+  // that predates the column. Found by opening a real store; no test could catch it
+  // because every test starts from an empty database.
+  // A per-fold `DELETE WHERE source_scope = ?` is a table scan without it.
   try { d.exec("CREATE INDEX IF NOT EXISTS ix_nv_scope ON node_versions(source_scope)"); } catch { /* fine */ }
   // The `shared_scope.status` / `.diagnostic` rungs are GONE with the protocol-1
   // freeze: both columns are in the CREATE above, and the only stores that ever

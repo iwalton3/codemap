@@ -433,3 +433,31 @@ test("editing your OWN doc still forks locally and does not touch the sidecar", 
     });
   } finally { u.cleanup(); }
 });
+
+test("a shared edit carries the witness state, rather than resetting it", async () => {
+  // Publishing `acceptedHashes: []` resets the evidence: the new version wins, cites
+  // the same code, and carries nothing saying it was ever checked against it — so an
+  // edit made against code that has NOT moved immediately reads `unverifiable`. A doc
+  // reporting itself unverifiable the moment somebody improved its prose is worse than
+  // the prose being slightly worse.
+  const u = await sharedUniverse();
+  try {
+    await withEnv({ CODEMAP_SIDECAR: undefined, CODEMAP_AGENT_MODEL: undefined }, async () => {
+      const { updateNode, confirm } = await import("./ops.js");
+      // Give the team's version real evidence first, the way a person would.
+      await confirm(u.root, "n_team");
+      const before = (await loadNodeVersions(u.root, "n_team"))
+        .flatMap((v) => v.citations.flatMap((c) => c.acceptedHashes));
+      assert.ok(before.length, "precondition: the team version has accepted hashes");
+
+      await updateNode(u.root, { id: "n_team", setBody: "my addition" });
+      const edited = (await loadNodeVersions(u.root, "n_team")).find((v) => v.body === "my addition")!;
+      assert.ok(edited.citations[0]!.acceptedHashes.length,
+        "the edit kept the evidence its subject was checked against");
+
+      // CONTROL — and the doc actually resolves as checked rather than unverifiable.
+      const node = (await loadNodes(u.root)).find((n) => n.id === "n_team")!;
+      assert.notEqual(node.status, "unverifiable", `resolved as ${node.status}`);
+    });
+  } finally { u.cleanup(); }
+});

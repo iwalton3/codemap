@@ -8,11 +8,26 @@ import { reviewTriageFor } from "../triage.js";
  * path), or pass a second cached ref for a pure historical set-op.
  */
 export async function diff(root: string, base: string, head?: string) {
+  await materializeDocs(root);
   return computeDiff(root, base, head);
+}
+
+/**
+ * Fold the docs scope before a read that goes STRAIGHT to `diff.ts`.
+ *
+ * Swapping `loadNodes` for `loadNodesShared` inside `src/ops/` did not cover these:
+ * they call into `diff.ts`, which reads the store directly. So on a store whose docs
+ * scope had not been folded by some unrelated read, `diff` and `docDiff` omitted
+ * teammate docs entirely — which is precisely the attribution the diff surfaces were
+ * just taught to show. Materialize at the public boundary instead.
+ */
+async function materializeDocs(root: string): Promise<void> {
+  await import("../ops-shared.js").then((m) => m.docsVerdict(root)).catch(() => null);
 }
 
 /** Diff a doc's prose between the versions that win on base vs head (grounds the code diff). */
 export async function docDiff(root: string, base: string, head: string | undefined, id: string) {
+  await materializeDocs(root);
   return computeDocDiff(root, base, head, id);
 }
 

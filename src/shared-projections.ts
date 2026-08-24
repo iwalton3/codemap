@@ -270,12 +270,8 @@ export const notesProjection: Projection<Map<string, SharedNote>> = {
 export const walkthroughsProjection: Projection<SharedWalkthrough[]> = {
   write(d: DatabaseSync, scope: string, value: SharedWalkthrough[]): void {
     d.prepare("DELETE FROM shared_walkthrough WHERE scope = ?").run(scope);
-    const ins = d.prepare(
-      "INSERT INTO shared_walkthrough(scope,author,event_id,at,head,body) VALUES(?,?,?,?,?,?)",
-    );
-    for (const w of value) {
-      ins.run(scope, w.actor.principal, w.eventId, w.at, w.walkthrough.head, JSON.stringify(w));
-    }
+    const ins = d.prepare("INSERT INTO shared_walkthrough(scope,author,event_id,body) VALUES(?,?,?,?)");
+    for (const w of value) ins.run(scope, w.actor.principal, w.eventId, JSON.stringify(w));
   },
 
   read(d: DatabaseSync, scope: string): SharedWalkthrough[] {

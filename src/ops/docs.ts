@@ -1,4 +1,5 @@
 import { type LogicalNodeType, type EdgeType, type Edge } from "../schema.js";
+import { liveHashes } from "../reviews.js";
 import { createHash } from "node:crypto";
 import { readAnchorStore, loadNodes, readGraph, writeGraph, writeNode, slug, readAnnotations, deleteNode as storeDeleteNode, confirmNode, ackHole as storeAckHole, loadNodeVersions, derivationLookup } from "../store.js";
 import { evalVersion } from "../doc-version.js";
@@ -144,15 +145,28 @@ export async function connect(
 async function writeThroughShared(
   root: string,
   node: { id: string; type: string; title: string; summary: string; body: string; anchors: string[] },
-  winner: { origin?: string },
+  winner: { origin?: string; citations?: { anchorId: string; acceptedHashes: string[] }[] },
 ): Promise<{ ok: true; id: string; shared: true } | { error: string } | null> {
   if (!winner.origin) return null;
   const shared = await import("../ops-shared.js").catch(() => null);
   if (!shared) return null;
+  // The witness state has to travel with the edit. Publishing `acceptedHashes: []`
+  // resets it: the new version wins, carries no evidence, and an edit made against
+  // code that has not moved immediately reads `unverifiable` — a doc reporting itself
+  // unverifiable the moment somebody improved its prose. `writeNode`'s local path
+  // preserves the prior hashes and adds the current one, and a shared write has no
+  // reason to be different.
+  const prior = new Map((winner.citations ?? []).map((c) => [c.anchorId, c.acceptedHashes]));
+  const live = await liveHashes(root, node.anchors);
+  const citations = node.anchors.map((anchorId) => {
+    const set = new Set(prior.get(anchorId) ?? []);
+    const now = live.get(anchorId);
+    if (now) set.add(now);
+    return { anchorId, acceptedHashes: [...set] };
+  });
   const r = await shared.shareDoc(root, {
     nodeId: node.id, type: node.type, title: node.title, summary: node.summary, body: node.body,
-    citations: node.anchors.map((anchorId) => ({ anchorId, acceptedHashes: [] })),
-    createdCommit: null, createdBranch: null,
+    citations, createdCommit: null, createdBranch: null,
   } as never) as { error?: string };
   if (r.error) return { error: r.error };
   return { ok: true, id: node.id, shared: true };
@@ -191,7 +205,8 @@ export async function updateNode(
   // Write-through: editing a doc the team owns appends a shared version rather than
   // forking a private copy nobody else will see. `node.origin` is the winning
   // version's scope, which `loadNodes` carries.
-  const through = await writeThroughShared(root, node as never, node);
+  const winner = (await loadNodeVersions(root, node.id)).find((v) => v.origin) ?? node;
+  const through = await writeThroughShared(root, node as never, winner as never);
   if (through && "error" in through) return through;
   if (!through) await writeNode(root, node);
   const known = new Set(nodes.map((n) => n.id));
@@ -209,6 +224,12 @@ export async function updateNode(
  * change touched the code a doc cites but the doc's claims still hold.
  */
 export async function confirm(root: string, id: string) {
+  // Fold first. `confirmNode` reads versions straight from the store, so on a store
+  // whose docs scope has not been materialized a teammate's doc has NO versions and
+  // this answers "no node" — not "that is theirs", so the shared route below is never
+  // reached. Same class as the diff endpoints: an ops entry point reading nodes
+  // without materializing.
+  await import("../ops-shared.js").then((m) => m.docsVerdict(root)).catch(() => null);
   const r = await confirmNode(root, id);
   // Write-through, the other half. `confirmNode` refuses a fold-owned winner because
   // accepting hashes into it locally would be reverted by the next fold — so route it

@@ -899,7 +899,12 @@ export async function shareDoc(root: string, v: NewDocVersion) {
   if (unknown.length) {
     return { error: `not anchors in this universe: ${unknown.slice(0, 5).join(", ")}${unknown.length > 5 ? ` (+${unknown.length - 5} more)` : ""}. A doc must cite code that exists — index it first, or cite the anchor it really describes.` };
   }
-  await ensureSidecar(b.cfg.path, b.actor);
+  // Checked, not merely awaited. `ensureSidecar` returns an error when the path is
+  // not its own git repository — and appending into a directory that is not a usable
+  // sidecar, then reporting success, is the shape of failure this whole arc exists to
+  // stop.
+  const ready = await ensureSidecar(b.cfg.path, b.actor);
+  if ("error" in ready) return ready;
   // `versionId` and `createdAt` are dropped, not honoured. This is a NEW version, so
   // there is no prior identity to preserve — the field exists for `publishLocalDocs`,
   // which republishes versions that already have one.
@@ -918,8 +923,21 @@ export async function shareDoc(root: string, v: NewDocVersion) {
   // before this returns and the caller never observes the log. Without it a shared
   // write is invisible until something else happens to fold — which is the whole
   // difference between "the store" and "a cache somebody refreshes".
-  await docsVerdict(root);
-  return { ok: true, nodeId: v.nodeId, versionId, note: "recorded locally — run `codemap sync` to send it" };
+  //
+  // The RESULT is checked. `docsVerdict` turns a materialization failure into a
+  // blocked verdict rather than throwing, which is right for a read and wrong to
+  // ignore here: the event landed, the row may not have, and saying "ok" flatly would
+  // claim a condition this function advertises and did not deliver. The event is
+  // durable either way, so this is a partial success, not an error.
+  const after = await docsVerdict(root);
+  const materialized = after.status === "complete";
+  return {
+    ok: true, nodeId: v.nodeId, versionId,
+    ...(materialized ? {} : { materialized: false as const, scope: after.status }),
+    note: materialized
+      ? "recorded locally — run `codemap sync` to send it"
+      : "recorded in the log, but this store could not fold it — the next read or sync will retry",
+  };
 }
 
 /**
@@ -957,6 +975,11 @@ export async function confirmSharedDoc(root: string, nodeId: string, versionId?:
     await acceptDocHash(b.cfg.path, b.cfg.universe, b.actor, nodeId, v.versionId, c.anchorId, hash);
     added.push(c.anchorId);
   }
+  // Write-through, like every other shared write: the acceptances are appended as
+  // events, and without folding them the confirmation is invisible to this store
+  // until something else happens to materialize — so a doc confirmed a moment ago
+  // still reads `stale`, and an edit on top of it carries no evidence.
+  if (added.length) await docsVerdict(root);
   return {
     ok: true, nodeId, versionId: v.versionId, confirmed: added.length, anchors: added,
     ...(unconfirmable.length ? {
@@ -1073,13 +1096,23 @@ export async function publishLocalDocs(root: string, opts: { dryRun?: boolean } 
 export async function shareWalkthrough(root: string, w: PrWalkthrough) {
   const b = bind(root);
   if ("error" in b) return b;
-  await ensureSidecar(b.cfg.path, b.actor);
+  const ready = await ensureSidecar(b.cfg.path, b.actor);
+  if ("error" in ready) return ready;
   await publishWalkthrough(b.cfg.path, b.actor, { ...w, pr: w.pr }, prKey(b.cfg, w.pr));
   // Write-through, same as a shared doc: append, then materialize that scope, so the
-  // walkthrough is readable from SQLite the moment this returns.
-  await ensureMaterialized(root, b.cfg.path, walkthroughScope(prKey(b.cfg, w.pr)),
+  // walkthrough is readable from SQLite the moment this returns. Reported rather than
+  // swallowed — a bare `.catch(() => null)` here returned success for a write that
+  // never reached the store.
+  const m = await ensureMaterialized(root, b.cfg.path, walkthroughScope(prKey(b.cfg, w.pr)),
     sidecarIdentity(b.cfg), foldWalkthroughs, walkthroughsProjection).catch(() => null);
-  return { ok: true, pr: w.pr, note: "recorded locally — run `codemap sync` to send it" };
+  const materialized = m?.fresh === true && m.status === "complete";
+  return {
+    ok: true, pr: w.pr,
+    ...(materialized ? {} : { materialized: false as const }),
+    note: materialized
+      ? "recorded locally — run `codemap sync` to send it"
+      : "recorded in the log, but this store could not fold it — the next read or sync will retry",
+  };
 }
 
 export async function sharedWalkthroughs(root: string, pr: number | string, head?: string) {

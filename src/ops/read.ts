@@ -264,12 +264,13 @@ export async function context(root: string, refs: string[]) {
 }
 
 export async function getAnchor(root: string, id: string) {
-  // BEFORE the nodes, for the same reason `context` does it: `docsVerdict` is what
-  // folds the docs scope into `node_versions`, so asking after would read the rows
-  // that fold was about to write.
+  // One fold, not two. `loadNodesShared` already calls `docsVerdict`, so asking for
+  // the verdict separately folded the scope twice on the hottest drill-down path.
+  // Sequenced before the rest deliberately: it is what materializes the rows the
+  // load is about to read.
   const anchorVerdict = await import("../ops-shared.js").then((m) => m.docsVerdict(root)).catch(() => null);
   const [store, nodes, bugStore, annStore] = await Promise.all([
-    readAnchorStore(root), loadNodesShared(root), readBugs(root), readAnnotations(root),
+    readAnchorStore(root), loadNodes(root), readBugs(root), readAnnotations(root),
   ]);
   let anchor = store.anchors.find((a) => a.id === id);
   // Three places to look, and WHICH one answered is part of the answer.
