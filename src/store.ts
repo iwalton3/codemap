@@ -1018,7 +1018,7 @@ export async function ackHole(root: string, id: string): Promise<AckHoleResult> 
 
 // --- graph (edges) -----------------------------------------------------------
 
-interface EdgeRow { from_id: string; to_id: string; type: string; ord: number | null; generated_by: string | null; }
+interface EdgeRow { from_id: string; to_id: string; type: string; ord: number | null; generated_by: string | null; source_scope?: string | null; }
 
 function rowToEdge(r: EdgeRow): Edge {
   return {
@@ -1030,17 +1030,54 @@ function rowToEdge(r: EdgeRow): Edge {
   };
 }
 
+/**
+ * Every edge this store answers with: this clone's own, plus the team's.
+ *
+ * The union, not a merge, and the reason is that an edge has no value to weigh — it
+ * exists or it does not. Two people wiring the same node differently is settled by the
+ * FOLD before these rows are written (see `shared-graph.ts`), so by the time a reader
+ * gets here there is one shared answer per node and this clone's own edges beside it.
+ *
+ * Deduped on (from, to, type): the same edge drawn by two people is one edge, and
+ * without this a shared row and an identical local one would double every count the
+ * catalog and matrix show.
+ */
 export async function readGraph(root: string): Promise<Graph> {
-  const rows = db(root).prepare("SELECT from_id,to_id,type,ord,generated_by FROM edges").all() as unknown as EdgeRow[];
+  const rows = db(root).prepare("SELECT from_id,to_id,type,ord,generated_by,source_scope FROM edges")
+    .all() as unknown as EdgeRow[];
+  const seen = new Set<string>();
+  const out: Edge[] = [];
+  for (const r of rows) {
+    const k = `${r.from_id}\0${r.to_id}\0${r.type}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(rowToEdge(r));
+  }
+  return { edges: out };
+}
+
+/** This clone's OWN edges. What every WRITER must read before it writes. */
+export async function readLocalGraph(root: string): Promise<Graph> {
+  const rows = db(root).prepare("SELECT from_id,to_id,type,ord,generated_by FROM edges WHERE source_scope IS NULL")
+    .all() as unknown as EdgeRow[];
   return { edges: rows.map(rowToEdge) };
 }
 
+/**
+ * Replace this clone's OWN edges. NEVER a teammate's.
+ *
+ * `WHERE source_scope IS NULL` is the whole point, and this function is exactly the
+ * shape that bit triage: a whole-list rewrite that was correct while every row was
+ * local and destructive the moment one is not. A bare `DELETE FROM edges` would take
+ * rows only the fold may own, with no event recording it, and the next fold would put
+ * them back — so the damage appears and disappears depending on when you look.
+ */
 export async function writeGraph(root: string, graph: Graph): Promise<void> {
   const d = db(root);
   const ins = d.prepare("INSERT INTO edges(from_id,to_id,type,ord,generated_by) VALUES(?,?,?,?,?)");
   d.exec("BEGIN");
   try {
-    d.prepare("DELETE FROM edges").run();
+    d.prepare("DELETE FROM edges WHERE source_scope IS NULL").run();
     for (const e of graph.edges) ins.run(e.from, e.to, e.type, e.order ?? null, e.generatedBy ?? null);
     d.exec("COMMIT");
   } catch (e) {

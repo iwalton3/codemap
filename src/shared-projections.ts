@@ -25,6 +25,7 @@ import { needsHumanAck, foldFindings, type SharedFinding } from "./shared-findin
 import { foldDocs, type SharedDoc, type UnmatchedAcceptance } from "./shared-docs.js";
 import { foldNotes, type SharedNote } from "./shared-notes.js";
 import { foldTriage, triageSubject, isTombstone, ABSENT_FIELD, type TriageEntry, type Axis, type TriageField } from "./shared-triage.js";
+import { foldGraph, type SharedWiring } from "./shared-graph.js";
 import type { Actor, NodeVersion } from "./schema.js";
 
 /**
@@ -374,6 +375,55 @@ export const triageProjection: Projection<Map<string, TriageEntry>> = {
 };
 
 /**
+ * A teammate's wiring, into the ONE canonical `edges` table.
+ *
+ * Same rule that removed the `shared_doc_*` tables: a teammate's edge is an ordinary
+ * edge carrying an `origin`, so every surface that reads the graph reads theirs without
+ * knowing it exists. Before this, `edges` had no provenance columns at all — an edge
+ * could not be fold-owned, so a teammate's doc arrived with its citations and none of
+ * its wiring, and the event matrix reported their aggregate as an orphan.
+ *
+ * **Replaces only what it owns.** `DELETE ... WHERE source_scope = ?`, never by node:
+ * a bare delete would take this clone's own edges, which are the one thing here the log
+ * cannot put back.
+ *
+ * The DIVERGENCE is not stored. It is derived from the same events on every clone, so a
+ * column for it would be a second copy of something the fold already answers — and the
+ * queue that consumes it is local by the same rule that keeps the contested-triage item
+ * local.
+ */
+export const graphProjection: Projection<Map<string, SharedWiring>> = {
+  write(d: DatabaseSync, scope: string, value: Map<string, SharedWiring>): void {
+    d.prepare("DELETE FROM edges WHERE source_scope = ?").run(scope);
+    d.prepare("DELETE FROM shared_wiring WHERE scope = ?").run(scope);
+    const ins = d.prepare(
+      "INSERT INTO edges(from_id,to_id,type,ord,generated_by,origin,source_scope) VALUES(?,?,?,?,?,?,?)",
+    );
+    const receipt = d.prepare("INSERT INTO shared_wiring(scope,node_id,body) VALUES(?,?,?)");
+    for (const w of value.values()) {
+      for (const e of w.winner.edges) {
+        ins.run(w.nodeId, e.to, e.type, e.order ?? null, null, "sync", scope);
+      }
+      receipt.run(scope, w.nodeId, JSON.stringify(w));
+    }
+  },
+
+  read(d: DatabaseSync, scope: string): Map<string, SharedWiring> {
+    // From the RECEIPT table, not by reassembling edge rows: the fold's answer carries
+    // who published it, at what commit, and whether the ordering mattered, and none of
+    // that survives a trip through `edges`. `rowid` order, so the fold's own Map order
+    // survives the round trip — the contract is `read(write(x)) === x`.
+    const out = new Map<string, SharedWiring>();
+    for (const r of d.prepare("SELECT node_id, body FROM shared_wiring WHERE scope = ? ORDER BY rowid")
+      .all(scope) as unknown as { node_id: string; body: string }[]) {
+      try { out.set(r.node_id, JSON.parse(r.body) as SharedWiring); }
+      catch { throw new CorruptProjection(`shared_wiring ${scope}/${r.node_id} is unreadable`); }
+    }
+    return out;
+  },
+};
+
+/**
  * The fold and projection a scope is cached by, or null if its kind has none yet.
  *
  * Prefix-matched on the scope path, which is the same string `findingScope` /
@@ -391,5 +441,6 @@ export function projectionFor(scope: string): { fold: (e: LogEvent[]) => any; pr
   if (scope.startsWith("notes/")) return { fold: foldNotes, proj: notesProjection };
   if (scope.startsWith("walkthrough/")) return { fold: foldWalkthroughs, proj: walkthroughsProjection };
   if (scope.startsWith("triage/")) return { fold: foldTriage, proj: triageProjection };
+  if (scope.startsWith("graph/")) return { fold: foldGraph, proj: graphProjection };
   return null;
 }

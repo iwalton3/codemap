@@ -1,7 +1,7 @@
 import { type LogicalNodeType, type EdgeType, type Edge } from "../schema.js";
 import { liveHashes } from "../reviews.js";
 import { createHash } from "node:crypto";
-import { readAnchorStore, loadNodes, readGraph, writeGraph, writeNode, slug, readAnnotations, deleteNode as storeDeleteNode, confirmNode, ackHole as storeAckHole, loadNodeVersions, derivationLookup } from "../store.js";
+import { readAnchorStore, loadNodes, readGraph, readLocalGraph, writeGraph, writeNode, slug, readAnnotations, deleteNode as storeDeleteNode, confirmNode, ackHole as storeAckHole, loadNodeVersions, derivationLookup } from "../store.js";
 import { evalVersion } from "../doc-version.js";
 import { anchorIndex, derivationsOf } from "../anchor-resolve.js";
 import { snapshotHashes, resolveRefs, rejected, loadNodesShared} from "./shared.js";
@@ -109,8 +109,12 @@ export async function connect(
 ) {
   const list = input.edges ?? (input.from && input.to && input.type ? [{ from: input.from, to: input.to, type: input.type, order: input.order }] : []);
   if (!list.length) return { error: "provide an edge (from/to/type) or edges[]" };
+  // Node existence against the MERGED view — a teammate's node is a legitimate target.
   const nodeIds = new Set((await loadNodesShared(root)).map((n) => n.id));
-  const graph = await readGraph(root);
+  // But the graph being MUTATED is this clone's own. Read-modify-write over the merged
+  // view would copy every teammate edge into the local partition, where the next fold
+  // would produce it again alongside — the seam bug triage was built to prevent.
+  const graph = await readLocalGraph(root);
   let added = 0;
   const errors: string[] = [];
   for (const e of list) {
@@ -122,7 +126,21 @@ export async function connect(
     if (addEdge(graph, { from: e.from, to: e.to, type: e.type, order: e.order })) added++;
   }
   await writeGraph(root, graph);
-  return { ok: true, added, edges: graph.edges.length, ...(errors.length ? { errors } : {}) };
+  // Publish the wiring of every node this touched. AFTER the local write and never in
+  // place of it: codemap worked without a sidecar for its whole life, and an edge must
+  // not be lost because a shared repo is misconfigured.
+  const touched = [...new Set(list.map((e) => e.from))];
+  const shared = await import("../graph-publish.js")
+    .then((m) => m.mirrorWiring(root, touched))
+    .catch(() => ({ shared: false, configured: false, error: undefined as string | undefined }));
+  return {
+    ok: true, added, edges: graph.edges.length,
+    ...(errors.length ? { errors } : {}),
+    ...(shared.shared ? { shared: true } : {}),
+    // Said, not swallowed: the edge is local either way, and a teammate not seeing it is
+    // a different outcome from it not existing.
+    ...(shared.configured && !shared.shared ? { shareError: shared.error ?? "the wiring could not be published" } : {}),
+  };
 }
 
 /**

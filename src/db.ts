@@ -179,10 +179,25 @@ function migrate(d: DatabaseSync): void {
       ord INTEGER, author TEXT
     );
     CREATE INDEX IF NOT EXISTS ix_nv_node ON node_versions(node_id);
+    -- Edges. origin/source_scope exactly as node_versions: NULL origin = this user
+    -- wrote it, and a row with one is written ONLY by the fold. Without them an edge
+    -- could not be fold-owned at all, which is why a teammate's doc used to arrive with
+    -- its citations and none of its wiring — and the event matrix then called their
+    -- aggregate an orphan.
     CREATE TABLE IF NOT EXISTS edges (
-      rowid INTEGER PRIMARY KEY, from_id TEXT, to_id TEXT, type TEXT, ord INTEGER, generated_by TEXT
+      rowid INTEGER PRIMARY KEY, from_id TEXT, to_id TEXT, type TEXT, ord INTEGER, generated_by TEXT,
+      origin TEXT, source_scope TEXT
     );
     CREATE INDEX IF NOT EXISTS ix_edges_from ON edges(from_id);
+    -- The fold's own answer per node: who published the winning wiring, at what commit,
+    -- and whether wall-clock and canonical order disagreed about it. The edge rows
+    -- above are the canonical materialization every reader uses; this is the receipt
+    -- they cannot carry, as shared_doc_unmatched holds what a node_versions row cannot.
+    -- Without it the projection could not round-trip and CONVERGENCE would fail.
+    CREATE TABLE IF NOT EXISTS shared_wiring (
+      scope TEXT NOT NULL, node_id TEXT NOT NULL, body TEXT NOT NULL,
+      PRIMARY KEY (scope, node_id)
+    );
     CREATE INDEX IF NOT EXISTS ix_edges_to ON edges(to_id);
     CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
     -- One row per cached commit snapshot (the anchors themselves live in the
@@ -338,6 +353,14 @@ function migrate(d: DatabaseSync): void {
   // and it. Same ladder rule as everything above: the CREATE block has it on a fresh
   // database, and an existing one needs the ALTER or `no such column` fails `migrate`.
   try { d.exec("ALTER TABLE triage ADD COLUMN detail TEXT"); } catch { /* already present */ }
+  // edges provenance (graph sync). Additive, and on the ladder rather than in the
+  // CREATE block above for the reason that block already records: an existing store's
+  // table is a no-op, so the column only arrives here, and an index on it in CREATE
+  // would fail `migrate` on every store that predates it.
+  for (const col of ["origin TEXT", "source_scope TEXT"]) {
+    try { d.exec(`ALTER TABLE edges ADD COLUMN ${col}`); } catch { /* already present */ }
+  }
+  try { d.exec("CREATE INDEX IF NOT EXISTS ix_edges_scope ON edges(source_scope)"); } catch { /* fine */ }
   // A per-fold `DELETE WHERE source_scope = ?` is a table scan without it.
   try { d.exec("CREATE INDEX IF NOT EXISTS ix_triage_scope ON triage(source_scope)"); } catch { /* fine */ }
   // The `shared_scope.status` / `.diagnostic` rungs are GONE with the protocol-1
