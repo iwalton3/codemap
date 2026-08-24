@@ -353,6 +353,15 @@ export async function removeNode(root: string, id: string) {
   const nodes = await loadNodes(root);
   if (!nodes.some((n) => n.id === id)) return { error: `no node "${id}"` };
   await storeDeleteNode(root, id);
+  // `deleteNode` removes only LOCAL rows, so a node whose versions are a teammate's
+  // survives it. Reporting `deleted` anyway — and dropping every edge touching it —
+  // would be a deletion that did not happen, with real collateral. Check that the
+  // node actually went before touching the graph.
+  if ((await loadNodes(root)).some((n) => n.id === id)) {
+    return { error: `node "${id}" is a teammate's doc here, so deleting your copy does not `
+      + `remove it. If its subject is genuinely gone, a person retires it with `
+      + `\`retire_shared_doc\`; otherwise write a version saying what you know.` };
+  }
   const graph = await readGraph(root);
   const kept = graph.edges.filter((e) => e.from !== id && e.to !== id);
   if (kept.length !== graph.edges.length) await writeGraph(root, { edges: kept });

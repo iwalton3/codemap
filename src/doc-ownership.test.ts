@@ -151,3 +151,74 @@ test("a person's prose beats a machine synopsis at equal badness", () => {
   // synopsis. And a generated-only node still resolves to its generated version.
   assert.equal(selectWinner([machine], work).v.versionId, "v_gen");
 });
+
+test("(d) editing a node whose winner is a teammate's forks, and does not silently no-op", async () => {
+  // The fence makes an in-place edit of a fold-owned row safe — the UPDATE matches
+  // zero rows. Safe and SILENT: the caller is told the edit landed. Forking is the
+  // honest answer and is what the drifted path already does.
+  const r = await repo();
+  try {
+    foldRow(r.root, { versionId: "nv_team", nodeId: "n_pay", body: "theirs",
+      citations: [{ anchorId: r.anchorId, acceptedHashes: [] }] });
+    await writeNode(r.root, { id: "n_pay", type: "concept", title: "Mine", summary: "s", body: "mine", anchors: [r.anchorId] });
+
+    const versions = await loadNodeVersions(r.root, "n_pay");
+    assert.equal(versions.length, 2, "a new local version, not an overwrite");
+    assert.equal(versions.find((v) => v.origin)!.body, "theirs", "theirs is untouched");
+    assert.ok(versions.some((v) => !v.origin && v.body === "mine"), "and mine exists");
+  } finally { r.cleanup(); }
+});
+
+test("versionCount counts what exists, not what resolution considered", async () => {
+  // `resolvable` narrows the pool, and `resolveNode` counted the narrowed one — so a
+  // node with three versions reported two, disagreeing with the version-history UI
+  // that lists them all. The narrowing is a resolution rule, not a claim about how
+  // much history there is.
+  const r = await repo();
+  try {
+    db(r.root).prepare(
+      "INSERT INTO node_versions(version_id,node_id,type,title,summary,body,generated_by,created_commit,"
+      + "created_branch,created_at,citations,removed) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+    ).run("nv_tomb", "n_pay", "concept", "Mine", "s", "b", null, null, null, "2026-02-01T00:00:00Z",
+      JSON.stringify([{ anchorId: "a_gone", acceptedHashes: [] }]), 1);
+    foldRow(r.root, { versionId: "nv_team", nodeId: "n_pay", citations: [{ anchorId: r.anchorId, acceptedHashes: [] }] });
+
+    const node = (await loadNodes(r.root)).find((n) => n.id === "n_pay")!;
+    assert.equal(node.versionCount, 2, "both versions are counted");
+    assert.equal((await loadNodeVersions(r.root, "n_pay")).length, 2, "and the history agrees");
+  } finally { r.cleanup(); }
+});
+
+test("confirming a teammate's winning version is refused, not silently dropped", async () => {
+  // The fence makes the UPDATE affect zero rows. Without this the call still returned
+  // `ok` with a predicted fresh status, and a reload showed the row unchanged: a
+  // confirmation reported and never stored.
+  const r = await repo();
+  try {
+    foldRow(r.root, { versionId: "nv_team", nodeId: "n_pay", citations: [{ anchorId: r.anchorId, acceptedHashes: [] }] });
+    const res = await confirmNode(r.root, "n_pay") as { ok?: true; error?: string };
+    assert.ok(res.error, "refused");
+    assert.match(res.error!, /teammate's/);
+  } finally { r.cleanup(); }
+});
+
+test("removing a node that is only a teammate's does not report a deletion", async () => {
+  // `deleteNode` removes local rows only, so the node survives — and `removeNode`
+  // reported `deleted` anyway AND dropped every edge touching it. A deletion that did
+  // not happen, with real collateral.
+  const r = await repo();
+  try {
+    const { removeNode } = await import("./ops.js");
+    foldRow(r.root, { versionId: "nv_team", nodeId: "n_pay", citations: [{ anchorId: r.anchorId, acceptedHashes: [] }] });
+    const res = await removeNode(r.root, "n_pay") as { ok?: true; error?: string };
+    assert.ok(res.error, "refused");
+    assert.ok((await loadNodes(r.root)).some((n) => n.id === "n_pay"), "and it is still there");
+
+    // CONTROL — a purely local node still deletes. Without this the rule reads
+    // "removeNode never works".
+    await writeNode(r.root, { id: "n_mine", type: "concept", title: "Mine", summary: "s", body: "b", anchors: [r.anchorId] });
+    const ok = await removeNode(r.root, "n_mine") as { ok?: true; error?: string };
+    assert.equal(ok.error, undefined);
+    assert.equal((await loadNodes(r.root)).some((n) => n.id === "n_mine"), false);
+  } finally { r.cleanup(); }
+});

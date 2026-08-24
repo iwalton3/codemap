@@ -122,14 +122,18 @@ export function selectWinner(versions: NodeVersion[], work: AnchorIndex): { v: N
   return { v: best, e: bestE };
 }
 
-export function resolveNode(versions: NodeVersion[], work: AnchorIndex): LogicalNode {
+export function resolveNode(versions: NodeVersion[], work: AnchorIndex, allVersions = versions): LogicalNode {
   const { v, e } = selectWinner(versions, work);
   return {
     id: v.nodeId, type: v.type, title: v.title, summary: v.summary, body: v.body,
     anchors: v.citations.map((c) => c.anchorId),
     ...(v.generatedBy ? { generatedBy: v.generatedBy } : {}),
     versionId: v.versionId, status: e.status, staleAnchors: e.stale, danglingAnchors: e.dangling,
-    versionCount: versions.length,
+    // The UNFILTERED count. A caller may hand `versions` a narrowed pool — the store
+    // drops local tombstones from a node a teammate has documented — and counting
+    // that pool made a node with three versions report two, disagreeing with the
+    // version-history UI, which lists them all.
+    versionCount: allVersions.length,
   };
 }
 

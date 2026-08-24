@@ -634,9 +634,15 @@ export function resolvable(versions: NodeVersion[]): NodeVersion[] {
  * `CorruptProjection` either, so that escape hatch never fires.
  *
  * Appending the clause by hand at each site is what the plan asked for and it is not
- * enough on its own: the next write path added simply forgets. Every statement that
- * touches `node_versions` locally is built here instead, so forgetting means not
- * compiling.
+ * enough on its own: the next write path added simply forgets. Every local statement
+ * against `node_versions` is built here instead, so there is ONE place to read to
+ * know the rule holds.
+ *
+ * It is a convention, not enforcement — raw SQL compiles perfectly well, and a test
+ * in this repo already writes some. `src/doc-ownership.test.ts` is what actually
+ * checks the rule; if a stronger fence is ever wanted, it is a SQLite trigger that
+ * raises unless a fold is active, which is zero-dependency and turns every one of
+ * these into a loud error.
  */
 const LOCAL_ONLY = "origin IS NULL";
 
@@ -693,7 +699,7 @@ export async function loadNodes(root: string): Promise<LogicalNode[]> {
   }
   // Tombstoned-here nodes are not live docs on this branch — exclude them (they
   // still win/show on branches where their content version matches).
-  return [...byNode.values()].map((vs) => resolveNode(resolvable(vs), work)).filter((n) => n.status !== "removed");
+  return [...byNode.values()].map((vs) => resolveNode(resolvable(vs), work, vs)).filter((n) => n.status !== "removed");
 }
 
 /** All versions of one node (for the version-aware UI / confirm / fork ops). */
@@ -798,7 +804,13 @@ export async function writeNode(
   if (!existing.length) { insert(capture(node.anchors)); return; }
 
   const { v: winner, e } = selectWinner(resolvable(existing), work);
-  if (e.status === "fresh") {
+  // (d) — you cannot edit a teammate's version IN PLACE, so don't try. The fence on
+  // the UPDATE below already makes that safe, but safe and silent: it would match
+  // zero rows and the caller would be told the edit succeeded. Forking is the honest
+  // answer and is what the drifted path already does — your prose becomes your own
+  // version and theirs stays theirs. Write-through turns this into a shared write
+  // where that is what the caller wanted; until then it is a local fork.
+  if (e.status === "fresh" && !winner.origin) {
     // Edit in place + confirm: merge current @work hashes into the citation sets.
     const prev = new Map(winner.citations.map((c) => [c.anchorId, new Set(c.acceptedHashes)]));
     const cites: NodeCitation[] = node.anchors.map((id) => {
@@ -833,6 +845,13 @@ export async function confirmNode(root: string, id: string): Promise<{ ok?: true
   if (!versions.length) return { error: `no node "${id}"` };
   const work = workHashes(d, root);
   const { v } = selectWinner(resolvable(versions), work);
+  // A fold-owned version is confirmed by an EVENT, not by an in-place UPDATE the
+  // ownership fence would silently drop. Refused loudly rather than returning `ok`
+  // for a write of zero rows — write-through routes this to `confirmSharedDoc`.
+  if (v.origin) {
+    return { error: `the version that wins here is a teammate's, and accepting hashes into it `
+      + `locally would be reverted by the next fold. Confirm it on the shared copy instead.` };
+  }
   if (v.generatedBy) return { error: "generated node — regenerated, not confirmable" };
   if (v.removed) return { error: "node is tombstoned here" };
   // "Nothing to confirm" and "cannot confirm" are different answers. A citation
