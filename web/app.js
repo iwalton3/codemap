@@ -229,15 +229,20 @@ const REV_COLOR = { reviewed: '#7ee787', stale: '#f0a35e', unreviewed: '#3a4250'
 // lineage this ref does not descend from, or ⟲ sitting on top of a revert. Every
 // surface that draws a review mark takes it, or the summaries quietly disagree
 // with the buttons they summarise.
-const revCls = (state, actor, via) => state === 'reviewed' ? (via === 'reverted' ? 'reverted' : actor === 'agent' ? 'checked' : 'on') : state === 'stale' ? 'stale' : '';
+// `unverifiable` is checked BEFORE `reverted`/agent, and it is not `stale`: nothing
+// drifted, the two builds simply hash bodies differently, so the mark stands and says
+// it could not be confirmed. Rendering it as a plain vouch is the silent green check
+// CLAUDE.md's north star forbids; rendering it as stale is the 985-of-985 failure in
+// the other direction.
+const revCls = (state, actor, via) => state === 'reviewed' ? (via === 'unverifiable' ? 'unverifiable' : via === 'reverted' ? 'reverted' : actor === 'agent' ? 'checked' : 'on') : state === 'stale' ? 'stale' : '';
 const revColorA = (info) => {
   const s = info && info.state, a = info && info.actor, v = info && info.via;
-  return s === 'reviewed' ? (v === 'reverted' ? '#f0a35e' : a === 'agent' ? '#58a6ff' : '#7ee787') : s === 'stale' ? '#f0a35e' : '#3a4250';
+  return s === 'reviewed' ? (v === 'unverifiable' ? '#8b95a3' : v === 'reverted' ? '#f0a35e' : a === 'agent' ? '#58a6ff' : '#7ee787') : s === 'stale' ? '#f0a35e' : '#3a4250';
 };
 const revMark = (state, actor, via) => state === 'reviewed'
-  ? (via === 'reverted' ? ' ⟲' : via === 'replayed' ? ' ↻' : actor === 'agent' ? ' ·' : ' ✓')
+  ? (via === 'unverifiable' ? ' ?' : via === 'reverted' ? ' ⟲' : via === 'replayed' ? ' ↻' : actor === 'agent' ? ' ·' : ' ✓')
   : state === 'stale' ? ' ⚠' : '';
-const VIA_TIP = { reverted: ' — approved before the code moved BACK to this body on this branch; someone undid work', replayed: ' — approval borrowed from a branch this one does not descend from' };
+const VIA_TIP = { reverted: ' — approved before the code moved BACK to this body on this branch; someone undid work', replayed: ' — approval borrowed from a branch this one does not descend from', unverifiable: ' — the mark stands, but the body it covered was hashed by a different build (an older HASH_SCHEME, or another grammar version), so it CANNOT be compared with the code here. Nothing has drifted; re-sign against this build to make it a live claim again.' };
 // Doc-version status (see docs/doc-versioning.md).
 const STATUS = { fresh: '#7ee787', stale: '#f0a35e', dangling: '#f27b7b', removed: '#8b95a3', generated: '#6b7684' };
 const statusChip = (s, extra) => s && s !== 'generated' ? html`<span class="stchip ${s}" title="doc version: ${s}${extra || ''}">${s}</span>` : html``;
@@ -311,7 +316,7 @@ const coverageBar = (cov) => {
 // on another branch (a stack walk, a rebase) — real, but borrowed; `reverted` the
 // code moved BACK to a body you approved before it was superseded on this very
 // history, which is someone undoing work and is the one worth interrupting for.
-const VIA_MARK = { replayed: ' ↻', reverted: ' ⟲' };
+const VIA_MARK = { replayed: ' ↻', reverted: ' ⟲', unverifiable: ' ?' };
 const whereFrom = (p) => (p ? `${p.branch || (p.commit ? p.commit.slice(0, 7) : 'unknown')}${p.at ? ' · ' + p.at.slice(0, 10) : ''}` : 'unknown');
 const markBtnEl = (attestation, info, onMark, coverLabel) => {
   const st = (info && info.state) || 'unreviewed';
@@ -330,6 +335,8 @@ const markBtnEl = (attestation, info, onMark, coverLabel) => {
   const mk = st === 'reviewed' ? (VIA_MARK[via] || (cover ? ' ↳' : ' ✓')) : st === 'stale' ? ' ⚠' : '';
   const tip = st !== 'reviewed'
     ? `${attestation}: ${st}${st === 'stale' ? ' — code changed, click to re-approve at the live hash' : ' — click to mark'}`
+    : via === 'unverifiable'
+      ? `${attestation}: the mark stands, but the body it covered was hashed by a different build — an older HASH_SCHEME, or another grammar version — so it CANNOT be compared with the code here. Nothing has drifted. Click to re-sign against this build.`
     : via === 'reverted'
       ? `${attestation}: this body was approved on ${whereFrom(info.acceptedAt)}, then superseded on this branch by ${whereFrom(info.revertedFrom)} — the code has since moved BACK. Someone undid work; re-read before trusting the tick.`
       : via === 'replayed'
@@ -617,7 +624,7 @@ const reviewHeat = (rev) => {
     + (rev.codeReverted ? ` · ${rev.codeReverted} approval(s) sitting on a revert` : '');
   return html`<span class="rheat ${rev.codeReverted ? 'has-reverted' : ''}" title="${tip}">${track(rev.logical, rev.logicalStale)}${track(rev.code, rev.codeStale)}</span>`;
 };
-const revDot = (state, actor, via) => html`<span class="rd ${state === 'reviewed' ? (via === 'reverted' ? 'reverted' : actor === 'agent' ? 'checked' : 'done') : state === 'stale' ? 'stale' : ''}" title="${state}${via && VIA_TIP[via] ? VIA_TIP[via] : ''}"></span>`;
+const revDot = (state, actor, via) => html`<span class="rd ${state === 'reviewed' ? (via === 'unverifiable' ? 'unverifiable' : via === 'reverted' ? 'reverted' : actor === 'agent' ? 'checked' : 'done') : state === 'stale' ? 'stale' : ''}" title="${state}${via && VIA_TIP[via] ? VIA_TIP[via] : ''}"></span>`;
 
 // --- markdown ----------------------------------------------------------------
 // Content is authored by the documenting agent / developers (internal, trusted).
@@ -1511,10 +1518,14 @@ class FlowPage extends Component {
   // (viewed exposure, anchor code) leave it undefined → normal toggle.
   async toggle(kind, id, level, state, attestation, actor) { const unmark = state === 'reviewed' && (actor === undefined || actor === 'human'); await postReview(this.props.params.universe, kind, id, level, unmark, attestation); this.load.run(); }
   revBtn(kind, id, level, info) {
-    const st = (info && info.state) || 'unreviewed', actor = info && info.actor;
-    const cls = revCls(st, actor);
-    const tip = `${level} ${st}${st === 'reviewed' && actor === 'agent' ? ' (agent-checked — click to confirm as human)' : ''}${info && info.by ? ' · by ' + info.by : ''}`;
-    return html`<button class="${cls}" title="${tip}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.toggle(kind, id, level, st, undefined, actor); }}">${level}${revMark(st, actor)}</button>`;
+    // `via` is threaded through, and it had never been: this surface called
+    // `revCls`/`revMark` with two arguments, so `reverted`, `replayed` and
+    // `unverifiable` all rendered here as an ordinary green tick. Every surface that
+    // draws a review mark takes `via`, or the summaries disagree with the buttons.
+    const st = (info && info.state) || 'unreviewed', actor = info && info.actor, via = info && info.via;
+    const cls = revCls(st, actor, via);
+    const tip = `${level} ${st}${st === 'reviewed' && actor === 'agent' ? ' (agent-checked — click to confirm as human)' : ''}${info && info.by ? ' · by ' + info.by : ''}${via && VIA_TIP[via] ? VIA_TIP[via] : ''}`;
+    return html`<button class="${cls}" title="${tip}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.toggle(kind, id, level, st, undefined, actor); }}">${level}${revMark(st, actor, via)}</button>`;
   }
   // `viewed` exposure toggle (code level) alongside the signed-vouch level buttons.
   viewBtn(kind, id, info) {

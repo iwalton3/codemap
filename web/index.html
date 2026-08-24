@@ -565,6 +565,9 @@
     .prload { padding: 6px 10px; font-size: 12px; }
     .prbase { border: 1px solid var(--border); border-radius: 6px; padding: 8px; overflow-x: auto; opacity: 0.85; }
     .rev button.reverted, button.reverted { border-color: #8a5a2b; color: #f0a35e; }
+    /* Not a warning colour: nothing drifted. The mark stands and cannot be checked. */
+    .rev button.unverifiable, .nrev button.unverifiable, button.unverifiable { border-color: var(--border); color: var(--dim); }
+    .rd.unverifiable { background: var(--dim); }
     .viaflag { font-size: 11px; padding: 0 6px; border-radius: 10px; border: 1px solid var(--border); white-space: nowrap; }
     .viaflag.rev-back { border-color: #8a5a2b; color: #f0a35e; }
     .viaflag.rev-replay { border-color: #2d4a63; color: #79c0ff; }
