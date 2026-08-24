@@ -1,8 +1,222 @@
 # Handoff — `worktree-shared-review-hashscheme`
 
-Everything is committed and green (699 tests; `tsc -p .` and `tsc -p web` clean).
-Last updated 2026-08-23, at the end of the session that finished the sidecar sequence
-and exercised it against a real universe for the first time.
+Green (760 tests; `tsc -p .` and `tsc -p web` clean; the vdx template lint is clean).
+**Uncommitted** — everything below is in the working tree. Last updated 2026-08-24, at
+the end of the session that finished workflows 3–6 and the old-store fixtures.
+
+## What the 2026-08-24 session did
+
+**Workflows 3–6 are DONE**, each driving the whole chain with the six properties checked
+at every step, and each **mutation-checked** — the fix reverted, the test must fail.
+
+- **3, the cloned machine** (`oracle-cloned-machine.test.ts`). One writer id on two of
+  one person's machines. The half a unit test cannot reach is a THIRD person: while the
+  fork is unpushed it is invisible to him (a sync that fails closed pushes nothing), and
+  once it lands he is not blocked either, because **the acknowledgment is an EVENT and
+  travels with the evidence it covers**. One person looking at a fork clears it for every
+  reader. The control is a SECOND fork, which blocks again.
+  *Measured while mutation-checking:* it takes removing BOTH of `acknowledged`'s gates —
+  the evidence digest AND the causal check — to make an acknowledgment a mute. They are
+  independently sufficient, so neither is redundant.
+- **4, hostile history** (`oracle-hostile-history.test.ts`). A pushed `git rm`, an event
+  from a newer protocol, a `writerPrev` cycle, and a malformed line. Every mechanism
+  already had a unit test, so what this adds is **blast radius**: each shape is refused
+  in ONE scope and nowhere else, and with two scopes blocked the team still publishes,
+  reads and opens new scopes. A junk line must NOT block, or one corrupt byte from
+  anybody is a denial of service built out of a safety check.
+- **5, schema movement** (`oracle-schema-movement.test.ts`). A `HASH_SCHEME` bump
+  simulated by moving the STORE back to its pre-bump form, which is what an old build's
+  store really holds. A local doc, a teammate's doc and a sign-off all degrade to
+  "cannot tell" rather than to drift, and the LOG is untouched — a scheme is a fact about
+  a build. Plus the `ANCHOR_SCHEME` half: a snapshot from another derivation reads as NOT
+  CACHED.
+- **6, upgrade skew** (`oracle-upgrade-skew.test.ts`). `ANCHOR_SCHEME` differing is FATAL
+  in both directions (the push is gated too — being behind is not safer than being
+  ahead); `HASH_SCHEME` and a grammar version are ADVISORY. Nothing is lost while a clone
+  is gated out.
+
+**Old-store fixtures are DONE** (`schema-eras.ts` + `db-eras.test.ts`). Five eras, and
+the SQL is **extracted from `db.ts`'s own history**, not written by hand — a test
+re-extracts it with `git show <commit>:src/db.ts` and fails if a fixture drifts from the
+shape that commit really produced (it skips when history is unavailable, so the unit
+suite stays hermetic).
+
+**And they immediately found a boundary.** A store from `3624f49` cannot be read at all
+— `no such column: status` — because the `shared_scope.status`/`diagnostic` rungs were
+deliberately removed at the protocol-1 freeze. **That decision is correct and is now
+measured twice:** `3624f49` is on no branch but this one, and none of the four live
+universes under `/working/` has a `shared_scope` table at all, so `CREATE TABLE IF NOT
+EXISTS` hands every real store the modern one. Pinned as an INVERTED test: restore the
+rungs and it fails, telling you to move `shared_scope` into `REQUIRED`.
+
+**Two defects fixed in the web UI**, both found by workflow 5 and both the same class —
+a green check that cannot say why it is green:
+
+1. `AcceptanceVia` has had `unverifiable` since the scheme work, and it appeared in
+   NONE of `web/app.js`'s lookup tables. After a `HASH_SCHEME` bump every sign-off in
+   the store rendered as an ordinary ✓.
+2. `revBtn` called `revCls(st, actor)` and `revMark(st, actor)` with two arguments, so
+   on that surface `reverted` and `replayed` were invisible too.
+
+`src/review-via-render.test.ts` guards the correspondence statically, the way
+`api-map.test.ts` does: every member of the union that needs a label has a tooltip, a
+glyph in both renderers, and every call site is passed the `via`.
+
+**The seed is polyglot now.** `SEED` gained C#, which is the only way to reach the anchor
+shapes this project exists for — overloads (and so a DISAMBIGUATOR), namespaces in the
+symbol path, and partial types across two files. `oracle.test.ts` asserts all three land
+in the index, because a seed that quietly stopped indexing `.cs` would read as coverage.
+
+**`concurrently` is `whileApart`.** It was exported and called by nothing, and it claimed
+a simultaneity it never delivered: it produces CAUSAL concurrency, which is the only kind
+the log defines. `oracle-apart.test.ts` now uses it and asserts, from the causal vector
+itself, that neither write saw the other — with the counter-control that a write after a
+settle DOES. Real simultaneity is `oracle-race.test.ts` and nothing else.
+
+The harness also gained `rewriteHistory`, `appendRaw`, `shardsIn` (hostile history) and
+`publishManifestAs` (upgrade skew), and `cloneMachine` now says so when the source clone
+has never written rather than throwing ENOENT.
+
+### The e2e half was RED, and both causes were stale fixtures
+
+`npm run e2e` failed 8 of 81 before this session touched it, and neither cause was a
+product defect:
+
+- **`shared-ui.e2e.ts` published nothing.** Its fixture documented with
+  `type: "process"`, which the publish surface and the fold both refuse — the trap this
+  handoff already lists, in a fixture that was missed. Both shared-docs tests sat waiting
+  30s for a row that could never render. Retyped to `concept`; the suite went from 73s to
+  14s.
+- **`pr-import.e2e.ts` had lost its prerequisite.** `~/Desktop/jellyfin` no longer holds
+  any `refs/pull/*` and its remote is named `alt`, so the fixture PR is unreachable. That
+  is a missing prerequisite, and CLAUDE.md's rule is that those SKIP rather than fail —
+  `skipReason()` checked the fixture COMMITS and `gh auth`, neither of which implies the
+  pull ref now that resolution is git-only. It checks the ref and says how to restore it.
+
+**`npm run e2e` is green (74 pass, 1 suite skipped).** To bring those six back:
+
+```sh
+git -C ~/Desktop/jellyfin fetch <remote> '+refs/pull/17463/head:refs/pull/17463/head'
+```
+
+### A live defect, filed not fixed: two agents can raise a contest neither may settle
+
+`contest.ts` gates SETTLEMENT on the actor (`src/contest.ts:88`) and not CREATION:
+`applyRevision` records every incoming owner (`:75`) and detects divergence without
+testing either actor (`:103`). Two agent writes of different values, neither having seen
+the other, produce a contest — and `isAgentActor` then refuses to let either clear it.
+**Measured** against `dist/contest.js`; the repro is in `docs/shared-triage.md`.
+
+It is live for findings and notes today. Deliberately NOT fixed here: both depend on the
+current semantics (`src/shared-findings.ts:237`, `src/shared-notes.ts:127`), and a global
+actor rule has consequences unrelated to triage. Shared triage works around it by feeding
+only human events into its `ContestState`.
+
+### Shared triage: designed, not built
+
+`docs/shared-triage.md` is normative and reviewed. The headline, because it killed the
+obvious design: **`ratchet()` is not a join-semilattice, and not only because humans
+lower — two AGENT writes already reorder** (the counterexample is in the document and
+was run against `dist/triage.js`). It does not matter, because DETERMINISM here is
+satisfied by a sequential fold over `sortEvents`, not by commutativity.
+
+Settled: per-axis receipts; `source: "graph"` does NOT travel; triage moves out of
+`meta["triage"]` into one canonical table. A second review round then found the rules did
+not define a UNIQUE fold — two implementers could produce deterministic, incompatible
+projections — so the document now specifies **per-FIELD supersession**, which agent
+claims stay active when concurrent with a human, what happens while two humans disagree
+(maximum for ranking, labelled contested, never a scalar chosen by event id), and
+`tripwire` as a third receipt-bearing field that stays ARMED while contested.
+
+**Five write paths are whole-list rewrites, not three** — `clearTriage` is the one that
+matters most, because filtering the local list does not remove a fold-owned target at
+all and the next merged read returns it. The seam grows to five functions; the table
+needs PARTIAL unique indexes, because SQLite does not conflict NULLs and a plain
+`UNIQUE(target_kind, target_id, source_scope)` admits duplicate local rows (measured).
+
+**Two things the build must decide that no earlier draft mentioned.** What happens with
+no sidecar configured — the answer is "write locally and publish later, exactly as docs
+do". And what happens to the legacy `meta["triage"]` blob: it stays LOCAL until somebody
+publishes it explicitly, because a legacy `Triage` carries `source` but **no `Actor`**,
+so automatic publication would attribute every historical judgment to whoever upgraded
+first.
+
+**Not started, and one thing to weigh before starting.** Per-field supersession changes
+LOCAL semantics: today a human asserting only `importance` inherits the existing
+complexity and stamps the whole record `likely: false` (`src/triage.ts:153`, `:182`).
+Under the reviewed design it would leave an agent's complexity in place with its own
+`likely`. That is a change to single-player behaviour and existing tests, not an
+addition — worth an explicit decision rather than discovering it mid-build.
+
+## The commands changed
+
+`npm test` now runs EVERYTHING — unit then e2e — because a suite that is not in the
+default keyword is a suite that stops being run. `npm run unit` is the fast loop
+(~85s) and `npm run e2e` is the browser/real-repo half.
+
+## What the oracle is, after one session
+
+**Built and green.** `src/oracle.ts` is the harness: a member is a whole universe —
+a clone of a shared code repo, a `.codemap` store, and a sidecar clone — over two
+bare origins. `src/oracle-properties.ts` is six invariants checked after every step.
+`src/oracle-handoff.test.ts` drives the owner's actual arc across eleven steps;
+`src/oracle-race.test.ts` puts two real PROCESSES on one sidecar.
+
+**PR review no longer needs `gh`.** `prContext` resolves from git alone when the
+origin has no GitHub slug — a property of the remote, not a flag. Forks included
+(`refs/pull/N/head` is a server-side ref), merged PRs included (the base is recovered
+from the merge commit's first parent). That is what makes the oracle hermetic.
+
+**Three real defects fell out of building it**, which is the argument for the whole
+approach:
+
+1. The harness's own `settle()` called the transport instead of the `sharedSync` op,
+   so every clone held an unmaterialized log — a state no real machine is in. The
+   COMPLETENESS property caught it.
+2. A doc version missing a nullable scalar **poisoned the whole universe**.
+   `JSON.stringify` drops `undefined` keys, so a peer on a build without the coercion
+   sends a line with no `createdCommit`; the fold accepted it and the projection's
+   INSERT threw inside `readCached`'s transaction — every shared doc unreadable,
+   permanently, because nothing about the failure moves the fingerprint. Fixed at the
+   fold, which is the only gate that binds writers this build did not write.
+3. Git-only resolution assumed the remote's default base, so a PR onto `release` was
+   diffed against `main` — a wrong diff, not merely approximate metadata. It takes an
+   explicit base now and flags a guessed one (`PrMeta.baseInferred`).
+
+### The properties were VACUOUS, and that is the lesson
+
+A review round found four of the six passing on a broken system. All are fixed, and
+each fix has a test that fails without it — but the shapes are worth knowing, because
+they are what a property-based oracle fails as:
+
+- **`ownership` passed after `DELETE FROM node_versions WHERE source_scope IS NOT
+  NULL`** — the largest violation available. It iterated the ROWS, so absence was
+  invisible; it selected on `origin IS NOT NULL`, so clearing provenance hid the write
+  that did it; and it compared four fields, so `citations`, `removed`, `ord` and
+  `author` were free.
+- **`converged` never read the projections.** It re-folded the log on both clones, so
+  a row corrupted in place — still valid JSON, still under a current fingerprint —
+  passed while `sharedFindings` served the corruption.
+- **`determinism` was vacuous for exactly two events**: every seeded shuffle of a
+  two-element list is the identity, and two concurrent events are the *smallest*
+  interesting ordering case. It always tries a reversal now.
+- **`NO SILENT OK` did not exist at all.** It was in the list, and the list was the
+  documentation. It is a receipt at the call site now (`verified`), because only the
+  caller knows what a given `ok` promised.
+
+The general rule, which cost the most to learn twice: **check that a passing property
+COULD have failed.** Every one of these was green.
+
+### Branch-canonical keying is REFUTED — read `docs/review-target-identity.md`
+
+The plan was to make the branch name the scope key. A transient network error alone
+changes it, splitting one review's findings across two scopes; a real branch named
+`pr-17` collides with the fork fallback; and there is no lifecycle generation, so two
+sequential PRs from one branch name share a review. All measured. The document has the
+table, the design to build instead (durable minted id, typed aliases, base+head on the
+target), and the one migration rule: **never infer historical branch names from shas.**
+
+Nothing about the built git-only resolution depends on it.
 
 ## START HERE
 
@@ -39,13 +253,14 @@ Normative design: `docs/sidecar-architecture.md`. Mechanisms: `docs/fork-repair.
 `docs/plan-docs-unification.md` - both carry a "what the build changed" section, so
 read those rather than diffing the design against the code.
 
-**Not shared, deliberately:** bugs and triage (no design yet), edges (so `process` and
-`step` docs are refused, which makes the flow-walker single-player), witness marks.
+**Not shared:** bugs (no design), edges (so `process` and `step` docs are refused, which
+makes the flow-walker single-player), witness marks — and **triage, which now has a
+design and no build**: `docs/shared-triage.md`.
 
-## Why the current suite cannot see it
+## Why the current suite could not see it
 
-699 tests pass and they share three structural blind spots. These are why a real store
-broke the build on first contact.
+Written when 699 tests passed. **All three are now closed**, and the section is kept
+because the shapes are what a suite fails as, not because the gaps remain.
 
 1. **Every fixture is born at the current schema.** A build that could not open ANY
    pre-existing store passed the entire suite (`720b6d9`): an index on `source_scope`
@@ -61,7 +276,30 @@ broke the build on first contact.
    doc, change code, re-index, confirm, sync again. A defect that needs six steps to
    appear cannot appear.
 
+**CLOSED, all three.** (1) `schema-eras.ts` + `db-eras.test.ts`, five eras extracted from
+`db.ts`'s own history. (2) `oracle-race.test.ts`, two real processes gated on each other
+so they overlap by construction. (3) the six workflows below, each driving the whole
+chain with the invariants checked after every step.
+
+**Two blind spots the last session named are also closed.** The seed was TypeScript and
+Python only, so no C# overloads, namespaces or partial types — it has all three now, with
+a control test. And `concurrently()` claimed a simultaneity it never delivered; it is
+`whileApart` and its causal concurrency is now asserted from the causal vector itself.
+
+**What is left uncovered, honestly:** the web UI is still exercised only headlessly
+(`docs/sidecar-gap.md` §5), and nobody has looked at a blocked scope or a contested
+finding in a browser and said whether it reads right. Two defects this session found in
+`web/app.js` were both invisible to every test that existed, and the guard written for
+them is static — it checks that a `via` is RENDERED, not that the rendering is legible.
+
 ## The workflows to model
+
+**ALL SIX ARE DONE.** 1 is `oracle-handoff.test.ts`; 2 is `oracle-race.test.ts` (two
+real processes) plus `oracle-apart.test.ts` (the causal half); 3-6 are
+`oracle-cloned-machine`, `oracle-hostile-history`, `oracle-schema-movement` and
+`oracle-upgrade-skew`. Every one is mutation-checked. What each ADDS over the unit tests
+that already covered its mechanism is written at the top of its own file, and it is
+always the same kind of thing: what the failure does to somebody who was not involved.
 
 The patterns a real two-person review actually produces. Each should drive the WHOLE
 chain, not a unit of it.
@@ -143,10 +381,11 @@ statement before the failure was `IF NOT EXISTS` on objects that already existed
 ## What to run
 
 ```sh
-npm test         # ~60s, and it no longer stalls
+npm run unit     # ~70s, and it no longer stalls. The loop
+npm test         # unit AND e2e
 ```
 
-**`npm test` is the command again.** It was unusable for three sessions — the
+**The suite is usable again.** It was unusable for three sessions — the
 same suite took 28 minutes because the runner's per-file child intermittently
 never exits. It runs in ONE process now (`--test-isolation=none`), which cannot
 hit that. The stall is diagnosed below, and `CLAUDE.md` § "The suite runs in ONE
