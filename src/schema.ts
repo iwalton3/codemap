@@ -881,6 +881,18 @@ export interface Triage {
   at: string; // ISO timestamp
   /** Anchor hashes at triage time — a mismatch later triggers re-triage (Phase 4). */
   witnesses: BugWitness[];
+  /**
+   * Per-FIELD provenance, when the mark came from a store that keeps it.
+   *
+   * The singular `source`/`likely`/`reason`/`witnesses` above are aliases of the
+   * IMPORTANCE receipt — documented as such, because a record whose importance is a
+   * human's and whose complexity is an agent's has no single truthful value for any of
+   * them. Anything asking a question ABOUT A FIELD reads here. Optional: a legacy blob
+   * has no per-field receipts to offer.
+   */
+  axes?: Partial<Record<"importance" | "complexity" | "tripwire", {
+    source: TriageSource; likely: boolean; witnesses: BugWitness[]; at: string;
+  }>>;
 }
 
 export interface TriageStore {

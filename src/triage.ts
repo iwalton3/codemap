@@ -446,11 +446,24 @@ export async function deriveTriage(root: string): Promise<{ derived: number; byI
   const live = await liveHashes(root, store.anchors.map((a) => a.id));
   const witnessesOf = (kind: "node" | "anchor", id: string) =>
     (kind === "anchor" ? [id] : nodeAnchors.get(id) ?? []).map((aid) => ({ anchorId: aid, bodyHash: live.get(aid) ?? "sha256:absent" }));
-  const humanDrifted = new Set<string>();
+  // PER AXIS, keyed `<target>|<field>`. Read off the record it was per TARGET and off
+  // the IMPORTANCE alias — so a mark whose importance is an agent's never qualified at
+  // all (`t.source !== "human"`), and a drifted human COMPLEXITY could never
+  // re-escalate however far the code it covered had moved.
+  //
   // `realDrift`: a witness minted under an older HASH_SCHEME is not evidence a human's
   // mark went stale, and treating it as such would re-escalate every human mark in the
   // store the first time normalization changes.
-  for (const t of ts.triage) if (t.source === "human" && realDrift(witnessDrift(t.witnesses, live)).length) humanDrifted.add(key(t.target.kind, t.target.id));
+  const humanDrifted = new Set<string>();
+  for (const t of ts.triage) {
+    const k = key(t.target.kind, t.target.id);
+    const axes = t.axes ?? { importance: { source: t.source, likely: t.likely, witnesses: t.witnesses, at: t.at } };
+    for (const [field, r] of Object.entries(axes)) {
+      if (r && r.source === "human" && realDrift(witnessDrift(r.witnesses, live)).length) humanDrifted.add(`${k}|${field}`);
+    }
+  }
+  /** Did the human receipt for THIS axis drift? An absent axis never did. */
+  const drifted = (k: string, field: string) => humanDrifted.has(`${k}|${field}`);
 
   // Start from the marks we keep (human + agent proposals); graph marks are regenerated.
   const result = new Map<string, Triage>();
@@ -467,7 +480,10 @@ export async function deriveTriage(root: string): Promise<{ derived: number; byI
     const k = key(kind, id);
     const ex = result.get(k);
     const overHuman = ex?.source === "human";
-    const d = ratchet(ex, { importance, complexity, source: "graph" }, { humanDrifted: overHuman && humanDrifted.has(k) });
+    // Either axis drifting re-opens the mark: the ratchet's exception is about whether a
+    // human's judgement still covers the code, and it does not if the code under EITHER
+    // axis has moved.
+    const d = ratchet(ex, { importance, complexity, source: "graph" }, { humanDrifted: overHuman && (drifted(k, "importance") || drifted(k, "complexity")) });
     if ("refused" in d) return;
     // A human mark is authoritative UNLESS its code drifted since they set it —
     // then a higher derivation re-enters the confirm queue rather than silently
@@ -552,15 +568,28 @@ export interface TriageDrift {
 export async function triageDrift(root: string): Promise<TriageDrift[]> {
   const ts = await readTriage(root);
   const ids = new Set<string>();
-  for (const t of ts.triage) for (const w of t.witnesses) ids.add(w.anchorId);
+  for (const t of ts.triage) for (const w of witnessesOfEvery(t)) ids.add(w.anchorId);
   const live = await liveHashes(root, ids);
   const out: TriageDrift[] = [];
   for (const t of ts.triage) {
     // The re-triage worklist and the tripwire both mean "this code moved", so an
     // unverifiable witness must not appear here — it means "this hash is old", which
     // a re-index fixes and nobody needs waking up for.
+    //
+    // A TRIPWIRE is judged against the witnesses it was ARMED with, and the rest of the
+    // mark against the importance receipt's. On a record whose fields came from
+    // different writers those are different bodies, and asking one array the other's
+    // question is how an alarm reports "not fired" about code it never covered.
+    const armed = t.axes?.tripwire?.witnesses ?? t.witnesses;
     const drift = realDrift(witnessDrift(t.witnesses, live));
-    if (drift.length) out.push({ target: t.target, importance: normImportance(t.importance), source: t.source, tripwire: !!t.tripwire, reason: t.reason, drift });
+    const twDrift = t.tripwire ? realDrift(witnessDrift(armed, live)) : [];
+    if (drift.length || twDrift.length) {
+      out.push({
+        target: t.target, importance: normImportance(t.importance), source: t.source,
+        tripwire: !!t.tripwire && twDrift.length > 0,
+        reason: t.reason, drift: drift.length ? drift : twDrift,
+      });
+    }
   }
   return out;
 }
@@ -576,6 +605,12 @@ export async function tripwires(root: string): Promise<{ fired: TriageDrift[]; a
   const drift = await triageDrift(root);
   return { fired: drift.filter((d) => d.tripwire), armedCount };
 }
+
+/** Every witness on a mark, whichever field recorded it. */
+const witnessesOfEvery = (t: Triage) => [
+  ...t.witnesses,
+  ...Object.values(t.axes ?? {}).flatMap((a) => a?.witnesses ?? []),
+];
 
 export interface BatchTriageItem { anchorId: string; importance?: Importance; complexity?: Complexity; reason?: string }
 

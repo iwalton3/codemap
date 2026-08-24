@@ -1118,6 +1118,17 @@ const TRIAGE_COLS = "target_kind,target_id,field,value,source,likely,generated_b
  * importance is the field the rest refine. Anything needing the real provenance of a
  * given field reads the rows.
  */
+/**
+ * `likely` — true when any EFFECTIVE field is agent-supplied.
+ *
+ * One function because there were two readers computing it differently: `triageOf`
+ * derived it and `triageFromRows` took the importance row's flag, so a human mark whose
+ * complexity an agent raised read as `likely` through one path and confirmed through
+ * the other.
+ */
+export const likelyOf = (rows: ({ likely: number | boolean } | undefined)[]): boolean =>
+  rows.some((r) => !!r?.likely);
+
 function triageFromRows(rows: TriageRow[]): Triage[] {
   const byTarget = new Map<string, TriageRow[]>();
   for (const r of rows) {
@@ -1132,19 +1143,35 @@ function triageFromRows(rows: TriageRow[]): Triage[] {
     if (!imp) continue;
     const cx = group.find((r) => r.field === "complexity");
     const tw = group.find((r) => r.field === "tripwire");
-    let witnesses: BugWitness[] = [];
-    try { witnesses = JSON.parse(imp.witnesses || "[]") as BugWitness[]; } catch { /* keep the mark */ }
+    const wit = (r: TriageRow | undefined): BugWitness[] => {
+      try { return JSON.parse(r?.witnesses || "[]") as BugWitness[]; } catch { return []; /* keep the mark */ }
+    };
+    const witnesses = wit(imp);
     out.push({
       target: { kind: imp.target_kind as "node" | "anchor", id: imp.target_id },
       importance: imp.value as Importance,
       ...(cx ? { complexity: cx.value as Complexity } : {}),
-      likely: !!imp.likely,
+      // DERIVED, exactly as `triageOf` derives it: true when ANY effective field is
+      // agent-supplied. Taken off the importance row alone, a human's stakes refined by
+      // an agent's complexity read as a confirmed human mark. One rule, two readers, and
+      // they must not disagree — `likelyOf` is the rule.
+      likely: likelyOf([imp, cx]),
       ...(tw ? { tripwire: tw.value === "1" } : {}),
       source: imp.source as TriageSource,
       ...(imp.generated_by ? { generatedBy: imp.generated_by } : {}),
       ...(imp.reason ? { reason: imp.reason } : {}),
       at: imp.at,
       witnesses,
+      // PER FIELD. `witnesses` above is the importance receipt's, kept as the alias the
+      // compatibility surface documents — but a tripwire armed against one body and an
+      // importance witnessed against another are two facts, and asking a record-wide
+      // question of one field's array is the compound-value bug this table exists to
+      // end. `triageDrift`, `tripwires` and `deriveTriage` read these.
+      axes: {
+        importance: { source: imp.source as TriageSource, likely: !!imp.likely, witnesses, at: imp.at },
+        ...(cx ? { complexity: { source: cx.source as TriageSource, likely: !!cx.likely, witnesses: wit(cx), at: cx.at } } : {}),
+        ...(tw ? { tripwire: { source: tw.source as TriageSource, likely: !!tw.likely, witnesses: wit(tw), at: tw.at } } : {}),
+      },
     });
   }
   return out;
@@ -1171,30 +1198,36 @@ function triageToRows(t: Triage): [string, string, string, string, string, numbe
  * What every READER wants. Nothing folds a log here — these are rows, so `COMPLETENESS`
  * still holds; the fold's job is to have written the shared rows at sync time.
  *
- * **Per FIELD, and the fold-owned row wins.** Both halves are deliberate:
+ * **Coverage is per TARGET, and where the log covers a target it is the whole answer.**
  *
- * Per field, because that is what the table is keyed on and what the design turns on —
- * a record whose importance is a teammate's and whose complexity is yours is two
- * assertions, and collapsing them to whichever record "wins" throws one away.
+ * Per target, not per field, and the difference is not academic. Merging per field lets
+ * a local `{low, deep}` meet a shared `{business-critical}` and produce shared
+ * importance beside local complexity — a pair NEITHER party ever asserted, assembled by
+ * the reader. A mark is one act; a target the log covers is answered by the log.
  *
- * The fold wins because the LOG is authoritative. Your own published marks are events,
- * so the fold has already weighed them against everyone else's by the documented rule
- * (`docs/shared-triage.md`) — including a teammate lowering something you raised, which
- * is a decision they made having SEEN yours. Letting a local row outrank that would
- * silently reinstate the value they superseded, and it would do it only on your machine.
+ * The log wins because it is authoritative. Your own published marks are events, so the
+ * fold has already weighed them against everyone else's — including a teammate lowering
+ * something you raised, having SEEN it. A local row outranking that would silently
+ * reinstate the value they superseded, on your machine only.
  *
- * What that leaves is the honest case: a local row the log has never heard of, from
- * before there was a sidecar. It fills the gap, and `publishLocalTriage` is how it stops
- * being a gap. That is the same explicit act `publishLocalDocs` is, for the same reason
- * — a legacy `Triage` carries a `source` but no `Actor`, so publishing it automatically
- * would attribute every historical judgment to whoever upgraded first.
+ * **Covered means the fold had something ADMISSIBLE to say** — a mark, or an absence a
+ * person asserted (the `@absent` tombstone). Not merely "the log mentions this target":
+ * a complexity-only agent claim is refused by the ratchet precisely because an agent may
+ * not invent stakes, and letting that refused event count as coverage would suppress a
+ * human's local `business-critical` — the same lowering, by the back door.
+ *
+ * What is left is the honest gap: a target the log has no admissible answer for, which
+ * a local row fills. `publishLocalTriage` is how it stops being a gap — an explicit
+ * attributed act, as `publishLocalDocs` is, because a legacy `Triage` carries a `source`
+ * but no `Actor` and publishing it automatically would attribute every historical
+ * judgment to whoever upgraded first.
  */
 export async function readTriage(root: string): Promise<TriageStore> {
   const rows = db(root).prepare(`SELECT ${TRIAGE_COLS} FROM triage`).all() as unknown as TriageRow[];
-  const shared = new Set(rows.filter((r) => r.source_scope !== null)
-    .map((r) => `${r.target_kind}\0${r.target_id}\0${r.field}`));
+  const covered = new Set(rows.filter((r) => r.source_scope !== null)
+    .map((r) => `${r.target_kind}\0${r.target_id}`));
   const merged = rows.filter((r) => r.source_scope !== null
-    || !shared.has(`${r.target_kind}\0${r.target_id}\0${r.field}`));
+    || !covered.has(`${r.target_kind}\0${r.target_id}`));
   return { schemaVersion: SCHEMA_VERSION, triage: triageFromRows(merged) };
 }
 

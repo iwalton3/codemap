@@ -24,7 +24,7 @@ import { foldWalkthroughs, type SharedWalkthrough } from "./shared-walkthrough.j
 import { needsHumanAck, foldFindings, type SharedFinding } from "./shared-findings.js";
 import { foldDocs, type SharedDoc, type UnmatchedAcceptance } from "./shared-docs.js";
 import { foldNotes, type SharedNote } from "./shared-notes.js";
-import { foldTriage, triageSubject, type SharedTriage, type Axis, type TriageField } from "./shared-triage.js";
+import { foldTriage, triageSubject, isTombstone, ABSENT_FIELD, type TriageEntry, type Axis, type TriageField } from "./shared-triage.js";
 import type { Actor, NodeVersion } from "./schema.js";
 
 /**
@@ -306,14 +306,14 @@ export const walkthroughsProjection: Projection<SharedWalkthrough[]> = {
  * use — and `detail` holds that field's whole `Axis`, which is what makes the round trip
  * exact rather than approximately right.
  */
-export const triageProjection: Projection<Map<string, SharedTriage>> = {
-  write(d: DatabaseSync, scope: string, value: Map<string, SharedTriage>): void {
+export const triageProjection: Projection<Map<string, TriageEntry>> = {
+  write(d: DatabaseSync, scope: string, value: Map<string, TriageEntry>): void {
     d.prepare("DELETE FROM triage WHERE source_scope = ?").run(scope);
     const ins = d.prepare(
       "INSERT INTO triage(target_kind,target_id,field,value,source,likely,generated_by,reason,at,"
       + "actor,asserted_commit,witnesses,origin,source_scope,detail) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
     );
-    const put = (t: SharedTriage, field: TriageField, axis: Axis<any> | undefined): void => {
+    const put = (t: { target: { kind: string; id: string } }, field: string, axis: Axis<any> | undefined): void => {
       if (!axis) return;
       const r = axis.effective;
       ins.run(
@@ -327,14 +327,25 @@ export const triageProjection: Projection<Map<string, SharedTriage>> = {
       );
     };
     for (const t of value.values()) {
+      if (isTombstone(t)) {
+        // An absence a person ASSERTED. Written as a row because the alternative — no
+        // row — is indistinguishable from a target the log never mentioned, and that
+        // is precisely how a cleared mark used to be resurrected by a local one.
+        ins.run(
+          t.target.kind, t.target.id, ABSENT_FIELD, "", "human", 0, null, null, t.cleared.at,
+          JSON.stringify(t.cleared.actor), null, "[]", "sync", scope,
+          JSON.stringify({ cleared: t.cleared }),
+        );
+        continue;
+      }
       put(t, "importance", t.importance);
       put(t, "complexity", t.complexity);
       put(t, "tripwire", t.tripwire);
     }
   },
 
-  read(d: DatabaseSync, scope: string): Map<string, SharedTriage> {
-    const out = new Map<string, SharedTriage>();
+  read(d: DatabaseSync, scope: string): Map<string, TriageEntry> {
+    const out = new Map<string, TriageEntry>();
     // `rowid`, so the fold's own Map order survives the round trip — `foldTriage`
     // returns targets in first-event order and the contract is `read(write(x)) === x`.
     for (const r of d.prepare(
@@ -342,17 +353,18 @@ export const triageProjection: Projection<Map<string, SharedTriage>> = {
     ).all(scope) as unknown as { target_kind: string; target_id: string; field: string; detail: string | null }[]) {
       const kind = r.target_kind as "node" | "anchor";
       const key = triageSubject(kind, r.target_id);
-      let t = out.get(key);
-      if (!t) {
-        // `importance` is written first for every target, so the partial object is only
-        // ever missing it between this line and the assignment below.
-        t = { target: { kind, id: r.target_id } } as SharedTriage;
-        out.set(key, t);
-      }
       try {
-        const axis = JSON.parse(r.detail ?? "null") as Axis<any> | null;
-        if (!axis) throw new Error("no detail");
-        (t as any)[r.field] = axis;
+        const detail = JSON.parse(r.detail ?? "null");
+        if (!detail) throw new Error("no detail");
+        if (r.field === ABSENT_FIELD) { out.set(key, { target: { kind, id: r.target_id }, cleared: detail.cleared }); continue; }
+        let t = out.get(key);
+        if (!t) {
+          // `importance` is written first for every target, so the partial object is
+          // only ever missing it between this line and the assignment below.
+          t = { target: { kind, id: r.target_id } } as TriageEntry;
+          out.set(key, t);
+        }
+        (t as any)[r.field] = detail as Axis<any>;
       } catch {
         throw new CorruptProjection(`triage ${scope}/${key}/${r.field} is unreadable`);
       }

@@ -26,7 +26,7 @@ import { readScope, scopesOnDisk, sortEvents, type LogEvent } from "./eventlog.j
 import { projectionFor } from "./shared-projections.js";
 import { foldCount } from "./materialize.js";
 import { docScope, foldDocs } from "./shared-docs.js";
-import { triageScope, foldTriage } from "./shared-triage.js";
+import { triageScope, foldTriage, isTombstone, ABSENT_FIELD } from "./shared-triage.js";
 import { sharedDocs, sharedFindings, sharedNotes, sharedWalkthroughs, sharedTriage } from "./ops-shared.js";
 import { universeKey } from "./sidecar-config.js";
 import { db } from "./db.js";
@@ -366,6 +366,15 @@ async function triageOwnership(m: Member, universe: string): Promise<void> {
 
   const expected = new Map<string, string>();
   for (const t of folded.values()) {
+    if (isTombstone(t)) {
+      // An asserted absence is a row too — that is the point of it. Same shape as the
+      // axes so the ownership comparison stays one loop.
+      expected.set(key(t.target.kind, t.target.id, ABSENT_FIELD), stable({
+        value: "", source: "human", likely: false, reason: null, at: t.cleared.at,
+        actor: t.cleared.actor, detail: { cleared: t.cleared },
+      }));
+      continue;
+    }
     for (const field of ["importance", "complexity", "tripwire"] as const) {
       const axis = t[field];
       if (!axis) continue;

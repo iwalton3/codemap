@@ -12,7 +12,7 @@ import { testEvent } from "./test-events.js";
 import { sortEvents, type LogEvent } from "./eventlog.js";
 import type { Actor, Importance, Complexity } from "./schema.js";
 import { ratchet } from "./triage.js";
-import { foldTriage, triageSubject, triageOf, type SharedTriage } from "./shared-triage.js";
+import { foldTriage, triageSubject, triageOf, isTombstone, type SharedTriage } from "./shared-triage.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
 const ben: Actor = { principal: "ben@x.com" };
@@ -57,7 +57,11 @@ const clear = (id: string, by: Actor, over: Partial<Say> = {}): LogEvent => test
 });
 
 const fold = (events: LogEvent[]) => foldTriage(sortEvents(events));
-const one = (events: LogEvent[]): SharedTriage | undefined => fold(events).get(SUBJ);
+/** The mark for `a_1`, or undefined — a tombstone is an ASSERTED absence, not a mark. */
+const one = (events: LogEvent[]): SharedTriage | undefined => {
+  const e = fold(events).get(SUBJ);
+  return e && !isTombstone(e) ? e : undefined;
+};
 
 // --- the headline: no lattice, so no max-fold ---------------------------------
 
@@ -261,12 +265,28 @@ test("equal values are not a disagreement, however many people say it", () => {
 
 // --- clearing -----------------------------------------------------------------
 
-test("a clear causally after a mark folds the target to absent", () => {
+test("a clear causally after a mark folds the target to an asserted absence", () => {
   const got = fold([
     say({ id: "0000000001-aa", by: izzie, writer: "w_i", importance: "business-critical" }),
     clear("0000000002-bb", ben, { writer: "w_b", after: ["0000000001-aa"] }),
   ]);
-  assert.equal(got.get(SUBJ), undefined, "the superseded mark stays in history and out of the projection");
+  const e = got.get(SUBJ)!;
+  assert.ok(e && isTombstone(e), "a TOMBSTONE, not nothing — see below for why the difference is load-bearing");
+  assert.equal(e.cleared.actor.principal, "ben@x.com", "and it says who cleared it");
+  assert.equal(one([
+    say({ id: "0000000001-aa", by: izzie, writer: "w_i", importance: "business-critical" }),
+    clear("0000000002-bb", ben, { writer: "w_b", after: ["0000000001-aa"] }),
+  ]), undefined, "the superseded mark stays in history and out of the marks");
+});
+
+test("a target with nothing ADMISSIBLE is not a tombstone — it is uncovered", () => {
+  // The distinction the whole F2 repair turns on. A tombstone says "the team cleared
+  // this"; no row at all says "the team never said anything usable". Collapsing them
+  // lets a REFUSED agent claim — one the ratchet rejected because an agent may not
+  // invent stakes — suppress somebody's local mark, which is the same lowering by the
+  // back door.
+  const got = fold([say({ id: "0000000001-aa", by: opus, writer: "w_o", complexity: "deep" })]);
+  assert.equal(got.get(SUBJ), undefined, "no entry at all, so the reader knows the log has no answer here");
 });
 
 test("a clear CONCURRENT with an assertion loses — presence wins", () => {
@@ -304,7 +324,8 @@ test("but a complexity-only agent claim after a clear is still refused", () => {
     clear("0000000002-bb", izzie, { writer: "w_i", after: ["0000000001-aa"] }),
     say({ id: "0000000003-cc", by: opus, writer: "w_o", after: ["0000000002-bb"], complexity: "deep" }),
   ]);
-  assert.equal(got.get(SUBJ), undefined);
+  const e = got.get(SUBJ)!;
+  assert.ok(isTombstone(e), "the clear still stands — a complexity alone cannot revive a cleared mark");
 });
 
 // --- which agent claims stay active -------------------------------------------
@@ -388,8 +409,9 @@ test("targets do not leak into each other", () => {
     say({ id: "0000000001-aa", by: izzie, writer: "w_i", importance: "business-critical" }),
     say({ id: "0000000002-bb", by: ben, writer: "w_b", importance: "low", target: "a_2" }),
   ]);
-  assert.equal(got.get(triageSubject("anchor", "a_1"))!.importance.effective.value, "business-critical");
-  assert.equal(got.get(triageSubject("anchor", "a_2"))!.importance.effective.value, "low");
+  const mark = (id: string) => { const e = got.get(triageSubject("anchor", id))!; return isTombstone(e) ? null : e; };
+  assert.equal(mark("a_1")!.importance.effective.value, "business-critical");
+  assert.equal(mark("a_2")!.importance.effective.value, "low");
   assert.equal(got.size, 2);
 });
 

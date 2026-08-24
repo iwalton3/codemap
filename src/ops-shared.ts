@@ -34,7 +34,7 @@ import {
   createNote, answerNote, resolveNote, allNotes, foldNotes, noteScope, bucketFor,
   type NewNote,
 } from "./shared-notes.js";
-import { assertTriageBatch, triageScope, triageOf, type SharedTriage } from "./shared-triage.js";
+import { assertTriageBatch, triageScope, triageOf, isTombstone, type SharedTriage } from "./shared-triage.js";
 import { cachedTriage, materializeTriage } from "./triage-publish.js";
 export { mirrorTriage, mirrorTriageBatch, mirrorTriageClear } from "./triage-publish.js";
 import { readAnnotations, readAnchorStore, loadNodes, loadNodeVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage } from "./store.js";
@@ -1148,8 +1148,11 @@ export async function sharedTriage(root: string, targetKind?: "node" | "anchor",
   const cfg = resolveSidecar(root);
   if (!cfg) return { error: NO_SIDECAR };
   const { value, ...status } = await cachedTriage(root, cfg);
-  const all = [...value.values()].filter((t) =>
-    (!targetKind || t.target.kind === targetKind) && (!targetId || t.target.id === targetId));
+  // Tombstones are not marks — an asserted absence has nothing to show beside a
+  // symbol. They are load-bearing in the TABLE (they are what stops a cleared target
+  // reading as never-mentioned), and invisible here.
+  const all = [...value.values()].filter((t): t is SharedTriage => !isTombstone(t)
+    && (!targetKind || t.target.kind === targetKind) && (!targetId || t.target.id === targetId));
   return {
     scope: nonAuthoritative(status),
     universe: cfg.universe,
@@ -1163,7 +1166,7 @@ export async function contestedTriage(root: string) {
   const cfg = resolveSidecar(root);
   if (!cfg) return { error: NO_SIDECAR };
   const { value, ...status } = await cachedTriage(root, cfg);
-  const contested = [...value.values()].filter((t) => t.importance.contested);
+  const contested = [...value.values()].filter((t): t is SharedTriage => !isTombstone(t) && !!t.importance.contested);
   return {
     scope: nonAuthoritative(status),
     universe: cfg.universe,

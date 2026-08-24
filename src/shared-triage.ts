@@ -36,6 +36,15 @@ import { IMPORTANCE_RANK, COMPLEXITY_RANK, ratchet, type RatchetState } from "./
 /** One universe's stakes. Not per-PR: a symbol's blast radius outlives any branch. */
 export const triageScope = (universe: string): string => `triage/${universe}`;
 
+/**
+ * The pseudo-field a tombstone occupies in the canonical table.
+ *
+ * `@`-prefixed like `@work` and `@orphan`: it is not an axis anyone triages, and the
+ * prefix keeps it from ever colliding with one. `triageFromRows` looks for `importance`
+ * and so ignores it, which is what stops a tombstone rendering as a phantom mark.
+ */
+export const ABSENT_FIELD = "@absent";
+
 /** The grouping key, so the fold never parses a scope path or a kind out of a string. */
 export const triageSubject = (kind: "node" | "anchor", id: string): string => `${kind}:${id}`;
 
@@ -77,6 +86,28 @@ export interface Axis<V> {
   /** Only ever set on `importance`, and only across the business-critical line. */
   contested?: boolean;
 }
+
+/**
+ * A target a person deliberately cleared — an absence somebody ASSERTED.
+ *
+ * Distinct from a target the fold simply has no answer for, and the distinction is the
+ * whole of the F2 repair. Both used to fold to nothing, so the table could not tell
+ * "the team cleared this" from "the team never mentioned it", and a local mark
+ * reappeared the moment shared history cleared one.
+ *
+ * It also has to stay distinct from a target whose only events were REFUSED by policy
+ * — a complexity-only agent claim, say. That target is genuinely uncovered, and
+ * counting it as covered would let a forbidden agent claim suppress a human's local
+ * mark, which is the same lowering the ratchet exists to refuse.
+ */
+export interface TriageTombstone {
+  target: { kind: "node" | "anchor"; id: string };
+  cleared: { actor: Actor; at: string; eventId: string };
+}
+
+/** What a fold answers with for one target: a mark, or an asserted absence. */
+export type TriageEntry = SharedTriage | TriageTombstone;
+export const isTombstone = (e: TriageEntry): e is TriageTombstone => "cleared" in e;
 
 export interface SharedTriage {
   target: { kind: "node" | "anchor"; id: string };
@@ -235,7 +266,7 @@ function entryOf(e: LogEvent): Entry | null {
  * exactly what `ratchet` refuses to invent — and `triageFromRows` already drops such a
  * group, so emitting one would make the projection's round trip disagree with itself.
  */
-export function foldTriage(events: LogEvent[]): Map<string, SharedTriage> {
+export function foldTriage(events: LogEvent[]): Map<string, TriageEntry> {
   const causal = causality(events);
   const byTarget = new Map<string, Entry[]>();
   for (const e of events) {
@@ -245,7 +276,7 @@ export function foldTriage(events: LogEvent[]): Map<string, SharedTriage> {
     const acc = byTarget.get(e.subject);
     if (acc) acc.push(entry); else byTarget.set(e.subject, [entry]);
   }
-  const out = new Map<string, SharedTriage>();
+  const out = new Map<string, TriageEntry>();
   for (const [key, entries] of byTarget) {
     const t = foldTarget(entries, causal);
     if (t) out.set(key, t);
@@ -317,7 +348,7 @@ const answered = (humans: Entry[], en: Entry, field: TriageField, causal: Causal
   humans.some((h) => causal.saw(h.e.id, en.e.id)
     && (h.clear || (h.data[field] !== undefined && VALID[field](h.data[field]))));
 
-function foldTarget(entries: Entry[], causal: Causality): SharedTriage | null {
+function foldTarget(entries: Entry[], causal: Causality): TriageEntry | null {
   const first = entries[0]!;
   const target = {
     kind: str(first.data, "targetKind") as "node" | "anchor",
@@ -374,8 +405,15 @@ function foldTarget(entries: Entry[], causal: Causality): SharedTriage | null {
   }
 
   const importance = axisOf<Importance>(impBase, impFrom);
-  // No importance is not a mark, and a cleared target folds to absent.
-  if (!importance) return null;
+  if (!importance) {
+    // Absence ASSERTED by a person is a fact the team stated and it gets a tombstone.
+    // Absence for any other reason — no importance ever, or every claim refused — is
+    // the log having nothing admissible to say, and must NOT read as coverage.
+    const won = impBase?.cleared ? clearWinner(entries, causal) : undefined;
+    return won
+      ? { target, cleared: { actor: won.e.actor, at: won.e.at, eventId: won.e.id } }
+      : null;
+  }
   if (contested(importance, agentSaid.importance, causal)) importance.contested = true;
 
   const complexity = axisOf<Complexity>(cxBase, cxFrom);
@@ -483,7 +521,15 @@ export function triageOf(t: SharedTriage): Triage {
   };
 }
 
+/** The clear that actually won — the receipt a tombstone is written from. */
+function clearWinner(entries: Entry[], causal: Causality): Entry | undefined {
+  const clears = entries.filter((en) => en.clear && !en.agent);
+  const live = clears.filter((x) => !entries.some((y) => y !== x && !y.agent && causal.saw(y.e.id, x.e.id)));
+  // Lowest id among the survivors, so every clone writes the same tombstone.
+  return [...live].sort((a, b) => (a.e.id < b.e.id ? -1 : 1))[0];
+}
+
 /** Every field of every target where two people crossed the business-critical line. */
-export function contestedTargets(folded: Map<string, SharedTriage>): SharedTriage[] {
-  return [...folded.values()].filter((t) => t.importance.contested);
+export function contestedTargets(folded: Map<string, TriageEntry>): SharedTriage[] {
+  return [...folded.values()].filter((t): t is SharedTriage => !isTombstone(t) && !!t.importance.contested);
 }

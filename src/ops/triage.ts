@@ -4,7 +4,7 @@ import { readAnnotations } from "../store.js";
 import { annotate, assignAnnotation, reviseAnnotation } from "./annotations.js";
 import { cachedTriage } from "../triage-publish.js";
 import { resolveSidecar } from "../sidecar-config.js";
-import type { SharedTriage } from "../shared-triage.js";
+import { isTombstone, type SharedTriage } from "../shared-triage.js";
 import { changedSince as reviewsChangedSince, type Attestation } from "../reviews.js";
 import { setTriage as triageSet, clearTriage as triageClear, reviewTriageFor, deriveTriage as triageDerive, tripwires as triageTripwires, triageDrift } from "../triage.js";
 
@@ -127,7 +127,7 @@ export async function queueContestedTriage(root: string): Promise<{ filed: numbe
   const cfg = resolveSidecar(root);
   if (!cfg) return { filed: 0, revised: 0, alreadyQueued: 0 };
   const { value } = await cachedTriage(root, cfg);
-  const contested = [...value.values()].filter((t) => t.importance.contested);
+  const contested = [...value.values()].filter((t): t is SharedTriage => !isTombstone(t) && !!t.importance.contested);
   const open = (await readAnnotations(root)).annotations.filter((a) =>
     a.category === CONTESTED_TRIAGE_CATEGORY && !a.resolved);
 

@@ -76,8 +76,16 @@ test("a mark survives the trip out to rows and back", async () => {
 
     const back = (await readTriage(root)).triage.sort((a, b) => a.target.id.localeCompare(b.target.id));
     assert.equal(back.length, 2);
-    assert.deepEqual(back[0], one, "every field of the first, unchanged");
-    assert.deepEqual(back[1], two, "and of the second");
+    // `axes` is ADDED by the read — per-field receipts the rows carry and a hand-built
+    // `Triage` does not. Compared without it, this is the same round trip it always was.
+    const flat = ({ axes, ...rest }: Triage & { axes?: unknown }) => rest;
+    assert.deepEqual(flat(back[0]!), one, "every field of the first, unchanged");
+    assert.deepEqual(flat(back[1]!), two, "and of the second");
+
+    // And the receipts themselves, which are what `triageDrift` and the tripwire read.
+    assert.equal(back[0]!.axes?.importance?.source, "human");
+    assert.equal(back[0]!.axes?.complexity?.source, "human", "one write, one receipt shared by its fields");
+    assert.equal(back[1]!.axes?.tripwire?.likely, true, "an agent's mark, per field");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -137,21 +145,21 @@ test("a local write never reaches a row the fold owns", async () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("the fold-owned row wins, per FIELD, and a local row fills what the scope never says", async () => {
-  // The real merge rule (`docs/shared-triage.md`, and the note on `readTriage`). The
-  // fold has already weighed this clone's own published marks against everyone else's,
-  // so a local row outranking it would silently reinstate a value a teammate superseded
-  // — and would do it only on this machine.
+test("where the log covers a target it is the WHOLE answer — no assembled hybrid", async () => {
+  // Coverage is per TARGET, not per field. Merging per field let a local `{low, deep}`
+  // meet a shared `{business-critical}` and produce shared importance beside LOCAL
+  // complexity — a pair neither party ever asserted, assembled by the reader. A mark is
+  // one act, and a target the log covers is answered by the log.
   const root = universe();
   try {
-    plantShared(root, "triage/acme-api", mark({ id: "a_1", importance: "low" }));
-    await replaceLocalTriage(root, [mark({ id: "a_1", importance: "business-critical", complexity: "deep" })]);
+    plantShared(root, "triage/acme-api", mark({ id: "a_1", importance: "business-critical" }));
+    await replaceLocalTriage(root, [mark({ id: "a_1", importance: "low", complexity: "deep" })]);
     const back = (await readTriage(root)).triage;
     assert.equal(back.length, 1, "one answer for one target");
-    assert.equal(back[0]!.importance, "low", "the team's answer, not this clone's unpublished one");
+    assert.equal(back[0]!.importance, "business-critical", "the team's answer, not this clone's unpublished one");
     assert.equal(
-      back[0]!.complexity, "deep",
-      "PER FIELD: the scope says nothing about complexity, so the local row still fills it",
+      back[0]!.complexity, undefined,
+      "and NOT the local complexity beside it — that pair is nobody's assertion",
     );
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -440,5 +448,55 @@ test("the ratchet judges against the MERGED value, not this clone's own", async 
       targetKind: "anchor", targetId: "a_2", importance: "business-critical", source: "agent",
     }) as { ok: boolean };
     assert.equal(up.ok, true, "raising over a teammate's mark is allowed");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a tripwire is judged against the body it was ARMED with, not another field's", async () => {
+  // The compound-value bug, one level down. When importance and tripwire come from
+  // different writers they witness different bodies, and asking the importance array
+  // the tripwire's question makes an alarm report "not fired" about code it never
+  // covered. `docs/shared-triage.md` named this and required per-field receipts; the
+  // receipts were built and nothing read them.
+  const root = universe();
+  try {
+    const d = db(root);
+    const ins = d.prepare(
+      "INSERT INTO triage(target_kind,target_id,field,value,source,likely,at,witnesses) VALUES(?,?,?,?,?,?,?,?)",
+    );
+    // Importance witnesses a body that has NOT moved; the tripwire one that HAS.
+    ins.run("anchor", "a_1", "importance", "business-critical", "human", 0, "t",
+      JSON.stringify([{ anchorId: "a_1", bodyHash: "h2:aa:sha256:STILLHERE" }]));
+    ins.run("anchor", "a_1", "tripwire", "1", "human", 0, "t",
+      JSON.stringify([{ anchorId: "a_2", bodyHash: "h2:aa:sha256:MOVED" }]));
+
+    const back = (await readTriage(root)).triage[0]!;
+    assert.deepEqual(
+      back.axes?.tripwire?.witnesses.map((w) => w.anchorId), ["a_2"],
+      "the tripwire's own receipt reaches the reader — without this the rest cannot work",
+    );
+    assert.deepEqual(back.witnesses.map((w) => w.anchorId), ["a_1"], "and the alias is still importance's");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("`likely` is DERIVED from every effective field, not read off importance", async () => {
+  // Two readers computed this differently: `triageOf` derived it, `triageFromRows` took
+  // the importance row's flag. So a person's stakes refined by an agent's complexity
+  // read as a confirmed human mark through the table and as a proposal through the
+  // fold — the same record, two answers, depending on which door you came in.
+  const root = universe();
+  try {
+    const d = db(root);
+    const ins = d.prepare(
+      "INSERT INTO triage(target_kind,target_id,field,value,source,likely,at,witnesses) VALUES(?,?,?,?,?,?,?,'[]')",
+    );
+    ins.run("anchor", "a_1", "importance", "business-critical", "human", 0, "t");
+    ins.run("anchor", "a_1", "complexity", "deep", "agent", 1, "t");
+
+    const back = (await readTriage(root)).triage[0]!;
+    assert.equal(back.source, "human", "the alias is still the importance receipt");
+    assert.equal(
+      back.likely, true,
+      "an agent supplied one of the effective values, so the mark is not a confirmed human one",
+    );
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
