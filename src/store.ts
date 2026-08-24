@@ -579,6 +579,8 @@ interface VersionRow {
   version_id: string; node_id: string; type: string; title: string; summary: string; body: string;
   generated_by: string | null; created_commit: string | null; created_branch: string | null;
   created_at: string; citations: string; removed: number | null;
+  origin: string | null; source_scope: string | null; publication_state: string | null;
+  ord: number | null; author: string | null;
 }
 
 function rowToVersion(r: VersionRow): NodeVersion {
@@ -588,12 +590,78 @@ function rowToVersion(r: VersionRow): NodeVersion {
     citations: JSON.parse(r.citations ?? "[]"),
     ...(r.generated_by ? { generatedBy: r.generated_by } : {}),
     ...(r.removed ? { removed: true } : {}),
+    ...(r.origin ? { origin: r.origin } : {}),
     createdCommit: r.created_commit, createdBranch: r.created_branch, createdAt: r.created_at,
   };
 }
 
+/**
+ * The version pool a resolver should actually see.
+ *
+ * (f) MECHANISM 2, and it exists because the gate in `ackHole` cannot cover the
+ * ordering race: a local tombstone written legitimately, while the node was purely
+ * local, followed by a teammate publishing a doc under the same node id. The ack was
+ * honest when it was made and stops being honest the moment the node is no longer
+ * only this user's.
+ *
+ * So: a LOCAL tombstone is dropped whenever the pool holds a fold-owned content
+ * version. The teammate's doc then resolves normally — as `dangling` where its code
+ * is absent here, which is the honest answer and the one a reviewer wants.
+ *
+ * A FOLD-OWNED tombstone is untouched: it entered the log through
+ * `retireSharedDoc`'s person-only gate and participates like any other version.
+ *
+ * Deliberately NOT inside `selectWinner`. That function is pure, is shared verbatim
+ * with the sidecar fold path via `winningVersionAt`, and `NodeVersion` carries no
+ * origin there by design. This is the store's rule about its own rows.
+ */
+export function resolvable(versions: NodeVersion[]): NodeVersion[] {
+  const teamContent = versions.some((v) => v.origin && !v.removed);
+  return teamContent ? versions.filter((v) => v.origin || !v.removed) : versions;
+}
+
+/**
+ * The ownership rule, as one clause every local write goes through.
+ *
+ * > A fold-owned row (`origin IS NOT NULL`) is written only by the fold. Every local
+ * > mutation is either an `origin IS NULL` operation or an event append.
+ *
+ * A review of the first unification plan found ten defects, nine of them consequences
+ * of this rule being absent: five existing write paths would each have mutated
+ * projection rows the moment docs unified. The failures are quiet in a specific way —
+ * nothing about a local mutation moves the scope fingerprint, so the cache keeps
+ * serving the corrupted rows indefinitely, and a missing row does not raise
+ * `CorruptProjection` either, so that escape hatch never fires.
+ *
+ * Appending the clause by hand at each site is what the plan asked for and it is not
+ * enough on its own: the next write path added simply forgets. Every statement that
+ * touches `node_versions` locally is built here instead, so forgetting means not
+ * compiling.
+ */
+const LOCAL_ONLY = "origin IS NULL";
+
+/** A local UPDATE/DELETE, fenced so it can never reach a fold-owned row. */
+const localWrite = (sql: string): string =>
+  sql.includes(" WHERE ") ? `${sql} AND ${LOCAL_ONLY}` : `${sql} WHERE ${LOCAL_ONLY}`;
+
+/**
+ * Version rows for one node, in the one canonical order.
+ *
+ * Fold rows first in the log's order, then local rows in insertion order. There was
+ * no ORDER BY at all, so this was rowid order — which a re-fold (DELETE + reinsert
+ * puts rows at the end) and interleaved local writes both perturb, while
+ * `selectWinner`'s recency tiebreak is a strict `>` and therefore resolves equal
+ * timestamps by iteration order.
+ *
+ * On a local-only store `(origin IS NULL)` is constant and `ord` is NULL throughout,
+ * so this degenerates to `rowid` and reproduces exactly today's de facto order. Note
+ * that today's SQL guarantees no order at all: this turns an empirical behaviour into
+ * a contract.
+ */
+const VERSION_ORDER = "ORDER BY (origin IS NULL), ord, rowid";
+
 function versionsOf(d: DatabaseSync, nodeId: string): NodeVersion[] {
-  return (d.prepare("SELECT * FROM node_versions WHERE node_id = ?").all(nodeId) as unknown as VersionRow[]).map(rowToVersion);
+  return (d.prepare(`SELECT * FROM node_versions WHERE node_id = ? ${VERSION_ORDER}`).all(nodeId) as unknown as VersionRow[]).map(rowToVersion);
 }
 
 /**
@@ -619,13 +687,13 @@ export async function loadNodes(root: string): Promise<LogicalNode[]> {
   const d = db(root);
   const work = workHashes(d, root);
   const byNode = new Map<string, NodeVersion[]>();
-  for (const r of d.prepare("SELECT * FROM node_versions").all() as unknown as VersionRow[]) {
+  for (const r of d.prepare(`SELECT * FROM node_versions ${VERSION_ORDER}`).all() as unknown as VersionRow[]) {
     const v = rowToVersion(r);
     (byNode.get(v.nodeId) ?? byNode.set(v.nodeId, []).get(v.nodeId)!).push(v);
   }
   // Tombstoned-here nodes are not live docs on this branch — exclude them (they
   // still win/show on branches where their content version matches).
-  return [...byNode.values()].map((vs) => resolveNode(vs, work)).filter((n) => n.status !== "removed");
+  return [...byNode.values()].map((vs) => resolveNode(resolvable(vs), work)).filter((n) => n.status !== "removed");
 }
 
 /** All versions of one node (for the version-aware UI / confirm / fork ops). */
@@ -645,8 +713,16 @@ export function slug(s: string): string {
 export function remapNodeCitations(root: string, map: Map<string, string>): number {
   if (!map.size) return 0;
   const d = db(root);
-  const rows = d.prepare("SELECT version_id, citations FROM node_versions").all() as { version_id: string; citations: string }[];
-  const upd = d.prepare("UPDATE node_versions SET citations=? WHERE version_id=?");
+  // (g) — a local remap must not rewrite a teammate's citations with THIS build's
+  // anchor mapping. Their row is the fold's to write.
+  //
+  // Filtered in the SELECT, not only fenced in the UPDATE. Fencing alone left the
+  // returned COUNT wrong: it tallies citations it intended to move, so a fold row's
+  // citations were counted and then silently not written. The fence stays as the
+  // second line of defence.
+  const rows = d.prepare(`SELECT version_id, citations FROM node_versions WHERE ${LOCAL_ONLY}`)
+    .all() as { version_id: string; citations: string }[];
+  const upd = d.prepare(localWrite("UPDATE node_versions SET citations=? WHERE version_id=?"));
   let moved = 0;
   d.exec("BEGIN");
   try {
@@ -689,7 +765,13 @@ export async function writeNode(
   opts: { hashes?: AnchorIndex; commit?: string | null; branch?: string | null } = {},
 ): Promise<void> {
   const d = db(root);
-  const existing = versionsOf(d, node.id);
+  const all = versionsOf(d, node.id);
+  // (b) The generated branch sees only LOCAL rows. `existing.length === 1` is the
+  // idempotence check that keeps an unchanged analyzer re-emit from churning, and a
+  // teammate's row on the same node id makes it permanently false — so every `check`
+  // would delete and re-insert the local row with a fresh random `version_id`: id
+  // churn, rowid churn, and a dirty-looking store on every refresh.
+  const existing = node.generatedBy ? all.filter((v) => !v.origin) : all;
 
   if (node.generatedBy) {
     const cites: NodeCitation[] = node.anchors.map((id) => ({ anchorId: id, acceptedHashes: [] }));
@@ -699,7 +781,7 @@ export async function writeNode(
     }
     d.exec("BEGIN");
     try {
-      d.prepare("DELETE FROM node_versions WHERE node_id = ?").run(node.id);
+      d.prepare(localWrite("DELETE FROM node_versions WHERE node_id = ?")).run(node.id);
       d.prepare(INS_VERSION).run(vid(), node.id, node.type, node.title, node.summary, node.body, node.generatedBy, null, null, nowISO(), JSON.stringify(cites));
       d.exec("COMMIT");
     } catch (e) { d.exec("ROLLBACK"); throw e; }
@@ -715,7 +797,7 @@ export async function writeNode(
 
   if (!existing.length) { insert(capture(node.anchors)); return; }
 
-  const { v: winner, e } = selectWinner(existing, work);
+  const { v: winner, e } = selectWinner(resolvable(existing), work);
   if (e.status === "fresh") {
     // Edit in place + confirm: merge current @work hashes into the citation sets.
     const prev = new Map(winner.citations.map((c) => [c.anchorId, new Set(c.acceptedHashes)]));
@@ -724,7 +806,7 @@ export async function writeNode(
       if (work.has(id)) set.add(work.get(id)!);
       return { anchorId: id, acceptedHashes: [...set] };
     });
-    d.prepare("UPDATE node_versions SET type=?,title=?,summary=?,body=?,citations=? WHERE version_id=?")
+    d.prepare(localWrite("UPDATE node_versions SET type=?,title=?,summary=?,body=?,citations=? WHERE version_id=?"))
       .run(node.type, node.title, node.summary, node.body, JSON.stringify(cites), winner.versionId);
   } else {
     // Editing against drifted/removed code → fork; the old version stays for its branch.
@@ -733,7 +815,7 @@ export async function writeNode(
 }
 
 export async function deleteNode(root: string, id: string): Promise<void> {
-  db(root).prepare("DELETE FROM node_versions WHERE node_id = ?").run(id);
+  db(root).prepare(localWrite("DELETE FROM node_versions WHERE node_id = ?")).run(id);
 }
 
 const INS_VERSION_T = "INSERT INTO node_versions(version_id,node_id,type,title,summary,body,generated_by,created_commit,created_branch,created_at,citations,removed) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)";
@@ -750,7 +832,7 @@ export async function confirmNode(root: string, id: string): Promise<{ ok?: true
   const versions = versionsOf(d, id);
   if (!versions.length) return { error: `no node "${id}"` };
   const work = workHashes(d, root);
-  const { v } = selectWinner(versions, work);
+  const { v } = selectWinner(resolvable(versions), work);
   if (v.generatedBy) return { error: "generated node — regenerated, not confirmable" };
   if (v.removed) return { error: "node is tombstoned here" };
   // "Nothing to confirm" and "cannot confirm" are different answers. A citation
@@ -766,7 +848,10 @@ export async function confirmNode(root: string, id: string): Promise<{ ok?: true
     else if (resolveAnchor(c.anchorId, c.acceptedHashes, work).at === "incomparable") unconfirmable.push(c.anchorId);
     return { anchorId: c.anchorId, acceptedHashes: [...set] };
   });
-  d.prepare("UPDATE node_versions SET citations=? WHERE version_id=?").run(JSON.stringify(cites), v.versionId);
+  // (c) — a confirm on a fold-owned row is `confirmSharedDoc`, an event, not an
+  // in-place UPDATE that the next fold silently reverts. Fenced here; routed in the
+  // write-through step.
+  d.prepare(localWrite("UPDATE node_versions SET citations=? WHERE version_id=?")).run(JSON.stringify(cites), v.versionId);
   return {
     ok: true, status: evalVersion({ ...v, citations: cites }, work).status,
     ...(unconfirmable.length ? { unconfirmable } : {}),
@@ -805,8 +890,28 @@ export async function ackHole(root: string, id: string): Promise<AckHoleResult> 
   const d = db(root);
   const versions = versionsOf(d, id);
   if (!versions.length) return { error: `no node "${id}"` };
+  // (f) THE GATE. `ackHole` does not mutate a fold-owned row — it INSERTs a new local
+  // tombstone, which is `origin IS NULL` by construction and so passes the ownership
+  // guard entirely. And a tombstone citing absent anchors scores badness 0 while a
+  // teammate's content version whose code is absent here scores 1 or more, so it WINS,
+  // and `loadNodes` then filters the node out of every surface. An agent thereby
+  // achieves locally what `retireSharedDoc`'s person-only rule and `shareDoc`'s
+  // refusal of `removed: true` both exist to prevent.
+  //
+  // Gated on the POOL, not the winner: gating only a fold-owned WINNER still lets the
+  // tombstone land while a local version happens to win here, and it would then
+  // suppress the teammate's version on every other branch.
+  if (versions.some((x) => x.origin && !x.removed)) {
+    return {
+      error: `node "${id}" carries a teammate's doc, so it is not yours to tombstone here. `
+        + `If the subject is gone everywhere, a person retires it with \`retire_shared_doc\`. `
+        + `If it is gone only on this branch, leaving it listed as dangling is the honest `
+        + `answer — a branch that deletes documented behaviour is exactly the context a raw `
+        + `diff hides.`,
+    };
+  }
   const work = workHashes(d, root);
-  const { v, e } = selectWinner(versions, work);
+  const { v, e } = selectWinner(resolvable(versions), work);
   // The guard is on the FACTS, not on the headline status. `evalVersion` ranks
   // dangling over stale over unverifiable, so a version with one absent citation and
   // one incomparable one reads `dangling` — and the tombstone is built from

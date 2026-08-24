@@ -105,6 +105,17 @@ export function selectWinner(versions: NodeVersion[], work: AnchorIndex): { v: N
     // TODO: git-aware tiebreak (created_commit ancestry) — rare; most-recent for now.
     const better = e.badness !== bestE.badness ? e.badness < bestE.badness
       : !!best.removed !== !!v.removed ? !v.removed
+      // A person's prose beats a machine synopsis at equal badness. NOT a tidiness
+      // rule and NOT inert: both score 0, so recency decided — and a generated row's
+      // `created_at` refreshes on every re-emit, so after any code change the
+      // analyzer's summary silently outranked a human doc on every surface. This
+      // changes resolution on a local-only store too, wherever a human version has
+      // forked onto a generated node id.
+      //
+      // Badness still comes first, which is the right reading in the other direction:
+      // a DRIFTED human doc loses to a current machine synopsis, and `versionCount`
+      // still shows it exists.
+      : !!best.generatedBy !== !!v.generatedBy ? !v.generatedBy
       : v.createdAt > best.createdAt;
     if (better) { best = v; bestE = e; }
   }

@@ -101,9 +101,25 @@ function migrate(d: DatabaseSync): void {
       version_id TEXT PRIMARY KEY, node_id TEXT NOT NULL,
       type TEXT, title TEXT, summary TEXT, body TEXT, generated_by TEXT,
       created_commit TEXT, created_branch TEXT, created_at TEXT,
-      citations TEXT, removed INTEGER DEFAULT 0
+      citations TEXT, removed INTEGER DEFAULT 0,
+      -- WHERE THIS ROW CAME FROM, and it is three facts rather than one: a locally
+      -- authored version that has since been published needs all three.
+      --   origin            NULL = this user wrote it; non-NULL = the fold owns it.
+      --   source_scope      which sidecar scope the fold read it from.
+      --   publication_state whether a local row has been published, and how.
+      -- The ownership rule (docs/sidecar-architecture.md) is stated on origin: a row
+      -- with one is written ONLY by the fold. Do NOT overload generated_by for this
+      -- — analyzer-generated and sync-origin are different facts about a row.
+      origin TEXT, source_scope TEXT, publication_state TEXT,
+      -- The fold's position for this version, and its author. Both are fold outputs
+      -- that a table does not otherwise preserve. author is a column rather than part
+      -- of the JSON because SharedDoc.authors is a Map, which JSON cannot carry — the
+      -- same reason it is a column in shared_doc_version today.
+      ord INTEGER, author TEXT
     );
     CREATE INDEX IF NOT EXISTS ix_nv_node ON node_versions(node_id);
+    -- A per-fold DELETE WHERE source_scope = ? is a table scan without this.
+    CREATE INDEX IF NOT EXISTS ix_nv_scope ON node_versions(source_scope);
     CREATE TABLE IF NOT EXISTS edges (
       rowid INTEGER PRIMARY KEY, from_id TEXT, to_id TEXT, type TEXT, ord INTEGER, generated_by TEXT
     );
@@ -203,6 +219,14 @@ function migrate(d: DatabaseSync): void {
   // which symbols pair up across two snapshots, the hashes say which pairs changed,
   // so a mismatch on either makes the whole diff meaningless.
   try { d.exec("ALTER TABLE snapshots ADD COLUMN hash_scheme INTEGER"); } catch { /* already present */ }
+  // node_versions provenance (docs unification). Additive, and additive is
+  // load-bearing here: local rows are the ONE thing in this database that is not
+  // regenerable — human docs live there and nowhere else — so "delete it and re-init"
+  // is never a revert path for this table.
+  for (const col of ["origin TEXT", "source_scope TEXT", "publication_state TEXT", "ord INTEGER", "author TEXT"]) {
+    try { d.exec(`ALTER TABLE node_versions ADD COLUMN ${col}`); } catch { /* already present */ }
+  }
+  try { d.exec("CREATE INDEX IF NOT EXISTS ix_nv_scope ON node_versions(source_scope)"); } catch { /* fine */ }
   // The `shared_scope.status` / `.diagnostic` rungs are GONE with the protocol-1
   // freeze: both columns are in the CREATE above, and the only stores that ever
   // lacked them were dev stores on this branch. The four rungs that remain are core

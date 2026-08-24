@@ -299,6 +299,15 @@ export interface NodeVersion {
   /** Analyzer that generated this node (e.g. "marten"); absent = human-authored. */
   generatedBy?: string;
   /**
+   * The sidecar scope this version was folded from, when the fold owns this row.
+   *
+   * Absent means this user wrote it. The ownership rule turns on exactly this: a row
+   * with an origin is written ONLY by the fold, and every local mutation is either an
+   * origin-less operation or an event append. NOT the same fact as `generatedBy`,
+   * which says a machine wrote the prose.
+   */
+  origin?: string;
+  /**
    * A tombstone — the doc's subject was intentionally removed. A tombstone is
    * "fresh" on a branch where its cited anchors are ABSENT (the removal holds),
    * and loses to a live content version on branches where they still exist. So
