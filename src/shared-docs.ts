@@ -100,9 +100,17 @@ export function foldDocs(events: LogEvent[]): Map<string, SharedDoc> {
       // publish surface refuses these too, but that only binds writers who ask.
       //
       // Analyzer output has no refresh path once published and can never be judged
-      // stale; a `process`/`step` doc arrives without its edges and renders as an
-      // empty flow. See `notPublishable` in ops-shared.ts for the full argument.
-      if (v.generatedBy || v.type === "process" || v.type === "step") continue;
+      // stale. See `notPublishable` in ops-shared.ts for the full argument.
+      //
+      // `process`/`step` used to be refused here as well, because their steps are
+      // `step_of` edges and edges did not travel, so a shared flow rendered as an empty
+      // one. Edges travel now (`shared-graph.ts`) and a flow is a node whose `step_of`
+      // set is ordered, so the clause is gone. It is worth knowing it was HERE and not
+      // only at the publish surface: removing the publish check alone left every flow
+      // event arriving and being silently dropped by the fold, which is the both-ends
+      // rule doing its job — the fold is the gate that binds writers this build did not
+      // write, and a publish check only binds writers who ask.
+      if (v.generatedBy) continue;
       // A version id is written once, and once per SCOPE — not per node, because
       // `doc.accepted` carries no node and resolves the id globally. So the drop
       // has to come BEFORE the doc is created: a node whose every version collides

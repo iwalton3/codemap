@@ -104,6 +104,7 @@ export async function apiPost(path, body) {
  *   '/api/shared/hub':          Awaited<ReturnType<Shared['sharedHub']>>,
  *   '/api/shared/triage':       Awaited<ReturnType<Shared['sharedTriage']>>,
  *   '/api/shared/contested':    Awaited<ReturnType<Shared['contestedTriage']>>,
+ *   '/api/shared/graph':        Awaited<ReturnType<Shared['sharedGraph']>>,
  *   '/api/shared/walkthroughs': Awaited<ReturnType<Shared['sharedWalkthroughs']>>,
  *   '/api/shared/notes':        Awaited<ReturnType<Shared['sharedNotes']>>,
  *   '/api/shared/docs':         Awaited<ReturnType<Shared['sharedDocs']>>,
@@ -436,6 +437,14 @@ const codeTip = (cr) => (!cr || !cr.total) ? 'no reviewable code segments'
 // under the second, and on a store with real history the second is most of them.
 const blockedHere = (plan) => (plan.blocked || []).filter(b => !b.elsewhere);
 const blockedElsewhere = (plan) => (plan.blocked || []).filter(b => b.elsewhere);
+// "Nothing folds this, nothing projects it" is a CLAIM, and it may only be made when
+// this store could have seen the wiring. A teammate's node whose folding edges are
+// analyzer output, or a generated node whose analyzer has not run here, is
+// `pendingAnalyzer` — which says what to do, where `orphan` says there is nothing to do
+// and would be wrong. The server decides; these read its answer without re-deriving it.
+const isOrphan = (e) => 'orphan' in e && !!e.orphan;
+const pendingAnalyzer = (e) => 'pendingAnalyzer' in e ? (e.pendingAnalyzer ?? '') : null;
+
 const codeCellBtn = (cr, onOpen) => {
   const st = cr ? cr.state : 'unreviewed';
   const cls = st === 'reviewed' ? (cr && cr.reverted ? 'reverted' : cr && cr.unverifiable ? 'unverifiable' : 'on') : st === 'stale' ? 'stale' : '';
@@ -1784,7 +1793,7 @@ class MatrixPage extends Component {
   filtered() {
     const f = this.state.f, q = f.q.toLowerCase();
     return this.state.data.events.filter((e) =>
-      (!q || e.title.toLowerCase().includes(q)) && (!f.domain || e.domain === f.domain) && (!f.orphan || e.orphan));
+      (!q || e.title.toLowerCase().includes(q)) && (!f.domain || e.domain === f.domain) && (!f.orphan || isOrphan(e)));
   }
   template() {
     const u = this.props.params.universe, d = this.state.data;
@@ -1809,7 +1818,7 @@ class MatrixPage extends Component {
           ${each(d.sinks, s => html`<span class="msink ${s.type}" on-click="${() => go(nodeUrl(u, s.id))}" title="${s.title} (${s.type})">${s.title}</span>`, s => s.id)}
           <span class="mrevh">review</span>
         </div>
-        ${each(rows, e => html`<div class="mrow ${e.orphan ? 'orphan' : ''}">
+        ${each(rows, e => html`<div class="mrow ${isOrphan(e) ? 'orphan' : ''} ${pendingAnalyzer(e) !== null ? 'pending-analyzer' : ''}" title="${pendingAnalyzer(e) !== null ? `nothing here folds or projects this — but its wiring is analyzer output${pendingAnalyzer(e) ? ` (${pendingAnalyzer(e)})` : ''}, which never travels between clones because every clone regenerates it. Run the analyzer to resolve it.` : ''}">
           <span class="mev" on-click="${() => go(nodeUrl(u, e.id))}"><b>${e.title}</b><small>${e.domain} · ${e.emitters}↑</small></span>
           ${each(d.sinks, s => html`<span class="mcell">${when(e.cells[s.id], () => html`<i class="cdot ${e.cells[s.id]}" title="${e.cells[s.id]}"></i>`)}</span>`, s => s.id)}
           <span class="mrevh"><span class="nrev">${this.revBtn(e.id, 'logical', e.review.logical, e.reviewBy && e.reviewBy.logical, e.reviewVia && e.reviewVia.logical)}${codeCellBtn(e.codeReview, () => go(nodeUrl(u, e.id)))}</span></span>
@@ -2394,6 +2403,7 @@ class SharedHubPage extends Component {
         ${this.kindRow('docs', 'docs', ok.unpublished && ok.unpublished.docs, 'publish_docs')}
         ${this.kindRow('notes', 'notes', ok.unpublished && ok.unpublished.notes, 'publish_notes')}
         ${this.kindRow('triage', 'stakes', ok.unpublished && ok.unpublished.triage, 'publish_triage')}
+        ${this.kindRow('graph', 'wiring', ok.unpublished && ok.unpublished.graph, 'publish_graph')}
 
         ${when(this.state.result, () => html`<div class="hubresult ${this.state.result.error ? 'err' : ''}">
           <b>${this.state.result.label}</b>: ${this.state.result.error || this.state.result.note || 'done'}

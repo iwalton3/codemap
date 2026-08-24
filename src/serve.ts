@@ -193,6 +193,8 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return shared.sharedTriage(root, (q.get("kind") as "node" | "anchor") || undefined, q.get("target") || undefined);
     case "/api/shared/contested":
       return shared.contestedTriage(root);
+    case "/api/shared/graph":
+      return shared.sharedGraph(root);
     case "/api/shared/walkthroughs":
       return shared.sharedWalkthroughs(root, q.get("pr") ?? "", q.get("head") || undefined);
     case "/api/shared/notes":
@@ -313,6 +315,7 @@ const server = createServer(async (req, res) => {
         case "publish_docs": out = await run(() => shared.publishLocalDocs(root, { dryRun: body.dryRun === true })); break;
         case "publish_notes": out = await run(() => shared.publishLocalNotes(root, { dryRun: body.dryRun === true })); break;
         case "publish_triage": out = await run(() => shared.publishLocalTriage(root, { dryRun: body.dryRun === true })); break;
+        case "publish_graph": out = await run(() => shared.publishLocalGraph(root, { dryRun: body.dryRun === true })); break;
         // A person's act, and there is deliberately no MCP tool for it: an agent
         // repairing a fork it may itself have caused is the case the person-gate is
         // for. `sharedHeal` IS the complete operation — union, rotate, acknowledge,

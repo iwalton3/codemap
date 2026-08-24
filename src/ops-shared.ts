@@ -811,11 +811,10 @@ export function notPublishable(v: { type?: string; generatedBy?: string | null }
       + "shares a copy that can never be refreshed or judged stale. Share what you CONCLUDED "
       + "about it as a doc in your own words, or as a note.";
   }
-  if (v.type === "process" || v.type === "step") {
-    return `a \`${v.type}\` doc is its steps, and step edges do not travel yet — the shared copy `
-      + "would render as an empty flow on every teammate's machine. Share the insight as a "
-      + "`concept` or `module` doc citing the same anchors, or keep the flow local until flows sync.";
-  }
+  // `process`/`step` used to be refused here: step edges did not travel, so a shared
+  // flow rendered as an empty one on every teammate's machine. Edges travel now
+  // (`shared-graph.ts`), and a flow is just a node whose `step_of` set is ordered — so
+  // the refusal is gone rather than being weakened, and the WALL asserting it is too.
   return null;
 }
 
@@ -1276,6 +1275,7 @@ export async function sharedHub(root: string) {
   // dry run walks all 256 buckets, so running the three concurrently triples the peak
   // rather than the throughput.
   const docs = await publishLocalDocs(root, { dryRun: true }).catch((e: any) => ({ error: String(e?.message ?? e) }));
+  const graph = await publishLocalGraph(root, { dryRun: true }).catch((e: any) => ({ error: String(e?.message ?? e) }));
   const notes = await publishLocalNotes(root, { dryRun: true }).catch((e: any) => ({ error: String(e?.message ?? e) }));
   const triage = await publishLocalTriage(root, { dryRun: true }).catch((e: any) => ({ error: String(e?.message ?? e) }));
 
@@ -1299,10 +1299,77 @@ export async function sharedHub(root: string) {
   return {
     configured: true as const,
     ...status,
-    unpublished: { docs, notes, triage },
+    unpublished: { docs, notes, triage, graph },
     blocked,
     // A fork is the one thing here a person must act on, and `heal` is theirs alone —
     // there is no MCP tool for it, deliberately.
     forked: blocked.some((b) => /fork/i.test(b.reason)),
+  };
+}
+
+
+// --- the graph ----------------------------------------------------------------
+
+/**
+ * Publish this store's own wiring — the graph half of a genesis publish.
+ *
+ * By node, because that is the unit. Analyzer-generated edges are skipped and COUNTED:
+ * they are regenerated per machine, and a silent narrowing reads from the other side
+ * exactly like wiring that did travel.
+ */
+export async function publishLocalGraph(root: string, opts: { dryRun?: boolean } = {}) {
+  const b = bind(root);
+  if ("error" in b) return b;
+  const { readLocalGraph } = await import("./store.js");
+  const edges = (await readLocalGraph(root)).edges;
+  const mine = edges.filter((e) => !e.generatedBy);
+  const skippedGenerated = edges.length - mine.length;
+  const nodes = [...new Set(mine.map((e) => e.from))];
+
+  // How much of this depends on the OTHER side having run an analyzer. A human edge can
+  // cite an analyzer-generated node, and those never travel — measured at 30% of the
+  // shareable edges on the primary target, so it is a precondition rather than a corner
+  // case and the publisher should see it before their teammate does.
+  const generated = new Set((await loadNodes(root)).filter((n) => n.generatedBy).map((n) => n.id));
+  const needsAnalyzer = mine.filter((e) => generated.has(e.to) || generated.has(e.from)).length;
+
+  if (opts.dryRun) {
+    return {
+      universe: b.cfg.universe, wouldPublish: nodes.length, edges: mine.length,
+      skippedGenerated, needsAnalyzer,
+    };
+  }
+  const { mirrorWiring } = await import("./graph-publish.js");
+  const r = await mirrorWiring(root, nodes);
+  if (r.configured && !r.shared) return { error: r.error ?? "the wiring could not be published" };
+  return {
+    universe: b.cfg.universe, published: nodes.length, edges: mine.length,
+    skippedGenerated, needsAnalyzer,
+    note: needsAnalyzer
+      ? `run \`codemap sync\` to send them — ${needsAnalyzer} edge(s) cite analyzer-generated nodes, so a teammate needs the same analyzer to resolve them`
+      : "run `codemap sync` to send them",
+  };
+}
+
+/** The team's wiring, with who published each node's and whether the order mattered. */
+export async function sharedGraph(root: string) {
+  const cfg = resolveSidecar(root);
+  if (!cfg) return { error: NO_SIDECAR };
+  const { cachedGraph } = await import("./graph-publish.js");
+  const { divergedNodes } = await import("./shared-graph.js");
+  const { value, ...status } = await cachedGraph(root, cfg);
+  const all = [...value.values()];
+  return {
+    scope: nonAuthoritative(status),
+    universe: cfg.universe,
+    nodes: all.length,
+    edges: all.reduce((n, w) => n + w.winner.edges.length, 0),
+    // The ones a person or an agent should look at: wall-clock and canonical order
+    // disagreed about the winner, so the ordering was load-bearing.
+    reordered: divergedNodes(value).map((w) => ({
+      nodeId: w.nodeId,
+      served: { by: w.winner.actor.principal, at: w.winner.at, edges: w.winner.edges.length },
+      lost: { by: w.reordered!.causal.actor.principal, at: w.reordered!.causal.at, edges: w.reordered!.causal.edges.length },
+    })),
   };
 }

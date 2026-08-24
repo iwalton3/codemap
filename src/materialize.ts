@@ -53,8 +53,16 @@ import { readScopeChecked, SHARD_EXT, type LogEvent, type ScopeStatus } from "./
  * tables the new reader does not read, so without this the fingerprint matches, the
  * reader returns an empty map, and the canonical fold never happens until the sidecar
  * itself changes.
+ *
+ * 6 -> 7: `foldDocs` stopped refusing `process`/`step` versions, because edges travel
+ * now and a flow is a node whose `step_of` set is ordered. A RULE change with no shape
+ * change, and it needs the bump for the same reason: the fingerprint is over the
+ * SHARDS, which do not move when the fold's mind changes, so every existing store would
+ * keep serving rows that were folded under the old rule and a flow published before the
+ * bump would never appear. Found by walking a real two-clone flow — the events arrived,
+ * the fold was fixed, and the reader still answered from a cache hit.
  */
-export const MATERIALIZER_VERSION = 6;
+export const MATERIALIZER_VERSION = 7;
 
 /**
  * What the events in a scope are, cheaply.

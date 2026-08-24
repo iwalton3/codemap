@@ -54,13 +54,13 @@ test("every exported shared op is reachable from a front-end", () => {
  */
 const WEB_REQUIRED = [
   "sharedHub", "sharedHeal",
-  "publishLocalDocs", "publishLocalNotes", "publishLocalTriage",
-  "sharedTriage", "contestedTriage",
+  "publishLocalDocs", "publishLocalNotes", "publishLocalTriage", "publishLocalGraph",
+  "sharedTriage", "contestedTriage", "sharedGraph",
 ];
 /** Reads only. An agent must SEE the team's stakes; it may not republish or heal. */
 const MCP_REQUIRED = ["sharedTriage", "contestedTriage"];
 /** And these must NOT be agent-reachable, for the reason in the note above. */
-const MCP_FORBIDDEN = ["sharedHeal", "publishLocalDocs", "publishLocalNotes", "publishLocalTriage"];
+const MCP_FORBIDDEN = ["sharedHeal", "publishLocalDocs", "publishLocalNotes", "publishLocalTriage", "publishLocalGraph"];
 
 test("the join and recover flows are reachable from the web, not just a terminal", () => {
   const web = readFileSync("src/serve.ts", "utf8");

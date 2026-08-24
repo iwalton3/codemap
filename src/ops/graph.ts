@@ -161,8 +161,19 @@ export async function nodeCatalog(root: string) {
  * Per-row it also carries the emitter count (handlers that raise it) and review
  * state, so events can be reviewed straight from the matrix.
  */
+/** Which analyzers this store has actually emitted from. See `orphan` below. */
+async function analyzersEmitted(root: string): Promise<Set<string>> {
+  try {
+    const { readAnalyzers } = await import("../store.js");
+    const cfg = await readAnalyzers(root);
+    return new Set(cfg.enabled ?? []);
+  } catch { return new Set(); }
+}
+
 export async function eventMatrix(root: string) {
-  const [nodes, graph, store] = await Promise.all([loadNodesShared(root), readGraph(root), readAnchorStore(root)]);
+  const [nodes, graph, store, analyzersRun] = await Promise.all([
+    loadNodesShared(root), readGraph(root), readAnchorStore(root), analyzersEmitted(root),
+  ]);
   const nsById = new Map(store.anchors.map((a) => [a.id, a.symbolPath[0]]));
   const org = orgPrefixOf(nsById);
   const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -204,7 +215,23 @@ export async function eventMatrix(root: string) {
         cells,
         folds,
         projects,
-        orphan: folds === 0 && projects === 0,
+        // `orphan` is a CLAIM — "nothing folds this, nothing projects it" — and it may
+        // only be made when this store could have seen the wiring. Two cases where it
+        // could not, and asserting it in either is the same false-confidence failure the
+        // whole map is built against:
+        //
+        //   - the node came from a teammate (`origin`), and the wiring that would fold
+        //     it is analyzer output, which never travels because every clone regenerates
+        //     it. Measured at 30% of shareable edges on the primary target.
+        //   - the node IS analyzer-generated and this store has not run that analyzer.
+        //
+        // Both are `pendingAnalyzer`, which says what to do; `orphan` says there is
+        // nothing to do and would be wrong.
+        ...(folds === 0 && projects === 0
+          ? (n.origin || n.generatedBy) && !analyzersRun.has(n.generatedBy ?? "")
+            ? { pendingAnalyzer: n.generatedBy ?? null }
+            : { orphan: true }
+          : {}),
         review: { logical: rp?.logical.state ?? "unreviewed", code: codeReview.state },
         reviewBy: { logical: rp?.logical.actor ?? null, code: codeReview.actor },
         reviewVia: { logical: rp?.logical.via, code: rp?.code.via },
@@ -218,7 +245,11 @@ export async function eventMatrix(root: string) {
     events: rows,
     stats: {
       events: rows.length,
-      orphans: rows.filter((r) => r.orphan).length,
+      orphans: rows.filter((r) => "orphan" in r && r.orphan).length,
+      // Counted apart from orphans on purpose: one is "nothing wires this" and the
+      // other is "this store cannot see the wiring yet". Summing them would restore
+      // the false claim the split exists to remove.
+      pendingAnalyzer: rows.filter((r) => "pendingAnalyzer" in r).length,
       aggregates: sinks.filter((s) => s.type === "aggregate").length,
       projections: sinks.filter((s) => s.type === "projection").length,
     },

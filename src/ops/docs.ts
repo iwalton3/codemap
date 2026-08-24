@@ -129,7 +129,10 @@ export async function connect(
   // Publish the wiring of every node this touched. AFTER the local write and never in
   // place of it: codemap worked without a sidecar for its whole life, and an edge must
   // not be lost because a shared repo is misconfigured.
-  const touched = [...new Set(list.map((e) => e.from))];
+  // Nothing added means nothing to say. Publishing an unchanged set would mint an event
+  // whose only effect is to move the wall-clock winner — which is how a no-op write
+  // starts winning races against real ones.
+  const touched = added ? [...new Set(list.map((e) => e.from))] : [];
   const shared = await import("../graph-publish.js")
     .then((m) => m.mirrorWiring(root, touched))
     .catch(() => ({ shared: false, configured: false, error: undefined as string | undefined }));

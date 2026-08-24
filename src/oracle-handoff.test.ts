@@ -333,14 +333,20 @@ test("the hand-off arc: a teammate reviews their own branch, the owner signs off
       assert.ok(dry.skippedGraph > 0, "and the graph rows are counted rather than quietly dropped");
     });
 
-    await step("WALL: a process doc still cannot be published", async () => {
-      // Edges never sync, so a `process`/`step` doc would arrive without its steps and
-      // render as an empty flow. That is why the flow-walker — a headline reviewer
-      // feature — is single-player. INVERTED: fails when edges start syncing.
+    await step("a flow travels now — the last wall is gone", async () => {
+      // INVERTED until edges synced. A `process` doc used to be refused outright,
+      // because its steps are `step_of` edges and edges never travelled, so the shared
+      // copy rendered as an empty flow on every teammate's machine — which is why the
+      // flow-walker, a headline reviewer feature, was single-player.
+      //
+      // A flow is a node with forced cardinality, so syncing the graph was the whole
+      // fix. See `shared-graph.ts`.
       const { notPublishable } = await import("./ops-shared.js");
+      assert.equal(notPublishable({ type: "process" }), null, "a flow is publishable");
+      assert.equal(notPublishable({ type: "step" }), null, "and so are its steps");
       assert.ok(
-        notPublishable({ type: "process" }),
-        "PROCESS DOCS NOW PUBLISH — edges must be syncing. Replace this wall.",
+        notPublishable({ type: "concept", generatedBy: "marten" }),
+        "but analyzer output still is not — every clone regenerates it, so a copy is one nobody can refresh",
       );
     });
 
