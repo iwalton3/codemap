@@ -95,23 +95,27 @@ reviewer's cognitive load, and that is not measurable from a test.
 
 ## The plan, in order
 
-**Order is by risk of silent wrongness, not by size.**
+**SUPERSEDED for the next session** — see `docs/HANDOFF.md` § "Your job: build the
+oracle". The owner's direction is that the tests REPLACE the week of real use rather
+than follow it, so item 3 below moves to last and items 1 and 2 become the shape of
+the whole job rather than its first two steps.
+
+Kept because the reasoning is still why those items exist:
 
 1. **Old-store fixtures** (§1). Small, mechanical, and it closes the class that just
    bit. Do this first because every later item risks another schema change.
 2. **Concurrent sync test** (§2). The lock is the least-exercised safety mechanism in
    the system and the one whose failure is quietest.
-3. **Use it for real, on one repo, for a week.** Two clones, two people, ordinary
-   review. Nothing in items 4-6 should be built before this, because it is what turns
-   "the flow-walker is single-player" from a judgement into a complaint or a shrug.
+3. **~~Use it for real, on one repo, for a week.~~** Moved to LAST. The point of the
+   oracle is that the break/fix happens in tests instead of in the owner's hands.
 4. **Decide bugs/triage** (§3). Either design them into the sidecar or write down that
    they stay local and why — the architecture doc currently records the gap without a
    position.
 5. **Decide findings-as-canonical-rows** (§4), with docs as the worked example.
-6. **Flows, if and only if somebody asks** (§3). The refusal message already tells
-   them the state of things; a complaint is the signal.
+6. **Flows, if and only if somebody asks** (§3). The refusal message already tells them
+   the state of things; a complaint is the signal.
 
 **Not on this list, deliberately:** more adversarial review rounds of the existing
-code. The last four rounds each found real defects, and the fifth found the class that
-only a real store could show. The marginal value has moved from reading the code to
-running it.
+code. The last five rounds each found real defects, and the fifth found a class only a
+real store could show. The marginal value has moved from reading the code to running
+it — which is the argument for the oracle, not against review.

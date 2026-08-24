@@ -1,106 +1,144 @@
 # Handoff — `worktree-shared-review-hashscheme`
 
-Everything here is committed and green (646 tests; `tsc -p .` and `tsc -p web`
-clean). Read the two documents START HERE points at; do not read the branch
-history — it is 134 commits and most of it is a sidequest this file explains.
-
-Last updated 2026-08-23, at the end of the session that settled the architecture
-and stopped the drift.
+Everything is committed and green (699 tests; `tsc -p .` and `tsc -p web` clean).
+Last updated 2026-08-23, at the end of the session that finished the sidecar sequence
+and exercised it against a real universe for the first time.
 
 ## START HERE
 
-**Read `docs/sidecar-architecture.md`.** It is short, normative, and settles the
-design. Then read `docs/plan-docs-unification.md` and `docs/fork-repair.md` — the two
-mechanisms it defers to. Those three are the plan. This file is context, and where it
-disagrees with them, they win.
+**The sidecar is mechanically complete and has never been used by two people.**
+Steps 1-5 of the old sequence are done; `docs/sidecar-gap.md` is the gap analysis, and
+this file is the brief.
 
-**The product is review.** `CLAUDE.md`'s north star: reduce the reviewer's
-cognitive load and surface the context a raw diff hides. Judge work against that.
+### Your job: build the oracle, not the feature
 
-### What happened, so you do not repeat it
+The owner's words: *"high fidelity e2e and integration tests consisting of the patterns
+involved in a real workflow - the goal being to prove out the system and provide an
+oracle, so I'm not doing a week of break/fix while trying to use the tool."*
 
-`PROPOSAL-shared-review-state.md` — the original sidecar plan — **completed** at
-some point and nobody noticed. With no moment to ask "pick the next plan", one
-risk bullet in it grew into `PROPOSAL-provenance.md`, then
-`docs/anchor-id-provenance.md`, and then into most of several sessions. The
-measured incidence of what that thread addresses, on the real target, is near
-zero: 0 ambiguous in 2,641 records, and its newest fix cannot fire on either live
-store because both report `tags: 0`.
+So: **the tests replace the week of real use, they do not follow it.**
+`docs/sidecar-gap.md` ranks "use it for real for a week" third; that ranking is
+SUPERSEDED by this brief. Every break/fix cycle you move out of the owner's hands and
+into a test is the whole value of the next session.
 
-**Do not resume the provenance thread.** What it produced that was worth having is
-landed and marked done. The tells that were available early, for next time: the
-originating proposal was complete; measurements kept coming back ~zero; and the
-owner redirected three consecutive design questions — *repeated redirection means
-the frame is wrong, not that the questions need to be narrower.*
+Judge your work by one question: *if this system were subtly broken in a way a real
+two-person review would surface on day three, would a test have caught it?* Today the
+honest answer is mostly no, and the next section says why.
 
-### The state of the design
+## What exists, so you do not rebuild it
 
-Settled with the owner and through two independent reviews (Fable 5, codex):
+Four entity kinds sync - **docs, findings, notes, walkthroughs** - each with a fold, a
+projection, and materialization at sync and on write-through. Transport is honest: a
+failed commit fails the sync, a push is verified to have landed, a deleted shard is
+restored rather than propagated. Conflict machinery is real: segment-derived causal
+vectors, contests, fork detection, `codemap sidecar heal` with a person-gated and
+causally-gated acknowledgment. A teammate's doc is an ordinary `node_versions` row with
+an `origin`; the bridges are gone.
 
-- The log is the team's shared state and is authoritative for what it covers.
-  Local SQLite is three things: this user's witness marks, the deterministic
-  anchor/analyzer data, and the projection of the log against that anchor database.
-- The log is pull/push like an email client, never read on an ordinary query.
-- One canonical table per entity kind; **fold-owned rows are written only by the
-  fold** — the rule whose absence caused nine of ten defects in the first plan.
-- Budgets: a web UI interaction under 0.5s; push/pull under 10s excluding git.
-- Conflict repair is append-only and deletes nothing: the causal vector is derived
-  from the `writerPrev` chain so it stays correct under a fork, `merge=union` is cut,
-  and one person-run `sidecar heal` unions the shard, rotates the writer id and
-  appends a `scope.acknowledged` keyed on an evidence digest. `docs/fork-repair.md`.
-- **Nothing is deployed.** `main` has no sidecar at all — the whole system is ~134
-  unreleased commits here. Reshaping schema, envelope and projection is free NOW.
+Normative design: `docs/sidecar-architecture.md`. Mechanisms: `docs/fork-repair.md` and
+`docs/plan-docs-unification.md` - both carry a "what the build changed" section, so
+read those rather than diffing the design against the code.
 
-Two questions are closed with arguments: **analyzer docs never sync** and
-**`merge=union` is cut**. One is genuinely open — whether findings follow docs into a
-canonical table — and it does not block docs-first.
+**Not shared, deliberately:** bugs and triage (no design yet), edges (so `process` and
+`step` docs are refused, which makes the flow-walker single-player), witness marks.
 
-An earlier version of this file reported all three as settled, including
-`merge=union` as *staying*, while the architecture doc it defers to said the opposite.
-If this file and a design document disagree, the design document wins; this one is
-context.
+## Why the current suite cannot see it
 
-### The sequence to implement
+699 tests pass and they share three structural blind spots. These are why a real store
+broke the build on first contact.
 
-Steps 1-3 are **DONE** (2026-08-23). What each actually took is in its commit message;
-the short version, because two of them changed the design:
+1. **Every fixture is born at the current schema.** A build that could not open ANY
+   pre-existing store passed the entire suite (`720b6d9`): an index on `source_scope`
+   sat in the CREATE block, which runs before the ALTER ladder that adds the column.
+   `db-migrate.test.ts` now covers one hop; nothing covers a store from three schema
+   changes ago.
+2. **Every sync is sequential.** The lock, the retry loop, the unlocked fetch and the
+   locked merge have never had two processes racing them. `src/scenario.ts` serialises
+   by construction, so the least-exercised safety mechanism in the system is also the
+   one whose failure is quietest.
+3. **Every scenario is a handful of operations.** Real review is a long chain - index,
+   document, publish, sync, review a PR, file findings, disagree, edit a colleague's
+   doc, change code, re-index, confirm, sync again. A defect that needs six steps to
+   appear cannot appear.
 
-1. ~~**Sync honesty and lock safety.**~~ `a7933a7`. R1 needed fixing at the source AND
-   at the check, and the obvious phrasing of the check ("a no-op push must not report
-   as pushed") is wrong — it fires falsely on an honest empty sync. `pushed` and
-   `committed` are separate now. R2 could not be fixed by any timer: a run of
-   `spawnSync` git calls never turns the event loop, so the git wrapper stamps the
-   lock synchronously and the stale window is wider than one git call.
-2. ~~**Sync does the integrity work.**~~ `faf0367` and `3b8e0d0`. The deletion audit
-   scans the incoming RANGE, not the endpoints — an endpoint diff is blind to an event
-   added and deleted between them. `--full-history` is load-bearing and mutation-
-   checked. Materialize-at-sync landed with it.
-3. ~~**Protocol-1 freeze, with the fork repair.**~~ `fe13d5e`, `0da3b61`, `786644b`.
-   The freeze deleted five tests along with the behaviour they covered. The vector is
-   derived from the `writerPrev` chain now; `sameWriter` is gone; `merge=union` is cut;
-   `codemap sidecar heal` is the repair. See `docs/fork-repair.md`, whose header lists
-   the four things that changed between design and implementation.
+## The workflows to model
 
-4. ~~**Docs unification**~~ **DONE.** A teammate's doc is a `node_versions` row with an
-   `origin`; the bridges are deleted; `docsVerdict` is the one place the "may this
-   scope decide" question is answered. `docs/plan-docs-unification.md` § "What the
-   build changed" lists the five things the implementation settled differently.
-5. ~~Write-through, bridge deletion, walkthroughs onto the checked path.~~ **DONE.**
-   Walkthroughs have a projection, so **no ordinary query path folds the log any
-   more** — what remains are write and backfill paths, where reading it is the job.
+The patterns a real two-person review actually produces. Each should drive the WHOLE
+chain, not a unit of it.
 
-**The sequence is finished.** What is left is in "What is open" below, plus the two
-questions the architecture doc still leaves open.
+1. **Two people, one repo, a week of review.** A indexes and documents, publishes,
+   syncs. B pulls, sees A's docs, reviews a PR, files findings, syncs. A pulls, sees
+   them, corroborates one and disputes another. B edits one of A's docs. Someone
+   changes the code; docs go stale; the diff shows the impact; someone confirms.
+   Assert convergence at every sync point.
+2. **Offline and concurrent.** Both write while apart, then both sync - including two
+   syncs racing in two PROCESSES against one sidecar.
+3. **The cloned machine.** One writer id on two clones, both write, sync fails closed,
+   `heal` repairs, both converge, and **both writes still exist**.
+4. **Hostile history.** A `git rm`'d shard; an event added and deleted between pulls; a
+   `writerPrev` cycle; an event from a newer protocol.
+5. **Schema movement.** An old store opened by a new build; `ANCHOR_SCHEME` and
+   `HASH_SCHEME` bumps against a store with published docs and witnessed reviews.
+6. **Upgrade skew.** One clone on a newer codemap than the other - the manifest gates,
+   in both directions.
 
-### Verified defects, not yet fixed
+### Make them oracles, not assertions
 
-All three that were open here are fixed: R1 (sync lied about pushing), R2 (the lock
-heartbeat could not fire), and the causal vector fabricating knowledge under a fork.
-Each is still written up where it was found, with its reproduction, because the
-reproductions are what make the fixes checkable.
+The value is in properties that must hold after ANY sequence, checked at every step:
 
-The full risk register — ten items, ranked by silence × damage — came from the
-direction review, and the top of it is in the architecture doc.
+- **Convergence.** After every clone syncs twice, their projections are identical.
+- **No loss.** Every event ever appended is present in every clone's log afterwards.
+- **No silent success.** Every op returning `ok` is independently verifiable by a read.
+- **Fold determinism.** The same events in any order fold to the same value.
+- **Ownership.** No local write ever reaches a row with `origin IS NOT NULL`.
+- **Completeness.** After a sync, no ordinary query folds the log.
+
+A harness that drives a seeded, random sequence of real operations across two or three
+clones and checks those six after each step is worth more than any number of
+hand-written cases. Seeded, so a failure reproduces.
+
+## Test-authoring traps, all of which cost me time
+
+Do not rediscover these.
+
+- **A test that passes with the fix reverted is not a test.** Mutation-check every one.
+  I wrote three versions of the `computeDiff` impact test that all passed against the
+  bug they were written for.
+- **Every test needs a control.** "Absence is now unverifiable" passes just as well if
+  absence were suppressed entirely.
+- **`init` re-caches the CURRENT commit.** You cannot make the working tree disagree
+  with a cached head ref without committing the change - otherwise `init` overwrites
+  that ref's snapshot from the tree you just emptied.
+- **`universeKey` memoises per root.** Add the git remote BEFORE the first `init`, or
+  the universe key is the directory basename and the scope you publish under is not the
+  scope the fold looks for.
+- **Two clones have different writer ids and so write different shards.** You cannot
+  test same-shard concurrency without copying `.git/codemap-writer` between them.
+- **`type: "process"` fixtures silently do not publish.** The publish surface and the
+  fold both refuse `process`/`step`/`generatedBy`. 25 fixtures used `process` as a
+  generic doc type; the ones that publish had to be retyped.
+- **`publishLocalDocs` skips already-shared NODES**, not versions.
+- **`materialize.test.ts` has a LOCAL `readCached` wrapper** returning the value, not
+  `Cached<T>`.
+- **Write test files with the `Write` tool or python, not a bash heredoc.** Backticks
+  and NUL bytes in test content break the shell before they reach the file.
+- **A fixture that never commits has no HEAD**, and half the diff surface needs one.
+
+## What the live exercise proved
+
+The only evidence in this repo that is not a test. Against a clone of `Acme.Settlement`
+(148MB, 275 docs, 1,222 anchors); the table is in `docs/sidecar-gap.md`.
+
+Publish: 53 shareable, **200 analyzer-generated skipped, 22 flows skipped** - the first
+real measurement of "analyzer output is the bulk". Adoption on colliding version ids:
+275 rows before, 275 after, 53 adopted, 0 duplicated. A shared writer id failed the
+sync closed; `heal` unioned 55 events keeping both sides, rotated and acknowledged;
+both clones converged with both forked writes intact.
+
+**Clone before you touch `/working/`.** Those universes are live and edited by another
+agent. I opened one directly and it threw inside `migrate` - no damage, verified (every
+statement before the failure was `IF NOT EXISTS` on objects that already existed) - but
+`cp -r` to scratch and work there.
 
 ## What to run
 
@@ -172,43 +210,11 @@ The old per-file mode still works and is still what wedges, so if you run
 the parent moves straight on, and only that file's results are lost (it reports
 as one failed FILE with no failing test inside).
 
-## The two arcs that landed
+## What is open
 
-### 1. Anchor-id provenance — `docs/anchor-id-provenance.md`
-
-The finding: **anchor ids are derived from the tree-sitter parse**, so two builds
-mint different ids for the same symbol. §1 has a runnable proof (two C# grammars,
-one `ANCHOR_SCHEME`, different ids for `M(ref string)`).
-
-`AnchorReceipt` was designed over three review rounds and then **cancelled**: the
-derivation evidence an id needs is already on the body hash minted beside it. Ids
-stay bare. The work was join-side, and it is done: `resolveAnchor`
-(`src/anchor-resolve.ts`) answers found / absent / **incomparable**, and every site
-that used to write `live.get(id) ?? ABSENT_HASH` consumes it.
-
-Two rules that are easy to get backwards, both learned by getting them wrong:
-
-- **The operand is the index being searched, not the running build.** `liveHashes`
-  with no ref re-parses in process, so the operand is this build; `@work`,
-  snapshots and `hashesAt` are stored rows, so it is the rows' own derivations.
-- **An index with no tags rules nothing out.** An empty ref, or one whose matched
-  rows happened to be empty, must fall back — otherwise every absence reads
-  `incomparable` exactly when it is most likely a real deletion.
-
-### 2. Sidecar materialization — `PROPOSAL-sidecar-materialization.md`
-
-Steps 0, 1, 2, 3b and 4 landed; §7 marks them. `materialize.ts` owns the cache key
-and the transaction and knows nothing about what it caches (the fold is a
-**parameter**, to avoid the storage/fold import cycle); `shared-projections.ts`
-knows the entities and nothing about when they fold.
-
-Receipts being cancelled means **nothing in 0–5 is blocked on provenance any more**.
-§7 was rewritten to say so, and to record the one thing that reads as a
-contradiction and is not: 3b's "do the anchor join in SQL" versus provenance's
-"`WHERE anchor_id = ?` cannot call a helper". Both hold, in one order —
-**equality join in the database, classify the misses in the resolver.**
-
-## What is open, roughly in the order I would take it
+**The implementation sequence is finished** (steps 1-5). Two design threads remain,
+and both are deliberately parked rather than half-built — read them before deciding
+they are quick.
 
 1. **The recovery arc** — `docs/anchor-id-provenance.md` § "Recovery: placing an id
    nobody can place". **Designed properly and step 1 is built; the rest is
@@ -349,89 +355,10 @@ contradiction and is not: 3b's "do the anchor join in SQL" versus provenance's
    `removalJudgment { indexDerivations, triageId, rationale }`. `retireSharedDoc`
    already demands a rationale and then drops it from the durable event.
 
-3. **Materialization.** Step 5 is largely landed; 3a is half done and its remainder
-   is the biggest single thing left on this branch.
-
-   - **5 — landed for the reads that matter.** `shared_doc_citation` is READ
-     (`docsCiting`, the reverse lookup); `get_anchor` carries `sharedDocs`;
-     `find_gaps` no longer offers a symbol a teammate documented; `context` — the
-     call an agent makes first — reports the team's docs, drops them from `gaps` and
-     has a verdict ranked below every local one. `sharedCoverage` is the single
-     entry point those use. Left: `outline`, `search`, `get_node`, notes — browse
-     polish, not the north star.
-   - **The outbox model**'s two named prerequisites are done: publication preserves
-     the source version id and the original `createdAt`. The overlay itself is not
-     built.
-   - **3a — HALF DONE. Read `PROPOSAL-provenance.md` §4, not the archived §13.**
-
-     Built: `withSidecarLock` (lock file OUTSIDE the sidecar — `git add -A` would
-     otherwise push it to the team), around `sync` AND around `emitEvent`'s whole
-     read-heads-then-append sequence. `LogEvent.writer`, a clone-local random id in
-     the sidecar's git dir; shards and the causal vector key on it. That closes a
-     VERIFIED wrong answer — see the commit and `eventlog.test.ts`: one person's
-     laptop agent lending their stale desktop knowledge it never had, which
-     suppressed a real contest between two other people.
-
-     **Now built — all four.** §4 is updated to say so; read it rather than this.
-
-     - **`writerPrev` and the GENESIS rule.** `emitEvent` stamps it, `detectForks`
-       reads it. Two rules the sketch did not have, both nearly got wrong: an absent
-       `writerPrev` is NOT an implicit GENESIS (every pre-chain log would fork on
-       its writer's second event), and a chain claim needs a `writer`, not
-       `causality`'s principal fallback (which files two machines' chains under one
-       person). The predecessor comes from the writer's own SHARD's last line, not
-       from fold order — a shard is single-writer and append-only, so its last line
-       is the chain head by construction, where fold order has to be trusted to
-       agree with append order and that is what a fork breaks.
-     - **Scope status.** §7's fail-closed rule: `status` + one `diagnostic` on
-       `shared_scope`, stored beside the fingerprint so a cache HIT answers it.
-       `readCached` returns it WITH the value and `ensureMaterialized` returns it
-       with `fresh`, deliberately — a signature that lets a caller take the rows
-       and forget to ask is how a fail-closed rule fails, and that is exactly how
-       it first failed here.
-     - **Writer identity in the folds — and the three resolved differently.**
-       `contest.ts` keys on the WRITER (its principal test was subsumed by `saw` for
-       one clone, so its only live effect was suppressing a real two-machine
-       disagreement). Corroboration keys on `(principal, model)`, NOT the writer: a
-       verdict is an opinion and which model formed it is part of whose it is, but a
-       person re-reviewing from their desktop has changed their mind. Walkthroughs
-       stay per principal. Izzie's calls, recorded in §4.
-     - **`sidecarProtocol` / `eventSchema`** on the envelope, with §7's rule that a
-       HIGHER number blocks the scope and a lower or absent one reads fine.
-
-     **What this cost that was not on the list.** The fold's OUTPUT changed shape,
-     and nothing about a code change touches the materializer's cache key — so
-     every store that had already folded a scope would have served the old answer
-     forever. `MATERIALIZER_VERSION` is 3, and a golden vector over a fixed log now
-     fails when the fold moves, which is the guard `normalize.test.ts` gives
-     `HASH_SCHEME`. **If you change a fold, that test is the question, not a
-     defect.**
-   - **3b** — the anchor-table scans are gone but `shared_doc_citation`'s §5 join is
-     the one that landed, not the doc-freshness one. `shared_scope.folded_at` and
-     `events` are still written and never read; `status` and `diagnostic` are read.
-
-   **What is left of 3a, and it is small.** There is no rotation command for a
-   writer id yet (§4 asks for one), so the repair for a detected fork is manual:
-   delete `<sidecar git dir>/codemap-writer` on one clone. And nothing REFUSES a
-   write to a blocked scope; the choice was deliberate — a fork is in history and
-   cannot be un-forked, so refusing writes would wedge the scope permanently
-   rather than contain it.
-
-   **Two codex rounds, and the second was worth more than the first.** Round one
-   refuted a comment in `contest.ts` that claimed more than it could: the writer
-   test is subsumed by `saw` between two TAGGED events, and not between a tagged
-   one and a pre-writer one. Round two found the real hole and named the cut in
-   the same breath — `ensureMaterialized` returned a bare boolean, so the two
-   surfaces on the QUERY path dropped the verdict, and `scopeVerdict` was a second
-   route bolted on to recover it for one caller with an "unknown" state §7 does
-   not permit. One route now carries it. **Ask it what to cut.**
-
-   **The rule that came out of round two and is easy to get wrong:** a blocked
-   scope must stop DECIDING, not merely stop claiming. Suppressing a gap is an
-   authoritative act and the harm is invisible — it is what is missing from the
-   list. So `findGaps` and `context` keep the gap and show the team's doc beside
-   it; `getAnchor`, which suppresses nothing, reports the verdict and its docs
-   unchanged.
+3. ~~**Materialization.**~~ **DONE**, and then some: every scope kind has a
+   projection, sync materializes them, and shared writes are write-through. No
+   ordinary query folds the log any more. `docs/plan-docs-unification.md` and
+   `docs/fork-repair.md` record what the build settled differently from the designs.
 
 4. ~~**There is no orphans page.**~~ **DONE.** `/u/:u/orphans/` reads `/api/orphans`,
    which had been served since the sweep was built and consumed by nothing — the
