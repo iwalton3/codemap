@@ -893,6 +893,19 @@ export interface Triage {
   axes?: Partial<Record<"importance" | "complexity" | "tripwire", {
     source: TriageSource; likely: boolean; witnesses: BugWitness[]; at: string;
   }>>;
+  /**
+   * Fields where THIS clone's unpublished mark and the team's answer disagree.
+   *
+   * The value in the record is the PESSIMISTIC one — higher stakes, deeper complexity,
+   * armed tripwire — because the cost is asymmetric: reviewing something too carefully
+   * costs minutes, and reviewing it too lightly costs the thing this project exists to
+   * prevent. That is the same rule the fold uses for concurrent divergence, so there is
+   * one asymmetry in the system rather than two.
+   *
+   * Present means somebody should look: the safe reading is being shown, and it is not
+   * what either side actually asserted. Publishing yours, or adopting theirs, ends it.
+   */
+  divergence?: { field: "importance" | "complexity" | "tripwire"; yours: string; theirs: string }[];
 }
 
 export interface TriageStore {

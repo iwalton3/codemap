@@ -288,6 +288,12 @@ const postReview = (u, targetKind, targetId, level, unmark, attestation, ref) =>
 const postTriage = (u, targetKind, targetId, body) =>
   fetch('/api/triage', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, targetKind, targetId, ...body }) });
 // Severity = stakes × complexity × review-gap (docs/triage.md). Chip = worst outstanding gap.
+// Your unpublished mark and the team's answer disagree. The value beside this chip is
+// the PESSIMISTIC reading of the two — safe, and nobody's actual assertion — so showing
+// it without saying so would present a merge as a judgement.
+const divergeChip = (t) => (t && t.divergence && t.divergence.length)
+  ? html`<span class="dchip" title="${t.divergence.map(d => `${d.field}: yours ${d.yours}, the team's ${d.theirs}`).join(' · ')} — the safer of the two is shown. Publish yours, or adopt theirs, to settle it.">⇄ merged</span>`
+  : html``;
 const sevChip = (t) => {
   if (!t) return html``;
   const sev = t.severity;
@@ -441,7 +447,7 @@ const triageRowEl = (triage, onSet, onTripwire) => {
   const cur = triage && triage.importance, ccur = triage && triage.complexity;
   const sbtn = (imp, label) => html`<button class="${cur === imp ? 'on' : ''}" title="set stakes (blast radius): ${imp}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onSet({ importance: imp }); }}">${label}</button>`;
   const cbtn = (cx, label, tip) => html`<button class="${ccur === cx ? 'on' : ''}" title="set complexity (review depth): ${cx} — ${tip}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onSet({ complexity: cx }); }}">${label}</button>`;
-  return html`<span class="rev" style="align-items:center;flex-wrap:wrap;gap:6px"><span style="color:#8b949e">stakes:</span>${sbtn('business-critical', 'business-critical')}${sbtn('important', 'important')}${sbtn('low', 'low')}${when(cur, () => html`<button title="clear triage" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onSet({ clear: true }); }}">✕</button>`)}<span style="color:#8b949e;margin-left:6px">complexity:</span>${cbtn('deep', 'deep', 'subtle logic, needs careful thought')}${cbtn('standard', 'standard', 'real but tractable logic')}${cbtn('rote', 'rote', 'a mechanical/checklist verify')}${cbtn('wiring', 'wiring', 'plumbing — a glance clears it')}${sevChip(triage)}${when(cur && onTripwire, () => html`<button class="${triage.tripwire ? 'checked' : ''}" title="${triage.tripwire ? 'tripwire armed — alert if this code changes (click to disarm)' : 'arm tripwire — alert me the instant this code changes'}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onTripwire(!triage.tripwire); }}">🔔</button>`)}${when(triage && triage.likely, () => html`<span style="color:#58a6ff;font-size:12px" title="agent proposal — click a tier to confirm">· likely</span>`)}</span>`;
+  return html`<span class="rev" style="align-items:center;flex-wrap:wrap;gap:6px"><span style="color:#8b949e">stakes:</span>${sbtn('business-critical', 'business-critical')}${sbtn('important', 'important')}${sbtn('low', 'low')}${when(cur, () => html`<button title="clear triage" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onSet({ clear: true }); }}">✕</button>`)}<span style="color:#8b949e;margin-left:6px">complexity:</span>${cbtn('deep', 'deep', 'subtle logic, needs careful thought')}${cbtn('standard', 'standard', 'real but tractable logic')}${cbtn('rote', 'rote', 'a mechanical/checklist verify')}${cbtn('wiring', 'wiring', 'plumbing — a glance clears it')}${sevChip(triage)}${divergeChip(triage)}${when(cur && onTripwire, () => html`<button class="${triage.tripwire ? 'checked' : ''}" title="${triage.tripwire ? 'tripwire armed — alert if this code changes (click to disarm)' : 'arm tripwire — alert me the instant this code changes'}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); onTripwire(!triage.tripwire); }}">🔔</button>`)}${when(triage && triage.likely, () => html`<span style="color:#58a6ff;font-size:12px" title="agent proposal — click a tier to confirm">· likely</span>`)}</span>`;
 };
 // `ref` scopes anchor resolution to a PR head, so a finding can land on a symbol
 // that exists only on the branch (server: resolveRefs' scopeRef).
@@ -1100,7 +1106,7 @@ class NodePage extends Component {
     return pageShell(n, taskError(this.load) ?? (n && n.error), () => {
     const cr = deriveCode(n.resolvedAnchors);
     return html`<div class="detail">
-      <div class="meta">${n.type}${n.universe ? ' · ' + n.universe : ''} · ${n.id} ${statusChip(n.status)}${trustChip(n.trust)}${sevChip(n.triage)}<span class="viewlink" on-click="${() => go(graphUrl(u, n.id))}">◆ graph</span></div>
+      <div class="meta">${n.type}${n.universe ? ' · ' + n.universe : ''} · ${n.id} ${statusChip(n.status)}${trustChip(n.trust)}${sevChip(n.triage)}${divergeChip(n.triage)}<span class="viewlink" on-click="${() => go(graphUrl(u, n.id))}">◆ graph</span></div>
       <h2>${n.title}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions (forked across branches)">⑂${n.versionCount}</span>`)}</h2>
       <div style="margin:6px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="dim" style="font-size:12px">doc sign-off:</span>${reviewRowEl(n.review, n.viewed, (att, st, actor, via) => this.signNode(att, st, actor, via), 'logical')}<span class="dim" style="font-size:12px">— vouches for the doc, not its code</span></div>
       <div style="margin:6px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">${codeRollupEl(cr)}${when(cr.total, () => html`<button on-click="${() => go(nodeReviewUrl(u, n.id))}">open code review →</button>`)}</div>
@@ -1694,7 +1700,7 @@ class NodeCatalogPage extends Component {
     return html`<div class="nrow" on-click="${() => go(nodeUrl(u, n.id))}">
       <span class="nt" style="border-color:${nodeColor(n.type)}">${n.type}</span>
       <span class="ntitle">${n.title || n.id}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions (forked)">⑂${n.versionCount}</span>`)}</span>
-      ${statusChip(n.status)}${trustChip(n.trust, (act) => this.verify(n.id, act))}${sevChip(n.triage)}
+      ${statusChip(n.status)}${trustChip(n.trust, (act) => this.verify(n.id, act))}${sevChip(n.triage)}${divergeChip(n.triage)}
       <span class="ndom">${n.domain}</span>
       <span class="nmeta">${n.anchors}a · ${n.edgesIn}↓${n.edgesOut}↑</span>
       ${when(n.generatedBy, () => html`<span class="gen">${n.generatedBy}</span>`)}

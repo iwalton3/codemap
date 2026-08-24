@@ -249,6 +249,14 @@ export interface TriageInfo {
   severity: Severity;
   /** Attestation still needed to reach `complete` (null once complete/untriaged). */
   bar: "viewed" | "signed" | null;
+  /**
+   * This clone's unpublished mark and the team's answer disagree on these fields.
+   *
+   * The values above are the PESSIMISTIC reading of the two, which is the safe one and
+   * is nobody's actual assertion — so a surface that shows the value without showing
+   * this is presenting a merge as a judgement.
+   */
+  divergence?: Triage["divergence"];
 }
 
 const isLive = (p?: ReviewPair) => Boolean(p && p.code.state === "reviewed");
@@ -336,6 +344,7 @@ export async function reviewTriageFor(root: string, targets: Target[], opts: { r
         tripwire: tri.tripwire,
         severity: sev,
         bar: sev === "complete" ? null : barFor(complexity),
+        ...(tri.divergence?.length ? { divergence: tri.divergence } : {}),
       };
     }
     out.set(k, { review: vp, viewed: vw, triage });

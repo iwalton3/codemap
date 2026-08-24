@@ -527,3 +527,29 @@ test("a failed shared clear does not delete the local row on its way out", async
     );
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("a complexity-only assertion does not erase a tombstone", () => {
+  // A clear is superseded only by something that could REINSTATE the mark. Judged
+  // against every later human entry, a complexity-only assertion killed the clear while
+  // `humanBaseline` — which filters on the field — still read the target as cleared, so
+  // the fold returned NEITHER a mark nor a tombstone. A legacy local row then filled a
+  // hole that a deliberate clear had made.
+  const got = fold([
+    say({ id: "0000000001-aa", by: izzie, writer: "w_i", importance: "business-critical" }),
+    clear("0000000002-bb", izzie, { writer: "w_i", after: ["0000000001-aa"] }),
+    say({ id: "0000000003-cc", by: ben, writer: "w_b", after: ["0000000002-bb"], complexity: "deep" }),
+  ]);
+  const e = got.get(SUBJ);
+  assert.ok(e && isTombstone(e), "the clear still stands, and still says so to the table");
+});
+
+test("but an importance DOES reinstate it — a clear is not a permanent ban", () => {
+  // The control. Without it the rule above passes just as well if nothing could ever
+  // supersede a clear, which would make a cleared target unusable forever.
+  const t = one([
+    say({ id: "0000000001-aa", by: izzie, writer: "w_i", importance: "business-critical" }),
+    clear("0000000002-bb", izzie, { writer: "w_i", after: ["0000000001-aa"] }),
+    say({ id: "0000000003-cc", by: ben, writer: "w_b", after: ["0000000002-bb"], importance: "important" }),
+  ])!;
+  assert.equal(t.importance.effective.value, "important");
+});

@@ -23,6 +23,7 @@ import { anchorIndex, derivationsOf, legacyIndex, type AnchorIndex, resolveAncho
 import { randomBytes } from "node:crypto";
 import { db, WORK_REF, ORPHAN_REF } from "./db.js";
 import { ABSENT_FIELD } from "./shared-triage.js";
+import { IMPORTANCE_RANK, COMPLEXITY_RANK } from "./triage-rules.js";
 import { headCommit, currentBranch } from "./git.js";
 import { evalVersion, selectWinner, resolveNode, winningVersionAt } from "./doc-version.js";
 export { winningVersionAt } from "./doc-version.js";
@@ -1130,6 +1131,21 @@ const TRIAGE_COLS = "target_kind,target_id,field,value,source,likely,generated_b
 export const likelyOf = (rows: ({ likely: number | boolean } | undefined)[]): boolean =>
   rows.some((r) => !!r?.likely);
 
+/**
+ * The worse of two values for a field — higher stakes, deeper verification, armed.
+ *
+ * An unknown field or value answers with the team's, because inventing an order for
+ * something this build does not understand is how a merge rule starts making things up.
+ */
+function pessimistic(field: string, theirs: string, yours: string): string {
+  if (field === "tripwire") return theirs === "1" || yours === "1" ? "1" : "0";
+  const rank = field === "importance" ? IMPORTANCE_RANK : field === "complexity" ? COMPLEXITY_RANK : null;
+  if (!rank) return theirs;
+  const a = (rank as Record<string, number>)[theirs], b = (rank as Record<string, number>)[yours];
+  if (a === undefined || b === undefined) return theirs;
+  return b > a ? yours : theirs;
+}
+
 function triageFromRows(rows: TriageRow[]): Triage[] {
   const byTarget = new Map<string, TriageRow[]>();
   for (const r of rows) {
@@ -1217,6 +1233,17 @@ function triageToRows(t: Triage): [string, string, string, string, string, numbe
  * not invent stakes, and letting that refused event count as coverage would suppress a
  * human's local `business-critical` — the same lowering, by the back door.
  *
+ * **Where both have something to say, merge PESSIMISTICALLY and flag it.** Taking the
+ * log's answer wholesale hid a local `deep` that the team's importance-only mark never
+ * contradicted, and consumers then fell back to `standard` — a review bar quietly
+ * lowered by a merge rule. Taking the higher of each field is the same asymmetry the
+ * fold already applies to concurrent divergence, so the system has one rule and not two:
+ * over-reviewing costs minutes, under-reviewing costs the thing this exists to prevent.
+ *
+ * The flag is what keeps that honest. The merged record is the SAFE reading rather than
+ * anybody's assertion, so `divergence` names every field where the two disagree and the
+ * surfaces show it. Publishing yours, or adopting theirs, is what ends it.
+ *
  * What is left is the honest gap: a target the log has no admissible answer for, which
  * a local row fills. `publishLocalTriage` is how it stops being a gap — an explicit
  * attributed act, as `publishLocalDocs` is, because a legacy `Triage` carries a `source`
@@ -1227,9 +1254,46 @@ export async function readTriage(root: string): Promise<TriageStore> {
   const rows = db(root).prepare(`SELECT ${TRIAGE_COLS} FROM triage`).all() as unknown as TriageRow[];
   const covered = new Set(rows.filter((r) => r.source_scope !== null)
     .map((r) => `${r.target_kind}\0${r.target_id}`));
-  const merged = rows.filter((r) => r.source_scope !== null
-    || !covered.has(`${r.target_kind}\0${r.target_id}`));
-  return { schemaVersion: SCHEMA_VERSION, triage: triageFromRows(merged) };
+  const merged: TriageRow[] = [];
+  /** target -> the fields where this clone and the team disagree. */
+  const diverged = new Map<string, NonNullable<Triage["divergence"]>>();
+
+  const byTarget = new Map<string, TriageRow[]>();
+  for (const r of rows) {
+    const k = `${r.target_kind}\0${r.target_id}`;
+    const acc = byTarget.get(k); if (acc) acc.push(r); else byTarget.set(k, [r]);
+  }
+  for (const [k, group] of byTarget) {
+    if (!covered.has(k)) { merged.push(...group); continue; }   // the log has nothing to say
+    const shared = group.filter((r) => r.source_scope !== null);
+    const local = new Map(group.filter((r) => r.source_scope === null).map((r) => [r.field, r]));
+    if (!local.size) { merged.push(...shared); continue; }      // nothing of this clone's to weigh
+    const sharedFields = new Set(shared.map((r) => r.field));
+    for (const r of shared) {
+      const mine = local.get(r.field);
+      if (!mine) { merged.push(r); continue; }
+      const worse = pessimistic(r.field, r.value, mine.value);
+      if (worse !== r.value) {
+        // Keep the team's RECEIPT with this clone's value: the row is the safe reading,
+        // and `divergence` says so rather than dressing it up as somebody's assertion.
+        merged.push({ ...r, value: worse });
+      } else merged.push(r);
+      if (r.value !== mine.value) {
+        const d = diverged.get(k) ?? [];
+        d.push({ field: r.field as "importance" | "complexity" | "tripwire", yours: mine.value, theirs: r.value });
+        diverged.set(k, d);
+      }
+    }
+    // A field only this clone has said anything about. Nothing contradicts it.
+    for (const [field, r] of local) if (!sharedFields.has(field) && field !== ABSENT_FIELD) merged.push(r);
+  }
+
+  const triage = triageFromRows(merged);
+  for (const t of triage) {
+    const d = diverged.get(`${t.target.kind}\0${t.target.id}`);
+    if (d?.length) t.divergence = d;
+  }
+  return { schemaVersion: SCHEMA_VERSION, triage };
 }
 
 /**

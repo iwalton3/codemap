@@ -28,6 +28,9 @@ export async function anchorMark(root: string, id: string, opts: { ref?: string 
   return {
     id,
     severity: e?.triage.severity ?? "untriaged",
+    // Set when this clone's unpublished mark and the team's answer disagree. The value
+    // shown is the safe reading of the two, so the surface has to be able to say so.
+    ...(e?.triage.divergence?.length ? { divergence: e.triage.divergence } : {}),
     reviewed: e?.review.code.state === "reviewed",
     viewed: e?.viewed.code.state === "reviewed",
     review: e?.review.code,

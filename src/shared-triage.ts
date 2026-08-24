@@ -521,10 +521,24 @@ export function triageOf(t: SharedTriage): Triage {
   };
 }
 
-/** The clear that actually won — the receipt a tombstone is written from. */
+/**
+ * The clear that actually won — the receipt a tombstone is written from.
+ *
+ * Only something that could REINSTATE the mark supersedes a clear: another clear, or a
+ * human assertion carrying an importance. Judged against every later human entry, a
+ * complexity-only assertion killed the clear here while `humanBaseline` — which filters
+ * on the field — still read the target as cleared, so the fold returned NEITHER a mark
+ * nor a tombstone and a legacy local row filled the hole a deliberate clear had made.
+ *
+ * `setTriage` does not currently produce a complexity-only human assertion, but this
+ * fold's whole contract is that it is the authority over events from clients it did not
+ * write, and `TriageAssertion` permits the shape.
+ */
 function clearWinner(entries: Entry[], causal: Causality): Entry | undefined {
+  const reinstates = (en: Entry) => !en.agent
+    && (en.clear || (en.data.importance !== undefined && VALID.importance(en.data.importance)));
   const clears = entries.filter((en) => en.clear && !en.agent);
-  const live = clears.filter((x) => !entries.some((y) => y !== x && !y.agent && causal.saw(y.e.id, x.e.id)));
+  const live = clears.filter((x) => !entries.some((y) => y !== x && reinstates(y) && causal.saw(y.e.id, x.e.id)));
   // Lowest id among the survivors, so every clone writes the same tombstone.
   return [...live].sort((a, b) => (a.e.id < b.e.id ? -1 : 1))[0];
 }

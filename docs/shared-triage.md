@@ -166,6 +166,47 @@ published later claims to have seen everything pulled in between. That is why a 
 append now writes nothing rather than falling back to a local row, and why a bulk
 publish holds back targets the log already answers differently.
 
+### Local versus shared: pessimistic, and flagged
+
+Where the log answers a target and this clone also has an unpublished mark, the merged
+read takes the WORSE of each field — higher stakes, deeper verification, armed tripwire
+— and records a `divergence` naming every field where the two disagree.
+
+Two rules were tried and are wrong, both recorded because each looks reasonable:
+
+- **Merge per field, silently.** Produces a pair neither side asserted, and a reader
+  cannot tell it from a judgement.
+- **The log is the whole answer.** Fixes that, and hides an uncontradicted local `deep`
+  behind a team mark that only ever mentioned importance — so consumers fall back to
+  `standard` and a review bar is lowered by a merge rule.
+
+Pessimistic-and-flagged keeps one asymmetry in the system rather than two: it is the
+same rule the fold already applies to concurrent divergence, for the same reason
+(over-reviewing costs minutes, under-reviewing costs the thing this exists to prevent).
+The flag is what stops it lying — the record is the SAFE reading, not anybody's
+assertion, and every surface that shows the value shows the flag beside it. Publishing
+yours, or adopting theirs, ends it.
+
+### Lifecycle needs to be commit-chain aware, and is not yet
+
+**Open, and the honest answer to a class this build only papered over.** A clear is
+superseded only by something that could reinstate the mark, which stops a complexity-only
+assertion erasing a tombstone — but that is a guard, not a model.
+
+The real question underneath is one this codebase keeps meeting in different clothes:
+**"dead at commit" and "just not on this branch right now" are different facts, and
+nothing here can currently tell them apart.** A tombstone says a person asserted an
+absence; it does not say whether the code is gone from the history or merely absent from
+the ref you have checked out. The same ambiguity is why a doc nobody can place is queued
+rather than cleared (`docs/anchor-id-provenance.md`), and why `orphanedWork`'s `lost`
+bucket had to grow a `why`.
+
+The direction, per the owner: make the lifecycle commit-chain aware, and give agents the
+job of resolving the ambiguity — `whereWas` already answers "what did this id name at
+that commit" for a single record, and a lifecycle built on it could say *dead at this
+commit* rather than *absent here*. Not designed yet. Until it is, a clear is a person's
+assertion about the branch they were on, and that is what the tombstone records.
+
 ### The compatibility surface
 
 `Triage` (`src/schema.ts:868`) and `TriageInfo` (`src/triage.ts:208`) have singular

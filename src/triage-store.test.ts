@@ -11,6 +11,7 @@ import {
   writeStore,
 } from "./store.js";
 import { setTriage, clearTriage, setTriageBatch, deriveTriage } from "./triage.js";
+import { triageProjection } from "./shared-projections.js";
 import type { Triage } from "./schema.js";
 
 /**
@@ -146,21 +147,25 @@ test("a local write never reaches a row the fold owns", async () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("where the log covers a target it is the WHOLE answer — no assembled hybrid", async () => {
-  // Coverage is per TARGET, not per field. Merging per field let a local `{low, deep}`
-  // meet a shared `{business-critical}` and produce shared importance beside LOCAL
-  // complexity — a pair neither party ever asserted, assembled by the reader. A mark is
-  // one act, and a target the log covers is answered by the log.
+test("a disagreement resolves PESSIMISTICALLY, and the record says it is a merge", async () => {
+  // This rule replaced "the log is the whole answer", which was itself a fix: merging
+  // per field used to produce shared importance beside local complexity with nothing
+  // saying so, and a reader could not tell that pair from something somebody asserted.
+  //
+  // The answer is not to hide one side — that lowered a review bar silently — but to
+  // take the worse of each field and SAY it is a merge. Over-reviewing costs minutes;
+  // under-reviewing costs the thing this project exists to prevent.
   const root = universe();
   try {
     plantShared(root, "triage/acme-api", mark({ id: "a_1", importance: "business-critical" }));
     await replaceLocalTriage(root, [mark({ id: "a_1", importance: "low", complexity: "deep" })]);
     const back = (await readTriage(root)).triage;
     assert.equal(back.length, 1, "one answer for one target");
-    assert.equal(back[0]!.importance, "business-critical", "the team's answer, not this clone's unpublished one");
-    assert.equal(
-      back[0]!.complexity, undefined,
-      "and NOT the local complexity beside it — that pair is nobody's assertion",
+    assert.equal(back[0]!.importance, "business-critical", "the higher stakes hold");
+    assert.equal(back[0]!.complexity, "deep", "and the deeper verification, which the team never contradicted");
+    assert.deepEqual(
+      back[0]!.divergence, [{ field: "importance", yours: "low", theirs: "business-critical" }],
+      "flagged: this record is the safe reading, and it is not what either side asserted",
     );
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -538,5 +543,34 @@ test("a bulk publish holds back EVERY target the log already answers", async () 
       (r.heldBack ?? []).map((h) => h.target.id).sort(), ["a_cleared", "a_same_imp"],
       "the matching-importance one AND the tombstoned one both need a per-target decision",
     );
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("where both have something to say, the PESSIMISTIC value wins and is flagged", async () => {
+  // Taking the log's answer wholesale hid a local `deep` the team's importance-only
+  // mark never contradicted, and consumers fell back to `standard` — a review bar
+  // quietly lowered by a merge rule. Higher-of-each-field is the same asymmetry the
+  // fold applies to concurrent divergence, so there is one rule in the system, not two.
+  const root = universe();
+  try {
+    await replaceLocalTriage(root, [mark({ id: "a_1", importance: "business-critical", complexity: "deep" })]);
+    const rc = (v: string) => ({ value: v, actor: { principal: "ben@x" }, source: "human", likely: false, at: "t", witnesses: [], eventId: "e" + v });
+    const shared = (over: any) => new Map<string, any>([["anchor:a_1", { target: { kind: "anchor", id: "a_1" }, ...over }]]);
+
+    // The team said only importance, and agreed. Nothing contradicts the local depth.
+    triageProjection.write(db(root), "triage/acme-api", shared({ importance: { effective: rc("business-critical"), baseline: rc("business-critical") } }));
+    let t = (await readTriage(root)).triage[0]!;
+    assert.equal(t.complexity, "deep", "an uncontradicted local field is not hidden by target-level coverage");
+    assert.equal(t.divergence, undefined, "and agreeing is not a disagreement");
+
+    // Now the team lowers it. The safe reading wins, and says it is not anybody's.
+    triageProjection.write(db(root), "triage/acme-api", shared({
+      importance: { effective: rc("business-critical"), baseline: rc("business-critical") },
+      complexity: { effective: rc("wiring"), baseline: rc("wiring") },
+    }));
+    t = (await readTriage(root)).triage[0]!;
+    assert.equal(t.complexity, "deep", "over-reviewing costs minutes; under-reviewing costs the thing this prevents");
+    assert.deepEqual(t.divergence, [{ field: "complexity", yours: "deep", theirs: "wiring" }],
+      "flagged, because the record is now the SAFE reading rather than either side's assertion");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
