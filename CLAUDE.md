@@ -226,6 +226,12 @@ and there is **one canonical table per entity kind**, so a teammate's doc is a
 `node_versions` row with an origin marker rather than a parallel table needing a
 bridge onto every surface.
 
+One sentence carries most of it, and the codebase has re-derived it five times:
+**acts enter the log at the moment they happen; everything derivable is a local
+projection.** A derived event has no honest actor and no honest causal position, and a
+deterministic fold means every clone mints its own copy; a claim that never entered the
+log cannot be retrofitted with a position, because `after` is captured at append time.
+
 It defers the mechanisms to two documents: `docs/plan-docs-unification.md` and
 `docs/fork-repair.md`. The second is worth knowing exists before touching
 `eventlog.ts` or `contest.ts` — the causal vector's per-writer ordinal is a **prefix

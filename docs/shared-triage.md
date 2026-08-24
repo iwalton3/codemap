@@ -87,8 +87,17 @@ costs the thing this project exists to prevent.
 **3. Except across the `business-critical` line, which goes to the review queue.** When
 one side says `business-critical` and another says lower, that is the only disagreement
 where being wrong is expensive, and it is rare. It becomes an item in the existing
-`review_queue` — the same queue `ackHole` files into — for a person to settle. An agent
-may settle an agent/agent disagreement; it may not settle one between two people.
+`review_queue` — the same queue `ackHole` files into — for a person to settle.
+
+**Only a person settles, and the build changed this sentence.** It used to say an agent
+may settle an agent/agent disagreement. That half is UNREACHABLE: settling is asserting
+a value having SEEN both sides, `ratchet` refuses an agent's no-op restatement, and a
+contest exists only across the `business-critical` line — so there is never a higher
+value left for an agent to assert. The options were a special case inside `ratchet`
+(consolidated from three copies precisely to stop them drifting) or dropping the claim.
+Dropped: the agent is ASSIGNED the queue item, investigates, and reports an `outcome` —
+a proposal, so the person is not deciding blind — and the person settles by triaging the
+symbol again. That mark supersedes both sides and every clone's item closes itself.
 
 **Rejected: last-in-wins.** Among concurrent events "last" means "larger event id", so a
 `low` written by somebody who never saw the `business-critical` would silently lower it
@@ -134,6 +143,28 @@ complexity and `setTriage` stamps it (`src/triage.ts:153`, `:182`). The fold the
 that record as a set of field assertions **sharing one receipt**, which is where per-field
 provenance comes from without inventing a second merge rule. Single-player behaviour is
 untouched, and there is exactly one rule for what a write means.
+
+### Where a derived item lives, and where an act lives
+
+One sentence, which the build had to learn twice and which
+`docs/sidecar-architecture.md` already contains in two halves:
+
+> **Acts enter the log at the moment they happen; everything derivable is a local
+> projection.**
+
+An event is something somebody DID. If it is computable from what is already in the log
+it must not be an event: a derived event has no honest actor and no honest causal
+position, and since the fold is deterministic, N clones derive it N times. That is not
+theory — the contest queue item was filed through `annotate`, which mirrors, so every
+clone produced its own shared question with its own random id for one team fact, and the
+shared-note fold refuses agent resolutions so none of them could ever be closed. The
+duplication is the SIGNATURE of a derived fact being logged.
+
+Symmetrically: a claim somebody did make but that never entered the log cannot be
+retrofitted with a causal position. `after` is captured at APPEND time, so a local row
+published later claims to have seen everything pulled in between. That is why a failed
+append now writes nothing rather than falling back to a local row, and why a bulk
+publish holds back targets the log already answers differently.
 
 ### The compatibility surface
 

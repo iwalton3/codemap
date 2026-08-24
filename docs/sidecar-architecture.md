@@ -217,6 +217,25 @@ No timer-based heartbeat can fix this. The lock must be stamped around each bloc
 call — in the git wrapper itself, which is the one place that knows a call is about to
 block — or git must stop being synchronous.
 
+## The boundary, in one sentence
+
+> **Acts enter the log at the moment they happen; everything derivable is a local
+> projection.**
+
+Both halves are already stated below and above — "no transactional outbox", "no
+reconstructing events by diffing SQLite", "the join is deliberately local", "no verdict
+travels", `source: "graph"` refused at the fold. They are written here as one sentence
+because the codebase has now had to re-derive them five times, most recently in shared
+triage, where BOTH directions were crossed in one build: a derived contest item was
+mirrored into the log as though it were an authored act, and a failed append fell back
+to a local row that a later publish would have given a causal position it never had.
+
+The test: an event is something somebody DID. If it is computable from what the log
+already holds, it must not be an event — a derived event has no honest actor and no
+honest causal position, and because the fold is deterministic, N clones derive it N
+times. And a claim that never entered the log cannot be retrofitted with one; it
+re-enters only as a fresh, attributed act.
+
 ## Conflict repair, without deleting anything
 
 A fork — two clones holding one writer id — and a differing-content duplicate id are

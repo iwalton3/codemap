@@ -1,9 +1,60 @@
 # Handoff — `worktree-shared-review-hashscheme`
 
-Green (808 unit + 81 e2e, nothing skipped; `tsc -p .` and `tsc -p web` clean; the vdx
-template lint is clean). Everything through the triage storage is COMMITTED; the shared
-triage fold and the `[signed ?]` web fix are in the working tree. Last updated
-2026-08-24, at the end of the session that built the shared triage fold.
+Green (824 unit + 82 e2e, nothing skipped; `tsc -p .` and `tsc -p web` clean). All
+committed. Last updated 2026-08-24, at the end of the session that REVIEWED the shared
+triage fold and fixed the nine defects three review rounds found in it.
+
+## What the 2026-08-24 (evening) session did — the triage REVIEW
+
+**Nine defects, three review rounds (Codex x2, Fable x1), all fixed.** Every one was
+reproduced with a runnable command before being believed, and every fix is
+mutation-checked. The shared triage feature as first landed was NOT sound; it is now.
+
+The three that would have bitten a real team:
+
+- **A human answering ONE field dropped the whole agent event**, folding the target to
+  ABSENT — eligibility was per event, not per field.
+- **An agent could LOWER a human's complexity.** `ratchet`'s `existing` was a `Triage`,
+  which requires an importance, so a human complexity baseline with no human importance
+  was unrepresentable and the replay took the first-mark branch.
+- **A failed append fell back to a local row**, which a later publish gave a causal
+  position it never had — the "reconstructed events falsely claim to have seen
+  everything just pulled" defect, by a slower route. Cut: a failed append now writes
+  nothing and says so.
+
+Plus: contests fired on every ordinary `pr-triage` escalation and never between two
+agents; per-field receipts were built and no consumer read them (tripwires judged
+against the wrong body, `humanDrifted` per-target, `likely` derived two ways);
+`clearTriage` reported success having changed nothing; the contest queue item was
+MIRRORED, so N clones filed N unclosable shared questions for one fact; and
+`publishLocalTriage` published unconditionally, so a post-sync backfill silently
+superseded teammates' marks.
+
+**THE PRINCIPLE, now in `sidecar-architecture.md`:** *acts enter the log at the moment
+they happen; everything derivable is a local projection.* Both halves were already in
+the doc; this build crossed the boundary in BOTH directions at once, which is what
+forced writing it as one sentence. Fifth time the codebase has re-derived it.
+
+**Two design rules changed, both owner calls, both recorded in `docs/shared-triage.md`:**
+the merge is A3 + gap-fill (the log answers where it covers a target; local rows fill
+only what it has no admissible answer for, so adoption does not move anybody's
+rankings); and only a PERSON settles a contest — the design's agent/agent half was
+unreachable, so the agent investigates and proposes instead.
+
+**Every shared flow is now on the web and MCP.** The CLI-only set was measured, and its
+shape was not random: JOIN and RECOVER were terminal-only while day-to-day review was
+everywhere. `/#/u/:u/shared/` is the hub. MCP gets the READS only — an MCP session is an
+agent actor, so publishing a human's legacy marks through it would rewrite them as agent
+claims and drop their tripwires. `ops-reach.test.ts` now pins both lists.
+
+**Also fixed, found by the owner in use:** a push listed twelve findings from an
+unrelated PR as "cannot be placed on this diff", burying the ones that were about the
+change in hand. Election is a deliberate lifecycle rule (a finding stays reportable
+until its reporter resolves it), so nothing is dropped or auto-resolved — a held-back
+finding now says WHICH review it belongs to and the backlog collapses to a line.
+
+**Green: 824 unit + 82 e2e, nothing skipped.** The genesis path is verified end to end
+on a scratch universe, and the hub in a real browser.
 
 ## What the 2026-08-24 (afternoon) session did
 
