@@ -297,10 +297,14 @@ the contest design is tuned against.
   remains are write and backfill paths, where reading the log is the job.
 - ~~**Docs, findings and notes live in parallel `shared_*` tables.**~~ **FIXED for
   docs** (`7d27352`): a teammate's doc is a `node_versions` row with an `origin`, and
-  the `shared_doc*` tables are gone. Findings and notes still have their own tables —
-  see the open question below, which is about findings specifically.
-- **Bugs and triage are still local**, though the original table put them in the
-  sidecar. Nothing shares them, and nothing is designed to yet.
+  the `shared_doc*` tables are gone, and bugs were built canonical from the start
+  (`bugs`, not `shared_bug`). Findings and notes still have their own tables — see the
+  open question below, which is about findings specifically.
+- ~~**Bugs and triage are still local.**~~ **Both now travel.** Triage:
+  `docs/shared-triage.md`. Bugs: `bugs/<universe>`, on the finding lifecycle, with a
+  grow-only citation set and a per-system tracking reference — and a `bugs` table where
+  a teammate's bug is a row with an `origin`, the same rule that removed `shared_doc*`.
+  `docs/plan-sharing-the-rest.md` §2 carries the design and what building it changed.
 - **Edges never sync**, so `process` and `step` docs are refused at publish and at the
   fold. A flow cannot be shared. Deliberate (`bf92cfb`): syncing one without its edges
   renders an empty flow under a teammate's name, which is worse than absence.

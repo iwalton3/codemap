@@ -365,9 +365,9 @@ Normative design: `docs/sidecar-architecture.md`. Mechanisms: `docs/fork-repair.
 `docs/plan-docs-unification.md` - both carry a "what the build changed" section, so
 read those rather than diffing the design against the code.
 
-**Not shared:** bugs (no design), edges (so `process` and `step` docs are refused, which
-makes the flow-walker single-player), and witness marks. **Triage now IS shared** —
-`docs/shared-triage.md`, built 2026-08-24.
+**Not shared:** witness marks, by decision. **Triage** (`docs/shared-triage.md`),
+**edges** — so the flow-walker is no longer single-player — and **bugs**
+(`docs/plan-sharing-the-rest.md` §2) all travel now.
 
 ## Why the current suite could not see it
 

@@ -141,6 +141,37 @@ consequences:
 
 ## 2. Bugs — findings that outlive a pull request and go stale instead of closing
 
+**Status: BUILT (2026-08-24).** `src/shared-bugs.ts` is the fold, `bugs` is the table,
+and every point below landed as written. Four things the design did not say, each forced
+by building it:
+
+1. **A bug is filed straight into the log**, not published from a local row. The owner's
+   call, and it matches findings: `shareFinding` appends the moment it is called. A
+   `publish_bugs` op still exists, but as the BACKFILL path for the backlog that predates
+   the sidecar — not the ordinary one.
+2. **There is no local `bugs` twin, and the migration is the interesting part.** The
+   entity moved from `meta["bugs"]` — a JSON blob whose create and update rewrote the
+   whole array — into one canonical table where a teammate's bug is a row with an
+   `origin`. The four legacy statuses map onto `FindingState` (open→created,
+   fixed→resolved, wontfix→withdrawn with the old name as the closing reason,
+   invalid→invalid), and the free-text `history` becomes the thread, because it is the
+   only record those bugs have. Every migrated bug stays LOCAL: a legacy `Bug` has no
+   `Actor`, so publishing on upgrade would attribute the whole backlog to whoever
+   upgraded first.
+3. **The finding→bug id is DERIVED** (`bugIdFor`), for the reason §3's review gave about
+   raising a contest: two people accepting one finding offline would otherwise mint two
+   bugs for one defect, with the conversation split across them. Derived, the fold merges
+   them — first filing owns what one person owns, citations merge.
+4. **Tracking is a list keyed by system, not a scalar.** A bug genuinely can be a Jira
+   ticket AND a GitHub issue. Within one system the first entry stands and only a person
+   may re-point it; an agent detaching the team's conversation from a ticket is the same
+   class as an agent closing a finding somebody stood behind.
+
+Two things the design named that did NOT need building: `filedAt` (when a published bug
+was originally recorded, apart from when it reached the team) had to be added, and
+`possiblyFixed` never travels — `ops/bugs.ts` computes it on every read against the
+local index, and `shared-bugs.test.ts` asserts the string never appears in a folded bug.
+
 **Owner's spec:** a bug is a finding not anchored to a specific PR, which can go stale
 but is **not auto-closed when its anchors drop out from under it**. Stale citations put
 it in a possibly-fixed queue.
@@ -232,7 +263,8 @@ Two things to get right, both of which this codebase has already been bitten by:
    Human edges only; the generated filter is what makes the volume trivial.
 2. **Contest raise-to-team** (§3) — small, closes a gap already open, needs the
    deterministic id below.
-3. **Bugs** (§2) — most machinery reused; the owner has it as not yet critical.
+3. ~~**Bugs** (§2)~~ — **BUILT 2026-08-24.** Most machinery reused, as predicted; see
+   the four deviations at the top of §2.
 4. **Inbox** (§4) — CUT from this plan. The watermark design does not work (see below);
    the product need stands and wants a separate frontier design.
 
@@ -297,8 +329,9 @@ keeps `created_at`, not a last-activity id, so recovering it would mean reading 
 a read path. A real inbox needs an observation frontier or per-event arrival metadata,
 and it is NOT identical across clones — relevance depends on local review marks.
 
-**Bugs differ by more than identity.** There is no local `bugs` table: they are one JSON
-blob in `meta`, and both create and update rewrite the whole array — the whole-list
+**Bugs differ by more than identity.** *(Upheld, and it decided the build: the entity
+became a table before it became shared.)* There is no local `bugs` table: they are one
+JSON blob in `meta`, and both create and update rewrite the whole array — the whole-list
 writer my "open question" guessed at. Bugs also carry collection semantics findings do
 not (multiple anchors, `addAnchors`, whole-witness refresh, append-only history), so two
 people adding different anchors concurrently either contests whole arrays or loses one.
