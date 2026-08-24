@@ -36,7 +36,7 @@ test("acking a hole keeps the hashes the removal claim rests on", async () => {
   try {
     const anchorId = (await readAnchorStore(root)).anchors[0]!.id;
     const d = await documentNode(root, {
-      type: "process", title: "The transfer seam", summary: "s", body: "b", anchors: [anchorId],
+      type: "concept", title: "The transfer seam", summary: "s", body: "b", anchors: [anchorId],
     }) as { id?: string; error?: string };
     assert.ok(d.id, JSON.stringify(d));
 

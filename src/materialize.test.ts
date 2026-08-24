@@ -160,7 +160,7 @@ test("a doc's authors Map and version order survive the round trip", async () =>
     const { publishDocVersion, readDocs, foldDocs, docScope } = await import("./shared-docs.js");
     const U = "acme/api";
     const v = (title: string) => ({
-      nodeId: "n_pay", type: "process" as const, title, summary: "s", body: "b",
+      nodeId: "n_pay", type: "concept" as const, title, summary: "s", body: "b",
       citations: [{ anchorId: "a_1", acceptedHashes: [] }],
       createdCommit: null, createdBranch: null,
     });
@@ -194,7 +194,7 @@ test("the citation edge table is populated for the step-3b join", async () => {
     const { db } = await import("./db.js");
     const U = "acme/api";
     const vid = await publishDocVersion(logRoot, U, izzie, {
-      nodeId: "n_pay", type: "process", title: "t", summary: "s", body: "b",
+      nodeId: "n_pay", type: "concept", title: "t", summary: "s", body: "b",
       citations: [{ anchorId: "a_1", acceptedHashes: [] }, { anchorId: "a_2", acceptedHashes: [] }],
       createdCommit: null, createdBranch: null,
     } as never);

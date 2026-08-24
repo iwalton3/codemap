@@ -44,8 +44,11 @@ import { readScopeChecked, SHARD_EXT, type LogEvent, type ScopeStatus } from "./
  * forked writer now folds to a DIFFERENT contested set — the disagreement between
  * two branches is raised where it used to be silently suppressed — and `scopeStatus`
  * gained a `chain-cycle` verdict. See docs/fork-repair.md.
+ *
+ * 4 -> 5: `foldDocs` drops analyzer-generated versions and `process`/`step` docs. A
+ * docs scope that already carried any of them folds to a smaller map now.
  */
-export const MATERIALIZER_VERSION = 4;
+export const MATERIALIZER_VERSION = 5;
 
 /**
  * What the events in a scope are, cheaply.

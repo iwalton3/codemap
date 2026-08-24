@@ -89,6 +89,15 @@ export function foldDocs(events: LogEvent[]): Map<string, SharedDoc> {
       // every shared doc in the universe becoming unreadable for everyone, forever.
       if (!v || typeof v.versionId !== "string" || v.nodeId !== e.subject) continue;
       if (v.citations !== undefined && !Array.isArray(v.citations)) continue;
+      // The load-bearing half of the narrowing. There is no server and no central
+      // validation, so the FOLD is the only gate that binds every writer — including
+      // an older client, a hand-written line, or a future one that forgets. The
+      // publish surface refuses these too, but that only binds writers who ask.
+      //
+      // Analyzer output has no refresh path once published and can never be judged
+      // stale; a `process`/`step` doc arrives without its edges and renders as an
+      // empty flow. See `notPublishable` in ops-shared.ts for the full argument.
+      if (v.generatedBy || v.type === "process" || v.type === "step") continue;
       // A version id is written once, and once per SCOPE — not per node, because
       // `doc.accepted` carries no node and resolves the id globally. So the drop
       // has to come BEFORE the doc is created: a node whose every version collides

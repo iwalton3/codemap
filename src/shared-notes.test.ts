@@ -193,7 +193,7 @@ test("retiring refuses while the cited code is still here", async () => {
     await init(u.root);
     const { readAnchorStore } = await import("./store.js");
     const anchorId = (await readAnchorStore(u.root)).anchors[0]!.id;
-    await documentNode(u.root, { type: "process", title: "Seam", summary: "s", body: "b", anchors: [anchorId] });
+    await documentNode(u.root, { type: "concept", title: "Seam", summary: "s", body: "b", anchors: [anchorId] });
     await shared.publishLocalDocs(u.root);
 
     const nodeId = [...(await shared.sharedDocs(u.root) as any).docs][0].nodeId;
@@ -231,7 +231,7 @@ test("a doc whose code is genuinely gone can be retired, and stays resolvable", 
     await init(u.root);
     const { readAnchorStore } = await import("./store.js");
     const anchorId = (await readAnchorStore(u.root)).anchors[0]!.id;
-    await documentNode(u.root, { type: "process", title: "Seam", summary: "s", body: "b", anchors: [anchorId] });
+    await documentNode(u.root, { type: "concept", title: "Seam", summary: "s", body: "b", anchors: [anchorId] });
     await shared.publishLocalDocs(u.root);
     const nodeId = [...(await shared.sharedDocs(u.root) as any).docs][0].nodeId;
 
@@ -269,7 +269,7 @@ test("a retired doc's tombstone carries the evidence its claim rests on", async 
     writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
     await init(u.root);
     const anchorId = (await readAnchorStore(u.root)).anchors[0]!.id;
-    await documentNode(u.root, { type: "process", title: "Seam", summary: "s", body: "b", anchors: [anchorId] });
+    await documentNode(u.root, { type: "concept", title: "Seam", summary: "s", body: "b", anchors: [anchorId] });
     await shared.publishLocalDocs(u.root);
     const nodeId = [...(await shared.sharedDocs(u.root) as any).docs][0].nodeId;
 

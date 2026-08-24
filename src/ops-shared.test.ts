@@ -7,6 +7,7 @@ import { basename, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { resolveSidecar, universeKey, scopeFor } from "./sidecar-config.js";
 import * as shared from "./ops-shared.js";
+import { foldDocs } from "./shared-docs.js";
 import { db } from "./db.js";
 
 const git = (root: string, ...args: string[]) =>
@@ -306,7 +307,7 @@ test("a doc citing an id from another build is unverifiable, not lost, and says 
     const theirs = { ...derivationTag("typescript"), grammarDigest: "f".repeat(64) };
     const cfg = rs(u.root)!;
     await publishDocVersion(cfg.path, cfg.universe, { principal: "dana@x.com" }, {
-      nodeId: "n_theirs", type: "process", title: "Their doc", summary: "s", body: "b",
+      nodeId: "n_theirs", type: "concept", title: "Their doc", summary: "s", body: "b",
       citations: [{ anchorId: "a_not_derivable_here", acceptedHashes: [hashTokens(["body"], theirs)] }],
       createdCommit: null, createdBranch: null,
     } as never);
@@ -344,7 +345,7 @@ test("a teammate's doc is visible on the anchor it describes", async () => {
 
     const cfg = rs(u.root)!;
     await publishDocVersion(cfg.path, cfg.universe, { principal: "dana@x.com" }, {
-      nodeId: "n_transfer", type: "process", title: "How a transfer settles", summary: "s", body: "b",
+      nodeId: "n_transfer", type: "concept", title: "How a transfer settles", summary: "s", body: "b",
       citations: [{ anchorId: transfer.id, acceptedHashes: [transfer.bodyHash] }],
       createdCommit: null, createdBranch: null,
     } as never);
@@ -406,7 +407,7 @@ test("share_doc cannot choose its own version id or its own time", async () => {
     const id = (await readAnchorStore(u.root)).anchors[0]!.id;
 
     const r = await shared.shareDoc(u.root, {
-      nodeId: "n_theirs", type: "process", title: "T", summary: "s", body: "b",
+      nodeId: "n_theirs", type: "concept", title: "T", summary: "s", body: "b",
       citations: [{ anchorId: id, acceptedHashes: [] }],
       versionId: "nv_hijack", createdAt: "9999-01-01T00:00:00.000Z",
     } as never) as any;
@@ -438,7 +439,7 @@ test("a tombstone cannot be published through share_doc", async () => {
     writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
     await init(u.root);
     const id = (await readAnchorStore(u.root)).anchors[0]!.id;
-    const v = { nodeId: "n_x", type: "process", title: "T", summary: "s", body: "b", citations: [{ anchorId: id, acceptedHashes: [] }] };
+    const v = { nodeId: "n_x", type: "concept", title: "T", summary: "s", body: "b", citations: [{ anchorId: id, acceptedHashes: [] }] };
 
     const bad = await shared.shareDoc(u.root, { ...v, removed: true } as never) as any;
     assert.ok(bad.error);
@@ -477,7 +478,7 @@ test("a symbol a teammate documented is not offered as a gap", async () => {
 
     const cfg = rs(u.root)!;
     await publishDocVersion(cfg.path, cfg.universe, { principal: "dana@x.com" }, {
-      nodeId: "n_transfer", type: "process", title: "How a transfer settles", summary: "s", body: "b",
+      nodeId: "n_transfer", type: "concept", title: "How a transfer settles", summary: "s", body: "b",
       citations: [{ anchorId: transfer.id, acceptedHashes: [transfer.bodyHash] }],
       createdCommit: null, createdBranch: null,
     } as never);
@@ -552,7 +553,7 @@ test("context answers for the team, not just for this machine", async () => {
 
     const cfg = rs(u.root)!;
     await publishDocVersion(cfg.path, cfg.universe, { principal: "dana@x.com" }, {
-      nodeId: "n_transfer", type: "process", title: "How a transfer settles", summary: "s", body: "b",
+      nodeId: "n_transfer", type: "concept", title: "How a transfer settles", summary: "s", body: "b",
       citations: [{ anchorId: transfer.id, acceptedHashes: [transfer.bodyHash] }],
       createdCommit: null, createdBranch: null,
     } as never);
@@ -608,7 +609,7 @@ test("a question can be filed on a doc that lives only on the sidecar", async ()
 
     const cfg = rs(u.root)!;
     await publishDocVersion(cfg.path, cfg.universe, { principal: "dana@x.com" }, {
-      nodeId: "n_theirs", type: "process", title: "Dana's doc", summary: "s", body: "b",
+      nodeId: "n_theirs", type: "concept", title: "Dana's doc", summary: "s", body: "b",
       citations: [{ anchorId, acceptedHashes: ["sha256:whatever"] }],
       createdCommit: null, createdBranch: null,
     } as never);
@@ -764,4 +765,81 @@ test("an agent may not heal", async () => {
       assert.match(r.error!, /agent may not/i);
     });
   } finally { t.cleanup(); }
+});
+
+// --- the publishable surface -----------------------------------------------------
+
+test("analyzer output and flows are refused at the publish surface", async () => {
+  const u = universe();
+  try {
+    await withEnv({ CODEMAP_SIDECAR: undefined, CODEMAP_AGENT_MODEL: undefined }, async () => {
+      const { init } = await import("./ops.js");
+      const { readAnchorStore } = await import("./store.js");
+      mkdirSync(join(u.root, "src"), { recursive: true });
+      writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+      await init(u.root);
+      const anchorId = (await readAnchorStore(u.root)).anchors[0]!.id;
+      const base = { nodeId: "n_x", title: "t", summary: "s", body: "b", citations: [{ anchorId, acceptedHashes: [] }] };
+
+      const gen = await shared.shareDoc(u.root, { ...base, type: "concept", generatedBy: "marten" } as any) as { error?: string };
+      assert.ok(gen.error, "analyzer output does not travel");
+      assert.match(gen.error!, /regenerated by every machine/);
+
+      for (const type of ["process", "step"]) {
+        const r = await shared.shareDoc(u.root, { ...base, type } as any) as { error?: string };
+        assert.ok(r.error, `${type} docs do not travel`);
+        assert.match(r.error!, /empty flow/);
+      }
+
+      // CONTROL — an ordinary doc still publishes. Without it, "refuse everything"
+      // passes every assertion above.
+      const ok = await shared.shareDoc(u.root, { ...base, type: "concept" } as any) as { error?: string };
+      assert.equal(ok.error, undefined, "a concept doc is publishable");
+    });
+  } finally { u.cleanup(); }
+});
+
+test("the fold drops them too, because it is the only gate that binds every writer", () => {
+  // There is no server and no central validation. The publish surface binds writers
+  // who ask; an older client, a hand-written line, or a future one that forgets are
+  // bound only here. This is the load-bearing half of the narrowing.
+  const version = (over: Record<string, unknown>) => ({
+    versionId: "v" + (over.nodeId as string), nodeId: over.nodeId, type: "concept",
+    title: "t", summary: "s", body: "b", citations: [{ anchorId: "a_1", acceptedHashes: [] }],
+    createdCommit: null, createdBranch: null, createdAt: "2026-01-01T00:00:00Z", ...over,
+  });
+  const ev = (nodeId: string, over: Record<string, unknown> = {}) => testEvent({
+    id: "0000000001-" + nodeId, kind: "doc.version", subject: nodeId,
+    data: { version: version({ nodeId, ...over }) as never },
+  });
+
+  const folded = foldDocs([
+    ev("n_gen", { generatedBy: "marten" }),
+    ev("n_flow", { type: "process" }),
+    ev("n_step", { type: "step" }),
+    ev("n_ok"),
+  ]);
+  assert.deepEqual([...folded.keys()], ["n_ok"], "only the ordinary doc survives the fold");
+});
+
+test("publishing reports what it skipped rather than narrowing in silence", async () => {
+  // A version that never travels and is never mentioned reads, from the other side,
+  // exactly like one that did.
+  const u = universe();
+  try {
+    await withEnv({ CODEMAP_SIDECAR: undefined, CODEMAP_AGENT_MODEL: undefined }, async () => {
+      const { init, document: documentNode } = await import("./ops.js");
+      const { readAnchorStore } = await import("./store.js");
+      mkdirSync(join(u.root, "src"), { recursive: true });
+      writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+      await init(u.root);
+      const anchorId = (await readAnchorStore(u.root)).anchors[0]!.id;
+      await documentNode(u.root, { type: "process", title: "Flow", summary: "s", body: "b", anchors: [anchorId] });
+      await documentNode(u.root, { type: "concept", title: "Idea", summary: "s", body: "b", anchors: [anchorId] });
+
+      const r = await shared.publishLocalDocs(u.root) as any;
+      assert.ok(r.skipped?.flows >= 1, "the flow is reported as skipped");
+      assert.ok(r.publishedVersions >= 1, "and the concept doc still went");
+    });
+  } finally { u.cleanup(); }
 });

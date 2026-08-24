@@ -18,7 +18,7 @@ const U = "acme/api";
 
 const DOC = {
   nodeId: "n_payments",
-  type: "process",
+  type: "concept",
   title: "Payments seam",
   summary: "how a payment reaches the ledger",
   body: "The handler folds…",
@@ -186,7 +186,7 @@ test("a citation confirmed under an older HASH_SCHEME is unverifiable, not drift
  */
 test("an acceptance that matches no citation is kept, not silently dropped", () => {
   const version = {
-    versionId: "v1", nodeId: "n1", type: "process", title: "t", summary: "s", body: "b",
+    versionId: "v1", nodeId: "n1", type: "concept", title: "t", summary: "s", body: "b",
     citations: [{ anchorId: "a_mine", acceptedHashes: [] }],
     createdCommit: null, createdBranch: null, createdAt: "2026-01-01T00:00:00Z",
   } as unknown as NodeVersion;
@@ -206,7 +206,7 @@ test("an acceptance that matches no citation is kept, not silently dropped", () 
 
 test("an acceptance for a version this fold never saw is kept too", () => {
   const version = {
-    versionId: "v1", nodeId: "n1", type: "process", title: "t", summary: "s", body: "b",
+    versionId: "v1", nodeId: "n1", type: "concept", title: "t", summary: "s", body: "b",
     citations: [{ anchorId: "a_mine", acceptedHashes: [] }],
     createdCommit: null, createdBranch: null, createdAt: "2026-01-01T00:00:00Z",
   } as unknown as NodeVersion;
@@ -271,7 +271,7 @@ test("a version id claimed by two nodes takes one down, not two", async () => {
   const ev = (nodeId: string, body: string, i: number): LogEvent => testEvent({
     id: "e" + i, subject: nodeId, kind: "doc.version",
     actor: { principal: "p@x.com" }, at: "2026-01-0" + i + "T00:00:00Z",
-    data: { version: { versionId: "nv_same", nodeId, type: "process", title: nodeId, summary: "", body, citations: [{ anchorId: "a_1", acceptedHashes: [] }], createdCommit: null, createdBranch: null, createdAt: "2026-01-01T00:00:00Z" } as unknown as Record<string, unknown> },
+    data: { version: { versionId: "nv_same", nodeId, type: "concept", title: nodeId, summary: "", body, citations: [{ anchorId: "a_1", acceptedHashes: [] }], createdCommit: null, createdBranch: null, createdAt: "2026-01-01T00:00:00Z" } as unknown as Record<string, unknown> },
   });
 
   const docs = foldDocs([ev("n_first", "FIRST", 1), ev("n_second", "SECOND", 2)]);
@@ -286,7 +286,7 @@ test("an acceptance cannot reach into another node's version", async () => {
   const version: LogEvent = {
     id: "e1", scope: "docs/u", subject: "n_first", kind: "doc.version",
     actor: { principal: "p@x.com" }, at: "2026-01-01T00:00:00Z",
-    data: { version: { versionId: "nv_same", nodeId: "n_first", type: "process", title: "t", summary: "", body: "b", citations: [{ anchorId: "a_1", acceptedHashes: [] }], createdCommit: null, createdBranch: null, createdAt: "2026-01-01T00:00:00Z" } },
+    data: { version: { versionId: "nv_same", nodeId: "n_first", type: "concept", title: "t", summary: "", body: "b", citations: [{ anchorId: "a_1", acceptedHashes: [] }], createdCommit: null, createdBranch: null, createdAt: "2026-01-01T00:00:00Z" } },
   } as unknown as LogEvent;
   const accept = (subject: string, i: number): LogEvent => ({
     id: "e" + i, scope: "docs/u", subject, kind: "doc.accepted",
