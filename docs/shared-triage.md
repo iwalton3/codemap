@@ -37,19 +37,15 @@ explicit presence discriminator and must NOT be encoded as `importance: undefine
 `applyRevision` (`src/contest.ts:70`) reads an absent field as "this event did not touch
 it", so a clear written that way is indistinguishable from silence.
 
-### Supersession is per FIELD, never per record
+### Supersession is per FIELD
 
-A human assertion supersedes causally-seen claims **only for the fields it explicitly
-asserts**. `triage.cleared` asserts presence=false and supersedes every field it saw.
+An assertion supersedes causally-seen claims **only for the fields it carries**.
+`triage.cleared` asserts presence=false and supersedes every field it saw. A settlement
+must likewise name the field: writing complexity after seeing an importance disagreement
+does not settle importance.
 
-This is the rule that "per-axis receipts" actually implies, and it has to be stated
-because the local code chooses a third answer: `ratchet` inherits existing complexity
-(`src/triage.ts:153`) and `setTriage` then stamps the whole record `likely: false`
-(`src/triage.ts:182`). Under a per-field rule, a human asserting only `importance`
-leaves an agent's `complexity` in place **with its own `likely` and its own receipt**.
-
-A human SETTLEMENT must likewise name the field. Writing complexity after seeing an
-importance contest does not settle importance.
+Per-field is about what an assertion REACHES, not about how a local write is composed —
+see "Local semantics do not change" below.
 
 ### Clearing
 
@@ -60,18 +56,55 @@ fold** — today's "human-only in practice" is a comment, not a gate.
 
 - Causally after a mark → the target folds to absent. The superseded mark stays in
   history and simply does not appear in the projection.
-- Concurrent with another human assertion → a contest between presence and absence,
-  settled by a later human who has seen both sides.
+- Concurrent with another human assertion → **presence wins**, by the same rule as
+  everything else: a mark nobody wanted costs a glance, a mark silently removed costs
+  the review it was asking for. The clear stays in history and a human who has seen both
+  can clear again.
 - A later agent escalation may create a new `likely` mark. **A clear is not a permanent
   ban** — stakes genuinely arrive later. But a complexity-only agent claim after a clear
   is still refused, because there is no importance on record and an agent that asserts no
   stakes does not get one invented for it (`src/triage.ts:130`).
 
+### Merging: let the stakes decide how much machinery the conflict gets
+
+Triage exists to say how much ceremony a thing deserves. Its own conflicts get the same
+treatment, and that is what keeps the rule from being either lossy or exhausting.
+
+**1. Causally-seen always supersedes.** If you looked at `business-critical` and set
+`low`, you win — that is a decision, not a merge, and it is the normal way anything gets
+lowered. Most of what looks like conflict is this, and it needs no machinery at all.
+
+**2. Concurrent divergence: the higher value wins, silently.** No contest label, no queue
+item. Two people who never saw each other disagreeing about `low` versus `important` is
+not worth anyone's attention. Nothing is lost by taking the higher one — **both receipts
+are retained regardless**, because per-field provenance is already required — it simply
+does not demand a decision.
+
+The asymmetry is the whole argument, and it is the same one that makes `tripwire`
+arm-safe: ranking something too high costs somebody a few minutes; ranking it too low
+costs the thing this project exists to prevent.
+
+**3. Except across the `business-critical` line, which goes to the review queue.** When
+one side says `business-critical` and another says lower, that is the only disagreement
+where being wrong is expensive, and it is rare. It becomes an item in the existing
+`review_queue` — the same queue `ackHole` files into — for a person to settle. An agent
+may settle an agent/agent disagreement; it may not settle one between two people.
+
+**Rejected: last-in-wins.** Among concurrent events "last" means "larger event id", so a
+`low` written by somebody who never saw the `business-critical` would silently lower it
+because its id happened to sort later. Review priority decided by id during an
+unresolved disagreement is the failure mode this codebase rejects everywhere else, and
+it is silent, which makes it the worst available option.
+
+**Rejected: contest everything.** Correct and exhausting. A sticky contested label on a
+`low` versus `important` disagreement spends attention to protect nothing, and a rule
+people route around is worse than a simpler one they keep.
+
 ### Which agent claims are still active
 
 A sequential fold alone gets this wrong. If an agent claim `A` is concurrent with a
 human assertion `H` and ids sort `A` before `H`, treating `H` as "reset the state"
-erases `A` — even though `H` never saw it. The algorithm, per target and per field:
+erases `A` — even though `H` never saw it. Per target and per field:
 
 1. A claim is suppressed by a human assertion only if `causal.saw(human.id, claim.id)`.
 2. An agent claim **concurrent** with a human assertion stays eligible regardless of
@@ -81,11 +114,11 @@ erases `A` — even though `H` never saw it. The algorithm, per target and per f
 4. An eligible agent claim is **visible only if it actually raises** the effective
    value. Concurrency alone does not make a lower or no-op claim an escalation.
 
-The projection therefore carries three things per field, not one:
+The projection carries three things per field, not one:
 
 ```ts
 importance: {
-  baseline?: AxisReceipt;    // the active human assertion, when uncontested
+  baseline?: AxisReceipt;    // the active human assertion
   effective: AxisReceipt;    // what ranking and severity use
   escalation?: AxisReceipt;  // set when an agent supplied the effective value over a human baseline
 }
@@ -94,25 +127,13 @@ importance: {
 `Triage.importance` as existing consumers see it is the **effective** value. The human
 baseline stays visible, or "confirm" has nothing concrete to mean.
 
-### While two humans disagree, do not pick by id
+### Local semantics do not change
 
-Concurrent human assertions contest. An agent claim never settles or replaces a human
-contest. While a field is contested:
-
-- every maximal concurrent human assertion is kept as a side;
-- an agent claim is applied separately to each side whose assertion did not causally
-  cover it;
-- the **maximum** effective value across sides is what ranks the queue, labelled
-  contested and non-authoritative;
-- a later human who names the field and causally sees all sides establishes the single
-  new baseline. Agent claims that human also saw are reset; still-concurrent ones stay
-  eligible.
-
-This is deliberately **stricter than findings**, where `applyRevision` assigns the
-incoming value before recording the contest (`src/contest.ts:75`) and a scalar is
-therefore chosen by total order. Copying that here would make review priority depend on
-event ids during an explicitly unresolved disagreement, and would let a `low` side that
-happened to sort last quietly lower attention on a symbol somebody called critical.
+A local write is one act and keeps producing one record: `ratchet` inherits the existing
+complexity and `setTriage` stamps it (`src/triage.ts:153`, `:182`). The fold then treats
+that record as a set of field assertions **sharing one receipt**, which is where per-field
+provenance comes from without inventing a second merge rule. Single-player behaviour is
+untouched, and there is exactly one rule for what a write means.
 
 ### The compatibility surface
 
@@ -138,14 +159,15 @@ receipts, neither is necessarily the snapshot the tripwire was armed against.
 
 - **Humans only.** An agent's value is ignored by the fold.
 - Omitted means "did not touch"; `true` arms, `false` disarms.
-- A causally later human value wins. Concurrent equal values agree.
-- Concurrent `true`/`false` **contests**, and while contested the projection shows
-  **armed**. Silently choosing `false` loses an alert; choosing `true` produces an
-  unwanted one, which is reversible and visible. Arm-safe is the only defensible default
-  for an alarm.
+- A causally later human value wins — the same supersession rule as everything else, so
+  the way to disarm an alarm is to look at it and disarm it.
+- Concurrent `true`/`false` resolves to **armed**, by the same "higher value wins" rule:
+  silently choosing `false` loses an alert, while choosing `true` produces an unwanted
+  one that is reversible and visible. No contest label; an alarm nobody asked to be
+  armed is a nuisance, and one silently disarmed is the failure.
 - `triage.cleared` causally after an arm disarms it — the clear asserts the absence of
-  the whole mark. A clear concurrent with `tripwire: true` joins the presence contest
-  and stays armed provisionally.
+  the whole mark. A clear CONCURRENT with `tripwire: true` leaves it armed, by the
+  presence rule above.
 
 Prior art is weak and should not be copied blindly: `finding.promoted` is a genuine
 one-way latch with no false event (`src/shared-findings.ts:281`), and `note.resolved`
@@ -173,19 +195,23 @@ It is regenerated locally by `deriveTriage` (`src/triage.ts:431`), and
 fold has to refuse it too, because remote events come from builds this one did not write
 — the rule already stated for findings (`src/shared-findings.ts:22`).
 
-## Contests: human events only
+## Triage does NOT use `contest.ts`
 
-`contest.ts` does **not** gate contest creation on the actor. `applyRevision` records
-every incoming owner before any actor check (`src/contest.ts:75`) and detects a
-divergence without testing either side (`src/contest.ts:103`); `isAgentActor` appears
-only in the settlement branch (`src/contest.ts:88`). **Measured:** two agent
-assertions produce an `importance` contest that neither of them may settle.
+Worth saying outright, because "use the existing machinery" was an earlier draft's
+answer and the merge rule above replaced it. Triage resolves concurrent divergence by
+taking the higher value, and escalates only across the `business-critical` line — to the
+review queue, where a person acts, rather than to a contested field that sits on the
+record until somebody clears it.
 
-Do not fix this globally as part of this feature — findings and notes depend on the
-current semantics (`src/shared-findings.ts:237`, `src/shared-notes.ts:127`). Feed only
-human assertions and clears into triage's `ContestState`; agent claims live in separate
-escalation state and never become scalar owners for contest detection. "Use the existing
-machinery" means its causal detection and settlement representation, for human events.
+That also sidesteps a live defect rather than depending on it. `contest.ts` gates
+SETTLEMENT on the actor (`src/contest.ts:88`) and not CREATION: `applyRevision` records
+every incoming owner (`:75`) and detects divergence without testing either side (`:103`).
+**Measured:** two agent assertions produce a contest that neither of them may settle.
+
+That defect is live for findings and notes today (`src/shared-findings.ts:237`,
+`src/shared-notes.ts:127`) and is deliberately **not fixed here** — a global actor rule
+has consequences for both that are unrelated to this decision. It is filed in
+`docs/HANDOFF.md`.
 
 ## Storage
 
