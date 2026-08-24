@@ -1,6 +1,6 @@
 # Handoff — `worktree-shared-review-hashscheme`
 
-Green (760 tests; `tsc -p .` and `tsc -p web` clean; the vdx template lint is clean).
+Green (779 unit + 74 e2e; `tsc -p .` and `tsc -p web` clean; the vdx template lint is clean).
 **Uncommitted** — everything below is in the working tree. Last updated 2026-08-24, at
 the end of the session that finished workflows 3–6 and the old-store fixtures.
 
@@ -141,12 +141,32 @@ publishes it explicitly, because a legacy `Triage` carries `source` but **no `Ac
 so automatic publication would attribute every historical judgment to whoever upgraded
 first.
 
-**Not started, and one thing to weigh before starting.** Per-field supersession changes
-LOCAL semantics: today a human asserting only `importance` inherits the existing
-complexity and stamps the whole record `likely: false` (`src/triage.ts:153`, `:182`).
-Under the reviewed design it would leave an agent's complexity in place with its own
-`likely`. That is a change to single-player behaviour and existing tests, not an
-addition — worth an explicit decision rather than discovering it mid-build.
+**The merge rule was decided by asking what a conflict is WORTH**, which is what triage
+is for in the first place. Neither "contest everything" (correct and exhausting) nor
+"last-in-wins" (silent — among concurrent events "last" means "larger event id", so a
+`low` from somebody who never saw the `business-critical` quietly lowers it). Three rules
+instead: causally-seen supersedes, concurrent divergence takes the higher value silently,
+and only a disagreement ACROSS the `business-critical` line reaches the review queue.
+Applied consistently it also settles presence and `tripwire`, and it leaves LOCAL
+semantics unchanged — a write is one act producing one record, and the fold reads that
+record as fields sharing one receipt.
+
+**THE STORAGE IS BUILT AND GREEN.** Triage is one canonical `triage` table, one row per
+(target, FIELD), with `origin`/`source_scope` exactly as `node_versions`. `meta["triage"]`
+migrates on open, idempotently, and every migrated mark stays LOCAL. All five write paths
+go through the local seam and are table-driven-tested against a store that already holds
+a teammate's row; the ratchet still judges against the merged view. Mutation-checked in
+both commits.
+
+**What is left of the build:** the event kinds and the fold (`shared-triage.ts`), the
+projection and its `projectionFor` entry, the ops (`shareTriage` / `sharedTriage` and
+write-through), the review-queue escalation for a business-critical crossing, the oracle
+wiring (OWNERSHIP and COMPLETENESS know only about docs), and the WALL in
+`oracle-handoff.test.ts`.
+
+**One measured trap for whoever writes the fold:** SQLite does not conflict NULLs, so the
+table uses PARTIAL unique indexes. A plain `UNIQUE(target_kind, target_id, field,
+source_scope)` admits unlimited duplicate local rows.
 
 ## The commands changed
 
