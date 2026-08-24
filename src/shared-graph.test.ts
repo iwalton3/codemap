@@ -213,3 +213,76 @@ test("the merged read does not double an edge two people both drew", async () =>
     assert.equal((await readGraph(root)).edges.length, 1, "one edge, drawn twice, is one edge");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("a reordering reaches the review queue, and a repair closes it", async () => {
+  // The end of the loop. The fold DETECTS a reorder; without this it shows up only if
+  // somebody goes looking, which is the same as not detecting it.
+  const { mkdtempSync, mkdirSync, rmSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { spawnSync } = await import("node:child_process");
+  const { db } = await import("./db.js");
+  const { readAnnotations } = await import("./store.js");
+  const { init, document: documentNode } = await import("./ops.js");
+  const { queueDivergedWiring, DIVERGED_WIRING_CATEGORY } = await import("./ops/graph.js");
+  const { graphProjection } = await import("./shared-projections.js");
+
+  const root = mkdtempSync(join(tmpdir(), "codemap-wq-"));
+  try {
+    mkdirSync(join(root, "src"), { recursive: true });
+    writeFileSync(join(root, "src/pay.ts"), "export function transfer(c: number) { return c; }\n");
+    spawnSync("git", ["init", "-q"], { cwd: root });
+    spawnSync("git", ["add", "-A"], { cwd: root });
+    spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "i"], { cwd: root });
+    await init(root);
+    const side = join(root, "side");
+    mkdirSync(side, { recursive: true });
+    spawnSync("git", ["init", "-q"], { cwd: side });
+    writeFileSync(join(root, ".codemap", "sidecar"), side);
+    const doc = await documentNode(root, {
+      id: "n_flow", type: "process", title: "Intake", summary: "s", body: "b",
+      anchors: ["src/pay.ts#transfer"],
+    }) as { error?: string };
+    assert.equal(doc.error, undefined, `document failed: ${doc.error}`);
+
+    // The fold's answer, planted: the clock and causality disagree about the winner.
+    // From the resolver, not the basename: `universeKey` lower-cases, so a hand-built
+    // scope string silently misses the one the ops use.
+    const { resolveSidecar } = await import("./sidecar-config.js");
+    const scope = `graph/${resolveSidecar(root)!.universe}`;
+    const receipt = (who: string, at: string, id: string, to: string) => ({
+      nodeId: "n_flow", commit: "c1", edges: [{ to, type: "step_of" as any }],
+      actor: { principal: who }, at, eventId: id,
+    });
+    graphProjection.write(db(root), scope, new Map([["n_flow", {
+      nodeId: "n_flow",
+      winner: receipt("izzie@x", "2026-08-24T09:00:00Z", "e1", "n_a"),
+      reordered: { causal: receipt("ben@x", "2026-08-24T08:00:00Z", "e2", "n_b") },
+    }]]));
+    db(root).prepare("INSERT INTO shared_scope(scope,fingerprint,folded_at,events,status) VALUES(?,?,?,?,?)")
+      .run(scope, "planted", "now", 2, "complete");
+
+    const first = await queueDivergedWiring(root) as any;
+    assert.equal(first.filed, 1, "the reorder is filed where a person will see it");
+    const items = (await readAnnotations(root)).annotations
+      .filter((a) => a.category === DIVERGED_WIRING_CATEGORY && !a.resolved);
+    assert.equal(items.length, 1);
+    assert.match(items[0]!.text, /causally later/, "and the item says WHY it matters, not just that it happened");
+    assert.match(items[0]!.text, /ben@x/, "naming the writer whose decision lost to a clock");
+
+    // Idempotent: it runs on every sync, and one that re-asked would bury the answer.
+    const again = await queueDivergedWiring(root) as any;
+    assert.deepEqual({ f: again.filed, q: again.alreadyQueued }, { f: 0, q: 1 });
+
+    // The repair: the fold stops reporting it, so the clone closes its own item.
+    graphProjection.write(db(root), scope, new Map([["n_flow", {
+      nodeId: "n_flow", winner: receipt("ben@x", "2026-08-24T10:00:00Z", "e3", "n_b"),
+    }]]));
+    const after = await queueDivergedWiring(root) as any;
+    assert.equal(after.closed, 1, "a repair closes the item — its own text promises that");
+    assert.equal(
+      (await readAnnotations(root)).annotations
+        .filter((a) => a.category === DIVERGED_WIRING_CATEGORY && !a.resolved).length, 0,
+    );
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

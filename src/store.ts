@@ -1056,6 +1056,26 @@ export async function readGraph(root: string): Promise<Graph> {
   return { edges: out };
 }
 
+/**
+ * The fold's answer for this scope's wiring, from ROWS.
+ *
+ * Not through the cache. `readTriage` and every ordinary read answer from the table, and
+ * so must anything asking the same question — COMPLETENESS is the rule that an ordinary
+ * read never folds, and a queue pass that folded would also discard any answer the
+ * fingerprint does not currently describe. The fold's job was to have written these.
+ *
+ * `null` when the scope has no stored verdict or is not `complete`: a blocked scope may
+ * not drive writes, because filing from one invents work and resolving from one closes a
+ * real divergence that a scope nobody may read simply stopped reporting.
+ */
+export async function readSharedWiring(root: string, scope: string): Promise<{ nodeId: string; body: string }[] | null> {
+  const d = db(root);
+  const row = d.prepare("SELECT status FROM shared_scope WHERE scope = ?").get(scope) as { status: string } | undefined;
+  if (!row || row.status !== "complete") return null;
+  return d.prepare("SELECT node_id AS nodeId, body FROM shared_wiring WHERE scope = ? ORDER BY rowid")
+    .all(scope) as unknown as { nodeId: string; body: string }[];
+}
+
 /** This clone's OWN edges. What every WRITER must read before it writes. */
 export async function readLocalGraph(root: string): Promise<Graph> {
   const rows = db(root).prepare("SELECT from_id,to_id,type,ord,generated_by FROM edges WHERE source_scope IS NULL")

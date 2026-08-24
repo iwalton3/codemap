@@ -142,9 +142,18 @@ export async function sharedSync(root: string) {
   // Failure here does not fail the sync: the transport worked, and the queue is derived
   // state that the next sync re-derives.
   const contests = await queueContestedTriage(root).catch(() => null);
+  // Same rule, same place: a sync is when a teammate's wiring arrives, so it is when a
+  // reordering becomes something a person can act on. Inside the op so every front-end
+  // gets it, and a failure does not fail the sync — the queue is derived state the next
+  // sync re-derives.
+  const wiring = await import("./ops/graph.js")
+    .then((m) => m.queueDivergedWiring(root))
+    .catch(() => null);
   return {
     ...(contests && !("error" in contests) && (contests.filed || contests.revised || contests.closed)
-      ? { contests } : {}), ok: true, universe: b.cfg.universe, sidecar: b.cfg.path, ...r, materialized };
+      ? { contests } : {}),
+    ...(wiring && !("error" in wiring) && (wiring.filed || wiring.revised || wiring.closed)
+      ? { wiring } : {}), ok: true, universe: b.cfg.universe, sidecar: b.cfg.path, ...r, materialized };
 }
 
 export interface HealResult {

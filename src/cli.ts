@@ -287,6 +287,11 @@ async function cmdSync(root: string): Promise<void> {
     console.log(`  ${q.filed + q.revised} stakes disagreement(s) crossing business-critical — queued for you (\`codemap contested\`)`);
   }
   if (q && q.closed) console.log(`  ${q.closed} settled disagreement(s) closed`);
+  const wq = r.wiring as { filed: number; revised: number; closed: number } | undefined;
+  if (wq && (wq.filed || wq.revised)) {
+    console.log(`  ${wq.filed + wq.revised} node(s) whose wiring the clock and causality disagree about — queued for you`);
+  }
+  if (wq && wq.closed) console.log(`  ${wq.closed} wiring divergence(s) resolved`);
 }
 
 /**

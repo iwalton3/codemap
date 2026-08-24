@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import { resolveSidecar } from "../sidecar-config.js";
+import { annotate, assignAnnotation, reviseAnnotation, resolveAnnotation } from "./annotations.js";
+import type { SharedWiring } from "../shared-graph.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type Anchor, type LogicalNode, type Edge } from "../schema.js";
@@ -736,3 +740,118 @@ export async function flow(root: string, id: string) {
   };
 }
 
+
+/** Marks a queued item as a wiring divergence, so a second pass finds it. */
+export const DIVERGED_WIRING_CATEGORY = "diverged-wiring";
+
+const wiringEvidenceKey = (text: string): string | null =>
+  /^\[evidence ([0-9a-f]{12})\]$/m.exec(text)?.[1] ?? null;
+
+/**
+ * What the two orders disagreed about, as a digest.
+ *
+ * The EVIDENCE, never the rendered prose: comparing text would make a wording change
+ * look like a new divergence, re-ask a question somebody had answered, and clear the
+ * outcome on the way past. Same rule `ackHole` and the contested-triage queue follow.
+ */
+function wiringDigest(w: SharedWiring): string {
+  const side = (r: { eventId: string; actor: { principal: string } }) => `${r.eventId}\0${r.actor.principal}`;
+  return createHash("sha256")
+    .update([w.nodeId, side(w.winner), side(w.reordered!.causal)].join("\n"))
+    .digest("hex").slice(0, 12);
+}
+
+function wiringQuestion(w: SharedWiring, title: string): string {
+  const one = (r: { actor: { principal: string }; at: string; edges: unknown[] }, label: string) =>
+    `  - **${label}** — ${r.actor.principal}, ${r.edges.length} edge(s), clock ${r.at}`;
+  return [
+    `[evidence ${wiringDigest(w)}]`,
+    "",
+    `Two publications of **${title}**'s wiring disagree about which is newer, depending on`,
+    "whether you order by the clock or by what each writer had actually seen.",
+    "",
+    one(w.winner, "served (latest clock)"),
+    one(w.reordered!.causal, "lost (causally later)"),
+    "",
+    "The clock's answer is being served, so nothing is blocked. But the causally later",
+    "publication was written by somebody who had ALREADY SEEN the other one — so their",
+    "wiring is a decision, and it lost to a clock rather than to a judgement.",
+    "",
+    "Repair by publishing the wiring you believe is right (`connect`, then sync). That",
+    "publication carries a commit and is authoritative for it exactly as any other is —",
+    "there is no special repair authority, and this item closes itself once the two",
+    "orders agree again.",
+  ].join("\n");
+}
+
+/**
+ * File a review-queue item for every node whose wiring divergence needs a look.
+ *
+ * Entered by STATE, like the contested-triage queue and unlike `ackHole`, and safe for
+ * the same reason: a divergence takes two people publishing one node's wiring where the
+ * clock and causality disagree, which is rare by construction.
+ *
+ * LOCAL-ONLY, and that is the rule rather than an optimisation. The divergence is
+ * DERIVED — every clone folds the same events and reaches the same answer — so filing it
+ * as a shared note would mint one question per clone for one team fact, each with its own
+ * random id, and the shared-note fold refuses agent resolutions so none could ever be
+ * closed. The receipts it is derived FROM already travel.
+ */
+export async function queueDivergedWiring(root: string): Promise<{ filed: number; revised: number; alreadyQueued: number; closed: number } | { error: string }> {
+  const cfg = resolveSidecar(root);
+  if (!cfg) return { filed: 0, revised: 0, alreadyQueued: 0, closed: 0 };
+  const { graphScope } = await import("../shared-graph.js");
+  const { readSharedWiring } = await import("../store.js");
+  // From ROWS, not through the cache — see `readSharedWiring`. It answers null for a
+  // blocked or unfolded scope, which is the blocked-scope guard.
+  const rows = await readSharedWiring(root, graphScope(cfg.universe));
+  if (!rows) return { filed: 0, revised: 0, alreadyQueued: 0, closed: 0 };
+  const diverged: SharedWiring[] = [];
+  for (const r of rows) {
+    try {
+      const w = JSON.parse(r.body) as SharedWiring;
+      if (w.reordered) diverged.push(w);
+    } catch { /* a damaged row is the projection's problem, not this pass's */ }
+  }
+  const titles = new Map((await loadNodesShared(root)).map((n) => [n.id, n.title]));
+  const open = (await readAnnotations(root)).annotations.filter((a) =>
+    a.category === DIVERGED_WIRING_CATEGORY && !a.resolved);
+  const openByTarget = new Map(open.map((a) => [a.target.id, a]));
+
+  let filed = 0, revised = 0, alreadyQueued = 0, closed = 0;
+  const live = new Set<string>();
+  for (const w of diverged) {
+    live.add(w.nodeId);
+    // A node this clone has no doc for is skipped rather than filed against: the queue
+    // item is a question about something, and `annotate` refuses an unknown target.
+    if (!titles.has(w.nodeId)) continue;
+    const text = wiringQuestion(w, titles.get(w.nodeId)!);
+    const already = openByTarget.get(w.nodeId);
+    if (already) {
+      if (wiringEvidenceKey(already.text) === wiringDigest(w)) { alreadyQueued++; continue; }
+      await reviseAnnotation(root, { id: already.id, text, by: "graph" });
+      await assignAnnotation(root, { id: already.id, kind: "investigate", by: "graph" });
+      revised++;
+      continue;
+    }
+    const f = await annotate(root, {
+      targetKind: "node", targetId: w.nodeId,
+      kind: "question", category: DIVERGED_WIRING_CATEGORY, author: "graph", text,
+      localOnly: true,
+    }) as { id?: string };
+    if (!f.id) continue;
+    // An agent INVESTIGATES and proposes — it reads both wirings and reports which is
+    // right. The person publishes the answer, which is the act that travels.
+    await assignAnnotation(root, { id: f.id, kind: "investigate", by: "graph" });
+    filed++;
+  }
+
+  // The reverse pass. A repair is an ordinary publication, so every clone's fold stops
+  // reporting the divergence and every clone closes its own item — no shared lifecycle.
+  for (const [nodeId, a] of openByTarget) {
+    if (live.has(nodeId)) continue;
+    await resolveAnnotation(root, a.id, true, { actor: "agent" });
+    closed++;
+  }
+  return { filed, revised, alreadyQueued, closed };
+}
