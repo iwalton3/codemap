@@ -85,6 +85,15 @@ export interface Axis<V> {
   concurrent?: AxisReceipt<V>[];
   /** Only ever set on `importance`, and only across the business-critical line. */
   contested?: boolean;
+  /**
+   * The ACTIVE receipts that constitute the contest — every side, whoever wrote it.
+   *
+   * Retained because the queue item has to name both sides, and neither `effective` nor
+   * `concurrent` can supply them: `concurrent` holds only the human receipts the
+   * baseline won over, and an agent's losing claim was computed for the contest check
+   * and then dropped. The queue question then said two parties disagreed and listed one.
+   */
+  contestedWith?: AxisReceipt<V>[];
 }
 
 /**
@@ -414,7 +423,8 @@ function foldTarget(entries: Entry[], causal: Causality): TriageEntry | null {
       ? { target, cleared: { actor: won.e.actor, at: won.e.at, eventId: won.e.id } }
       : null;
   }
-  if (contested(importance, agentSaid.importance, causal)) importance.contested = true;
+  const sides = contestingSides(importance, agentSaid.importance, causal);
+  if (sides) { importance.contested = true; importance.contestedWith = sides; }
 
   const complexity = axisOf<Complexity>(cxBase, cxFrom);
   // Humans only. An agent's tripwire value is ignored outright rather than ratcheted:
@@ -453,23 +463,26 @@ function foldTarget(entries: Entry[], causal: Causality): TriageEntry | null {
  * is a PROPOSAL on the queue item — it investigates and reports an outcome, and the
  * person settles by re-triaging. See `docs/shared-triage.md`.
  */
-function contested(
+function contestingSides(
   axis: Axis<Importance>, agentClaims: AxisReceipt<Importance>[], causal: Causality,
-): boolean {
+): AxisReceipt<Importance>[] | null {
   const humanSide = [...(axis.baseline ? [axis.baseline] : []), ...(axis.concurrent ?? [])];
   const all = [...humanSide, ...agentClaims];
   const isAgent = (r: AxisReceipt<Importance>) => r.source === "agent";
   const active = all.filter((x) => !all.some((y) => y !== x
     && causal.saw(y.eventId, x.eventId)
     && !isAgent(y)));
-  return active.some((a) => a.value === "business-critical")
-    && active.some((b) => b.value !== "business-critical")
-    // Straddling is not enough on its own: the two sides must be genuinely concurrent,
-    // or a person lowering something they had just read reads as a conflict with
-    // themselves.
-    && active.some((a) => active.some((b) => a !== b
-      && a.value === "business-critical" && b.value !== "business-critical"
-      && !causal.saw(a.eventId, b.eventId) && !causal.saw(b.eventId, a.eventId)));
+  // Straddling is not enough on its own: the two sides must be genuinely concurrent, or
+  // a person lowering something they had just read reads as a conflict with themselves.
+  const straddles = active.some((a) => active.some((b) => a !== b
+    && a.value === "business-critical" && b.value !== "business-critical"
+    && !causal.saw(a.eventId, b.eventId) && !causal.saw(b.eventId, a.eventId)));
+  if (!straddles) return null;
+  // Every active receipt, deduped and ordered by id so two clones render one contest
+  // the same way.
+  const seen = new Set<string>();
+  return active.filter((r) => !seen.has(r.eventId) && seen.add(r.eventId))
+    .sort((a, b) => (a.eventId < b.eventId ? -1 : 1));
 }
 
 /** Baseline plus escalation as the three-part axis consumers read. */

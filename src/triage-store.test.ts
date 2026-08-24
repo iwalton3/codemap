@@ -574,3 +574,26 @@ test("where both have something to say, the PESSIMISTIC value wins and is flagge
       "flagged, because the record is now the SAFE reading rather than either side's assertion");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("asking what is unpublished does not WRITE to the shared repo", async () => {
+  // `sharedHub` runs all three publish dry runs on every page load, and each began with
+  // `ensureSidecar`, which writes `.gitattributes`, local git config and this
+  // principal's manifest. Opening a read-only page mutated the shared repo. A count is
+  // a question, not a preparation to write.
+  const { publishLocalDocs, publishLocalNotes, publishLocalTriage } = await import("./ops-shared.js");
+  const { readdirSync } = await import("node:fs");
+  const root = universe();
+  try {
+    const side = join(root, "sidecar");
+    mkdirSync(side, { recursive: true });
+    spawnSync("git", ["init", "-q"], { cwd: side });
+    writeFileSync(join(root, ".codemap", "sidecar"), side);
+    const before = readdirSync(side).sort();
+
+    await publishLocalDocs(root, { dryRun: true });
+    await publishLocalNotes(root, { dryRun: true });
+    await publishLocalTriage(root, { dryRun: true });
+
+    assert.deepEqual(readdirSync(side).sort(), before, "a dry run left the sidecar exactly as it found it");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

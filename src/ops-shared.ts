@@ -606,13 +606,14 @@ export async function resolveSharedNote(root: string, targetId: string, id: stri
 export async function publishLocalNotes(root: string, opts: { dryRun?: boolean } = {}) {
   const b = bind(root);
   if ("error" in b) return b;
-  await ensureSidecar(b.cfg.path, b.actor);
   const local = (await readAnnotations(root)).annotations;
   const already = new Set((await allNotes(b.cfg.path, b.cfg.universe)).map((n) => n.id));
   const todo = local.filter((a) => !already.has(a.id));
+  // AFTER the dry run — see `publishLocalDocs`. A count must not write.
   if (opts.dryRun) {
     return { universe: b.cfg.universe, local: local.length, alreadyShared: local.length - todo.length, wouldPublish: todo.length };
   }
+  await ensureSidecar(b.cfg.path, b.actor);
   for (const a of todo) {
     await createNote(b.cfg.path, b.cfg.universe, b.actor, {
       id: a.id,
@@ -1001,13 +1002,17 @@ export async function retireSharedDoc(root: string, nodeId: string, rationale: s
 export async function publishLocalDocs(root: string, opts: { dryRun?: boolean } = {}) {
   const b = bind(root);
   if ("error" in b) return b;
-  await ensureSidecar(b.cfg.path, b.actor);
   const nodes = await loadNodes(root);
   const already = (await cachedDocs(root, b.cfg)).value;
   const todo = nodes.filter((n) => !already.has(n.id));
+  // AFTER the dry run, not before. `ensureSidecar` writes — `.gitattributes`, local git
+  // config, this principal's manifest — and `sharedHub` calls all three dry runs on
+  // every page load, so a read of "what have I not published" was rewriting the shared
+  // repo. A count is a question, not a preparation to write.
   if (opts.dryRun) {
     return { universe: b.cfg.universe, local: nodes.length, alreadyShared: nodes.length - todo.length, wouldPublish: todo.length };
   }
+  await ensureSidecar(b.cfg.path, b.actor);
   let versions = 0;
   const skipped = { generated: 0, flows: 0 };
   for (const n of todo) {

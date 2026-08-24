@@ -85,16 +85,26 @@ const evidenceKey = (text: string): string | null => /^\[evidence ([0-9a-f]{12})
  * clear the outcome on the way past. Same rule `ackHole` follows.
  */
 function contestDigest(t: SharedTriage): string {
-  const said = [t.importance.effective, ...(t.importance.concurrent ?? [])]
-    .map((r) => `${r.value}\0${r.actor.principal}`)
-    .sort();
+  const said = sidesOf(t).map((r) => `${r.value}\0${r.actor.principal}`).sort();
   return createHash("sha256").update([`${t.target.kind}:${t.target.id}`, ...said].join("\n")).digest("hex").slice(0, 12);
 }
 
+/**
+ * Every side of the disagreement, as the fold computed it.
+ *
+ * `contestedWith` and not `effective + concurrent`: `concurrent` holds only the human
+ * receipts the baseline won over, so an agent's losing claim — and, in a human/agent
+ * contest, the human's — was missing. The question then said two parties disagreed and
+ * listed one, which is worse than not asking.
+ */
+const sidesOf = (t: SharedTriage) =>
+  t.importance.contestedWith ?? [t.importance.effective, ...(t.importance.concurrent ?? [])];
+
 function contestQuestion(t: SharedTriage): string {
-  const line = (r: { value: unknown; actor: { principal: string }; reason?: string; at: string }) =>
-    `  - **${r.value}** — ${r.actor.principal}${r.reason ? `: ${r.reason}` : ""} (${r.at.slice(0, 10)})`;
-  const all = [t.importance.effective, ...(t.importance.concurrent ?? [])];
+  const line = (r: { value: unknown; actor: { principal: string }; reason?: string; at: string; source?: string }) =>
+    `  - **${r.value}** — ${r.actor.principal}${r.source === "agent" ? " (agent)" : ""}`
+    + `${r.reason ? `: ${r.reason}` : ""} (${r.at.slice(0, 10)})`;
+  const all = sidesOf(t);
   return [
     `[evidence ${contestDigest(t)}]`,
     "",

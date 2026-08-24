@@ -553,3 +553,30 @@ test("but an importance DOES reinstate it — a clear is not a permanent ban", (
   ])!;
   assert.equal(t.importance.effective.value, "important");
 });
+
+test("a contest names EVERY side, not just the one that happens to be effective", () => {
+  // The queue item is what a person acts on, so a question that says two parties
+  // disagree and lists one is worse than not asking. `effective + concurrent` could not
+  // supply both: `concurrent` holds only the human receipts the baseline won over, and
+  // an agent's losing claim was computed for the contest check and then dropped.
+  const agentAgent = one([
+    say({ id: "0000000001-aa", by: opus, writer: "w_o", importance: "low", reason: "guarded" }),
+    say({ id: "0000000002-bb", by: bensAgent, writer: "w_b", importance: "business-critical", reason: "money" }),
+  ])!;
+  assert.equal(agentAgent.importance.contested, true);
+  assert.deepEqual(
+    (agentAgent.importance.contestedWith ?? []).map((r) => r.value).sort(),
+    ["business-critical", "low"],
+    "two agents disagreeing: both claims are on the record",
+  );
+
+  const humanAgent = one([
+    say({ id: "0000000001-aa", by: izzie, writer: "w_i", importance: "low" }),
+    say({ id: "0000000002-bb", by: bensAgent, writer: "w_b", importance: "business-critical" }),
+  ])!;
+  assert.deepEqual(
+    (humanAgent.importance.contestedWith ?? []).map((r) => r.actor.principal).sort(),
+    ["ben@x.com", "izzie@x.com"],
+    "and a human/agent contest names the person as well as the machine",
+  );
+});
