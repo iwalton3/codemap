@@ -27,6 +27,8 @@ import { projectionFor } from "./shared-projections.js";
 import { foldCount } from "./materialize.js";
 import { docScope, foldDocs } from "./shared-docs.js";
 import { triageScope, foldTriage, isTombstone, ABSENT_FIELD } from "./shared-triage.js";
+import { bugScope, foldBugs } from "./shared-bugs.js";
+import { listBugs } from "./ops/bugs.js";
 import { sharedDocs, sharedFindings, sharedNotes, sharedWalkthroughs, sharedTriage } from "./ops-shared.js";
 import { universeKey } from "./sidecar-config.js";
 import { db } from "./db.js";
@@ -258,6 +260,49 @@ interface OwnedRow {
  *   - compare the whole stored representation, or a mutation to `citations`,
  *     `removed`, `ord` or `author` passes.
  */
+/**
+ * The same rule, on the `bugs` table.
+ *
+ * A separate function rather than a branch inside `ownership`, because the failure it
+ * catches is different in one way that matters: a bug's whole content is ONE JSON
+ * column, so a local mutation is a single `UPDATE` that a shape check over columns
+ * would not see. Compare the stored body against what the log folds to, and nothing
+ * that edits a fold-owned bug can pass.
+ */
+export async function bugOwnership(m: Member): Promise<void> {
+  const universe = universeKey(m.repo);
+  const scope = bugScope(universe);
+  const folded = foldBugs(await readScope(m.sidecar, scope));
+  const d = db(m.repo);
+
+  const rows = d.prepare("SELECT id, body FROM bugs WHERE source_scope = ?").all(scope) as unknown as
+    { id: string; body: string }[];
+  const expected = new Map([...folded.values()].map((b) => [b.id, stable(b)]));
+
+  for (const r of rows) {
+    const want = expected.get(r.id);
+    assert.ok(
+      want !== undefined,
+      `OWNERSHIP violated: ${m.actor.principal} holds bug ${r.id} under ${scope}, and the log does not `
+      + `say it exists. A fold-owned row is written only by the fold.`,
+    );
+    assert.equal(
+      stable(JSON.parse(r.body)), want,
+      `OWNERSHIP violated: ${m.actor.principal}'s stored bug ${r.id} is not what the log folds to. `
+      + `Nothing about a local mutation moves the scope fingerprint, so the cache would keep serving `
+      + `this indefinitely.`,
+    );
+  }
+  // Iterate the FOLD too, or a DELETE is invisible — the lesson `ownership` records.
+  for (const id of expected.keys()) {
+    assert.ok(
+      rows.some((r) => r.id === id),
+      `OWNERSHIP violated: ${m.actor.principal} is missing fold-owned bug ${id}. Rows the fold owns `
+      + `are replaced whole; one that is gone was taken by something else.`,
+    );
+  }
+}
+
 export async function ownership(m: Member): Promise<void> {
   const universe = universeKey(m.repo);
   const scope = docScope(universe);
@@ -513,6 +558,11 @@ export async function readsDoNotFold(t: Team): Promise<void> {
     // a fold that never materializes — the shared read would then be the only thing
     // folding, and it would fold on every call.
     if (scopes.includes(triageScope(universe))) await sharedTriage(m.repo);
+    // And bugs, whose ordinary read is `listBugs` — a LOCAL op that happens to fold a
+    // shared scope. That shape is the one at risk: nothing about it looks shared, so a
+    // missing materialization would leave the read path folding on every call while
+    // every shared surface still looked correct.
+    if (scopes.includes(bugScope(universe))) await listBugs(m.repo);
     // All FOUR public read surfaces. Checking two of them left notes and walkthroughs
     // free to fold on every read with the property still green — and a scope kind
     // missing from materialization is exactly the defect this is watching for.
@@ -553,6 +603,7 @@ export async function checkAlways(t: Team, ledger: Ledger, seed = 1): Promise<vo
   for (const m of t.all) {
     await determinism(m, seed);
     await ownership(m);
+    await bugOwnership(m);
   }
 }
 
