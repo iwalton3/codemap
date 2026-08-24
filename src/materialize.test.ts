@@ -187,6 +187,44 @@ test("a doc's authors Map and version order survive the round trip", async () =>
   } finally { [logRoot, root].forEach((r) => rmSync(r, { recursive: true, force: true })); }
 });
 
+/**
+ * Bugs, whose round trip has a trap docs' does not: adoption UPDATEs a row that is
+ * already there, so a bug published from this machine keeps the rowid it had as a local
+ * row. Insertion order is then PUBLICATION order rather than fold order, and a cache
+ * hit would serve a different Map order than a miss — which is exactly the equivalence
+ * this file exists to hold. `ord` is what makes it work; this is what would catch its
+ * removal.
+ */
+test("a bug's fold order survives the round trip, adopted rows included", async () => {
+  const logRoot = tmp("blog"), root = tmp("brepo");
+  try {
+    const { fileBug, foldBugs, bugScope, commentOnBug, trackBug } = await import("./shared-bugs.js");
+    const { bugsProjection } = await import("./shared-projections.js");
+    const { writeLocalBug } = await import("./store.js");
+    const { testBug } = await import("./test-events.js");
+    const U = "acme/api";
+
+    // `bug_second` exists locally FIRST, so its row predates `bug_first`'s — the
+    // publication order the fold order must not inherit.
+    await writeLocalBug(root, testBug({ id: "bug_second", title: "second", text: "d" }));
+    await fileBug(logRoot, U, izzie, { id: "bug_first", title: "first", text: "d", anchors: [] });
+    await fileBug(logRoot, U, dana, { id: "bug_second", title: "second", text: "d", anchors: [] });
+    await commentOnBug(logRoot, U, dana, "bug_first", "looking at it");
+    await trackBug(logRoot, U, izzie, "bug_first", { key: "ACME-1" });
+
+    const scope = bugScope(U);
+    const direct = foldBugs(await readScope(logRoot, scope));
+    const cached = await readCached(root, logRoot, scope, ID, foldBugs, bugsProjection);
+    same(cached, direct, "a miss must fold and return the same answer");
+
+    let folds = 0;
+    const again = await readCached(root, logRoot, scope, ID, (e) => { folds++; return foldBugs(e); }, bugsProjection);
+    assert.equal(folds, 0, "and the second read is a hit");
+    same(again, direct, "…served from rows, in the FOLD's order, not the order the rows were written");
+    assert.deepEqual([...again.keys()], ["bug_first", "bug_second"]);
+  } finally { [logRoot, root].forEach((r) => rmSync(r, { recursive: true, force: true })); }
+});
+
 test("a folded doc lands as a canonical row, and its citations are answerable", async () => {
   // This used to assert a separate `shared_doc_citation` table was populated. That
   // table existed to bridge the duality — a teammate's doc living somewhere other
