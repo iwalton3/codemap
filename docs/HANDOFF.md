@@ -81,12 +81,16 @@ the short version, because two of them changed the design:
    `codemap sidecar heal` is the repair. See `docs/fork-repair.md`, whose header lists
    the four things that changed between design and implementation.
 
-4. **Docs unification** — `docs/plan-docs-unification.md`. Unblocked: its prerequisite
-   (materialize-at-sync) landed in step 2.
-5. Write-through, bridge deletion, walkthroughs onto the checked path. **`walkthrough/`
-   scopes have no projection and fold on every read** — the last place an ordinary
-   query parses NDJSON, and the remaining violation of "the log is not read during
-   normal operation".
+4. ~~**Docs unification**~~ **DONE.** A teammate's doc is a `node_versions` row with an
+   `origin`; the bridges are deleted; `docsVerdict` is the one place the "may this
+   scope decide" question is answered. `docs/plan-docs-unification.md` § "What the
+   build changed" lists the five things the implementation settled differently.
+5. ~~Write-through, bridge deletion, walkthroughs onto the checked path.~~ **DONE.**
+   Walkthroughs have a projection, so **no ordinary query path folds the log any
+   more** — what remains are write and backfill paths, where reading it is the job.
+
+**The sequence is finished.** What is left is in "What is open" below, plus the two
+questions the architecture doc still leaves open.
 
 ### Verified defects, not yet fixed
 

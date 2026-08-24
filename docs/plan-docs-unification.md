@@ -1,6 +1,11 @@
 # Plan: unify shared docs into `node_versions`
 
-**Status: reviewed twice, NOT started.** Written 2026-08-23, revised the same day
+**Status: DONE** (2026-08-23; `bf92cfb`, `362ecf7`, `61d6915`, `7d27352`, `bc18995`,
+`2a21c3e`). Kept because the arguments are still the reasons the code looks like this,
+and because three of its steps changed under review — see "What the build changed"
+at the end.
+
+Originally: **reviewed twice, NOT started.** Written 2026-08-23, revised the same day
 after a design pass closed five defects the first version only claimed to close, and
 an adversarial round found five more. `docs/sidecar-architecture.md` is the
 architecture this implements and wins wherever the two differ.
@@ -209,3 +214,34 @@ badness-first; flipping it is one line in the same tiebreak and wants UI evidenc
 The pre-existing local behaviour that an analyzer re-emit deletes a human fork sharing
 its node id. Scoped to local rows by step 2, otherwise unchanged, and flagged here so
 it is not later mistaken for a regression.
+
+## What the build changed
+
+Five things the implementation settled differently from the plan above, each found by
+attacking the code rather than by writing it:
+
+1. **Adoption needs an exact predicate**, not a `version_id` match. Matching on the id
+   alone adopts a row edited since publication (unrecoverable: local rows are the only
+   non-regenerable thing in the store), a row under another node id, and a row owned by
+   another scope — which then makes two scopes steal it from each other on every fold.
+   Local, same node, same payload; anything else is not the same version.
+2. **The show/decide split has to live inside `coverageFor`.** Coverage STATE is
+   computed there, so a blocked scope's citation has already made its anchor `cited`
+   before any caller could filter it, and no downstream filtering turns that back into
+   a gap. `nodes` for display, `result` from the deciding subset, one place.
+3. **`coverageFor` and every ops-layer node read must FOLD.** `docsVerdict` is what
+   materializes the docs scope; a surface that never called it simply did not see
+   teammate docs. That was most of them.
+4. **The projection must preserve the fold's OUTER order.** `ORDER BY node_id`
+   alphabetises a Map that `foldDocs` returns in first-event order, so a cache miss and
+   a cache hit returned different values for one scope. The pre-existing equivalence
+   test could not catch it — it used a single node.
+5. **`MATERIALIZER_VERSION` had to move twice**, once for the narrowing and once for
+   the projection reshape. A cache written under the old number points at tables the
+   new reader does not read, so the fingerprint matches and the fold never happens.
+
+And one product decision made rather than inherited: `context` no longer ranks a
+teammate's doc below every local one. That rank existed because the doc was NOT in this
+store, so "go and read it" was the only honest instruction. It is a `node_versions` row
+now, so how much to trust it is the same question as for any other doc — confirmed with
+the owner. Whose it is is carried by `sharedDocs`.
