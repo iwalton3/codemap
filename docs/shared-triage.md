@@ -293,9 +293,55 @@ mark the `meta` blob, so re-opening never re-imports. `schema-eras.ts` seeds a r
 triage blob in every era and `db-eras.test.ts` requires it to survive a read
 (`src/db-eras.test.ts:89`), so the ladder has five fixtures watching it.
 
-## Implementation checklist
+## What the build settled
 
-Register triage with `projectionFor`, and extend CONVERGENCE, OWNERSHIP and COMPLETENESS
-to cover it — every one of the six properties stays green over an entity kind that is
-simply absent. Give `setTriage`/`clearTriage` `verified(...)` receipts. Replace the WALL
-in `oracle-handoff.test.ts` with the real assertion.
+**BUILT, 2026-08-24.** `src/shared-triage.ts` is the fold, `triageProjection` writes it
+into the canonical table, and `oracle-contested-triage.test.ts` drives the whole arc
+across two real clones. The WALL in `oracle-handoff.test.ts` is gone: triage travels,
+and that test now asserts izzie inherits the stakes ben's agent set, with the receipts.
+
+Five things the build had to decide that the design above does not state, or states
+ambiguously. Each is in the code with the reasoning; they are collected here because a
+reader comparing the two would otherwise have to diff them.
+
+1. **The local-vs-shared read merge, which is not the fold's merge.** `readTriage`
+   resolves PER FIELD and the fold-owned row WINS; a local row fills only a field the
+   scope never mentions. The log is authoritative, and this clone's own published marks
+   are events the fold has already weighed — including a teammate lowering something you
+   raised, having seen it. A local row outranking that would silently reinstate the value
+   they superseded, on your machine only. What is left is the honest case: a row from
+   before there was a sidecar, and `publishLocalTriage` is how it stops being a gap.
+
+2. **With a sidecar, a write is an event and NOT also a local row.** "Write locally and
+   succeed" is satisfied by the append — the sidecar is a local clone, and nothing
+   contacts a remote until `sync`. Keeping both would make a second copy that no
+   supersession can reach. The local row remains the fallback when there is no sidecar,
+   or when publishing throws: a mark must never be lost because a shared repo is missing.
+
+3. **`setTriageBatch` publishes in ONE append.** `emitEvent` re-reads the scope to find
+   its causal heads, so 531 marks on a real pull request is quadratic. `emitEvents`
+   (eventlog) chains `writerPrev` across a batch and records the same `after` for all of
+   them, which is the honest description: they were written knowing the same thing.
+
+4. **The escalation is entered by STATE, which is the opposite of `ackHole`** and safe
+   for the opposite reason: a contest takes two people, on one symbol, disagreeing across
+   one line, so it is rare by construction — where a `HASH_SCHEME` bump made 985 docs
+   unplaceable at once. `queueContestedTriage` runs on every `sync`, dedupes on a digest
+   of the EVIDENCE (never the rendered prose), and revises rather than re-asking.
+
+5. **Two modules exist only to keep the import graph acyclic**, and both are noted where
+   they live. `triage-rules.ts` is the pure ratchet, so the fold can replay through the
+   same rule a local write obeys without importing `triage.ts`. `triage-publish.ts` is
+   the publish seam, because `triage.ts` reaching `ops-shared.ts` closes a cycle by four
+   routes — `src/import-cycles.test.ts` found the second one.
+
+The `detail` column on `triage` is what makes the projection round trip exactly: the
+other columns carry the EFFECTIVE receipt so every ordinary reader works unchanged, and
+`detail` carries that field's whole `Axis`.
+
+**What is NOT built:** nothing on the checklist. CONVERGENCE covers triage for free
+(it is generic over `projectionFor`); OWNERSHIP and COMPLETENESS were extended by hand.
+One honest limit is recorded in `oracle-handoff.test.ts`: a local write that flattens
+fold-owned rows is repaired by the re-fold the same operation triggers, so the ARC cannot
+observe it — the permanent case, where no event moves the fingerprint and the cache stays
+a hit, is `triage-store.test.ts`, and both mutations of the seam fail it.

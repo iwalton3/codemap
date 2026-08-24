@@ -1,8 +1,45 @@
 # Handoff — `worktree-shared-review-hashscheme`
 
-Green (779 unit + 74 e2e; `tsc -p .` and `tsc -p web` clean; the vdx template lint is clean).
-**Uncommitted** — everything below is in the working tree. Last updated 2026-08-24, at
-the end of the session that finished workflows 3–6 and the old-store fixtures.
+Green (808 unit + 81 e2e, nothing skipped; `tsc -p .` and `tsc -p web` clean; the vdx
+template lint is clean). Everything through the triage storage is COMMITTED; the shared
+triage fold and the `[signed ?]` web fix are in the working tree. Last updated
+2026-08-24, at the end of the session that built the shared triage fold.
+
+## What the 2026-08-24 (afternoon) session did
+
+**SHARED TRIAGE IS BUILT.** That was the last item on the implementation sequence, so
+every entity kind the design names now travels. `docs/shared-triage.md` carries a "what
+the build settled" section listing the five things the build had to decide that the
+design did not state — read that rather than diffing the design against the code.
+
+- `src/shared-triage.ts` is the fold: per-field supersession, concurrent divergence
+  taking the higher value, and eligible agent claims REPLAYED through the same `ratchet`
+  a local write obeys. Five headline rules mutation-checked.
+- `triageProjection` writes it into the ONE canonical `triage` table. The new `detail`
+  column is what makes the round trip exact; the other columns hold the effective
+  receipt, so every existing reader works unchanged.
+- `queueContestedTriage` files the one disagreement worth interrupting for — two people
+  across the `business-critical` line — into the same review queue `ackHole` uses. It
+  runs on every `sync`, dedupes on a digest of the evidence, and is idempotent.
+- **`oracle-contested-triage.test.ts` is workflow 7**: two clones, `whileApart`, the six
+  properties after every step. Four mutations of the merge rule fail it.
+- The WALL in `oracle-handoff.test.ts` is GONE — triage travels, and that step asserts
+  izzie inherits the stakes ben's agent set, with the receipts.
+
+**Three modules moved to keep the import graph acyclic**, and `src/import-cycles.test.ts`
+is what found each one. `triage-rules.ts` is the pure ratchet (so the fold can replay
+through it without importing `triage.ts`); `triage-publish.ts` is the publish seam (so
+`triage.ts` never reaches `ops-shared.ts`, which closes a cycle by four routes);
+`sidecarIdentity` moved into `sidecar-config.ts` so both halves derive the SAME cache key
+rather than two same-shaped ones.
+
+**And a web fix the owner found by using it.** `[signed ?]` — a sign-off whose witness
+was hashed by another build — rendered as an ordinary green tick, and clicking it CLEARED
+the mark while its own tooltip promised a re-sign. It is warning-coloured now, the click
+re-signs at the live hash, and the walkthrough's advance stops on it instead of walking
+past. Guarded by three new static tests in `review-via-render.test.ts`, all mutation-
+checked. Still open, same class: the severity chip and the graph pages' trust dots read
+an unverifiable mark as complete.
 
 ## What the 2026-08-24 session did
 
@@ -162,11 +199,11 @@ go through the local seam and are table-driven-tested against a store that alrea
 a teammate's row; the ratchet still judges against the merged view. Mutation-checked in
 both commits.
 
-**What is left of the build:** the event kinds and the fold (`shared-triage.ts`), the
-projection and its `projectionFor` entry, the ops (`shareTriage` / `sharedTriage` and
-write-through), the review-queue escalation for a business-critical crossing, the oracle
-wiring (OWNERSHIP and COMPLETENESS know only about docs), and the WALL in
-`oracle-handoff.test.ts`.
+**The build is DONE** — fold, projection, ops, write-through, the review-queue
+escalation, the oracle wiring (OWNERSHIP and COMPLETENESS were extended by hand;
+CONVERGENCE is generic over `projectionFor` and got it for free), and the WALL. See "What
+the 2026-08-24 (afternoon) session did" above, and the same-named section in
+`docs/shared-triage.md` for what the build decided that the design did not state.
 
 **One measured trap for whoever writes the fold:** SQLite does not conflict NULLs, so the
 table uses PARTIAL unique indexes. A plain `UNIQUE(target_kind, target_id, field,
@@ -278,8 +315,8 @@ Normative design: `docs/sidecar-architecture.md`. Mechanisms: `docs/fork-repair.
 read those rather than diffing the design against the code.
 
 **Not shared:** bugs (no design), edges (so `process` and `step` docs are refused, which
-makes the flow-walker single-player), witness marks — and **triage, which now has a
-design and no build**: `docs/shared-triage.md`.
+makes the flow-walker single-player), and witness marks. **Triage now IS shared** —
+`docs/shared-triage.md`, built 2026-08-24.
 
 ## Why the current suite could not see it
 
