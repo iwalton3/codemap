@@ -271,16 +271,22 @@ the contest design is tuned against.
 
 ## Where the code deviates today
 
-- ~~**Materialization is per-query, not per-sync.**~~ **FIXED** in `faf0367`:
-  `sharedSync` folds every scope of its universe after the transport. `readCached`
-  keeps folding on a miss as a self-heal, which is the correctness fallback rather
-  than the mechanism. One real exception remains: **`walkthrough/` scopes have no
-  projection at all** and fold on every read. That is step 5's item and the last place
-  an ordinary query parses NDJSON.
-- **Docs, findings and notes live in parallel `shared_*` tables**, which is the
-  duality the ownership rule exists to end.
+- ~~**Materialization is per-query, not per-sync.**~~ **FIXED** (`faf0367`, `2a21c3e`).
+  `sharedSync` folds every scope of its universe after the transport, and all four
+  scope kinds have a projection. `readCached` still folds on a miss, as the self-heal
+  rather than the mechanism. **No ordinary query path parses NDJSON any more** — what
+  remains are write and backfill paths, where reading the log is the job.
+- ~~**Docs, findings and notes live in parallel `shared_*` tables.**~~ **FIXED for
+  docs** (`7d27352`): a teammate's doc is a `node_versions` row with an `origin`, and
+  the `shared_doc*` tables are gone. Findings and notes still have their own tables —
+  see the open question below, which is about findings specifically.
 - **Bugs and triage are still local**, though the original table put them in the
-  sidecar.
+  sidecar. Nothing shares them, and nothing is designed to yet.
+- **Edges never sync**, so `process` and `step` docs are refused at publish and at the
+  fold. A flow cannot be shared. Deliberate (`bf92cfb`): syncing one without its edges
+  renders an empty flow under a teammate's name, which is worse than absence.
+- **Witness marks (`viewed`, `signed`) never sync**, by decision rather than omission —
+  a sign-off is a statement about what *you* read.
 
 ## Questions this document leaves open
 
