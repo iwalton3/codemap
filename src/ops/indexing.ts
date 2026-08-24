@@ -8,7 +8,7 @@ import { GRAMMAR_VERSIONS } from "../grammar-versions.js";
 import { remapOverloadIds, applyRemap } from "../migrate-overloads.js";
 import { refreshAnalyzers } from "../analyzers/run.js";
 import { applyIndexUpdate } from "../sync.js";
-import { anchorBrief } from "./shared.js";
+import { anchorBrief, loadNodesShared} from "./shared.js";
 
 /**
  * Full re-baseline: re-index the whole repo at the current HEAD and replace the
@@ -218,7 +218,7 @@ async function maybeReindexOnBranchChange(root: string) {
 export async function checkStale(root: string) {
   // A branch switch means "different code now" — re-baseline before checking.
   const rebaseline = await maybeReindexOnBranchChange(root);
-  const [store, nodes] = await Promise.all([readAnchorStore(root), loadNodes(root)]);
+  const [store, nodes] = await Promise.all([readAnchorStore(root), loadNodesShared(root)]);
   let commit: string | null = null;
   try {
     commit = (await readState(root)).lastVerifiedCommit;

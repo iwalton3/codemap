@@ -9,7 +9,7 @@ import { parseAgentLines, ingestAgentReview } from "../pr-ingest.js";
 import { planPrPush, executePrPush, pullViewedFromGitHub, fetchReviewThreads, planResolveSync, pushResolvedToGitHub, pullResolvedFromGitHub, ghViewer, type PushPlan, type ReviewEvent, type ResolveSyncPlan } from "../pr-push.js";
 import { bulkPullViewed } from "../pr-bulk.js";
 import { markReviewedBatch, unmarkReviewed, unmarkCovered, type Attestation } from "../reviews.js";
-import { snapshotHashes } from "./shared.js";
+import { snapshotHashes, loadNodesShared} from "./shared.js";
 import { annotate, resolveAnnotation, reviewQueue } from "./annotations.js";
 import { document } from "./docs.js";
 import { anchorMark } from "./triage.js";
@@ -299,7 +299,7 @@ export async function prTriageDerive(root: string, input: string) {
  * different chapter, or somebody's hand-written node, and `prPromote` refuses.
  */
 async function nodeAtPromotionId(root: string, id: string, promotedFrom: string | undefined) {
-  const node = (await loadNodes(root)).find((n) => n.id === id);
+  const node = (await loadNodesShared(root)).find((n) => n.id === id);
   if (!node) return undefined;
   return { id: node.id, title: node.title, type: node.type, ours: promotionOwns(node, promotedFrom) };
 }

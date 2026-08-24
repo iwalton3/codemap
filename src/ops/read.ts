@@ -7,7 +7,7 @@ import { readAnchorStore, loadNodes, readGraph, readBugs, readAnnotations, readR
 import { resolveAnchorRefs } from "../refs.js";
 import { reviewStatus, reviewStatesFor, anchorReviewMap, deriveCodeReview, type ReviewPair } from "../reviews.js";
 import { triageStatus } from "../triage.js";
-import { langFor, anchorBrief, type Trust, trustOf, coverageFor } from "./shared.js";
+import { langFor, anchorBrief, type Trust, trustOf, coverageFor, loadNodesShared} from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Reading the graph & code
@@ -109,7 +109,7 @@ export async function outline(root: string, prefix = "", opts: { compact?: boole
 }
 export async function search(root: string, query: string, limit = 30) {
   const q = query.toLowerCase();
-  const [store, nodes] = await Promise.all([readAnchorStore(root), loadNodes(root)]);
+  const [store, nodes] = await Promise.all([readAnchorStore(root), loadNodesShared(root)]);
   const anchors = store.anchors
     .filter((a) => a.symbolPath.join(".").toLowerCase().includes(q) || a.file.toLowerCase().includes(q))
     .slice(0, limit)
@@ -269,7 +269,7 @@ export async function getAnchor(root: string, id: string) {
   // that fold was about to write.
   const anchorVerdict = await import("../ops-shared.js").then((m) => m.docsVerdict(root)).catch(() => null);
   const [store, nodes, bugStore, annStore] = await Promise.all([
-    readAnchorStore(root), loadNodes(root), readBugs(root), readAnnotations(root),
+    readAnchorStore(root), loadNodesShared(root), readBugs(root), readAnnotations(root),
   ]);
   let anchor = store.anchors.find((a) => a.id === id);
   // Three places to look, and WHICH one answered is part of the answer.
@@ -369,7 +369,7 @@ export async function getAnchor(root: string, id: string) {
  * rollup; `files` lists the distinct files touched (for the file modal).
  */
 export async function nodeReview(root: string, id: string) {
-  const [nodes, store, annStore] = await Promise.all([loadNodes(root), readAnchorStore(root), readAnnotations(root)]);
+  const [nodes, store, annStore] = await Promise.all([loadNodesShared(root), readAnchorStore(root), readAnnotations(root)]);
   const node = nodes.find((n) => n.id === id);
   if (!node) return { error: `no node "${id}"` };
   const byId = new Map(store.anchors.map((a) => [a.id, a]));

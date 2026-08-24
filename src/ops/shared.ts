@@ -87,6 +87,22 @@ export function trustOf(status: string | undefined, review?: { logical: ReviewLi
 
 /** Effective coverage state per anchor, from citation + stored rules. */
 /**
+ * Nodes, with the shared docs folded in first.
+ *
+ * `docsVerdict` is what materializes the docs scope, so a surface that calls
+ * `loadNodes` straight reads whatever the last fold happened to leave — which on a
+ * fresh store or after somebody else's sync means no teammate docs at all. Every
+ * ops-layer read of nodes goes through here for that reason.
+ *
+ * DISPLAY semantics: nothing is excluded. A caller that must not be decided for by a
+ * blocked scope wants `coverageFor`, which does the deciding split.
+ */
+export async function loadNodesShared(root: string): Promise<LogicalNode[]> {
+  await import("../ops-shared.js").then((m) => m.docsVerdict(root)).catch(() => null);
+  return loadNodes(root);
+}
+
+/**
  * Coverage, with the show/decide split made in ONE place.
  *
  * `nodes` is everything, for DISPLAY. `result` is computed from the deciding subset

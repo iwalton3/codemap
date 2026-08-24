@@ -19,6 +19,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { db } from "./db.js";
 import { CorruptProjection, type Projection } from "./materialize.js";
+import type { SharedWalkthrough } from "./shared-walkthrough.js";
 import { needsHumanAck, type SharedFinding } from "./shared-findings.js";
 import type { SharedDoc, UnmatchedAcceptance } from "./shared-docs.js";
 import type { SharedNote } from "./shared-notes.js";
@@ -249,6 +250,43 @@ export const notesProjection: Projection<Map<string, SharedNote>> = {
       { id: string; body: string }[]) {
       try { out.set(r.id, JSON.parse(r.body) as SharedNote); }
       catch { throw new CorruptProjection(`shared_note ${scope}/${r.id} is unreadable`); }
+    }
+    return out;
+  },
+};
+
+/**
+ * Shared walkthroughs, keyed by scope (`walkthrough/<universe>/pr-<n>`).
+ *
+ * The last scope kind that folded on every read. `readWalkthroughs` went straight to
+ * `readScope`, so opening a pull request parsed every shard in its walkthrough scope
+ * — which is the one thing "the log is pull/push, never read on an ordinary query" is
+ * about. It is a cache like the others now, filled by sync and by write-through.
+ *
+ * One row per author, because that is what the fold produces: a later publication by
+ * the same person REPLACES their earlier one, and two people's walkthroughs of one
+ * pull request are two answers rather than a conflict.
+ */
+export const walkthroughsProjection: Projection<SharedWalkthrough[]> = {
+  write(d: DatabaseSync, scope: string, value: SharedWalkthrough[]): void {
+    d.prepare("DELETE FROM shared_walkthrough WHERE scope = ?").run(scope);
+    const ins = d.prepare(
+      "INSERT INTO shared_walkthrough(scope,author,event_id,at,head,body) VALUES(?,?,?,?,?,?)",
+    );
+    for (const w of value) {
+      ins.run(scope, w.actor.principal, w.eventId, w.at, w.walkthrough.head, JSON.stringify(w));
+    }
+  },
+
+  read(d: DatabaseSync, scope: string): SharedWalkthrough[] {
+    const out: SharedWalkthrough[] = [];
+    // `rowid`, so the fold's own order survives the round trip — `foldWalkthroughs`
+    // returns a Map's values in first-seen order and the projection's contract is
+    // `read(write(x)) === x`.
+    for (const r of d.prepare("SELECT body, event_id FROM shared_walkthrough WHERE scope = ? ORDER BY rowid")
+      .all(scope) as unknown as { body: string; event_id: string }[]) {
+      try { out.push(JSON.parse(r.body) as SharedWalkthrough); }
+      catch { throw new CorruptProjection(`shared_walkthrough ${scope}/${r.event_id} is unreadable`); }
     }
     return out;
   },

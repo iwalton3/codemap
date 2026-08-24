@@ -16,7 +16,7 @@ import { evalVersion } from "./doc-version.js";
 import { readCached, ensureMaterialized, type Projection } from "./materialize.js";
 import type { ScopeStatus, ScopeDiagnostic, LogEvent } from "./eventlog.js";
 import { scopesOnDisk, readScopeChecked, writerFor, rotateWriter, acknowledgeScope } from "./eventlog.js";
-import { findingsProjection, docsProjection, notesProjection, docsByNode } from "./shared-projections.js";
+import { findingsProjection, docsProjection, notesProjection, walkthroughsProjection, docsByNode } from "./shared-projections.js";
 import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
 import { resolveSidecar, scopeFor, type SidecarConfig } from "./sidecar-config.js";
 import { originSlug, headCommit, currentBranch } from "./git.js";
@@ -29,7 +29,7 @@ import {
   foldFindings, findingScope,
   type SharedFinding, type Verdict, type Ask, type FindingState, type NewFinding,
 } from "./shared-findings.js";
-import { publishWalkthrough, readWalkthroughs, currentWalkthrough, staleWalkthroughs } from "./shared-walkthrough.js";
+import { publishWalkthrough, currentWalkthrough, staleWalkthroughs, foldWalkthroughs, walkthroughScope } from "./shared-walkthrough.js";
 import {
   createNote, answerNote, resolveNote, allNotes, foldNotes, noteScope, bucketFor,
   type NewNote,
@@ -72,6 +72,7 @@ function projectionFor(scope: string): { fold: (e: LogEvent[]) => any; proj: Pro
   if (scope.startsWith("findings/")) return { fold: foldFindings, proj: findingsProjection };
   if (scope.startsWith("docs/")) return { fold: foldDocs, proj: docsProjection };
   if (scope.startsWith("notes/")) return { fold: foldNotes, proj: notesProjection };
+  if (scope.startsWith("walkthrough/")) return { fold: foldWalkthroughs, proj: walkthroughsProjection };
   return null;
 }
 
@@ -913,6 +914,11 @@ export async function shareDoc(root: string, v: NewDocVersion) {
     createdCommit: v.createdCommit ?? headCommit(root),
     createdBranch: v.createdBranch ?? currentBranch(root),
   });
+  // WRITE-THROUGH: append, then materialize this scope, so the row is in SQLite
+  // before this returns and the caller never observes the log. Without it a shared
+  // write is invisible until something else happens to fold — which is the whole
+  // difference between "the store" and "a cache somebody refreshes".
+  await docsVerdict(root);
   return { ok: true, nodeId: v.nodeId, versionId, note: "recorded locally — run `codemap sync` to send it" };
 }
 
@@ -1069,18 +1075,32 @@ export async function shareWalkthrough(root: string, w: PrWalkthrough) {
   if ("error" in b) return b;
   await ensureSidecar(b.cfg.path, b.actor);
   await publishWalkthrough(b.cfg.path, b.actor, { ...w, pr: w.pr }, prKey(b.cfg, w.pr));
+  // Write-through, same as a shared doc: append, then materialize that scope, so the
+  // walkthrough is readable from SQLite the moment this returns.
+  await ensureMaterialized(root, b.cfg.path, walkthroughScope(prKey(b.cfg, w.pr)),
+    sidecarIdentity(b.cfg), foldWalkthroughs, walkthroughsProjection).catch(() => null);
   return { ok: true, pr: w.pr, note: "recorded locally — run `codemap sync` to send it" };
 }
 
 export async function sharedWalkthroughs(root: string, pr: number | string, head?: string) {
   const cfg = resolveSidecar(root);
   if (!cfg) return { error: NO_SIDECAR };
-  const all = await readWalkthroughs(cfg.path, prKey(cfg, pr));
+  // Through the CACHE, not `readWalkthroughs`. This was the last read that folded the
+  // log on every call, which is exactly what "the log is pull/push, never read on an
+  // ordinary query" rules out — opening a pull request parsed every shard in its
+  // walkthrough scope.
+  const { value: all, ...status } = await readCached(
+    root, cfg.path, walkthroughScope(prKey(cfg, pr)), sidecarIdentity(cfg),
+    foldWalkthroughs, walkthroughsProjection,
+  );
   const cur = head ? currentWalkthrough(all, head) : undefined;
   return {
     universe: cfg.universe,
     pr,
     count: all.length,
+    // A blocked scope still SHOWS its walkthroughs — this suppresses nothing, so it
+    // reports the verdict rather than emptying the list.
+    ...(status.status !== "complete" ? { scope: status } : {}),
     current: cur ? { by: cur.actor.principal, model: cur.actor.via?.model, at: cur.at, walkthrough: cur.walkthrough } : undefined,
     // Named rather than hidden: a walkthrough about another commit is not wrong,
     // it is about something else, and saying so is the point of the head stamp.

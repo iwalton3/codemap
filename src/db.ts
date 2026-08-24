@@ -163,6 +163,13 @@ function migrate(d: DatabaseSync): void {
       scope TEXT NOT NULL, node_id TEXT NOT NULL, body TEXT NOT NULL,
       PRIMARY KEY (scope, node_id)
     );
+    -- One row per author per pull request: a later publication by the same person
+    -- replaces their earlier one, and two people's walkthroughs are two answers.
+    CREATE TABLE IF NOT EXISTS shared_walkthrough (
+      scope TEXT NOT NULL, author TEXT NOT NULL, event_id TEXT NOT NULL,
+      at TEXT NOT NULL, head TEXT NOT NULL, body TEXT NOT NULL,
+      PRIMARY KEY (scope, author)
+    );
     CREATE TABLE IF NOT EXISTS shared_finding (
       scope TEXT NOT NULL, id TEXT NOT NULL,
       target_kind TEXT NOT NULL, target_id TEXT NOT NULL,

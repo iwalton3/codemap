@@ -456,3 +456,36 @@ test("the docs projection preserves the fold's OUTER order, not just each node's
     assert.deepEqual([...hit.keys()], [...miss.keys()], "and the cache agrees with it");
   } finally { [logRoot, root].forEach((r) => rmSync(r, { recursive: true, force: true })); }
 });
+
+test("walkthroughs round-trip through their projection, and are read from the cache", async () => {
+  // The last read that folded the log on every call. Opening a pull request parsed
+  // every shard in its walkthrough scope, which is exactly what "the log is pull/push,
+  // never read on an ordinary query" rules out.
+  const logRoot = tmp("wlog"), root = tmp("wrepo");
+  try {
+    const { publishWalkthrough, foldWalkthroughs, walkthroughScope } = await import("./shared-walkthrough.js");
+    const { walkthroughsProjection } = await import("./shared-projections.js");
+    const { db } = await import("./db.js");
+    const wt = (head: string, title: string) => ({ pr: 264, head, chapters: [{ title, symbols: [] }] });
+    await publishWalkthrough(logRoot, izzie, wt("h1", "first") as never, "acme/api/pr-264");
+    await publishWalkthrough(logRoot, dana, wt("h1", "theirs") as never, "acme/api/pr-264");
+    const scope = walkthroughScope("acme/api/pr-264");
+
+    const miss = await readCached(root, logRoot, scope, ID, foldWalkthroughs, walkthroughsProjection);
+    const hit = await readCached(root, logRoot, scope, ID, foldWalkthroughs, walkthroughsProjection);
+    assert.equal(miss.length, 2, "two people, two answers");
+    assert.deepEqual(JSON.stringify(hit), JSON.stringify(miss), "the cache returns what the fold did");
+
+    // The rows are actually there — a hit is a table read, not a re-fold.
+    const rows = db(root).prepare("SELECT author FROM shared_walkthrough WHERE scope = ? ORDER BY rowid")
+      .all(scope) as unknown as { author: string }[];
+    assert.deepEqual(rows.map((r) => r.author), [izzie.principal, dana.principal]);
+
+    // CONTROL — a later publication by the SAME person replaces theirs rather than
+    // adding a row, which is the fold's rule and must survive the round trip.
+    await publishWalkthrough(logRoot, izzie, wt("h2", "second") as never, "acme/api/pr-264");
+    const again = await readCached(root, logRoot, scope, ID, foldWalkthroughs, walkthroughsProjection);
+    assert.equal(again.length, 2, "still two authors");
+    assert.equal(again.find((w) => w.actor.principal === izzie.principal)!.walkthrough.head, "h2");
+  } finally { [logRoot, root].forEach((r) => rmSync(r, { recursive: true, force: true })); }
+});

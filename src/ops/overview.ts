@@ -5,7 +5,7 @@ import { readAnchorStore, readState, loadNodes, readGraph, readBugs, readAnnotat
 import { selectAnchors, docPct as computeDocPct, citedPct as computeCitedPct } from "../coverage.js";
 import { revertedMarks, witnessDrift, realDrift } from "../reviews.js";
 import { tripwires as triageTripwires } from "../triage.js";
-import { genId, liveIndex, liveAnchors, anchorBrief, coverageFor } from "./shared.js";
+import { genId, liveIndex, liveAnchors, anchorBrief, coverageFor, loadNodesShared} from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Discovery
@@ -153,7 +153,7 @@ const BODY_QUALIFIER = /(\bexcept\b|\bunless\b|\bbut\b|\bhowever\b|\balone\b|onl
  * Returns REVIEW CANDIDATES to verify (like analyzer findings), never auto-filed.
  */
 export async function lintSummaries(root: string) {
-  const nodes = await loadNodes(root);
+  const nodes = await loadNodesShared(root);
   const candidates = [] as { id: string; title: string; absolute: string; qualifier: string; summary: string }[];
   for (const n of nodes) {
     if (n.generatedBy) continue; // analyzer prose isn't hand-authored
@@ -231,7 +231,7 @@ export async function cover(
 ) {
   if (input.as === "owned" && !input.owner) return { error: "`owned` requires `owner` (the universe that owns the doc)" };
   if (input.as === "covered" && input.node) {
-    const nodes = await loadNodes(root);
+    const nodes = await loadNodesShared(root);
     if (!nodes.some((n) => n.id === input.node)) return { error: `unknown node "${input.node}"` };
   }
   const store = await readAnchorStore(root);

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { readAnchorStore, loadNodes, readGraph, writeGraph, writeNode, slug, readAnnotations, deleteNode as storeDeleteNode, confirmNode, ackHole as storeAckHole, loadNodeVersions, derivationLookup } from "../store.js";
 import { evalVersion } from "../doc-version.js";
 import { anchorIndex, derivationsOf } from "../anchor-resolve.js";
-import { snapshotHashes, resolveRefs, rejected } from "./shared.js";
+import { snapshotHashes, resolveRefs, rejected, loadNodesShared} from "./shared.js";
 import { type WhereWas, whereWere } from "./orphans.js";
 import { annotate, reviseAnnotation, assignAnnotation } from "./annotations.js";
 
@@ -55,7 +55,7 @@ export async function document(
   // P1.2 — inline ordered steps materialize step nodes + step_of + touches edges.
   if (input.type === "process" && input.steps?.length) {
     const graph = await readGraph(root);
-    const allNodes = await loadNodes(root);
+    const allNodes = await loadNodesShared(root);
     const taken = new Set(allNodes.map((n) => n.id)); // includes the process just written
     // Re-documenting a process must UPDATE its steps, not mint a second set. Ids came
     // from `uniqueSlug` against every existing node, so a second promotion of the same
@@ -95,7 +95,7 @@ export async function document(
   }
 
   // P1.4 — flag [[links]] that don't resolve to a node (target may come later).
-  const known = new Set((await loadNodes(root)).map((n) => n.id));
+  const known = new Set((await loadNodesShared(root)).map((n) => n.id));
   const dangling = [...new Set(extractLinks(input.summary + "\n" + body))].filter((l) => !known.has(l));
   if (dangling.length) result.danglingLinks = dangling;
   return result;
@@ -108,7 +108,7 @@ export async function connect(
 ) {
   const list = input.edges ?? (input.from && input.to && input.type ? [{ from: input.from, to: input.to, type: input.type, order: input.order }] : []);
   if (!list.length) return { error: "provide an edge (from/to/type) or edges[]" };
-  const nodeIds = new Set((await loadNodes(root)).map((n) => n.id));
+  const nodeIds = new Set((await loadNodesShared(root)).map((n) => n.id));
   const graph = await readGraph(root);
   let added = 0;
   const errors: string[] = [];
@@ -124,12 +124,46 @@ export async function connect(
   return { ok: true, added, edges: graph.edges.length, ...(errors.length ? { errors } : {}) };
 }
 
+/**
+ * Write a version of a doc the TEAM owns, as a shared write.
+ *
+ * This is what "write-through" means: the event is appended and that scope is
+ * materialized, so the row appears immediately and the caller never observes the log.
+ * SQLite goes on feeling like the store while the log stays the authority.
+ *
+ * The alternative — forking a private local version of a doc a colleague wrote — is
+ * what the code did before, and it is the wrong shape for the situation. A doc with a
+ * version history and named authors is ONE doc that several people have worked on;
+ * editing it is contributing a version, not starting a rival copy nobody else will
+ * ever see. Forking is still right when the winning version is your OWN, which is
+ * what `writeNode` continues to do.
+ *
+ * Returns `null` when this is not a shared doc or there is no sidecar, so the caller
+ * falls through to the ordinary local path.
+ */
+async function writeThroughShared(
+  root: string,
+  node: { id: string; type: string; title: string; summary: string; body: string; anchors: string[] },
+  winner: { origin?: string },
+): Promise<{ ok: true; id: string; shared: true } | { error: string } | null> {
+  if (!winner.origin) return null;
+  const shared = await import("../ops-shared.js").catch(() => null);
+  if (!shared) return null;
+  const r = await shared.shareDoc(root, {
+    nodeId: node.id, type: node.type, title: node.title, summary: node.summary, body: node.body,
+    citations: node.anchors.map((anchorId) => ({ anchorId, acceptedHashes: [] })),
+    createdCommit: null, createdBranch: null,
+  } as never) as { error?: string };
+  if (r.error) return { error: r.error };
+  return { ok: true, id: node.id, shared: true };
+}
+
 /** P1.3 — patch a node without resending the whole body. */
 export async function updateNode(
   root: string,
   input: { id: string; setTitle?: string; setSummary?: string; setBody?: string; addAnchors?: string[]; removeAnchors?: string[] },
 ) {
-  const nodes = await loadNodes(root);
+  const nodes = await loadNodesShared(root);
   const node = nodes.find((n) => n.id === input.id);
   if (!node) return { error: `no node "${input.id}"` };
   if (input.setTitle !== undefined) node.title = input.setTitle;
@@ -154,10 +188,19 @@ export async function updateNode(
     node.anchors = node.anchors.filter((a) => !rm.has(a));
   }
   if (!node.anchors.length) return { error: "a node must keep ≥1 anchor (no floating claims)" };
-  await writeNode(root, node);
+  // Write-through: editing a doc the team owns appends a shared version rather than
+  // forking a private copy nobody else will see. `node.origin` is the winning
+  // version's scope, which `loadNodes` carries.
+  const through = await writeThroughShared(root, node as never, node);
+  if (through && "error" in through) return through;
+  if (!through) await writeNode(root, node);
   const known = new Set(nodes.map((n) => n.id));
   const dangling = [...new Set(extractLinks(node.summary + "\n" + node.body))].filter((l) => !known.has(l));
-  return { ok: true, id: node.id, anchors: node.anchors.length, ...rejected(rejects), ...(dangling.length ? { danglingLinks: dangling } : {}) };
+  return {
+    ok: true, id: node.id, anchors: node.anchors.length,
+    ...(through ? { shared: true as const } : {}),
+    ...rejected(rejects), ...(dangling.length ? { danglingLinks: dangling } : {}),
+  };
 }
 
 /**
@@ -166,7 +209,16 @@ export async function updateNode(
  * change touched the code a doc cites but the doc's claims still hold.
  */
 export async function confirm(root: string, id: string) {
-  return confirmNode(root, id);
+  const r = await confirmNode(root, id);
+  // Write-through, the other half. `confirmNode` refuses a fold-owned winner because
+  // accepting hashes into it locally would be reverted by the next fold — so route it
+  // to the event that survives one. The refusal stays for the case with no sidecar to
+  // route to, which is why this is a fallback rather than a branch above.
+  if ("error" in r && /teammate's/.test(r.error ?? "")) {
+    const shared = await import("../ops-shared.js").catch(() => null);
+    if (shared) return shared.confirmSharedDoc(root, id);
+  }
+  return r;
 }
 
 /** Marks a queued question as one of these, so a second `ackHole` finds it. */
@@ -350,14 +402,14 @@ export async function nodeVersions(root: string, id: string) {
 
 /** Delete a logical node outright (and any edges touching it) — for obsolete/tombstoned docs. */
 export async function removeNode(root: string, id: string) {
-  const nodes = await loadNodes(root);
+  const nodes = await loadNodesShared(root);
   if (!nodes.some((n) => n.id === id)) return { error: `no node "${id}"` };
   await storeDeleteNode(root, id);
   // `deleteNode` removes only LOCAL rows, so a node whose versions are a teammate's
   // survives it. Reporting `deleted` anyway — and dropping every edge touching it —
   // would be a deletion that did not happen, with real collateral. Check that the
   // node actually went before touching the graph.
-  if ((await loadNodes(root)).some((n) => n.id === id)) {
+  if ((await loadNodesShared(root)).some((n) => n.id === id)) {
     return { error: `node "${id}" is a teammate's doc here, so deleting your copy does not `
       + `remove it. If its subject is genuinely gone, a person retires it with `
       + `\`retire_shared_doc\`; otherwise write a version saying what you know.` };
@@ -370,7 +422,7 @@ export async function removeNode(root: string, id: string) {
 
 /** P1.4 — every dangling [[link]] across the universe. */
 export async function linksReport(root: string) {
-  const nodes = await loadNodes(root);
+  const nodes = await loadNodesShared(root);
   const known = new Set(nodes.map((n) => n.id));
   const dangling: { node: string; danglingLinks: string[] }[] = [];
   for (const n of nodes) {

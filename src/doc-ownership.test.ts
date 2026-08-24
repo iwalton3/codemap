@@ -50,6 +50,46 @@ async function repo(): Promise<{ root: string; anchorId: string; cleanup: () => 
   return { root, anchorId, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
 
+/**
+ * A universe with a sidecar holding one published team doc on `n_team`.
+ *
+ * The remote and the sidecar pointer are in place BEFORE `init`, deliberately:
+ * `universeKey` memoises per root, so adding the remote afterwards leaves the cached
+ * key from before it existed and the scope the doc is published under stops matching
+ * the scope the fold looks for.
+ */
+async function sharedUniverse(): Promise<{ root: string; anchorId: string; cleanup: () => void }> {
+  const root = mkdtempSync(join(tmpdir(), "codemap-own-"));
+  const side = mkdtempSync(join(tmpdir(), "codemap-own-side-"));
+  git(root, "init", "-q", "-b", "main");
+  git(root, "remote", "add", "origin", "https://github.com/acme/api.git");
+  mkdirSync(join(root, "src"), { recursive: true });
+  mkdirSync(join(root, ".codemap"), { recursive: true });
+  writeFileSync(join(root, ".codemap", "sidecar"), side, "utf8");
+  writeFileSync(join(root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+  git(root, "add", "-A");
+  git(root, "commit", "-qm", "one");
+  const { init } = await import("./ops.js");
+  await init(root);
+  const anchorId = (await readAnchorStore(root)).anchors[0]!.id;
+
+  const { publishDocVersion } = await import("./shared-docs.js");
+  const { resolveSidecar } = await import("./sidecar-config.js");
+  const cfg = resolveSidecar(root)!;
+  await publishDocVersion(cfg.path, cfg.universe, { principal: "dana@x.com" }, {
+    nodeId: "n_team", type: "concept", title: "Theirs", summary: "s", body: "theirs",
+    citations: [{ anchorId, acceptedHashes: [] }],
+    createdCommit: null, createdBranch: null,
+  } as never);
+  return { root, anchorId, cleanup: () => [root, side].forEach((d) => rmSync(d, { recursive: true, force: true })) };
+}
+
+const withEnv = async (vars: Record<string, string | undefined>, fn: () => Promise<void>) => {
+  const saved: Record<string, string | undefined> = {};
+  for (const k of Object.keys(vars)) { saved[k] = process.env[k]; if (vars[k] === undefined) delete process.env[k]; else process.env[k] = vars[k]!; }
+  try { await fn(); } finally { for (const k of Object.keys(saved)) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]!; } }
+};
+
 test("(f) an agent cannot tombstone a node a teammate has documented", async () => {
   // `ackHole` does not MUTATE a fold-owned row — it inserts a new local one, which is
   // `origin IS NULL` and so passes the ownership guard completely. And a tombstone
@@ -353,4 +393,43 @@ test("(i) impact is resolved against the refs asked for, not the current checkou
     assert.ok(ids.includes("n_pay"),
       `the doc is impacted between base and head whatever this checkout holds: ${JSON.stringify(ids)}`);
   } finally { r.cleanup(); }
+});
+
+test("editing a doc the team owns appends a shared version, not a private fork", async () => {
+  // Write-through. The event is appended and the scope materialized, so the row is
+  // there when the call returns and the caller never observes the log. Forking a
+  // private copy of a colleague's doc — which is what happened before — is the wrong
+  // shape: a doc with named authors and a version history is ONE doc several people
+  // worked on, so editing it is contributing a version.
+  const u = await sharedUniverse();
+  try {
+    await withEnv({ CODEMAP_SIDECAR: undefined, CODEMAP_AGENT_MODEL: undefined }, async () => {
+      const { updateNode } = await import("./ops.js");
+      const r = await updateNode(u.root, { id: "n_team", setBody: "my addition" }) as any;
+      assert.equal(r.error, undefined, `update failed: ${r.error}`);
+      assert.equal(r.shared, true, "it went to the team");
+
+      // Immediately visible, without a sync: that is what write-through buys.
+      const versions = await loadNodeVersions(u.root, "n_team");
+      assert.ok(versions.some((v) => v.body === "my addition"), "the new version is here now");
+      assert.ok(versions.every((v) => v.origin), "and every version of it is the team's");
+    });
+  } finally { u.cleanup(); }
+});
+
+test("editing your OWN doc still forks locally and does not touch the sidecar", async () => {
+  // CONTROL. Without it, "everything is a shared write" passes the test above and
+  // quietly publishes every private note a person takes.
+  const u = await sharedUniverse();
+  try {
+    await withEnv({ CODEMAP_SIDECAR: undefined, CODEMAP_AGENT_MODEL: undefined }, async () => {
+      const { updateNode, document: documentNode } = await import("./ops.js");
+      await documentNode(u.root, { type: "concept", title: "Mine", summary: "s", body: "b", anchors: [u.anchorId] });
+      const mine = (await loadNodes(u.root)).find((n) => n.title === "Mine")!;
+      const r = await updateNode(u.root, { id: mine.id, setBody: "changed" }) as any;
+      assert.equal(r.error, undefined);
+      assert.notEqual(r.shared, true, "a private doc stays private");
+      assert.ok((await loadNodeVersions(u.root, mine.id)).every((v) => !v.origin));
+    });
+  } finally { u.cleanup(); }
 });

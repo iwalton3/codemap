@@ -6,7 +6,7 @@ import { headCommit, readBlobs } from "../git.js";
 import { readAnchorStore, loadNodes, readAnnotations, writeAnnotations, findAnchorsOutsideWork, readPushes, bodyHashAt, readOrphans } from "../store.js";
 import { requireActor, isAgentActor, actorLabel } from "../identity.js";
 import { isAgentAuthored, publishStateOf, type PublishState } from "../pr-push.js";
-import { genId, liveAnchors, resolveRefs } from "./shared.js";
+import { genId, liveAnchors, resolveRefs, loadNodesShared} from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Annotations
@@ -148,7 +148,7 @@ export async function annotate(
     witness = w.witness;
     sourceRef = w.sourceRef;
   } else {
-    const nodes = await loadNodes(root);
+    const nodes = await loadNodesShared(root);
     // OR the sidecar. The guard refuses a target that exists NOWHERE; a doc the team
     // published and this store never adopted exists, it is just not here — and it
     // cannot be adopted either, because `document` refuses a node whose anchors do
@@ -704,7 +704,7 @@ export async function closeAssignment(
  * improve the docs" queue. Each is resolved to its target's title/symbol + a link.
  */
 export async function listQuestions(root: string, opts: { includeResolved?: boolean } = {}) {
-  const [annStore, nodes, store] = await Promise.all([readAnnotations(root), loadNodes(root), readAnchorStore(root)]);
+  const [annStore, nodes, store] = await Promise.all([readAnnotations(root), loadNodesShared(root), readAnchorStore(root)]);
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
   const anchorById = new Map(store.anchors.map((a) => [a.id, a]));
   const qs = annStore.annotations.filter((a) => a.kind === "question" && (opts.includeResolved || !a.resolved));

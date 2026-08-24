@@ -5,7 +5,7 @@ import { indexFile } from "../repo.js";
 import { readAnchorStore, loadNodes, readGraph, readAnnotations } from "../store.js";
 import { reviewStatesFor, deriveCodeReview, type ReviewPair, type DerivedCodeReview } from "../reviews.js";
 import { reviewTriageFor, coverageFor as triageCoverageFor, rollupCoverage } from "../triage.js";
-import { langFor, anchorBrief, trustOf } from "./shared.js";
+import { langFor, anchorBrief, trustOf, loadNodesShared} from "./shared.js";
 
 /**
  * Derived code review per node — a node reads code-reviewed only when every code
@@ -73,7 +73,7 @@ function topNamespace(anchorIds: string[], nsById: Map<string, string | undefine
  * (reviewStatesFor re-indexes only files with reviewed anchors, so it's cheap).
  */
 export async function nodeCatalog(root: string) {
-  const [nodes, graph, store] = await Promise.all([loadNodes(root), readGraph(root), readAnchorStore(root)]);
+  const [nodes, graph, store] = await Promise.all([loadNodesShared(root), readGraph(root), readAnchorStore(root)]);
   const nsById = new Map(store.anchors.map((a) => [a.id, a.symbolPath[0]]));
   const org = orgPrefixOf(nsById);
   const inC = new Map<string, number>();
@@ -161,7 +161,7 @@ export async function nodeCatalog(root: string) {
  * state, so events can be reviewed straight from the matrix.
  */
 export async function eventMatrix(root: string) {
-  const [nodes, graph, store] = await Promise.all([loadNodes(root), readGraph(root), readAnchorStore(root)]);
+  const [nodes, graph, store] = await Promise.all([loadNodesShared(root), readGraph(root), readAnchorStore(root)]);
   const nsById = new Map(store.anchors.map((a) => [a.id, a.symbolPath[0]]));
   const org = orgPrefixOf(nsById);
   const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -225,7 +225,7 @@ export async function eventMatrix(root: string) {
 
 export async function getNode(root: string, id: string) {
   const [nodes, graph, store, annStore] = await Promise.all([
-    loadNodes(root), readGraph(root), readAnchorStore(root), readAnnotations(root),
+    loadNodesShared(root), readGraph(root), readAnchorStore(root), readAnnotations(root),
   ]);
   const node = nodes.find((n) => n.id === id);
   if (!node) return { error: `no node "${id}"` };
@@ -265,7 +265,7 @@ export async function getNode(root: string, id: string) {
 
 /** A node's immediate graph neighborhood (for the graph viewer). Same-universe only. */
 export async function neighborhood(root: string, id: string) {
-  const [nodes, graph] = await Promise.all([loadNodes(root), readGraph(root)]);
+  const [nodes, graph] = await Promise.all([loadNodesShared(root), readGraph(root)]);
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const node = byId.get(id);
   if (!node) return { error: `no node "${id}"` };
@@ -293,7 +293,7 @@ export async function neighborhood(root: string, id: string) {
  * instead of dumping a whole neighborhood at once.
  */
 export async function subgraph(root: string, ids: string[], expand?: string) {
-  const [nodes, graph] = await Promise.all([loadNodes(root), readGraph(root)]);
+  const [nodes, graph] = await Promise.all([loadNodesShared(root), readGraph(root)]);
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const set = new Set(ids.filter((id) => byId.has(id)));
   if (expand && byId.has(expand)) {
@@ -334,7 +334,7 @@ export async function subgraph(root: string, ids: string[], expand?: string) {
 
 /** All process nodes (flows) with step counts + review rollup — the bird's-eye view. */
 export async function flows(root: string) {
-  const [nodes, graph, store] = await Promise.all([loadNodes(root), readGraph(root), readAnchorStore(root)]);
+  const [nodes, graph, store] = await Promise.all([loadNodesShared(root), readGraph(root), readAnchorStore(root)]);
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const processes = nodes.filter((n) => n.type === "process");
   const stepsByProc = new Map<string, string[]>();
@@ -387,7 +387,7 @@ export async function flows(root: string) {
 const PIPELINE_LAYER: Record<string, number> = { command: 0, handler: 1, event_family: 2, aggregate: 3, projection: 4 };
 
 export async function pipelineGraph(root: string, opts: { domain?: string } = {}) {
-  const [nodes, graph, store] = await Promise.all([loadNodes(root), readGraph(root), readAnchorStore(root)]);
+  const [nodes, graph, store] = await Promise.all([loadNodesShared(root), readGraph(root), readAnchorStore(root)]);
   const nsById = new Map(store.anchors.map((a) => [a.id, a.symbolPath[0]]));
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const inLayer = (n: LogicalNode) => PIPELINE_LAYER[n.type] !== undefined;
@@ -470,7 +470,7 @@ export async function pipelineGraph(root: string, opts: { domain?: string } = {}
  * gutter); states the graph never reaches land in a final layer.
  */
 export async function stateMap(root: string, opts: { aggregate?: string } = {}) {
-  const [nodes, graph] = await Promise.all([loadNodes(root), readGraph(root)]);
+  const [nodes, graph] = await Promise.all([loadNodesShared(root), readGraph(root)]);
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const present = (e: Edge) => byId.has(e.from) && byId.has(e.to);
 
@@ -599,7 +599,7 @@ export async function stateMap(root: string, opts: { aggregate?: string } = {}) 
 
 /** One flow: its ordered steps, each with touched modules + the live source of its anchors. */
 export async function flow(root: string, id: string) {
-  const [nodes, graph, store, annStore] = await Promise.all([loadNodes(root), readGraph(root), readAnchorStore(root), readAnnotations(root)]);
+  const [nodes, graph, store, annStore] = await Promise.all([loadNodesShared(root), readGraph(root), readAnchorStore(root), readAnnotations(root)]);
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const anchorById = new Map(store.anchors.map((a) => [a.id, a]));
   const annFor = (aid: string) => annStore.annotations.filter((a) => a.target.kind === "anchor" && a.target.id === aid);
