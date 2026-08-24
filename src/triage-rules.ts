@@ -37,8 +37,26 @@ export function normImportance(i: string | undefined): Importance {
  * third hand-written copy of the ratchet — the copy it used to keep still had the
  * absent-complexity hole this function closed.
  */
+/**
+ * What the ratchet judges AGAINST — the three fields it actually reads.
+ *
+ * Narrower than `Triage` on purpose, and `Triage` is structurally assignable so every
+ * existing caller is unaffected. The width is load-bearing: `Triage` requires an
+ * `importance`, so a state with a human COMPLEXITY and no importance could not be
+ * expressed — and the shared fold, replaying a teammate's events, has exactly that
+ * state whenever a person answered the complexity of a mark whose stakes an agent had
+ * proposed. Seeded as `undefined` instead, the replay took the first-mark branch below
+ * and let an agent LOWER a human's complexity, which is the one thing the ratchet
+ * exists to refuse.
+ */
+export interface RatchetState {
+  importance?: Importance;
+  complexity?: Complexity;
+  source: TriageSource;
+}
+
 export function ratchet(
-  existing: Triage | undefined,
+  existing: RatchetState | undefined,
   input: { importance?: Importance; complexity?: Complexity; source: TriageSource },
   opts: { humanDrifted?: boolean } = {},
 ): { importance: Importance; complexity?: Complexity } | { refused: string } {

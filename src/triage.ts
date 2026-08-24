@@ -13,6 +13,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { indexFile } from "./repo.js";
 import { headCommit } from "./git.js";
+import { resolveSidecar } from "./sidecar-config.js";
 // The pure rules live one layer down so the shared fold can replay through the SAME
 // ratchet without importing this module — see `triage-rules.ts`. Re-exported, because
 // every existing caller imports them from here.
@@ -100,6 +101,17 @@ export interface TriageInput {
   ref?: string;
 }
 
+/**
+ * One message for the one failure a caller has to act on, with the cause kept.
+ *
+ * The raw cause alone is what this returned first, and it reads as an unrelated
+ * filesystem error (`EEXIST: file already exists, mkdir ...`) with nothing tying it to
+ * the sidecar or saying the mark was not stored.
+ */
+const appendFailed = (cause?: string): string =>
+  "the mark could not be appended to the sidecar log, so NOTHING was written — "
+  + `fix the sidecar and set it again${cause ? ` (${cause})` : ""}`;
+
 export async function setTriage(
   root: string,
   input: TriageInput,
@@ -142,7 +154,22 @@ export async function setTriage(
   // missing, so the fallback is the old path and not an error.
   //
   // `graph` never travels: it is regenerated per machine by `deriveTriage`.
-  const shared = input.source === "graph" ? { shared: false } : await mirror(root, rec, input);
+  const shared = input.source === "graph" ? { shared: false as const } : await mirror(root, rec, input);
+  // NO LOCAL FALLBACK when a sidecar is configured, and this is the rule rather than an
+  // omission. A row written here is published LATER, and `emitEvents` captures the
+  // causal heads at APPEND time — so the event would claim this act had seen everything
+  // pulled between the failure and the publish. That is the "reconstructed events
+  // falsely claim to have seen everything just pulled" defect `sidecar-architecture.md`
+  // bans, arriving by a slower route. Causal position is only true at the moment of the
+  // write; an uncaptured one is not a fact anyone holds, it is gone.
+  //
+  // The sidecar is a LOCAL clone — nothing touches the network until `sync` — so a
+  // failed append is a real local failure (a bad path, a disk, an unresolvable actor),
+  // not a blip to paper over. Failing loudly is the honest answer and the caller can
+  // retry. Without a sidecar the local row is still the whole story, exactly as before.
+  if (shared.configured && !shared.shared) {
+    return { ok: false, reason: appendFailed(shared.error) };
+  }
   if (!shared.shared) await upsertLocalTriage(root, rec);
   return {
     ok: true, importance: rec.importance, complexity: rec.complexity, likely: rec.likely,
@@ -156,7 +183,7 @@ export async function setTriage(
  * A throw here must not fail a write that is about to succeed locally: the caller falls
  * back to a local row, which is what codemap did for its whole life before the sidecar.
  */
-async function mirror(root: string, rec: Triage, input: TriageInput): Promise<{ shared: boolean }> {
+async function mirror(root: string, rec: Triage, input: TriageInput): Promise<{ shared: boolean; configured?: boolean; error?: string }> {
   try {
     return await mirrorTriage(root, {
       targetKind: rec.target.kind, targetId: rec.target.id,
@@ -169,7 +196,11 @@ async function mirror(root: string, rec: Triage, input: TriageInput): Promise<{ 
       assertedCommit: input.ref ?? headCommit(root) ?? undefined,
       witnesses: rec.witnesses,
     });
-  } catch { return { shared: false }; }
+  } catch (e: any) {
+    // A throw with a sidecar configured is a FAILED APPEND, and the caller must not
+    // paper over it — `mirrorTriage` only reaches the log once it has resolved one.
+    return { shared: false, configured: !!resolveSidecar(root), error: e?.message ?? String(e) };
+  }
 }
 
 /**
@@ -563,7 +594,7 @@ export async function setTriageBatch(
   root: string,
   items: BatchTriageItem[],
   opts: { source: TriageSource; ref?: string },
-): Promise<{ applied: number; refused: number }> {
+): Promise<{ applied: number; refused: number; shared?: boolean; error?: string }> {
   if (!items.length) return { applied: 0, refused: 0 };
   const ts = await readTriage(root);
   const byId = new Map(ts.triage.filter((t) => t.target.kind === "anchor").map((t) => [t.target.id, t]));
@@ -599,12 +630,18 @@ export async function setTriageBatch(
   // which is quadratic on a pull request that marks 531 symbols. `graph` never travels,
   // so it keeps the local path it has always had.
   const marks = [...touched].map((id) => byId.get(id)!);
-  const shared = opts.source === "graph" ? { shared: false } : await mirrorTriageBatch(root, marks.map((t) => ({
+  const shared = opts.source === "graph" ? { shared: false as const, configured: false } : await mirrorTriageBatch(root, marks.map((t) => ({
     targetKind: t.target.kind, targetId: t.target.id,
     importance: t.importance, complexity: t.complexity,
     source: (t.source === "human" ? "human" : "agent") as TriageSource,
     reason: t.reason, assertedCommit: opts.ref, witnesses: t.witnesses,
-  }))).catch(() => ({ shared: false }));
+  }))).catch((e: any) => ({ shared: false, configured: !!resolveSidecar(root), error: e?.message ?? String(e) }));
+  // Same rule as `setTriage`: a failed append with a sidecar configured writes NOTHING.
+  // A batch is where it matters most — hundreds of rows published later would each
+  // claim a causal position captured long after the act.
+  if (shared.configured && !shared.shared) {
+    return { applied: 0, refused: items.length, error: appendFailed((shared as { error?: string }).error) };
+  }
   // What this batch WROTE, one target at a time — never the whole list. `byId` was built
   // from the merged view so the ratchet could judge against a teammate's stakes; writing
   // it back wholesale would copy every one of their marks into this clone's partition,

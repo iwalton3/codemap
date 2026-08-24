@@ -153,6 +153,103 @@ test("across the business-critical line it goes to a person instead", () => {
   assert.equal(t.importance.contested, true);
 });
 
+test("an agent raising over a human baseline is an ESCALATION, not a contest", () => {
+  // Not even a concurrency case: a person marks a symbol `low`, then `pr-triage` runs
+  // and its agent proposes `business-critical` on the same machine, having seen it.
+  // Counting that as a contest files a review-queue item per symbol on every sync —
+  // "contest everything", which this design rejected, reached through a side door on a
+  // pull request that marks hundreds of symbols.
+  const t = one([
+    say({ id: "0000000001-aa", by: izzie, writer: "w_i", importance: "low" }),
+    say({ id: "0000000002-bb", by: opus, writer: "w_i", after: ["0000000001-aa"], importance: "business-critical" }),
+  ])!;
+  assert.equal(t.importance.effective.value, "business-critical", "the escalation still holds the value");
+  assert.equal(t.importance.escalation?.actor.via?.model, "claude-opus-5");
+  assert.equal(t.importance.baseline?.value, "low", "and the human baseline stays visible, so `confirm` means something");
+  assert.equal(t.importance.contested, undefined, "it saw the mark it raised — that is an escalation, not a disagreement");
+});
+
+test("two AGENTS across the line, concurrent, IS a contest", () => {
+  // The design: "An agent may settle an agent/agent disagreement; it may not settle one
+  // between two people." A disagreement it can settle is still a disagreement.
+  const t = one([
+    say({ id: "0000000001-aa", by: opus, writer: "w_o", importance: "low" }),
+    say({ id: "0000000002-bb", by: bensAgent, writer: "w_b", importance: "business-critical" }),
+  ])!;
+  assert.equal(t.importance.contested, true);
+});
+
+test("but an agent may NOT settle it either — it proposes, a person settles", () => {
+  const t = one([
+    say({ id: "0000000001-aa", by: opus, writer: "w_o", importance: "low" }),
+    say({ id: "0000000002-bb", by: bensAgent, writer: "w_b", importance: "business-critical" }),
+    say({ id: "0000000003-cc", by: opus, writer: "w_o2", after: ["0000000001-aa", "0000000002-bb"], importance: "business-critical" }),
+  ])!;
+  assert.equal(
+    t.importance.contested, true,
+    "the design's agent-settles-agent half is unreachable (`ratchet` refuses an agent no-op, and "
+    + "there is nothing above business-critical to assert) — so an agent investigates and proposes, "
+    + "and the person settles by re-triaging",
+  );
+});
+
+test("but an agent may NOT settle a disagreement between two people", () => {
+  const t = one([
+    say({ id: "0000000001-aa", by: izzie, writer: "w_i", importance: "business-critical" }),
+    say({ id: "0000000002-bb", by: ben, writer: "w_b", importance: "low" }),
+    say({ id: "0000000003-cc", by: opus, writer: "w_o", after: ["0000000001-aa", "0000000002-bb"], importance: "business-critical" }),
+  ])!;
+  assert.equal(t.importance.contested, true, "an agent pruning human receipts would settle a human disagreement by machine");
+});
+
+test("a person settles it, and then it is settled", () => {
+  const t = one([
+    say({ id: "0000000001-aa", by: izzie, writer: "w_i", importance: "business-critical" }),
+    say({ id: "0000000002-bb", by: ben, writer: "w_b", importance: "low" }),
+    say({ id: "0000000003-cc", by: ben, writer: "w_b2", after: ["0000000001-aa", "0000000002-bb"], importance: "important" }),
+  ])!;
+  assert.equal(t.importance.contested, undefined);
+  assert.equal(t.importance.effective.value, "important");
+});
+
+test("a FORK's own disagreement is contested — `sameWriter` is deleted, not made fork-aware", () => {
+  // `docs/sidecar-architecture.md`: sameWriter is deleted from contest detection
+  // because "its only residual effect was suppressing intra-fork disagreements". Two
+  // clones holding one writer id is exactly the case worth seeing, and an earlier
+  // draft of this rule tested writer inequality and would have hidden it.
+  const t = one([
+    say({ id: "0000000001-aa", by: izzie, writer: "w_SHARED", importance: "business-critical" }),
+    say({ id: "0000000002-bb", by: izzie, writer: "w_SHARED", importance: "low" }),
+  ])!;
+  assert.equal(t.importance.contested, true);
+});
+
+test("a human answering ONE field leaves the agent's other field standing", () => {
+  // The bug this cost the most to find: eligibility was judged per EVENT, so a person
+  // answering the complexity of an agent's `{business-critical, deep}` dropped the
+  // whole event — and the business-critical importance nobody disputed vanished with
+  // it. The target folded to ABSENT.
+  const t = one([
+    say({ id: "0000000001-aa", by: opus, writer: "w_o", importance: "business-critical", complexity: "deep" }),
+    say({ id: "0000000002-bb", by: izzie, writer: "w_i", after: ["0000000001-aa"], complexity: "wiring" }),
+  ]);
+  assert.ok(t, "the target must not fold to absent — nobody disputed the stakes");
+  assert.equal(t!.importance.effective.value, "business-critical");
+  assert.equal(t!.complexity!.effective.value, "wiring", "and the field she DID answer is hers");
+});
+
+test("an agent may not lower an active human complexity, even with no human importance", () => {
+  // `ratchet` judges against a state that must be able to hold a complexity with no
+  // importance. Seeded as `undefined` the replay took the FIRST-MARK branch, where an
+  // explicit `wiring` stands — so the agent lowered a person's `deep`.
+  const t = one([
+    say({ id: "0000000001-aa", by: izzie, writer: "w_i", complexity: "deep" }),
+    say({ id: "0000000002-bb", by: opus, writer: "w_o", after: ["0000000001-aa"], importance: "important", complexity: "wiring" }),
+  ])!;
+  assert.equal(t.importance.effective.value, "important", "the agent's stakes stand — nobody had set any");
+  assert.equal(t.complexity!.effective.value, "deep", "and the human's complexity is not lowered by a machine");
+});
+
 test("equal values are not a disagreement, however many people say it", () => {
   const t = one([
     say({ id: "0000000001-aa", by: izzie, writer: "w_i", importance: "business-critical" }),
@@ -318,4 +415,60 @@ test("`likely` is DERIVED: true when any effective field is agent-supplied", () 
   assert.equal(flat.complexity, "deep", "the agent raised the complexity it was allowed to raise");
   assert.equal(flat.source, "human", "top-level source is the IMPORTANCE receipt, documented as an alias");
   assert.equal(flat.likely, true, "and `likely` says an agent supplied one of the effective values");
+});
+
+// --- the write paths, which is where causality is captured -------------------
+
+test("a failed append with a sidecar configured writes NOTHING", async () => {
+  // The defect this closes is not the failure — it is the RECOVERY. A local row written
+  // here is published later, and `emitEvents` captures causal heads at APPEND time, so
+  // the event would claim this act had seen everything pulled in between. That is the
+  // "reconstructed events falsely claim to have seen everything just pulled" defect
+  // `docs/sidecar-architecture.md` bans, arriving by a slower route.
+  const { mkdtempSync, mkdirSync, rmSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { writeStore, readLocalTriage } = await import("./store.js");
+  const { setTriage } = await import("./triage.js");
+
+  const root = mkdtempSync(join(tmpdir(), "codemap-nofallback-"));
+  try {
+    mkdirSync(join(root, ".codemap"), { recursive: true });
+    await writeStore(root, [], { schemaVersion: 1, lastVerifiedCommit: null, grammarVersions: {} } as any);
+    // A sidecar that cannot work: the path is a FILE, so every append throws.
+    writeFileSync(join(root, "not-a-dir"), "x");
+    writeFileSync(join(root, ".codemap", "sidecar"), join(root, "not-a-dir"));
+
+    const r = await setTriage(root, {
+      targetKind: "anchor", targetId: "a_1", importance: "business-critical", source: "human",
+    }) as { ok: boolean; reason?: string };
+
+    assert.equal(r.ok, false, "a write that did not reach the log must not report success");
+    assert.match(r.reason ?? "", /sidecar/i, "and it must say what to fix");
+    assert.deepEqual(
+      (await readLocalTriage(root)).triage, [],
+      "NOTHING was written — a row here is the causality-fabrication path, not a safety net",
+    );
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("but with NO sidecar the local row is still the whole story", async () => {
+  // The control. Without it the rule above passes just as well if `setTriage` had
+  // simply stopped writing anything at all, which would break every single-player store.
+  const { mkdtempSync, mkdirSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { writeStore, readLocalTriage } = await import("./store.js");
+  const { setTriage } = await import("./triage.js");
+
+  const root = mkdtempSync(join(tmpdir(), "codemap-solo-"));
+  try {
+    mkdirSync(join(root, ".codemap"), { recursive: true });
+    await writeStore(root, [], { schemaVersion: 1, lastVerifiedCommit: null, grammarVersions: {} } as any);
+    const r = await setTriage(root, {
+      targetKind: "anchor", targetId: "a_1", importance: "business-critical", source: "human",
+    }) as { ok: boolean };
+    assert.equal(r.ok, true);
+    assert.equal((await readLocalTriage(root)).triage[0]?.importance, "business-critical");
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

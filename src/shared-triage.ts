@@ -31,7 +31,7 @@
 import type { Actor, BugWitness, Complexity, Importance, TriageSource, Triage } from "./schema.js";
 import { isAgentActor } from "./identity.js";
 import { emitEvent, emitEvents, type LogEvent, type Causality, causality } from "./eventlog.js";
-import { IMPORTANCE_RANK, COMPLEXITY_RANK, ratchet } from "./triage-rules.js";
+import { IMPORTANCE_RANK, COMPLEXITY_RANK, ratchet, type RatchetState } from "./triage-rules.js";
 
 /** One universe's stakes. Not per-PR: a symbol's blast radius outlives any branch. */
 export const triageScope = (universe: string): string => `triage/${universe}`;
@@ -304,6 +304,19 @@ function humanBaseline<V>(
   return { chosen, concurrent: receipts.filter((r) => r !== chosen), cleared: false };
 }
 
+/**
+ * Has a human ANSWERED this agent event's claim to `field`?
+ *
+ * Per FIELD, and that is the whole correction. Judged per event, a human who saw an
+ * agent's `{business-critical, deep}` and answered only the complexity suppressed the
+ * entire event — and the business-critical importance nobody had disputed vanished with
+ * it, folding the target to absent. An assertion supersedes causally-seen claims only
+ * for the fields it carries; a clear carries all of them.
+ */
+const answered = (humans: Entry[], en: Entry, field: TriageField, causal: Causality): boolean =>
+  humans.some((h) => causal.saw(h.e.id, en.e.id)
+    && (h.clear || (h.data[field] !== undefined && VALID[field](h.data[field]))));
+
 function foldTarget(entries: Entry[], causal: Causality): SharedTriage | null {
   const first = entries[0]!;
   const target = {
@@ -315,30 +328,36 @@ function foldTarget(entries: Entry[], causal: Causality): SharedTriage | null {
   const cxBase = humanBaseline<Complexity>(entries, "complexity", causal);
   const twBase = humanBaseline<boolean>(entries, "tripwire", causal);
 
-  // Which agent claims a human has ANSWERED. A claim is suppressed only by a human
-  // assertion that actually saw it; one merely sorting later never suppresses it, or a
-  // human write would erase a concurrent escalation it had no idea existed.
   const humans = entries.filter((en) => !en.agent);
-  const eligible = entries.filter((en) => en.agent && !en.clear
-    && !humans.some((h) => causal.saw(h.e.id, en.e.id)));
+  const agents = entries.filter((en) => en.agent && !en.clear);
 
-  // Replay from the human baseline, in canonical order, through the SAME ratchet a
-  // local write obeys. Not a max: see the header.
-  let running: Triage | undefined = impBase?.chosen
+  // The state the replay ratchets against. Carries a human complexity even when no
+  // human importance exists — see `RatchetState`.
+  let running: RatchetState | undefined = impBase?.chosen || cxBase?.chosen
     ? {
-      target,
-      importance: impBase.chosen.value,
+      ...(impBase?.chosen ? { importance: impBase.chosen.value } : {}),
       ...(cxBase?.chosen ? { complexity: cxBase.chosen.value } : {}),
-      likely: false, source: "human", at: impBase.chosen.at, witnesses: [],
+      source: "human" as const,
     }
     : undefined;
+
   let impFrom: AxisReceipt<Importance> | undefined;
   let cxFrom: AxisReceipt<Complexity> | undefined;
+  /** Every live agent claim per field — needed for contests, not just the raising one. */
+  const agentSaid: { importance: AxisReceipt<Importance>[]; complexity: AxisReceipt<Complexity>[] } =
+    { importance: [], complexity: [] };
 
-  for (const en of eligible) {
-    const imp = VALID.importance(en.data.importance) ? (en.data.importance as Importance) : undefined;
-    const cx = VALID.complexity(en.data.complexity) ? (en.data.complexity as Complexity) : undefined;
+  for (const en of agents) {
+    // A field a human has answered is masked OUT of this event before the ratchet sees
+    // it. The rest of the event still stands.
+    const imp = !answered(humans, en, "importance", causal) && VALID.importance(en.data.importance)
+      ? (en.data.importance as Importance) : undefined;
+    const cx = !answered(humans, en, "complexity", causal) && VALID.complexity(en.data.complexity)
+      ? (en.data.complexity as Complexity) : undefined;
     if (imp === undefined && cx === undefined) continue;
+    if (imp !== undefined) agentSaid.importance.push(receiptOf(en, imp));
+    if (cx !== undefined) agentSaid.complexity.push(receiptOf(en, cx));
+
     const decided = ratchet(running, { importance: imp, complexity: cx, source: "agent" });
     if ("refused" in decided) continue;
     // Visible only if it actually RAISES: concurrency alone does not make a lower or
@@ -348,18 +367,16 @@ function foldTarget(entries: Entry[], causal: Causality): SharedTriage | null {
       cxFrom = receiptOf(en, decided.complexity);
     }
     running = {
-      target, importance: decided.importance, ...(decided.complexity ? { complexity: decided.complexity } : {}),
-      likely: true, source: "agent", at: en.e.at, witnesses: [],
+      importance: decided.importance,
+      ...(decided.complexity ? { complexity: decided.complexity } : {}),
+      source: "agent",
     };
   }
 
   const importance = axisOf<Importance>(impBase, impFrom);
   // No importance is not a mark, and a cleared target folds to absent.
   if (!importance) return null;
-  // The only disagreement where being wrong is expensive, and it is rare: one side
-  // says business-critical and another says lower. It goes to the review queue for a
-  // person, rather than to a sticky label that sits on the record.
-  if (crossesCritical(importance)) importance.contested = true;
+  if (contested(importance, agentSaid.importance, causal)) importance.contested = true;
 
   const complexity = axisOf<Complexity>(cxBase, cxFrom);
   // Humans only. An agent's tripwire value is ignored outright rather than ratcheted:
@@ -371,6 +388,50 @@ function foldTarget(entries: Entry[], causal: Causality): SharedTriage | null {
     ...(complexity ? { complexity } : {}),
     ...(tripwire ? { tripwire } : {}),
   };
+}
+
+/**
+ * Does this field hold a disagreement across the business-critical line?
+ *
+ * Two distinct ACTIVE receipts whose values straddle the line, where neither saw the
+ * other. Three clauses, each of which was wrong at some point:
+ *
+ * **No writer or principal test.** `docs/sidecar-architecture.md` deletes `sameWriter`
+ * from contest detection outright — under the segment vector `saw()` subsumes every
+ * legitimate case it covered, and its only residual effect was suppressing intra-fork
+ * disagreements, which is exactly the disagreement worth seeing. An earlier draft of
+ * this function tested writer inequality and would have hidden a fork's own conflict.
+ *
+ * **ACTIVE, not "ever said".** A receipt that saw both sides and spoke is a settlement,
+ * so it prunes what it saw. Without this a settled contest contests forever, because
+ * the historical pair is still on the record.
+ *
+ * **Only a person settles.** The design said an agent may settle an agent/agent
+ * disagreement, and the build found that half UNREACHABLE: settling is asserting a
+ * value having seen both sides, `ratchet` refuses an agent's no-op restatement, and a
+ * contest exists only across the business-critical line — so there is never a higher
+ * value left for an agent to assert. Rather than carve a special case into `ratchet`
+ * (consolidated from three copies precisely to stop them drifting), the agent's role
+ * is a PROPOSAL on the queue item — it investigates and reports an outcome, and the
+ * person settles by re-triaging. See `docs/shared-triage.md`.
+ */
+function contested(
+  axis: Axis<Importance>, agentClaims: AxisReceipt<Importance>[], causal: Causality,
+): boolean {
+  const humanSide = [...(axis.baseline ? [axis.baseline] : []), ...(axis.concurrent ?? [])];
+  const all = [...humanSide, ...agentClaims];
+  const isAgent = (r: AxisReceipt<Importance>) => r.source === "agent";
+  const active = all.filter((x) => !all.some((y) => y !== x
+    && causal.saw(y.eventId, x.eventId)
+    && !isAgent(y)));
+  return active.some((a) => a.value === "business-critical")
+    && active.some((b) => b.value !== "business-critical")
+    // Straddling is not enough on its own: the two sides must be genuinely concurrent,
+    // or a person lowering something they had just read reads as a conflict with
+    // themselves.
+    && active.some((a) => active.some((b) => a !== b
+      && a.value === "business-critical" && b.value !== "business-critical"
+      && !causal.saw(a.eventId, b.eventId) && !causal.saw(b.eventId, a.eventId)));
 }
 
 /** Baseline plus escalation as the three-part axis consumers read. */
@@ -390,12 +451,6 @@ function axisOf<V>(
     effective: base.chosen, baseline: base.chosen,
     ...(base.concurrent.length ? { concurrent: base.concurrent } : {}),
   };
-}
-
-/** Does this axis hold a disagreement ACROSS the business-critical line? */
-function crossesCritical(a: Axis<Importance>): boolean {
-  const all = [a.effective, ...(a.concurrent ?? []), ...(a.baseline && a.baseline !== a.effective ? [a.baseline] : [])];
-  return all.some((r) => r.value === "business-critical") && all.some((r) => r.value !== "business-critical");
 }
 
 // ---------------------------------------------------------------------------

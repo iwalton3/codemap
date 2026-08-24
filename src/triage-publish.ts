@@ -48,31 +48,31 @@ export async function materializeTriage(root: string, cfg: SidecarConfig): Promi
 /**
  * Publish one triage assertion, if there is anywhere to publish it to.
  *
- * A no-op when no sidecar is configured — `setTriage` then keeps its local row, which
- * is what codemap did for its whole life before there was a sidecar. `shared: false`
- * is the signal to do that, and it covers a misconfigured sidecar too: a mark must
- * never be lost because a shared repo is missing.
+ * `shared: false` with `configured: false` means there is no sidecar and the caller
+ * should keep its local row, which is what codemap did for its whole life. `configured:
+ * true` with `shared: false` is a FAILED APPEND and the caller must fail — see the note
+ * at `setTriage`'s call site for why a local row here fabricates causality later.
  */
-export async function mirrorTriage(root: string, a: TriageAssertion): Promise<{ shared: boolean; folded?: boolean }> {
+export async function mirrorTriage(root: string, a: TriageAssertion): Promise<{ shared: boolean; configured: boolean; folded?: boolean; error?: string }> {
   const cfg = resolveSidecar(root);
-  if (!cfg) return { shared: false };
+  if (!cfg) return { shared: false, configured: false };
   const actor = requireActor(root);
-  if ("error" in actor) return { shared: false };
+  if ("error" in actor) return { shared: false, configured: true, error: actor.error };
   await ensureSidecar(cfg.path, actor);
   await assertTriage(cfg.path, triageScope(cfg.universe), actor, a);
-  return { shared: true, folded: await materializeTriage(root, cfg) };
+  return { shared: true, configured: true, folded: await materializeTriage(root, cfg) };
 }
 
 /** Many assertions, one append and ONE fold. See `assertTriageBatch`. */
-export async function mirrorTriageBatch(root: string, items: TriageAssertion[]): Promise<{ shared: boolean; folded?: boolean }> {
-  if (!items.length) return { shared: false };
+export async function mirrorTriageBatch(root: string, items: TriageAssertion[]): Promise<{ shared: boolean; configured: boolean; folded?: boolean; error?: string }> {
+  if (!items.length) return { shared: false, configured: !!resolveSidecar(root) };
   const cfg = resolveSidecar(root);
-  if (!cfg) return { shared: false };
+  if (!cfg) return { shared: false, configured: false };
   const actor = requireActor(root);
-  if ("error" in actor) return { shared: false };
+  if ("error" in actor) return { shared: false, configured: true, error: actor.error };
   await ensureSidecar(cfg.path, actor);
   await assertTriageBatch(cfg.path, triageScope(cfg.universe), actor, items);
-  return { shared: true, folded: await materializeTriage(root, cfg) };
+  return { shared: true, configured: true, folded: await materializeTriage(root, cfg) };
 }
 
 /**
