@@ -111,10 +111,16 @@ export async function connect(
   if (!list.length) return { error: "provide an edge (from/to/type) or edges[]" };
   // Node existence against the MERGED view — a teammate's node is a legitimate target.
   const nodeIds = new Set((await loadNodesShared(root)).map((n) => n.id));
-  // But the graph being MUTATED is this clone's own. Read-modify-write over the merged
-  // view would copy every teammate edge into the local partition, where the next fold
-  // would produce it again alongside — the seam bug triage was built to prevent.
-  const graph = await readLocalGraph(root);
+  // And the wiring being mutated is the MERGED one, which is the correction that makes
+  // "decide the answer and push it back" work at all.
+  //
+  // Reading only the local partition looked right — a local write may never reach a
+  // fold-owned row — and lost data: a publication REPLACES that node's wiring, so
+  // publishing a local set that never held a teammate's edges silently dropped them.
+  // Measured before the fix: B adding one edge to a node A had wired removed a step
+  // from B's own flow. What you are editing is what you can SEE; publishing it is
+  // stating your answer, which is what a conflict resolution is.
+  const graph = await readGraph(root);
   let added = 0;
   const errors: string[] = [];
   for (const e of list) {
@@ -125,27 +131,65 @@ export async function connect(
     }
     if (addEdge(graph, { from: e.from, to: e.to, type: e.type, order: e.order })) added++;
   }
-  await writeGraph(root, graph);
-  // Publish the wiring of every node this touched. AFTER the local write and never in
-  // place of it: codemap worked without a sidecar for its whole life, and an edge must
-  // not be lost because a shared repo is misconfigured.
-  // Nothing added means nothing to say. Publishing an unchanged set would mint an event
-  // whose only effect is to move the wall-clock winner — which is how a no-op write
-  // starts winning races against real ones.
-  const touched = added ? [...new Set(list.map((e) => e.from))] : [];
+  return writeAndPublish(root, graph, added ? [...new Set(list.map((x) => x.from))] : [], { added, errors });
+}
+
+/**
+ * Remove edges, and publish the node's wiring without them.
+ *
+ * The other half of deciding an answer. Without a removal there is no way to say "that
+ * step does not belong", so a divergence could only ever be resolved by adding — which
+ * is not a resolution, it is an accumulation.
+ */
+export async function disconnect(
+  root: string,
+  input: { from?: string; to?: string; type?: EdgeType; edges?: { from: string; to: string; type: EdgeType }[] },
+) {
+  const list = input.edges ?? (input.from && input.to && input.type ? [{ from: input.from, to: input.to, type: input.type }] : []);
+  if (!list.length) return { error: "provide an edge (from/to/type) or edges[]" };
+  const graph = await readGraph(root);
+  const gone = new Set(list.map((e) => `${e.from}\0${e.to}\0${e.type}`));
+  const before = graph.edges.length;
+  // Analyzer edges are not yours to remove: they are regenerated from the code on every
+  // machine, so a removal here is undone by the next `check` and reads as a flapping
+  // graph rather than a decision.
+  const kept = graph.edges.filter((e) => !(gone.has(`${e.from}\0${e.to}\0${e.type}`) && !e.generatedBy));
+  const removed = before - kept.length;
+  return writeAndPublish(root, { edges: kept }, removed ? [...new Set(list.map((x) => x.from))] : [], { removed });
+}
+
+/**
+ * Write this clone's answer for the touched nodes, publish it, and hand ownership over.
+ *
+ * The clear is what makes a removal propagate. A publication replaces the shared wiring,
+ * but the publisher's own local row would keep answering on their machine — so "the
+ * wiring is X" would resolve for everybody except the person who decided it. With a
+ * sidecar the wiring lives in the log; the local partition holds only what has not been
+ * published, exactly as `publishLocalTriage` leaves it.
+ */
+async function writeAndPublish(
+  root: string,
+  graph: { edges: Edge[] },
+  touched: string[],
+  extra: { added?: number; removed?: number; errors?: string[] },
+) {
+  const { replaceLocalNodeEdges, clearLocalNodeEdges } = await import("../store.js");
+  if (touched.length) await replaceLocalNodeEdges(root, touched, graph.edges);
   const shared = await import("../graph-publish.js")
     .then((m) => m.mirrorWiring(root, touched))
     .catch(() => ({ shared: false, configured: false, error: undefined as string | undefined }));
+  // Only once it is really in the log. A clear on a failed publish would delete the
+  // only copy of a decision that never travelled.
+  if (shared.shared) await clearLocalNodeEdges(root, touched);
+  const errs = extra.errors ?? [];
   return {
-    ok: true, added, edges: graph.edges.length,
-    ...(errors.length ? { errors } : {}),
+    ok: true,
+    added: extra.added ?? 0,
+    ...(extra.removed !== undefined ? { removed: extra.removed } : {}),
+    edges: (await readGraph(root)).edges.length,
+    ...(errs.length ? { errors: errs } : {}),
     ...(shared.shared ? { shared: true } : {}),
-    // Said, not swallowed: the edge is local either way, and a teammate not seeing it is
-    // a different outcome from it not existing.
-    // `added === 0` is a no-op, not a failure — nothing was published because there was
-    // nothing to publish. Reporting a share error there made every re-run of an
-    // unchanged `connect` look like the sidecar was broken.
-    ...(added && shared.configured && !shared.shared
+    ...(touched.length && shared.configured && !shared.shared
       ? { shareError: shared.error ?? "the wiring could not be published" } : {}),
   };
 }

@@ -1057,6 +1057,48 @@ export async function readGraph(root: string): Promise<Graph> {
 }
 
 /**
+ * Replace this clone's own edges FROM these nodes, leaving every other node alone.
+ *
+ * Per node rather than whole-list, because the unit of a wiring act is one node's
+ * outgoing set — and because `writeGraph` rewrites the entire local partition, which is
+ * the wrong grain once a publish only covers the nodes you touched.
+ */
+export async function replaceLocalNodeEdges(root: string, nodeIds: string[], edges: Edge[]): Promise<void> {
+  if (!nodeIds.length) return;
+  const d = db(root);
+  const del = d.prepare("DELETE FROM edges WHERE source_scope IS NULL AND from_id = ?");
+  const ins = d.prepare("INSERT INTO edges(from_id,to_id,type,ord,generated_by) VALUES(?,?,?,?,?)");
+  d.exec("BEGIN");
+  try {
+    for (const id of nodeIds) del.run(id);
+    for (const e of edges) {
+      if (!nodeIds.includes(e.from)) continue;
+      ins.run(e.from, e.to, e.type, e.order ?? null, e.generatedBy ?? null);
+    }
+    d.exec("COMMIT");
+  } catch (e) { d.exec("ROLLBACK"); throw e; }
+}
+
+/**
+ * Drop this clone's own edges from these nodes — the log owns them now.
+ *
+ * Called after a successful publish, and it is what makes a REMOVAL propagate. Left
+ * behind, the publisher's local copy keeps answering on their machine after the shared
+ * answer has dropped it, so "I decided the wiring is X" resolves for everybody except
+ * the person who decided. Exactly the rule `publishLocalTriage` follows: with a sidecar,
+ * the wiring lives in the log and the local partition holds only what has not been
+ * published yet.
+ */
+export async function clearLocalNodeEdges(root: string, nodeIds: string[]): Promise<void> {
+  if (!nodeIds.length) return;
+  const d = db(root);
+  const del = d.prepare("DELETE FROM edges WHERE source_scope IS NULL AND from_id = ?");
+  d.exec("BEGIN");
+  try { for (const id of nodeIds) del.run(id); d.exec("COMMIT"); }
+  catch (e) { d.exec("ROLLBACK"); throw e; }
+}
+
+/**
  * The fold's answer for this scope's wiring, from ROWS.
  *
  * Not through the cache. `readTriage` and every ordinary read answer from the table, and

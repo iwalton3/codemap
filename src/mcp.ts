@@ -418,6 +418,17 @@ const tools: Tool[] = [
     handler: (a, c) => ops.connect(c.universe.path, a),
   },
   {
+    name: "disconnect",
+    description: "Remove wiring between two nodes — the other half of `connect`.\n\nUse it to say \"that step does not belong\" or \"this does not depend on that\". Without a removal a wiring disagreement can only be resolved by ADDING, which is accumulation rather than resolution.\n\nThe node's whole outgoing set is republished, so this is you stating what the wiring IS, not just what to subtract. Analyzer-generated edges are refused: they are regenerated from the code on every machine, so removing one here is undone by the next `check`.",
+    inputSchema: obj({
+      from: { type: "string", description: "Source node id." },
+      to: { type: "string", description: "Target node id." },
+      type: { type: "string", description: "The edge type to remove." },
+    }, ["from", "to", "type"]),
+    mutates: true,
+    handler: (a, c) => ops.disconnect(c.universe.path, { from: a.from, to: a.to, type: a.type }),
+  },
+  {
     name: "delete_node",
     description: "Delete a logical node outright and any edges touching it (ALL branches). For removing code on ONE branch while keeping the doc live on another, use `ack_hole` instead. To drop a single vanished anchor ref while keeping the node, use update_node with removeAnchors: [\"a_<id>\"].",
     inputSchema: obj({ id: { type: "string" } }, ["id"]),

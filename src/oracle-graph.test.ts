@@ -74,8 +74,14 @@ test("a flow one person wrote is walkable by another, and a reorder reaches the 
 
       const d = await publishLocalDocs(izzie.repo) as { skipped?: { flows: number } };
       assert.equal(d.skipped?.flows ?? 0, 0, "a flow is no longer skipped at the publish surface");
-      const g = await publishLocalGraph(izzie.repo) as { published: number };
-      assert.ok(g.published >= 1, "and the wiring publishes");
+      // `connect` already published and handed ownership to the log, so the genesis
+      // tool has nothing left to do. Asserted rather than skipped: a non-zero here would
+      // mean the wiring stayed in the local partition, which is what made a later
+      // removal resolve for everybody except the person who decided it.
+      const g = await publishLocalGraph(izzie.repo) as { wouldPublish?: number; published?: number };
+      assert.equal(g.published ?? 0, 0, "connect published it; nothing is left behind locally");
+      const { readLocalGraph } = await import("./store.js");
+      assert.deepEqual((await readLocalGraph(izzie.repo)).edges, [], "the log owns the wiring now");
 
       // Materialize before the properties run. `publishLocalDocs` APPENDS and does not
       // fold, so between the two the local row is byte-identical to a shared version

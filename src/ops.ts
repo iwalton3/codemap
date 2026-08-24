@@ -49,7 +49,7 @@ export {
 } from "./ops/triage.js";
 
 export {
-  document, connect, updateNode, confirm, UNPLACEABLE_CATEGORY, ackHole, nodeVersions, removeNode, linksReport,
+  document, connect, disconnect, updateNode, confirm, UNPLACEABLE_CATEGORY, ackHole, nodeVersions, removeNode, linksReport,
 } from "./ops/docs.js";
 
 export { reportBug, listBugs, bugDetail, updateBug } from "./ops/bugs.js";

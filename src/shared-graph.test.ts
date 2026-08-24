@@ -286,3 +286,83 @@ test("a reordering reaches the review queue, and a repair closes it", async () =
     );
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("deciding an answer and pushing it back resolves it for EVERYONE", async () => {
+  // The owner's framing: this should work like pointing an agent at a merge conflict —
+  // once corrected, the invalid state is resolved across the board. Three things have
+  // to hold for that, and the first two were broken.
+  //
+  //   1. What you edit is what you can SEE. `connect` read only the local partition, so
+  //      adding one edge to a node a teammate had wired published a set that never held
+  //      their edges — silently dropping them. Measured: B added one edge and lost a
+  //      STEP from B's own flow.
+  //   2. You can say "not that". There was no removal at all, so a divergence could only
+  //      be resolved by adding, which is accumulation rather than resolution.
+  //   3. The answer lands everywhere, INCLUDING on the machine that decided it. A
+  //      publication replaces the shared wiring, but the publisher's own local row would
+  //      keep answering locally — so a removal resolved for everybody except them.
+  const { mkdtempSync, mkdirSync, rmSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { spawnSync } = await import("node:child_process");
+  const { db } = await import("./db.js");
+  const { readGraph, readLocalGraph } = await import("./store.js");
+  const { init, document: documentNode, connect, disconnect } = await import("./ops.js");
+  const { graphProjection } = await import("./shared-projections.js");
+  const { resolveSidecar } = await import("./sidecar-config.js");
+
+  const root = mkdtempSync(join(tmpdir(), "codemap-decide-"));
+  try {
+    mkdirSync(join(root, "src"), { recursive: true });
+    writeFileSync(join(root, "src/pay.ts"), "export function transfer(c: number) { return c; }\n");
+    spawnSync("git", ["init", "-q"], { cwd: root });
+    spawnSync("git", ["add", "-A"], { cwd: root });
+    spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "i"], { cwd: root });
+    await init(root);
+    const side = join(root, "side");
+    mkdirSync(side, { recursive: true });
+    spawnSync("git", ["init", "-q"], { cwd: side });
+    writeFileSync(join(root, ".codemap", "sidecar"), side);
+    for (const [id, type] of [["n_flow", "process"], ["n_a", "step"]] as const) {
+      const r = await documentNode(root, {
+        id, type: type as any, title: id, summary: "s", anchors: ["src/pay.ts#transfer"],
+      }) as { error?: string };
+      assert.equal(r.error, undefined, `document ${id} failed: ${r.error}`);
+    }
+
+    // A TEAMMATE's wiring, fold-owned — this clone holds no local row for it.
+    const scope = `graph/${resolveSidecar(root)!.universe}`;
+    graphProjection.write(db(root), scope, new Map([["n_a", {
+      nodeId: "n_a", winner: {
+        nodeId: "n_a", commit: "c1", edges: [{ to: "n_flow", type: "step_of" as any, order: 0 }],
+        actor: { principal: "ben@x" }, at: "2026-08-24T01:00:00Z", eventId: "e1",
+      },
+    }]]));
+    assert.deepEqual((await readLocalGraph(root)).edges, [], "nothing of this clone's own yet");
+
+    // 1 — ADDING must not drop what you could see.
+    const c = await connect(root, { edges: [{ from: "n_a", to: "n_flow", type: "touches" }] }) as any;
+    assert.equal(c.shareError, undefined, `publish failed: ${c.shareError}`);
+    assert.deepEqual(
+      (await readGraph(root)).edges.filter((e) => e.from === "n_a").map((e) => e.type).sort(),
+      ["step_of", "touches"],
+      "the teammate's step_of survived an additive act — this is the bug that lost a flow step",
+    );
+
+    // 3 — and the publisher does not keep a private copy: the log owns it now.
+    assert.deepEqual(
+      (await readLocalGraph(root)).edges, [],
+      "published wiring left the local partition, or a later removal resolves for everyone but you",
+    );
+
+    // 2 — SAYING NOT THAT, which is what resolving a divergence actually needs.
+    const d = await disconnect(root, { from: "n_a", to: "n_flow", type: "step_of" }) as any;
+    assert.equal(d.removed, 1, "a removal is expressible");
+    assert.equal(d.shareError, undefined, `removal did not publish: ${d.shareError}`);
+    assert.deepEqual(
+      (await readGraph(root)).edges.filter((e) => e.from === "n_a").map((e) => e.type),
+      ["touches"],
+      "and it lands — the decided answer is the whole answer, on this machine too",
+    );
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
