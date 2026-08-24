@@ -16,7 +16,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, statSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { CODEMAP_DIR } from "./schema.js";
 import { originSlug } from "./git.js";
@@ -147,6 +147,21 @@ export function workspaceSidecar(root: string): string | null {
   }
   return null;
 }
+
+/**
+ * The cache key's identity half — WHICH sidecar a scope's rows came from.
+ *
+ * Lives here because `ops-shared.ts` and `triage-publish.ts` both need it and one may
+ * not import the other (see the note at the top of `triage-publish.ts`). Two copies
+ * that drift would key one universe's scopes two ways: every read a miss, and two rows
+ * for one scope racing to overwrite each other.
+ *
+ * `realpath` so two paths to one sidecar are one identity — and the raw path when it
+ * does not exist yet, which is an ordinary state before the first `ensureSidecar`.
+ */
+export const sidecarIdentity = (cfg: { path: string }): string => {
+  try { return realpathSync(cfg.path); } catch { return cfg.path; }
+};
 
 /** Scope keys, universe-prefixed. The one place that layout is decided. */
 export const scopeFor = (cfg: SidecarConfig, kind: string, key: string | number): string =>

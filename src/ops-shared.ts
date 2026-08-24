@@ -18,7 +18,7 @@ import type { ScopeStatus, ScopeDiagnostic, LogEvent } from "./eventlog.js";
 import { scopesOnDisk, readScopeChecked, writerFor, rotateWriter, acknowledgeScope } from "./eventlog.js";
 import { findingsProjection, docsProjection, notesProjection, walkthroughsProjection, docsByNode, projectionFor } from "./shared-projections.js";
 import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
-import { resolveSidecar, scopeFor, type SidecarConfig } from "./sidecar-config.js";
+import { resolveSidecar, scopeFor, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
 import { originSlug, headCommit, currentBranch } from "./git.js";
 import { fetchReviewThreads, type GhRunner } from "./pr-push.js";
 import { ensureSidecar, sync as sidecarSync, healMerge, readManifests, checkPeers, currentManifest } from "./sidecar.js";
@@ -418,9 +418,9 @@ export async function settleContest(root: string, pr: number | string, id: strin
  * with matching shard stats the first sidecar's rows would be served for the
  * second's log indefinitely. `realpath` is what makes "cannot reuse rows" true.
  */
-const sidecarIdentity = (cfg: { path: string }): string => {
-  try { return realpathSync(cfg.path); } catch { return cfg.path; }   // not created yet
-};
+// Moved to `sidecar-config.ts` so a second module can share the exact string — see the
+// note there. Re-exported: it was module-private and several call sites below read
+// better with the short name.
 
 /**
  * What a surface says about the scope it just answered from.
