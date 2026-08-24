@@ -87,17 +87,21 @@ product defect:
   handoff already lists, in a fixture that was missed. Both shared-docs tests sat waiting
   30s for a row that could never render. Retyped to `concept`; the suite went from 73s to
   14s.
-- **`pr-import.e2e.ts` had lost its prerequisite.** `~/Desktop/jellyfin` no longer holds
-  any `refs/pull/*` and its remote is named `alt`, so the fixture PR is unreachable. That
-  is a missing prerequisite, and CLAUDE.md's rule is that those SKIP rather than fail —
-  `skipReason()` checked the fixture COMMITS and `gh auth`, neither of which implies the
-  pull ref now that resolution is git-only. It checks the ref and says how to restore it.
+- **`pr-import.e2e.ts` had lost its prerequisite.** `~/Desktop/jellyfin` held none of
+  `refs/pull/*`, so the fixture PR was unreachable. `skipReason()` checked the fixture
+  COMMITS and `gh auth`, and neither implies the pull ref now that resolution is
+  git-only — an ordinary fetch brings branches and tags, never pull refs. It checks the
+  ref itself now and names the command that restores it, because CLAUDE.md's rule is that
+  a missing prerequisite SKIPS rather than fails.
 
-**`npm run e2e` is green (74 pass, 1 suite skipped).** To bring those six back:
+  **Fetched, and the suite passes again** (7/7 against the real repo). If it ever goes
+  missing, the ref lives on the repository the PR was opened against:
 
-```sh
-git -C ~/Desktop/jellyfin fetch <remote> '+refs/pull/17463/head:refs/pull/17463/head'
-```
+  ```sh
+  git -C ~/Desktop/jellyfin fetch origin '+refs/pull/17463/head:refs/pull/17463/head'
+  ```
+
+**`npm run e2e` is green.**
 
 ### A live defect, filed not fixed: two agents can raise a contest neither may settle
 
