@@ -30,6 +30,7 @@ import {
   type NodeVersion, type NodeCitation, type NodeStatus,
   type Graph, type Edge, type Bug, type BugStore, type Annotation, type AnnotationStore,
   type CoverageRule, type CoverageStore, type AnalyzerConfig, type Review, type ReviewStore, type Triage, type TriageStore,
+  type BugWitness, type Importance, type Complexity, type TriageSource,
   SCHEMA_VERSION, ANCHOR_SCHEME, HASH_SCHEME,
 } from "./schema.js";
 
@@ -1088,12 +1089,177 @@ export async function writeReviews(root: string, reviews: Review[]): Promise<voi
   setMeta(db(root), "reviews", { schemaVersion: SCHEMA_VERSION, reviews });
 }
 
-export async function readTriage(root: string): Promise<TriageStore> {
-  return getMeta<TriageStore>(db(root), "triage") ?? { schemaVersion: SCHEMA_VERSION, triage: [] };
+// --- triage: one canonical table, one row per (target, field) ----------------------
+//
+// `docs/shared-triage.md` is normative. The shape here is the part that has to be right
+// before anything is shared: a teammate's stakes are an ordinary row carrying an
+// `origin`, and a LOCAL WRITE MAY NEVER REACH ONE. That is why the reader and the
+// writers are different functions rather than one pair — every existing write path is a
+// read-modify-write of the whole list, so handing them the merged view and letting them
+// write it back would copy a teammate's row into the local partition, where the next
+// fold would produce it again alongside.
+
+interface TriageRow {
+  target_kind: string; target_id: string; field: string; value: string;
+  source: string; likely: number; generated_by: string | null; reason: string | null;
+  at: string; actor: string | null; asserted_commit: string | null; witnesses: string;
+  origin: string | null; source_scope: string | null;
 }
 
-export async function writeTriage(root: string, triage: Triage[]): Promise<void> {
-  setMeta(db(root), "triage", { schemaVersion: SCHEMA_VERSION, triage });
+const TRIAGE_COLS = "target_kind,target_id,field,value,source,likely,generated_by,reason,at,"
+  + "actor,asserted_commit,witnesses,origin,source_scope";
+
+/**
+ * Per-field rows back into the `Triage` records callers expect.
+ *
+ * The record-level `source`, `likely`, `reason` and `at` come from the IMPORTANCE row.
+ * That is the documented alias, not an accident: a record whose importance is a human's
+ * and whose complexity is an agent's has no single truthful value for any of them, and
+ * importance is the field the rest refine. Anything needing the real provenance of a
+ * given field reads the rows.
+ */
+function triageFromRows(rows: TriageRow[]): Triage[] {
+  const byTarget = new Map<string, TriageRow[]>();
+  for (const r of rows) {
+    const k = `${r.target_kind}\0${r.target_id}`;
+    const acc = byTarget.get(k); if (acc) acc.push(r); else byTarget.set(k, [r]);
+  }
+  const out: Triage[] = [];
+  for (const group of byTarget.values()) {
+    const imp = group.find((r) => r.field === "importance");
+    // No importance is not a mark. Nothing else can stand in for it: `complexity` alone
+    // has no stakes to weigh, which is exactly what the ratchet refuses to invent.
+    if (!imp) continue;
+    const cx = group.find((r) => r.field === "complexity");
+    const tw = group.find((r) => r.field === "tripwire");
+    let witnesses: BugWitness[] = [];
+    try { witnesses = JSON.parse(imp.witnesses || "[]") as BugWitness[]; } catch { /* keep the mark */ }
+    out.push({
+      target: { kind: imp.target_kind as "node" | "anchor", id: imp.target_id },
+      importance: imp.value as Importance,
+      ...(cx ? { complexity: cx.value as Complexity } : {}),
+      likely: !!imp.likely,
+      ...(tw ? { tripwire: tw.value === "1" } : {}),
+      source: imp.source as TriageSource,
+      ...(imp.generated_by ? { generatedBy: imp.generated_by } : {}),
+      ...(imp.reason ? { reason: imp.reason } : {}),
+      at: imp.at,
+      witnesses,
+    });
+  }
+  return out;
+}
+
+/** One `Triage` as its per-field rows, all sharing the record's receipt. */
+function triageToRows(t: Triage): [string, string, string, string, string, number, string | null, string | null, string, string][] {
+  const receipt = [
+    t.source, t.likely ? 1 : 0, t.generatedBy ?? null, t.reason ?? null,
+    t.at, JSON.stringify(t.witnesses ?? []),
+  ] as const;
+  const rows: any[] = [[t.target.kind, t.target.id, "importance", String(t.importance), ...receipt]];
+  if (t.complexity) rows.push([t.target.kind, t.target.id, "complexity", String(t.complexity), ...receipt]);
+  // Only when SET — `undefined` means nobody has said, and an invented `false` is an
+  // alarm silently turned off.
+  if (t.tripwire !== undefined) rows.push([t.target.kind, t.target.id, "tripwire", t.tripwire ? "1" : "0", ...receipt]);
+  return rows;
+}
+
+/**
+ * Every mark this store answers with: the local rows, and a teammate's where there is no
+ * local one for that target.
+ *
+ * What every READER wants. Nothing folds a log here — these are rows, so `COMPLETENESS`
+ * still holds; the fold's job is to have written the shared rows at sync time.
+ *
+ * The merge is deliberately the trivial one for now: no fold writes `source_scope` yet,
+ * so there is nothing to merge and this is exactly the previous behaviour. The rule that
+ * decides a real merge is in `docs/shared-triage.md` and lands with the fold.
+ */
+export async function readTriage(root: string): Promise<TriageStore> {
+  const rows = db(root).prepare(`SELECT ${TRIAGE_COLS} FROM triage`).all() as unknown as TriageRow[];
+  const local = new Set(rows.filter((r) => r.source_scope === null).map((r) => `${r.target_kind}\0${r.target_id}`));
+  const merged = rows.filter((r) => r.source_scope === null || !local.has(`${r.target_kind}\0${r.target_id}`));
+  return { schemaVersion: SCHEMA_VERSION, triage: triageFromRows(merged) };
+}
+
+/** This clone's OWN marks. What every WRITER must read before it writes. */
+export async function readLocalTriage(root: string): Promise<TriageStore> {
+  const rows = db(root).prepare(`SELECT ${TRIAGE_COLS} FROM triage WHERE source_scope IS NULL`)
+    .all() as unknown as TriageRow[];
+  return { schemaVersion: SCHEMA_VERSION, triage: triageFromRows(rows) };
+}
+
+/**
+ * Replace this clone's own marks. NEVER a teammate's.
+ *
+ * `WHERE source_scope IS NULL` is the whole point: a bare `DELETE FROM triage` would
+ * take rows only the fold may own, with no event recording it, and the next fold would
+ * put them back — so the damage appears and disappears depending on when you look.
+ */
+export async function replaceLocalTriage(root: string, triage: Triage[]): Promise<void> {
+  const d = db(root);
+  const ins = d.prepare(
+    "INSERT OR REPLACE INTO triage(target_kind,target_id,field,value,source,likely,generated_by,"
+    + "reason,at,witnesses) VALUES(?,?,?,?,?,?,?,?,?,?)",
+  );
+  d.exec("BEGIN");
+  try {
+    d.prepare("DELETE FROM triage WHERE source_scope IS NULL").run();
+    for (const t of triage) for (const row of triageToRows(t)) ins.run(...row as any);
+    d.exec("COMMIT");
+  } catch (e) { d.exec("ROLLBACK"); throw e; }
+}
+
+/**
+ * Kept as the old name, and it is the LOCAL writer.
+ *
+ * Every existing caller means "my own marks" — there were no others when they were
+ * written. Keeping the name means the 18 call sites do not all move in the same change
+ * that moves the storage, which is how the JSON→SQLite migration stayed reviewable.
+ */
+export const writeTriage = replaceLocalTriage;
+
+/**
+ * Replace only the local GRAPH rows, leaving human and agent marks alone.
+ *
+ * `deriveTriage` regenerates graph output by dropping and rebuilding it, which is safe
+ * while everything is local and destructive the moment it is not: the whole-list rewrite
+ * it does today would write a teammate's human mark back as a local row. Graph output is
+ * also the one kind that never travels, precisely because it is regenerated per machine.
+ */
+export async function replaceLocalGraphTriage(root: string, triage: Triage[]): Promise<void> {
+  const d = db(root);
+  const ins = d.prepare(
+    "INSERT OR REPLACE INTO triage(target_kind,target_id,field,value,source,likely,generated_by,"
+    + "reason,at,witnesses) VALUES(?,?,?,?,?,?,?,?,?,?)",
+  );
+  d.exec("BEGIN");
+  try {
+    d.prepare("DELETE FROM triage WHERE source_scope IS NULL AND source = 'graph'").run();
+    for (const t of triage) {
+      if (t.source !== "graph") continue;
+      for (const row of triageToRows(t)) ins.run(...row as any);
+    }
+    d.exec("COMMIT");
+  } catch (e) { d.exec("ROLLBACK"); throw e; }
+}
+
+/** One target's local mark, replacing whatever was there for it. */
+export async function upsertLocalTriage(root: string, t: Triage): Promise<void> {
+  const d = db(root);
+  const ins = d.prepare(
+    "INSERT OR REPLACE INTO triage(target_kind,target_id,field,value,source,likely,generated_by,"
+    + "reason,at,witnesses) VALUES(?,?,?,?,?,?,?,?,?,?)",
+  );
+  d.exec("BEGIN");
+  try {
+    // By TARGET, not by field: a mark that loses its complexity must lose the row, or the
+    // old value survives under a receipt that no longer mentions it.
+    d.prepare("DELETE FROM triage WHERE source_scope IS NULL AND target_kind = ? AND target_id = ?")
+      .run(t.target.kind, t.target.id);
+    for (const row of triageToRows(t)) ins.run(...row as any);
+    d.exec("COMMIT");
+  } catch (e) { d.exec("ROLLBACK"); throw e; }
 }
 
 /**

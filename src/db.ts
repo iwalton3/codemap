@@ -42,8 +42,69 @@ export function db(root: string): DatabaseSync {
   migrate(d);
   importLegacy(root, d);
   migrateNodesToVersions(d);
+  migrateTriageBlob(d);
   cache.set(root, d);
   return d;
+}
+
+/**
+ * One-time: `meta["triage"]` becomes rows in the `triage` table.
+ *
+ * The blob was one JSON document holding every mark. It has to become a table before a
+ * teammate's stakes can be an ordinary row with an `origin` — the one-canonical-table
+ * rule that removed the parallel `shared_doc_*` tables. See `docs/shared-triage.md`.
+ *
+ * Every migrated mark is LOCAL (`source_scope IS NULL`), and stays local until somebody
+ * publishes it deliberately. That is not fastidiousness: a legacy `Triage` carries a
+ * `source` but no `Actor`, so publishing automatically would attribute every historical
+ * judgment to whoever happened to upgrade first.
+ *
+ * Idempotent by construction — the key is dropped in the same transaction that writes
+ * the rows, so a second open has nothing to import. If rows already exist the blob is
+ * stale (something has written since) and is dropped without being read: the table has
+ * already won, and re-importing would resurrect marks a later write removed.
+ */
+function migrateTriageBlob(d: DatabaseSync): void {
+  const row = d.prepare("SELECT v FROM meta WHERE k = 'triage'").get() as { v: string } | undefined;
+  if (!row) return;
+  const existing = (d.prepare("SELECT COUNT(*) c FROM triage").get() as { c: number }).c;
+
+  d.exec("BEGIN");
+  try {
+    if (!existing) {
+      let parsed: { triage?: unknown[] } | undefined;
+      // A blob this build cannot parse is not a reason to refuse to open the store. It
+      // is left in `meta` rather than dropped, so nothing is destroyed and a later build
+      // can still look at it.
+      try { parsed = JSON.parse(row.v) as { triage?: unknown[] }; } catch { d.exec("ROLLBACK"); return; }
+      const ins = d.prepare(
+        "INSERT OR IGNORE INTO triage(target_kind,target_id,field,value,source,likely,generated_by,"
+        + "reason,at,witnesses) VALUES(?,?,?,?,?,?,?,?,?,?)",
+      );
+      for (const t of (parsed?.triage ?? []) as Record<string, any>[]) {
+        const kind = t?.target?.kind, id = t?.target?.id;
+        // `importance` is what makes a mark a mark; every other field is a refinement of
+        // one. A row without it is not a triage record and there is nothing to carry.
+        if (!kind || !id || !t.importance) continue;
+        const receipt = [
+          t.source ?? "human", t.likely ? 1 : 0, t.generatedBy ?? null,
+          t.reason ?? null, t.at ?? new Date(0).toISOString(), JSON.stringify(t.witnesses ?? []),
+        ];
+        ins.run(kind, id, "importance", String(t.importance), ...receipt);
+        if (t.complexity) ins.run(kind, id, "complexity", String(t.complexity), ...receipt);
+        // Only when SET. `undefined` means nobody has said, which is not the same as
+        // disarmed — and a tripwire invented as `false` is an alarm silently turned off.
+        if (t.tripwire !== undefined && t.tripwire !== null) {
+          ins.run(kind, id, "tripwire", t.tripwire ? "1" : "0", ...receipt);
+        }
+      }
+    }
+    d.prepare("DELETE FROM meta WHERE k = 'triage'").run();
+    d.exec("COMMIT");
+  } catch (e) {
+    d.exec("ROLLBACK");
+    throw e;
+  }
 }
 
 /**
@@ -190,6 +251,45 @@ function migrate(d: DatabaseSync): void {
     -- Map key order is not a document property, and SharedDoc.authors is a Map,
     -- which JSON.stringify turns into {}.
     -- The citation edge, lifted out of the JSON. READ, by the section-5 reverse
+
+    -- Triage, one row per (target, field). ONE canonical table, so a teammate's stakes
+    -- are an ordinary row with an origin rather than a parallel table needing a bridge
+    -- onto every surface — the rule that removed the shared_doc_* tables.
+    -- See docs/shared-triage.md.
+    --
+    -- Per FIELD, not per target, because each asserted field carries its own receipt:
+    -- a record whose importance is a human's and whose complexity is an agent's has no
+    -- single truthful source, reason or witnesses. Collapsing them to one row is
+    -- the compound-value bug the design exists to avoid.
+    CREATE TABLE IF NOT EXISTS triage (
+      target_kind TEXT NOT NULL,          -- 'node' | 'anchor'
+      target_id TEXT NOT NULL,
+      field TEXT NOT NULL,                -- 'importance' | 'complexity' | 'tripwire'
+      value TEXT NOT NULL,
+      -- The receipt for THIS field.
+      source TEXT NOT NULL,               -- TriageSource
+      likely INTEGER NOT NULL DEFAULT 0,
+      generated_by TEXT,
+      reason TEXT,
+      at TEXT NOT NULL,
+      -- Who asserted it, as JSON Actor. NULL on a local row: it is this store's user,
+      -- and legacy marks carry a source but no actor at all.
+      actor TEXT,
+      -- The commit the assertion was made at. A body hash decides whether a claim
+      -- applies here; only a locator can retrieve or explain the writer's version.
+      asserted_commit TEXT,
+      witnesses TEXT NOT NULL DEFAULT '[]',
+      -- Provenance, exactly as node_versions: NULL origin = this user wrote it.
+      origin TEXT, source_scope TEXT
+    );
+    -- PARTIAL indexes, and they are not interchangeable with one composite UNIQUE.
+    -- SQLite does not conflict NULLs, so UNIQUE(target_kind,target_id,field,source_scope)
+    -- admits unlimited duplicate LOCAL rows — measured, it inserts two happily.
+    CREATE UNIQUE INDEX IF NOT EXISTS ix_triage_local ON triage(target_kind, target_id, field)
+      WHERE source_scope IS NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS ix_triage_shared ON triage(source_scope, target_kind, target_id, field)
+      WHERE source_scope IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS ix_triage_target ON triage(target_id);
 
     CREATE TABLE IF NOT EXISTS shared_note (
       scope TEXT NOT NULL, id TEXT NOT NULL, target_id TEXT NOT NULL,
