@@ -36,6 +36,10 @@ import {
 } from "./shared-notes.js";
 import { assertTriageBatch, triageScope, triageOf, isTombstone, type SharedTriage } from "./shared-triage.js";
 import { cachedTriage, materializeTriage } from "./triage-publish.js";
+export { mirrorNote } from "./notes-publish.js";
+export { sharedKnowsNode, docsVerdict, type DocsVerdict } from "./docs-lookup.js";
+import { docsVerdict } from "./docs-lookup.js";
+import { queueContestedTriage } from "./ops/triage.js";
 export { mirrorTriage, mirrorTriageBatch, mirrorTriageClear } from "./triage-publish.js";
 import { readAnnotations, readAnchorStore, loadNodes, loadNodeVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage } from "./store.js";
 import {
@@ -127,7 +131,19 @@ export async function sharedSync(root: string) {
   // about folds or entity kinds. Sync is also the one moment a person is watching,
   // which is why the blocked scopes are reported rather than discovered later.
   const materialized = await materializeUniverse(root, b.cfg);
-  return { ok: true, universe: b.cfg.universe, sidecar: b.cfg.path, ...r, materialized };
+  // A sync is the moment a teammate's disagreement ARRIVES, so it is where a stakes
+  // contest becomes a queue item and where a settled one is closed. INSIDE the op, not
+  // in a front-end: it lived in `cli.ts` and MCP and the web both call `sharedSync`
+  // directly, so an agent or browser sync materialized the contest and never queued it
+  // — a claim my own commit message made and the code did not keep. Every surface gets
+  // it here by construction, and no future front-end can forget.
+  //
+  // Failure here does not fail the sync: the transport worked, and the queue is derived
+  // state that the next sync re-derives.
+  const contests = await queueContestedTriage(root).catch(() => null);
+  return {
+    ...(contests && !("error" in contests) && (contests.filed || contests.revised || contests.closed)
+      ? { contests } : {}), ok: true, universe: b.cfg.universe, sidecar: b.cfg.path, ...r, materialized };
 }
 
 export interface HealResult {
@@ -535,15 +551,6 @@ export async function inboundReplies(root: string, pr: number | string, opts: { 
  * for its whole life, and a note must never be lost because a shared repo was
  * misconfigured. The sidecar is where the note goes to be useful to somebody else.
  */
-export async function mirrorNote(root: string, n: NewNote): Promise<{ shared: boolean }> {
-  const cfg = resolveSidecar(root);
-  if (!cfg) return { shared: false };
-  const actor = requireActor(root);
-  if ("error" in actor) return { shared: false };
-  await ensureSidecar(cfg.path, actor);
-  await createNote(cfg.path, cfg.universe, actor, n);
-  return { shared: true };
-}
 
 /** What the team knows about one symbol — everyone's notes, not just yours. */
 export async function sharedNotes(root: string, targetId: string) {
@@ -737,51 +744,8 @@ export async function sharedDocs(root: string, opts: { nodeId?: string } = {}) {
  * `null`, not an error, with no sidecar: every caller is a local read that worked
  * before shared docs existed and must keep working.
  */
-export interface DocsVerdict extends ScopeStatus {
-  /** The docs scope, when there is a sidecar at all. */
-  scope?: string;
-  /**
-   * Scopes a DECIDING caller must not let decide for it.
-   *
-   * Empty when the scope is healthy or absent. Non-empty means: the rows are still
-   * there and still shown, and they may not remove work from anybody's queue.
-   */
-  excludeFromDecisions: ReadonlySet<string>;
-}
 
-const NO_SIDECAR_VERDICT: DocsVerdict = { status: "complete", excludeFromDecisions: new Set() };
 
-/**
- * Fold the docs scope and say whether it may be believed.
- *
- * **The one place the suppression decision is derived.** It used to be derived in two
- * (`sharedCoverage` and `findGaps`), which is how a rule that reads identically in
- * both ends up applied in one.
- *
- * Fails CLOSED but never crashes. The agnostic core does not depend on the sidecar,
- * and an unreadable one must not break a local read that predates it — so an I/O
- * failure degrades to `blocked` rather than throwing inside outline, search, context,
- * diff and the analyzer.
- */
-export async function docsVerdict(root: string): Promise<DocsVerdict> {
-  const cfg = resolveSidecar(root);
-  if (!cfg) return NO_SIDECAR_VERDICT;
-  const scope = docScope(cfg.universe);
-  try {
-    const { fresh, ...status } = await ensureMaterialized(
-      root, cfg.path, scope, sidecarIdentity(cfg), foldDocs, docsProjection,
-    );
-    const trustworthy = fresh && status.status === "complete";
-    return { ...status, scope, excludeFromDecisions: trustworthy ? new Set() : new Set([scope]) };
-  } catch (e: any) {
-    return {
-      status: "blocked",
-      diagnostic: { reason: "fork", detail: `the shared docs could not be read: ${e?.message ?? e}`, evidence: [] },
-      scope,
-      excludeFromDecisions: new Set([scope]),
-    };
-  }
-}
 
 
 /**
@@ -796,16 +760,6 @@ export async function docsVerdict(root: string): Promise<DocsVerdict> {
  * code to do it, and this is a membership test on a write path. `false` when there
  * is no sidecar, so a store without one behaves exactly as it always did.
  */
-export async function sharedKnowsNode(root: string, nodeId: string): Promise<boolean> {
-  const cfg = resolveSidecar(root);
-  if (!cfg) return false;
-  const scope = docScope(cfg.universe);
-  const { fresh } = await ensureMaterialized(root, cfg.path, scope, sidecarIdentity(cfg), foldDocs, docsProjection);
-  if (fresh) return docsByNode(root, scope, [nodeId]).size > 0;
-  // The projection is behind, so ask the log rather than answer "no" from rows we
-  // have been told are stale — a false no here refuses a legitimate target.
-  return (await cachedDocs(root, cfg)).value.has(nodeId);
-}
 
 
 

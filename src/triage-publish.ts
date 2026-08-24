@@ -83,14 +83,14 @@ export async function mirrorTriageBatch(root: string, items: TriageAssertion[]):
  */
 export async function mirrorTriageClear(
   root: string, t: { targetKind: "node" | "anchor"; targetId: string },
-): Promise<{ shared: boolean; folded?: boolean; error?: string }> {
+): Promise<{ shared: boolean; configured: boolean; folded?: boolean; error?: string }> {
   const cfg = resolveSidecar(root);
-  if (!cfg) return { shared: false };
+  if (!cfg) return { shared: false, configured: false };
   const actor = requireActor(root);
-  if ("error" in actor) return { shared: false };
-  if (isAgentActor(actor)) return { shared: false, error: "clearing stakes is a person's call — an agent may only raise" };
+  if ("error" in actor) return { shared: false, configured: true, error: actor.error };
+  if (isAgentActor(actor)) return { shared: false, configured: true, error: "clearing stakes is a person's call — an agent may only raise" };
   await ensureSidecar(cfg.path, actor);
   await clearSharedTriage(cfg.path, triageScope(cfg.universe), actor, t);
-  return { shared: true, folded: await materializeTriage(root, cfg) };
+  return { shared: true, configured: true, folded: await materializeTriage(root, cfg) };
 }
 

@@ -129,7 +129,16 @@ async function witnessAt(
 
 export async function annotate(
   root: string,
-  input: { targetKind: "anchor" | "node"; targetId: string; text: string; author?: string; kind?: Annotation["kind"]; severity?: BugSeverity; category?: string; line?: number; ref?: string; comment?: string; disposition?: Disposition; publishPath?: string; publishLine?: number; agent?: boolean; model?: string; harness?: string },
+  input: { targetKind: "anchor" | "node"; targetId: string; text: string; author?: string; kind?: Annotation["kind"]; severity?: BugSeverity; category?: string; line?: number; ref?: string; comment?: string; disposition?: Disposition; publishPath?: string; publishLine?: number; agent?: boolean; model?: string; harness?: string;
+    /**
+     * Keep it off the sidecar. For an annotation DERIVED from shared state rather than
+     * authored — a contested-stakes item, say. Mirroring one is the signature of a
+     * derived fact being logged: the fold is deterministic, so every clone derives it,
+     * so every clone files its own copy with its own random id, and the shared-note
+     * fold refuses agent resolutions so none of them can ever be closed. The receipts
+     * it is derived FROM already travel; the rendering is this clone's business.
+     */
+    localOnly?: boolean },
 ) {
   // Validate the target exists (anchor targets accept file#Symbol refs too).
   let targetId = input.targetId;
@@ -157,7 +166,7 @@ export async function annotate(
     // reach for the sidecar (`context`, `findGaps`): the agnostic core must not
     // depend on it, and a missing or unreadable sidecar answers false.
     if (!nodes.some((n) => n.id === input.targetId)) {
-      const shared = await import("../ops-shared.js")
+      const shared = await import("../docs-lookup.js")
         .then((m) => m.sharedKnowsNode(root, input.targetId!)).catch(() => false);
       if (!shared) return { error: `unknown node "${input.targetId}"` };
     }
@@ -236,7 +245,8 @@ export async function annotate(
   // sidecar for its whole life, and a note must not be lost because a shared repo
   // was misconfigured. `mirrorNote` is a no-op when there is nothing to mirror to,
   // and a throw here must not fail a write that has already succeeded locally.
-  const { mirrorNote } = await import("../ops-shared.js");
+  if (input.localOnly) return { ok: true, id: ann.id, target: ann.target };
+  const { mirrorNote } = await import("../notes-publish.js");
   const mirrored = await mirrorNote(root, {
     id: ann.id, targetKind: input.targetKind, targetId,
     kind: kind ?? "note", text: input.text,

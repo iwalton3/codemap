@@ -229,7 +229,7 @@ export async function confirm(root: string, id: string) {
   // this answers "no node" — not "that is theirs", so the shared route below is never
   // reached. Same class as the diff endpoints: an ops entry point reading nodes
   // without materializing.
-  await import("../ops-shared.js").then((m) => m.docsVerdict(root)).catch(() => null);
+  await import("../docs-lookup.js").then((m) => m.docsVerdict(root)).catch(() => null);
   const r = await confirmNode(root, id);
   // Write-through, the other half. `confirmNode` refuses a fold-owned winner because
   // accepting hashes into it locally would be reverted by the next fold — so route it

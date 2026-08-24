@@ -23,7 +23,7 @@ import assert from "node:assert/strict";
 import { team, who, whileApart, settle, type Team } from "./oracle.js";
 import { Ledger, checkAlways, checkSettled } from "./oracle-properties.js";
 import { setTriage, queueContestedTriage } from "./ops.js";
-import { sharedTriage, contestedTriage } from "./ops-shared.js";
+import { sharedTriage, contestedTriage, sharedNotes } from "./ops-shared.js";
 import { triageStatus } from "./triage.js";
 import { readAnnotations, readAnchorStore } from "./store.js";
 import { CONTESTED_TRIAGE_CATEGORY } from "./ops/triage.js";
@@ -123,13 +123,15 @@ test("two people disagree about stakes, and only the expensive disagreement reac
       );
     });
 
-    await step("a person is asked to settle it, once", async () => {
-      const first = await queueContestedTriage(izzie.repo) as any;
-      assert.equal(first.filed, 1, "filed into the same review queue `ackHole` uses");
-      assert.deepEqual(await openContests(izzie.repo), [transfer]);
+    await step("the SYNC filed it, on both machines, without anyone asking", async () => {
+      // The F6 fix. This used to be wired into `cli.ts` alone, so an agent or a browser
+      // sync materialized the contest and never queued it — the arc above only ever
+      // syncs, and it is what a real reviewer does.
+      assert.deepEqual(await openContests(izzie.repo), [transfer], "izzie was told");
+      assert.deepEqual(await openContests(ben.repo), [transfer], "and so was ben");
 
-      // Idempotent. The escalation is entered by STATE, so it runs on every sync — one
-      // that re-asked each time would bury the answer under its own repetitions.
+      // Idempotent. It runs on EVERY sync, so one that re-asked each time would bury
+      // the answer under its own repetitions.
       const again = await queueContestedTriage(izzie.repo) as any;
       assert.deepEqual(
         { filed: again.filed, revised: again.revised, alreadyQueued: again.alreadyQueued },
@@ -137,6 +139,19 @@ test("two people disagree about stakes, and only the expensive disagreement reac
         "a second pass over unchanged evidence must not re-ask",
       );
       assert.equal((await openContests(izzie.repo)).length, 1);
+    });
+
+    await step("the queue item is LOCAL — one contest is not N shared questions", async () => {
+      // Derived state, so it never enters the log. The fold is deterministic, so every
+      // clone derives the same contest; mirroring the rendering would file one shared
+      // note per clone, each with its own random id, and the shared-note fold refuses
+      // agent resolutions so none of them could ever be closed.
+      const notes = await sharedNotes(izzie.repo, transfer) as any;
+      assert.equal(notes.error, undefined, `shared notes failed: ${notes.error}`);
+      assert.deepEqual(
+        notes.notes.filter((n: any) => n.category === CONTESTED_TRIAGE_CATEGORY), [],
+        "the contest is derived from receipts that already travel — the rendering stays home",
+      );
     });
 
     await step("izzie settles it by marking again, having seen both sides", async () => {
@@ -158,6 +173,11 @@ test("two people disagree about stakes, and only the expensive disagreement reac
         );
       }
       assert.equal((await contestedTriage(ben.repo) as any).count, 0, "the disagreement is over on both sides");
+      // And the queue item goes WITH it, which its own text promises. Settlement travels
+      // as an ordinary assertion, so each clone's fold stops reporting the contest and
+      // each clone closes its own item — no shared lifecycle to get stuck.
+      assert.deepEqual(await openContests(izzie.repo), [], "izzie's item closed");
+      assert.deepEqual(await openContests(ben.repo), [], "and ben's, on his own machine");
     });
   } finally {
     t.dispose();

@@ -98,7 +98,7 @@ export function trustOf(status: string | undefined, review?: { logical: ReviewLi
  * blocked scope wants `coverageFor`, which does the deciding split.
  */
 export async function loadNodesShared(root: string): Promise<LogicalNode[]> {
-  await import("../ops-shared.js").then((m) => m.docsVerdict(root)).catch(() => null);
+  await import("../docs-lookup.js").then((m) => m.docsVerdict(root)).catch(() => null);
   return loadNodes(root);
 }
 
@@ -123,7 +123,7 @@ export async function coverageFor(root: string): Promise<{
   result: CoverageResult;
   verdict: { status: string; scope?: string; excludeFromDecisions: ReadonlySet<string> } | null;
 }> {
-  const verdict = await import("../ops-shared.js").then((m) => m.docsVerdict(root)).catch(() => null);
+  const verdict = await import("../docs-lookup.js").then((m) => m.docsVerdict(root)).catch(() => null);
   const [store, nodes, cov] = await Promise.all([readAnchorStore(root), loadNodes(root), readCoverage(root)]);
   const blocked = verdict?.excludeFromDecisions;
   const deciding = blocked?.size ? nodes.filter((n) => !n.origin || !blocked.has(n.origin)) : nodes;

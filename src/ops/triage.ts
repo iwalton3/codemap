@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { type ReviewLevel, type Importance, type Complexity, type TriageSource } from "../schema.js";
 import { readAnnotations } from "../store.js";
-import { annotate, assignAnnotation, reviseAnnotation } from "./annotations.js";
+import { annotate, assignAnnotation, reviseAnnotation, resolveAnnotation } from "./annotations.js";
 import { cachedTriage } from "../triage-publish.js";
 import { resolveSidecar } from "../sidecar-config.js";
 import { isTombstone, type SharedTriage } from "../shared-triage.js";
@@ -123,18 +123,27 @@ function contestQuestion(t: SharedTriage): string {
  * docs unplaceable at once. Re-running is idempotent: one open item per target, revised
  * when the evidence moves and left alone when it has not.
  */
-export async function queueContestedTriage(root: string): Promise<{ filed: number; revised: number; alreadyQueued: number } | { error: string }> {
+export async function queueContestedTriage(root: string): Promise<{ filed: number; revised: number; alreadyQueued: number; closed: number } | { error: string }> {
   const cfg = resolveSidecar(root);
-  if (!cfg) return { filed: 0, revised: 0, alreadyQueued: 0 };
-  const { value } = await cachedTriage(root, cfg);
+  if (!cfg) return { filed: 0, revised: 0, alreadyQueued: 0, closed: 0 };
+  const { value, status } = await cachedTriage(root, cfg);
+  // A blocked scope may not drive writes. Its projection is explicitly not something to
+  // act on, so filing from it would invent work and — worse — RESOLVING from it would
+  // close a real contest because a scope nobody may read no longer reports it.
+  if (status !== "complete") return { filed: 0, revised: 0, alreadyQueued: 0, closed: 0 };
   const contested = [...value.values()].filter((t): t is SharedTriage => !isTombstone(t) && !!t.importance.contested);
   const open = (await readAnnotations(root)).annotations.filter((a) =>
     a.category === CONTESTED_TRIAGE_CATEGORY && !a.resolved);
+  // Indexed, not scanned per contest: `open` grows with everything ever filed and the
+  // inner `find` made this O(contests x open items).
+  const openByTarget = new Map(open.map((a) => [`${a.target.kind}\0${a.target.id}`, a]));
 
-  let filed = 0, revised = 0, alreadyQueued = 0;
+  let filed = 0, revised = 0, alreadyQueued = 0, closed = 0;
+  const live = new Set<string>();
   for (const t of contested) {
+    live.add(`${t.target.kind}\0${t.target.id}`);
     const text = contestQuestion(t);
-    const already = open.find((a) => a.target.kind === t.target.kind && a.target.id === t.target.id);
+    const already = openByTarget.get(`${t.target.kind}\0${t.target.id}`);
     if (already) {
       // Answered and still accurate: waiting on a person, not on an agent. Re-asking
       // would throw away an answer nobody has read.
@@ -147,12 +156,28 @@ export async function queueContestedTriage(root: string): Promise<{ filed: numbe
     const f = await annotate(root, {
       targetKind: t.target.kind, targetId: t.target.id,
       kind: "question", category: CONTESTED_TRIAGE_CATEGORY, author: "triage", text,
+      // DERIVED, so it never goes on the sidecar — see `localOnly`.
+      localOnly: true,
     }) as { id?: string };
     if (!f.id) continue;
     // Filing and assigning are two writes, so an item can exist unassigned — and a
     // dedupe that answered `alreadyQueued` about something no queue shows would hide it.
+    // Assigned to an agent DELIBERATELY, and it is not a settlement: `investigate` asks
+    // it to look and report an `outcome`, which `reviewQueue` then treats as waiting on
+    // the human. The agent proposes so the person is not deciding blind; the person
+    // settles by re-triaging, which is the act that travels.
     await assignAnnotation(root, { id: f.id, kind: "investigate", by: "triage" });
     filed++;
   }
-  return { filed, revised, alreadyQueued };
+
+  // The reverse pass. Settlement travels as an ordinary `triage.asserted`, so every
+  // clone's fold stops reporting the contest and every clone closes its own item — no
+  // shared lifecycle, which is exactly why the item is local. Without this the queue
+  // item outlives the disagreement, and its own text promises it "goes with" it.
+  for (const [k, a] of openByTarget) {
+    if (live.has(k)) continue;
+    await resolveAnnotation(root, a.id, true, { actor: "agent" });
+    closed++;
+  }
+  return { filed, revised, alreadyQueued, closed };
 }

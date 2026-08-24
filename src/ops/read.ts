@@ -268,7 +268,7 @@ export async function getAnchor(root: string, id: string) {
   // the verdict separately folded the scope twice on the hottest drill-down path.
   // Sequenced before the rest deliberately: it is what materializes the rows the
   // load is about to read.
-  const anchorVerdict = await import("../ops-shared.js").then((m) => m.docsVerdict(root)).catch(() => null);
+  const anchorVerdict = await import("../docs-lookup.js").then((m) => m.docsVerdict(root)).catch(() => null);
   const [store, nodes, bugStore, annStore] = await Promise.all([
     readAnchorStore(root), loadNodes(root), readBugs(root), readAnnotations(root),
   ]);

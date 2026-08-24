@@ -22,7 +22,7 @@ export async function diff(root: string, base: string, head?: string) {
  * just taught to show. Materialize at the public boundary instead.
  */
 async function materializeDocs(root: string): Promise<void> {
-  await import("../ops-shared.js").then((m) => m.docsVerdict(root)).catch(() => null);
+  await import("../docs-lookup.js").then((m) => m.docsVerdict(root)).catch(() => null);
 }
 
 /** Diff a doc's prose between the versions that win on base vs head (grounds the code diff). */
