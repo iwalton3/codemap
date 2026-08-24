@@ -439,6 +439,15 @@ export interface StalenessReport {
 // ---------------------------------------------------------------------------
 // Bugs — findings anchored to code, re-validatable when that code changes
 // ---------------------------------------------------------------------------
+//
+// LEGACY, as of the `bugs` table. The live entity is `SharedBug` in
+// `shared-bugs.ts`: one shape whether it came from this machine or a teammate's
+// log, on the lifecycle findings already use. What is below is the shape of the
+// `meta["bugs"]` blob that `migrateBugsBlob` reads once and drops, and it is kept
+// only so that migration has a type. Nothing else should import it.
+//
+// `BugSeverity` and `BugWitness` are NOT legacy — both are still the vocabulary
+// everywhere, and both are re-exported from the shared entity.
 
 export type BugStatus = "open" | "fixed" | "wontfix" | "invalid";
 export type BugSeverity = "low" | "medium" | "high" | "critical";

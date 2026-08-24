@@ -1,6 +1,7 @@
 import { type Anchor, type LogicalNode, type AnchorSelector, type CoverageMark } from "../schema.js";
 import { originSlug } from "../git.js";
 import { computeStaleness } from "../stale.js";
+import { citedAnchors, isClosed, witnessesOf } from "../shared-bugs.js";
 import { readAnchorStore, readState, loadNodes, readGraph, readBugs, readAnnotations, readCoverage, writeCoverage } from "../store.js";
 import { selectAnchors, docPct as computeDocPct, citedPct as computeCitedPct } from "../coverage.js";
 import { revertedMarks, witnessDrift, realDrift } from "../reviews.js";
@@ -50,7 +51,7 @@ export async function status(root: string) {
   }
   const nodesByType = tallyTypes(nodes);
   const bugsByStatus: Record<string, number> = {};
-  for (const b of bugStore.bugs) bugsByStatus[b.status] = (bugsByStatus[b.status] ?? 0) + 1;
+  for (const b of bugStore.bugs) bugsByStatus[b.state] = (bugsByStatus[b.state] ?? 0) + 1;
   return {
     anchors: store.anchors.length,
     coverage: result.breakdown, // open / cited / covered / trivial / deferred / owned
@@ -96,20 +97,20 @@ export async function dashboard(root: string) {
 
   // Bug re-validation: live re-index of bug-cited files vs each bug's witness.
   const bugFiles = new Set<string>();
-  for (const b of bugStore.bugs) for (const id of b.anchors) { const a = store.anchors.find((x) => x.id === id); if (a) bugFiles.add(a.file); }
+  for (const b of bugStore.bugs) for (const id of citedAnchors(b)) { const a = store.anchors.find((x) => x.id === id); if (a) bugFiles.add(a.file); }
   const live = await liveAnchors(root, bugFiles);
   const bugIndex = liveIndex(root, live);
   const bugCounts: Record<string, number> = {};
   let openBugs = 0, possiblyFixed = 0, unverifiableBugs = 0;
   for (const b of bugStore.bugs) {
-    bugCounts[b.status] = (bugCounts[b.status] ?? 0) + 1;
+    bugCounts[b.state] = (bugCounts[b.state] ?? 0) + 1;
     // Through `witnessDrift` rather than an inline `sameBody`, which also fixes a
     // second conflation this line had: a witness from another HASH_SCHEME counted as
     // possibly-fixed too. `realDrift` is what separates "the code moved" from
     // "nobody can say", and this rollup is a count people act on.
-    if (b.status === "open") {
+    if (!isClosed(b.state)) {
       openBugs++;
-      const changes = witnessDrift(b.witnesses, bugIndex);
+      const changes = witnessDrift(witnessesOf(b), bugIndex);
       // Counted apart, not dropped. `realDrift` is right to keep an undecidable
       // witness out of "possibly fixed" — it is not evidence the code moved — but
       // dropping it entirely let the dashboard say everything was current with the

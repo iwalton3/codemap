@@ -43,6 +43,7 @@ export function db(root: string): DatabaseSync {
   importLegacy(root, d);
   migrateNodesToVersions(d);
   migrateTriageBlob(d);
+  migrateBugsBlob(d);
   cache.set(root, d);
   return d;
 }
@@ -100,6 +101,96 @@ function migrateTriageBlob(d: DatabaseSync): void {
       }
     }
     d.prepare("DELETE FROM meta WHERE k = 'triage'").run();
+    d.exec("COMMIT");
+  } catch (e) {
+    d.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+/**
+ * One-time: `meta["bugs"]` becomes rows in the `bugs` table.
+ *
+ * Same shape and the same reasons as `migrateTriageBlob` above — a blob cannot carry an
+ * `origin`, so a teammate's bug could not be an ordinary row until it was a table.
+ *
+ * The status vocabulary changes here, and that is the interesting part. A shared bug
+ * runs on the lifecycle findings already use, so the four legacy statuses map onto it:
+ *
+ *   open    -> created    somebody stands behind it
+ *   fixed   -> resolved
+ *   wontfix -> withdrawn  with the old name kept as the closing reason, because
+ *                         "withdrawn" alone loses the deliberateness of a wontfix
+ *   invalid -> invalid
+ *
+ * Every migrated bug is LOCAL (`source_scope IS NULL`) and stays local until somebody
+ * publishes it. A legacy `Bug` has no `Actor` — only a `history` of strings — so
+ * publishing on upgrade would attribute the whole backlog to whoever upgraded first.
+ * `author` is recorded as the empty principal for the same reason: unknown is a fact,
+ * and inventing one is the false provenance the witness fields exist to prevent.
+ *
+ * Idempotent by construction: the key is dropped in the transaction that writes the
+ * rows. If rows already exist the blob is stale and is dropped unread — the table has
+ * won, and re-importing would resurrect bugs a later write removed.
+ */
+function migrateBugsBlob(d: DatabaseSync): void {
+  const row = d.prepare("SELECT v FROM meta WHERE k = 'bugs'").get() as { v: string } | undefined;
+  if (!row) return;
+  const existing = (d.prepare("SELECT COUNT(*) c FROM bugs").get() as { c: number }).c;
+
+  const STATE: Record<string, string> = { open: "created", fixed: "resolved", wontfix: "withdrawn", invalid: "invalid" };
+
+  d.exec("BEGIN");
+  try {
+    if (!existing) {
+      let parsed: { bugs?: unknown[] } | undefined;
+      // A blob this build cannot parse is left in `meta` rather than dropped: nothing
+      // is destroyed, and a later build can still look at it.
+      try { parsed = JSON.parse(row.v) as { bugs?: unknown[] }; } catch { d.exec("ROLLBACK"); return; }
+      const ins = d.prepare(
+        "INSERT OR IGNORE INTO bugs(id,title,state,severity,author,created_at,needs_ack,contested,tracked,body) "
+        + "VALUES(?,?,?,?,?,?,0,0,0,?)",
+      );
+      for (const b of (parsed?.bugs ?? []) as Record<string, any>[]) {
+        if (!b?.id || !b?.title) continue;
+        const state = STATE[b.status as string] ?? "created";
+        const at = new Date(0).toISOString();
+        const witness = new Map<string, string>();
+        for (const w of (b.witnesses ?? []) as { anchorId?: string; bodyHash?: string }[]) {
+          if (w?.anchorId && w?.bodyHash) witness.set(w.anchorId, w.bodyHash);
+        }
+        const author = { principal: "" };
+        const bug = {
+          id: b.id,
+          title: String(b.title),
+          text: String(b.description ?? ""),
+          severity: b.severity ?? "medium",
+          // A legacy anchor with no witness gets `sha256:absent` — the same value the
+          // filer writes for a symbol its index cannot see. It reads as "nobody
+          // recorded what this looked like", which is true, and it keeps every citation
+          // in the shape `witnessDrift` takes rather than dropping the evidence.
+          anchors: ((b.anchors ?? []) as string[]).map((id) => ({
+            anchorId: id, bodyHash: witness.get(id) ?? "sha256:absent", by: author, at,
+          })),
+          createdCommit: b.createdCommit ?? undefined,
+          author,
+          createdAt: at,
+          state,
+          corroboration: [],
+          // The old free-text history, as the thread it always was. It is the only
+          // record of what happened to these bugs, and dropping it on upgrade would
+          // lose the one thing the blob held that the columns do not.
+          thread: ((b.history ?? []) as string[]).map((body, i) => ({
+            id: `${b.id}_h${i}`, actor: author, at, body: String(body),
+          })),
+          tracking: [],
+          ...(b.status === "wontfix" ? { closed: { at, by: author, reason: "wontfix" } } : {}),
+          revisions: [],
+        };
+        ins.run(bug.id, bug.title, state, String(bug.severity), "", at, JSON.stringify(bug));
+      }
+    }
+    d.prepare("DELETE FROM meta WHERE k = 'bugs'").run();
     d.exec("COMMIT");
   } catch (e) {
     d.exec("ROLLBACK");
@@ -261,6 +352,33 @@ function migrate(d: DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS ix_sf_target ON shared_finding(target_id);
     CREATE INDEX IF NOT EXISTS ix_sf_queue  ON shared_finding(scope, needs_ack);
+    -- Bugs. ONE canonical table, not a bugs plus a shared_bug: a teammate's bug is a row
+    -- here with an origin, by the rule that removed the parallel shared_doc_* tables. A
+    -- bug filed with no sidecar configured is the same row with a NULL origin, and
+    -- publishing it is the fold ADOPTING it (see bugsProjection).
+    --
+    -- No scope in the primary key, unlike shared_finding: a bug id is minted once and
+    -- one universe has one bugs scope, so (scope, id) would let the same bug exist
+    -- twice -- which is precisely what adoption is for. The columns are what a query
+    -- filters on; body is the whole SharedBug, the shape shared_finding uses.
+    CREATE TABLE IF NOT EXISTS bugs (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL, state TEXT NOT NULL, severity TEXT NOT NULL,
+      author TEXT NOT NULL, created_at TEXT NOT NULL,
+      -- Derived by the FOLD and recomputed whole, never incremented, so the queue is a
+      -- WHERE rather than a scan over deserialized objects. tracked is the same kind
+      -- of fact: whether anybody has put this in a tracker outside codemap.
+      needs_ack INTEGER NOT NULL DEFAULT 0, contested INTEGER NOT NULL DEFAULT 0,
+      tracked INTEGER NOT NULL DEFAULT 0,
+      origin TEXT, source_scope TEXT,
+      -- The FOLD's own iteration order, and it is a column rather than a reliance on
+      -- rowid because adoption UPDATEs a row already there: an adopted bug keeps the
+      -- rowid it had as a local row, so rowid order is publication order, not fold
+      -- order, and read(write(x)) === x fails on exactly the stores that published.
+      ord INTEGER,
+      body TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS ix_bugs_scope ON bugs(source_scope);
     -- ord and author are columns rather than part of the JSON because neither
     -- survives a round trip through it: versions are ORDERED (oldest first) and a
     -- Map key order is not a document property, and SharedDoc.authors is a Map,

@@ -83,6 +83,21 @@ class SharedPage extends Component {
   mounted() { this.load.run(); }
   propsChanged(name) { if (name === 'params') { this.state.d = null; this.load.run(); } }
 
+  /**
+   * Promote a finding into a bug. Its own path rather than an `act`, because it writes
+   * the BUGS scope and lands on a different route — and because the id it mints is
+   * derived from the finding, so two people doing this offline converge on one bug.
+   */
+  async acceptAsBug(id) {
+    this.state.busy = 'accept';
+    this.state.note = null;
+    try {
+      const r = await apiPost('/api/bug/accept', { u: this.props.params.universe, pr: this.props.params.pr, finding: id });
+      this.state.note = r.error ?? r.note ?? null;
+      await this.load.run();
+    } catch (e) { this.state.note = errText(e); } finally { this.state.busy = null; }
+  }
+
   async act(action, body) {
     this.state.busy = action;
     this.state.note = null;
@@ -227,6 +242,12 @@ class SharedPage extends Component {
           <button on-click="${() => this.act('promote', { id: f.id })}">promote</button>
           <button on-click="${() => this.act('close', { id: f.id, state: 'resolved', reason: 'closed from the shared view' })}">resolve</button>
           <button on-click="${() => this.act('close', { id: f.id, state: 'refuted', reason: 'closed from the shared view' })}">refute</button>
+          ${when(!!f.bug, () => html`<button on-click="${() => go(`/u/${this.props.params.universe}/bugs/`, { bug: f.bug })}">open bug</button>`,
+            // Accepting is what stops a real finding dying with the pull request: the
+            // finding stays here for the PR's history and the bug carries the obligation.
+            () => html`<button title="keep this as a bug once the pull request closes"
+              disabled="${this.state.busy === 'accept'}"
+              on-click="${() => this.acceptAsBug(f.id)}">accept as bug</button>`)}
         </div>
       </div>`;
   }

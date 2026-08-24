@@ -16,6 +16,7 @@
 
 import { GENESIS, SIDECAR_PROTOCOL, EVENT_SCHEMA, type LogEvent } from "./eventlog.js";
 import type { Actor } from "./schema.js";
+import type { SharedBug } from "./shared-bugs.js";
 
 const ANYONE: Actor = { principal: "someone@x.com" };
 
@@ -48,4 +49,33 @@ export function testChain(writer: string, events: (Partial<LogEvent> & Pick<LogE
     prev = built.id;
     return built;
   });
+}
+
+/**
+ * A local `SharedBug`, for tests that need a bug in the store without a sidecar.
+ *
+ * The same reason `testEvent` exists: the entity grew fields that every fixture has to
+ * get right (`tracking` is read unguarded, an anchor carries its own witness), and six
+ * test files were each half-building one with `as never`.
+ */
+export function testBug(
+  over: Partial<SharedBug> & Pick<SharedBug, "id" | "title">
+    & { cites?: { anchorId: string; bodyHash: string }[] },
+): SharedBug {
+  const at = over.createdAt ?? "2026-08-21T00:00:00Z";
+  const author = over.author ?? ANYONE;
+  const { cites, ...rest } = over;
+  return {
+    text: "",
+    severity: "medium",
+    anchors: (cites ?? []).map((c) => ({ ...c, by: author, at })),
+    author,
+    createdAt: at,
+    state: "created",
+    corroboration: [],
+    thread: [],
+    tracking: [],
+    revisions: [],
+    ...rest,
+  };
 }

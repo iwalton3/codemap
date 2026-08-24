@@ -16,6 +16,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { comparableHashDerivation, type Anchor, type Review } from "./schema.js";
 import { indexRepo, indexFile, indexBlob } from "./repo.js";
+import { citedAnchors, isClosed } from "./shared-bugs.js";
 import { readSnapshot, readAnchorStore, loadNodes, loadNodeVersions, winningVersionAt, readGraph, readReviews, readBugs, derivationLookup, loadNodesAt, resolvable} from "./store.js";
 import { reviewStatesFor } from "./reviews.js";
 import { reviewTriageFor, coverageFor, type Coverage } from "./triage.js";
@@ -47,7 +48,7 @@ export interface DiffResult {
     nodes: { id: string; title: string; type: string; summary: string; anchors: string[]; status: string; versionCount: number; review: { logical: string; code: string }; reviewBy: { logical: string | null; code: string | null }; reviewVia: { logical?: string; code?: string }; viewed: { logical: string; code: string }; severity: string }[];
     flows: { id: string; title: string; steps: { id: string; title: string; anchors: string[] }[] }[];
     reviews: { id: string; target: { kind: string; id: string }; level: string; anchors: string[] }[];
-    bugs: { id: string; title: string; status: string; severity: string; anchors: string[]; removed: boolean; possiblyFixed: boolean }[];
+    bugs: { id: string; title: string; state: string; severity: string; anchors: string[]; removed: boolean; possiblyFixed: boolean }[];
   };
   /** Review-complete rollup over the changed+added anchors — "am I done reviewing this?" */
   coverage: Coverage;
@@ -173,12 +174,12 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
   // This is the "does this change touch known-broken code" context a raw diff hides.
   const removedIds = new Set(removed.map((b) => b.id));
   const bugImpact = (await readBugs(root)).bugs
-    .map((bug) => ({ bug, hit: bug.anchors.filter((id) => impacted.has(id)) }))
+    .map((bug) => ({ bug, hit: citedAnchors(bug).filter((id) => impacted.has(id)) }))
     .filter((x) => x.hit.length > 0)
     .map(({ bug, hit }) => ({
-      id: bug.id, title: bug.title, status: bug.status, severity: bug.severity, anchors: hit,
+      id: bug.id, title: bug.title, state: bug.state, severity: bug.severity, anchors: hit,
       removed: hit.some((id) => removedIds.has(id)),
-      possiblyFixed: bug.status === "open",
+      possiblyFixed: !isClosed(bug.state),
     }));
 
   // Review-complete over the anchors this diff changed or added (removed ones need no

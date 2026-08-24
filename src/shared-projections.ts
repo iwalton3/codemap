@@ -26,6 +26,7 @@ import { foldDocs, type SharedDoc, type UnmatchedAcceptance } from "./shared-doc
 import { foldNotes, type SharedNote } from "./shared-notes.js";
 import { foldTriage, triageSubject, isTombstone, ABSENT_FIELD, type TriageEntry, type Axis, type TriageField } from "./shared-triage.js";
 import { foldGraph, type SharedWiring } from "./shared-graph.js";
+import { foldBugs, needsHumanAck as bugNeedsAck, type SharedBug } from "./shared-bugs.js";
 import type { Actor, NodeVersion } from "./schema.js";
 
 /**
@@ -66,6 +67,79 @@ export const findingsProjection: Projection<Map<string, SharedFinding>> = {
         out.set(r.id, JSON.parse(r.body) as SharedFinding);
       } catch {
         throw new CorruptProjection(`shared_finding ${scope}/${r.id} is unreadable`);
+      }
+    }
+    return out;
+  },
+};
+
+/**
+ * Bugs, into the ONE canonical `bugs` table.
+ *
+ * A teammate's bug is a row there with an `origin`, not a row in a parallel
+ * `shared_bug` — the rule that removed the `shared_doc_*` tables, and the reason a bug
+ * shows up in `list_bugs`, the outline rollups and the anchor view with no bridge code
+ * at any of them.
+ *
+ * **Replaces only what it owns.** `DELETE ... WHERE source_scope = ?`, never by id: a
+ * bare delete would take local rows the fold may not own, silently, and the next fold
+ * would not put them back.
+ *
+ * **The adoption rule**, and it is the same crash `docsProjection` documents. Publishing
+ * a local bug preserves its id — it is a republication of history, not a new bug — so on
+ * any store that filed a bug and then published it the fold inserts an id that already
+ * exists, `bugs` keys on `id` alone, and the constraint violation happens INSIDE
+ * `readCached`'s transaction: the fold throws, every bug read on that store fails, and
+ * nothing about the failure moves the fingerprint, so it never self-heals.
+ *
+ * The row is the same row, so the fold ADOPTS it. The predicate is narrow for the reason
+ * docs' is: a local row EDITED between publishing and the first fold holds content the
+ * event does not, and overwriting it is unrecoverable loss of the one thing in this
+ * database that is not regenerable. Same id, still local, same title and text — anything
+ * else is not the same bug and the event is left in the log rather than forced onto it.
+ */
+export const bugsProjection: Projection<Map<string, SharedBug>> = {
+  write(d: DatabaseSync, scope: string, value: Map<string, SharedBug>): void {
+    d.prepare("DELETE FROM bugs WHERE source_scope = ?").run(scope);
+    const ins = d.prepare(
+      "INSERT INTO bugs(id,title,state,severity,author,created_at,needs_ack,contested,tracked,"
+      + "origin,source_scope,ord,body) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    );
+    const adopt = d.prepare(
+      "UPDATE bugs SET title=?,state=?,severity=?,author=?,created_at=?,needs_ack=?,contested=?,"
+      + "tracked=?,origin=?,source_scope=?,ord=?,body=? WHERE id=?",
+    );
+    const candidate = d.prepare("SELECT title, body, source_scope FROM bugs WHERE id = ?");
+    let ord = 0;
+    for (const b of value.values()) {
+      const i = ord++;
+      // `origin` is a store fact, not a fold output — it must not ride in the JSON, or
+      // the round trip returns a value the fold never produced.
+      const body = JSON.stringify({ ...b, origin: undefined });
+      const cols = [
+        b.title, b.state, b.severity, b.author.principal, b.createdAt,
+        bugNeedsAck(b) ? 1 : 0, b.contested?.length ? 1 : 0, b.tracking.length ? 1 : 0,
+        "sync", scope, i, body,
+      ];
+      const row = candidate.get(b.id) as { title: string; body: string; source_scope: string | null } | undefined;
+      if (!row) { ins.run(b.id, ...cols as any); continue; }
+      if (row.source_scope) continue; // owned by another scope; not ours to take
+      let local: SharedBug | null = null;
+      try { local = JSON.parse(row.body) as SharedBug; } catch { /* unreadable: not adoptable */ }
+      if (!local || local.title !== b.title || local.text !== b.text) continue;
+      adopt.run(...cols as any, b.id);
+    }
+  },
+
+  read(d: DatabaseSync, scope: string): Map<string, SharedBug> {
+    const out = new Map<string, SharedBug>();
+    // `ord`, the fold's own order — see the column's note in `db.ts`.
+    for (const r of d.prepare("SELECT id, body FROM bugs WHERE source_scope = ? ORDER BY ord").all(scope) as unknown as
+      { id: string; body: string }[]) {
+      try {
+        out.set(r.id, JSON.parse(r.body) as SharedBug);
+      } catch {
+        throw new CorruptProjection(`bugs ${scope}/${r.id} is unreadable`);
       }
     }
     return out;
@@ -437,6 +511,7 @@ export const graphProjection: Projection<Map<string, SharedWiring>> = {
  */
 export function projectionFor(scope: string): { fold: (e: LogEvent[]) => any; proj: Projection<any> } | null {
   if (scope.startsWith("findings/")) return { fold: foldFindings, proj: findingsProjection };
+  if (scope.startsWith("bugs/")) return { fold: foldBugs, proj: bugsProjection };
   if (scope.startsWith("docs/")) return { fold: foldDocs, proj: docsProjection };
   if (scope.startsWith("notes/")) return { fold: foldNotes, proj: notesProjection };
   if (scope.startsWith("walkthrough/")) return { fold: foldWalkthroughs, proj: walkthroughsProjection };

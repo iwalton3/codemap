@@ -287,7 +287,8 @@ test("a stranded record whose own commit still names its id is not lost", async 
   const { root, first } = await committedRepo();
   try {
     const { indexBlob } = await import("./repo.js");
-    const { readBugs, writeBugs } = await import("./store.js");
+    const { readBugs, writeLocalBugs } = await import("./store.js");
+    const { testBug } = await import("./test-events.js");
     // The id as it was at `first`, taken WITHOUT storing it — so nothing retains it
     // and nothing snapshots it, which is what makes this the `lost` path rather
     // than `retained` or `offTree`.
@@ -297,12 +298,11 @@ test("a stranded record whose own commit still names its id is not lost", async 
     // Filed AFTER the reindex, so retention never saw it — as an ingested finding
     // against a branch whose snapshot has since been evicted would be.
     const bugs = await readBugs(root);
-    bugs.bugs.push({
-      id: "b_1", title: "no guard on negatives", status: "open", severity: "high", description: "d",
-      anchors: [gone.id], witnesses: [{ anchorId: gone.id, bodyHash: gone.bodyHash }],
-      createdCommit: first, history: [],
-    } as never);
-    await writeBugs(root, bugs.bugs);
+    bugs.bugs.push(testBug({
+      id: "b_1", title: "no guard on negatives", severity: "high", text: "d",
+      cites: [{ anchorId: gone.id, bodyHash: gone.bodyHash }], createdCommit: first,
+    }));
+    await writeLocalBugs(root, bugs.bugs);
 
     const before = await orphanedWork(root) as any;
     assert.equal(before.located.length, 0, "nothing is claimed without asking");
@@ -327,15 +327,15 @@ test("asking and finding nothing is a different answer from not asking", async (
   // anything and both would pass.
   const { root, first } = await committedRepo();
   try {
-    const { readBugs, writeBugs } = await import("./store.js");
+    const { readBugs, writeLocalBugs } = await import("./store.js");
+    const { testBug } = await import("./test-events.js");
     const { fixtureHash } = await import("./fixture-hash.js");
     const bugs = await readBugs(root);
-    bugs.bugs.push({
-      id: "b_ghost", title: "an id that commit never produced", status: "open", severity: "low", description: "d",
-      anchors: ["a_0000000000000000"], witnesses: [{ anchorId: "a_0000000000000000", bodyHash: fixtureHash("X") }],
-      createdCommit: first, history: [],
-    } as never);
-    await writeBugs(root, bugs.bugs);
+    bugs.bugs.push(testBug({
+      id: "b_ghost", title: "an id that commit never produced", severity: "low", text: "d",
+      cites: [{ anchorId: "a_0000000000000000", bodyHash: fixtureHash("X") }], createdCommit: first,
+    }));
+    await writeLocalBugs(root, bugs.bugs);
 
     const r = await orphanedWork(root, { locate: true }) as any;
     assert.equal(r.located.length, 0);
@@ -349,16 +349,16 @@ test("a record with nothing to ask says so, rather than claiming the code is gon
   // ask*, *not asked* and *asked and absent* are three different situations.
   const root = mkdtempSync(join(tmpdir(), "codemap-orphan-why-"));
   try {
-    const { writeStore, readBugs, writeBugs } = await import("./store.js");
+    const { writeStore, readBugs, writeLocalBugs } = await import("./store.js");
+    const { testBug } = await import("./test-events.js");
     const { fixtureHash } = await import("./fixture-hash.js");
     await writeStore(root, [], { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as any);
     const bugs = await readBugs(root);
-    bugs.bugs.push({
-      id: "b_1", title: "old bug", status: "open", severity: "high", description: "d",
-      anchors: ["a_nowhere"], witnesses: [{ anchorId: "a_nowhere", bodyHash: fixtureHash("X") }],
-      createdCommit: null, history: [],
-    } as any);
-    await writeBugs(root, bugs.bugs);
+    bugs.bugs.push(testBug({
+      id: "b_1", title: "old bug", severity: "high", text: "d",
+      cites: [{ anchorId: "a_nowhere", bodyHash: fixtureHash("X") }],
+    }));
+    await writeLocalBugs(root, bugs.bugs);
 
     const r = await orphanedWork(root, { locate: true }) as any;
     assert.equal(r.lost.length, 1);
@@ -373,7 +373,8 @@ test("what `locate` did not reach is reported, never dropped", async () => {
   const { root, first } = await committedRepo();
   try {
     const { indexBlob } = await import("./repo.js");
-    const { readBugs, writeBugs } = await import("./store.js");
+    const { readBugs, writeLocalBugs } = await import("./store.js");
+    const { testBug } = await import("./test-events.js");
 
     // A second symbol, at a second commit, and gone again — so the two records have
     // two different addresses and `locate` has two trees to open.
@@ -392,10 +393,10 @@ test("what `locate` did not reach is reported, never dropped", async () => {
 
     const bugs = await readBugs(root);
     bugs.bugs.push(
-      { id: "b_1", title: "one", status: "open", severity: "low", description: "d", anchors: [one.id], witnesses: [{ anchorId: one.id, bodyHash: one.bodyHash }], createdCommit: first, history: [] } as never,
-      { id: "b_2", title: "two", status: "open", severity: "low", description: "d", anchors: [two.id], witnesses: [{ anchorId: two.id, bodyHash: two.bodyHash }], createdCommit: second, history: [] } as never,
+      testBug({ id: "b_1", title: "one", severity: "low", text: "d", cites: [{ anchorId: one.id, bodyHash: one.bodyHash }], createdCommit: first }),
+      testBug({ id: "b_2", title: "two", severity: "low", text: "d", cites: [{ anchorId: two.id, bodyHash: two.bodyHash }], createdCommit: second }),
     );
-    await writeBugs(root, bugs.bugs);
+    await writeLocalBugs(root, bugs.bugs);
 
     const all = await orphanedWork(root, { locate: true }) as any;
     assert.equal(all.located.length, 2, "both are findable when both commits are read");
@@ -415,16 +416,16 @@ test("a record with nothing to ask says so, rather than claiming the code is gon
   // ask*, *not asked* and *asked and absent* are three different situations.
   const root = mkdtempSync(join(tmpdir(), "codemap-orphan-why-"));
   try {
-    const { writeStore, readBugs, writeBugs } = await import("./store.js");
+    const { writeStore, readBugs, writeLocalBugs } = await import("./store.js");
+    const { testBug } = await import("./test-events.js");
     const { fixtureHash } = await import("./fixture-hash.js");
     await writeStore(root, [], { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as any);
     const bugs = await readBugs(root);
-    bugs.bugs.push({
-      id: "b_1", title: "old bug", status: "open", severity: "high", description: "d",
-      anchors: ["a_nowhere"], witnesses: [{ anchorId: "a_nowhere", bodyHash: fixtureHash("X") }],
-      createdCommit: null, history: [],
-    } as any);
-    await writeBugs(root, bugs.bugs);
+    bugs.bugs.push(testBug({
+      id: "b_1", title: "old bug", severity: "high", text: "d",
+      cites: [{ anchorId: "a_nowhere", bodyHash: fixtureHash("X") }],
+    }));
+    await writeLocalBugs(root, bugs.bugs);
 
     const r = await orphanedWork(root, { locate: true }) as any;
     assert.equal(r.lost.length, 1);

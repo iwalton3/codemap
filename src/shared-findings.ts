@@ -145,8 +145,21 @@ export interface SharedFinding {
  */
 export const findingScope = (pr: number | string): string => `findings/${pr}`;
 
+/**
+ * What the ratchet reads, and nothing else.
+ *
+ * A shared BUG carries the same three fields and the same lifecycle. Sharing the
+ * FUNCTIONS rather than copying the shape is what stops one lifecycle becoming two
+ * that drift — `docs/plan-sharing-the-rest.md` §2 asks for exactly this reuse.
+ */
+export interface Ratcheted {
+  state: FindingState;
+  promotion?: { at: string; by: Actor };
+  corroboration: Corroboration[];
+}
+
 /** Derived, never stored — an OR over a latch and a grow-only set, so it cannot race. */
-export function needsHumanAck(f: SharedFinding): boolean {
+export function needsHumanAck(f: Ratcheted): boolean {
   return !!f.promotion || f.corroboration.some((c) => c.verdict === "confirm");
 }
 
@@ -159,7 +172,7 @@ export function needsHumanAck(f: SharedFinding): boolean {
  *   - kill a proposal nobody has stood behind yet (`issued` -> `invalid`).
  * Past `created`, or once anything needs an ack, an agent may only REQUEST.
  */
-export function mayTransition(f: SharedFinding, actor: Actor, next: FindingState): boolean {
+export function mayTransition(f: Ratcheted, actor: Actor, next: FindingState): boolean {
   if (!isAgentActor(actor)) return true;
   if (f.state !== "issued") return false;
   if (needsHumanAck(f)) return false;
@@ -361,6 +374,11 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         // Both records survive and cross-link: the PR history should still show the
         // finding was raised there. Promotion transfers the OBLIGATION, so the
         // finding stops asking for a decision — its successor is asking.
+        //
+        // A LATCH, like `posted`. Two people accepting one finding offline is the
+        // duplicate this log exists to prevent; `bugIdFor` already makes them mint
+        // the same id, and the latch is what holds if one of them passes another.
+        if (f.bug) break;
         f.bug = bug;
         f.pending = undefined;
         break;

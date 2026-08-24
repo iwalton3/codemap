@@ -3,7 +3,7 @@ import { indexRepo, indexCommit } from "../repo.js";
 import { collidingAnchors } from "../indexer.js";
 import { headCommit, currentBranch, isDirty, revParse, submoduleDrift } from "../git.js";
 import { computeStaleness } from "../stale.js";
-import { readAnchorStore, readState, writeState, writeStore, loadNodes, readBugs, writeBugs, readAnnotations, writeAnnotations, readReviews, writeSnapshot, readSnapshot, listSnapshots, writeReviews, remapNodeCitations, readLocalTriage as triageRead, replaceLocalTriage as triageWrite, staleSchemeSnapshots, liveDerivationDrift, retainOrphans, releaseRecoveredOrphans, referencedAnchorIds } from "../store.js";
+import { readAnchorStore, readState, writeState, writeStore, loadNodes, readBugs, writeLocalBugs, readAnnotations, writeAnnotations, readReviews, writeSnapshot, readSnapshot, listSnapshots, writeReviews, remapNodeCitations, readLocalTriage as triageRead, replaceLocalTriage as triageWrite, staleSchemeSnapshots, liveDerivationDrift, retainOrphans, releaseRecoveredOrphans, referencedAnchorIds } from "../store.js";
 import { GRAMMAR_VERSIONS } from "../grammar-versions.js";
 import { remapOverloadIds, applyRemap } from "../migrate-overloads.js";
 import { refreshAnalyzers } from "../analyzers/run.js";
@@ -109,16 +109,19 @@ async function migrateOverloads(root: string, fresh: Anchor[]) {
   const [reviewStore, triageStore, annStore, bugStore] = await Promise.all([
     readReviews(root), triageRead(root), readAnnotations(root), readBugs(root),
   ]);
+  // Local bugs only, for the reason the comment above gives about triage: a teammate's
+  // bug names ids in THEIR claim, and the fold would overwrite anything written here.
+  const localBugs = bugStore.bugs.filter((b) => !b.origin);
   const counts = applyRemap(map, {
     reviews: reviewStore.reviews, triage: triageStore.triage, annotations: annStore.annotations,
-    bugs: bugStore.bugs, citations: [],
+    bugs: localBugs, citations: [],
   });
   counts.citations = remapNodeCitations(root, map);
   await Promise.all([
     writeReviews(root, reviewStore.reviews),
     triageWrite(root, triageStore.triage),
     writeAnnotations(root, annStore.annotations),
-    writeBugs(root, bugStore.bugs),
+    writeLocalBugs(root, localBugs),
   ]);
   return { ...counts, droppedSnapshots };
 }

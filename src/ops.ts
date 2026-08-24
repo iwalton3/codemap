@@ -52,7 +52,11 @@ export {
   document, connect, disconnect, updateNode, confirm, UNPLACEABLE_CATEGORY, ackHole, nodeVersions, removeNode, linksReport,
 } from "./ops/docs.js";
 
-export { reportBug, listBugs, bugDetail, updateBug } from "./ops/bugs.js";
+export {
+  reportBug, listBugs, bugDetail, updateBug, commentBug, trackBugExternally,
+  corroborateBugOp, promoteBugOp, requestOnBugOp, resolveBugContestOp, unanchorBugOp,
+  publishBugs, acceptFinding,
+} from "./ops/bugs.js";
 
 export {
   anchorAnnotations, annotate, resolveAnnotation, escalateAnnotation, reviseAnnotation, withdrawAnnotation,

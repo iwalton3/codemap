@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Anchor, Review, Triage, Annotation, State } from "./schema.js";
 import { remapOverloadIds, applyRemap } from "./migrate-overloads.js";
+import { testBug } from "./test-events.js";
 import { indexBlob } from "./repo.js";
 import { writeStore, readReviews, writeReviews, readAnchorStore } from "./store.js";
 import { markReviewed } from "./reviews.js";
@@ -79,15 +80,16 @@ test("every kind of stored reference is carried across", () => {
   const citations = [[{ anchorId: "old0", acceptedHashes: [] }, { anchorId: "untouched" }]];
   // Bugs are witness-hashed against anchor ids exactly as reviews are, and were the
   // one store the first version of this migration forgot.
-  const bugs = [{
-    id: "b1", title: "t", body: "", status: "open", severity: "high",
-    anchors: ["old0", "untouched"], witnesses: [{ anchorId: "old0", bodyHash: fixtureHash("a") }],
-  } as unknown as import("./schema.js").Bug];
+  const bugs = [testBug({
+    id: "b1", title: "t", severity: "high",
+    cites: [{ anchorId: "old0", bodyHash: fixtureHash("a") }, { anchorId: "untouched", bodyHash: fixtureHash("b") }],
+  })];
 
   const counts = applyRemap(map, { reviews, triage, annotations, bugs, citations });
   assert.deepEqual(counts, { anchors: 1, reviews: 1, triage: 1, annotations: 1, citations: 1, bugs: 1 });
-  assert.deepEqual(bugs[0]!.anchors, ["new_a", "untouched"]);
-  assert.equal(bugs[0]!.witnesses[0]!.anchorId, "new_a");
+  // One list now: a citation carries its own witness, so the id and the hash cannot
+  // drift apart under the remap the way two parallel lists could.
+  assert.deepEqual(bugs[0]!.anchors.map((a) => a.anchorId), ["new_a", "untouched"]);
   assert.equal(reviews[0]!.target.id, "new_a");
   assert.equal(reviews[0]!.witnesses[0]!.anchorId, "new_a");
   assert.equal(reviews[0]!.accepted![0]!.anchorId, "new_a");

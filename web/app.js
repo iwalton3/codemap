@@ -1052,7 +1052,7 @@ class AnchorPage extends Component {
       <div style="margin:8px 0">${reviewRowEl(a.review, a.viewed, (att, st, actor, via) => this.mark(att, st, actor, via))}</div>
       <div style="margin:8px 0">${triageRowEl(a.triage, (imp) => this.triage(imp), (on) => this.armTripwire(on))}</div>
       ${when(a.citedBy && a.citedBy.length, () => html`<div class="sec">documented by</div><div class="chips">${each(a.citedBy, n => html`<span class="chip" on-click="${() => go(nodeUrl(u, n.id))}">${n.title || n.id}</span>`)}</div>`)}
-      ${when(a.bugs && a.bugs.length, () => html`<div class="sec">bugs</div><div class="chips">${each(a.bugs, b => html`<span class="chip">${b.status} · ${b.title}</span>`)}</div>`)}
+      ${when(a.bugs && a.bugs.length, () => html`<div class="sec">bugs</div><div class="chips">${each(a.bugs, b => html`<span class="chip">${b.state} · ${b.title}</span>`)}</div>`)}
       ${annoThread(this, u, 'anchor', a.id, a.annotations)}
       <shared-notes-panel universe="${u}" target="${a.id}"></shared-notes-panel>
       <div class="sec">source</div>
@@ -2104,10 +2104,17 @@ class StatemapPage extends Component {
 }
 defineComponent('statemap-page', StatemapPage);
 
-// --- bugs: triage MCP-reported findings, re-validate against live code --------
-const BUG_STATUSES = ['open', 'fixed', 'wontfix', 'invalid'];
+// --- bugs: the team's defect list, re-validated against live code --------------
+//
+// A bug is a shared object now: it travels on the sidecar, people comment on it, and it
+// can carry a link to whatever tracker the team uses. What does NOT travel is the
+// verdict — `possiblyFixed` is a join against THIS checkout's index, computed on every
+// read, and a bug whose code vanished is queued rather than closed.
+const BUG_STATES = ['issued', 'created', 'resolved', 'withdrawn', 'refuted', 'invalid'];
 /**
- * @typedef {{ data: ApiMap['/api/bugs'] | null, detail: ApiMap['/api/bug'] | null, detailPending: boolean }} BugsState
+ * @typedef {{ data: ApiMap['/api/bugs'] | null, detail: ApiMap['/api/bug'] | null,
+ *   detailPending: boolean, note: string | null, busy: string | null, draft: string,
+ *   tracking: boolean }} BugsState
  * @extends {Component<PageProps, BugsState>}
  */
 class BugsPage extends Component {
@@ -2116,13 +2123,13 @@ class BugsPage extends Component {
   constructor(props) {
     super(props);
     /** @type {BugsState} */
-    this.state = { data: null, detail: null, detailPending: false };
+    this.state = { data: null, detail: null, detailPending: false, note: null, busy: null, draft: '', tracking: false };
   }
-  // Filter (status) and selection (bug) both live in the URL, so back/forward
-  // walk the triage and any bug is deep-linkable.
+  // Filter (state) and selection (bug) both live in the URL, so back/forward walk the
+  // triage and any bug is deep-linkable.
   load = this.createTask(async () => {
     const u = this.props.params.universe; nav.current = u;
-    this.state.data = await api('/api/bugs', { u, status: this.props.query.status || '' });
+    this.state.data = await api('/api/bugs', { u, state: this.props.query.state || '', queue: this.props.query.queue || '' });
     await this.applySel();
   });
   mounted() { this._q = { ...this.props.query }; this._u = this.props.params.universe; this.load.run(); }
@@ -2130,7 +2137,7 @@ class BugsPage extends Component {
     if (name !== 'query' && name !== 'params') return;
     const q = this.props.query, prev = this._q || {}, u = this.props.params.universe;
     this._q = { ...q };
-    if (u !== this._u || q.status !== prev.status) { this._u = u; this.load.run(); }
+    if (u !== this._u || q.state !== prev.state || q.queue !== prev.queue) { this._u = u; this.load.run(); }
     else if (q.bug !== prev.bug) this.applySel();
   }
   async applySel() {
@@ -2140,67 +2147,173 @@ class BugsPage extends Component {
     try { this.state.detail = await api('/api/bug', { u: this.props.params.universe, id }); }
     finally { this.state.detailPending = false; }
   }
-  pickStatus(s) { go(bugsUrl(this.props.params.universe), s ? { status: s } : {}); }
-  pickBug(id) { go(bugsUrl(this.props.params.universe), { status: this.props.query.status, bug: id }); }
-  async act(patch) {
-    const u = this.props.params.universe, id = this.state.detail && this.state.detail.id;
-    if (!id) return;
-    await fetch('/api/bug/update', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id, ...patch }) });
-    await this.load.run();
+  pickState(s) { go(bugsUrl(this.props.params.universe), s === 'queue' ? { queue: '1' } : (s ? { state: s } : {})); }
+  pickBug(id) { go(bugsUrl(this.props.params.universe), { state: this.props.query.state, queue: this.props.query.queue, bug: id }); }
+
+  /**
+   * Every write goes through here, and every one of them can be REFUSED — the ratchet
+   * says an agent may not close what somebody stood behind, and the log's own fold says
+   * an agent may not re-point a tracking link. The refusal is the answer, so it is shown
+   * rather than swallowed into a silent reload.
+   */
+  async act(action, body, label) {
+    const u = this.props.params.universe, d = this.state.detail;
+    // `isErr`, not `d.error`: both arms carry the key, so truthiness narrows nothing.
+    if (!d || isErr(d)) return;
+    const id = d.id;
+    this.state.busy = label || action;
+    this.state.note = null;
+    try {
+      const r = await apiPost(`/api/bug/${action}`, { u, id, ...body });
+      this.state.note = r.error ?? r.note ?? null;
+      await this.load.run();
+    } catch (e) { this.state.note = errText(e); } finally { this.state.busy = null; }
+  }
+  async comment() {
+    const body = this.state.draft.trim();
+    if (!body) return;
+    await this.act('comment', { body }, 'comment');
+    if (!this.state.note) this.state.draft = '';
+  }
+  async track(form) {
+    const key = (form.key.value || '').trim(), url = (form.url.value || '').trim();
+    await this.act('track', { system: (form.system.value || 'jira').trim() || 'jira', key, url }, 'track');
+    if (!this.state.note || /^tracked/.test(this.state.note)) this.state.tracking = false;
+  }
+  async publish() {
+    const u = this.props.params.universe;
+    this.state.busy = 'publish';
+    try {
+      const r = await apiPost('/api/bug/publish', { u });
+      this.state.note = r.error ?? `${r.published} published — run \`codemap sync\` to send them`;
+      await this.load.run();
+    } catch (e) { this.state.note = errText(e); } finally { this.state.busy = null; }
   }
 
   bugRow(b) {
     const sel = this.props.query.bug === b.id;
-    return html`<div class="brow ${b.status} ${sel ? 'sel' : ''}" on-click="${() => this.pickBug(b.id)}">
+    return html`<div class="brow ${b.state} ${sel ? 'sel' : ''}" on-click="${() => this.pickBug(b.id)}">
       <span class="sevdot" style="background:${SEV_COLOR[b.severity] || SEV_COLOR.medium}" title="severity: ${b.severity}"></span>
       <span class="btitle">${b.title}</span>
+      ${when(b.waitingOnYou, () => html`<span class="bchip poss" title="promoted, corroborated, contested or asked about — this one needs a person">needs you</span>`)}
       ${when(b.possiblyFixed, () => html`<span class="bchip poss" title="cited code changed since filing — possibly fixed">possibly fixed</span>`,
         () => when(b.codeChanged, () => html`<span class="bchip changed" title="cited code changed since filing">code changed</span>`))}
-      <span class="bchip ${b.status}">${b.status}</span>
-      <span class="bmeta">${b.anchors.length}a</span>
+      ${when(b.tracked, () => html`<span class="bchip" title="${b.tracking.map(t => t.system + ' ' + (t.key || t.url)).join(', ')}">tracked</span>`)}
+      <span class="bchip ${b.state}">${b.state}</span>
+      <span class="bmeta">${b.anchors.length}a${b.comments ? ' · ' + b.comments + '💬' : ''}${b.shared ? '' : ' · local'}</span>
     </div>`;
   }
+
+  /** The thread. What the old free-text `history` was standing in for, with authors. */
+  threadEl(b) {
+    return html`<div class="sec">discussion (${b.thread.length})</div>
+      <div class="bhist">${each(b.thread, c => html`<div class="bcomment">
+        <div class="dim">${c.by}${c.via ? ' · ' + c.via : ''} · ${c.at.slice(0, 10)}</div>
+        <md-content text="${c.body}"></md-content>
+      </div>`, c => c.id)}</div>
+      <div class="row">
+        <textarea class="bdraft" rows="2" placeholder="say something on this bug…"
+          value="${this.state.draft}" on-input="${(e) => { this.state.draft = e.target.value; }}"></textarea>
+        <button disabled="${!this.state.draft.trim() || this.state.busy === 'comment'}" on-click="${() => this.comment()}">comment</button>
+      </div>`;
+  }
+
+  /**
+   * Where this bug lives outside codemap. Being in a tracker is NOT being fixed — the
+   * witness is still what decides that here — so this never changes the state.
+   */
+  trackEl(b) {
+    return html`<div class="sec">external tracking</div>
+      ${when(!b.tracking.length, () => html`<div class="dim">not tracked anywhere outside codemap</div>`)}
+      ${each(b.tracking, t => html`<div class="btrack">
+        <span class="bchip">${t.system}</span>
+        ${when(!!t.url, () => html`<a href="${t.url}" target="_blank" rel="noreferrer">${t.key || t.url}</a>`,
+          () => html`<span>${t.key}</span>`)}
+      </div>`, t => t.system)}
+      ${when(this.state.tracking, () => html`<form class="row btrackform" on-submit="${(e) => { e.preventDefault(); this.track(e.target); }}">
+        <input name="system" placeholder="jira" value="jira" size="6">
+        <input name="key" placeholder="ACME-1234" size="12">
+        <input name="url" placeholder="https://…" size="28">
+        <button type="submit" disabled="${this.state.busy === 'track'}">link</button>
+        <button type="button" on-click="${() => { this.state.tracking = false; }}">cancel</button>
+      </form>`, () => html`<div class="row"><button on-click="${() => { this.state.tracking = true; }}">link a ticket</button></div>`)}`;
+  }
+
   detail() {
     const u = this.props.params.universe, b = this.state.detail;
     if (this.state.detailPending && !b) return html`<div class="loading">loading…</div>`;
     if (!b) return html`<div class="empty" style="padding:40px">select a bug on the left</div>`;
-    if (b.error) return html`<div class="empty">${b.error}</div>`;
-    const closed = b.status !== 'open';
+    if (isErr(b)) return html`<div class="empty">${b.error}</div>`;
     return html`<div class="ddetail">
-      <div class="dsymhead"><span class="sevdot" style="background:${SEV_COLOR[b.severity] || SEV_COLOR.medium}"></span> <b>${b.title}</b> <span class="bchip ${b.status}">${b.status}</span>${when(b.possiblyFixed, () => html`<span class="bchip poss">possibly fixed</span>`)}</div>
-      <div class="meta">${b.severity} · ${b.id}${b.createdCommit ? ' · filed @ ' + b.createdCommit.slice(0, 8) : ''}</div>
+      <div class="dsymhead"><span class="sevdot" style="background:${SEV_COLOR[b.severity] || SEV_COLOR.medium}"></span> <b>${b.title}</b> <span class="bchip ${b.state}">${b.state}</span>${when(b.possiblyFixed, () => html`<span class="bchip poss">possibly fixed</span>`)}</div>
+      <div class="meta">${b.severity} · ${b.id}${b.createdCommit ? ' · filed @ ' + b.createdCommit.slice(0, 8) : ''}${b.shared ? ' · shared' : ' · local only'}${b.filedAt ? ' · originally ' + b.filedAt.slice(0, 10) : ''}</div>
+      ${when(!!b.from, () => html`<div class="meta">accepted from finding ${b.from.finding} on <span class="lk" on-click="${() => go(`/u/${u}/pr/${b.from.pr}/`)}">PR ${b.from.pr}</span></div>`)}
+      ${when(!!b.pending, () => html`<div class="attn-banner"><span>${b.pending.by} asked to <b>${b.pending.ask}</b>: ${b.pending.rationale}</span></div>`)}
       <div class="drev">
-        <span class="dim">set status:</span>
-        <span class="rev">${each(BUG_STATUSES, s => html`<button class="${b.status === s ? 'on' : ''}" on-click="${() => this.act({ status: s })}">${s}</button>`, s => s)}</span>
-        <button class="bwit" title="re-snapshot the cited code's hashes as the current witness (clears stale)" on-click="${() => this.act({ refreshWitnesses: true })}">refresh witnesses</button>
+        <span class="dim">state:</span>
+        <span class="rev">${each(BUG_STATES, s => html`<button class="${b.state === s ? 'on' : ''}" disabled="${this.state.busy === 'state'}" on-click="${() => this.act('update', { state: s }, 'state')}">${s}</button>`, s => s)}</span>
+        <button class="bwit" title="re-snapshot the cited code's hashes as the current witness (clears stale)" on-click="${() => this.act('update', { refreshWitnesses: true }, 'witness')}">refresh witnesses</button>
+        ${when(!b.promotion, () => html`<button title="surface this for the whole team" on-click="${() => this.act('promote', {}, 'promote')}">promote</button>`,
+          () => html`<span class="bchip">promoted by ${b.promotion.by}</span>`)}
       </div>
-      <md-content text="${b.description}"></md-content>
+      ${when(!!this.state.note, () => html`<div class="note">${this.state.note}</div>`)}
+      <md-content text="${b.text}"></md-content>
+
+      ${when(!!b.contestedFields.length, () => html`<div class="sec warn">contested</div>
+        ${each(b.contestedFields, c => html`<div class="contest">
+          <div class="dim">${c.field} — two people set this without seeing each other</div>
+          <div><b>${c.held.by}</b>: ${String(c.held.value)}</div>
+          <div><b>${c.incoming.by}</b>: ${String(c.incoming.value)}</div>
+          <div class="row">
+            <button on-click="${() => this.act('settle', { field: c.field, value: c.held.value }, 'settle')}">keep ${c.held.by}'s</button>
+            <button on-click="${() => this.act('settle', { field: c.field, value: c.incoming.value }, 'settle')}">keep ${c.incoming.by}'s</button>
+          </div>
+        </div>`, c => c.field)}`)}
+
       <div class="sec">cited code (${b.anchors.length})${when(b.staleAnchors, () => html` · <span class="warn">${b.staleAnchors} stale</span>`)}</div>
-      ${each(b.anchors, a => html`<div class="banchor ${a.stale ? 'stale' : ''} ${a.present ? '' : 'gone'}" on-click="${() => go(anchorUrl(u, a.id))}">
+      ${each(b.anchors, a => html`<div class="banchor ${a.stale ? 'stale' : ''} ${a.present ? '' : 'gone'} ${a.removed ? 'dropped' : ''}" on-click="${() => go(anchorUrl(u, a.id))}">
         <span class="basym">${a.symbol}</span>
         <span class="bafile">${a.file || '(unresolved)'}${a.lines ? ':' + a.lines : ''}</span>
-        ${when(a.unverifiable, () => html`<span class="bchip" title="this anchor id was minted by a build whose ids are derived differently — it is not resolvable here, which is not the same as gone">can't check</span>`,
-          () => when(!a.present, () => html`<span class="bchip changed" title="anchor no longer found (renamed/removed)">lost</span>`,
-            () => when(a.stale, () => html`<span class="bchip changed" title="code changed since the bug's witness — re-validate">stale</span>`)))}
+        ${when(!!a.removed, () => html`<span class="bchip" title="dropped by ${a.removed.by}: ${a.removed.reason}">dropped</span>`,
+          () => when(a.unverifiable, () => html`<span class="bchip" title="this anchor id was minted by a build whose ids are derived differently — it is not resolvable here, which is not the same as gone">can't check</span>`,
+            () => when(!a.present, () => html`<span class="bchip changed" title="anchor no longer found (renamed/removed)">lost</span>`,
+              () => when(a.stale, () => html`<span class="bchip changed" title="code changed since the bug's witness — re-validate">stale</span>`))))}
       </div>`, a => a.id)}
-      ${when(b.history && b.history.length, () => html`<div class="sec">history</div>
-        <div class="bhist">${each(b.history, (h, i) => html`<div class="hline">${h}</div>`, (h, i) => i + h)}</div>`)}
+
+      ${when(!!b.corroboration.length, () => html`<div class="sec">second opinions (${b.corroboration.length})</div>
+        ${each(b.corroboration, c => html`<div class="bcomment">
+          <div class="dim"><b>${c.verdict}</b> — ${c.by}${c.via ? ' · ' + c.via : ''}${c.independent ? ' · independent' : ''}</div>
+          <div>${c.rationale}</div>
+        </div>`, c => c.by + (c.via || ''))}`)}
+
+      ${this.trackEl(b)}
+      ${this.threadEl(b)}
     </div>`;
   }
   template() {
     const u = this.props.params.universe, d = this.state.data;
-    if (!d || (this.load.pending && !d)) return html`<main><div class="loading">loading…</div></main>`;
+    // `createTask` never rejects — it parks the failure on `task.error`. A page that
+    // ignores that shows its spinner forever, which is what this branch is for.
+    const err = taskError(this.load);
+    if (err || !d) return html`<main>${when(!!err, () => html`<div class="empty">${err}</div>`,
+      () => html`<div class="loading">loading…</div>`)}</main>`;
     const counts = d.counts || {};
-    const cur = this.props.query.status || '';
-    const chip = (val, label) => html`<button class="${cur === val ? 'on' : ''}" on-click="${() => this.pickStatus(val)}">${label}${when(counts[val] != null, () => html` <span class="n">${counts[val]}</span>`)}</button>`;
+    const cur = this.props.query.queue ? 'queue' : (this.props.query.state || '');
+    const chip = (val, label, n) => html`<button class="${cur === val ? 'on' : ''}" on-click="${() => this.pickState(val)}">${label}${when(n != null, () => html` <span class="n">${n}</span>`)}</button>`;
+    const unshared = d.bugs.filter(b => !b.shared).length;
     return html`<main class="wide">
-      <div class="crumbs">${u} <span class="sep">·</span> bugs (${d.bugs.length}${cur ? ' shown' : ''})</div>
-      <div class="dtoggle bugfilter"><span class="dim">status</span>
-        ${chip('', 'all')}${each(BUG_STATUSES, s => chip(s, s), s => s)}
+      <div class="crumbs">${u} <span class="sep">·</span> bugs (${d.bugs.length}${cur ? ' shown' : ''})${when(d.shared > 0, () => html` <span class="sep">·</span> ${d.shared} shared`)}</div>
+      <div class="dtoggle bugfilter"><span class="dim">state</span>
+        ${chip('', 'all')}${chip('queue', 'needs you', d.waitingOnYou)}${each(BUG_STATES, s => chip(s, s, counts[s]), s => s)}
       </div>
+      ${when(!!unshared, () => html`<div class="attn-banner">
+        <span>${unshared} bug${unshared === 1 ? '' : 's'} ${unshared === 1 ? 'is' : 'are'} only on this machine — filed before the sidecar was configured.</span>
+        <button disabled="${this.state.busy === 'publish'}" on-click="${() => this.publish()}">publish to the team</button>
+      </div>`)}
+      ${when(!!this.state.note && !this.props.query.bug, () => html`<div class="note">${this.state.note}</div>`)}
       <div class="dgrid">
         <div class="dleft">
-          ${when(!d.bugs.length, () => html`<div class="dim" style="padding:8px 2px">no bugs${cur ? ' with status “' + cur + '”' : ''} — report them via the <code>report_bug</code> MCP tool</div>`)}
+          ${when(!d.bugs.length, () => html`<div class="dim" style="padding:8px 2px">no bugs${cur ? ' matching “' + cur + '”' : ''} — report them via the <code>report_bug</code> MCP tool, or accept a pull-request finding into one</div>`)}
           ${each(d.bugs, b => this.bugRow(b), b => b.id)}
         </div>
         <div class="dright">${this.detail()}</div>

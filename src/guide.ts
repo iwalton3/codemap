@@ -157,7 +157,16 @@ so the worst-and-least-reviewed code sorts to the top of the human's queue.
   (lost/dangling); run the post-change loop above on them.
 - \`report_bug\` — anchor a defect to the exact code. It auto-flags possiblyFixed
   when that code later changes; \`list_bugs\` surfaces those to re-validate, then
-  \`update_bug\` to resolve.
+  \`update_bug\` to resolve. **With a sidecar a bug is the TEAM's**: it enters the
+  shared log as you file it, yours opens as \`issued\` (a proposal), and past
+  \`created\` only a person closes one — \`ask_about_bug\` is the path when
+  \`update_bug\` refuses. \`comment_bug\` is where what you checked goes;
+  \`corroborate_bug\` is a second opinion on somebody else's; \`track_bug\` records
+  the Jira ticket or GitHub issue it is filed under, which does NOT close it.
+- \`accept_finding\` — a pull-request finding that is a real defect should not die
+  with the branch. This keeps it as a bug and cross-links both; the finding stays on
+  the PR for its history and the bug carries the obligation. Do it for anything you
+  would be annoyed to rediscover in three months.
 - \`annotate\` — leave a note or open question on an anchor/node for the human or
   a future session.
 - \`analyze\` (opt-in, framework-specific) — for Marten/Wolverine event-sourced C#,

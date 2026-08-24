@@ -23,6 +23,7 @@ import { anchorIndex, derivationsOf, legacyIndex, type AnchorIndex, resolveAncho
 import { randomBytes } from "node:crypto";
 import { db, WORK_REF, ORPHAN_REF } from "./db.js";
 import { ABSENT_FIELD } from "./shared-triage.js";
+import { needsHumanAck, type SharedBug } from "./shared-bugs.js";
 import { IMPORTANCE_RANK, COMPLEXITY_RANK } from "./triage-rules.js";
 import { headCommit, currentBranch } from "./git.js";
 import { evalVersion, selectWinner, resolveNode, winningVersionAt } from "./doc-version.js";
@@ -30,7 +31,7 @@ export { winningVersionAt } from "./doc-version.js";
 import {
   type Anchor, type AnchorStore, type State, type LogicalNode, type LogicalNodeType,
   type NodeVersion, type NodeCitation, type NodeStatus,
-  type Graph, type Edge, type Bug, type BugStore, type Annotation, type AnnotationStore,
+  type Graph, type Edge, type Annotation, type AnnotationStore,
   type CoverageRule, type CoverageStore, type AnalyzerConfig, type Review, type ReviewStore, type Triage, type TriageStore,
   type BugWitness, type Importance, type Complexity, type TriageSource,
   SCHEMA_VERSION, ANCHOR_SCHEME, HASH_SCHEME,
@@ -290,10 +291,9 @@ export async function referencedAnchorIds(root: string): Promise<Set<string>> {
   ]);
   const ids = new Set<string>();
   for (const a of annStore.annotations) if (a.target.kind === "anchor") ids.add(a.target.id);
-  for (const b of bugStore.bugs) {
-    for (const id of b.anchors) ids.add(id);
-    for (const w of b.witnesses ?? []) ids.add(w.anchorId);
-  }
+  // Removed citations count too: a bug's history is evidence, and an anchor dropped
+  // from a live bug is still the code somebody was looking at when they filed it.
+  for (const b of bugStore.bugs) for (const a of b.anchors) ids.add(a.anchorId);
   for (const r of reviewStore.reviews) if (r.target.kind === "anchor") ids.add(r.target.id);
   for (const t of triageStore.triage) if (t.target.kind === "anchor") ids.add(t.target.id);
   for (const n of nodes) for (const id of n.anchors) ids.add(id);
@@ -1148,15 +1148,101 @@ export async function writeGraph(root: string, graph: Graph): Promise<void> {
   }
 }
 
-// --- small JSON-blob stores (bugs / annotations / coverage / analyzers / reviews) ---
+// --- bugs ------------------------------------------------------------------
+//
+// One canonical table, so a teammate's bug and this machine's are the same row shape
+// and every surface above reads them together. `origin` is what separates them, and
+// the ownership rule (docs/sidecar-architecture.md) is stated on it: a row with one is
+// written ONLY by the fold.
 
+export interface BugStore {
+  schemaVersion: number;
+  bugs: SharedBug[];
+}
+
+/** Every bug this store holds — this machine's and the team's, in one list. */
 export async function readBugs(root: string): Promise<BugStore> {
-  return getMeta<BugStore>(db(root), "bugs") ?? { schemaVersion: SCHEMA_VERSION, bugs: [] };
+  const rows = db(root).prepare("SELECT body, source_scope FROM bugs ORDER BY created_at, id")
+    .all() as unknown as { body: string; source_scope: string | null }[];
+  const bugs: SharedBug[] = [];
+  for (const r of rows) {
+    try {
+      const b = JSON.parse(r.body) as SharedBug;
+      // Set by the STORE and never by the fold, exactly as a shared doc carries it:
+      // the fold's output describes the bug, not where this machine's copy came from.
+      if (r.source_scope) b.origin = { scope: r.source_scope };
+      bugs.push(b);
+    } catch { /* a row this build cannot parse is not a reason to fail every bug read */ }
+  }
+  return { schemaVersion: SCHEMA_VERSION, bugs };
 }
 
-export async function writeBugs(root: string, bugs: Bug[]): Promise<void> {
-  setMeta(db(root), "bugs", { schemaVersion: SCHEMA_VERSION, bugs });
+/** One bug by id, without deserializing the rest. */
+export async function readBug(root: string, id: string): Promise<SharedBug | null> {
+  const row = db(root).prepare("SELECT body, source_scope FROM bugs WHERE id = ?").get(id) as
+    { body: string; source_scope: string | null } | undefined;
+  if (!row) return null;
+  try {
+    const b = JSON.parse(row.body) as SharedBug;
+    if (row.source_scope) b.origin = { scope: row.source_scope };
+    return b;
+  } catch { return null; }
 }
+
+const bugRow = (b: SharedBug): unknown[] => [
+  b.id, b.title, b.state, b.severity, b.author.principal, b.createdAt,
+  needsHumanAck(b) ? 1 : 0, b.contested?.length ? 1 : 0, b.tracking.length ? 1 : 0,
+  // `origin` is never written from here — this path only ever writes local rows.
+  JSON.stringify({ ...b, origin: undefined }),
+];
+
+/**
+ * Write one LOCAL bug. Refuses a fold-owned row.
+ *
+ * The refusal is the ownership rule made mechanical rather than remembered. A local
+ * mutation of a projection row is quiet in a specific way: nothing about it moves the
+ * scope fingerprint, so the cache keeps serving the corrupted row until something else
+ * forces a re-fold, and then the change vanishes. An error at the call site is the only
+ * version of that anybody can debug.
+ */
+export async function writeLocalBug(root: string, bug: SharedBug): Promise<void> {
+  const d = db(root);
+  const owner = d.prepare("SELECT source_scope FROM bugs WHERE id = ?").get(bug.id) as { source_scope: string | null } | undefined;
+  if (owner?.source_scope) {
+    throw new Error(
+      `${bug.id} is owned by the sidecar fold (${owner.source_scope}) — write an event, not a row. `
+      + `Local edits to a folded bug are erased by the next sync and invisible until then.`,
+    );
+  }
+  d.prepare(
+    "INSERT OR REPLACE INTO bugs(id,title,state,severity,author,created_at,needs_ack,contested,tracked,body) "
+    + "VALUES(?,?,?,?,?,?,?,?,?,?)",
+  ).run(...bugRow(bug) as any);
+}
+
+/**
+ * Replace this clone's own bugs. NEVER a teammate's.
+ *
+ * `WHERE source_scope IS NULL` for the reason `replaceLocalTriage` gives: a bare
+ * `DELETE FROM bugs` would take rows only the fold may own, with no event recording it,
+ * and the next fold would put them back — so the damage appears and disappears
+ * depending on when you look.
+ */
+export async function writeLocalBugs(root: string, bugs: SharedBug[]): Promise<void> {
+  const d = db(root);
+  const ins = d.prepare(
+    "INSERT INTO bugs(id,title,state,severity,author,created_at,needs_ack,contested,tracked,body) "
+    + "VALUES(?,?,?,?,?,?,?,?,?,?)",
+  );
+  d.exec("BEGIN");
+  try {
+    d.prepare("DELETE FROM bugs WHERE source_scope IS NULL").run();
+    for (const b of bugs) ins.run(...bugRow(b) as any);
+    d.exec("COMMIT");
+  } catch (e) { d.exec("ROLLBACK"); throw e; }
+}
+
+// --- small JSON-blob stores (annotations / coverage / analyzers / reviews) ---
 
 export async function readAnnotations(root: string): Promise<AnnotationStore> {
   return getMeta<AnnotationStore>(db(root), "annotations") ?? { schemaVersion: SCHEMA_VERSION, annotations: [] };

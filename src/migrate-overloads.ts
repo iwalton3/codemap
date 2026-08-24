@@ -20,7 +20,8 @@
  * somebody's sign-off to a method they never read.
  */
 
-import type { Anchor, Review, Triage, Annotation, Bug } from "./schema.js";
+import type { Anchor, Review, Triage, Annotation } from "./schema.js";
+import type { SharedBug } from "./shared-bugs.js";
 import { bodyKey } from "./normalize.js";
 
 const groupKey = (a: { file: string; symbolPath: string[] }) => `${a.file} ${a.symbolPath.join(" ")}`;
@@ -85,8 +86,13 @@ export function applyRemap(
     /**
      * Bugs are witness-hashed against anchor ids exactly as reviews are — the
      * `possiblyFixed` signal reads them — and were the one store this forgot.
+     *
+     * LOCAL bugs only. A fold-owned one names ids in the AUTHOR's claim, published from
+     * their machine; rewriting them here would silently edit somebody else's record of
+     * what they cited, and the next fold would put the old ids back anyway. Same rule,
+     * and the same reasoning, as the triage list above.
      */
-    bugs: Bug[];
+    bugs: SharedBug[];
     /** Node versions' citation lists, mutated in place. */
     citations: { anchorId: string; acceptedHashes?: string[] }[][];
   },
@@ -120,11 +126,9 @@ export function applyRemap(
     }
   }
   for (const b of stores.bugs) {
-    let touched = false;
-    const anchors = (b.anchors ?? []).map((id) => { if (map.has(id)) { touched = true; return to(id); } return id; });
-    if (touched) b.anchors = anchors;
-    if (retargetWitnesses(b.witnesses)) touched = true;
-    if (touched) counts.bugs++;
+    // One list now: a citation carries its own witness, so the id and the hash it was
+    // witnessed at cannot drift apart under a remap the way two parallel lists could.
+    if (retargetWitnesses(b.anchors ?? [])) counts.bugs++;
   }
   for (const cites of stores.citations) {
     for (const c of cites) if (map.has(c.anchorId)) { c.anchorId = to(c.anchorId); counts.citations++; }

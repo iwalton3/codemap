@@ -315,6 +315,27 @@ export async function upstreamFinding(root: string, pr: number | string, id: str
   return { ok: true, id, note: "tracked upstream; still open here until the code says otherwise" };
 }
 
+/**
+ * One finding, as the data another op needs rather than as a view.
+ *
+ * `nodeAnchors` is the one derived thing it adds: a finding on a NODE cites no anchor of
+ * its own, and what that node covers is a property of the reader's LOCAL graph. Resolved
+ * here because this is where the store is, and returned separately from the target so a
+ * caller cannot mistake this machine's answer for something the finding carried.
+ */
+export async function findingRecord(root: string, pr: number | string, id: string) {
+  const b = bind(root);
+  if ("error" in b) return b;
+  const f = (await cachedFindings(root, b.cfg, pr)).value.get(id);
+  if (!f) return { error: `no finding ${id} on pr ${pr}` };
+  let nodeAnchors: string[] | undefined;
+  if (f.target.kind === "node") {
+    const nodes = await loadNodes(root);
+    nodeAnchors = nodes.find((n) => n.id === f.target.id)?.anchors;
+  }
+  return { ...f, nodeAnchors };
+}
+
 export async function findingToBug(root: string, pr: number | string, id: string, bug: string) {
   const b = bind(root);
   if ("error" in b) return b;

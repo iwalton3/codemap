@@ -1,6 +1,7 @@
 import { type Annotation } from "../schema.js";
 import { indexCommit } from "../repo.js";
 import { revParse } from "../git.js";
+import { citedAnchors } from "../shared-bugs.js";
 import { readAnchorStore, readBugs, readAnnotations, readReviews, findAnchorsOutsideWork, readOrphans } from "../store.js";
 
 /**
@@ -54,7 +55,7 @@ export async function orphanedWork(root: string, opts: { locate?: boolean; maxCo
     });
   }
   for (const b of bugStore.bugs) {
-    for (const id of b.anchors) {
+    for (const id of citedAnchors(b)) {
       if (live.has(id)) continue;
       refs.push({ id, kind: "bug", ref: b.id, label: b.title, ...(addressOf(b.createdCommit) ? { sourceRef: b.createdCommit! } : {}) });
     }

@@ -3,6 +3,7 @@ import { join, resolve, sep } from "node:path";
 import { type Anchor, type LogicalNode, type CoverageState } from "../schema.js";
 import { indexFile, indexBlob } from "../repo.js";
 import { headCommit, readBlobs } from "../git.js";
+import { citedAnchors, isClosed } from "../shared-bugs.js";
 import { readAnchorStore, loadNodes, readGraph, readBugs, readAnnotations, readReviews, findAnchorsOutsideWork, snapshotBranch, readOrphans } from "../store.js";
 import { resolveAnchorRefs } from "../refs.js";
 import { reviewStatus, reviewStatesFor, anchorReviewMap, deriveCodeReview, type ReviewPair } from "../reviews.js";
@@ -101,7 +102,7 @@ export async function outline(root: string, prefix = "", opts: { compact?: boole
         covered: g.b.covered,
         review: { total: g.rDenom, logical: g.rl, logicalStale: g.rlStale, code: g.rc, codeStale: g.rcStale, codeReverted: g.rcReverted },
         nodes: nodes.filter((n) => underPath(n.anchors, path)).length,
-        bugs: bugStore.bugs.filter((b) => underPath(b.anchors, path)).length,
+        bugs: bugStore.bugs.filter((b) => underPath(citedAnchors(b), path)).length,
       };
     })
     .sort((x, y) => y.anchors - x.anchors);
@@ -225,7 +226,7 @@ export async function context(root: string, refs: string[]) {
   }));
 
   const bugs = bugStore.bugs
-    .filter((b) => b.status === "open" && b.anchors.some((id) => scope.has(id)))
+    .filter((b) => !isClosed(b.state) && citedAnchors(b).some((id) => scope.has(id)))
     .map((b) => ({ id: b.id, title: b.title, severity: b.severity }));
 
   return {
@@ -350,7 +351,7 @@ export async function getAnchor(root: string, id: string) {
     // nothing, so a blocked scope is reported rather than emptied. See §7.
     ...(anchorVerdict && anchorVerdict.status !== "complete"
       ? { sharedScope: { status: anchorVerdict.status, diagnostic: anchorVerdict.diagnostic } } : {}),
-    bugs: bugStore.bugs.filter((b) => b.anchors.includes(id)).map((b) => ({ id: b.id, title: b.title, status: b.status })),
+    bugs: bugStore.bugs.filter((b) => citedAnchors(b).includes(id)).map((b) => ({ id: b.id, title: b.title, state: b.state })),
     annotations: annStore.annotations.filter((a) => a.target.kind === "anchor" && a.target.id === id),
     lang: langFor(anchor.file),
     review: await reviewStatus(root, { kind: "anchor", id }),

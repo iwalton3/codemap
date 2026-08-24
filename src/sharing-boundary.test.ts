@@ -21,7 +21,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 /** The scope kinds that travel. Adding one is a decision this test makes you state. */
-const SHARED_KINDS = ["findings/", "docs/", "notes/", "walkthrough/", "triage/", "graph/"];
+const SHARED_KINDS = ["findings/", "bugs/", "docs/", "notes/", "walkthrough/", "triage/", "graph/"];
 
 test("exactly the authored entity kinds travel", () => {
   const src = readFileSync("src/shared-projections.ts", "utf8");

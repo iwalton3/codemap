@@ -110,7 +110,11 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
     case "/api/lint":
       return ops.lintSummaries(root);
     case "/api/bugs":
-      return ops.listBugs(root, { status: (q.get("status") as any) ?? undefined });
+      return ops.listBugs(root, {
+        state: (q.get("state") as any) ?? undefined,
+        open: q.get("open") === "1",
+        queue: q.get("queue") === "1",
+      });
     case "/api/bug":
       return ops.bugDetail(root, q.get("id") ?? "");
     case "/api/queue":
@@ -596,15 +600,39 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    // Bug triage from the UI: change status / append a note / refresh witnesses.
-    if (req.method === "POST" && url.pathname === "/api/bug/update") {
+    // Bug triage from the UI. One router rather than a route each, the same shape as
+    // `/api/shared/` above — a bug is now a team object and every one of these is a
+    // thing somebody does to it.
+    if (req.method === "POST" && url.pathname.startsWith("/api/bug/")) {
       const chunks: Buffer[] = [];
       for await (const c of req) chunks.push(c as Buffer);
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
       const root = rootFor(body.u ?? null);
-      const out = await withLock<unknown>(root, () =>
-        ops.updateBug(root, { id: body.id, status: body.status, note: body.note, refreshWitnesses: body.refreshWitnesses }),
-      );
+      const action = url.pathname.slice("/api/bug/".length);
+      // Which of these write `.codemap/` directly. Everything else appends to the log
+      // and folds; naming them explicitly is what stops a new action racing the rest of
+      // the server silently.
+      const TOUCHES_LOCAL = new Set(["update", "publish", "accept", "unanchor"]);
+      const run = <T>(fn: () => Promise<T>): Promise<T> =>
+        TOUCHES_LOCAL.has(action) ? withLock(root, fn) : fn();
+      let out: unknown;
+      switch (action) {
+        case "update": out = await run(() => ops.updateBug(root, {
+          id: body.id, state: body.state, reason: body.reason, note: body.note,
+          addAnchors: body.addAnchors, refreshWitnesses: body.refreshWitnesses,
+          title: body.title, description: body.description, severity: body.severity, category: body.category,
+        })); break;
+        case "comment": out = await ops.commentBug(root, body.id, body.body ?? "", body.inReplyTo); break;
+        case "track": out = await ops.trackBugExternally(root, body.id, { system: body.system, key: body.key, url: body.url }); break;
+        case "corroborate": out = await ops.corroborateBugOp(root, body.id, body.verdict, body.rationale ?? ""); break;
+        case "promote": out = await ops.promoteBugOp(root, body.id); break;
+        case "request": out = await ops.requestOnBugOp(root, body.id, body.ask, body.rationale ?? ""); break;
+        case "settle": out = await ops.resolveBugContestOp(root, body.id, body.field, body.value); break;
+        case "unanchor": out = await run(() => ops.unanchorBugOp(root, body.id, body.anchorId, body.reason ?? "")); break;
+        case "publish": out = await run(() => ops.publishBugs(root, { dryRun: body.dryRun === true, ids: body.ids })); break;
+        case "accept": out = await run(() => ops.acceptFinding(root, String(body.pr ?? ""), body.finding, { title: body.title, severity: body.severity })); break;
+        default: out = { error: `unknown bug action "${action}"` };
+      }
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(out));
       return;
