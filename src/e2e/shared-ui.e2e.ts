@@ -74,7 +74,11 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
       text: "is the retry idempotent, or does it double-post?",
     });
     await documentNode(root, {
-      type: "process", title: "Payments seam",
+      // NOT `process`. The publish surface and the fold both refuse `process`/`step`,
+      // because edges do not sync and such a doc would arrive without its steps — so a
+      // `process` fixture publishes NOTHING and the catalogue below renders empty. It
+      // was doing exactly that: both shared-docs tests timed out waiting for a row.
+      type: "concept", title: "Payments seam",
       summary: "how a payment reaches the ledger",
       body: "transfer() is the only entry point.",
       anchors: [anchorId],

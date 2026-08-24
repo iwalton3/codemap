@@ -59,7 +59,20 @@ export function skipReason(): string | null {
       return `${SOURCE_REPO} does not hold ${sha.slice(0, 12)} — fetch jellyfin/jellyfin master`;
     }
   }
-  if (spawnSync("gh", ["auth", "status"], { encoding: "utf8" }).status !== 0) return "gh is not authenticated";
+  // The PULL REF, which is the actual prerequisite now that resolution is git-only.
+  // A clone fetches `refs/pull/N/head` from its origin — this repo — so this repo has
+  // to hold it locally. Holding the fixture COMMITS is not the same thing and does not
+  // imply it: an ordinary `git fetch` brings branches and tags, never pull refs.
+  //
+  // A skip rather than a failure, by the same rule as the absent repo: `npm run unit`
+  // and `npm run e2e` must not fail because somebody's checkout lacks a prerequisite
+  // this project does not own. Found by the suite failing six tests on a checkout whose
+  // pull refs had gone and whose remote had been renamed.
+  const pullRef = `refs/pull/${FIXTURE_PR.number}/head`;
+  if (git(SOURCE_REPO, "rev-parse", "--verify", "--quiet", pullRef).status !== 0) {
+    return `${SOURCE_REPO} has no ${pullRef} — a PR is reachable without \`gh\` only through it. `
+      + `Restore with: git -C ${SOURCE_REPO} fetch <remote> '+${pullRef}:${pullRef}'`;
+  }
   return null;
 }
 
