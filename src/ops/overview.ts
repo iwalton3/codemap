@@ -184,16 +184,11 @@ export async function findGaps(
   root: string,
   opts: { pathPrefix?: string; kind?: string; limit?: number } = {},
 ) {
-  // Dynamic, like `mirrorNote` and `getAnchor`: the agnostic core does not depend on
-  // the sidecar, and a shared store that is missing or unreadable must not break the
-  // work queue that predates it.
-  const shared = await import("../ops-shared.js").catch(() => null);
-  const verdict = shared ? await shared.docsVerdict(root).catch(() => null) : null;
-
-  // A teammate's doc is an ordinary node now, so coverage already counts it and there
-  // is no second path to keep in step. What DOES need saying is which scopes may not
-  // decide: a blocked one still shows its rows and may not remove work from the queue.
-  const { store, nodes, result } = await coverageFor(root, verdict?.excludeFromDecisions);
+  // `coverageFor` folds the docs scope and computes coverage from the DECIDING subset,
+  // so a teammate's doc counts and a blocked scope's does not. Both halves live there
+  // because the state is computed there — a blocked citation has already made its
+  // anchor `cited` by the time this function could filter anything.
+  const { store, nodes, result, verdict } = await coverageFor(root);
   let open = store.anchors.filter((a) => result.state.get(a.id) === "open");
   if (opts.pathPrefix) open = open.filter((a) => a.file.startsWith(opts.pathPrefix!));
   if (opts.kind) open = open.filter((a) => a.kind === opts.kind);

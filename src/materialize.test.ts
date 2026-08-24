@@ -196,7 +196,6 @@ test("a folded doc lands as a canonical row, and its citations are answerable", 
   try {
     const { publishDocVersion, foldDocs, docScope } = await import("./shared-docs.js");
     const { db } = await import("./db.js");
-    const { docsCiting, sharedCitedAnchors } = await import("./shared-projections.js");
     const U = "acme/api";
     const vid = await publishDocVersion(logRoot, U, izzie, {
       nodeId: "n_pay", type: "concept", title: "t", summary: "s", body: "b",
@@ -212,9 +211,11 @@ test("a folded doc lands as a canonical row, and its citations are answerable", 
     assert.equal(row!.origin, "sync", "marked fold-owned, which is what fences local writes off it");
     assert.equal(row!.source_scope, docScope(U), "and tagged with the scope that owns it");
 
-    assert.deepEqual([...sharedCitedAnchors(root, docScope(U))].sort(), ["a_1", "a_2"]);
-    assert.deepEqual(docsCiting(root, docScope(U), ["a_2"]), ["n_pay"]);
-    assert.deepEqual(docsCiting(root, docScope(U), ["a_nope"]), [], "and it does not match everything");
+    // The citations travelled with the row, which is what makes the anchor question
+    // answerable from canonical rows at all.
+    const cites = JSON.parse((db(root).prepare("SELECT citations FROM node_versions WHERE version_id = ?")
+      .get(vid) as { citations: string }).citations) as { anchorId: string }[];
+    assert.deepEqual(cites.map((c) => c.anchorId).sort(), ["a_1", "a_2"]);
   } finally { [logRoot, root].forEach((r) => rmSync(r, { recursive: true, force: true })); }
 });
 
@@ -429,4 +430,29 @@ test("…and the vector actually contains the two rules it claims to", () => {
   const c = (f.contested ?? []).find((c) => c.field === "severity");
   assert.ok(c, "two clones, one contest");
   assert.deepEqual([c.held.writer, c.incoming.writer], ["w_laptop", "w_desktop"]);
+});
+
+test("the docs projection preserves the fold's OUTER order, not just each node's", async () => {
+  // `foldDocs` returns a Map in first-event order and the projection's contract is
+  // `read(write(x)) === x`. Reading back `ORDER BY node_id` alphabetises it, so a
+  // cache MISS and a cache HIT return different serialized values for one scope. The
+  // existing equivalence test could not catch it: it uses a single node.
+  const logRoot = tmp("olog"), root = tmp("orepo");
+  try {
+    const { publishDocVersion, foldDocs, docScope } = await import("./shared-docs.js");
+    const U = "acme/api";
+    // Published so that fold order and alphabetical order DISAGREE.
+    for (const nodeId of ["n_zebra", "n_alpha"]) {
+      await publishDocVersion(logRoot, U, izzie, {
+        nodeId, type: "concept", title: nodeId, summary: "s", body: "b",
+        citations: [{ anchorId: "a_1", acceptedHashes: [] }],
+        createdCommit: null, createdBranch: null,
+      } as never);
+    }
+    const scope = docScope(U);
+    const miss = await readCached(root, logRoot, scope, ID, foldDocs, docsProjection);
+    const hit = await readCached(root, logRoot, scope, ID, foldDocs, docsProjection);
+    assert.deepEqual([...miss.keys()], ["n_zebra", "n_alpha"], "the fold's own order");
+    assert.deepEqual([...hit.keys()], [...miss.keys()], "and the cache agrees with it");
+  } finally { [logRoot, root].forEach((r) => rmSync(r, { recursive: true, force: true })); }
 });

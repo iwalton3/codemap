@@ -16,7 +16,7 @@ import { evalVersion } from "./doc-version.js";
 import { readCached, ensureMaterialized, type Projection } from "./materialize.js";
 import type { ScopeStatus, ScopeDiagnostic, LogEvent } from "./eventlog.js";
 import { scopesOnDisk, readScopeChecked, writerFor, rotateWriter, acknowledgeScope } from "./eventlog.js";
-import { findingsProjection, docsProjection, notesProjection, docsCiting, docsByNode, sharedCitedAnchors } from "./shared-projections.js";
+import { findingsProjection, docsProjection, notesProjection, docsByNode } from "./shared-projections.js";
 import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
 import { resolveSidecar, scopeFor, type SidecarConfig } from "./sidecar-config.js";
 import { originSlug, headCommit, currentBranch } from "./git.js";
@@ -819,12 +819,6 @@ export async function sharedKnowsNode(root: string, nodeId: string): Promise<boo
 }
 
 
-/**
- * How many ids `sharedDocsCiting` will be asked about directly before the cheap
- * prefilter is worth a second query. It binds one parameter per id, which is right
- * for a scope and wrong for a whole index.
- */
-const PREFILTER_ABOVE = 200;
 
 
 /** Why this doc version cannot be published, or null. Shape only — ids are checked live. */

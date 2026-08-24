@@ -86,10 +86,33 @@ export function trustOf(status: string | undefined, review?: { logical: ReviewLi
 }
 
 /** Effective coverage state per anchor, from citation + stored rules. */
-export async function coverageFor(root: string, excludeScopes?: ReadonlySet<string>): Promise<{ store: Awaited<ReturnType<typeof readAnchorStore>>; nodes: LogicalNode[]; result: CoverageResult }> {
-  const [store, nodes, cov] = await Promise.all([readAnchorStore(root), loadNodes(root, excludeScopes), readCoverage(root)]);
-  const cited = new Set(nodes.flatMap((n) => n.anchors));
-  return { store, nodes, result: resolveCoverage(store.anchors, cited, cov.rules) };
+/**
+ * Coverage, with the show/decide split made in ONE place.
+ *
+ * `nodes` is everything, for DISPLAY. `result` is computed from the deciding subset
+ * only — a blocked scope's rows are shown and do not get to say there is no work
+ * here. Doing the filtering at the call site cannot work: coverage state is computed
+ * here, so a blocked citation has already made its anchor `cited` by the time a
+ * caller sees it, and no later filter can turn that back into a gap.
+ *
+ * It also FOLDS. `docsVerdict` is what materializes the docs scope, so a surface that
+ * never asked simply did not see a teammate's docs at all — which is most of them.
+ * Doing it here means every coverage consumer gets the team's half without each one
+ * remembering to.
+ */
+export async function coverageFor(root: string): Promise<{
+  store: Awaited<ReturnType<typeof readAnchorStore>>;
+  nodes: LogicalNode[];
+  deciding: LogicalNode[];
+  result: CoverageResult;
+  verdict: { status: string; scope?: string; excludeFromDecisions: ReadonlySet<string> } | null;
+}> {
+  const verdict = await import("../ops-shared.js").then((m) => m.docsVerdict(root)).catch(() => null);
+  const [store, nodes, cov] = await Promise.all([readAnchorStore(root), loadNodes(root), readCoverage(root)]);
+  const blocked = verdict?.excludeFromDecisions;
+  const deciding = blocked?.size ? nodes.filter((n) => !n.origin || !blocked.has(n.origin)) : nodes;
+  const cited = new Set(deciding.flatMap((n) => n.anchors));
+  return { store, nodes, deciding, result: resolveCoverage(store.anchors, cited, cov.rules), verdict };
 }
 
 /** Anchor→hash map for a cached commit — the hash source when documenting a branch. */

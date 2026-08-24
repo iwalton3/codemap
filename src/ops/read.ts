@@ -142,11 +142,7 @@ export async function search(root: string, query: string, limit = 30) {
  * doc already answers, and focus its reading on the gaps when it doesn't.
  */
 export async function context(root: string, refs: string[]) {
-  // BEFORE the nodes are loaded, not after. `docsVerdict` is what folds the docs
-  // scope into `node_versions`, so asking it later means the first `context` on a
-  // fresh store reads the rows that fold was about to write. Ordering, not taste.
-  const verdict = await import("../ops-shared.js").then((m) => m.docsVerdict(root)).catch(() => null);
-  const { store, nodes, result } = await coverageFor(root);
+  const { store, nodes, deciding: decidingNodes, result, verdict } = await coverageFor(root);
   const [graph, bugStore] = await Promise.all([readGraph(root), readBugs(root)]);
   const anchorsById = new Map(store.anchors.map((a) => [a.id, a]));
 
@@ -175,7 +171,10 @@ export async function context(root: string, refs: string[]) {
   // A doc "covers" the scope if it cites any anchor in a SCOPE FILE — file-level, so a
   // module doc for the file surfaces even when it doesn't cite the exact member asked
   // about (the dry-run's RatingProfile.cs case). Exact-anchor overlap still ranks first.
+  // Two sets, deliberately. `covering` is what the answer SHOWS; `deciding` is what
+  // it is allowed to conclude from. They differ only when a scope is blocked.
   const covering = nodes.filter((n) => n.anchors.some((id) => scopeFiles.has(fileOf(id) ?? "")));
+  const deciding = decidingNodes.filter((n) => n.anchors.some((id) => scopeFiles.has(fileOf(id) ?? "")));
 
   // Flows whose OWN anchors or any of their STEPS' anchors touch the scope — a raw
   // `type === 'process'` filter missed the flow that actually answers the question,
@@ -195,10 +194,14 @@ export async function context(root: string, refs: string[]) {
   };
   const docs = covering.map((n) => ({ ...view(n), coversInScope: n.anchors.filter((id) => scope.has(id)).length }))
     .sort((a, b) => (rank[a.trust] - rank[b.trust]) || b.coversInScope - a.coversInScope);
+  const decidingIds = new Set(deciding.map((n) => n.id));
+  const decidingDocs = docs.filter((d) => decidingIds.has(d.id));
   const flows = flowNodes.map((n) => ({ ...view(n), steps: (stepsOf.get(n.id) ?? []).length }));
 
   // Files that DO have a readable doc (some node cites an anchor in them).
-  const docFiles = new Set(covering.flatMap((n) => n.anchors.map(fileOf)).filter(Boolean) as string[]);
+  // From the DECIDING set. `docFiles` decides — it is what lets a file-level rule say
+  // an anchor is not a gap — so a blocked scope's doc must not put a file in it.
+  const docFiles = new Set(deciding.flatMap((n) => n.anchors.map(fileOf)).filter(Boolean) as string[]);
   // Gaps = scope anchors with no readable doc that aren't intentionally excluded:
   // `open`, or `covered`-by-a-rule but no doc actually cites anything in the file.
   // (`cited`/`trivial`/`deferred`/`owned` are not gaps.)
@@ -209,7 +212,6 @@ export async function context(root: string, refs: string[]) {
   // What still needs deciding is which scopes may DECIDE. A blocked one shows its
   // rows and may not remove a gap, so it is filtered out of the deciding set only.
   const blocked = verdict?.excludeFromDecisions;
-  const deciding = blocked?.size ? covering.filter((n) => !n.origin || !blocked.has(n.origin)) : covering;
   const decides = (id: string) => deciding.some((n) => n.anchors.includes(id));
   const gaps = scopeIds.filter((id) => {
     const st = result.state.get(id);
@@ -240,11 +242,14 @@ export async function context(root: string, refs: string[]) {
     flows,
     bugs,
     // A one-line read for the agent: is this area answered by something, and how much to trust it?
+    // The one-line verdict is a CONCLUSION, so it reads the deciding set. `docs` above
+    // still lists everything: a blocked scope's doc is shown and does not get to say
+    // this area is covered.
     verdict: !scopeIds.length ? "empty scope"
-      : docs.some((d) => d.trust === "verified") ? "covered — human-verified docs exist; rely on them"
-      : docs.some((d) => d.trust === "checked") ? "covered — agent-checked docs exist; solid, spot-check if critical"
-      : docs.some((d) => d.trust === "unverified") ? "partial — docs exist but unchecked; use as hypotheses, verify against code (and sanity_check what holds)"
-      : docs.some((d) => d.trust === "stale") ? "stale — docs here need re-validation against current code"
+      : decidingDocs.some((d) => d.trust === "verified") ? "covered — human-verified docs exist; rely on them"
+      : decidingDocs.some((d) => d.trust === "checked") ? "covered — agent-checked docs exist; solid, spot-check if critical"
+      : decidingDocs.some((d) => d.trust === "unverified") ? "partial — docs exist but unchecked; use as hypotheses, verify against code (and sanity_check what holds)"
+      : decidingDocs.some((d) => d.trust === "stale") ? "stale — docs here need re-validation against current code"
       // Below every trust-based verdict, and only when nothing else spoke: a
       // teammate's doc IS in this store now, so how much to trust it is the same
       // question as for any other doc and the branches above already answer it. This

@@ -706,8 +706,21 @@ function workHashes(d: DatabaseSync, root: string): AnchorIndex {
  * coverage feeding it) pass the blocked scopes. See `docsVerdict` in ops-shared.
  */
 export async function loadNodes(root: string, excludeScopes?: ReadonlySet<string>): Promise<LogicalNode[]> {
+  return loadNodesAt(root, workHashes(db(root), root), excludeScopes);
+}
+
+/**
+ * The same, resolved against a GIVEN index rather than the working tree.
+ *
+ * Which version of a doc wins depends on which code is in front of you, so "the docs
+ * affected by this change" is a question about the refs being diffed — not about
+ * whatever branch happens to be checked out. Resolving against `@work` meant a doc
+ * retired on your current branch vanished from a pull request's impact for two other
+ * refs, and `computeDiff` takes explicit cached refs precisely so it does not depend
+ * on the checkout.
+ */
+export async function loadNodesAt(root: string, work: AnchorIndex, excludeScopes?: ReadonlySet<string>): Promise<LogicalNode[]> {
   const d = db(root);
-  const work = workHashes(d, root);
   const byNode = new Map<string, NodeVersion[]>();
   for (const r of d.prepare(`SELECT * FROM node_versions ${VERSION_ORDER}`).all() as unknown as VersionRow[]) {
     if (excludeScopes?.size && r.source_scope && excludeScopes.has(r.source_scope)) continue;

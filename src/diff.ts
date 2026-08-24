@@ -16,7 +16,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { comparableHashDerivation, type Anchor, type Review } from "./schema.js";
 import { indexRepo, indexFile, indexBlob } from "./repo.js";
-import { readSnapshot, readAnchorStore, loadNodes, loadNodeVersions, winningVersionAt, readGraph, readReviews, readBugs, derivationLookup} from "./store.js";
+import { readSnapshot, readAnchorStore, loadNodes, loadNodeVersions, winningVersionAt, readGraph, readReviews, readBugs, derivationLookup, loadNodesAt, resolvable} from "./store.js";
 import { reviewStatesFor } from "./reviews.js";
 import { reviewTriageFor, coverageFor, type Coverage } from "./triage.js";
 import { revParse, headCommit, currentBranch, showFile } from "./git.js";
@@ -111,7 +111,13 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
   // surfaced separately as `added`, not as invalidation.)
   const impacted = new Set<string>([...changed, ...removed].map((b) => b.id));
 
-  const nodes = await loadNodes(root);
+  // Resolved against the HEAD being diffed. `loadNodes` uses the working index, and a
+  // doc retired on whatever branch is checked out then vanished from a pull request's
+  // impact for two entirely different refs — `computeDiff` takes explicit cached refs
+  // exactly so it does not depend on the checkout. `headHashes` is the working index
+  // when `headRef` is undefined, which is the ordinary "diff against my tree" case.
+  const headHashes = await hashesAt(root, headRef);
+  const nodes = headHashes ? await loadNodesAt(root, headHashes) : await loadNodes(root);
   const graph = await readGraph(root);
   const reviews = (await readReviews(root)).reviews;
 
@@ -281,6 +287,10 @@ async function hashesAt(root: string, ref: string | undefined): Promise<AnchorIn
 export interface DocSide {
   versionId: string; branch: string | null; commit: string | null;
   title: string; summary: string; body: string; removed: boolean;
+  /** The scope this version came from, when a teammate wrote it. */
+  origin?: string;
+  /** Who wrote it, when a teammate did. */
+  by?: string;
 }
 export interface DocDiff {
   forked: boolean;
@@ -299,7 +309,11 @@ export interface DocDiff {
  * body). Lets a reviewer read *how the documentation changed* alongside the code.
  */
 export async function docDiff(root: string, baseRef: string, headRef: string | undefined, nodeId: string): Promise<DocDiff> {
-  const versions = await loadNodeVersions(root, nodeId);
+  // `resolvable` here too, and it has to be explicit: this resolves from table rows
+  // WITHOUT going through the store's own resolution sites, so an old local tombstone
+  // would otherwise win a side against a teammate's version and render `(removed)`.
+  // Not inside `loadNodeVersions` — the version-history UI must still list it.
+  const versions = resolvable(await loadNodeVersions(root, nodeId));
   if (!versions.length) return { forked: false, error: `no node "${nodeId}"` };
   const baseHashes = await hashesAt(root, baseRef);
   if (!baseHashes) return { forked: false, error: `no cached snapshot for base "${baseRef}"` };
@@ -309,7 +323,15 @@ export async function docDiff(root: string, baseRef: string, headRef: string | u
   const hv = winningVersionAt(versions, headHashes);
   if (!bv || !hv) return { forked: false, note: "not resolvable on both sides" };
   const text = (v: typeof bv) => (v.removed ? "(removed)" : `# ${v.title}\n\n${v.summary}\n\n${v.body}`.replace(/\r/g, ""));
-  const side = (v: typeof bv): DocSide => ({ versionId: v.versionId, branch: v.createdBranch, commit: v.createdCommit, title: v.title, summary: v.summary, body: v.body, removed: !!v.removed });
+  const side = (v: typeof bv): DocSide => ({
+    versionId: v.versionId, branch: v.createdBranch, commit: v.createdCommit,
+    title: v.title, summary: v.summary, body: v.body, removed: !!v.removed,
+    // Labelled rather than excluded. A teammate's version winning one side is the
+    // BEST answer to "did anyone update the docs for this change?" — the failure mode
+    // is unlabelled attribution, so the label is the mechanism.
+    ...(v.origin ? { origin: v.origin } : {}),
+    ...(v.author ? { by: v.author } : {}),
+  });
   // Same version on both branches: the doc's prose is unchanged, so ship the
   // single winning version for the UI to render inline (no diff to show).
   if (bv.versionId === hv.versionId) return { forked: false, note: "same version on both branches", doc: side(bv) };

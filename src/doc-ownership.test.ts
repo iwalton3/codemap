@@ -8,6 +8,7 @@ import { db } from "./db.js";
 import { loadNodes, loadNodeVersions, readAnchorStore, ackHole, writeNode, confirmNode, remapNodeCitations } from "./store.js";
 import { selectWinner } from "./doc-version.js";
 import { anchorIndex } from "./anchor-resolve.js";
+import { headCommit } from "./git.js";
 import type { NodeVersion } from "./schema.js";
 
 /**
@@ -41,6 +42,8 @@ async function repo(): Promise<{ root: string; anchorId: string; cleanup: () => 
   git(root, "init", "-q", "-b", "main");
   mkdirSync(join(root, "src"), { recursive: true });
   writeFileSync(join(root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+  git(root, "add", "-A");
+  git(root, "commit", "-qm", "one");
   const { init } = await import("./ops.js");
   await init(root);
   const anchorId = (await readAnchorStore(root)).anchors[0]!.id;
@@ -248,5 +251,106 @@ test("a teammate's doc is an ordinary node, and a blocked scope may show but not
     // keyed on the scope rather than on "is it a teammate's".
     const other = await loadNodes(r.root, new Set(["docs/somewhere/else"]));
     assert.ok(other.some((n) => n.id === "n_pay"), "a healthy scope still decides");
+  } finally { r.cleanup(); }
+});
+
+test("(i) a diff side won by a teammate's version says whose it is", async () => {
+  // Labelled rather than excluded. A teammate's version winning one side is the best
+  // possible answer to "did anyone update the docs for this change?"; the failure
+  // mode is unlabelled attribution, so the label IS the mechanism.
+  const r = await repo();
+  try {
+    const { snapshot } = await import("./ops.js");
+    const { docDiff } = await import("./diff.js");
+    await snapshot(r.root);
+    const base = headCommit(r.root)!;
+
+    foldRow(r.root, { versionId: "nv_team", nodeId: "n_pay", body: "theirs",
+      citations: [{ anchorId: r.anchorId, acceptedHashes: [] }] });
+
+    const d = await docDiff(r.root, base, undefined, "n_pay");
+    const side = d.doc ?? d.head;
+    assert.ok(side, `expected a resolvable side: ${JSON.stringify(d)}`);
+    assert.equal(side!.origin, "docs/acme/api", "the scope it came from");
+    assert.equal(side!.by, "dana@x.com", "and who wrote it");
+  } finally { r.cleanup(); }
+});
+
+test("(f) an old local tombstone cannot win a diff side against a teammate's doc", async () => {
+  // `docDiff` resolves from table rows WITHOUT going through the store's resolution
+  // sites, so the partition has to be applied explicitly here. Otherwise a tombstone
+  // written while the node was purely local renders the side as `(removed)`.
+  const r = await repo();
+  try {
+    const { snapshot } = await import("./ops.js");
+    const { docDiff } = await import("./diff.js");
+    await snapshot(r.root);
+    const base = headCommit(r.root)!;
+
+    db(r.root).prepare(
+      "INSERT INTO node_versions(version_id,node_id,type,title,summary,body,generated_by,created_commit,"
+      + "created_branch,created_at,citations,removed) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+    ).run("nv_tomb", "n_pay", "concept", "Mine", "s", "b", null, null, null, "2026-05-01T00:00:00Z",
+      JSON.stringify([{ anchorId: "a_gone", acceptedHashes: [] }]), 1);
+    foldRow(r.root, { versionId: "nv_team", nodeId: "n_pay", body: "theirs",
+      citations: [{ anchorId: r.anchorId, acceptedHashes: [] }] });
+
+    const d = await docDiff(r.root, base, undefined, "n_pay");
+    const side = d.doc ?? d.head;
+    assert.ok(side, "resolvable");
+    assert.equal(side!.removed, false, "not rendered as a removal");
+    assert.equal(side!.body, "theirs", "the teammate's version is what shows");
+  } finally { r.cleanup(); }
+});
+
+test("(i) impact is resolved against the refs asked for, not the current checkout", async () => {
+  // `computeDiff` takes explicit cached refs precisely so it does not depend on the
+  // checkout — and then resolved docs against the working index anyway. So a doc that
+  // does not hold HERE vanished from a pull request's impact computed for two other
+  // refs: a silent omission, in the surface whose whole job is not to have any.
+  //
+  // Built so the checkout genuinely disagrees with both refs: base and head both
+  // contain the symbol, the working tree does not.
+  const r = await repo();
+  try {
+    const { init, snapshot } = await import("./ops.js");
+    const { computeDiff } = await import("./diff.js");
+    await snapshot(r.root);
+    const base = headCommit(r.root)!;
+
+    writeFileSync(join(r.root, "src", "pay.ts"), "export function transfer(c: number) { return c + 1; }\n", "utf8");
+    git(r.root, "commit", "-qam", "two");
+    await init(r.root);
+    // Written AFTER the change, so its accepted hash is head's. At head it is fresh;
+    // in a checkout without the symbol it is dangling. That gap is the whole test.
+    await writeNode(r.root, { id: "n_pay", type: "concept", title: "Mine", summary: "s", body: "b", anchors: [r.anchorId] });
+    await snapshot(r.root);
+    const head = headCommit(r.root)!;
+
+    // A tombstone that holds ONLY against the working tree: it cites code absent
+    // everywhere, so once the checkout loses the symbol too it outranks the content
+    // version there (both badness 0, and a removal that holds beats nothing) while
+    // losing to it at head, where the content version is fresh. That asymmetry is
+    // what makes this test discriminate — without it both resolutions agree and the
+    // test passes whichever index is used.
+    db(r.root).prepare(
+      "INSERT INTO node_versions(version_id,node_id,type,title,summary,body,generated_by,created_commit,"
+      + "created_branch,created_at,citations,removed) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+    ).run("nv_tomb", "n_pay", "concept", "Mine", "s", "b", null, null, null, "2026-05-01T00:00:00Z",
+      JSON.stringify([{ anchorId: "a_gone", acceptedHashes: [] }]), 1);
+
+    // Now the checkout loses the symbol entirely. COMMITTED, so HEAD moves off the
+    // head ref — `init` re-caches the current commit, so deleting without committing
+    // would overwrite head's own snapshot from the emptied tree and the two refs
+    // would no longer disagree with the checkout at all.
+    rmSync(join(r.root, "src", "pay.ts"));
+    git(r.root, "commit", "-qam", "three");
+    await init(r.root);
+
+    const d = await computeDiff(r.root, base, head) as any;
+    assert.equal(d.error, undefined, `diff failed: ${d.error}`);
+    const ids = (d.impact?.nodes ?? []).map((x: any) => x.id ?? x.node?.id);
+    assert.ok(ids.includes("n_pay"),
+      `the doc is impacted between base and head whatever this checkout holds: ${JSON.stringify(ids)}`);
   } finally { r.cleanup(); }
 });

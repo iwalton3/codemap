@@ -117,7 +117,21 @@ export const docsProjection: Projection<Map<string, SharedDoc>> = {
       "UPDATE node_versions SET type=?,title=?,summary=?,body=?,created_commit=?,created_branch=?,"
       + "created_at=?,citations=?,removed=?,origin=?,source_scope=?,ord=?,author=? WHERE version_id=?",
     );
-    const exists = d.prepare("SELECT version_id FROM node_versions WHERE version_id = ?");
+    // The adoption PREDICATE, and it has to be exact. Matching on `version_id` alone
+    // adopts three things it must not:
+    //
+    //   - a local row that has been EDITED since it was published. The event carries
+    //     the older content, and overwriting is unrecoverable data loss — local rows
+    //     are the one non-regenerable thing in this database.
+    //   - a row under a DIFFERENT node id, which would leave the old `node_id` and
+    //     replace its content, putting one doc's prose under another's name.
+    //   - a row already owned by ANOTHER scope, which reassigns `source_scope` while
+    //     the losing scope's fingerprint still reads as a cache hit — two scopes then
+    //     steal the row from each other on every fold.
+    //
+    // So: local, same node, same immutable payload. Anything else is not the same
+    // version and must not be treated as one.
+    const candidate = d.prepare("SELECT node_id, body, title, summary, origin FROM node_versions WHERE version_id = ?");
     const insUnmatched = d.prepare("INSERT INTO shared_doc_unmatched(scope,node_id,body) VALUES(?,?,?)");
 
     for (const doc of value.values()) {
@@ -126,7 +140,19 @@ export const docsProjection: Projection<Map<string, SharedDoc>> = {
         const a = doc.authors.get(v.versionId);
         const author = a ? JSON.stringify(a) : null;
         const cites = JSON.stringify(v.citations ?? []);
-        if (exists.get(v.versionId)) {
+        const row = candidate.get(v.versionId) as
+          { node_id: string; body: string | null; title: string | null; summary: string | null; origin: string | null } | undefined;
+        const adoptable = row && !row.origin && row.node_id === doc.nodeId
+          && (row.body ?? "") === (v.body ?? "") && (row.title ?? "") === (v.title ?? "")
+          && (row.summary ?? "") === (v.summary ?? "");
+        if (row && !adoptable) {
+          // A collision that is NOT the same version. Skipping loses the event rather
+          // than the local row, and losing the regenerable thing is the right way
+          // round: the log still holds it, and the next fold after the local row
+          // changes will place it.
+          return;
+        }
+        if (adoptable) {
           adopt.run(v.type, v.title, v.summary, v.body, v.createdCommit, v.createdBranch,
             v.createdAt, cites, v.removed ? 1 : 0, "sync", scope, i, author, v.versionId);
         } else {
@@ -143,24 +169,6 @@ export const docsProjection: Projection<Map<string, SharedDoc>> = {
   },
 };
 
-/**
- * Every anchor any shared doc version cites in this scope.
- *
- * One query with one parameter, deliberately: `docsCiting` takes the ids it is
- * asking about, which is right for a handful and wrong for a caller holding the
- * whole index — a repo with thousands of undocumented anchors would bind thousands
- * of parameters to ask a question whose answer is a few hundred rows. Intersect
- * against this instead, then ask `docsCiting` about what survives.
- */
-export function sharedCitedAnchors(root: string, scope: string): Set<string> {
-  const out = new Set<string>();
-  for (const r of db(root).prepare("SELECT citations FROM node_versions WHERE source_scope = ?").all(scope) as unknown as
-    { citations: string }[]) {
-    try { for (const c of JSON.parse(r.citations ?? "[]") as { anchorId: string }[]) out.add(c.anchorId); }
-    catch { /* one unreadable row must not blind the whole answer */ }
-  }
-  return out;
-}
 
 /** Unfiltered, this is the projection's `read`; filtered, it is what makes
  *  `docsCiting` worth having — only the matched nodes' JSON is parsed. */
@@ -171,8 +179,12 @@ function readDocRows(d: DatabaseSync, scope: string, nodeIds?: string[]): Map<st
   const args = nodeIds ? [scope, ...nodeIds] : [scope];
   // `ord` is the fold's own order and is why it is a column: `versions` is oldest
   // first and row order is not a property of a table.
+  // `rowid, ord`, NOT `node_id, ord`. `foldDocs` returns a Map in first-event order,
+  // and the projection's contract is `read(write(x)) === x` — alphabetising the outer
+  // order means a cache MISS and a cache HIT return different serialized values for
+  // the same scope. Rows are inserted in fold order, so rowid is that order.
   for (const r of d.prepare(
-    `SELECT * FROM node_versions WHERE source_scope = ?${only} ORDER BY node_id, ord`,
+    `SELECT * FROM node_versions WHERE source_scope = ?${only} ORDER BY rowid, ord`,
   ).all(...args) as unknown as (VersionRow & { author: string | null })[]) {
     let doc = out.get(r.node_id);
     if (!doc) { doc = { nodeId: r.node_id, versions: [], authors: new Map<string, Actor>() }; out.set(r.node_id, doc); }
@@ -220,38 +232,6 @@ export function docsByNode(root: string, scope: string, nodeIds: string[]): Map<
   return readDocRows(db(root), scope, [...new Set(nodeIds)]);
 }
 
-/**
- * Which shared docs cite these anchors — the read `shared_doc_citation` exists for.
- *
- * The catalogue read wants every doc anyway, so its citation ids are already in the
- * JSON it deserializes. This is the other direction — "does anybody's doc describe
- * THIS symbol" — and answering it by deserializing the universe is the cost
- * materialization exists to remove.
- *
- * Node ids only, so nothing is parsed to find out. `ensureMaterialized` first:
- * these are projection rows, and a stale one answers confidently from the wrong
- * input set.
- */
-export function docsCiting(root: string, scope: string, anchorIds: string[]): string[] {
-  const ids = [...new Set(anchorIds)];
-  if (!ids.length) return [];
-  // Over canonical rows now. The citation table is gone with the duality it served,
-  // and `citations` is JSON here exactly as it is for a local doc — so this scans the
-  // scope's rows rather than joining an index. That is the same shape the local
-  // coverage path already has, at the same scale (one universe's docs), and it is
-  // what removes the second table this function existed to bridge.
-  const want = new Set(ids);
-  const out = new Set<string>();
-  for (const r of db(root).prepare("SELECT node_id, citations FROM node_versions WHERE source_scope = ?")
-    .all(scope) as unknown as { node_id: string; citations: string }[]) {
-    try {
-      for (const c of JSON.parse(r.citations ?? "[]") as { anchorId: string }[]) {
-        if (want.has(c.anchorId)) { out.add(r.node_id); break; }
-      }
-    } catch { /* one unreadable row must not blind the whole answer */ }
-  }
-  return [...out];
-}
 
 /** Shared notes, keyed by scope (`notes/<universe>/<bucket>`). */
 export const notesProjection: Projection<Map<string, SharedNote>> = {

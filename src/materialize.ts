@@ -47,8 +47,14 @@ import { readScopeChecked, SHARD_EXT, type LogEvent, type ScopeStatus } from "./
  *
  * 4 -> 5: `foldDocs` drops analyzer-generated versions and `process`/`step` docs. A
  * docs scope that already carried any of them folds to a smaller map now.
+ *
+ * 5 -> 6: the docs projection writes `node_versions` instead of the `shared_doc*`
+ * family. The SHAPE changed, not just the content — a cache written under 5 points at
+ * tables the new reader does not read, so without this the fingerprint matches, the
+ * reader returns an empty map, and the canonical fold never happens until the sidecar
+ * itself changes.
  */
-export const MATERIALIZER_VERSION = 5;
+export const MATERIALIZER_VERSION = 6;
 
 /**
  * What the events in a scope are, cheaply.
