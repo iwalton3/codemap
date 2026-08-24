@@ -142,7 +142,11 @@ export async function connect(
     ...(shared.shared ? { shared: true } : {}),
     // Said, not swallowed: the edge is local either way, and a teammate not seeing it is
     // a different outcome from it not existing.
-    ...(shared.configured && !shared.shared ? { shareError: shared.error ?? "the wiring could not be published" } : {}),
+    // `added === 0` is a no-op, not a failure — nothing was published because there was
+    // nothing to publish. Reporting a share error there made every re-run of an
+    // unchanged `connect` look like the sidecar was broken.
+    ...(added && shared.configured && !shared.shared
+      ? { shareError: shared.error ?? "the wiring could not be published" } : {}),
   };
 }
 
