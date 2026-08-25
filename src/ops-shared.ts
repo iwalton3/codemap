@@ -57,13 +57,29 @@ const NO_SIDECAR =
 interface Bound { cfg: SidecarConfig; actor: Actor }
 
 /** Resolve the sidecar and the actor together — both are needed for every write. */
-function bind(root: string): Bound | { error: string } {
+/**
+ * `via` carries the caller's own model id, and it is the only route it has.
+ *
+ * `resolveActor` takes a model from the call or from `CODEMAP_AGENT_MODEL`, and
+ * nothing in this repo sets that variable — so a write op that does not forward one
+ * records "an agent, model unknown". Measured on a real universe: 19 corroborated
+ * findings, every author and every verdict attributed to the person with no model at
+ * all, which makes cross-model agreement unmeasurable rather than merely unmeasured.
+ * `annotate` had the parameter from the start; the shared path did not.
+ *
+ * Optional, and it stays optional: an agent that was not told what it is must not
+ * guess, and a guessed model id is worse than an absent one.
+ */
+function bind(root: string, via: { model?: string; harness?: string } = {}): Bound | { error: string } {
   const cfg = resolveSidecar(root);
   if (!cfg) return { error: NO_SIDECAR };
-  const actor = requireActor(root);
+  const actor = requireActor(root, via);
   if ("error" in actor) return actor;
   return { cfg, actor };
 }
+
+/** What a caller says about itself: its model id and the tool running it. Never guessed. */
+export interface Via { model?: string; harness?: string }
 
 /** `acme/api/pr-264` — the universe-qualified key every scope is built from. */
 const prKey = (cfg: SidecarConfig, pr: number | string) => scopeFor(cfg, "pr", pr);
@@ -277,8 +293,8 @@ export async function sharedStatus(root: string) {
   };
 }
 
-export async function shareFinding(root: string, pr: number | string, f: NewFinding) {
-  const b = bind(root);
+export async function shareFinding(root: string, pr: number | string, f: NewFinding, via: Via = {}) {
+  const b = bind(root, via);
   if ("error" in b) return b;
   await ensureSidecar(b.cfg.path, b.actor);
   const id = await createFinding(b.cfg.path, prKey(b.cfg, pr), b.actor, f);
@@ -286,8 +302,8 @@ export async function shareFinding(root: string, pr: number | string, f: NewFind
   return { ok: true, id, note: "recorded locally — run `codemap sync` to send it" };
 }
 
-export async function corroborateFinding(root: string, pr: number | string, id: string, verdict: Verdict, rationale: string) {
-  const b = bind(root);
+export async function corroborateFinding(root: string, pr: number | string, id: string, verdict: Verdict, rationale: string, via: Via = {}) {
+  const b = bind(root, via);
   if ("error" in b) return b;
   if (!rationale.trim()) return { error: "a verdict without a rationale is a vote, not a review — say what you checked" };
   await corroborate(b.cfg.path, prKey(b.cfg, pr), b.actor, id, verdict, rationale);
@@ -295,8 +311,8 @@ export async function corroborateFinding(root: string, pr: number | string, id: 
   return { ok: true, id, verdict };
 }
 
-export async function commentOnFinding(root: string, pr: number | string, id: string, body: string, inReplyTo?: string) {
-  const b = bind(root);
+export async function commentOnFinding(root: string, pr: number | string, id: string, body: string, inReplyTo?: string, via: Via = {}) {
+  const b = bind(root, via);
   if ("error" in b) return b;
   if (!body.trim()) return { error: "an empty comment says nothing" };
   const e = await comment(b.cfg.path, prKey(b.cfg, pr), b.actor, id, body, inReplyTo);

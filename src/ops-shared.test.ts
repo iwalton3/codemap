@@ -942,3 +942,32 @@ test("a local write to a fold-owned finding is refused, not silently lost", asyn
     assert.equal((await readFinding(u.root, r.id))!.text, NEW.text, "and the row is untouched");
   } finally { u.cleanup(); }
 });
+
+/**
+ * Cross-model agreement is only measurable if the model is recorded, and on the shared
+ * path it was not: `annotate` had a `model` parameter from the start, `share_finding`
+ * and `corroborate` had none, and nothing in this repo sets `CODEMAP_AGENT_MODEL`. On a
+ * real universe that produced 19 corroborated findings with every author and every
+ * verdict attributed to the person, model unknown — so "a second model confirmed it"
+ * was not merely unmeasured, it was unrecordable.
+ */
+test("a model that says what it is is recorded on the finding and on the verdict", async () => {
+  const u = universe();
+  try {
+    const r = await shared.shareFinding(u.root, 264, NEW, { model: "claude-opus-5" }) as { id: string };
+    await shared.corroborateFinding(u.root, 264, r.id, "confirm", "read it again", { model: "gpt-5.2" });
+
+    const f = (await readFinding(u.root, r.id))!;
+    assert.equal(f.author.via?.model, "claude-opus-5", "the finding says which model raised it");
+    assert.equal(f.corroboration[0]!.actor.via?.model, "gpt-5.2", "and which one weighed in");
+  } finally { u.cleanup(); }
+});
+
+/** And an agent that was not told what it is must not invent one. */
+test("no model given records no model, rather than a guess", async () => {
+  const u = universe();
+  try {
+    const r = await shared.shareFinding(u.root, 264, NEW) as { id: string };
+    assert.equal((await readFinding(u.root, r.id))!.author.via?.model, undefined);
+  } finally { u.cleanup(); }
+});
