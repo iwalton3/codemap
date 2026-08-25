@@ -103,7 +103,7 @@ const checkDisposition = (d: string | undefined): Disposition | undefined =>
  * neither the PR under review nor the branch the reader may have been looking at.
  * Recording which one it was is what makes that confusion detectable later.
  */
-async function witnessAt(
+export async function witnessAt(
   root: string, anchorId: string, ref?: string,
 ): Promise<{ witness?: { anchorId: string; bodyHash: string }; sourceRef: string }> {
   if (ref) {

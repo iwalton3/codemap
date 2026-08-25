@@ -117,12 +117,6 @@ const tools: Tool[] = [
     handler: () => multi.listUniverses(ws),
   },
   {
-    name: "guide",
-    description: "The documentation methodology: how to orient, document at the right granularity, connect, and file bugs. Re-read this any time you're unsure how to proceed.",
-    inputSchema: obj({}, [], false),
-    handler: async () => ({ methodology: METHODOLOGY }),
-  },
-  {
     name: "init",
     description: "Build the anchor index for a universe that isn't mapped yet — run this FIRST if any tool answers \"codemap not initialized\", instead of falling back to reading the codebase by hand. `list_universes` shows `initialized: false` for a universe that needs it. Safe to re-run on an initialized universe: it is the same full re-baseline as `reindex` and leaves docs, edges, reviews, coverage, bugs and annotations untouched. Note it only builds the ANCHOR index — the map's documentation starts empty, so follow with `outline` / `find_gaps`.",
     inputSchema: obj({}),
@@ -306,7 +300,7 @@ const tools: Tool[] = [
   },
   {
     name: "review",
-    description: "Mark (or unmark: unmark:true) a node or anchor as reviewed — the agent's first-pass 'I read this' mark. level 'logical' = the doc is accurate; 'code' = the source was read (mark ANCHORS at code level — a node's code review is DERIVED from its segments). Recorded as an AGENT review → `checked` trust (blue); only a human via the web UI grants `verified` (green sign-off). Staleness-aware: reverts to stale when the reviewed code changes. Pair with `share_finding` when you are reviewing a pull request — it scopes the finding to that PR — or `annotate` (kind:finding/pointer) for a durable remark about the code itself, to leave the human reviewer your findings and watch-outs on the exact lines.",
+    description: "Mark (or unmark: unmark:true) a node or anchor as reviewed — the agent's first-pass 'I read this' mark. level 'logical' = the doc is accurate; 'code' = the source was read (mark ANCHORS at code level — a node's code review is DERIVED from its segments). Recorded as an AGENT review → `checked` trust (blue); only a human via the web UI grants `verified` (green sign-off). Staleness-aware: reverts to stale when the reviewed code changes. Pair with `report_defect` when you find something — `context:{kind:\"pull_request\"}` puts it on the PR under review — or `annotate` for a pointer or a durable remark about the code itself, to leave the human reviewer your findings and watch-outs on the exact lines.",
     inputSchema: obj({
       targetKind: { type: "string", enum: ["node", "anchor"] },
       targetId: { type: "string" },
@@ -489,19 +483,6 @@ const tools: Tool[] = [
     handler: (a, c) => multi.link(ws, { fromUniverse: c.universe.id, from: a.from, toUniverse: a.toUniverse, to: a.to, type: a.type, order: a.order }),
   },
   {
-    name: "report_bug",
-    description: "File a bug anchored to exact code in a universe. Captures a witness hash so it auto-flags possiblyFixed when that code changes.\n\nA bug is a DRIVE-BY defect noticed during unrelated work, or a finding deferred to fix after merge. It is not a pull-request finding: something wrong with the PR you are reviewing belongs on that PR via `share_finding`, where the person who wrote it will see it. To defer a PR finding into a bug, use `accept_finding` — that keeps the cross-link instead of filing a second, unattributed copy.\n\nWith a sidecar configured this goes to the TEAM — the bug enters the shared log the moment it is filed, and colleagues see it on their next sync. It opens as `issued` (a proposal) when an agent files it and `created` when a person does; past `created` only a person may close one.",
-    inputSchema: obj({
-      title: { type: "string" },
-      description: { type: "string" },
-      anchors: { type: "array", items: { type: "string" }, description: "Anchors by `file#Symbol`, `file:line`, or raw id (`file#Symbol(*)` = every overload). Partially resolved: unresolvable refs come back as `rejectedAnchors`." },
-      severity: { type: "string", enum: ["low", "medium", "high", "critical"] },
-      category: { type: "string", description: "Mirrors the review buckets: Authorization, Logic, Tenant Safety, Performance, Domain Model, Validation, …" },
-    }, ["title", "description", "anchors"]),
-    mutates: true,
-    handler: (a, c) => ops.reportBug(c.universe.path, a),
-  },
-  {
     name: "list_bugs",
     description: "List bugs in a universe — this machine's and the team's, in one list. Open bugs whose anchored code changed since filing are flagged `possiblyFixed`; re-validate those rather than closing them, because a symbol that vanished may have been renamed or deleted without the defect being addressed. `queue: true` is the short list: what needs a PERSON here (promoted, corroborated, contested, asked about, or drifted).",
     inputSchema: obj({
@@ -581,8 +562,8 @@ const tools: Tool[] = [
     handler: (a, c) => ops.requestOnBugOp(c.universe.path, a.id, a.ask, a.rationale),
   },
   {
-    name: "accept_finding",
-    description: "Turn a pull-request finding into a bug, so it is not lost when the PR closes.\n\nThe finding SURVIVES and cross-links — the PR's history should still show it was raised there — and what transfers is the obligation: the finding stops asking for a decision because the bug is asking now. The bug's id is derived from the finding's, so two people accepting the same finding independently land on ONE bug rather than two.\n\nThe bug is filed against the anchors the finding names, witnessed here. A finding on a node takes that node's citations in THIS checkout, which is a judgement about what the defect covers — check it is the right code first.",
+    name: "defer_finding",
+    description: "Defer a pull-request finding into a bug, so it is not lost when the PR closes. The ONLY route from a finding to a bug — filing a second copy with `report_defect` loses the cross-link and the history.\n\nThe finding SURVIVES and cross-links — the PR's history should still show it was raised there — and what transfers is the obligation: the finding stops asking for a decision because the bug is asking now. The bug's id is derived from the finding's, so two people accepting the same finding independently land on ONE bug rather than two.\n\nThe bug is filed against the anchors the finding names, witnessed here. A finding on a node takes that node's citations in THIS checkout, which is a judgement about what the defect covers — check it is the right code first.",
     inputSchema: obj({
       pr: { type: ["number", "string"] },
       finding: { type: "string" },
@@ -594,7 +575,7 @@ const tools: Tool[] = [
   },
   {
     name: "publish_bugs",
-    description: "Send this machine's local bugs to the team. The BACKFILL path, not the ordinary one — with a sidecar configured `report_bug` already files into the shared log. What this is for is the backlog that predates the sidecar. `dryRun: true` counts without writing.",
+    description: "Send this machine's local bugs to the team. The BACKFILL path, not the ordinary one — with a sidecar configured `report_defect` already files into the shared log. What this is for is the backlog that predates the sidecar. `dryRun: true` counts without writing.",
     inputSchema: obj({
       dryRun: { type: "boolean" },
       ids: { type: "array", items: { type: "string" }, description: "Only these. Omit for every local bug." },
@@ -613,7 +594,7 @@ const tools: Tool[] = [
       disposition: { type: "string", enum: ["open", "confirmed", "partial", "rerated", "refuted", "accepted"], description: DISPOSITION_DOC },
       publishPath: { type: "string", description: "Only when this is about code the pull request does not touch: the file IN THE DIFF nearest to the problem. Usually left to the human, who is better placed to judge \"nearest\" — an unset one is reported, never guessed." },
       publishLine: { type: "number", description: "Line within `publishPath`, if a specific one is meant." },
-      kind: { type: "string", enum: ["note", "question", "finding", "pointer"], description: "\"finding\" (issue), \"pointer\" (watch-out for the reviewer), \"question\", or \"note\" (default)." },
+      kind: { type: "string", enum: ["note", "question", "pointer"], description: "\"pointer\" (a watch-out for the reviewer), \"question\" (an ask for a person), or \"note\" (default). A DEFECT is not an annotation — use `report_defect`, which puts it on a pull request or in the bug list rather than leaving it as a remark on a symbol." },
       severity: { type: "string", enum: ["low", "medium", "high", "critical"], description: "For findings: critical=security/auth/data-integrity, high=logic bug, medium=improvement, low=nitpick." },
       category: { type: "string", description: "Review bucket, e.g. Authorization, Logic, Tenant Safety, Performance, Domain Model, Validation, Separation of Concerns." },
       line: { type: "number", description: "1-based line to pin to (anchor targets) — the exact line the finding/pointer is about." },
@@ -744,7 +725,7 @@ const tools: Tool[] = [
   },
   {
     name: "findings",
-    description: "Every LOCAL finding and question on the map, whoever raised them and whether or not anyone was asked to act. NOT the team's: a finding filed with `share_finding` lives on the sidecar and is read by `shared_findings` for its pull request. Until the two stores are one (`docs/plan-findings-unification.md`) neither list is a superset of the other.\n\n`review_queue` answers \"what have I been asked to do\" and only lists items with an assignment — so a finding raised by `annotate` and published to a pull request was invisible to every query afterwards. This one answers \"what is on this map, and where has it got to\": filter by `disposition` (what triage concluded) and `publishState` (local / approved / withdrawn / posted), and `posted` items carry `postedRef` with the review and comment they landed in.\n\nBrief by default, same as `review_queue`.",
+    description: "Every LOCAL finding and question on the map, whoever raised them and whether or not anyone was asked to act. NOT the team's: a finding filed with `report_defect` lives in the canonical findings table and is read by `shared_findings` for its pull request. Until the two stores are one (`docs/plan-findings-unification.md`) neither list is a superset of the other.\n\n`review_queue` answers \"what have I been asked to do\" and only lists items with an assignment — so a finding raised by `annotate` and published to a pull request was invisible to every query afterwards. This one answers \"what is on this map, and where has it got to\": filter by `disposition` (what triage concluded) and `publishState` (local / approved / withdrawn / posted), and `posted` items carry `postedRef` with the review and comment they landed in.\n\nBrief by default, same as `review_queue`.",
     inputSchema: obj({
       disposition: { type: "string", enum: ["open", "confirmed", "partial", "rerated", "refuted", "accepted"] },
       publishState: { type: "string", enum: ["local", "approved", "withdrawn", "posted"] },
@@ -840,22 +821,39 @@ const tools: Tool[] = [
     handler: (a, c) => shared.sharedFindings(c.universe.path, a.pr, { queue: !!a.queue }),
   },
   {
-    name: "share_finding",
-    description: "Raise a finding on the SIDECAR, where the rest of the team and their agents can see it. Yours opens as a proposal (`issued`) because an agent's finding is a proposal until somebody stands behind it." + COMMENT_CONTRACT,
+    name: "report_defect",
+    description: "Report a defect. ONE verb — you say what you were DOING, and that decides what the record becomes.\n\n"
+      + "  • `context: {kind:\"pull_request\", pr:\"270\"}` — found while reviewing that pull request. Becomes a FINDING on it, resolved at or before merge, visible to the team and to their agents. Needs `targetKind`/`targetId` (the one symbol or node) and `comment`.\n"
+      + "  • `context: {kind:\"drive_by\", rationale:\"noticed while changing X\"}` — spotted during unrelated work. Becomes a BUG, which outlives the branch. Needs `title` and `anchors`.\n\n"
+      + "There is no storage parameter and there is no way to pick one. A pull-request finding belongs on the pull request, where the person who wrote the code will see it; whether it also reaches the sidecar depends on whether this machine has one, which is not your decision.\n\n"
+      + "To defer a pull-request finding into a bug later, use `defer_finding` — that cross-links the two instead of filing a second, unattributed copy."
+      + COMMENT_CONTRACT,
     inputSchema: obj({
-      pr: { type: "string" },
-      targetKind: { type: "string", enum: ["anchor", "node"] },
-      targetId: { type: "string" },
-      text: { type: "string", description: "The evidence: what you checked, why the obvious alternative fails, what is still unverified." },
-      comment: { type: "string", description: "The submitter-facing version. Max 800 characters." },
+      context: {
+        type: "object",
+        description: "What you were doing. `{kind:\"pull_request\", pr}` or `{kind:\"drive_by\", rationale}`.",
+        properties: {
+          kind: { type: "string", enum: ["pull_request", "drive_by"] },
+          pr: { type: "string", description: "Pull request NUMBER, for `pull_request`." },
+          rationale: { type: "string", description: "What you were doing when you noticed it, for `drive_by`." },
+        },
+        required: ["kind"],
+      },
+      text: { type: "string", description: "The evidence: what you checked, why the obvious alternative fails, what is still unverified. Not published." },
+      comment: { type: "string", description: "REQUIRED on a pull-request finding — the submitter-facing version." },
       severity: { type: "string", enum: ["low", "medium", "high", "critical"] },
-      category: { type: "string" },
-      line: { type: "number" },
-      model: { type: "string", description: "YOUR model id, e.g. \"claude-opus-5\". Recorded so the finding says which model spoke — that is what makes cross-model agreement measurable. Never guess it: pass it only if you were told what you are, and omit it otherwise." },
+      category: { type: "string", description: "Review bucket: Authorization, Logic, Tenant Safety, Performance, Domain Model, Validation, …" },
+      targetKind: { type: "string", enum: ["anchor", "node"], description: "Pull-request findings: what the target is." },
+      targetId: { type: "string", description: "Pull-request findings: the symbol or node it is about." },
+      line: { type: "number", description: "1-based line the finding is about." },
+      ref: { type: "string", description: "Resolve and witness the target at this commit too — a PR head, for a symbol that exists only on the branch." },
+      title: { type: "string", description: "Drive-by bugs: the one line a triage list is read by." },
+      anchors: { type: "array", items: { type: "string" }, description: "Drive-by bugs: the code it is anchored to (`file#Symbol`, `file:line`, or an id)." },
+      model: { type: "string", description: "YOUR model id, e.g. \"claude-opus-5\". Recorded so the record says which model raised it. Never guess it." },
       harness: { type: "string", description: "The tool running you, e.g. \"claude-code\". Optional." },
-    }, ["pr", "targetKind", "targetId", "text"]),
+    }, ["context", "text"]),
     mutates: true,
-    handler: (a, c) => shared.shareFinding(c.universe.path, a.pr, a, { model: a.model, harness: a.harness }),
+    handler: (a, c) => ops.reportDefect(c.universe.path, a as never),
   },
   {
     name: "corroborate",
@@ -922,13 +920,6 @@ const tools: Tool[] = [
     description: "The TEAM's documentation, each doc resolved against the code you have checked out. One sidecar serves every branch: a doc is a set of immutable versions, each recording the anchors it cites with the body hashes it was confirmed against, and the version whose hashes match your checkout is the one you get — no branch tags, no git. Read `citations[].matches` to tell fresh from stale; a version being returned does NOT mean it describes your code.",
     inputSchema: obj({ nodeId: { type: "string", description: "Only this node (default: all)." } }),
     handler: (a, c) => shared.sharedDocs(c.universe.path, { nodeId: a.nodeId }),
-  },
-  {
-    name: "retire_shared_doc",
-    description: "Retire a shared doc whose subject was genuinely removed. A PERSON's act — you may not, because it is a closure. What you CAN do is check `shared_docs` for citations reading `retained` or `lost`, verify the code really went away, and leave a shared note on the node saying what you found; a person retires it from there.\n\nNote that `offTree` citations are NOT gone — the symbol is on another branch and the doc is correct there.",
-    inputSchema: obj({ nodeId: { type: "string" }, rationale: { type: "string" } }, ["nodeId", "rationale"]),
-    mutates: true,
-    handler: (a, c) => shared.retireSharedDoc(c.universe.path, a.nodeId, a.rationale),
   },
   {
     name: "confirm_shared_doc",

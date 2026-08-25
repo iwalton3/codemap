@@ -1,8 +1,9 @@
 # Plan: one canonical `findings` table, and one way to file into it
 
-**Status: IN PROGRESS** on `findings-unification`. Steps 1, 2, 3 and 5 are done. What
-is left is step 4 (the tool surface, which is what stops the split recurring) and the
-remainder of step 6 (the shared hub still has no per-PR index). Written 2026-08-25 from a live investigation of the
+**Status: IN PROGRESS** on `findings-unification`. Steps 1, 2, 3 and 5 are done, and
+step 4's create verb — the part that stops the split recurring — has landed. What is
+left is merging the parallel bug/finding lifecycle verbs, routing the web UI's own
+"raise a finding" through `report_defect`, and the shared hub's missing per-PR index. Written 2026-08-25 from a live investigation of the
 `acme/acme.api` universe. `docs/sidecar-architecture.md` is the architecture
 this implements and wins wherever the two differ; this plan answers the question that
 document leaves open ("Whether findings follow docs into a canonical table") in the
@@ -247,8 +248,17 @@ migrating actor, and say so.
    `import-cycles.test.ts` catches.
    `pr-push` stays local: publishing to GitHub is a manual raise and the sidecar is not
    meant to feed it. The dashboard's `open` is documentation coverage, not findings.
-4. **Collapse the tool surface**: one context-discriminated create verb, one lifecycle
-   verb set resolving opaque ids against records, `accept_finding` -> `defer_finding`.
+4. **Collapse the tool surface.** DONE for the part that stops the split recurring:
+   `report_defect` is the one create verb, taking a required discriminated `context`
+   (`pull_request` + pr, or `drive_by` + rationale) and NO storage parameter.
+   `share_finding` and `report_bug` are gone, `accept_finding` is `defer_finding`,
+   `annotate` no longer accepts `kind:"finding"`, and the two verified cuts (`guide`,
+   `retire_shared_doc`) are gone. 84 tools -> 81.
+   LEFT: merging the parallel lifecycle verbs (`comment_bug`/`comment_on_finding`,
+   `corroborate_bug`/`corroborate`, `ask_about_bug`/`request_ack`,
+   `update_bug`/`close_finding`). That is ergonomics rather than correctness — the
+   create verb is what made wrong placement impossible — and it is a wide change to
+   land on its own.
 5. ~~**Migration script** for the 96~~ **DONE** — `src/findings-migrate.ts`,
    `codemap migrate-findings`. Applied to Acme.API: 45 moved (23 on #227, 22 on #264),
    51 left with no recorded pull request, of which only 6 are open — and four of those

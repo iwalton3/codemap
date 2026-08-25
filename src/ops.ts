@@ -65,6 +65,7 @@ export {
 
 import { closeAssignment as closeAnnotation, closeLocalFinding as closeLocal } from "./ops/annotations.js";
 import { readFinding } from "./store.js";
+export { reportDefect, type DefectContext, type DefectInput } from "./ops/defect.js";
 
 /**
  * Report back on whatever `review_queue` handed you — annotation or finding.
