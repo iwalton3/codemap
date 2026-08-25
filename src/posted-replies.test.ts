@@ -6,6 +6,9 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import * as shared from "./ops-shared.js";
 import type { GhRunner } from "./pr-push.js";
+import { migrateLocalFindings } from "./findings-migrate.js";
+import { writeAnnotations, readFinding } from "./store.js";
+import type { Annotation } from "./schema.js";
 
 const git = (root: string, ...args: string[]) => spawnSync("git", args, { cwd: root, encoding: "utf8" });
 const NEW = { targetKind: "anchor" as const, targetId: "a_1", text: "evidence", comment: "the submitter-facing ask" };
@@ -118,6 +121,66 @@ test("the first place it landed is the one that sticks", async () => {
       await shared.recordPublished(u.root, 264, created.id, { key: "9002", url: "second" });
       const v = await shared.sharedFindings(u.root, 264) as { findings: { posted?: string }[] };
       assert.equal(v.findings[0]!.posted, "first");
+    });
+  } finally { u.cleanup(); }
+});
+
+/**
+ * The failure this op was actually reported for: twelve findings on PR 264, each with
+ * a `postedRef`, and `inbound_replies` answering "nothing from here has been published".
+ *
+ * They were filed locally and pushed by the web UI, so they never entered the sidecar
+ * log — and this op folded the log. The answer is worse than an empty one, because it
+ * asserts a PREMISE: an agent that believes it stops looking and reports that the
+ * submitter never replied.
+ */
+test("a locally-filed finding pushed to the pull request brings its reply back too", async () => {
+  const u = universe();
+  try {
+    await withEnv({ CODEMAP_SIDECAR: undefined, CODEMAP_AGENT_MODEL: undefined }, async () => {
+      await writeAnnotations(u.root, [{
+        id: "finding_local", kind: "finding", target: { kind: "anchor", id: "a_1" },
+        text: "evidence", comment: "the submitter-facing ask", author: "izzie",
+        createdCommit: null, resolved: false, revisions: [],
+        postedRef: {
+          pr: 264, at: "2026-08-20T00:00:00Z", placement: "inline",
+          commentId: 9001, url: "https://github.com/acme/api/pull/264#discussion_r9001",
+        },
+      } as unknown as Annotation]);
+      await migrateLocalFindings(u.root);
+      // Never in the log: this is the whole point — the fold cannot see it.
+      assert.equal((await readFinding(u.root, "finding_local", { pr: 264 }))!.origin, undefined);
+
+      const r = await shared.inboundReplies(u.root, 264, { gh: fakeGh(9001) }) as
+        { note?: string; findings: { id: string; replies: { body: string }[] }[] };
+      assert.equal(r.note, undefined, "not 'nothing has been published' — it plainly has been");
+      assert.deepEqual(r.findings.map((f) => f.id), ["finding_local"]);
+      assert.deepEqual(r.findings[0]!.replies.map((x) => x.body), ["guarded upstream, see Startup.cs"]);
+    });
+  } finally { u.cleanup(); }
+});
+
+/**
+ * And the two emptinesses stay apart. A review-BODY comment has no comment id, so there
+ * is no thread to read — but saying "nothing has been published" about it is the same
+ * false premise in a quieter place.
+ */
+test("posted with no comment id says so, rather than claiming nothing went out", async () => {
+  const u = universe();
+  try {
+    await withEnv({ CODEMAP_SIDECAR: undefined, CODEMAP_AGENT_MODEL: undefined }, async () => {
+      await writeAnnotations(u.root, [{
+        id: "finding_body", kind: "finding", target: { kind: "anchor", id: "a_1" },
+        text: "evidence", comment: "deferred into the review body", author: "izzie",
+        createdCommit: null, resolved: false, revisions: [],
+        postedRef: { pr: 264, at: "2026-08-20T00:00:00Z", placement: "body" },
+      } as unknown as Annotation]);
+      await migrateLocalFindings(u.root);
+
+      const r = await shared.inboundReplies(u.root, 264, { gh: fakeGh(9001) }) as { note?: string; findings: unknown[] };
+      assert.equal(r.findings.length, 0);
+      assert.match(r.note ?? "", /no comment id recorded/);
+      assert.doesNotMatch(r.note ?? "", /nothing from here has been published/);
     });
   } finally { u.cleanup(); }
 });

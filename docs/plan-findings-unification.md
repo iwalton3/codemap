@@ -343,13 +343,24 @@ The end goal is that a local finding exists only where it is CORRECT — a store
 sidecar — and that the duplication needed to serve two kinds is gone. Ordered by what
 blocks what.
 
-1. **`inbound_replies` reads the log, not the canonical table** (`ops-shared.ts`,
-   `cachedFindings`). It answers `"nothing from here has been published to the pull
-   request"` while `findings(pr:"264")` returns twelve rows each carrying a `postedRef`.
-   That is the worst failure shape on this list: it does not say "no replies yet", it
-   asserts a PREMISE, and an agent that believes it stops looking — reporting "no
-   submitter response" on a pull request where every finding had been answered.
-   Everything else on that PR already reads canonical; this is the last one that does not.
+1. ~~**`inbound_replies` reads the log, not the canonical table.**~~ DONE. It reads
+   `readFindings` after materializing, so a finding filed locally and pushed by the web UI
+   is in the list its replies are looked up from. Two things came out of it that the item
+   did not say:
+
+   - **The migration was dropping the comment id.** `postedRef.commentId` had no `key` in
+     the `posted` it wrote, and `inboundReplies` matches the submitter's thread by that
+     key — so fixing only the read would have moved the false premise one layer down and
+     kept the same answer. Fixed in `findings-migrate.ts`; both halves are
+     mutation-checked separately.
+   - **Two emptinesses are now distinct.** A finding posted in the review BODY has a
+     `posted` and no key: there is no thread to read, but something IS on the pull
+     request, and saying "nothing has been published" about it is the same lie in a
+     quieter place.
+
+   The sidecar is no longer required for the read either — a store that filed locally and
+   pushed still has replies to read, and demanding a sidecar for them was the split
+   showing through.
 
 2. **Notes are the last parallel table** (`shared_note`), and the mirror is
    ONE-DIRECTIONAL: `mirrorNote` pushes a new annotation into the log, and nothing folds
@@ -373,7 +384,17 @@ blocks what.
    MCP tool, no CLI command; the op is reachable only from a web POST. An agent following
    any of those messages has nowhere to go.
 
-6. **Two `universe` namespaces.** Every shared read prints `cfg.universe` (the
+6. **The push-to-GitHub plan cannot see a canonical finding.** Found while doing (1),
+   and it is the same shape one layer out: `planPrPush` reads `readAnnotations` and
+   nothing else, and its whole vocabulary is `Annotation` (`pushVerdict`,
+   `fromAnotherReview`, `postedRef`). Since the create tap shut, `report_defect` writes a
+   canonical row or a log event and never an annotation — so nothing filed today is
+   pushable by the UI, and `record_published` by hand is the only way a finding acquires
+   the `posted` that (1) depends on. Bigger than the rest of this list, and unmeasured:
+   the push UI has never posted for real, so how much of it is load-bearing is a question
+   before it is a plan.
+
+7. **Two `universe` namespaces.** Every shared read prints `cfg.universe` (the
    `owner/repo` slug); the `universe` INPUT is keyed on workspace ids (manifest id, else
    directory basename). So a tool prints an identifier the next call refuses as unknown,
    under the same field name, in the same session.

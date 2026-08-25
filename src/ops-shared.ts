@@ -773,13 +773,38 @@ export async function sharedFindings(root: string, pr: number | string, opts: { 
  */
 export async function inboundReplies(root: string, pr: number | string, opts: { gh?: GhRunner } = {}) {
   const cfg = resolveSidecar(root);
-  if (!cfg) return { error: NO_SIDECAR };
   const slug = originSlug(root);
   if (!slug) return { error: "no GitHub remote on this universe, so there is no pull request to read replies from" };
 
-  const all = [...(await cachedFindings(root, cfg, pr)).value.values()];
+  // CANONICAL, not the fold. This read used to fold the log, so it saw only findings
+  // that entered through the sidecar — and answered "nothing from here has been
+  // published" over a pull request whose every finding carried a posted ref, because
+  // they were filed locally and pushed by the web UI. That answer is worse than an
+  // empty one: it asserts a PREMISE, and an agent that believes it stops looking and
+  // reports the submitter never replied.
+  if (cfg) {
+    await ensureMaterialized(
+      root, cfg.path, findingScope(prKey(cfg, pr)), sidecarIdentity(cfg), foldFindings, findingsProjection,
+    );
+  }
+  const all = (await readFindings(root, { pr })).findings;
   const published = all.filter((f) => f.posted?.key);
-  if (!published.length) return { universe: cfg.universe, pr, findings: [], note: "nothing from here has been published to the pull request" };
+  if (!published.length) {
+    // Two different emptinesses, and conflating them is how this op lied before.
+    // A finding posted in the review BODY, or one whose comment id the push could not
+    // resolve, has a `posted` and no `key` — there is no thread to read, but something
+    // is on the pull request and the reader must not be told otherwise.
+    const keyless = all.filter((f) => f.posted).length;
+    return {
+      universe: cfg?.universe ?? null,
+      pr,
+      findings: [],
+      note: keyless
+        ? `${keyless} finding${keyless === 1 ? " is" : "s are"} on the pull request with no comment id recorded, `
+          + "so no thread can be read back — `record_published` with the comment's numeric id is what ties them together"
+        : "nothing from here has been published to the pull request",
+    };
+  }
 
   const threads = fetchReviewThreads(`${slug.owner}/${slug.repo}`, Number(pr), opts.gh);
   if ("error" in threads) return threads;
@@ -804,7 +829,7 @@ export async function inboundReplies(root: string, pr: number | string, opts: { 
       replies: replies.map((c) => ({ by: c.author, at: c.createdAt, body: c.body })),
     });
   }
-  return { universe: cfg.universe, pr, findings: out };
+  return { universe: cfg?.universe ?? null, pr, findings: out };
 }
 
 // ---------------------------------------------------------------------------

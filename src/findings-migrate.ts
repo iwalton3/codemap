@@ -106,7 +106,22 @@ function toFinding(a: Annotation, now: string): { finding: SharedFinding; stampe
       ...(a.outcome ? { outcome: { result: a.outcome.result, detail: a.outcome.detail, ...(a.outcome.files ? { files: a.outcome.files } : {}), by: { principal: a.outcome.by }, at: a.outcome.at } } : {}),
       // `by` is the annotation's own actor: the posting was this store's act, and the
       // record has nobody else to name for it.
-      ...(a.postedRef ? { posted: { system: "github" as const, ...(a.postedRef.url ? { url: a.postedRef.url } : {}), at: a.postedRef.at, by: actor } } : {}),
+      //
+      // `commentId` -> `key` is load-bearing, not tidiness: `inboundReplies` matches the
+      // submitter's thread by that id and skips a `posted` without one, so dropping it
+      // migrated the finding and silently lost every reply it had already received.
+      // A body-placement ref genuinely has no comment id; those stay keyless.
+      ...(a.postedRef
+        ? {
+          posted: {
+            system: "github" as const,
+            ...(a.postedRef.commentId !== undefined ? { key: String(a.postedRef.commentId) } : {}),
+            ...(a.postedRef.url ? { url: a.postedRef.url } : {}),
+            at: a.postedRef.at,
+            by: actor,
+          },
+        }
+        : {}),
       ...(a.withdrawn ? { closed: { at: a.withdrawn.at, by: { principal: a.withdrawn.by }, reason: a.withdrawn.reason ?? "withdrawn before this store had findings" } } : {}),
       revisions: (a.revisions ?? []).map((r) => ({ at: r.at, by: { principal: r.by }, was: r.was as Record<string, unknown> })),
     },

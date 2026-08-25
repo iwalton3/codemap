@@ -218,3 +218,28 @@ test("an id that is neither still says so plainly", async () => {
     assert.match(String(out.error), /no finding or annotation "nope"/);
   } finally { r.cleanup(); }
 });
+
+/**
+ * The comment id is the thread. `inboundReplies` matches the submitter's replies by
+ * `posted.key` and skips a `posted` without one, so dropping `commentId` here migrated
+ * the finding and silently lost every answer it had already been given.
+ */
+test("migration carries the comment id, which is what ties the thread back", async () => {
+  const r = repo();
+  try {
+    await writeAnnotations(r.root, [
+      ann({ id: "finding_inline", comment: "on a line", postedRef: { ...posted(264), commentId: 9001 } }),
+      ann({ id: "finding_body", comment: "in the review body", postedRef: { ...posted(264), placement: "body" } }),
+    ]);
+    await migrateLocalFindings(r.root);
+
+    const inline = (await readFinding(r.root, "finding_inline", { pr: 264 }))!;
+    assert.equal(inline.posted?.key, "9001", "the comment id survives, as a string");
+    assert.equal(inline.posted?.url, "https://github.com/o/r/pull/264#x");
+
+    // A body-placement ref genuinely has no comment id — keyless, not fabricated.
+    const body = (await readFinding(r.root, "finding_body", { pr: 264 }))!;
+    assert.ok(body.posted, "still recorded as posted");
+    assert.equal(body.posted?.key, undefined);
+  } finally { r.cleanup(); }
+});
