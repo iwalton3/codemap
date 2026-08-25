@@ -337,6 +337,47 @@ A verdict recorded on one side is visible on the other, and that is not a coinci
 `corroborate` on a shared finding appends to the canonical row's corroboration, so the
 local view's `disposition` moves from `open` to `confirmed` with it. There is one row.
 
+## Near-term: what is left before there is only one kind of finding
+
+The end goal is that a local finding exists only where it is CORRECT — a store with no
+sidecar — and that the duplication needed to serve two kinds is gone. Ordered by what
+blocks what.
+
+1. **`inbound_replies` reads the log, not the canonical table** (`ops-shared.ts`,
+   `cachedFindings`). It answers `"nothing from here has been published to the pull
+   request"` while `findings(pr:"264")` returns twelve rows each carrying a `postedRef`.
+   That is the worst failure shape on this list: it does not say "no replies yet", it
+   asserts a PREMISE, and an agent that believes it stops looking — reporting "no
+   submitter response" on a pull request where every finding had been answered.
+   Everything else on that PR already reads canonical; this is the last one that does not.
+
+2. **Notes are the last parallel table** (`shared_note`), and the mirror is
+   ONE-DIRECTIONAL: `mirrorNote` pushes a new annotation into the log, and nothing folds
+   a teammate's note back. So `questions` — the tool that calls itself "the 'answer these
+   to improve the docs' queue" — cannot see a teammate's question, `resolve_question`
+   cannot close one, and `get_anchor` returns local annotations only while the same
+   function already merges teammates' DOCS. Docs, bugs, findings, triage and walkthroughs
+   all went canonical; notes did not.
+
+3. **Pointers still ride the annotation machinery.** They are a legitimate kind — a
+   review aid is not a defect and should not be one — but they are now the only thing
+   `annotate` still writes at volume, on a store that the rest of the system has moved
+   off. Worth an audit of what actually reads them and whether that path still has an
+   owner, before it becomes the next thing that quietly holds half a picture.
+
+4. **`shared_finding` is still created and never used.** `db.ts` says three lines above
+   it, about `shared_walkthrough`: "a table nothing writes is a table somebody reads by
+   mistake."
+
+5. **`retire_shared_doc` is named in three user-facing errors and is not a tool** — no
+   MCP tool, no CLI command; the op is reachable only from a web POST. An agent following
+   any of those messages has nowhere to go.
+
+6. **Two `universe` namespaces.** Every shared read prints `cfg.universe` (the
+   `owner/repo` slug); the `universe` INPUT is keyed on workspace ids (manifest id, else
+   directory basename). So a tool prints an identifier the next call refuses as unknown,
+   under the same field name, in the same session.
+
 ## What this plan does not cover
 
 - **`shared_note` stays.** Notes are symbol-scoped knowledge that outlives branches;
