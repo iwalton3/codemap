@@ -50,7 +50,7 @@ const blockedBanner = (scope) => when(!!scope, () => html`
 
 /**
  * @typedef {{ params: { universe: string, pr: string }, query: Record<string, string> }} SharedProps
- * @typedef {{ d: FindingsView | null, queue: boolean, busy: string | null, note: string | null, open: string | null, draft: string, replyTo: string | null }} SharedState
+ * @typedef {{ d: FindingsView | null, queue: boolean, busy: string | null, note: string | null, open: string | null, draft: string, replyTo: string | null, showSettled: boolean }} SharedState
  */
 
 const sevClass = (s) => (s === 'critical' || s === 'high' ? 'bad' : s === 'medium' ? 'warn' : 'dim');
@@ -71,7 +71,7 @@ class SharedPage extends Component {
     // `queue` defaults on: the page exists to answer "what needs me", and showing
     // everything first buries that under findings somebody else already settled.
     /** @type {SharedState} */
-    this.state = { d: null, queue: true, busy: null, note: null, open: null, draft: '', replyTo: null };
+    this.state = { d: null, queue: true, busy: null, note: null, open: null, draft: '', replyTo: null, showSettled: false };
   }
 
   load = this.createTask(async () => {
@@ -252,12 +252,47 @@ class SharedPage extends Component {
       </div>`;
   }
 
+  /** One finding's row. Extracted so the tier groups and the settled list share it. */
+  rowEl(f) {
+    const st = this.state;
+    return html`
+      <div class="frow">
+        <div class="row" on-click="${() => { st.open = st.open === f.id ? null : f.id; }}">
+          <span class="prbadge">${f.state}</span>
+          <span class="${sevClass(f.severity)}">${f.severity ?? '\u2014'}</span>
+          <span class="fcomment">${f.comment ?? f.text}</span>
+          <span class="dim">${f.author}${f.authorModel ? ` (${f.authorModel})` : ''}</span>
+        </div>
+        <div class="row">${this.marksEl(f)}</div>
+        ${when(st.open === f.id, () => this.detailEl(f))}
+      </div>`;
+  }
+
+  /**
+   * The open tiers, in the order `findingTier` defines. Grouped HERE and not in a
+   * slot: `each` refuses a bare `.map()`, and the server has already sorted, so
+   * filtering per tier preserves the reading order inside each one.
+   *
+   * @returns {[string, Finding[]][]}
+   */
+  groups() {
+    const d = this.state.d;
+    const rows = (d && !('error' in d) && d.findings) || [];
+    const of = (t) => rows.filter(f => f.tier === t);
+    return /** @type {[string, Finding[]][]} */ ([
+      ['confirmed — somebody stood behind these', of('confirmed')],
+      ['not confirmed yet', of('unconfirmed')],
+      ['refuted or withdrawn, not closed out', of('doubted')],
+    ]).filter(g => g[1].length);
+  }
+
   template() {
     const u = this.props.params.universe, pr = this.props.params.pr, d = this.state.d, st = this.state;
     const failed = taskError(this.load);
     if (failed) return pageShell(null, failed, html``);
     if (!d) return html`<main><div class="loading">loading shared findings…</div></main>`;
     if (d.error) return pageShell(d, d.error, html``);
+    const settled = d.findings.filter(f => f.tier === 'settled');
     return pageShell(d, null, html`
       <div class="crumbs">
         <b>${u}</b> <span class="sep">·</span>
@@ -272,17 +307,14 @@ class SharedPage extends Component {
       ${blockedBanner(d.scope)}
       ${when(!!st.note, () => html`<div class="empty">${st.note}</div>`)}
       ${when(!d.findings.length, () => html`<div class="dim">${st.queue ? 'nothing is waiting on a person.' : 'no shared findings for this pull request.'}</div>`)}
-      ${each(d.findings, f => html`
-        <div class="frow">
-          <div class="row" on-click="${() => { st.open = st.open === f.id ? null : f.id; }}">
-            <span class="prbadge">${f.state}</span>
-            <span class="${sevClass(f.severity)}">${f.severity ?? '—'}</span>
-            <span class="fcomment">${f.comment ?? f.text}</span>
-            <span class="dim">${f.author}${f.authorModel ? ` (${f.authorModel})` : ''}</span>
-          </div>
-          <div class="row">${this.marksEl(f)}</div>
-          ${when(st.open === f.id, () => this.detailEl(f))}
-        </div>`, f => f.id)}
+      ${each(this.groups(), g => html`
+        <div class="fgroup"><span class="dim">${g[0]}</span> <span class="dim">· ${g[1].length}</span></div>
+        ${each(g[1], f => this.rowEl(f), f => f.id)}`, g => g[0])}
+      ${when(!!settled.length, () => html`
+        <div class="fgroup settled" on-click="${() => { st.showSettled = !st.showSettled; }}">
+          <span class="dim">${st.showSettled ? '▾' : '▸'} ${settled.length} settled — resolved or invalid</span>
+        </div>
+        ${when(st.showSettled, () => html`${each(settled, f => this.rowEl(f), f => f.id)}`)}`)}
     `);
   }
 }
@@ -307,6 +339,7 @@ class SharedPeersPage extends Component {
     if (failed) return pageShell(null, failed, html``);
     if (!d) return html`<main><div class="loading">loading…</div></main>`;
     if (d.error) return pageShell(d, d.error, html``);
+    const settled = d.findings.filter(f => f.tier === 'settled');
     return pageShell(d, null, html`
       <div class="crumbs"><b>${u}</b> <span class="sep">·</span> sidecar peers</div>
       <div class="dim">${d.sidecar} — you are ${d.you ?? '(no identity configured)'}</div>
@@ -449,6 +482,7 @@ class SharedDocsPage extends Component {
     if (failed) return pageShell(null, failed, html``);
     if (!d) return html`<main><div class="loading">loading shared docs…</div></main>`;
     if (d.error) return pageShell(d, d.error, html``);
+    const settled = d.findings.filter(f => f.tier === 'settled');
     return pageShell(d, null, html`
       <div class="crumbs"><b>${u}</b> <span class="sep">·</span> shared docs
         <span class="dim">· ${d.total}, resolved against this checkout</span></div>

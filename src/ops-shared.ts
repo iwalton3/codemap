@@ -27,7 +27,7 @@ import {
   createFinding, corroborate, comment, promote, request, setState, recordOutcome,
   markPosted, markUpstreamed, promoteToBug, needsHumanAck, ackQueue,
   revise, resolveContest, relocate,
-  foldFindings, findingScope,
+  foldFindings, findingScope, findingTier, byReadingOrder,
   type SharedFinding, type Verdict, type Ask, type FindingState, type NewFinding,
 } from "./shared-findings.js";
 import { publishWalkthrough, currentWalkthrough, staleWalkthroughs, foldWalkthroughs, walkthroughScope } from "./shared-walkthrough.js";
@@ -615,7 +615,10 @@ export async function sharedFindings(root: string, pr: number | string, opts: { 
   const { value: folded, ...scope } = await cachedFindings(root, cfg, pr);
   const all = [...folded.values()];
   const places = await classifyCitations(root, [...new Set(all.filter((f) => f.target.kind === "anchor").map((f) => f.target.id))]);
-  const chosen = opts.queue ? ackQueue(all) : all;
+  // Reading order, not filing order — see `findingTier`. Applied to the queue too:
+  // the queue is a narrower list of the same question, so it wants the same answer at
+  // the top. `sort` mutates, so it is the already-copied array being ordered.
+  const chosen = (opts.queue ? ackQueue(all) : [...all]).sort(byReadingOrder);
   const place = (f: SharedFinding) => places.get(f.target.id) ?? { state: "unknown" as const };
   return {
     scope: nonAuthoritative(scope),
@@ -624,7 +627,7 @@ export async function sharedFindings(root: string, pr: number | string, opts: { 
     total: all.length,
     waitingOnYou: ackQueue(all).length,
     contested: all.filter((f) => f.contested?.length).length,
-    findings: chosen.map((f) => ({ ...view(f), target: { ...f.target, where: place(f).state, at: place(f).at, lastFile: place(f).file } })),
+    findings: chosen.map((f) => ({ ...view(f), tier: findingTier(f), target: { ...f.target, where: place(f).state, at: place(f).at, lastFile: place(f).file } })),
   };
 }
 

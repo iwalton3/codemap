@@ -767,6 +767,11 @@
     .prswc code { font-family: var(--mono); font-size: 12px; color: #f0a35e; }
 
     /* --- shared review (web/shared.js) ------------------------------------ */
+    /* Tier headings: a rule the eye can stop at, not a box competing with the rows. */
+    .fgroup { margin: 18px 0 4px; padding-bottom: 3px; border-bottom: 1px solid var(--border);
+      font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+    .fgroup:first-of-type { margin-top: 8px; }
+    .fgroup.settled { cursor: pointer; user-select: none; }
     .frow { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 8px 0; background: var(--panel); }
     .frow .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; cursor: pointer; }
     .fcomment { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

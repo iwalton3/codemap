@@ -201,6 +201,55 @@ export interface Ratcheted {
   corroboration: Corroboration[];
 }
 
+/**
+ * Where a finding sits in the reading order: what needs a decision first.
+ *
+ * The list is read top-down by somebody deciding what to act on, so the order is by
+ * HOW SETTLED each finding is, not by when it was filed:
+ *
+ *   0 `confirmed`   — open, and somebody stood behind it.
+ *   1 `unconfirmed` — open, nobody has weighed in yet.
+ *   2 `doubted`     — refuted or withdrawn, or open with a refuting verdict on it:
+ *                     probably not real, but nobody has closed it out.
+ *   3 `settled`     — closed. Collapsed by the surfaces that render it.
+ *
+ * A finding with BOTH a confirm and a refute ranks `confirmed`, deliberately: two
+ * reviewers disagreeing is the case most needing a person, and burying it under the
+ * unconfirmed ones is the opposite of what this ordering is for.
+ *
+ * `refuted` and `withdrawn` are terminal in `FindingState`, but they are kept out of
+ * `settled` because they are the two a person most often reopens — "we decided this
+ * was not real" is worth seeing, where "we fixed it" is not.
+ */
+export type FindingTier = "confirmed" | "unconfirmed" | "doubted" | "settled";
+
+const TIER_ORDER: Record<FindingTier, number> = { confirmed: 0, unconfirmed: 1, doubted: 2, settled: 3 };
+
+export function findingTier(f: Pick<SharedFinding, "state" | "corroboration">): FindingTier {
+  if (f.state === "resolved" || f.state === "invalid") return "settled";
+  if (f.state === "refuted" || f.state === "withdrawn") return "doubted";
+  if (f.corroboration.some((c) => c.verdict === "confirm")) return "confirmed";
+  if (f.corroboration.some((c) => c.verdict === "refute")) return "doubted";
+  return "unconfirmed";
+}
+
+/**
+ * Rank within a tier: severity, then oldest first.
+ *
+ * Oldest first rather than newest, because within one tier the question is which has
+ * been waiting longest — a newest-first list quietly buries whatever nobody got to.
+ */
+const SEVERITY_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+
+export function byReadingOrder(
+  a: Pick<SharedFinding, "state" | "corroboration" | "severity" | "createdAt">,
+  b: Pick<SharedFinding, "state" | "corroboration" | "severity" | "createdAt">,
+): number {
+  return TIER_ORDER[findingTier(a)] - TIER_ORDER[findingTier(b)]
+    || (SEVERITY_ORDER[a.severity ?? ""] ?? 4) - (SEVERITY_ORDER[b.severity ?? ""] ?? 4)
+    || a.createdAt.localeCompare(b.createdAt);
+}
+
 /** Derived, never stored — an OR over a latch and a grow-only set, so it cannot race. */
 export function needsHumanAck(f: Ratcheted): boolean {
   return !!f.promotion || f.corroboration.some((c) => c.verdict === "confirm");

@@ -9,7 +9,7 @@ import { sortEvents, readScope, type LogEvent } from "./eventlog.js";
 import {
   createFinding, corroborate, comment, promote, request, setState, recordOutcome,
   markPosted, markUpstreamed, promoteToBug, readFindings, foldFindings, findingScope,
-  needsHumanAck, mayTransition, ackQueue, alreadyPosted, isClosed,
+  needsHumanAck, mayTransition, ackQueue, alreadyPosted, isClosed, findingTier, byReadingOrder,
   type SharedFinding, type FindingState,
 } from "./shared-findings.js";
 
@@ -324,4 +324,51 @@ test("mayTransition is the single rule both the fold and the writer use", () => 
   assert.equal(mayTransition(issued, opus, "resolved"), false, "not a terminal an agent may write");
   const created = { ...issued, state: "created" as FindingState };
   assert.equal(mayTransition(created, opus, "invalid"), false, "`created` is the floor");
+});
+
+// --- reading order -----------------------------------------------------------
+
+const tiered = (state: FindingState, verdicts: ("confirm" | "refute")[], severity?: string) => ({
+  state,
+  corroboration: verdicts.map((verdict) => ({
+    actor: { principal: "x@y.z" }, verdict, at: "2026-01-01T00:00:00Z", rationale: "r", independent: false,
+  })),
+  severity: severity as never,
+  createdAt: "2026-01-01T00:00:00Z",
+});
+
+test("a finding's tier is how settled it is, not when it was filed", () => {
+  assert.equal(findingTier(tiered("created", ["confirm"])), "confirmed");
+  assert.equal(findingTier(tiered("issued", [])), "unconfirmed");
+  assert.equal(findingTier(tiered("created", ["refute"])), "doubted", "open but refuted is not just unconfirmed");
+  assert.equal(findingTier(tiered("refuted", [])), "doubted");
+  assert.equal(findingTier(tiered("withdrawn", [])), "doubted", "kept out of settled — a person reopens these");
+  assert.equal(findingTier(tiered("resolved", [])), "settled");
+  assert.equal(findingTier(tiered("invalid", [])), "settled");
+});
+
+test("disagreement ranks with the confirmed, not with the doubted", () => {
+  // Two reviewers disagreeing is the case most needing a person; burying it under
+  // the ones nobody has looked at is the opposite of what the ordering is for.
+  assert.equal(findingTier(tiered("created", ["confirm", "refute"])), "confirmed");
+});
+
+test("the reading order is tier, then severity, then oldest first", () => {
+  const list = [
+    tiered("resolved", [], "critical"),
+    tiered("created", [], "low"),
+    tiered("created", ["confirm"], "medium"),
+    tiered("refuted", [], "critical"),
+    tiered("created", ["confirm"], "critical"),
+  ];
+  const order = [...list].sort(byReadingOrder).map((f) => `${findingTier(f)}/${f.severity}`);
+  assert.deepEqual(order, [
+    "confirmed/critical", "confirmed/medium", "unconfirmed/low", "doubted/critical", "settled/critical",
+  ], "a resolved critical sorts below an unconfirmed low — settledness outranks severity");
+});
+
+test("within a tier the oldest is first, so nothing waits unseen", () => {
+  const older = { ...tiered("created", ["confirm"], "high"), createdAt: "2026-01-01T00:00:00Z" };
+  const newer = { ...tiered("created", ["confirm"], "high"), createdAt: "2026-06-01T00:00:00Z" };
+  assert.deepEqual([newer, older].sort(byReadingOrder).map((f) => f.createdAt), [older.createdAt, newer.createdAt]);
 });
