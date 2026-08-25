@@ -1470,8 +1470,26 @@ export async function sharedHub(root: string) {
     blocked.push({ scope: r.scope, reason });
   }
 
+  // Every pull request that has findings, from the canonical table. The hub had no
+  // per-PR index at all, so there was no navigational path from here to a pull
+  // request's findings — you had to already know the number and type the URL.
+  //
+  // One grouped query rather than a fold per scope: the table is the projection, it
+  // holds local rows as well as the team's, and a hub that listed only the scopes on
+  // disk would miss a finding filed on a machine with no sidecar.
+  const prs = (db(root).prepare(
+    "SELECT pr, COUNT(*) AS total, SUM(needs_ack) AS waiting, "
+    + "SUM(CASE WHEN source_scope IS NULL THEN 1 ELSE 0 END) AS mine "
+    + "FROM findings GROUP BY pr",
+  ).all() as unknown as { pr: string; total: number; waiting: number; mine: number }[])
+    .map((r) => ({ pr: r.pr, total: Number(r.total), waiting: Number(r.waiting), unshared: Number(r.mine) }))
+    // Newest first where the key is a number, which is what a pull request key is;
+    // anything else sorts after rather than being dropped.
+    .sort((a, b) => (Number(b.pr) || -1) - (Number(a.pr) || -1) || a.pr.localeCompare(b.pr));
+
   return {
     configured: true as const,
+    prs,
     ...status,
     unpublished: { docs, notes, triage, graph },
     blocked,

@@ -637,6 +637,14 @@
        list reads as a severity spectrum without a badge on every row. */
     /* A finding on the anchor's own page. Same severity rail as the pull-request list,
        because it is the same object seen from the other side. */
+    /* The hub's pull-request index. There was no path from here to a PR's findings at
+       all — you had to know the number and type the URL. */
+    .hubsec { margin: 16px 0 6px; font-size: 11.5px; color: var(--dim); text-transform: uppercase;
+      letter-spacing: .04em; border-bottom: 1px solid var(--border); padding-bottom: 3px; }
+    .hubpr { display: flex; gap: 10px; align-items: baseline; padding: 6px 10px; margin: 4px 0;
+      background: var(--panel); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; font-size: 13px; }
+    .hubpr:hover { border-color: var(--accent); }
+    .hubpr .hubgo { margin-left: auto; color: var(--dim); }
     .afind { border-left: 3px solid var(--border); background: var(--panel); border-radius: 0 6px 6px 0;
       padding: 7px 12px; margin: 5px 0; }
     .afind.sev-critical, .afind.sev-high { border-left-color: var(--bad); }

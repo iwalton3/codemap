@@ -758,6 +758,26 @@ export async function closeLocalFinding(
   return { ok: true, id: f.id, pr: f.pr, shared: false, ...(unmapped ? { note: `disposition "${unmapped}" is not recorded on a finding — verdicts are` } : {}) };
 }
 
+/**
+ * Add to a LOCAL finding's thread — one filed here with no sidecar, or not yet folded.
+ *
+ * The shared half is an event (`comment_on_finding`); this is the row half, and it lives
+ * here for the same layering reason `closeLocalFinding` does: reaching `ops-shared` from
+ * this module closes an import cycle through `ops/triage`. `ops.ts` picks between them.
+ */
+export async function commentOnLocalFinding(root: string, id: string, body: string, inReplyTo?: string) {
+  if (!body.trim()) return { error: "an empty comment says nothing" };
+  const f = await readFinding(root, id).catch(() => null);
+  if (!f) return { error: `no finding "${id}"` };
+  const actor = requireActor(root);
+  if ("error" in actor) return actor;
+  const at = new Date().toISOString();
+  const commentId = "c_" + Math.random().toString(36).slice(2, 10);
+  f.thread = [...f.thread, { id: commentId, actor, at, body, ...(inReplyTo ? { inReplyTo } : {}) }];
+  await writeLocalFinding(root, f, f.pr!);
+  return { ok: true, id: commentId };
+}
+
 export async function closeAssignment(
   root: string,
   input: {

@@ -1,9 +1,8 @@
 # Plan: one canonical `findings` table, and one way to file into it
 
-**Status: IN PROGRESS** on `findings-unification`. Steps 1, 2, 3 and 5 are done, and
-step 4's create verb — the part that stops the split recurring — has landed. What is
-left is merging the parallel bug/finding lifecycle verbs, routing the web UI's own
-"raise a finding" through `report_defect`, and the shared hub's missing per-PR index. Written 2026-08-25 from a live investigation of the
+**Status: ALL SIX STEPS DONE** on `findings-unification`. Kept because the arguments
+are still the reasons the code looks like this, and because two of them changed under
+review — see the notes on step 2's key and on what step 4 did not merge. Written 2026-08-25 from a live investigation of the
 `acme/acme.api` universe. `docs/sidecar-architecture.md` is the architecture
 this implements and wins wherever the two differ; this plan answers the question that
 document leaves open ("Whether findings follow docs into a canonical table") in the
@@ -254,19 +253,24 @@ migrating actor, and say so.
    `share_finding` and `report_bug` are gone, `accept_finding` is `defer_finding`,
    `annotate` no longer accepts `kind:"finding"`, and the two verified cuts (`guide`,
    `retire_shared_doc`) are gone. 84 tools -> 81.
-   LEFT: merging the parallel lifecycle verbs (`comment_bug`/`comment_on_finding`,
-   `corroborate_bug`/`corroborate`, `ask_about_bug`/`request_ack`,
-   `update_bug`/`close_finding`). That is ergonomics rather than correctness — the
-   create verb is what made wrong placement impossible — and it is a wide change to
-   land on its own.
+   The parallel lifecycle verbs are merged too: `comment`, `corroborate` and
+   `request_human` each take a finding id OR a bug id and resolve it against the
+   RECORDS. A finding carries its own pull request, so there is no longer a `pr` to
+   pass wrongly. 84 tools -> 78.
+   NOT merged: `update_bug` and `close_finding`. They look like a pair and are not —
+   one changes fields, the other reports an outcome, and collapsing them would make
+   `result` mean two things.
 5. ~~**Migration script** for the 96~~ **DONE** — `src/findings-migrate.ts`,
    `codemap migrate-findings`. Applied to Acme.API: 45 moved (23 on #227, 22 on #264),
    51 left with no recorded pull request, of which only 6 are open — and four of those
    six turned out to be duplicates of findings already on the sidecar, so leaving them
    unplaced is the right outcome rather than a gap.
-6. **Web UI**: PR story page reads the canonical table; fix the "No findings raised"
-   empty state; give the shared hub a per-PR index (there is currently no
-   navigational path from a PR to its findings at all).
+6. ~~**Web UI**~~ **DONE**. The PR story page reads the canonical table, the "No
+   findings raised" empty state counts the team's, the shared page wraps its findings
+   and puts triage first, and the hub has a per-PR index — there was no navigational
+   path from the hub to a pull request's findings at all. The browser's own "raise"
+   goes through `report_defect` with the context it can see: on a pull request it files
+   a finding there, anywhere else a drive-by bug, and the button says which.
 
 Steps 2 and 3 are one landing — a canonical table nothing reads is a fourth store.
 

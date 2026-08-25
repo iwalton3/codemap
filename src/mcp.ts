@@ -500,7 +500,7 @@ const tools: Tool[] = [
   },
   {
     name: "update_bug",
-    description: "Update a bug: change state, add a comment, add anchors, refresh witness hashes, or revise its prose/severity. With a sidecar each of those is a separate act in the shared log, because they merge differently — citations are grow-only, prose can be contested, and the state is ratcheted. An agent may not move a bug somebody has stood behind; use `ask_about_bug` for that.",
+    description: "Update a bug: change state, add a comment, add anchors, refresh witness hashes, or revise its prose/severity. With a sidecar each of those is a separate act in the shared log, because they merge differently — citations are grow-only, prose can be contested, and the state is ratcheted. An agent may not move a bug somebody has stood behind; use `request_human` for that.",
     inputSchema: obj({
       id: { type: "string" },
       state: { type: "string", enum: ["issued", "created", "invalid", "refuted", "resolved", "withdrawn"] },
@@ -517,17 +517,6 @@ const tools: Tool[] = [
     handler: (a, c) => ops.updateBug(c.universe.path, a),
   },
   {
-    name: "comment_bug",
-    description: "Say something on a bug, where the team will see it. Use this for what you found, what you ruled out, and why — the durable version of a chat message about a defect.",
-    inputSchema: obj({
-      id: { type: "string" },
-      body: { type: "string" },
-      inReplyTo: { type: "string", description: "The comment id this answers." },
-    }, ["id", "body"]),
-    mutates: true,
-    handler: (a, c) => ops.commentBug(c.universe.path, a.id, a.body, a.inReplyTo),
-  },
-  {
     name: "track_bug",
     description: "Record that a bug is tracked outside codemap — a Jira ticket, a GitHub issue. It does NOT close the bug: being in a tracker is not being fixed, and the witness is still what decides that here. One reference per system, and the first one stands — if somebody already filed a ticket for this, that is the ticket.",
     inputSchema: obj({
@@ -538,28 +527,6 @@ const tools: Tool[] = [
     }, ["id"]),
     mutates: true,
     handler: (a, c) => ops.trackBugExternally(c.universe.path, a.id, { system: a.system, key: a.key, url: a.url }),
-  },
-  {
-    name: "corroborate_bug",
-    description: "A second opinion on somebody's bug: confirm, refute or unsure, with what you actually checked. One entry per reviewer, never collapsed to a score — the disagreement is the signal, which is the whole reason to ask more than one model.",
-    inputSchema: obj({
-      id: { type: "string" },
-      verdict: { type: "string", enum: ["confirm", "refute", "unsure"] },
-      rationale: { type: "string", description: "What you checked. A verdict without one is a vote, not a review, and is refused." },
-    }, ["id", "verdict", "rationale"]),
-    mutates: true,
-    handler: (a, c) => ops.corroborateBugOp(c.universe.path, a.id, a.verdict, a.rationale),
-  },
-  {
-    name: "ask_about_bug",
-    description: "Ask a person to do what you may not: promote, invalidate, refute or resolve a bug. Queues it for them with your reasoning. This is the path when `update_bug` refuses — a bug somebody has stood behind is theirs to close.",
-    inputSchema: obj({
-      id: { type: "string" },
-      ask: { type: "string", enum: ["promote", "invalidate", "refute", "resolve"] },
-      rationale: { type: "string" },
-    }, ["id", "ask", "rationale"]),
-    mutates: true,
-    handler: (a, c) => ops.requestOnBugOp(c.universe.path, a.id, a.ask, a.rationale),
   },
   {
     name: "defer_finding",
@@ -856,40 +823,41 @@ const tools: Tool[] = [
     handler: (a, c) => ops.reportDefect(c.universe.path, a as never),
   },
   {
-    name: "corroborate",
-    description: "Weigh in on somebody else's finding: is it real? This is the point of several models reviewing — DISAGREEMENT is the signal, so refute plainly when you think it is wrong rather than deferring. Your verdict never replaces anyone else's, only your own earlier one. A rationale is required: a verdict without one is a vote, not a review.\n\nCorroborating a finding raised by the person you are running as does not count as independent — say so anyway, it is still worth recording.",
+    name: "comment",
+    description: "Say something on a finding or a bug — the reviewers' thread. For a finding this lives here rather than on GitHub so that findings about ABSENT code, and about code the branch never touched, can be discussed in place.\n\nOne verb for both: pass the id and the record decides. There is no separate tool per entity type, and no `pr` to get wrong — a finding carries its own.",
     inputSchema: obj({
-      pr: { type: "string" },
-      id: { type: "string" },
+      id: { type: "string", description: "A finding or bug id, from `findings`, `shared_findings` or `list_bugs`." },
+      body: { type: "string" },
+      inReplyTo: { type: "string" },
+      model: { type: "string", description: "YOUR model id. Never guess it." },
+      harness: { type: "string" },
+    }, ["id", "body"]),
+    mutates: true,
+    handler: (a, c) => ops.commentOn(c.universe.path, a as never),
+  },
+  {
+    name: "corroborate",
+    description: "Weigh in on somebody else's finding or bug: is it real? This is the point of several models reviewing — DISAGREEMENT is the signal, so refute plainly when you think it is wrong rather than deferring. Your verdict never replaces anyone else's, only your own earlier one. A rationale is required: a verdict without one is a vote, not a review.\n\nCorroborating something raised by the person you are running as does not count as independent — say so anyway, it is still worth recording, and passing `model` is what makes cross-model agreement measurable at all.",
+    inputSchema: obj({
+      id: { type: "string", description: "A finding or bug id." },
       verdict: { type: "string", enum: ["confirm", "refute", "unsure"] },
       rationale: { type: "string", description: "What you actually checked." },
-      model: { type: "string", description: "YOUR model id, e.g. \"claude-opus-5\". Recorded so the finding says which model spoke — that is what makes cross-model agreement measurable. Never guess it: pass it only if you were told what you are, and omit it otherwise." },
-      harness: { type: "string", description: "The tool running you, e.g. \"claude-code\". Optional." },
-    }, ["pr", "id", "verdict", "rationale"]),
+      model: { type: "string", description: "YOUR model id. Never guess it." },
+      harness: { type: "string" },
+    }, ["id", "verdict", "rationale"]),
     mutates: true,
-    handler: (a, c) => shared.corroborateFinding(c.universe.path, a.pr, a.id, a.verdict, a.rationale, { model: a.model, harness: a.harness }),
+    handler: (a, c) => ops.corroborateOn(c.universe.path, a as never),
   },
   {
-    name: "comment_on_finding",
-    description: "Add to a finding's thread — the reviewers' conversation, which lives here rather than on GitHub so that findings about ABSENT code and about code the branch never touched can be discussed in place.",
+    name: "request_human",
+    description: "Ask a PERSON to do what you may not: promote, invalidate, refute or resolve. Once a finding is `created`, or once anything has confirmed it, an agent may only ask — this is that ask, and it lands in the human's queue with your rationale attached. Use it instead of trying to set the state and being refused.\n\nWorks on a bug the same way, and for the same reason: past `created`, only a person closes one.",
     inputSchema: obj({
-      pr: { type: "string" }, id: { type: "string" }, body: { type: "string" }, inReplyTo: { type: "string" },
-      model: { type: "string", description: "YOUR model id, e.g. \"claude-opus-5\". Recorded so the finding says which model spoke — that is what makes cross-model agreement measurable. Never guess it: pass it only if you were told what you are, and omit it otherwise." },
-      harness: { type: "string", description: "The tool running you, e.g. \"claude-code\". Optional." },
-    }, ["pr", "id", "body"]),
-    mutates: true,
-    handler: (a, c) => shared.commentOnFinding(c.universe.path, a.pr, a.id, a.body, a.inReplyTo, { model: a.model, harness: a.harness }),
-  },
-  {
-    name: "request_ack",
-    description: "Ask a PERSON to close, refute, or promote a finding you may not close yourself. Once a finding is `created`, or anything has confirmed it, an agent may only ask — this is that ask, and it lands in the human's queue with your rationale attached. Use it instead of trying to set the state and being refused.",
-    inputSchema: obj({
-      pr: { type: "string" }, id: { type: "string" },
-      ask: { type: "string", enum: ["promote", "invalidate", "refute", "resolve"] },
+      id: { type: "string", description: "A finding or bug id." },
+      action: { type: "string", enum: ["promote", "invalidate", "refute", "resolve"] },
       rationale: { type: "string", description: "Why. This is what the human reads to decide." },
-    }, ["pr", "id", "ask", "rationale"]),
+    }, ["id", "action", "rationale"]),
     mutates: true,
-    handler: (a, c) => shared.requestOnFinding(c.universe.path, a.pr, a.id, a.ask, a.rationale),
+    handler: (a, c) => ops.requestHuman(c.universe.path, a as never),
   },
   {
     name: "report_on_finding",

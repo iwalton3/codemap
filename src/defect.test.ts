@@ -131,3 +131,67 @@ test("with a sidecar the same call reaches the team", async () => {
     assert.equal(f!.author.via?.model, "claude-opus-5", "and it records which model spoke");
   } finally { r.cleanup(); }
 });
+
+// --- one verb per ACT, over both kinds of record ------------------------------
+
+/**
+ * Findings and bugs have the same lifecycle acts and had two tools each, so the caller
+ * picked the entity type by picking a tool name — the same mistake `report_defect`
+ * removed from creation. Dispatch resolves the id against the RECORDS: `f_`, `finding_`
+ * and `bug_` come from one generic helper and say nothing about where a row lives.
+ */
+test("one comment verb reaches a finding or a bug, by id alone", async () => {
+  const r = await repo(true);
+  try {
+    const { reportDefect: file, commentOn } = await import("./ops.js");
+    const f = await file(r.root, {
+      context: { kind: "pull_request", pr: "270" },
+      targetKind: "anchor", targetId: r.anchor, text: "e", comment: "c",
+    }) as Record<string, string>;
+    const b = await file(r.root, {
+      context: { kind: "drive_by", rationale: "unrelated work" },
+      title: "a bug", text: "e", anchors: [r.anchor],
+    }) as Record<string, string>;
+    assert.notEqual(f.id, b.id);
+
+    // No `pr`, no entity kind, no tool choice — just the id.
+    assert.equal((await commentOn(r.root, { id: f.id!, body: "on the finding" }) as { error?: string }).error, undefined);
+    assert.equal((await commentOn(r.root, { id: b.id!, body: "on the bug" }) as { error?: string }).error, undefined);
+
+    const finding = (await readFindings(r.root, { pr: 270 })).findings[0]!;
+    assert.equal(finding.thread.length, 1, "the finding's thread");
+    assert.match(finding.thread[0]!.body, /on the finding/);
+    assert.match(JSON.stringify((await readBugs(r.root)).bugs[0]), /on the bug/, "and the bug's");
+  } finally { r.cleanup(); }
+});
+
+test("an id that is neither is refused, not routed to a default", async () => {
+  const r = await repo(true);
+  try {
+    const { commentOn, corroborateOn, requestHuman } = await import("./ops.js");
+    for (const call of [
+      () => commentOn(r.root, { id: "nope", body: "x" }),
+      () => corroborateOn(r.root, { id: "nope", verdict: "confirm" as const, rationale: "x" }),
+      () => requestHuman(r.root, { id: "nope", action: "resolve" as const, rationale: "x" }),
+    ]) {
+      assert.match(String(((await call()) as { error: string }).error), /no finding or bug "nope"/);
+    }
+  } finally { r.cleanup(); }
+});
+
+test("a finding carries its own pull request, so the caller cannot pass the wrong one", async () => {
+  const r = await repo(true);
+  try {
+    const { reportDefect: file, corroborateOn } = await import("./ops.js");
+    const f = await file(r.root, {
+      context: { kind: "pull_request", pr: "901" },
+      targetKind: "anchor", targetId: r.anchor, text: "e", comment: "c",
+    }) as Record<string, string>;
+    // Nothing here names a pull request. It is read off the record.
+    const out = await corroborateOn(r.root, { id: f.id!, verdict: "confirm", rationale: "checked", model: "gpt-5.2" }) as { error?: string };
+    assert.equal(out.error, undefined);
+    const finding = (await readFindings(r.root, { pr: 901 })).findings[0]!;
+    assert.equal(finding.corroboration.length, 1);
+    assert.equal(finding.corroboration[0]!.actor.via?.model, "gpt-5.2");
+  } finally { r.cleanup(); }
+});

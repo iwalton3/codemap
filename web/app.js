@@ -519,13 +519,34 @@ async function afterAnnotationWrite(c, res) {
 }
 const asJson = (p) => p.then(r => r.json()).catch(() => null);
 
+/**
+ * Raise what you just read, through the same op the agents use.
+ *
+ * `report_defect` takes a required CONTEXT and no storage, so a person raising something
+ * while reading a diff and an agent raising it during a review land in exactly one
+ * place. The context comes from where you are standing, which is the one thing the page
+ * knows and the caller should not have to state:
+ *
+ *   on a pull request  -> a FINDING on that pull request
+ *   anywhere else      -> a DRIVE-BY, which becomes a bug and outlives the branch
+ *
+ * The button says which, so nobody is surprised by where it went.
+ */
 async function raiseFinding(c, u, anchorId, line) {
   const key = findingKey(anchorId, line);
   const text = (c._fdrafts?.[key] || '').trim(); if (!text) return;
+  const pr = c.props && c.props.params && c.props.params.pr;
   // What you type here IS the submitter-facing version: a finding raised in one line
   // while reading a diff is already the short form. The evidence half only diverges
   // once someone investigates, and it is editable in the findings list when it does.
-  const res = await asJson(postAnnotate(u, 'anchor', anchorId, text, 'finding', Number.isFinite(line) ? line : undefined, c.state?.prRef, text));
+  const body = pr
+    ? { u, context: { kind: 'pull_request', pr: String(pr) }, targetKind: 'anchor', targetId: anchorId,
+        text, comment: text, ...(Number.isFinite(line) ? { line } : {}), ref: c.state?.prRef }
+    : { u, context: { kind: 'drive_by', rationale: 'raised while reading this symbol' },
+        title: text.split('\n')[0].slice(0, 120), text, anchors: [anchorId] };
+  const res = await asJson(fetch('/api/defect', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  }));
   // A refusal must not take the typed text with it. Both of them (over-length, and
   // an opening that grades the finding instead of describing the code) are asking
   // for a rewrite of what is in the box — which is hard to do once the box is empty.
@@ -597,7 +618,7 @@ const findingForm = (c, u, anchorId, line) => {
   if (!c._fdrafts) c._fdrafts = {};
   const key = findingKey(anchorId, line);
   const err = c.state.raiseErr && c.state.raiseErr.key === key ? c.state.raiseErr.error : null;
-  return html`<div class="rvaddf"><span class="rvfpin">${line ? '↳' + line : '✎'}</span><input class="rvftextin" placeholder="finding / action item — sign-off still allowed" value="${c._fdrafts[key] || ''}" on-input="${(e) => { c._fdrafts[key] = e.target.value; }}" on-keydown="${(e) => { if (e.key === 'Enter') raiseFinding(c, u, anchorId, line); else if (e.key === 'Escape') closeFindingForm(c); }}"><button on-click="${() => raiseFinding(c, u, anchorId, line)}">raise</button><button class="ghost" on-click="${() => closeFindingForm(c)}">cancel</button>${when(err, () => html`<span class="rvferr">${err}</span>`)}</div>`;
+  return html`<div class="rvaddf"><span class="rvfpin">${line ? '↳' + line : '✎'}</span><input class="rvftextin" placeholder="finding / action item — sign-off still allowed" value="${c._fdrafts[key] || ''}" on-input="${(e) => { c._fdrafts[key] = e.target.value; }}" on-keydown="${(e) => { if (e.key === 'Enter') raiseFinding(c, u, anchorId, line); else if (e.key === 'Escape') closeFindingForm(c); }}"><button title="${c.props && c.props.params && c.props.params.pr ? 'files a finding on this pull request' : 'files a bug — you are not in a pull request review, so this outlives the branch'}" on-click="${() => raiseFinding(c, u, anchorId, line)}">${c.props && c.props.params && c.props.params.pr ? 'raise' : 'file as bug'}</button><button class="ghost" on-click="${() => closeFindingForm(c)}">cancel</button>${when(err, () => html`<span class="rvferr">${err}</span>`)}</div>`;
 };
 // Render one anchor's source line-by-line (absolute line numbers from `startLine`)
 // with a hover 💬 per line that raises a finding pinned to that exact line; existing
@@ -2564,6 +2585,16 @@ class SharedHubPage extends Component {
             <span class="dim">team</span> ${(ok.peers || []).length} <a on-click="${() => go(`/u/${u}/shared/0/peers/`)}">peers ›</a></div>
           <button disabled="${!!this.state.busy}" on-click="${() => this.act('sync', 'sync')}">${this.state.busy === 'sync' ? 'syncing…' : 'sync now'}</button>
         </div>
+
+        ${when(!!(ok.prs && ok.prs.length), () => html`
+          <div class="hubsec">pull requests with findings</div>
+          ${each(ok.prs, p => html`<div class="hubpr" on-click="${() => go(`/u/${u}/shared/${p.pr}/`)}">
+            <b>PR ${p.pr}</b>
+            <span class="dim">${p.total} finding${p.total === 1 ? '' : 's'}</span>
+            ${when(!!p.waiting, () => html`<span class="warn">${p.waiting} waiting on a person</span>`)}
+            ${when(!!p.unshared, () => html`<span class="dim" title="filed here and not sent to the team">${p.unshared} not shared</span>`)}
+            <span class="hubgo">›</span>
+          </div>`, p => p.pr)}`)}
 
         ${when(ok.blocked && ok.blocked.length, () => html`<div class="hubblocked">
           <b class="bad">${ok.blocked.length} scope(s) cannot be read</b>

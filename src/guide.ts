@@ -178,8 +178,9 @@ way to choose it:
 
 Yours opens as \`issued\` — an agent's finding is a proposal until a person stands behind
 it. It then carries what a PR finding needs: \`corroborate\` for cross-model second
-opinions, \`comment_on_finding\` for the reviewers' thread, and \`request_ack\` for the
-decisions you may not take yourself.
+opinions, \`comment\` for the reviewers' thread, and \`request_human\` for the decisions
+you may not take yourself. Those three take a finding id or a bug id — one verb per
+ACT, not per entity.
 
 \`defer_finding\` is the ONLY route from a finding to a bug — filing a second copy with
 \`report_defect\` loses the cross-link and the history.
@@ -203,9 +204,10 @@ it, because reporting and agreeing it is closed are different acts.
 - Once a bug exists: it auto-flags possiblyFixed when its code later changes;
   \`list_bugs\` surfaces those to re-validate, then \`update_bug\` to resolve. **With a
   sidecar a bug is the TEAM's**: it enters the shared log as you file it, and past
-  \`created\` only a person closes one — \`ask_about_bug\` is the path when
-  \`update_bug\` refuses. \`comment_bug\` is where what you checked goes;
-  \`corroborate_bug\` is a second opinion on somebody else's; \`track_bug\` records
+  \`created\` only a person closes one — \`request_human\` is the path when
+  \`update_bug\` refuses. \`comment\` is where what you checked goes;
+  \`corroborate\` is a second opinion on somebody else's — both take a finding id or a
+  bug id, because they are the same act on either; \`track_bug\` records
   the Jira ticket or GitHub issue it is filed under, which does NOT close it.
 - \`defer_finding\` — a pull-request finding that is a real defect should not die with
   the branch: this keeps it as a bug and cross-links both, so the finding stays on the

@@ -409,6 +409,19 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    // Reporting a defect, from the browser. The same op the agents use, with the same
+    // required context — so a person raising something while reading a diff and an
+    // agent raising it during a review land in exactly one place.
+    if (req.method === "POST" && url.pathname === "/api/defect") {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      const root = rootFor(body.u ?? null);
+      const out = await withLock(root, () => ops.reportDefect(root, body));
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(out));
+      return;
+    }
     if (req.method === "POST" && url.pathname === "/api/pr/pull_viewed") {
       const chunks: Buffer[] = [];
       for await (const c of req) chunks.push(c as Buffer);
