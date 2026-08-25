@@ -774,7 +774,7 @@ const tools: Tool[] = [
       by: { type: "string" },
     }, ["id", "result", "detail"]),
     mutates: true,
-    handler: (a, c) => ops.closeAssignment(c.universe.path, a as never),
+    handler: (a, c) => ops.closeFinding(c.universe.path, a as never),
   },
   {
     name: "revise_finding",

@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { type Anchor, type LogicalNode, type BugSeverity, type Annotation, type Disposition, DISPOSITIONS, COMMENT_MAX } from "../schema.js";
 import { indexFile, indexBlob } from "../repo.js";
 import { headCommit, readBlobs } from "../git.js";
-import { readAnchorStore, loadNodes, readAnnotations, writeAnnotations, findAnchorsOutsideWork, readPushes, bodyHashAt, readOrphans } from "../store.js";
+import { readAnchorStore, loadNodes, readAnnotations, writeAnnotations, readFindings, readFinding, writeLocalFinding, findAnchorsOutsideWork, readPushes, bodyHashAt, readOrphans } from "../store.js";
+import type { SharedFinding } from "../shared-findings.js";
 import { requireActor, isAgentActor, actorLabel } from "../identity.js";
 import { isAgentAuthored, publishStateOf, type PublishState } from "../pr-push.js";
 import { genId, liveAnchors, resolveRefs, loadNodesShared} from "./shared.js";
@@ -475,6 +476,13 @@ export interface QueueItem {
   targetAt?: string;
   postedRef?: Annotation["postedRef"];
   /**
+   * Set on rows that are canonical FINDINGS rather than annotations: which pull request
+   * it belongs to, and whether the team has it. Absent on a note or a question, which
+   * have neither.
+   */
+  pr?: string;
+  shared?: boolean;
+  /**
    * Triage state. The queue is the only way the web findings list can see a finding
    * on a symbol the pull request does not touch, and without these three every such
    * row read as live: it offered `resolve` on an already-resolved finding and never
@@ -504,6 +512,48 @@ export interface QueueItem {
  * is waiting on the human, not on the agent, and returning it would have agents
  * redo work someone has not read yet.
  */
+/**
+ * A canonical finding, in the shape this queue already knows how to handle.
+ *
+ * Findings are rows now, not annotations, so `review_queue` and `findings` were
+ * answering from half the map — 51 of 96 on the store that motivated the migration.
+ * Converting on the way IN rather than rewriting the pipeline keeps every filter,
+ * the paging, the brief/full split and the off-tree resolution working unchanged.
+ *
+ * `disposition` is DERIVED, and only from things the record actually says: a refuting
+ * verdict or a refuted state is `refuted`, a confirmation is `confirmed`, and anything
+ * else is `open`. It is not stored on a finding — the shared model carries verdicts and
+ * a state instead — so inventing a richer one here would put a triage conclusion on a
+ * record nobody reached it for.
+ */
+function findingAsQueueEntry(f: SharedFinding): Annotation {
+  const refuted = f.state === "refuted" || f.corroboration.some((c) => c.verdict === "refute");
+  const confirmed = f.corroboration.some((c) => c.verdict === "confirm");
+  return {
+    id: f.id,
+    target: f.target,
+    text: f.text,
+    kind: "finding",
+    ...(f.severity ? { severity: f.severity } : {}),
+    ...(f.category ? { category: f.category } : {}),
+    ...(f.line !== undefined ? { line: f.line } : {}),
+    ...(f.comment ? { comment: f.comment } : {}),
+    disposition: refuted ? "refuted" : confirmed ? "confirmed" : "open",
+    resolved: f.state === "resolved",
+    ...(f.state === "withdrawn" && f.closed
+      ? { withdrawn: { at: f.closed.at, by: f.closed.by.principal, ...(f.closed.reason ? { reason: f.closed.reason } : {}) } } : {}),
+    ...(f.posted ? { postedRef: { pr: Number(f.pr) || 0, at: f.posted.at, placement: "inline" as const, ...(f.posted.url ? { url: f.posted.url } : {}) } } : {}),
+    ...(f.assignment ? { assignment: { to: "agent" as const, kind: f.assignment.kind === "answer" ? "investigate" as const : f.assignment.kind, at: f.assignment.at, by: f.assignment.by.principal, ...(f.assignment.note ? { note: f.assignment.note } : {}) } } : {}),
+    ...(f.outcome ? { outcome: { at: f.outcome.at, by: f.outcome.by.principal, result: f.outcome.result, detail: f.outcome.detail, ...(f.outcome.files ? { files: f.outcome.files } : {}) } } : {}),
+    ...(f.witness ? { witness: f.witness } : {}),
+    ...(f.sourceRef ? { sourceRef: f.sourceRef } : {}),
+    author: f.author.principal,
+    actor: f.author,
+    createdCommit: null,
+    revisions: f.revisions.map((r) => ({ at: r.at, by: r.by.principal, was: r.was as never })),
+  } as Annotation;
+}
+
 export async function reviewQueue(
   root: string,
   opts: {
@@ -529,10 +579,17 @@ export async function reviewQueue(
   } = {},
 ) {
   const store = await readAnnotations(root);
+  const rows = (await readFindings(root)).findings;
+  // Which pull request each row belongs to, and whether the team has it. Kept beside
+  // the queue rather than forced into the Annotation shape: neither is a thing an
+  // annotation has, and a synthetic field nobody can write back to is a lie.
+  const prOf = new Map(rows.map((f) => [f.id, f.pr!]));
+  const sharedIds = new Set(rows.filter((f) => f.origin).map((f) => f.id));
+  const everything = [...store.annotations, ...rows.map(findingAsQueueEntry)];
   const pushedIds = await pushedAnnotationIds(root);
   const liveIds = new Set((await readAnchorStore(root)).anchors.map((a) => a.id));
   const assignedOnly = opts.assignedOnly !== false;
-  let pending = store.annotations.filter((a) => assignedOnly
+  let pending = everything.filter((a) => assignedOnly
     ? a.assignment && !a.resolved && (opts.includeAnswered || !a.outcome)
     : (a.kind === "finding" || a.kind === "question") && (opts.includeResolved || !a.resolved));
   if (opts.ids) { const want = new Set(opts.ids); pending = pending.filter((a) => want.has(a.id)); }
@@ -582,6 +639,7 @@ export async function reviewQueue(
       ...targetState(a),
       ...triageState(a),
       ...(a.postedRef ? { postedRef: a.postedRef } : {}),
+      ...(prOf.has(a.id) ? { pr: prOf.get(a.id), shared: sharedIds.has(a.id) } : {}),
     }));
     return {
       total, offset, more, queue: brief,
@@ -651,6 +709,55 @@ export async function reviewQueue(
  * a review tool slips into someone's branch. Declining with a reason is a useful
  * answer, so it is recorded as one.
  */
+/**
+ * Report back on a LOCAL canonical finding — one filed here and not yet the fold's.
+ *
+ * `review_queue` serves annotations and findings in one list now, so an id it handed
+ * out has to be closeable whichever store it came from. Resolved against the RECORD,
+ * never by the id's prefix: those are minted by a generic helper and say nothing about
+ * where a row lives.
+ *
+ * Fold-owned rows are NOT handled here, and the split is a layering constraint rather
+ * than a preference: a row the fold owns may only be changed by an event, and reaching
+ * `ops-shared` from this module closes an import cycle through `ops/triage`. `ops.ts`
+ * owns that branch — see `closeFinding` there.
+ *
+ * Reporting is not resolving, the same rule `close_finding` states: this records what
+ * was done and leaves the close to a person.
+ *
+ * `disposition` maps only where the finding model has somewhere true to put it: refuted
+ * and confirmed are verdicts, so they land as corroboration. `partial`, `rerated` and
+ * `accepted` are triage conclusions with no equivalent, and are reported back as not
+ * recorded rather than dropped silently.
+ */
+export async function closeLocalFinding(
+  root: string,
+  input: { id: string; result: "fixed" | "answered" | "declined"; detail: string; files?: string[]; by?: string; comment?: string; line?: number; disposition?: Disposition },
+): Promise<Record<string, unknown>> {
+  const f = await readFinding(root, input.id).catch(() => null);
+  if (!f) return { error: `no annotation or finding "${input.id}"` };
+  if (!f.assignment) return { error: "that finding was not assigned to an agent" };
+  if (f.state === "resolved") return { error: "that finding was resolved while you were working on it — reopen it before recording an outcome" };
+  const files = input.files ?? [];
+  if (input.result === "fixed" && files.length > 1) {
+    return { error: `a fix may touch one file; this touched ${files.length} (${files.join(", ")}).` };
+  }
+  const c = checkComment(input.comment, input.disposition);
+  if ("error" in c) return c;
+  const actor = requireActor(root);
+  if ("error" in actor) return actor;
+  const verdict = input.disposition === "refuted" ? "refute" as const : input.disposition === "confirmed" ? "confirm" as const : null;
+  const unmapped = input.disposition && !verdict ? input.disposition : null;
+  const at = new Date().toISOString();
+
+  f.outcome = { result: input.result, detail: input.detail, ...(files.length ? { files } : {}), by: actor, at };
+  if (c.comment) f.comment = c.comment;
+  if (Number.isFinite(input.line)) f.line = Math.floor(input.line as number);
+  if (verdict) f.corroboration = [...f.corroboration, { actor, verdict, at, rationale: input.detail, independent: false }];
+  await writeLocalFinding(root, f, f.pr!);
+  return { ok: true, id: f.id, pr: f.pr, shared: false, ...(unmapped ? { note: `disposition "${unmapped}" is not recorded on a finding — verdicts are` } : {}) };
+}
+
 export async function closeAssignment(
   root: string,
   input: {
@@ -675,6 +782,9 @@ export async function closeAssignment(
 ) {
   const store = await readAnnotations(root);
   const ann = store.annotations.find((a) => a.id === input.id);
+  // A non-annotation id is a canonical finding, and `ops.closeFinding` routes those —
+  // this function is the annotation half. Reached directly only by a caller that already
+  // knows which it has.
   if (!ann) return { error: `no annotation "${input.id}"` };
   if (!ann.assignment) return { error: "that annotation was not assigned to an agent" };
   // `assignAnnotation` refuses a resolved annotation for the same reason: an agent

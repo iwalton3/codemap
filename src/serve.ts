@@ -385,7 +385,7 @@ const server = createServer(async (req, res) => {
       const out = await withLock<unknown>(root, async () => withAnchorAnnotations(root,
         await (url.pathname === "/api/annotation_assign"
           ? ops.assignAnnotation(root, { id: body.id, kind: body.kind, by: body.by, note: body.note })
-          : ops.closeAssignment(root, { id: body.id, result: body.result, detail: body.detail, files: body.files, by: body.by })),
+          : ops.closeFinding(root, { id: body.id, result: body.result, detail: body.detail, files: body.files, by: body.by })),
       ));
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(out));

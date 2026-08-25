@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -141,5 +141,80 @@ test("notes, questions and pointers stay annotations", async () => {
     await migrateLocalFindings(r.root);
     const left = (await readAnnotations(r.root)).annotations.map((a) => a.id).sort();
     assert.deepEqual(left, ["n1", "p1", "q1"], "only findings move — the split that is load-bearing stays");
+  } finally { r.cleanup(); }
+});
+
+// --- the queue serves both stores --------------------------------------------
+
+/** `reviewQueue` resolves targets against the anchor index, so this one is indexed. */
+const indexedRepo = async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-migq-"));
+  const git = (...a: string[]) => spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...a], { cwd: root });
+  git("init", "-q", "-b", "main");
+  mkdirSync(join(root, ".codemap"), { recursive: true });
+  mkdirSync(join(root, "src"), { recursive: true });
+  writeFileSync(join(root, "src", "pay.ts"), "export function transfer(c) { return c; }\n", "utf8");
+  git("add", "-A"); git("commit", "-qm", "seed");
+  const { init } = await import("./ops.js");
+  await init(root);
+  return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+};
+
+/**
+ * `review_queue` and `findings` read annotations; findings are rows. On the store that
+ * motivated the migration that meant answering from 51 of 96. The queue now merges
+ * both, and an id it hands out has to be closeable whichever store it came from —
+ * resolved against the RECORD, because `f_`, `finding_` and `bug_` are minted by a
+ * generic helper and say nothing about where a row lives.
+ */
+test("the queue lists findings and annotations together", async () => {
+  const r = await indexedRepo();
+  try {
+    const { reviewQueue } = await import("./ops/annotations.js");
+    await writeAnnotations(r.root, [
+      ann({ id: "finding_moved", comment: "moved", postedRef: posted(264) }),
+      ann({ id: "q1", kind: "question", text: "still an annotation" }),
+    ]);
+    await migrateLocalFindings(r.root);
+
+    const q = await reviewQueue(r.root, { assignedOnly: false, includeResolved: true });
+    const ids = q.queue.map((x) => x.id).sort();
+    assert.deepEqual(ids, ["finding_moved", "q1"], "one list, both stores");
+    const moved = q.queue.find((x) => x.id === "finding_moved")!;
+    assert.equal(moved.pr, "264", "a row says which pull request it is on");
+    assert.equal(moved.shared, false, "and that the team does not have it yet");
+    assert.equal(q.queue.find((x) => x.id === "q1")!.pr, undefined, "a question has neither");
+  } finally { r.cleanup(); }
+});
+
+test("a finding moved out of annotations can still be reported on", async () => {
+  const r = await indexedRepo();
+  try {
+    const { closeFinding } = await import("./ops.js");
+    await writeAnnotations(r.root, [ann({
+      id: "finding_assigned", comment: "look at this", postedRef: posted(264),
+      assignment: { to: "agent", kind: "investigate", at: "2026-08-20T00:00:00Z", by: "izzie" },
+    })]);
+    await migrateLocalFindings(r.root);
+
+    const out = await closeFinding(r.root, {
+      id: "finding_assigned", result: "answered", detail: "checked it — the guard is upstream",
+    } as never);
+    assert.equal(out.error, undefined, "the id the queue hands out is the id that closes");
+    assert.equal(out.pr, "264");
+
+    const f = (await readFinding(r.root, "finding_assigned", { pr: 264 }))!;
+    assert.equal(f.outcome!.result, "answered");
+    assert.match(f.outcome!.detail, /guard is upstream/);
+    assert.equal(f.state, "created", "reporting is not resolving — a person still closes it");
+  } finally { r.cleanup(); }
+});
+
+test("an id that is neither still says so plainly", async () => {
+  const r = repo();
+  try {
+    const { closeFinding } = await import("./ops.js");
+    const out = await closeFinding(r.root, { id: "nope", result: "answered", detail: "x" } as never);
+    assert.match(String(out.error), /no annotation "nope"/);
   } finally { r.cleanup(); }
 });

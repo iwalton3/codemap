@@ -1,9 +1,8 @@
 # Plan: one canonical `findings` table, and one way to file into it
 
-**Status: IN PROGRESS** on `findings-unification`. Steps 1, 2 and 5 are done, and
-step 3 has landed for the pull-request page and `sharedFindings`. What is left is the
-rest of step 3 (review queue, anchor page, dashboard counts, orphans), step 4 (the tool
-surface), and the remainder of step 6. Written 2026-08-25 from a live investigation of the
+**Status: IN PROGRESS** on `findings-unification`. Steps 1, 2, 3 and 5 are done. What
+is left is step 4 (the tool surface, which is what stops the split recurring) and the
+remainder of step 6 (the shared hub still has no per-PR index). Written 2026-08-25 from a live investigation of the
 `acme/acme.api` universe. `docs/sidecar-architecture.md` is the architecture
 this implements and wins wherever the two differ; this plan answers the question that
 document leaves open ("Whether findings follow docs into a canonical table") in the
@@ -237,12 +236,17 @@ migrating actor, and say so.
    Write-through landed on all thirteen write ops (twelve was a miscount — `settleContest`
    is one too), and the store half is `readFindings` / `readFinding` /
    `writeLocalFinding`.
-3. **Repoint every reader** at the canonical table. DONE for `sharedFindings`, the PR
-   story page, the anchor page and `orphans`. LEFT: `reviewQueue` (and with it the
-   `findings` / `review_queue` tools and `close_finding`), which is Annotation-shaped
-   and feeds `pr-push`. `pr-push` itself stays local — publishing to GitHub is a manual
-   raise and the sidecar is not meant to feed it, so it is not a gap.
-   The dashboard's `open` is documentation coverage, not findings; nothing to repoint.
+3. ~~**Repoint every reader** at the canonical table.~~ **DONE** — `sharedFindings`,
+   the PR story page, the anchor page, `orphans`, and `reviewQueue` (with it the
+   `findings` / `review_queue` tools and `close_finding`). `reviewQueue` converts a
+   finding row into the Annotation shape it already handles, so every filter, the
+   paging and the off-tree resolution kept working; `close_finding` resolves the id
+   against the RECORD and routes to annotation / local row / log. That router lives in
+   `ops.ts` because the three branches span two layers that may not import each other —
+   `ops/annotations` reaching `ops-shared` closes a cycle through `ops/triage`, which
+   `import-cycles.test.ts` catches.
+   `pr-push` stays local: publishing to GitHub is a manual raise and the sidecar is not
+   meant to feed it. The dashboard's `open` is documentation coverage, not findings.
 4. **Collapse the tool surface**: one context-discriminated create verb, one lifecycle
    verb set resolving opaque ids against records, `accept_finding` -> `defer_finding`.
 5. ~~**Migration script** for the 96~~ **DONE** — `src/findings-migrate.ts`,
