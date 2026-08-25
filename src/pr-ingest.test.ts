@@ -9,6 +9,10 @@ import { setTriage } from "./triage.js";
 import { parseAgentLines, ingestAgentReview, type AgentLine } from "./pr-ingest.js";
 import { fixtureHash } from "./fixture-hash.js";
 
+/** Ingest routes findings to `report_defect` now; tests that only care about the other kinds still have to supply it. */
+const noopFile = async () => ({});
+const noopAnn = async () => ({});
+
 test("parseAgentLines tolerates blanks and reports malformed lines without losing good ones", () => {
   const { lines, bad } = parseAgentLines([
     `{"kind":"finding","anchorId":"a_1","text":"boom","severity":"high"}`,
@@ -22,8 +26,9 @@ test("parseAgentLines tolerates blanks and reports malformed lines without losin
   assert.equal(bad[0]!.line, 4);
 });
 
-test("ingest routes findings to annotate, triage to the ratchet, and rejects unanchored lines", async () => {
+test("ingest routes findings to report_defect, notes to annotate, and rejects unanchored lines", async () => {
   const calls: any[] = [];
+  const findings: any[] = [];
   const lines: AgentLine[] = [
     { kind: "finding", anchorId: "a_1", text: "missing tenant check", severity: "critical", category: "Tenant Safety", line: 42, evidence: "no AuthCheck" },
     { kind: "pointer", anchorId: "a_2", text: "confirm the rounding mode" },
@@ -33,6 +38,7 @@ test("ingest routes findings to annotate, triage to the ratchet, and rejects una
   ];
   const r = await ingestAgentReview("/nonexistent", lines, {
     annotate: async (_root, input) => { calls.push(input); return {}; },
+    fileFinding: async (_root, input) => { findings.push(input); return {}; },
   }, { headRef: "deadbeef", dryRun: false });
 
   assert.equal(r.annotations, 2);
@@ -40,11 +46,17 @@ test("ingest routes findings to annotate, triage to the ratchet, and rejects una
   assert.equal(r.summaries.length, 1);
   assert.equal(r.bySeverity.critical, 1);
 
+  // A finding is NOT an annotation. Routed here it would be a local record with no pull
+  // request, which no shared surface can reach — the tap that kept refilling the split
+  // store `codemap unify-findings` drains.
+  assert.equal(findings.length, 1, "the finding went to report_defect");
+  assert.equal(calls.length, 1, "and only the pointer went to annotate");
+  assert.equal(calls[0].kind, "pointer");
+
   // the head ref must ride along or findings on branch-only symbols get rejected
-  assert.equal(calls[0].ref, "deadbeef");
-  assert.equal(calls[0].line, 42);
-  assert.equal(calls[0].kind, "finding");
-  assert.match(calls[0].text, /Evidence: no AuthCheck/);
+  assert.equal(findings[0].ref, "deadbeef");
+  assert.equal(findings[0].line, 42);
+  assert.match(findings[0].text, /Evidence: no AuthCheck/);
 });
 
 test("re-ingesting the same findings adds nothing — a partial batch can be re-run safely", async () => {
@@ -54,14 +66,15 @@ test("re-ingesting the same findings adds nothing — a partial batch can be re-
     { kind: "pointer", anchorId: "a_2", text: "confirm the rounding mode" },
   ];
   const annotate = async (_root: string, input: any) => { calls.push(input); return {}; };
+  const fileFinding = async (_root: string, input: any) => { calls.push({ ...input, kind: "finding" }); return {}; };
 
-  const first = await ingestAgentReview("/nonexistent", lines, { annotate }, { headRef: "h" });
+  const first = await ingestAgentReview("/nonexistent", lines, { annotate, fileFinding }, { headRef: "h" });
   assert.equal(first.annotations, 2);
   assert.equal(first.duplicates, 0);
 
   // second run, with the first run's output already in the map
   const existing = calls.map((c) => ({ targetId: c.targetId, line: c.line, kind: c.kind, text: c.text, author: c.author }));
-  const second = await ingestAgentReview("/nonexistent", lines, { annotate, existing }, { headRef: "h" });
+  const second = await ingestAgentReview("/nonexistent", lines, { annotate, fileFinding, existing }, { headRef: "h" });
   assert.equal(second.annotations, 0, "ingest mints fresh ids, so without dedupe this doubles every finding");
   assert.equal(second.duplicates, 2);
   assert.equal(calls.length, 2, "and nothing new was written");
@@ -72,7 +85,7 @@ test("a finding that differs only in its line is NOT a duplicate", async () => {
   const annotate = async (_r: string, i: any) => { calls.push(i); return {}; };
   const a: AgentLine = { kind: "finding", anchorId: "a_1", text: "same words", line: 10 };
   const b: AgentLine = { kind: "finding", anchorId: "a_1", text: "same words", line: 99 };
-  const r = await ingestAgentReview("/nonexistent", [a, b], { annotate }, { headRef: "h" });
+  const r = await ingestAgentReview("/nonexistent", [a, b], { annotate: noopAnn, fileFinding: annotate }, { headRef: "h" });
   assert.equal(r.annotations, 2);
   assert.equal(r.duplicates, 0);
 });
@@ -81,7 +94,7 @@ test("a medium-confidence finding says so in its text, so a human can weight it"
   const calls: any[] = [];
   await ingestAgentReview("/nonexistent", [
     { kind: "finding", anchorId: "a_1", text: "maybe wrong", confidence: "medium" },
-  ], { annotate: async (_r, i) => { calls.push(i); return {}; } }, { headRef: "x" });
+  ], { annotate: noopAnn, fileFinding: async (_r, i) => { calls.push(i); return {}; } }, { headRef: "x" });
   assert.match(calls[0].text, /agent confidence: medium/);
 });
 
@@ -98,7 +111,7 @@ test("a triage line the ratchet declines is reported as declined, not counted as
     const r = await ingestAgentReview(root, [
       { kind: "triage", anchorId: "a_1", importance: "low", complexity: "rote" },   // lowering — refused
       { kind: "triage", anchorId: "a_1", importance: "business-critical", complexity: "deep" }, // no change — refused
-    ], { annotate: async () => ({}) }, { headRef: "headsha", dryRun: false });
+    ], { annotate: noopAnn, fileFinding: noopFile }, { headRef: "headsha", dryRun: false });
 
     assert.equal(r.triaged, 0, "a refusal is not an applied triage");
     assert.equal(r.triageRefused.length, 2);
@@ -121,7 +134,7 @@ test("an ingested triage proposal is witnessed against the PR head, not the work
 
     const r = await ingestAgentReview(root, [
       { kind: "triage", anchorId: "a_new", importance: "important", complexity: "wiring" },
-    ], { annotate: async () => ({}) }, { headRef: "headsha", dryRun: false });
+    ], { annotate: noopAnn, fileFinding: noopFile }, { headRef: "headsha", dryRun: false });
 
     assert.equal(r.triaged, 1);
     const t = (await readTriage(root)).triage.find((x) => x.target.id === "a_new")!;

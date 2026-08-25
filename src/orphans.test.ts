@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { annotate, reindex, orphanedWork, getAnchor, reviewQueue, assignAnnotation, resolveAnnotation, withdrawAnnotation } from "./ops.js";
+import { annotate, reindex, orphanedWork, getAnchor, reviewQueue, assignAnnotation, resolveAnnotation, withdrawAnnotation, annotateLegacyFinding } from "./ops.js";
 import { spawnSync } from "node:child_process";
 import { readAnnotations } from "./store.js";
 
@@ -31,9 +31,9 @@ test("a reindex that drops an anchor somebody filed against does not lose it", a
   try {
     const anchors = (await import("./store.js")).readAnchorStore;
     const id = (await anchors(root)).anchors.find((a) => a.symbolPath.join(".") === "transfer")!.id;
-    const f = await annotate(root, {
+    const f = await annotateLegacyFinding(root, {
       targetKind: "anchor", targetId: id, text: "no guard on negatives",
-      comment: "`transfer` accepts negative cents", kind: "finding", severity: "high", author: "me",
+      comment: "`transfer` accepts negative cents", severity: "high", author: "me",
     }) as { id: string };
 
     // rename the symbol — a new anchor id, and the old one gone from the tree
@@ -57,9 +57,9 @@ test("the sweep says what broke, and whether it can be recovered", async () => {
   try {
     const { readAnchorStore } = await import("./store.js");
     const id = (await readAnchorStore(root)).anchors[0]!.id;
-    await annotate(root, {
+    await annotateLegacyFinding(root, {
       targetKind: "anchor", targetId: id, text: "e", comment: "the credit gate is not enforced",
-      kind: "finding", author: "me",
+      author: "me",
     });
     assert.equal((await orphanedWork(root)).total, 0, "nothing is broken yet");
 
@@ -82,7 +82,7 @@ test("a symbol that comes back is live code again, not a retained ghost", async 
   try {
     const { readAnchorStore } = await import("./store.js");
     const id = (await readAnchorStore(root)).anchors[0]!.id;
-    await annotate(root, { targetKind: "anchor", targetId: id, text: "e", comment: "c", kind: "finding", author: "me" });
+    await annotateLegacyFinding(root, { targetKind: "anchor", targetId: id, text: "e", comment: "c", author: "me" });
 
     write(root, "export function transferFunds(cents: number) {\n  return cents;\n}\n");
     await reindex(root);
@@ -103,7 +103,7 @@ test("a dangling target is flagged in the queue rather than served silently", as
   try {
     const { readAnchorStore } = await import("./store.js");
     const id = (await readAnchorStore(root)).anchors[0]!.id;
-    const f = await annotate(root, { targetKind: "anchor", targetId: id, text: "e", comment: "c", kind: "finding", author: "me" }) as { id: string };
+    const f = await annotateLegacyFinding(root, { targetKind: "anchor", targetId: id, text: "e", comment: "c", author: "me" }) as { id: string };
     await assignAnnotation(root, { id: f.id, kind: "investigate", by: "me" });
 
     assert.equal((await reviewQueue(root)).queue[0]!.targetResolved, undefined, "live targets say nothing");
@@ -130,9 +130,9 @@ test("an orphaned anchor can still be filed against, so stranded work is reachab
     write(root, "export function transferFunds(cents: number) {\n  return cents;\n}\n");
     await reindex(root);
 
-    const re = await annotate(root, {
+    const re = await annotateLegacyFinding(root, {
       targetKind: "anchor", targetId: id, text: "supersedes the pointer",
-      comment: "the credit gate is not enforced", kind: "finding", author: "me",
+      comment: "the credit gate is not enforced", author: "me",
     }) as any;
     assert.ok(!re.error, re.error);
     const ann = (await readAnnotations(root)).annotations.find((a) => a.id === re.id)!;
@@ -154,9 +154,9 @@ test("a symbol that exists only on a branch can be annotated without naming the 
     await writeSnapshot(root, "prhead", "feature/x", branchOnly, "2026-08-19T00:00:00Z");
     const id = branchOnly[0]!.id;
 
-    const r = await annotate(root, {
+    const r = await annotateLegacyFinding(root, {
       targetKind: "anchor", targetId: id, text: "no guard", comment: "no guard on the new endpoint",
-      kind: "finding", author: "me",
+      author: "me",
     }) as any;
     assert.ok(!r.error, r.error);
 
@@ -229,9 +229,9 @@ test("the queue reports triage state, or a finding on stranded code cannot be cl
   try {
     const { readAnchorStore } = await import("./store.js");
     const id = (await readAnchorStore(root)).anchors[0]!.id;
-    const live = await annotate(root, { targetKind: "anchor", targetId: id, text: "a", comment: "c", kind: "finding", author: "me" }) as { id: string };
-    const done = await annotate(root, { targetKind: "anchor", targetId: id, text: "b", comment: "c", kind: "finding", author: "me" }) as { id: string };
-    const gone = await annotate(root, { targetKind: "anchor", targetId: id, text: "c", comment: "c", kind: "finding", author: "me" }) as { id: string };
+    const live = await annotateLegacyFinding(root, { targetKind: "anchor", targetId: id, text: "a", comment: "c", author: "me" }) as { id: string };
+    const done = await annotateLegacyFinding(root, { targetKind: "anchor", targetId: id, text: "b", comment: "c", author: "me" }) as { id: string };
+    const gone = await annotateLegacyFinding(root, { targetKind: "anchor", targetId: id, text: "c", comment: "c", author: "me" }) as { id: string };
     await resolveAnnotation(root, done.id, true);
     await withdrawAnnotation(root, { id: gone.id, withdraw: true, by: "me", reason: "superseded" });
 

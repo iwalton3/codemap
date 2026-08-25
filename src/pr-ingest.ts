@@ -83,6 +83,22 @@ export async function ingestAgentReview(
       kind?: Annotation["kind"]; severity?: BugSeverity; category?: string; line?: number; ref?: string;
       comment?: string; disposition?: Disposition;
     }) => Promise<{ error?: string } | unknown>;
+    /**
+     * Findings go through `report_defect`, NOT through `annotate`.
+     *
+     * A finding filed as an annotation is a local record with no pull request, which no
+     * shared surface can reach — so an ingest that used `annotate` for them was quietly
+     * refilling the split store that `codemap unify-findings` exists to drain. Injected
+     * for the same layering reason `annotate` is.
+     *
+     * The batch's `author` string cannot travel: `report_defect` resolves its own actor,
+     * and a legacy label like `agent:pr-first-pass` is not a principal. It reaches the
+     * record as `filed` only for rows a migration carried, not for new ones.
+     */
+    fileFinding: (root: string, input: {
+      targetKind: "anchor"; targetId: string; text: string; comment?: string;
+      severity?: BugSeverity; category?: string; line?: number; ref?: string;
+    }) => Promise<{ error?: string } | unknown>;
   },
   opts: { headRef: string; author?: string; dryRun?: boolean } = { headRef: "" },
 ): Promise<IngestResult> {
@@ -137,11 +153,16 @@ export async function ingestAgentReview(
     if (seen.has(k)) { out.duplicates++; continue; }
     seen.add(k);
     if (!opts.dryRun) {
-      const r = await deps.annotate(root, {
-        targetKind: "anchor", targetId: l.anchorId, text, author,
-        kind: l.kind, severity: l.severity, category: l.category, line: l.line, ref: opts.headRef,
-        comment: l.comment, disposition: l.disposition,
-      }) as { error?: string };
+      const r = (l.kind === "finding"
+        ? await deps.fileFinding(root, {
+          targetKind: "anchor", targetId: l.anchorId, text, comment: l.comment,
+          severity: l.severity, category: l.category, line: l.line, ref: opts.headRef,
+        })
+        : await deps.annotate(root, {
+          targetKind: "anchor", targetId: l.anchorId, text, author,
+          kind: l.kind, severity: l.severity, category: l.category, line: l.line, ref: opts.headRef,
+          comment: l.comment, disposition: l.disposition,
+        })) as { error?: string };
       if (r && r.error) { out.rejected.push({ line: i + 1, why: r.error }); continue; }
     }
     out.annotations++;

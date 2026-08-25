@@ -1,6 +1,6 @@
 import { type Annotation } from "../schema.js";
 import { originSlug } from "../git.js";
-import { readAnchorStore, loadNodes, readAnnotations, findAnchorsOutsideWork, writeLocalWalkthrough, foldOwnsWalkthrough, readOrphans } from "../store.js";
+import { readAnchorStore, loadNodes, readAnnotations, readFindings, findAnchorsOutsideWork, writeLocalWalkthrough, foldOwnsWalkthrough, readOrphans } from "../store.js";
 import { prTriage, listOpenPrs, prPacket, prStory, prAnchorCode, prPromotionPlan, derivePrTriage, prContainment, offStoryReason, type OffStoryReason } from "../pr.js";
 import { promotionOwns } from "../pr-promote.js";
 import { resolveSidecar } from "../sidecar-config.js";
@@ -14,6 +14,7 @@ import { markReviewedBatch, unmarkReviewed, unmarkCovered, type Attestation } fr
 import { snapshotHashes, loadNodesShared, walkthroughFor } from "./shared.js";
 import { annotate, resolveAnnotation, reviewQueue } from "./annotations.js";
 import { document } from "./docs.js";
+import { reportDefect } from "./defect.js";
 import { anchorMark } from "./triage.js";
 
 /**
@@ -42,8 +43,23 @@ export async function prIngest(root: string, input: string, texts: string[], opt
     const p = parseAgentLines(text);
     lines.push(...p.lines); bad.push(...p.bad);
   }
-  const existing = (await readAnnotations(root)).annotations.map((a) => ({ targetId: a.target.id, line: a.line, kind: a.kind, text: a.text, author: a.author }));
-  const r = await ingestAgentReview(root, lines, { annotate, existing }, { headRef: t.refs.head, author: opts.author, dryRun: opts.dryRun });
+  const author = opts.author ?? "agent:pr-first-pass";
+  // Both stores. Findings are canonical rows now, so a dedupe that read only annotations
+  // would let every re-ingest mint a second copy of every finding — which is the exact
+  // doubling this key exists to prevent, moved rather than fixed.
+  const existing = [
+    ...(await readAnnotations(root)).annotations.map((a) => ({ targetId: a.target.id, line: a.line, kind: a.kind, text: a.text, author: a.author })),
+    ...(await readFindings(root, { pr: t.pr.number })).findings.map((f) => ({
+      targetId: f.target.id, line: f.line, kind: "finding", text: f.text, author,
+    })),
+  ];
+  const r = await ingestAgentReview(root, lines, {
+    annotate, existing,
+    fileFinding: (r2, input) => reportDefect(r2, {
+      context: { kind: "pull_request", pr: String(t.pr.number) },
+      ...input,
+    } as never),
+  }, { headRef: t.refs.head, author: opts.author, dryRun: opts.dryRun });
   return { ...r, malformed: bad, pr: t.pr.number, head: t.refs.head };
 }
 

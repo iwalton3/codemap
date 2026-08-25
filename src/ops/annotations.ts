@@ -131,6 +131,24 @@ export async function witnessAt(
   return { sourceRef: ref ?? "@work" };
 }
 
+/**
+ * Create a `kind: "finding"` ANNOTATION — the legacy shape.
+ *
+ * **For tests and migration fixtures. There is no production caller**, and that is the
+ * point: `annotate` refuses findings so the tool surface cannot mint another local
+ * record with no pull request, and this is not reachable from MCP or HTTP because it is
+ * not wired to either. The lifecycle it produces still has to WORK — real stores hold
+ * annotation-findings that predate the canonical table, and orphan recovery, publishing
+ * and the review loop all still run on them — so it still has to be constructible.
+ *
+ * Same precedent as `clearAgentSession`: a test-only export beats an input flag, because
+ * an input flag is something a caller can pass.
+ */
+export const annotateLegacyFinding = (
+  root: string,
+  input: Omit<Parameters<typeof annotate>[1], "kind">,
+) => annotate(root, { ...input, kind: "finding" } as never, { legacy: true });
+
 export async function annotate(
   root: string,
   input: { targetKind: "anchor" | "node"; targetId: string; text: string; author?: string; kind?: Annotation["kind"]; severity?: BugSeverity; category?: string; line?: number; ref?: string; comment?: string; disposition?: Disposition; publishPath?: string; publishLine?: number; agent?: boolean; model?: string; harness?: string;
@@ -143,6 +161,8 @@ export async function annotate(
      * it is derived FROM already travel; the rendering is this clone's business.
      */
     localOnly?: boolean },
+  /** `legacy` is `annotateLegacyFinding`'s only caller — see the note there. */
+  opts: { legacy?: boolean } = {},
 ) {
   // Validate the target exists (anchor targets accept file#Symbol refs too).
   let targetId = input.targetId;
@@ -176,7 +196,25 @@ export async function annotate(
     }
   }
   const line = Number.isFinite(input.line) && (input.line as number) > 0 ? Math.floor(input.line as number) : undefined;
-  const KINDS = ["note", "question", "finding", "pointer"] as const;
+  // `finding` is REFUSED, not silently downgraded to a note. This is the tap that keeps
+  // refilling the split store: a finding filed here is a local annotation with no `pr`,
+  // so `shared_findings`, `defer_finding`, `record_published` and `inbound_replies` can
+  // none of them ever reach it — and `codemap unify-findings` drains a pool that this
+  // was still pouring into. `report_defect` is the one create verb, and it takes the
+  // context that decides where the record belongs.
+  //
+  // Legacy annotations KEEP `kind: "finding"` — the queue reads it, and rewriting
+  // history to close an input hole would lose which of them were findings.
+  if (input.kind === "finding" && !opts.legacy) {
+    return {
+      error: "`annotate` no longer files findings — use `report_defect`, which takes the `context` that decides "
+        + "whether it becomes a pull-request finding or a drive-by bug. A finding filed here would be a local "
+        + "annotation with no pull request, which no shared surface can reach.",
+    };
+  }
+  const KINDS = opts.legacy
+    ? ["note", "question", "finding", "pointer"] as const
+    : ["note", "question", "pointer"] as const;
   const kind = (KINDS as readonly string[]).includes(input.kind ?? "") ? input.kind : "note";
   const SEV = ["low", "medium", "high", "critical"];
   const severity = input.severity && SEV.includes(input.severity) ? input.severity : undefined;
@@ -195,13 +233,8 @@ export async function annotate(
   });
   if ("error" in resolved) return resolved;
   const actor = resolved;
-  // Required on findings, not merely encouraged. Twelve findings in the session that
-  // motivated this were filed with rich evidence and no short form — because none
-  // was asked for — and all twelve were then rewritten by hand for GitHub. An
-  // optional field is skipped every time; the round-trip is the thing being removed.
-  if (kind === "finding" && !c.comment) {
-    return { error: "a finding needs `comment`: what is broken, the file:line that proves it, and the ask — in at most " + COMMENT_MAX + " characters, for the person who has to fix it. The evidence goes in `text`." };
-  }
+  // The comment requirement lives on `report_defect` now — findings are refused above,
+  // so there is no kind left here that has a submitter to write for.
   const ann: Annotation = {
     id: genId(kind || "note"),
     target: { kind: input.targetKind, id: targetId },

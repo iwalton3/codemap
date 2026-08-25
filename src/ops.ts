@@ -61,6 +61,8 @@ export {
 export {
   anchorAnnotations, annotate, resolveAnnotation, escalateAnnotation, reviseAnnotation, withdrawAnnotation,
   assignAnnotation, type QueueItem, reviewQueue, closeAssignment, closeLocalFinding, listQuestions,
+  // Test and migration fixtures only — not wired to any tool. See its note.
+  annotateLegacyFinding,
 } from "./ops/annotations.js";
 
 import {

@@ -8,7 +8,7 @@ import { HASH_SCHEME } from "./schema.js";
 import { hashSchemeOf } from "./normalize.js";
 import { writeStore, readAnnotations, writeAnnotations, writeSnapshot } from "./store.js";
 import { withLock } from "./lock.js";
-import { annotate, assignAnnotation, reviewQueue, closeAssignment, resolveAnnotation, escalateAnnotation, anchorAnnotations, reviseAnnotation, withdrawAnnotation } from "./ops.js";
+import { annotate, assignAnnotation, reviewQueue, closeAssignment, resolveAnnotation, escalateAnnotation, anchorAnnotations, reviseAnnotation, withdrawAnnotation, annotateLegacyFinding } from "./ops.js";
 import { indexBlob } from "./repo.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
@@ -21,7 +21,7 @@ async function fixture() {
   const anchors = await indexBlob(src, "src/pay.ts");
   await writeStore(root, anchors, state);
   const id = anchors.find((a) => a.symbolPath.join(".") === "transfer")!.id;
-  const r = await annotate(root, { targetKind: "anchor", targetId: id, text: "negative amounts are only guarded here", comment: "`transfer` guards negatives at pay.ts:2 only; the by-id path does not. Add the same check.", kind: "finding", severity: "high", category: "Logic", line: 2, author: "me" }) as any;
+  const r = await annotateLegacyFinding(root, { targetKind: "anchor", targetId: id, text: "negative amounts are only guarded here", comment: "`transfer` guards negatives at pay.ts:2 only; the by-id path does not. Add the same check.", severity: "high", category: "Logic", line: 2, author: "me" }) as any;
   return { root, anchorId: id, annId: r.id as string };
 }
 
@@ -146,10 +146,10 @@ test("raising a finding to the maintainer is a separate act from writing or reso
   const own = await escalateAnnotation(root, { id: annId }) as any;
   assert.ok(own.error, "a finding you wrote is already yours to publish");
 
-  const a = await annotate(root, {
+  const a = await annotateLegacyFinding(root, {
     targetKind: "anchor", targetId: anchorId, text: "agent thinks this overflows",
     comment: "`transfer` sums into an int32; a large batch overflows silently.",
-    kind: "finding", severity: "high", author: "agent:pr-first-pass",
+    severity: "high", author: "agent:pr-first-pass",
   }) as any;
   const find = async () => (await readAnnotations(root)).annotations.find((x) => x.id === a.id)!;
   assert.equal((await find()).escalated, undefined, "an agent's finding starts unraised");
@@ -175,8 +175,8 @@ test("an annotation write reports the anchor's findings, so one symbol can be re
   const before = await anchorAnnotations(root, anchorId);
   assert.equal(before.length, 1);
 
-  const raised = await annotate(root, {
-    targetKind: "anchor", targetId: anchorId, text: "second", comment: "second", kind: "finding", author: "human",
+  const raised = await annotateLegacyFinding(root, {
+    targetKind: "anchor", targetId: anchorId, text: "second", comment: "second", author: "human",
   }) as any;
   assert.deepEqual(raised.target, { kind: "anchor", id: anchorId }, "the write says where it landed");
 
@@ -220,10 +220,20 @@ test("a finding must carry the short version, written when the evidence is", asy
     // Twelve findings in the session that motivated this were filed with rich
     // evidence and no short form, because none was asked for — and all twelve were
     // then rewritten by hand for GitHub. Optional means skipped.
-    const bare = await annotate(root, {
-      targetKind: "anchor", targetId: anchorId, text: "no tenant predicate on the by-id branch", kind: "finding",
-    }) as any;
+    // The duty moved with the verb: findings are `report_defect`'s now, and `annotate`
+    // refuses them outright rather than filing a local record no shared surface can see.
+    const { reportDefect } = await import("./ops.js");
+    const bare = await reportDefect(root, {
+      context: { kind: "pull_request", pr: "1" },
+      targetKind: "anchor", targetId: anchorId, text: "no tenant predicate on the by-id branch",
+    } as never) as any;
     assert.match(bare.error, /needs `comment`/);
+
+    const viaAnnotate = await annotate(root, {
+      targetKind: "anchor", targetId: anchorId, text: "x", kind: "finding" as never,
+    }) as any;
+    assert.match(viaAnnotate.error, /no longer files findings/);
+    assert.match(viaAnnotate.error, /report_defect/, "and it names the verb that does");
 
     // notes and pointers are not claims aimed at anybody, so they carry no such duty
     for (const kind of ["note", "pointer", "question"] as const) {
@@ -238,8 +248,8 @@ test("an over-long comment is refused, never truncated", async () => {
   try {
     // A comment cut at the cap loses its LAST sentence, which by the contract is the
     // ask — the one part the person fixing it actually needs.
-    const r = await annotate(root, {
-      targetKind: "anchor", targetId: anchorId, text: "evidence", kind: "finding",
+    const r = await annotateLegacyFinding(root, {
+      targetKind: "anchor", targetId: anchorId, text: "evidence",
       comment: "x".repeat(801),
     }) as any;
     assert.match(r.error, /801 characters.*cap is 800/);
@@ -264,8 +274,8 @@ test("a comment that opens on a verdict is refused — the submitter has no base
       "Still open: nothing has changed here.",
       "False positive — the filter is correct.",
     ]) {
-      const r = await annotate(root, {
-        targetKind: "anchor", targetId: anchorId, text: "evidence", kind: "finding", comment: bad,
+      const r = await annotateLegacyFinding(root, {
+        targetKind: "anchor", targetId: anchorId, text: "evidence", comment: bad,
       }) as any;
       assert.match(r.error ?? "", /verdict on the FINDING/, bad);
     }
@@ -291,8 +301,8 @@ test("the verdict check does not fire on a defect sentence that starts on the sa
       "Real-time quotes are cached for five minutes (`pay.ts:2`), so the fee is stale.",
       "Confirmation emails go to the pre-edit address (`pay.ts:2`).",
     ]) {
-      const r = await annotate(root, {
-        targetKind: "anchor", targetId: anchorId, text: "evidence", kind: "finding", comment: good,
+      const r = await annotateLegacyFinding(root, {
+        targetKind: "anchor", targetId: anchorId, text: "evidence", comment: good,
       }) as any;
       assert.ok(r.ok, `${good} -> ${r.error}`);
     }
@@ -438,8 +448,8 @@ test("a finding records the body it was written against, and which ref that was"
   // branch's review reads. The witness is what tells those apart afterwards.
   const { root, anchorId } = await fixture();
   try {
-    const live = await annotate(root, {
-      targetKind: "anchor", targetId: anchorId, text: "e", comment: "c", kind: "finding", author: "me",
+    const live = await annotateLegacyFinding(root, {
+      targetKind: "anchor", targetId: anchorId, text: "e", comment: "c", author: "me",
     }) as any;
     const of = async (id: string) => (await readAnnotations(root)).annotations.find((a) => a.id === id)!;
     const fromWork = await of(live.id);
@@ -455,8 +465,8 @@ test("a finding records the body it was written against, and which ref that was"
     const branchSrc = "export function transfer(cents: number) {\n  return cents * 2;\n}\n";
     const branch = await indexBlob(branchSrc, "src/pay.ts");
     await writeSnapshot(root, "prhead", "feature/x", branch, "2026-08-19T00:00:00Z");
-    const onBranch = await annotate(root, {
-      targetKind: "anchor", targetId: anchorId, text: "e", comment: "c", kind: "finding", author: "me", ref: "prhead",
+    const onBranch = await annotateLegacyFinding(root, {
+      targetKind: "anchor", targetId: anchorId, text: "e", comment: "c", author: "me", ref: "prhead",
     }) as any;
     const filed = await of(onBranch.id);
     assert.equal(filed.sourceRef, "prhead");
@@ -480,9 +490,9 @@ test("a published finding nobody was assigned is still findable", async () => {
   // the idempotency rule even though the dedupe itself reads `postedRef`.
   const { root, anchorId, annId } = await fixture();
   try {
-    const loose = await annotate(root, {
+    const loose = await annotateLegacyFinding(root, {
       targetKind: "anchor", targetId: anchorId, text: "capacity guard", comment: "no capacity guard",
-      kind: "finding", disposition: "confirmed", author: "human",
+      disposition: "confirmed", author: "human",
     }) as any;
     const store = await readAnnotations(root);
     store.annotations.find((a) => a.id === loose.id)!.postedRef =
@@ -575,8 +585,8 @@ test("the queue can be asked for exactly a named set of findings", async () => {
   // — and the full form re-indexes a file per row.
   const { root, anchorId, annId } = await fixture();
   try {
-    const second = await annotate(root, {
-      targetKind: "anchor", targetId: anchorId, text: "second", comment: "c", kind: "finding", author: "me",
+    const second = await annotateLegacyFinding(root, {
+      targetKind: "anchor", targetId: anchorId, text: "second", comment: "c", author: "me",
     }) as { id: string };
 
     const both = await reviewQueue(root, { assignedOnly: false });

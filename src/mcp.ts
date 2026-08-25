@@ -109,6 +109,41 @@ const DISPOSITION_DOC =
   "What triage CONCLUDED about the finding: \"open\" (filed, nobody has checked it — the default), \"confirmed\" (real as filed), \"partial\" (real in part; `comment` states the part that is real, in full), \"rerated\" (real, but the severity or impact differs from as-filed), \"refuted\" (not a defect — a false positive), \"accepted\" (real, deliberately not being fixed). Only confirmed/partial/rerated go to the submitter unasked; the rest stay on the map unless the human names them.\n\nThis axis is about the CLAIM, never about what was done. A finding somebody has since FIXED is still `confirmed` — set `remediation` for that. Revising a fixed finding to `refuted` marks a real defect a false positive, and \"which of my findings were wrong?\" then contains the ones that were most right.";
 
 
+/**
+ * The declared `enum`s, actually enforced.
+ *
+ * They were documentation: nothing validated `inputSchema`, so a value the schema
+ * forbade reached the handler and whatever that handler did with it was the contract.
+ * `annotate`'s enum dropped `"finding"` when findings moved to `report_defect` and the
+ * path stayed fully open — the tool went on filing them for as long as anybody kept
+ * passing the old value, which is how a closed create path keeps refilling a store.
+ *
+ * ENUMS ONLY, deliberately. `required` is not enforced here because the handlers already
+ * refuse missing fields with errors that say what the field is FOR, and a generic
+ * "missing required property" would be a worse message in every one of those cases. An
+ * enum has no such handler-level equivalent: the values are the whole meaning.
+ */
+function violates(schema: unknown, args: Record<string, unknown>, path = ""): string | null {
+  const props = (schema as { properties?: Record<string, unknown> })?.properties;
+  if (!props) return null;
+  for (const [k, spec] of Object.entries(props)) {
+    const v = args?.[k];
+    if (v === undefined || v === null) continue;
+    const s = spec as { enum?: unknown[]; type?: string; properties?: unknown; items?: unknown };
+    const where = path ? `${path}.${k}` : k;
+    if (s.enum && !s.enum.includes(v)) {
+      return `${where} must be one of ${s.enum.map((x) => JSON.stringify(x)).join(", ")} — got ${JSON.stringify(v)}`;
+    }
+    // One level in, because a discriminated `context` object is exactly where the
+    // valuable enum lives (`report_defect`), and it is not a top-level property.
+    if (s.type === "object" && s.properties && typeof v === "object" && !Array.isArray(v)) {
+      const inner = violates(s, v as Record<string, unknown>, where);
+      if (inner) return inner;
+    }
+  }
+  return null;
+}
+
 const tools: Tool[] = [
   {
     name: "list_universes",
@@ -552,17 +587,17 @@ const tools: Tool[] = [
   },
   {
     name: "annotate",
-    description: "Attach review context to an anchor or node — durable on the map (not a throwaway PR comment), rendered inline for the human reviewer. This is how an agent hands off a code-review pass. `kind`:\n  • \"finding\" — a raised issue/requirement needing attention (a potential bug, a missing check). Set `severity` + `category`; stays open until a human resolves it.\n  • \"pointer\" — a review AID, not a defect: \"when reviewing this block, watch out for X / confirm Y.\" Points the human reviewer at what matters. `category` optional.\n  • \"question\" — an ask a human should answer (open-questions queue, see `questions`).\n  • \"note\" (default) — a durable remark.\nPin to a specific line with `line` (for anchor targets) so it renders against that line. Typical agent review pass: read a segment → `review` it (level:code → `checked`) → `annotate` any findings/pointers on the exact lines. `category` mirrors CI review buckets (Authorization, Logic, Tenant Safety, Performance, Domain Model, Validation, …)." + COMMENT_CONTRACT,
+    description: "Attach review context to an anchor or node — durable on the map (not a throwaway PR comment), rendered inline for the human reviewer. `kind`:\n  • \"pointer\" — a review AID, not a defect: \"when reviewing this block, watch out for X / confirm Y.\" Points the human reviewer at what matters. `category` optional.\n  • \"question\" — an ask a human should answer (open-questions queue, see `questions`).\n  • \"note\" (default) — a durable remark.\n\nA DEFECT IS NOT AN ANNOTATION. `report_defect` files those, and it is REFUSED here rather than downgraded: a finding filed as an annotation is a local record with no pull request, so `shared_findings`, `defer_finding` and `inbound_replies` can none of them ever reach it — which is the split store `codemap unify-findings` exists to drain.\n\nPin to a specific line with `line` (for anchor targets) so it renders against that line. Typical agent review pass: read a segment → `review` it (level:code → `checked`) → `report_defect` what you found, `annotate` the pointers. `category` mirrors CI review buckets (Authorization, Logic, Tenant Safety, Performance, Domain Model, Validation, …)." + COMMENT_CONTRACT,
     inputSchema: obj({
       targetKind: { type: "string", enum: ["anchor", "node"] },
       targetId: { type: "string" },
       text: { type: "string", description: "The EVIDENCE, for the map and for whoever triages: what you checked, why the obvious alternative fails, what is still unverified. Not published." },
-      comment: { type: "string", description: "REQUIRED on a finding. The submitter-facing version — see the contract in this tool's description. Max 800 characters; longer is refused." },
+      comment: { type: "string", description: "The submitter-facing version, if this is going to a person — see the contract in this tool's description. Max 800 characters; longer is refused." },
       disposition: { type: "string", enum: ["open", "confirmed", "partial", "rerated", "refuted", "accepted"], description: DISPOSITION_DOC },
       publishPath: { type: "string", description: "Only when this is about code the pull request does not touch: the file IN THE DIFF nearest to the problem. Usually left to the human, who is better placed to judge \"nearest\" — an unset one is reported, never guessed." },
       publishLine: { type: "number", description: "Line within `publishPath`, if a specific one is meant." },
       kind: { type: "string", enum: ["note", "question", "pointer"], description: "\"pointer\" (a watch-out for the reviewer), \"question\" (an ask for a person), or \"note\" (default). A DEFECT is not an annotation — use `report_defect`, which puts it on a pull request or in the bug list rather than leaving it as a remark on a symbol." },
-      severity: { type: "string", enum: ["low", "medium", "high", "critical"], description: "For findings: critical=security/auth/data-integrity, high=logic bug, medium=improvement, low=nitpick." },
+      severity: { type: "string", enum: ["low", "medium", "high", "critical"], description: "critical=security/auth/data-integrity, high=logic bug, medium=improvement, low=nitpick." },
       category: { type: "string", description: "Review bucket, e.g. Authorization, Logic, Tenant Safety, Performance, Domain Model, Validation, Separation of Concerns." },
       line: { type: "number", description: "1-based line to pin to (anchor targets) — the exact line the finding/pointer is about." },
       ref: { type: "string", description: "Resolve the target against this commit snapshot as well as the live index — a PR head, for a symbol that exists only on the branch. Rarely needed: an anchor id found in any cached snapshot resolves without it." },
@@ -1020,6 +1055,11 @@ async function handle(msg: any): Promise<void> {
         return;
       }
       const args = params.arguments ?? {};
+      const bad = violates(tool.inputSchema, args);
+      if (bad) {
+        send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Error: ${bad}` }], isError: true } });
+        return;
+      }
       const universe = args.universe ? ws.byId.get(args.universe) : ws.primary;
       if (!universe) {
         send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Error: unknown universe "${args.universe}"` }], isError: true } });

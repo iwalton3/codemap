@@ -15,6 +15,18 @@ import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { makeFixture, startServer, type Server, type Fixture } from "./harness.js";
 import { readAnchorStore } from "../store.js";
+import { annotateLegacyFinding } from "../ops/annotations.js";
+
+/**
+ * Seed a legacy finding-ANNOTATION in process.
+ *
+ * `/api/annotate` refuses findings now — `report_defect` is the create verb, and a
+ * finding filed as an annotation is a local record with no pull request. The lifecycle
+ * below (assign, resolve, escalate, revise, withdraw) still runs on annotation-findings
+ * that predate that, so it still needs covering; only the CREATE path moved.
+ */
+const seedFinding = (root: string, input: Record<string, unknown>) =>
+  annotateLegacyFinding(root, input as never) as Promise<any>;
 
 describe("HTTP write routes", () => {
   let fixture: Fixture, server: Server, u: string, anchorId: string;
@@ -37,12 +49,19 @@ describe("HTTP write routes", () => {
   };
 
   test("raising a finding reports the anchor it landed on and that anchor's findings", async () => {
+    // A POINTER, not a finding: what is under test is the ROUTE's response shape, and
+    // `/api/annotate` refuses findings now — see `seedFinding`.
     const out = await post("/api/annotate", {
       targetKind: "anchor", targetId: anchorId, text: "negative amounts are only guarded here",
       comment: "`transfer` guards negatives at pay.ts:2 only. Add the same check on the by-id path.",
-      kind: "finding", severity: "high", author: "human", line: 2,
+      kind: "pointer", severity: "high", author: "human", line: 2,
     });
     assert.ok(!out.error, out.error);
+
+    const refusedKind = await post("/api/annotate", {
+      targetKind: "anchor", targetId: anchorId, text: "x", comment: "y", kind: "finding", author: "human",
+    });
+    assert.match(refusedKind.error, /no longer files findings/, "the HTTP tap is shut too, not just MCP");
     assert.deepEqual(out.target, { kind: "anchor", id: anchorId });
     assert.ok(Array.isArray(out.annotations) && out.annotations.length >= 1,
       "the caller needs the anchor's findings back to refresh one symbol");
@@ -50,8 +69,8 @@ describe("HTTP write routes", () => {
 
   test("handing a finding to an agent does the same", async () => {
     // The route that broke: it sits ABOVE the helper's old declaration.
-    const raised = await post("/api/annotate", {
-      targetKind: "anchor", targetId: anchorId, text: "check the rounding mode", comment: "rounds half-up; the ledger rounds half-even", kind: "finding", author: "human",
+    const raised = await seedFinding(fixture.root, {
+      targetKind: "anchor", targetId: anchorId, text: "check the rounding mode", comment: "rounds half-up; the ledger rounds half-even", author: "human",
     });
     const out = await post("/api/annotation_assign", { id: raised.id, kind: "investigate", by: "me" });
     assert.ok(!out.error, out.error);
@@ -60,8 +79,8 @@ describe("HTTP write routes", () => {
   });
 
   test("resolving and raising to the maintainer report the same shape", async () => {
-    const mine = await post("/api/annotate", {
-      targetKind: "anchor", targetId: anchorId, text: "mine", comment: "mine", kind: "finding", author: "human",
+    const mine = await seedFinding(fixture.root, {
+      targetKind: "anchor", targetId: anchorId, text: "mine", comment: "mine", author: "human",
     });
     const resolved = await post("/api/annotation_resolve", { id: mine.id, resolved: true });
     assert.ok(!resolved.error, resolved.error);
@@ -71,9 +90,9 @@ describe("HTTP write routes", () => {
     const refused = await post("/api/annotation_escalate", { id: mine.id });
     assert.ok(refused.error, "electing your own finding is refused, not silently recorded");
 
-    const theirs = await post("/api/annotate", {
+    const theirs = await seedFinding(fixture.root, {
       targetKind: "anchor", targetId: anchorId, text: "agent thinks this overflows",
-      comment: "an agent's proposal", kind: "finding", author: "agent:pr-first-pass",
+      comment: "an agent's proposal", author: "agent:pr-first-pass",
     });
     const raised = await post("/api/annotation_escalate", { id: theirs.id, by: "izzie" });
     assert.ok(!raised.error, raised.error);
@@ -92,8 +111,8 @@ describe("HTTP write routes", () => {
     const id = branchAnchors[0]!.id;
     await writeSnapshot(fixture.root, "prhead", "feature/x", branchAnchors, "2026-08-19T00:00:00Z");
 
-    const raised = await post("/api/annotate", {
-      targetKind: "anchor", targetId: id, text: "overflows", comment: "sums into an int32", kind: "finding", author: "human", ref: "prhead",
+    const raised = await seedFinding(fixture.root, {
+      targetKind: "anchor", targetId: id, text: "overflows", comment: "sums into an int32", author: "human", ref: "prhead",
     });
     assert.ok(!raised.error, raised.error);
     await post("/api/annotation_assign", { id: raised.id, kind: "investigate", by: "me" });
@@ -112,21 +131,25 @@ describe("HTTP write routes", () => {
   test("a finding must carry the version its submitter reads", async () => {
     // The UI raises findings through this route, so the requirement has to hold at
     // the wiring and not only in ops — and the message has to say what to do.
-    const bare = await post("/api/annotate", {
-      targetKind: "anchor", targetId: anchorId, text: "no tenant predicate", kind: "finding", author: "human",
+    // The duty moved with the verb: `/api/defect` raises findings now, so that is where
+    // the requirement has to hold at the wiring rather than only in ops.
+    const bare = await post("/api/defect", {
+      context: { kind: "pull_request", pr: "1" },
+      targetKind: "anchor", targetId: anchorId, text: "no tenant predicate",
     });
     assert.match(bare.error, /needs `comment`/);
 
-    const long = await post("/api/annotate", {
-      targetKind: "anchor", targetId: anchorId, text: "x", kind: "finding", author: "human", comment: "y".repeat(801),
+    const long = await post("/api/defect", {
+      context: { kind: "pull_request", pr: "1" },
+      targetKind: "anchor", targetId: anchorId, text: "x", comment: "y".repeat(801),
     });
     assert.match(long.error, /cap is 800/);
   });
 
   test("a finding can be corrected, withdrawn, and taken back", async () => {
-    const raised = await post("/api/annotate", {
+    const raised = await seedFinding(fixture.root, {
       targetKind: "anchor", targetId: anchorId, text: "the evidence", comment: "the short version",
-      kind: "finding", severity: "high", author: "human",
+      severity: "high", author: "human",
     });
     const found = (out: any) => out.annotations.find((a: any) => a.id === raised.id);
 
@@ -173,9 +196,9 @@ describe("HTTP write routes", () => {
   });
 
   test("the queue can list beyond the assignment queue over HTTP", async () => {
-    const raised = await post("/api/annotate", {
+    const raised = await seedFinding(fixture.root, {
       targetKind: "anchor", targetId: anchorId, text: "e", comment: "unassigned but real",
-      kind: "finding", author: "human",
+      author: "human",
     });
     assert.ok(!raised.error, raised.error);
     const assigned = await (await fetch(`${server.url}/api/queue?u=${u}`)).json() as any;
