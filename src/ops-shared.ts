@@ -282,6 +282,7 @@ export async function shareFinding(root: string, pr: number | string, f: NewFind
   if ("error" in b) return b;
   await ensureSidecar(b.cfg.path, b.actor);
   const id = await createFinding(b.cfg.path, prKey(b.cfg, pr), b.actor, f);
+  await materializeFindings(root, b.cfg, pr);
   return { ok: true, id, note: "recorded locally — run `codemap sync` to send it" };
 }
 
@@ -290,6 +291,7 @@ export async function corroborateFinding(root: string, pr: number | string, id: 
   if ("error" in b) return b;
   if (!rationale.trim()) return { error: "a verdict without a rationale is a vote, not a review — say what you checked" };
   await corroborate(b.cfg.path, prKey(b.cfg, pr), b.actor, id, verdict, rationale);
+  await materializeFindings(root, b.cfg, pr);
   return { ok: true, id, verdict };
 }
 
@@ -298,6 +300,7 @@ export async function commentOnFinding(root: string, pr: number | string, id: st
   if ("error" in b) return b;
   if (!body.trim()) return { error: "an empty comment says nothing" };
   const e = await comment(b.cfg.path, prKey(b.cfg, pr), b.actor, id, body, inReplyTo);
+  await materializeFindings(root, b.cfg, pr);
   return { ok: true, id: e.id };
 }
 
@@ -305,6 +308,7 @@ export async function promoteFinding(root: string, pr: number | string, id: stri
   const b = bind(root);
   if ("error" in b) return b;
   await promote(b.cfg.path, prKey(b.cfg, pr), b.actor, id);
+  await materializeFindings(root, b.cfg, pr);
   return { ok: true, id, note: "surfaced for team-wide attention; it does not gate anyone's triage" };
 }
 
@@ -313,6 +317,7 @@ export async function requestOnFinding(root: string, pr: number | string, id: st
   if ("error" in b) return b;
   if (!rationale.trim()) return { error: `asking to ${ask} without saying why leaves the human nothing to act on` };
   await request(b.cfg.path, prKey(b.cfg, pr), b.actor, id, ask, rationale);
+  await materializeFindings(root, b.cfg, pr);
   return { ok: true, id, ask, note: "queued for a person to acknowledge" };
 }
 
@@ -320,13 +325,16 @@ export async function closeFinding(root: string, pr: number | string, id: string
   const b = bind(root);
   if ("error" in b) return b;
   const r = await setState(b.cfg.path, prKey(b.cfg, pr), b.actor, id, state, reason);
-  return "error" in r ? r : { ok: true, id, state };
+  if ("error" in r) return r;
+  await materializeFindings(root, b.cfg, pr);
+  return { ok: true, id, state };
 }
 
 export async function reportOnFinding(root: string, pr: number | string, id: string, result: "fixed" | "answered" | "declined", detail: string, files?: string[]) {
   const b = bind(root);
   if ("error" in b) return b;
   await recordOutcome(b.cfg.path, prKey(b.cfg, pr), b.actor, id, result, detail, files);
+  await materializeFindings(root, b.cfg, pr);
   return { ok: true, id, result, note: "reported — a person still has to close it" };
 }
 
@@ -334,6 +342,7 @@ export async function upstreamFinding(root: string, pr: number | string, id: str
   const b = bind(root);
   if ("error" in b) return b;
   await markUpstreamed(b.cfg.path, prKey(b.cfg, pr), b.actor, id, ref);
+  await materializeFindings(root, b.cfg, pr);
   return { ok: true, id, note: "tracked upstream; still open here until the code says otherwise" };
 }
 
@@ -362,6 +371,7 @@ export async function findingToBug(root: string, pr: number | string, id: string
   const b = bind(root);
   if ("error" in b) return b;
   await promoteToBug(b.cfg.path, prKey(b.cfg, pr), b.actor, id, bug);
+  await materializeFindings(root, b.cfg, pr);
   return { ok: true, id, bug };
 }
 
@@ -369,6 +379,7 @@ export async function recordPublished(root: string, pr: number | string, id: str
   const b = bind(root);
   if ("error" in b) return b;
   await markPosted(b.cfg.path, prKey(b.cfg, pr), b.actor, id, ref);
+  await materializeFindings(root, b.cfg, pr);
   return { ok: true, id };
 }
 
@@ -453,6 +464,7 @@ export async function relocateFinding(
     }
   }
   await relocate(b.cfg.path, prKey(b.cfg, pr), b.actor, id, kind, rationale, opts);
+  await materializeFindings(root, b.cfg, pr);
   return { ok: true, id, kind, ...(opts.apply ? { applied: true } : { note: "queued for a person to apply" }) };
 }
 
@@ -460,6 +472,7 @@ export async function reviseFinding(root: string, pr: number | string, id: strin
   const b = bind(root);
   if ("error" in b) return b;
   await revise(b.cfg.path, prKey(b.cfg, pr), b.actor, id, now);
+  await materializeFindings(root, b.cfg, pr);
   return { ok: true, id };
 }
 
@@ -468,7 +481,9 @@ export async function settleContest(root: string, pr: number | string, id: strin
   const b = bind(root);
   if ("error" in b) return b;
   const r = await resolveContest(b.cfg.path, prKey(b.cfg, pr), b.actor, id, field, value);
-  return "error" in r ? r : { ok: true, id, field };
+  if ("error" in r) return r;
+  await materializeFindings(root, b.cfg, pr);
+  return { ok: true, id, field };
 }
 
 /**
@@ -507,6 +522,24 @@ const nonAuthoritative = (s: ScopeStatus): { status: "blocked"; diagnostic?: Sco
 
 const cachedFindings = (root: string, cfg: { path: string; universe: string }, pr: number | string) =>
   readCached(root, cfg.path, findingScope(prKey(cfg, pr)), sidecarIdentity(cfg), foldFindings, findingsProjection);
+
+/**
+ * Fold this pull request's findings scope into rows, now.
+ *
+ * WRITE-THROUGH — the rule `docs/sidecar-architecture.md` lists among the consequences
+ * that are decided, not open: a shared write appends its event and then materializes
+ * that scope, so the row is there and the caller never observes the log. Findings were
+ * the one entity kind that skipped it. All twelve write ops appended and returned, so
+ * the tool that had just filed a finding read back nothing until something else
+ * happened to fold, and the comment in `bugs-publish.ts` claiming otherwise was stale.
+ *
+ * Failure here is NOT failure of the write: the event is appended and durable, and the
+ * next read or sync folds it. Swallowed rather than thrown past the caller, exactly as
+ * `materializeBugs` does — a write that succeeded must not be reported as failed.
+ */
+async function materializeFindings(root: string, cfg: { path: string; universe: string }, pr: number | string): Promise<void> {
+  try { await cachedFindings(root, cfg, pr); } catch { /* the log has it; the next read folds it */ }
+}
 
 /** A universe's shared docs, through the cache. Same shape as findings above. */
 const cachedDocs = (root: string, cfg: { path: string; universe: string }) =>

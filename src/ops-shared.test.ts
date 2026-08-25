@@ -856,3 +856,39 @@ test("publishing reports what it skipped rather than narrowing in silence", asyn
     });
   } finally { u.cleanup(); }
 });
+
+// --- write-through -----------------------------------------------------------
+
+/**
+ * A shared write appends its event and then materializes that scope, so the row is
+ * there and the caller never observes the log. Findings were the one entity kind that
+ * skipped it: all thirteen write ops appended and returned, so the tool that had just
+ * filed a finding read back nothing until something else happened to fold.
+ *
+ * Asserted against the TABLE, not through `sharedFindings` — that folds on a miss, so
+ * it would answer correctly whether or not the write ever wrote through, which is the
+ * shape that let this go unnoticed.
+ */
+test("a filed finding is a row before anything reads it", async () => {
+  const u = universe();
+  try {
+    const r = await shared.shareFinding(u.root, 264, NEW) as { id: string };
+    const row = db(u.root).prepare("SELECT pr, target_id, source_scope FROM findings WHERE id = ?")
+      .get(r.id) as { pr: string; target_id: string; source_scope: string | null } | undefined;
+    assert.ok(row, "the event is appended AND the scope is materialized");
+    assert.equal(row!.pr, "264", "and the pull request is a stored column, not an inference");
+    assert.equal(row!.target_id, "a_1", "with the queryable columns filled from the fold");
+    assert.ok(row!.source_scope?.endsWith("/pr-264"), "owned by the scope it was filed into");
+  } finally { u.cleanup(); }
+});
+
+/** The same, for a write that is not the create — a comment must land in rows too. */
+test("commenting on a finding writes through as well", async () => {
+  const u = universe();
+  try {
+    const r = await shared.shareFinding(u.root, 264, NEW) as { id: string };
+    await shared.commentOnFinding(u.root, 264, r.id, "checked it, still holds");
+    const row = db(u.root).prepare("SELECT body FROM findings WHERE id = ?").get(r.id) as { body: string };
+    assert.equal(JSON.parse(row.body).thread.length, 1, "the thread is in the row, not only in the log");
+  } finally { u.cleanup(); }
+});
