@@ -16,6 +16,7 @@ import { computeDiff, lineDiff, stripCR, type DiffResult, type DiffLine } from "
 import { indexBlob, indexCommit } from "./repo.js";
 import { readSnapshot, writeSnapshot, readAnnotations, readAnchorStore, retainOrphans, referencedAnchorIds, anchorsUnderRef } from "./store.js";
 import { loadLanes, LANE_POLICY, type Lane } from "./lanes.js";
+import { teamNotesByAnchor, type PinnedNote } from "./notes-lookup.js";
 import { containedAnchorIds } from "./reviews.js";
 import { complexityOf, MONEY_RX, reviewTriageFor, setTriageBatch } from "./triage.js";
 import { readTriage } from "./store.js";
@@ -734,6 +735,10 @@ export async function prStory(
   const anns = (await readAnnotations(root)).annotations.filter((a) => a.target.kind === "anchor");
   const byAnchor = new Map<string, Annotation[]>();
   for (const a of anns) (byAnchor.get(a.target.id) ?? byAnchor.set(a.target.id, []).get(a.target.id)!).push(a);
+  // And the TEAM's, beside them rather than in them — see `notes-lookup.ts`. A pointer
+  // is a review aid whose value is being pinned to the line while somebody reads the
+  // diff, and this pane showed only the ones this machine wrote.
+  const teamNotes = await teamNotesByAnchor(root, new Set(anns.map((a) => a.id)));
 
   const steps: StoryStep[] = t.worklist
     .filter((w) => w.lane === "code")
@@ -744,6 +749,7 @@ export async function prStory(
       reviewed: w.reviewed, viewed: w.viewed,
       review: w.review, viewedMark: w.viewedMark,
       annotations: byAnchor.get(w.id) ?? [],
+      ...(teamNotes.get(w.id)?.length ? { sharedNotes: teamNotes.get(w.id)! } : {}),
     }));
 
   // Symbol names this universe knows about at all — live plus the PR head — so a
@@ -785,6 +791,12 @@ export interface PrAnchorCode {
    */
   lineEndingsChanged: boolean;
   annotations: Annotation[];
+  /**
+   * The TEAM's notes on this symbol — read-only, and separate from `annotations` for
+   * the reason `notes-lookup.ts` gives: those carry actions the UI offers, and a
+   * fold-owned note is not locally mutable.
+   */
+  sharedNotes?: PinnedNote[];
 }
 
 /**
@@ -824,6 +836,10 @@ export async function prAnchorCode(root: string, input: string, id: string): Pro
   const head = item.change === "removed" ? { code: null as string | null, startLine: 1 } : await at(refs.head);
   const base = item.change === "added" ? { code: null as string | null, startLine: 1 } : await at(refs.mergeBase);
   const anns = (await readAnnotations(root)).annotations.filter((a) => a.target.kind === "anchor" && a.target.id === id);
+  // The team's, for the same reason the story's steps carry them: this is the pane a
+  // reviewer reads the diff in, and a pointer pinned to a line is worth nothing anywhere
+  // else. Read-only and separate — see `notes-lookup.ts`.
+  const team = (await teamNotesByAnchor(root, new Set(anns.map((a) => a.id)))).get(id) ?? [];
 
   const hasCR = (x: string | null) => x != null && x.includes("\r");
   const lineEndingsChanged = base.code != null && head.code != null && hasCR(base.code) !== hasCR(head.code);
@@ -836,7 +852,7 @@ export async function prAnchorCode(root: string, input: string, id: string): Pro
 
   return {
     id, file: item.file, lang: langOf(item.file),
-    head: h, startLine: head.startLine, base: b, baseStartLine: base.startLine, lines, lineEndingsChanged, annotations: anns,
+    head: h, startLine: head.startLine, base: b, baseStartLine: base.startLine, lines, lineEndingsChanged, annotations: anns, ...(team.length ? { sharedNotes: team } : {}),
   };
 }
 

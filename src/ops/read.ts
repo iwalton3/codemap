@@ -1,10 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
-import { type Anchor, type LogicalNode, type CoverageState } from "../schema.js";
+import { type Anchor, type LogicalNode, type CoverageState, type Annotation } from "../schema.js";
 import { indexFile, indexBlob } from "../repo.js";
 import { headCommit, readBlobs } from "../git.js";
 import { citedAnchors, isClosed } from "../shared-bugs.js";
 import { readAnchorStore, loadNodes, readGraph, readBugs, readAnnotations, readFindings, readReviews, findAnchorsOutsideWork, snapshotBranch, readOrphans } from "../store.js";
+import { teamNotesByAnchor, type PinnedNote } from "../notes-lookup.js";
 import { resolveAnchorRefs } from "../refs.js";
 import { reviewStatus, reviewStatesFor, anchorReviewMap, deriveCodeReview, type ReviewPair } from "../reviews.js";
 import { triageStatus } from "../triage.js";
@@ -273,22 +274,9 @@ export async function context(root: string, refs: string[]) {
  */
 async function sharedNotesOn(
   root: string, targetId: string, localIds: Set<string>,
-): Promise<{ sharedNotes?: { id: string; kind: string; text: string; by: string; at: string; resolved: boolean }[] }> {
-  try {
-    const { resolveSidecar } = await import("../sidecar-config.js");
-    const cfg = resolveSidecar(root);
-    if (!cfg) return {};
-    const { readSharedNotes } = await import("../store.js");
-    const notes = (await readSharedNotes(root, cfg.universe, { targetId }))
-      .filter((n) => n.kind !== "finding" && !localIds.has(n.id));
-    if (!notes.length) return {};
-    return {
-      sharedNotes: notes.map((n) => ({
-        id: n.id, kind: n.kind, text: n.text,
-        by: n.author.principal, at: n.createdAt, resolved: !!n.resolved,
-      })),
-    };
-  } catch { return {}; }
+): Promise<{ sharedNotes?: PinnedNote[] }> {
+  const notes = (await teamNotesByAnchor(root, localIds)).get(targetId) ?? [];
+  return notes.length ? { sharedNotes: notes } : {};
 }
 
 export async function getAnchor(root: string, id: string) {
@@ -422,6 +410,8 @@ export async function nodeReview(root: string, id: string) {
   if (!node) return { error: `no node "${id}"` };
   const byId = new Map(store.anchors.map((a) => [a.id, a]));
   const annFor = (aid: string) => annStore.annotations.filter((a) => a.target.kind === "anchor" && a.target.id === aid);
+  // The team's, beside your own and never merged in — see `notes-lookup.ts`.
+  const teamNotes = await teamNotesByAnchor(root, new Set(annStore.annotations.map((a) => a.id)));
   const targets = node.anchors.map((aid) => ({ kind: "anchor" as const, id: aid }));
   const [rev, revView] = await Promise.all([reviewStatesFor(root, targets), reviewStatesFor(root, targets, { viewed: true })]);
   // Cache live-indexed files so several anchors in one file re-index once. loc
@@ -439,7 +429,10 @@ export async function nodeReview(root: string, id: string) {
   const segments = [];
   for (const aid of node.anchors) {
     const a = byId.get(aid);
-    if (!a) { segments.push({ id: aid, missing: true as const }); continue; }
+    // `annotations` even here. Every consumer treats it as a list, and leaving the
+    // field off made the union un-narrowable at the one call site that filters on it —
+    // `tsc -p web` caught that, which is what it is for.
+    if (!a) { segments.push({ id: aid, missing: true as const, annotations: [] as Annotation[] }); continue; }
     const fc = await load(a.file);
     const live = fc.byId.get(aid);
     segments.push({
@@ -448,6 +441,7 @@ export async function nodeReview(root: string, id: string) {
       present: Boolean(live?.loc), code: live?.loc ? fc.src.slice(live.loc.startByte, live.loc.endByte) : null,
       review: rev.get("anchor:" + aid), viewed: revView.get("anchor:" + aid),
       annotations: annFor(aid), // line-pinned findings + segment notes
+      ...(teamNotes.get(aid)?.length ? { sharedNotes: teamNotes.get(aid)! } : {}),
     });
   }
   segments.sort((x, y) => ((x as { file?: string }).file ?? "").localeCompare((y as { file?: string }).file ?? "") || ((x as { startLine?: number }).startLine ?? 0) - ((y as { startLine?: number }).startLine ?? 0));
@@ -472,6 +466,7 @@ export async function fileSource(root: string, file: string) {
   if (abs !== base && !abs.startsWith(base + sep)) return { error: `"${file}" is outside this universe` };
 
   const [store, annStore] = await Promise.all([readAnchorStore(root), readAnnotations(root)]);
+  const teamNotes = await teamNotesByAnchor(root, new Set(annStore.annotations.map((a) => a.id)));
   const inFile = store.anchors.filter((a) => a.file === file);
   let code: string;
   try { code = await readFile(abs, "utf8"); } catch { return { error: `cannot read "${file}"` }; }
@@ -487,6 +482,7 @@ export async function fileSource(root: string, file: string) {
       present: Boolean(lv?.loc),
       review: rev.get("anchor:" + a.id), viewed: revView.get("anchor:" + a.id),
       annotations: annStore.annotations.filter((an) => an.target.kind === "anchor" && an.target.id === a.id),
+      ...(teamNotes.get(a.id)?.length ? { sharedNotes: teamNotes.get(a.id)! } : {}),
     };
   }).sort((x, y) => (x.startLine ?? 0) - (y.startLine ?? 0));
   return { file, lang: langFor(file), code, anchors };

@@ -22,6 +22,7 @@
 import type { Lane } from "./lanes.js";
 import { scanMarkdown } from "./markdown.js";
 import type { Annotation, Complexity } from "./schema.js";
+import type { PinnedNote } from "./notes-lookup.js";
 
 export interface SpecSection { specPath: string; heading: string; level: number; text: string; durable: boolean }
 
@@ -178,6 +179,12 @@ export interface StoryStep {
   /** The marks themselves, carrying `via` — a borrowed approval must not render as a plain tick. */
   review?: unknown; viewedMark?: unknown;
   annotations?: Annotation[];
+  /**
+   * The TEAM's notes on this symbol — read-only, and separate from `annotations` on
+   * purpose. Those carry the actions the UI offers (assign, escalate, resolve) and a
+   * fold-owned note is not locally mutable. See `notes-lookup.ts`.
+   */
+  sharedNotes?: PinnedNote[];
 }
 
 export interface StoryChapter {

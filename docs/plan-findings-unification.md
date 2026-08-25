@@ -394,11 +394,40 @@ blocks what.
      mirrored them before the tap shut. `shared_notes` and `get_anchor` no longer list
      them and say how many they left out. See (4a).
 
-3. **Pointers still ride the annotation machinery.** They are a legitimate kind — a
-   review aid is not a defect and should not be one — but they are now the only thing
-   `annotate` still writes at volume, on a store that the rest of the system has moved
-   off. Worth an audit of what actually reads them and whether that path still has an
-   owner, before it becomes the next thing that quietly holds half a picture.
+3. ~~**Pointers still ride the annotation machinery — audit what reads them.**~~ DONE.
+   **The path has an owner, and it is the product's core surface.** The worry was
+   backwards: the annotation store IS a pointer's canonical home, and nothing has moved
+   off it. Measured on `Acme.API`: 44 pointers, 34 line-pinned, 40 on live anchors, all
+   but one from a single `pr-first-pass`, categorised the way findings are (Security 7,
+   Logic 8, Tenant Safety 5, …).
+
+   **Readers, all live:** `getAnchor.annotations` (MCP + the anchor page); the PR story's
+   per-step `annotations` (`pr.ts`, kind-agnostic) which `codeReviewLines` pins inline at
+   its line with 👁 — this is the one that matters; `shared_notes` and the web panel, so a
+   teammate has them; `orphanedWork`, which covers them when their anchor leaves the tree
+   (16 annotation orphans on that store); and `planPrPush`, which gates on DISPOSITION
+   and deliberately **not** on kind — a pointer later confirmed is a finding in all but
+   the field it was filed under, and the six once excluded on kind included the
+   highest-rated item in the review.
+
+   **Deliberate exclusions, all documented at their site:** the ⚑ action-item count,
+   `review_queue`'s open view, `listQuestions`, the overview's open-question count,
+   `prOffStoryFindings`. Not one reader in the tree branches on `kind === "pointer"`;
+   every kind-aware read filters FOR finding/question. That is a coherent design, not
+   neglect.
+
+   **The one real gap, and it is fixed.** Every pane that pins an annotation to a line —
+   `prStory`'s steps, `nodeReview`, `fileView`, `prAnchorCode` — read LOCAL annotations
+   only. So your own pointer showed at line 183 while you read the diff and a teammate's
+   showed nowhere near the code; `get_anchor` was the sole surface carrying it, one
+   navigation away. `notes-lookup.ts` now supplies `sharedNotes` to all four, rendered
+   read-only beside the local ones (`teamNoteEl`) — never merged into `annotations`,
+   because those carry assign/escalate/resolve and a fold-owned note is not locally
+   mutable. Findings are excluded for the same reason `shared_notes` excludes them.
+
+   On `Acme.API` this changes nothing visible today: every shared note there has a local
+   twin, so the dedupe correctly yields zero. What a TEAMMATE of that store would now see
+   pinned to code is 59 notes across 55 anchors, 47 of them at a line.
 
 4a. **51 findings are published as NOTES and are in no findings surface.** Measured on
    `Acme.API`: of the 96 `kind:"finding"` rows in the note log, 45 are also rows in

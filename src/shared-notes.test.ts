@@ -531,3 +531,100 @@ test("get_anchor does not list your own note twice", async () => {
     assert.equal(a.sharedNotes, undefined, "the mirror of your own note is not a second note");
   } finally { u.cleanup(); }
 });
+
+// --- a pointer is only worth anything AT the code ---------------------------------
+
+/**
+ * A `pointer` is a review AID — "watch out for X when reading this block" — and 34 of
+ * the 44 on the primary universe carry a LINE. Its whole value is being pinned beside
+ * the code while somebody reads the diff. Every pane that does that pinning
+ * (`prStory`'s steps, `nodeReview`, `fileView`, `prAnchorCode`) read local annotations
+ * only, so your own pointer showed at its line and a teammate's showed nowhere near the
+ * code. `get_anchor` was the sole surface that had them, one navigation away.
+ */
+test("a teammate's pointer reaches the code-review pane, at its line", async () => {
+  const u = universe();
+  try {
+    const { init, nodeReview, document: documentNode } = await import("./ops.js");
+    mkdirSync(join(u.root, "src"), { recursive: true });
+    writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) {\n  return c;\n}\n", "utf8");
+    await init(u.root);
+    const { readAnchorStore } = await import("./store.js");
+    const anchorId = (await readAnchorStore(u.root)).anchors[0]!.id;
+    const node = await documentNode(u.root, {
+      type: "concept", title: "Transfers", summary: "s", body: "b", anchors: [anchorId],
+    }) as { id: string };
+
+    await createNote(u.side, uKey(u.root), dana, {
+      targetKind: "anchor", targetId: anchorId, kind: "pointer",
+      text: "the retry above is not idempotent — check the ledger write", line: 2, category: "Money",
+    });
+    await shared.sharedNotes(u.root, anchorId);
+
+    const r = await nodeReview(u.root, node.id) as
+      { segments: { id: string; sharedNotes?: { text: string; by: string; line?: number; kind: string; category?: string }[] }[] };
+    const seg = r.segments.find((s) => s.id === anchorId)!;
+    assert.equal(seg.sharedNotes?.length, 1, "the team's pointer is on the segment");
+    assert.equal(seg.sharedNotes![0]!.line, 2, "AT its line — that is the whole point of a pointer");
+    assert.equal(seg.sharedNotes![0]!.by, "dana@x.com");
+    assert.equal(seg.sharedNotes![0]!.category, "Money", "and it keeps the fields the pane renders");
+  } finally { u.cleanup(); }
+});
+
+/** Your own is already in `annotations`; the mirror must not double it. */
+test("your own pointer is not repeated as a team note", async () => {
+  const u = universe();
+  try {
+    const { init, annotate: ann, nodeReview, document: documentNode } = await import("./ops.js");
+    mkdirSync(join(u.root, "src"), { recursive: true });
+    writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+    await init(u.root);
+    const { readAnchorStore } = await import("./store.js");
+    const anchorId = (await readAnchorStore(u.root)).anchors[0]!.id;
+    const node = await documentNode(u.root, {
+      type: "concept", title: "Transfers", summary: "s", body: "b", anchors: [anchorId],
+    }) as { id: string };
+    await ann(u.root, {
+      targetKind: "anchor", targetId: anchorId, text: "watch the retry", kind: "pointer", author: "izzie", line: 1,
+    });
+
+    const r = await nodeReview(u.root, node.id) as
+      { segments: { id: string; annotations: unknown[]; sharedNotes?: unknown[] }[] };
+    const seg = r.segments.find((s) => s.id === anchorId)!;
+    assert.equal(seg.annotations.length, 1, "it is yours, and it is where it always was");
+    assert.equal(seg.sharedNotes, undefined, "and its mirror is not a second pointer");
+  } finally { u.cleanup(); }
+});
+
+/**
+ * A finding is not pinned here even though the note log still holds pre-canonical
+ * copies — those are rows in `findings` with a pull request, a tier and a thread, and
+ * rendering the copy with none of that beside the code would be the double-render that
+ * `shared_notes` already stopped.
+ */
+test("a pre-canonical finding in the note log is not pinned to the code", async () => {
+  const u = universe();
+  try {
+    const { init, nodeReview, document: documentNode } = await import("./ops.js");
+    mkdirSync(join(u.root, "src"), { recursive: true });
+    writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+    await init(u.root);
+    const { readAnchorStore } = await import("./store.js");
+    const anchorId = (await readAnchorStore(u.root)).anchors[0]!.id;
+    const node = await documentNode(u.root, {
+      type: "concept", title: "Transfers", summary: "s", body: "b", anchors: [anchorId],
+    }) as { id: string };
+    await createNote(u.side, uKey(u.root), dana, {
+      targetKind: "anchor", targetId: anchorId, kind: "finding", text: "a pre-canonical finding", line: 1,
+    });
+    await createNote(u.side, uKey(u.root), dana, {
+      targetKind: "anchor", targetId: anchorId, kind: "pointer", text: "a real pointer", line: 1,
+    });
+    await shared.sharedNotes(u.root, anchorId);
+
+    const r = await nodeReview(u.root, node.id) as
+      { segments: { id: string; sharedNotes?: { kind: string }[] }[] };
+    const seg = r.segments.find((s) => s.id === anchorId)!;
+    assert.deepEqual(seg.sharedNotes?.map((n) => n.kind), ["pointer"]);
+  } finally { u.cleanup(); }
+});

@@ -591,6 +591,25 @@ const PUBLISHABLE = new Set(['confirmed', 'partial', 'rerated']);
 // came back. The agent reports; resolving stays the human's act, so an agent can
 // never mark its own work accepted.
 const OUTCOME_ICON = { fixed: '✔', answered: '💬', declined: '⊘' };
+/**
+ * Somebody ELSE's note, pinned to the code. Read-only by construction.
+ *
+ * A `pointer` is a review aid — "watch out for X when reading this block" — and its
+ * value is being here, at the line, while you read the diff. It used to render only if
+ * this machine wrote it. Deliberately not a `findingItemEl`: that offers assign,
+ * escalate and resolve, and a fold-owned note is not locally mutable, so those buttons
+ * would be writes that cannot land. `shared_notes` on the anchor is where you answer one.
+ */
+const teamNoteEl = (n) => html`<div class="rvfind rvteam k-${n.kind} ${n.resolved ? 'resolved' : ''}">
+  <span class="rvfpin" title="${n.kind} · ${n.by}${n.line ? ' · line ' + n.line : ''}">${ANNO_ICON[n.kind] || '✎'}${n.line ? ' ' + n.line : ''}</span>
+  ${when(n.severity, () => html`<span class="rvfsev" style="background:${SEV_COLOR[n.severity] || '#3a4250'}" title="severity: ${n.severity}"></span>`)}
+  ${when(n.category, () => html`<span class="rvfcat">${n.category}</span>`)}
+  <span class="rvftext">${n.text}</span>
+  <span class="rvfacts">
+    <span class="dim rvfauthor" title="the team's — answer it with shared_notes on this symbol">${n.by}</span>
+    ${when(n.resolved, () => html`<span class="prbadge ok">resolved</span>`)}
+  </span>
+</div>`;
 const findingItemEl = (c, u, f) => {
   const k = f.kind || 'note';
   const a = f.assignment, o = f.outcome;
@@ -620,16 +639,28 @@ const findingForm = (c, u, anchorId, line) => {
   const err = c.state.raiseErr && c.state.raiseErr.key === key ? c.state.raiseErr.error : null;
   return html`<div class="rvaddf"><span class="rvfpin">${line ? '↳' + line : '✎'}</span><input class="rvftextin" placeholder="finding / action item — sign-off still allowed" value="${c._fdrafts[key] || ''}" on-input="${(e) => { c._fdrafts[key] = e.target.value; }}" on-keydown="${(e) => { if (e.key === 'Enter') raiseFinding(c, u, anchorId, line); else if (e.key === 'Escape') closeFindingForm(c); }}"><button title="${c.props && c.props.params && c.props.params.pr ? 'files a finding on this pull request' : 'files a bug — you are not in a pull request review, so this outlives the branch'}" on-click="${() => raiseFinding(c, u, anchorId, line)}">${c.props && c.props.params && c.props.params.pr ? 'raise' : 'file as bug'}</button><button class="ghost" on-click="${() => closeFindingForm(c)}">cancel</button>${when(err, () => html`<span class="rvferr">${err}</span>`)}</div>`;
 };
+/**
+ * Group a symbol's team notes the way the local ones are grouped: by pinned line, with
+ * the unpinned ones collected for the block below the code.
+ *
+ * @returns {[Map<number, any[]>, any[]]}
+ */
+function pinTeamNotes(shared) {
+  const byLine = new Map(); const noLine = [];
+  for (const n of (shared || [])) { if (n.line) { (byLine.get(n.line) || byLine.set(n.line, []).get(n.line)).push(n); } else noLine.push(n); }
+  return [byLine, noLine];
+}
 // Render one anchor's source line-by-line (absolute line numbers from `startLine`)
 // with a hover 💬 per line that raises a finding pinned to that exact line; existing
 // findings render inline under their line, unlocated notes below. The `annotations`
 // this reads are refreshed either by `c.load.run()` or, where the host implements
 // it, by `c.patchAnnotations` updating just this anchor (see afterAnnotationWrite).
-function codeReviewLines(c, u, anchorId, code, lang, startLine, annotations) {
+function codeReviewLines(c, u, anchorId, code, lang, startLine, annotations, shared) {
   if (code == null) return html`<pre class="code rvcode">(source unavailable — anchor renamed/removed?)</pre>`;
   const base = startLine || 1;
   const byLine = new Map(); const noLine = [];
   for (const a of (annotations || [])) { if (a.line) { (byLine.get(a.line) || byLine.set(a.line, []).get(a.line)).push(a); } else noLine.push(a); }
+  const [teamByLine, teamNoLine] = pinTeamNotes(shared);
   const lines = highlightLines(code, lang);
   return html`<div class="rvpre hljs">
     ${each(lines, (lineHtml, i) => {
@@ -638,10 +669,11 @@ function codeReviewLines(c, u, anchorId, code, lang, startLine, annotations) {
       return html`<div class="flrow">
         <div class="fline"><span class="flno">${n}</span><span class="fltext">${raw(lineHtml)}</span><button class="flcomment" title="raise a finding on line ${n}" on-click="${() => openFindingForm(c, anchorId, n)}">💬</button></div>
         ${each(finds, f => findingItemEl(c, u, f), f => f.id)}
+        ${each(teamByLine.get(n) || [], t => teamNoteEl(t), t => t.id)}
         ${when(c.state.finding === findingKey(anchorId, n), () => findingForm(c, u, anchorId, n))}
       </div>`;
     }, (lineHtml, i) => i)}
-    ${when(noLine.length, () => html`<div class="rvfinds">${each(noLine, f => findingItemEl(c, u, f), f => f.id)}</div>`)}
+    ${when(noLine.length || teamNoLine.length, () => html`<div class="rvfinds">${each(noLine, f => findingItemEl(c, u, f), f => f.id)}${each(teamNoLine, t => teamNoteEl(t), t => t.id)}</div>`)}
   </div>`;
 }
 const highlight = (code, lang) => {
@@ -1174,7 +1206,7 @@ class NodePage extends Component {
       </div>
       ${when(open, () => !c ? html`<div class="loading" style="padding:6px 0">loading…</div>`
         : isErr(c) ? html`<div class="empty">${c.error}</div>`
-          : codeReviewLines(this, u, a.id, c.code, c.lang, presetLine, a.annotations))}
+          : codeReviewLines(this, u, a.id, c.code, c.lang, presetLine, a.annotations, a.sharedNotes))}
     </div>`;
   }
   async triageNode(patch) { await postTriage(this.props.params.universe, 'node', this.props.params.id, patch); this.load.run(); }
@@ -1266,7 +1298,7 @@ class NodeReviewPage extends Component {
         ${when(nf, () => html`<span class="rvfbadge" title="${nf} open finding${nf === 1 ? '' : 's'}">⚑ ${nf}</span>`)}
         <span class="rev" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">${reviewRowEl(s.review, s.viewed, (att, st, actor, via) => this.markSeg(s.id, att, st, actor, via))}<button title="read the whole file in context" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.openFile(s.file, s.id); }}">view file</button><span class="viewlink" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); go(anchorUrl(u, s.id)); }}" title="open anchor page">↗</span></span>
       </div>
-      ${when(open, () => codeReviewLines(this, u, s.id, s.code, s.lang, s.startLine, s.annotations))}
+      ${when(open, () => codeReviewLines(this, u, s.id, s.code, s.lang, s.startLine, s.annotations, s.sharedNotes))}
     </div>`;
   }
   fileLines(f) {
@@ -1669,7 +1701,7 @@ class FlowPage extends Component {
     const nf = openFindingCount(a.annotations);
     return html`<div class="anchor-code">
       <div class="sym">${a.symbol} · ${a.file}:${a.lines}${when(nf, () => html`<span class="rvfbadge" title="${nf} open finding${nf === 1 ? '' : 's'}">⚑ ${nf}</span>`)}${reviewRowEl(a.review, a.viewed, (att, st, actor, via) => this.toggle('anchor', a.id, 'code', st, att, actor, via))}</div>
-      ${codeReviewLines(this, this.props.params.universe, a.id, a.code, a.lang, a.startLine, a.annotations)}
+      ${codeReviewLines(this, this.props.params.universe, a.id, a.code, a.lang, a.startLine, a.annotations, a.sharedNotes)}
     </div>`;
   }
   template() {
@@ -2930,10 +2962,11 @@ defineComponent('diff-page', DiffPage);
 //
 // Highlighted per line rather than as a block: the +/- signs are not part of the
 // language, so a whole-block highlight would lex them as syntax.
-function diffReviewLines(c, u, anchorId, lines, lang, startLine, annotations) {
+function diffReviewLines(c, u, anchorId, lines, lang, startLine, annotations, shared) {
   if (!lines || !lines.length) return html`<pre class="code rvcode">(no diff available)</pre>`;
   const byLine = new Map(); const noLine = [];
   for (const a of (annotations || [])) { if (a.line) { (byLine.get(a.line) || byLine.set(a.line, []).get(a.line)).push(a); } else noLine.push(a); }
+  const [teamByLine, teamNoLine] = pinTeamNotes(shared);
   let head = (startLine || 1) - 1;
   // Highlight through `diffCodeRows`, which reconstructs each SIDE and highlights it
   // as one block. Lexing a line on its own loses the multi-line context that a block
@@ -2956,10 +2989,11 @@ function diffReviewLines(c, u, anchorId, lines, lang, startLine, annotations) {
           ${when(r.n, () => html`<button class="flcomment" title="raise a finding on line ${r.n}" on-click="${() => openFindingForm(c, anchorId, r.n)}">💬</button>`)}
         </div>
         ${each(finds, f => findingItemEl(c, u, f), f => f.id)}
+        ${each(r.n ? (teamByLine.get(r.n) || []) : [], t => teamNoteEl(t), t => t.id)}
         ${when(r.n && c.state.finding === findingKey(anchorId, r.n), () => findingForm(c, u, anchorId, r.n))}
       </div>`;
     }, (r, i) => i)}
-    ${when(noLine.length, () => html`<div class="rvfinds">${each(noLine, f => findingItemEl(c, u, f), f => f.id)}</div>`)}
+    ${when(noLine.length || teamNoLine.length, () => html`<div class="rvfinds">${each(noLine, f => findingItemEl(c, u, f), f => f.id)}${each(teamNoLine, t => teamNoteEl(t), t => t.id)}</div>`)}
   </div>`;
 }
 
@@ -4058,8 +4092,8 @@ class PrStoryPage extends Component {
           <span class="viewlink" title="open the full anchor page" on-click="${() => go(anchorUrl(u, step.anchorId))}">↗</span>
         </div>
         ${when(this.showsDiff(step),
-          () => diffReviewLines(this, u, step.anchorId, code.lines, code.lang, code.startLine, code.annotations),
-          () => codeReviewLines(this, u, step.anchorId, src.text, code.lang, src.startLine, code.annotations))}
+          () => diffReviewLines(this, u, step.anchorId, code.lines, code.lang, code.startLine, code.annotations, code.sharedNotes),
+          () => codeReviewLines(this, u, step.anchorId, src.text, code.lang, src.startLine, code.annotations, code.sharedNotes))}
       </div>`)}
       ${when(isErr(held), () => html`<div class="prsbody dim">${isErr(held) ? held.error : ''}</div>`)}
     </div>`;
