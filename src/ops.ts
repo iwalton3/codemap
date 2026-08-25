@@ -63,7 +63,10 @@ export {
   assignAnnotation, type QueueItem, reviewQueue, closeAssignment, closeLocalFinding, listQuestions,
 } from "./ops/annotations.js";
 
-import { closeAssignment as closeAnnotation, closeLocalFinding as closeLocal, commentOnLocalFinding } from "./ops/annotations.js";
+import {
+  closeAssignment as closeAnnotation, closeLocalFinding as closeLocal, commentOnLocalFinding,
+  reviseLocalFinding, reviseAnnotation, checkComment, REVISABLE,
+} from "./ops/annotations.js";
 import { commentBug, corroborateBugOp, requestOnBugOp } from "./ops/bugs.js";
 import { readFinding, readBug } from "./store.js";
 export { reportDefect, type DefectContext, type DefectInput } from "./ops/defect.js";
@@ -83,7 +86,10 @@ export { reportDefect, type DefectContext, type DefectInput } from "./ops/defect
  */
 export async function closeFinding(
   root: string,
-  input: { id: string; result: "fixed" | "answered" | "declined"; detail: string; files?: string[]; by?: string; comment?: string; line?: number; disposition?: never },
+  input: {
+    id: string; result: "fixed" | "answered" | "declined"; detail: string; files?: string[]; by?: string;
+    comment?: string; line?: number; severity?: "low" | "medium" | "high" | "critical"; disposition?: never;
+  },
 ): Promise<Record<string, unknown>> {
   const f = await readFinding(root, input.id).catch(() => null);
   if (!f) return closeAnnotation(root, input as never) as Promise<Record<string, unknown>>;
@@ -95,11 +101,94 @@ export async function closeFinding(
   const d = (input as { disposition?: string }).disposition;
   const verdict = d === "refuted" ? "refute" as const : d === "confirmed" ? "confirm" as const : null;
   if (verdict) await shared.corroborateFinding(root, f.pr!, f.id, verdict, input.detail);
-  return {
-    ok: true, id: f.id, pr: f.pr, shared: true,
-    note: "reported — a person still has to close it"
-      + (d && !verdict ? `; disposition "${d}" is not recorded on a shared finding — verdicts are` : ""),
+  // The corrected wording is the point of reporting back, so it goes onto the RECORD
+  // rather than into the outcome's prose: a `comment` the submitter reads and a `line`
+  // the publisher places by are fields, and an outcome paragraph is neither filterable
+  // nor placeable. A revision is how a finding's substance changes, so this is one —
+  // and it inherits that verb's refusals, which is why the failure is reported back
+  // instead of swallowed.
+  const notes: string[] = ["reported — a person still has to close it"];
+  if (d && !verdict) notes.push(`disposition "${d}" is not recorded on a shared finding — verdicts are`);
+  const patch = {
+    ...(input.comment !== undefined ? { comment: input.comment } : {}),
+    ...(Number.isFinite(input.line) ? { line: Math.floor(input.line as number) } : {}),
+    ...(input.severity !== undefined ? { severity: input.severity } : {}),
   };
+  if (Object.keys(patch).length) {
+    const c = checkComment(input.comment, d);
+    if ("error" in c) return c;
+    const rev = await shared.reviseFinding(root, f.pr!, f.id, patch) as { error?: string };
+    if (rev.error) notes.push(`${Object.keys(patch).join(" and ")} NOT changed: ${rev.error}`);
+  }
+  return { ok: true, id: f.id, pr: f.pr, shared: true, note: notes.join("; ") };
+}
+
+/**
+ * Correct a finding, wherever it lives — annotation, local finding, or the fold's.
+ *
+ * The same dispatch `commentOn` uses, and for the same reason: revising is one act, and
+ * making the caller pick the tool by the store is making them pick it by a detail they
+ * cannot see from the id. It was worse than a missing verb — `revise_finding` named
+ * "yours or somebody else's" in its description, listed one refusal that did not
+ * include this, and then failed on a shared id with `no annotation "f_…"`.
+ *
+ * What the stores genuinely do NOT share is `disposition`: the fold has no such field,
+ * so on a shared finding the two verdict-shaped values become corroboration and the
+ * rest are reported back as not recorded, exactly as `closeFinding` does.
+ */
+export async function reviseOn(
+  root: string,
+  input: {
+    id: string; by?: string; allowPostEdit?: boolean;
+    text?: string; comment?: string; disposition?: string; severity?: "low" | "medium" | "high" | "critical";
+    category?: string; line?: number; publishPath?: string; publishLine?: number; ref?: string;
+  },
+): Promise<Record<string, unknown>> {
+  const f = await readFinding(root, input.id).catch(() => null);
+  if (!f) return reviseAnnotation(root, input as never) as Promise<Record<string, unknown>>;
+  if (!f.origin) return reviseLocalFinding(root, input as never) as Promise<Record<string, unknown>>;
+
+  const shared = await import("./ops-shared.js");
+  const c = checkComment(input.comment, input.disposition);
+  if ("error" in c) return c;
+  const patch: Record<string, unknown> = {};
+  for (const k of REVISABLE) {
+    const v = (input as Record<string, unknown>)[k];
+    if (v === undefined) continue;
+    patch[k] = k === "line" ? Math.floor(v as number) : k === "comment" ? c.comment : v;
+  }
+  const notes: string[] = [];
+  let out: Record<string, unknown> = { ok: true, id: f.id, pr: f.pr, shared: true, changed: [] as string[] };
+  if (Object.keys(patch).length) {
+    const r = await shared.reviseFinding(root, f.pr!, f.id, patch, { allowPostEdit: input.allowPostEdit }) as Record<string, unknown>;
+    if (r.error) return r;
+    out = { ...r, pr: f.pr, shared: true };
+  }
+  const verdict = input.disposition === "refuted" ? "refute" as const
+    : input.disposition === "confirmed" ? "confirm" as const : null;
+  if (verdict) {
+    // `corroborateFinding` refuses a verdict with no rationale, and it is right to:
+    // a verdict without one is a vote. So it is only recorded when the revision
+    // carried the reasoning that justifies it.
+    const rationale = (input.text ?? input.comment ?? "").trim();
+    if (rationale) await shared.corroborateFinding(root, f.pr!, f.id, verdict, rationale);
+    else notes.push(`disposition "${input.disposition}" not recorded — a verdict on a shared finding needs a rationale; pass \`text\`, or use \`corroborate\``);
+  } else if (input.disposition) {
+    notes.push(`disposition "${input.disposition}" is not recorded on a shared finding — verdicts are`);
+  }
+  for (const k of ["publishPath", "publishLine"] as const) {
+    if ((input as Record<string, unknown>)[k] !== undefined) {
+      notes.push(`${k} is a local publishing field and has no shared equivalent — set it on the copy this machine publishes from`);
+    }
+  }
+  // `finding.revised` folds text/comment/severity/category/sourceRef/line and NOT the
+  // witness, so there is no event that re-witnesses a shared finding. Said out loud
+  // rather than dropped: `ref` is the one route past the written-against-a-different-
+  // body gate, and an agent that thinks it ran will not look for another.
+  if (input.ref !== undefined) {
+    notes.push("ref is not recorded on a shared finding — the fold has no re-witness event; re-witness the local copy, or ask a person");
+  }
+  return notes.length ? { ...out, note: notes.join("; ") } : out;
 }
 
 // ---------------------------------------------------------------------------

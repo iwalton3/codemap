@@ -4,7 +4,7 @@ import { type Anchor, type LogicalNode, type BugSeverity, type Annotation, type 
 import { indexFile, indexBlob } from "../repo.js";
 import { headCommit, readBlobs } from "../git.js";
 import { readAnchorStore, loadNodes, readAnnotations, writeAnnotations, readFindings, readFinding, writeLocalFinding, findAnchorsOutsideWork, readPushes, bodyHashAt, readOrphans } from "../store.js";
-import type { SharedFinding } from "../shared-findings.js";
+import { findingTier, type FindingTier, type SharedFinding } from "../shared-findings.js";
 import { requireActor, isAgentActor, actorLabel } from "../identity.js";
 import { isAgentAuthored, publishStateOf, type PublishState } from "../pr-push.js";
 import { genId, liveAnchors, resolveRefs, loadNodesShared} from "./shared.js";
@@ -70,7 +70,7 @@ const WITHDRAWAL_LEAD = new RegExp(
  * by the contract in the tool description is the ASK — the one part the person
  * fixing it actually needs.
  */
-function checkComment(
+export function checkComment(
   comment: string | undefined, disposition?: string,
 ): { comment?: string } | { error: string } {
   const c = comment?.trim();
@@ -349,7 +349,10 @@ export async function reviseAnnotation(
 ) {
   const store = await readAnnotations(root);
   const ann = store.annotations.find((a) => a.id === input.id);
-  if (!ann) return { error: `no annotation "${input.id}"` };
+  // Names both namespaces because this is the LAST branch `ops.reviseOn` tries: an id
+  // that is not a finding lands here, and answering a shared id with `no annotation`
+  // named the one store the caller had not asked about.
+  if (!ann) return { error: `no finding or annotation "${input.id}" — ids come from \`findings\`, \`shared_findings\` or \`review_queue\`` };
   // Editing what the submitter can already see, without editing it there too, makes
   // the map and the pull request disagree about what was said — and the pull request
   // is the copy the other person is acting on.
@@ -465,6 +468,11 @@ export interface QueueItem {
   textPreview?: string;
   comment?: string;
   disposition?: Disposition;
+  /**
+   * The same axis `disposition` names, in the vocabulary `shared_findings` uses, so
+   * one word reads both lists. See `tierOfAnnotation` for the correspondence.
+   */
+  tier?: FindingTier;
   publishState?: PublishState;
   /**
    * False when the target is not in the working tree. The queue used to serve a
@@ -526,6 +534,29 @@ export interface QueueItem {
  * a state instead — so inventing a richer one here would put a triage conclusion on a
  * record nobody reached it for.
  */
+/**
+ * A plain annotation's tier — the one axis both finding surfaces answer on.
+ *
+ * `disposition` and `tier` name the same question ("how settled is this?") in two
+ * vocabularies, and until the two stores are one word (`docs/plan-findings-unification.md`)
+ * this is the mapping, in one place, so neither surface has to know the other's words:
+ *
+ *   open                          -> unconfirmed   nobody has weighed in
+ *   confirmed / partial / rerated -> confirmed     somebody stood behind it
+ *   refuted                       -> doubted       probably not real
+ *   accepted, or resolved         -> settled       real, and done with
+ *
+ * `accepted` lands in `settled` rather than `confirmed` deliberately: it means real and
+ * deliberately not being fixed, so it is finished, and leaving it under `confirmed`
+ * would keep it at the top of a list read for what still needs deciding.
+ */
+export function tierOfAnnotation(a: Pick<Annotation, "disposition" | "resolved" | "withdrawn">): FindingTier {
+  if (a.resolved || a.disposition === "accepted") return "settled";
+  if (a.withdrawn || a.disposition === "refuted") return "doubted";
+  if (a.disposition && a.disposition !== "open") return "confirmed";
+  return "unconfirmed";
+}
+
 function findingAsQueueEntry(f: SharedFinding): Annotation {
   const refuted = f.state === "refuted" || f.corroboration.some((c) => c.verdict === "refute");
   const confirmed = f.corroboration.some((c) => c.verdict === "confirm");
@@ -560,6 +591,19 @@ export async function reviewQueue(
     includeAnswered?: boolean; brief?: boolean; limit?: number; offset?: number;
     disposition?: string; publishState?: string;
     /**
+     * One pull request's findings. PR membership is STORED on a canonical finding
+     * (`docs/plan-findings-unification.md`), so this is a filter and not the read-time
+     * worklist intersection the PR story does. An annotation has no `pr` of its own
+     * until it is posted, so it matches only through its `postedRef`.
+     */
+    pr?: string | number;
+    /**
+     * How settled the row is, in the shared vocabulary — see `tierOf`. The same axis
+     * `disposition` names locally, so either word answers "what has nobody looked at":
+     * `tier: "unconfirmed"` and `disposition: "open"` select the same rows.
+     */
+    tier?: string;
+    /**
      * Default true: the queue is "what a human asked an agent to act on", and an
      * assignment is what made it that.
      *
@@ -585,6 +629,11 @@ export async function reviewQueue(
   // annotation has, and a synthetic field nobody can write back to is a lie.
   const prOf = new Map(rows.map((f) => [f.id, f.pr!]));
   const sharedIds = new Set(rows.filter((f) => f.origin).map((f) => f.id));
+  // Tier from the RECORD where there is one. `findingAsQueueEntry` flattens a
+  // finding's state and corroboration down to a `Disposition`, which cannot tell
+  // `invalid` from unreviewed — so the tier is taken before that flattening, and only
+  // a plain annotation, which never had the richer state, is derived from it.
+  const tierOf = new Map(rows.map((f) => [f.id, findingTier(f)]));
   const everything = [...store.annotations, ...rows.map(findingAsQueueEntry)];
   const pushedIds = await pushedAnnotationIds(root);
   const liveIds = new Set((await readAnchorStore(root)).anchors.map((a) => a.id));
@@ -593,7 +642,12 @@ export async function reviewQueue(
     ? a.assignment && !a.resolved && (opts.includeAnswered || !a.outcome)
     : (a.kind === "finding" || a.kind === "question") && (opts.includeResolved || !a.resolved));
   if (opts.ids) { const want = new Set(opts.ids); pending = pending.filter((a) => want.has(a.id)); }
+  if (opts.pr !== undefined) {
+    const want = String(opts.pr);
+    pending = pending.filter((a) => (prOf.get(a.id) ?? (a.postedRef ? String(a.postedRef.pr) : undefined)) === want);
+  }
   if (opts.disposition) pending = pending.filter((a) => (a.disposition ?? "open") === opts.disposition);
+  if (opts.tier) pending = pending.filter((a) => (tierOf.get(a.id) ?? tierOfAnnotation(a)) === opts.tier);
   if (opts.publishState) pending = pending.filter((a) => publishStateOf(a, pushedIds) === opts.publishState);
 
   const rank = { critical: 0, high: 1, medium: 2, low: 3 } as Record<string, number>;
@@ -632,7 +686,8 @@ export async function reviewQueue(
   if (opts.brief !== false) {
     const brief: QueueItem[] = page.map((a) => ({
       id: a.id, kind: a.kind, severity: a.severity, category: a.category,
-      disposition: a.disposition ?? "open", publishState: publishStateOf(a, pushedIds),
+      disposition: a.disposition ?? "open", tier: tierOf.get(a.id) ?? tierOfAnnotation(a),
+      publishState: publishStateOf(a, pushedIds),
       comment: a.comment,
       textPreview: a.text.length > 300 ? a.text.slice(0, 300) + "…" : a.text,
       line: a.line, author: a.author, assignment: a.assignment, target: a.target,
@@ -690,6 +745,7 @@ export async function reviewQueue(
       ...(off ? { atCommit: off.ref } : {}),
       comment: a.comment,
       disposition: a.disposition ?? "open",
+      tier: tierOf.get(a.id) ?? tierOfAnnotation(a),
       publishState: publishStateOf(a, pushedIds),
       ...targetState(a),
       ...triageState(a),
@@ -732,7 +788,10 @@ export async function reviewQueue(
  */
 export async function closeLocalFinding(
   root: string,
-  input: { id: string; result: "fixed" | "answered" | "declined"; detail: string; files?: string[]; by?: string; comment?: string; line?: number; disposition?: Disposition },
+  input: {
+    id: string; result: "fixed" | "answered" | "declined"; detail: string; files?: string[]; by?: string;
+    comment?: string; line?: number; severity?: BugSeverity; disposition?: Disposition;
+  },
 ): Promise<Record<string, unknown>> {
   const f = await readFinding(root, input.id).catch(() => null);
   if (!f) return { error: `no annotation or finding "${input.id}"` };
@@ -750,9 +809,23 @@ export async function closeLocalFinding(
   const unmapped = input.disposition && !verdict ? input.disposition : null;
   const at = new Date().toISOString();
 
+  const SEV = ["low", "medium", "high", "critical"];
+  if (input.severity !== undefined && !SEV.includes(input.severity)) {
+    return { error: `unknown severity "${input.severity}" — expected one of ${SEV.join(", ")}` };
+  }
+  // A re-rate that only reaches `detail` is the thing this whole surface exists to
+  // stop: prose nothing can filter on, over a record that still reads `high`.
+  const was: Record<string, unknown> = {};
+  const set = <K extends keyof SharedFinding>(k: K, v: SharedFinding[K] | undefined) => {
+    if (v === undefined || v === f[k]) return;
+    was[k] = f[k];
+    f[k] = v;
+  };
   f.outcome = { result: input.result, detail: input.detail, ...(files.length ? { files } : {}), by: actor, at };
-  if (c.comment) f.comment = c.comment;
-  if (Number.isFinite(input.line)) f.line = Math.floor(input.line as number);
+  set("comment", c.comment);
+  set("line", Number.isFinite(input.line) ? Math.floor(input.line as number) : undefined);
+  set("severity", input.severity);
+  if (Object.keys(was).length) f.revisions = [...f.revisions, { at, by: actor, was }];
   if (verdict) f.corroboration = [...f.corroboration, { actor, verdict, at, rationale: input.detail, independent: false }];
   await writeLocalFinding(root, f, f.pr!);
   return { ok: true, id: f.id, pr: f.pr, shared: false, ...(unmapped ? { note: `disposition "${unmapped}" is not recorded on a finding — verdicts are` } : {}) };
@@ -778,6 +851,84 @@ export async function commentOnLocalFinding(root: string, id: string, body: stri
   return { ok: true, id: commentId };
 }
 
+/**
+ * The fields a revision may rewrite, on either half of the split.
+ *
+ * Same list as the fold applies for `finding.revised` (`shared-findings.ts`) — kept
+ * beside the local writer so the two halves of one verb cannot drift into revising
+ * different things depending on whether a sidecar happens to be configured.
+ */
+export const REVISABLE = ["text", "comment", "severity", "category", "line"] as const;
+
+/**
+ * Revise a LOCAL finding — one filed here with no sidecar, or not yet folded.
+ *
+ * The shared half is an event (`finding.revised`); this is the row half, and it lives
+ * here for the layering reason `closeLocalFinding` gives. `ops.reviseOn` picks between
+ * them, and neither is reachable by a caller that has to know which store it has.
+ *
+ * A finding already on the pull request is refused for the reason `reviseAnnotation`
+ * gives: the submitter is acting on the posted copy, and editing only the map makes
+ * the two disagree without anybody being told.
+ */
+export async function reviseLocalFinding(
+  root: string,
+  input: {
+    id: string; allowPostEdit?: boolean;
+    text?: string; comment?: string; severity?: BugSeverity; category?: string; line?: number;
+    /** Re-witness against this ref after re-reading the code, exactly as `reviseAnnotation` does. */
+    ref?: string;
+  },
+) {
+  const f = await readFinding(root, input.id).catch(() => null);
+  if (!f) return { error: `no finding "${input.id}"` };
+  if (f.posted && !input.allowPostEdit) {
+    return { error: `that finding is already posted to PR #${f.pr}${f.posted.url ? ` (${f.posted.url})` : ""}. Revising it here would diverge from what the submitter can see — reply on the pull request instead, or pass allowPostEdit to change the map anyway (which does NOT edit the posted comment).` };
+  }
+  const c = checkComment(input.comment);
+  if ("error" in c) return c;
+  const SEV = ["low", "medium", "high", "critical"];
+  if (input.severity !== undefined && !SEV.includes(input.severity)) {
+    return { error: `unknown severity "${input.severity}" — expected one of ${SEV.join(", ")}` };
+  }
+  const actor = requireActor(root);
+  if ("error" in actor) return actor;
+
+  const next: Record<string, unknown> = {
+    ...(input.text !== undefined ? { text: input.text.trim() } : {}),
+    ...(c.comment !== undefined ? { comment: c.comment } : {}),
+    ...(input.severity !== undefined ? { severity: input.severity } : {}),
+    ...(input.category !== undefined ? { category: input.category.trim() } : {}),
+    ...(Number.isFinite(input.line) ? { line: Math.floor(input.line as number) } : {}),
+  };
+  const row = f as unknown as Record<string, unknown>;
+  const was: Record<string, unknown> = {};
+  const changed: string[] = [];
+  for (const k of REVISABLE) {
+    if (!(k in next) || next[k] === row[k]) continue;
+    was[k] = row[k];
+    row[k] = next[k];
+    changed.push(k);
+  }
+  // Re-witnessing is how a finding blocked as written-against-a-different-body gets
+  // cleared, so it has to work on the store the finding is actually in — dropping it
+  // silently here would leave the only route past that gate looking like it ran.
+  if (input.ref !== undefined && f.target.kind === "anchor") {
+    const w = await witnessAt(root, f.target.id, input.ref || undefined);
+    if (!w.witness) return { error: `could not read ${f.target.id} at ${input.ref || "@work"} — nothing to witness against` };
+    if (w.witness.bodyHash !== f.witness?.bodyHash) {
+      was.witness = f.witness; was.sourceRef = f.sourceRef;
+      changed.push("witness");
+    }
+    f.witness = w.witness;
+    f.sourceRef = w.sourceRef;
+  }
+  if (!changed.length) return { ok: true, id: f.id, pr: f.pr, shared: false, changed, note: "nothing changed" };
+  f.revisions = [...f.revisions, { at: new Date().toISOString(), by: actor, was }];
+  await writeLocalFinding(root, f, f.pr!);
+  return { ok: true, id: f.id, pr: f.pr, shared: false, changed };
+}
+
 export async function closeAssignment(
   root: string,
   input: {
@@ -798,14 +949,20 @@ export async function closeAssignment(
      * defect". Collapsing the two would make `result` mean two things at once.
      */
     disposition?: Disposition;
+    /**
+     * A re-rate the investigation reached. Same reason `disposition` is here: a
+     * severity stated only in `detail` leaves the record reading what it was filed
+     * as, so anybody filtering by severity acts on the number nobody now believes.
+     */
+    severity?: BugSeverity;
   },
 ) {
   const store = await readAnnotations(root);
   const ann = store.annotations.find((a) => a.id === input.id);
   // A non-annotation id is a canonical finding, and `ops.closeFinding` routes those —
-  // this function is the annotation half. Reached directly only by a caller that already
-  // knows which it has.
-  if (!ann) return { error: `no annotation "${input.id}"` };
+  // this function is the annotation half, and the last branch it tries, so the message
+  // names every namespace an id can come from rather than only this one.
+  if (!ann) return { error: `no finding or annotation "${input.id}" — ids come from \`findings\`, \`shared_findings\` or \`review_queue\`` };
   if (!ann.assignment) return { error: "that annotation was not assigned to an agent" };
   // `assignAnnotation` refuses a resolved annotation for the same reason: an agent
   // holding a queue read from before the human closed this would otherwise stamp an
@@ -826,12 +983,17 @@ export async function closeAssignment(
   // Reporting back is a revision of the finding, so it leaves the same trail: what
   // it said before the investigation is exactly what a reader wants when the
   // investigation changed the answer.
+  const SEV = ["low", "medium", "high", "critical"];
+  if (input.severity !== undefined && !SEV.includes(input.severity)) {
+    return { error: `unknown severity "${input.severity}" — expected one of ${SEV.join(", ")}` };
+  }
   const line = Number.isFinite(input.line) && (input.line as number) > 0 ? Math.floor(input.line as number) : undefined;
-  if (c.comment || disposition || line !== undefined) {
+  if (c.comment || disposition || line !== undefined || input.severity !== undefined) {
     const was: NonNullable<Annotation["revisions"]>[number]["was"] = {};
     if (c.comment && c.comment !== ann.comment) { was.comment = ann.comment; ann.comment = c.comment; }
     if (disposition && disposition !== ann.disposition) { was.disposition = ann.disposition; ann.disposition = disposition; }
     if (line !== undefined && line !== ann.line) { was.line = ann.line; ann.line = line; }
+    if (input.severity !== undefined && input.severity !== ann.severity) { was.severity = ann.severity; ann.severity = input.severity; }
     if (Object.keys(was).length) (ann.revisions ??= []).push({ at: new Date().toISOString(), by: input.by || "agent", was });
   }
   ann.outcome = { at: new Date().toISOString(), by: input.by || "agent", result: input.result, detail: input.detail, files: files.length ? files : undefined };

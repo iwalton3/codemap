@@ -193,6 +193,17 @@ with an assignment, and nothing else; \`findings\` is the wider list of everythi
 map. Report back with \`close_finding\` — that records what you did and does not close
 it, because reporting and agreeing it is closed are different acts.
 
+**Triaging what somebody else filed.** "The ones not confirmed yet" is
+\`shared_findings(pr, tier:"unconfirmed")\`, or \`findings(pr, tier:"unconfirmed")\` —
+NOT \`queue:true\`, which is what is waiting on a PERSON and therefore cannot contain a
+finding nobody has looked at. Then, per finding: \`corroborate\` with what you actually
+checked, and if verification changed the finding itself — a severity you now rate
+differently, an ask that would send the submitter to do the wrong thing —
+\`revise_finding\` puts the correction on the RECORD, where it can be filtered and where
+the submitter will read it. A re-rate written into an outcome paragraph leaves the
+finding reading what it was filed as to everyone else. Past \`issued\` a team finding is
+a person's to rewrite: say what you found with \`comment\` and use \`request_human\`.
+
 ## Find & fix
 - \`check_stale\` — docs whose anchored code changed (candidate_stale) or vanished
   (lost/dangling); run the post-change loop above on them.

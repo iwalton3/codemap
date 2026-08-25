@@ -159,6 +159,7 @@ id dispatch at all, since no id exists yet; that is what the required context is
 | second opinion | `corroborate_bug` | — | `corroborate` |
 | ask a human | `ask_about_bug` | — | `request_ack` |
 | report back | `update_bug` | `close_finding` | `report_on_finding` |
+| revise | `update_bug` | `revise_finding` | **nothing** |
 
 `review_queue` and `findings` are the same handler (`ops.reviewQueue`) with different
 default flags.
@@ -260,6 +261,15 @@ migrating actor, and say so.
    NOT merged: `update_bug` and `close_finding`. They look like a pair and are not —
    one changes fields, the other reports an outcome, and collapsing them would make
    `result` mean two things.
+
+   **A later use-report finished the row this table calls "report back"** (see below).
+   `revise_finding` and `close_finding` now resolve any finding id against the records,
+   the same way `comment` does, and `report_on_finding` — which was `close_finding` for
+   the shared half, with a `pr` to get wrong and no `comment`, `severity` or
+   `disposition` — is gone. 78 tools -> 77. What made this worth doing was not the
+   duplication: it was that the shared half had NO revise verb at all, so an agent whose
+   triage changed a finding's ask could only put the correction in an outcome paragraph,
+   over a record still reading the severity it was filed as.
 5. ~~**Migration script** for the 96~~ **DONE** — `src/findings-migrate.ts`,
    `codemap migrate-findings`. Applied to Acme.API: 45 moved (23 on #227, 22 on #264),
    51 left with no recorded pull request, of which only 6 are open — and four of those
@@ -273,6 +283,39 @@ migrating actor, and say so.
    a finding there, anywhere else a drive-by bug, and the button says which.
 
 Steps 2 and 3 are one landing — a canonical table nothing reads is a fourth store.
+
+## One axis, two vocabularies
+
+The stores are one table, and the *lifecycle* verbs are now one each. What is still two
+words is the question every triage list is read by — how settled a finding is:
+
+| local `disposition` | shared `tier` | means |
+|---|---|---|
+| `open` | `unconfirmed` | filed; nobody has weighed in |
+| `confirmed` / `partial` / `rerated` | `confirmed` | somebody stood behind it |
+| `refuted` | `doubted` | probably not real, nobody has closed it |
+| `accepted`, or resolved | `settled` | done with |
+
+Until one word wins, **both surfaces answer to both**: `findings` takes `tier` and puts
+it on every row, `shared_findings` takes `tier`, and the mapping lives in exactly one
+place (`tierOfAnnotation`, `ops/annotations.ts`) rather than being re-derived per caller.
+`findings` also takes `pr`, which it can only do because membership is stored.
+
+Two things about the correspondence that are easy to get wrong:
+
+- **`tier` is taken from the RECORD, before the flattening.** `findingAsQueueEntry`
+  reduces a finding's state and corroboration to a `Disposition`, and that reduction
+  cannot tell `invalid` from unreviewed — both come out `open`. Deriving the tier from
+  the disposition would therefore file a closed-as-invalid finding under "nobody has
+  looked at this". Only a plain annotation, which never had the richer state, is
+  derived from its disposition.
+- **`accepted` is `settled`, not `confirmed`.** It means real and deliberately not being
+  fixed. Leaving it under `confirmed` would keep it at the top of a list read for what
+  still needs deciding.
+
+A verdict recorded on one side is visible on the other, and that is not a coincidence:
+`corroborate` on a shared finding appends to the canonical row's corroboration, so the
+local view's `disposition` moves from `open` to `confirmed` with it. There is one row.
 
 ## What this plan does not cover
 

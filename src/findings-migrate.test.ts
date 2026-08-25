@@ -215,6 +215,6 @@ test("an id that is neither still says so plainly", async () => {
   try {
     const { closeFinding } = await import("./ops.js");
     const out = await closeFinding(r.root, { id: "nope", result: "answered", detail: "x" } as never);
-    assert.match(String(out.error), /no annotation "nope"/);
+    assert.match(String(out.error), /no finding or annotation "nope"/);
   } finally { r.cleanup(); }
 });

@@ -127,6 +127,7 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
         // as opposed to "what have I been asked to do".
         assignedOnly: q.get("all") !== "1",
         includeResolved: q.get("resolved") === "1",
+        pr: q.get("pr") ?? undefined, tier: q.get("tier") ?? undefined,
       });
     case "/api/orphans":
       // `locate` indexes a commit per stranded record's address, so it is opt-in
@@ -188,7 +189,9 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
     // Shared review. Read-only; nothing here touches the sidecar's remote — that
     // is POST /api/shared/sync, so a page load never surprises anyone with network.
     case "/api/shared":
-      return shared.sharedFindings(root, q.get("pr") ?? "", { queue: q.get("queue") === "1" });
+      return shared.sharedFindings(root, q.get("pr") ?? "", {
+        queue: q.get("queue") === "1", tier: (q.get("tier") ?? undefined) as never,
+      });
     case "/api/shared/peers":
       return shared.sharedStatus(root);
     case "/api/shared/hub":

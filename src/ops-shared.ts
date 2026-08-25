@@ -28,7 +28,7 @@ import {
   markPosted, markUpstreamed, promoteToBug, needsHumanAck, ackQueue,
   revise, resolveContest, relocate,
   foldFindings, findingScope, findingTier, byReadingOrder,
-  type SharedFinding, type Verdict, type Ask, type FindingState, type NewFinding,
+  type SharedFinding, type Verdict, type Ask, type FindingState, type NewFinding, type FindingTier,
 } from "./shared-findings.js";
 import { publishWalkthrough, currentWalkthrough, staleWalkthroughs, foldWalkthroughs, walkthroughScope } from "./shared-walkthrough.js";
 import {
@@ -504,12 +504,41 @@ export async function relocateFinding(
   return { ...mz, ok: true, id, kind, ...(opts.apply ? { applied: true } : { note: "queued for a person to apply" }) };
 }
 
-export async function reviseFinding(root: string, pr: number | string, id: string, now: Record<string, unknown>) {
+/**
+ * Rewrite a finding's substance, keeping what it used to say.
+ *
+ * Both refusals below are the fold's rules stated at the write path, for the reason
+ * `setState` gives: the fold would DROP the event either way, and a silent no-op is a
+ * worse answer than an error. An agent revising a finding somebody stood behind used
+ * to be accepted here, appended, synced — and then ignored by every reader.
+ */
+export async function reviseFinding(
+  root: string, pr: number | string, id: string, now: Record<string, unknown>,
+  opts: { allowPostEdit?: boolean } = {},
+) {
   const b = bind(root);
   if ("error" in b) return b;
-  await revise(b.cfg.path, prKey(b.cfg, pr), b.actor, id, now);
+  const f = (await cachedFindings(root, b.cfg, pr)).value.get(id);
+  if (!f) return { error: `no finding ${id} on pr ${pr}` };
+  if (isAgentActor(b.actor) && f.state !== "issued") {
+    return {
+      error: `${id} is \`${f.state}\` — past a proposal, only a person revises a finding. `
+        + "Say what you found with `comment`, and `request_human` if the wording has to change.",
+    };
+  }
+  if (f.posted && !opts.allowPostEdit) {
+    return {
+      error: `${id} is already on PR ${pr}${f.posted.url ? ` (${f.posted.url})` : ""}. `
+        + "Revising it here would diverge from the copy the submitter is acting on — reply on the pull request instead, "
+        + "or pass allowPostEdit to change the map anyway (which does NOT edit the posted comment).",
+    };
+  }
+  const was = Object.fromEntries(
+    Object.keys(now).map((k) => [k, (f as unknown as Record<string, unknown>)[k]]),
+  );
+  await revise(b.cfg.path, prKey(b.cfg, pr), b.actor, id, now, was);
   const mz = await materializeFindings(root, b.cfg, pr);
-  return { ...mz, ok: true, id };
+  return { ...mz, ok: true, id, changed: Object.keys(now) };
 }
 
 /** Settle a field two people set differently without seeing each other. */
@@ -622,7 +651,7 @@ const cachedNotes = async (root: string, cfg: { path: string; universe: string }
  * findings, and refusing to list them was the shared/local split showing through a
  * surface that should not know about it.
  */
-export async function sharedFindings(root: string, pr: number | string, opts: { queue?: boolean } = {}) {
+export async function sharedFindings(root: string, pr: number | string, opts: { queue?: boolean; tier?: FindingTier } = {}) {
   const cfg = resolveSidecar(root);
   let scope: { status?: string; diagnostic?: ScopeDiagnostic } = { status: "complete" };
   if (cfg) {
@@ -637,8 +666,16 @@ export async function sharedFindings(root: string, pr: number | string, opts: { 
   // Reading order, not filing order — see `findingTier`. Applied to the queue too:
   // the queue is a narrower list of the same question, so it wants the same answer at
   // the top. `sort` mutates, so it is the already-copied array being ordered.
-  const chosen = (opts.queue ? ackQueue(all) : [...all]).sort(byReadingOrder);
+  let chosen = (opts.queue ? ackQueue(all) : [...all]).sort(byReadingOrder);
+  if (opts.tier) chosen = chosen.filter((f) => findingTier(f) === opts.tier);
   const place = (f: SharedFinding) => places.get(f.target.id) ?? { state: "unknown" as const };
+  // The shape of the list, always — the queue answers "what is waiting on a person",
+  // and an UNTRIAGED finding is waiting on nobody by that definition, so the most
+  // ordinary triage question ("what has nobody looked at?") had no surface at all and
+  // was answered by reading every finding and filtering by eye. Counting the tiers here
+  // costs nothing and makes `tier` discoverable from the answer that motivates it.
+  const tiers: Record<FindingTier, number> = { confirmed: 0, unconfirmed: 0, doubted: 0, settled: 0 };
+  for (const f of all) tiers[findingTier(f)]++;
   return {
     scope: nonAuthoritative(scope as ScopeStatus),
     universe: cfg?.universe ?? null,
@@ -646,6 +683,7 @@ export async function sharedFindings(root: string, pr: number | string, opts: { 
     total: all.length,
     waitingOnYou: ackQueue(all).length,
     contested: all.filter((f) => f.contested?.length).length,
+    tiers,
     findings: chosen.map((f) => ({ ...view(f), tier: findingTier(f), target: { ...f.target, where: place(f).state, at: place(f).at, lastFile: place(f).file } })),
   };
 }

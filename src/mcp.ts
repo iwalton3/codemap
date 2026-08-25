@@ -692,8 +692,10 @@ const tools: Tool[] = [
   },
   {
     name: "findings",
-    description: "Every LOCAL finding and question on the map, whoever raised them and whether or not anyone was asked to act. NOT the team's: a finding filed with `report_defect` lives in the canonical findings table and is read by `shared_findings` for its pull request. Until the two stores are one (`docs/plan-findings-unification.md`) neither list is a superset of the other.\n\n`review_queue` answers \"what have I been asked to do\" and only lists items with an assignment — so a finding raised by `annotate` and published to a pull request was invisible to every query afterwards. This one answers \"what is on this map, and where has it got to\": filter by `disposition` (what triage concluded) and `publishState` (local / approved / withdrawn / posted), and `posted` items carry `postedRef` with the review and comment they landed in.\n\nBrief by default, same as `review_queue`.",
+    description: "Every finding and question on the map — whoever raised them, whether or not anyone was asked to act, and whichever store they live in. Both halves: a finding filed with `report_defect` and a finding the team folded from the sidecar are one row here. `shared_findings` is the other view of the same pull request, from the sidecar's side, and carries the corroboration and thread this list only summarises.\n\n`review_queue` answers \"what have I been asked to do\" and only lists items with an assignment — so a finding raised by `annotate` and published to a pull request was invisible to every query afterwards. This one answers \"what is on this map, and where has it got to\".\n\nFilters: `pr` (one pull request — findings store theirs, so this is exact and not a guess from the diff), `tier` (how settled: `unconfirmed` is the untriaged pile), `disposition` (what triage concluded) and `publishState` (local / approved / withdrawn / posted). `tier` and `disposition` are the same axis in two vocabularies — `tier:\"unconfirmed\"` and `disposition:\"open\"` select the same rows, and `tier` is the word `shared_findings` uses, so it reads both lists.\n\n`posted` items carry `postedRef` with the review and comment they landed in. Brief by default, same as `review_queue`.",
     inputSchema: obj({
+      pr: { type: "string", description: "Only findings on this pull request." },
+      tier: { type: "string", enum: ["unconfirmed", "confirmed", "doubted", "settled"], description: "How settled it is — `unconfirmed` means nobody has weighed in yet. The vocabulary `shared_findings` uses." },
       disposition: { type: "string", enum: ["open", "confirmed", "partial", "rerated", "refuted", "accepted"] },
       publishState: { type: "string", enum: ["local", "approved", "withdrawn", "posted"] },
       includeResolved: { type: "boolean", description: "Also list findings a human has closed out (default false)." },
@@ -705,19 +707,21 @@ const tools: Tool[] = [
       assignedOnly: false,
       includeResolved: Boolean(a.includeResolved), brief: a.brief !== false,
       limit: a.limit as number | undefined, offset: a.offset as number | undefined,
+      pr: a.pr as string | undefined, tier: a.tier as string | undefined,
       disposition: a.disposition as string | undefined, publishState: a.publishState as string | undefined,
     }),
   },
   {
     name: "close_finding",
-    description: "Report back on a finding from `review_queue`. This records what you did; it does NOT resolve the finding — reporting and agreeing it is closed are different acts, and the human closes it after reading.\n\n`result`:\n  • \"fixed\" — you changed the code. List every file you touched in `files`; more than one is refused, by design.\n  • \"answered\" — you investigated. Put the finding in `detail`: whether it is real, why, and what you checked.\n  • \"declined\" — you did not act. Say what it would take. Declining a fix that spans files, or that needs a judgement call you cannot make, is the RIGHT answer.\n\n`result` is what YOU DID; `disposition` is what turned out to be TRUE of the finding. They are different axes — a false positive is `answered` + `refuted`, because you did answer and the answer was \"not a defect\". Set `disposition` whenever you reached a conclusion: it is what decides whether this goes to the submitter, and prose saying \"recommend closing as invalid\" cannot be filtered on." + COMMENT_CONTRACT,
+    description: "Report back on a finding from `review_queue`. This records what you did; it does NOT resolve the finding — reporting and agreeing it is closed are different acts, and the human closes it after reading.\n\n`result`:\n  • \"fixed\" — you changed the code. List every file you touched in `files`; more than one is refused, by design.\n  • \"answered\" — you investigated. Put the finding in `detail`: whether it is real, why, and what you checked.\n  • \"declined\" — you did not act. Say what it would take. Declining a fix that spans files, or that needs a judgement call you cannot make, is the RIGHT answer.\n\n`result` is what YOU DID; `disposition` is what turned out to be TRUE of the finding. They are different axes — a false positive is `answered` + `refuted`, because you did answer and the answer was \"not a defect\". Set `disposition` whenever you reached a conclusion: it is what decides whether this goes to the submitter, and prose saying \"recommend closing as invalid\" cannot be filtered on.\n\nThe same rule governs the other two conclusions an investigation reaches: a corrected `comment` and a re-rated `severity` go in the FIELDS, on the record, not into `detail`. A severity stated only in prose leaves the finding reading what it was filed as to everyone filtering by it.\n\nTakes any finding id — your own, another agent's, or the TEAM's from `shared_findings`; there is no second tool for the shared half and no `pr` to get wrong. On a team finding `disposition` becomes corroboration where it is a verdict (`confirmed`/`refuted`) and is reported back as not recorded otherwise, and a finding past `issued` refuses the comment/severity half — say it with `comment` and `request_human` instead." + COMMENT_CONTRACT,
     inputSchema: obj({
-      id: { type: "string", description: "The annotation id from `review_queue`." },
+      id: { type: "string", description: "A finding id, from `review_queue`, `findings` or `shared_findings`." },
       result: { type: "string", enum: ["fixed", "answered", "declined"] },
       detail: { type: "string", description: "What you did or found — the human reads this, so be concrete." },
       disposition: { type: "string", enum: ["open", "confirmed", "partial", "rerated", "refuted", "accepted"], description: DISPOSITION_DOC },
       comment: { type: "string", description: "Rewrite the submitter-facing version if your investigation changed it — as a standalone statement about the code, not as a diff against the filing, which the submitter has never seen. Max 800 characters. The previous wording is kept on the map." },
       line: { type: "number", description: "The line in the finding's own file that it actually points at. SET THIS — you have just read the code, and without it the comment is placed by geometry (the enclosing symbol's first changed line), which lands on a neighbouring member." },
+      severity: { type: "string", enum: ["low", "medium", "high", "critical"], description: "Re-rate it, if the investigation changed the rating. Set the value you now believe — not the delta, and not a note about it in `detail`." },
       files: { type: "array", items: { type: "string" }, description: "Files you actually changed (for `fixed`). One file maximum." },
       by: { type: "string" },
     }, ["id", "result", "detail"]),
@@ -731,10 +735,14 @@ const tools: Tool[] = [
       + "Findings get filed before they are understood: a report goes in, investigation shows it was overstated or aimed at the wrong line, and the correction has to be visible AS a correction. Revisions APPEND; nothing is destroyed, and the previous wording stays readable ON THE MAP.\n\n"
       + "The submitter is not a party to that history: they receive the latest `comment` and nothing else. A revised comment therefore has to STAND ALONE — rewritten as if filed fresh, not written as a correction to the one before it.\n\n"
       + "Use it to sharpen a `comment`, to record what triage concluded (`disposition`), to re-rate a `severity` you now think is wrong, or to set `publishPath` for a finding about code the pull request does not touch.\n\n"
-      + "Refused once the finding is on the pull request: revising it here would diverge from the copy the submitter is acting on."
+      + "Takes any finding id — your own, another agent's, or the TEAM's from `shared_findings`. The store the row lives in is not yours to work out, and it is not visible in the id.\n\n"
+      + "TWO REFUSALS, both because the revision would otherwise be written and then ignored:\n"
+      + "  • Already on the pull request — revising it here would diverge from the copy the submitter is acting on. Reply there instead.\n"
+      + "  • A TEAM finding past `issued` — once somebody stands behind a finding, only a person rewrites it. Say what you found with `comment`, and `request_human` if the wording itself has to change.\n\n"
+      + "On a team finding `disposition` has nowhere true to live: `confirmed` and `refuted` are recorded as corroboration (with your `text` as the rationale), and the other four are reported back as not recorded rather than dropped quietly. `publishPath`/`publishLine` are local publishing fields with no shared equivalent."
       + COMMENT_CONTRACT,
     inputSchema: obj({
-      id: { type: "string", description: "The annotation id." },
+      id: { type: "string", description: "A finding id, from `findings` or `shared_findings`." },
       text: { type: "string", description: "The evidence — for the map, not published." },
       comment: { type: "string", description: "The submitter-facing version, rewritten to stand alone — it replaces the old one for the reader, who never sees what it replaced. Max 800 characters." },
       disposition: { type: "string", enum: ["open", "confirmed", "partial", "rerated", "refuted", "accepted"], description: DISPOSITION_DOC },
@@ -742,12 +750,13 @@ const tools: Tool[] = [
       line: { type: "number", description: "The line in the finding's OWN file that it points at — the normal way to say where it is." },
       publishPath: { type: "string", description: "For a finding about code this PR does not touch: the file IN THE DIFF nearest to the problem. An out-of-diff override, not the everyday field — use `line` for that." },
       publishLine: { type: "number", description: "Line within `publishPath`. Only meaningful alongside it." },
-      ref: { type: "string", description: "Re-witness against this ref after re-reading the code — how a finding blocked as \"written against a different version\" is cleared." },
+      ref: { type: "string", description: "Re-witness against this ref after re-reading the code — how a finding blocked as \"written against a different version\" is cleared. Not available on a TEAM finding — the fold has no re-witness event, and it says so rather than dropping it." },
+      category: { type: "string", description: "Review bucket: Authorization, Logic, Tenant Safety, Performance, Domain Model, Validation, …" },
       allowPostEdit: { type: "boolean", description: "Revise even though it is already posted. The GitHub copy is NOT updated — reply there instead; this only stops the map from silently disagreeing with it." },
       by: { type: "string" },
     }, ["id"]),
     mutates: true,
-    handler: (a, c) => ops.reviseAnnotation(c.universe.path, a as never),
+    handler: (a, c) => ops.reviseOn(c.universe.path, a as never),
   },
   {
     name: "questions",
@@ -780,12 +789,13 @@ const tools: Tool[] = [
   },
   {
     name: "shared_findings",
-    description: "Findings on the sidecar for a pull request — everyone's, not just yours. `queue:true` narrows to what is waiting on a PERSON (promoted, or confirmed by somebody, or with an outstanding request). Read this before filing: a finding somebody has already raised and refuted does not need raising again.",
+    description: "Findings on the sidecar for a pull request — everyone's, not just yours. Read this before filing: a finding somebody has already raised and refuted does not need raising again.\n\nTwo different questions, and they are NOT the same list:\n  • `tier` — how settled each finding is. `unconfirmed` is the untriaged pile: filed, and nobody has weighed in. That is what \"what still needs triage\" means, and it is what you want when somebody asks for the ones not confirmed yet. Also `confirmed` (somebody stood behind it), `doubted` (refuted, withdrawn, or carrying a refuting verdict) and `settled` (closed).\n  • `queue:true` — what is waiting on a PERSON: promoted, confirmed by somebody, contested, or with an outstanding request. An UNTRIAGED finding is waiting on nobody by that definition, so the queue deliberately does not contain it — triaging one is what PUTS it there.\n\n`tiers` on the answer counts all four whatever you filtered by, so the shape of the pull request is visible from any call.",
     inputSchema: obj({
       pr: { type: "string", description: "Pull request number." },
-      queue: { type: "boolean", description: "Only what needs a human decision." },
+      tier: { type: "string", enum: ["unconfirmed", "confirmed", "doubted", "settled"], description: "Only findings at this tier. `unconfirmed` = nobody has weighed in yet." },
+      queue: { type: "boolean", description: "Only what needs a human decision. Excludes the untriaged — use `tier` for those." },
     }, ["pr"]),
-    handler: (a, c) => shared.sharedFindings(c.universe.path, a.pr, { queue: !!a.queue }),
+    handler: (a, c) => shared.sharedFindings(c.universe.path, a.pr, { queue: !!a.queue, tier: a.tier as never }),
   },
   {
     name: "report_defect",
@@ -858,18 +868,6 @@ const tools: Tool[] = [
     }, ["id", "action", "rationale"]),
     mutates: true,
     handler: (a, c) => ops.requestHuman(c.universe.path, a as never),
-  },
-  {
-    name: "report_on_finding",
-    description: "Say what you DID about a finding — fixed it, answered it, or declined. Reporting is not resolving: this records your work and the files you touched so the human can close it quickly, but the close stays theirs.",
-    inputSchema: obj({
-      pr: { type: "string" }, id: { type: "string" },
-      result: { type: "string", enum: ["fixed", "answered", "declined"] },
-      detail: { type: "string" },
-      files: { type: "array", items: { type: "string" }, description: "Files actually touched — the receipt." },
-    }, ["pr", "id", "result", "detail"]),
-    mutates: true,
-    handler: (a, c) => shared.reportOnFinding(c.universe.path, a.pr, a.id, a.result, a.detail, a.files),
   },
   {
     name: "relocate_finding",
