@@ -30,7 +30,7 @@ import {
   foldFindings, findingScope, findingTier, byReadingOrder,
   type SharedFinding, type Verdict, type Ask, type FindingState, type NewFinding, type FindingTier,
 } from "./shared-findings.js";
-import { publishWalkthrough, currentWalkthrough, staleWalkthroughs, foldWalkthroughs, walkthroughScope } from "./shared-walkthrough.js";
+import { publishWalkthrough, currentWalkthrough, staleWalkthroughs, foldWalkthroughs, walkthroughScope, walkthroughShaped } from "./shared-walkthrough.js";
 import {
   createNote, answerNote, resolveNote, allNotes, foldNotes, noteScope, bucketFor,
   type NewNote,
@@ -1380,6 +1380,18 @@ export async function publishLocalDocs(root: string, opts: { dryRun?: boolean } 
 export async function shareWalkthrough(root: string, w: PrWalkthrough) {
   const b = bind(root);
   if ("error" in b) return b;
+  // REFUSED at the boundary, because the log is append-only and this one is permanent.
+  // `PrWalkthrough` and `WalkInput` are structurally close enough that TypeScript never
+  // sees one passed for the other, and every caller here crosses a JSON boundary that
+  // erases the difference — an MCP argument, the unvalidated `walkthrough_share` POST,
+  // or a stored row from a build that predates a field. It happened once, on `Acme.API`
+  // PR 269, and the pull-request page 500'd until the fold learned to skip it.
+  if (!walkthroughShaped(w)) {
+    return {
+      error: "that is the walkthrough INPUT, not a built walkthrough — its chapters carry no ids and no witnesses, "
+        + "so nothing could ever tell you it had gone stale. Write it with `pr_walkthrough`, which builds and publishes in one act.",
+    };
+  }
   const ready = await ensureSidecar(b.cfg.path, b.actor);
   if ("error" in ready) return ready;
   // BEFORE the fold comes back. A local row migrated from the legacy blob has no

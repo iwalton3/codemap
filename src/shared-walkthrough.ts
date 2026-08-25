@@ -58,6 +58,20 @@ export async function publishWalkthrough(
  * Pure, and separate from the read so a caller can fold events from anywhere —
  * a pull, a test, a merge that has not been written to disk yet.
  */
+/**
+ * Is this the BUILT walkthrough, or the input somebody meant to build from?
+ *
+ * The two differ only by fields a JSON boundary erases — `PrWalkthrough` and `WalkInput`
+ * are structurally close enough that TypeScript never sees the substitution, and every
+ * publish path crosses one (an MCP argument, an HTTP body, an NDJSON line).
+ */
+export function walkthroughShaped(w: PrWalkthrough): boolean {
+  if (!Array.isArray(w.features)) return false;
+  return w.features.every((f) =>
+    Array.isArray(f?.chapters)
+    && f.chapters.every((c) => c && typeof c.id === "string" && Array.isArray(c.witnesses)));
+}
+
 export function foldWalkthroughs(events: LogEvent[]): SharedWalkthrough[] {
   const byAuthor = new Map<string, SharedWalkthrough>();
   for (const e of events) {
@@ -67,6 +81,16 @@ export function foldWalkthroughs(events: LogEvent[]): SharedWalkthrough[] {
     // else's client and a shared store that will not load is worse than one
     // missing a record.
     if (!w || typeof w.pr !== "number" || typeof w.head !== "string") continue;
+    // And the CHAPTERS, which this checked only at the envelope. One event on
+    // `Acme.API` PR 269 carried the agent's `WalkInput` — `{title, blocks}` with no id
+    // and no witnesses — instead of the built walkthrough, and every reader crashed on
+    // it: `staleChapters` reads `c.witnesses` and the pull-request page 500'd for good,
+    // because the log is append-only and the fold had no opinion about the shape.
+    //
+    // Witnesses are not decoration. A chapter without them cannot go stale, so a
+    // walkthrough of them would sit under a green check that can never turn — which is
+    // the one thing this project's marks are for.
+    if (!walkthroughShaped(w)) continue;
     byAuthor.set(e.actor.principal, { walkthrough: w, actor: e.actor, eventId: e.id, at: e.at });
   }
   return [...byAuthor.values()];

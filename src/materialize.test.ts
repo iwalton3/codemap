@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync, appendFileSync, readdirSync, readFileSync, writeFi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Actor } from "./schema.js";
+import type { PrWalkthrough } from "./walkthrough.js";
 import { readScope, type LogEvent } from "./eventlog.js";
 import { createFinding, foldFindings, findingScope, comment } from "./shared-findings.js";
 import { createHash } from "node:crypto";
@@ -504,9 +505,17 @@ test("walkthroughs round-trip through their projection, and are read from the ca
     const { publishWalkthrough, foldWalkthroughs, walkthroughScope } = await import("./shared-walkthrough.js");
     const { walkthroughsProjection } = await import("./shared-projections.js");
     const { db } = await import("./db.js");
-    const wt = (head: string, title: string) => ({ pr: 264, head, chapters: [{ title, symbols: [] }] });
-    await publishWalkthrough(logRoot, izzie, wt("h1", "first") as never, "acme/api/pr-264");
-    await publishWalkthrough(logRoot, dana, wt("h1", "theirs") as never, "acme/api/pr-264");
+    // A REAL walkthrough, not a stub cast through `as never`. It used to be
+    // `{pr, head, chapters}` — a shape nothing in the codebase produces — which is the
+    // same `WalkInput`-for-`PrWalkthrough` substitution that took PR 269's page down,
+    // and the fold now refuses it. A projection test that round-trips a shape the
+    // projection can never receive is testing the plumbing against a fiction.
+    const wt = (head: string, title: string): PrWalkthrough => ({
+      pr: 264, head, at: "2026-08-21T00:00:00Z", by: "agent",
+      features: [{ id: "f1", title, summary: "s", chapters: [{ id: "c1", title, blocks: [], witnesses: [] }] }],
+    });
+    await publishWalkthrough(logRoot, izzie, wt("h1", "first"), "acme/api/pr-264");
+    await publishWalkthrough(logRoot, dana, wt("h1", "theirs"), "acme/api/pr-264");
     const scope = walkthroughScope("acme/api/pr-264");
 
     const miss = await readCached(root, logRoot, scope, ID, foldWalkthroughs, walkthroughsProjection);
@@ -525,7 +534,7 @@ test("walkthroughs round-trip through their projection, and are read from the ca
 
     // CONTROL — a later publication by the SAME person replaces theirs rather than
     // adding a row, which is the fold's rule and must survive the round trip.
-    await publishWalkthrough(logRoot, izzie, wt("h2", "second") as never, "acme/api/pr-264");
+    await publishWalkthrough(logRoot, izzie, wt("h2", "second"), "acme/api/pr-264");
     const again = await readCached(root, logRoot, scope, ID, foldWalkthroughs, walkthroughsProjection);
     assert.equal(again.length, 2, "still two authors");
     assert.equal(again.find((w) => w.actor.principal === izzie.principal)!.walkthrough.head, "h2");

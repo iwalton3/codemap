@@ -431,6 +431,28 @@ blocks what.
    directory basename). So a tool prints an identifier the next call refuses as unknown,
    under the same field name, in the same session.
 
+## Found on the way, and fixed: a walkthrough published as INPUT
+
+Not part of this plan, but the same defect shape one entity over, and worth the entry
+because the diagnosis is reusable. One `walkthrough.published` event on `Acme.API` PR 269
+carried the agent's `WalkInput` — `{title, blocks}`, no chapter id and no witnesses —
+where the BUILT `PrWalkthrough` belonged. `staleChapters` reads `c.witnesses.some`, so
+`/api/pr/story` 500'd for that pull request permanently: the log is append-only, and the
+fold validated only the envelope (`pr`, `head`).
+
+- **The two types are structurally close and every publish path crosses a JSON boundary**
+  (an MCP argument, the unvalidated `walkthrough_share` POST, an NDJSON line), so
+  TypeScript never sees the substitution. Only one event in the whole sidecar is affected;
+  the current write path builds correctly.
+- **Three guards, because they catch it at three different distances:** the fold skips it
+  (which is also what HEALS it — the next materialization drops the row on every machine,
+  no history rewrite), `shareWalkthrough` refuses it, and `staleChapters` no longer throws
+  on a chapter a local row could still carry.
+- **The fold guard failed one existing test, and the test was wrong.** `materialize.test.ts`
+  round-tripped `{pr, head, chapters}` cast through `as never` — a shape nothing produces —
+  so it was checking the projection plumbing against a fiction. It now round-trips a real
+  walkthrough. A cast to `never` in a fixture is worth treating as a finding on its own.
+
 ## What this plan does not cover
 
 - **`shared_note` stays.** Notes are symbol-scoped knowledge that outlives branches;

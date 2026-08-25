@@ -199,7 +199,11 @@ export function buildWalkthrough(
 /** Chapters whose cited code has moved since the walkthrough was written. */
 export function staleChapters(w: PrWalkthrough, live: AnchorIndex): string[] {
   return w.features.flatMap((f) => f.chapters)
-    .filter((c) => c.witnesses.some((wit) => {
+    // A chapter with no witnesses cannot be judged, and used to THROW here — which is
+    // how one malformed sidecar event took the whole pull-request page down. The fold
+    // and the publish boundary both refuse that shape now; this is the third guard,
+    // because a LOCAL row reaches this without passing either.
+    .filter((c) => Array.isArray(c.witnesses) && c.witnesses.some((wit) => {
       const r = resolveAnchor(wit.anchorId, [wit.bodyHash], live);
       // An id this index could not have minted says nothing about whether the
       // chapter's code moved, and a chapter flagged stale for that reason is work

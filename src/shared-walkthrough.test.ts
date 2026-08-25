@@ -152,3 +152,78 @@ test("between two current walkthroughs the newest wins, by the shared order", ()
   const all = foldWalkthroughs([ev("0000000001-aa", izzie, wt(264, "h")), ev("0000000009-zz", dana, wt(264, "h"))]);
   assert.equal(currentWalkthrough(all, "h")?.actor.principal, "dana@x.com");
 });
+
+/**
+ * The event that took a pull-request page down permanently.
+ *
+ * One `walkthrough.published` on `Acme.API` PR 269 carried the agent's `WalkInput` —
+ * `{title, blocks}`, no id and no witnesses — where the BUILT walkthrough belonged.
+ * `PrWalkthrough` and `WalkInput` are close enough structurally that TypeScript never
+ * sees the substitution, and every publish path crosses a JSON boundary that erases the
+ * difference. `staleChapters` then read `c.witnesses.some` and `/api/pr/story` 500'd
+ * with "Cannot read properties of undefined" — for good, because the log is append-only
+ * and the fold had checked only the envelope.
+ *
+ * Skipped, not repaired: the fold's existing rule for a malformed event, and it means
+ * the next materialization drops the row on every machine without rewriting history.
+ */
+test("a walkthrough published as unbuilt INPUT is skipped, not folded", () => {
+  const unbuilt = {
+    pr: 269, head: "headsha", at: "2026-08-25T03:16:05.158Z", by: "agent",
+    features: [{ id: "f1", title: "F", summary: "s", chapters: [{ title: "C", blocks: [] }] }],
+  } as unknown as PrWalkthrough;
+  const bad = ev("0000000009-bad", izzie, unbuilt);
+  assert.deepEqual(foldWalkthroughs([bad]), [], "a chapter with no witnesses can never go stale — it is not a walkthrough");
+});
+
+/** And a good one beside it still folds — the guard is about the shape, not the author. */
+test("the malformed event does not take a valid one down with it", () => {
+  const unbuilt = {
+    pr: 269, head: "headsha", at: "2026-08-25T03:16:05.158Z", by: "agent",
+    features: [{ id: "f1", title: "F", summary: "s", chapters: [{ title: "C", blocks: [] }] }],
+  } as unknown as PrWalkthrough;
+  const folded = foldWalkthroughs(sortEvents([
+    ev("0000000009-bad", izzie, unbuilt),
+    ev("0000000010-ok", dana, wt(269, "headsha", "dana's read")),
+  ]));
+  assert.deepEqual(folded.map((f) => f.actor.principal), ["dana@x.com"]);
+});
+
+/** The same shape refused at the publish boundary, so it cannot enter a log again. */
+test("publishing the input rather than the built walkthrough is refused", async () => {
+  const dirs = [mkdtempSync(join(tmpdir(), "codemap-swr-")), mkdtempSync(join(tmpdir(), "codemap-sws-"))];
+  const [root, side] = dirs as [string, string];
+  try {
+    const { spawnSync } = await import("node:child_process");
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    spawnSync("git", ["init", "-q", "-b", "main"], { cwd: root });
+    spawnSync("git", ["config", "user.email", "izzie@x.com"], { cwd: root });
+    spawnSync("git", ["config", "user.name", "izzie"], { cwd: root });
+    spawnSync("git", ["init", "-q", "-b", "main"], { cwd: side });
+    mkdirSync(join(root, ".codemap"), { recursive: true });
+    writeFileSync(join(root, ".codemap", "sidecar"), side, "utf8");
+
+    const shared = await import("./ops-shared.js");
+    const unbuilt = {
+      pr: 269, head: "headsha", at: "2026-08-25T03:16:05.158Z", by: "agent",
+      features: [{ id: "f1", title: "F", summary: "s", chapters: [{ title: "C", blocks: [] }] }],
+    } as unknown as PrWalkthrough;
+    const r = await shared.shareWalkthrough(root, unbuilt) as { error?: string };
+    assert.match(r.error ?? "", /INPUT, not a built walkthrough/);
+    assert.match(r.error ?? "", /pr_walkthrough/, "and it names the verb that builds it");
+
+    // The valid one still publishes — a guard that refuses everything proves nothing.
+    const ok = await shared.shareWalkthrough(root, wt(269, "headsha")) as { error?: string; ok?: true };
+    assert.ok(ok.ok, ok.error ?? "");
+  } finally { dirs.forEach((d) => rmSync(d, { recursive: true, force: true })); }
+});
+
+/** And the READ survives one anyway — a local row reaches it without passing either guard. */
+test("staleChapters does not throw on a chapter with no witnesses", async () => {
+  const { staleChapters } = await import("./walkthrough.js");
+  const unbuilt = {
+    pr: 269, head: "headsha", at: "2026-08-25T03:16:05.158Z", by: "agent",
+    features: [{ id: "f1", title: "F", summary: "s", chapters: [{ title: "C", blocks: [] }] }],
+  } as unknown as PrWalkthrough;
+  assert.deepEqual(staleChapters(unbuilt, new Map() as never), [], "it cannot be judged, and saying so is not crashing");
+});
