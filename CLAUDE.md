@@ -213,8 +213,12 @@ generated file to drift. Both test targets run it (`tsc -p web`, well under a se
   For chrome that must follow the router (no props, so no `propsChanged`), use
   `watch(() => store.field, fn)`. Cost a debugging round on `codemap-checkout`.
 - The framework's own **template lint** covers the string-form bindings TS reads
-  as opaque text (Lit sigils, raw `.map()` in a slot, `ref=` typos). Run it when
-  re-vendoring — the command is in `web/vendor/vdx/PROVENANCE.md`.
+  as opaque text (Lit sigils, raw `.map()` in a slot, `ref=` typos) — the one class
+  of front-end defect `tsc -p web` cannot see. It runs in the **e2e suite**
+  (`src/e2e/vdx-lint.e2e.ts`) and *skips* when the tool is absent; point
+  `CODEMAP_VDX_TOOLS` at a vdx-web checkout's `tools/`. It used to be a manual
+  step at re-vendoring time, which meant the only check TypeScript could not
+  stand in for was also the only one with no schedule.
 
 ## The sidecar — read `docs/sidecar-architecture.md` before touching shared state
 

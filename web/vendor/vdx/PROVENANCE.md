@@ -21,8 +21,17 @@ at runtime). Ten bundle exports are untyped — `contain`, `createRoot`,
 `flushEffects`, `setEffectErrorHandler`, `clearTemplateCache` and the `isX`
 guards — all optimizer-facing, none imported by this app.
 
-Re-vendoring is also the moment to re-run the framework's own template lint,
-which covers the string-form bindings TypeScript treats as opaque text:
+The framework's own template lint covers the string-form bindings TypeScript
+treats as opaque text. **It runs in the e2e suite** (`src/e2e/vdx-lint.e2e.ts`),
+so it is no longer something to remember at re-vendoring time — that sentence is
+what it replaced. It *skips* when the tool is absent, like the puppeteer and
+real-repo suites, because the tool is not this project's to own:
+
+```sh
+CODEMAP_VDX_TOOLS=/path/to/vdx-web/tools npm run e2e
+```
+
+To run it by hand against a working tree:
 
 ```sh
 cd /working/vdx-web/tools && node optimize.js -i <codemap>/web --templates-only
