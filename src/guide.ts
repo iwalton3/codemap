@@ -152,23 +152,68 @@ so the worst-and-least-reviewed code sorts to the top of the human's queue.
 - Severity = stakes × the review gap (whether it's been \`viewed\`/\`signed\`), so your
   triage directly decides where a human spends their next golden window.
 
+## Reviewing a pull request
+
+This is what the map is FOR: a 20k-line diff is unreviewable as a file list, so
+codemap rolls each changed symbol up to the flows, docs and reviews it affects.
+
+- \`pr_walkthrough\` writes the reading guide a human reviews FROM; \`pr_walkthrough_get\`
+  reads it back with \`stale\` naming chapters whose code has moved.
+- \`shared_findings\` FIRST, before you file anything: a finding somebody already
+  raised and refuted does not need raising again.
+- \`review\` each segment you have actually read (level:code -> \`checked\`), then file
+  what you found.
+
+**A finding on a pull request goes to \`share_finding\`.** It is scoped to the PR, so
+it cannot be filed against the wrong one, and it carries the things a PR finding needs:
+a state ratchet, \`corroborate\` for cross-model second opinions, \`comment_on_finding\`
+for the reviewers' thread, and \`request_ack\` for the decisions you may not take
+yourself. Yours opens as \`issued\` — an agent's finding is a proposal until a person
+stands behind it.
+
+\`relocate_finding\` is for a finding whose symbol is not in your checkout — but check
+\`target.where\` first: \`offTree\` means it is on another branch and nothing is wrong.
+
+**Know which store you are writing to, until they are one.** \`annotate(kind:"finding")\`
+writes a LOCAL finding: it reaches the review queue, the PR story page and the GitHub
+publish path, but it has no \`pr\` field, so which pull request it belongs to is guessed
+by intersecting its target with that PR's changed symbols — and it never appears in
+\`shared_findings\` for any PR. \`share_finding\` is the reverse: correctly scoped to the
+PR and visible to the team, but invisible to the review queue and to the GitHub publish
+path. Prefer \`share_finding\` for anything about the pull request under review, and
+\`annotate\` for a durable remark about the code itself. Both stores are being unified
+into one canonical table — \`docs/plan-findings-unification.md\`.
+
+When a human hands you work: \`review_queue\` is what they asked YOU to act on;
+\`findings\` is the wider list of local findings and questions (it does NOT include
+shared findings). Report back with \`close_finding\` — that records what you did and
+does not close it, because reporting and agreeing it is closed are different acts.
+
 ## Find & fix
 - \`check_stale\` — docs whose anchored code changed (candidate_stale) or vanished
   (lost/dangling); run the post-change loop above on them.
-- \`report_bug\` — anchor a defect to the exact code. It auto-flags possiblyFixed
-  when that code later changes; \`list_bugs\` surfaces those to re-validate, then
-  \`update_bug\` to resolve. **With a sidecar a bug is the TEAM's**: it enters the
-  shared log as you file it, yours opens as \`issued\` (a proposal), and past
-  \`created\` only a person closes one — \`ask_about_bug\` is the path when
+- **A bug is not a pull-request finding.** A finding is raised while reviewing a
+  specific PR and is resolved at or before merge. A bug is one of two things: a
+  finding deferred to fix AFTER merge, or a drive-by defect you noticed while doing
+  something unrelated. Never file a finding about the PR you are reviewing as a bug —
+  it belongs on the PR, where the person who wrote the code will see it.
+- \`report_bug\` — for the drive-by: anchor a defect to the exact code. It auto-flags
+  possiblyFixed when that code later changes; \`list_bugs\` surfaces those to
+  re-validate, then \`update_bug\` to resolve. **With a sidecar a bug is the TEAM's**:
+  it enters the shared log as you file it, yours opens as \`issued\` (a proposal), and
+  past \`created\` only a person closes one — \`ask_about_bug\` is the path when
   \`update_bug\` refuses. \`comment_bug\` is where what you checked goes;
   \`corroborate_bug\` is a second opinion on somebody else's; \`track_bug\` records
   the Jira ticket or GitHub issue it is filed under, which does NOT close it.
-- \`accept_finding\` — a pull-request finding that is a real defect should not die
-  with the branch. This keeps it as a bug and cross-links both; the finding stays on
-  the PR for its history and the bug carries the obligation. Do it for anything you
-  would be annoyed to rediscover in three months.
-- \`annotate\` — leave a note or open question on an anchor/node for the human or
-  a future session.
+- \`accept_finding\` — for the deferral, and the ONLY route from a finding to a bug.
+  A pull-request finding that is a real defect should not die with the branch: this
+  keeps it as a bug and cross-links both, so the finding stays on the PR for its
+  history and the bug carries the obligation. Do it for anything you would be annoyed
+  to rediscover in three months. It takes a \`share_finding\` id; a local
+  \`annotate\` finding has no route to a bug yet.
+- \`annotate\` — a durable remark on an anchor or node: a note, an open question, a
+  \`pointer\` telling the next reviewer what to watch for, or a local finding (see the
+  PR section above for which store that is).
 - \`analyze\` (opt-in, framework-specific) — for Marten/Wolverine event-sourced C#,
   runs consistency checks (commands with no handler/endpoint; events appended but
   never folded/projected/consumed). Findings are review candidates — verify before

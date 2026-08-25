@@ -306,7 +306,7 @@ const tools: Tool[] = [
   },
   {
     name: "review",
-    description: "Mark (or unmark: unmark:true) a node or anchor as reviewed — the agent's first-pass 'I read this' mark. level 'logical' = the doc is accurate; 'code' = the source was read (mark ANCHORS at code level — a node's code review is DERIVED from its segments). Recorded as an AGENT review → `checked` trust (blue); only a human via the web UI grants `verified` (green sign-off). Staleness-aware: reverts to stale when the reviewed code changes. Pair with `annotate` (kind:finding/pointer) to leave the human reviewer your findings and watch-outs on the exact lines.",
+    description: "Mark (or unmark: unmark:true) a node or anchor as reviewed — the agent's first-pass 'I read this' mark. level 'logical' = the doc is accurate; 'code' = the source was read (mark ANCHORS at code level — a node's code review is DERIVED from its segments). Recorded as an AGENT review → `checked` trust (blue); only a human via the web UI grants `verified` (green sign-off). Staleness-aware: reverts to stale when the reviewed code changes. Pair with `share_finding` when you are reviewing a pull request — it scopes the finding to that PR — or `annotate` (kind:finding/pointer) for a durable remark about the code itself, to leave the human reviewer your findings and watch-outs on the exact lines.",
     inputSchema: obj({
       targetKind: { type: "string", enum: ["node", "anchor"] },
       targetId: { type: "string" },
@@ -419,7 +419,7 @@ const tools: Tool[] = [
   },
   {
     name: "disconnect",
-    description: "Remove wiring between two nodes — the other half of `connect`.\n\nUse it to say \"that step does not belong\" or \"this does not depend on that\". Without a removal a wiring disagreement can only be resolved by ADDING, which is accumulation rather than resolution.\n\nThe node's whole outgoing set is republished, so this is you stating what the wiring IS, not just what to subtract. Analyzer-generated edges are refused: they are regenerated from the code on every machine, so removing one here is undone by the next `check`.",
+    description: "Remove wiring between two nodes — the other half of `connect`.\n\nUse it to say \"that step does not belong\" or \"this does not depend on that\". Without a removal a wiring disagreement can only be resolved by ADDING, which is accumulation rather than resolution.\n\nThe node's whole outgoing set is republished, so this is you stating what the wiring IS, not just what to subtract. Analyzer-generated edges are refused: they are regenerated from the code on every machine, so removing one here is undone by the next `check_stale`.",
     inputSchema: obj({
       from: { type: "string", description: "Source node id." },
       to: { type: "string", description: "Target node id." },
@@ -490,7 +490,7 @@ const tools: Tool[] = [
   },
   {
     name: "report_bug",
-    description: "File a bug anchored to exact code in a universe. Captures a witness hash so it auto-flags possiblyFixed when that code changes.\n\nWith a sidecar configured this goes to the TEAM — the bug enters the shared log the moment it is filed, and colleagues see it on their next sync. It opens as `issued` (a proposal) when an agent files it and `created` when a person does; past `created` only a person may close one.",
+    description: "File a bug anchored to exact code in a universe. Captures a witness hash so it auto-flags possiblyFixed when that code changes.\n\nA bug is a DRIVE-BY defect noticed during unrelated work, or a finding deferred to fix after merge. It is not a pull-request finding: something wrong with the PR you are reviewing belongs on that PR via `share_finding`, where the person who wrote it will see it. To defer a PR finding into a bug, use `accept_finding` — that keeps the cross-link instead of filing a second, unattributed copy.\n\nWith a sidecar configured this goes to the TEAM — the bug enters the shared log the moment it is filed, and colleagues see it on their next sync. It opens as `issued` (a proposal) when an agent files it and `created` when a person does; past `created` only a person may close one.",
     inputSchema: obj({
       title: { type: "string" },
       description: { type: "string" },
@@ -674,6 +674,23 @@ const tools: Tool[] = [
     handler: (a, c) => ops.prWalkthroughGet(c.universe.path, String(a.pr ?? "")),
   },
   {
+    name: "pr_packet",
+    description: "The pull request's changed symbols, ranked, WITH THEIR SOURCE AT THE PR's HEAD — and the base version of each, so you read the change rather than guessing it.\n\nThis is the tool for reviewing a PR. `get_anchor` returns the WORKING TREE's source, which during a review is a third version: not the PR's head and not the base. Quoting it as evidence for a finding is how a review cites code the pull request does not contain.\n\nPaged: `limit` (default 40) and `offset` walk the ranked worklist, so a large PR is read in passes rather than in one unusable response.",
+    inputSchema: obj({
+      pr: { type: "string", description: "PR number, url, or owner/repo#N." },
+      limit: { type: "number", description: "Symbols per page (default 40)." },
+      offset: { type: "number", description: "Where to start in the ranked worklist." },
+      fetch: { type: "boolean", description: "Fetch the PR's refs first (default true). `false` requires them to be local already." },
+    }, ["pr"]),
+    // `prTriage` caches two commit snapshots, so this is a read that writes.
+    mutates: true,
+    handler: (a, c) => ops.prPacketFor(c.universe.path, String(a.pr ?? ""), {
+      limit: a.limit as number | undefined,
+      offset: a.offset as number | undefined,
+      fetch: a.fetch !== false,
+    }),
+  },
+  {
     name: "review_queue",
     description: "What the human has asked you to act on: findings they raised during review and handed to an agent, newest-severity-first, each with the symbol it sits on and that symbol's CURRENT source — so you can act without hunting for it.\n\n`assignment.kind` says what was asked:\n  • \"investigate\" — work out whether it is real and report back what you found.\n  • \"fix\" — make the change. ONE file only. A fix that needs to span files is work for an agent the human dispatches, not a review-tool edit: report `declined` with what it would take, which is a useful answer, not a failure.\n\nReport back with `close_finding`. You do NOT resolve the finding — the human does, after reading what you did.\n\nBRIEF by default: no source is inlined, because the full form is unreadably large on a real queue. Read one symbol with `get_anchor`, or pass `brief:false` when you actually need every body at once.",
     inputSchema: obj({
@@ -727,7 +744,7 @@ const tools: Tool[] = [
   },
   {
     name: "findings",
-    description: "Every finding and question on the map, whoever raised them and whether or not anyone was asked to act.\n\n`review_queue` answers \"what have I been asked to do\" and only lists items with an assignment — so a finding raised by `annotate` and published to a pull request was invisible to every query afterwards. This one answers \"what is on this map, and where has it got to\": filter by `disposition` (what triage concluded) and `publishState` (local / approved / withdrawn / posted), and `posted` items carry `postedRef` with the review and comment they landed in.\n\nBrief by default, same as `review_queue`.",
+    description: "Every LOCAL finding and question on the map, whoever raised them and whether or not anyone was asked to act. NOT the team's: a finding filed with `share_finding` lives on the sidecar and is read by `shared_findings` for its pull request. Until the two stores are one (`docs/plan-findings-unification.md`) neither list is a superset of the other.\n\n`review_queue` answers \"what have I been asked to do\" and only lists items with an assignment — so a finding raised by `annotate` and published to a pull request was invisible to every query afterwards. This one answers \"what is on this map, and where has it got to\": filter by `disposition` (what triage concluded) and `publishState` (local / approved / withdrawn / posted), and `posted` items carry `postedRef` with the review and comment they landed in.\n\nBrief by default, same as `review_queue`.",
     inputSchema: obj({
       disposition: { type: "string", enum: ["open", "confirmed", "partial", "rerated", "refuted", "accepted"] },
       publishState: { type: "string", enum: ["local", "approved", "withdrawn", "posted"] },
@@ -923,7 +940,7 @@ const tools: Tool[] = [
   },
   {
     name: "contested_triage",
-    description: "Stakes two people disagree about across the business-critical line — the only triage disagreement worth interrupting somebody for, and the one a person must settle.\n\nEverything else the fold settles silently: two people who never saw each other disagreeing about `low` versus `important` is not worth anyone's attention, and the higher value holds meanwhile so nothing is under-reviewed. These are the exceptions.\n\nYour job here is to INVESTIGATE and propose — read the code, weigh both stated reasons, and report what you found through `report_finding` on the queued question. The person settles by triaging the symbol again having seen both sides; that mark supersedes both and the item closes itself.",
+    description: "Stakes two people disagree about across the business-critical line — the only triage disagreement worth interrupting somebody for, and the one a person must settle.\n\nEverything else the fold settles silently: two people who never saw each other disagreeing about `low` versus `important` is not worth anyone's attention, and the higher value holds meanwhile so nothing is under-reviewed. These are the exceptions.\n\nYour job here is to INVESTIGATE and propose — read the code, weigh both stated reasons, and report what you found through `close_finding` on the queued question (it arrives in `review_queue` as an `investigate` assignment). The person settles by triaging the symbol again having seen both sides; that mark supersedes both and the item closes itself.",
     inputSchema: obj({}, []),
     handler: (_a, c) => shared.contestedTriage(c.universe.path),
   },
@@ -972,7 +989,7 @@ const tools: Tool[] = [
   },
   {
     name: "share_doc",
-    description: "Publish ONE doc version to the sidecar — the doc you just wrote, rather than the whole store. `publish_local_docs` is the bulk backfill for a store that predates its sidecar; this is the ordinary act. The version is immutable and records the commit and branch it was written on, so a later reader can tell whether it describes their checkout.",
+    description: "Publish ONE doc version to the sidecar — the doc you just wrote, rather than the whole store. The CLI's `codemap publish-docs` is the bulk backfill for a store that predates its sidecar; this is the ordinary act. The version is immutable and records the commit and branch it was written on, so a later reader can tell whether it describes their checkout.",
     inputSchema: obj({ version: { type: "object", description: "The doc version: `nodeId`, `type`, `title`, `summary`, `body`, `citations`." } }, ["version"]),
     mutates: true,
     handler: (a, c) => shared.shareDoc(c.universe.path, a.version),
