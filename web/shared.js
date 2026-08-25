@@ -299,7 +299,7 @@ class SharedPage extends Component {
         <a href="#/u/${u}/pr/${pr}/">PR ${pr}</a> <span class="sep">·</span> shared
         <span class="dim">· ${d.total} finding(s) · ${d.waitingOnYou} waiting on a person${d.contested ? ` · ${d.contested} contested` : ''}</span>
       </div>
-      <div class="row">
+      <div class="sharedbar">
         <button on-click="${() => this.sync()}" disabled="${st.busy === 'sync'}">${st.busy === 'sync' ? 'syncing…' : 'sync'}</button>
         <button on-click="${() => this.toggleQueue()}">${st.queue ? 'showing: needs a person' : 'showing: everything'}</button>
         <a href="#/u/${u}/shared/${pr}/peers/">peers</a>

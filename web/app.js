@@ -3051,6 +3051,7 @@ class PrStoryPage extends Component {
    *   chapterBusy: Record<string, boolean>,
    *   offStory: ApiMap['/api/pr/findings'] | null,
    *   shared: ApiMap['/api/shared'] | null,
+   *   teamOpen: string | null,
    *   pushDraft: { summary: string, event: string } | null,
    *   pick: Set<string> | null,
    *   editFinding: { id: string, comment: string, disposition: string, publishPath?: string } | null,
@@ -3070,6 +3071,7 @@ class PrStoryPage extends Component {
       pulling: false, pulled: null, push: null, markError: null, showFindings: false, chapterBusy: {},
       offStory: null,
       shared: null,
+      teamOpen: null,
       // These five were assigned but never listed here, and `propsChanged` merges
       // rather than replaces — so they were the fields that DID survive a move to
       // another pull request. `pushDraft` is the summary and APPROVE/REQUEST_CHANGES
@@ -3117,6 +3119,58 @@ class PrStoryPage extends Component {
   async loadShared() {
     const team = await api('/api/shared', { u: this.props.params.universe, pr: this.props.params.pr }).catch(() => null);
     this.state.shared = isErr(team) ? null : team;
+  }
+
+  /**
+   * Where a team finding sits, from the story this page already has.
+   *
+   * The shared view carries the anchor id, not a path — resolving it needs the index,
+   * and the walkthrough has already done that for every symbol the pull request
+   * touches. A finding on code the PR does not touch resolves to nothing, which is
+   * honest: there is no line here to send anybody to.
+   */
+  teamLoc(f) {
+    if (f.target?.kind !== 'anchor') return null;
+    for (const c of (this.state.story && this.state.story.chapters) || []) {
+      for (const st of c.steps) if (st.anchorId === f.target.id) return { step: st, chapter: c };
+    }
+    return null;
+  }
+
+  /**
+   * One team finding, GitHub code-scanning-alert shaped: title on a line of its own,
+   * location and provenance muted underneath, evidence behind a click.
+   *
+   * The whole row is the toggle; the location stops propagation so it can jump to the
+   * symbol instead. Reads `comment` for the title because that is the submitter-facing
+   * sentence and `text` is the evidence — showing the evidence first is what made every
+   * row a wall.
+   */
+  teamFindingEl(f) {
+    const st = this.state;
+    const open = st.teamOpen === f.id;
+    const loc = this.teamLoc(f);
+    const sev = f.severity || 'low';
+    return html`<div class="tfind sev-${sev} ${f.tier === 'settled' ? 'tf-settled' : ''} ${open ? 'tf-open' : ''}"
+      on-click="${() => { st.teamOpen = open ? null : f.id; }}">
+      <div class="tfhead">
+        <span class="tfsev">${sev}</span>
+        <span class="tftitle">${f.comment || f.text}</span>
+      </div>
+      <div class="tfmeta">
+        ${when(!!loc, () => html`<span class="tfloc" title="open this symbol in the walkthrough"
+          on-click="${(e) => { e.stopPropagation(); this.gotoFinding({ f, step: loc.step, chapter: loc.chapter }); }}"
+          >${loc.step.file.split('/').pop()}${f.line ? ':' + f.line : ''}</span>`)}
+        ${when(!loc, () => html`<span class="dim" title="not on a symbol this pull request changes">not in this diff</span>`)}
+        ${when(!!f.category, () => html`<span>${f.category}</span>`)}
+        <span>${f.author}${f.authorModel ? ` (${f.authorModel})` : ''}</span>
+        ${when(!!f.confirms, () => html`<span class="tfvote ok" title="confirmations">+${f.confirms}</span>`)}
+        ${when(!!f.refutes, () => html`<span class="tfvote bad" title="refutations">−${f.refutes}</span>`)}
+        ${when(!!f.needsAck, () => html`<span class="warn">needs a person</span>`)}
+        ${when(!!f.bug, () => html`<span class="dim">kept as a bug</span>`)}
+      </div>
+      ${when(open, () => html`<div class="tfbody">${f.text}</div>`)}
+    </div>`;
   }
 
   /** Open findings the team holds — the half of the count that is not local. */
@@ -3622,7 +3676,7 @@ class PrStoryPage extends Component {
     // to being found one at a time by tripping over them.
     const stray = (this.state.offStory && this.state.offStory.stranded) || 0;
     const strayEl = () => html`<div class="prfstray dim" title="open findings whose target is not in the working tree, posted to no pull request and settled by nobody — a rename, another branch, or code that is simply gone">
-      ${stray} open finding${stray === 1 ? '' : 's'} point at code no longer in the tree and belong to no pull request — <code>codemap orphans</code>
+      ${stray} open finding${stray === 1 ? ' points' : 's point'} at code no longer in the tree and belong${stray === 1 ? 's' : ''} to no pull request — <code>codemap orphans</code>
     </div>`;
     // `team` counts here too. It did not, and the guard fired first: a pull request
     // with ten shared findings and no local ones rendered "No findings raised on this
@@ -3653,13 +3707,7 @@ class PrStoryPage extends Component {
       ${when(!!team.length, () => html`<div class="prfgroup">
         <div class="prfgh">the team's, on the sidecar <b>${team.length}</b>
           <a href="#/u/${u}/shared/${this.props.params.pr}/">open shared review ›</a></div>
-        ${each(team, f => html`<div class="prfrow">
-          <div class="prfloc dim"><code>${f.tier}</code><span>${f.severity ?? '—'}</span></div>
-          <div class="prfbody">
-            <span class="prfcmttext">${f.comment ?? f.text}</span>
-            <span class="dim"> — ${f.author}${f.authorModel ? ` (${f.authorModel})` : ''}${f.independentConfirms ? ` · ${f.independentConfirms} independent` : ''}${f.refutes ? ` · ${f.refutes} refuted` : ''}</span>
-          </div>
-        </div>`, f => f.id)}
+        ${each(team, f => this.teamFindingEl(f), f => f.id)}
       </div>`)}
       ${when(picked.length, () => html`<div class="prfpicked">
         <b>${picked.length}</b> picked — publishing these sends exactly them, whatever their disposition.
