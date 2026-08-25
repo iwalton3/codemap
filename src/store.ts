@@ -24,6 +24,9 @@ import { randomBytes } from "node:crypto";
 import { db, WORK_REF, ORPHAN_REF } from "./db.js";
 import { ABSENT_FIELD } from "./shared-triage.js";
 import { needsHumanAck, type SharedBug } from "./shared-bugs.js";
+// Aliased: `shared-bugs` exports the same name for the same rule over the same
+// `Ratcheted` shape, and importing both unaliased is a redeclaration.
+import { needsHumanAck as findingNeedsAck, type SharedFinding } from "./shared-findings.js";
 import { IMPORTANCE_RANK, COMPLEXITY_RANK } from "./triage-rules.js";
 import { headCommit, currentBranch } from "./git.js";
 import { evalVersion, selectWinner, resolveNode, winningVersionAt } from "./doc-version.js";
@@ -1240,6 +1243,98 @@ export async function writeLocalBugs(root: string, bugs: SharedBug[]): Promise<v
     for (const b of bugs) ins.run(...bugRow(b) as any);
     d.exec("COMMIT");
   } catch (e) { d.exec("ROLLBACK"); throw e; }
+}
+
+// --- findings, the canonical table -------------------------------------------
+
+export interface FindingStore {
+  schemaVersion: number;
+  findings: SharedFinding[];
+}
+
+/**
+ * Set the two fields the STORE owns and the fold never produces.
+ *
+ * `pr` and `origin` are row facts: the fold's output describes the finding, not this
+ * clone's provenance for it or which scope carries it. Writing them into the JSON
+ * would make `read(write(x))` return a value the fold never emitted, which is the
+ * projection round-trip contract `materialize.test.ts` asserts.
+ */
+const hydrate = (body: string, pr: string, sourceScope: string | null): SharedFinding | null => {
+  try {
+    const f = JSON.parse(body) as SharedFinding;
+    f.pr = pr;
+    if (sourceScope) f.origin = { scope: sourceScope };
+    return f;
+  } catch { return null; }
+};
+
+/**
+ * Every finding this store holds — this machine's and the team's, in one list.
+ *
+ * The whole point of the canonical table: no caller has to know whether a finding came
+ * from the sidecar or was filed here with none configured, and none of them needs a
+ * bridge to see both. `pr` narrows without deserializing the rest, because it is a
+ * column rather than something inferred from a worklist.
+ */
+export async function readFindings(root: string, opts: { pr?: number | string } = {}): Promise<FindingStore> {
+  const where = opts.pr === undefined ? "" : " WHERE pr = ?";
+  const args = opts.pr === undefined ? [] : [String(opts.pr)];
+  const rows = db(root).prepare(
+    `SELECT pr, body, source_scope FROM findings${where} ORDER BY created_at, id`,
+  ).all(...args as []) as unknown as { pr: string; body: string; source_scope: string | null }[];
+  const findings: SharedFinding[] = [];
+  for (const r of rows) {
+    const f = hydrate(r.body, r.pr, r.source_scope);
+    // A row this build cannot parse is not a reason to fail every finding read.
+    if (f) findings.push(f);
+  }
+  return { schemaVersion: SCHEMA_VERSION, findings };
+}
+
+/** One finding by id, without deserializing the rest. Local rows first — see the note. */
+export async function readFinding(root: string, id: string): Promise<SharedFinding | null> {
+  // `ORDER BY source_scope IS NULL DESC` puts a LOCAL row first. An id can exist in
+  // more than one row only in the window between filing here and the fold adopting it;
+  // preferring the local one means a caller that just wrote sees what it wrote.
+  const row = db(root).prepare(
+    "SELECT pr, body, source_scope FROM findings WHERE id = ? ORDER BY source_scope IS NULL DESC",
+  ).get(id) as { pr: string; body: string; source_scope: string | null } | undefined;
+  return row ? hydrate(row.body, row.pr, row.source_scope) : null;
+}
+
+const findingRow = (f: SharedFinding, pr: string): unknown[] => [
+  f.id, pr, f.target.kind, f.target.id, f.state,
+  f.severity ?? null, f.category ?? null, f.line ?? null,
+  f.author.principal, f.createdAt,
+  findingNeedsAck(f) ? 1 : 0, f.contested?.length ? 1 : 0,
+  // Never written from here — this path only ever writes local rows.
+  JSON.stringify({ ...f, origin: undefined, pr: undefined }),
+];
+
+/**
+ * Write one LOCAL finding — what filing with no sidecar configured leaves behind.
+ *
+ * Refuses a fold-owned row, and the refusal is the ownership rule made mechanical
+ * rather than remembered. A local mutation of a projection row is quiet in a specific
+ * way: nothing about it moves the scope fingerprint, so the cache keeps serving the
+ * corrupted row until something else forces a re-fold, and then the change vanishes.
+ * An error at the call site is the only version of that anybody can debug.
+ */
+export async function writeLocalFinding(root: string, f: SharedFinding, pr: number | string): Promise<void> {
+  const d = db(root);
+  const owner = d.prepare("SELECT source_scope FROM findings WHERE id = ? AND source_scope IS NOT NULL")
+    .get(f.id) as { source_scope: string } | undefined;
+  if (owner) {
+    throw new Error(
+      `${f.id} is owned by the sidecar fold (${owner.source_scope}) — write an event, not a row. `
+      + `Local edits to a folded finding are erased by the next sync and invisible until then.`,
+    );
+  }
+  d.prepare(
+    "INSERT OR REPLACE INTO findings(id,pr,target_kind,target_id,state,severity,category,line,"
+    + "author,created_at,needs_ack,contested,body) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+  ).run(...findingRow(f, String(pr)) as any);
 }
 
 // --- small JSON-blob stores (annotations / coverage / analyzers / reviews) ---

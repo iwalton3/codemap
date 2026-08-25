@@ -9,6 +9,8 @@ import { resolveSidecar, universeKey, scopeFor } from "./sidecar-config.js";
 import * as shared from "./ops-shared.js";
 import { foldDocs } from "./shared-docs.js";
 import { db } from "./db.js";
+import { readFindings, readFinding, writeLocalFinding } from "./store.js";
+import type { SharedFinding } from "./shared-findings.js";
 
 const git = (root: string, ...args: string[]) =>
   spawnSync("git", ["-c", "user.email=izzie@x.com", "-c", "user.name=t", ...args], { cwd: root, encoding: "utf8" });
@@ -890,5 +892,53 @@ test("commenting on a finding writes through as well", async () => {
     await shared.commentOnFinding(u.root, 264, r.id, "checked it, still holds");
     const row = db(u.root).prepare("SELECT body FROM findings WHERE id = ?").get(r.id) as { body: string };
     assert.equal(JSON.parse(row.body).thread.length, 1, "the thread is in the row, not only in the log");
+  } finally { u.cleanup(); }
+});
+
+/** A minimal local finding — what filing with no sidecar configured produces. */
+const localFinding = (id: string, text: string): SharedFinding => ({
+  id, target: { kind: "anchor", id: "a_local" }, text,
+  author: { principal: "izzie@x.com" }, createdAt: "2026-01-01T00:00:00Z",
+  state: "created", corroboration: [], thread: [], revisions: [],
+});
+
+/**
+ * The point of one canonical table: a caller asks for a pull request's findings and
+ * gets both halves, with no bridge and no knowledge of where either came from.
+ */
+test("one list holds this machine's findings and the team's", async () => {
+  const u = universe();
+  try {
+    await shared.shareFinding(u.root, 264, NEW);
+    await writeLocalFinding(u.root, localFinding("f_mine", "filed with no sidecar"), 264);
+
+    const all = (await readFindings(u.root, { pr: 264 })).findings;
+    assert.equal(all.length, 2, "both, in one query");
+    const mine = all.find((f) => f.id === "f_mine")!;
+    assert.equal(mine.origin, undefined, "a local finding has no origin");
+    assert.equal(mine.pr, "264", "and carries the pull request it was filed against");
+    assert.ok(all.find((f) => f.origin?.scope.endsWith("/pr-264")), "the shared one names its scope");
+    // And the pr column is what narrows: a different PR sees neither.
+    assert.equal((await readFindings(u.root, { pr: 999 })).findings.length, 0);
+  } finally { u.cleanup(); }
+});
+
+/**
+ * The ownership rule, made mechanical. A local write to a fold-owned row is quiet in a
+ * specific way — nothing about it moves the scope fingerprint, so the cache keeps
+ * serving it until something forces a re-fold and the change then vanishes. An error
+ * at the call site is the only version of that anybody can debug.
+ */
+test("a local write to a fold-owned finding is refused, not silently lost", async () => {
+  const u = universe();
+  try {
+    const r = await shared.shareFinding(u.root, 264, NEW) as { id: string };
+    const folded = (await readFinding(u.root, r.id))!;
+    assert.ok(folded.origin, "precondition: the fold owns it");
+    await assert.rejects(
+      () => writeLocalFinding(u.root, { ...folded, text: "quietly rewritten" }, 264),
+      /owned by the sidecar fold/,
+    );
+    assert.equal((await readFinding(u.root, r.id))!.text, NEW.text, "and the row is untouched");
   } finally { u.cleanup(); }
 });
