@@ -743,6 +743,24 @@ export async function loadNodeVersions(root: string, nodeId: string): Promise<No
   return versionsOf(db(root), nodeId);
 }
 
+/**
+ * Node ids with at least one version a publish would actually send.
+ *
+ * One indexed pass rather than `loadNodeVersions` per node, because `sharedHub` runs
+ * every dry run on every page load and this answers for the whole store at once.
+ *
+ * It exists so the COUNT and the PUBLISH can share a predicate. They did not:
+ * `publishLocalDocs` counted nodes the sidecar had not seen and then published only
+ * versions `notPublishable` allowed, so on a store whose unshared docs are all
+ * analyzer output the hub advertised 746 and the button appended nothing — for ever,
+ * with no reason on screen. Mirrors `notPublishable`, which refuses `generatedBy`.
+ */
+export async function nodeIdsWithPublishableVersions(root: string): Promise<Set<string>> {
+  const rows = db(root).prepare("SELECT DISTINCT node_id FROM node_versions WHERE generated_by IS NULL")
+    .all() as unknown as { node_id: string }[];
+  return new Set(rows.map((r) => r.node_id));
+}
+
 // A conservative id-safe slug (kept: node ids are still human-facing).
 export function slug(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "node";

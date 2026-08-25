@@ -307,7 +307,7 @@ const server = createServer(async (req, res) => {
       const action = url.pathname.slice("/api/shared/".length);
       // Which of these write `.codemap/`. Named explicitly: a new action that mutates
       // and is not listed here races the rest of the server silently.
-      const TOUCHES_LOCAL = new Set(["sync", "pull", "publish_docs", "publish_notes", "publish_triage", "heal"]);
+      const TOUCHES_LOCAL = new Set(["sync", "pull", "publish_docs", "publish_notes", "publish_triage", "publish_graph", "heal"]);
       const run = <T>(fn: () => Promise<T>): Promise<T> =>
         TOUCHES_LOCAL.has(action) ? withLock(root, fn) : fn();
       let out: unknown;

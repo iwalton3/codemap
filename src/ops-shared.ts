@@ -42,7 +42,7 @@ export { sharedKnowsNode, docsVerdict, type DocsVerdict } from "./docs-lookup.js
 import { docsVerdict } from "./docs-lookup.js";
 import { queueContestedTriage } from "./ops/triage.js";
 export { mirrorTriage, mirrorTriageBatch, mirrorTriageClear } from "./triage-publish.js";
-import { readAnnotations, readAnchorStore, loadNodes, loadNodeVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets } from "./store.js";
+import { readAnnotations, readAnchorStore, loadNodes, loadNodeVersions, nodeIdsWithPublishableVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets } from "./store.js";
 import {
   publishDocVersion, acceptDocHash, resolveDoc, foldDocs, docScope,
   type NewDocVersion,
@@ -1150,7 +1150,21 @@ export async function publishLocalDocs(root: string, opts: { dryRun?: boolean } 
   // every page load, so a read of "what have I not published" was rewriting the shared
   // repo. A count is a question, not a preparation to write.
   if (opts.dryRun) {
-    return { universe: b.cfg.universe, local: nodes.length, alreadyShared: nodes.length - todo.length, wouldPublish: todo.length };
+    // The same predicate the publish uses, not a looser one. Counting nodes the
+    // sidecar has not seen and then publishing only the versions `notPublishable`
+    // allows made the hub advertise work the button could not do: on a real universe
+    // all 746 unshared docs were analyzer output, so pressing publish appended nothing
+    // and the next count said 746 again, with no reason anywhere on screen.
+    const publishable = await nodeIdsWithPublishableVersions(root);
+    const willPublish = todo.filter((n) => publishable.has(n.id));
+    return {
+      universe: b.cfg.universe, local: nodes.length,
+      alreadyShared: nodes.length - todo.length,
+      wouldPublish: willPublish.length,
+      // Named like triage's, and rendered the same way: analyzer output is regenerated
+      // by every machine, so it is local-only rather than pending.
+      skippedGenerated: todo.length - willPublish.length,
+    };
   }
   await ensureSidecar(b.cfg.path, b.actor);
   let versions = 0;

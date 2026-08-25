@@ -1043,3 +1043,40 @@ test("a url or owner/repo#N is refused as a findings scope, not silently accepte
     assert.ok(((await shared.shareFinding(u.root, "#5", NEW)) as { id?: string }).id);
   } finally { u.cleanup(); }
 });
+
+/**
+ * The count and the publish must share a predicate.
+ *
+ * They did not: the dry run counted NODES the sidecar had not seen, and the publish
+ * then sent only the versions `notPublishable` allows. On a store whose unshared docs
+ * are all analyzer output — 746 of them on a real universe — the hub advertised 746
+ * unpublished, the button appended nothing, and the next count said 746 again, with no
+ * reason anywhere on screen.
+ */
+test("the docs count offers only what publishing would actually send", async () => {
+  const u = universe();
+  try {
+    const { document: documentNode } = await import("./ops.js");
+    const { init } = await import("./ops.js");
+    mkdirSync(join(u.root, "src"), { recursive: true });
+    writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c) { return c; }\n", "utf8");
+    git(u.root, "add", "-A"); git(u.root, "commit", "-qm", "seed");
+    await init(u.root);
+    const { readAnchorStore } = await import("./store.js");
+    const anchor = (await readAnchorStore(u.root)).anchors[0]!.id;
+
+    await documentNode(u.root, { type: "concept", title: "Human doc", summary: "s", body: "b", anchors: [anchor] });
+    await documentNode(u.root, { id: "gen1", type: "command", title: "Generated", summary: "s", body: "b", anchors: [anchor] });
+    // As an analyzer emit would leave it.
+    db(u.root).prepare("UPDATE node_versions SET generated_by = 'marten' WHERE node_id = 'gen1'").run();
+
+    const before = await shared.publishLocalDocs(u.root, { dryRun: true }) as unknown as Record<string, number>;
+    assert.equal(before.wouldPublish, 1, "the generated one is not work");
+    assert.equal(before.skippedGenerated, 1, "and it is reported rather than silently dropped");
+
+    await shared.publishLocalDocs(u.root);
+    const after = await shared.publishLocalDocs(u.root, { dryRun: true }) as unknown as Record<string, number>;
+    assert.equal(after.wouldPublish, 0, "pressing publish moves the count — the button can finish");
+    assert.equal(after.skippedGenerated, 1, "the analyzer output stays local-only, and still says so");
+  } finally { u.cleanup(); }
+});

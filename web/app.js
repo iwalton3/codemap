@@ -2522,7 +2522,9 @@ class SharedHubPage extends Component {
     if (info && info.error) return html`<div class="hubrow"><b>${label}</b> <span class="bad">${info.error}</span></div>`;
     const n = info ? (info.wouldPublish ?? 0) : 0;
     const held = info && info.heldBack ? info.heldBack.length : 0;
-    const skipped = info ? (info.skippedGraph ?? 0) : 0;
+    // `skippedGraph` (triage) and `skippedGenerated` (docs, wiring) are the same
+    // fact under two names: content every machine regenerates, so it never travels.
+    const skipped = info ? (info.skippedGraph ?? info.skippedGenerated ?? 0) : 0;
     return html`<div class="hubrow">
       <b>${label}</b>
       <span class="${n ? 'warn' : 'dim'}">${n} unpublished</span>
