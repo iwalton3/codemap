@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { type Anchor, type LogicalNode } from "../schema.js";
 import { indexFile } from "../repo.js";
-import { readAnchorStore, loadNodes, readCoverage, readSnapshot, findAnchorsOutsideWork, readOrphans, derivationLookup, readWalkthroughsFor } from "../store.js";
+import { readAnchorStore, loadNodes, readCoverage, readSnapshot, findAnchorsOutsideWork, readOrphans, derivationLookup, readWalkthroughsFor, type StoredWalkthrough } from "../store.js";
 import type { PrWalkthrough } from "../walkthrough.js";
 import { requireActor } from "../identity.js";
 import { resolveSidecar, scopeFor, sidecarIdentity } from "../sidecar-config.js";
@@ -223,6 +223,13 @@ export interface WalkthroughPick {
   sharedBy?: string;
   /** The readings this is NOT showing. Named, because the fold keeps one per author. */
   others: { by: string; head: string; mine: boolean }[];
+  /**
+   * Every reading, chosen first, with bodies — what a caller asking to see a
+   * teammate's INSTEAD of the chosen one needs. `others` is the summary of the same
+   * list; this is the list. Already in memory from the one table read, so carrying it
+   * costs nothing and saves the caller a second one that could disagree.
+   */
+  all: (StoredWalkthrough & { mine: boolean })[];
 }
 
 /**
@@ -281,5 +288,6 @@ export async function walkthroughFor(
     walkthrough: best!.walkthrough,
     ...(isMine(best!) ? {} : { sharedBy: best!.author }),
     others: rest.map((r) => ({ by: r.author || "(unattributed)", head: r.walkthrough.head, mine: isMine(r) })),
+    all: sorted.map((r) => ({ ...r, mine: isMine(r) })),
   };
 }

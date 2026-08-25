@@ -23,7 +23,7 @@ import { publishWalkthrough } from "./shared-walkthrough.js";
 import { walkthroughFor } from "./ops/shared.js";
 import { writeLocalWalkthrough, readWalkthroughsFor } from "./store.js";
 import { db } from "./db.js";
-import { sharedWalkthroughs, shareWalkthrough } from "./ops-shared.js";
+import { sharedWalkthroughs, shareWalkthrough, publishLocalWalkthroughs } from "./ops-shared.js";
 import { scopeFor, resolveSidecar } from "./sidecar-config.js";
 
 const tmp = (t: string) => mkdtempSync(join(tmpdir(), `codemap-wr-${t}-`));
@@ -198,5 +198,57 @@ test("a legacy blob becomes rows, unattributed, and publishing is what names the
     assert.equal(after.length, 1, "one row, not one per attribution state");
     assert.equal(after[0]!.author, "izzie@x.com");
     assert.ok(after[0]!.source_scope);
+  } finally { u.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// Two tools, not four
+// ---------------------------------------------------------------------------
+
+test("the backfill publishes what a store wrote before it had a sidecar, and says what failed", async () => {
+  const u = universe();
+  try {
+    // The state the legacy blob migrates into: local, unattributed, never published.
+    // `share_walkthrough` used to be the only way out of it, and it was an MCP tool an
+    // agent found only by already knowing it existed.
+    await writeLocalWalkthrough(u.root, String(PR), wt("head1", "2026-08-21T00:00:00Z"));
+    db(u.root).prepare("UPDATE walkthroughs SET author = '' WHERE pr = ?").run(String(PR));
+
+    const dry = await publishLocalWalkthroughs(u.root, { dryRun: true }) as { wouldPublish: string[] };
+    assert.deepEqual(dry.wouldPublish, [String(PR)], "a dry run names them rather than counting them");
+
+    const r = await publishLocalWalkthroughs(u.root) as { published: string[]; failed?: unknown[] };
+    assert.deepEqual(r.published, [String(PR)]);
+    assert.equal(r.failed, undefined);
+    await sharedWalkthroughs(u.root, PR); // what a sync does
+
+    const rows = db(u.root).prepare("SELECT author, source_scope FROM walkthroughs WHERE pr = ?")
+      .all(String(PR)) as unknown as { author: string; source_scope: string | null }[];
+    assert.equal(rows.length, 1, "publishing attributed the row, so the fold adopted it");
+    assert.equal(rows[0]!.author, "izzie@x.com");
+    assert.ok(rows[0]!.source_scope);
+
+    // Idempotent: the second run finds nothing local left to publish.
+    const again = await publishLocalWalkthroughs(u.root) as { published: string[] };
+    assert.deepEqual(again.published, [], "a row the fold owns is somebody's published reading");
+  } finally { u.cleanup(); }
+});
+
+test("every reading is reachable from the one read verb, chosen first", async () => {
+  const u = universe();
+  try {
+    // Two people walked it. The chosen one is a display decision; the other has to stay
+    // READABLE, or collapsing `shared_walkthroughs` away would have lost it.
+    await writeLocalWalkthrough(u.root, String(PR), wt("head1", "2026-08-21T00:00:00Z"));
+    await publish(u, dana, wt("head1", "2026-08-22T00:00:00Z"));
+    await sharedWalkthroughs(u.root, PR);
+
+    const pick = (await walkthroughFor(u.root, PR, "head1"))!;
+    assert.equal(pick.all.length, 2);
+    assert.equal(pick.all[0]!.walkthrough.head, pick.walkthrough.head, "chosen first");
+    assert.deepEqual(pick.all.map((r) => r.mine), [true, false], "yours won the tie, and hers is still here");
+    // Bodies, not a summary: `others` says who, `all` is what you would read instead.
+    assert.ok(pick.all[1]!.walkthrough.features.length > 0);
+    assert.equal(pick.all[1]!.author, "dana@x.com");
   } finally { u.cleanup(); }
 });

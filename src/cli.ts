@@ -235,7 +235,7 @@ async function cmdPrIngest(root: string, prInput: string, files: string[], dryRu
 }
 
 function usage(): never {
-  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap orphans  [repo]              findings/reviews pointing at code the tree no longer has\n  codemap pr-resolve <pr> [--repo path] [--confirm] [--pull] [--anyone]\n                                              sync which review conversations are settled\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n                     [--only id,id,…]  publish exactly these, whatever their disposition\n                     [--summary TEXT] [--approve | --request-changes]\n  codemap pr-triage <pr> [--repo path]        derive stakes+complexity for the PR's symbols\n  codemap pr-pull-viewed <pr|--all> [--repo path] [--dry-run] [--force] [--limit N] [--max-prs N]\n                                              import GitHub's viewed ticks as `viewed`\n  codemap analyze marten [repo] [--verbose] [--emit]\n\n  Shared review (a sidecar repo; set CODEMAP_SIDECAR or .codemap/sidecar):\n  codemap sync     [repo]              send and receive shared review state\n  codemap sidecar heal [repo]          repair a forked sidecar (a person, not an agent)\n  codemap shared   <pr> [repo] [--queue] [--tier t] [--json]   findings on the sidecar\n                     --tier unconfirmed   the untriaged pile; --queue never shows it\n  codemap peers    [repo]              who else is on this sidecar, and scheme drift\n  codemap replies  <pr> [repo]         what the PR submitter said back about published findings\n  codemap notes    <anchor|node id> [repo]   what the TEAM knows about a symbol\n  codemap publish-notes [repo] [--dry-run]   put this store's existing annotations on the sidecar\n  codemap shared-docs [repo] [--json]  the team's docs, resolved against THIS checkout\n  codemap publish-docs [repo] [--dry-run]    put this store's docs on the sidecar\n  codemap shared-triage [anchor|node id] [repo] [--json]   the team's stakes, with receipts\n  codemap contested [repo] [--json] [--queue]   stakes two people disagree about ACROSS business-critical\n  codemap publish-triage [repo] [--dry-run]  put this store's own triage marks on the sidecar\n  codemap migrate-findings [--repo path] [--apply] [--assign id=PR ...]\n                                              move local findings into the canonical findings table");
+  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap orphans  [repo]              findings/reviews pointing at code the tree no longer has\n  codemap pr-resolve <pr> [--repo path] [--confirm] [--pull] [--anyone]\n                                              sync which review conversations are settled\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n                     [--only id,id,…]  publish exactly these, whatever their disposition\n                     [--summary TEXT] [--approve | --request-changes]\n  codemap pr-triage <pr> [--repo path]        derive stakes+complexity for the PR's symbols\n  codemap pr-pull-viewed <pr|--all> [--repo path] [--dry-run] [--force] [--limit N] [--max-prs N]\n                                              import GitHub's viewed ticks as `viewed`\n  codemap analyze marten [repo] [--verbose] [--emit]\n\n  Shared review (a sidecar repo; set CODEMAP_SIDECAR or .codemap/sidecar):\n  codemap sync     [repo]              send and receive shared review state\n  codemap sidecar heal [repo]          repair a forked sidecar (a person, not an agent)\n  codemap shared   <pr> [repo] [--queue] [--tier t] [--json]   findings on the sidecar\n                     --tier unconfirmed   the untriaged pile; --queue never shows it\n  codemap peers    [repo]              who else is on this sidecar, and scheme drift\n  codemap replies  <pr> [repo]         what the PR submitter said back about published findings\n  codemap notes    <anchor|node id> [repo]   what the TEAM knows about a symbol\n  codemap publish-notes [repo] [--dry-run]   put this store's existing annotations on the sidecar\n  codemap shared-docs [repo] [--json]  the team's docs, resolved against THIS checkout\n  codemap publish-docs [repo] [--dry-run]    put this store's docs on the sidecar\n  codemap publish-walkthroughs [repo] [--dry-run]   backfill walkthroughs written\n                     before this store had a sidecar (pr_walkthrough publishes as it writes)\n  codemap shared-triage [anchor|node id] [repo] [--json]   the team's stakes, with receipts\n  codemap contested [repo] [--json] [--queue]   stakes two people disagree about ACROSS business-critical\n  codemap publish-triage [repo] [--dry-run]  put this store's own triage marks on the sidecar\n  codemap migrate-findings [--repo path] [--apply] [--assign id=PR ...]\n                                              move local findings into the canonical findings table");
   process.exit(2);
 }
 
@@ -443,6 +443,22 @@ async function cmdPublishDocs(root: string, dryRun: boolean): Promise<void> {
   const r = await shared.publishLocalDocs(root, { dryRun }) as Record<string, any>;
   if (r.error) { console.error(r.error); process.exit(1); }
   console.log(JSON.stringify(r));
+}
+
+/**
+ * Backfill: put walkthroughs this store wrote before it had a sidecar onto it.
+ *
+ * The ordinary act is `pr_walkthrough`, which publishes as it writes — there is no
+ * agent-facing publish verb, because writing a reading guide for a pull request the
+ * team reviews and keeping it to yourself is not a decision anybody should be making
+ * one call at a time. This is the one-time catch-up, and it lives beside the other
+ * three for the same reason.
+ */
+async function cmdPublishWalkthroughs(root: string, dryRun: boolean): Promise<void> {
+  const r = await shared.publishLocalWalkthroughs(root, { dryRun }) as Record<string, any>;
+  if (r.error) { console.error(r.error); process.exit(1); }
+  console.log(JSON.stringify(r));
+  if (r.failed?.length) process.exit(1);
 }
 
 /**
@@ -752,6 +768,8 @@ if (positionals[0] === "analyze") {
         (values.assign as string[] | undefined) ?? []));
   } else if (positionals[0] === "publish-docs") {
     await cmdPublishDocs(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."), Boolean(values["dry-run"]));
+  } else if (positionals[0] === "publish-walkthroughs") {
+    await cmdPublishWalkthroughs(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."), Boolean(values["dry-run"]));
   } else if (positionals[0] === "orphans") {
     await cmdOrphans(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."), !!values.locate);
   } else if (positionals[0] === "prs") {

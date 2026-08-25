@@ -157,8 +157,10 @@ so the worst-and-least-reviewed code sorts to the top of the human's queue.
 This is what the map is FOR: a 20k-line diff is unreviewable as a file list, so
 codemap rolls each changed symbol up to the flows, docs and reviews it affects.
 
-- \`pr_walkthrough\` writes the reading guide a human reviews FROM; \`pr_walkthrough_get\`
-  reads it back with \`stale\` naming chapters whose code has moved.
+- \`pr_walkthrough\` writes the reading guide a human reviews FROM, and publishes it to
+  the team as it writes; \`pr_walkthrough_get\` reads it back — yours or a teammate's,
+  whichever fits the head you are on — with \`stale\` naming chapters whose code has
+  moved and \`all\` returning every reading when more than one person walked it.
 - \`shared_findings\` FIRST, before you file anything: a finding somebody already
   raised and refuted does not need raising again.
 - \`review\` each segment you have actually read (level:code -> \`checked\`), then file

@@ -120,14 +120,34 @@ export async function prWalkthroughSet(
   };
 }
 
-/** The stored walkthrough for a PR, with the chapters whose code has since moved. */
-export async function prWalkthroughGet(root: string, input: string) {
+/**
+ * The walkthrough for a pull request, with the chapters whose code has since moved.
+ *
+ * One read verb over one table. `all` returns EVERY reading with its body instead of
+ * the chosen one: the fold keeps one per author, so a pull request several people
+ * walked has several, and reading a teammate's instead of your own is a display choice
+ * rather than a different store to go and ask. It replaced `shared_walkthroughs`, which
+ * was the same question asked of the half of the data that had travelled.
+ */
+export async function prWalkthroughGet(root: string, input: string, opts: { all?: boolean } = {}) {
   const t = await prTriage(root, input, { fetch: false });
   if ("error" in t) return { error: t.error };
   const pick = await walkthroughFor(root, t.pr.number, t.refs.head);
-  if (!pick) return { pr: t.pr.number, walkthrough: null };
-  const w = pick.walkthrough;
+  if (!pick) return { pr: t.pr.number, walkthrough: null, ...(opts.all ? { readings: [] } : {}) };
   const live = await snapshotHashes(root, t.refs.head);
+  const reading = (r: (typeof pick.all)[number]) => ({
+    by: r.author || "(unattributed)",
+    mine: r.mine,
+    at: r.at,
+    shared: !!r.origin,
+    head: r.walkthrough.head,
+    headMoved: r.walkthrough.head !== t.refs.head,
+    stale: staleChapters(r.walkthrough, live),
+    walkthrough: r.walkthrough,
+  });
+  if (opts.all) return { pr: t.pr.number, count: pick.all.length, readings: pick.all.map(reading) };
+
+  const w = pick.walkthrough;
   return {
     pr: t.pr.number,
     walkthrough: w,

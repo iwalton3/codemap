@@ -617,9 +617,12 @@ const tools: Tool[] = [
   },
   {
     name: "pr_walkthrough_get",
-    description: "The walkthrough for a pull request — yours, or a teammate's from the sidecar when they walked it and you did not. `stale` names the chapters whose code has moved since it was written (re-walk only those); `headMoved` means it was written against a different commit entirely.\n\n`sharedBy` is set when this is somebody else's reading, and `otherReadings` names the ones it is not showing — the fold keeps one per author, so a pull request several people walked has several. A reading of THIS head wins over a stale one, and yours wins every tie. `shared_walkthroughs` lists them all.",
-    inputSchema: obj({ pr: { type: "string", description: "PR number, url, or owner/repo#N." } }, ["pr"]),
-    handler: (a, c) => ops.prWalkthroughGet(c.universe.path, String(a.pr ?? "")),
+    description: "The walkthrough for a pull request — yours, or a teammate's when they walked it and you did not. There is no separate tool for the team's: they are one set of readings, and which of them travelled is not a question you should have to ask.\n\n`stale` names the chapters whose code has moved since it was written (re-walk only those); `headMoved` means it was written against a different commit entirely. `sharedBy` is set when this is somebody else's reading, and `otherReadings` names the ones it is not showing.\n\nWHICH ONE you get: a reading written against THIS head wins over a stale one — a walkthrough about another commit is not a worse reading, it is about something else — and yours wins every tie. Pass `all` to get every reading with its body instead, newest and best-matching first, each with its own `stale` and `headMoved`.",
+    inputSchema: obj({
+      pr: { type: "string", description: "PR number, url, or owner/repo#N." },
+      all: { type: "boolean", description: "Every reading of this pull request, with bodies — the fold keeps one per author. Use it to read a teammate's instead of the one chosen for you." },
+    }, ["pr"]),
+    handler: (a, c) => ops.prWalkthroughGet(c.universe.path, String(a.pr ?? ""), { all: !!a.all }),
   },
   {
     name: "pr_packet",
@@ -938,19 +941,6 @@ const tools: Tool[] = [
     }, ["pr", "id"]),
     mutates: true,
     handler: (a, c) => shared.recordPublished(c.universe.path, a.pr, a.id, { key: a.key, url: a.url }),
-  },
-  {
-    name: "shared_walkthroughs",
-    description: "Walkthroughs of a pull request written by anyone on the team. Pass `head` to get the one written against the commit you are looking at — a walkthrough about another commit is reported as stale rather than shown, because it is about something else.",
-    inputSchema: obj({ pr: { type: "string" }, head: { type: "string" } }, ["pr"]),
-    handler: (a, c) => shared.sharedWalkthroughs(c.universe.path, a.pr, a.head),
-  },
-  {
-    name: "share_walkthrough",
-    description: "Publish a walkthrough to the SIDECAR explicitly. `pr_walkthrough` already does this on every write, so this is the backfill: a walkthrough written before this store had a sidecar, or a re-publish after one was repaired. It is witnessed against the head it was written for — a reader on a different commit is told it is stale rather than shown it.",
-    inputSchema: obj({ walkthrough: { type: "object", description: "The walkthrough, as `pr_walkthrough` returns it." } }, ["walkthrough"]),
-    mutates: true,
-    handler: (a, c) => shared.shareWalkthrough(c.universe.path, a.walkthrough),
   },
   {
     name: "share_doc",

@@ -1279,6 +1279,52 @@ export async function shareWalkthrough(root: string, w: PrWalkthrough) {
   };
 }
 
+/**
+ * Publish the walkthroughs already in this universe's store to the sidecar.
+ *
+ * The one-time step for a store that predates sharing, and the same act
+ * `publishLocalDocs` and `publishLocalTriage` are for. `pr_walkthrough` publishes on
+ * every write now, so the only walkthroughs this finds are ones written before that
+ * did, or before this store had a sidecar — including the ones the legacy `meta` blob
+ * migrated in, which is why it exists rather than being one more thing to remember.
+ *
+ * Attributed to whoever runs it. A migrated row has no principal — a walkthrough's `by`
+ * is free text, not one — and publishing is the first act that knows who; `shareWalkthrough`
+ * stamps the row so the fold adopts it instead of duplicating it.
+ *
+ * Idempotent: a row the fold already owns is somebody's published reading and is skipped.
+ */
+export async function publishLocalWalkthroughs(root: string, opts: { dryRun?: boolean } = {}) {
+  const cfg = resolveSidecar(root);
+  if (!cfg) return { error: NO_SIDECAR };
+  const rows = db(root).prepare(
+    "SELECT pr, body FROM walkthroughs WHERE source_scope IS NULL ORDER BY pr",
+  ).all() as unknown as { pr: string; body: string }[];
+  const todo: { pr: string; walkthrough: PrWalkthrough }[] = [];
+  for (const r of rows) {
+    try {
+      const env = JSON.parse(r.body) as { walkthrough?: PrWalkthrough };
+      if (env?.walkthrough) todo.push({ pr: r.pr, walkthrough: env.walkthrough });
+    } catch { /* an unreadable row is reported by the count, not by refusing to run */ }
+  }
+  if (opts.dryRun) {
+    return { universe: cfg.universe, local: rows.length, wouldPublish: todo.map((t) => t.pr) };
+  }
+  const published: string[] = [];
+  const failed: { pr: string; error: string }[] = [];
+  for (const t of todo) {
+    const r = await shareWalkthrough(root, t.walkthrough) as { error?: string };
+    // COUNTED, not swallowed. A walkthrough that did not travel reads, from this side,
+    // exactly like one that did — which is the defect this whole area was fixing.
+    if (r.error) failed.push({ pr: t.pr, error: r.error }); else published.push(t.pr);
+  }
+  return {
+    universe: cfg.universe, local: rows.length, published,
+    ...(failed.length ? { failed } : {}),
+    note: published.length ? "run `codemap sync` to send them" : "nothing new to publish",
+  };
+}
+
 export async function sharedWalkthroughs(root: string, pr: number | string, head?: string) {
   const cfg = resolveSidecar(root);
   if (!cfg) return { error: NO_SIDECAR };
