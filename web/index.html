@@ -816,8 +816,17 @@
     .fgroup:first-of-type { margin-top: 8px; }
     .fgroup.settled { cursor: pointer; user-select: none; }
     .frow { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 8px 0; background: var(--panel); }
+    .frow.fopen { border-color: var(--dim); }
     .frow .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; cursor: pointer; }
-    .fcomment { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* State, severity and marks on one line; the finding itself gets the next one. */
+    .fmeta { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; cursor: pointer; }
+    .fcaret { color: var(--dim); font-size: 11px; width: 10px; flex: none; }
+    .fauthor { margin-left: auto; font-size: 12px; }
+    /* WRAPS. This is the submitter-facing sentence on a page that exists to show it;
+       it used to share a flex row with the badges and ellipsis away, with nothing to
+       click to see the rest. */
+    .fcomment { margin: 5px 0 0 18px; color: var(--text); overflow-wrap: anywhere; cursor: pointer; }
+    .factions { margin-bottom: 2px; }
     .fdetail { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; }
     .ftext { white-space: pre-wrap; color: var(--dim); font-family: var(--mono); font-size: 12px; }
     .corr, .tcomment { font-size: 12px; }

@@ -146,7 +146,7 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
   test("expanding a finding shows the evidence and who said what", async () => {
     const { page, errors } = await open(`/u/${universe}/shared/264/`);
     await page.waitForSelector(".frow");
-    await page.locator(".frow .row").first().click();
+    await page.locator(".frow .fmeta").first().click();
     await page.waitForSelector(".fdetail");
     const detail = await page.textContent(".fdetail");
     assert.match(detail, /tenant predicate/, "the evidence, which is never published");
@@ -172,7 +172,7 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
     // learns nothing.
     const { page, errors } = await open(`/u/${universe}/shared/264/`);
     await page.waitForSelector(".frow");
-    await page.locator(".frow .row").first().click();
+    await page.locator(".frow .fmeta").first().click();
     await page.waitForSelector(".composer textarea");
 
     await page.locator(".composer textarea").fill("checked the caller — it is guarded upstream");
@@ -191,7 +191,7 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
   test("an agent's ask is actionable, and says who asked and why", async () => {
     const { page, errors } = await open(`/u/${universe}/shared/264/`);
     await page.waitForSelector(".frow");
-    await page.locator(".frow .row").first().click();
+    await page.locator(".frow .fmeta").first().click();
     await page.waitForSelector(".askbox");
     const ask = await page.textContent(".askbox");
     assert.match(ask, /asked to/);
@@ -328,7 +328,7 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
 
     const { page, errors } = await open(`/u/${universe}/shared/900/`);
     await page.waitForSelector(".prbadge.contested");
-    await page.locator(".frow .row").first().click();
+    await page.locator(".frow .fmeta").first().click();
     await page.waitForSelector(".contest");
     const text = await page.textContent(".contest");
     assert.match(text, /severity/);
@@ -342,7 +342,7 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
   test("a person settles a contest by choosing a value, and it stays settled", async () => {
     const { page, errors } = await open(`/u/${universe}/shared/900/`);
     await page.waitForSelector(".prbadge.contested");
-    await page.locator(".frow .row").first().click();
+    await page.locator(".frow .fmeta").first().click();
     await page.waitForSelector(".contest");
     await page.getByRole("button", { name: /keep izzie@x\.com's/ }).click();
     // The fold replays history on every read, so "settled" has to survive a reload —
@@ -415,7 +415,7 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
 
     const { page, errors } = await open(`/u/${universe}/shared/902/`);
     await page.waitForSelector(".prbadge.ask");
-    await page.locator(".frow .row").first().click();
+    await page.locator(".frow .fmeta").first().click();
     await page.waitForSelector(".askbox");
     const box = await page.textContent(".askbox");
     assert.match(box, /moved to/, "what it proposes");

@@ -50,7 +50,7 @@ const blockedBanner = (scope) => when(!!scope, () => html`
 
 /**
  * @typedef {{ params: { universe: string, pr: string }, query: Record<string, string> }} SharedProps
- * @typedef {{ d: FindingsView | null, queue: boolean, busy: string | null, note: string | null, open: string | null, draft: string, replyTo: string | null, showSettled: boolean }} SharedState
+ * @typedef {{ d: FindingsView | null, queue: boolean, busy: string | null, note: string | null, open: Set<string>, draft: string, replyTo: string | null, showSettled: boolean }} SharedState
  */
 
 const sevClass = (s) => (s === 'critical' || s === 'high' ? 'bad' : s === 'medium' ? 'warn' : 'dim');
@@ -71,7 +71,7 @@ class SharedPage extends Component {
     // `queue` defaults on: the page exists to answer "what needs me", and showing
     // everything first buries that under findings somebody else already settled.
     /** @type {SharedState} */
-    this.state = { d: null, queue: true, busy: null, note: null, open: null, draft: '', replyTo: null, showSettled: false };
+    this.state = { d: null, queue: true, busy: null, note: null, open: new Set(), draft: '', replyTo: null, showSettled: false };
   }
 
   load = this.createTask(async () => {
@@ -116,6 +116,19 @@ class SharedPage extends Component {
 
   toggleQueue() { this.state.queue = !this.state.queue; this.load.run(); }
 
+  /**
+   * Open or close every finding on screen.
+   *
+   * Triage reads all of them, and one-at-a-time expansion is the workflow fighting the
+   * page. A NEW Set each time: reactivity here is read-tracking, so mutating in place
+   * changes nothing on screen.
+   */
+  toggleAll() {
+    const d = this.state.d;
+    const ids = (d && d.findings || []).map(f => f.id);
+    this.state.open = this.state.open.size >= ids.length && ids.length ? new Set() : new Set(ids);
+  }
+
   async sync() {
     this.state.busy = 'sync';
     try {
@@ -132,6 +145,7 @@ class SharedPage extends Component {
       ${when(!!f.contested?.length, () => html`<span class="prbadge contested">contested: ${f.contested.map(c => c.field).join(', ')}</span>`)}
       ${when(f.promoted, () => html`<span class="prbadge">promoted</span>`)}
       ${when(f.independentConfirms > 0, () => html`<span class="prbadge ok">${f.independentConfirms} independent</span>`)}
+      ${when(f.confirms > f.independentConfirms, () => html`<span class="prbadge ok" title="confirmed, but by the same principal as the author — not a second opinion">+${f.confirms - f.independentConfirms} confirmed</span>`)}
       ${when(f.refutes > 0, () => html`<span class="prbadge warnb">${f.refutes} refuted</span>`)}
       ${when(!!f.pending, () => html`<span class="prbadge ask">asked: ${f.pending.ask}</span>`)}
       ${when(!!f.upstream, () => html`<span class="prbadge">${f.upstream}</span>`)}
@@ -189,7 +203,7 @@ class SharedPage extends Component {
 
   /** Focus the composer with a starting body — declining an ask needs a reason. */
   reply(id, prefix) {
-    this.state.open = id;
+    this.state.open = new Set(this.state.open).add(id);
     this.state.draft = prefix;
     this.state.replyTo = id;
   }
@@ -213,6 +227,15 @@ class SharedPage extends Component {
   detailEl(f) {
     return html`
       <div class="fdetail">
+        <div class="row factions">
+          <button on-click="${() => this.act('promote', { id: f.id })}">promote</button>
+          <button on-click="${() => this.act('close', { id: f.id, state: 'resolved', reason: 'closed from the shared view' })}">resolve</button>
+          <button on-click="${() => this.act('close', { id: f.id, state: 'refuted', reason: 'closed from the shared view' })}">refute</button>
+          ${when(!!f.bug, () => html`<button on-click="${() => go(`/u/${this.props.params.universe}/bugs/`, { bug: f.bug })}">open bug</button>`,
+            () => html`<button title="keep this as a bug once the pull request closes"
+              disabled="${this.state.busy === 'accept'}"
+              on-click="${() => this.acceptAsBug(f.id)}">accept as bug</button>`)}
+        </div>
         <div class="ftext">${f.text}</div>
         ${this.contestEl(f)}
         ${when(!!f.pending, () => this.askEl(f))}
@@ -238,33 +261,36 @@ class SharedPage extends Component {
         ${each(f.thread ?? [], t => html`
           <div class="tcomment"><b>${t.by}</b>${when(!!t.model, () => html` <span class="dim">(${t.model})</span>`)}: ${t.body}</div>`, t => t.id)}
         ${this.composerEl(f)}
-        <div class="row">
-          <button on-click="${() => this.act('promote', { id: f.id })}">promote</button>
-          <button on-click="${() => this.act('close', { id: f.id, state: 'resolved', reason: 'closed from the shared view' })}">resolve</button>
-          <button on-click="${() => this.act('close', { id: f.id, state: 'refuted', reason: 'closed from the shared view' })}">refute</button>
-          ${when(!!f.bug, () => html`<button on-click="${() => go(`/u/${this.props.params.universe}/bugs/`, { bug: f.bug })}">open bug</button>`,
-            // Accepting is what stops a real finding dying with the pull request: the
-            // finding stays here for the PR's history and the bug carries the obligation.
-            () => html`<button title="keep this as a bug once the pull request closes"
-              disabled="${this.state.busy === 'accept'}"
-              on-click="${() => this.acceptAsBug(f.id)}">accept as bug</button>`)}
-        </div>
       </div>`;
   }
 
-  /** One finding's row. Extracted so the tier groups and the settled list share it. */
+  /**
+   * One finding's row.
+   *
+   * The submitter-facing text WRAPS and gets its own line. It used to share a flex row
+   * with the badges and ellipsis away — on a dedicated findings page, with no way to
+   * expand it, that made the one sentence the page exists to show the one thing you
+   * could not read.
+   */
   rowEl(f) {
     const st = this.state;
+    const open = st.open.has(f.id);
+    const toggle = () => {
+      const next = new Set(st.open);
+      if (open) next.delete(f.id); else next.add(f.id);
+      st.open = next;
+    };
     return html`
-      <div class="frow">
-        <div class="row" on-click="${() => { st.open = st.open === f.id ? null : f.id; }}">
+      <div class="frow ${open ? 'fopen' : ''}">
+        <div class="fmeta" on-click="${toggle}">
+          <span class="fcaret">${open ? '▾' : '▸'}</span>
           <span class="prbadge">${f.state}</span>
           <span class="${sevClass(f.severity)}">${f.severity ?? '\u2014'}</span>
-          <span class="fcomment">${f.comment ?? f.text}</span>
-          <span class="dim">${f.author}${f.authorModel ? ` (${f.authorModel})` : ''}</span>
+          ${this.marksEl(f)}
+          <span class="fauthor dim">${f.author}${f.authorModel ? ` (${f.authorModel})` : ''}</span>
         </div>
-        <div class="row">${this.marksEl(f)}</div>
-        ${when(st.open === f.id, () => this.detailEl(f))}
+        <div class="fcomment" on-click="${toggle}">${f.comment ?? f.text}</div>
+        ${when(open, () => this.detailEl(f))}
       </div>`;
   }
 
@@ -303,6 +329,8 @@ class SharedPage extends Component {
       <div class="sharedbar">
         <button on-click="${() => this.sync()}" disabled="${st.busy === 'sync'}">${st.busy === 'sync' ? 'syncing…' : 'sync'}</button>
         <button on-click="${() => this.toggleQueue()}">${st.queue ? 'showing: needs a person' : 'showing: everything'}</button>
+        ${when(!!d.findings.length, () => html`<button on-click="${() => this.toggleAll()}"
+          >${st.open.size >= d.findings.length ? 'collapse all' : 'expand all'}</button>`)}
         <a href="#/u/${u}/shared/${pr}/peers/">peers</a>
       </div>
       ${blockedBanner(d.scope)}
