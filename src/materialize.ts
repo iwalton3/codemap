@@ -68,8 +68,14 @@ import { readScopeChecked, SHARD_EXT, type LogEvent, type ScopeStatus } from "./
  * matches, the reader returns an empty map, and every shared finding a store already
  * held vanishes until that scope's shards happen to move. On a real universe that is
  * 26 findings across three pull requests disappearing on upgrade.
+ *
+ * 8 -> 9: walkthroughs moved from `shared_walkthrough` to the canonical `walkthroughs`
+ * table. The same SHAPE change as 7 -> 8, needing the bump for the same reason, and it
+ * is also what makes the migration free on the shared half: those rows are a projection
+ * of the log, so invalidating the scope re-folds them into the new table and no row has
+ * to be copied across.
  */
-export const MATERIALIZER_VERSION = 8;
+export const MATERIALIZER_VERSION = 9;
 
 /**
  * What the events in a scope are, cheaply.

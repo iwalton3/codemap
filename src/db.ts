@@ -44,6 +44,7 @@ export function db(root: string): DatabaseSync {
   migrateNodesToVersions(d);
   migrateTriageBlob(d);
   migrateBugsBlob(d);
+  migrateWalkthroughBlob(d);
   cache.set(root, d);
   return d;
 }
@@ -106,6 +107,76 @@ function migrateTriageBlob(d: DatabaseSync): void {
     d.exec("ROLLBACK");
     throw e;
   }
+}
+
+/**
+ * One-time: `meta["pr_walkthrough"]` becomes rows in the `walkthroughs` table.
+ *
+ * Same shape and the same reasons as the two above. The blob was `{[pr]: walkthrough}`,
+ * one per pull request, which is precisely a `(pr, author)` row set with the author left
+ * out — and leaving it out is what made a teammate's walkthrough unrepresentable, so the
+ * whole surface read the blob and could not see one.
+ *
+ * A migrated row is LOCAL (`source_scope IS NULL`) and **unattributed** (`author = ''`),
+ * the sentinel `migrateBugsBlob` already uses for a legacy record with no `Actor`. A
+ * `PrWalkthrough` carries a free-text `by` ("agent", "ben's agent") and that is not a
+ * principal — attributing every historical reading to whoever happens to upgrade first
+ * is the failure `migrateTriageBlob` refuses for the same reason. It stays unattributed
+ * until it is re-walked or published, and publishing is the act that knows who.
+ *
+ * The SHARED half needs no migration: those rows are a projection of the log, and
+ * `MATERIALIZER_VERSION` 8 -> 9 invalidates every cached walkthrough scope so the next
+ * read re-folds into the new table. That is what the version is for.
+ *
+ * Idempotent by construction, exactly as the two above are — the key is dropped in the
+ * same transaction that writes the rows.
+ */
+function migrateWalkthroughBlob(d: DatabaseSync): void {
+  const row = d.prepare("SELECT v FROM meta WHERE k = 'pr_walkthrough'").get() as { v: string } | undefined;
+  if (!row) return;
+  const existing = (d.prepare("SELECT COUNT(*) c FROM walkthroughs").get() as { c: number }).c;
+
+  d.exec("BEGIN");
+  try {
+    if (!existing) {
+      let parsed: { walkthroughs?: Record<string, unknown> } | undefined;
+      // Left in `meta` rather than dropped when it will not parse: nothing is
+      // destroyed, and a later build can still look at it.
+      try { parsed = JSON.parse(row.v) as { walkthroughs?: Record<string, unknown> }; }
+      catch { d.exec("ROLLBACK"); return; }
+      const ins = d.prepare("INSERT OR IGNORE INTO walkthroughs(pr,author,body) VALUES(?,?,?)");
+      for (const [pr, w] of Object.entries(parsed?.walkthroughs ?? {})) {
+        const walk = w as { head?: unknown; at?: unknown } | null;
+        // `head` is what makes a walkthrough a claim about a commit rather than a
+        // document; the fold already drops an event without one, and a row without one
+        // would be shown as being about whatever the reader is looking at.
+        if (!walk || typeof walk.head !== "string") continue;
+        // The `SharedWalkthrough` envelope, so a local row and a folded one are one
+        // shape and one read path. `eventId` is empty: nothing published this.
+        const body = JSON.stringify({
+          walkthrough: walk, actor: { principal: "" }, eventId: "",
+          at: typeof walk.at === "string" ? walk.at : new Date(0).toISOString(),
+        });
+        ins.run(String(pr), "", body);
+      }
+    }
+    d.prepare("DELETE FROM meta WHERE k = 'pr_walkthrough'").run();
+    d.exec("COMMIT");
+  } catch (e) {
+    d.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+/**
+ * Run the walkthrough blob migration on an ALREADY-OPEN store. **For tests.**
+ *
+ * `db()` caches a connection per root and the migrations run once, at open, so a test
+ * that writes a legacy blob into a live store cannot get it re-read without a new
+ * process. Nothing in production calls this: the migration it drives is the one at open.
+ */
+export function migrateWalkthroughBlobForTest(root: string): void {
+  migrateWalkthroughBlob(db(root));
 }
 
 /**
@@ -328,16 +399,47 @@ function migrate(d: DatabaseSync): void {
       scope TEXT NOT NULL, node_id TEXT NOT NULL, body TEXT NOT NULL,
       PRIMARY KEY (scope, node_id)
     );
-    -- One row per author per pull request: a later publication by the same person
-    -- replaces their earlier one, and two people's walkthroughs are two answers.
-    -- No at or head column. Both are already in body and neither is queried, and
-    -- "at NOT NULL" was a domain mismatch with the envelope, which does not require
-    -- at — one accepted event without it poisoned materialization of the whole
-    -- scope. A column that stores nothing anybody asks for can only be wrong.
-    CREATE TABLE IF NOT EXISTS shared_walkthrough (
-      scope TEXT NOT NULL, author TEXT NOT NULL, event_id TEXT NOT NULL, body TEXT NOT NULL,
-      PRIMARY KEY (scope, author)
+    -- Walkthroughs. ONE canonical table, on the rule that removed shared_doc_* and
+    -- then shared_finding, and this one had already cost what the rule predicts: a
+    -- teammate's walkthrough travelled, folded into the old parallel
+    -- shared_walkthrough, and every surface that renders a walkthrough read a local
+    -- meta blob instead — so the pull-request page offered "ask an agent to map out
+    -- PR N" over a walkthrough sitting in the reader's own database.
+    --
+    -- (pr, author) is the identity, and it is the one shape both halves already had:
+    -- the blob held one walkthrough per pull request (this store's), and the fold holds
+    -- one per author, because two people mapping a pull request is two readings and not
+    -- a conflict to arbitrate. A local row is this store's own reading with a NULL
+    -- source_scope; publishing it is the fold ADOPTING that row, exactly as a bug's
+    -- publication does, so the author's own copy never appears twice.
+    --
+    -- No at or head column, and that decision predates this table: both are already in
+    -- body, neither is queried — walkthroughFor ranks a handful of rows in memory —
+    -- and at NOT NULL was a domain mismatch with the envelope, which does not require
+    -- at. One accepted event without it poisoned materialization of a whole scope. A
+    -- column that stores nothing anybody asks for can only be wrong.
+    CREATE TABLE IF NOT EXISTS walkthroughs (
+      pr TEXT NOT NULL,
+      author TEXT NOT NULL,
+      event_id TEXT,
+      origin TEXT, source_scope TEXT,
+      -- The fold's own iteration order; a column rather than rowid for the reason
+      -- bugs.ord gives — adoption UPDATEs a row already there, so rowid order is
+      -- publication order rather than fold order and read(write(x)) === x fails on
+      -- exactly the stores that published.
+      ord INTEGER,
+      body TEXT NOT NULL
     );
+    -- The finding's rule, one layer simpler: one store holds one universe, so a pr maps
+    -- to exactly one walkthrough scope, and (pr, author) is both the fold's key and the
+    -- constraint that refuses a local row and a folded row for the same reading.
+    CREATE UNIQUE INDEX IF NOT EXISTS ix_walkthroughs_identity ON walkthroughs(pr, author);
+    CREATE INDEX IF NOT EXISTS ix_walkthroughs_scope ON walkthroughs(source_scope);
+    -- Gone: the parallel shared_walkthrough. Its rows are a projection of the log, so
+    -- MATERIALIZER_VERSION 8 -> 9 re-folds every walkthrough scope into walkthroughs on
+    -- the next read and nothing has to be copied across. Dropped rather than left empty:
+    -- a table nothing writes is a table somebody reads by mistake.
+    DROP TABLE IF EXISTS shared_walkthrough;
     CREATE TABLE IF NOT EXISTS shared_finding (
       scope TEXT NOT NULL, id TEXT NOT NULL,
       target_kind TEXT NOT NULL, target_id TEXT NOT NULL,

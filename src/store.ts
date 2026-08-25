@@ -22,6 +22,7 @@ import { derivationFingerprint, derivationMark } from "./normalize.js";
 import { anchorIndex, derivationsOf, legacyIndex, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
 import { randomBytes } from "node:crypto";
 import { db, WORK_REF, ORPHAN_REF } from "./db.js";
+import { resolveActor } from "./identity.js";
 import { ABSENT_FIELD } from "./shared-triage.js";
 import { needsHumanAck, type SharedBug } from "./shared-bugs.js";
 // Aliased: `shared-bugs` exports the same name for the same rule over the same
@@ -1730,20 +1731,96 @@ export async function readPushes(root: string): Promise<PushStore> {
 }
 
 /**
- * Agent-written walkthroughs, one per pull request. Keyed by PR number and carrying
- * the head it was written against, so a walkthrough is never silently read as being
- * about a commit it has not seen.
+ * Walkthroughs of one pull request — this store's own and the team's, one row each.
+ *
+ * ONE canonical table, so a teammate's reading is an ordinary row with an `origin`
+ * rather than something a surface has to go and look for somewhere else. It used to be
+ * two stores: a `meta` blob keyed by pull request (yours) and `shared_walkthrough`
+ * (theirs), and every surface read the first — so a walkthrough that had travelled,
+ * folded and landed in the reader's own database was invisible on the page that renders
+ * one. `docs/sidecar-architecture.md` gives the rule; this is it applied.
+ *
+ * `mine` is by PRINCIPAL, not by `origin`: publishing your own walkthrough sets an
+ * origin on your row (the fold adopts it), so origin means "came via the log" and never
+ * "somebody else's".
  */
-export type WalkthroughStore = { schemaVersion: number; walkthroughs: Record<string, PrWalkthrough> };
-
-export async function readWalkthroughs(root: string): Promise<WalkthroughStore> {
-  return getMeta<WalkthroughStore>(db(root), "pr_walkthrough") ?? { schemaVersion: SCHEMA_VERSION, walkthroughs: {} };
+export interface StoredWalkthrough {
+  walkthrough: PrWalkthrough;
+  /** The principal who wrote it. Empty on a row migrated from the legacy blob. */
+  author: string;
+  /** When it entered the record — the event's time for a folded row. */
+  at: string;
+  /** Where this machine's copy came from. Absent means written here and not published. */
+  origin?: { scope: string };
 }
 
-export async function writeWalkthrough(root: string, pr: string, w: PrWalkthrough): Promise<void> {
-  const store = await readWalkthroughs(root);
-  store.walkthroughs[pr] = w;
-  setMeta(db(root), "pr_walkthrough", store);
+export async function readWalkthroughsFor(root: string, pr: number | string): Promise<StoredWalkthrough[]> {
+  const rows = db(root).prepare(
+    "SELECT author, source_scope, body FROM walkthroughs WHERE pr = ? ORDER BY ord, rowid",
+  ).all(String(pr)) as unknown as { author: string; source_scope: string | null; body: string }[];
+  const out: StoredWalkthrough[] = [];
+  for (const r of rows) {
+    // A row this build cannot parse is skipped rather than fatal, the rule the fold
+    // uses: a walkthrough list that will not load is worse than one missing a reading.
+    let env: { walkthrough?: PrWalkthrough; at?: string } | null = null;
+    try { env = JSON.parse(r.body) as { walkthrough?: PrWalkthrough; at?: string }; } catch { continue; }
+    if (!env?.walkthrough) continue;
+    out.push({
+      walkthrough: env.walkthrough,
+      author: r.author,
+      at: env.at ?? env.walkthrough.at,
+      ...(r.source_scope ? { origin: { scope: r.source_scope } } : {}),
+    });
+  }
+  return out;
+}
+
+/**
+ * Record this store's own walkthrough of a pull request.
+ *
+ * One local row per pull request, which is exactly what the blob enforced by being a
+ * `Record<pr, …>` — re-walking replaces your reading, it does not accumulate one per
+ * attempt. Rows the FOLD owns are never touched: they may only change by an event.
+ *
+ * `author` is resolved but not required. Writing a walkthrough is not a write that
+ * carries attribution — a store with no identity can still map its own pull requests —
+ * and the empty principal is the sentinel a legacy row already uses. What it cannot do
+ * is publish, which is what makes an unattributed row safe: nothing can adopt it.
+ */
+export async function writeLocalWalkthrough(root: string, pr: string, w: PrWalkthrough): Promise<void> {
+  const actor = resolveActor(root);
+  const d = db(root);
+  d.exec("BEGIN");
+  try {
+    d.prepare("DELETE FROM walkthroughs WHERE pr = ? AND source_scope IS NULL").run(String(pr));
+    d.prepare("INSERT INTO walkthroughs(pr,author,body) VALUES(?,?,?)").run(
+      String(pr), actor?.principal ?? "",
+      JSON.stringify({ walkthrough: w, actor: actor ?? { principal: "" }, eventId: "", at: w.at }),
+    );
+    d.exec("COMMIT");
+  } catch (e) { d.exec("ROLLBACK"); throw e; }
+}
+
+/**
+ * Attribute this store's unattributed local walkthrough, at the moment publishing makes
+ * the author known.
+ *
+ * A row migrated from the legacy blob has no principal, and a `PrWalkthrough`'s
+ * free-text `by` is not one. Publishing is the first act that knows — and it has to
+ * happen before the fold comes back, or the folded row cannot adopt the local one and
+ * the author's own reading appears twice, once as theirs and once as a stranger's.
+ */
+export async function attributeLocalWalkthrough(root: string, pr: string, principal: string): Promise<void> {
+  if (!principal) return;
+  const d = db(root);
+  const row = d.prepare("SELECT body FROM walkthroughs WHERE pr = ? AND author = '' AND source_scope IS NULL")
+    .get(String(pr)) as { body: string } | undefined;
+  if (!row) return;
+  let env: Record<string, unknown>;
+  try { env = JSON.parse(row.body) as Record<string, unknown>; } catch { return; }
+  env.actor = { principal };
+  d.prepare("UPDATE walkthroughs SET author = ?, body = ? WHERE pr = ? AND author = '' AND source_scope IS NULL")
+    .run(principal, JSON.stringify(env), String(pr));
 }
 
 /** Which PRs have already had their GitHub viewed-ticks imported, so a bulk run resumes. */

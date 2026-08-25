@@ -400,22 +400,70 @@ export const notesProjection: Projection<Map<string, SharedNote>> = {
  * the same person REPLACES their earlier one, and two people's walkthroughs of one
  * pull request are two answers rather than a conflict.
  */
+/**
+ * Walkthroughs, into the ONE canonical `walkthroughs` table.
+ *
+ * A teammate's walkthrough is a row there with an `origin`, not a row in a parallel
+ * `shared_walkthrough` — the rule that removed the `shared_doc_*` tables and then
+ * `shared_finding`. This one is the case that proved the rule's cost: the parallel table
+ * worked perfectly, the events arrived, the fold was right, and every surface that
+ * renders a walkthrough read a local blob instead.
+ *
+ * **Replaces only what it owns.** `DELETE ... WHERE source_scope = ?`, never by pr: a
+ * bare delete would take this store's own local walkthrough, which is the one thing here
+ * the log cannot put back.
+ *
+ * **Adoption**, the same rule bugs and findings state. Publishing your own walkthrough
+ * is a republication of the reading you already have, so the fold produces a row for
+ * YOUR principal that the local row is already holding `(pr, author)` for. Insert would
+ * violate the unique index inside the fold's transaction; adopting turns the local row
+ * into the folded one instead, which is also what keeps your own copy from appearing
+ * beside itself as somebody else's reading.
+ *
+ * Matched on the EXACT author. An unattributed local row (`author = ''`, what the blob
+ * migration writes) is deliberately not adoptable: it would let the first teammate whose
+ * walkthrough folds take over a reading that is not theirs.
+ */
 export const walkthroughsProjection: Projection<SharedWalkthrough[]> = {
   write(d: DatabaseSync, scope: string, value: SharedWalkthrough[]): void {
-    d.prepare("DELETE FROM shared_walkthrough WHERE scope = ?").run(scope);
-    const ins = d.prepare("INSERT INTO shared_walkthrough(scope,author,event_id,body) VALUES(?,?,?,?)");
-    for (const w of value) ins.run(scope, w.actor.principal, w.eventId, JSON.stringify(w));
+    const pr = prOfScope(scope);
+    d.prepare("DELETE FROM walkthroughs WHERE source_scope = ?").run(scope);
+    const ins = d.prepare(
+      "INSERT INTO walkthroughs(pr,author,event_id,origin,source_scope,ord,body) VALUES(?,?,?,?,?,?,?)",
+    );
+    const adopt = d.prepare(
+      "UPDATE walkthroughs SET event_id=?,origin=?,source_scope=?,ord=?,body=? "
+      + "WHERE pr=? AND author=? AND source_scope IS NULL",
+    );
+    const candidate = d.prepare("SELECT 1 FROM walkthroughs WHERE pr = ? AND author = ? AND source_scope IS NULL");
+    let ord = 0;
+    for (const w of value) {
+      const i = ord++;
+      const author = w.actor.principal;
+      const body = JSON.stringify(w);
+      if (!candidate.get(pr, author)) {
+        ins.run(pr, author, w.eventId, "sync", scope, i, body);
+        continue;
+      }
+      // `changes` is the invariant, not decoration: the UPDATE and the SELECT that chose
+      // it run in one transaction already holding the write lock, so zero rows means the
+      // predicate and the index have drifted — which would otherwise present as the
+      // scope quietly missing one author's reading.
+      const r = adopt.run(w.eventId, "sync", scope, i, body, pr, author);
+      if (Number(r.changes) !== 1) {
+        throw new CorruptProjection(`walkthroughs ${scope}/${author}: adoption matched no local row`);
+      }
+    }
   },
 
   read(d: DatabaseSync, scope: string): SharedWalkthrough[] {
     const out: SharedWalkthrough[] = [];
-    // `rowid`, so the fold's own order survives the round trip — `foldWalkthroughs`
-    // returns a Map's values in first-seen order and the projection's contract is
-    // `read(write(x)) === x`.
-    for (const r of d.prepare("SELECT body, event_id FROM shared_walkthrough WHERE scope = ? ORDER BY rowid")
-      .all(scope) as unknown as { body: string; event_id: string }[]) {
+    // `ord`, the fold's own order — `foldWalkthroughs` returns a Map's values in
+    // first-seen order and the projection's contract is `read(write(x)) === x`.
+    for (const r of d.prepare("SELECT body, author FROM walkthroughs WHERE source_scope = ? ORDER BY ord")
+      .all(scope) as unknown as { body: string; author: string }[]) {
       try { out.push(JSON.parse(r.body) as SharedWalkthrough); }
-      catch { throw new CorruptProjection(`shared_walkthrough ${scope}/${r.event_id} is unreadable`); }
+      catch { throw new CorruptProjection(`walkthroughs ${scope}/${r.author} is unreadable`); }
     }
     return out;
   },

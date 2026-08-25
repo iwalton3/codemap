@@ -514,10 +514,14 @@ test("walkthroughs round-trip through their projection, and are read from the ca
     assert.equal(miss.length, 2, "two people, two answers");
     assert.deepEqual(JSON.stringify(hit), JSON.stringify(miss), "the cache returns what the fold did");
 
-    // The rows are actually there — a hit is a table read, not a re-fold.
-    const rows = db(root).prepare("SELECT author FROM shared_walkthrough WHERE scope = ? ORDER BY rowid")
-      .all(scope) as unknown as { author: string }[];
+    // The rows are actually there — a hit is a table read, not a re-fold — and they are
+    // in the CANONICAL `walkthroughs` table, keyed by the pull request rather than by
+    // the scope, so a teammate's reading is an ordinary row every surface already sees.
+    const rows = db(root).prepare("SELECT author, pr, origin FROM walkthroughs WHERE source_scope = ? ORDER BY ord")
+      .all(scope) as unknown as { author: string; pr: string; origin: string }[];
     assert.deepEqual(rows.map((r) => r.author), [izzie.principal, dana.principal]);
+    assert.deepEqual(rows.map((r) => r.pr), ["264", "264"], "the pull request is a column, lifted out of the scope");
+    assert.deepEqual(rows.map((r) => r.origin), ["sync", "sync"]);
 
     // CONTROL — a later publication by the SAME person replaces theirs rather than
     // adding a row, which is the fold's rule and must survive the round trip.

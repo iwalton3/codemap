@@ -1,6 +1,6 @@
 import { type Annotation } from "../schema.js";
 import { originSlug } from "../git.js";
-import { readAnchorStore, loadNodes, readAnnotations, findAnchorsOutsideWork, writeWalkthrough, readOrphans } from "../store.js";
+import { readAnchorStore, loadNodes, readAnnotations, findAnchorsOutsideWork, writeLocalWalkthrough, readOrphans } from "../store.js";
 import { prTriage, listOpenPrs, prPacket, prStory, prAnchorCode, prPromotionPlan, derivePrTriage, prContainment, offStoryReason, type OffStoryReason } from "../pr.js";
 import { promotionOwns } from "../pr-promote.js";
 import { resolveSidecar } from "../sidecar-config.js";
@@ -92,7 +92,7 @@ export async function prWalkthroughSet(
       coverage, dryRun: true,
     };
   }
-  await writeWalkthrough(root, String(t.pr.number), built);
+  await writeLocalWalkthrough(root, String(t.pr.number), built);
   // Writing one and PUBLISHING it were two acts, and nothing said so — the tool that
   // publishes is findable only by somebody who already knows it exists, so a
   // walkthrough written for a team stayed in the author's own store. Publishing here

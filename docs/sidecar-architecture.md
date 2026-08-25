@@ -118,15 +118,15 @@ Consequences that are decided, not open:
   hand-written bridge onto every surface. **Do not overload `generatedBy`** — it
   means analyzer-generated, which is a different fact from sync origin.
 
-  **Walkthroughs are the one payload still outside this rule**, and they cost
-  exactly what the rule predicts. A teammate's lives in `shared_walkthrough` while
-  yours is a `meta` blob, so a walkthrough that travelled, folded and sat in the
-  reader's own store was invisible to every surface that renders one — the
-  pull-request page told them "no agent has walked this one". The bridge now exists
-  (`walkthroughFor`, `ops/shared.ts`), which is the fix, not the answer: the answer
-  is one table keyed `(pr, author)` with an `origin`, the way `findings` got one.
-  Until then, a NEW surface that renders a walkthrough must go through that function
-  and not through `readWalkthroughs`, which is yours alone.
+  **Walkthroughs were the last payload outside this rule, and are now inside it.**
+  They cost exactly what the rule predicts while they were out: a teammate's lived
+  in `shared_walkthrough` while yours was a `meta` blob, so a walkthrough that
+  travelled, folded and sat in the reader's own store was invisible to every surface
+  that renders one — the pull-request page told them "no agent has walked this one".
+  They are now rows in `walkthroughs` keyed `(pr, author)`, publishing your own
+  ADOPTS the local row, and `walkthroughFor` (`ops/shared.ts`) only chooses between
+  readings. A surface that renders a walkthrough goes through it rather than
+  querying, because choosing is the part that is easy to get wrong, not reading.
 - **No transactional outbox.** The NDJSON shard already is one. `emitEvent`
   captures causal heads and the writer-chain position atomically under the sidecar
   lock, and those are only true at the moment of the write — an outbox that mints

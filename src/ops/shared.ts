@@ -2,11 +2,11 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { type Anchor, type LogicalNode } from "../schema.js";
 import { indexFile } from "../repo.js";
-import { readAnchorStore, loadNodes, readCoverage, readSnapshot, findAnchorsOutsideWork, readOrphans, derivationLookup, readWalkthroughs } from "../store.js";
+import { readAnchorStore, loadNodes, readCoverage, readSnapshot, findAnchorsOutsideWork, readOrphans, derivationLookup, readWalkthroughsFor } from "../store.js";
 import type { PrWalkthrough } from "../walkthrough.js";
 import { requireActor } from "../identity.js";
 import { resolveSidecar, scopeFor, sidecarIdentity } from "../sidecar-config.js";
-import { readCached } from "../materialize.js";
+import { ensureMaterialized } from "../materialize.js";
 import { foldWalkthroughs, walkthroughScope } from "../shared-walkthrough.js";
 import { walkthroughsProjection } from "../shared-projections.js";
 import { resolveCoverage, type CoverageResult } from "../coverage.js";
@@ -228,15 +228,13 @@ export interface WalkthroughPick {
 /**
  * The walkthrough to show for a pull request, out of everyone's.
  *
- * A walkthrough was the one shared payload still living in a parallel table with no
- * bridge onto the surfaces that render it: a teammate's travelled, folded into
- * `shared_walkthrough`, and every page and tool that shows a walkthrough read the local
- * blob only — so the reader was told "no agent has walked this one" while it sat in
- * their own store. That is the failure `docs/sidecar-architecture.md` gives the
- * one-canonical-table rule to prevent, and this is the bridge until walkthroughs get
- * the table (`node_versions` and `findings` already have theirs).
+ * One table read. A page renders ONE structure, so something has to choose between the
+ * readings a pull request has — and the choice being nowhere was the defect: a
+ * teammate's walkthrough folded into the reader's own store and every surface that
+ * renders one looked in the other place. Now they are rows in `walkthroughs` and this is
+ * only the choosing.
  *
- * The choice, in order, and the head rule is FIRST on purpose:
+ * The order, and the head rule is FIRST on purpose:
  *
  *   1. a reading written against this head — yours before a teammate's
  *   2. failing that, yours, stale and flagged as it always was
@@ -244,50 +242,44 @@ export interface WalkthroughPick {
  *
  * Head first because a walkthrough about another commit is not a worse reading, it is
  * about something else — the rule `currentWalkthrough` already enforces — so a
- * teammate's fresh one beats your stale one. Yours wins every tie, so nothing you
- * wrote is ever displaced by somebody else's at equal standing.
+ * teammate's fresh one beats your stale one. Yours wins every tie, so nothing you wrote
+ * is ever displaced by somebody else's at equal standing.
  *
  * Never picks silently: whatever is not shown comes back in `others`.
  */
 export async function walkthroughFor(
   root: string, pr: number | string, head: string,
 ): Promise<WalkthroughPick | null> {
-  const mine = (await readWalkthroughs(root)).walkthroughs[String(pr)] ?? null;
-  // Straight to the PROJECTION, not through `ops-shared`: the core may reach the
-  // sidecar's own modules (`shared-walkthrough`, `docs-lookup`) and may not reach the
-  // ops layer above them, which closes a cycle back through `ops/triage` —
-  // `import-cycles.test.ts` catches it, dynamic imports included. Reading the cache is
-  // also the architecture's rule: the log is pull/push, never folded on an ordinary read.
+  // Ensure, then QUERY the canonical table — the shape `sharedFindings` uses, and the
+  // reason it is two steps rather than one: `ensureMaterialized` is `readCached` without
+  // deserializing a value nobody wants, because the rows themselves are the answer now.
+  // It is a fingerprint check on a cache hit, not a fold; the log stays pull/push.
   const cfg = resolveSidecar(root);
-  const folded = cfg
-    ? await readCached(root, cfg.path, walkthroughScope(scopeFor(cfg, "pr", String(pr))),
-      sidecarIdentity(cfg), foldWalkthroughs, walkthroughsProjection)
-      .then((r) => r.value).catch(() => [])
-    : [];
+  if (cfg) {
+    await ensureMaterialized(root, cfg.path, walkthroughScope(scopeFor(cfg, "pr", String(pr))),
+      sidecarIdentity(cfg), foldWalkthroughs, walkthroughsProjection).catch(() => null);
+  }
+  const rows = await readWalkthroughsFor(root, pr);
+  if (!rows.length) return null;
 
+  // MINE is by principal, never by `origin`. Publishing your own walkthrough makes the
+  // fold adopt your row, so an origin marks "came via the log" and would report your own
+  // reading back to you as a stranger's. An unattributed row (`author === ""`, migrated
+  // from the legacy blob) has no principal to match, and is yours by the only other
+  // thing that can say so: nothing published it.
   const actor = requireActor(root);
   const me = "error" in actor ? null : actor.principal;
-  // My own published copy is the same reading as the local blob, not a second opinion.
-  // `me` is null only when this store has no identity — and publishing REQUIRES one
-  // (`bind` refuses), so there is then nothing of mine in the log to mistake for a
-  // teammate's. The unguarded branch is unreachable rather than merely unlikely.
-  const theirs = folded.filter((f) => !me || f.actor.principal !== me);
+  const isMine = (r: typeof rows[number]) => (r.author ? r.author === me : !r.origin);
 
-  const candidates: { walkthrough: PrWalkthrough; by?: string; at: string; mine: boolean }[] = [
-    ...(mine ? [{ walkthrough: mine, at: mine.at, mine: true }] : []),
-    ...theirs.map((t) => ({ walkthrough: t.walkthrough, by: t.actor.principal, at: t.at, mine: false })),
-  ];
-  if (!candidates.length) return null;
-
-  const rank = (c: typeof candidates[number]) =>
-    (c.walkthrough.head === head ? 0 : 2) + (c.mine ? 0 : 1);
+  const rank = (r: typeof rows[number]) =>
+    (r.walkthrough.head === head ? 0 : 2) + (isMine(r) ? 0 : 1);
   // Newest FIRST among equals — the winner is `sorted[0]` — so a re-walk supersedes
   // rather than losing the tiebreak to the reading it was written to replace.
-  const sorted = [...candidates].sort((a, b) => rank(a) - rank(b) || b.at.localeCompare(a.at));
+  const sorted = [...rows].sort((a, b) => rank(a) - rank(b) || b.at.localeCompare(a.at));
   const [best, ...rest] = sorted;
   return {
     walkthrough: best!.walkthrough,
-    ...(best!.mine ? {} : { sharedBy: best!.by }),
-    others: rest.map((c) => ({ by: c.by ?? (me ?? "you"), head: c.walkthrough.head, mine: c.mine })),
+    ...(isMine(best!) ? {} : { sharedBy: best!.author }),
+    others: rest.map((r) => ({ by: r.author || "(unattributed)", head: r.walkthrough.head, mine: isMine(r) })),
   };
 }

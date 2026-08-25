@@ -42,7 +42,7 @@ export { sharedKnowsNode, docsVerdict, type DocsVerdict } from "./docs-lookup.js
 import { docsVerdict } from "./docs-lookup.js";
 import { queueContestedTriage } from "./ops/triage.js";
 export { mirrorTriage, mirrorTriageBatch, mirrorTriageClear } from "./triage-publish.js";
-import { readAnnotations, readAnchorStore, readFindings, loadNodes, loadNodeVersions, nodeIdsWithPublishableVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets } from "./store.js";
+import { readAnnotations, readAnchorStore, readFindings, loadNodes, loadNodeVersions, nodeIdsWithPublishableVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets, attributeLocalWalkthrough } from "./store.js";
 import {
   publishDocVersion, acceptDocHash, resolveDoc, foldDocs, docScope,
   type NewDocVersion,
@@ -1257,6 +1257,11 @@ export async function shareWalkthrough(root: string, w: PrWalkthrough) {
   if ("error" in b) return b;
   const ready = await ensureSidecar(b.cfg.path, b.actor);
   if ("error" in ready) return ready;
+  // BEFORE the fold comes back. A local row migrated from the legacy blob has no
+  // principal — a walkthrough's `by` is free text, not one — and publishing is the first
+  // act that knows who. Without this the folded row cannot adopt it, and the author's
+  // own reading appears twice: once as theirs, once as a stranger's.
+  await attributeLocalWalkthrough(root, String(w.pr), b.actor.principal);
   await publishWalkthrough(b.cfg.path, b.actor, { ...w, pr: w.pr }, prKey(b.cfg, w.pr));
   // Write-through, same as a shared doc: append, then materialize that scope, so the
   // walkthrough is readable from SQLite the moment this returns. Reported rather than
