@@ -67,6 +67,117 @@ node ~/codemap/dist/cli.js diff main --repo /path/to/your-repo   # review a bran
 front-ends over one store. To map several repos at once, see the workspace
 manifest below.
 
+## Shared review — setting up a sidecar (a team)
+
+Everything above is one person's map. A **sidecar** is a second git repo carrying
+the *shared* half — findings, docs, notes, triage — as an append-only event log
+that every teammate pulls and pushes. No server, no auth, no new protocol: the
+log is authoritative and each clone's SQLite store is a projection of it.
+`docs/sidecar-architecture.md` is the normative description (the two
+`PROPOSAL-*.md` files predate it and lose where they disagree).
+
+One sidecar serves **many universes**. Scopes are prefixed with a universe key
+taken from the repo's `owner/repo` origin — `acme/acme.api/pr-264` — so two repos
+that share a submodule, and therefore share anchor ids, cannot collide.
+
+**1. Make a repo for it.** Empty is fine. A remote is optional: a sidecar with no
+remote is a perfectly good local one — sync commits, push is a no-op, and adding
+`origin` later just starts working.
+
+```sh
+git clone git@github.com:your-org/codemap-sidecar.git /working/codemap-sidecar
+```
+
+**2. Point your universes at it.** Three ways, in precedence order:
+
+| How | Where it fits |
+| --- | --- |
+| `CODEMAP_SIDECAR=/path/to/sidecar` | a one-off, or trying it out |
+| `.codemap/sidecar` — a file holding the path, or a directory that *is* the sidecar | one repo, permanently |
+| `"sidecar": "codemap-sidecar"` in `codemap.workspace.json`, relative to the manifest | **a team** — one entry serves every universe in the workspace |
+
+```jsonc
+// codemap.workspace.json
+{
+  "sidecar": "codemap-sidecar",
+  "universes": [
+    { "id": "api",        "path": "Acme.API",        "primary": true },
+    { "id": "settlement", "path": "Acme.Settlement" }
+  ]
+}
+```
+
+**3. Have an identity**, because every event records who did it — `git config
+user.email you@example.com`, or `CODEMAP_PRINCIPAL`. Reading needs none of it.
+
+**4. First sync.** Run it once per universe:
+
+```sh
+node dist/cli.js sync --repo /working/Acme.API
+# sidecar /working/codemap-sidecar  (acme/acme.api)
+#   received 0 event(s), sent yours
+```
+
+That `git init`s the sidecar if it isn't one yet (it is always its own repo, even
+at `.codemap/sidecar` inside your code repo), writes the shard merge policy
+`.gitattributes`, registers a per-person manifest recording your anchor/hash
+schemes, then commits and pushes.
+
+### The initial sync — putting an existing map on the sidecar
+
+A store that predates the sidecar holds docs, notes and triage marks nobody else
+can see. Three commands move them onto the log. **It is append-only** — publishing
+is not something you undo — so dry-run first and read the counts.
+
+```sh
+node dist/cli.js publish-docs   --repo /working/Acme.API --dry-run
+node dist/cli.js publish-notes  --repo /working/Acme.API --dry-run
+node dist/cli.js publish-triage --repo /working/Acme.API --dry-run
+```
+
+Then publish for real and **`sync` to send** — publishing appends locally and
+tells you so; the transport is a separate step.
+
+```sh
+node dist/cli.js publish-docs   --repo /working/Acme.API
+node dist/cli.js publish-notes  --repo /working/Acme.API
+node dist/cli.js publish-triage --repo /working/Acme.API
+node dist/cli.js sync           --repo /working/Acme.API
+```
+
+Analyzer-generated content is skipped on purpose: it is derived, every clone
+mints its own copy deterministically, and a derived event has no honest author.
+On Acme.API that was 622 human triage marks published against 2,221 generated
+ones skipped, and 756 of 998 documented nodes skipped as analyzer output.
+
+**Joining a sidecar somebody else set up** is the same minus the publishing:
+clone it, point at it, `sync`. The fold materializes their state into your store,
+resolved against *your* checkout.
+
+### Day to day
+
+```sh
+node dist/cli.js sync           --repo <repo>   # send and receive; also queues arriving disagreements
+node dist/cli.js peers          --repo <repo>   # who else is on this sidecar, and scheme drift
+node dist/cli.js shared 264     --repo <repo>   # the team's findings on a PR
+node dist/cli.js replies 264    --repo <repo>   # what the submitter said back
+node dist/cli.js shared-docs    --repo <repo>   # their docs, resolved against your checkout
+node dist/cli.js shared-triage  --repo <repo>   # their stakes, with receipts
+node dist/cli.js contested      --repo <repo>   # stakes two people disagree about
+node dist/cli.js notes <anchor|node> --repo <repo>   # what the team knows about one symbol
+node dist/cli.js sidecar heal   --repo <repo>   # repair a forked sidecar (a person, not an agent)
+```
+
+Three front-ends over one log, as everywhere else: MCP exposes `sync`,
+`shared_findings`, `shared_docs`, `shared_triage`, `shared_notes` and friends, and
+the web UI has a hub at `/#/u/<universe>/shared/` with a sync button. The log is
+**pull/push only** — an ordinary read never touches the network.
+
+One trap worth knowing: **`--repo` works on every one of these; the bare
+positional does not.** `shared`, `replies`, `notes` and `shared-triage` take their
+target first, so `codemap shared-triage /working/Acme.API` reads the path as a
+*symbol*, falls back to the current directory, and reports no sidecar configured.
+
 ## Status
 
 Building **v1: the anchor + staleness engine** (the code-index phase). Process
