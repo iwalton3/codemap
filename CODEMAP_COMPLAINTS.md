@@ -302,7 +302,7 @@ response above, which `defer_finding` then rejects as unknown.
 Practical consequence, unchanged: the one genuinely-outstanding #264 finding (the
 credit-line stream replay under an exclusive lock) still cannot be deferred into a
 bug, so it will vanish from view when the PR closes. It survives only because Mike
-independently filed Jira Acme-742. The `remediation: "deferred"` flag now at least
+independently filed Jira ACME-742. The `remediation: "deferred"` flag now at least
 records *that* it was deferred — but there is no codemap bug behind it, and
 `track_bug` needs a bug id to attach the Jira key to, so the link lives in prose.
 
@@ -447,7 +447,7 @@ baseline commit: 6965b31f...
 68 previously-missing anchor(s) are back in the tree
 ```
 
-`defer_finding` then succeeded first try → `bug_a4ad586a8afa`, cross-linked, Acme-742
+`defer_finding` then succeeded first try → `bug_a4ad586a8afa`, cross-linked, ACME-742
 attached via `track_bug`. **1.6 seconds.**
 
 So the practical fix for a PR finding on branch-introduced code is: check the branch
