@@ -164,8 +164,10 @@ codemap rolls each changed symbol up to the flows, docs and reviews it affects.
 - \`review\` each segment you have actually read (level:code -> \`checked\`), then file
   what you found.
 
-**A finding on a pull request goes to \`share_finding\`.** It is scoped to the PR, so
-it cannot be filed against the wrong one, and it carries the things a PR finding needs:
+**A finding on a pull request goes to \`share_finding\`.** The pull request is part of
+where it is STORED rather than something guessed from which symbols the diff touched —
+so a finding about code the PR does not touch is still that PR's finding, which is the
+class the other path loses. It also carries what a PR finding needs:
 a state ratchet, \`corroborate\` for cross-model second opinions, \`comment_on_finding\`
 for the reviewers' thread, and \`request_ack\` for the decisions you may not take
 yourself. Yours opens as \`issued\` — an agent's finding is a proposal until a person
@@ -175,18 +177,19 @@ stands behind it.
 \`target.where\` first: \`offTree\` means it is on another branch and nothing is wrong.
 
 **Know which store you are writing to, until they are one.** \`annotate(kind:"finding")\`
-writes a LOCAL finding: it reaches the review queue, the PR story page and the GitHub
-publish path, but it has no \`pr\` field, so which pull request it belongs to is guessed
-by intersecting its target with that PR's changed symbols — and it never appears in
-\`shared_findings\` for any PR. \`share_finding\` is the reverse: correctly scoped to the
+writes a LOCAL finding: it reaches \`findings\`, the PR story page and the GitHub publish
+path, but it has no \`pr\` field, so which pull request it belongs to is guessed by
+intersecting its target with that PR's changed symbols — and it never appears in
+\`shared_findings\` for any PR. (Not \`review_queue\` either: that lists only what a human
+ASSIGNED to an agent, and \`annotate\` does not assign.) \`share_finding\` is the reverse: correctly scoped to the
 PR and visible to the team, but invisible to the review queue and to the GitHub publish
 path. Prefer \`share_finding\` for anything about the pull request under review, and
 \`annotate\` for a durable remark about the code itself. Both stores are being unified
 into one canonical table — \`docs/plan-findings-unification.md\`.
 
-When a human hands you work: \`review_queue\` is what they asked YOU to act on;
-\`findings\` is the wider list of local findings and questions (it does NOT include
-shared findings). Report back with \`close_finding\` — that records what you did and
+When a human hands you work: \`review_queue\` is what they asked YOU to act on — items
+with an assignment, and nothing else; \`findings\` is the wider list of every local
+finding and question (it does NOT include shared findings). Report back with \`close_finding\` — that records what you did and
 does not close it, because reporting and agreeing it is closed are different acts.
 
 ## Find & fix

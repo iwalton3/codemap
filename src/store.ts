@@ -1292,15 +1292,34 @@ export async function readFindings(root: string, opts: { pr?: number | string } 
   return { schemaVersion: SCHEMA_VERSION, findings };
 }
 
-/** One finding by id, without deserializing the rest. Local rows first — see the note. */
-export async function readFinding(root: string, id: string): Promise<SharedFinding | null> {
-  // `ORDER BY source_scope IS NULL DESC` puts a LOCAL row first. An id can exist in
-  // more than one row only in the window between filing here and the fold adopting it;
-  // preferring the local one means a caller that just wrote sees what it wrote.
-  const row = db(root).prepare(
-    "SELECT pr, body, source_scope FROM findings WHERE id = ? ORDER BY source_scope IS NULL DESC",
-  ).get(id) as { pr: string; body: string; source_scope: string | null } | undefined;
-  return row ? hydrate(row.body, row.pr, row.source_scope) : null;
+/**
+ * One finding, without deserializing the rest.
+ *
+ * `pr` is part of the identity, not an optional narrowing: `ix_findings_identity` is
+ * UNIQUE on `(pr, id)` precisely because one id can exist in two pull requests, and a
+ * test in `materialize.test.ts` exists to keep that true. So an id alone can be
+ * ambiguous, and an unordered pick among the matches is the shape that returns one
+ * caller's finding to another. Omitting `pr` is allowed for a caller that genuinely
+ * has only an id, and REFUSED rather than guessed when it turns out not to be unique.
+ */
+export async function readFinding(
+  root: string, id: string, opts: { pr?: number | string } = {},
+): Promise<SharedFinding | null> {
+  const d = db(root);
+  if (opts.pr !== undefined) {
+    const row = d.prepare("SELECT pr, body, source_scope FROM findings WHERE pr = ? AND id = ?")
+      .get(String(opts.pr), id) as { pr: string; body: string; source_scope: string | null } | undefined;
+    return row ? hydrate(row.body, row.pr, row.source_scope) : null;
+  }
+  const rows = d.prepare("SELECT pr, body, source_scope FROM findings WHERE id = ?").all(id) as unknown as
+    { pr: string; body: string; source_scope: string | null }[];
+  if (!rows.length) return null;
+  if (rows.length > 1) {
+    throw new Error(
+      `${id} is a finding on more than one pull request (${rows.map((r) => r.pr).join(", ")}) — pass \`pr\` to say which`,
+    );
+  }
+  return hydrate(rows[0]!.body, rows[0]!.pr, rows[0]!.source_scope);
 }
 
 const findingRow = (f: SharedFinding, pr: string): unknown[] => [

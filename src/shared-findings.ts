@@ -169,8 +169,12 @@ export interface SharedFinding {
  * than as the failure it is.
  */
 export function prOfScope(scope: string): string {
-  const i = scope.lastIndexOf("/pr-");
-  if (i >= 0) return scope.slice(i + "/pr-".length);
+  // The tail must be a whole segment. Without that a key that itself contained
+  // `/pr-` — which `prKey` now refuses, but old shards and hand-written events are
+  // not bound by it — would have its own tail picked out and indexed as the pull
+  // request. `foo/pr-999` reading as PR 999 is worse than reading as nothing.
+  const m = /\/pr-([^/]+)$/.exec(scope);
+  if (m) return m[1]!;
   const j = scope.indexOf("/");
   return j < 0 ? scope : scope.slice(j + 1);
 }

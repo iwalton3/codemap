@@ -61,8 +61,15 @@ import { readScopeChecked, SHARD_EXT, type LogEvent, type ScopeStatus } from "./
  * keep serving rows that were folded under the old rule and a flow published before the
  * bump would never appear. Found by walking a real two-clone flow — the events arrived,
  * the fold was fixed, and the reader still answered from a cache hit.
+ *
+ * 7 -> 8: findings moved from `shared_finding` to the canonical `findings` table. The
+ * same SHAPE change as 5 -> 6 and it needs the bump for the same reason — a cache
+ * written under 7 points at a table the new reader does not read, so the fingerprint
+ * matches, the reader returns an empty map, and every shared finding a store already
+ * held vanishes until that scope's shards happen to move. On a real universe that is
+ * 26 findings across three pull requests disappearing on upgrade.
  */
-export const MATERIALIZER_VERSION = 7;
+export const MATERIALIZER_VERSION = 8;
 
 /**
  * What the events in a scope are, cheaply.

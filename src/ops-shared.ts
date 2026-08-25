@@ -81,8 +81,28 @@ function bind(root: string, via: { model?: string; harness?: string } = {}): Bou
 /** What a caller says about itself: its model id and the tool running it. Never guessed. */
 export interface Via { model?: string; harness?: string }
 
-/** `acme/api/pr-264` — the universe-qualified key every scope is built from. */
-const prKey = (cfg: SidecarConfig, pr: number | string) => scopeFor(cfg, "pr", pr);
+/**
+ * `acme/api/pr-264` — the universe-qualified key every scope is built from.
+ *
+ * VALIDATED, because the scope IS the pull-request association: an unnormalized key
+ * makes two scopes for one pull request, and every reader then sees half the findings.
+ * `pr_walkthrough` advertises "number, url, or owner/repo#N", so a caller passing
+ * `https://github.com/o/r/pull/5` here is not far-fetched — and it would scope to
+ * `pr-https://github.com/o/r/pull/5` while the same person's `5` scoped to `pr-5`.
+ * A slash in the key also lets `prOfScope` pick the wrong tail back out.
+ *
+ * Throws rather than returning an error: both front ends already catch and surface the
+ * message, and this is a malformed input rather than a state a workflow can be in.
+ */
+const prKey = (cfg: SidecarConfig, pr: number | string) => {
+  const key = String(pr).trim().replace(/^#/, "");
+  if (!/^\d+$/.test(key)) {
+    throw new Error(
+      `"${pr}" is not a pull request number — shared findings scope by number, so pass 5 rather than a url or owner/repo#5`,
+    );
+  }
+  return scopeFor(cfg, "pr", key);
+};
 
 
 /** Is this scope part of the universe we are syncing? One sidecar can carry several. */
@@ -298,8 +318,8 @@ export async function shareFinding(root: string, pr: number | string, f: NewFind
   if ("error" in b) return b;
   await ensureSidecar(b.cfg.path, b.actor);
   const id = await createFinding(b.cfg.path, prKey(b.cfg, pr), b.actor, f);
-  await materializeFindings(root, b.cfg, pr);
-  return { ok: true, id, note: "recorded locally — run `codemap sync` to send it" };
+  const mz = await materializeFindings(root, b.cfg, pr);
+  return { ...mz, ok: true, id, note: "recorded locally — run `codemap sync` to send it" };
 }
 
 export async function corroborateFinding(root: string, pr: number | string, id: string, verdict: Verdict, rationale: string, via: Via = {}) {
@@ -307,8 +327,8 @@ export async function corroborateFinding(root: string, pr: number | string, id: 
   if ("error" in b) return b;
   if (!rationale.trim()) return { error: "a verdict without a rationale is a vote, not a review — say what you checked" };
   await corroborate(b.cfg.path, prKey(b.cfg, pr), b.actor, id, verdict, rationale);
-  await materializeFindings(root, b.cfg, pr);
-  return { ok: true, id, verdict };
+  const mz = await materializeFindings(root, b.cfg, pr);
+  return { ...mz, ok: true, id, verdict };
 }
 
 export async function commentOnFinding(root: string, pr: number | string, id: string, body: string, inReplyTo?: string, via: Via = {}) {
@@ -316,16 +336,16 @@ export async function commentOnFinding(root: string, pr: number | string, id: st
   if ("error" in b) return b;
   if (!body.trim()) return { error: "an empty comment says nothing" };
   const e = await comment(b.cfg.path, prKey(b.cfg, pr), b.actor, id, body, inReplyTo);
-  await materializeFindings(root, b.cfg, pr);
-  return { ok: true, id: e.id };
+  const mz = await materializeFindings(root, b.cfg, pr);
+  return { ...mz, ok: true, id: e.id };
 }
 
 export async function promoteFinding(root: string, pr: number | string, id: string) {
   const b = bind(root);
   if ("error" in b) return b;
   await promote(b.cfg.path, prKey(b.cfg, pr), b.actor, id);
-  await materializeFindings(root, b.cfg, pr);
-  return { ok: true, id, note: "surfaced for team-wide attention; it does not gate anyone's triage" };
+  const mz = await materializeFindings(root, b.cfg, pr);
+  return { ...mz, ok: true, id, note: "surfaced for team-wide attention; it does not gate anyone's triage" };
 }
 
 export async function requestOnFinding(root: string, pr: number | string, id: string, ask: Ask, rationale: string) {
@@ -333,8 +353,8 @@ export async function requestOnFinding(root: string, pr: number | string, id: st
   if ("error" in b) return b;
   if (!rationale.trim()) return { error: `asking to ${ask} without saying why leaves the human nothing to act on` };
   await request(b.cfg.path, prKey(b.cfg, pr), b.actor, id, ask, rationale);
-  await materializeFindings(root, b.cfg, pr);
-  return { ok: true, id, ask, note: "queued for a person to acknowledge" };
+  const mz = await materializeFindings(root, b.cfg, pr);
+  return { ...mz, ok: true, id, ask, note: "queued for a person to acknowledge" };
 }
 
 export async function closeFinding(root: string, pr: number | string, id: string, state: FindingState, reason?: string) {
@@ -342,24 +362,24 @@ export async function closeFinding(root: string, pr: number | string, id: string
   if ("error" in b) return b;
   const r = await setState(b.cfg.path, prKey(b.cfg, pr), b.actor, id, state, reason);
   if ("error" in r) return r;
-  await materializeFindings(root, b.cfg, pr);
-  return { ok: true, id, state };
+  const mz = await materializeFindings(root, b.cfg, pr);
+  return { ...mz, ok: true, id, state };
 }
 
 export async function reportOnFinding(root: string, pr: number | string, id: string, result: "fixed" | "answered" | "declined", detail: string, files?: string[]) {
   const b = bind(root);
   if ("error" in b) return b;
   await recordOutcome(b.cfg.path, prKey(b.cfg, pr), b.actor, id, result, detail, files);
-  await materializeFindings(root, b.cfg, pr);
-  return { ok: true, id, result, note: "reported — a person still has to close it" };
+  const mz = await materializeFindings(root, b.cfg, pr);
+  return { ...mz, ok: true, id, result, note: "reported — a person still has to close it" };
 }
 
 export async function upstreamFinding(root: string, pr: number | string, id: string, ref: { system?: string; key?: string; url?: string }) {
   const b = bind(root);
   if ("error" in b) return b;
   await markUpstreamed(b.cfg.path, prKey(b.cfg, pr), b.actor, id, ref);
-  await materializeFindings(root, b.cfg, pr);
-  return { ok: true, id, note: "tracked upstream; still open here until the code says otherwise" };
+  const mz = await materializeFindings(root, b.cfg, pr);
+  return { ...mz, ok: true, id, note: "tracked upstream; still open here until the code says otherwise" };
 }
 
 /**
@@ -387,16 +407,16 @@ export async function findingToBug(root: string, pr: number | string, id: string
   const b = bind(root);
   if ("error" in b) return b;
   await promoteToBug(b.cfg.path, prKey(b.cfg, pr), b.actor, id, bug);
-  await materializeFindings(root, b.cfg, pr);
-  return { ok: true, id, bug };
+  const mz = await materializeFindings(root, b.cfg, pr);
+  return { ...mz, ok: true, id, bug };
 }
 
 export async function recordPublished(root: string, pr: number | string, id: string, ref: { key?: string; url?: string }) {
   const b = bind(root);
   if ("error" in b) return b;
   await markPosted(b.cfg.path, prKey(b.cfg, pr), b.actor, id, ref);
-  await materializeFindings(root, b.cfg, pr);
-  return { ok: true, id };
+  const mz = await materializeFindings(root, b.cfg, pr);
+  return { ...mz, ok: true, id };
 }
 
 /** A finding, flattened for a front-end: derived fields resolved, actors named. */
@@ -480,16 +500,16 @@ export async function relocateFinding(
     }
   }
   await relocate(b.cfg.path, prKey(b.cfg, pr), b.actor, id, kind, rationale, opts);
-  await materializeFindings(root, b.cfg, pr);
-  return { ok: true, id, kind, ...(opts.apply ? { applied: true } : { note: "queued for a person to apply" }) };
+  const mz = await materializeFindings(root, b.cfg, pr);
+  return { ...mz, ok: true, id, kind, ...(opts.apply ? { applied: true } : { note: "queued for a person to apply" }) };
 }
 
 export async function reviseFinding(root: string, pr: number | string, id: string, now: Record<string, unknown>) {
   const b = bind(root);
   if ("error" in b) return b;
   await revise(b.cfg.path, prKey(b.cfg, pr), b.actor, id, now);
-  await materializeFindings(root, b.cfg, pr);
-  return { ok: true, id };
+  const mz = await materializeFindings(root, b.cfg, pr);
+  return { ...mz, ok: true, id };
 }
 
 /** Settle a field two people set differently without seeing each other. */
@@ -498,8 +518,8 @@ export async function settleContest(root: string, pr: number | string, id: strin
   if ("error" in b) return b;
   const r = await resolveContest(b.cfg.path, prKey(b.cfg, pr), b.actor, id, field, value);
   if ("error" in r) return r;
-  await materializeFindings(root, b.cfg, pr);
-  return { ok: true, id, field };
+  const mz = await materializeFindings(root, b.cfg, pr);
+  return { ...mz, ok: true, id, field };
 }
 
 /**
@@ -549,12 +569,29 @@ const cachedFindings = (root: string, cfg: { path: string; universe: string }, p
  * the tool that had just filed a finding read back nothing until something else
  * happened to fold, and the comment in `bugs-publish.ts` claiming otherwise was stale.
  *
- * Failure here is NOT failure of the write: the event is appended and durable, and the
- * next read or sync folds it. Swallowed rather than thrown past the caller, exactly as
- * `materializeBugs` does — a write that succeeded must not be reported as failed.
+ * Failure here is NOT failure of the write: the event is appended and durable, and a
+ * later fold still picks it up. So it is never thrown past the caller — a write that
+ * succeeded must not be reported as failed.
+ *
+ * But it is not silent either, and the earlier version's "the next read folds it" was
+ * wrong as well as quiet: the canonical readers in `store.ts` query SQLite directly and
+ * never fold, so a failed materialization leaves the finding out of every one of them
+ * until a sync. Reported, so disk-full, a schema mismatch and a constraint violation do
+ * not all present as success.
  */
-async function materializeFindings(root: string, cfg: { path: string; universe: string }, pr: number | string): Promise<void> {
-  try { await cachedFindings(root, cfg, pr); } catch { /* the log has it; the next read folds it */ }
+async function materializeFindings(
+  root: string, cfg: { path: string; universe: string }, pr: number | string,
+): Promise<Record<string, never> | { materialized: false; warning: string }> {
+  try {
+    await cachedFindings(root, cfg, pr);
+    return {};
+  } catch (e: any) {
+    return {
+      materialized: false,
+      warning: `the event is in the log, but this store could not materialize pr ${pr}: `
+        + `${e?.message ?? String(e)} — it will not appear in local reads until the next sync`,
+    };
+  }
 }
 
 /** A universe's shared docs, through the cache. Same shape as findings above. */

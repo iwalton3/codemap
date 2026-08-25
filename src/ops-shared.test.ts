@@ -967,7 +967,79 @@ test("a model that says what it is is recorded on the finding and on the verdict
 test("no model given records no model, rather than a guess", async () => {
   const u = universe();
   try {
+    // Explicitly cleared: unset in this process anyway, so without this the test would
+    // pass for the environment's reasons rather than the code's — and `resolveActor`
+    // reads CODEMAP_AGENT_MODEL as a fallback, which is exactly what must not leak in.
+    await withEnv({ CODEMAP_AGENT_MODEL: undefined, CODEMAP_AGENT_HARNESS: undefined }, async () => {
+      const r = await shared.shareFinding(u.root, 264, NEW) as { id: string };
+      assert.equal((await readFinding(u.root, r.id))!.author.via?.model, undefined);
+    });
+  } finally { u.cleanup(); }
+});
+
+/** Adoption must not reach across pull requests: (pr, id) is the identity, not id. */
+test("a local finding on one pull request is not adopted by another's fold", async () => {
+  const u = universe();
+  try {
+    await writeLocalFinding(u.root, localFinding("f_x", "mine, on 900"), 900);
+    // The same id published on a DIFFERENT pull request.
+    await shared.shareFinding(u.root, 901, { ...NEW, id: "f_x" } as never);
+    await shared.sharedFindings(u.root, 901);
+
+    const rows = db(u.root).prepare("SELECT pr, source_scope FROM findings WHERE id = ? ORDER BY pr")
+      .all("f_x") as unknown as { pr: string; source_scope: string | null }[];
+    assert.equal(rows.length, 2, "two pull requests, two rows");
+    assert.equal(rows[0]!.pr, "900");
+    assert.equal(rows[0]!.source_scope, null, "900's local row is untouched by 901's fold");
+    assert.ok(rows[1]!.source_scope, "901's row is the fold's");
+  } finally { u.cleanup(); }
+});
+
+/**
+ * Write-through on more than the two ops that first had it. Only `share_finding` and
+ * `comment_on_finding` were covered, so removing any of the other eleven calls still
+ * passed — which is the same blind spot that let findings skip write-through entirely.
+ */
+test("every finding write op leaves its change in the rows", async () => {
+  const u = universe();
+  try {
     const r = await shared.shareFinding(u.root, 264, NEW) as { id: string };
-    assert.equal((await readFinding(u.root, r.id))!.author.via?.model, undefined);
+    const body = () => JSON.parse((db(u.root).prepare("SELECT body FROM findings WHERE id = ?")
+      .get(r.id) as { body: string }).body);
+
+    await shared.corroborateFinding(u.root, 264, r.id, "confirm", "read it");
+    assert.equal(body().corroboration.length, 1, "corroborate");
+
+    await shared.promoteFinding(u.root, 264, r.id);
+    assert.ok(body().promotion, "promote");
+
+    await shared.requestOnFinding(u.root, 264, r.id, "resolve", "done with it");
+    assert.ok(body().pending, "request");
+
+    await shared.reportOnFinding(u.root, 264, r.id, "fixed", "changed it", ["a.ts"]);
+    assert.ok(body().outcome, "report");
+
+    await shared.upstreamFinding(u.root, 264, r.id, { key: "JIRA-1" });
+    assert.ok(body().upstream, "upstream");
+
+    await shared.reviseFinding(u.root, 264, r.id, { text: "sharper evidence" });
+    assert.equal(body().text, "sharper evidence", "revise");
+
+    await shared.closeFinding(u.root, 264, r.id, "resolved", "fixed upstream");
+    assert.equal(body().state, "resolved", "close");
+  } finally { u.cleanup(); }
+});
+
+/** A pull request key that is not a number would make a second scope for one PR. */
+test("a url or owner/repo#N is refused as a findings scope, not silently accepted", async () => {
+  const u = universe();
+  try {
+    await assert.rejects(
+      () => shared.shareFinding(u.root, "https://github.com/o/r/pull/5", NEW),
+      /not a pull request number/,
+    );
+    await assert.rejects(() => shared.shareFinding(u.root, "o/r#5", NEW), /not a pull request number/);
+    // And the ordinary forms still work, `#5` included.
+    assert.ok(((await shared.shareFinding(u.root, "#5", NEW)) as { id?: string }).id);
   } finally { u.cleanup(); }
 });

@@ -419,11 +419,17 @@ function migrate(d: DatabaseSync): void {
       ord INTEGER,
       body TEXT NOT NULL
     );
-    CREATE UNIQUE INDEX IF NOT EXISTS ix_findings_local ON findings(id)
-      WHERE source_scope IS NULL;
-    CREATE UNIQUE INDEX IF NOT EXISTS ix_findings_shared ON findings(source_scope, id)
-      WHERE source_scope IS NOT NULL;
-    CREATE INDEX IF NOT EXISTS ix_findings_pr ON findings(pr);
+    -- (pr, id), which is the finding's actual identity. It admits one id in two
+    -- different pull requests -- the case an id-only key dropped, caught by the
+    -- oracle's hostile-history property -- while REFUSING a local row and a folded
+    -- row for the same PR finding to sit side by side. Two partial indexes keyed on
+    -- source_scope allowed exactly that, and a local row the fold then declined to
+    -- adopt left the scope answering incomplete for ever.
+    --
+    -- One store holds one universe, so a pr maps to exactly one scope: (pr, id) and
+    -- (source_scope, id) are the same constraint over shared rows, and (pr, id) covers
+    -- the local ones too.
+    CREATE UNIQUE INDEX IF NOT EXISTS ix_findings_identity ON findings(pr, id);
     CREATE INDEX IF NOT EXISTS ix_findings_target ON findings(target_id);
     CREATE INDEX IF NOT EXISTS ix_findings_queue ON findings(pr, needs_ack);
     CREATE INDEX IF NOT EXISTS ix_findings_scope ON findings(source_scope);

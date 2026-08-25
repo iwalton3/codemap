@@ -46,15 +46,28 @@ import type { Actor, NodeVersion } from "./schema.js";
  * by pr: a bare delete would silently take local rows the fold may not own, and the
  * next fold would not put them back.
  *
- * **The adoption rule**, identical to `bugsProjection`'s and for the identical crash.
- * Publishing a local finding preserves its id — a republication of history, not a new
- * finding — so on any store that filed then published, the fold inserts an id that
- * already exists, `findings` keys on `id` alone, and the constraint violation happens
- * INSIDE `readCached`'s transaction: the fold throws, every finding read on that store
- * fails, and nothing about the failure moves the fingerprint, so it never self-heals.
- * The row is the same row, so the fold ADOPTS it. The predicate is narrow for the
- * reason docs' and bugs' are: a local row EDITED between publishing and the first fold
- * holds content the event does not, and overwriting it is unrecoverable loss.
+ * **The adoption rule.** Publishing a local finding preserves its id — a republication
+ * of history, not a new finding — so on any store that filed then published, the fold
+ * meets an id already in the table. `ix_findings_identity` is UNIQUE on `(pr, id)`, so
+ * the constraint violation would happen INSIDE `readCached`'s transaction: the fold
+ * throws, every finding read on that store fails, and nothing about the failure moves
+ * the fingerprint, so it never self-heals. The row is the same row, so the fold ADOPTS
+ * it.
+ *
+ * **Unconditionally, unlike `bugsProjection` and `docsProjection`**, which adopt only
+ * when the local content still matches and otherwise `continue`. That `continue` is a
+ * hole: the shared row is then never stored, the fingerprint is committed anyway, the
+ * first (missing) read returns the fold and every later one answers from rows without
+ * it — measured here, `folds so far: 1` and the finding gone from every subsequent hit.
+ * A scope that silently answers incomplete for ever is worse than the loss the narrow
+ * predicate was protecting against.
+ *
+ * And here that loss cannot be the feared one. Adoption fires only when an EVENT with
+ * this id exists, so the row it takes is by definition a finding that has been
+ * published. The non-regenerable case the bugs comment is about — filed locally, never
+ * published — never reaches this branch at all. What an unconditional adopt can lose is
+ * an unpublished edit made between publishing and the first fold, and for that the log
+ * is authoritative by the architecture's first rule.
  */
 export const findingsProjection: Projection<Map<string, SharedFinding>> = {
   write(d: DatabaseSync, scope: string, value: Map<string, SharedFinding>): void {
@@ -68,13 +81,12 @@ export const findingsProjection: Projection<Map<string, SharedFinding>> = {
     const adopt = d.prepare(
       "UPDATE findings SET pr=?,target_kind=?,target_id=?,state=?,severity=?,category=?,line=?,"
       + "author=?,created_at=?,needs_ack=?,contested=?,origin=?,source_scope=?,ord=?,body=? "
-      + "WHERE id=? AND source_scope IS NULL",
+      + "WHERE pr=? AND id=? AND source_scope IS NULL",
     );
-    // LOCAL rows only. Looking an id up across every scope was the first version's
-    // bug: another PR's row for the same id made this skip, so the fold's second
-    // finding was never stored. Another scope's row is not ours to adopt OR to block
-    // on -- it is a different row under `ix_findings_shared`.
-    const candidate = d.prepare("SELECT body FROM findings WHERE id = ? AND source_scope IS NULL");
+    // Keyed on (pr, id) and LOCAL rows only. An id looked up across every scope was the
+    // first version's bug: another pull request's row for the same id made this skip, so
+    // the fold's second finding was never stored.
+    const candidate = d.prepare("SELECT 1 FROM findings WHERE pr = ? AND id = ? AND source_scope IS NULL");
     let ord = 0;
     for (const f of value.values()) {
       const i = ord++;
@@ -88,12 +100,15 @@ export const findingsProjection: Projection<Map<string, SharedFinding>> = {
         needsHumanAck(f) ? 1 : 0, f.contested?.length ? 1 : 0,
         "sync", scope, i, body,
       ];
-      const row = candidate.get(f.id) as { body: string } | undefined;
-      if (!row) { ins.run(f.id, ...cols as any); continue; }
-      let local: SharedFinding | null = null;
-      try { local = JSON.parse(row.body) as SharedFinding; } catch { /* unreadable: not adoptable */ }
-      if (!local || local.text !== f.text) continue;
-      adopt.run(...cols as any, f.id);
+      if (!candidate.get(pr, f.id)) { ins.run(f.id, ...cols as any); continue; }
+      // `changes` is the invariant, not decoration: the UPDATE and the SELECT that
+      // chose it run in one transaction that already holds the write lock, so zero
+      // rows here means the predicate and the index have drifted apart — which would
+      // otherwise present as the scope quietly missing one finding.
+      const r = adopt.run(...cols as any, pr, f.id);
+      if (Number(r.changes) !== 1) {
+        throw new CorruptProjection(`findings ${scope}/${f.id}: adoption matched no local row`);
+      }
     }
   },
 
