@@ -1,6 +1,6 @@
 # Design: derivation provenance for anchor ids
 
-Status: **draft 4.** Written against `b51834e`, the commit that turned hash emission
+Status: **draft 4.** Written against `20a1884`, the commit that turned hash emission
 on. Supersedes the id half of `PROPOSAL-provenance.md` §5's Comparability bullet,
 and **cancels** §5's `AnchorReceipt` struct. Read
 `docs/decision-receipts-vs-prefix.md` first — it decided *B for hashes, A for ids*,
@@ -8,7 +8,7 @@ and this document is the finding that A is not needed.
 
 **The conclusion, up front.** Anchor ids stay bare. Their derivation evidence is the
 fingerprint already riding on the body hash minted beside them, which as of
-`b51834e` is nearly every stored id. What remains is join-side: teach the sinks to
+`20a1884` is nearly every stored id. What remains is join-side: teach the sinks to
 consult one predicate, fix three carriers that genuinely have no hash beside them,
 and keep the `anchorScheme` gate that already exists.
 
@@ -185,7 +185,7 @@ their `Record<string, unknown>` casts are invisible to the compiler.
 
 ## 4. The design: the evidence is already there
 
-A body hash minted at `b51834e` or later carries `derivationFingerprint`
+A body hash minted at `20a1884` or later carries `derivationFingerprint`
 (`normalize.ts:235`) over `{hashScheme, parserIntegrity, grammarDigest}`. §2's id
 projection is `{anchorScheme, parserIntegrity, grammarDigest}`. **The mark therefore
 answers two of the three id-gating fields, for free, on a value already stored
@@ -253,7 +253,7 @@ than the hash side got for a strictly more frequent failure.
 
 The attestation argument that justified emitting hashes early does not transfer
 either. It said protection accrues only to records minted after emission, so delay
-has a compounding cost. **That cost was already paid at `b51834e`**: the marks are
+has a compounding cost. **That cost was already paid at `20a1884`**: the marks are
 being minted now, at zero additional bytes, into every paired carrier. What is left
 for a v1-format decision is small — do not strip marks from event payloads, keep the
 `anchorScheme` gate, fix the tombstone emptying.
@@ -487,7 +487,7 @@ The note shard (§5) is not on this list — it is a separate record.
 
 ## What the implementation review found
 
-A Codex round over `eacb1c3..HEAD` produced five findings, four of them real. They
+A Codex round over `0be38e2..HEAD` produced five findings, four of them real. They
 are worth recording because three are about the *seam*, not the logic:
 
 1. **Three `workHashes(d)` calls omitted the store root**, so `loadNodes`,

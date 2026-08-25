@@ -1,6 +1,6 @@
 # Causal vectors under a fork, and repairing one
 
-**Status: BUILT** (2026-08-23, commits `0da3b61` and `786644b`).
+**Status: BUILT** (2026-08-23, commits `64db969` and `4f16311`).
 `docs/sidecar-architecture.md` is the architecture; this is the mechanism behind its
 "Conflict repair" section and wins on detail wherever that document is only
 summarising.

@@ -156,13 +156,13 @@ test("a store with data in tables this build no longer writes keeps it", async (
 test("a pre-freeze shared_scope is NOT migrated, and that is a decision", async () => {
   // `db.ts` removed the `shared_scope.status` / `.diagnostic` rungs on the grounds that
   // "the only stores that ever lacked them were dev stores on this branch". That claim
-  // is TRUE and now measured twice: `3624f49` is on no branch but this one (`git
-  // merge-base --is-ancestor 3624f49 main` fails), and none of the four live universes
+  // is TRUE and now measured twice: `370f261` is on no branch but this one (`git
+  // merge-base --is-ancestor 370f261 main` fails), and none of the four live universes
   // under `/working/` has a `shared_scope` table at all — so `CREATE TABLE IF NOT
   // EXISTS` hands every real store the modern one.
   //
   // The consequence is worth pinning rather than leaving implicit, because it is the
-  // exact shape of the defect `720b6d9` shipped: a store that predates the columns
+  // exact shape of the defect `febbc09` shipped: a store that predates the columns
   // cannot be read AT ALL, not merely partially. Anyone still holding a mid-branch dev
   // store from before the freeze must delete it.
   //

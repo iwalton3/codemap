@@ -1,7 +1,7 @@
 # Plan: unify shared docs into `node_versions`
 
-**Status: DONE** (2026-08-23; `bf92cfb`, `362ecf7`, `61d6915`, `7d27352`, `bc18995`,
-`2a21c3e`). Kept because the arguments are still the reasons the code looks like this,
+**Status: DONE** (2026-08-23; `1322e6c`, `87586db`, `0e097b2`, `ce1e027`, `1771aff`,
+`e70e5fa`). Kept because the arguments are still the reasons the code looks like this,
 and because three of its steps changed under review — see "What the build changed"
 at the end.
 

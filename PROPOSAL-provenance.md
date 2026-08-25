@@ -3,7 +3,7 @@
 Status: **draft — design settled, implementation begun.** Ten review rounds are
 folded in; §10 records what each changed, and §8 lists what is still open.
 
-Reviewed against `worktree-shared-review-hashscheme` at `568bd07`.
+Reviewed against `worktree-shared-review-hashscheme` at `0e7860e`.
 
 This is the ninth revision and the first that is *smaller* than the one before it.
 Round 9 asked whether the design had outgrown its value; it had, and two whole

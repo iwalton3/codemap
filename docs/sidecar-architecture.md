@@ -166,7 +166,7 @@ record `after` and `writerPrev` at write time, which makes its row an event stor
 somewhere other than the log, i.e. two authorities and a drain protocol in place of
 an append.
 
-## R1 — sync lied about pushing. Reproduced, FIXED in `a7933a7`.
+## R1 — sync lied about pushing. Reproduced, FIXED in `59f941f`.
 
 `commitLocal` returns whether the commit succeeded and **both call sites drop it**
 (`src/sidecar.ts`, in `push` and in `syncHeld`). When the commit fails the shards
@@ -200,7 +200,7 @@ that checked the boolean could not tell a clean no-op from a lost finding.
 `src/scenario.ts` cannot catch it today because its git wrapper passes
 `-c user.email=…` on every call, which masks the whole class.
 
-## R2 — the lock heartbeat could not fire. Verified, FIXED in `a7933a7`.
+## R2 — the lock heartbeat could not fire. Verified, FIXED in `59f941f`.
 
 `withSidecarLock` keeps a live holder from being stolen from by stamping the lock on
 a `setInterval` (`src/lock.ts:107`). Git is `spawnSync` (`src/sidecar.ts:44`), which
@@ -290,13 +290,13 @@ the contest design is tuned against.
 
 ## Where the code deviates today
 
-- ~~**Materialization is per-query, not per-sync.**~~ **FIXED** (`faf0367`, `2a21c3e`).
+- ~~**Materialization is per-query, not per-sync.**~~ **FIXED** (`0baac5a`, `e70e5fa`).
   `sharedSync` folds every scope of its universe after the transport, and all four
   scope kinds have a projection. `readCached` still folds on a miss, as the self-heal
   rather than the mechanism. **No ordinary query path parses NDJSON any more** — what
   remains are write and backfill paths, where reading the log is the job.
 - ~~**Docs, findings and notes live in parallel `shared_*` tables.**~~ **FIXED for
-  docs** (`7d27352`): a teammate's doc is a `node_versions` row with an `origin`, and
+  docs** (`ce1e027`): a teammate's doc is a `node_versions` row with an `origin`, and
   the `shared_doc*` tables are gone, and bugs were built canonical from the start
   (`bugs`, not `shared_bug`). Findings and notes still have their own tables — see the
   open question below, which is about findings specifically.
@@ -306,7 +306,7 @@ the contest design is tuned against.
   a teammate's bug is a row with an `origin`, the same rule that removed `shared_doc*`.
   `docs/plan-sharing-the-rest.md` §2 carries the design and what building it changed.
 - **Edges never sync**, so `process` and `step` docs are refused at publish and at the
-  fold. A flow cannot be shared. Deliberate (`bf92cfb`): syncing one without its edges
+  fold. A flow cannot be shared. Deliberate (`1322e6c`): syncing one without its edges
   renders an empty flow under a teammate's name, which is worse than absence.
 - **Witness marks (`viewed`, `signed`) never sync**, by decision rather than omission —
   a sign-off is a statement about what *you* read.
