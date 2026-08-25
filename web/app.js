@@ -2111,6 +2111,13 @@ defineComponent('statemap-page', StatemapPage);
 // verdict — `possiblyFixed` is a join against THIS checkout's index, computed on every
 // read, and a bug whose code vanished is queued rather than closed.
 const BUG_STATES = ['issued', 'created', 'resolved', 'withdrawn', 'refuted', 'invalid'];
+// `migrateBugsBlob` records an unknown author as the empty principal and an unknown time
+// as the epoch, deliberately: a legacy bug carries neither, and inventing them is the
+// false provenance the witness fields exist to prevent. Rendering those sentinels as a
+// name and a date tells that lie one layer up — this is where they stay unknown.
+const unknownAt = (at) => !at || String(at).slice(0, 4) === '1970';
+const byline = (by, via, at) => (by ? by + (via ? ' · ' + via : '') : 'author not recorded')
+  + (unknownAt(at) ? ' · date not recorded' : ' · ' + String(at).slice(0, 10));
 /**
  * @typedef {{ data: ApiMap['/api/bugs'] | null, detail: ApiMap['/api/bug'] | null,
  *   detailPending: boolean, note: string | null, busy: string | null, draft: string,
@@ -2194,13 +2201,17 @@ class BugsPage extends Component {
     const sel = this.props.query.bug === b.id;
     return html`<div class="brow ${b.state} ${sel ? 'sel' : ''}" on-click="${() => this.pickBug(b.id)}">
       <span class="sevdot" style="background:${SEV_COLOR[b.severity] || SEV_COLOR.medium}" title="severity: ${b.severity}"></span>
-      <span class="btitle">${b.title}</span>
-      ${when(b.waitingOnYou, () => html`<span class="bchip poss" title="promoted, corroborated, contested or asked about — this one needs a person">needs you</span>`)}
-      ${when(b.possiblyFixed, () => html`<span class="bchip poss" title="cited code changed since filing — possibly fixed">possibly fixed</span>`,
-        () => when(b.codeChanged, () => html`<span class="bchip changed" title="cited code changed since filing">code changed</span>`))}
-      ${when(b.tracked, () => html`<span class="bchip" title="${b.tracking.map(t => t.system + ' ' + (t.key || t.url)).join(', ')}">tracked</span>`)}
-      <span class="bchip ${b.state}">${b.state}</span>
-      <span class="bmeta">${b.anchors.length}a${b.comments ? ' · ' + b.comments + '💬' : ''}${b.shared ? '' : ' · local'}</span>
+      <div class="bmain">
+        <div class="btitle">${b.title}</div>
+        <div class="bsub">
+          <span class="bchip ${b.state}">${b.state}</span>
+          ${when(b.waitingOnYou, () => html`<span class="bchip poss" title="promoted, corroborated, contested or asked about — this one needs a person">needs you</span>`)}
+          ${when(b.possiblyFixed, () => html`<span class="bchip poss" title="cited code changed since filing — possibly fixed">possibly fixed</span>`,
+            () => when(b.codeChanged, () => html`<span class="bchip changed" title="cited code changed since filing">code changed</span>`))}
+          ${when(b.tracked, () => html`<span class="bchip" title="${b.tracking.map(t => t.system + ' ' + (t.key || t.url)).join(', ')}">tracked</span>`)}
+          <span class="bmeta">${b.anchors.length}a${b.comments ? ' · ' + b.comments + '💬' : ''}${b.shared ? '' : ' · local'}</span>
+        </div>
+      </div>
     </div>`;
   }
 
@@ -2208,11 +2219,11 @@ class BugsPage extends Component {
   threadEl(b) {
     return html`<div class="sec">discussion (${b.thread.length})</div>
       <div class="bhist">${each(b.thread, c => html`<div class="bcomment">
-        <div class="dim">${c.by}${c.via ? ' · ' + c.via : ''} · ${c.at.slice(0, 10)}</div>
+        <div class="dim">${byline(c.by, c.via, c.at)}</div>
         <md-content text="${c.body}"></md-content>
       </div>`, c => c.id)}</div>
-      <div class="row">
-        <textarea class="bdraft" rows="2" placeholder="say something on this bug…"
+      <div class="bcompose">
+        <textarea class="bdraft" rows="3" placeholder="say something on this bug…"
           value="${this.state.draft}" on-input="${(e) => { this.state.draft = e.target.value; }}"></textarea>
         <button disabled="${!this.state.draft.trim() || this.state.busy === 'comment'}" on-click="${() => this.comment()}">comment</button>
       </div>`;
@@ -2230,13 +2241,13 @@ class BugsPage extends Component {
         ${when(!!t.url, () => html`<a href="${t.url}" target="_blank" rel="noreferrer">${t.key || t.url}</a>`,
           () => html`<span>${t.key}</span>`)}
       </div>`, t => t.system)}
-      ${when(this.state.tracking, () => html`<form class="row btrackform" on-submit="${(e) => { e.preventDefault(); this.track(e.target); }}">
+      ${when(this.state.tracking, () => html`<form class="btrackform" on-submit="${(e) => { e.preventDefault(); this.track(e.target); }}">
         <input name="system" placeholder="jira" value="jira" size="6">
         <input name="key" placeholder="ACME-1234" size="12">
         <input name="url" placeholder="https://…" size="28">
         <button type="submit" disabled="${this.state.busy === 'track'}">link</button>
         <button type="button" on-click="${() => { this.state.tracking = false; }}">cancel</button>
-      </form>`, () => html`<div class="row"><button on-click="${() => { this.state.tracking = true; }}">link a ticket</button></div>`)}`;
+      </form>`, () => html`<div class="bactions"><button on-click="${() => { this.state.tracking = true; }}">link a ticket</button></div>`)}`;
   }
 
   detail() {
@@ -2246,7 +2257,7 @@ class BugsPage extends Component {
     if (isErr(b)) return html`<div class="empty">${b.error}</div>`;
     return html`<div class="ddetail">
       <div class="dsymhead"><span class="sevdot" style="background:${SEV_COLOR[b.severity] || SEV_COLOR.medium}"></span> <b>${b.title}</b> <span class="bchip ${b.state}">${b.state}</span>${when(b.possiblyFixed, () => html`<span class="bchip poss">possibly fixed</span>`)}</div>
-      <div class="meta">${b.severity} · ${b.id}${b.createdCommit ? ' · filed @ ' + b.createdCommit.slice(0, 8) : ''}${b.shared ? ' · shared' : ' · local only'}${b.filedAt ? ' · originally ' + b.filedAt.slice(0, 10) : ''}</div>
+      <div class="meta">${b.severity} · ${b.id}${b.createdCommit ? ' · filed @ ' + b.createdCommit.slice(0, 8) : ''}${b.shared ? ' · shared' : ' · local only'}${b.filedAt && !unknownAt(b.filedAt) ? ' · originally ' + b.filedAt.slice(0, 10) : ''}</div>
       ${when(!!b.from, () => html`<div class="meta">accepted from finding ${b.from.finding} on <span class="lk" on-click="${() => go(`/u/${u}/pr/${b.from.pr}/`)}">PR ${b.from.pr}</span></div>`)}
       ${when(!!b.pending, () => html`<div class="attn-banner"><span>${b.pending.by} asked to <b>${b.pending.ask}</b>: ${b.pending.rationale}</span></div>`)}
       <div class="drev">
@@ -2264,7 +2275,7 @@ class BugsPage extends Component {
           <div class="dim">${c.field} — two people set this without seeing each other</div>
           <div><b>${c.held.by}</b>: ${String(c.held.value)}</div>
           <div><b>${c.incoming.by}</b>: ${String(c.incoming.value)}</div>
-          <div class="row">
+          <div class="bactions">
             <button on-click="${() => this.act('settle', { field: c.field, value: c.held.value }, 'settle')}">keep ${c.held.by}'s</button>
             <button on-click="${() => this.act('settle', { field: c.field, value: c.incoming.value }, 'settle')}">keep ${c.incoming.by}'s</button>
           </div>

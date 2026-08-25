@@ -500,13 +500,20 @@
 
     /* --- bugs --- */
     .bugfilter button .n { color: var(--dim); font-size: 11px; margin-left: 4px; }
-    .brow { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: 8px; margin: 6px 0; cursor: pointer; }
+    .brow { display: flex; align-items: flex-start; gap: 8px; padding: 9px 10px; border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: 8px; margin: 6px 0; cursor: pointer; }
     .brow:hover { background: var(--panel); }
     .brow.open { border-left-color: var(--warn); }
     .brow.fixed { border-left-color: var(--accent2); }
     .brow.wontfix, .brow.invalid { border-left-color: var(--dim); }
     .brow.sel { background: var(--panel); box-shadow: inset 0 0 0 1px var(--accent); }
-    .brow .btitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* Two lines on purpose. One line put a 13px title in a ~180px gap left over by the
+       chips, so every title ellipsized at about twenty characters. The status belongs
+       under the title, where the whole 340px column is free. */
+    .brow .bmain { flex: 1; min-width: 0; }
+    .brow .sevdot { margin-top: 5px; }
+    .brow .btitle { font-size: 13.5px; line-height: 1.35; color: var(--text); overflow: hidden;
+      display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
+    .brow .bsub { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
     .brow .bmeta { color: var(--dim); font-size: 11.5px; font-family: var(--mono); flex: none; }
     .sevdot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
     .bchip { font-size: 10px; font-family: var(--mono); padding: 1px 6px; border-radius: 10px; border: 1px solid var(--border); color: var(--dim); flex: none; text-transform: lowercase; }
@@ -521,6 +528,22 @@
     .banchor.gone { opacity: 0.6; }
     .banchor .basym { color: var(--text); }
     .banchor .bafile { color: var(--dim); margin-left: auto; }
+    /* NOT `.row` — that is the outline's `grid-template-columns: 24px 1fr 96px …` file
+       row. Reusing it here put the comment textarea in the 24px column, which is why it
+       rendered two characters wide, and wrapped `link a ticket` over three lines. */
+    .bactions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+    .bcompose { display: flex; align-items: flex-end; gap: 8px; margin-top: 8px; }
+    .bdraft { flex: 1; min-width: 0; resize: vertical; font: inherit; font-size: 13px; line-height: 1.4;
+      padding: 7px 9px; border-radius: 6px; border: 1px solid var(--border);
+      background: var(--panel2); color: var(--text); }
+    .bdraft:focus { outline: none; border-color: var(--accent); }
+    .btrackform { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+    .btrackform input { font: inherit; font-size: 12px; padding: 5px 8px; border-radius: 6px;
+      border: 1px solid var(--border); background: var(--panel2); color: var(--text); min-width: 0; }
+    .btrackform input:focus { outline: none; border-color: var(--accent); }
+    .bcomment { padding: 8px 10px; border-top: 1px solid var(--border); }
+    .bcomment:first-child { border-top: none; }
+    .btrack { display: flex; align-items: center; gap: 8px; margin: 5px 0; }
     .bhist { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
     .bhist .hline { padding: 5px 10px; border-top: 1px solid var(--border); font-family: var(--mono); font-size: 12px; color: var(--dim); }
     .bhist .hline:first-child { border-top: none; }
