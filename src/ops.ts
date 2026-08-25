@@ -34,6 +34,7 @@ export { diff, docDiff, diffCode } from "./ops/diffs.js";
 export {
   pr, prPacketFor, prIngest, prWalkthroughSet, prWalkthroughGet, prStoryFor, prOffStoryFindings,
   prStepMark, prChapterMark, prTriageDerive, prPromotePlan, prPromote, prPullViewed, prPullViewedAll,
+  prWalkthroughChapter,
   prPushPlan, prResolvePlan, prResolvePush, prResolvePull, prPushExecute, prCode, prsFor, prs,
 } from "./ops/pr.js";
 

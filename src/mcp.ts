@@ -633,10 +633,17 @@ const tools: Tool[] = [
           title: { type: "string", description: "What this capability IS, in the reviewer's words." },
           summary: { type: "string", description: "What it is aiming to do. One to three sentences that guide reading — not a description of every symbol in it." },
           unstated: { type: "boolean", description: "This is not part of the change's stated purpose — a drive-by. Say so here rather than in prose." },
+          // DECLARED so that what `pr_walkthrough_get` returns can be handed straight
+          // back. The read adds them and the write derives them, so a schema that
+          // refused them broke the only natural editing loop there is — get, edit, put —
+          // and every caller had to know to strip them first.
+          id: { type: "string", description: "Ignored. Returned by `pr_walkthrough_get`; ids are derived from titles." },
           chapters: {
             type: "array",
             items: obj({
               title: { type: "string" },
+              id: { type: "string", description: "Ignored — derived from the title." },
+              witnesses: { type: "array", items: { type: "object" }, description: "Ignored — taken at write time from the pull request's head." },
               blocks: {
                 type: "array",
                 description: "Interleaved. Each item is {kind:'prose',text} or {kind:'symbol',anchorId}.",
@@ -650,8 +657,38 @@ const tools: Tool[] = [
     handler: (a, c) => ops.prWalkthroughSet(c.universe.path, String(a.pr ?? ""), a.features ?? [], { by: "agent", dryRun: !!a.dryRun }),
   },
   {
+    name: "pr_walkthrough_chapter",
+    description:
+      "Rewrite ONE chapter of a pull request's walkthrough, leaving the rest alone.\n\n"
+      + "This is the verb for a re-walk after the submitter pushes. `pr_walkthrough_get` names the chapters whose code moved in `stale`; send those, one call each. Re-sending the whole document to change three chapters costs the read AND the write of everything you are not editing, and it scales the wrong way — the better documented the pull request, the more the smallest correction to it costs.\n\n"
+      + "The document-level rules are unchanged and still checked, across the stored chapters with yours substituted in: every changed symbol still has to be covered, no symbol may be claimed by two chapters, and a chapter still needs a symbol in it. Moving a symbol from one chapter to another is therefore TWO calls — the one it leaves and the one it joins — and the first will be refused on its own, which is the invariant doing its job.\n\n"
+      + "A chapter title that is not there is APPENDED to the named feature. `summary` re-states the feature's summary when the chapter's meaning changed it.\n\n"
+      + "Somebody else's walkthrough is refused: editing one chapter of a teammate's reading would fork it under your name. Write your own with `pr_walkthrough`.",
+    mutates: true,
+    inputSchema: obj({
+      pr: { type: "string", description: "PR number, url, or owner/repo#N." },
+      feature: { type: "string", description: "The feature title this chapter belongs to, exactly as `pr_walkthrough_get` returns it." },
+      title: { type: "string", description: "The chapter title. An unknown one is appended to the feature." },
+      summary: { type: "string", description: "Optional: re-state the FEATURE's summary, if this chapter changed what it is about." },
+      blocks: {
+        type: "array",
+        description: "The chapter's body — ordered, prose INTERLEAVED with symbols, exactly as `pr_walkthrough` describes it.",
+        items: obj({
+          kind: { type: "string", enum: ["prose", "symbol"] },
+          text: { type: "string", description: "For `prose`." },
+          anchorId: { type: "string", description: "For `symbol`." },
+        }, ["kind"]),
+      },
+      dryRun: { type: "boolean", description: "Validate and report coverage without storing." },
+    }, ["pr", "feature", "title", "blocks"]),
+    handler: (a, c) => ops.prWalkthroughChapter(c.universe.path, String(a.pr ?? ""), {
+      feature: String(a.feature ?? ""), title: String(a.title ?? ""),
+      blocks: (a.blocks ?? []) as never, summary: a.summary as string | undefined,
+    }, { by: "agent", dryRun: !!a.dryRun }),
+  },
+  {
     name: "pr_walkthrough_get",
-    description: "The walkthrough for a pull request — yours, or a teammate's when they walked it and you did not. There is no separate tool for the team's: they are one set of readings, and which of them travelled is not a question you should have to ask.\n\n`stale` names the chapters whose code has moved since it was written (re-walk only those); `headMoved` means it was written against a different commit entirely. `sharedBy` is set when this is somebody else's reading, and `otherReadings` names the ones it is not showing.\n\nWHICH ONE you get: a reading written against THIS head wins over a stale one — a walkthrough about another commit is not a worse reading, it is about something else — and yours wins every tie. Pass `all` to get every reading with its body instead, newest and best-matching first, each with its own `stale` and `headMoved`.",
+    description: "The walkthrough for a pull request — yours, or a teammate's when they walked it and you did not. There is no separate tool for the team's: they are one set of readings, and which of them travelled is not a question you should have to ask.\n\n`stale` names the chapters whose code has moved since it was written (re-walk only those); `headMoved` means it was written against a different commit entirely. `sharedBy` is set when this is somebody else's reading, and `otherReadings` names the ones it is not showing. What this returns can be handed straight back to `pr_walkthrough` — the `id` and `witnesses` it adds are derived, and are ignored on the way in rather than refused.\n\nWHICH ONE you get: a reading written against THIS head wins over a stale one — a walkthrough about another commit is not a worse reading, it is about something else — and yours wins every tie. Pass `all` to get every reading with its body instead, newest and best-matching first, each with its own `stale` and `headMoved`.",
     inputSchema: obj({
       pr: { type: "string", description: "PR number, url, or owner/repo#N." },
       all: { type: "boolean", description: "Every reading of this pull request, with bodies — the fold keeps one per author. Use it to read a teammate's instead of the one chosen for you." },

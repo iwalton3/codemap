@@ -74,12 +74,16 @@ test("coverage counts what the reviewer would end up reading on GitHub instead",
   const c = walkCoverage(
     [feature("F", [{ title: "c", blocks: [sym("a_1"), prose("x"), sym("a_2")] }])],
     new Set(["a_1", "a_2", "a_3", "a_4"]),
-    9,
+    Array.from({ length: 9 }, (_, i) => ({ id: `a_gen${i}`, lane: "generated" })),
   );
   assert.deepEqual(c.uncovered, ["a_3", "a_4"]);
   assert.equal(c.covered, 2);
   assert.equal(c.total, 4);
   assert.equal(c.outsideQueue, 9, "generated and vendored code is EXPECTED to go unwalked — counted apart");
+  // WHICH ones. A bare `outsideQueue: 2` beside `uncovered: []` read as "two symbols you
+  // cited are not in the queue" — not what it counts, and nothing to act on either way.
+  assert.equal(c.outsideQueueSymbols!.length, 9);
+  assert.equal(c.outsideQueueSymbols![0]!.lane, "generated");
 });
 
 test("ids are derived from titles, so re-walking an unchanged structure keeps them", () => {
@@ -164,4 +168,44 @@ test("a chapter whose ids this build could not have minted is not stale", () => 
     features: [feature("F", [{ title: "mine", blocks: [sym("a_mine")] }])],
   }, () => mineHash);
   assert.deepEqual(staleChapters(w2, mineIdx), ["mine"]);
+});
+
+/**
+ * The declared write schema has to admit what the read hands back.
+ *
+ * A description is checked by eye; a schema is checked by the CLIENT, before the call is
+ * ever made. `pr_walkthrough_get` returns `id` on every feature and chapter and
+ * `witnesses` on every chapter, and the write schema is `additionalProperties: false` —
+ * so the only natural editing loop there is (get, edit, put) was rejected client-side,
+ * and every caller had to know to strip two derived fields first. Stripping them also
+ * halved a 62 KB payload, which is how much of that response the writer never needed.
+ *
+ * Reads the SOURCE rather than importing `mcp.ts`, the technique `api-map.test.ts` uses
+ * and for a sharper reason here: importing that module installs a stdin reader and calls
+ * `markAgentSession()`, a process-global latch with no way back — and the whole suite
+ * runs in one process. The first draft of this test simply hung.
+ *
+ * Asserted against the schema and not against the op, because the op never refused them:
+ * nothing server-side enforces `additionalProperties`, so a test that called
+ * `prWalkthroughSet` passed under the defect and proved nothing.
+ */
+test("what `pr_walkthrough_get` returns is a shape `pr_walkthrough` declares", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync("src/mcp.ts", "utf8");
+  const start = src.indexOf('name: "pr_walkthrough",');
+  assert.ok(start > 0, "could not find the pr_walkthrough tool");
+  const schema = src.slice(start, src.indexOf('name: "pr_walkthrough_chapter"', start));
+
+  const built = buildWalkthrough(
+    { pr: 1, head: "h", by: "me", at: "2026-01-01T00:00:00Z", features: [feature("F", [{ title: "c", blocks: [sym("a_1")] }])] },
+    () => "sha256:x",
+  );
+  // Every key the read puts on a feature or a chapter has to be declared, or the loop
+  // breaks again the next time one is added.
+  for (const k of [...Object.keys(built.features[0]!), ...Object.keys(built.features[0]!.chapters[0]!)]) {
+    assert.match(schema, new RegExp(`\\b${k}: \\{`), `\`${k}\` is returned by the read but not declared by the write`);
+  }
+  // `obj(props, required, false)` — the third argument is the strictness, and it stays
+  // on. Declaring the derived fields is not a licence to send anything.
+  assert.match(schema, /\], false\)/, "still strict — this is not a licence to send anything");
 });

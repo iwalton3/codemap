@@ -127,6 +127,8 @@ export interface WalkCoverage {
    * make the number meaningless.
    */
   outsideQueue: number;
+  /** Which ones, capped. Absent when there are none. */
+  outsideQueueSymbols?: { id: string; lane: string }[];
 }
 
 /**
@@ -139,11 +141,22 @@ export interface WalkCoverage {
 export function walkCoverage(
   features: { chapters: { title: string; blocks: WalkBlock[] }[] }[],
   queue: ReadonlySet<string>,
-  outsideQueue: number,
+  /**
+   * The pull request's symbols that are NOT in the review-queue lane — tests, generated
+   * files. IDS, not a count: `outsideQueue: 2` sat beside `covered: 227, total: 227,
+   * uncovered: []` and read as "two symbols you cited are not in the queue", which is
+   * not what it counts and left nothing to act on either way. A number whose meaning has
+   * to be guessed is worse than the same number with its members attached.
+   */
+  outside: readonly { id: string; lane: string }[],
 ): WalkCoverage {
   const cited = new Set(citedAnchors(features).map((c) => c.anchorId));
   const uncovered = [...queue].filter((id) => !cited.has(id));
-  return { uncovered, covered: queue.size - uncovered.length, total: queue.size, outsideQueue };
+  return {
+    uncovered, covered: queue.size - uncovered.length, total: queue.size,
+    outsideQueue: outside.length,
+    ...(outside.length ? { outsideQueueSymbols: outside.slice(0, 20).map((o) => ({ id: o.id, lane: o.lane })) } : {}),
+  };
 }
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48);

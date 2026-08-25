@@ -208,6 +208,34 @@ test("the hand-off arc: a teammate reviews their own branch, the owner signs off
       assert.equal(stored.walkthrough.features[0].summary, "re-walked after the push",
         "and the read-back is the NEW reading — the old failure rolled back silently");
       assert.equal(stored.sharedBy, undefined, "still his own");
+
+      // ONE CHAPTER, not the whole document. The model has always been per-chapter —
+      // ids from titles, witnesses per chapter, `stale` naming them one at a time — and
+      // only the write verb was per-document, so changing eight of twenty-six meant
+      // resending all twenty-six reconstructed byte-for-byte.
+      const { prWalkthroughChapter } = await import("./ops.js");
+      const one = await prWalkthroughChapter(ben.repo, String(PR), {
+        feature: "Payee and amount validation", title: "The guards",
+        blocks: [
+          { kind: "prose", text: "sharpened after the push, without resending the rest" },
+          ...ids.map((id) => ({ kind: "symbol" as const, anchorId: id })),
+        ],
+      }, { by: "ben's agent" }) as any;
+      assert.equal(one.error, undefined, `chapter write refused: ${JSON.stringify(one)}`);
+      assert.equal(one.added, false, "it replaced the chapter rather than appending a second");
+
+      const after = await prWalkthroughGet(ben.repo, String(PR)) as any;
+      const ch = after.walkthrough.features[0].chapters[0];
+      assert.match(ch.blocks[0].text, /without resending the rest/);
+      assert.equal(after.walkthrough.features[0].chapters.length, 1);
+      // The document rules still hold across the substitution — coverage is checked over
+      // the stored chapters with this one swapped in, not over this one alone.
+      assert.deepEqual(after.stale, [], "and the chapter is re-witnessed at this head");
+
+      // What the READ returns is what the WRITE takes. The natural loop is get, edit,
+      // put, and it failed on the `id`/`witnesses` the read adds and the write refused.
+      const roundTrip = await prWalkthroughSet(ben.repo, String(PR), after.walkthrough.features, { by: "ben's agent" }) as any;
+      assert.equal(roundTrip.error, undefined, `round trip refused: ${JSON.stringify(roundTrip)}`);
     });
 
     // 6, 7 ----------------------------------------------------------------------

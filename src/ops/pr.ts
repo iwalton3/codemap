@@ -73,11 +73,31 @@ export async function prIngest(root: string, input: string, texts: string[], opt
  * something, since anything left uncovered is what the reviewer ends up reading on
  * GitHub instead.
  */
+/**
+ * Strip what `pr_walkthrough_get` returns and `pr_walkthrough` does not accept.
+ *
+ * The natural loop is get, edit, put — and it failed, because the read returns `id` on
+ * every feature and chapter and `witnesses` on every chapter, while the write schema is
+ * `additionalProperties: false`. Every caller had to know to strip them, and stripping
+ * them halved a 62 KB payload, which says how much of that response the writer never
+ * needed. Tolerated and ignored here: ids are DERIVED from titles, so echoing one back
+ * is not a claim about identity, and witnesses are taken at write time from the head.
+ */
+const asInput = (features: readonly unknown[]): WalkInput[] =>
+  (features ?? []).map((f) => {
+    const { title, summary, unstated, chapters } = f as WalkInput;
+    return {
+      title, summary, ...(unstated ? { unstated: true } : {}),
+      chapters: (chapters ?? []).map((c) => ({ title: c.title, blocks: c.blocks })),
+    };
+  });
+
 export async function prWalkthroughSet(
   root: string, input: string,
-  features: WalkInput[],
+  featuresIn: WalkInput[],
   opts: { by?: string; dryRun?: boolean } = {},
 ) {
+  const features = asInput(featuresIn);
   const t = await prTriage(root, input, { fetch: false });
   if ("error" in t) return { error: t.error };
 
@@ -100,7 +120,8 @@ export async function prWalkthroughSet(
     { pr: t.pr.number, head: t.refs.head, by: opts.by || "agent", at: new Date().toISOString(), features },
     (id) => live.get(id),
   );
-  const coverage = walkCoverage(features, queue, t.worklist.length - queue.size);
+  const outside = t.worklist.filter((w) => !queue.has(w.id)).map((w) => ({ id: w.id, lane: String(w.lane) }));
+  const coverage = walkCoverage(features, queue, outside);
   if (opts.dryRun) {
     return {
       ok: true, pr: t.pr.number, head: t.refs.head,
@@ -156,6 +177,58 @@ export async function prWalkthroughSet(
       ? { sharedNote: `written locally, but NOT shared: ${shared.error}` }
       : shared ? { note: "recorded and staged for the team — run `codemap sync` to send it" } : {}),
   };
+}
+
+/**
+ * Rewrite ONE chapter, leaving the rest of the walkthrough alone.
+ *
+ * The write path was per-document while the model has always been per-chapter. Chapters
+ * carry their own ids (derived from titles) and their own witnesses, and `stale` names
+ * them one at a time — but changing eight of twenty-six meant resending all twenty-six,
+ * reconstructed byte-for-byte. Measured on a 91-file pull request: a 62 KB document, 34.5
+ * KB after stripping what the writer cannot send back, ~30k tokens of context for an
+ * eight-chapter edit. It scales the wrong way — the better-documented the change, the
+ * more the smallest correction to it costs — and the transcription risk lands entirely on
+ * the eighteen chapters nobody meant to touch.
+ *
+ * Coverage is checked across the STORED chapters with this one substituted in, so the
+ * document-level invariants still hold: a symbol moved out of another chapter and into
+ * this one is still claimed twice, and is still refused. Nothing is relaxed; only the
+ * unit of submission changes.
+ */
+export async function prWalkthroughChapter(
+  root: string, input: string,
+  chapter: { feature: string; title: string; blocks: WalkInput["chapters"][number]["blocks"]; summary?: string },
+  opts: { by?: string; dryRun?: boolean } = {},
+) {
+  const t = await prTriage(root, input, { fetch: false });
+  if ("error" in t) return { error: t.error };
+  const pick = await walkthroughFor(root, t.pr.number, t.refs.head);
+  if (!pick) {
+    return { error: `PR #${t.pr.number} has no walkthrough yet — write the first one with \`pr_walkthrough\`` };
+  }
+  if (pick.sharedBy) {
+    // Editing one chapter of somebody else's reading would silently fork it under your
+    // name. Writing your own is the honest act, and `pr_walkthrough` is where that lives.
+    return { error: `that walkthrough is ${pick.sharedBy}'s. Write your own with \`pr_walkthrough\`, or comment on theirs.` };
+  }
+
+  const features = asInput(pick.walkthrough.features);
+  const feature = features.find((f) => f.title === chapter.feature);
+  if (!feature) {
+    return {
+      error: `no feature "${chapter.feature}" in that walkthrough`,
+      features: features.map((f) => ({ title: f.title, chapters: f.chapters.map((c) => c.title) })),
+    };
+  }
+  const at = feature.chapters.findIndex((c) => c.title === chapter.title);
+  const next = { title: chapter.title, blocks: chapter.blocks };
+  if (at >= 0) feature.chapters[at] = next; else feature.chapters.push(next);
+  if (chapter.summary !== undefined) feature.summary = chapter.summary;
+
+  const r = await prWalkthroughSet(root, input, features, opts) as Record<string, unknown>;
+  if (r.error) return r;
+  return { ...r, chapter: chapter.title, feature: chapter.feature, added: at < 0 };
 }
 
 /**
@@ -227,7 +300,7 @@ export async function prStoryFor(root: string, input: string, opts: { fetch?: bo
       ...(pick.others.length ? { otherReadings: pick.others } : {}),
       headMoved: stored.head !== story.refs.head,
       stale: staleChapters(stored, live),
-      coverage: walkCoverage(stored.features, queue, story.totals.steps - queue.size),
+      coverage: walkCoverage(stored.features, queue, []),
     },
   };
 }
