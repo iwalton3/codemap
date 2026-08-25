@@ -1,8 +1,9 @@
 # Plan: one canonical `findings` table, and one way to file into it
 
-**Status: IN PROGRESS** on `findings-unification`. Steps 1 and 2 are done
-(`15c1ee4`, `e022b98`, `34c0caa`, `629f91b`); step 3 is next and is what makes the
-table load-bearing. Written 2026-08-25 from a live investigation of the
+**Status: IN PROGRESS** on `findings-unification`. Steps 1, 2 and 5 are done, and
+step 3 has landed for the pull-request page and `sharedFindings`. What is left is the
+rest of step 3 (review queue, anchor page, dashboard counts, orphans), step 4 (the tool
+surface), and the remainder of step 6. Written 2026-08-25 from a live investigation of the
 `acme/acme.api` universe. `docs/sidecar-architecture.md` is the architecture
 this implements and wins wherever the two differ; this plan answers the question that
 document leaves open ("Whether findings follow docs into a canonical table") in the
@@ -240,7 +241,11 @@ migrating actor, and say so.
    page, dashboard, orphans, `pr-push.ts`. Delete the bridges rather than adding one.
 4. **Collapse the tool surface**: one context-discriminated create verb, one lifecycle
    verb set resolving opaque ids against records, `accept_finding` -> `defer_finding`.
-5. **Migration script** for the 96, surfacing the 6 open no-PR findings for triage.
+5. ~~**Migration script** for the 96~~ **DONE** — `src/findings-migrate.ts`,
+   `codemap migrate-findings`. Applied to Acme.API: 45 moved (23 on #227, 22 on #264),
+   51 left with no recorded pull request, of which only 6 are open — and four of those
+   six turned out to be duplicates of findings already on the sidecar, so leaving them
+   unplaced is the right outcome rather than a gap.
 6. **Web UI**: PR story page reads the canonical table; fix the "No findings raised"
    empty state; give the shared hub a per-PR index (there is currently no
    navigational path from a PR to its findings at all).

@@ -1507,17 +1507,47 @@ export async function publishLocalGraph(root: string, opts: { dryRun?: boolean }
   const generated = new Set((await loadNodes(root)).filter((n) => n.generatedBy).map((n) => n.id));
   const needsAnalyzer = mine.filter((e) => generated.has(e.to) || generated.has(e.from)).length;
 
+  // What is NOT already said. This counted every node with a human edge, published all
+  // of them, and counted the same number again afterwards — so the hub read "96
+  // unpublished" for ever and each press appended 96 more events. Measured on a real
+  // sidecar: 480 `graph.published` events over exactly 96 subjects, five presses of a
+  // button that looked like it had done nothing.
+  //
+  // A node is done when the WINNING receipt is already this principal's and says the
+  // same thing. A teammate holding it is not done: republishing is how you state what
+  // the wiring is, and that is a real act — but only until it is your receipt that wins.
+  const { cachedGraph } = await import("./graph-publish.js");
+  const shared = (await cachedGraph(root, b.cfg)).value;
+  const byNode = new Map<string, typeof mine>();
+  for (const e of mine) (byNode.get(e.from) ?? byNode.set(e.from, []).get(e.from)!).push(e);
+  const edgeKey = (edges: { to: string; type: string; order?: number }[]) =>
+    edges.map((e) => `${e.to}\0${e.type}\0${e.order ?? ""}`).sort().join("\n");
+  const todo = nodes.filter((id) => {
+    const w = shared.get(id)?.winner;
+    if (!w || w.actor.principal !== b.actor.principal) return true;
+    return edgeKey(w.edges) !== edgeKey(byNode.get(id) ?? []);
+  });
+
   if (opts.dryRun) {
     return {
-      universe: b.cfg.universe, wouldPublish: nodes.length, edges: mine.length,
+      universe: b.cfg.universe, wouldPublish: todo.length, edges: mine.length,
+      alreadyShared: nodes.length - todo.length,
       skippedGenerated, needsAnalyzer,
     };
   }
   const { mirrorWiring } = await import("./graph-publish.js");
-  const r = await mirrorWiring(root, nodes);
+  if (!todo.length) {
+    return {
+      universe: b.cfg.universe, published: 0, edges: mine.length,
+      alreadyShared: nodes.length, skippedGenerated, needsAnalyzer,
+      note: "the team already has this wiring — nothing to send",
+    };
+  }
+  const r = await mirrorWiring(root, todo);
   if (r.configured && !r.shared) return { error: r.error ?? "the wiring could not be published" };
   return {
-    universe: b.cfg.universe, published: nodes.length, edges: mine.length,
+    universe: b.cfg.universe, published: todo.length, edges: mine.length,
+    alreadyShared: nodes.length - todo.length,
     skippedGenerated, needsAnalyzer,
     note: needsAnalyzer
       ? `run \`codemap sync\` to send them — ${needsAnalyzer} edge(s) cite analyzer-generated nodes, so a teammate needs the same analyzer to resolve them`

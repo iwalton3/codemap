@@ -37,6 +37,15 @@ const withEnv = async (vars: Record<string, string | undefined>, fn: () => Promi
 
 const NEW = { targetKind: "anchor" as const, targetId: "a_1", text: "evidence", comment: "the ask" };
 
+/** Events in the sidecar's graph scope, so a redundant publish can be caught writing. */
+const countGraphEvents = (side: string): number => {
+  const dir = join(side, "graph");
+  const walk = (d: string): number => readdirSync(d, { withFileTypes: true })
+    .reduce((n, e) => n + (e.isDirectory() ? walk(join(d, e.name))
+      : readFileSync(join(d, e.name), "utf8").split("\n").filter(Boolean).length), 0);
+  try { return walk(dir); } catch { return 0; }
+};
+
 // --- configuration -----------------------------------------------------------
 
 test("no sidecar configured is a clear message, not a crash", async () => {
@@ -1089,13 +1098,80 @@ test("the docs count offers only what publishing would actually send", async () 
     // As an analyzer emit would leave it.
     db(u.root).prepare("UPDATE node_versions SET generated_by = 'marten' WHERE node_id = 'gen1'").run();
 
-    const before = await shared.publishLocalDocs(u.root, { dryRun: true }) as unknown as Record<string, number>;
+    const before = await shared.publishLocalDocs(u.root, { dryRun: true }) as unknown as unknown as Record<string, number>;
     assert.equal(before.wouldPublish, 1, "the generated one is not work");
     assert.equal(before.skippedGenerated, 1, "and it is reported rather than silently dropped");
 
     await shared.publishLocalDocs(u.root);
-    const after = await shared.publishLocalDocs(u.root, { dryRun: true }) as unknown as Record<string, number>;
+    const after = await shared.publishLocalDocs(u.root, { dryRun: true }) as unknown as unknown as Record<string, number>;
     assert.equal(after.wouldPublish, 0, "pressing publish moves the count — the button can finish");
     assert.equal(after.skippedGenerated, 1, "the analyzer output stays local-only, and still says so");
+  } finally { u.cleanup(); }
+});
+
+/**
+ * The wiring count must say what is NOT already said.
+ *
+ * It counted every node with a human edge, published all of them, and counted the same
+ * number again — so the hub read "96 unpublished" for ever and each press appended 96
+ * more events. Measured on a real sidecar: 480 `graph.published` events over exactly 96
+ * subjects, five presses of a button that looked like it had done nothing.
+ *
+ * The fixture wires BEFORE the sidecar exists, because `connect` mirrors as it goes —
+ * `publishLocalGraph` is the backfill for wiring that predates joining a team, which is
+ * exactly the state that store was in.
+ */
+const wiredBeforeSidecar = async (u: ReturnType<typeof universe>, extra?: string) => {
+  const { document: documentNode, connect, init } = await import("./ops.js");
+  mkdirSync(join(u.root, "src"), { recursive: true });
+  writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c) { return c; }\n", "utf8");
+  git(u.root, "add", "-A"); git(u.root, "commit", "-qm", "seed");
+  await init(u.root);
+  const { readAnchorStore } = await import("./store.js");
+  const anchor = (await readAnchorStore(u.root)).anchors[0]!.id;
+  for (const id of ["a", "b", "c"]) {
+    await documentNode(u.root, { id, type: "concept", title: id, summary: "s", body: "b", anchors: [anchor] });
+  }
+  await connect(u.root, { from: "a", to: "b", type: "depends_on" });
+  if (extra) await connect(u.root, { from: "a", to: extra, type: "depends_on" });
+  // Join the team only now.
+  writeFileSync(join(u.root, ".codemap", "sidecar"), u.side, "utf8");
+  return { connect };
+};
+
+test("publishing wiring twice sends it once", async () => {
+  const u = universe(false);
+  try {
+    await wiredBeforeSidecar(u);
+    const first = await shared.publishLocalGraph(u.root, { dryRun: true }) as unknown as Record<string, number>;
+    assert.equal(first.wouldPublish, 1, "one node has wiring the team has not seen");
+
+    const sent = await shared.publishLocalGraph(u.root) as unknown as Record<string, number>;
+    assert.equal(sent.published, 1);
+
+    const after = await shared.publishLocalGraph(u.root, { dryRun: true }) as unknown as Record<string, number>;
+    assert.equal(after.wouldPublish, 0, "the count moves — the button can finish");
+    assert.equal(after.alreadyShared, 1, "and says why it is zero");
+
+    // The second press must append nothing at all, not merely report nothing.
+    const before = countGraphEvents(u.side);
+    await shared.publishLocalGraph(u.root);
+    assert.equal(countGraphEvents(u.side), before, "a redundant press writes no events");
+  } finally { u.cleanup(); }
+});
+
+/** Changing the wiring makes it publishable again — the skip is not a latch. */
+test("wiring that changed is published again", async () => {
+  const u = universe(false);
+  try {
+    const { connect } = await wiredBeforeSidecar(u);
+    await shared.publishLocalGraph(u.root);
+    assert.equal((await shared.publishLocalGraph(u.root, { dryRun: true }) as unknown as Record<string, number>).wouldPublish, 0);
+
+    await connect(u.root, { from: "a", to: "c", type: "depends_on" });
+    // `connect` mirrors as it goes, so the team already has the new set — which is the
+    // right answer and the reason the count is zero rather than one.
+    const after = await shared.publishLocalGraph(u.root, { dryRun: true }) as unknown as Record<string, number>;
+    assert.equal(after.wouldPublish, 0, "connect already sent it; the backfill has nothing left to do");
   } finally { u.cleanup(); }
 });
