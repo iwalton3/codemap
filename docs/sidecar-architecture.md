@@ -306,11 +306,9 @@ the contest design is tuned against.
   grow-only citation set and a per-system tracking reference — and a `bugs` table where
   a teammate's bug is a row with an `origin`, the same rule that removed `shared_doc*`.
   `docs/plan-sharing-the-rest.md` §2 carries the design and what building it changed.
-- **Findings never write through.** All twelve finding write ops append and return; the
-  row lands only on the next read or sync. Docs, walkthroughs and bugs materialize on
-  write. The comment in `bugs-publish.ts` claiming "triage, findings and docs all
-  materialize on write" is stale on findings. `retireSharedDoc` has the same gap.
-  Fixed by `docs/plan-findings-unification.md` step 2.
+- ~~**Findings never write through.**~~ **FIXED** (`34c0caa`). All thirteen finding write
+  ops now append and then materialize their scope. `retireSharedDoc` still has the
+  gap — docs, not findings.
 - **Edges never sync**, so `process` and `step` docs are refused at publish and at the
   fold. A flow cannot be shared. Deliberate (`1322e6c`): syncing one without its edges
   renders an empty flow under a teammate's name, which is worse than absence.
