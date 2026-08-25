@@ -383,9 +383,26 @@ test("a finding on a changed line lands on that line, with nothing prepended", (
 });
 
 test("a finding whose line is outside every hunk falls back to the symbol's changed lines", () => {
+  // ...and SAYS it moved. This asserted no preamble, while the test directly below
+  // asserts one for the same displacement one branch further down the chain — the
+  // reader is being told about line 3 while looking at line 15 either way. That
+  // inconsistency is what put a comment pinned to `AdminSidebar.tsx:264` onto line 86
+  // of a pull request that does not contain 264, with nothing on it saying so.
   const p = place({ line: 3 }, { file: "touched.cs", symbol: "S › M" }, { symbolLine: 15 });
-  assert.deepEqual(p, { kind: "inline", path: "touched.cs", line: 15 },
-    "the comment belongs on the code it is about, not swept into the summary");
+  assert.deepEqual(p, { kind: "inline", path: "touched.cs", line: 15, preamble: "touched.cs:3" },
+    "the comment belongs on the code it is about, and names the line it is really about");
+});
+
+/** A finding that lands exactly where it asked is not displaced, and says nothing. */
+test("a finding placed on its own line carries no preamble", () => {
+  const p = place({ line: 10 }, { file: "touched.cs", symbol: "S › M" });
+  assert.deepEqual(p, { kind: "inline", path: "touched.cs", line: 10 });
+});
+
+/** Nor does one that never named a line — there is no displacement to report. */
+test("a finding with no line of its own is not reported as displaced", () => {
+  const p = place({}, { file: "touched.cs", symbol: "S › M" }, { symbolLine: 15 });
+  assert.deepEqual(p, { kind: "inline", path: "touched.cs", line: 15 });
 });
 
 test("landing somewhere other than the subject leads with where the subject really is", () => {

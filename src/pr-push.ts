@@ -327,10 +327,22 @@ export function placeAnnotation(
     if (cited !== undefined && q.commentable(subject.file, cited)) return { kind: "inline", path: subject.file, line: cited };
     // Then the first line this change ADDED inside the symbol. Context lines are by
     // definition not what the PR changed, so they are rarely a finding's subject.
+    //
+    // RELOCATED, and it must say so. The preamble on the last branch below explains
+    // itself as "what stops the submitter reading the comment as being about the hunk
+    // it happens to be pinned to" — and that is just as true here, but these two
+    // branches did not carry it. Measured: a finding pinned to `AdminSidebar.tsx:264`
+    // was placed on line 86 with nothing on it saying 264, because 264 is not in this
+    // pull request's diff at all. `displaced` is only ever true when the annotation
+    // named a line and this could not honour it, so a finding landing where it asked
+    // still gets no preamble.
+    const displaced = a.line !== undefined;
+    const relocated = (line: number): Placement =>
+      ({ kind: "inline", path: subject.file!, line, ...(displaced ? { preamble: where } : {}) });
     const added = q.firstAddedLineOfSymbol();
-    if (added !== undefined) return { kind: "inline", path: subject.file, line: added };
+    if (added !== undefined) return relocated(added);
     const own = q.firstChangedLineOfSymbol();
-    if (own !== undefined) return { kind: "inline", path: subject.file, line: own };
+    if (own !== undefined) return relocated(own);
     const first = q.firstHunkLine(subject.file);
     // Same file, wrong line: the preamble is what stops the submitter reading the
     // comment as being about the hunk it happens to be pinned to.
