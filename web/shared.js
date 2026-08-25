@@ -339,7 +339,6 @@ class SharedPeersPage extends Component {
     if (failed) return pageShell(null, failed, html``);
     if (!d) return html`<main><div class="loading">loading…</div></main>`;
     if (d.error) return pageShell(d, d.error, html``);
-    const settled = d.findings.filter(f => f.tier === 'settled');
     return pageShell(d, null, html`
       <div class="crumbs"><b>${u}</b> <span class="sep">·</span> sidecar peers</div>
       <div class="dim">${d.sidecar} — you are ${d.you ?? '(no identity configured)'}</div>
@@ -482,7 +481,6 @@ class SharedDocsPage extends Component {
     if (failed) return pageShell(null, failed, html``);
     if (!d) return html`<main><div class="loading">loading shared docs…</div></main>`;
     if (d.error) return pageShell(d, d.error, html``);
-    const settled = d.findings.filter(f => f.tier === 'settled');
     return pageShell(d, null, html`
       <div class="crumbs"><b>${u}</b> <span class="sep">·</span> shared docs
         <span class="dim">· ${d.total}, resolved against this checkout</span></div>
