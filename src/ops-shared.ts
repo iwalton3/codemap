@@ -25,8 +25,8 @@ import { fetchReviewThreads, type GhRunner } from "./pr-push.js";
 import { ensureSidecar, sync as sidecarSync, receive as sidecarReceive, healMerge, readManifests, checkPeers, currentManifest } from "./sidecar.js";
 import {
   createFinding, corroborate, comment, promote, request, setState, recordOutcome,
-  markPosted, markUpstreamed, promoteToBug, needsHumanAck, ackQueue,
-  revise, resolveContest, relocate,
+  markPosted, markUpstreamed, promoteToBug, needsHumanAck, ackQueue, mayRevise,
+  revise, resolveContest, relocate, remediate, type Remediation,
   foldFindings, findingScope, findingTier, byReadingOrder,
   type SharedFinding, type Verdict, type Ask, type FindingState, type NewFinding, type FindingTier,
 } from "./shared-findings.js";
@@ -340,6 +340,25 @@ export async function commentOnFinding(root: string, pr: number | string, id: st
   return { ...mz, ok: true, id: e.id };
 }
 
+/**
+ * Record what happened about a finding — fixed, deferred, not being fixed.
+ *
+ * NOT gated on confirmation, unlike a revision. It is an observation about the code that
+ * adds a fact and rewrites nobody's claim, so the gate protecting somebody's confirmed
+ * wording has nothing to protect here — and gating it would re-block the case the axis
+ * exists for, which is a submitter fixing findings other people confirmed.
+ */
+export async function remediateFinding(
+  root: string, pr: number | string, id: string, state: Remediation,
+  opts: { detail?: string; ref?: string } = {},
+) {
+  const b = bind(root, {});
+  if ("error" in b) return b;
+  await remediate(b.cfg.path, prKey(b.cfg, pr), b.actor, id, state, opts.detail, opts.ref);
+  const mz = await materializeFindings(root, b.cfg, pr);
+  return { ...mz, ok: true, id, remediation: state };
+}
+
 export async function promoteFinding(root: string, pr: number | string, id: string) {
   const b = bind(root);
   if ("error" in b) return b;
@@ -447,6 +466,11 @@ function view(f: SharedFinding) {
     thread: f.thread.map((c) => ({ id: c.id, by: c.actor.principal, model: c.actor.via?.model, at: c.at, body: c.body, inReplyTo: c.inReplyTo })),
     pending: f.pending ? { ask: f.pending.ask, by: f.pending.by.principal, rationale: f.pending.rationale } : undefined,
     outcome: f.outcome ? { result: f.outcome.result, detail: f.outcome.detail, by: f.outcome.by.principal, files: f.outcome.files } : undefined,
+    // ALWAYS present, defaulting to `outstanding`. Absent-means-outstanding is the same
+    // fact, and a field that appears only once somebody has acted is one a reader learns
+    // to stop looking for.
+    remediation: f.remediation?.state ?? "outstanding",
+    remediatedAt: f.remediation ? { by: f.remediation.by.principal, at: f.remediation.at, detail: f.remediation.detail, ref: f.remediation.ref } : undefined,
     closed: f.closed ? { by: f.closed.by.principal, reason: f.closed.reason } : undefined,
     contested: f.contested?.map((c) => ({ field: c.field, held: c.held, incoming: c.incoming })),
     relocation: f.relocation
@@ -520,10 +544,11 @@ export async function reviseFinding(
   if ("error" in b) return b;
   const f = (await cachedFindings(root, b.cfg, pr)).value.get(id);
   if (!f) return { error: `no finding ${id} on pr ${pr}` };
-  if (isAgentActor(b.actor) && f.state !== "issued") {
+  if (!mayRevise(f, b.actor)) {
     return {
-      error: `${id} is \`${f.state}\` — past a proposal, only a person revises a finding. `
-        + "Say what you found with `comment`, and `request_human` if the wording has to change.",
+      error: `${id} has been confirmed${f.promotion ? " and promoted" : ""}, so only a person rewrites it now — `
+        + "losing what somebody stood behind to one wrong call is what that gate is for. "
+        + "Say what you found with `comment`, and `request_human` if the wording itself has to change.",
     };
   }
   if (f.posted && !opts.allowPostEdit) {
@@ -651,7 +676,7 @@ const cachedNotes = async (root: string, cfg: { path: string; universe: string }
  * findings, and refusing to list them was the shared/local split showing through a
  * surface that should not know about it.
  */
-export async function sharedFindings(root: string, pr: number | string, opts: { queue?: boolean; tier?: FindingTier } = {}) {
+export async function sharedFindings(root: string, pr: number | string, opts: { queue?: boolean; tier?: FindingTier; remediation?: Remediation } = {}) {
   const cfg = resolveSidecar(root);
   let scope: { status?: string; diagnostic?: ScopeDiagnostic } = { status: "complete" };
   if (cfg) {
@@ -668,6 +693,7 @@ export async function sharedFindings(root: string, pr: number | string, opts: { 
   // the top. `sort` mutates, so it is the already-copied array being ordered.
   let chosen = (opts.queue ? ackQueue(all) : [...all]).sort(byReadingOrder);
   if (opts.tier) chosen = chosen.filter((f) => findingTier(f) === opts.tier);
+  if (opts.remediation) chosen = chosen.filter((f) => (f.remediation?.state ?? "outstanding") === opts.remediation);
   const place = (f: SharedFinding) => places.get(f.target.id) ?? { state: "unknown" as const };
   // The shape of the list, always — the queue answers "what is waiting on a person",
   // and an UNTRIAGED finding is waiting on nobody by that definition, so the most

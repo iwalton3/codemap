@@ -103,18 +103,56 @@ test("an unknown id names every namespace it could have come from", async () => 
   } finally { u.cleanup(); }
 });
 
-test("an agent revising a finding somebody stands behind is refused, not silently dropped", async () => {
+test("an agent may write up a person's raw finding — until somebody stands behind it", async () => {
   const u = await universe();
   try {
-    // Filed by a PERSON, so it opens at `created` — past the point the fold accepts
-    // an agent's revision. It used to be appended, synced, and then ignored by every
-    // reader, which is indistinguishable from having worked.
+    // Filed by a PERSON, so it opens at `created`. This is the case the ratchet used to
+    // refuse, and refusing it was backwards: a human's one-liner carries no severity, no
+    // line and no remedy, and it is exactly what an agent that has just read the code is
+    // there to supply. Keyed on filing state, the findings an agent could write up were
+    // the ones an agent had already written.
     const r = await shared.shareFinding(u.root, 269, NEW) as { id: string };
     await asAgent(async () => {
-      const out = await reviseOn(u.root, { id: r.id, severity: "low" });
-      assert.match(String(out.error), /only a person revises/);
+      const ok = await reviseOn(u.root, { id: r.id, severity: "low", line: 42 });
+      assert.ok(!ok.error, String(ok.error));
+      assert.equal((await readFinding(u.root, r.id))!.severity, "low", "the write-up lands");
+      assert.equal((await readFinding(u.root, r.id))!.line, 42);
+    });
+
+    // Now somebody stands behind it. THE GATE: losing what a person confirmed to one
+    // wrong call is not recoverable from anywhere, so past here an agent may only ask.
+    await shared.corroborateFinding(u.root, 269, r.id, "confirm", "read it, it is real");
+    await asAgent(async () => {
+      const out = await reviseOn(u.root, { id: r.id, severity: "critical" });
+      assert.match(String(out.error), /confirmed/);
       assert.match(String(out.error), /request_human/, "and it names what the agent CAN do");
-      assert.equal((await readFinding(u.root, r.id))!.severity, "high", "nothing moved");
+      assert.equal((await readFinding(u.root, r.id))!.severity, "low", "nothing moved");
+    });
+  } finally { u.cleanup(); }
+});
+
+test("an agent closes what nobody has confirmed, and only asks once somebody has", async () => {
+  const u = await universe();
+  try {
+    const open = await shared.shareFinding(u.root, 269, NEW) as { id: string };
+    const held = await shared.shareFinding(u.root, 269, { ...NEW, text: "second" }) as { id: string };
+    await shared.corroborateFinding(u.root, 269, held.id, "confirm", "real");
+
+    await asAgent(async () => {
+      // Triage. A queue of unconfirmed false positives that only a person may clear is a
+      // queue nobody clears, so refuting one directly to the closed section is the agent's
+      // job — this is the half the gate was never meant to cover.
+      const a = await shared.closeFinding(u.root, 269, open.id, "refuted", "the guard is two lines up");
+      assert.ok(!("error" in a), JSON.stringify(a));
+      assert.equal((await readFinding(u.root, open.id))!.state, "refuted");
+
+      const b = await shared.closeFinding(u.root, 269, held.id, "refuted", "same") as { error?: string };
+      assert.match(String(b.error), /may only request|needs a person/);
+      assert.equal((await readFinding(u.root, held.id))!.state, "created", "confirmed findings keep their person-gate");
+
+      // And `resolved` is nobody's to write from here: it claims the CODE was fixed.
+      const c = await shared.closeFinding(u.root, 269, open.id, "resolved", "fixed") as { error?: string };
+      assert.ok(c.error, "an agent does not get to declare a defect fixed");
     });
   } finally { u.cleanup(); }
 });
@@ -192,6 +230,7 @@ test("a report whose re-rate the ratchet refuses says so rather than reporting s
   const u = await universe();
   try {
     const r = await shared.shareFinding(u.root, 269, NEW) as { id: string };
+    await shared.corroborateFinding(u.root, 269, r.id, "confirm", "somebody stood behind it");
     await asAgent(async () => {
       const out = await closeFinding(u.root, {
         id: r.id, result: "answered", detail: "looked into it", severity: "low",
@@ -200,6 +239,23 @@ test("a report whose re-rate the ratchet refuses says so rather than reporting s
       assert.match(String(out.note), /NOT changed/);
       assert.equal((await readFinding(u.root, r.id))!.severity, "high");
       assert.ok((await readFinding(u.root, r.id))!.outcome, "and the report survived the refusal");
+    });
+  } finally { u.cleanup(); }
+});
+
+test("reporting back needs no assignment — the ordinary path never creates one", async () => {
+  const u = await universe();
+  try {
+    // report_defect -> publish -> the submitter fixes it -> report back. There is no
+    // assignment step anywhere in that, so requiring one refused the case `close_finding`
+    // names in its own description, for a reason no caller could satisfy.
+    await writeLocalFinding(u.root, localFinding("f_mine", { severity: "high" }), 269);
+    await asAgent(async () => {
+      const out = await closeFinding(u.root, {
+        id: "f_mine", result: "answered", detail: "verified fixed upstream in 6965b31f",
+      });
+      assert.ok(!out.error, String(out.error));
+      assert.equal((await readFinding(u.root, "f_mine"))!.outcome!.result, "answered");
     });
   } finally { u.cleanup(); }
 });
@@ -306,3 +362,75 @@ test("every ask a writer can emit is one the fold accepts", async () => {
   for (const a of ASKS) assert.ok(isAsk(a), `${a} is emittable but not foldable`);
   assert.ok(!isAsk("retire"), "and the guard is a guard, not a pass-through");
 } );
+
+// ---------------------------------------------------------------------------
+// Complaint §6 — "was real, and has been fixed" had no word, so people wrote
+// `refuted` and turned real defects into false positives.
+// ---------------------------------------------------------------------------
+
+test("a confirmed finding the submitter fixed can say so — without being called false", async () => {
+  const u = await universe();
+  try {
+    const r = await shared.shareFinding(u.root, 269, NEW) as { id: string };
+    await shared.corroborateFinding(u.root, 269, r.id, "confirm", "read it, it is real");
+
+    await asAgent(async () => {
+      // THE CASE. The finding is confirmed, so revising it is gated — and this is not a
+      // revision. Recording what happened to the code adds a fact and rewrites nobody's
+      // claim, so it goes through whatever the gate says.
+      const { recordRemediation } = await import("./ops.js");
+      const out = await recordRemediation(u.root, r.id, "fixed-on-branch", {
+        detail: "fixed in 6965b31f; verified in the diff", ref: "6965b31f",
+      });
+      assert.ok(!out.error, String(out.error));
+    });
+
+    const f = (await readFinding(u.root, r.id))!;
+    assert.equal(f.remediation!.state, "fixed-on-branch");
+    assert.equal(f.remediation!.ref, "6965b31f", "the ref is what makes it checkable rather than asserted");
+    // The two axes stay orthogonal, which is the whole point: the claim is still TRUE.
+    assert.equal(f.state, "created", "recording a fix is not closing it");
+    assert.ok(f.corroboration.some((c) => c.verdict === "confirm"), "and it is still confirmed, not refuted");
+  } finally { u.cleanup(); }
+});
+
+test("the two axes are separately filterable — confirmed-and-outstanding is not confirmed-and-fixed", async () => {
+  const u = await universe();
+  try {
+    const done = await shared.shareFinding(u.root, 269, NEW) as { id: string };
+    const open = await shared.shareFinding(u.root, 269, { ...NEW, text: "still broken" }) as { id: string };
+    for (const id of [done.id, open.id]) await shared.corroborateFinding(u.root, 269, id, "confirm", "real");
+    const { recordRemediation } = await import("./ops.js");
+    await recordRemediation(u.root, done.id, "fixed-on-default", { detail: "merged" });
+
+    const all = await shared.sharedFindings(u.root, 269, { tier: "confirmed" }) as { findings: { id: string }[] };
+    assert.equal(all.findings.length, 2, "both are confirmed — which is exactly what tier cannot separate");
+
+    const left = await shared.sharedFindings(u.root, 269, { tier: "confirmed", remediation: "outstanding" }) as
+      { findings: { id: string; remediation: string }[] };
+    assert.deepEqual(left.findings.map((f) => f.id), [open.id], "what still needs doing, in one query");
+    assert.equal(left.findings[0]!.remediation, "outstanding", "unset reads as outstanding — the same fact");
+
+    const fixed = await shared.sharedFindings(u.root, 269, { remediation: "fixed-on-default" }) as { findings: { id: string }[] };
+    assert.deepEqual(fixed.findings.map((f) => f.id), [done.id]);
+  } finally { u.cleanup(); }
+});
+
+test("`findings` carries the same axis, so neither list needs the other's vocabulary", async () => {
+  const u = await universe();
+  try {
+    await writeLocalFinding(u.root, localFinding("f_fixed"), 269);
+    await writeLocalFinding(u.root, localFinding("f_open"), 269);
+    const { recordRemediation } = await import("./ops.js");
+    await recordRemediation(u.root, "f_fixed", "fixed-on-branch", { detail: "on the branch only" });
+
+    const ids = async (opts: Record<string, unknown>) =>
+      ((await reviewQueue(u.root, { assignedOnly: false, brief: true, ...opts }) as
+        { queue: { id: string }[] }).queue).map((q) => q.id).sort();
+    assert.deepEqual(await ids({ pr: "269", remediation: "fixed-on-branch" }), ["f_fixed"]);
+    // The distinction that was previously a sentence somebody had to read: the mainline
+    // still carries this defect, so a linked bug must NOT be closed.
+    assert.deepEqual(await ids({ pr: "269", remediation: "fixed-on-default" }), []);
+    assert.deepEqual(await ids({ pr: "269", remediation: "outstanding" }), ["f_open"]);
+  } finally { u.cleanup(); }
+});

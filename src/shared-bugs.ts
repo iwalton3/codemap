@@ -33,12 +33,12 @@ import { isAgentActor, isIndependent, reviewerKey } from "./identity.js";
 import { emitEvent, mintId, readScope, causality, type LogEvent } from "./eventlog.js";
 import { applyRevision, newContestState, type Contested } from "./contest.js";
 import {
-  isClosed, mayTransition, needsHumanAck,
+  isClosed, mayTransition, mayRevise, needsHumanAck,
   isAsk, type Ask, type Corroboration, type ExternalRef, type FindingComment,
   type FindingState, type Verdict,
 } from "./shared-findings.js";
 
-export { isClosed, needsHumanAck, mayTransition };
+export { isClosed, needsHumanAck, mayTransition, mayRevise };
 export type { Ask, Verdict, FindingState as BugState };
 
 /**
@@ -240,8 +240,10 @@ export function foldBugs(events: LogEvent[]): Map<string, SharedBug> {
       case "bug.revised": {
         const was = (d?.was as Record<string, unknown>) ?? {};
         const now = (d?.now as Record<string, unknown>) ?? {};
-        // A person may revise anyone's; an agent only while it is still a proposal.
-        if (isAgentActor(e.actor) && b.state !== "issued") break;
+        // A person may revise anyone's; an agent only while nobody has stood behind it.
+        // Same gate as a finding's, from the same function — the two folds spelling one
+        // rule out separately is how they drift.
+        if (!mayRevise(b, e.actor)) break;
         applyRevision(b, e, now, CONTESTABLE, contest, causal);
         b.revisions.push({ at: e.at, by: e.actor, was });
         if (typeof now.title === "string") b.title = now.title;

@@ -203,8 +203,24 @@ checked, and if verification changed the finding itself — a severity you now r
 differently, an ask that would send the submitter to do the wrong thing —
 \`revise_finding\` puts the correction on the RECORD, where it can be filtered and where
 the submitter will read it. A re-rate written into an outcome paragraph leaves the
-finding reading what it was filed as to everyone else. Past \`issued\` a team finding is
-a person's to rewrite: say what you found with \`comment\` and use \`request_human\`.
+finding reading what it was filed as to everyone else.
+
+**The gate is CONFIRMATION, not who filed it.** A finding nobody has stood behind is
+yours to sharpen and yours to close — refuting a false positive straight to the closed
+section IS the triage, and a queue only a person may clear is a queue nobody clears.
+Once anything confirms one, or somebody promotes it, only a person closes or rewrites
+it: losing what somebody stood behind to one wrong call is not recoverable from
+anywhere. Say what you found with \`comment\` and use \`request_human\` there.
+
+**Two axes, and do not collapse them.** \`disposition\` is whether the claim is TRUE;
+\`remediation\` is what HAPPENED about it — \`outstanding\`, \`fixed-on-branch\`,
+\`fixed-on-default\`, \`deferred\`, \`wont-fix\`. When a submitter fixes something, set
+\`remediation\` and leave the verdict alone. **Never revise a fixed finding to
+\`refuted\`** to mean "done": that marks a real, correctly filed defect a false positive,
+and "which of my findings were wrong?" then silently contains the ones that were most
+right. \`fixed-on-branch\` vs \`fixed-on-default\` is load-bearing — a fix on an unmerged
+branch means the mainline still carries the defect, so do not close a linked bug.
+Recording a fix is never gated: it adds a fact and rewrites nobody's claim.
 
 ## Find & fix
 - \`check_stale\` — docs whose anchored code changed (candidate_stale) or vanished

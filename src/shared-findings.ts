@@ -81,6 +81,26 @@ export interface Corroboration {
   independent: boolean;
 }
 
+/**
+ * What HAPPENED about a finding, as opposed to whether it is true.
+ *
+ * A second axis, and its absence was a live defect rather than a gap. `disposition` /
+ * corroboration say whether the claim holds; nothing said whether anybody had acted on
+ * it. So when a submitter fixed eleven of twelve findings the map could not record it,
+ * and the workaround in use was to revise them to `refuted` — marking real, correctly
+ * filed, now-fixed defects as FALSE POSITIVES. That poisons the one question this data
+ * is for: "which of my findings were wrong?" then silently contains the ones that were
+ * most right.
+ *
+ * `fixed-on-branch` and `fixed-on-default` are separate because the difference is
+ * load-bearing and was previously a sentence somebody had to read: a fix living on an
+ * unmerged branch means the mainline still carries the defect, which is exactly when a
+ * linked bug must NOT be closed.
+ */
+export const REMEDIATIONS = ["outstanding", "fixed-on-branch", "fixed-on-default", "deferred", "wont-fix"] as const;
+export type Remediation = (typeof REMEDIATIONS)[number];
+export const isRemediation = (v: unknown): v is Remediation => REMEDIATIONS.includes(v as Remediation);
+
 export interface FindingComment {
   id: string;
   actor: Actor;
@@ -122,6 +142,14 @@ export interface SharedFinding {
   upstream?: ExternalRef;
   /** The bug this became. Both records survive; see `finding.promotedToBug`. */
   bug?: string;
+
+  /**
+   * What happened about it — see `Remediation`. An OBSERVATION about the code, not a
+   * claim about the report, which is why anyone may record one at any time and why it
+   * is its own event rather than a revision: it adds information and destroys none, so
+   * the gate that protects somebody's confirmed wording has nothing to protect here.
+   */
+  remediation?: { state: Remediation; by: Actor; at: string; detail?: string; ref?: string };
 
   assignment?: { kind: "investigate" | "fix" | "answer"; by: Actor; at: string; note?: string };
   outcome?: { result: "fixed" | "answered" | "declined"; detail: string; files?: string[]; by: Actor; at: string };
@@ -278,17 +306,49 @@ export function needsHumanAck(f: Ratcheted): boolean {
 /**
  * Whether `actor` may move a finding to `next` right now.
  *
- * The whole ratchet, in one place, so the fold and the write path cannot drift
- * apart. A person may do anything. An agent may only:
- *   - promote its own proposal to `created`, and
- *   - kill a proposal nobody has stood behind yet (`issued` -> `invalid`).
- * Past `created`, or once anything needs an ack, an agent may only REQUEST.
+ * The whole ratchet, in one place, so the fold and the write path cannot drift apart.
+ * A person may do anything.
+ *
+ * **The gate is CONFIRMATION, not who filed it.** An agent may close a finding nobody
+ * has stood behind — that is triage, and making it a person's job means a queue of
+ * false positives nobody has time to clear. Once anything confirms one, or somebody
+ * promotes it, only a person closes: losing a confirmed finding to one wrong call is
+ * the failure the gate exists for, and it is not recoverable from anywhere.
+ *
+ * It used to key on `f.state !== "issued"`, which is the same rule for an agent's OWN
+ * findings and the wrong one for everybody else's: a finding a PERSON files opens at
+ * `created`, so a human's unreviewed one-liner — the case most likely to be a false
+ * positive, and the one an agent is best placed to check — was the one an agent could
+ * not touch.
+ *
+ * So an agent may:
+ *   - promote its own proposal to `created`;
+ *   - close an UNCONFIRMED finding as `invalid` or `refuted`.
+ *
+ * And may not: `resolved` (claims a defect was FIXED, which is a claim about the code
+ * rather than about the report), `withdrawn` (retires a record somebody may still want),
+ * or reopening anything already closed. Those stay `request_human`'s.
  */
 export function mayTransition(f: Ratcheted, actor: Actor, next: FindingState): boolean {
   if (!isAgentActor(actor)) return true;
-  if (f.state !== "issued") return false;
   if (needsHumanAck(f)) return false;
-  return next === "created" || next === "invalid";
+  // Reopening is a person's call even on an unconfirmed finding: whoever closed it
+  // wrote a reason, and an agent re-litigating it is not triage.
+  if (isClosed(f.state)) return false;
+  return next === "created" || next === "invalid" || next === "refuted";
+}
+
+/**
+ * Whether `actor` may rewrite a finding's substance right now.
+ *
+ * Same gate, same reason. An unconfirmed finding is still a proposal whoever looks at
+ * it may sharpen; a confirmed one carries somebody's name and only they change it.
+ * Keyed on `f.state !== "issued"` this refused exactly the case that needs it most — a
+ * person's raw note, which carries no severity, no line and no remedy, and which an
+ * agent that has just read the code is best placed to supply.
+ */
+export function mayRevise(f: Ratcheted, actor: Actor): boolean {
+  return !isAgentActor(actor) || !needsHumanAck(f);
 }
 
 // ---------------------------------------------------------------------------
@@ -362,8 +422,8 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
       case "finding.revised": {
         const was = (d?.was as Record<string, unknown>) ?? {};
         const now = (d?.now as Record<string, unknown>) ?? {};
-        // A person may revise anyone's; an agent only while it is still a proposal.
-        if (isAgentActor(e.actor) && f.state !== "issued") break;
+        // A person may revise anyone's; an agent only while nobody has stood behind it.
+        if (!mayRevise(f, e.actor)) break;
         applyRevision(f, e, now, CONTESTABLE, contest, causal);
         f.revisions.push({ at: e.at, by: e.actor, was });
         // Assigned field by field rather than through a dynamic key: a revision is
@@ -393,6 +453,19 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
           independent: isIndependent(e.actor, f.author),
         };
         if (i >= 0) f.corroboration[i] = entry; else f.corroboration.push(entry);
+        break;
+      }
+
+      case "finding.remediated": {
+        const state = str(d, "state");
+        if (!isRemediation(state)) break;
+        // Latest wins. It is an observation, and a later look at the code supersedes an
+        // earlier one — unlike corroboration, where the disagreement IS the data.
+        f.remediation = {
+          state, by: e.actor, at: e.at,
+          ...(str(d, "detail") ? { detail: str(d, "detail") } : {}),
+          ...(str(d, "ref") ? { ref: str(d, "ref") } : {}),
+        };
         break;
       }
 
@@ -533,6 +606,17 @@ export const corroborate = (logRoot: string, pr: number | string, actor: Actor, 
 
 export const comment = (logRoot: string, pr: number | string, actor: Actor, id: string, body: string, inReplyTo?: string) =>
   emit(logRoot, pr, actor, id, "finding.commented", { body, ...(inReplyTo ? { inReplyTo } : {}) });
+
+/**
+ * Record what happened about a finding. Anyone, at any state — see `Remediation`.
+ *
+ * `ref` is what makes `fixed-on-branch` checkable rather than asserted: the commit the
+ * fix landed in, so a later reader can look instead of believing.
+ */
+export const remediate = (logRoot: string, pr: number | string, actor: Actor, id: string,
+  state: Remediation, detail?: string, ref?: string) =>
+  emit(logRoot, pr, actor, id, "finding.remediated",
+    { state, ...(detail ? { detail } : {}), ...(ref ? { ref } : {}) });
 
 export const promote = (logRoot: string, pr: number | string, actor: Actor, id: string) =>
   emit(logRoot, pr, actor, id, "finding.promoted");

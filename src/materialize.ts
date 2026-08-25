@@ -74,8 +74,16 @@ import { readScopeChecked, SHARD_EXT, type LogEvent, type ScopeStatus } from "./
  * is also what makes the migration free on the shared half: those rows are a projection
  * of the log, so invalidating the scope re-folds them into the new table and no row has
  * to be copied across.
+ *
+ * 9 -> 10: the agent ratchet keys on CONFIRMATION rather than on filing state, so
+ * `mayTransition` and the new `mayRevise` accept events both folds previously dropped —
+ * an agent closing or sharpening a finding nobody has stood behind. A RULE change with
+ * no shape change, needing the bump for the reason 6 -> 7 gives: the fingerprint is over
+ * the SHARDS, which do not move when the fold's mind changes, so every existing store
+ * would keep serving rows folded under the old rule and the events it used to ignore
+ * would stay ignored for ever.
  */
-export const MATERIALIZER_VERSION = 9;
+export const MATERIALIZER_VERSION = 10;
 
 /**
  * What the events in a scope are, cheaply.

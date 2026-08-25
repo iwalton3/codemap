@@ -65,11 +65,11 @@ export {
 
 import {
   closeAssignment as closeAnnotation, closeLocalFinding as closeLocal, commentOnLocalFinding,
-  reviseLocalFinding, reviseAnnotation, checkComment, REVISABLE,
+  reviseLocalFinding, reviseAnnotation, remediateLocalFinding, checkComment, REVISABLE,
 } from "./ops/annotations.js";
 import { commentBug, corroborateBugOp, requestOnBugOp } from "./ops/bugs.js";
 import { readFinding, readBug } from "./store.js";
-import type { Ask } from "./shared-findings.js";
+import { isRemediation, type Ask, type Remediation } from "./shared-findings.js";
 export { reportDefect, type DefectContext, type DefectInput } from "./ops/defect.js";
 
 /**
@@ -89,12 +89,20 @@ export async function closeFinding(
   root: string,
   input: {
     id: string; result: "fixed" | "answered" | "declined"; detail: string; files?: string[]; by?: string;
-    comment?: string; line?: number; severity?: "low" | "medium" | "high" | "critical"; disposition?: never;
+    comment?: string; line?: number; severity?: "low" | "medium" | "high" | "critical";
+    remediation?: Remediation; disposition?: never;
   },
 ): Promise<Record<string, unknown>> {
   const f = await readFinding(root, input.id).catch(() => null);
   if (!f) return closeAnnotation(root, input as never) as Promise<Record<string, unknown>>;
-  if (!f.origin) return closeLocal(root, input as never);
+  if (!f.origin) {
+    const r = await closeLocal(root, input as never);
+    if (!r.error && input.remediation) {
+      const rr = await remediateLocalFinding(root, f.id, input.remediation, { detail: input.detail }) as { error?: string };
+      if (rr.error) return { ...r, note: `${r.note ?? ""} remediation NOT recorded: ${rr.error}`.trim() };
+    }
+    return r;
+  }
   // Fold-owned: a row the fold owns may only be changed by an event.
   const shared = await import("./ops-shared.js");
   const r = await shared.reportOnFinding(root, f.pr!, f.id, input.result, input.detail, input.files) as Record<string, unknown>;
@@ -109,6 +117,13 @@ export async function closeFinding(
   // and it inherits that verb's refusals, which is why the failure is reported back
   // instead of swallowed.
   const notes: string[] = ["reported — a person still has to close it"];
+  // Ungated, unlike the comment/severity half below: what HAPPENED about a finding is an
+  // observation, and the commonest reason to record one is a submitter fixing something
+  // other people confirmed — exactly the case a confirmation gate would refuse.
+  if (input.remediation) {
+    const rr = await shared.remediateFinding(root, f.pr!, f.id, input.remediation, { detail: input.detail }) as { error?: string };
+    if (rr.error) notes.push(`remediation NOT recorded: ${rr.error}`);
+  }
   if (d && !verdict) notes.push(`disposition "${d}" is not recorded on a shared finding — verdicts are`);
   const patch = {
     ...(input.comment !== undefined ? { comment: input.comment } : {}),
@@ -143,11 +158,19 @@ export async function reviseOn(
     id: string; by?: string; allowPostEdit?: boolean;
     text?: string; comment?: string; disposition?: string; severity?: "low" | "medium" | "high" | "critical";
     category?: string; line?: number; publishPath?: string; publishLine?: number; ref?: string;
+    remediation?: Remediation;
   },
 ): Promise<Record<string, unknown>> {
   const f = await readFinding(root, input.id).catch(() => null);
   if (!f) return reviseAnnotation(root, input as never) as Promise<Record<string, unknown>>;
-  if (!f.origin) return reviseLocalFinding(root, input as never) as Promise<Record<string, unknown>>;
+  if (!f.origin) {
+    const r = await reviseLocalFinding(root, input as never) as Record<string, unknown>;
+    if (!r.error && input.remediation) {
+      const rr = await remediateLocalFinding(root, f.id, input.remediation, { detail: input.text }) as { error?: string };
+      if (rr.error) return { ...r, note: `${r.note ?? ""} remediation NOT recorded: ${rr.error}`.trim() };
+    }
+    return r;
+  }
 
   const shared = await import("./ops-shared.js");
   const c = checkComment(input.comment, input.disposition);
@@ -160,6 +183,10 @@ export async function reviseOn(
   }
   const notes: string[] = [];
   let out: Record<string, unknown> = { ok: true, id: f.id, pr: f.pr, shared: true, changed: [] as string[] };
+  if (input.remediation) {
+    const rr = await shared.remediateFinding(root, f.pr!, f.id, input.remediation, { detail: input.text }) as { error?: string };
+    if (rr.error) notes.push(`remediation NOT recorded: ${rr.error}`);
+  }
   if (Object.keys(patch).length) {
     const r = await shared.reviseFinding(root, f.pr!, f.id, patch, { allowPostEdit: input.allowPostEdit }) as Record<string, unknown>;
     if (r.error) return r;
@@ -246,4 +273,24 @@ export async function requestHuman(root: string, input: { id: string; action: As
   if (!w.finding.shared) return { error: `no sidecar is configured, so there is nobody to ask about ${input.id}` };
   const shared = await import("./ops-shared.js");
   return shared.requestOnFinding(root, w.finding.pr, input.id, input.action as never, input.rationale);
+}
+
+/**
+ * Record what HAPPENED about a finding — fixed, deferred, not being fixed.
+ *
+ * Its own path rather than a field on a revision, and that is the whole point: a
+ * revision rewrites somebody's claim and is gated on confirmation, while this adds an
+ * observation about the code and destroys nothing. Routing it through the revision would
+ * re-block the case the axis exists for — a submitter fixing findings other people
+ * confirmed, which is the commonest reason a finding ever gets updated.
+ */
+export async function recordRemediation(
+  root: string, id: string, state: Remediation, opts: { detail?: string; ref?: string } = {},
+): Promise<Record<string, unknown>> {
+  if (!isRemediation(state)) return { error: `unknown remediation "${state}"` };
+  const f = await readFinding(root, id).catch(() => null);
+  if (!f) return { error: `no finding "${id}"` };
+  if (!f.origin) return remediateLocalFinding(root, id, state, opts) as Promise<Record<string, unknown>>;
+  const shared = await import("./ops-shared.js");
+  return shared.remediateFinding(root, f.pr!, id, state, opts) as Promise<Record<string, unknown>>;
 }

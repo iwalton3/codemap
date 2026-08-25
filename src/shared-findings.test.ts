@@ -9,7 +9,7 @@ import { sortEvents, readScope, type LogEvent } from "./eventlog.js";
 import {
   createFinding, corroborate, comment, promote, request, setState, recordOutcome,
   markPosted, markUpstreamed, promoteToBug, readFindings, foldFindings, findingScope,
-  needsHumanAck, mayTransition, ackQueue, alreadyPosted, isClosed, findingTier, byReadingOrder,
+  needsHumanAck, mayTransition, mayRevise, ackQueue, alreadyPosted, isClosed, findingTier, byReadingOrder,
   type SharedFinding, type FindingState,
 } from "./shared-findings.js";
 
@@ -321,9 +321,46 @@ test("mayTransition is the single rule both the fold and the writer use", () => 
   assert.equal(mayTransition(issued, izzie, "resolved"), true, "people may do anything");
   assert.equal(mayTransition(issued, opus, "created"), true);
   assert.equal(mayTransition(issued, opus, "invalid"), true);
-  assert.equal(mayTransition(issued, opus, "resolved"), false, "not a terminal an agent may write");
+  assert.equal(mayTransition(issued, opus, "refuted"), true);
+  assert.equal(mayTransition(issued, opus, "resolved"), false,
+    "`resolved` claims the CODE was fixed, which is not a claim about the report");
+
+  // THE GATE IS CONFIRMATION, not who filed it or what state it opened in. A finding a
+  // PERSON files opens at `created`, so keying on state made a human's unreviewed
+  // one-liner — the likeliest false positive, and the one an agent is best placed to
+  // check — the one thing an agent could not close.
   const created = { ...issued, state: "created" as FindingState };
-  assert.equal(mayTransition(created, opus, "invalid"), false, "`created` is the floor");
+  assert.equal(mayTransition(created, opus, "invalid"), true, "unconfirmed: an agent may close it");
+  assert.equal(mayTransition(created, opus, "refuted"), true);
+
+  const confirmed = {
+    ...created,
+    corroboration: [{ actor: izzie, verdict: "confirm", at: "2026-01-01T00:00:00Z", rationale: "r", independent: true }],
+  } as unknown as SharedFinding;
+  assert.equal(mayTransition(confirmed, opus, "refuted"), false, "somebody stood behind it — a person closes it");
+  assert.equal(mayTransition(confirmed, izzie, "refuted"), true, "and that person still may");
+
+  const promoted = { ...created, promotion: { at: "2026-01-01T00:00:00Z", by: izzie } } as unknown as SharedFinding;
+  assert.equal(mayTransition(promoted, opus, "invalid"), false, "promotion is the other half of the gate");
+
+  // Reopening is a person's call even unconfirmed: whoever closed it wrote a reason.
+  const closed = { ...issued, state: "refuted" as FindingState };
+  assert.equal(mayTransition(closed, opus, "created"), false);
+});
+
+test("mayRevise is that same gate, so a human's raw note can be written up", () => {
+  const created = { state: "created" as FindingState, corroboration: [], promotion: undefined } as unknown as SharedFinding;
+  // The case the old rule refused: a person's one-line finding carries no severity, no
+  // line and no remedy, and an agent that has just read the code is best placed to
+  // supply them. Keyed on `state !== "issued"` the findings an agent could write up
+  // were exactly the ones an agent had already written.
+  assert.equal(mayRevise(created, opus), true);
+  const confirmed = {
+    ...created,
+    corroboration: [{ actor: izzie, verdict: "confirm", at: "2026-01-01T00:00:00Z", rationale: "r", independent: true }],
+  } as unknown as SharedFinding;
+  assert.equal(mayRevise(confirmed, opus), false, "confirmed carries somebody's name");
+  assert.equal(mayRevise(confirmed, izzie), true, "and a person may always");
 });
 
 // --- reading order -----------------------------------------------------------

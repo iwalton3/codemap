@@ -301,7 +301,27 @@ it on every row, `shared_findings` takes `tier`, and the mapping lives in exactl
 place (`tierOfAnnotation`, `ops/annotations.ts`) rather than being re-derived per caller.
 `findings` also takes `pr`, which it can only do because membership is stored.
 
-Two things about the correspondence that are easy to get wrong:
+### And a SECOND axis, which is not that one
+
+`disposition` / `tier` say whether the claim is TRUE. `remediation` says what HAPPENED
+about it: `outstanding` | `fixed-on-branch` | `fixed-on-default` | `deferred` | `wont-fix`.
+
+Its absence was a live defect rather than a gap. With nowhere to record a fix, the
+workaround in use was to revise fixed findings to `refuted` — marking real, correctly
+filed, now-fixed defects as false positives — which poisons the one question the data is
+for. Measured on PR #264: twelve findings, eleven fixed by the submitter, and the outcome
+expressible only as a paragraph in `text` that no query reaches.
+
+`fixed-on-branch` and `fixed-on-default` are separate because the difference is
+load-bearing: a fix on an unmerged branch means the mainline still carries the defect,
+which is exactly when a linked bug must NOT be closed.
+
+It is its own event (`finding.remediated`), not a revision, and that is what makes it
+work: a revision rewrites somebody's claim and is gated on confirmation, while this adds
+an observation and destroys nothing. Gated, it would have refused the case it exists for —
+a submitter fixing findings other people confirmed.
+
+Two things about the tier correspondence that are easy to get wrong:
 
 - **`tier` is taken from the RECORD, before the flattening.** `findingAsQueueEntry`
   reduces a finding's state and corroboration to a `Disposition`, and that reduction

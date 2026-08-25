@@ -4,7 +4,7 @@ import { type Anchor, type LogicalNode, type BugSeverity, type Annotation, type 
 import { indexFile, indexBlob } from "../repo.js";
 import { headCommit, readBlobs } from "../git.js";
 import { readAnchorStore, loadNodes, readAnnotations, writeAnnotations, readFindings, readFinding, writeLocalFinding, findAnchorsOutsideWork, readPushes, bodyHashAt, readOrphans } from "../store.js";
-import { findingTier, type FindingTier, type SharedFinding } from "../shared-findings.js";
+import { findingTier, isClosed, type FindingTier, type Remediation, type SharedFinding } from "../shared-findings.js";
 import { requireActor, isAgentActor, actorLabel } from "../identity.js";
 import { isAgentAuthored, publishStateOf, type PublishState } from "../pr-push.js";
 import { genId, liveAnchors, resolveRefs, loadNodesShared} from "./shared.js";
@@ -473,6 +473,8 @@ export interface QueueItem {
    * one word reads both lists. See `tierOfAnnotation` for the correspondence.
    */
   tier?: FindingTier;
+  /** What HAPPENED about it — the axis `tier` and `disposition` do not carry. */
+  remediation?: Remediation;
   publishState?: PublishState;
   /**
    * False when the target is not in the working tree. The queue used to serve a
@@ -604,6 +606,13 @@ export async function reviewQueue(
      */
     tier?: string;
     /**
+     * What HAPPENED about it, as opposed to whether it is true — the other axis. Without
+     * it, `disposition: "confirmed"` cannot tell an outstanding defect from one the
+     * submitter fixed last night, which is what pushed people to revise fixed findings
+     * to `refuted` and call real defects false positives.
+     */
+    remediation?: string;
+    /**
      * Default true: the queue is "what a human asked an agent to act on", and an
      * assignment is what made it that.
      *
@@ -634,6 +643,10 @@ export async function reviewQueue(
   // `invalid` from unreviewed — so the tier is taken before that flattening, and only
   // a plain annotation, which never had the richer state, is derived from it.
   const tierOf = new Map(rows.map((f) => [f.id, findingTier(f)]));
+  // Unset reads as `outstanding`: nobody has said anything happened, which is what
+  // "outstanding" means. A separate "unknown" would split one state into two for no
+  // caller — every filter on it wants the same rows either way.
+  const remediationOf = new Map(rows.filter((f) => f.remediation).map((f) => [f.id, f.remediation!.state]));
   const everything = [...store.annotations, ...rows.map(findingAsQueueEntry)];
   const pushedIds = await pushedAnnotationIds(root);
   const liveIds = new Set((await readAnchorStore(root)).anchors.map((a) => a.id));
@@ -648,6 +661,7 @@ export async function reviewQueue(
   }
   if (opts.disposition) pending = pending.filter((a) => (a.disposition ?? "open") === opts.disposition);
   if (opts.tier) pending = pending.filter((a) => (tierOf.get(a.id) ?? tierOfAnnotation(a)) === opts.tier);
+  if (opts.remediation) pending = pending.filter((a) => (remediationOf.get(a.id) ?? "outstanding") === opts.remediation);
   if (opts.publishState) pending = pending.filter((a) => publishStateOf(a, pushedIds) === opts.publishState);
 
   const rank = { critical: 0, high: 1, medium: 2, low: 3 } as Record<string, number>;
@@ -687,6 +701,7 @@ export async function reviewQueue(
     const brief: QueueItem[] = page.map((a) => ({
       id: a.id, kind: a.kind, severity: a.severity, category: a.category,
       disposition: a.disposition ?? "open", tier: tierOf.get(a.id) ?? tierOfAnnotation(a),
+      remediation: remediationOf.get(a.id) ?? "outstanding",
       publishState: publishStateOf(a, pushedIds),
       comment: a.comment,
       textPreview: a.text.length > 300 ? a.text.slice(0, 300) + "…" : a.text,
@@ -746,6 +761,7 @@ export async function reviewQueue(
       comment: a.comment,
       disposition: a.disposition ?? "open",
       tier: tierOf.get(a.id) ?? tierOfAnnotation(a),
+      remediation: remediationOf.get(a.id) ?? "outstanding",
       publishState: publishStateOf(a, pushedIds),
       ...targetState(a),
       ...triageState(a),
@@ -795,8 +811,15 @@ export async function closeLocalFinding(
 ): Promise<Record<string, unknown>> {
   const f = await readFinding(root, input.id).catch(() => null);
   if (!f) return { error: `no annotation or finding "${input.id}"` };
-  if (!f.assignment) return { error: "that finding was not assigned to an agent" };
-  if (f.state === "resolved") return { error: "that finding was resolved while you were working on it — reopen it before recording an outcome" };
+  // NO assignment precondition. Reporting back is what this records, and the ordinary
+  // path that produces a finding — report_defect, publish, the submitter fixes it,
+  // report back — has no assignment step anywhere in it. Requiring one made the tool
+  // refuse the case its own description names ("takes any finding id"), and refuse it
+  // for a reason no caller could satisfy by any route it controls. Assignment is a
+  // HUMAN handing work over; it is not what makes an outcome worth recording.
+  if (isClosed(f.state)) {
+    return { error: `that finding is already \`${f.state}\` — reopen it before recording an outcome, or say this on the thread with \`comment\`` };
+  }
   const files = input.files ?? [];
   if (input.result === "fixed" && files.length > 1) {
     return { error: `a fix may touch one file; this touched ${files.length} (${files.join(", ")}).` };
@@ -876,6 +899,17 @@ export async function reviseLocalFinding(
   input: {
     id: string; allowPostEdit?: boolean;
     text?: string; comment?: string; severity?: BugSeverity; category?: string; line?: number;
+    /**
+     * What triage concluded. A canonical finding has no `disposition` FIELD — it has
+     * corroboration, which is where a verdict lives — so the two verdict-shaped values
+     * land there and the rest are reported back as not recorded.
+     *
+     * It used to be accepted and dropped: `revise_finding(disposition: "confirmed")`
+     * returned `ok` with `disposition` absent from `changed` and no warning, and passing
+     * it alone returned "nothing changed", which reads as "it was already that value".
+     * Twelve findings were believed triaged and were not.
+     */
+    disposition?: Disposition;
     /** Re-witness against this ref after re-reading the code, exactly as `reviseAnnotation` does. */
     ref?: string;
   },
@@ -923,10 +957,59 @@ export async function reviseLocalFinding(
     f.witness = w.witness;
     f.sourceRef = w.sourceRef;
   }
-  if (!changed.length) return { ok: true, id: f.id, pr: f.pr, shared: false, changed, note: "nothing changed" };
-  f.revisions = [...f.revisions, { at: new Date().toISOString(), by: actor, was }];
+  const notes: string[] = [];
+  const at = new Date().toISOString();
+  if (input.disposition !== undefined) {
+    if (!checkDisposition(input.disposition)) {
+      return { error: `unknown disposition "${input.disposition}" — expected one of ${DISPOSITIONS.join(", ")}` };
+    }
+    const verdict = input.disposition === "refuted" ? "refute" as const
+      : input.disposition === "confirmed" ? "confirm" as const : null;
+    const rationale = (input.text ?? input.comment ?? "").trim();
+    if (verdict && rationale) {
+      // One entry per reviewer, replacing this actor's own earlier opinion and nobody
+      // else's — the same rule the shared fold applies, so the two halves of one verb
+      // record a verdict identically.
+      f.corroboration = [
+        ...f.corroboration.filter((c) => c.actor.principal !== actor.principal),
+        { actor, verdict, at, rationale, independent: false },
+      ];
+      changed.push("disposition");
+    } else if (verdict) {
+      notes.push(`disposition "${input.disposition}" NOT recorded — a verdict needs a rationale; pass \`text\``);
+    } else {
+      notes.push(`disposition "${input.disposition}" NOT recorded — a finding carries verdicts, not dispositions; confirmed and refuted are the two that map`);
+    }
+  }
+  if (!changed.length) {
+    return {
+      ok: true, id: f.id, pr: f.pr, shared: false, changed,
+      note: notes.length ? notes.join("; ") : "nothing to change — every field you passed already held that value",
+    };
+  }
+  f.revisions = [...f.revisions, { at, by: actor, was }];
   await writeLocalFinding(root, f, f.pr!);
-  return { ok: true, id: f.id, pr: f.pr, shared: false, changed };
+  return { ok: true, id: f.id, pr: f.pr, shared: false, changed, ...(notes.length ? { note: notes.join("; ") } : {}) };
+}
+
+/**
+ * Record what happened about a LOCAL finding. The row half of `finding.remediated`, here
+ * for the layering reason `closeLocalFinding` gives; `ops.ts` picks between them.
+ */
+export async function remediateLocalFinding(
+  root: string, id: string, state: Remediation, opts: { detail?: string; ref?: string } = {},
+) {
+  const f = await readFinding(root, id).catch(() => null);
+  if (!f) return { error: `no finding "${id}"` };
+  const actor = requireActor(root);
+  if ("error" in actor) return actor;
+  f.remediation = {
+    state, by: actor, at: new Date().toISOString(),
+    ...(opts.detail ? { detail: opts.detail } : {}),
+    ...(opts.ref ? { ref: opts.ref } : {}),
+  };
+  await writeLocalFinding(root, f, f.pr!);
+  return { ok: true, id: f.id, pr: f.pr, shared: false, remediation: state };
 }
 
 export async function closeAssignment(

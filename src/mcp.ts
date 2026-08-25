@@ -106,7 +106,7 @@ const COMMENT_CONTRACT =
   + "ALSO BAD: \"Confirmed and wider than filed: five fields, not three.\" — short, on-topic, and still unreadable: \"wider than filed\" and \"not three\" cite a filing the reader has never seen. Say what the five fields are and what is wrong with them.";
 
 const DISPOSITION_DOC =
-  "What triage CONCLUDED about the finding: \"open\" (filed, nobody has checked it — the default), \"confirmed\" (real as filed), \"partial\" (real in part; `comment` states the part that is real, in full), \"rerated\" (real, but the severity or impact differs from as-filed), \"refuted\" (not a defect — a false positive), \"accepted\" (real, deliberately not being fixed). Only confirmed/partial/rerated go to the submitter unasked; the rest stay on the map unless the human names them.";
+  "What triage CONCLUDED about the finding: \"open\" (filed, nobody has checked it — the default), \"confirmed\" (real as filed), \"partial\" (real in part; `comment` states the part that is real, in full), \"rerated\" (real, but the severity or impact differs from as-filed), \"refuted\" (not a defect — a false positive), \"accepted\" (real, deliberately not being fixed). Only confirmed/partial/rerated go to the submitter unasked; the rest stay on the map unless the human names them.\n\nThis axis is about the CLAIM, never about what was done. A finding somebody has since FIXED is still `confirmed` — set `remediation` for that. Revising a fixed finding to `refuted` marks a real defect a false positive, and \"which of my findings were wrong?\" then contains the ones that were most right.";
 
 
 const tools: Tool[] = [
@@ -699,6 +699,7 @@ const tools: Tool[] = [
     inputSchema: obj({
       pr: { type: "string", description: "Only findings on this pull request." },
       tier: { type: "string", enum: ["unconfirmed", "confirmed", "doubted", "settled"], description: "How settled it is — `unconfirmed` means nobody has weighed in yet. The vocabulary `shared_findings` uses." },
+      remediation: { type: "string", enum: ["outstanding", "fixed-on-branch", "fixed-on-default", "deferred", "wont-fix"], description: "What HAPPENED about it — the other axis. `tier:\"confirmed\"` alone cannot tell an outstanding defect from one fixed last night." },
       disposition: { type: "string", enum: ["open", "confirmed", "partial", "rerated", "refuted", "accepted"] },
       publishState: { type: "string", enum: ["local", "approved", "withdrawn", "posted"] },
       includeResolved: { type: "boolean", description: "Also list findings a human has closed out (default false)." },
@@ -711,6 +712,7 @@ const tools: Tool[] = [
       includeResolved: Boolean(a.includeResolved), brief: a.brief !== false,
       limit: a.limit as number | undefined, offset: a.offset as number | undefined,
       pr: a.pr as string | undefined, tier: a.tier as string | undefined,
+      remediation: a.remediation as string | undefined,
       disposition: a.disposition as string | undefined, publishState: a.publishState as string | undefined,
     }),
   },
@@ -725,6 +727,7 @@ const tools: Tool[] = [
       comment: { type: "string", description: "Rewrite the submitter-facing version if your investigation changed it — as a standalone statement about the code, not as a diff against the filing, which the submitter has never seen. Max 800 characters. The previous wording is kept on the map." },
       line: { type: "number", description: "The line in the finding's own file that it actually points at. SET THIS — you have just read the code, and without it the comment is placed by geometry (the enclosing symbol's first changed line), which lands on a neighbouring member." },
       severity: { type: "string", enum: ["low", "medium", "high", "critical"], description: "Re-rate it, if the investigation changed the rating. Set the value you now believe — not the delta, and not a note about it in `detail`." },
+      remediation: { type: "string", enum: ["outstanding", "fixed-on-branch", "fixed-on-default", "deferred", "wont-fix"], description: "What HAPPENED about it, as opposed to whether it is true — a separate axis from `disposition`. Set it when you have verified the code, and say where in `detail`. `fixed-on-branch` vs `fixed-on-default` is load-bearing: a fix on an unmerged branch means the mainline still carries the defect, so a linked bug must NOT be closed. Never reach for `refuted` to mean \"fixed\" — that marks a real defect a false positive and poisons the one question this data answers." },
       files: { type: "array", items: { type: "string" }, description: "Files you actually changed (for `fixed`). One file maximum." },
       by: { type: "string" },
     }, ["id", "result", "detail"]),
@@ -753,6 +756,7 @@ const tools: Tool[] = [
       line: { type: "number", description: "The line in the finding's OWN file that it points at — the normal way to say where it is." },
       publishPath: { type: "string", description: "For a finding about code this PR does not touch: the file IN THE DIFF nearest to the problem. An out-of-diff override, not the everyday field — use `line` for that." },
       publishLine: { type: "number", description: "Line within `publishPath`. Only meaningful alongside it." },
+      remediation: { type: "string", enum: ["outstanding", "fixed-on-branch", "fixed-on-default", "deferred", "wont-fix"], description: "What HAPPENED about it, as opposed to whether it is true — a separate axis from `disposition`. Set it when you have verified the code, and say where in `detail`. `fixed-on-branch` vs `fixed-on-default` is load-bearing: a fix on an unmerged branch means the mainline still carries the defect, so a linked bug must NOT be closed. Never reach for `refuted` to mean \"fixed\" — that marks a real defect a false positive and poisons the one question this data answers." },
       ref: { type: "string", description: "Re-witness against this ref after re-reading the code — how a finding blocked as \"written against a different version\" is cleared. Not available on a TEAM finding — the fold has no re-witness event, and it says so rather than dropping it." },
       category: { type: "string", description: "Review bucket: Authorization, Logic, Tenant Safety, Performance, Domain Model, Validation, …" },
       allowPostEdit: { type: "boolean", description: "Revise even though it is already posted. The GitHub copy is NOT updated — reply there instead; this only stops the map from silently disagreeing with it." },
@@ -796,9 +800,10 @@ const tools: Tool[] = [
     inputSchema: obj({
       pr: { type: "string", description: "Pull request number." },
       tier: { type: "string", enum: ["unconfirmed", "confirmed", "doubted", "settled"], description: "Only findings at this tier. `unconfirmed` = nobody has weighed in yet." },
+      remediation: { type: "string", enum: ["outstanding", "fixed-on-branch", "fixed-on-default", "deferred", "wont-fix"], description: "Only findings whose remediation is this — what HAPPENED about them, as opposed to whether they are true." },
       queue: { type: "boolean", description: "Only what needs a human decision. Excludes the untriaged — use `tier` for those." },
     }, ["pr"]),
-    handler: (a, c) => shared.sharedFindings(c.universe.path, a.pr, { queue: !!a.queue, tier: a.tier as never }),
+    handler: (a, c) => shared.sharedFindings(c.universe.path, a.pr, { queue: !!a.queue, tier: a.tier as never, remediation: a.remediation as never }),
   },
   {
     name: "report_defect",
