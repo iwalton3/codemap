@@ -1,6 +1,6 @@
 # Where this is — handoff, 2026-08-25 (evening)
 
-On `main`, at `0f813ba`. 987 unit + 89 e2e green, `tsc -p web` clean.
+On `main`, at `6caef0b`. 990 unit + 89 e2e green, `tsc -p web` clean.
 
 If you are picking this up cold: read `CLAUDE.md`, then this, then
 `docs/plan-findings-unification.md` § "Near-term" for the work queue.
@@ -34,14 +34,21 @@ sanitization leak came in from the side and were fixed too.
   built `PrWalkthrough` belonged, and `staleChapters` threw on every render, forever,
   because the log is append-only and the fold checked only the envelope. Three guards;
   the fold one is what heals the data on every machine without a rewrite.
+- **The pointer audit says the path has an owner** (`6caef0b`) — item 3, and the worry
+  was backwards: the annotation store IS a pointer's canonical home. 44 of them on the
+  primary universe, 34 line-pinned, read by five live surfaces; `planPrPush` deliberately
+  gates on disposition and not on kind. The one real gap: every pane that pins to a LINE
+  read local annotations only, so a teammate's pointer showed nowhere near the code.
+  `notes-lookup.ts` fixes that for all four panes, read-only and never merged into
+  `annotations`.
 - **Client names came back into the repo** (`0f813ba`). `cfade33`, `a8e6203` and
   `a6b6f23` reintroduced them in prose. Files are fixed; **history is not** — see
   Operational.
 
 ## What to do next
 
-`docs/plan-findings-unification.md` § "Near-term" is the queue; 1 and 2 are struck.
-Next is (3) audit what reads pointers, then (4a) — new, and a person's call: **51
+`docs/plan-findings-unification.md` § "Near-term" is the queue; 1, 2 and 3 are struck.
+Next is (4a) — a person's call: **51
 findings are published as NOTES and are in no findings surface.** They are the local
 annotations `migrate-findings` reported as "unplaced"; the team can already see them as
 notes while every findings surface calls them local-only. Assign each a PR, or accept
