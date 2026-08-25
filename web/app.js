@@ -3050,6 +3050,7 @@ class PrStoryPage extends Component {
    *   showFindings: boolean,
    *   chapterBusy: Record<string, boolean>,
    *   offStory: ApiMap['/api/pr/findings'] | null,
+   *   shared: ApiMap['/api/shared'] | null,
    *   pushDraft: { summary: string, event: string } | null,
    *   pick: Set<string> | null,
    *   editFinding: { id: string, comment: string, disposition: string, publishPath?: string } | null,
@@ -3068,6 +3069,7 @@ class PrStoryPage extends Component {
       promote: null, promoted: {}, showCovered: false, deriving: false, derived: null,
       pulling: false, pulled: null, push: null, markError: null, showFindings: false, chapterBusy: {},
       offStory: null,
+      shared: null,
       // These five were assigned but never listed here, and `propsChanged` merges
       // rather than replaces — so they were the fields that DID survive a move to
       // another pull request. `pushDraft` is the summary and APPROVE/REQUEST_CHANGES
@@ -3098,8 +3100,31 @@ class PrStoryPage extends Component {
     // just handed to an agent — invisible until the pane was collapsed and
     // reopened. Refresh whatever is open alongside it.
     await this.refreshOpenCode();
+    await this.loadShared();
     if (this.state.offStory) await this.loadOffStory();
   });
+
+  /**
+   * The team's findings for this pull request, from the canonical table.
+   *
+   * Loaded with the PAGE and not with the findings panel, because the panel's own
+   * button carries the count — and a count that waits for the panel to be opened is
+   * how a pull request with ten shared findings displayed `findings (0)`.
+   *
+   * Read-only here: corroborating, acknowledging and accepting as a bug live on the
+   * shared page, and a second copy of that surface is one more thing to keep in step.
+   */
+  async loadShared() {
+    const team = await api('/api/shared', { u: this.props.params.universe, pr: this.props.params.pr }).catch(() => null);
+    this.state.shared = isErr(team) ? null : team;
+  }
+
+  /** Open findings the team holds — the half of the count that is not local. */
+  sharedOpenCount() {
+    const d = this.state.shared;
+    if (!d || isErr(d)) return 0;
+    return d.findings.filter(f => f.tier !== 'settled').length;
+  }
 
   /**
    * Send this store's findings to the team and take theirs, then re-read the page.
@@ -3591,6 +3616,7 @@ class PrStoryPage extends Component {
     if (!this.state.showFindings) return html``;
     const all = this.allFindings();
     const off = this.offStoryFindings();
+    const team = (this.state.shared && !isErr(this.state.shared) && this.state.shared.findings) || [];
     // They used to be listed here, on every pull request alike. A count is not a
     // workflow — `/api/orphans` has no page yet — but it keeps them from going back
     // to being found one at a time by tripping over them.
@@ -3598,7 +3624,11 @@ class PrStoryPage extends Component {
     const strayEl = () => html`<div class="prfstray dim" title="open findings whose target is not in the working tree, posted to no pull request and settled by nobody — a rename, another branch, or code that is simply gone">
       ${stray} open finding${stray === 1 ? '' : 's'} point at code no longer in the tree and belong to no pull request — <code>codemap orphans</code>
     </div>`;
-    if (!all.length && !off.length) return html`<div class="prfindings dim">No findings raised on this pull request yet.${when(stray, strayEl)}</div>`;
+    // `team` counts here too. It did not, and the guard fired first: a pull request
+    // with ten shared findings and no local ones rendered "No findings raised on this
+    // pull request yet" over the top of them, which is the sentence this whole change
+    // exists to stop being printed.
+    if (!all.length && !off.length && !team.length) return html`<div class="prfindings dim">No findings raised on this pull request yet.${when(stray, strayEl)}</div>`;
     const live = all.filter(e => !e.f.resolved && !e.f.withdrawn && !e.f.postedRef);
     const elected = live.filter(e => !isAgentFinding(e.f) || e.f.escalated);
     // An orphan you resolve or withdraw leaves the orphan group by the same route an
@@ -3620,6 +3650,17 @@ class PrStoryPage extends Component {
     const groups = allGroups.filter(g => g[1].length);
     const picked = [...(this.state.pick || [])];
     return html`<div class="prfindings">
+      ${when(!!team.length, () => html`<div class="prfgroup">
+        <div class="prfgh">the team's, on the sidecar <b>${team.length}</b>
+          <a href="#/u/${u}/shared/${this.props.params.pr}/">open shared review ›</a></div>
+        ${each(team, f => html`<div class="prfrow">
+          <div class="prfloc dim"><code>${f.tier}</code><span>${f.severity ?? '—'}</span></div>
+          <div class="prfbody">
+            <span class="prfcmttext">${f.comment ?? f.text}</span>
+            <span class="dim"> — ${f.author}${f.authorModel ? ` (${f.authorModel})` : ''}${f.independentConfirms ? ` · ${f.independentConfirms} independent` : ''}${f.refutes ? ` · ${f.refutes} refuted` : ''}</span>
+          </div>
+        </div>`, f => f.id)}
+      </div>`)}
       ${when(picked.length, () => html`<div class="prfpicked">
         <b>${picked.length}</b> picked — publishing these sends exactly them, whatever their disposition.
         <button class="on" on-click="${() => this.openPush('comments')}">review what would be sent</button>
@@ -4023,7 +4064,7 @@ class PrStoryPage extends Component {
         </div>
         ${when(this.state.markError, () => html`<div class="warn">sign-off failed: ${this.state.markError}</div>`)}
         <div class="prderive prpush">
-          <button class="${this.state.showFindings ? 'on' : ''}" on-click="${() => this.toggleFindings()}" title="every finding on this PR in one list — raise or resolve without opening each symbol">${this.state.showFindings ? 'hide findings' : `findings (${this.allFindings().filter(e => !e.f.resolved).length})`}</button>
+          <button class="${this.state.showFindings ? 'on' : ''}" on-click="${() => this.toggleFindings()}" title="every finding on this PR in one list — raise or resolve without opening each symbol">${this.state.showFindings ? 'hide findings' : `findings (${this.allFindings().filter(e => !e.f.resolved).length + this.sharedOpenCount()})`}</button>
           <button on-click="${() => this.openPush('comments')}" title="post your findings to the pull request as review comments. Yours go out; an agent's only if you raised it. Shows you exactly what would be sent first.">push comments to GitHub</button>
           <button on-click="${() => this.openPush('viewed')}" title="tick the per-file viewed boxes on GitHub for files you have fully signed off here, so both tools agree about what has been read.">push viewed state to GitHub</button>
           <button on-click="${() => this.openResolveSync()}" title="compare which of your posted findings are settled here against which conversations are resolved on the pull request — for when the submitter fixed it and left the comment open.">sync resolved state</button>
