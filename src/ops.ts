@@ -69,6 +69,7 @@ import {
 } from "./ops/annotations.js";
 import { commentBug, corroborateBugOp, requestOnBugOp } from "./ops/bugs.js";
 import { readFinding, readBug } from "./store.js";
+import type { Ask } from "./shared-findings.js";
 export { reportDefect, type DefectContext, type DefectInput } from "./ops/defect.js";
 
 /**
@@ -238,7 +239,7 @@ export async function corroborateOn(root: string, input: { id: string; verdict: 
 }
 
 /** Ask a PERSON to do what you may not: promote, invalidate, refute or resolve. */
-export async function requestHuman(root: string, input: { id: string; action: "promote" | "invalidate" | "refute" | "resolve"; rationale: string }) {
+export async function requestHuman(root: string, input: { id: string; action: Ask; rationale: string }) {
   const w = await whichRecord(root, input.id);
   if ("error" in w) return w;
   if ("bug" in w) return requestOnBugOp(root, input.id, input.action as never, input.rationale);

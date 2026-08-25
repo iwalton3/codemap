@@ -269,3 +269,40 @@ test("every finding row carries the tier, so one word reads both lists", async (
     assert.equal(row.disposition, "open");
   } finally { u.cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// `withdraw`: the ask that is not a verdict
+// ---------------------------------------------------------------------------
+
+test("a true-but-duplicate finding can be retired without calling it false", async () => {
+  const u = await universe();
+  try {
+    const r = await shared.shareFinding(u.root, 269, NEW) as { id: string };
+    await asAgent(async () => {
+      const { requestHuman } = await import("./ops.js");
+      const out = await requestHuman(u.root, {
+        id: r.id, action: "withdraw",
+        rationale: "the claim is TRUE and confirmed; f_other covers the same defect on the same anchor",
+      }) as Record<string, unknown>;
+      assert.ok(!out.error, String(out.error));
+
+      // It reaches the person's queue as `withdraw`. The fold guard is the half that
+      // matters: a word added to the type but not to the guard is an event every reader
+      // silently drops, and the request would vanish rather than fail.
+      const f = (await shared.sharedFindings(u.root, 269) as { findings: { id: string; pending?: { ask: string } }[] })
+        .findings.find((x) => x.id === r.id)!;
+      assert.equal(f.pending?.ask, "withdraw");
+    });
+    // And it is still an ASK — an agent may not retire the record itself, which is the
+    // gate that stops a confirmed finding being lost by one wrong call.
+    assert.notEqual((await readFinding(u.root, r.id))!.state, "withdrawn");
+  } finally { u.cleanup(); }
+});
+
+test("every ask a writer can emit is one the fold accepts", async () => {
+  const { ASKS, isAsk } = await import("./shared-findings.js");
+  // The two folds spelled this list out separately and drifted is the failure mode:
+  // `withdraw` in the enum and absent from a guard reads as "accepted, then ignored".
+  for (const a of ASKS) assert.ok(isAsk(a), `${a} is emittable but not foldable`);
+  assert.ok(!isAsk("retire"), "and the guard is a guard, not a pass-through");
+} );

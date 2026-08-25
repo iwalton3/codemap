@@ -45,8 +45,28 @@ export const CLOSED_STATES: readonly FindingState[] = ["invalid", "refuted", "re
 export const isClosed = (s: FindingState): boolean => CLOSED_STATES.includes(s);
 
 export type Verdict = "confirm" | "refute" | "unsure";
-/** What a request asks a human to do. Anyone may ask, at any state. */
-export type Ask = "promote" | "invalidate" | "refute" | "resolve";
+
+/**
+ * What a request asks a human to do. Anyone may ask, at any state.
+ *
+ * `withdraw` is the one that is not a verdict. The other four say something about
+ * whether the claim is TRUE; withdraw says the record should go while the claim stands —
+ * a duplicate, most often, which is the routine outcome of two reviewers landing on one
+ * anchor. Without it a true-but-duplicate finding had to be queued as `invalidate`
+ * ("this was not a real finding") or `refute` (a false verdict on the record, which by
+ * the comment contract also publishes a withdrawal to the submitter). `withdrawn` was
+ * already a terminal state and a `doubted` tier; the gap was only that an agent had no
+ * word for it.
+ */
+export const ASKS = ["promote", "invalidate", "refute", "resolve", "withdraw"] as const;
+export type Ask = (typeof ASKS)[number];
+
+/**
+ * ONE place, because the fold must accept exactly what the writers emit and the two
+ * folds (findings and bugs) had the list spelled out separately. A word added to the
+ * type but not to a guard is an event every reader silently drops.
+ */
+export const isAsk = (v: unknown): v is Ask => ASKS.includes(v as Ask);
 
 export interface Corroboration {
   actor: Actor;
@@ -421,8 +441,8 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
       }
 
       case "finding.requested": {
-        const ask = str(d, "ask") as Ask | undefined;
-        if (ask !== "promote" && ask !== "invalidate" && ask !== "refute" && ask !== "resolve") break;
+        const ask = str(d, "ask");
+        if (!isAsk(ask)) break;
         // One outstanding ask; a second replaces it, and the replacement is visible
         // because the superseded event is still in the log.
         f.pending = { ask, by: e.actor, at: e.at, rationale: str(d, "rationale") ?? "" };

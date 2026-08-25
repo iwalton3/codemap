@@ -34,7 +34,7 @@ import { emitEvent, mintId, readScope, causality, type LogEvent } from "./eventl
 import { applyRevision, newContestState, type Contested } from "./contest.js";
 import {
   isClosed, mayTransition, needsHumanAck,
-  type Ask, type Corroboration, type ExternalRef, type FindingComment,
+  isAsk, type Ask, type Corroboration, type ExternalRef, type FindingComment,
   type FindingState, type Verdict,
 } from "./shared-findings.js";
 
@@ -335,8 +335,8 @@ export function foldBugs(events: LogEvent[]): Map<string, SharedBug> {
       }
 
       case "bug.requested": {
-        const ask = str(d, "ask") as Ask | undefined;
-        if (ask !== "promote" && ask !== "invalidate" && ask !== "refute" && ask !== "resolve") break;
+        const ask = str(d, "ask");
+        if (!isAsk(ask)) break;
         b.pending = { ask, by: e.actor, at: e.at, rationale: str(d, "rationale") ?? "" };
         break;
       }

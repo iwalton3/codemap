@@ -863,10 +863,10 @@ const tools: Tool[] = [
   },
   {
     name: "request_human",
-    description: "Ask a PERSON to do what you may not: promote, invalidate, refute or resolve. Once a finding is `created`, or once anything has confirmed it, an agent may only ask — this is that ask, and it lands in the human's queue with your rationale attached. Use it instead of trying to set the state and being refused.\n\nWorks on a bug the same way, and for the same reason: past `created`, only a person closes one.",
+    description: "Ask a PERSON to do what you may not: promote, invalidate, refute, resolve or withdraw. Once a finding is `created`, or once anything has confirmed it, an agent may only ask — this is that ask, and it lands in the human's queue with your rationale attached. Use it instead of trying to set the state and being refused.\n\nFour of these are verdicts on whether the claim is TRUE. `withdraw` is not: it says the RECORD should go while the claim stands, which is what a duplicate is — the routine outcome of two reviewers landing on one anchor. Reach for it there rather than `invalidate` (\"this was not a real finding\") or `refute`, which puts a false verdict on the record and, by the comment contract, sends the submitter a withdrawal of a defect that is real.\n\nWorks on a bug the same way, and for the same reason: past `created`, only a person closes one.",
     inputSchema: obj({
       id: { type: "string", description: "A finding or bug id." },
-      action: { type: "string", enum: ["promote", "invalidate", "refute", "resolve"] },
+      action: { type: "string", enum: ["promote", "invalidate", "refute", "resolve", "withdraw"], description: "`withdraw` retires the record with the claim intact — a duplicate. The other four say something about whether it is true." },
       rationale: { type: "string", description: "Why. This is what the human reads to decide." },
     }, ["id", "action", "rationale"]),
     mutates: true,

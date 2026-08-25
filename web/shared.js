@@ -189,7 +189,11 @@ class SharedPage extends Component {
   askEl(f) {
     const p = f.pending;
     // `invalidate` maps onto the `invalid` state; the others share their names.
-    const state = p.ask === 'invalidate' ? 'invalid' : p.ask === 'refute' ? 'refuted' : p.ask === 'resolve' ? 'resolved' : null;
+    // `withdraw` retires the record with the claim intact — the duplicate case. Without
+    // it here the ask lands in the queue with no button, which is a request a person
+    // can read and not act on.
+    const state = p.ask === 'invalidate' ? 'invalid' : p.ask === 'refute' ? 'refuted'
+      : p.ask === 'resolve' ? 'resolved' : p.ask === 'withdraw' ? 'withdrawn' : null;
     return html`
       <div class="askbox">
         <div><b>${p.by}</b> asked to <b>${p.ask}</b>: ${p.rationale}</div>
