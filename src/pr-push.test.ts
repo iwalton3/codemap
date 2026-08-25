@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { diffLineRanges, diffHunks } from "./git.js";
@@ -927,4 +927,88 @@ test("another review's findings do not bury this one's held-back list", async ()
     );
     assert.equal(by.get("an_other")?.elsewhere?.ref, otherRef, "and one witnessed on another branch is marked as such");
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// --- the two halves of a push, and which one a sidecar turns off -------------------
+
+/**
+ * With a sidecar, findings are published THERE and not as raw comments on the branch.
+ *
+ * The two halves are different acts. Reporting what you signed off and how clean the
+ * branch is — the verdict, the summary, the viewed ticks — is a status report about
+ * your reading, and belongs on the pull request. Posting the findings themselves does
+ * not once a team has a sidecar: that is where the reviewers' discussion lives, it can
+ * hold a finding about code the branch never touched or about an ABSENCE, and it
+ * survives the branch. Sending both makes the GitHub copy the one people answer and
+ * the sidecar copy the one that goes stale.
+ */
+test("a sidecar turns off the comment half and leaves the verdict alone", async () => {
+  const dirs = [mkdtempSync(join(tmpdir(), "codemap-ph-repo-")), mkdtempSync(join(tmpdir(), "codemap-ph-side-"))];
+  const [root, side] = dirs as [string, string];
+  try {
+    mkdirSync(join(root, ".codemap"), { recursive: true });
+
+    const plan = {
+      pr: { number: 7, title: "t", url: "u", owner: "o", repo: "r" },
+      head: "h", body: "b", event: "APPROVE" as const, summary: "looks good",
+      comments: [{ path: "a.ts", line: 1, side: "RIGHT" as const, body: "x", annotationId: "n1" }],
+      deferred: [{ annotationId: "n2", path: "a.ts", body: "y", why: "no line" }],
+      blocked: [], viewedPaths: [], unverified: [], fingerprint: "f",
+      skipped: { alreadyPushed: 0, resolved: 0, notElected: 0, belowSeverity: 0, withdrawn: 0, noComment: 0, notPublishable: 0, evidenceMoved: 0, evidenceUnverifiable: 0 },
+    } as unknown as Parameters<typeof executePrPush>[1];
+
+    const sent: string[] = [];
+    const fakeGh = ((args: string[], input?: string) => {
+      sent.push(input ?? "");
+      return { ok: true, out: JSON.stringify({ id: 1, html_url: "url" }), err: "" };
+    }) as unknown as Parameters<typeof executePrPush>[2] extends { gh?: infer G } ? G : never;
+
+    // WITHOUT a sidecar: unchanged behaviour, both comments go.
+    const before = await executePrPush(root, plan, { gh: fakeGh as never });
+    assert.equal(before.postedComments, 1);
+    assert.match(sent[0]!, /"comments":\[\{/, "the inline comment is on the wire");
+    assert.equal(before.errors.length, 0);
+
+    // WITH one: the comments are gone and the verdict still posts.
+    writeFileSync(join(root, ".codemap", "sidecar"), side, "utf8");
+    sent.length = 0;
+    const after = await executePrPush(root, plan, { gh: fakeGh as never });
+    assert.equal(after.postedComments, 0, "no raw comments reach the branch");
+    assert.equal(after.deferredInBody, 0);
+    assert.match(sent[0] ?? "", /"comments":\[\]/, "an empty comment array, not a skipped review");
+    assert.match(sent[0] ?? "", /"event":"APPROVE"/, "the verdict still goes — that is the half being kept");
+    assert.equal(after.errors.length, 1, "and it says the comments were not posted, rather than implying they were");
+    assert.match(after.errors[0]!, /sidecar/);
+  } finally { dirs.forEach((d) => rmSync(d, { recursive: true, force: true })); }
+});
+
+/**
+ * And a suppressed comment must not be stamped as published.
+ *
+ * `postedRef` is a receipt, and `pushVerdict` reads it as `already-pushed` forever
+ * after — so a false one silently retires a finding that never left the machine.
+ */
+test("a comment the sidecar suppressed is not recorded as posted", async () => {
+  const dirs = [mkdtempSync(join(tmpdir(), "codemap-ps-repo-")), mkdtempSync(join(tmpdir(), "codemap-ps-side-"))];
+  const [root, side] = dirs as [string, string];
+  try {
+    mkdirSync(join(root, ".codemap"), { recursive: true });
+    writeFileSync(join(root, ".codemap", "sidecar"), side, "utf8");
+    const { writeAnnotations, readAnnotations } = await import("./store.js");
+    await writeAnnotations(root, [ann({ id: "n1", line: 1 })]);
+
+    const plan = {
+      pr: { number: 7, title: "t", url: "u", owner: "o", repo: "r" },
+      head: "h", body: "b", event: "COMMENT" as const, summary: "s",
+      comments: [{ path: "a.ts", line: 1, side: "RIGHT" as const, body: "x", annotationId: "n1" }],
+      deferred: [], blocked: [], viewedPaths: [], unverified: [], fingerprint: "f",
+      skipped: { alreadyPushed: 0, resolved: 0, notElected: 0, belowSeverity: 0, withdrawn: 0, noComment: 0, notPublishable: 0, evidenceMoved: 0, evidenceUnverifiable: 0 },
+    } as unknown as Parameters<typeof executePrPush>[1];
+
+    await executePrPush(root, plan, {
+      gh: (() => ({ ok: true, out: JSON.stringify({ id: 1, html_url: "url" }), err: "" })) as never,
+    });
+    const a = (await readAnnotations(root)).annotations.find((x) => x.id === "n1")!;
+    assert.equal(a.postedRef, undefined, "it never went out, so it carries no receipt saying it did");
+  } finally { dirs.forEach((d) => rmSync(d, { recursive: true, force: true })); }
 });

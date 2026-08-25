@@ -85,6 +85,14 @@ async function cmdPrPush(
   console.log(`#${plan.pr.number} ${plan.pr.title}`);
   if (plan.event !== "COMMENT") console.log(`  VERDICT: ${plan.event} — this shows on the pull request as a vote`);
   if (plan.summary) console.log(`  summary: ${(plan.summary.split("\n")[0] ?? "").slice(0, 120)}${plan.summary.length > 120 ? "…" : ""}`);
+  // Said before the counts, because with a sidecar the counts are zero for a reason
+  // that has nothing to do with what is on the map.
+  if (plan.commentPush) {
+    console.log(`  COMMENT PUSH OFF — ${plan.commentPush.why}`);
+    if (plan.commentPush.suppressed) {
+      console.log(`  ${plan.commentPush.suppressed} finding(s) would otherwise have been posted; read them with \`codemap shared ${plan.pr.number}\`.`);
+    }
+  }
   console.log(`  ${plan.comments.length} inline comment(s), ${plan.deferred.length} folded into the summary body`);
   console.log(`  ${plan.viewedPaths.length} file(s) fully reviewed → would be marked viewed on GitHub`);
   if (plan.skipped.alreadyPushed) console.log(`  ${plan.skipped.alreadyPushed} already pushed (skipped — a re-run never duplicates)`);

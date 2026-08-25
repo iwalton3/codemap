@@ -22,6 +22,7 @@ import { diffHunks, isAncestor } from "./git.js";
 import { prTriage, anchorSpans, fetchPrMeta, type PrMeta } from "./pr.js";
 import { LANE_POLICY } from "./lanes.js";
 import { sameBody, comparableHashes } from "./normalize.js";
+import { resolveSidecar } from "./sidecar-config.js";
 
 export interface InlineComment {
   path: string; line: number; side: "RIGHT"; body: string; annotationId: string;
@@ -93,6 +94,21 @@ export interface PushPlan {
   skipped: { alreadyPushed: number; resolved: number; notElected: number; belowSeverity: number; withdrawn: number; noComment: number; notPublishable: number; evidenceMoved: number; evidenceUnverifiable: number };
   /** Published findings codemap could not confirm were written against this PR. */
   unverified: string[];
+  /**
+   * Raw comment push is OFF because this universe has a sidecar.
+   *
+   * The two halves of this file are different acts. Reporting what you signed off and
+   * how clean the branch is — the verdict, the summary, the viewed ticks — is a status
+   * report about YOUR reading, and it belongs on the pull request where the author
+   * looks. Posting the findings themselves does not, once the team has a sidecar: that
+   * is where the reviewers' discussion lives, it can hold a finding about code the
+   * branch never touched or about an ABSENCE, and it survives the branch. Sending the
+   * same finding to both makes the GitHub copy the one people reply to and the sidecar
+   * copy the one that goes stale.
+   *
+   * Absent when there is no sidecar, so a solo store keeps exactly the behaviour it had.
+   */
+  commentPush?: { disabled: true; why: string; suppressed: number };
   /**
    * Identity of exactly what this plan would publish. A caller that inspected a
    * plan sends it back with the publish; if re-deriving gives a different one, the
@@ -642,7 +658,29 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
     firstAddedLineOfSymbol: firstAddedLine,
     firstChangedLineOfSymbol: firstCommentableLine,
   }, filter);
-  const { comments, deferred, blocked } = set;
+  // THE COMMENT HALF, and whether it is this universe's to send at all. See
+  // `PushPlan.commentPush`: with a sidecar the findings live there, and posting them
+  // here as well creates a second copy that the author replies to and nobody folds
+  // back. The verdict, the summary and the viewed ticks are a different act and are
+  // unaffected — they report YOUR reading of the branch, which is what a pull request
+  // is for.
+  //
+  // Suppressed AFTER the set is built rather than by skipping the build: the count is
+  // what tells a reader the findings exist and where they went, and a plan that simply
+  // showed nothing would be indistinguishable from a clean review.
+  const sidecar = resolveSidecar(root);
+  const commentPush = sidecar
+    ? {
+      disabled: true as const,
+      suppressed: set.comments.length + set.deferred.length,
+      why: `this universe has a sidecar (${sidecar.universe}), so findings are published there and not as raw `
+        + "comments on the branch — `shared_findings` is where the team reads and answers them. "
+        + "The verdict, the summary and the viewed ticks still post.",
+    }
+    : undefined;
+  const { blocked } = set;
+  const comments = commentPush ? [] : set.comments;
+  const deferred = commentPush ? [] : set.deferred;
 
   // A file counts as viewed once every reviewable symbol the PR changed in it has
   // been looked at — GitHub's checkbox is per file, codemap's marks are per symbol.
@@ -703,6 +741,10 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
     comments.map((c) => [c.annotationId, c.path, c.line, c.body]).sort(),
     deferred.map((d) => [d.annotationId, d.body]).sort(),
     [...viewedPaths].sort(),
+    // Whether the comment half is on. Without this a plan inspected while a sidecar
+    // was configured and executed after it was removed re-derives to the same hash —
+    // and the identity check exists precisely so nothing publishes that nobody read.
+    !!commentPush,
   ])).digest("hex").slice(0, 16);
 
   return {
@@ -711,6 +753,7 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
     head: t.refs.head,
     body, event, ...(summary ? { summary } : {}),
     comments, deferred, blocked, viewedPaths,
+    ...(commentPush ? { commentPush } : {}),
     unverified: set.unverified,
     skipped: set.skipped,
   };
@@ -737,7 +780,16 @@ function gh(args: string[], input?: string): { ok: boolean; out: string; err: st
  */
 async function stampPostedRefs(
   root: string, plan: PushPlan,
-  ctx: { reviewId?: number; reviewUrl?: string; gh: typeof gh; slug: string },
+  ctx: {
+    reviewId?: number; reviewUrl?: string; gh: typeof gh; slug: string;
+    /**
+     * What actually went out, which is not always what the plan carried: with a
+     * sidecar the comment half is suppressed at the act. Stamping a `postedRef` on a
+     * finding that never left the machine would be a false receipt — and a durable
+     * one, since `pushVerdict` reads it as `already-pushed` forever after.
+     */
+    comments: InlineComment[]; deferred: DeferredComment[];
+  },
 ): Promise<void> {
   const at = new Date().toISOString();
   const urls = new Map<string, { id: number; url: string }>();
@@ -759,7 +811,7 @@ async function stampPostedRefs(
   const store = await readAnnotations(root);
   const byId = new Map(store.annotations.map((a) => [a.id, a]));
   let touched = false;
-  for (const c of plan.comments) {
+  for (const c of ctx.comments) {
     const a = byId.get(c.annotationId);
     if (!a) continue;
     const hit = urls.get(`${c.path}:${c.line}`);
@@ -770,7 +822,7 @@ async function stampPostedRefs(
     };
     touched = true;
   }
-  for (const d of plan.deferred) {
+  for (const d of ctx.deferred) {
     const a = byId.get(d.annotationId);
     if (!a) continue;
     a.postedRef = {
@@ -817,15 +869,33 @@ export async function executePrPush(
   // `event: undefined` on the wire, where GitHub rejects the whole batch.
   const event: ReviewEvent = plan.event ?? "COMMENT";
   const hasVerdict = event !== "COMMENT" || !!plan.summary;
+
+  // ENFORCED HERE TOO, not only in the plan. `planPrPush` empties these when a sidecar
+  // is configured, so a plan arriving with them is a stale one made before the sidecar
+  // existed, or a payload nobody built — and this is the act, where a write-time check
+  // is the only one that binds. The verdict, the summary and the viewed sync are a
+  // DIFFERENT act and are deliberately untouched: they report what the reviewer signed
+  // off and how clean the branch is, which is what a pull request is for.
+  const sidecar = resolveSidecar(root);
+  const comments = sidecar ? [] : plan.comments;
+  const deferred = sidecar ? [] : plan.deferred;
+  if (sidecar && (plan.comments.length || plan.deferred.length)) {
+    errors.push(
+      `${plan.comments.length + plan.deferred.length} comment(s) in this plan were NOT posted: this universe has a `
+      + `sidecar (${sidecar.universe}), so findings are published there rather than as raw comments on the branch. `
+      + "Re-derive the plan to see it without them. The verdict and viewed state were unaffected.",
+    );
+  }
+  result.deferredInBody = deferred.length;
   const postComments = opts.comments !== false
-    && (plan.comments.length > 0 || plan.deferred.length > 0 || hasVerdict);
+    && (comments.length > 0 || deferred.length > 0 || hasVerdict);
 
   if (postComments) {
     const payload = JSON.stringify({
       commit_id: plan.head,
       body: plan.body,
       event,
-      comments: plan.comments.map((c) => ({ path: c.path, line: c.line, side: c.side, body: c.body })),
+      comments: comments.map((c) => ({ path: c.path, line: c.line, side: c.side, body: c.body })),
     });
     const r = gh_(["api", "--method", "POST", `repos/${slug}/pulls/${plan.pr.number}/reviews`, "--input", "-"], payload);
     if (!r.ok) {
@@ -846,7 +916,7 @@ export async function executePrPush(
         result.reviewUrl = review.html_url;
         reviewId = typeof review.id === "number" ? review.id : undefined;
       } catch { /* the url and id are a nicety; the post succeeded either way */ }
-      result.postedComments = plan.comments.length;
+      result.postedComments = comments.length;
 
       // Record the publish IMMEDIATELY. Everything below is more `gh` — a comment
       // fetch here, then a call per file with a 120s timeout each — and recording
@@ -854,7 +924,7 @@ export async function executePrPush(
       // went out, so the next publish re-posted every inline comment on someone
       // else's pull request. The dedupe record goes down before any of it.
       await writePush(root, String(plan.pr.number), {
-        annotationIds: [...plan.comments.map((c) => c.annotationId), ...plan.deferred.map((d) => d.annotationId)],
+        annotationIds: [...comments.map((c) => c.annotationId), ...deferred.map((d) => d.annotationId)],
         viewedPaths: [],
         at: new Date().toISOString(),
         reviewUrl: result.reviewUrl,
@@ -862,7 +932,7 @@ export async function executePrPush(
 
       // Then stamp each finding with where it landed. Refinement of a record that
       // already exists, so losing it costs detail rather than the dedupe itself.
-      await stampPostedRefs(root, plan, { reviewId, reviewUrl: result.reviewUrl, gh: gh_, slug });
+      await stampPostedRefs(root, plan, { reviewId, reviewUrl: result.reviewUrl, gh: gh_, slug, comments, deferred });
     }
   }
 

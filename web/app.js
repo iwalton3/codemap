@@ -3252,6 +3252,22 @@ class PrStoryPage extends Component {
   }
 
   /** Open findings the team holds — the half of the count that is not local. */
+  /**
+   * Does this universe publish findings to a team?
+   *
+   * If it does, raw comment push is off — the findings live on the sidecar, and posting
+   * them to the branch as well makes the GitHub copy the one people reply to and the
+   * sidecar copy the one that goes stale. `planPrPush` and `executePrPush` both enforce
+   * it; this only stops the page offering a button that would come back empty.
+   *
+   * The signal is the shared read's own `universe`, which is null exactly when no
+   * sidecar is configured — not a separate flag that could disagree with it.
+   */
+  hasSidecar() {
+    const d = this.state.shared;
+    return !!d && !isErr(d) && !!d.universe;
+  }
+
   sharedOpenCount() {
     const d = this.state.shared;
     if (!d || isErr(d)) return 0;
@@ -4193,7 +4209,7 @@ class PrStoryPage extends Component {
         ${when(this.state.markError, () => html`<div class="warn">sign-off failed: ${this.state.markError}</div>`)}
         <div class="prderive prpush">
           <button class="${this.state.showFindings ? 'on' : ''}" on-click="${() => this.toggleFindings()}" title="every finding on this PR in one list — raise or resolve without opening each symbol">${this.state.showFindings ? 'hide findings' : `findings (${this.allFindings().filter(e => !e.f.resolved).length + this.sharedOpenCount()})`}</button>
-          <button on-click="${() => this.openPush('comments')}" title="post your findings to the pull request as review comments. Yours go out; an agent's only if you raised it. Shows you exactly what would be sent first.">push comments to GitHub</button>
+          ${when(!this.hasSidecar(), () => html`<button on-click="${() => this.openPush('comments')}" title="post your findings to the pull request as review comments. Yours go out; an agent's only if you raised it. Shows you exactly what would be sent first.">push comments to GitHub</button>`)}
           <button on-click="${() => this.openPush('viewed')}" title="tick the per-file viewed boxes on GitHub for files you have fully signed off here, so both tools agree about what has been read.">push viewed state to GitHub</button>
           <button on-click="${() => this.openResolveSync()}" title="compare which of your posted findings are settled here against which conversations are resolved on the pull request — for when the submitter fixed it and left the comment open.">sync resolved state</button>
         </div>
