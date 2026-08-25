@@ -141,6 +141,9 @@ class SharedPage extends Component {
   /** @param {Finding} f */
   marksEl(f) {
     return html`
+      ${when(!f.published, () => html`<span class="prbadge warnb"
+        title="on this map only — the team cannot see it. Publish with codemap publish-findings."
+        >not published</span>`)}
       ${when(f.needsAck, () => html`<span class="prbadge needsack">needs ack</span>`)}
       ${when(!!f.contested?.length, () => html`<span class="prbadge contested">contested: ${f.contested.map(c => c.field).join(', ')}</span>`)}
       ${when(f.promoted, () => html`<span class="prbadge">promoted</span>`)}

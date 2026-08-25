@@ -66,10 +66,11 @@ export {
 import {
   closeAssignment as closeAnnotation, closeLocalFinding as closeLocal, commentOnLocalFinding,
   reviseLocalFinding, reviseAnnotation, remediateLocalFinding, checkComment, REVISABLE,
+  setLocalFindingState, corroborateLocalFinding, promoteLocalFinding, requestOnLocalFinding,
 } from "./ops/annotations.js";
 import { commentBug, corroborateBugOp, requestOnBugOp } from "./ops/bugs.js";
 import { readFinding, readBug } from "./store.js";
-import { isRemediation, type Ask, type Remediation } from "./shared-findings.js";
+import { isRemediation, type Ask, type FindingState, type Remediation, type Verdict } from "./shared-findings.js";
 export { reportDefect, type DefectContext, type DefectInput } from "./ops/defect.js";
 
 /**
@@ -260,7 +261,11 @@ export async function corroborateOn(root: string, input: { id: string; verdict: 
   const w = await whichRecord(root, input.id);
   if ("error" in w) return w;
   if ("bug" in w) return corroborateBugOp(root, input.id, input.verdict, input.rationale);
-  if (!w.finding.shared) return { error: `no sidecar is configured, so there is nobody to corroborate ${input.id} for` };
+  // A LOCAL canonical finding holds corroboration too — `closeLocalFinding` has written
+  // it since the tables merged. Refusing here said "there is nobody to corroborate this
+  // for", which was never the question: a second model reviewing your own finding is the
+  // point of running several, sidecar or no sidecar.
+  if (!w.finding.shared) return corroborateLocalFinding(root, input.id, input.verdict as Verdict, input.rationale);
   const shared = await import("./ops-shared.js");
   return shared.corroborateFinding(root, w.finding.pr, input.id, input.verdict, input.rationale, { model: input.model, harness: input.harness });
 }
@@ -270,7 +275,9 @@ export async function requestHuman(root: string, input: { id: string; action: As
   const w = await whichRecord(root, input.id);
   if ("error" in w) return w;
   if ("bug" in w) return requestOnBugOp(root, input.id, input.action as never, input.rationale);
-  if (!w.finding.shared) return { error: `no sidecar is configured, so there is nobody to ask about ${input.id}` };
+  // An ask on a local finding lands in the same queue the shared ones do — `reviewQueue`
+  // reads the canonical table, so a person sees it either way.
+  if (!w.finding.shared) return requestOnLocalFinding(root, input.id, input.action, input.rationale);
   const shared = await import("./ops-shared.js");
   return shared.requestOnFinding(root, w.finding.pr, input.id, input.action as never, input.rationale);
 }
@@ -293,4 +300,35 @@ export async function recordRemediation(
   if (!f.origin) return remediateLocalFinding(root, id, state, opts) as Promise<Record<string, unknown>>;
   const shared = await import("./ops-shared.js");
   return shared.remediateFinding(root, f.pr!, id, state, opts) as Promise<Record<string, unknown>>;
+}
+
+/**
+ * Move a finding's lifecycle state — resolve, refute, invalidate, reopen.
+ *
+ * Dispatched on the RECORD, like every other act here, and it is the one that was
+ * missing: `shared_findings` lists this store's own rows beside the team's, so the
+ * shared page's `resolve` button was offered on a local finding and answered
+ * `no finding finding_… on pr <scope>` — a real id, a real row, and an error naming the
+ * one place it could not be.
+ *
+ * The ratchet is the same function on both sides, so what an agent may close does not
+ * depend on whether the row happens to have been published.
+ */
+export async function setFindingState(
+  root: string, input: { id: string; state: FindingState; reason?: string },
+): Promise<Record<string, unknown>> {
+  const f = await readFinding(root, input.id).catch(() => null);
+  if (!f) return { error: `no finding "${input.id}"` };
+  if (!f.origin) return setLocalFindingState(root, input.id, input.state, input.reason);
+  const shared = await import("./ops-shared.js");
+  return shared.closeFinding(root, f.pr!, f.id, input.state, input.reason) as Promise<Record<string, unknown>>;
+}
+
+/** Surface a finding for team-wide human attention, wherever the row lives. */
+export async function promoteOn(root: string, id: string): Promise<Record<string, unknown>> {
+  const f = await readFinding(root, id).catch(() => null);
+  if (!f) return { error: `no finding "${id}"` };
+  if (!f.origin) return promoteLocalFinding(root, id);
+  const shared = await import("./ops-shared.js");
+  return shared.promoteFinding(root, f.pr!, id) as Promise<Record<string, unknown>>;
 }

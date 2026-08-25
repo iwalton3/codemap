@@ -434,3 +434,44 @@ test("`findings` carries the same axis, so neither list needs the other's vocabu
     assert.deepEqual(await ids({ pr: "269", remediation: "outstanding" }), ["f_open"]);
   } finally { u.cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// The shared page lists this store's own findings too, so its buttons have to
+// work on them. `resolve` answered `no finding finding_… on pr <scope>`.
+// ---------------------------------------------------------------------------
+
+test("every lifecycle act works on a finding the fold does not own", async () => {
+  const u = await universe();
+  try {
+    const { setFindingState, promoteOn, corroborateOn, requestHuman, commentOn } = await import("./ops.js");
+    await writeLocalFinding(u.root, localFinding("f_local", { state: "issued" }), 264);
+
+    // Each of these used to be sent to the LOG, which has never heard of a local row —
+    // so the error named the one place the finding could not be. On the real store every
+    // row of PR 264 was local, so this was every button on the page.
+    const ok = (r: unknown) => assert.ok(!(r as { error?: string }).error, String((r as { error?: string }).error));
+    ok(await commentOn(u.root, { id: "f_local", body: "looked at it" }));
+    ok(await corroborateOn(u.root, { id: "f_local", verdict: "confirm", rationale: "read the code" }));
+    ok(await promoteOn(u.root, "f_local"));
+    ok(await requestHuman(u.root, { id: "f_local", action: "resolve", rationale: "fixed upstream" }));
+
+    const f = (await readFinding(u.root, "f_local"))!;
+    assert.equal(f.thread.length, 1);
+    assert.equal(f.corroboration.length, 1);
+    assert.ok(f.promotion);
+    assert.equal(f.pending!.ask, "resolve");
+
+    // And the ratchet is the SAME rule: this one is confirmed and promoted now, so an
+    // agent may only ask — being local does not buy an agent a weaker gate.
+    await asAgent(async () => {
+      const no = await setFindingState(u.root, { id: "f_local", state: "resolved", reason: "done" });
+      assert.match(String(no.error), /needs a person|may not/);
+    });
+    const yes = await setFindingState(u.root, { id: "f_local", state: "resolved", reason: "closed from the shared view" });
+    assert.ok(!yes.error, String(yes.error));
+    const done = (await readFinding(u.root, "f_local"))!;
+    assert.equal(done.state, "resolved");
+    assert.equal(done.closed!.reason, "closed from the shared view");
+    assert.equal(done.pending, undefined, "the ask is answered by the act it asked for");
+  } finally { u.cleanup(); }
+});

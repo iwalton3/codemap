@@ -1,11 +1,14 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { type Anchor, type LogicalNode, type BugSeverity, type Annotation, type Disposition, DISPOSITIONS, COMMENT_MAX } from "../schema.js";
+import { type Actor, type Anchor, type LogicalNode, type BugSeverity, type Annotation, type Disposition, DISPOSITIONS, COMMENT_MAX } from "../schema.js";
 import { indexFile, indexBlob } from "../repo.js";
 import { headCommit, readBlobs } from "../git.js";
 import { readAnchorStore, loadNodes, readAnnotations, writeAnnotations, readFindings, readFinding, writeLocalFinding, findAnchorsOutsideWork, readPushes, bodyHashAt, readOrphans } from "../store.js";
-import { findingTier, isClosed, type FindingTier, type Remediation, type SharedFinding } from "../shared-findings.js";
-import { requireActor, isAgentActor, actorLabel } from "../identity.js";
+import {
+  findingTier, isClosed, mayTransition, needsHumanAck,
+  type Ask, type FindingState, type FindingTier, type Remediation, type SharedFinding, type Verdict,
+} from "../shared-findings.js";
+import { requireActor, isAgentActor, actorLabel, reviewerKey, isIndependent } from "../identity.js";
 import { isAgentAuthored, publishStateOf, type PublishState } from "../pr-push.js";
 import { genId, liveAnchors, resolveRefs, loadNodesShared} from "./shared.js";
 
@@ -1011,6 +1014,79 @@ export async function remediateLocalFinding(
   await writeLocalFinding(root, f, f.pr!);
   return { ok: true, id: f.id, pr: f.pr, shared: false, remediation: state };
 }
+
+/**
+ * The lifecycle acts, on a LOCAL canonical finding.
+ *
+ * `shared_findings` lists this store's own rows beside the team's — one canonical table,
+ * and a store that never joined a team still has findings — but every write behind that
+ * page went straight to the log, which has never heard of a local row. So `resolve` on
+ * one answered `no finding finding_… on pr <scope>`: a real id, a real row, and an error
+ * naming the one place it could not be.
+ *
+ * These are the row halves. They live here for the layering reason `closeLocalFinding`
+ * gives, and `ops.ts` picks between them and the event ones.
+ *
+ * The RATCHET applies identically. `mayTransition` is the same function the fold uses,
+ * so a local finding somebody has confirmed is no more closeable by an agent than a
+ * shared one — the gate is about who stood behind the claim, not about where the row
+ * happens to live.
+ */
+async function localFindingWrite<T>(
+  root: string, id: string, fn: (f: SharedFinding, actor: Actor, at: string) => T | { error: string },
+): Promise<Record<string, unknown>> {
+  const f = await readFinding(root, id).catch(() => null);
+  if (!f) return { error: `no finding "${id}"` };
+  const actor = requireActor(root);
+  if ("error" in actor) return actor;
+  const r = fn(f, actor, new Date().toISOString());
+  if (r && typeof r === "object" && "error" in r) return r as { error: string };
+  await writeLocalFinding(root, f, f.pr!);
+  return { ok: true, id: f.id, pr: f.pr, shared: false, ...(r as object ?? {}) };
+}
+
+export const setLocalFindingState = (root: string, id: string, state: FindingState, reason?: string) =>
+  localFindingWrite(root, id, (f, actor, at) => {
+    if (!mayTransition(f, actor, state)) {
+      return {
+        error: needsHumanAck(f)
+          ? `${id} needs a person: it is promoted or somebody has confirmed it, so an agent may only request \`${state}\`, not do it`
+          : `an agent may not move ${id} from ${f.state} to ${state} — request it instead`,
+      };
+    }
+    f.state = state;
+    f.closed = isClosed(state) ? { at, by: actor, reason: reason ?? state } : undefined;
+    // An ask is answered by the act it asked for.
+    f.pending = undefined;
+    return { state };
+  });
+
+export const corroborateLocalFinding = (root: string, id: string, verdict: Verdict, rationale: string) =>
+  localFindingWrite(root, id, (f, actor, at) => {
+    if (!rationale.trim()) return { error: "a verdict without a rationale is a vote, not a review — say what you checked" };
+    // One entry per REVIEWER, replacing that reviewer's own earlier opinion and nobody
+    // else's — `reviewerKey`, the same rule the fold applies, so the two halves of one
+    // verb cannot disagree about who has spoken.
+    const i = f.corroboration.findIndex((c) => reviewerKey(c.actor) === reviewerKey(actor));
+    const entry = { actor, verdict, at, rationale, independent: isIndependent(actor, f.author) };
+    if (i >= 0) f.corroboration[i] = entry; else f.corroboration.push(entry);
+    return { verdict };
+  });
+
+export const promoteLocalFinding = (root: string, id: string) =>
+  localFindingWrite(root, id, (f, actor, at) => {
+    // A latch: surfacing something twice is not a state change.
+    if (!f.promotion) f.promotion = { at, by: actor };
+    return { note: "surfaced for team-wide attention; it does not gate anyone's triage" };
+  });
+
+export const requestOnLocalFinding = (root: string, id: string, ask: Ask, rationale: string) =>
+  localFindingWrite(root, id, (f, actor, at) => {
+    if (!rationale.trim()) return { error: `asking to ${ask} without saying why leaves the human nothing to act on` };
+    // One outstanding ask; a second replaces it.
+    f.pending = { ask, by: actor, at, rationale };
+    return { ask, note: "queued for a person to acknowledge" };
+  });
 
 export async function closeAssignment(
   root: string,

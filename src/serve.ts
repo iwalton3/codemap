@@ -333,12 +333,17 @@ const server = createServer(async (req, res) => {
         // sync — and it must be called once, not wrapped: the sidecar lock is not
         // reentrant, so a wrapper that took it around the four steps would deadlock.
         case "heal": out = await run(() => shared.sharedHeal(root)); break;
-        case "corroborate": out = await shared.corroborateFinding(root, pr, body.id, body.verdict, body.rationale ?? ""); break;
-        case "comment": out = await shared.commentOnFinding(root, pr, body.id, body.body ?? "", body.inReplyTo); break;
-        case "promote": out = await shared.promoteFinding(root, pr, body.id); break;
-        case "request": out = await shared.requestOnFinding(root, pr, body.id, body.ask, body.rationale ?? ""); break;
-        case "close": out = await shared.closeFinding(root, pr, body.id, body.state, body.reason); break;
-        case "revise": out = await shared.reviseFinding(root, pr, body.id, body.now ?? {}); break;
+        // Dispatched on the RECORD, not sent to the log. This page lists the canonical
+        // table — this store's own findings beside the team's, which is the point of one
+        // table — so a button that assumed the fold owned every row it was offered on
+        // answered `no finding finding_… on pr <scope>`: a real id, a real row, and an
+        // error naming the one place it could not be. On PR 264 that was every row.
+        case "corroborate": out = await ops.corroborateOn(root, { id: body.id, verdict: body.verdict, rationale: body.rationale ?? "" }); break;
+        case "comment": out = await ops.commentOn(root, { id: body.id, body: body.body ?? "", inReplyTo: body.inReplyTo }); break;
+        case "promote": out = await ops.promoteOn(root, body.id); break;
+        case "request": out = await ops.requestHuman(root, { id: body.id, action: body.ask, rationale: body.rationale ?? "" }); break;
+        case "close": out = await ops.setFindingState(root, { id: body.id, state: body.state, reason: body.reason }); break;
+        case "revise": out = await ops.reviseOn(root, { id: body.id, ...(body.now ?? {}) }); break;
         case "settle": out = await shared.settleContest(root, pr, body.id, body.field, body.value); break;
         case "upstream": out = await shared.upstreamFinding(root, pr, body.id, { system: body.system, key: body.key, url: body.url }); break;
         case "to_bug": out = await shared.findingToBug(root, pr, body.id, body.bug); break;

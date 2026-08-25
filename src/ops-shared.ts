@@ -469,6 +469,11 @@ function view(f: SharedFinding) {
     // ALWAYS present, defaulting to `outstanding`. Absent-means-outstanding is the same
     // fact, and a field that appears only once somebody has acted is one a reader learns
     // to stop looking for.
+    // Whether the TEAM has this one. A local row and a published one looked identical on
+    // the shared page, so a finding nobody else can see read exactly like one everybody
+    // could — and on PR 264 every row was local. Not a filter: the page lists both on
+    // purpose (one canonical table), it just has to say which is which.
+    published: !!f.origin,
     remediation: f.remediation?.state ?? "outstanding",
     remediatedAt: f.remediation ? { by: f.remediation.by.principal, at: f.remediation.at, detail: f.remediation.detail, ref: f.remediation.ref } : undefined,
     closed: f.closed ? { by: f.closed.by.principal, reason: f.closed.reason } : undefined,
