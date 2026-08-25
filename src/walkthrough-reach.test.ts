@@ -252,3 +252,53 @@ test("every reading is reachable from the one read verb, chosen first", async ()
     assert.equal(pick.all[1]!.author, "dana@x.com");
   } finally { u.cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// Re-walking. walk -> publish -> re-walk, which is the ordinary response to the
+// submitter pushing a commit.
+// ---------------------------------------------------------------------------
+
+test("re-walking a PUBLISHED reading is refused in words, not by a constraint", async () => {
+  const u = universe();
+  try {
+    await writeLocalWalkthrough(u.root, String(PR), wt("head1", "2026-08-21T00:00:00Z"));
+    await publish(u, me, wt("head1", "2026-08-21T00:00:00Z"));
+    await sharedWalkthroughs(u.root, PR); // the fold adopts it — the row is now the fold's
+
+    // The submitter pushes and the pull request is re-walked. This is the third step of
+    // the only lifecycle a walkthrough has, and it used to reach the caller as a raw
+    // `UNIQUE constraint failed: walkthroughs.pr, walkthroughs.author`, with the
+    // transaction rolled back and the read-back still answering with the OLD reading.
+    const r = await writeLocalWalkthrough(u.root, String(PR), wt("head2", "2026-08-22T00:00:00Z"));
+    assert.ok("error" in r, "the local writer does not own that row");
+    assert.match((r as { error: string }).error, /already published/);
+    assert.match((r as { error: string }).error, /pr_walkthrough/, "and it names what does own it");
+
+    // Re-walking it as the publication it now is — which is what `pr_walkthrough` does.
+    await publish(u, me, wt("head2", "2026-08-22T00:00:00Z"));
+    await sharedWalkthroughs(u.root, PR);
+    const rows = await readWalkthroughsFor(u.root, PR);
+    assert.equal(rows.length, 1, "one reading, re-walked — not one row per attempt");
+    assert.equal(rows[0]!.walkthrough.head, "head2");
+  } finally { u.cleanup(); }
+});
+
+test("attributing a walkthrough whose published copy is already there collapses them", async () => {
+  const u = universe();
+  try {
+    // The live state this hit: a store that published BEFORE the blob migration existed
+    // has the fold's row under its principal AND the migrated row under `''`, which is
+    // the same reading twice. Renaming the second onto the first violates the index.
+    await publish(u, me, wt("head1", "2026-08-21T00:00:00Z"));
+    await sharedWalkthroughs(u.root, PR);
+    db(u.root).prepare("INSERT INTO walkthroughs(pr,author,body) VALUES(?,'',?)").run(
+      String(PR), JSON.stringify({ walkthrough: wt("head1", "2026-08-20T00:00:00Z"), actor: { principal: "" }, eventId: "", at: "2026-08-20T00:00:00Z" }));
+
+    const { attributeLocalWalkthrough } = await import("./store.js");
+    await attributeLocalWalkthrough(u.root, String(PR), "izzie@x.com");
+
+    const rows = await readWalkthroughsFor(u.root, PR);
+    assert.equal(rows.length, 1, "the published copy is the authoritative one");
+    assert.ok(rows[0]!.origin, "and it is the fold's");
+  } finally { u.cleanup(); }
+});

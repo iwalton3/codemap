@@ -1,9 +1,10 @@
 import { type Annotation } from "../schema.js";
 import { originSlug } from "../git.js";
-import { readAnchorStore, loadNodes, readAnnotations, findAnchorsOutsideWork, writeLocalWalkthrough, readOrphans } from "../store.js";
+import { readAnchorStore, loadNodes, readAnnotations, findAnchorsOutsideWork, writeLocalWalkthrough, foldOwnsWalkthrough, readOrphans } from "../store.js";
 import { prTriage, listOpenPrs, prPacket, prStory, prAnchorCode, prPromotionPlan, derivePrTriage, prContainment, offStoryReason, type OffStoryReason } from "../pr.js";
 import { promotionOwns } from "../pr-promote.js";
 import { resolveSidecar } from "../sidecar-config.js";
+import { resolveActor } from "../identity.js";
 import { validateWalkthrough, buildWalkthrough, walkCoverage, staleChapters, type WalkInput } from "../walkthrough.js";
 import { LANE_POLICY } from "../lanes.js";
 import { parseAgentLines, ingestAgentReview } from "../pr-ingest.js";
@@ -92,7 +93,18 @@ export async function prWalkthroughSet(
       coverage, dryRun: true,
     };
   }
-  await writeLocalWalkthrough(root, String(t.pr.number), built);
+  // A reading this store has already PUBLISHED is the fold's row, and a fold-owned row
+  // may only change by an event — so re-walking it is a publication, and the local write
+  // is skipped rather than attempted. That is also the honest answer: a re-walk kept
+  // local would leave the team reading the version the submitter's push invalidated.
+  // walk -> publish -> re-walk is the ordinary lifecycle, not an edge case; it is what
+  // happens every time the submitter pushes.
+  const mine = resolveActor(root)?.principal ?? "";
+  const republish = foldOwnsWalkthrough(root, String(t.pr.number), mine);
+  if (!republish) {
+    const w = await writeLocalWalkthrough(root, String(t.pr.number), built);
+    if ("error" in w) return w;
+  }
   // Writing one and PUBLISHING it were two acts, and nothing said so — the tool that
   // publishes is findable only by somebody who already knows it exists, so a
   // walkthrough written for a team stayed in the author's own store. Publishing here
@@ -104,12 +116,22 @@ export async function prWalkthroughSet(
       .then((m) => m.shareWalkthrough(root, built) as Promise<{ error?: string }>)
       .catch((e: unknown) => ({ error: String((e as Error)?.message ?? e) }))
     : null;
+  // On a REPUBLISH the event is the only thing that carries the new reading, so a failed
+  // publish is a failed re-walk — reporting `ok` would leave the caller believing the
+  // map moved while `pr_walkthrough_get` kept answering with the old one.
+  if (republish && (!shared || shared.error)) {
+    return {
+      error: `PR #${t.pr.number}'s walkthrough is already published, so re-walking it is a publication — and that did not land`
+        + `${shared?.error ? `: ${shared.error}` : " (no sidecar is configured any more)"}. The previous reading still stands.`,
+    };
+  }
   return {
     ok: true, pr: t.pr.number, head: t.refs.head,
     features: built.features.length,
     chapters: built.features.reduce((n, f) => n + f.chapters.length, 0),
     coverage,
     dryRun: false,
+    ...(republish ? { republished: true as const } : {}),
     // Reported, and only where there is a team to report about: a walkthrough that
     // silently did not travel reads, from the author's side, exactly like one that did,
     // and a store with no sidecar has nowhere for it to go and no gap to announce.

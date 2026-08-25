@@ -1787,18 +1787,42 @@ export async function readWalkthroughsFor(root: string, pr: number | string): Pr
  * and the empty principal is the sentinel a legacy row already uses. What it cannot do
  * is publish, which is what makes an unattributed row safe: nothing can adopt it.
  */
-export async function writeLocalWalkthrough(root: string, pr: string, w: PrWalkthrough): Promise<void> {
+export async function writeLocalWalkthrough(
+  root: string, pr: string, w: PrWalkthrough,
+): Promise<{ ok: true } | { error: string }> {
   const actor = resolveActor(root);
+  const author = actor?.principal ?? "";
+  // A reading you have PUBLISHED is the fold's row, and a fold-owned row may only be
+  // changed by an event. Re-walking it is therefore a publication, not a local write —
+  // which is also the honest product answer: a re-walk that stayed local would leave the
+  // team reading the version the submitter's push already invalidated. Refused here, in
+  // words, because the alternative was a raw `UNIQUE constraint failed` reaching the
+  // caller on the third step of the only lifecycle a walkthrough has.
+  if (author && foldOwnsWalkthrough(root, pr, author)) {
+    return {
+      error: `PR #${pr}'s walkthrough is already published, so re-walking it is a publication rather than a local write. `
+        + "Publish the new reading — `pr_walkthrough` does that as it writes.",
+    };
+  }
   const d = db(root);
   d.exec("BEGIN");
   try {
     d.prepare("DELETE FROM walkthroughs WHERE pr = ? AND source_scope IS NULL").run(String(pr));
     d.prepare("INSERT INTO walkthroughs(pr,author,body) VALUES(?,?,?)").run(
-      String(pr), actor?.principal ?? "",
+      String(pr), author,
       JSON.stringify({ walkthrough: w, actor: actor ?? { principal: "" }, eventId: "", at: w.at }),
     );
     d.exec("COMMIT");
+    return { ok: true };
   } catch (e) { d.exec("ROLLBACK"); throw e; }
+}
+
+/** Has this store PUBLISHED its reading of `pr` — i.e. is the row the fold's now? */
+export function foldOwnsWalkthrough(root: string, pr: string, principal: string): boolean {
+  if (!principal) return false;
+  return !!db(root).prepare(
+    "SELECT 1 FROM walkthroughs WHERE pr = ? AND author = ? AND source_scope IS NOT NULL",
+  ).get(String(pr), principal);
 }
 
 /**
@@ -1816,6 +1840,18 @@ export async function attributeLocalWalkthrough(root: string, pr: string, princi
   const row = d.prepare("SELECT body FROM walkthroughs WHERE pr = ? AND author = '' AND source_scope IS NULL")
     .get(String(pr)) as { body: string } | undefined;
   if (!row) return;
+  // Already published under this principal, so the unattributed row is this store's own
+  // pre-publication copy of the SAME reading — the fold never writes an empty author, so
+  // it can have come from nowhere else. Renaming it onto the published one violates the
+  // index; the published copy is the authoritative one, so the duplicate goes.
+  //
+  // Reachable on any store that published before the blob migration existed: the fold's
+  // row and the migrated row are one reading wearing two names, and nothing could pair
+  // them because adoption matches the author exactly.
+  if (foldOwnsWalkthrough(root, pr, principal)) {
+    d.prepare("DELETE FROM walkthroughs WHERE pr = ? AND author = '' AND source_scope IS NULL").run(String(pr));
+    return;
+  }
   let env: Record<string, unknown>;
   try { env = JSON.parse(row.body) as Record<string, unknown>; } catch { return; }
   env.actor = { principal };

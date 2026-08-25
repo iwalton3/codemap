@@ -175,6 +175,41 @@ test("the hand-off arc: a teammate reviews their own branch, the owner signs off
       );
     });
 
+    // 5b ------------------------------------------------------------------------
+    await step("the submitter pushes, and ben RE-walks — the ordinary next step", async () => {
+      // walk -> publish -> re-walk is the whole lifecycle, and the third step used to
+      // fail: publishing makes the row the fold's, and the local writer could neither
+      // delete it (wrong source_scope) nor insert beside it (unique index), so it
+      // surfaced a raw SQLite constraint error while the read-back kept answering with
+      // the old reading. Re-walking is not an edge case — it is what a pushed commit
+      // asks for, which is exactly when a walkthrough most needs replacing.
+      edit(ben, { "src/pay.ts": GUARDED.replace("payee required", "payee required (checked)") });
+      commit(ben, "tighten the payee message");
+      pushBranch(ben, BRANCH);
+      openPr(ben, PR, { branch: BRANCH });
+
+      const t = await pr(ben.repo, String(PR)) as any;
+      const ids: string[] = t.worklist.map((w: any) => w.id);
+      const again = await prWalkthroughSet(ben.repo, String(PR), [{
+        title: "Payee and amount validation",
+        summary: "re-walked after the push",
+        chapters: [{
+          title: "The guards",
+          blocks: [
+            { kind: "prose", text: "the message changed; the guard did not." },
+            ...ids.map((id) => ({ kind: "symbol" as const, anchorId: id })),
+          ],
+        }],
+      }], { by: "ben's agent" }) as any;
+      assert.equal(again.error, undefined, `re-walk rejected: ${JSON.stringify(again)}`);
+      assert.equal(again.republished, true, "the reading was already published, so re-walking it published again");
+
+      const stored = await prWalkthroughGet(ben.repo, String(PR)) as any;
+      assert.equal(stored.walkthrough.features[0].summary, "re-walked after the push",
+        "and the read-back is the NEW reading — the old failure rolled back silently");
+      assert.equal(stored.sharedBy, undefined, "still his own");
+    });
+
     // 6, 7 ----------------------------------------------------------------------
     await settled("ben hands off");
 
@@ -183,7 +218,7 @@ test("the hand-off arc: a teammate reviews their own branch, the owner signs off
       assert.equal(t3.error, undefined, `izzie could not open the PR: ${t3.error}`);
 
       const w = await sharedWalkthroughs(izzie.repo, PR, t3.refs.head) as any;
-      assert.equal(w.count, 1, "ben's walkthrough travelled");
+      assert.equal(w.count, 1, "ben's walkthrough travelled — ONE reading, re-walked, not two");
       assert.equal(w.current?.by, MATE, "and it is attributed to him");
       assert.equal(w.current?.walkthrough.features.length, 1);
 
@@ -204,6 +239,8 @@ test("the hand-off arc: a teammate reviews their own branch, the owner signs off
       // the attribution — one field meaning both is how a surface reports your own
       // walkthrough as somebody else's.
       assert.equal(story.walkthrough.by, "ben's agent");
+      assert.equal(story.walkthrough.features[0].summary, "re-walked after the push",
+        "and it is the re-walk she gets, not the reading the push invalidated");
 
       const his = await prStoryFor(ben.repo, String(PR)) as any;
       assert.equal(his.walkthrough.sharedBy, undefined, "his own reading is not labelled as somebody else's");
