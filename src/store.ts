@@ -28,6 +28,7 @@ import { needsHumanAck, type SharedBug } from "./shared-bugs.js";
 // Aliased: `shared-bugs` exports the same name for the same rule over the same
 // `Ratcheted` shape, and importing both unaliased is a redeclaration.
 import { needsHumanAck as findingNeedsAck, type SharedFinding } from "./shared-findings.js";
+import type { SharedNote, NoteKind } from "./shared-notes.js";
 import { IMPORTANCE_RANK, COMPLEXITY_RANK } from "./triage-rules.js";
 import { headCommit, currentBranch } from "./git.js";
 import { evalVersion, selectWinner, resolveNode, winningVersionAt } from "./doc-version.js";
@@ -1339,6 +1340,39 @@ export async function readFinding(
     );
   }
   return hydrate(rows[0]!.body, rows[0]!.pr, rows[0]!.source_scope);
+}
+
+/**
+ * The team's notes, across every bucket of one universe.
+ *
+ * Reads the PROJECTION, never the log. `notesForTarget` folds one bucket because a
+ * write path needs the freshest state at the moment it appends; a query path must not,
+ * and folding all 256 buckets to answer "what questions are open" is exactly the
+ * NDJSON-on-a-read that `sharedSync`'s materialization exists to have ended.
+ *
+ * Rows can therefore be behind a log nobody has synced. That is the same contract every
+ * other canonical read has, and the honest one: a note nobody pulled is a note this
+ * machine has not been told about.
+ */
+export async function readSharedNotes(
+  root: string, universe: string, opts: { kind?: NoteKind; targetId?: string; id?: string } = {},
+): Promise<SharedNote[]> {
+  // The scope prefix is the universe filter. `notes/<universe>/<bucket>` — anchored with
+  // the trailing slash so `acme/api` cannot match `acme/api-legacy`.
+  const args: unknown[] = [`notes/${universe}/%`];
+  let sql = "SELECT body FROM shared_note WHERE scope LIKE ?";
+  if (opts.kind) { sql += " AND kind = ?"; args.push(opts.kind); }
+  if (opts.targetId) { sql += " AND target_id = ?"; args.push(opts.targetId); }
+  // For a single-id lookup: without it, resolving one note hydrates every note blob in
+  // the universe to find it.
+  if (opts.id) { sql += " AND id = ?"; args.push(opts.id); }
+  const out: SharedNote[] = [];
+  for (const r of db(root).prepare(sql + " ORDER BY created_at, id").all(...args as []) as unknown as { body: string }[]) {
+    // A row this build cannot parse is not a reason to fail every note read — the
+    // rule `readFindings` follows, for the same reason.
+    try { out.push(JSON.parse(r.body) as SharedNote); } catch { /* skip */ }
+  }
+  return out;
 }
 
 const findingRow = (f: SharedFinding, pr: string): unknown[] => [

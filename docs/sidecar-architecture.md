@@ -311,6 +311,12 @@ the contest design is tuned against.
   (`bugs`, not `shared_bug`). Findings and notes still have their own tables. Notes keep
   theirs — symbol-scoped knowledge that outlives a branch is a different entity, not a
   parallel copy of one. Findings do not: `docs/plan-findings-unification.md`.
+
+  That decision is about the TABLE and was never about the reads, which is how notes
+  stayed one-directional long after it was settled. The note store also still holds 96
+  `kind:"finding"` rows on the primary universe, mirrored by `annotate` before the create
+  tap shut; the note surfaces exclude them and say how many, because a finding rendered as
+  a note is one without a pull request, a tier or a thread beside the copy that has them.
 - ~~**Bugs and triage are still local.**~~ **Both now travel.** Triage:
   `docs/shared-triage.md`. Bugs: `bugs/<universe>`, on the finding lifecycle, with a
   grow-only citation set and a per-system tracking reference — and a `bugs` table where
@@ -319,6 +325,12 @@ the contest design is tuned against.
 - ~~**Findings never write through.**~~ **FIXED** (`34c0caa`). All thirteen finding write
   ops now append and then materialize their scope. `retireSharedDoc` still has the
   gap — docs, not findings.
+- ~~**Notes never write through, and the mirror is one-directional.**~~ **FIXED.**
+  `mirrorNote` and `mirrorNoteResolved` materialize the target's bucket, and the reads
+  merge: `questions` lists the team's, `resolve_question` dispatches on the record, and
+  `get_anchor` carries `sharedNotes`. The agent gate stays where it is — `foldNotes`
+  drops a `note.resolved` from an agent, so an agent closes its own LOCAL question and is
+  told the shared copy is still open, rather than being handed an event no reader honors.
 - **Edges never sync**, so `process` and `step` docs are refused at publish and at the
   fold. A flow cannot be shared. Deliberate (`1322e6c`): syncing one without its edges
   renders an empty flow under a teammate's name, which is worse than absence.

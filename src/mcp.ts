@@ -844,7 +844,7 @@ const tools: Tool[] = [
   },
   {
     name: "resolve_question",
-    description: "Close out a review QUESTION (or re-open with resolved:false) once you've answered it by improving the documentation.\n\nQuestions only. Reporting on a finding and agreeing it is closed are different acts — use `close_finding` to say what you did and what you found; the human closes it after reading.",
+    description: "Close out a review QUESTION (or re-open with resolved:false) once you've answered it by improving the documentation.\n\nQuestions only. Reporting on a finding and agreeing it is closed are different acts — use `close_finding` to say what you did and what you found; the human closes it after reading.\n\nDispatches on the record. Your own question closes here AND on the team's copy — except from an agent, which closes the local one and is told the shared copy is still open, because settling a question for everybody is a person's act. A teammate's question (`shared:true` in `questions`) has no local copy at all, so an agent is refused outright: `answer_shared_note` is the tool for that.",
     inputSchema: obj({ id: { type: "string" }, resolved: { type: "boolean" } }, ["id"]),
     mutates: true,
     handler: (a, c) => ops.resolveAnnotation(c.universe.path, a.id, a.resolved !== false, { actor: "agent" }),

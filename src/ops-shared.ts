@@ -42,7 +42,7 @@ export { sharedKnowsNode, docsVerdict, type DocsVerdict } from "./docs-lookup.js
 import { docsVerdict } from "./docs-lookup.js";
 import { queueContestedTriage } from "./ops/triage.js";
 export { mirrorTriage, mirrorTriageBatch, mirrorTriageClear } from "./triage-publish.js";
-import { readAnnotations, readAnchorStore, readFindings, loadNodes, loadNodeVersions, nodeIdsWithPublishableVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets, attributeLocalWalkthrough } from "./store.js";
+import { readSharedNotes, readAnnotations, readAnchorStore, readFindings, loadNodes, loadNodeVersions, nodeIdsWithPublishableVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets, attributeLocalWalkthrough } from "./store.js";
 import {
   publishDocVersion, acceptDocHash, resolveDoc, foldDocs, docScope,
   type NewDocVersion,
@@ -849,11 +849,24 @@ export async function inboundReplies(root: string, pr: number | string, opts: { 
 export async function sharedNotes(root: string, targetId: string) {
   const cfg = resolveSidecar(root);
   if (!cfg) return { error: NO_SIDECAR };
-  const { notes, ...scope } = await cachedNotes(root, cfg, targetId);
+  const { notes: all, ...scope } = await cachedNotes(root, cfg, targetId);
+  // A FINDING IS NOT A NOTE. `annotate(kind:"finding")` used to mirror one into this
+  // store, so the note log still carries them — 96 of them on the primary universe, 45
+  // of which are also rows in `findings`. Listing those here renders the same finding
+  // twice on an anchor (once as a note, once as a finding) and puts the copy with no
+  // pull request, no tier and no thread beside the one that has them. `report_defect`
+  // is the only door now; these are history, and history is not a second surface.
+  const notes = all.filter((n) => n.kind !== "finding");
+  const legacyFindings = all.length - notes.length;
   return {
     scope: nonAuthoritative(scope),
     universe: cfg.universe,
     target: targetId,
+    // Said out loud rather than dropped silently: `shared_notes` returning fewer rows
+    // than the log holds is exactly the shape somebody debugs from the wrong end.
+    ...(legacyFindings
+      ? { legacyFindings, note: `${legacyFindings} finding(s) mirrored into the note store before findings were canonical are not listed — read them with \`shared_findings\` or \`findings\`` }
+      : {}),
     notes: notes.map((n) => ({
       id: n.id, kind: n.kind, text: n.text, severity: n.severity, category: n.category, line: n.line,
       by: n.author.principal, model: n.author.via?.model, at: n.createdAt,
@@ -874,11 +887,29 @@ export async function answerSharedNote(root: string, targetId: string, id: strin
   return { ok: true, id };
 }
 
+/**
+ * Close (or re-open) a shared note.
+ *
+ * The refusal covers BOTH directions, because `foldNotes` does: it drops any
+ * `note.resolved` from an agent actor, resolved or not. Refusing only the close left
+ * re-opening as an append the op answered `{ok:true}` for and every reader ignored —
+ * the silent no-op `mustExist` exists to end on the finding side.
+ *
+ * The rule itself lives in the fold and stays there, because a write-time check only
+ * ever protects the honest writer. `resolve_question` deliberately lets an agent close
+ * its own LOCAL question (`26a61d6`) — that is this machine's record, not the team's —
+ * and `resolveAnnotation` says the shared copy is still open rather than leaving the
+ * two to differ quietly.
+ */
 export async function resolveSharedNote(root: string, targetId: string, id: string, resolved: boolean, reason?: string) {
   const b = bind(root);
   if ("error" in b) return b;
-  if (isAgentActor(b.actor) && resolved) {
-    return { error: "an agent may answer a question, not declare it settled — reply instead and let a person close it" };
+  if (isAgentActor(b.actor)) {
+    return {
+      error: resolved
+        ? "an agent may answer a question, not declare it settled — reply instead and let a person close it"
+        : "an agent may not re-open the team's note either — the fold ignores both, so this would look like it worked",
+    };
   }
   await resolveNote(b.cfg.path, b.cfg.universe, targetId, b.actor, id, resolved, reason);
   return { ok: true, id, resolved };

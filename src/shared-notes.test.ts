@@ -13,6 +13,7 @@ import {
 } from "./shared-notes.js";
 import * as shared from "./ops-shared.js";
 import { annotate } from "./ops.js";
+import { resolveSidecar } from "./sidecar-config.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
 const dana: Actor = { principal: "dana@x.com" };
@@ -114,6 +115,15 @@ function universe() {
   writeFileSync(join(root, ".codemap", "sidecar"), side, "utf8");
   return { root, side, cleanup: () => [root, side].forEach((r) => rmSync(r, { recursive: true, force: true })) };
 }
+
+/**
+ * The universe key this store will actually use.
+ *
+ * `universe()` gives the repo no git remote, so `universeKey` takes its directory-name
+ * fallback — a literal here would write the teammate's note into a universe no read of
+ * this store ever looks at, and the test would pass for the wrong reason.
+ */
+const uKey = (root: string): string => resolveSidecar(root)!.universe;
 
 test("no sidecar configured is not an error — mirroring is additive", async () => {
   const root = tmp("bare");
@@ -284,5 +294,240 @@ test("a retired doc's tombstone carries the evidence its claim rests on", async 
     assert.ok(tomb, "retiring writes a tombstone version");
     assert.ok(tomb.citations[0]!.acceptedHashes.length > 0,
       "the tombstone must not empty the set — that is the only evidence it could resolve the id");
+  } finally { u.cleanup(); }
+});
+
+// --- the queue is the TEAM's, not this machine's ----------------------------------
+
+/**
+ * `questions` called itself "the 'answer these to improve the docs' queue" and listed
+ * only what this machine wrote. A teammate's question was therefore one that nobody on
+ * any other machine was ever shown — on the single surface whose whole job is not to
+ * lose it. Docs, bugs, findings, triage and walkthroughs all went canonical; notes were
+ * the last kind whose reads stopped at the local store.
+ */
+test("a teammate's question is in the queue, and says whose it is", async () => {
+  const u = universe();
+  try {
+    const { init, listQuestions } = await import("./ops.js");
+    mkdirSync(join(u.root, "src"), { recursive: true });
+    writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+    await init(u.root);
+    const id = await createNote(u.side, uKey(u.root), dana, { ...NEW, kind: "question", text: "why is the retry not idempotent?" });
+    // Fold it the way a read does — the projection is what a query path is allowed
+    // to consult, and `allNotes` folding 256 buckets is exactly what it may not do.
+    await shared.sharedNotes(u.root, "a_1");
+
+    const q = await listQuestions(u.root) as {
+      total: number; open: number;
+      questions: { id: string; text: string; author: string; shared: boolean }[];
+    };
+    assert.equal(q.total, 1, "the team's question is in the queue");
+    assert.equal(q.open, 1);
+    assert.equal(q.questions[0]!.id, id);
+    assert.equal(q.questions[0]!.author, "dana@x.com", "attributed to whoever asked");
+    assert.equal(q.questions[0]!.shared, true, "and marked as the team's, not this machine's");
+  } finally { u.cleanup(); }
+});
+
+/** One question in two stores is ONE question — the mirror must not double the queue. */
+test("a mirrored question is listed once, not twice", async () => {
+  const u = universe();
+  try {
+    const { init, annotate: ann, listQuestions } = await import("./ops.js");
+    mkdirSync(join(u.root, "src"), { recursive: true });
+    writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+    await init(u.root);
+    const { readAnchorStore } = await import("./store.js");
+    const anchorId = (await readAnchorStore(u.root)).anchors[0]!.id;
+    const r = await ann(u.root, {
+      targetKind: "anchor", targetId: anchorId, text: "does this retry ever double-charge?",
+      kind: "question", author: "izzie",
+    }) as { id: string; shared?: boolean };
+    assert.equal(r.shared, true, "it did reach the sidecar — otherwise this proves nothing");
+    await shared.sharedNotes(u.root, anchorId);
+
+    const q = await listQuestions(u.root) as { total: number; questions: { id: string; shared: boolean }[] };
+    assert.equal(q.total, 1, "the local row and its mirror are one question");
+    assert.equal(q.questions[0]!.id, r.id);
+    assert.equal(q.questions[0]!.shared, false, "the local copy wins — it is the one this store can close");
+  } finally { u.cleanup(); }
+});
+
+/**
+ * Closing a mirrored question used to write one store. The team's copy stayed open
+ * forever, and `questions` on anybody else's machine kept listing an answered question
+ * with nothing able to say it had been answered.
+ */
+test("a person closing a mirrored question closes the team's copy too", async () => {
+  const u = universe();
+  try {
+    const { init, annotate: ann, resolveAnnotation } = await import("./ops.js");
+    mkdirSync(join(u.root, "src"), { recursive: true });
+    writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+    await init(u.root);
+    const { readAnchorStore } = await import("./store.js");
+    const anchorId = (await readAnchorStore(u.root)).anchors[0]!.id;
+    const r = await ann(u.root, {
+      targetKind: "anchor", targetId: anchorId, text: "is the retry idempotent?", kind: "question", author: "izzie",
+    }) as { id: string };
+
+    const out = await resolveAnnotation(u.root, r.id, true) as { ok: true; shared?: boolean };
+    assert.equal(out.shared, true, "the resolution reached the sidecar");
+
+    const team = await shared.sharedNotes(u.root, anchorId) as { notes: { id: string; resolved?: unknown }[] };
+    assert.ok(team.notes.find((n) => n.id === r.id)!.resolved, "and the team's copy is closed");
+  } finally { u.cleanup(); }
+});
+
+/**
+ * And an agent's close does NOT travel — but is not silent about it.
+ *
+ * `foldNotes` drops a `note.resolved` from an agent actor outright, so mirroring one
+ * would append an event every reader ignores and report it as shared. Closing its own
+ * local question is deliberate (`26a61d6`); closing it for the team is a person's act.
+ */
+test("an agent closes its own question locally and is told the team's is still open", async () => {
+  const u = universe();
+  try {
+    const { init, annotate: ann, resolveAnnotation } = await import("./ops.js");
+    mkdirSync(join(u.root, "src"), { recursive: true });
+    writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+    await init(u.root);
+    const { readAnchorStore } = await import("./store.js");
+    const anchorId = (await readAnchorStore(u.root)).anchors[0]!.id;
+    const r = await ann(u.root, {
+      targetKind: "anchor", targetId: anchorId, text: "which branch owns this?", kind: "question", author: "izzie",
+    }) as { id: string };
+
+    process.env.CODEMAP_AGENT_MODEL = "claude-opus-5";
+    let out: { ok?: true; shared?: boolean; sharedNote?: string };
+    try {
+      out = await resolveAnnotation(u.root, r.id, true, { actor: "agent" }) as typeof out;
+    } finally { delete process.env.CODEMAP_AGENT_MODEL; }
+    assert.ok(out!.ok, "the local close still works — that is the loop resolve_question exists for");
+    assert.equal(out!.shared, undefined, "it did not claim to share it");
+    assert.match(out!.sharedNote ?? "", /still open for the team/);
+
+    const team = await shared.sharedNotes(u.root, anchorId) as { notes: { id: string; resolved?: unknown }[] };
+    assert.equal(team.notes.find((n) => n.id === r.id)!.resolved, undefined, "and it genuinely is still open");
+  } finally { u.cleanup(); }
+});
+
+/** A teammate's question has no local row to close, so an agent is refused outright. */
+test("an agent may not close the team's question, and is told what it can do", async () => {
+  const u = universe();
+  try {
+    const { resolveAnnotation } = await import("./ops.js");
+    const id = await createNote(u.side, uKey(u.root), dana, { ...NEW, kind: "question", text: "whose is this?" });
+    await shared.sharedNotes(u.root, "a_1");
+    process.env.CODEMAP_AGENT_MODEL = "claude-opus-5";
+    try {
+      const r = await resolveAnnotation(u.root, id, true, { actor: "agent" }) as { error: string };
+      assert.match(r.error, /the team's question/);
+      assert.match(r.error, /answer_shared_note/, "and it names the tool that IS allowed");
+    } finally { delete process.env.CODEMAP_AGENT_MODEL; }
+  } finally { u.cleanup(); }
+});
+
+/** A person can close it, which is the whole point of the queue listing it. */
+test("a person closes the team's question through the same tool", async () => {
+  const u = universe();
+  try {
+    const { init, resolveAnnotation, listQuestions } = await import("./ops.js");
+    mkdirSync(join(u.root, "src"), { recursive: true });
+    writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+    await init(u.root);
+    const id = await createNote(u.side, uKey(u.root), dana, { ...NEW, kind: "question", text: "whose is this?" });
+    await shared.sharedNotes(u.root, "a_1");
+
+    const r = await resolveAnnotation(u.root, id, true) as { ok?: true; shared?: boolean; error?: string };
+    assert.ok(r.ok, r.error ?? "");
+    assert.equal(r.shared, true);
+    assert.equal((await listQuestions(u.root) as { open: number }).open, 0, "and it leaves the queue");
+  } finally { u.cleanup(); }
+});
+
+/** An id in neither store still says which nothing it is. */
+test("an id in neither store is still an unknown annotation", async () => {
+  const u = universe();
+  try {
+    const { resolveAnnotation } = await import("./ops.js");
+    const r = await resolveAnnotation(u.root, "note_nope", true) as { error: string };
+    assert.match(r.error, /no annotation "note_nope"/);
+  } finally { u.cleanup(); }
+});
+
+/**
+ * A FINDING IS NOT A NOTE.
+ *
+ * `annotate(kind:"finding")` used to mirror one into the note store, so the note log
+ * still carries them — 96 on the primary universe, 45 of which are also rows in
+ * `findings`. Listing those here renders one finding twice on an anchor: once as a note
+ * with no pull request, tier or thread, and once as the finding that has them.
+ */
+test("findings mirrored into the note store before they were canonical are not notes", async () => {
+  const u = universe();
+  try {
+    const key = uKey(u.root);
+    await createNote(u.side, key, izzie, { ...NEW, kind: "note", text: "the real note" });
+    await createNote(u.side, key, izzie, { ...NEW, kind: "finding", text: "a pre-canonical finding" });
+
+    const out = await shared.sharedNotes(u.root, "a_1") as
+      { notes: { kind: string }[]; legacyFindings?: number; note?: string };
+    assert.deepEqual(out.notes.map((n) => n.kind), ["note"], "the finding is not listed as a note");
+    assert.equal(out.legacyFindings, 1, "but the reader is TOLD, not silently shown fewer rows");
+    assert.match(out.note ?? "", /shared_findings/, "and told where they actually live");
+  } finally { u.cleanup(); }
+});
+
+/**
+ * `get_anchor` merged teammates' DOCS and returned local annotations only, so a
+ * colleague's note on the very symbol being read was one navigation away, on a surface
+ * nothing in the reply pointed at. The web anchor page had shown them for months.
+ */
+test("get_anchor carries the team's notes about the symbol", async () => {
+  const u = universe();
+  try {
+    const { init, getAnchor } = await import("./ops.js");
+    mkdirSync(join(u.root, "src"), { recursive: true });
+    writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+    await init(u.root);
+    const { readAnchorStore } = await import("./store.js");
+    const anchorId = (await readAnchorStore(u.root)).anchors[0]!.id;
+
+    const key = uKey(u.root);
+    await createNote(u.side, key, dana, {
+      targetKind: "anchor", targetId: anchorId, kind: "note", text: "the retry here is not idempotent",
+    });
+    await createNote(u.side, key, dana, {
+      targetKind: "anchor", targetId: anchorId, kind: "finding", text: "a pre-canonical finding",
+    });
+    await shared.sharedNotes(u.root, anchorId);
+
+    const a = await getAnchor(u.root, anchorId) as
+      { sharedNotes?: { text: string; by: string; kind: string }[] };
+    assert.equal(a.sharedNotes?.length, 1, "the note, and not the pre-canonical finding beside it");
+    assert.match(a.sharedNotes![0]!.text, /not idempotent/);
+    assert.equal(a.sharedNotes![0]!.by, "dana@x.com", "and whose it is");
+  } finally { u.cleanup(); }
+});
+
+/** A note this machine wrote is already in `annotations` — `sharedNotes` must not double it. */
+test("get_anchor does not list your own note twice", async () => {
+  const u = universe();
+  try {
+    const { init, annotate: ann, getAnchor } = await import("./ops.js");
+    mkdirSync(join(u.root, "src"), { recursive: true });
+    writeFileSync(join(u.root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+    await init(u.root);
+    const { readAnchorStore } = await import("./store.js");
+    const anchorId = (await readAnchorStore(u.root)).anchors[0]!.id;
+    await ann(u.root, { targetKind: "anchor", targetId: anchorId, text: "mine", kind: "note", author: "izzie" });
+
+    const a = await getAnchor(u.root, anchorId) as
+      { annotations: unknown[]; sharedNotes?: unknown[] };
+    assert.equal(a.annotations.length, 1);
+    assert.equal(a.sharedNotes, undefined, "the mirror of your own note is not a second note");
   } finally { u.cleanup(); }
 });

@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { type Actor, type Anchor, type LogicalNode, type BugSeverity, type Annotation, type Disposition, DISPOSITIONS, COMMENT_MAX } from "../schema.js";
 import { indexFile, indexBlob } from "../repo.js";
 import { headCommit, readBlobs } from "../git.js";
-import { readAnchorStore, loadNodes, readAnnotations, writeAnnotations, readFindings, readFinding, writeLocalFinding, findAnchorsOutsideWork, readPushes, bodyHashAt, readOrphans } from "../store.js";
+import { readAnchorStore, loadNodes, readAnnotations, writeAnnotations, readFindings, readFinding, writeLocalFinding, findAnchorsOutsideWork, readPushes, bodyHashAt, readOrphans, readSharedNotes } from "../store.js";
+import { resolveSidecar } from "../sidecar-config.js";
 import {
   findingTier, isClosed, mayTransition, needsHumanAck,
   type Ask, type FindingState, type FindingTier, type Remediation, type SharedFinding, type Verdict,
@@ -309,13 +310,67 @@ export async function resolveAnnotation(
 ) {
   const annStore = await readAnnotations(root);
   const ann = annStore.annotations.find((a) => a.id === id);
-  if (!ann) return { error: `no annotation "${id}"` };
-  if (opts.actor === "agent" && (ann.kind ?? "note") !== "question") {
-    return { error: `\`${id}\` is a ${ann.kind ?? "note"}, not a question — reporting on it and agreeing it is closed are different acts. Use \`close_finding\` to say what you did; the human closes it after reading.` };
+  // DISPATCH ON THE RECORD, the rule the finding tools already follow. An id with no
+  // local annotation is not necessarily unknown: a teammate's question lives only in
+  // `shared_note`, and refusing it here is what made `questions` a queue with items
+  // nobody could close.
+  if (!ann) return resolveSharedAnnotation(root, id, resolved, opts);
+  const kind = ann.kind ?? "note";
+  if (opts.actor === "agent" && kind !== "question") {
+    return { error: `\`${id}\` is a ${kind}, not a question — reporting on it and agreeing it is closed are different acts. Use \`close_finding\` to say what you did; the human closes it after reading.` };
   }
   ann.resolved = resolved;
   await writeAnnotations(root, annStore.annotations);
-  return { ok: true, id, resolved, target: ann.target };
+
+  // The twin. `annotate` mirrors every note it writes, so a question the team can see
+  // has a local annotation AND a `shared_note` row under one id — and closing one store
+  // left the other open for everybody else, permanently, with no surface saying so.
+  // Local first and never conditional on it: the write above has already succeeded.
+  //
+  // NOT for an agent. `foldNotes` drops a `note.resolved` from an agent actor outright,
+  // so mirroring one would append an event every reader ignores and report it as shared.
+  // An agent closing its own local question is deliberate (`26a61d6`); closing it for
+  // the team is a person's act. So the divergence is REPORTED instead — the thing this
+  // codebase prefers to a quiet no-op every time it has had to choose.
+  const { mirrorNoteResolved } = await import("../notes-publish.js");
+  const mirrored = opts.actor === "agent"
+    ? { shared: false as const, blocked: true }
+    : { ...(await mirrorNoteResolved(root, ann.target.id, id, resolved).catch(() => ({ shared: false }))), blocked: false };
+  return {
+    ok: true, id, resolved, target: ann.target,
+    ...(mirrored.shared ? { shared: true } : {}),
+    ...(mirrored.blocked
+      ? { sharedNote: "still open for the team — an agent may answer a question, not settle it for everyone. A person closes the shared copy." }
+      : {}),
+  };
+}
+
+/**
+ * Close a record that exists only on the sidecar — a teammate's.
+ *
+ * Separate from the local path rather than folded into it because the two differ in
+ * what they may refuse: there is no local row to consult for `kind`, so the kind comes
+ * from the shared record, and an id in neither store has to say which nothing it is.
+ */
+async function resolveSharedAnnotation(
+  root: string, id: string, resolved: boolean, opts: { actor?: "human" | "agent" },
+) {
+  const cfg = resolveSidecar(root);
+  if (!cfg) return { error: `no annotation "${id}"` };
+  const note = (await readSharedNotes(root, cfg.universe, { id }))[0];
+  if (!note) return { error: `no annotation "${id}"` };
+  // The fold's rule, stated at the write path because the fold would DROP the event
+  // either way and a silent no-op is the worse answer. There is no local copy to close
+  // as a consolation here — this record is only the team's.
+  if (opts.actor === "agent") {
+    return { error: `${id} is the team's ${note.kind} — an agent may answer one, not settle it for everyone. Reply with \`answer_shared_note\` and let a person close it.` };
+  }
+  const { mirrorNoteResolved } = await import("../notes-publish.js");
+  const mirrored = await mirrorNoteResolved(root, note.target.id, id, resolved);
+  if (!mirrored.shared) {
+    return { error: `${id} is the team's question and this store cannot write to the sidecar — check the sidecar path and your identity` };
+  }
+  return { ok: true, id, resolved, target: note.target, shared: true };
 }
 
 /**
@@ -1218,20 +1273,42 @@ export async function closeAssignment(
  * improve the docs" queue. Each is resolved to its target's title/symbol + a link.
  */
 export async function listQuestions(root: string, opts: { includeResolved?: boolean } = {}) {
-  const [annStore, nodes, store] = await Promise.all([readAnnotations(root), loadNodesShared(root), readAnchorStore(root)]);
+  const cfg = resolveSidecar(root);
+  const [annStore, nodes, store, shared] = await Promise.all([
+    readAnnotations(root), loadNodesShared(root), readAnchorStore(root),
+    // The team's, from the canonical projection. This queue called itself "the
+    // 'answer these to improve the docs' queue" and listed only questions THIS machine
+    // wrote — so a teammate's question was one nobody on any other machine was ever
+    // shown, on the one surface whose whole job is not to lose it.
+    cfg ? readSharedNotes(root, cfg.universe, { kind: "question" }) : Promise.resolve([]),
+  ]);
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
   const anchorById = new Map(store.anchors.map((a) => [a.id, a]));
-  const qs = annStore.annotations.filter((a) => a.kind === "question" && (opts.includeResolved || !a.resolved));
+  const labelOf = (target: { kind: "anchor" | "node"; id: string }): string => {
+    const t = target.kind === "node" ? nodeById.get(target.id) : anchorById.get(target.id);
+    return target.kind === "node"
+      ? (t as LogicalNode | undefined)?.title ?? target.id
+      : (t as Anchor | undefined)?.symbolPath.join(" › ") ?? target.id;
+  };
+
+  // A mirrored question is ONE question in two stores under one id, so the local row
+  // wins and the shared one is dropped rather than listed twice. `resolveAnnotation`
+  // now writes both, so which copy answered here does not change what closing it does.
+  const localIds = new Set(annStore.annotations.map((a) => a.id));
+  const mine = annStore.annotations
+    .filter((a) => a.kind === "question")
+    .map((a) => ({ id: a.id, text: a.text, author: a.author, resolved: !!a.resolved, target: a.target, shared: false }));
+  const theirs = shared
+    .filter((n) => !localIds.has(n.id))
+    .map((n) => ({
+      id: n.id, text: n.text, author: n.author.principal, resolved: !!n.resolved,
+      target: n.target, shared: true,
+    }));
+  const all = [...mine, ...theirs].filter((q) => opts.includeResolved || !q.resolved);
   return {
-    total: qs.length,
-    open: qs.filter((q) => !q.resolved).length,
-    questions: qs.map((q) => {
-      const t = q.target.kind === "node" ? nodeById.get(q.target.id) : anchorById.get(q.target.id);
-      const label = q.target.kind === "node"
-        ? (t as LogicalNode | undefined)?.title ?? q.target.id
-        : (t as Anchor | undefined)?.symbolPath.join(" › ") ?? q.target.id;
-      return { id: q.id, text: q.text, author: q.author, resolved: !!q.resolved, target: q.target, targetLabel: label };
-    }),
+    total: all.length,
+    open: all.filter((q) => !q.resolved).length,
+    questions: all.map((q) => ({ ...q, targetLabel: labelOf(q.target) })),
   };
 }
 

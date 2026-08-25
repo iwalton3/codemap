@@ -362,19 +362,51 @@ blocks what.
    pushed still has replies to read, and demanding a sidecar for them was the split
    showing through.
 
-2. **Notes are the last parallel table** (`shared_note`), and the mirror is
-   ONE-DIRECTIONAL: `mirrorNote` pushes a new annotation into the log, and nothing folds
-   a teammate's note back. So `questions` — the tool that calls itself "the 'answer these
-   to improve the docs' queue" — cannot see a teammate's question, `resolve_question`
-   cannot close one, and `get_anchor` returns local annotations only while the same
-   function already merges teammates' DOCS. Docs, bugs, findings, triage and walkthroughs
-   all went canonical; notes did not.
+2. ~~**Notes are the last parallel table, and the mirror is one-directional.**~~ DONE for
+   the READS and the writes; the storage layout is deliberately unchanged, and
+   `docs/sidecar-architecture.md` is why — it settles that notes keep their own table
+   ("symbol-scoped knowledge that outlives a branch is a different entity"). What was
+   actually broken was the direction, not the table:
+
+   - `questions` merges the team's (`readSharedNotes`, the projection — never a fold of
+     256 buckets on a read), dedupes a mirrored question to one row, and marks whose is
+     whose with `shared`.
+   - `resolve_question` dispatches on the record. A mirrored question closes on BOTH
+     copies; a teammate's, which has no local copy, closes on the sidecar.
+   - `get_anchor` carries `sharedNotes`, the way it already carried `sharedDocs`. The web
+     anchor page had shown them for months; the MCP surface had not.
+
+   Three things the item did not say, all found by building it:
+
+   - **The agent gate is in the FOLD.** `foldNotes` drops any `note.resolved` from an
+     agent actor. Relaxing the op to match `resolve_question`'s deliberate "an agent may
+     close a question" (`26a61d6`) would have appended an event every reader ignores and
+     reported it as shared — the silent no-op this plan spent a session removing. So an
+     agent closes its own LOCAL question and is TOLD the team's is still open. The
+     shared refusal now also covers re-opening, which the fold drops and the op used to
+     answer `{ok:true}` for.
+   - **Notes never wrote through.** `mirrorNote` appended and returned, so the row
+     appeared only when something else folded — and every canonical reader queries SQLite.
+     Findings were fixed for this in `34c0caa`; notes were the last kind that skipped it.
+   - **The note store holds 96 findings** on the primary universe (45 also rows in
+     `findings`, 36 anchors that rendered the same finding twice — once as a note with no
+     PR, tier or thread, once as the finding that has them). `annotate(kind:"finding")`
+     mirrored them before the tap shut. `shared_notes` and `get_anchor` no longer list
+     them and say how many they left out. See (4a).
 
 3. **Pointers still ride the annotation machinery.** They are a legitimate kind — a
    review aid is not a defect and should not be one — but they are now the only thing
    `annotate` still writes at volume, on a store that the rest of the system has moved
    off. Worth an audit of what actually reads them and whether that path still has an
    owner, before it becomes the next thing that quietly holds half a picture.
+
+4a. **51 findings are published as NOTES and are in no findings surface.** Measured on
+   `Acme.API`: of the 96 `kind:"finding"` rows in the note log, 45 are also rows in
+   `findings` and 51 are not — they are the local annotations `migrate-findings` reported
+   as "unplaced, a person must assign a PR". So the team can already see them, as notes,
+   while every findings surface calls them local-only. Excluding them from the notes
+   surfaces (done) stops the double-render; it does not give them a home. That is a data
+   decision for a person: assign each a pull request, or accept them as history.
 
 4. **`shared_finding` is still created and never used.** `db.ts` says three lines above
    it, about `shared_walkthrough`: "a table nothing writes is a table somebody reads by

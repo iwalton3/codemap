@@ -264,6 +264,33 @@ export async function context(root: string, refs: string[]) {
   };
 }
 
+/**
+ * A teammate's notes on one target, or nothing at all.
+ *
+ * Dynamic import and a swallowed failure, like `docsVerdict` above: the agnostic core
+ * does not depend on the sidecar, and a shared store that is missing or unreadable must
+ * not fail a local read that worked before shared notes existed.
+ */
+async function sharedNotesOn(
+  root: string, targetId: string, localIds: Set<string>,
+): Promise<{ sharedNotes?: { id: string; kind: string; text: string; by: string; at: string; resolved: boolean }[] }> {
+  try {
+    const { resolveSidecar } = await import("../sidecar-config.js");
+    const cfg = resolveSidecar(root);
+    if (!cfg) return {};
+    const { readSharedNotes } = await import("../store.js");
+    const notes = (await readSharedNotes(root, cfg.universe, { targetId }))
+      .filter((n) => n.kind !== "finding" && !localIds.has(n.id));
+    if (!notes.length) return {};
+    return {
+      sharedNotes: notes.map((n) => ({
+        id: n.id, kind: n.kind, text: n.text,
+        by: n.author.principal, at: n.createdAt, resolved: !!n.resolved,
+      })),
+    };
+  } catch { return {}; }
+}
+
 export async function getAnchor(root: string, id: string) {
   // One fold, not two. `loadNodesShared` already calls `docsVerdict`, so asking for
   // the verdict separately folded the scope twice on the hottest drill-down path.
@@ -353,6 +380,17 @@ export async function getAnchor(root: string, id: string) {
       ? { sharedScope: { status: anchorVerdict.status, diagnostic: anchorVerdict.diagnostic } } : {}),
     bugs: bugStore.bugs.filter((b) => citedAnchors(b).includes(id)).map((b) => ({ id: b.id, title: b.title, state: b.state })),
     annotations: annStore.annotations.filter((a) => a.target.kind === "anchor" && a.target.id === id),
+    // The team's notes about this symbol, the way `sharedDocs` above carries the team's
+    // docs. This read merged teammates' DOCS and returned local annotations only, so a
+    // colleague's note on the very symbol being read was one navigation away on a
+    // surface nothing pointed at. Separate from `annotations` for the reason
+    // `sharedDocs` is separate from `citedBy`: merging them makes "who says so"
+    // unanswerable from the reply.
+    //
+    // A mirrored note is one note under one id, so this drops what `annotations`
+    // already carries. Findings are excluded outright — they are rows in `findings`
+    // below, and the note store still holds pre-canonical copies of them.
+    ...(await sharedNotesOn(root, id, new Set(annStore.annotations.map((a) => a.id)))),
     // Findings are rows, not annotations, so without this an anchor's page showed
     // notes and questions about it and none of the findings raised against it.
     findings: (await readFindings(root)).findings
