@@ -276,8 +276,7 @@ class SharedPage extends Component {
    * @returns {[string, Finding[]][]}
    */
   groups() {
-    const d = this.state.d;
-    const rows = (d && !('error' in d) && d.findings) || [];
+    const rows = (this.state.d && this.state.d.findings) || [];
     const of = (t) => rows.filter(f => f.tier === t);
     return /** @type {[string, Finding[]][]} */ ([
       ['confirmed — somebody stood behind these', of('confirmed')],
@@ -291,7 +290,9 @@ class SharedPage extends Component {
     const failed = taskError(this.load);
     if (failed) return pageShell(null, failed, html``);
     if (!d) return html`<main><div class="loading">loading shared findings…</div></main>`;
-    if (d.error) return pageShell(d, d.error, html``);
+    // No error arm any more: reading a pull request's findings works without a sidecar,
+    // so the only failure left is the request itself, which `taskError` has above. The
+    // ApiMap union is what caught this branch going dead.
     const settled = d.findings.filter(f => f.tier === 'settled');
     return pageShell(d, null, html`
       <div class="crumbs">

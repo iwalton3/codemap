@@ -42,7 +42,7 @@ export { sharedKnowsNode, docsVerdict, type DocsVerdict } from "./docs-lookup.js
 import { docsVerdict } from "./docs-lookup.js";
 import { queueContestedTriage } from "./ops/triage.js";
 export { mirrorTriage, mirrorTriageBatch, mirrorTriageClear } from "./triage-publish.js";
-import { readAnnotations, readAnchorStore, loadNodes, loadNodeVersions, nodeIdsWithPublishableVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets } from "./store.js";
+import { readAnnotations, readAnchorStore, readFindings, loadNodes, loadNodeVersions, nodeIdsWithPublishableVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets } from "./store.js";
 import {
   publishDocVersion, acceptDocHash, resolveDoc, foldDocs, docScope,
   type NewDocVersion,
@@ -609,11 +609,30 @@ const cachedNotes = async (root: string, cfg: { path: string; universe: string }
   return { notes: [...value.values()].filter((n) => n.target.id === targetId), ...status };
 };
 
+/**
+ * Every finding on a pull request — this machine's and the team's, in one list.
+ *
+ * Reads the canonical TABLE, not the fold. That is the point of the table, and it is
+ * what makes a local finding visible: one filed with no sidecar configured, or moved in
+ * by `migrateLocalFindings`, is a row with a null `origin` and no event behind it, so a
+ * reader that folded the log saw nothing. `ensureMaterialized` still folds when the
+ * shards have moved — the log stays authoritative, this is its projection.
+ *
+ * No sidecar is no longer an error. A store that never joined a team still has its own
+ * findings, and refusing to list them was the shared/local split showing through a
+ * surface that should not know about it.
+ */
 export async function sharedFindings(root: string, pr: number | string, opts: { queue?: boolean } = {}) {
   const cfg = resolveSidecar(root);
-  if (!cfg) return { error: NO_SIDECAR };
-  const { value: folded, ...scope } = await cachedFindings(root, cfg, pr);
-  const all = [...folded.values()];
+  let scope: { status?: string; diagnostic?: ScopeDiagnostic } = { status: "complete" };
+  if (cfg) {
+    const { fresh, folded, ...st } = await ensureMaterialized(
+      root, cfg.path, findingScope(prKey(cfg, pr)), sidecarIdentity(cfg), foldFindings, findingsProjection,
+    );
+    void fresh; void folded;
+    scope = st;
+  }
+  const all = (await readFindings(root, { pr })).findings;
   const places = await classifyCitations(root, [...new Set(all.filter((f) => f.target.kind === "anchor").map((f) => f.target.id))]);
   // Reading order, not filing order — see `findingTier`. Applied to the queue too:
   // the queue is a narrower list of the same question, so it wants the same answer at
@@ -621,8 +640,8 @@ export async function sharedFindings(root: string, pr: number | string, opts: { 
   const chosen = (opts.queue ? ackQueue(all) : [...all]).sort(byReadingOrder);
   const place = (f: SharedFinding) => places.get(f.target.id) ?? { state: "unknown" as const };
   return {
-    scope: nonAuthoritative(scope),
-    universe: cfg.universe,
+    scope: nonAuthoritative(scope as ScopeStatus),
+    universe: cfg?.universe ?? null,
     pr,
     total: all.length,
     waitingOnYou: ackQueue(all).length,

@@ -235,7 +235,7 @@ async function cmdPrIngest(root: string, prInput: string, files: string[], dryRu
 }
 
 function usage(): never {
-  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap orphans  [repo]              findings/reviews pointing at code the tree no longer has\n  codemap pr-resolve <pr> [--repo path] [--confirm] [--pull] [--anyone]\n                                              sync which review conversations are settled\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n                     [--only id,id,…]  publish exactly these, whatever their disposition\n                     [--summary TEXT] [--approve | --request-changes]\n  codemap pr-triage <pr> [--repo path]        derive stakes+complexity for the PR's symbols\n  codemap pr-pull-viewed <pr|--all> [--repo path] [--dry-run] [--force] [--limit N] [--max-prs N]\n                                              import GitHub's viewed ticks as `viewed`\n  codemap analyze marten [repo] [--verbose] [--emit]\n\n  Shared review (a sidecar repo; set CODEMAP_SIDECAR or .codemap/sidecar):\n  codemap sync     [repo]              send and receive shared review state\n  codemap sidecar heal [repo]          repair a forked sidecar (a person, not an agent)\n  codemap shared   <pr> [repo] [--queue] [--json]   findings on the sidecar\n  codemap peers    [repo]              who else is on this sidecar, and scheme drift\n  codemap replies  <pr> [repo]         what the PR submitter said back about published findings\n  codemap notes    <anchor|node id> [repo]   what the TEAM knows about a symbol\n  codemap publish-notes [repo] [--dry-run]   put this store's existing annotations on the sidecar\n  codemap shared-docs [repo] [--json]  the team's docs, resolved against THIS checkout\n  codemap publish-docs [repo] [--dry-run]    put this store's docs on the sidecar\n  codemap shared-triage [anchor|node id] [repo] [--json]   the team's stakes, with receipts\n  codemap contested [repo] [--json] [--queue]   stakes two people disagree about ACROSS business-critical\n  codemap publish-triage [repo] [--dry-run]  put this store's own triage marks on the sidecar");
+  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo]              cache the current commit for branch-diff\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap orphans  [repo]              findings/reviews pointing at code the tree no longer has\n  codemap pr-resolve <pr> [--repo path] [--confirm] [--pull] [--anyone]\n                                              sync which review conversations are settled\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n                     [--only id,id,…]  publish exactly these, whatever their disposition\n                     [--summary TEXT] [--approve | --request-changes]\n  codemap pr-triage <pr> [--repo path]        derive stakes+complexity for the PR's symbols\n  codemap pr-pull-viewed <pr|--all> [--repo path] [--dry-run] [--force] [--limit N] [--max-prs N]\n                                              import GitHub's viewed ticks as `viewed`\n  codemap analyze marten [repo] [--verbose] [--emit]\n\n  Shared review (a sidecar repo; set CODEMAP_SIDECAR or .codemap/sidecar):\n  codemap sync     [repo]              send and receive shared review state\n  codemap sidecar heal [repo]          repair a forked sidecar (a person, not an agent)\n  codemap shared   <pr> [repo] [--queue] [--json]   findings on the sidecar\n  codemap peers    [repo]              who else is on this sidecar, and scheme drift\n  codemap replies  <pr> [repo]         what the PR submitter said back about published findings\n  codemap notes    <anchor|node id> [repo]   what the TEAM knows about a symbol\n  codemap publish-notes [repo] [--dry-run]   put this store's existing annotations on the sidecar\n  codemap shared-docs [repo] [--json]  the team's docs, resolved against THIS checkout\n  codemap publish-docs [repo] [--dry-run]    put this store's docs on the sidecar\n  codemap shared-triage [anchor|node id] [repo] [--json]   the team's stakes, with receipts\n  codemap contested [repo] [--json] [--queue]   stakes two people disagree about ACROSS business-critical\n  codemap publish-triage [repo] [--dry-run]  put this store's own triage marks on the sidecar\n  codemap migrate-findings [--repo path] [--apply] [--assign id=PR ...]\n                                              move local findings into the canonical findings table");
   process.exit(2);
 }
 
@@ -397,6 +397,42 @@ async function cmdSharedDocs(root: string, json: boolean): Promise<void> {
     if (missing) console.log(`      ${missing} cited symbol(s) are not in this checkout`);
   }
   if (!r.docs.length) console.log("  (nothing shared yet — try `codemap publish-docs`)");
+}
+
+/**
+ * Move this store's local findings into the canonical `findings` table.
+ *
+ * DRY RUN BY DEFAULT: it rewrites `meta.annotations`, and the findings it removes from
+ * there exist only as the rows it just wrote. `--apply` is the deliberate second look.
+ *
+ * `--assign id=pr` places one the migration cannot: a local annotation has no pull
+ * request unless it was posted to GitHub, and guessing from a worklist is what this
+ * whole change exists to stop.
+ */
+async function cmdMigrateFindings(root: string, apply: boolean, assignArgs: string[]): Promise<void> {
+  const assign: Record<string, string> = {};
+  for (const a of assignArgs) {
+    const [id, pr] = a.split("=");
+    if (!id || !pr || !/^\d+$/.test(pr)) { console.error(`--assign wants id=PR, got "${a}"`); process.exit(2); }
+    assign[id] = pr;
+  }
+  const { migrateLocalFindings } = await import("./findings-migrate.js");
+  const r = await migrateLocalFindings(root, { dryRun: !apply, assign });
+  const tag = r.dryRun ? "[dry run] " : "";
+  console.log(`${tag}${r.moved.length} finding(s) ${r.dryRun ? "would move" : "moved"} into the findings table` +
+    `${r.alreadyThere ? `, ${r.alreadyThere} already there` : ""}` +
+    `${r.stampedNow ? `, ${r.stampedNow} with no recorded creation time (stamped now)` : ""}`);
+  const byPr = new Map<string, number>();
+  for (const m of r.moved) byPr.set(m.pr, (byPr.get(m.pr) ?? 0) + 1);
+  for (const [pr, n] of [...byPr].sort()) console.log(`  pr ${pr}: ${n}`);
+  if (r.unplaced.length) {
+    const open = r.unplaced.filter((u) => u.open);
+    console.log(`\n${r.unplaced.length} have no recorded pull request (${open.length} still open).`);
+    console.log("A local annotation only records one if it was posted to GitHub; the rest need a person.");
+    for (const u of open) console.log(`  --assign ${u.id}=<pr>   ${u.label}`);
+    if (r.unplaced.length > open.length) console.log(`  (${r.unplaced.length - open.length} closed out — leaving them is fine)`);
+  }
+  if (r.dryRun && r.moved.length) console.log("\nRe-run with --apply to move them.");
 }
 
 async function cmdPublishDocs(root: string, dryRun: boolean): Promise<void> {
@@ -579,7 +615,7 @@ async function cmdCheck(root: string): Promise<void> {
   }
 }
 
-const { positionals, values } = parseArgs({ allowPositionals: true, options: { verbose: { type: "boolean" }, emit: { type: "boolean" }, repo: { type: "string" }, "no-fetch": { type: "boolean" }, json: { type: "boolean" }, limit: { type: "string" }, offset: { type: "string" }, "dry-run": { type: "boolean" }, confirm: { type: "boolean" }, viewed: { type: "boolean" }, all: { type: "boolean" }, "min-severity": { type: "string" }, force: { type: "boolean" }, "max-prs": { type: "string" }, summary: { type: "string" }, approve: { type: "boolean" }, "request-changes": { type: "boolean" }, pull: { type: "boolean" }, anyone: { type: "boolean" }, only: { type: "string" }, queue: { type: "boolean" }, locate: { type: "boolean" }, "show-elsewhere": { type: "boolean" } } });
+const { positionals, values } = parseArgs({ allowPositionals: true, options: { verbose: { type: "boolean" }, emit: { type: "boolean" }, repo: { type: "string" }, "no-fetch": { type: "boolean" }, json: { type: "boolean" }, limit: { type: "string" }, offset: { type: "string" }, "dry-run": { type: "boolean" }, confirm: { type: "boolean" }, viewed: { type: "boolean" }, all: { type: "boolean" }, "min-severity": { type: "string" }, force: { type: "boolean" }, "max-prs": { type: "string" }, summary: { type: "string" }, approve: { type: "boolean" }, "request-changes": { type: "boolean" }, pull: { type: "boolean" }, anyone: { type: "boolean" }, only: { type: "string" }, queue: { type: "boolean" }, locate: { type: "boolean" }, "show-elsewhere": { type: "boolean" }, apply: { type: "boolean" }, assign: { type: "string", multiple: true } } });
 
 if (positionals[0] === "analyze") {
   const analyzer = positionals[1] ?? "";
@@ -706,6 +742,10 @@ if (positionals[0] === "analyze") {
     await cmdContestedTriage(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."), Boolean(values.json), Boolean(values.queue));
   } else if (positionals[0] === "publish-triage") {
     await cmdPublishTriage(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."), Boolean(values["dry-run"]));
+  } else if (positionals[0] === "migrate-findings") {
+    await withLock(resolve((values.repo as string | undefined) ?? "."), () =>
+      cmdMigrateFindings(resolve((values.repo as string | undefined) ?? "."), Boolean(values.apply),
+        (values.assign as string[] | undefined) ?? []));
   } else if (positionals[0] === "publish-docs") {
     await cmdPublishDocs(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."), Boolean(values["dry-run"]));
   } else if (positionals[0] === "orphans") {

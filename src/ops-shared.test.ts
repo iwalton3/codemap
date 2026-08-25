@@ -43,9 +43,28 @@ test("no sidecar configured is a clear message, not a crash", async () => {
   const u = universe(false);
   try {
     await withEnv({ CODEMAP_SIDECAR: undefined }, async () => {
-      const r = await shared.sharedFindings(u.root, 264) as { error: string };
+      // Asserted on an op that genuinely NEEDS one. Reading a pull request's findings
+      // no longer does — see the test below.
+      const r = await shared.sharedStatus(u.root) as { error: string };
       assert.match(r.error, /no sidecar configured/);
       assert.match(r.error, /Everything else works without one/, "and it must not read as the whole tool being gated");
+    });
+  } finally { u.cleanup(); }
+});
+
+/**
+ * "Everything else works without one" has to be true of the findings list too. A store
+ * that never joined a team still has its own findings, and refusing to list them was
+ * the shared/local split showing through a surface that should not know about it.
+ */
+test("a pull request's findings list works with no sidecar at all", async () => {
+  const u = universe(false);
+  try {
+    await withEnv({ CODEMAP_SIDECAR: undefined }, async () => {
+      await writeLocalFinding(u.root, localFinding("f_solo", "filed with nobody to share it with"), 264);
+      const r = await shared.sharedFindings(u.root, 264) as { total: number; findings: { id: string }[] };
+      assert.equal(r.total, 1, "the local finding is listed, not gated behind a sidecar");
+      assert.equal(r.findings[0]!.id, "f_solo");
     });
   } finally { u.cleanup(); }
 });
