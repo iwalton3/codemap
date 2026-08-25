@@ -9,6 +9,7 @@ import { type EdgeType } from "./schema.js";
 import { type Workspace, parseRef, qualify } from "./workspace.js";
 import { loadNodes, readGraph, writeGraph } from "./store.js";
 import * as ops from "./ops.js";
+import { resolveSidecar } from "./sidecar-config.js";
 
 export async function listUniverses(ws: Workspace) {
   const universes = [];
@@ -24,6 +25,10 @@ export async function listUniverses(ws: Workspace) {
       path: u.path,
       primary: u.primary,
       initialized: s !== null,
+      // Whether this universe has a sidecar at all, so the chrome can offer a pull
+      // button only where pulling means something. Config and a `git remote get-url`,
+      // never the network — the log stays pull/push, and this is not a pull.
+      sidecar: resolveSidecar(u.path) !== null,
       views: s?.views, // which event-graph views have data here (nav gating)
       anchors: s?.anchors,
       nodes: s?.nodes,

@@ -26,6 +26,14 @@
     .uni button { background: var(--panel2); color: var(--dim); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 13px; }
     .uni button.active { color: var(--bg); background: var(--accent); border-color: var(--accent); font-weight: 600; }
     .uni button .n { opacity: 0.7; font-size: 11px; margin-left: 5px; }
+    /* The pull button renders AFTER `.search`, which keeps `margin-left: auto`. Moving
+       the auto onto the button instead would have left the search box unanchored on a
+       universe with no sidecar, where the button is not rendered at all. */
+    .pullbtn { background: var(--panel2); color: var(--dim); border: 1px solid var(--border);
+      border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 13px; white-space: nowrap; }
+    .pullbtn:hover:not(:disabled) { border-color: var(--accent); color: var(--text); }
+    .pullbtn:disabled { opacity: 0.6; cursor: default; }
+    .pullnote { color: var(--dim); font-size: 12px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .search { margin-left: auto; }
     .search input { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 5px 10px; width: 240px; font-size: 13px; }
 

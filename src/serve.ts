@@ -307,12 +307,16 @@ const server = createServer(async (req, res) => {
       const action = url.pathname.slice("/api/shared/".length);
       // Which of these write `.codemap/`. Named explicitly: a new action that mutates
       // and is not listed here races the rest of the server silently.
-      const TOUCHES_LOCAL = new Set(["sync", "publish_docs", "publish_notes", "publish_triage", "heal"]);
+      const TOUCHES_LOCAL = new Set(["sync", "pull", "publish_docs", "publish_notes", "publish_triage", "heal"]);
       const run = <T>(fn: () => Promise<T>): Promise<T> =>
         TOUCHES_LOCAL.has(action) ? withLock(root, fn) : fn();
       let out: unknown;
       switch (action) {
         case "sync": out = await run(() => shared.sharedSync(root)); break;
+        // Receive without sending. The top bar offers this on every page, so it must
+        // never publish: a button that reached other people from wherever you happened
+        // to be standing is not one anybody can leave in the chrome.
+        case "pull": out = await run(() => shared.sharedPull(root)); break;
         // Publishing this store's existing state, and repairing a fork. These were
         // terminal-only, which made JOINING a team and RECOVERING from one the two
         // things a browser user could not do.

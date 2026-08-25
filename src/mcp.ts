@@ -807,6 +807,13 @@ const tools: Tool[] = [
     handler: (_a, c) => shared.sharedSync(c.universe.path),
   },
   {
+    name: "pull",
+    description: "Receive the team's shared review state WITHOUT sending yours. Use it to read what the team knows before deciding whether your own findings are ready to publish; use `sync` when you want both halves. Same fold and the same queueing as `sync` — only the push is missing.",
+    inputSchema: obj({}),
+    mutates: true,
+    handler: (_a, c) => shared.sharedPull(c.universe.path),
+  },
+  {
     name: "shared_findings",
     description: "Findings on the sidecar for a pull request — everyone's, not just yours. `queue:true` narrows to what is waiting on a PERSON (promoted, or confirmed by somebody, or with an outstanding request). Read this before filing: a finding somebody has already raised and refuted does not need raising again.",
     inputSchema: obj({

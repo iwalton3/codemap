@@ -22,7 +22,7 @@ import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./an
 import { resolveSidecar, scopeFor, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
 import { originSlug, headCommit, currentBranch } from "./git.js";
 import { fetchReviewThreads, type GhRunner } from "./pr-push.js";
-import { ensureSidecar, sync as sidecarSync, healMerge, readManifests, checkPeers, currentManifest } from "./sidecar.js";
+import { ensureSidecar, sync as sidecarSync, receive as sidecarReceive, healMerge, readManifests, checkPeers, currentManifest } from "./sidecar.js";
 import {
   createFinding, corroborate, comment, promote, request, setState, recordOutcome,
   markPosted, markUpstreamed, promoteToBug, needsHumanAck, ackQueue,
@@ -123,29 +123,24 @@ async function materializeUniverse(root: string, cfg: SidecarConfig): Promise<Ma
 }
 
 /** Send and receive. The whole point of the button. */
-export async function sharedSync(root: string) {
-  const b = bind(root);
-  if ("error" in b) return b;
-  const r = await sidecarSync(b.cfg.path, b.actor, `codemap: ${b.cfg.universe}`);
-  if ("error" in r) return r;
+/**
+ * The half of a transport that is not the transport: fold what arrived, then turn the
+ * disagreements it carried into things a person can act on.
+ *
+ * Shared by `sharedSync` and `sharedPull` rather than written twice, because a
+ * receive-only path that skipped it would land a teammate's contested stakes in the
+ * store and queue nothing — the exact bug this code already had once when the queueing
+ * lived in `cli.ts` and the other front-ends called the op directly.
+ *
+ * Both queueing passes are best-effort: the transport has already succeeded by here,
+ * and the queues are derived state that the next transport re-derives.
+ */
+async function settleArrivals(root: string, cfg: SidecarConfig) {
   // AFTER the transport, and only here: `sidecar.ts` is transport and knows nothing
-  // about folds or entity kinds. Sync is also the one moment a person is watching,
-  // which is why the blocked scopes are reported rather than discovered later.
-  const materialized = await materializeUniverse(root, b.cfg);
-  // A sync is the moment a teammate's disagreement ARRIVES, so it is where a stakes
-  // contest becomes a queue item and where a settled one is closed. INSIDE the op, not
-  // in a front-end: it lived in `cli.ts` and MCP and the web both call `sharedSync`
-  // directly, so an agent or browser sync materialized the contest and never queued it
-  // — a claim my own commit message made and the code did not keep. Every surface gets
-  // it here by construction, and no future front-end can forget.
-  //
-  // Failure here does not fail the sync: the transport worked, and the queue is derived
-  // state that the next sync re-derives.
+  // about folds or entity kinds. This is also the one moment a person is watching,
+  // which is why blocked scopes are reported rather than discovered later.
+  const materialized = await materializeUniverse(root, cfg);
   const contests = await queueContestedTriage(root).catch(() => null);
-  // Same rule, same place: a sync is when a teammate's wiring arrives, so it is when a
-  // reordering becomes something a person can act on. Inside the op so every front-end
-  // gets it, and a failure does not fail the sync — the queue is derived state the next
-  // sync re-derives.
   const wiring = await import("./ops/graph.js")
     .then((m) => m.queueDivergedWiring(root))
     .catch(() => null);
@@ -153,7 +148,34 @@ export async function sharedSync(root: string) {
     ...(contests && !("error" in contests) && (contests.filed || contests.revised || contests.closed)
       ? { contests } : {}),
     ...(wiring && !("error" in wiring) && (wiring.filed || wiring.revised || wiring.closed)
-      ? { wiring } : {}), ok: true, universe: b.cfg.universe, sidecar: b.cfg.path, ...r, materialized };
+      ? { wiring } : {}),
+    materialized,
+  };
+}
+
+/**
+ * Receive without publishing.
+ *
+ * A separate op rather than `sharedSync` with a flag, because the two make different
+ * promises to a teammate and the difference is visible on their machine: sync says
+ * "here is mine, now give me yours", pull says only the second half. Reading the team's
+ * state before deciding whether your own is ready to go is an ordinary thing to want,
+ * and the top bar offers this on every page — where sending would be a surprise.
+ */
+export async function sharedPull(root: string) {
+  const b = bind(root);
+  if ("error" in b) return b;
+  const r = await sidecarReceive(b.cfg.path, b.actor, `codemap: ${b.cfg.universe}`);
+  if ("error" in r) return r;
+  return { ...(await settleArrivals(root, b.cfg)), ok: true, universe: b.cfg.universe, sidecar: b.cfg.path, ...r };
+}
+
+export async function sharedSync(root: string) {
+  const b = bind(root);
+  if ("error" in b) return b;
+  const r = await sidecarSync(b.cfg.path, b.actor, `codemap: ${b.cfg.universe}`);
+  if ("error" in r) return r;
+  return { ...(await settleArrivals(root, b.cfg)), ok: true, universe: b.cfg.universe, sidecar: b.cfg.path, ...r };
 }
 
 export interface HealResult {

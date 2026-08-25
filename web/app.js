@@ -740,9 +740,42 @@ const VIEW_LINKS = [
 // a payload with no `views` at all shows everything rather than hiding the UI.
 const viewEnabled = (uni, gate) => !gate || (!!uni && (!uni.views || !!uni.views[gate]));
 
+/** @extends {Component<{}, {pulling: boolean, note: string|null}>} */
 class CodemapHeader extends Component {
   static stores = { nav };
+  constructor(props) {
+    super(props);
+    /** @type {{pulling: boolean, note: string|null}} */
+    this.state = { pulling: false, note: null };
+  }
   mounted() { nav.load(); }
+  /**
+   * Receive the team's shared state from wherever you happen to be standing.
+   *
+   * PULL, never sync, and that is the whole reason `sharedPull` exists. This button is
+   * in the chrome of every page; one that also published would send your findings to
+   * the team as a side effect of wanting to see theirs, from a page that gave no hint
+   * it was about to. Sending stays on the shared hub, where it is the subject.
+   */
+  async pull() {
+    const n = this.stores.nav;
+    const u = n.current || (n.universes[0] && n.universes[0].id);
+    if (!u || this.state.pulling) return;
+    this.state.pulling = true;
+    this.state.note = null;
+    try {
+      const r = await apiPost('/api/shared/pull', { u });
+      // ops-shared refusals come back 200 with an `error` — a reason, not a failure.
+      if (r.error) { this.state.note = r.error; return; }
+      // A full reload, for the reason `CheckoutBanner.rebaseline` gives: what arrived
+      // changes the answer of every shared query on the page, and chrome has no way to
+      // re-run the current page's own load. Only when something actually arrived —
+      // reloading on an empty pull would throw away scroll position to show the same
+      // page back.
+      if (r.gained) { location.reload(); return; }
+      this.state.note = 'up to date';
+    } catch (e) { this.state.note = errText(e); } finally { this.state.pulling = false; }
+  }
   search(e, v) {
     const u = this.stores.nav.current || (this.stores.nav.universes[0] && this.stores.nav.universes[0].id);
     if (u && v) go(`/u/${u}/search/`, { q: v });
@@ -755,6 +788,10 @@ class CodemapHeader extends Component {
       <div class="uni">${each(n.universes, u => html`<button class="${u.id === n.current ? 'active' : ''}" on-click="${() => go(dashUrl(u.id))}">${u.id}<span class="n">${u.anchors ?? '–'}</span></button>`)}</div>
       ${each(VIEW_LINKS.filter(l => viewEnabled(cur, l[2])), l => html`<a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(l[1](u)); }}">${l[0]}</a>`, l => l[0])}
       <div class="search"><input placeholder="search symbols & docs…" on-change="${(e, v) => this.search(e, v)}"></div>
+      ${when(!!cur && !!cur.sidecar, () => html`${when(!!this.state.note, () => html`<span class="pullnote" title="${this.state.note}">${this.state.note}</span>`)}
+        <button class="pullbtn" disabled="${this.state.pulling}"
+          title="receive the team's shared review state — findings, docs, notes, triage. This never sends yours; publishing lives on the shared page."
+          on-click="${() => this.pull()}">${this.state.pulling ? 'pulling…' : '⤓ pull'}</button>`)}
     </header>`;
   }
 }
@@ -2957,6 +2994,11 @@ const LAYER_NAME = ['command', 'handler', 'event', 'aggregate', 'read-model', 'j
 /** @extends {Component<PageProps, PrStoryState>} */
 class PrStoryPage extends Component {
   static props = { params: {}, query: {} };
+  // Subscribed for one field: whether this universe has a sidecar, so the push/pull
+  // control appears only where it means something. Read-tracking makes that reactive —
+  // `nav` loads after the first render, and a plain module read would decide "no
+  // sidecar" once, before the answer existed, and never revisit it.
+  static stores = { nav };
   // Everything this page holds about ONE pull request. `propsChanged` restores it
   // wholesale on a navigation: keeping any of it across PRs is how the previous
   // PR's chapters stayed on screen until the fetch landed, and — worse — how
@@ -3012,6 +3054,8 @@ class PrStoryPage extends Component {
    *   findingErr: { id: string, error: string } | null,
    *   resolveSync: { loading?: boolean, error?: string, plan?: any, running?: boolean, done?: any, dir?: string } | null,
    *   showElsewhere: boolean,
+   *   sharedBusy: boolean,
+   *   sharedNote: string | null,
    * }} PrStoryState
    *
    * @returns {PrStoryState}
@@ -3031,6 +3075,7 @@ class PrStoryPage extends Component {
       pushDraft: null, pick: null, editFinding: null, findingErr: null, resolveSync: null,
       // Other reviews' held-back findings are collapsed by default; this opens them.
       showElsewhere: false,
+      sharedBusy: false, sharedNote: null,
     };
   }
   constructor(props) { super(props); this.state = PrStoryPage.blank(); }
@@ -3053,6 +3098,29 @@ class PrStoryPage extends Component {
     await this.refreshOpenCode();
     if (this.state.offStory) await this.loadOffStory();
   });
+
+  /**
+   * Send this store's findings to the team and take theirs, then re-read the page.
+   *
+   * `sync` here rather than `pull`: a pull request is where you have just written
+   * findings FOR the team, so both halves are the point — unlike the chrome's button,
+   * which fires from pages that have nothing to do with publishing.
+   *
+   * `load.run()` rather than a reload: this page holds expanded code panes and an open
+   * chapter, and the task already refreshes their annotations alongside the story, so
+   * a teammate's arriving finding shows up without throwing away where you were.
+   */
+  async syncShared() {
+    if (this.state.sharedBusy) return;
+    this.state.sharedBusy = true;
+    this.state.sharedNote = null;
+    try {
+      const r = await apiPost('/api/shared/sync', { u: this.props.params.universe });
+      this.state.sharedNote = r.error
+        ?? `received ${r.gained} event(s)${r.pushed ? ', sent yours' : ''}${r.warning ? ` — ${r.warning}` : ''}`;
+      if (!r.error) await this.load.run();
+    } catch (e) { this.state.sharedNote = errText(e); } finally { this.state.sharedBusy = false; }
+  }
 
   async refreshOpenCode() {
     const open = Object.entries(this.state.code).filter(([, v]) => v && !isErr(v)).map(([id]) => id);
@@ -3923,6 +3991,12 @@ class PrStoryPage extends Component {
         <h2>#${st.pr.number} ${st.pr.title}</h2>
         <div class="dim">${st.pr.author} · ${st.pr.headRef} → ${st.pr.baseRef} ·
           <a href="${st.pr.url}" target="_blank" rel="noreferrer">open on GitHub ↗</a></div>
+        ${when(!!(this.stores.nav.universes.find(x => x.id === u) || {}).sidecar, () => html`<div class="bactions">
+          <button disabled="${this.state.sharedBusy}"
+            title="send your findings on this pull request to the team's sidecar and receive theirs, then re-read this page. Nothing goes to GitHub — that is the push panel."
+            on-click="${() => this.syncShared()}">${this.state.sharedBusy ? 'syncing…' : '⇅ push / pull findings'}</button>
+          ${when(!!this.state.sharedNote, () => html`<span class="dim">${this.state.sharedNote}</span>`)}
+        </div>`)}
         <div class="prstats">
           <span><b>${signed}</b>/${st.totals.steps} symbols signed</span>
           <span><b>${st.totals.chapters}</b> chapters</span>

@@ -748,6 +748,33 @@ export async function healMerge(root: string, actor?: Actor): Promise<HealedMerg
   return withSidecarLock(root, () => healMergeHeld(root, actor));
 }
 
+/**
+ * Receive only: everything `sync` does except the push.
+ *
+ * NOT `pull`, and the difference is the whole reason this exists. `pull` is the bare
+ * merge: its first line reads `git remote` and returns `gained: 0` on a directory that
+ * is not a repository yet, so a teammate who had never synced would click a button and
+ * be told, truthfully and uselessly, that nothing arrived. `ensureSidecar` first makes
+ * it one; `commitLocal` then clears the scaffold that ensure just wrote, because git
+ * refuses a merge that would overwrite untracked files — the same reason `syncHeld`
+ * commits before pulling, and the first pull anybody ever runs is exactly that case.
+ *
+ * The commit is LOCAL. Nothing leaves the machine here; that is the point of the op.
+ */
+export async function receive(root: string, actor?: Actor, message = "codemap: review state"): Promise<PullResult | { error: string }> {
+  // Outside the lock, for `sync`'s reason: a failure is remembered rather than retried
+  // inside, so somebody offline waits one git timeout instead of two.
+  const pre = fetchRemote(root);
+  const fetched: FetchState = "error" in pre ? pre : pre.fetched;
+  return withSidecarLock(root, async () => {
+    const ready = await ensureSidecar(root, actor);
+    if ("error" in ready) return ready;
+    const committed = commitLocal(root, message);
+    if (typeof committed === "object") return committed;
+    return pullHeld(root, actor, fetched);
+  });
+}
+
 export interface SyncResult { gained: number; pushed: boolean; committed: boolean; retries: number; warning?: string; restored?: Restored[] }
 
 /** Send and receive, in the order that makes the publish guard trustworthy. */
