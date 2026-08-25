@@ -2,7 +2,13 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { type Anchor, type LogicalNode } from "../schema.js";
 import { indexFile } from "../repo.js";
-import { readAnchorStore, loadNodes, readCoverage, readSnapshot, findAnchorsOutsideWork, readOrphans, derivationLookup } from "../store.js";
+import { readAnchorStore, loadNodes, readCoverage, readSnapshot, findAnchorsOutsideWork, readOrphans, derivationLookup, readWalkthroughs } from "../store.js";
+import type { PrWalkthrough } from "../walkthrough.js";
+import { requireActor } from "../identity.js";
+import { resolveSidecar, scopeFor, sidecarIdentity } from "../sidecar-config.js";
+import { readCached } from "../materialize.js";
+import { foldWalkthroughs, walkthroughScope } from "../shared-walkthrough.js";
+import { walkthroughsProjection } from "../shared-projections.js";
 import { resolveCoverage, type CoverageResult } from "../coverage.js";
 import { resolveAnchorRefs } from "../refs.js";
 import { grammarForPath, currentDerivations } from "../grammars.js";
@@ -200,3 +206,88 @@ export async function resolveRefs(
 /** `rejectedAnchors: […]` for a result, or nothing when every ref resolved. */
 export const rejected = (errors: string[]) => (errors.length ? { rejectedAnchors: errors } : {});
 
+
+// ---------------------------------------------------------------------------
+// Walkthroughs: yours and the team's, as one answer
+// ---------------------------------------------------------------------------
+
+export interface WalkthroughPick {
+  walkthrough: PrWalkthrough;
+  /**
+   * The teammate whose reading this is, by principal — absent when it is your own.
+   *
+   * NOT `by`: a walkthrough already carries one, the free-text author `pr_walkthrough`
+   * was called with ("ben's agent"). Two meanings on one field is how a surface ends up
+   * reporting your own walkthrough as somebody else's.
+   */
+  sharedBy?: string;
+  /** The readings this is NOT showing. Named, because the fold keeps one per author. */
+  others: { by: string; head: string; mine: boolean }[];
+}
+
+/**
+ * The walkthrough to show for a pull request, out of everyone's.
+ *
+ * A walkthrough was the one shared payload still living in a parallel table with no
+ * bridge onto the surfaces that render it: a teammate's travelled, folded into
+ * `shared_walkthrough`, and every page and tool that shows a walkthrough read the local
+ * blob only — so the reader was told "no agent has walked this one" while it sat in
+ * their own store. That is the failure `docs/sidecar-architecture.md` gives the
+ * one-canonical-table rule to prevent, and this is the bridge until walkthroughs get
+ * the table (`node_versions` and `findings` already have theirs).
+ *
+ * The choice, in order, and the head rule is FIRST on purpose:
+ *
+ *   1. a reading written against this head — yours before a teammate's
+ *   2. failing that, yours, stale and flagged as it always was
+ *   3. failing that, the newest teammate's
+ *
+ * Head first because a walkthrough about another commit is not a worse reading, it is
+ * about something else — the rule `currentWalkthrough` already enforces — so a
+ * teammate's fresh one beats your stale one. Yours wins every tie, so nothing you
+ * wrote is ever displaced by somebody else's at equal standing.
+ *
+ * Never picks silently: whatever is not shown comes back in `others`.
+ */
+export async function walkthroughFor(
+  root: string, pr: number | string, head: string,
+): Promise<WalkthroughPick | null> {
+  const mine = (await readWalkthroughs(root)).walkthroughs[String(pr)] ?? null;
+  // Straight to the PROJECTION, not through `ops-shared`: the core may reach the
+  // sidecar's own modules (`shared-walkthrough`, `docs-lookup`) and may not reach the
+  // ops layer above them, which closes a cycle back through `ops/triage` —
+  // `import-cycles.test.ts` catches it, dynamic imports included. Reading the cache is
+  // also the architecture's rule: the log is pull/push, never folded on an ordinary read.
+  const cfg = resolveSidecar(root);
+  const folded = cfg
+    ? await readCached(root, cfg.path, walkthroughScope(scopeFor(cfg, "pr", String(pr))),
+      sidecarIdentity(cfg), foldWalkthroughs, walkthroughsProjection)
+      .then((r) => r.value).catch(() => [])
+    : [];
+
+  const actor = requireActor(root);
+  const me = "error" in actor ? null : actor.principal;
+  // My own published copy is the same reading as the local blob, not a second opinion.
+  // `me` is null only when this store has no identity — and publishing REQUIRES one
+  // (`bind` refuses), so there is then nothing of mine in the log to mistake for a
+  // teammate's. The unguarded branch is unreachable rather than merely unlikely.
+  const theirs = folded.filter((f) => !me || f.actor.principal !== me);
+
+  const candidates: { walkthrough: PrWalkthrough; by?: string; at: string; mine: boolean }[] = [
+    ...(mine ? [{ walkthrough: mine, at: mine.at, mine: true }] : []),
+    ...theirs.map((t) => ({ walkthrough: t.walkthrough, by: t.actor.principal, at: t.at, mine: false })),
+  ];
+  if (!candidates.length) return null;
+
+  const rank = (c: typeof candidates[number]) =>
+    (c.walkthrough.head === head ? 0 : 2) + (c.mine ? 0 : 1);
+  // Newest FIRST among equals — the winner is `sorted[0]` — so a re-walk supersedes
+  // rather than losing the tiebreak to the reading it was written to replace.
+  const sorted = [...candidates].sort((a, b) => rank(a) - rank(b) || b.at.localeCompare(a.at));
+  const [best, ...rest] = sorted;
+  return {
+    walkthrough: best!.walkthrough,
+    ...(best!.mine ? {} : { sharedBy: best!.by }),
+    others: rest.map((c) => ({ by: c.by ?? (me ?? "you"), head: c.walkthrough.head, mine: c.mine })),
+  };
+}

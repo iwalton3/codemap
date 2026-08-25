@@ -1,15 +1,16 @@
 import { type Annotation } from "../schema.js";
 import { originSlug } from "../git.js";
-import { readAnchorStore, loadNodes, readAnnotations, findAnchorsOutsideWork, readWalkthroughs, writeWalkthrough, readOrphans } from "../store.js";
+import { readAnchorStore, loadNodes, readAnnotations, findAnchorsOutsideWork, writeWalkthrough, readOrphans } from "../store.js";
 import { prTriage, listOpenPrs, prPacket, prStory, prAnchorCode, prPromotionPlan, derivePrTriage, prContainment, offStoryReason, type OffStoryReason } from "../pr.js";
 import { promotionOwns } from "../pr-promote.js";
+import { resolveSidecar } from "../sidecar-config.js";
 import { validateWalkthrough, buildWalkthrough, walkCoverage, staleChapters, type WalkInput } from "../walkthrough.js";
 import { LANE_POLICY } from "../lanes.js";
 import { parseAgentLines, ingestAgentReview } from "../pr-ingest.js";
 import { planPrPush, executePrPush, pullViewedFromGitHub, fetchReviewThreads, planResolveSync, pushResolvedToGitHub, pullResolvedFromGitHub, ghViewer, type PushPlan, type ReviewEvent, type ResolveSyncPlan } from "../pr-push.js";
 import { bulkPullViewed } from "../pr-bulk.js";
 import { markReviewedBatch, unmarkReviewed, unmarkCovered, type Attestation } from "../reviews.js";
-import { snapshotHashes, loadNodesShared} from "./shared.js";
+import { snapshotHashes, loadNodesShared, walkthroughFor } from "./shared.js";
 import { annotate, resolveAnnotation, reviewQueue } from "./annotations.js";
 import { document } from "./docs.js";
 import { anchorMark } from "./triage.js";
@@ -83,13 +84,39 @@ export async function prWalkthroughSet(
     (id) => live.get(id),
   );
   const coverage = walkCoverage(features, queue, t.worklist.length - queue.size);
-  if (!opts.dryRun) await writeWalkthrough(root, String(t.pr.number), built);
+  if (opts.dryRun) {
+    return {
+      ok: true, pr: t.pr.number, head: t.refs.head,
+      features: built.features.length,
+      chapters: built.features.reduce((n, f) => n + f.chapters.length, 0),
+      coverage, dryRun: true,
+    };
+  }
+  await writeWalkthrough(root, String(t.pr.number), built);
+  // Writing one and PUBLISHING it were two acts, and nothing said so — the tool that
+  // publishes is findable only by somebody who already knows it exists, so a
+  // walkthrough written for a team stayed in the author's own store. Publishing here
+  // stages it in the log; it still reaches nobody until an explicit `sync`, which is
+  // why doing it on write is safe rather than a send.
+  const hasSidecar = !!resolveSidecar(root);
+  const shared = hasSidecar
+    ? await import("../ops-shared.js")
+      .then((m) => m.shareWalkthrough(root, built) as Promise<{ error?: string }>)
+      .catch((e: unknown) => ({ error: String((e as Error)?.message ?? e) }))
+    : null;
   return {
     ok: true, pr: t.pr.number, head: t.refs.head,
     features: built.features.length,
     chapters: built.features.reduce((n, f) => n + f.chapters.length, 0),
     coverage,
-    dryRun: !!opts.dryRun,
+    dryRun: false,
+    // Reported, and only where there is a team to report about: a walkthrough that
+    // silently did not travel reads, from the author's side, exactly like one that did,
+    // and a store with no sidecar has nowhere for it to go and no gap to announce.
+    ...(shared ? { shared: !shared.error } : {}),
+    ...(shared?.error
+      ? { sharedNote: `written locally, but NOT shared: ${shared.error}` }
+      : shared ? { note: "recorded and staged for the team — run `codemap sync` to send it" } : {}),
   };
 }
 
@@ -97,12 +124,16 @@ export async function prWalkthroughSet(
 export async function prWalkthroughGet(root: string, input: string) {
   const t = await prTriage(root, input, { fetch: false });
   if ("error" in t) return { error: t.error };
-  const w = (await readWalkthroughs(root)).walkthroughs[String(t.pr.number)];
-  if (!w) return { pr: t.pr.number, walkthrough: null };
+  const pick = await walkthroughFor(root, t.pr.number, t.refs.head);
+  if (!pick) return { pr: t.pr.number, walkthrough: null };
+  const w = pick.walkthrough;
   const live = await snapshotHashes(root, t.refs.head);
   return {
     pr: t.pr.number,
     walkthrough: w,
+    /** Set when this is a TEAMMATE's reading rather than your own. */
+    ...(pick.sharedBy ? { sharedBy: pick.sharedBy } : {}),
+    ...(pick.others.length ? { otherReadings: pick.others } : {}),
     /** Written against another commit entirely — every chapter is suspect. */
     headMoved: w.head !== t.refs.head,
     stale: staleChapters(w, live),
@@ -121,8 +152,9 @@ export async function prStoryFor(root: string, input: string, opts: { fetch?: bo
   const story = await prStory(root, input, opts);
   if ("error" in story) return story;
 
-  const stored = (await readWalkthroughs(root)).walkthroughs[String(story.pr.number)];
-  if (!stored) return { ...story, walkthrough: null };
+  const pick = await walkthroughFor(root, story.pr.number, story.refs.head);
+  if (!pick) return { ...story, walkthrough: null };
+  const stored = pick.walkthrough;
 
   const live = await snapshotHashes(root, story.refs.head);
   const queue = new Set(story.chapters.flatMap((c) => c.steps).map((s) => s.anchorId));
@@ -130,6 +162,11 @@ export async function prStoryFor(root: string, input: string, opts: { fetch?: bo
     ...story,
     walkthrough: {
       ...stored,
+      // Whose reading the page is rendering. A teammate's structures this page exactly
+      // as your own does, and a reader who cannot see it is somebody else's is being
+      // told their own agent wrote it.
+      ...(pick.sharedBy ? { sharedBy: pick.sharedBy } : {}),
+      ...(pick.others.length ? { otherReadings: pick.others } : {}),
       headMoved: stored.head !== story.refs.head,
       stale: staleChapters(stored, live),
       coverage: walkCoverage(stored.features, queue, story.totals.steps - queue.size),
@@ -248,7 +285,9 @@ export async function prChapterMark(
 ) {
   const t = await prTriage(root, input, { fetch: false });
   if ("error" in t) return { error: t.error };
-  const stored = (await readWalkthroughs(root)).walkthroughs[String(t.pr.number)];
+  // A teammate's reading is signable too: the chapter is a unit of READING, and the
+  // mark it produces is the reader's own ledger, not a claim about whose guide it was.
+  const stored = (await walkthroughFor(root, t.pr.number, t.refs.head))?.walkthrough;
   if (!stored) return { error: `PR #${t.pr.number} has no walkthrough` };
   const chapter = stored.features.flatMap((f) => f.chapters).find((c) => c.id === chapterId);
   if (!chapter) return { error: `no chapter "${chapterId}" in that walkthrough` };

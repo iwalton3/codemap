@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { team, who, edit, commit, branch, pushBranch, openPr, settle, type Team, type Member } from "./oracle.js";
 import { Ledger, checkAlways, checkSettled, verified } from "./oracle-properties.js";
-import { pr, prWalkthroughSet, prWalkthroughGet, setTriage, anchorMark, document } from "./ops.js";
+import { pr, prWalkthroughSet, prWalkthroughGet, prStoryFor, setTriage, anchorMark, document } from "./ops.js";
 import {
   shareFinding, sharedFindings, corroborateFinding, reportOnFinding,
   shareWalkthrough, sharedWalkthroughs, sharedTriage, contestedTriage, publishLocalTriage,
@@ -186,6 +186,27 @@ test("the hand-off arc: a teammate reviews their own branch, the owner signs off
       assert.equal(w.count, 1, "ben's walkthrough travelled");
       assert.equal(w.current?.by, MATE, "and it is attributed to him");
       assert.equal(w.current?.walkthrough.features.length, 1);
+
+      // ...and it is on the surfaces she actually opens. `sharedWalkthroughs` above is
+      // the dedicated view; these two are the pull-request page and the walkthrough
+      // tool, and they read the local blob only until the bridge in `walkthroughFor`.
+      // The gap was invisible from here for exactly that reason — the transport was
+      // asserted and the surface was not.
+      const hers = await prWalkthroughGet(izzie.repo, String(PR)) as any;
+      assert.ok(hers.walkthrough, "ben's walkthrough is what `pr_walkthrough_get` answers with");
+      assert.equal(hers.sharedBy, MATE, "and it is attributed to him, not presented as her own");
+      assert.equal(hers.headMoved, false);
+
+      const story = await prStoryFor(izzie.repo, String(PR)) as any;
+      assert.ok(story.walkthrough, "the pull-request page renders it rather than `no agent has walked this one`");
+      assert.equal(story.walkthrough.sharedBy, MATE);
+      // `by` is the free-text author `pr_walkthrough` was called with, and it is NOT
+      // the attribution — one field meaning both is how a surface reports your own
+      // walkthrough as somebody else's.
+      assert.equal(story.walkthrough.by, "ben's agent");
+
+      const his = await prStoryFor(ben.repo, String(PR)) as any;
+      assert.equal(his.walkthrough.sharedBy, undefined, "his own reading is not labelled as somebody else's");
 
       const f = await sharedFindings(izzie.repo, PR) as any;
       assert.equal(f.findings.length, 2, "both findings travelled");

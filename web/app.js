@@ -3362,6 +3362,8 @@ class PrStoryPage extends Component {
     const stale = new Set(w.stale || []);
     const uncovered = (w.coverage && w.coverage.uncovered) || [];
     return html`
+      ${when(!!w.sharedBy, () => html`<div class="wkbanner wkteam">Read from <b>${w.sharedBy}</b>'s walkthrough of this pull request, from the team's sidecar — not one written here.${when((w.otherReadings || []).length > 0, () => html` <span class="dim">${(w.otherReadings || []).length} other reading(s): ${(w.otherReadings || []).map(o => o.mine ? 'yours' : o.by).join(', ')}.</span>`)}</div>`)}
+      ${when(!w.sharedBy && (w.otherReadings || []).length > 0, () => html`<div class="wkbanner dim">Your own walkthrough. ${(w.otherReadings || []).length} other reading(s) of this pull request: ${(w.otherReadings || []).map(o => o.by).join(', ')}.</div>`)}
       ${when(w.headMoved, () => html`<div class="warn wkbanner">This walkthrough was written against a different commit (${String(w.head).slice(0, 12)}). Every chapter is suspect — ask an agent to re-walk the pull request.</div>`)}
       ${each(w.features, f => html`<section class="wkfeature">
         <div class="wkfhead">

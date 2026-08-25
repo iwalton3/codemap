@@ -587,7 +587,7 @@ const tools: Tool[] = [
       + "DESCRIBE WHAT THE CODE DOES. The spec is evidence, not scaffolding: specs lie, and code drifts. Use `pr_packet` for the ranked symbols, their source and the spec text, then say what is actually there.\n\n"
       + "ACCOUNT FOR EVERYTHING. Every changed symbol in the review queue belongs in exactly one chapter. Anything you leave out is what the human ends up reading on GitHub with no context — so if a cluster does not fit the change's stated purpose, it is still a feature: name it for what it is and set `unstated: true`. A drive-by that is called out is useful; one that is silently omitted is the thing this exists to prevent.\n\n"
       + "REJECTED if a chapter cites a symbol this PR does not touch, if two chapters claim the same symbol, or if a chapter has no symbol in it. Re-run with `dryRun: true` to check coverage before writing.\n\n"
-      + "Chapter and feature ids are derived from titles, so re-walking a PR with the same structure keeps the reviewer's place. Chapters are witnessed against the head's bodies: when the submitter pushes, only the chapters whose code moved go stale, and only those need re-walking.",
+      + "Chapter and feature ids are derived from titles, so re-walking a PR with the same structure keeps the reviewer's place. Chapters are witnessed against the head's bodies: when the submitter pushes, only the chapters whose code moved go stale, and only those need re-walking.\n\nPUBLISHED to the team's sidecar as part of writing it, when one is configured — writing a reading guide for a pull request the team reviews and keeping it to yourself is not a thing to have to remember. `shared` in the response says whether it happened, and it stages only: nothing reaches anybody until an explicit `sync`.",
     mutates: true,
     inputSchema: obj({
       pr: { type: "string", description: "PR number, url, or owner/repo#N." },
@@ -617,7 +617,7 @@ const tools: Tool[] = [
   },
   {
     name: "pr_walkthrough_get",
-    description: "The stored walkthrough for a pull request, with `stale` naming the chapters whose code has moved since it was written (re-walk only those) and `headMoved` when it was written against a different commit entirely.",
+    description: "The walkthrough for a pull request — yours, or a teammate's from the sidecar when they walked it and you did not. `stale` names the chapters whose code has moved since it was written (re-walk only those); `headMoved` means it was written against a different commit entirely.\n\n`sharedBy` is set when this is somebody else's reading, and `otherReadings` names the ones it is not showing — the fold keeps one per author, so a pull request several people walked has several. A reading of THIS head wins over a stale one, and yours wins every tie. `shared_walkthroughs` lists them all.",
     inputSchema: obj({ pr: { type: "string", description: "PR number, url, or owner/repo#N." } }, ["pr"]),
     handler: (a, c) => ops.prWalkthroughGet(c.universe.path, String(a.pr ?? "")),
   },
@@ -947,7 +947,7 @@ const tools: Tool[] = [
   },
   {
     name: "share_walkthrough",
-    description: "Publish a walkthrough of a pull request to the SIDECAR, where the rest of the team and their agents can read it. Nothing else writes one, so a walkthrough that is not shared from here exists only in your own store. It is witnessed against the head it was written for: a reader on a different commit is told it is stale rather than shown it.",
+    description: "Publish a walkthrough to the SIDECAR explicitly. `pr_walkthrough` already does this on every write, so this is the backfill: a walkthrough written before this store had a sidecar, or a re-publish after one was repaired. It is witnessed against the head it was written for — a reader on a different commit is told it is stale rather than shown it.",
     inputSchema: obj({ walkthrough: { type: "object", description: "The walkthrough, as `pr_walkthrough` returns it." } }, ["walkthrough"]),
     mutates: true,
     handler: (a, c) => shared.shareWalkthrough(c.universe.path, a.walkthrough),
