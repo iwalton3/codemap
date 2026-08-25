@@ -1859,6 +1859,19 @@ export async function attributeLocalWalkthrough(root: string, pr: string, princi
     .run(principal, JSON.stringify(env), String(pr));
 }
 
+/**
+ * When this store's local findings were unified onto the sidecar, or null.
+ *
+ * Recorded so "already unified" is distinguishable from "never had any" — the gate has
+ * to be able to tell a clean store from one that has simply not been looked at, and a
+ * count of zero says both.
+ */
+export const findingsUnifiedAt = (root: string): string | null =>
+  getMeta<{ at: string }>(db(root), "findings_unified")?.at ?? null;
+
+export const markFindingsUnified = (root: string, count: number): void =>
+  setMeta(db(root), "findings_unified", { at: nowISO(), count });
+
 /** Which PRs have already had their GitHub viewed-ticks imported, so a bulk run resumes. */
 export type ViewedImportStore = { schemaVersion: number; imported: Record<string, { at: string; marked: number }> };
 

@@ -304,10 +304,15 @@ export async function sharedStatus(root: string) {
   const mine = currentManifest("error" in actor ? "" : actor.principal);
   const peers = await readManifests(cfg.path);
   const incompat = checkPeers(peers, mine);
+  const { splitState } = await import("./findings-unify.js");
+  const split = await splitState(root);
   return {
     universe: cfg.universe,
     sidecar: cfg.path,
     you: "error" in actor ? null : actor.principal,
+    // Activating a sidecar and leaving findings off it is the state that produced every
+    // "no finding X on pr Y" — the record was real and the log had never heard of it.
+    ...(split ? { unmigratedFindings: split.local.length, action: "codemap unify-findings" } : {}),
     peers: peers.map((p) => ({ principal: p.principal, anchorScheme: p.anchorScheme, hashScheme: p.hashScheme })),
     ...(incompat ? { [incompat.fatal ? "blocked" : "warning"]: incompat.message } : {}),
   };
@@ -707,10 +712,24 @@ export async function sharedFindings(root: string, pr: number | string, opts: { 
   // costs nothing and makes `tier` discoverable from the answer that motivates it.
   const tiers: Record<FindingTier, number> = { confirmed: 0, unconfirmed: 0, doubted: 0, settled: 0 };
   for (const f of all) tiers[findingTier(f)]++;
+  // THE RATCHET, reported rather than enforced by refusal. With a sidecar configured,
+  // findings the team cannot see are the split state every store-half bug came out of —
+  // and the surface that would hide it is precisely this one, which lists both kinds and
+  // used to render them identically. Refusing the read instead would put the fix behind
+  // the surface that reports the problem.
+  const unmigrated = cfg ? all.filter((f) => !f.origin) : [];
   return {
     scope: nonAuthoritative(scope as ScopeStatus),
     universe: cfg?.universe ?? null,
     pr,
+    ...(unmigrated.length
+      ? {
+        splitStore: {
+          local: unmigrated.length,
+          note: "these are on this map only — the team cannot see them. `codemap unify-findings` publishes them, ids and history preserved.",
+        },
+      }
+      : {}),
     total: all.length,
     waitingOnYou: ackQueue(all).length,
     contested: all.filter((f) => f.contested?.length).length,

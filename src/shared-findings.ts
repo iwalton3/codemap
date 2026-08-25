@@ -132,6 +132,19 @@ export interface SharedFinding {
   sourceRef?: string;
   author: Actor;
   createdAt: string;
+  /**
+   * What the LOCAL row said about who filed it and when, carried as the publisher's
+   * claim — the shape `SharedBug.filedAt` already uses, and for the same reason.
+   *
+   * Only a one-time migration sets it. `author` and `createdAt` come from the event, and
+   * must: the event actor is who is accountable for the publication, and an event that
+   * asserted somebody else wrote it would be exactly the false provenance this design
+   * refuses. But the pre-sidecar record HAD an author — often a legacy label like
+   * `agent:pr-first-pass` rather than a principal — and dropping it silently would lose
+   * the only evidence of where the finding came from. So it is kept, and kept under a
+   * name that says whose claim it is.
+   */
+  filed?: { by: string; at: string };
 
   state: FindingState;
   corroboration: Corroboration[];
@@ -405,6 +418,9 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         sourceRef: str(d, "sourceRef"),
         author: e.actor,
         createdAt: e.at,
+        ...(str(d, "filedBy") || str(d, "filedAt")
+          ? { filed: { by: str(d, "filedBy") ?? "(unrecorded)", at: str(d, "filedAt") ?? e.at } }
+          : {}),
         // Authorship decides the opening state, exactly as the old disposition
         // default did — but from `via`, not from a prefix on a name.
         state: isAgentActor(e.actor) ? "issued" : "created",
@@ -584,6 +600,9 @@ const emit = (
 
 export interface NewFinding {
   id?: string;
+  /** Migration only — see `SharedFinding.filed`. */
+  filedBy?: string;
+  filedAt?: string;
   targetKind: "anchor" | "node";
   targetId: string;
   text: string;
