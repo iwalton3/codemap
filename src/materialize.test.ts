@@ -274,7 +274,7 @@ test("a corrupt projection row invalidates the scope instead of vanishing", asyn
     assert.equal(first.size, 2);
 
     // Damage a row without touching the log.
-    db(f.root).prepare("UPDATE shared_finding SET body = ? WHERE scope = ?").run("{not json", scope);
+    db(f.root).prepare("UPDATE findings SET body = ? WHERE source_scope = ?").run("{not json", scope);
 
     let folds = 0;
     const after = await readCached(f.root, f.logRoot, scope, ID, (e) => { folds++; return foldFindings(e); }, findingsProjection);
@@ -526,4 +526,77 @@ test("walkthroughs round-trip through their projection, and are read from the ca
     assert.equal(again.length, 2, "still two authors");
     assert.equal(again.find((w) => w.actor.principal === izzie.principal)!.walkthrough.head, "h2");
   } finally { [logRoot, root].forEach((r) => rmSync(r, { recursive: true, force: true })); }
+});
+
+/**
+ * The oracle's hostile-history property found this, and it earns a fast test of its
+ * own because the oracle is slow and reaches it sideways.
+ *
+ * A findings scope is PER PULL REQUEST, so one log can carry the same id in two of
+ * them — a fork, a replayed shard, or somebody hand-writing an event. Keyed on `id`
+ * alone (the shape `bugs` uses, where a universe has exactly one scope) the second
+ * scope's row silently does not land: the fold says two findings, the table holds one,
+ * and nothing about that moves the fingerprint, so every later read of that scope
+ * answers from something the log does not say.
+ */
+test("the same finding id in two pull requests is two rows, not one", async () => {
+  const f = await fixture();
+  try {
+    const OTHER = 999;
+    await createFinding(f.logRoot, PR, izzie, {
+      id: "f_same", targetKind: "anchor", targetId: "a_here", text: "on 264",
+    } as never);
+    await createFinding(f.logRoot, OTHER, dana, {
+      id: "f_same", targetKind: "anchor", targetId: "a_there", text: "on 999",
+    } as never);
+
+    for (const pr of [PR, OTHER]) {
+      const scope = findingScope(pr);
+      const cached = await readCached(f.root, f.logRoot, scope, ID, foldFindings, findingsProjection);
+      same(cached, foldFindings(await readScope(f.logRoot, scope)), `pr ${pr} must materialize whole`);
+      assert.ok(cached.get("f_same"), `pr ${pr} kept its own copy of the shared id`);
+    }
+
+    // And they are two distinct rows, not one the second fold overwrote.
+    const { db } = await import("./db.js");
+    const rows = db(f.root).prepare(
+      "SELECT pr, target_id FROM findings WHERE id = ? ORDER BY pr",
+    ).all("f_same") as unknown as { pr: string; target_id: string }[];
+    // Spread: node:sqlite rows are null-prototype, which deepEqual counts as a difference.
+    assert.deepEqual(rows.map((r) => ({ ...r })), [
+      { pr: "264", target_id: "a_here" },
+      { pr: "999", target_id: "a_there" },
+    ], "each scope owns its own row, and `pr` is stored rather than inferred");
+  } finally { f.cleanup(); }
+});
+
+/**
+ * Publishing a local finding preserves its id — it is a republication of history, not
+ * a new finding — so the fold meets an id already in the table. It must ADOPT that row
+ * rather than insert beside it: two rows for one finding is the duplicate the
+ * cancelled outbox overlay existed to paper over.
+ */
+test("a published local finding is adopted, not duplicated", async () => {
+  const f = await fixture();
+  try {
+    const { db } = await import("./db.js");
+    const scope = findingScope(PR);
+    const d = db(f.root);
+    // A local row: what filing with no sidecar configured leaves behind.
+    d.prepare(
+      "INSERT INTO findings(id,pr,target_kind,target_id,state,author,created_at,needs_ack,contested,body) "
+      + "VALUES(?,?,?,?,?,?,?,?,?,?)",
+    ).run("f_local", "264", "anchor", "a_1", "created", izzie.principal, "2026-01-01T00:00:00Z", 0, 0,
+      JSON.stringify({ id: "f_local", text: "filed before the sidecar existed" }));
+
+    await createFinding(f.logRoot, PR, izzie, {
+      id: "f_local", targetKind: "anchor", targetId: "a_1", text: "filed before the sidecar existed",
+    } as never);
+    await readCached(f.root, f.logRoot, scope, ID, foldFindings, findingsProjection);
+
+    const rows = d.prepare("SELECT source_scope FROM findings WHERE id = ?").all("f_local") as unknown as
+      { source_scope: string | null }[];
+    assert.equal(rows.length, 1, "one finding is one row");
+    assert.equal(rows[0]!.source_scope, scope, "and the fold now owns it");
+  } finally { f.cleanup(); }
 });

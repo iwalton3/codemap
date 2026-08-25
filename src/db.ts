@@ -379,6 +379,54 @@ function migrate(d: DatabaseSync): void {
       body TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS ix_bugs_scope ON bugs(source_scope);
+
+    -- Findings. ONE canonical table, on the same rule as bugs and for a sharper
+    -- reason: there were two stores holding the same entity and neither was a
+    -- superset. On one real universe, 96 local findings against 26 shared ones, with
+    -- no surface showing more than 96 of the 122. See docs/plan-findings-unification.md.
+    --
+    -- pr is a COLUMN, and that is the whole point. A local annotation had no pr at
+    -- all, so which pull request a finding belonged to was inferred by intersecting
+    -- its target with that PR's changed-symbol worklist -- which silently drops every
+    -- finding about code the PR does not touch, the exact class a reviewer most needs.
+    -- Stored here, the association cannot be got wrong and cannot be lost. Worklist
+    -- intersection goes back to being what it always should have been: a rendering
+    -- decision about which chapter a finding belongs in.
+    --
+    -- Keyed like triage, NOT like bugs. One universe has one bugs scope, so an id
+    -- alone identifies a bug; findings have one scope PER PULL REQUEST, and a log can
+    -- carry the same id in two of them -- a fork, a replayed shard, or somebody
+    -- hand-writing one. An id-only primary key silently drops the second, and the
+    -- oracle's hostile-history property caught exactly that: the fold said two
+    -- findings, the table held one, and every read of that scope then answered from
+    -- something the log does not say.
+    --
+    -- So: partial unique indexes, the pattern triage already uses here. SQLite does
+    -- not conflict NULLs, so a plain UNIQUE(source_scope, id) would admit unlimited
+    -- duplicate LOCAL rows.
+    CREATE TABLE IF NOT EXISTS findings (
+      id TEXT NOT NULL,
+      pr TEXT NOT NULL,
+      target_kind TEXT NOT NULL, target_id TEXT NOT NULL,
+      state TEXT NOT NULL, severity TEXT, category TEXT, line INTEGER,
+      author TEXT NOT NULL, created_at TEXT NOT NULL,
+      -- Derived by the FOLD and recomputed whole, never incremented, so the ack queue
+      -- is a WHERE rather than a scan over deserialized objects.
+      needs_ack INTEGER NOT NULL DEFAULT 0, contested INTEGER NOT NULL DEFAULT 0,
+      origin TEXT, source_scope TEXT,
+      -- The fold's own iteration order; a column rather than rowid for the reason
+      -- bugs.ord gives -- adoption UPDATEs a row already there.
+      ord INTEGER,
+      body TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ix_findings_local ON findings(id)
+      WHERE source_scope IS NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS ix_findings_shared ON findings(source_scope, id)
+      WHERE source_scope IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS ix_findings_pr ON findings(pr);
+    CREATE INDEX IF NOT EXISTS ix_findings_target ON findings(target_id);
+    CREATE INDEX IF NOT EXISTS ix_findings_queue ON findings(pr, needs_ack);
+    CREATE INDEX IF NOT EXISTS ix_findings_scope ON findings(source_scope);
     -- ord and author are columns rather than part of the JSON because neither
     -- survives a round trip through it: versions are ORDERED (oldest first) and a
     -- Map key order is not a document property, and SharedDoc.authors is a Map,

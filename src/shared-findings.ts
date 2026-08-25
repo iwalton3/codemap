@@ -134,6 +134,45 @@ export interface SharedFinding {
    * as the ack queue: a machine may propose, a person decides.
    */
   contested?: Contested[];
+  /**
+   * Where this machine's copy came from. Set by the STORE from the row's
+   * `source_scope`, never by the fold — the fold's output describes the finding, not
+   * this clone's provenance for it, and a value the fold never produced would break
+   * the projection round trip. Absent means a local finding: filed here, with no
+   * sidecar configured, and not yet published.
+   */
+  origin?: { scope: string };
+  /**
+   * The pull request. Set by the STORE from the row's own column, on the same rule as
+   * `origin`. For a fold-owned finding it is `prOfScope(source_scope)`; for a local
+   * one it is what the filer supplied. Stored either way — the association is never
+   * inferred from a worklist again.
+   */
+  pr?: string;
+}
+
+/**
+ * The pull request a findings scope is about — the inverse of `findingScope(prKey(...))`.
+ *
+ * The association is STRUCTURAL: it is the scope, not a field on the event, which is
+ * why no shared finding has ever been filed against the wrong pull request. The
+ * canonical `findings` table lifts it into a column so a reader has it without parsing
+ * a path, and this is where that column's value comes from.
+ *
+ * `lastIndexOf`, not a split: a universe key contains slashes of its own
+ * (`acme/api/pr-264`), so the first `/pr-` is not reliably the last one.
+ *
+ * TOTAL on purpose, and the fallback is not decoration. `findingScope` takes whatever
+ * key the caller scopes by: `ops` always passes the universe-qualified `prKey`, but a
+ * bare `findingScope(264)` is legal and several tests use it. Returning `""` for that
+ * shape would put empty strings in a NOT NULL column, which reads as a value rather
+ * than as the failure it is.
+ */
+export function prOfScope(scope: string): string {
+  const i = scope.lastIndexOf("/pr-");
+  if (i >= 0) return scope.slice(i + "/pr-".length);
+  const j = scope.indexOf("/");
+  return j < 0 ? scope : scope.slice(j + 1);
 }
 
 /**

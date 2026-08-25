@@ -21,7 +21,7 @@ import { db } from "./db.js";
 import { CorruptProjection, type Projection } from "./materialize.js";
 import type { LogEvent } from "./eventlog.js";
 import { foldWalkthroughs, type SharedWalkthrough } from "./shared-walkthrough.js";
-import { needsHumanAck, foldFindings, type SharedFinding } from "./shared-findings.js";
+import { needsHumanAck, foldFindings, prOfScope, type SharedFinding } from "./shared-findings.js";
 import { foldDocs, type SharedDoc, type UnmatchedAcceptance } from "./shared-docs.js";
 import { foldNotes, type SharedNote } from "./shared-notes.js";
 import { foldTriage, triageSubject, isTombstone, ABSENT_FIELD, type TriageEntry, type Axis, type TriageField } from "./shared-triage.js";
@@ -30,43 +30,84 @@ import { foldBugs, needsHumanAck as bugNeedsAck, type SharedBug } from "./shared
 import type { Actor, NodeVersion } from "./schema.js";
 
 /**
- * Findings, keyed by scope.
+ * Findings, into the ONE canonical `findings` table.
  *
- * `body` holds the whole `SharedFinding` as JSON — the same shape `node_versions`
- * already uses for citations. The real columns are only what a query filters or
- * joins on, and every one of them is copied from the fold's own output rather than
- * derived from the anchors table, which is the condition the cache key rests on.
+ * A teammate's finding is a row there with an `origin`, not a row in a parallel
+ * `shared_finding` — the rule that removed the `shared_doc_*` tables, and the reason a
+ * finding now shows up in the review queue, the PR story, the anchor view and the
+ * GitHub publish path with no bridge code at any of them. Before this there were two
+ * stores holding the same entity and neither was a superset: 96 local findings against
+ * 26 shared ones on one universe, with no surface showing more than 96 of the 122.
+ *
+ * **`pr` comes from the SCOPE**, which is the only place it has ever been reliable —
+ * see `prOfScope`.
+ *
+ * **Replaces only what it owns.** `DELETE ... WHERE source_scope = ?`, never by id or
+ * by pr: a bare delete would silently take local rows the fold may not own, and the
+ * next fold would not put them back.
+ *
+ * **The adoption rule**, identical to `bugsProjection`'s and for the identical crash.
+ * Publishing a local finding preserves its id — a republication of history, not a new
+ * finding — so on any store that filed then published, the fold inserts an id that
+ * already exists, `findings` keys on `id` alone, and the constraint violation happens
+ * INSIDE `readCached`'s transaction: the fold throws, every finding read on that store
+ * fails, and nothing about the failure moves the fingerprint, so it never self-heals.
+ * The row is the same row, so the fold ADOPTS it. The predicate is narrow for the
+ * reason docs' and bugs' are: a local row EDITED between publishing and the first fold
+ * holds content the event does not, and overwriting it is unrecoverable loss.
  */
 export const findingsProjection: Projection<Map<string, SharedFinding>> = {
   write(d: DatabaseSync, scope: string, value: Map<string, SharedFinding>): void {
-    // Replace, not merge. A fold is a whole-scope answer, and merging would let a
-    // row survive the event that retracted it.
-    d.prepare("DELETE FROM shared_finding WHERE scope = ?").run(scope);
+    const pr = prOfScope(scope);
+    d.prepare("DELETE FROM findings WHERE source_scope = ?").run(scope);
     const ins = d.prepare(
-      "INSERT INTO shared_finding(scope,id,target_kind,target_id,state,severity,category,line,"
-      + "author,created_at,needs_ack,contested,body) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO findings(id,pr,target_kind,target_id,state,severity,category,line,"
+      + "author,created_at,needs_ack,contested,origin,source_scope,ord,body) "
+      + "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
     );
+    const adopt = d.prepare(
+      "UPDATE findings SET pr=?,target_kind=?,target_id=?,state=?,severity=?,category=?,line=?,"
+      + "author=?,created_at=?,needs_ack=?,contested=?,origin=?,source_scope=?,ord=?,body=? "
+      + "WHERE id=? AND source_scope IS NULL",
+    );
+    // LOCAL rows only. Looking an id up across every scope was the first version's
+    // bug: another PR's row for the same id made this skip, so the fold's second
+    // finding was never stored. Another scope's row is not ours to adopt OR to block
+    // on -- it is a different row under `ix_findings_shared`.
+    const candidate = d.prepare("SELECT body FROM findings WHERE id = ? AND source_scope IS NULL");
+    let ord = 0;
     for (const f of value.values()) {
-      ins.run(
-        scope, f.id, f.target.kind, f.target.id, f.state,
+      const i = ord++;
+      // `origin` and `pr` are STORE facts, not fold output — they must not ride in the
+      // JSON, or the round trip returns a value the fold never produced.
+      const body = JSON.stringify({ ...f, origin: undefined, pr: undefined });
+      const cols = [
+        pr, f.target.kind, f.target.id, f.state,
         f.severity ?? null, f.category ?? null, f.line ?? null,
         f.author.principal, f.createdAt,
         needsHumanAck(f) ? 1 : 0, f.contested?.length ? 1 : 0,
-        JSON.stringify(f),
-      );
+        "sync", scope, i, body,
+      ];
+      const row = candidate.get(f.id) as { body: string } | undefined;
+      if (!row) { ins.run(f.id, ...cols as any); continue; }
+      let local: SharedFinding | null = null;
+      try { local = JSON.parse(row.body) as SharedFinding; } catch { /* unreadable: not adoptable */ }
+      if (!local || local.text !== f.text) continue;
+      adopt.run(...cols as any, f.id);
     }
   },
 
   read(d: DatabaseSync, scope: string): Map<string, SharedFinding> {
     const out = new Map<string, SharedFinding>();
-    // Insertion order, so a re-read matches the fold's own iteration order. The
-    // fold walks events in causal order and the ack queue is presented in it.
-    for (const r of d.prepare("SELECT id, body FROM shared_finding WHERE scope = ? ORDER BY rowid").all(scope) as unknown as
+    // `ord`, the fold's own order — the fold walks events in causal order and the ack
+    // queue is presented in it. Returns the PURE fold output: `origin` and `pr` are
+    // added by the store-level readers, so `read(write(x))` still equals `x`.
+    for (const r of d.prepare("SELECT id, body FROM findings WHERE source_scope = ? ORDER BY ord").all(scope) as unknown as
       { id: string; body: string }[]) {
       try {
         out.set(r.id, JSON.parse(r.body) as SharedFinding);
       } catch {
-        throw new CorruptProjection(`shared_finding ${scope}/${r.id} is unreadable`);
+        throw new CorruptProjection(`findings ${scope}/${r.id} is unreadable`);
       }
     }
     return out;
