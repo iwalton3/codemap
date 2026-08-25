@@ -635,6 +635,16 @@
        per finding, location and provenance on a muted second line, evidence behind a
        click. The 3px left rail is the only ornament and it encodes severity, so a long
        list reads as a severity spectrum without a badge on every row. */
+    /* A finding on the anchor's own page. Same severity rail as the pull-request list,
+       because it is the same object seen from the other side. */
+    .afind { border-left: 3px solid var(--border); background: var(--panel); border-radius: 0 6px 6px 0;
+      padding: 7px 12px; margin: 5px 0; }
+    .afind.sev-critical, .afind.sev-high { border-left-color: var(--bad); }
+    .afind.sev-medium { border-left-color: var(--warn); }
+    .afind .tfmeta { margin-left: 0; }
+    .afind .tfmeta a { color: var(--accent); text-decoration: none; }
+    .afind .tfmeta a:hover { text-decoration: underline; }
+    .afindtext { margin-top: 4px; color: var(--text); overflow-wrap: anywhere; }
     .tfind { border-left: 3px solid var(--border); background: var(--panel); border-radius: 0 6px 6px 0;
       padding: 7px 12px; margin: 5px 0; cursor: pointer; }
     .tfind:hover { background: var(--panel2); }

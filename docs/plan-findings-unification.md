@@ -237,8 +237,12 @@ migrating actor, and say so.
    Write-through landed on all thirteen write ops (twelve was a miscount — `settleContest`
    is one too), and the store half is `readFindings` / `readFinding` /
    `writeLocalFinding`.
-3. **Repoint every reader** at the canonical table — review queue, PR story, anchor
-   page, dashboard, orphans, `pr-push.ts`. Delete the bridges rather than adding one.
+3. **Repoint every reader** at the canonical table. DONE for `sharedFindings`, the PR
+   story page, the anchor page and `orphans`. LEFT: `reviewQueue` (and with it the
+   `findings` / `review_queue` tools and `close_finding`), which is Annotation-shaped
+   and feeds `pr-push`. `pr-push` itself stays local — publishing to GitHub is a manual
+   raise and the sidecar is not meant to feed it, so it is not a gap.
+   The dashboard's `open` is documentation coverage, not findings; nothing to repoint.
 4. **Collapse the tool surface**: one context-discriminated create verb, one lifecycle
    verb set resolving opaque ids against records, `accept_finding` -> `defer_finding`.
 5. ~~**Migration script** for the 96~~ **DONE** — `src/findings-migrate.ts`,

@@ -2,7 +2,7 @@ import { type Annotation } from "../schema.js";
 import { indexCommit } from "../repo.js";
 import { revParse } from "../git.js";
 import { citedAnchors } from "../shared-bugs.js";
-import { readAnchorStore, readBugs, readAnnotations, readReviews, findAnchorsOutsideWork, readOrphans } from "../store.js";
+import { readAnchorStore, readBugs, readAnnotations, readFindings, readReviews, findAnchorsOutsideWork, readOrphans } from "../store.js";
 
 /**
  * What is pointing at code the working tree no longer has — "what did that refactor
@@ -40,7 +40,7 @@ export async function orphanedWork(root: string, opts: { locate?: boolean; maxCo
   const addressOf = (v: string | null | undefined): string | undefined =>
     v && v !== "@work" && v !== "@orphan" ? v : undefined;
 
-  const refs: { id: string; kind: "annotation" | "bug" | "review"; ref: string; label: string; posted?: Annotation["postedRef"]; sourceRef?: string }[] = [];
+  const refs: { id: string; kind: "annotation" | "bug" | "review" | "finding"; ref: string; label: string; posted?: Annotation["postedRef"]; sourceRef?: string }[] = [];
   for (const a of annStore.annotations) {
     if (a.target.kind !== "anchor" || live.has(a.target.id)) continue;
     refs.push({
@@ -59,6 +59,18 @@ export async function orphanedWork(root: string, opts: { locate?: boolean; maxCo
       if (live.has(id)) continue;
       refs.push({ id, kind: "bug", ref: b.id, label: b.title, ...(addressOf(b.createdCommit) ? { sourceRef: b.createdCommit! } : {}) });
     }
+  }
+  // Findings, since they are rows rather than annotations. Left out, a finding whose
+  // symbol a refactor removed was invisible to the one report that exists to ask "what
+  // did that break?" — and after the migration that is where most of them live.
+  for (const f of (await readFindings(root)).findings) {
+    if (f.target.kind !== "anchor" || live.has(f.target.id)) continue;
+    refs.push({
+      id: f.target.id, kind: "finding", ref: f.id,
+      label: (f.comment || f.text).split("\n")[0]!.slice(0, 120),
+      ...(f.posted ? { posted: { pr: 0, at: f.posted.at, placement: "inline" as const, ...(f.posted.url ? { url: f.posted.url } : {}) } } : {}),
+      ...(addressOf(f.sourceRef) ? { sourceRef: f.sourceRef! } : {}),
+    });
   }
   // Reviews too: a stranded sign-off is a lost attestation, and retention protects
   // them, so leaving them out of the sweep would report less than was kept.

@@ -4,7 +4,7 @@ import { type Anchor, type LogicalNode, type CoverageState } from "../schema.js"
 import { indexFile, indexBlob } from "../repo.js";
 import { headCommit, readBlobs } from "../git.js";
 import { citedAnchors, isClosed } from "../shared-bugs.js";
-import { readAnchorStore, loadNodes, readGraph, readBugs, readAnnotations, readReviews, findAnchorsOutsideWork, snapshotBranch, readOrphans } from "../store.js";
+import { readAnchorStore, loadNodes, readGraph, readBugs, readAnnotations, readFindings, readReviews, findAnchorsOutsideWork, snapshotBranch, readOrphans } from "../store.js";
 import { resolveAnchorRefs } from "../refs.js";
 import { reviewStatus, reviewStatesFor, anchorReviewMap, deriveCodeReview, type ReviewPair } from "../reviews.js";
 import { triageStatus } from "../triage.js";
@@ -353,6 +353,14 @@ export async function getAnchor(root: string, id: string) {
       ? { sharedScope: { status: anchorVerdict.status, diagnostic: anchorVerdict.diagnostic } } : {}),
     bugs: bugStore.bugs.filter((b) => citedAnchors(b).includes(id)).map((b) => ({ id: b.id, title: b.title, state: b.state })),
     annotations: annStore.annotations.filter((a) => a.target.kind === "anchor" && a.target.id === id),
+    // Findings are rows, not annotations, so without this an anchor's page showed
+    // notes and questions about it and none of the findings raised against it.
+    findings: (await readFindings(root)).findings
+      .filter((f) => f.target.kind === "anchor" && f.target.id === id)
+      .map((f) => ({
+        id: f.id, pr: f.pr, state: f.state, severity: f.severity, category: f.category,
+        text: f.comment || f.text, author: f.author.principal, shared: !!f.origin,
+      })),
     lang: langFor(anchor.file),
     review: await reviewStatus(root, { kind: "anchor", id }),
     // The `viewed` exposure marks, separate from the vouch above, so the UI can show

@@ -1090,6 +1090,19 @@ class AnchorPage extends Component {
       <div style="margin:8px 0">${triageRowEl(a.triage, (imp) => this.triage(imp), (on) => this.armTripwire(on))}</div>
       ${when(a.citedBy && a.citedBy.length, () => html`<div class="sec">documented by</div><div class="chips">${each(a.citedBy, n => html`<span class="chip" on-click="${() => go(nodeUrl(u, n.id))}">${n.title || n.id}</span>`)}</div>`)}
       ${when(a.bugs && a.bugs.length, () => html`<div class="sec">bugs</div><div class="chips">${each(a.bugs, b => html`<span class="chip">${b.state} · ${b.title}</span>`)}</div>`)}
+      ${when(a.findings && a.findings.length, () => html`
+        <div class="sec">findings on this symbol</div>
+        ${each(a.findings, f => html`<div class="afind sev-${f.severity || 'low'}">
+          <div class="tfmeta">
+            <a href="#/u/${u}/shared/${f.pr}/">PR ${f.pr}</a>
+            <span>${f.severity ?? '—'}</span>
+            <span>${f.state}</span>
+            ${when(!!f.category, () => html`<span>${f.category}</span>`)}
+            <span>${f.author}</span>
+            ${when(!f.shared, () => html`<span class="dim" title="filed here, not yet sent to the team">local</span>`)}
+          </div>
+          <div class="afindtext">${f.text}</div>
+        </div>`, f => f.id)}`)}
       ${annoThread(this, u, 'anchor', a.id, a.annotations)}
       <shared-notes-panel universe="${u}" target="${a.id}"></shared-notes-panel>
       <div class="sec">source</div>
