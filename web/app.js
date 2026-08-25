@@ -3995,8 +3995,17 @@ class PrStoryPage extends Component {
     }
     const plan = p.plan, sk = plan.skipped;
     const comments = p.what === 'comments';
+    // The comment half is off (a sidecar publishes findings), so this modal is the
+    // SIGN-OFF push and nothing else: your summary and your verdict. Everything below
+    // describes what would be posted as comments, which is now nothing — showing the
+    // held-back counts here would be answering a question nobody asked.
+    const verdictOnly = comments && !!plan.commentPush;
     return html`<div class="prpromo">
-      ${when(comments, () => html`
+      ${when(verdictOnly, () => html`
+        <div>Your verdict and summary go to <a href="${plan.pr.url}" target="_blank" rel="noreferrer">#${plan.pr.number}</a>.
+          <span class="dim">Findings are not posted as comments — ${plan.commentPush.why}</span></div>
+        ${this.pushSummaryEl()}`)}
+      ${when(comments && !verdictOnly, () => html`
         <div><b>${plan.comments.length}</b> inline comment(s)${plan.deferred.length ? `, ${plan.deferred.length} folded into the review body (their line is not in the diff)` : ''} would go to <a href="${plan.pr.url}" target="_blank" rel="noreferrer">#${plan.pr.number}</a>.</div>
         ${this.pushSummaryEl()}
         ${each(plan.comments, c => html`<div class="pushrow">
@@ -4209,7 +4218,7 @@ class PrStoryPage extends Component {
         ${when(this.state.markError, () => html`<div class="warn">sign-off failed: ${this.state.markError}</div>`)}
         <div class="prderive prpush">
           <button class="${this.state.showFindings ? 'on' : ''}" on-click="${() => this.toggleFindings()}" title="every finding on this PR in one list — raise or resolve without opening each symbol">${this.state.showFindings ? 'hide findings' : `findings (${this.allFindings().filter(e => !e.f.resolved).length + this.sharedOpenCount()})`}</button>
-          ${when(!this.hasSidecar(), () => html`<button on-click="${() => this.openPush('comments')}" title="post your findings to the pull request as review comments. Yours go out; an agent's only if you raised it. Shows you exactly what would be sent first.">push comments to GitHub</button>`)}
+          <button on-click="${() => this.openPush('comments')}" title="${this.hasSidecar() ? 'post your verdict and summary to the pull request. Findings are NOT posted as comments — they live on the team\'s sidecar. Shows you exactly what would be sent first.' : 'post your findings to the pull request as review comments. Yours go out; an agent\'s only if you raised it. Shows you exactly what would be sent first.'}">${this.hasSidecar() ? 'push review verdict to GitHub' : 'push comments to GitHub'}</button>
           <button on-click="${() => this.openPush('viewed')}" title="tick the per-file viewed boxes on GitHub for files you have fully signed off here, so both tools agree about what has been read.">push viewed state to GitHub</button>
           <button on-click="${() => this.openResolveSync()}" title="compare which of your posted findings are settled here against which conversations are resolved on the pull request — for when the submitter fixed it and left the comment open.">sync resolved state</button>
         </div>
