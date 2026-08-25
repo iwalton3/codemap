@@ -1121,6 +1121,26 @@ export const requestOnLocalFinding = (root: string, id: string, ask: Ask, ration
     return { ask, note: "queued for a person to acknowledge" };
   });
 
+export const setLocalFindingPosted = (root: string, id: string, ref: { key?: string; url?: string }) =>
+  localFindingWrite(root, id, (f, actor, at) => {
+    // A latch, the fold's rule: two people publishing one finding is the duplicate the
+    // log exists to prevent, so the FIRST record stands.
+    if (!f.posted) f.posted = { system: "github", key: ref.key, url: ref.url, at, by: actor };
+    return { posted: f.posted.url ?? f.posted.key };
+  });
+
+export const relocateLocalFinding = (
+  root: string, id: string, kind: "moved" | "gone", rationale: string, opts: { to?: string } = {},
+) => localFindingWrite(root, id, (f, actor, at) => {
+  if (!rationale.trim()) return { error: `saying a target ${kind === "moved" ? "moved" : "is gone"} without saying why leaves nothing to check` };
+  if (kind === "moved" && !opts.to?.trim()) return { error: "say WHICH anchor it moved to — \"it moved\" is not actionable" };
+  // A PROPOSAL, never applied, exactly as the shared half refuses: re-pointing a finding
+  // at the wrong symbol is worse than leaving it untriaged, and being local does not make
+  // that judgement any more an agent's to take.
+  f.relocation = { kind, rationale, by: actor, at, ...(opts.to ? { to: opts.to } : {}) };
+  return { kind, note: "queued for a person to apply" };
+});
+
 export async function closeAssignment(
   root: string,
   input: {

@@ -69,8 +69,9 @@ import {
   closeAssignment as closeAnnotation, closeLocalFinding as closeLocal, commentOnLocalFinding,
   reviseLocalFinding, reviseAnnotation, remediateLocalFinding, checkComment, REVISABLE,
   setLocalFindingState, corroborateLocalFinding, promoteLocalFinding, requestOnLocalFinding,
+  setLocalFindingPosted, relocateLocalFinding,
 } from "./ops/annotations.js";
-import { commentBug, corroborateBugOp, requestOnBugOp } from "./ops/bugs.js";
+import { commentBug, corroborateBugOp, requestOnBugOp, acceptFinding } from "./ops/bugs.js";
 import { readFinding, readBug } from "./store.js";
 import { isRemediation, type Ask, type FindingState, type Remediation, type Verdict } from "./shared-findings.js";
 export { reportDefect, type DefectContext, type DefectInput } from "./ops/defect.js";
@@ -333,4 +334,50 @@ export async function promoteOn(root: string, id: string): Promise<Record<string
   if (!f.origin) return promoteLocalFinding(root, id);
   const shared = await import("./ops-shared.js");
   return shared.promoteFinding(root, f.pr!, id) as Promise<Record<string, unknown>>;
+}
+
+/**
+ * Where a finding landed on the pull request, wherever the row lives.
+ *
+ * Dispatched on the RECORD like everything else. It took a `pr` and went straight to the
+ * log, so on a local row it emitted an event the fold drops and returned `{ ok: true }` —
+ * and `inbound_replies` reads nothing but this, so the silent success guaranteed those
+ * replies would never be shown to anybody.
+ */
+export async function recordPublishedOn(
+  root: string, id: string, ref: { key?: string; url?: string },
+): Promise<Record<string, unknown>> {
+  const f = await readFinding(root, id).catch(() => null);
+  if (!f) return { error: `no finding "${id}"` };
+  if (!f.origin) {
+    return setLocalFindingPosted(root, id, ref);
+  }
+  const shared = await import("./ops-shared.js");
+  return shared.recordPublished(root, f.pr!, id, ref) as Promise<Record<string, unknown>>;
+}
+
+/** Say where a finding's target went, wherever the row lives. */
+export async function relocateOn(
+  root: string, id: string, kind: "moved" | "gone", rationale: string, opts: { to?: string } = {},
+): Promise<Record<string, unknown>> {
+  const f = await readFinding(root, id).catch(() => null);
+  if (!f) return { error: `no finding "${id}"` };
+  if (!f.origin) return relocateLocalFinding(root, id, kind, rationale, opts);
+  const shared = await import("./ops-shared.js");
+  return shared.relocateFinding(root, f.pr!, id, kind, rationale, opts) as Promise<Record<string, unknown>>;
+}
+
+/**
+ * Defer a finding into a bug, wherever the row lives.
+ *
+ * The finding carries its own pull request, so there is no `pr` to get wrong — which is
+ * what made this fail on a correct id: `no finding <id> on pr <n>` for a real record,
+ * because the id was a local row and the lookup read the log.
+ */
+export async function deferFinding(
+  root: string, id: string, opts: { title?: string; severity?: "low" | "medium" | "high" | "critical" } = {},
+): Promise<Record<string, unknown>> {
+  const f = await readFinding(root, id).catch(() => null);
+  if (!f) return { error: `no finding "${id}" — ids come from \`findings\` or \`shared_findings\`` };
+  return acceptFinding(root, f.pr!, id, opts) as Promise<Record<string, unknown>>;
 }

@@ -347,8 +347,42 @@ test("a finding pointing at code this checkout does not have is refused, not gue
     const f = await shared.shareFinding(r.root, 264, {
       targetKind: "anchor", targetId: "a_from_another_branch", text: "something", comment: "x",
     }) as any;
-    assert.match((await ops.acceptFinding(r.root, 264, f.id) as any).error,
-      /resolves to no anchor in this checkout/);
+    assert.match((await ops.deferFinding(r.root, f.id) as any).error,
+      /resolves to no anchor here/);
+  } finally { r.cleanup(); }
+});
+
+test("a finding on code the BRANCH introduces defers — that is the normal case, not an edge", async () => {
+  const r = await repo(true);
+  try {
+    // The shape that read like a design limit: a finding about code the pull request
+    // ADDS resolves to no `@work` anchor, so deferring it answered "index the branch it
+    // is on first" over a snapshot `codemap pr <N>` had already written. `resolveRefs`
+    // carried `scopeRef` and `includeOrphans` the whole time, with comments describing
+    // this exact case; `witnessRefs` was the one call site that did not pass them.
+    const { writeSnapshot } = await import("./store.js");
+    const { indexBlob } = await import("./repo.js");
+    const src = "export function onlyOnTheBranch(cents: number) {\n  return cents * 2;\n}\n";
+    const branchAnchors = await indexBlob(src, "src/branch-only.ts");
+    const id = branchAnchors[0]!.id;
+    await writeSnapshot(r.root, "prhead", "feature/x", branchAnchors, "2026-08-19T00:00:00Z");
+
+    const shared = await import("./ops-shared.js");
+    const f = await shared.shareFinding(r.root, 264, {
+      targetKind: "anchor", targetId: id, text: "doubles instead of halving", comment: "fix the factor",
+      sourceRef: "prhead",
+    } as never) as any;
+
+    const accepted = await ops.deferFinding(r.root, f.id) as any;
+    assert.ok(accepted.ok, `deferral refused: ${accepted.error}`);
+    const bug = await ops.bugDetail(r.root, accepted.id) as any;
+    assert.deepEqual(bug.anchors.map((a: any) => a.id), [id], "anchored to the branch's symbol");
+    // The symbol is not in the WORKING tree — it exists only on the branch — so the bug
+    // records that honestly rather than refusing to exist. `present: false` with no
+    // staleness reads as "this is elsewhere", which is exactly true.
+    assert.equal(bug.anchors[0]!.present, false);
+    assert.equal(bug.anchors[0]!.stale, false, "not stale — it was never here to drift");
+    assert.deepEqual(bug.from, { pr: "264", finding: f.id }, "and it carries the cross-link");
   } finally { r.cleanup(); }
 });
 

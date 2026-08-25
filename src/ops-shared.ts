@@ -435,9 +435,26 @@ export async function findingToBug(root: string, pr: number | string, id: string
   return { ...mz, ok: true, id, bug };
 }
 
+/**
+ * A finding this scope has never seen, refused rather than emitted.
+ *
+ * `markPosted` and `relocate` are bare `emit`s, and the fold drops an event whose
+ * subject it does not know — so both returned `{ ok: true }` for an id that was never
+ * recorded anywhere, and left a permanent orphan event in the log. Worse than the hard
+ * error its sibling gives: `record_published`'s own description says `inbound_replies`
+ * reads nothing else, so the silent no-op quietly guaranteed the replies would never
+ * be shown.
+ */
+async function mustExist(root: string, b: Bound, pr: number | string, id: string): Promise<string | null> {
+  const f = (await cachedFindings(root, b.cfg, pr)).value.get(id);
+  return f ? null : `no finding ${id} on pull request ${pr} — the log has never seen it, so an event about it would be dropped by every reader`;
+}
+
 export async function recordPublished(root: string, pr: number | string, id: string, ref: { key?: string; url?: string }) {
   const b = bind(root);
   if ("error" in b) return b;
+  const missing = await mustExist(root, b, pr, id);
+  if (missing) return { error: missing };
   await markPosted(b.cfg.path, prKey(b.cfg, pr), b.actor, id, ref);
   const mz = await materializeFindings(root, b.cfg, pr);
   return { ...mz, ok: true, id };
@@ -533,6 +550,8 @@ export async function relocateFinding(
       };
     }
   }
+  const gone = await mustExist(root, b, pr, id);
+  if (gone) return { error: gone };
   await relocate(b.cfg.path, prKey(b.cfg, pr), b.actor, id, kind, rationale, opts);
   const mz = await materializeFindings(root, b.cfg, pr);
   return { ...mz, ok: true, id, kind, ...(opts.apply ? { applied: true } : { note: "queued for a person to apply" }) };

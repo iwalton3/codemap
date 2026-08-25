@@ -565,15 +565,14 @@ const tools: Tool[] = [
   },
   {
     name: "defer_finding",
-    description: "Defer a pull-request finding into a bug, so it is not lost when the PR closes. The ONLY route from a finding to a bug — filing a second copy with `report_defect` loses the cross-link and the history.\n\nThe finding SURVIVES and cross-links — the PR's history should still show it was raised there — and what transfers is the obligation: the finding stops asking for a decision because the bug is asking now. The bug's id is derived from the finding's, so two people accepting the same finding independently land on ONE bug rather than two.\n\nThe bug is filed against the anchors the finding names, witnessed here. A finding on a node takes that node's citations in THIS checkout, which is a judgement about what the defect covers — check it is the right code first.",
+    description: "Defer a pull-request finding into a bug, so it is not lost when the PR closes. The ONLY route from a finding to a bug — filing a second copy with `report_defect` loses the cross-link and the history.\n\nThe bug is witnessed at the ref the FINDING was witnessed at, so a finding about code the pull request INTRODUCES defers like any other — that code is in this store under the branch's snapshot, which `codemap pr <N>` wrote.\n\nThe finding SURVIVES and cross-links — the PR's history should still show it was raised there — and what transfers is the obligation: the finding stops asking for a decision because the bug is asking now. The bug's id is derived from the finding's, so two people accepting the same finding independently land on ONE bug rather than two.\n\nThe bug is filed against the anchors the finding names, witnessed here. A finding on a node takes that node's citations in THIS checkout, which is a judgement about what the defect covers — check it is the right code first.",
     inputSchema: obj({
-      pr: { type: ["number", "string"] },
-      finding: { type: "string" },
+      finding: { type: "string", description: "A finding id, from `findings` or `shared_findings`. It carries its own pull request." },
       title: { type: "string", description: "Defaults to the finding's first line." },
       severity: { type: "string", enum: ["low", "medium", "high", "critical"] },
-    }, ["pr", "finding"]),
+    }, ["finding"]),
     mutates: true,
-    handler: (a, c) => ops.acceptFinding(c.universe.path, a.pr, a.finding, { title: a.title, severity: a.severity }),
+    handler: (a, c) => ops.deferFinding(c.universe.path, String(a.finding ?? ""), { title: a.title, severity: a.severity }),
   },
   {
     name: "publish_bugs",
@@ -916,13 +915,13 @@ const tools: Tool[] = [
     name: "relocate_finding",
     description: "Say where a finding's target went, when its symbol is not in the checkout. FIRST check WHY it is missing: `shared_findings` reports `target.where` as `offTree` (the symbol is on another branch — nothing is wrong, do NOT relocate it), `retained` (gone from the tree, last known location recorded), or `lost`. Only the last two are yours to act on.\n\n`moved` needs the anchor id it moved TO — \"it moved\" is not actionable. `gone` says the code was genuinely removed. You may PROPOSE either, which queues it for a person; you may not apply one, because re-pointing a finding at the wrong symbol is worse than leaving it untriaged.",
     inputSchema: obj({
-      pr: { type: "string" }, id: { type: "string" },
+      id: { type: "string", description: "A finding id. It carries its own pull request." },
       kind: { type: "string", enum: ["moved", "gone"] },
       to: { type: "string", description: "For `moved`: the anchor id it is now." },
       rationale: { type: "string", description: "What you checked — the commit that renamed it, or where the code went." },
-    }, ["pr", "id", "kind", "rationale"]),
+    }, ["id", "kind", "rationale"]),
     mutates: true,
-    handler: (a, c) => shared.relocateFinding(c.universe.path, a.pr, a.id, a.kind, a.rationale, { to: a.to }),
+    handler: (a, c) => ops.relocateOn(c.universe.path, String(a.id ?? ""), a.kind, String(a.rationale ?? ""), { to: a.to }),
   },
   {
     name: "shared_docs",
@@ -973,14 +972,14 @@ const tools: Tool[] = [
   },
   {
     name: "record_published",
-    description: "Record WHERE a shared finding landed on the pull request, after you posted it there. `inbound_replies` reads nothing else — a finding with no record here is one whose replies nobody will ever be shown, however loudly the submitter answers. `key` is the review comment's numeric id (the `id` field of the GitHub API's comment object, not the node id), which is what ties the thread back to this finding.",
+    description: "Record WHERE a finding landed on the pull request, after you posted it there. `inbound_replies` reads nothing else — a finding with no record here is one whose replies nobody will ever be shown, however loudly the submitter answers. `key` is the review comment's numeric id (the `id` field of the GitHub API's comment object, not the node id), which is what ties the thread back to this finding.",
     inputSchema: obj({
-      pr: { type: "string" }, id: { type: "string", description: "The shared finding's id." },
+      id: { type: "string", description: "A finding id. It carries its own pull request." },
       key: { type: "string", description: "The review comment's numeric id on GitHub." },
       url: { type: "string", description: "Its permalink, for people reading the finding." },
-    }, ["pr", "id"]),
+    }, ["id"]),
     mutates: true,
-    handler: (a, c) => shared.recordPublished(c.universe.path, a.pr, a.id, { key: a.key, url: a.url }),
+    handler: (a, c) => ops.recordPublishedOn(c.universe.path, String(a.id ?? ""), { key: a.key, url: a.url }),
   },
   {
     name: "share_doc",

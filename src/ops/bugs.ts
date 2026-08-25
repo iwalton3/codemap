@@ -16,7 +16,7 @@
 
 import { type BugSeverity, type BugWitness } from "../schema.js";
 import { headCommit } from "../git.js";
-import { readAnchorStore, readBugs, readBug, writeLocalBug } from "../store.js";
+import { readAnchorStore, readBugs, readBug, writeLocalBug, findAnchorsOutsideWork, readOrphans } from "../store.js";
 import { witnessDrift, realDrift } from "../reviews.js";
 import { requireActor } from "../identity.js";
 import {
@@ -34,14 +34,32 @@ import { genId, liveIndex, liveAnchors, resolveRefs, rejected } from "./shared.j
 // Filing
 // ---------------------------------------------------------------------------
 
-/** Resolve refs to anchor ids and witness each one against the working tree. */
-async function witnessRefs(root: string, refs: string[]): Promise<
-  { ids: string[]; witnesses: BugWitness[]; errors: string[] }
-> {
-  const r = await resolveRefs(root, refs);
+/**
+ * Resolve refs to anchor ids and witness each one against the working tree.
+ *
+ * `scopeRef` and `includeOrphans` are FORWARDED, and their absence was the whole of a
+ * defect that read like a design limit: a finding about code the pull request INTRODUCES
+ * resolves to no `@work` anchor, so deferring one to a bug answered "resolves to no
+ * anchor in this checkout — index the branch it is on first" over a snapshot the store
+ * already had. `codemap pr <N>` writes that snapshot (`pr.ts`, `indexCommit`), and
+ * `resolveRefs` has carried both arguments, with comments describing this exact case,
+ * the whole time. One call site did not pass them.
+ *
+ * The file lookup goes through the RESOLVED anchors rather than `@work` for the same
+ * reason: a snapshot or orphan id is not in the anchor store, and `find(...)!` on it
+ * would have thrown the moment the ref above started resolving.
+ */
+async function witnessRefs(
+  root: string, refs: string[], scopeRef?: string, opts: { includeOrphans?: boolean } = {},
+): Promise<{ ids: string[]; witnesses: BugWitness[]; errors: string[] }> {
+  const r = await resolveRefs(root, refs, scopeRef, opts);
   if (!r.ids.length) return { ids: [], witnesses: [], errors: r.errors };
   const store = await readAnchorStore(root);
-  const files = r.ids.map((id) => store.anchors.find((a) => a.id === id)!.file);
+  const byId = new Map(store.anchors.map((a) => [a.id, a]));
+  const elsewhere = findAnchorsOutsideWork(root, r.ids.filter((id) => !byId.has(id)));
+  const orphans = readOrphans(root, r.ids.filter((id) => !byId.has(id)));
+  const fileOf = (id: string) => byId.get(id)?.file ?? elsewhere.get(id)?.anchor.file ?? orphans.get(id)?.file;
+  const files = r.ids.map(fileOf).filter((f): f is string => !!f);
   const live = await liveAnchors(root, files);
   // `sha256:absent` is a witness, not a missing one: it records that the filer looked
   // and the symbol was not in their index, which a later reader can act on.
@@ -56,7 +74,9 @@ export async function reportBug(
   root: string,
   input: { title: string; description: string; anchors: string[]; severity?: BugSeverity; category?: string },
 ) {
-  const { ids, witnesses, errors } = await witnessRefs(root, input.anchors);
+  // Orphans included, the rule `annotate` and `report_defect` already follow: filing a
+  // drive-by against branch code has the identical shape as filing a finding on it.
+  const { ids, witnesses, errors } = await witnessRefs(root, input.anchors, undefined, { includeOrphans: true });
   // Partial acceptance (see resolveRefs) — a bug still needs somewhere to point.
   if (!ids.length) return { error: errors.join("; ") || "no anchors given" };
 
@@ -525,11 +545,15 @@ export async function acceptFinding(
   // defect covers, made here, and the witnesses are taken here. That is an authored act
   // and belongs in the log; guessing it silently would not.
   const refs = f.target.kind === "anchor" ? [f.target.id] : (f.nodeAnchors ?? []);
-  const { witnesses, errors } = await witnessRefs(root, refs);
+  // The ref the finding was WITNESSED at — usually the pull request's head, which is
+  // where code the branch introduces lives. Without it this refused the ordinary case on
+  // a feature branch and told the caller to index a branch the store had already indexed.
+  const { witnesses, errors } = await witnessRefs(root, refs, f.sourceRef, { includeOrphans: true });
   if (!witnesses.length) {
     return {
-      error: `${findingId} points at ${f.target.kind} ${f.target.id.slice(0, 12)}, which resolves to no anchor in this checkout`
-        + `${errors.length ? ` (${errors.join("; ")})` : ""} — file the bug against code you can see, or index the branch it is on first`,
+      error: `${findingId} points at ${f.target.kind} ${f.target.id.slice(0, 12)}, which resolves to no anchor here`
+        + `${f.sourceRef ? ` or at ${String(f.sourceRef).slice(0, 12)}` : ""}`
+        + `${errors.length ? ` (${errors.join("; ")})` : ""} — run \`codemap pr ${pr}\` to snapshot the branch, then try again`,
     };
   }
 
