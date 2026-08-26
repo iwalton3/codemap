@@ -35,26 +35,29 @@ the tools said they did.
 - **`promote_annotation`** — a pointer that turns out to be a defect becomes the finding,
   keeping its id. Its absence is what made pointers feel like a parallel system.
 - **`pr-push`**: a sidecar turns off raw comment push and keeps the verdict/viewed half.
+  (REVERSED 2026-08-26 — see next-step 1. Push is the escape hatch and stays everywhere.)
 - **The web UI's navigation is real links** — ~50 sites; middle-click, cmd-click and
   right-click-copy work now.
 
 ## What to do next
 
-1. **`docs/plan-finding-parity.md` ends on one question, and everything else waits on it:
-   does codemap post raw comments to GitHub at all?** If no, `publishPath`/`publishLine`/
-   `publishAttribution`/`escalated` retire with the annotation store and `pr_push` goes
-   with them (`posted` stays — findings already pushed still get replies). If yes, those
-   fields need a canonical home and `pr_push` must become a table keyed on findings rather
-   than a meta blob listing ANNOTATION ids, which cannot dedupe a canonical finding at all.
-2. **`docs/plan-retire-local-findings.md`** — parked deliberately until the lifecycle
-   stops moving, which it now roughly has. The claim that makes it cheap is verified in
-   the code: a store with no sidecar loses nothing, because the log is plain files, a
+1. ~~**Does codemap post raw comments to GitHub at all?**~~ **ANSWERED: yes, everywhere** —
+   it is the escape hatch for a submitter who does not use codemap. `publishPath`/
+   `publishLine`/`publishAttribution` and `pr_push` get a canonical home in SQLite (keyed
+   on findings); `escalated` retires into `promotion`, which becomes the RAISE: only a
+   promoted, unclosed finding is pushable, and `--only` no longer overrides that. The gate
+   that disables comment push wherever a sidecar exists has to go FIRST — after the default
+   sidecar lands, that predicate means nothing and push turns off universally.
+2. **`docs/plan-retire-local-findings.md` — READY, and it is the work.** Unparked by (1);
+   rewritten 2026-08-26 with the push guards, the promotion-as-raise gate and an eight-step
+   order. The claim that makes it cheap is verified in the code: a store with no sidecar loses nothing, because the log is plain files, a
    remote-less sidecar is already supported, `resolveSidecar` already takes a bare
    directory, and `unify-findings` already replays local rows into a log.
 3. The rest of `plan-findings-unification.md` § Near-term: `shared_finding` created and
    never used; `retire_shared_doc` named in three errors and not a tool; two `universe`
-   namespaces. Item 6 needs rewriting rather than building — comment push is off wherever
-   findings are canonical, so `planPrPush` not seeing them is no longer the gap it was.
+   namespaces. **Item 6 is back to being a real gap** now that push stays: `planPrPush` reads
+   `readAnnotations` and nothing else, so nothing `report_defect` files today is pushable.
+   It is step 3 of `plan-retire-local-findings.md`, not a rewrite.
 4. **Open decisions on live data:** `finding_0916cfc2ad21`'s severity re-rate is sitting
    on its row for a person; `finding_79bb05ce3c19` on `Acme.React` needs one check to
    settle (re-witness at `5fbefa07`, see whether the aircraft `SearchableSelect` is

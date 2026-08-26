@@ -46,7 +46,7 @@ But the vocabulary was narrower, so two values had nowhere to go.
 - `open` / `confirmed` / `refuted` map to no-corroboration / a standing-behind verdict / a
   refute verdict. `accepted` maps to the `bug` link (`defer_finding`). All covered.
 
-## 2. The publishing fields — moot where it matters, real where it does not
+## 2. The publishing fields — the decision they were waiting on, now made
 
 `publishPath`, `publishLine`, `publishAttribution` and `escalated` exist to serve one act:
 posting a finding to GitHub as a review comment. `publishPath` is the interesting one —
@@ -54,19 +54,29 @@ GitHub only accepts a comment on a file in the diff, and plenty of real findings
 code the branch never touched, or about an ABSENCE, which has no line anywhere. A person
 picks the nearest file; nothing is guessed.
 
-**Moot wherever a sidecar is configured**, because raw comment push is now off there: the
-findings live on the sidecar and the pull request gets the verdict and the viewed ticks.
-So on every universe that has a team, these four fields serve nothing.
+**DECIDED, 2026-08-26: raw comment push stays, everywhere.** The reason is the audience,
+not the lifecycle — *the pull request's author may not use codemap*, and a raw comment is
+the only channel that reaches them. It is an ESCAPE HATCH, which is what sets the bar for
+sending one.
 
-**Not moot for a solo store**, which is exactly the configuration the retirement plan turns
-into "a sidecar nobody else pulls from" — at which point comment push is off there too, and
-the fields become dead everywhere.
+So this section's sequencing question is answered, and answered the other way from the
+"current answer" it recorded. What follows from it:
 
-So the honest sequencing is: **these are not a parity gap to close, they are a feature to
-decide about.** Either raw comment push is a thing codemap does (and canonical findings
-need the four fields) or it is not (and they go with the annotation store). The current
-answer is "not, wherever there is a team", and the retirement makes that universal. Worth
-stating out loud rather than discovering it as an absence later.
+- `publishPath` / `publishLine` / `publishAttribution` DO need a canonical home. It is
+  `finding_push` in SQLite — genuinely local, because it is this machine's record of what
+  it sent under this person's account. Rarer than it reads: 3 records set `publishPath`
+  across both live universes.
+- `escalated` does NOT. It retires into `SharedFinding.promotion`, which becomes the raise
+  — the one act that makes a finding publishable — together with `!isClosed(state)`.
+  `disposition ∈ PUBLISHABLE` retires with it.
+- `pr_push` becomes a table keyed on findings. Migrating it is a straight copy: 55 of its
+  60 ids are already finding ids.
+- The gate that DISABLED comment push wherever a sidecar exists must go, and must go
+  before the retirement lands — once every store has a sidecar, that predicate means
+  nothing and push would turn off universally.
+
+`docs/plan-retire-local-findings.md` carries all of it, with the three guards that replace
+the blanket disable and the measurements behind them.
 
 ## 3. `createdCommit` — deliberately not carried, and that is right
 
@@ -97,7 +107,9 @@ state is two different things and they were conflated on the annotation:
   finding carries its own. **Done.**
 - **Where a person WANTS it published**, before the fact — `publishPath`, `publishLine`,
   `publishAttribution`, and the `escalated` elect gate. No canonical home. This is the
-  part that would want the table.
+  part that wants the table — except `escalated`, which turned out to belong in the LOG:
+  a person's decision to send a finding is exactly the act the sidecar carries, so it
+  became `promotion` rather than a column. See § 2.
 
 The remaining piece of the first half is `pr_push`, still a `meta` JSON blob keyed by
 pull request and listing ANNOTATION ids (`readPushes`/`writePush`). That is the record
@@ -105,8 +117,9 @@ that stops a re-run duplicating a comment, and it is the one thing here that gen
 wants to become a table with a finding foreign key: keyed on annotations, it cannot
 dedupe a canonical finding at all.
 
-**But building either is gated on the decision below**, not on parity. Both serve raw
-comment push, which is off wherever a sidecar exists.
+Both serve raw comment push, which § 2 settles: it stays, everywhere, and both get built.
+The migration of `pr_push` is a straight copy — `migrateLocalFindings` preserves the
+annotation id verbatim, so 55 of its 60 live ids are already finding ids.
 
 ## What is left before parity
 
@@ -116,11 +129,12 @@ comment push, which is off wherever a sidecar exists.
    it cannot disagree with `revisions`. Across 169 real findings: 8 have revisions, 2 have
    a severity revision, 1 is actually re-rated — which is the discrimination the field is
    for.
-2. **Decide about raw comment push.** Everything else on this page hangs off it. If it
-   stays, canonical findings need the three publish fields, the elect gate, and `pr_push`
-   as a table keyed on findings. If it goes, all four fields retire with the annotation
-   store, `pr_push` goes with them, and `posted` stays for `inbound_replies` — which is
-   worth keeping either way, because findings already pushed still get replies.
+2. ~~**Decide about raw comment push.**~~ **DECIDED** — it stays, everywhere, as the
+   escape hatch for a submitter who does not use codemap. `publishPath`/`publishLine`/
+   `publishAttribution` get a canonical home in a `finding_push` SQLite table and `pr_push`
+   becomes a table keyed on findings; `escalated` retires into `promotion`, which is now
+   the raise. `posted` stays either way, because findings already pushed still get replies.
+   See `docs/plan-retire-local-findings.md`.
 
 Everything else the old store did, the new one does — and the reverse list is fourteen
 fields long.
