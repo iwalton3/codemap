@@ -235,9 +235,25 @@ class SharedPage extends Component {
         <div class="row">
           ${when(!!state, () => html`<button on-click="${() => this.act('close', { id: f.id, state, reason: `agreed: ${p.rationale}` })}">agree — ${p.ask}</button>`)}
           ${when(p.ask === 'promote', () => html`<button on-click="${() => this.act('promote', { id: f.id })}">agree — promote</button>`)}
+          <button title="say no, with a reason — this clears the badge and the queue entry, which replying does not"
+            on-click="${() => this.declineAsk(f.id, p)}">decline</button>
           <button on-click="${() => this.reply(f.id, `declining: `)}">answer instead</button>
         </div>
       </div>`;
+  }
+
+  /**
+   * Say no to an ask, and mean it.
+   *
+   * "answer instead" posts a comment, which touches neither `pending` nor the queue — so
+   * a declined ask kept its `refuted pending` badge and its `waitingOnYou` slot forever.
+   * The reason is required by the op, so it is prompted for rather than defaulted: an
+   * ask declined without one is indistinguishable from one nobody got to.
+   */
+  async declineAsk(id, p) {
+    const reason = window.prompt(`Decline ${p.by}'s request to ${p.ask}?\n\nSay why — it stays on the record.`, '');
+    if (reason === null || !reason.trim()) return;
+    await this.act('decline', { id, reason });
   }
 
   /** Focus the composer with a starting body — declining an ask needs a reason. */
@@ -291,7 +307,7 @@ class SharedPage extends Component {
           <div class="dim">target is ${f.target.where}${f.target.lastFile ? ` — last seen in ${f.target.lastFile}` : ''}</div>`)}
         ${when(!!f.closedReason, () => html`<div class="dim"><b>closed</b>: ${f.closedReason}${when(!!f.closedGranting, () => html` <span class="dim">— granting ${f.closedGranting.by}'s request to ${f.closedGranting.ask}</span>`)}</div>`)}
         ${each(f.asks ?? [], a => html`
-          <div class="dim"><b>${a.by}</b> asked to <b>${a.ask}</b>: ${a.rationale}${when(!!a.settled, () => html` <span class="dim">— ${a.settled.as}${a.settled.by ? ' by ' + a.settled.by : ''}</span>`)}</div>`, (a, i) => `ask${i}`)}
+          <div class="dim"><b>${a.by}</b> asked to <b>${a.ask}</b>: ${a.rationale}${when(!!a.settled, () => html` <span class="dim">— ${a.settled.as}${a.settled.by ? ' by ' + a.settled.by : ''}${a.settled.reason ? ': ' + a.settled.reason : ''}</span>`)}</div>`, (a, i) => `ask${i}`)}
         ${each(f.outcomes?.length ? f.outcomes : (f.outcome ? [f.outcome] : []), o => html`
           <div class="dim">${o.by} reported <b>${o.result}</b>: ${o.detail}</div>`, (o, i) => `out${i}`)}
         ${each(f.corroboration ?? [], c => html`

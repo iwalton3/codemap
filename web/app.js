@@ -3298,6 +3298,8 @@ class PrStoryPage extends Component {
         ${when(!!f.confirms, () => html`<span class="tfvote ok" title="confirmations">+${f.confirms}</span>`)}
         ${when(!!f.refutes, () => html`<span class="tfvote bad" title="refutations">−${f.refutes}</span>`)}
         ${when(!!f.needsAck, () => html`<span class="warn">needs a person</span>`)}
+        ${when(!!REMEDIATION_LABEL_APP[f.remediation], () => html`<span class="prbadge ok" title="${REMEDIATION_LABEL_APP[f.remediation][1]}">${REMEDIATION_LABEL_APP[f.remediation][0]}</span>`)}
+        ${when(!!f.pending, () => html`<span class="prbadge ask" title="${f.pending.by} asked for this — ${f.pending.rationale}">${PENDING_LABEL_APP[f.pending.ask] || f.pending.ask} pending</span>`)}
         ${when(!!f.bug, () => html`<span class="dim">kept as a bug</span>`)}
       </div>
       ${when(open, () => html`<div class="tfbody">${f.text}</div>`)}

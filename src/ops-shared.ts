@@ -26,7 +26,7 @@ import { ensureSidecar, sync as sidecarSync, receive as sidecarReceive, healMerg
 import {
   createFinding, corroborate, comment, promote, request, setState, recordOutcome,
   markPosted, markUpstreamed, promoteToBug, needsHumanAck, ackQueue, mayRevise,
-  revise, resolveContest, relocate, remediate, agentClosureNeedsAck, type Remediation,
+  revise, resolveContest, relocate, remediate, agentClosureNeedsAck, declineAsk, type Remediation,
   foldFindings, findingScope, findingTier, byReadingOrder,
   type SharedFinding, type Verdict, type Ask, type FindingState, type NewFinding, type FindingTier,
 } from "./shared-findings.js";
@@ -364,6 +364,30 @@ export async function remediateFinding(
   return { ...mz, ok: true, id, remediation: state };
 }
 
+/**
+ * Decline the ask on a finding — the answer that had no verb.
+ *
+ * The badge and the queue entry cleared only when somebody DID the thing asked for, so
+ * saying no left both standing indefinitely. `waitingOnYou` counting an item nobody is
+ * waiting on is the failure mode that teaches people to stop trusting the queue.
+ */
+export async function declineFindingAsk(root: string, pr: number | string, id: string, reason: string) {
+  const b = bind(root);
+  if ("error" in b) return b;
+  if (!reason.trim()) {
+    return { error: "say why you are declining — an ask declined without a reason is indistinguishable from one nobody got to, which is the state this clears" };
+  }
+  if (isAgentActor(b.actor)) {
+    return { error: "an ask is a request to a PERSON, and declining it is theirs. If this is your own ask and you have changed your mind, ask for what you now think instead — that supersedes it." };
+  }
+  const f = (await cachedFindings(root, b.cfg, pr)).value.get(id);
+  if (!f) return { error: `no finding ${id} on pr ${pr}` };
+  if (!f.pending) return { error: `${id} has no outstanding ask to decline` };
+  await declineAsk(b.cfg.path, prKey(b.cfg, pr), b.actor, id, reason);
+  const mz = await materializeFindings(root, b.cfg, pr);
+  return { ...mz, ok: true, id, declined: f.pending.ask };
+}
+
 export async function promoteFinding(root: string, pr: number | string, id: string) {
   const b = bind(root);
   if ("error" in b) return b;
@@ -505,7 +529,7 @@ function view(f: SharedFinding) {
     // still says whose recommendation it was and why.
     asks: (f.asks ?? []).map((a) => ({
       ask: a.ask, by: a.by.principal, at: a.at, rationale: a.rationale,
-      settled: a.settled ? { as: a.settled.as, by: a.settled.by.principal, at: a.settled.at, state: a.settled.state } : undefined,
+      settled: a.settled ? { as: a.settled.as, by: a.settled.by.principal, at: a.settled.at, state: a.settled.state, reason: a.settled.reason } : undefined,
     })),
     closedReason: f.closed?.reason,
     closedGranting: f.closed?.grantedAsk

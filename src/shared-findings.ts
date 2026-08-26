@@ -209,7 +209,7 @@ export interface SharedFinding {
    * log. The settlement is stamped in place rather than appended, because an ask has one
    * outcome and a second entry for it would read as a second ask.
    */
-  asks?: { ask: Ask; by: Actor; at: string; rationale: string; settled?: { as: "applied" | "superseded"; by: Actor; at: string; state?: FindingState } }[];
+  asks?: { ask: Ask; by: Actor; at: string; rationale: string; settled?: { as: "applied" | "superseded" | "declined"; by: Actor; at: string; state?: FindingState; reason?: string } }[];
   /**
    * How it ended. `grantedAsk` is the request this close granted, if it granted one —
    * so "why is this resolved" is answerable from the record without reading the log,
@@ -650,6 +650,19 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         break;
       }
 
+      case "finding.askDeclined": {
+        const reason = str(d, "reason");
+        if (!reason) break;                       // "declined" with no why is not an answer
+        // A person's call, like granting one. An agent that wants its own ask off the
+        // queue asks for something else, which supersedes it.
+        if (isAgentActor(e.actor)) break;
+        const open = (f.asks ??= []).find((a) => !a.settled);
+        if (!open) break;
+        open.settled = { as: "declined", by: e.actor, at: e.at, reason };
+        f.pending = undefined;
+        break;
+      }
+
       case "finding.stateChanged": {
         const next = str(d, "state") as FindingState | undefined;
         if (!next || !["issued", "created", "invalid", "refuted", "resolved", "withdrawn"].includes(next)) break;
@@ -766,6 +779,20 @@ export const promote = (logRoot: string, pr: number | string, actor: Actor, id: 
 
 export const request = (logRoot: string, pr: number | string, actor: Actor, id: string, ask: Ask, rationale: string) =>
   emit(logRoot, pr, actor, id, "finding.requested", { ask, rationale });
+
+/**
+ * Say no to an ask, which nothing could do.
+ *
+ * `pending` was cleared only by the act it asked for, so declining left the finding
+ * wearing `refuted pending` and sitting in `waitingOnYou` forever — a permanently wrong
+ * claim about an open item, on the queue whose accuracy the whole design leans on. The
+ * web's "answer instead" posted a COMMENT, which touches none of that.
+ *
+ * The reason is not optional: an ask that was declined without one is indistinguishable
+ * from one nobody got to, which is the state this is removing.
+ */
+export const declineAsk = (logRoot: string, pr: number | string, actor: Actor, id: string, reason: string) =>
+  emit(logRoot, pr, actor, id, "finding.askDeclined", { reason });
 
 export const recordOutcome = (logRoot: string, pr: number | string, actor: Actor, id: string, result: "fixed" | "answered" | "declined", detail: string, files?: string[]) =>
   emit(logRoot, pr, actor, id, "finding.outcome", { result, detail, ...(files ? { files } : {}) });

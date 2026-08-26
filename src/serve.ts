@@ -343,6 +343,9 @@ const server = createServer(async (req, res) => {
         case "promote": out = await ops.promoteOn(root, body.id); break;
         case "request": out = await ops.requestHuman(root, { id: body.id, action: body.ask, rationale: body.rationale ?? "" }); break;
         case "close": out = await ops.setFindingState(root, { id: body.id, state: body.state, reason: body.reason }); break;
+        // Saying NO to an ask, which cleared nothing before — the badge and the queue
+        // entry stood until somebody did the thing that had been asked for.
+        case "decline": out = await shared.declineFindingAsk(root, pr, body.id, String(body.reason ?? "")); break;
         case "revise": out = await ops.reviseOn(root, { id: body.id, ...(body.now ?? {}) }); break;
         case "settle": out = await shared.settleContest(root, pr, body.id, body.field, body.value); break;
         case "upstream": out = await shared.upstreamFinding(root, pr, body.id, { system: body.system, key: body.key, url: body.url }); break;

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { Actor } from "./schema.js";
 import { sortEvents, readScope, type LogEvent } from "./eventlog.js";
 import {
-  createFinding, corroborate, comment, promote, request, setState, recordOutcome,
+  createFinding, corroborate, comment, promote, request, setState, recordOutcome, declineAsk,
   markPosted, markUpstreamed, promoteToBug, readFindings, foldFindings, findingScope,
   needsHumanAck, mayTransition, mayRevise, ackQueue, alreadyPosted, isClosed, findingTier, byReadingOrder,
   type SharedFinding, type FindingState,
@@ -559,5 +559,55 @@ test("a superseded ask is settled, not lost", async () => {
     assert.equal(f.asks?.[0]?.settled?.as, "superseded");
     assert.equal(f.asks?.[0]?.rationale, "first read: not reachable");
     assert.equal(f.pending?.ask, "resolve", "and the open one is the latest");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+/**
+ * Declining an ask had no verb, so saying no left the badge and the queue entry standing.
+ *
+ * `pending` cleared only on the act it asked for; the web's "answer instead" posts a
+ * comment, which touches neither. A finding nobody is waiting on that sits in
+ * `waitingOnYou` indefinitely is how a queue stops being trusted. Found by a Fable 5
+ * review of the agent-facing surface (#7).
+ */
+test("declining an ask clears the badge and the queue, and keeps the reason", async () => {
+  const root = tmp();
+  try {
+    const id = await createFinding(root, 264, izzie, NEW);
+    await setState(root, 264, opus, id, "refuted", "not reachable from the controller");
+    assert.equal((await one(root)).pending?.ask, "refute");
+    assert.equal(ackQueue([await one(root)]).length, 1, "and it IS in the queue while open");
+
+    await declineAsk(root, 264, izzie, id, "it is reachable — see Startup.cs:88");
+    const f = await one(root);
+    assert.equal(f.pending, undefined, "the badge is gone");
+    assert.equal(ackQueue([f]).length, 0, "and so is the queue entry");
+    assert.equal(f.asks?.[0]?.settled?.as, "declined");
+    assert.equal(f.asks?.[0]?.settled?.reason, "it is reachable — see Startup.cs:88");
+    assert.equal(f.asks?.[0]?.rationale, "not reachable from the controller", "both sides of the disagreement survive");
+    assert.equal(f.state, "created", "declining is not closing");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+/** An ask is a request to a person, so an agent cannot answer its own. */
+test("an agent may not decline an ask", async () => {
+  const root = tmp();
+  try {
+    const id = await createFinding(root, 264, izzie, NEW);
+    await setState(root, 264, opus, id, "refuted", "not reachable");
+    await declineAsk(root, 264, opus, id, "changed my mind");
+    const f = await one(root);
+    assert.equal(f.pending?.ask, "refute", "the fold ignores it — a write-time check only binds the honest writer");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+/** And a decline with no reason is not an answer. */
+test("declining without a reason is dropped", async () => {
+  const root = tmp();
+  try {
+    const id = await createFinding(root, 264, izzie, NEW);
+    await setState(root, 264, opus, id, "refuted", "not reachable");
+    await declineAsk(root, 264, izzie, id, "");
+    assert.equal((await one(root)).pending?.ask, "refute");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
