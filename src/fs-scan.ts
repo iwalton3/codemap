@@ -6,7 +6,7 @@
  * named `bin` (a .NET build output) is skipped.
  */
 
-import { readdir, stat } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import { grammarForPath } from "./grammars.js";
 import { loadIgnore, type Ignore } from "./ignore.js";
@@ -31,6 +31,38 @@ export function toPosixRel(root: string, abs: string): string {
 }
 
 /**
+ * A LINKED WORKTREE, which must not be walked into.
+ *
+ * `.git` is in `SKIP_DIRS`, and that does not help: in a linked worktree `.git` is a
+ * FILE, so basename directory-pruning never fires and the entire repo is indexed
+ * again, once per worktree. Measured on a clone with one: 1,882 of 3,764 anchors —
+ * exactly half the store — came from `.claude/worktrees/`, which the repo had already
+ * gitignored. `search` then floods, `document` refuses every `file#Symbol` as
+ * ambiguous, and `context` answers "gap" for a symbol that is documented, because the
+ * path ref matched a worktree copy. See COD-1.
+ *
+ * **Submodules are deliberately NOT pruned, and this is why the check reads the file
+ * rather than merely testing for `.git`.** A submodule's `.git` is also a file — its
+ * gitdir points at `.git/modules/<name>` where a worktree's points at
+ * `.git/worktrees/<name>` — and submodule code is indexed ON PURPOSE: `codemap init`
+ * warns when an uninitialized one had to be skipped, and `indexCommit` recurses
+ * through gitlinks. The one-rule-for-everything version suggested on the ticket
+ * ("any nested `.git`, file or directory") would have silently stopped indexing
+ * submodules, which is a feature with its own user-facing warning.
+ *
+ * A nested plain clone (`.git` as a directory) is also left alone for the same
+ * reason — an old-style submodule has one — and `.codemapignore` covers that case.
+ */
+async function isLinkedWorktree(dir: string): Promise<boolean> {
+  try {
+    const m = /^gitdir:\s*(.+)$/m.exec(await readFile(join(dir, ".git"), "utf8"));
+    return !!m && /[\\/]worktrees[\\/]/.test(m[1]!.trim());
+  } catch {
+    return false; // no `.git`, or it is a directory — neither is a linked worktree
+  }
+}
+
+/**
  * All supported, non-ignored source files under `root` (absolute paths).
  * Applies built-in SKIP_DIRS/file rules plus the repo's `.codemapignore`.
  */
@@ -48,7 +80,9 @@ export async function listSupportedFiles(root: string): Promise<string[]> {
       const abs = join(dir, e.name);
       const rel = toPosixRel(root, abs);
       if (e.isDirectory()) {
-        if (!SKIP_DIRS.has(e.name) && !ignore.ignores(rel, true)) await walk(abs);
+        if (SKIP_DIRS.has(e.name) || ignore.ignores(rel, true)) continue;
+        if (await isLinkedWorktree(abs)) continue;
+        await walk(abs);
       } else if (e.isFile()) {
         if (!grammarForPath(e.name) || isSkippedFile(e.name)) continue;
         if (ignore.ignores(rel, false)) continue;

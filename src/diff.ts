@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { comparableHashDerivation, type Anchor, type Review } from "./schema.js";
 import { indexRepo, indexFile, indexBlob } from "./repo.js";
 import { citedAnchors, isClosed } from "./shared-bugs.js";
-import { readSnapshot, readAnchorStore, loadNodes, loadNodeVersions, winningVersionAt, readGraph, readReviews, readBugs, derivationLookup, loadNodesAt, resolvable} from "./store.js";
+import { readSnapshot, snapshotIsDirty, readAnchorStore, loadNodes, loadNodeVersions, winningVersionAt, readGraph, readReviews, readBugs, derivationLookup, loadNodesAt, resolvable} from "./store.js";
 import { reviewStatesFor } from "./reviews.js";
 import { reviewTriageFor, coverageFor, type Coverage } from "./triage.js";
 import { revParse, headCommit, currentBranch, showFile } from "./git.js";
@@ -64,6 +64,16 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
   const base = await resolveSnapshot(root, baseRef);
   if (!base.anchors) {
     return { error: `no cached snapshot for base "${baseRef}" (${base.sha.slice(0, 12)}). Check out that commit and run \`codemap init\` (or \`codemap snapshot\`) to cache it.` };
+  }
+  // Refused rather than answered, and refused SEPARATELY from "not cached" because
+  // the advice differs: this snapshot exists and is unusable, and the not-cached
+  // message says to run `init` — which is the thing that produced it. Left to run,
+  // the diff compares a base that already contains the branch's uncommitted work
+  // against the same working tree and reports nothing changed. See COD-3.
+  if (snapshotIsDirty(root, base.sha)) {
+    return { error: `the cached snapshot for base "${baseRef}" (${base.sha.slice(0, 12)}) was indexed from a working tree with uncommitted changes, `
+      + `so it is not that commit — diffing against it would hide the very changes you are reviewing. `
+      + `Commit or stash them and re-run \`codemap snapshot\`, or cache it from git objects instead, which needs no clean checkout.` };
   }
 
   let headAnchors: Anchor[];

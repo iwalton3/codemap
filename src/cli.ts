@@ -551,6 +551,16 @@ async function cmdInit(root: string): Promise<void> {
   const r = await ops.init(root);
   console.log(`indexed ${r.anchors} anchors across ${r.files} files`);
   console.log(`baseline commit: ${r.commit ?? "(no git)"}${r.commit ? ` (snapshotted, branch ${r.branch ?? "?"})` : ""}`);
+  // Louder than a footnote: the snapshot just written is labelled with that sha and
+  // is not it, so `diff <sha>` would compare the branch's uncommitted work against
+  // itself. `diff` refuses such a base, and this is where a person can still act on
+  // it cheaply — before they have built a review on top.
+  if ((r as { dirtySnapshot?: boolean }).dirtySnapshot) {
+    console.log(
+      "WARNING: the working tree had uncommitted changes, so that snapshot is NOT the commit it is named after.\n"
+      + "         `codemap diff " + String(r.commit).slice(0, 12) + "` will refuse it. Commit or stash, then `codemap snapshot`.",
+    );
+  }
   // A reindex is routine; losing review history to one should not be. Say what this
   // stranded, and where to go and look at it.
   // Louder than the orphan notes below: a drifted submodule means the anchors just

@@ -158,9 +158,25 @@ against COD-7's 543/884 — the suite is 1023 tests now, and green on Linux.
 
 ## Phase 2 — the two confidently-wrong answers
 
-**6. COD-1 — prune nested repository roots.** In `listSupportedFiles`, do not descend into
-a directory below the root that contains a `.git` entry, **file or directory**. One rule
-covers worktrees, submodules and vendored clones; no config; one `stat` per directory.
+**6. COD-1 — prune linked worktrees.** *(Built. The ticket's one-rule version was wrong
+and is recorded here because the reasoning matters.)*
+
+The plan said: do not descend into any directory below the root holding a `.git` entry,
+file or directory — one rule for worktrees, submodules and vendored clones. **That would
+have stopped indexing submodules**, which is a deliberate feature: `init` warns when an
+uninitialized submodule had to be skipped, and `indexCommit` recurses through gitlinks.
+A submodule's `.git` is a file too, so "any nested `.git`" cannot tell them apart.
+
+What separates them is where the gitdir points — verified on disk rather than assumed:
+
+```
+worktree:   gitdir: <repo>/.git/worktrees/wt1
+submodule:  gitdir: ../.git/modules/sub
+```
+
+So `isLinkedWorktree` reads the file and prunes only `worktrees`. A nested plain clone
+is left alone for the same reason — an old-style submodule has a real `.git` directory —
+and `.codemapignore` covers that case.
 `.git` is already in `SKIP_DIRS` and does not help, because in a linked worktree `.git` is
 a regular file and basename directory-pruning never fires.
 
@@ -188,10 +204,16 @@ Compute it in `init` and print a warning in `cli.ts`, `mcp.ts` and `serve.ts`. T
 ticket's expectation §3, and it removes the silence today.
 
 The real fix is expectation §1: record on the snapshot that it was taken from a dirty
-tree (a column alongside the existing `scheme` / `hash_scheme` in `writeSnapshot`,
-`src/store.ts:225`), and have `diff` refuse `--base <sha>` when the only cached snapshot
-for that sha is dirty, saying why. **No `ANCHOR_SCHEME` bump** — the id derivation does
-not change, only what is recorded beside it.
+tree (a `dirty` column alongside `scheme` / `hash_scheme`), and have `diff` refuse such a
+base. **No `ANCHOR_SCHEME` bump** — the id derivation does not change, only what is
+recorded beside it.
+
+**Refused through its OWN path, not by returning "not cached".** The obvious
+implementation is to make `readSnapshot` answer null for a dirty snapshot, the way it
+already does for a scheme mismatch. That produces the existing message — *"no cached
+snapshot … run `codemap init`"* — and `init` on a dirty tree is what wrote the row, so
+following the advice loops. A test asserts the error does not contain `codemap init`,
+because that is the part that would quietly rot back.
 
 Reproduced at `4d80d65`: `init` on a tree with one newly added exported function, then
 `diff <sha>` → `+0 added -0 removed ~0 changed`.

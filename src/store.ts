@@ -215,6 +215,21 @@ export interface SnapshotInfo {
   branch: string | null;
   at: string; // ISO timestamp captured
   count: number;
+  /** Indexed from a working tree with uncommitted changes — not faithful to `ref`. */
+  dirty?: boolean;
+}
+
+/**
+ * Was the cached snapshot for `ref` taken from a dirty tree?
+ *
+ * Separate from `readSnapshot`, which deliberately answers null for a snapshot it
+ * cannot USE. A dirty one is perfectly usable and simply lies about which commit it
+ * describes, so the caller needs to say something specific rather than "not cached" —
+ * that message tells you to run `init`, which is what produced it.
+ */
+export function snapshotIsDirty(root: string, ref: string): boolean {
+  const r = db(root).prepare("SELECT dirty FROM snapshots WHERE ref = ?").get(ref) as { dirty: number | null } | undefined;
+  return !!r?.dirty;
 }
 
 /**
@@ -222,12 +237,21 @@ export interface SnapshotInfo {
  * the same sha overwrites it — the latest full index of that commit wins. `@work`
  * is reserved for the live index and is never used as a snapshot ref.
  */
-export async function writeSnapshot(root: string, ref: string, branch: string | null, anchors: Anchor[], at: string): Promise<void> {
+export async function writeSnapshot(
+  root: string, ref: string, branch: string | null, anchors: Anchor[], at: string,
+  /**
+   * The working tree had uncommitted changes when this was indexed, so the row is
+   * NOT a faithful picture of the commit it is named after. Callers that build from
+   * git objects (`snapshotAt`) are never dirty and leave it false; the ones that
+   * index the working tree (`init`, `snapshot`) must pass `isDirty(root)`.
+   */
+  opts: { dirty?: boolean } = {},
+): Promise<void> {
   if (ref === WORK_REF) throw new Error("cannot snapshot the reserved @work ref");
   const d = db(root);
   replaceAnchors(d, ref, anchors);
-  d.prepare("INSERT INTO snapshots(ref,branch,at,count,scheme,hash_scheme) VALUES(?,?,?,?,?,?) ON CONFLICT(ref) DO UPDATE SET branch=excluded.branch, at=excluded.at, count=excluded.count, scheme=excluded.scheme, hash_scheme=excluded.hash_scheme")
-    .run(ref, branch, at, anchors.length, ANCHOR_SCHEME, HASH_SCHEME);
+  d.prepare("INSERT INTO snapshots(ref,branch,at,count,scheme,hash_scheme,dirty) VALUES(?,?,?,?,?,?,?) ON CONFLICT(ref) DO UPDATE SET branch=excluded.branch, at=excluded.at, count=excluded.count, scheme=excluded.scheme, hash_scheme=excluded.hash_scheme, dirty=excluded.dirty")
+    .run(ref, branch, at, anchors.length, ANCHOR_SCHEME, HASH_SCHEME, opts.dirty ? 1 : 0);
 }
 
 /**
@@ -566,7 +590,7 @@ export function snapshotBranch(root: string, ref: string): string | null {
 }
 
 export async function listSnapshots(root: string): Promise<SnapshotInfo[]> {
-  const rows = db(root).prepare("SELECT ref, branch, at, count FROM snapshots ORDER BY at DESC").all() as unknown as SnapshotInfo[];
+  const rows = db(root).prepare("SELECT ref, branch, at, count, dirty FROM snapshots ORDER BY at DESC").all() as unknown as SnapshotInfo[];
   return rows;
 }
 

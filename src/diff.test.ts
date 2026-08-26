@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Anchor, DerivationTag, LogicalNode } from "./schema.js";
-import { writeSnapshot, writeNode, dropSnapshot } from "./store.js";
+import { writeSnapshot, writeNode, dropSnapshot, snapshotIsDirty } from "./store.js";
 import { computeDiff } from "./diff.js";
 import { fixtureHash } from "./fixture-hash.js";
 import { discard } from "./test-tmp.js";
@@ -130,5 +130,48 @@ test("an untagged snapshot still diffs, rather than going silent", async () => {
     assert.ok(!("error" in d), "expected a diff result");
     assert.deepEqual(d.changed.map((b) => b.id), ["a_1"]);
     assert.deepEqual(d.unverifiable, []);
+  } finally { discard(root); }
+});
+
+// --- a snapshot that is not the commit it is named after -------------------------
+
+/**
+ * `init`/`snapshot` build a snapshot by indexing the working TREE and label it with
+ * HEAD's sha. On a dirty checkout that row contains the branch's uncommitted work
+ * under the commit's name, so `diff <sha>` compared the base against the same tree
+ * and reported nothing changed — a confidently wrong answer at step one of the review
+ * protocol, and silent. See COD-3.
+ */
+test("a base snapshot taken from a dirty tree is refused, not diffed", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-dirty-"));
+  try {
+    const same: Anchor[] = [anchor("a_keep", "keep", "h1")];
+    await writeSnapshot(root, "dirty_sha", "main", same, "2026-08-26T00:00:00Z", { dirty: true });
+    assert.equal(snapshotIsDirty(root, "dirty_sha"), true, "the flag survives the round trip");
+
+    const r = await computeDiff(root, "dirty_sha") as { error?: string };
+    assert.ok(r.error, "a diff against it must not be answered");
+    assert.match(r.error!, /uncommitted changes/);
+
+    // The distinction that makes the refusal useful rather than annoying: the
+    // not-cached message tells you to run `init`, and `init` on a dirty tree is what
+    // produced this. Following it would loop.
+    assert.doesNotMatch(r.error!, /no cached snapshot/, "this is not the not-cached case");
+    assert.doesNotMatch(r.error!, /codemap init/, "and must not send them back to the command that caused it");
+  } finally { discard(root); }
+});
+
+test("a snapshot written from a clean tree diffs normally", async () => {
+  // The control. Without it the test above passes just as well against a build that
+  // refuses EVERY base, which would be a worse bug than the one being fixed.
+  const root = mkdtempSync(join(tmpdir(), "codemap-clean-"));
+  try {
+    await writeSnapshot(root, "base_sha", "main", [anchor("a_keep", "keep", "h1")], "2026-08-26T00:00:00Z");
+    await writeSnapshot(root, "head_sha", "feature", [anchor("a_keep", "keep", "h1"), anchor("a_add", "audit", "h4")], "2026-08-26T01:00:00Z");
+    assert.equal(snapshotIsDirty(root, "base_sha"), false, "omitting the flag means clean");
+
+    const r = await computeDiff(root, "base_sha", "head_sha") as { added?: unknown[]; error?: string };
+    assert.equal(r.error, undefined);
+    assert.equal(r.added?.length, 1, "and it still reports the change it should");
   } finally { discard(root); }
 });
