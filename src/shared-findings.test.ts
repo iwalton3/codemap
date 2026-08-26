@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { Actor } from "./schema.js";
 import { sortEvents, readScope, type LogEvent } from "./eventlog.js";
 import {
-  createFinding, corroborate, comment, promote, request, setState, recordOutcome, declineAsk,
+  createFinding, corroborate, comment, promote, request, setState, recordOutcome, declineAsk, reratedFrom,
   markPosted, markUpstreamed, promoteToBug, readFindings, foldFindings, findingScope,
   needsHumanAck, mayTransition, mayRevise, ackQueue, alreadyPosted, isClosed, findingTier, byReadingOrder,
   type SharedFinding, type FindingState,
@@ -651,4 +651,38 @@ test("`partial` is its own verdict, replacing that reviewer's earlier one", asyn
     assert.equal(f.corroboration[0]!.verdict, "partial");
     assert.match(f.corroboration[0]!.rationale, /only the second/);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+/**
+ * `rerated` — "real, but not at the severity it was filed at".
+ *
+ * The old annotation store had it as a disposition; the canonical store dropped it, and
+ * answering "what did triage change its mind about" meant reading every revision list.
+ * DERIVED from `revisions`, never stored, so it cannot disagree with its own source.
+ */
+test("a re-rated finding says what it was filed at", () => {
+  const base = { severity: "medium", revisions: [] } as unknown as SharedFinding;
+  assert.equal(reratedFrom(base), undefined, "unrevised is not re-rated");
+
+  const raised = { severity: "critical", revisions: [{ at: "t", by: izzie, was: { severity: "medium" } }] } as unknown as SharedFinding;
+  assert.equal(reratedFrom(raised), "medium", "and it names the value it was filed at");
+
+  // The EARLIEST `was` is the filed value. A finding raised and then dropped back is not
+  // re-rated, and comparing against the previous value would say it was.
+  const roundTrip = {
+    severity: "medium",
+    revisions: [
+      { at: "t1", by: izzie, was: { severity: "medium" } },
+      { at: "t2", by: izzie, was: { severity: "critical" } },
+    ],
+  } as unknown as SharedFinding;
+  assert.equal(reratedFrom(roundTrip), undefined, "back where it started is not a re-rate");
+
+  // A revision that changed something else entirely is not a re-rate either.
+  const worded = { severity: "high", revisions: [{ at: "t", by: izzie, was: { comment: "old" } }] } as unknown as SharedFinding;
+  assert.equal(reratedFrom(worded), undefined);
+
+  // Filed with no severity at all, then rated: that IS a re-rate, and says so.
+  const supplied = { severity: "high", revisions: [{ at: "t", by: izzie, was: { severity: undefined } }] } as unknown as SharedFinding;
+  assert.equal(reratedFrom(supplied), "unset");
 });

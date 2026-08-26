@@ -61,6 +61,28 @@ export const isClosed = (s: FindingState): boolean => CLOSED_STATES.includes(s);
  */
 export type Verdict = "confirm" | "partial" | "refute" | "unsure";
 
+/**
+ * Is this finding rated differently from how it was filed?
+ *
+ * `rerated` was a `disposition` in the old store — "real, but the severity or impact
+ * differs from as-filed" — and it is the one triage question that today needs reading
+ * every revision list to answer. DERIVED, never stored: `revisions` already records the
+ * `was` of every severity change, so a second field would be a copy that can disagree
+ * with its source.
+ *
+ * The EARLIEST recorded `was` is the filed value, not the latest — a finding rated
+ * medium, raised to critical and dropped back to medium was not re-rated, and comparing
+ * against the previous value would say it was.
+ */
+export function reratedFrom(f: Pick<SharedFinding, "severity" | "revisions">): string | undefined {
+  for (const r of f.revisions ?? []) {
+    if (!("severity" in r.was)) continue;
+    const filed = r.was.severity as string | undefined;
+    return filed === f.severity ? undefined : (filed ?? "unset");
+  }
+  return undefined;
+}
+
 /** Verdicts that mean "this is real" — `partial` says so about part of it. */
 export const STANDS_BEHIND: readonly Verdict[] = ["confirm", "partial"];
 export const isStandingBehind = (v: Verdict): boolean => STANDS_BEHIND.includes(v);

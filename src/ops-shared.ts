@@ -26,7 +26,7 @@ import { ensureSidecar, sync as sidecarSync, receive as sidecarReceive, healMerg
 import {
   createFinding, corroborate, comment, promote, request, setState, recordOutcome,
   markPosted, markUpstreamed, promoteToBug, needsHumanAck, ackQueue, mayRevise,
-  revise, resolveContest, relocate, remediate, agentClosureNeedsAck, declineAsk, isStandingBehind, type Remediation,
+  revise, resolveContest, relocate, remediate, agentClosureNeedsAck, declineAsk, isStandingBehind, reratedFrom, type Remediation,
   foldFindings, findingScope, findingTier, byReadingOrder,
   type SharedFinding, type Verdict, type Ask, type FindingState, type NewFinding, type FindingTier,
 } from "./shared-findings.js";
@@ -595,6 +595,9 @@ function view(f: SharedFinding) {
     // purpose (one canonical table), it just has to say which is which.
     published: !!f.origin,
     remediation: f.remediation?.state ?? "outstanding",
+    // "real, but not at the severity it was filed at" — the old store's `rerated`
+    // disposition, derived rather than stored so it cannot disagree with `revisions`.
+    ...(reratedFrom(f) ? { reratedFrom: reratedFrom(f) } : {}),
     remediatedAt: f.remediation ? { by: f.remediation.by.principal, at: f.remediation.at, detail: f.remediation.detail, ref: f.remediation.ref } : undefined,
     closed: f.closed ? { by: f.closed.by.principal, reason: f.closed.reason } : undefined,
     contested: f.contested?.map((c) => ({ field: c.field, held: c.held, incoming: c.incoming })),
@@ -839,7 +842,7 @@ const HEAVY = ["text", "thread", "corroboration", "outcomes", "outcome", "asks",
 
 export async function sharedFindings(
   root: string, pr: number | string,
-  opts: { queue?: boolean; tier?: FindingTier; remediation?: Remediation; terse?: boolean; limit?: number; offset?: number } = {},
+  opts: { queue?: boolean; tier?: FindingTier; remediation?: Remediation; rerated?: boolean; terse?: boolean; limit?: number; offset?: number } = {},
 ) {
   const cfg = resolveSidecar(root);
   let scope: { status?: string; diagnostic?: ScopeDiagnostic } = { status: "complete" };
@@ -858,6 +861,9 @@ export async function sharedFindings(
   let chosen = (opts.queue ? ackQueue(all) : [...all]).sort(byReadingOrder);
   if (opts.tier) chosen = chosen.filter((f) => findingTier(f) === opts.tier);
   if (opts.remediation) chosen = chosen.filter((f) => (f.remediation?.state ?? "outstanding") === opts.remediation);
+  // "what did triage change its mind about" — a real question that needed reading every
+  // revision list before this.
+  if (opts.rerated) chosen = chosen.filter((f) => !!reratedFrom(f));
   const place = (f: SharedFinding) => places.get(f.target.id) ?? { state: "unknown" as const };
   const offset = Math.max(0, Math.floor(opts.offset ?? 0));
   const limit = opts.limit !== undefined ? Math.max(1, Math.floor(opts.limit)) : undefined;
@@ -907,6 +913,7 @@ export async function sharedFindings(
       // of those is the problem this is solving. It is what identifies the row.
       light.comment = (f.comment || f.text || "").split("\n")[0]!.slice(0, 160);
       light.remediation = f.remediation?.state ?? "outstanding";
+      light.reratedFrom = reratedFrom(f);
       light.pending = f.pending ? { ask: f.pending.ask, by: f.pending.by.principal, rationale: "" } : undefined;
       return light as typeof row;
     }),

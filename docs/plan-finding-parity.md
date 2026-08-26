@@ -37,12 +37,11 @@ But the vocabulary was narrower, so two values had nowhere to go.
   said so: *"`disposition` is not recorded on shared findings (verdicts are), so `partial`
   lives in the corroboration rationale and the close detail, not as a filterable field."*
 
-- **`rerated`** — *"real, but the severity or impact differs from as-filed"*. **STILL OPEN.**
-  The data exists: `revisions` records every `severity` change with its `was`. What is
-  missing is the derived, filterable signal — "this finding's severity is not the one it
-  was filed at". Cheap to compute at read time; nothing needs storing. Worth doing before
-  the retirement, because "what did triage change its mind about" is a real triage question
-  and today it needs reading every revision list.
+- **`rerated`** — *"real, but the severity or impact differs from as-filed"*. **CLOSED**:
+  `reratedFrom` derives it from `revisions`, never storing a second copy that could
+  disagree. It compares against the EARLIEST recorded `was`, so a finding raised to
+  critical and dropped back to medium is not counted — comparing against the previous
+  value would have said it was.
 
 - `open` / `confirmed` / `refuted` map to no-corroboration / a standing-behind verdict / a
   refute verdict. `accepted` maps to the `bug` link (`defer_finding`). All covered.
@@ -86,13 +85,42 @@ A finding is one kind. Notes, questions and pointers stay annotations, which
 `docs/sidecar-architecture.md` settles as a different entity. `promote_annotation` is the
 bridge when a pointer turns out to be a defect.
 
+## 5. Push state: less missing than it looks, and split in two
+
+Izzie's instinct — *"store the push state in the sqlite database on push, referencing the
+findings as foreign keys"* — is the right shape, and half of it is already built. Push
+state is two different things and they were conflated on the annotation:
+
+- **Where it LANDED**, after the fact. Already canonical: `SharedFinding.posted` is an
+  `ExternalRef` (`system`, `key`, `url`, `at`, `by`), written by `record_published` and
+  read by `inbound_replies` to match the submitter's thread. It needs no `pr` because a
+  finding carries its own. **Done.**
+- **Where a person WANTS it published**, before the fact — `publishPath`, `publishLine`,
+  `publishAttribution`, and the `escalated` elect gate. No canonical home. This is the
+  part that would want the table.
+
+The remaining piece of the first half is `pr_push`, still a `meta` JSON blob keyed by
+pull request and listing ANNOTATION ids (`readPushes`/`writePush`). That is the record
+that stops a re-run duplicating a comment, and it is the one thing here that genuinely
+wants to become a table with a finding foreign key: keyed on annotations, it cannot
+dedupe a canonical finding at all.
+
+**But building either is gated on the decision below**, not on parity. Both serve raw
+comment push, which is off wherever a sidecar exists.
+
 ## What is left before parity
 
-1. **`rerated` as a derived signal** — a finding whose current `severity` differs from its
-   earliest recorded one, filterable. Read-time only.
-2. **Decide about raw comment push.** If it stays, canonical findings need `publishPath` /
-   `publishLine` / `publishAttribution` and an elect gate. If it goes, delete those four
-   fields with the annotation store and say so in the tool descriptions.
+1. ~~**`rerated` as a derived signal.**~~ **DONE** — `reratedFrom` compares the current
+   severity against the EARLIEST recorded `was`, so a finding raised and dropped back is
+   not counted; filterable via `shared_findings(rerated: true)`. Derived, never stored, so
+   it cannot disagree with `revisions`. Across 169 real findings: 8 have revisions, 2 have
+   a severity revision, 1 is actually re-rated — which is the discrimination the field is
+   for.
+2. **Decide about raw comment push.** Everything else on this page hangs off it. If it
+   stays, canonical findings need the three publish fields, the elect gate, and `pr_push`
+   as a table keyed on findings. If it goes, all four fields retire with the annotation
+   store, `pr_push` goes with them, and `posted` stays for `inbound_replies` — which is
+   worth keeping either way, because findings already pushed still get replies.
 
 Everything else the old store did, the new one does — and the reverse list is fourteen
 fields long.
