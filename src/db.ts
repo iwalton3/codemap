@@ -12,7 +12,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync, readdirSync, existsSync, writeFileSync } from "node:fs";
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { randomBytes } from "node:crypto";
 
 export const WORK_REF = "@work";
@@ -47,6 +47,46 @@ export function db(root: string): DatabaseSync {
   migrateWalkthroughBlob(d);
   cache.set(root, d);
   return d;
+}
+
+/**
+ * Close a root's cached handle and forget it. **Tests only — production has no
+ * caller, deliberately:** a handle is meant to live as long as the process.
+ *
+ * It exists because POSIX and Windows disagree about deleting an open file. A test
+ * that ends `rmSync(root, …)` on a temp dir holding an open `codemap.db` is fine on
+ * Linux, which unlinks it happily, and throws `EPERM` on Windows. That one
+ * difference was 398 of the 454 Windows failures — every one of them a passing test
+ * whose teardown could not run. See COD-7 §1.
+ *
+ * Safe to call for a root that was never opened, which is most of them: plenty of
+ * temp dirs in the suite are sidecars or plain fixtures with no store at all.
+ */
+export function closeDb(root: string): void {
+  const d = cache.get(root);
+  if (!d) return;
+  cache.delete(root);
+  // A handle closed twice, or one whose file has already gone, must not turn a
+  // teardown into a failure — the point of this is to make cleanup reliable.
+  try { d.close(); } catch { /* already gone */ }
+}
+
+/**
+ * A root and every store beneath it.
+ *
+ * The reason teardown needs this rather than `closeDb`: a temp directory is often a
+ * PARENT of the stores, not a store itself. `oracle.ts` builds a whole team under one
+ * `codemap-oracle-*` — two bare origins and a clone per person — so closing the root
+ * would close nothing and the tree would still refuse to delete on Windows.
+ */
+export function closeDbUnder(root: string): void {
+  const prefix = root.endsWith(sep) ? root : root + sep;
+  for (const k of [...cache.keys()]) if (k === root || k.startsWith(prefix)) closeDb(k);
+}
+
+/** Every cached handle, for a process about to exit or re-open a tree. */
+export function closeAll(): void {
+  for (const root of [...cache.keys()]) closeDb(root);
 }
 
 /**

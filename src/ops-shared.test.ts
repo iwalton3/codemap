@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import { testEvent } from "./test-events.js";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, readdirSync, appendFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, readdirSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { resolveSidecar, universeKey, scopeFor } from "./sidecar-config.js";
 import * as shared from "./ops-shared.js";
@@ -11,6 +11,7 @@ import { foldDocs } from "./shared-docs.js";
 import { db } from "./db.js";
 import { readFindings, readFinding, writeLocalFinding } from "./store.js";
 import type { SharedFinding } from "./shared-findings.js";
+import { discard } from "./test-tmp.js";
 
 const git = (root: string, ...args: string[]) =>
   spawnSync("git", ["-c", "user.email=izzie@x.com", "-c", "user.name=t", ...args], { cwd: root, encoding: "utf8" });
@@ -26,7 +27,7 @@ function universe(withSidecar = true) {
   mkdirSync(join(root, ".codemap"), { recursive: true });
   const side = tmp("side");
   if (withSidecar) writeFileSync(join(root, ".codemap", "sidecar"), side, "utf8");
-  return { root, side, cleanup: () => [root, side].forEach((r) => rmSync(r, { recursive: true, force: true })) };
+  return { root, side, cleanup: () => [root, side].forEach((r) => discard(r)) };
 }
 
 const withEnv = async (vars: Record<string, string | undefined>, fn: () => Promise<void>) => {
@@ -84,8 +85,12 @@ test("the pointer file locates the sidecar, and the env var beats it", async () 
     await withEnv({ CODEMAP_SIDECAR: undefined }, async () => {
       assert.equal(resolveSidecar(u.root)?.path, u.side);
     });
+    // `resolveSidecar` returns `resolve(env)`, so the expectation has to be resolved
+    // too: on win32 `resolve("/elsewhere")` is `C:\elsewhere`, and comparing against
+    // the bare literal fails for a reason that has nothing to do with the env var
+    // beating the pointer file, which is what this asserts.
     await withEnv({ CODEMAP_SIDECAR: "/elsewhere" }, async () => {
-      assert.equal(resolveSidecar(u.root)?.path, "/elsewhere");
+      assert.equal(resolveSidecar(u.root)?.path, resolve("/elsewhere"));
     });
   } finally { u.cleanup(); }
 });
@@ -245,7 +250,7 @@ test("the workspace manifest configures the sidecar for every universe under it"
     await withEnv({ CODEMAP_SIDECAR: undefined }, async () => {
       assert.equal(resolveSidecar(join(ws, "api"))?.path, side, "found by walking up to the manifest");
     });
-  } finally { rmSync(ws, { recursive: true, force: true }); }
+  } finally { discard(ws); }
 });
 
 test("a pointer file beats the workspace, and the env beats both", async () => {
@@ -258,9 +263,9 @@ test("a pointer file beats the workspace, and the env beats both", async () => {
       assert.equal(resolveSidecar(join(ws, "api"))?.path, "/from-pointer");
     });
     await withEnv({ CODEMAP_SIDECAR: "/from-env" }, async () => {
-      assert.equal(resolveSidecar(join(ws, "api"))?.path, "/from-env");
+      assert.equal(resolveSidecar(join(ws, "api"))?.path, resolve("/from-env"));
     });
-  } finally { rmSync(ws, { recursive: true, force: true }); }
+  } finally { discard(ws); }
 });
 
 test("a workspace with no sidecar field configures nothing", async () => {
@@ -271,7 +276,7 @@ test("a workspace with no sidecar field configures nothing", async () => {
     await withEnv({ CODEMAP_SIDECAR: undefined }, async () => {
       assert.equal(resolveSidecar(join(ws, "api")), null);
     });
-  } finally { rmSync(ws, { recursive: true, force: true }); }
+  } finally { discard(ws); }
 });
 
 /**
@@ -718,7 +723,7 @@ test("sync folds the scopes a PULL moved, so a later query never touches the log
       assert.ok(again.materialized!.scanned >= 1, "it still scanned the scope");
       assert.equal(again.materialized!.folded, 0, "but folded none of it");
     });
-  } finally { a.cleanup(); b.cleanup(); rmSync(origin, { recursive: true, force: true }); }
+  } finally { a.cleanup(); b.cleanup(); discard(origin); }
 });
 
 // --- sidecar heal ----------------------------------------------------------------
@@ -740,7 +745,7 @@ async function forkedPair() {
   // The fork itself: b picks up a's writer id, so both write one shard file.
   const id = (r: string) => join(r, ".git", "codemap-writer");
   writeFileSync(id(b.side), readFileSync(id(a.side), "utf8"), "utf8");
-  return { origin, a, b, cleanup: () => { a.cleanup(); b.cleanup(); rmSync(origin, { recursive: true, force: true }); } };
+  return { origin, a, b, cleanup: () => { a.cleanup(); b.cleanup(); discard(origin); } };
 }
 
 test("heal unions the divided shard, rotates the writer, and clears the scope", async () => {

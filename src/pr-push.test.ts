@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { diffLineRanges, diffHunks } from "./git.js";
@@ -9,6 +9,7 @@ import { planPrPush, isAgentAuthored, isElected, pushVerdict, executePrPush, pla
 import { readPushes, writePush } from "./store.js";
 import type { Annotation } from "./schema.js";
 import { fixtureHash } from "./fixture-hash.js";
+import { discard } from "./test-tmp.js";
 
 const git = (root: string, ...a: string[]) =>
   spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...a], { cwd: root, encoding: "utf8" });
@@ -35,7 +36,7 @@ test("diffLineRanges reports the head-side lines GitHub will accept a comment on
     assert.ok(covers(20), "the changed line must be commentable");
     assert.ok(covers(18) && covers(22), "context lines around it are commentable too");
     assert.ok(!covers(1), "a line far from any hunk is not commentable");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("the hunk geometry separates lines the change ADDED from its context", () => {
@@ -61,7 +62,7 @@ test("the hunk geometry separates lines the change ADDED from its context", () =
     const covers = (n: number) => h.ranges.some(([lo, hi]) => n >= lo && n <= hi);
     assert.ok(covers(17) && covers(24), "context is still commentable — it is just not what changed");
     assert.ok(!h.added.has(17), "…and is not confused for an addition");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an added line that looks like a diff header does not re-attribute the hunks after it", () => {
@@ -89,7 +90,7 @@ test("an added line that looks like a diff header does not re-attribute the hunk
     const f = ranges.get("fixture.patch");
     assert.ok(f && f.length >= 2, "both hunks belong to the file that actually changed");
     assert.ok(f!.some(([lo, hi]) => 30 >= lo && 30 <= hi), "the hunk after the trap keeps its own file");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a push record accumulates, so re-running never re-posts a comment", async () => {
@@ -107,7 +108,7 @@ test("a push record accumulates, so re-running never re-posts a comment", async 
     await writePush(root, "290", { annotationIds: ["an_9"], viewedPaths: [], at: "2026-08-18T02:00:00Z" });
     assert.deepEqual((await readPushes(root)).pushes["290"]!.annotationIds, ["an_9"]);
     assert.equal((await readPushes(root)).pushes["264"]!.annotationIds.length, 3);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an unrecognised --min-severity is refused, never read as \"no filter\"", async () => {
@@ -124,7 +125,7 @@ test("an unrecognised --min-severity is refused, never read as \"no filter\"", a
     // an absent filter is still "no filter", which is a different thing
     const ok = await planPrPush(root, "", {});
     assert.ok(!("error" in ok) || !/min-severity/i.test((ok as { error: string }).error));
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("only findings the human elected are publishable", () => {
@@ -273,7 +274,7 @@ test("publishing records the review BEFORE syncing viewed state", async () => {
     const rec = (await readPushes(root)).pushes["7"]!;
     assert.deepEqual(rec.annotationIds, ["n1"], "the publish is recorded, so a re-run skips it");
     assert.deepEqual(rec.viewedPaths, ["a.ts"]);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a failed comment post does not abandon a viewed sync that was also asked for", async () => {
@@ -294,7 +295,7 @@ test("a failed comment post does not abandon a viewed sync that was also asked f
     assert.deepEqual(r.markedViewed, ["a.ts"], "they are independent acts; one failing is not the other's news");
     // and nothing is recorded as published, so a retry still sends the comment
     assert.equal((await readPushes(root)).pushes["8"]?.annotationIds?.length ?? 0, 0);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("pushing viewed state alone opens no review on the pull request", async () => {
@@ -315,7 +316,7 @@ test("pushing viewed state alone opens no review on the pull request", async () 
     assert.equal(calls.includes("post-review"), false, "viewed state is a different act from commenting");
     assert.equal(r.postedComments, 0);
     assert.deepEqual(r.markedViewed, ["a.ts"]);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a viewed sync is refused when the pull request head moved under the plan", async () => {
@@ -344,7 +345,7 @@ test("a viewed sync is refused when the pull request head moved under the plan",
       headNow: { headSha: "OLDHEAD" } as any,
     });
     assert.deepEqual(same.markedViewed, ["a.ts"], "an unmoved head syncs normally");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("publishing viewed state alone does not erase the link to a review posted earlier", async () => {
@@ -355,7 +356,7 @@ test("publishing viewed state alone does not erase the link to a review posted e
     const rec = (await readPushes(root)).pushes["9"]!;
     assert.equal(rec.reviewUrl, "https://x/1", "the arrays union; a scalar must not be blanked by a later write");
     assert.deepEqual(rec.viewedPaths, ["a.ts"]);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 /**
@@ -693,7 +694,7 @@ test("a comment whose text points somewhere other than where it lands is flagged
   assert.equal(off.comments[0]!.citesLine, 41, "the disagreement is surfaced, not silently resolved");
 });
 
-test("a verdict is posted as one, and is reason enough to open a review", () => {
+test("a verdict is posted as one, and is reason enough to open a review", async () => {
   // Approving a change, or asking for work on it, is worth posting with no inline
   // comments at all — but it is a VOTE that shows on the pull request, so it is
   // never inherited from a filter or defaulted into.
@@ -710,15 +711,18 @@ test("a verdict is posted as one, and is reason enough to open a review", () => 
       comments: [], deferred: [], blocked: [], unverified: [], viewedPaths: [],
       skipped: { alreadyPushed: 0, resolved: 0, notElected: 0, belowSeverity: 0, withdrawn: 0, noComment: 0, notPublishable: 0, evidenceMoved: 0, evidenceUnverifiable: 0 },
     };
-    return executePrPush(root, plan as any, { gh: fakeGh as any }).then((r) => {
-      assert.equal(payload.event, "REQUEST_CHANGES");
-      assert.match(payload.body, /^my summary/, "the human's words lead; the stats are context for them");
-      assert.deepEqual(r.errors, []);
-    });
-  } finally { rmSync(root, { recursive: true, force: true }); }
+    // AWAIT, not `return …then(…)`. A `return` inside `try` runs the `finally`
+    // immediately — when the promise is handed back, not when it settles — so the
+    // teardown deleted the store while `executePrPush` was still writing to it. It
+    // passed on POSIX and left a stray temp dir behind, which is how it was found.
+    const r = await executePrPush(root, plan as any, { gh: fakeGh as any });
+    assert.equal(payload.event, "REQUEST_CHANGES");
+    assert.match(payload.body, /^my summary/, "the human's words lead; the stats are context for them");
+    assert.deepEqual(r.errors, []);
+  } finally { discard(root); }
 });
 
-test("GitHub refusing a self-review says the comments were lost with it", () => {
+test("GitHub refusing a self-review says the comments were lost with it", async () => {
   // The raw message ("Can not approve your own pull request") does not mention that
   // nothing was posted — which is the part that decides what you do next.
   const root = mkdtempSync(join(tmpdir(), "codemap-exec-"));
@@ -733,12 +737,11 @@ test("GitHub refusing a self-review says the comments were lost with it", () => 
       deferred: [], blocked: [], unverified: [], viewedPaths: [],
       skipped: { alreadyPushed: 0, resolved: 0, notElected: 0, belowSeverity: 0, withdrawn: 0, noComment: 0, notPublishable: 0, evidenceMoved: 0, evidenceUnverifiable: 0 },
     };
-    return executePrPush(root, plan as any, { gh: fakeGh as any }).then((r) => {
-      assert.match(r.errors[0]!, /will not let you approve your own pull request/);
-      assert.match(r.errors[0]!, /NOTHING was posted — including the comments/);
-      assert.equal(r.postedComments, 0);
-    });
-  } finally { rmSync(root, { recursive: true, force: true }); }
+    const r = await executePrPush(root, plan as any, { gh: fakeGh as any });
+    assert.match(r.errors[0]!, /will not let you approve your own pull request/);
+    assert.match(r.errors[0]!, /NOTHING was posted — including the comments/);
+    assert.equal(r.postedComments, 0);
+  } finally { discard(root); }
 });
 
 /**
@@ -926,7 +929,7 @@ test("another review's findings do not bury this one's held-back list", async ()
       "raised while reading THIS change: stays in the loud list, which is what it is for",
     );
     assert.equal(by.get("an_other")?.elsewhere?.ref, otherRef, "and one witnessed on another branch is marked as such");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 // --- the two halves of a push, and which one a sidecar turns off -------------------
@@ -979,7 +982,7 @@ test("a sidecar turns off the comment half and leaves the verdict alone", async 
     assert.match(sent[0] ?? "", /"event":"APPROVE"/, "the verdict still goes — that is the half being kept");
     assert.equal(after.errors.length, 1, "and it says the comments were not posted, rather than implying they were");
     assert.match(after.errors[0]!, /sidecar/);
-  } finally { dirs.forEach((d) => rmSync(d, { recursive: true, force: true })); }
+  } finally { dirs.forEach((d) => discard(d)); }
 });
 
 /**
@@ -1010,5 +1013,5 @@ test("a comment the sidecar suppressed is not recorded as posted", async () => {
     });
     const a = (await readAnnotations(root)).annotations.find((x) => x.id === "n1")!;
     assert.equal(a.postedRef, undefined, "it never went out, so it carries no receipt saying it did");
-  } finally { dirs.forEach((d) => rmSync(d, { recursive: true, force: true })); }
+  } finally { dirs.forEach((d) => discard(d)); }
 });

@@ -21,7 +21,7 @@
 
 import { spawnSync } from "node:child_process";
 import { appendFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
-import { realpathSync } from "node:fs";
+import { realpathSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { ANCHOR_SCHEME, HASH_SCHEME } from "./schema.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
@@ -37,7 +37,12 @@ import type { Actor } from "./schema.js";
  */
 function samePath(a: string, b: string): boolean {
   if (!a || !b) return false;
-  try { return realpathSync(a) === realpathSync(b); } catch { return a === b; }
+  // `.native` goes through the OS resolver (`GetFinalPathNameByHandle` on Windows),
+  // which expands 8.3 short names; the JS implementation walks lstat and does not.
+  // `os.tmpdir()` on Windows is often the short form (`C:\Users\RUNNER~1\...`) while
+  // `git rev-parse --show-toplevel` returns the long one, so without this the two
+  // never compare equal and the guard below refuses every sidecar under a temp dir.
+  try { return realpathSync.native(a) === realpathSync.native(b); } catch { return a === b; }
 }
 
 /**
@@ -455,8 +460,32 @@ async function restoreErased(root: string, erased: Erasure[]): Promise<void> {
 /** What an already-attempted fetch left behind: done, not attempted, or its failure. */
 type FetchState = boolean | { error: string };
 
+/**
+ * Does this sidecar have a remote configured?
+ *
+ * Read from `.git/config` rather than spawned. `git remote` is a config lookup behind
+ * a process start, and this sits on the hot path of every pull and every push — one
+ * 12-test file spawned it 1,488 times. A spawn is ~5ms on Linux and several times
+ * that on Windows, where the same suite runs 6x slower largely for this reason.
+ *
+ * No cache, deliberately: the file is the source of truth and reading it is a syscall,
+ * so this stays correct when a remote is added mid-process — which the oracle does.
+ *
+ * Falls back to the spawn when the config cannot be read. A linked worktree keeps
+ * `.git` as a FILE pointing elsewhere; a sidecar is always its own ordinary repo
+ * today, but guessing wrong here would decide a remote-backed sidecar is local-only
+ * and silently stop syncing, which is the one failure this must not invent.
+ */
+function hasRemote(root: string): boolean {
+  try {
+    return /^\s*\[remote /m.test(readFileSync(join(root, ".git", "config"), "utf8"));
+  } catch {
+    return !!g(root, ["remote"]).out;
+  }
+}
+
 function fetchRemote(root: string): { fetched: boolean } | { error: string } {
-  if (!g(root, ["remote"]).out) return { fetched: false };
+  if (!hasRemote(root)) return { fetched: false };
   const r = g(root, ["fetch", "--quiet", "origin"]);
   return r.ok ? { fetched: true } : { error: `fetch failed: ${r.err.slice(0, 300)}` };
 }
@@ -481,7 +510,7 @@ export async function pull(root: string, actor?: Actor): Promise<PullResult | { 
  * itself. Same shape as `sync`/`syncHeld`, and the lock is not reentrant.
  */
 async function pullHeld(root: string, actor?: Actor, fetched: FetchState = false): Promise<PullResult | { error: string }> {
-  if (!g(root, ["remote"]).out) return { gained: 0 };
+  if (!hasRemote(root)) return { gained: 0 };
   if (typeof fetched === "object") return fetched;
   const before = await countEvents(root);
   // Only when the caller has not already fetched outside the lock. The in-lock fetch
@@ -562,8 +591,26 @@ async function pullHeld(root: string, actor?: Actor, fetched: FetchState = false
  * A sha rather than `origin/<branch>`: the ref can move under us now that fetching
  * does not take the lock, and a caller that vets one state must merge that same one.
  */
+const manifestCache = new Map<string, SidecarManifest[]>();
+/** A full sha — the only rev whose content is guaranteed never to change. */
+const isSha = (rev: string): boolean => /^[0-9a-f]{40}$/.test(rev);
+
 function remoteManifests(root: string, rev: string): SidecarManifest[] {
+  // Memoized on (root, sha) and never invalidated. That is sound ONLY because the key
+  // is a content address: the tree at a sha cannot change, so a hit can never be
+  // stale. Guarded on the rev actually being a full sha — a branch name moves, and
+  // this would then serve one answer forever.
+  //
+  // Worth the cache because the sidecar re-reads these constantly: one `ls-tree` plus
+  // a `show` per peer on every pull. One 12-test file made 3,704 such calls, and a
+  // process spawn is ~5ms on Linux and several times that on Windows, where the whole
+  // suite runs 6x slower for exactly this kind of reason.
+  const key = isSha(rev) ? `${root}\u0000${rev}` : null;
+  if (key) { const hit = manifestCache.get(key); if (hit) return hit; }
+
   const listing = g(root, ["ls-tree", "--name-only", `${rev}:${MANIFEST_DIR}`]);
+  // A failed listing is NOT cached: the sha may simply not be fetched yet, and a
+  // later fetch must be able to change the answer. Only a real reading is memoized.
   if (!listing.ok) return [];
   const out: SidecarManifest[] = [];
   for (const name of listing.out.split("\n").map((s) => s.trim()).filter((s) => s.endsWith(".json"))) {
@@ -574,6 +621,7 @@ function remoteManifests(root: string, rev: string): SidecarManifest[] {
       if (m && typeof m.principal === "string" && typeof m.anchorScheme === "number") out.push(m);
     } catch { /* not ours to die on */ }
   }
+  if (key) manifestCache.set(key, out);
   return out;
 }
 
@@ -626,7 +674,7 @@ async function pushHeld(root: string, message: string, opts: { attempts?: number
   const commit = commitLocal(root, message);
   if (typeof commit === "object") return commit;
   const committed = commit === "committed";
-  if (!g(root, ["remote"]).out) return { pushed: false, committed, retries: 0 };
+  if (!hasRemote(root)) return { pushed: false, committed, retries: 0 };
 
   const branch = branchOf(root);
 
@@ -696,7 +744,7 @@ async function healMergeHeld(root: string, actor?: Actor): Promise<HealedMerge |
   if ("error" in ready) return ready;
   const pre = commitLocal(root, "codemap: local state before heal");
   if (typeof pre === "object") return pre;
-  if (!g(root, ["remote"]).out) return { resolved: [] };
+  if (!hasRemote(root)) return { resolved: [] };
 
   const f = fetchRemote(root);
   if ("error" in f) return f;

@@ -8,7 +8,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -16,6 +16,7 @@ import { indexBlob } from "./repo.js";
 import { collidingAnchors } from "./indexer.js";
 import { init, whereWas } from "./ops.js";
 import { readAnchorStore } from "./store.js";
+import { discard } from "./test-tmp.js";
 
 const git = (root: string, ...args: string[]) =>
   spawnSync("git", ["-c", "user.email=t@x", "-c", "user.name=t", ...args], { cwd: root, encoding: "utf8" });
@@ -49,7 +50,7 @@ test("an id the working tree lost is found at the commit the record names", asyn
     assert.equal(w.file, "src/pay.ts");
     assert.equal(w.symbol, "transfer");
     assert.equal(w.ref, first, "and it answers about THAT commit, not the newest one holding it");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an id no commit produced is absent there, and says how much it looked at", async () => {
@@ -60,7 +61,7 @@ test("an id no commit produced is absent there, and says how much it looked at",
     assert.equal(w.at, "absent");
     assert.equal(w.ref, first);
     assert.ok(w.indexed > 0, "it really indexed that commit");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a record with no historical address is told so, not told the code is gone", async () => {
@@ -77,7 +78,7 @@ test("a record with no historical address is told so, not told the code is gone"
     const bad = await whereWas(root, id, "no-such-ref") as any;
     assert.equal(bad.at, "unaddressed");
     assert.match(bad.why, /cannot resolve/);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 /**
@@ -160,7 +161,7 @@ test("a reindex that loses a symbol to a colliding id says so", async () => {
     // …and the store really did keep only one, which is what makes it worth saying.
     const kept = (await readAnchorStore(root)).anchors.filter((a) => a.symbolPath.join(".") === "C.M");
     assert.equal(kept.length, 1);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an ordinary reindex says nothing about collisions", async () => {
@@ -169,5 +170,5 @@ test("an ordinary reindex says nothing about collisions", async () => {
     mkdirSync(join(root, "src"));
     writeFileSync(join(root, "src/pay.ts"), "export function transfer(c: number) { return c; }\n");
     assert.equal((await init(root) as any).idCollisions, undefined, "absent, not an empty list");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });

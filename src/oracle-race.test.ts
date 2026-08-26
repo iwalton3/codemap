@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { team, who, settle, type Member, type Team } from "./oracle.js";
 import { Ledger, checkSettled } from "./oracle-properties.js";
@@ -27,6 +27,12 @@ import { setTimeout } from "node:timers/promises";
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+/**
+ * The child's `import` specifier must be a `file://` URL, not a path.
+ * `D:\a\codemap\dist\ops-shared.js` in an ESM import is read as protocol `d:` and
+ * Node refuses it — `ERR_UNSUPPORTED_ESM_URL_SCHEME`. POSIX never notices, because
+ * there an absolute path and a bare specifier happen to be distinguishable.
+ */
 const run = promisify(execFile);
 
 const A = "ana@acme.test";
@@ -51,7 +57,7 @@ function racer(m: Member, pr: number, tag: string, gate: string, other: string):
   const script = `
     import { writeFileSync, existsSync } from "node:fs";
     import { setTimeout as sleep } from "node:timers/promises";
-    import { shareFinding, sharedSync } from ${JSON.stringify(join(HERE, "ops-shared.js"))};
+    import { shareFinding, sharedSync } from ${JSON.stringify(pathToFileURL(join(HERE, "ops-shared.js")).href)};
 
     writeFileSync(${JSON.stringify(gate)}, "ready");
     const deadline = Date.now() + 30000;

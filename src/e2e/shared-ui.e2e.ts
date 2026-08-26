@@ -16,12 +16,13 @@
 import { test, describe, before, after } from "node:test";
 import { testEvent } from "../test-events.js";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { resolvePlaywright, launchPlaywright, startServer, type Server } from "./harness.js";
 import { shareFinding, promoteFinding, corroborateFinding, requestOnFinding, publishLocalDocs } from "../ops-shared.js";
+import { discard } from "../test-tmp.js";
 
 const pw = resolvePlaywright();
 
@@ -95,8 +96,8 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
   after(async () => {
     await browser?.close();
     server?.stop();
-    rmSync(root, { recursive: true, force: true });
-    rmSync(side, { recursive: true, force: true });
+    discard(root);
+    discard(side);
   });
 
   /** A page plus every console error it produced — a blank render is the failure. */

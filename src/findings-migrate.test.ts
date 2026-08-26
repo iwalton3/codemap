@@ -1,12 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { migrateLocalFindings } from "./findings-migrate.js";
 import { readAnnotations, writeAnnotations, readFindings, readFinding } from "./store.js";
 import type { Annotation } from "./schema.js";
+import { discard } from "./test-tmp.js";
 
 /**
  * The migration rewrites `meta.annotations` and the findings it removes exist only as
@@ -18,7 +19,7 @@ const repo = () => {
   const root = mkdtempSync(join(tmpdir(), "codemap-mig-"));
   spawnSync("git", ["init", "-q", "-b", "main"], { cwd: root });
   mkdirSync(join(root, ".codemap"), { recursive: true });
-  return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+  return { root, cleanup: () => discard(root) };
 };
 
 const ann = (over: Partial<Annotation> & { id: string }): Annotation => ({
@@ -157,7 +158,7 @@ const indexedRepo = async () => {
   git("add", "-A"); git("commit", "-qm", "seed");
   const { init } = await import("./ops.js");
   await init(root);
-  return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+  return { root, cleanup: () => discard(root) };
 };
 
 /**

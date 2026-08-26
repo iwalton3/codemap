@@ -18,9 +18,10 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, existsSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
+import { discard } from "../test-tmp.js";
 
 export const SOURCE_REPO = process.env.CODEMAP_E2E_GIT_REPO ?? join(homedir(), "Desktop", "jellyfin");
 
@@ -88,10 +89,10 @@ export interface Clone { root: string; cleanup(): void }
  */
 export function cloneAt(at: string): Clone {
   const root = mkdtempSync(join(tmpdir(), "codemap-e2e-repo-"));
-  rmSync(root, { recursive: true, force: true });   // git clone insists on creating it
+  discard(root);   // git clone insists on creating it
   const c = spawnSync("git", ["clone", "--quiet", "--local", "--no-checkout", SOURCE_REPO, root], { encoding: "utf8" });
   if (c.status !== 0) throw new Error(`clone failed: ${c.stderr}`);
   const co = git(root, "checkout", "--detach", "--quiet", at);
   if (co.status !== 0) throw new Error(`checkout ${at} failed: ${co.stderr}`);
-  return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+  return { root, cleanup: () => discard(root) };
 }

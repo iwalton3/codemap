@@ -13,7 +13,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -25,6 +25,7 @@ import { writeLocalWalkthrough, readWalkthroughsFor } from "./store.js";
 import { db } from "./db.js";
 import { sharedWalkthroughs, shareWalkthrough, publishLocalWalkthroughs } from "./ops-shared.js";
 import { scopeFor, resolveSidecar } from "./sidecar-config.js";
+import { discard } from "./test-tmp.js";
 
 const tmp = (t: string) => mkdtempSync(join(tmpdir(), `codemap-wr-${t}-`));
 
@@ -37,7 +38,7 @@ function universe() {
   mkdirSync(join(root, ".codemap"), { recursive: true });
   const side = tmp("side");
   writeFileSync(join(root, ".codemap", "sidecar"), side, "utf8");
-  return { root, side, cleanup: () => [root, side].forEach((r) => rmSync(r, { recursive: true, force: true })) };
+  return { root, side, cleanup: () => [root, side].forEach((r) => discard(r)) };
 }
 
 const PR = 264;
@@ -138,7 +139,7 @@ test("no walkthrough anywhere is still null, and a store with no sidecar still r
     await writeLocalWalkthrough(solo, String(PR), wt("head1", "2026-08-21T00:00:00Z"));
     const pick = (await walkthroughFor(solo, PR, "head1"))!;
     assert.equal(pick.walkthrough.head, "head1", "no sidecar is not an error — it is the ordinary case");
-  } finally { rmSync(solo, { recursive: true, force: true }); }
+  } finally { discard(solo); }
 });
 
 // ---------------------------------------------------------------------------

@@ -1,12 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Anchor, DerivationTag, LogicalNode } from "./schema.js";
 import { writeSnapshot, writeNode, dropSnapshot } from "./store.js";
 import { computeDiff } from "./diff.js";
 import { fixtureHash } from "./fixture-hash.js";
+import { discard } from "./test-tmp.js";
 
 function anchor(id: string, symbol: string, bodyHash: string): Anchor {
   // Through `fixtureHash`, because `sameBody` refuses a value that is not a hash —
@@ -48,7 +49,7 @@ test("diff of two cached snapshots reports added/removed/changed + impact", asyn
     assert.equal(r.impact.flows.length, 1);
     assert.equal(r.impact.flows[0]!.id, "flow1");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    discard(root);
   }
 });
 
@@ -58,7 +59,7 @@ test("diff against an uncached base ref returns a helpful error", async () => {
     const r = await computeDiff(root, "never_indexed");
     assert.ok("error" in r && /no cached snapshot/.test(r.error));
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    discard(root);
   }
 });
 
@@ -79,7 +80,7 @@ test("the reserved refs cannot be dropped as if they were snapshots", async () =
       assert.throws(() => dropSnapshot(root, ref), /not a snapshot/, `${ref} was droppable`);
     }
     dropSnapshot(root, "some_sha"); // an actual snapshot still goes
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 /** A tag this build would never produce — a snapshot from another grammar or parser. */
@@ -108,7 +109,7 @@ test("a snapshot from a different build reads as not cached, not as drift", asyn
     const d = await computeDiff(root, "base_sha", "head_sha");
     assert.ok("error" in d, "a foreign-derivation snapshot must not be silently compared");
     assert.match(d.error, /no cached snapshot for base/);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 /**
@@ -129,5 +130,5 @@ test("an untagged snapshot still diffs, rather than going silent", async () => {
     assert.ok(!("error" in d), "expected a diff result");
     assert.deepEqual(d.changed.map((b) => b.id), ["a_1"]);
     assert.deepEqual(d.unverifiable, []);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });

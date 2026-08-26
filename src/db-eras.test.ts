@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, cpSync } from "node:fs";
+import { mkdtempSync, mkdirSync, cpSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -8,6 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { db } from "./db.js";
 import { readTriage } from "./store.js";
 import { SCHEMA_ERAS, buildEra, type SchemaEra } from "./schema-eras.js";
+import { discard } from "./test-tmp.js";
 
 /**
  * A store from every schema era this project has had, opened by the current build.
@@ -107,7 +108,7 @@ for (const era of SCHEMA_ERAS) {
           "a row that was already local is not retroactively made the fold's — origin is who wrote it, "
           + "and a ladder that defaulted it would hand every existing doc to a scope nobody published to");
       }
-    } finally { rmSync(root, { recursive: true, force: true }); }
+    } finally { discard(root); }
   });
 }
 
@@ -130,7 +131,7 @@ test("a store from before node_versions gets its docs back-filled, not lost", as
       JSON.parse(rows[0]!.citations).map((c: { anchorId: string }) => c.anchorId), ["a_old"],
       "and its anchors became citations",
     );
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a store with data in tables this build no longer writes keeps it", async () => {
@@ -150,7 +151,7 @@ test("a store with data in tables this build no longer writes keeps it", async (
       (d.prepare("SELECT COUNT(*) c FROM shared_doc_citation").get() as { c: number }).c, 1,
       "and so is the citation edge beside it",
     );
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a pre-freeze shared_scope is NOT migrated, and that is a decision", async () => {
@@ -186,7 +187,7 @@ test("a pre-freeze shared_scope is NOT migrated, and that is a decision", async 
       /no such column: status/,
       "a pre-freeze store fails the read outright",
     );
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("CONTROL: a store already at the current schema is not disturbed by any of this", async () => {
@@ -214,8 +215,8 @@ test("CONTROL: a store already at the current schema is not disturbed by any of 
       const row = again.prepare("SELECT body FROM node_versions WHERE version_id = 'nv_now'")
         .get() as { body: string } | undefined;
       assert.equal(row?.body, "fresh prose", "and the row written before it is still there");
-    } finally { rmSync(copy, { recursive: true, force: true }); }
-  } finally { rmSync(root, { recursive: true, force: true }); }
+    } finally { discard(copy); }
+  } finally { discard(root); }
 });
 
 /**

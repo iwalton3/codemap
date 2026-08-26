@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -10,6 +10,7 @@ import { classifyCitations, needsAttention } from "./citation-state.js";
 import { relocate, createFinding, readFindings, ackQueue } from "./shared-findings.js";
 import type { Actor } from "./schema.js";
 import { fixtureHash } from "./fixture-hash.js";
+import { discard } from "./test-tmp.js";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "codemap-cs-"));
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
@@ -23,7 +24,7 @@ test("an anchor in the working index is simply here", async () => {
     const p = await classifyCitations(root, ["a_1"]);
     assert.equal(p.get("a_1")!.state, "here");
     assert.equal(needsAttention(p.values()), false);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an anchor on another branch is offTree — NOT an action item", async () => {
@@ -38,7 +39,7 @@ test("an anchor on another branch is offTree — NOT an action item", async () =
     assert.equal(p.get("a_elsewhere")!.state, "offTree");
     assert.equal(p.get("a_elsewhere")!.at, "deadbeef", "and it says which branch has it");
     assert.equal(needsAttention(p.values()), false, "nobody has to do anything about this");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an anchor kept in @orphan is retained, with its last known location", async () => {
@@ -56,7 +57,7 @@ test("an anchor kept in @orphan is retained, with its last known location", asyn
     assert.equal(got.state, "retained");
     assert.equal(got.file, "src/old.cs", "so a person can go and look");
     assert.equal(needsAttention([got]), true);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an anchor nothing has ever heard of is lost, and does need attention", async () => {
@@ -66,14 +67,14 @@ test("an anchor nothing has ever heard of is lost, and does need attention", asy
     const p = await classifyCitations(root, ["a_nowhere"]);
     assert.equal(p.get("a_nowhere")!.state, "lost");
     assert.equal(needsAttention(p.values()), true);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("classification is one pass — an empty ask does no work", async () => {
   const root = tmp();
   try {
     assert.equal((await classifyCitations(root, [])).size, 0);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 // --- relocation: the residue, and who may act on it ------------------------------
@@ -94,7 +95,7 @@ test("an agent may propose a relocation, and it lands in the ack queue", async (
     assert.equal(f.relocation?.applied, undefined, "a proposal, not a fact");
     assert.equal(f.target.id, "a_old", "and the target has NOT moved yet");
     assert.equal(ackQueue([f]).length, 1);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an agent may NOT apply one — a mis-targeted finding is worse than an untriaged one", async () => {
@@ -105,7 +106,7 @@ test("an agent may NOT apply one — a mis-targeted finding is worse than an unt
     const f = (await readFindings(root, PR)).get(id)!;
     assert.equal(f.target.id, "a_old", "the fold ignored it, not just the writer");
     assert.equal(f.relocation, undefined);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a person applying `moved` re-points the finding", async () => {
@@ -117,7 +118,7 @@ test("a person applying `moved` re-points the finding", async () => {
     assert.equal(f.target.id, "a_new");
     assert.equal(f.relocation?.applied, true);
     assert.equal(ackQueue([f]).length, 0, "and it leaves the queue");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a person applying `gone` closes it as invalid, with the reason", async () => {
@@ -128,7 +129,7 @@ test("a person applying `gone` closes it as invalid, with the reason", async () 
     const f = (await readFindings(root, PR)).get(id)!;
     assert.equal(f.state, "invalid");
     assert.match(f.closed!.reason, /deleted in v3/);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("`moved` without a destination is not a proposal", async () => {
@@ -137,7 +138,7 @@ test("`moved` without a destination is not a proposal", async () => {
     const id = await createFinding(root, PR, izzie, NEW);
     await relocate(root, PR, izzie, id, "moved", "it went somewhere");
     assert.equal((await readFindings(root, PR)).get(id)!.relocation, undefined);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 /**
@@ -155,5 +156,5 @@ test("an uninitialized universe answers `unknown`, never `lost`", async () => {
     const places = await classifyCitations(root, ["a_1", "a_2"]);
     assert.deepEqual([...places.values()].map((p) => p.state), ["unknown", "unknown"],
       "no index here is not evidence about anybody's code");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });

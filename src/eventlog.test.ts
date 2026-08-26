@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import { testEvent } from "./test-events.js";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, appendFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, appendFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import type { Actor } from "./schema.js";
@@ -12,6 +12,7 @@ import { projectionFor } from "./shared-projections.js";
 import { docScope } from "./shared-docs.js";
 import { noteScope } from "./shared-notes.js";
 import { bugScope } from "./shared-bugs.js";
+import { discard } from "./test-tmp.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
 const dana: Actor = { principal: "dana@x.com" };
@@ -82,7 +83,7 @@ test("a clone's writer id is minted once and then stable", async () => {
     assert.equal(await writerFor(root), first, "same process");
     // …and durable: it lives in the git dir, which `git add -A` can never reach.
     assert.equal(readFileSync(join(root, ".git", "codemap-writer"), "utf8").trim(), first);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("two clones mint different writer ids", async () => {
@@ -91,7 +92,7 @@ test("two clones mint different writer ids", async () => {
     mkdirSync(join(a, ".git"), { recursive: true });
     mkdirSync(join(b, ".git"), { recursive: true });
     assert.notEqual(await writerFor(a), await writerFor(b));
-  } finally { [a, b].forEach((r) => rmSync(r, { recursive: true, force: true })); }
+  } finally { [a, b].forEach((r) => discard(r)); }
 });
 
 // --- appending and reading ----------------------------------------------------
@@ -102,7 +103,7 @@ test("events round-trip through a shard", async () => {
     await appendEvents(root, "pr-264", W_A, [ev(mintId(1)), ev(mintId(2))]);
     const got = await readScope(root, "pr-264");
     assert.equal(got.length, 2);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("appending twice extends the shard rather than replacing it", async () => {
@@ -111,7 +112,7 @@ test("appending twice extends the shard rather than replacing it", async () => {
     await appendEvents(root, "pr-264", W_A, [ev(mintId(1))]);
     await appendEvents(root, "pr-264", W_A, [ev(mintId(2))]);
     assert.equal((await readScope(root, "pr-264")).length, 2);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a scope collects every actor's shard", async () => {
@@ -122,7 +123,7 @@ test("a scope collects every actor's shard", async () => {
     const got = await readScope(root, "pr-264");
     assert.equal(got.length, 2);
     assert.deepEqual([...new Set(got.map((e) => e.actor.principal))].sort(), ["dana@x.com", "izzie@x.com"]);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("scopes are isolated", async () => {
@@ -132,7 +133,7 @@ test("scopes are isolated", async () => {
     await appendEvents(root, "pr-227", W_A, [ev(mintId(2))]);
     assert.equal((await readScope(root, "pr-264")).length, 1);
     assert.equal((await readScope(root, "pr-999")).length, 0, "an unknown scope is empty, not an error");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 // --- the failure modes that actually happen -----------------------------------
@@ -146,7 +147,7 @@ test("a torn final line is dropped and everything before it survives", async () 
     appendFileSync(join(root, shardFor("pr-264", W_A)), '{"id":"zzz","kind":"not-final', "utf8");
     const got = await readScope(root, "pr-264");
     assert.equal(got.length, 2, "the two whole events stand");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("appending AFTER a torn line does not glue onto it", async () => {
@@ -166,7 +167,7 @@ test("appending AFTER a torn line does not glue onto it", async () => {
     const got = await readScope(root, "pr-264");
     assert.equal(got.length, 3, "the two whole events, plus the one just written");
     assert.ok(got.some((e) => e.id === next.id), "the event written after the tear survives");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("and a BATCH after a torn line loses none of it", async () => {
@@ -182,7 +183,7 @@ test("and a BATCH after a torn line loses none of it", async () => {
     await appendEvents(root, "pr-264", W_A, batch);
     const ids = new Set((await readScope(root, "pr-264")).map((e) => e.id));
     for (const e of batch) assert.ok(ids.has(e.id), `lost ${e.id}`);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a line that parses but is not an event is skipped", async () => {
@@ -192,7 +193,7 @@ test("a line that parses but is not an event is skipped", async () => {
     mkdirSync(join(root, "pr-264"), { recursive: true });
     writeFileSync(f, '{"id":"a"}\nnull\n123\n' + JSON.stringify(ev(mintId(5))) + "\n", "utf8");
     assert.equal((await readScope(root, "pr-264")).length, 1);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a duplicated line — what merge=union produces — is folded once", async () => {
@@ -204,7 +205,7 @@ test("a duplicated line — what merge=union produces — is folded once", async
     await appendEvents(root, "pr-264", W_A, [e]);
     appendFileSync(join(root, shardFor("pr-264", W_A)), JSON.stringify(e) + "\n", "utf8");
     assert.equal((await readScope(root, "pr-264")).length, 1);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a missing shard reads as empty, not as a failure", async () => {
@@ -541,7 +542,7 @@ test("one id with two different bodies blocks the scope; the same body twice doe
     assert.equal(read.status, "blocked");
     assert.equal(read.diagnostic?.reason, "duplicate-id");
     assert.deepEqual(read.diagnostic?.evidence, [a.id]);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a blocked scope still hands back its events", async () => {
@@ -556,7 +557,7 @@ test("a blocked scope still hands back its events", async () => {
     const read = await readScopeChecked(root, "s");
     assert.equal(read.status, "blocked");
     assert.equal(read.events.length, 2);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("emitting builds a chain: GENESIS, then each event naming the last", async () => {
@@ -574,7 +575,7 @@ test("emitting builds a chain: GENESIS, then each event naming the last", async 
     assert.equal(a.eventSchema, EVENT_SCHEMA);
     const read = await readScopeChecked(root, "s");
     assert.equal(read.status, "complete", "a clone writing its own chain never forks it");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a chain is per scope, so a writer's first event in a new scope opens a new one", async () => {
@@ -586,7 +587,7 @@ test("a chain is per scope, so a writer's first event in a new scope opens a new
     // `readScope` reads one scope at a time, so a global predecessor could not be
     // validated from there — see PROPOSAL-provenance.md §4.
     assert.equal(other.writerPrev, GENESIS);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a copied clone id forks the chain, and that is what the detector is for", async () => {
@@ -602,7 +603,7 @@ test("a copied clone id forks the chain, and that is what the detector is for", 
     const read = await readScopeChecked(root, "s");
     assert.equal(read.status, "blocked");
     assert.equal(read.diagnostic?.reason, "fork");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 // --- the protocol-1 freeze ------------------------------------------------------
@@ -638,7 +639,7 @@ test("the mandatory envelope is checked at the door, field by field", async () =
     // simply failed to parse — this would be 0 and the test would "pass" for the
     // wrong reason.
     assert.deepEqual(read.map((e) => e.id), [good.id], "the well-formed one, and only it");
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { discard(dir); }
 });
 
 // --- the segment vector ---------------------------------------------------------
@@ -920,7 +921,7 @@ test("a discovered scope is the same string the writer built", async () => {
     const built = [docScope(universe), noteScope(universe, "d7"), noteScope(universe, "cc")];
     scopeFixture(root, built);
     assert.deepEqual(await scopesOnDisk(root), [...built].sort());
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("every scope on disk routes to a projection — what materialization iterates", async () => {
@@ -934,7 +935,7 @@ test("every scope on disk routes to a projection — what materialization iterat
       assert.ok(projectionFor(scope), `no projection for ${scope} — materializeUniverse would skip it`);
       assert.ok(!scope.includes("\\"), `${scope} carries a backslash, which no consumer accepts`);
     }
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("the win32 form of the same scope routes nowhere — the separator is not cosmetic", () => {

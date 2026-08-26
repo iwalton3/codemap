@@ -15,10 +15,11 @@
 import { createRequire } from "node:module";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, readdirSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { discard } from "../test-tmp.js";
 
 const CHROMIUM = process.env.CODEMAP_E2E_CHROMIUM ?? "/usr/bin/chromium";
 const PUPPETEER_DIRS = [process.env.CODEMAP_E2E_PUPPETEER, "/working/vdx-web/tests/e2e/", resolve(".")].filter(Boolean) as string[];
@@ -147,7 +148,7 @@ export function post(entry: { cents: number }) {
     summary: "Moves money between accounts.", anchors: cited, body: "A transfer validates the amount and records it.",
   } as any);
 
-  return { root, universe: require_basename(root), cleanup: () => rmSync(root, { recursive: true, force: true }) };
+  return { root, universe: require_basename(root), cleanup: () => discard(root) };
 }
 
 function require_basename(p: string): string {
@@ -211,5 +212,5 @@ export async function makeRevertFixture(): Promise<Fixture & { anchorId: string;
   write("  return cents;");                       // the revert: back to the v1 body
   commit("revert the guard");
 
-  return { root, universe: root.split("/").pop()!, anchorId, nodeId: "n_pay", cleanup: () => rmSync(root, { recursive: true, force: true }) };
+  return { root, universe: root.split("/").pop()!, anchorId, nodeId: "n_pay", cleanup: () => discard(root) };
 }

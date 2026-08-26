@@ -150,17 +150,29 @@ export interface BulkViewedResult {
 export async function bulkPullViewed(
   root: string,
   slug: string,
-  opts: { force?: boolean; limit?: number; maxPrs?: number; dryRun?: boolean; onProgress?: (msg: string) => void } = {},
+  opts: { force?: boolean; limit?: number; maxPrs?: number; dryRun?: boolean; onProgress?: (msg: string) => void;
+    /** Injectable for tests, same as `surveyViewed`/`viewedPaths`. */
+    gh?: typeof gh } = {},
 ): Promise<BulkViewedResult | { error: string }> {
   const log = opts.onProgress ?? (() => {});
+  const gh_ = opts.gh ?? gh;
   // `gh pr list` returns NEWEST first, and the sort to oldest-first below happens
   // after this cap — so a hardcoded 400 silently truncated exactly the back
   // catalogue this module exists to import. The cap is now explicit and, when it
   // bites, reported rather than presented as the whole repository.
   const maxPrs = opts.maxPrs ?? 2000;
-  const listed = gh(["pr", "list", "--repo", slug, "--state", "all", "--limit", String(maxPrs), "--json", "number,state,author,createdAt"]);
+  // `baseRefName,headRefOid,baseRefOid` come back from the LIST, which is the whole
+  // point: they used to be fetched with a `gh pr view` per pull request — one network
+  // round trip each, a dozen lines above the comment saying this module exists to
+  // avoid paying a round trip per pull request. Across a 2000-PR back catalogue that
+  // was 2000 API calls for three fields the list already knew.
+  const listed = gh_(["pr", "list", "--repo", slug, "--state", "all", "--limit", String(maxPrs), "--json",
+    "number,state,author,createdAt,baseRefName,headRefOid,baseRefOid"]);
   if (!listed.ok) return { error: `gh pr list failed: ${listed.err.slice(0, 200)}` };
-  const prs: { number: number; state: string; author: { login: string } | null; createdAt: string }[] = JSON.parse(listed.out);
+  const prs: {
+    number: number; state: string; author: { login: string } | null; createdAt: string;
+    baseRefName: string; headRefOid: string; baseRefOid: string;
+  }[] = JSON.parse(listed.out);
   const listTruncated = prs.length >= maxPrs;
   // Oldest first, so an accepted set reads chronologically. This used to be load
   // bearing — `resolveAcceptance` inferred supersession from array position, and a
@@ -172,7 +184,7 @@ export async function bulkPullViewed(
   }
 
   log(`surveying ${prs.length} pull requests…`);
-  const survey = surveyViewed(slug, prs.map((p) => p.number));
+  const survey = surveyViewed(slug, prs.map((p) => p.number), { gh: gh_ });
   // `unknown` is a survey that could not answer — a PR whose files ran past the
   // first page, or a batch that failed. Checking it properly costs one paginated
   // request; reading it as "no ticks" cost the whole import silently.
@@ -194,9 +206,10 @@ export async function bulkPullViewed(
     const recordEmpty = () => withLock(root, () => writeViewedImport(root, String(p.number), 0));
     if (!opts.force && already[String(p.number)]) { res.skippedAlreadyImported++; continue; }
     try {
-      const meta = gh(["pr", "view", String(p.number), "--repo", slug, "--json", "baseRefName,headRefOid,baseRefOid"]);
-      if (!meta.ok) { res.errors.push({ pr: p.number, why: "gh pr view failed" }); continue; }
-      const { baseRefName, headRefOid, baseRefOid } = JSON.parse(meta.out);
+      const { baseRefName, headRefOid, baseRefOid } = p;
+      // A PR with no head oid is one the list could not resolve (a deleted fork, most
+      // often). Reported rather than skipped, same as a head that was never fetched.
+      if (!headRefOid) { res.errors.push({ pr: p.number, why: "no head oid in the pull request list" }); continue; }
       // The head must already be local. Nothing here fetches: a back-catalogue run
       // is for a clone that already has the PR refs (`git fetch origin
       // "+refs/pull/*/head:refs/remotes/origin/pr/*"`), because paying a round trip
@@ -204,7 +217,7 @@ export async function bulkPullViewed(
       // avoid. A PR whose head is missing is reported, not silently skipped.
       if (!hasObject(root, headRefOid)) { res.errors.push({ pr: p.number, why: "head object not fetched" }); continue; }
 
-      const paths = viewedPaths(slug, p.number);
+      const paths = viewedPaths(slug, p.number, { gh: gh_ });
       if ("error" in paths) { res.errors.push({ pr: p.number, why: paths.error }); continue; }
       if (!paths.size) { if (!opts.dryRun) await recordEmpty(); res.processed++; continue; }
 

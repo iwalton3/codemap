@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { indexRepo, indexCommit } from "./repo.js";
 import { headCommit, showFile } from "./git.js";
+import { discard } from "./test-tmp.js";
 
 const git = (root: string, ...args: string[]) =>
   spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "protocol.file.allow=always", ...args], { cwd: root, encoding: "utf8" });
@@ -31,7 +32,7 @@ test("indexCommit at HEAD matches indexRepo on a clean tree", async () => {
     const blob = await indexCommit(root, headCommit(root)!);
     assert.ok(walk.length > 0, "fixture should produce anchors");
     assert.equal(fingerprint(blob!), fingerprint(walk), "blob-index must equal walk-index");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("indexCommit ignores working-tree edits — it reads the commit, not the disk", async () => {
@@ -45,7 +46,7 @@ test("indexCommit ignores working-tree edits — it reads the commit, not the di
     writeFileSync(join(root, "b.ts"), "export function g() { return 2; }\n"); // uncommitted new file
     assert.equal(fingerprint((await indexCommit(root, headCommit(root)!))!), fingerprint(before!), "uncommitted edits must not leak in");
     assert.notEqual(fingerprint(await indexRepo(root)), fingerprint(before!), "the walk should see them");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an untracked .codemapignore still applies (both live universes keep it in info/exclude)", async () => {
@@ -61,7 +62,7 @@ test("an untracked .codemapignore still applies (both live universes keep it in 
     const files = new Set((await indexCommit(root, headCommit(root)!))!.map((a) => a.file));
     assert.ok(files.has("keep.ts"), "unignored file indexed");
     assert.ok(!files.has("tests/skip.ts"), "untracked .codemapignore must still exclude");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a committed .codemapignore is read as of that commit, not from disk", async () => {
@@ -81,7 +82,7 @@ test("a committed .codemapignore is read as of that commit, not from disk", asyn
     const at = async (sha: string) => new Set((await indexCommit(root, sha))!.map((a) => a.file));
     assert.ok(!(await at(excluded)).has("gen/out.ts"), "old commit judged by its own rules");
     assert.ok((await at(included)).has("gen/out.ts"), "new commit judged by its own rules");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("submodule contents are indexed under the parent's path", async (t) => {
@@ -104,7 +105,7 @@ test("submodule contents are indexed under the parent's path", async (t) => {
     assert.ok(files.has("lib/money.ts"), `submodule file should be indexed under its parent path, got ${[...files]}`);
     // ids hash the path, so the parent-prefixed path is what makes them line up with the walk
     assert.equal(fingerprint(anchors), fingerprint(await indexRepo(root)), "submodule anchors must match the walk");
-  } finally { rmSync(root, { recursive: true, force: true }); rmSync(sub, { recursive: true, force: true }); }
+  } finally { discard(root); discard(sub); }
 });
 
 test("a submodule's source is readable from the parent, at the commit the parent pins", async (t) => {
@@ -139,7 +140,7 @@ test("a submodule's source is readable from the parent, at the commit the parent
     const still = showFile(root, pinned, "lib/money.ts")!.toString("utf8");
     assert.match(still, /return cents;/, "the parent's commit pins v1, so v1 is what it serves");
     assert.doesNotMatch(still, /cents \* 2/);
-  } finally { rmSync(root, { recursive: true, force: true }); rmSync(sub, { recursive: true, force: true }); }
+  } finally { discard(root); discard(sub); }
 });
 
 test("a submodule that cannot be read makes the whole commit index null, not a short one", async (t) => {
@@ -162,7 +163,7 @@ test("a submodule that cannot be read makes the whole commit index null, not a s
     // Now make it unreadable, the way an uninitialized or unfetched submodule is.
     rmSync(join(root, "lib"), { recursive: true, force: true });
     assert.equal(await indexCommit(root, sha), null, "an unreadable submodule must fail the whole index");
-  } finally { rmSync(root, { recursive: true, force: true }); rmSync(sub, { recursive: true, force: true }); }
+  } finally { discard(root); discard(sub); }
 });
 
 test("indexCommit matches indexRepo for non-ASCII names and a nested universe", async () => {
@@ -179,7 +180,7 @@ test("indexCommit matches indexRepo for non-ASCII names and a nested universe", 
     commit(root);
     assert.equal(fingerprint(await indexCommit(root, headCommit(root)!) ?? []), fingerprint(await indexRepo(root)),
       "a non-ASCII filename must index identically from the tree and from disk");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a universe rooted in a subdirectory indexes the same either way", async () => {
@@ -196,5 +197,5 @@ test("a universe rooted in a subdirectory indexes the same either way", async ()
     assert.equal(fingerprint(fromTree), fingerprint(await indexRepo(root)));
     assert.deepEqual([...new Set(fromTree.map((a) => a.file))], ["src/pay.ts"],
       "paths are relative to the universe, and the repo's other files are not its business");
-  } finally { rmSync(outer, { recursive: true, force: true }); }
+  } finally { discard(outer); }
 });

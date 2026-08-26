@@ -10,7 +10,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Actor } from "./schema.js";
@@ -20,6 +20,7 @@ import {
   fileBug, foldBugs, isTracked, needsHumanAck, promoteBug, readBugsShared, requestOnBug,
   resolveBugContest, reviseBug, setBugState, trackBug, unanchorBug, witnessesOf,
 } from "./shared-bugs.js";
+import { discard } from "./test-tmp.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
 const dana: Actor = { principal: "dana@x.com" };
@@ -38,7 +39,7 @@ test("a person's bug opens as `created`; an agent's is a proposal", async () => 
   try {
     await fileBug(root, U, izzie, NEW);
     assert.equal((await one(root)).state, "created");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an agent's bug opens as `issued`, and it records which model filed it", async () => {
@@ -48,7 +49,7 @@ test("an agent's bug opens as `issued`, and it records which model filed it", as
     const b = await one(root);
     assert.equal(b.state, "issued");
     assert.equal(b.author.via?.model, "claude-opus-5");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an agent may not close a bug somebody stood behind — the WRITE path says why", async () => {
@@ -59,7 +60,7 @@ test("an agent may not close a bug somebody stood behind — the WRITE path says
     const r = await setBugState(root, U, opus, id, "resolved");
     assert.ok("error" in r && /needs a person/.test(r.error));
     assert.equal((await one(root)).state, "created", "and nothing moved");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("and the FOLD says so too — an event from a client that did not ask is ignored", async () => {
@@ -76,7 +77,7 @@ test("and the FOLD says so too — an event from a client that did not ask is ig
     });
     assert.equal(foldBugs(events).get(id)!.state, "created",
       "the write-time check protects the honest writer and nobody else");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 // --- citations are a grow-only set, and that is the whole difference from findings ---
@@ -88,7 +89,7 @@ test("two people citing different code on one bug keep BOTH citations", async ()
     await anchorBug(root, U, dana, id, [{ anchorId: "a_2", bodyHash: "sha256:two" }]);
     await anchorBug(root, U, izzie, id, [{ anchorId: "a_3", bodyHash: "sha256:three" }]);
     assert.deepEqual(citedAnchors(await one(root)), ["a_1", "a_2", "a_3"]);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("re-citing an anchor refreshes its witness rather than duplicating it", async () => {
@@ -100,7 +101,7 @@ test("re-citing an anchor refreshes its witness rather than duplicating it", asy
     assert.equal(b.anchors.length, 1);
     assert.deepEqual(witnessesOf(b), [{ anchorId: "a_1", bodyHash: "sha256:moved" }]);
     assert.equal(b.anchors[0]!.by.principal, "dana@x.com", "and says who last looked");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a removed citation is a TOMBSTONE, so a concurrent re-add cannot resurrect it", async () => {
@@ -112,7 +113,7 @@ test("a removed citation is a TOMBSTONE, so a concurrent re-add cannot resurrect
     const b = await one(root);
     assert.deepEqual(citedAnchors(b), [], "still removed");
     assert.equal(b.anchors[0]!.removed?.reason, "wrong symbol", "and the record of why survives");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an agent may not drop the evidence under a bug", async () => {
@@ -122,7 +123,7 @@ test("an agent may not drop the evidence under a bug", async () => {
     const r = await unanchorBug(root, U, opus, id, "a_1", "looks unrelated");
     assert.ok("error" in r && /a person's call/.test(r.error));
     assert.deepEqual(citedAnchors(await one(root)), ["a_1"]);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a citation with no witness is not a citation — staleness would be undetectable", async () => {
@@ -131,7 +132,7 @@ test("a citation with no witness is not a citation — staleness would be undete
     const id = await fileBug(root, U, izzie, NEW);
     await anchorBug(root, U, izzie, id, [{ anchorId: "a_9" } as never]);
     assert.deepEqual(citedAnchors(await one(root)), ["a_1"]);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 // --- external tracking ----------------------------------------------------------
@@ -146,7 +147,7 @@ test("a tracking reference latches per system — the FIRST ticket is the ticket
     assert.equal(b.tracking.length, 1);
     assert.equal(b.tracking[0]!.key, "ACME-1", "an agent may not re-point it at another ticket");
     assert.ok(isTracked(b));
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a person may re-point it, and a second SYSTEM is not a conflict", async () => {
@@ -159,7 +160,7 @@ test("a person may re-point it, and a second SYSTEM is not a conflict", async ()
     const b = await one(root);
     assert.deepEqual(b.tracking.map((t) => `${t.system}:${t.key ?? t.url}`),
       ["jira:ACME-7", "github:https://github.com/acme/api/issues/3"]);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a reference to nowhere is refused by the fold — neither key nor url is not tracking", async () => {
@@ -168,7 +169,7 @@ test("a reference to nowhere is refused by the fold — neither key nor url is n
     const id = await fileBug(root, U, izzie, NEW);
     await trackBug(root, U, izzie, id, { system: "jira" });
     assert.equal(isTracked(await one(root)), false);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("being in a tracker is not being fixed", async () => {
@@ -177,7 +178,7 @@ test("being in a tracker is not being fixed", async () => {
     const id = await fileBug(root, U, izzie, NEW);
     await trackBug(root, U, izzie, id, { key: "ACME-1" });
     assert.equal((await one(root)).state, "created");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 // --- accepting a finding --------------------------------------------------------
@@ -203,7 +204,7 @@ test("the bug id a finding becomes is derived, so two people converge on ONE bug
     assert.equal(b.title, "negatives are not rejected", "the first filing owns what one person owns");
     assert.deepEqual(citedAnchors(b), ["a_1", "a_2"], "and the citations MERGE — neither is lost");
     assert.deepEqual(b.from, { pr: "264", finding: "f_31a" });
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a published bug carries when it was originally filed, apart from when it reached the team", async () => {
@@ -213,7 +214,7 @@ test("a published bug carries when it was originally filed, apart from when it r
     const b = await one(root);
     assert.equal(b.filedAt, "2026-01-04T00:00:00Z");
     assert.notEqual(b.createdAt, b.filedAt, "the log's own time is not the publisher's claim");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 // --- contest, and the queue -----------------------------------------------------
@@ -234,7 +235,7 @@ test("two people re-titling one bug without seeing each other CONTESTS it", asyn
     const b = foldBugs(sortEvents([...all, concurrent])).get(id)!;
     assert.deepEqual(b.contested?.map((c) => c.field), ["severity"]);
     assert.equal(bugAckQueue([b]).length, 1, "and a contested field is waiting on a person");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an agent may not settle a disagreement between two people", async () => {
@@ -243,7 +244,7 @@ test("an agent may not settle a disagreement between two people", async () => {
     const id = await fileBug(root, U, izzie, NEW);
     const r = await resolveBugContest(root, U, opus, id, "severity", "high");
     assert.ok("error" in r && /an agent may not decide it/.test(r.error));
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("the ack queue is what needs a person, and a closed bug has left it", async () => {
@@ -260,7 +261,7 @@ test("the ack queue is what needs a person, and a closed bug has left it", async
     assert.deepEqual(bugAckQueue(all).map((b) => b.id), [asked]);
     assert.equal(needsHumanAck(all.find((b) => b.id === quiet)!), false,
       "…and the control: an untouched bug is not in it, so the filter is doing work");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("the fold is order-independent", async () => {
@@ -276,7 +277,7 @@ test("the fold is order-independent", async () => {
     const forward = foldBugs(events);
     const shuffled = foldBugs(sortEvents([...events].reverse()));
     assert.equal(JSON.stringify([...shuffled]), JSON.stringify([...forward]));
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("nothing the fold produces is a verdict about THIS checkout", async () => {
@@ -289,5 +290,5 @@ test("nothing the fold produces is a verdict about THIS checkout", async () => {
     for (const derived of ["possiblyFixed", "codeChanged", "stale", "unverifiable"]) {
       assert.ok(!serialized.includes(derived), `${derived} is derived per clone — it must not travel`);
     }
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });

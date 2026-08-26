@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import { testEvent } from "./test-events.js";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Actor } from "./schema.js";
@@ -11,6 +11,7 @@ import {
   publishWalkthrough, readWalkthroughs, foldWalkthroughs,
   currentWalkthrough, staleWalkthroughs,
 } from "./shared-walkthrough.js";
+import { discard } from "./test-tmp.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
 const dana: Actor = { principal: "dana@x.com" };
@@ -31,7 +32,7 @@ test("a walkthrough published by one person is readable by another", async () =>
     assert.equal(all.length, 1);
     assert.equal(all[0]!.actor.principal, "izzie@x.com");
     assert.equal(all[0]!.walkthrough.head, "headsha");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("two people mapping one PR is two readings, not a conflict", async () => {
@@ -43,7 +44,7 @@ test("two people mapping one PR is two readings, not a conflict", async () => {
     const all = await readWalkthroughs(root, 264);
     assert.equal(all.length, 2);
     assert.deepEqual(all.map((s) => s.actor.principal).sort(), ["dana@x.com", "izzie@x.com"]);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("re-publishing supersedes only your OWN earlier walkthrough", async () => {
@@ -57,7 +58,7 @@ test("re-publishing supersedes only your OWN earlier walkthrough", async () => {
     const mine = all.find((s) => s.actor.principal === "izzie@x.com")!;
     assert.equal(mine.walkthrough.features[0]!.title, "revised");
     assert.equal(all.find((s) => s.actor.principal === "dana@x.com")!.walkthrough.features[0]!.title, "dana's");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an agent publishes as its principal, not as a separate author", async () => {
@@ -69,7 +70,7 @@ test("an agent publishes as its principal, not as a separate author", async () =
     assert.equal(all.length, 1, "one person, one walkthrough");
     assert.equal(all[0]!.walkthrough.features[0]!.title, "by agent");
     assert.equal(all[0]!.actor.via?.model, "claude-opus-5", "and it records which model wrote it");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("pull requests are isolated", async () => {
@@ -79,7 +80,7 @@ test("pull requests are isolated", async () => {
     await publishWalkthrough(root, izzie, wt(227, "b"));
     assert.equal((await readWalkthroughs(root, 264)).length, 1);
     assert.equal((await readWalkthroughs(root, 999)).length, 0);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a second write records what the writer had already seen", async () => {
@@ -95,7 +96,7 @@ test("a second write records what the writer had already seen", async () => {
     // A list, because a writer apart from two others holds two heads and one id
     // cannot name both. Here there is exactly one.
     assert.deepEqual(second.after, [first.id]);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 // --- the fold's actual contract ------------------------------------------------
@@ -215,7 +216,7 @@ test("publishing the input rather than the built walkthrough is refused", async 
     // The valid one still publishes — a guard that refuses everything proves nothing.
     const ok = await shared.shareWalkthrough(root, wt(269, "headsha")) as { error?: string; ok?: true };
     assert.ok(ok.ok, ok.error ?? "");
-  } finally { dirs.forEach((d) => rmSync(d, { recursive: true, force: true })); }
+  } finally { dirs.forEach((d) => discard(d)); }
 });
 
 /** And the READ survives one anyway — a local row reaches it without passing either guard. */

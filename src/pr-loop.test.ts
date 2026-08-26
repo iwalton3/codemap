@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { State } from "./schema.js";
@@ -10,6 +10,7 @@ import { writeStore, readAnnotations, writeAnnotations, writeSnapshot } from "./
 import { withLock } from "./lock.js";
 import { annotate, assignAnnotation, reviewQueue, closeAssignment, resolveAnnotation, escalateAnnotation, anchorAnnotations, reviseAnnotation, withdrawAnnotation, annotateLegacyFinding } from "./ops.js";
 import { indexBlob } from "./repo.js";
+import { discard } from "./test-tmp.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 
@@ -29,7 +30,7 @@ test("an unassigned finding is not in the agent's queue", async () => {
   const { root } = await fixture();
   try {
     assert.deepEqual((await reviewQueue(root)).queue, [], "raising a finding records it; it does not ask for anything");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("assigning hands it over with the symbol's current source attached", async () => {
@@ -43,7 +44,7 @@ test("assigning hands it over with the symbol's current source attached", async 
     assert.match(queue[0]!.symbol!, /transfer/);
     assert.match(queue[0]!.code!, /throw new Error/, "the agent gets the code, not just a pointer to it");
     assert.equal(queue[0]!.line, 2);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a fix spanning more than one file is refused, with what to do instead", async () => {
@@ -59,7 +60,7 @@ test("a fix spanning more than one file is refused, with what to do instead", as
     const ok = await closeAssignment(root, { id: annId, result: "declined", detail: "needs a matching guard in ledger.ts — two files" }) as any;
     assert.ok(ok.ok);
     assert.equal((await readAnnotations(root)).annotations[0]!.outcome!.result, "declined");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("reporting back does not resolve the finding — the human closes it", async () => {
@@ -79,7 +80,7 @@ test("reporting back does not resolve the finding — the human closes it", asyn
 
     await resolveAnnotation(root, annId, true);
     assert.equal((await readAnnotations(root)).annotations[0]!.resolved, true);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("re-assigning an answered finding asks again and drops the stale answer", async () => {
@@ -93,7 +94,7 @@ test("re-assigning an answered finding asks again and drops the stale answer", a
     assert.equal(ann.outcome, undefined, "the previous answer no longer stands");
     assert.equal(ann.assignment!.kind, "fix");
     assert.equal((await reviewQueue(root)).queue.length, 1, "and it is back on the agent's queue");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a resolved finding cannot be assigned", async () => {
@@ -102,7 +103,7 @@ test("a resolved finding cannot be assigned", async () => {
     await resolveAnnotation(root, annId, true);
     const r = await assignAnnotation(root, { id: annId, kind: "fix" }) as any;
     assert.ok(r.error);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("the annotation blob is a whole-file read-modify-write — an interleave loses UNRELATED records", async () => {
@@ -111,59 +112,65 @@ test("the annotation blob is a whole-file read-modify-write — an interleave lo
   // Interleaved, the loser does not lose a field, it loses somebody else's
   // annotation. The interleave is hand-rolled so the test is deterministic.
   const { root, anchorId } = await fixture();
-  const asAgentSees = (await readAnnotations(root)).annotations;          // agent reads
+  try {
+    const asAgentSees = (await readAnnotations(root)).annotations;          // agent reads
 
-  await annotate(root, { targetKind: "anchor", targetId: anchorId, text: "a human's note", kind: "note", author: "human" });
-  await writeAnnotations(root, asAgentSees);                              // agent writes its stale copy
+    await annotate(root, { targetKind: "anchor", targetId: anchorId, text: "a human's note", kind: "note", author: "human" });
+    await writeAnnotations(root, asAgentSees);                              // agent writes its stale copy
 
-  const after = (await readAnnotations(root)).annotations;
-  assert.equal(after.length, 1);
-  assert.equal(after.find((a) => a.text === "a human's note"), undefined,
-    "this is the lost update the write lock exists to prevent");
+    const after = (await readAnnotations(root)).annotations;
+    assert.equal(after.length, 1);
+    assert.equal(after.find((a) => a.text === "a human's note"), undefined,
+      "this is the lost update the write lock exists to prevent");
+  } finally { discard(root); }
 });
 
 test("under the lock, a close and a concurrent annotate both survive", async () => {
   // `close_finding` was the one MCP write tool missing from `MUTATING`, so it was
   // the only one that could run the race above against a human's `/api/annotate`.
   const { root, anchorId, annId } = await fixture();
-  await assignAnnotation(root, { id: annId, kind: "investigate", by: "me" });
+  try {
+    await assignAnnotation(root, { id: annId, kind: "investigate", by: "me" });
 
-  await Promise.all([
-    withLock(root, () => closeAssignment(root, { id: annId, result: "answered", detail: "not reachable", by: "agent" })),
-    withLock(root, () => annotate(root, { targetKind: "anchor", targetId: anchorId, text: "a human's note", kind: "note", author: "human" })),
-  ]);
+    await Promise.all([
+      withLock(root, () => closeAssignment(root, { id: annId, result: "answered", detail: "not reachable", by: "agent" })),
+      withLock(root, () => annotate(root, { targetKind: "anchor", targetId: anchorId, text: "a human's note", kind: "note", author: "human" })),
+    ]);
 
-  const anns = (await readAnnotations(root)).annotations;
-  assert.equal(anns.length, 2, "neither write may drop the other");
-  assert.ok(anns.find((a) => a.id === annId)!.outcome, "the agent's outcome landed");
-  assert.ok(anns.find((a) => a.text === "a human's note"), "and the human's annotation is still there");
+    const anns = (await readAnnotations(root)).annotations;
+    assert.equal(anns.length, 2, "neither write may drop the other");
+    assert.ok(anns.find((a) => a.id === annId)!.outcome, "the agent's outcome landed");
+    assert.ok(anns.find((a) => a.text === "a human's note"), "and the human's annotation is still there");
+  } finally { discard(root); }
 });
 
 test("raising a finding to the maintainer is a separate act from writing or resolving one", async () => {
   const { root, anchorId, annId } = await fixture();
+  try {
 
-  // the fixture's finding is the human's own — there is nothing to elect
-  const own = await escalateAnnotation(root, { id: annId }) as any;
-  assert.ok(own.error, "a finding you wrote is already yours to publish");
+    // the fixture's finding is the human's own — there is nothing to elect
+    const own = await escalateAnnotation(root, { id: annId }) as any;
+    assert.ok(own.error, "a finding you wrote is already yours to publish");
 
-  const a = await annotateLegacyFinding(root, {
-    targetKind: "anchor", targetId: anchorId, text: "agent thinks this overflows",
-    comment: "`transfer` sums into an int32; a large batch overflows silently.",
-    severity: "high", author: "agent:pr-first-pass",
-  }) as any;
-  const find = async () => (await readAnnotations(root)).annotations.find((x) => x.id === a.id)!;
-  assert.equal((await find()).escalated, undefined, "an agent's finding starts unraised");
+    const a = await annotateLegacyFinding(root, {
+      targetKind: "anchor", targetId: anchorId, text: "agent thinks this overflows",
+      comment: "`transfer` sums into an int32; a large batch overflows silently.",
+      severity: "high", author: "agent:pr-first-pass",
+    }) as any;
+    const find = async () => (await readAnnotations(root)).annotations.find((x) => x.id === a.id)!;
+    assert.equal((await find()).escalated, undefined, "an agent's finding starts unraised");
 
-  assert.equal((await escalateAnnotation(root, { id: a.id, by: "izzie" }) as any).ok, true);
-  assert.equal((await find()).escalated!.by, "izzie");
+    assert.equal((await escalateAnnotation(root, { id: a.id, by: "izzie" }) as any).ok, true);
+    assert.equal((await find()).escalated!.by, "izzie");
 
-  // and it can be taken back
-  assert.equal((await escalateAnnotation(root, { id: a.id, escalate: false }) as any).ok, true);
-  assert.equal((await find()).escalated, undefined);
+    // and it can be taken back
+    assert.equal((await escalateAnnotation(root, { id: a.id, escalate: false }) as any).ok, true);
+    assert.equal((await find()).escalated, undefined);
 
-  // a resolved finding is not something to send to anybody
-  await resolveAnnotation(root, a.id, true);
-  assert.ok((await escalateAnnotation(root, { id: a.id }) as any).error);
+    // a resolved finding is not something to send to anybody
+    await resolveAnnotation(root, a.id, true);
+    assert.ok((await escalateAnnotation(root, { id: a.id }) as any).error);
+  } finally { discard(root); }
 });
 
 test("an annotation write reports the anchor's findings, so one symbol can be refreshed", async () => {
@@ -171,28 +178,30 @@ test("an annotation write reports the anchor's findings, so one symbol can be re
   // whole PR story to learn what happened to one finding. Each write now says which
   // anchor it landed on; `anchorAnnotations` is what the caller refreshes with.
   const { root, anchorId, annId } = await fixture();
+  try {
 
-  const before = await anchorAnnotations(root, anchorId);
-  assert.equal(before.length, 1);
+    const before = await anchorAnnotations(root, anchorId);
+    assert.equal(before.length, 1);
 
-  const raised = await annotateLegacyFinding(root, {
-    targetKind: "anchor", targetId: anchorId, text: "second", comment: "second", author: "human",
-  }) as any;
-  assert.deepEqual(raised.target, { kind: "anchor", id: anchorId }, "the write says where it landed");
+    const raised = await annotateLegacyFinding(root, {
+      targetKind: "anchor", targetId: anchorId, text: "second", comment: "second", author: "human",
+    }) as any;
+    assert.deepEqual(raised.target, { kind: "anchor", id: anchorId }, "the write says where it landed");
 
-  const assigned = await assignAnnotation(root, { id: annId, kind: "investigate", by: "me" }) as any;
-  assert.deepEqual(assigned.target, { kind: "anchor", id: anchorId });
+    const assigned = await assignAnnotation(root, { id: annId, kind: "investigate", by: "me" }) as any;
+    assert.deepEqual(assigned.target, { kind: "anchor", id: anchorId });
 
-  const resolved = await resolveAnnotation(root, raised.id, true) as any;
-  assert.deepEqual(resolved.target, { kind: "anchor", id: anchorId });
+    const resolved = await resolveAnnotation(root, raised.id, true) as any;
+    assert.deepEqual(resolved.target, { kind: "anchor", id: anchorId });
 
-  const after = await anchorAnnotations(root, anchorId);
-  assert.equal(after.length, 2, "both findings, with their current state");
-  assert.ok(after.find((a) => a.id === annId)!.assignment, "the handoff is visible");
-  assert.equal(after.find((a) => a.id === raised.id)!.resolved, true);
+    const after = await anchorAnnotations(root, anchorId);
+    assert.equal(after.length, 2, "both findings, with their current state");
+    assert.ok(after.find((a) => a.id === annId)!.assignment, "the handoff is visible");
+    assert.equal(after.find((a) => a.id === raised.id)!.resolved, true);
 
-  // and nothing from another anchor leaks in
-  assert.ok(after.every((a) => a.target.id === anchorId));
+    // and nothing from another anchor leaks in
+    assert.ok(after.every((a) => a.target.id === anchorId));
+  } finally { discard(root); }
 });
 
 test("an agent cannot record an outcome on a finding the human closed meanwhile", async () => {
@@ -201,13 +210,15 @@ test("an agent cannot record an outcome on a finding the human closed meanwhile"
   // the record of what happened at close time — and `reviewQueue` filters resolved
   // items out, so the write would be invisible afterwards.
   const { root, annId } = await fixture();
-  await assignAnnotation(root, { id: annId, kind: "investigate", by: "me" });
-  await resolveAnnotation(root, annId, true);
+  try {
+    await assignAnnotation(root, { id: annId, kind: "investigate", by: "me" });
+    await resolveAnnotation(root, annId, true);
 
-  const r = await closeAssignment(root, { id: annId, result: "answered", detail: "late", by: "agent" }) as any;
-  assert.ok(r.error, "closing a resolved finding is refused");
-  assert.match(r.error, /resolved/i);
-  assert.equal((await readAnnotations(root)).annotations.find((a) => a.id === annId)!.outcome, undefined);
+    const r = await closeAssignment(root, { id: annId, result: "answered", detail: "late", by: "agent" }) as any;
+    assert.ok(r.error, "closing a resolved finding is refused");
+    assert.match(r.error, /resolved/i);
+    assert.equal((await readAnnotations(root)).annotations.find((a) => a.id === annId)!.outcome, undefined);
+  } finally { discard(root); }
 });
 
 // ---------------------------------------------------------------------------
@@ -240,7 +251,7 @@ test("a finding must carry the short version, written when the evidence is", asy
       const r = await annotate(root, { targetKind: "anchor", targetId: anchorId, text: "x", kind }) as any;
       assert.ok(r.ok, kind);
     }
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an over-long comment is refused, never truncated", async () => {
@@ -255,7 +266,7 @@ test("an over-long comment is refused, never truncated", async () => {
     assert.match(r.error, /801 characters.*cap is 800/);
     assert.match(r.error, /`text`/, "and says where the investigation belongs");
     assert.equal((await anchorAnnotations(root, anchorId)).length, 1, "nothing was stored");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a comment that opens on a verdict is refused — the submitter has no baseline", async () => {
@@ -285,7 +296,7 @@ test("a comment that opens on a verdict is refused — the submitter has no base
     assert.match((await reviseAnnotation(root, { id: annId, comment: "Confirmed: the guard is missing." }) as any).error, /verdict on the FINDING/);
     await assignAnnotation(root, { id: annId, kind: "investigate" });
     assert.match((await closeAssignment(root, { id: annId, result: "answered", detail: "checked", disposition: "partial", comment: "Partial — the write side is still wrong." }) as any).error, /verdict on the FINDING/);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("the verdict check does not fire on a defect sentence that starts on the same word", async () => {
@@ -306,7 +317,7 @@ test("the verdict check does not fire on a defect sentence that starts on the sa
       }) as any;
       assert.ok(r.ok, `${good} -> ${r.error}`);
     }
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a withdrawal lead is refused unless the finding really is refuted", async () => {
@@ -329,7 +340,7 @@ test("a withdrawal lead is refused unless the finding really is refuted", async 
     // and the disposition the finding is ALREADY at counts, so clearing it up in a
     // second call does not have to restate what the first one concluded
     assert.ok((await reviseAnnotation(root, { id: annId, comment: "Withdrawn: the guard is present at `pay.ts:2`." }) as any).changed.includes("comment"));
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a finding can be corrected, and what it used to say survives", async () => {
@@ -357,7 +368,7 @@ test("a finding can be corrected, and what it used to say survives", async () =>
     assert.equal((await readAnnotations(root)).annotations.find((x) => x.id === annId)!.revisions!.length, 1);
 
     assert.match((await reviseAnnotation(root, { id: annId, disposition: "bogus" as never }) as any).error, /unknown disposition/);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("revising something the submitter can already see is refused by default", async () => {
@@ -374,7 +385,7 @@ test("revising something the submitter can already see is refused by default", a
 
     const forced = await reviseAnnotation(root, { id: annId, comment: "actually never mind", allowPostEdit: true }) as any;
     assert.deepEqual(forced.changed, ["comment"]);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("withdrawing keeps a finding on the map and off the pull request", async () => {
@@ -391,7 +402,7 @@ test("withdrawing keeps a finding on the map and off the pull request", async ()
 
     assert.equal((await withdrawAnnotation(root, { id: annId, withdraw: false }) as any).withdrawn, false);
     assert.equal((await a()).withdrawn, undefined);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("reporting back can carry the short version, and records what it displaced", async () => {
@@ -410,7 +421,7 @@ test("reporting back can carry the short version, and records what it displaced"
     assert.equal(a.outcome!.result, "answered");
     assert.equal(a.revisions!.length, 1, "the investigation changing the answer leaves the same trail");
     assert.match(a.revisions![0]!.was.comment!, /by-id path does not/);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("the queue is brief by default, because the full form could not be read at all", async () => {
@@ -438,7 +449,7 @@ test("the queue is brief by default, because the full form could not be read at 
     const paged = await reviewQueue(root, { limit: 1, offset: 1 });
     assert.equal(paged.queue.length, 0);
     assert.equal(paged.total, 1, "the count is of everything, not of the page");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a finding records the body it was written against, and which ref that was", async () => {
@@ -480,7 +491,7 @@ test("a finding records the body it was written against, and which ref that was"
     const after = await of(live.id);
     assert.equal(after.sourceRef, "prhead");
     assert.equal(after.revisions![0]!.was.sourceRef, "@work", "and what it used to be witnessed against survives");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a published finding nobody was assigned is still findable", async () => {
@@ -509,7 +520,7 @@ test("a published finding nobody was assigned is still findable", async () => {
     assert.deepEqual(posted.queue.map((q) => q.id), [loose.id]);
     assert.equal(posted.queue[0]!.postedRef!.commentId, 3816014418, "with the comment it landed in");
     assert.equal(posted.queue[0]!.assignment, undefined, "and no assignment invented for it");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("what triage concluded outranks what the finding was called", async () => {
@@ -530,7 +541,7 @@ test("what triage concluded outranks what the finding was called", async () => {
     await reviseAnnotation(root, { id: p.id, disposition: "confirmed", comment: "the credit gate is not enforced", by: "me" });
     assert.equal((await of()).disposition, "confirmed");
     assert.equal((await of()).kind, "pointer", "the kind it was filed under is history, not a verdict");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a field sent empty is cleared; one not sent at all is left alone", async () => {
@@ -553,7 +564,7 @@ test("a field sent empty is cleared; one not sent at all is left alone", async (
     const a = await of();
     assert.equal(a.publishPath, undefined);
     assert.equal(a.revisions!.at(-1)!.was.publishPath, "src/pay.ts");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an agent may close the question it answered, not the finding it reported on", async () => {
@@ -576,7 +587,7 @@ test("an agent may close the question it answered, not the finding it reported o
     assert.equal((await resolveAnnotation(root, q.id, true, { actor: "agent" }) as any).ok, true, "its own question is fine");
     // the human keeps the full power — this is about who is acting, not about the kind
     assert.equal((await resolveAnnotation(root, annId, true) as any).ok, true);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("the queue can be asked for exactly a named set of findings", async () => {
@@ -601,5 +612,5 @@ test("the queue can be asked for exactly a named set of findings", async () => {
       (await reviewQueue(root, { assignedOnly: false, ids: [annId, "an_nope"] })).queue.map((q) => q.id), [annId],
       "an id that is not there drops out rather than erroring",
     );
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });

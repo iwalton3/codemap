@@ -16,7 +16,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -28,6 +28,7 @@ import { resolveSidecar } from "./sidecar-config.js";
 import { bugScope, readBugsShared } from "./shared-bugs.js";
 import { readScope } from "./eventlog.js";
 import * as ops from "./ops.js";
+import { discard } from "./test-tmp.js";
 
 const git = (root: string, ...args: string[]) =>
   spawnSync("git", ["-c", "user.email=izzie@x.com", "-c", "user.name=izzie", ...args], { cwd: root, encoding: "utf8" });
@@ -52,7 +53,7 @@ async function repo(withSidecar = false) {
   git(root, "commit", "-qm", "one");
   await ops.init(root);
   const anchorId = (await readAnchorStore(root)).anchors[0]!.id;
-  return { root, side, anchorId, cleanup: () => [root, side].forEach((r) => rmSync(r, { recursive: true, force: true })) };
+  return { root, side, anchorId, cleanup: () => [root, side].forEach((r) => discard(r)) };
 }
 
 const noSidecar = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -114,7 +115,7 @@ test("the legacy `meta[\"bugs\"]` blob becomes rows, once, and the vocabulary ma
 
     assert.equal((db(root).prepare("SELECT COUNT(*) c FROM meta WHERE k='bugs'").get() as any).c, 0,
       "the blob is dropped in the same transaction, so a second open has nothing to import");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a blob this build cannot parse is left alone rather than dropped", async () => {
@@ -123,7 +124,7 @@ test("a blob this build cannot parse is left alone rather than dropped", async (
     assert.deepEqual((await readBugs(root)).bugs, []);
     assert.equal((db(root).prepare("SELECT COUNT(*) c FROM meta WHERE k='bugs'").get() as any).c, 1,
       "nothing is destroyed — a later build can still look at it");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 // --- filing, with and without a team ---------------------------------------------

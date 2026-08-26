@@ -20,13 +20,14 @@
 import { test } from "node:test";
 import { testEvent } from "./test-events.js";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, realpathSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { ensureSidecar, sync } from "./sidecar.js";
 import { appendEvents, mintId } from "./eventlog.js";
 import type { Actor } from "./schema.js";
+import { discard } from "./test-tmp.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
 
@@ -60,7 +61,7 @@ function codeRepo() {
   return {
     root, remote, head, status,
     remoteLog: () => git(remote, "log", "--oneline").stdout.trim(),
-    cleanup: () => [root, remote].forEach((d) => rmSync(d, { recursive: true, force: true })),
+    cleanup: () => [root, remote].forEach((d) => discard(d)),
   };
 }
 
@@ -72,7 +73,12 @@ test("a sidecar nested inside a code repo becomes its own repository", async () 
     assert.deepEqual(r, { created: true }, "it must init, not adopt the enclosing repo");
 
     const top = git(side, "rev-parse", "--show-toplevel").stdout.trim();
-    assert.equal(realpathSync(top), realpathSync(side), "the sidecar's git root is itself, not the code repo");
+    // `.native`, the same resolver `samePath` uses. git reports the long Windows path
+    // while `tmpdir()` hands back the 8.3 short form, and plain `realpathSync` expands
+    // neither — so this compared `RUNNER~1` against `runneradmin` and failed on a
+    // difference that is not the one it is testing.
+    assert.equal(realpathSync.native(top), realpathSync.native(side),
+      "the sidecar's git root is itself, not the code repo");
     assert.ok(existsSync(join(side, ".git")), "it has its own .git");
   } finally { c.cleanup(); }
 });

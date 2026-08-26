@@ -12,6 +12,7 @@ import { testEvent } from "./test-events.js";
 import { sortEvents, type LogEvent } from "./eventlog.js";
 import type { Actor } from "./schema.js";
 import { foldGraph, divergedNodes, graphScope } from "./shared-graph.js";
+import { discard } from "./test-tmp.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
 const ben: Actor = { principal: "ben@x.com" };
@@ -189,7 +190,7 @@ test("a local edge write never reaches a teammate's edge", async () => {
     );
     const merged = (await readGraph(root)).edges.map((e) => `${e.from}->${e.to}`).sort();
     assert.deepEqual(merged, ["n_mine->n_b", "n_theirs->n_step"], "and the teammate's edge is still there");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("the merged read does not double an edge two people both drew", async () => {
@@ -211,7 +212,7 @@ test("the merged read does not double an edge two people both drew", async () =>
     await writeGraph(root, { edges: [{ from: "n_flow", to: "n_a", type: "step_of", order: 0 }] });
 
     assert.equal((await readGraph(root)).edges.length, 1, "one edge, drawn twice, is one edge");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a reordering reaches the review queue, and a repair closes it", async () => {
@@ -284,7 +285,7 @@ test("a reordering reaches the review queue, and a repair closes it", async () =
       (await readAnnotations(root)).annotations
         .filter((a) => a.category === DIVERGED_WIRING_CATEGORY && !a.resolved).length, 0,
     );
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("deciding an answer and pushing it back resolves it for EVERYONE", async () => {
@@ -364,5 +365,5 @@ test("deciding an answer and pushing it back resolves it for EVERYONE", async ()
       ["touches"],
       "and it lands — the decided answer is the whole answer, on this machine too",
     );
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });

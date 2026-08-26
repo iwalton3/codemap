@@ -15,7 +15,7 @@
  * to clear the state without reading it.
  */
 
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -25,6 +25,7 @@ import { ensureSidecar, sync } from "./sidecar.js";
 import { readFindings, type SharedFinding } from "./shared-findings.js";
 import { readScope, type LogEvent } from "./eventlog.js";
 import { findingScope } from "./shared-findings.js";
+import { discard } from "./test-tmp.js";
 
 /**
  * Setup-only git. **No `-c user.email=…` injection**, deliberately.
@@ -82,7 +83,7 @@ export async function scenario(principals: string[]): Promise<Scenario> {
   for (const p of all) await sync(p.sidecar, p.actor);
   for (const p of all) await sync(p.sidecar, p.actor);
 
-  return { origin, people, all, dispose: () => dirs.forEach((d) => rmSync(d, { recursive: true, force: true })) };
+  return { origin, people, all, dispose: () => dirs.forEach((d) => discard(d)) };
 }
 
 /** An agent acting for a person — same principal, so not an independent witness. */

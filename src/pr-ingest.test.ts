@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Anchor, State } from "./schema.js";
@@ -8,6 +8,7 @@ import { writeStore, writeSnapshot, readTriage } from "./store.js";
 import { setTriage } from "./triage.js";
 import { parseAgentLines, ingestAgentReview, type AgentLine } from "./pr-ingest.js";
 import { fixtureHash } from "./fixture-hash.js";
+import { discard } from "./test-tmp.js";
 
 /** Ingest routes findings to `report_defect` now; tests that only care about the other kinds still have to supply it. */
 const noopFile = async () => ({});
@@ -121,7 +122,7 @@ test("a triage line the ratchet declines is reported as declined, not counted as
     const t = (await readTriage(root)).triage.find((x) => x.target.id === "a_1")!;
     assert.equal(t.importance, "business-critical");
     assert.equal(t.source, "human");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an ingested triage proposal is witnessed against the PR head, not the working tree", async () => {
@@ -140,5 +141,5 @@ test("an ingested triage proposal is witnessed against the PR head, not the work
     const t = (await readTriage(root)).triage.find((x) => x.target.id === "a_new")!;
     assert.equal(t.witnesses[0]!.bodyHash, fixtureHash("NEW"),
       "a symbol the branch ADDS must not be witnessed sha256:absent — that can never be told apart from drift");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import { testEvent } from "./test-events.js";
 import assert from "node:assert/strict";
 import { legacyIndex } from "./anchor-resolve.js";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Actor, NodeVersion } from "./schema.js";
@@ -10,6 +10,7 @@ import { sortEvents, type LogEvent } from "./eventlog.js";
 import { publishDocVersion, acceptDocHash, readDocs, resolveDoc, foldDocs, docScope } from "./shared-docs.js";
 import { comparableHashes } from "./normalize.js";
 import { fixtureHash } from "./fixture-hash.js";
+import { discard } from "./test-tmp.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
 const dana: Actor = { principal: "dana@x.com" };
@@ -36,7 +37,7 @@ test("a doc is a set of versions, and a change adds one rather than editing", as
     assert.equal(doc.versions.length, 2);
     assert.notEqual(v1, v2);
     assert.equal(doc.versions[0]!.body, "The handler folds…", "the first version is untouched");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("each version records who wrote it", async () => {
@@ -47,7 +48,7 @@ test("each version records who wrote it", async () => {
     const doc = (await readDocs(root, U)).get("n_payments")!;
     assert.equal(doc.authors.get(v1)?.principal, "izzie@x.com");
     assert.equal(doc.authors.get(v2)?.principal, "dana@x.com");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 // --- the point of the whole design: one log, every branch -------------------------
@@ -68,7 +69,7 @@ test("resolution picks the version matching the code in front of you", async () 
     const onFeature = resolveDoc(doc, legacyIndex(new Map([["a_1", fixtureHash("feature", 2)]])));
     assert.match(onDevelop!.body, /handler folds/);
     assert.match(onFeature!.body, /fold is async/, "same log, two branches, no branch tags");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("confirming a version against a second body makes it valid on both branches", async () => {
@@ -80,7 +81,7 @@ test("confirming a version against a second body makes it valid on both branches
     assert.ok(resolveDoc(doc, legacyIndex(new Map([["a_1", fixtureHash("develop", 2)]]))));
     assert.ok(resolveDoc(doc, legacyIndex(new Map([["a_1", fixtureHash("feature", 2)]]))), "one version, two branches");
     assert.equal(doc.versions[0]!.citations[0]!.acceptedHashes.length, 2);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("accepted hashes are a grow-only set — two people confirming both stick", async () => {
@@ -94,7 +95,7 @@ test("accepted hashes are a grow-only set — two people confirming both stick",
     assert.deepEqual([...c.acceptedHashes].sort(),
       [fixtureHash("develop", 2), fixtureHash("x", 2), fixtureHash("y", 2)].sort(),
       "deduped, none lost");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a hash for an anchor the version does not cite is ignored", async () => {
@@ -106,7 +107,7 @@ test("a hash for an anchor the version does not cite is ignored", async () => {
     const v = (await readDocs(root, U)).get("n_payments")!.versions[0]!;
     assert.equal(v.citations.length, 1);
     assert.equal(v.citations[0]!.acceptedHashes.length, 1);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a doc still resolves on a checkout no version was written against", async () => {
@@ -121,7 +122,7 @@ test("a doc still resolves on a checkout no version was written against", async 
     const v = resolveDoc(doc, legacyIndex(new Map([["a_1", fixtureHash("drifted", 2)]])));
     assert.ok(v, "a version is still returned");
     assert.equal(v!.citations[0]!.acceptedHashes.includes(fixtureHash("drifted", 2)), false, "…and it is NOT fresh here");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 // --- fold contract ----------------------------------------------------------------
@@ -237,7 +238,7 @@ test("publishing a version that already has an id keeps it, so the two copies ar
     const again = (await readDocs(root, U)).get("n_payments")!;
     assert.equal(again.versions.length, 1, "a second copy of one version is not a second version");
     assert.equal(again.versions[0]!.body, DOC.body, "and the first write is the one that stands");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a version with no id of its own still gets one, and it is this moment", async () => {
@@ -256,7 +257,7 @@ test("a version with no id of its own still gets one, and it is this moment", as
     const minted = await publishDocVersion(root, U, izzie, { ...DOC, body: "b2", versionId: "   " } as never);
     assert.match(minted, /^nv_/);
     assert.equal((await readDocs(root, U)).get("n_payments")!.versions.length, 2);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 // --- a colliding version id cannot reach across nodes ----------------------------

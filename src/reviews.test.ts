@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { legacyIndex, anchorIndex } from "./anchor-resolve.js";
 import { hashTokens } from "./normalize.js";
 import type { DerivationTag } from "./schema.js";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Review, BugWitness, Anchor, State } from "./schema.js";
@@ -12,6 +12,7 @@ import { markReviewed, unmarkReviewed, changedSince, reviewStatesFor, witnessDri
 import { anchorMark } from "./ops.js";
 import { indexBlob } from "./repo.js";
 import { fixtureHash } from "./fixture-hash.js";
+import { discard } from "./test-tmp.js";
 
 const rev = (over: Partial<Review>): Review => ({
   id: "r", target: { kind: "anchor", id: "a" }, level: "code", reviewer: "me",
@@ -64,7 +65,7 @@ test("viewed and signed are independent rows; each replaces only its own kind", 
     rows = (await readReviews(root)).reviews.filter((r) => r.target.id === "a_x");
     assert.deepEqual(rows.map((r) => effectiveAttestation(r)).sort(), ["checked", "viewed"]);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    discard(root);
   }
 });
 
@@ -79,7 +80,7 @@ test("unmark scopes to a single attestation", async () => {
     const rows = (await readReviews(root)).reviews.filter((r) => r.target.id === "a_y");
     assert.deepEqual(rows.map((r) => effectiveAttestation(r)), ["viewed"]);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    discard(root);
   }
 });
 
@@ -101,7 +102,7 @@ test("reviewStatesFor reads the vouch by default, the viewed marks with {viewed:
     assert.equal((await reviewStatesFor(root, [tgt])).get("anchor:a_v")!.code.state, "unreviewed");
     assert.ok(found((await reviewStatesFor(root, [tgt], { viewed: true })).get("anchor:a_v")!.code.state));
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    discard(root);
   }
 });
 
@@ -116,7 +117,7 @@ test("changedSince finds the mark and reports no drift when code is unchanged", 
     assert.equal(r.found, true);
     assert.deepEqual(r.changed, []); // witness == live (both "absent"), nothing moved
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    discard(root);
   }
 });
 
@@ -198,7 +199,7 @@ test("a review write reports the resulting mark, so one symbol can be updated in
 
     await unmarkReviewed(root, { targetKind: "anchor", targetId: id, level: "code", attestation: "signed" });
     assert.equal((await anchorMark(root, id)).reviewed, false, "taking it back is reported too");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a mark made against a PR head records THAT commit, not the working tree's", async () => {
@@ -226,7 +227,7 @@ test("a mark made against a PR head records THAT commit, not the working tree's"
       "and carries THAT commit's branch, not whichever the working tree was on");
     assert.equal((await changedSince(root, { kind: "anchor", id }, { level: "code", attestation: "signed" })).changed.length, 0,
       "nothing changed since it was signed");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("markReviewedBatch dedupes its ids — every reader assumes one row per target", async () => {
@@ -242,7 +243,7 @@ test("markReviewedBatch dedupes its ids — every reader assumes one row per tar
     assert.equal(r.marked, 2, "a repeated id is one mark");
     const rows = (await readReviews(root)).reviews.filter((x) => x.target.id === "a_1");
     assert.equal(rows.length, 1, "two rows for one (target, level, attestation) breaks every `.find` that reads them");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an imported viewed tick does not raise an approval-sitting-on-a-revert alarm", async () => {
@@ -274,7 +275,7 @@ test("an imported viewed tick does not raise an approval-sitting-on-a-revert ala
 
     const withViewed = await revertedMarks(root, { includeViewed: true });
     for (const m of withViewed) assert.equal(m.attestation, "viewed", "and when asked for, they say which they are");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("changedSince answers about the ref you ask about, not the working tree", async () => {
@@ -302,7 +303,7 @@ test("changedSince answers about the ref you ask about, not the working tree", a
 
     const atWorktree = await changedSince(root, { kind: "anchor", id }, { level: "code", attestation: "signed" });
     assert.equal(atWorktree.changed.length, 1, "and the working tree really does differ — a separate question");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 // --- a witness from an older HASH_SCHEME is not drift --------------------------
@@ -381,7 +382,11 @@ test("a symbol this build minted, now absent, is still real drift", () => {
  * `none`, which is the red tick. See docs/anchor-id-provenance.md §6.
  */
 test("a mark whose accepted ids came from another build reads unverifiable, not stale", async () => {
-  const { mkdtempSync: mk, rmSync: rm } = await import("node:fs");
+  const { mkdtempSync: mk } = await import("node:fs");
+  // `discard`, not a bare `rm`: this test writes a store, and Windows will not delete
+  // a directory holding an open `codemap.db`. The aliased import is why the sweep in
+  // this commit missed it — the pattern was `rmSync(`, and this reads `rm(`.
+  const { discard } = await import("./test-tmp.js");
   const { tmpdir: td } = await import("node:os");
   const { join: jn } = await import("node:path");
   const { writeReviews } = await import("./store.js");
@@ -413,5 +418,5 @@ test("a mark whose accepted ids came from another build reads unverifiable, not 
     await writeReviews(root, [mark(hashTokens(["body"], mine))]);
     st = (await reviewStatesFor(root, [{ kind: "anchor", id: "a_absent" }])).get("anchor:a_absent")!;
     assert.equal(st.code.state, "stale", "this index would have resolved it, so its absence is drift");
-  } finally { rm(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });

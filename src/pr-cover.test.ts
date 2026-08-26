@@ -1,12 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Anchor, State } from "./schema.js";
 import { writeStore, writeSnapshot, readReviews } from "./store.js";
 import { containedAnchorIds, markReviewedBatch, unmarkCovered, reviewStatesFor } from "./reviews.js";
 import { fixtureHash } from "./fixture-hash.js";
+import { discard } from "./test-tmp.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 
@@ -60,7 +61,7 @@ test("a cover marks each member at its own hash, so one member's edit stales onl
     assert.equal(now.get("anchor:a_m1")!.code.state, "stale", "the edited member returns to the worklist");
     assert.equal(now.get("anchor:a_m2")!.code.state, "reviewed");
     assert.equal(now.get("anchor:a_cls")!.code.state, "reviewed", "a type's hash is its shell — a method body is not in it");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("withdrawing a container's sign-off takes its cover with it, and nothing else", async () => {
@@ -79,7 +80,7 @@ test("withdrawing a container's sign-off takes its cover with it, and nothing el
     assert.deepEqual(removed, ["a_m1"]);
     const left = (await readReviews(root)).reviews.map((r) => r.target.id).sort();
     assert.deepEqual(left, ["a_m2"], "the member signed in its own right survives");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a viewed cover and a signed cover are independent marks", async () => {
@@ -93,5 +94,5 @@ test("a viewed cover and a signed cover are independent marks", async () => {
     const left = (await readReviews(root)).reviews;
     assert.equal(left.length, 1);
     assert.equal(left[0]!.attestation, "viewed", "unsigning must not clear the exposure mark");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
+import { mkdtempSync, existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -9,6 +9,7 @@ import { ensureSidecar, pull, push, sync, checkManifest, checkPeers, countEvents
 import { createFinding, corroborate, comment, readFindings, needsHumanAck } from "./shared-findings.js";
 import { publishWalkthrough, readWalkthroughs } from "./shared-walkthrough.js";
 import { principalKey } from "./eventlog.js";
+import { discard } from "./test-tmp.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
 const dana: Actor = { principal: "dana@x.com" };
@@ -29,7 +30,7 @@ async function team() {
     await ensureSidecar(r, who);
     git(r, "remote", "add", "origin", origin);
   }
-  return { origin, a, b, cleanup: () => [origin, a, b].forEach((r) => rmSync(r, { recursive: true, force: true })) };
+  return { origin, a, b, cleanup: () => [origin, a, b].forEach((r) => discard(r)) };
 }
 
 /** Every file the team's remote actually holds. */
@@ -53,7 +54,7 @@ test("a sidecar is a git repo that conflicts a shared shard, plus the writer's m
     assert.equal(ms[0]!.principal, "izzie@x.com");
     assert.equal(ms[0]!.anchorScheme, currentManifest("x").anchorScheme);
     assert.ok(!("error" in (await ensureSidecar(root, izzie))), "idempotent");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("with no remote, everything still works — the design is offline-first", async () => {
@@ -65,7 +66,7 @@ test("with no remote, everything still works — the design is offline-first", a
     const r = await sync(root, izzie);
     assert.ok(!("error" in r), JSON.stringify(r));
     assert.equal((await readFindings(root, 264)).size, 1);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 // --- the property the whole design rests on --------------------------------------
@@ -263,7 +264,7 @@ test("countEvents counts event lines and ignores everything else", async () => {
     git(root, "config", "user.email", "t@t"); git(root, "config", "user.name", "t");
     await createFinding(root, 264, izzie, NEW);
     assert.equal(await countEvents(root), 1);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 // --- one machine, one sidecar, one writer at a time ------------------------------
@@ -348,7 +349,7 @@ test("two different sidecars do not block each other", async () => {
     });
     await Promise.all([hold(t.a), hold(other)]);
     assert.equal(both, true, "they overlapped — the lock is per sidecar, not global");
-  } finally { t.cleanup(); rmSync(other, { recursive: true, force: true }); }
+  } finally { t.cleanup(); discard(other); }
 });
 
 // --- R1: a sync that loses a finding is worse than no sync at all ----------------
@@ -366,7 +367,7 @@ test("a sidecar configures its own committer identity and signs nothing", async 
     assert.equal(local("commit.gpgsign"), "false", "signing is off in the sidecar's own config");
     assert.equal(local("user.email"), izzie.principal, "and it commits as the person who owns it");
     assert.ok(local("user.name"), "with a name, which git also demands");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a commit that cannot succeed fails the sync instead of reporting a push", async () => {
@@ -403,7 +404,7 @@ test("a commit that cannot succeed fails the sync instead of reporting a push", 
     assert.equal(ok.committed, true, "and says it had something of its own to send");
     assert.ok(onRemote(t.origin).some((f) => f.startsWith("findings/pr-1/")), "the finding is on the remote now");
 
-    rmSync(hooks, { recursive: true, force: true });
+    discard(hooks);
   } finally { t.cleanup(); }
 });
 
