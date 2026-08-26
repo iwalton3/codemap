@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { State } from "./schema.js";
 import { writeStore, readViewedImports, writeViewedImport } from "./store.js";
-import { surveyViewed, viewedPaths, changedSymbolsIn } from "./pr-bulk.js";
+import { surveyViewed, viewedPaths, changedSymbolsIn, bulkPullViewed } from "./pr-bulk.js";
 import { prBaseCommit, mergeBase } from "./git.js";
 import { fixtureHash } from "./fixture-hash.js";
 import { discard } from "./test-tmp.js";
@@ -183,4 +183,59 @@ test("a ticked file marks only the symbols the PR changed in it", async () => {
   // a file the branch adds has no base side, so every symbol in it is changed
   const added = await changedSymbolsIn(new Map([["b.cs", "x=1\ny=2"]]), new Map(), index);
   assert.deepEqual(added.ids, ["b.cs#x", "b.cs#y"]);
+});
+
+// --- the back catalogue pays one API call, not one per pull request ------------
+
+/**
+ * The cost this module exists to avoid, asserted as a COUNT.
+ *
+ * `bulkPullViewed` used to run `gh pr view <n>` per pull request for three fields —
+ * `baseRefName`, `headRefOid`, `baseRefOid` — twelve lines above its own comment
+ * saying a round trip per pull request is the thing it exists not to pay. The list
+ * already returns all three. Across a 2000-PR back catalogue that was 2000 network
+ * calls for data already in hand.
+ *
+ * Counting the calls rather than reading the output is the point: the shapes below
+ * would all still parse if the per-PR view came back, and the import would still
+ * produce the right answer — just slowly, over the network, which is exactly the
+ * kind of regression no assertion about RESULTS can see.
+ */
+test("the back catalogue asks for the whole list once, never per pull request", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-bulk1-"));
+  try {
+    await writeStore(root, [], { schemaVersion: 1, lastVerifiedCommit: null } as State);
+    const calls: string[][] = [];
+    const fakeGh = (args: string[]) => {
+      calls.push(args);
+      if (args[0] === "pr" && args[1] === "list") {
+        return ghOk([1, 2, 3].map((n) => ({
+          number: n, state: "MERGED", author: { login: "someone" }, createdAt: "2026-01-01T00:00:00Z",
+          baseRefName: "main", headRefOid: "h".repeat(40), baseRefOid: "b".repeat(40),
+        })));
+      }
+      // The survey: every PR settled with no ticks, so none is checked in full and
+      // this test measures the LISTING cost alone.
+      if (args.includes("graphql")) {
+        return ghOk({ data: { repository: Object.fromEntries([1, 2, 3].map((n) =>
+          [`p${n}`, { files: { pageInfo: { hasNextPage: false }, nodes: [{ viewerViewedState: "UNVIEWED" }] } }])) } });
+      }
+      return { ok: false, out: "", err: "unexpected gh call" };
+    };
+
+    const r = await bulkPullViewed(root, "o/r", { dryRun: true, gh: fakeGh as never });
+    assert.ok(!("error" in r), `bulk import failed: ${(r as { error?: string }).error}`);
+    assert.equal((r as { surveyed: number }).surveyed, 3, "all three were listed");
+
+    const views = calls.filter((a) => a[0] === "pr" && a[1] === "view");
+    assert.deepEqual(views, [], "no per-pull-request `gh pr view` — the list carries those fields");
+    assert.equal(calls.filter((a) => a[0] === "pr" && a[1] === "list").length, 1, "and exactly one listing");
+
+    // Could this have failed? Only if the list is asked for the fields it must carry.
+    const list = calls.find((a) => a[1] === "list")!;
+    const fields = list[list.indexOf("--json") + 1]!;
+    for (const f of ["baseRefName", "headRefOid", "baseRefOid"]) {
+      assert.ok(fields.includes(f), `the listing must request ${f}, or the per-PR call comes back`);
+    }
+  } finally { discard(root); }
 });
