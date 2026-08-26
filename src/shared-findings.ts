@@ -174,10 +174,43 @@ export interface SharedFinding {
   remediation?: { state: Remediation; by: Actor; at: string; detail?: string; ref?: string };
 
   assignment?: { kind: "investigate" | "fix" | "answer"; by: Actor; at: string; note?: string };
+  /**
+   * The LATEST report, kept as a field because every reader wants "where did this get
+   * to" without walking a list. `outcomes` is the real record.
+   */
   outcome?: { result: "fixed" | "answered" | "declined"; detail: string; files?: string[]; by: Actor; at: string };
+  /**
+   * Every report, oldest first. APPEND-ONLY, because rounds are real.
+   *
+   * This was a single last-write-wins field, and a multi-round verification overwrote
+   * itself: on `Acme.API` PR 270, 37 of 59 reports were unreachable — 53k characters of
+   * investigation, including the verification that mattered, buried under a later
+   * bookkeeping note. Measured in `docs/finding-event-shape-audit.md`. The fold keeps
+   * every event now, and the surfaces render the history rather than the last line.
+   */
+  outcomes?: NonNullable<SharedFinding["outcome"]>[];
   /** An outstanding ask waiting on a person. One at a time; a second replaces it. */
+  /** The open ask, if one is outstanding. Cleared when a person acts on it. */
   pending?: { ask: Ask; by: Actor; at: string; rationale: string };
-  closed?: { at: string; by: Actor; reason: string };
+  /**
+   * Every ask ever made, and what became of it. APPEND-ONLY.
+   *
+   * `pending` alone is a banner that vanishes the moment somebody accepts it, taking
+   * the REASON with it — so a finding closed on an agent's recommendation kept no record
+   * of the recommendation, and "why is this resolved" was answerable only from the raw
+   * log. The settlement is stamped in place rather than appended, because an ask has one
+   * outcome and a second entry for it would read as a second ask.
+   */
+  asks?: { ask: Ask; by: Actor; at: string; rationale: string; settled?: { as: "applied" | "superseded"; by: Actor; at: string; state?: FindingState } }[];
+  /**
+   * How it ended. `grantedAsk` is the request this close granted, if it granted one —
+   * so "why is this resolved" is answerable from the record without reading the log,
+   * and the agent that did the work keeps its attribution.
+   */
+  closed?: {
+    at: string; by: Actor; reason: string;
+    grantedAsk?: { ask: Ask; by: Actor; at: string; rationale: string };
+  };
 
   revisions: { at: string; by: Actor; was: Record<string, unknown> }[];
   /**
@@ -486,6 +519,8 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         // default did — but from `via`, not from a prefix on a name.
         state: isAgentActor(e.actor) ? "issued" : "created",
         corroboration: [],
+        outcomes: [],
+        asks: [],
         thread: [],
         revisions: [],
       });
@@ -582,20 +617,28 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         const result = str(d, "result");
         if (result !== "fixed" && result !== "answered" && result !== "declined") break;
         // Reporting is not resolving: the agent says what it did, the human closes.
-        f.outcome = {
+        const entry: NonNullable<SharedFinding["outcome"]> = {
           result, detail: str(d, "detail") ?? "",
           files: Array.isArray(d?.files) ? (d.files as string[]) : undefined,
           by: e.actor, at: e.at,
         };
+        // BOTH: the list is the record, the field is the latest. A single field lost 37
+        // of 59 reports on one pull request — see `outcomes`.
+        (f.outcomes ??= []).push(entry);
+        f.outcome = entry;
         break;
       }
 
       case "finding.requested": {
         const ask = str(d, "ask");
         if (!isAsk(ask)) break;
-        // One outstanding ask; a second replaces it, and the replacement is visible
-        // because the superseded event is still in the log.
-        f.pending = { ask, by: e.actor, at: e.at, rationale: str(d, "rationale") ?? "" };
+        const record = { ask, by: e.actor, at: e.at, rationale: str(d, "rationale") ?? "" };
+        // One outstanding ask; a second SUPERSEDES it, and the superseded one keeps its
+        // rationale in `asks` rather than only in the raw log.
+        const open = (f.asks ??= []).find((a) => !a.settled);
+        if (open) open.settled = { as: "superseded", by: e.actor, at: e.at };
+        f.asks.push(record);
+        f.pending = record;
         break;
       }
 
@@ -606,9 +649,21 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         // ignored by every reader, not just by its own client.
         if (!mayTransition(f, e.actor, next)) break;
         f.state = next;
-        if (isClosed(next)) f.closed = { at: e.at, by: e.actor, reason: str(d, "reason") ?? next };
-        else f.closed = undefined;
-        // An ask is answered by the act it asked for.
+        // An ask is answered by the act it asked for — and SETTLED, not erased. Clearing
+        // `pending` alone took the rationale with it, so a finding closed on an agent's
+        // recommendation kept no record of the recommendation, and "why is this resolved"
+        // was answerable only from the raw log.
+        const open = (f.asks ??= []).find((a) => !a.settled);
+        if (open) open.settled = { as: "applied", by: e.actor, at: e.at, state: next };
+        if (isClosed(next)) {
+          f.closed = {
+            at: e.at, by: e.actor,
+            // The person's own words if they gave any; otherwise the reason the ask
+            // carried, which is what they were agreeing to. `next` alone says nothing.
+            reason: str(d, "reason") ?? open?.rationale ?? next,
+            ...(open ? { grantedAsk: { ask: open.ask, by: open.by, at: open.at, rationale: open.rationale } } : {}),
+          };
+        } else f.closed = undefined;
         f.pending = undefined;
         break;
       }

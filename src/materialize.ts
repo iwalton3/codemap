@@ -83,7 +83,7 @@ import { readScopeChecked, SHARD_EXT, type LogEvent, type ScopeStatus } from "./
  * would keep serving rows folded under the old rule and the events it used to ignore
  * would stay ignored for ever.
  */
-export const MATERIALIZER_VERSION = 10;
+export const MATERIALIZER_VERSION = 11;
 
 /**
  * What the events in a scope are, cheaply.

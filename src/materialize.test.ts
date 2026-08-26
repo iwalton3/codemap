@@ -455,7 +455,7 @@ test("the fold's output is pinned — change it and bump MATERIALIZER_VERSION", 
   const folded = [...foldFindings(GOLDEN_LOG)];
   assert.equal(
     createHash("sha256").update(JSON.stringify(folded)).digest("hex").slice(0, 32),
-    "f63820fba9d809da8d285f86eb81e0dc",
+    "35f898e33b2384370b8472f499830b2f",
     "the fold produces something different from what MATERIALIZER_VERSION "
     + `${MATERIALIZER_VERSION} was set for — bump it, or fix the fold`,
   );

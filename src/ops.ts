@@ -95,18 +95,32 @@ export async function closeFinding(
   input: {
     id: string; result: "fixed" | "answered" | "declined"; detail: string; files?: string[]; by?: string;
     comment?: string; line?: number; severity?: "low" | "medium" | "high" | "critical";
-    remediation?: Remediation; disposition?: never;
+    remediation?: Remediation; disposition?: never; state?: FindingState;
   },
 ): Promise<Record<string, unknown>> {
+  // VALIDATED FIRST, before a single event is written. This ran after the outcome, the
+  // corroboration and the remediation had already landed, so a rejected comment returned
+  // a bare error over a half-completed call — and the natural response to an error is to
+  // retry, which re-emitted `finding.outcome` and (until the history landed) overwrote
+  // the first report. The tool's own response shape drove the data loss the audit
+  // measured. `reviseOn` and the local path already validate up front.
+  {
+    const c = checkComment(input.comment, (input as { disposition?: string }).disposition);
+    if ("error" in c) return c;
+  }
   const f = await readFinding(root, input.id).catch(() => null);
   if (!f) return closeAnnotation(root, input as never) as Promise<Record<string, unknown>>;
   if (!f.origin) {
     const r = await closeLocal(root, input as never);
-    if (!r.error && input.remediation) {
-      const rr = await remediateLocalFinding(root, f.id, input.remediation, { detail: input.detail }) as { error?: string };
+    // The same inference the fold-owned branch makes: a report that says `fixed` must
+    // not leave the finding counted as open. This branch is every finding before it is
+    // published, which is most of them for most of their life.
+    const rem = input.remediation ?? (input.result === "fixed" ? ("fixed-on-branch" as const) : undefined);
+    if (!r.error && rem) {
+      const rr = await remediateLocalFinding(root, f.id, rem, { detail: input.detail }) as { error?: string };
       if (rr.error) return { ...r, note: `${r.note ?? ""} remediation NOT recorded: ${rr.error}`.trim() };
     }
-    return r;
+    return r.error ? r : { ...r, ...(await applyState(root, input, f.id)) };
   }
   // Fold-owned: a row the fold owns may only be changed by an event.
   const shared = await import("./ops-shared.js");
@@ -158,22 +172,46 @@ export async function closeFinding(
     ...(input.severity !== undefined ? { severity: input.severity } : {}),
   };
   if (Object.keys(patch).length) {
-    const c = checkComment(input.comment, d);
-    if ("error" in c) return c;
     const rev = await shared.reviseFinding(root, f.pr!, f.id, patch) as { error?: string };
     if (rev.error) {
       for (const k of Object.keys(patch)) refused.push({ field: k, why: rev.error });
       notes.push(`${Object.keys(patch).join(" and ")} NOT changed: ${rev.error}`);
     } else applied.push(...Object.keys(patch));
   }
+  const moved = await applyState(root, input, f.id);
+  if (moved.asked) applied.push("ask"); else if (moved.state) applied.push("state");
   return {
     // `ok` now means what it means everywhere else. A caller that asked for four things
     // and got three has not succeeded, and finding that out should not require reading.
     ok: refused.length === 0,
     id: f.id, pr: f.pr, shared: true, applied,
     ...(refused.length ? { refused } : {}),
-    note: notes.join("; "),
+    ...moved,
+    note: [...notes, moved.note].filter(Boolean).join("; "),
   };
+}
+
+/**
+ * Move the finding's state, if the caller asked for one.
+ *
+ * `close_finding` is named for closing and, until now, could not close: there was no
+ * MCP tool that set a finding's state at all, and `setFindingState` was reachable only
+ * from a web POST. Its description promised the pending-ask conversion anyway, which
+ * meant an agent following it dropped a `state` the schema did not declare, got
+ * `ok: true`, and queued nothing — the exact zero-`request_human` failure the ask
+ * conversion was built to end, now with the documentation steering agents into it.
+ *
+ * Attached here rather than given its own verb deliberately: a third tool covering the
+ * same intent is how `request_human` came to be the one nobody used.
+ */
+async function applyState(
+  root: string, input: { state?: FindingState; detail?: string }, id: string,
+): Promise<{ state?: FindingState; asked?: string; note?: string }> {
+  if (!input.state) return {};
+  const r = await setFindingState(root, { id, state: input.state, reason: input.detail }) as
+    { error?: string; state?: FindingState; asked?: string; note?: string };
+  if (r.error) return { note: `state NOT changed: ${r.error}` };
+  return r.asked ? { asked: r.asked, note: r.note } : { state: r.state };
 }
 
 /**

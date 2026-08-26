@@ -477,3 +477,87 @@ test("promoting a finding moves it out of the untriaged tier", () => {
   // And closing still wins over both: a promoted finding that got fixed is settled.
   assert.equal(findingTier({ ...promoted, state: "resolved" } as unknown as SharedFinding), "settled");
 });
+
+// --- the history, and why a banner is not a record --------------------------------
+
+/**
+ * Rounds are real, and a single field lost them.
+ *
+ * `finding.outcome` was last-write-wins: on `Acme.API` PR 270 an eight-round
+ * verification overwrote itself, leaving 37 of 59 reports unreachable — 53k characters
+ * of investigation, including the verification that mattered, buried under a later
+ * bookkeeping note. Measured in `docs/finding-event-shape-audit.md`.
+ */
+test("every report is kept, and the field still says where it got to", async () => {
+  const root = tmp();
+  try {
+    const id = await createFinding(root, 264, opus, NEW);
+    await recordOutcome(root, 264, opus, id, "answered", "round 1: confirmed at head aaa");
+    await recordOutcome(root, 264, opus, id, "answered", "round 2: submitter says fixed");
+    await recordOutcome(root, 264, opus, id, "fixed", "round 3: verified at head ccc");
+
+    const f = await one(root);
+    assert.deepEqual(f.outcomes?.map((o) => o!.detail), [
+      "round 1: confirmed at head aaa",
+      "round 2: submitter says fixed",
+      "round 3: verified at head ccc",
+    ], "oldest first, nothing overwritten");
+    assert.equal(f.outcome?.detail, "round 3: verified at head ccc", "and the field is the latest");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+/**
+ * An ask is a banner, and a banner vanishes the moment somebody accepts it — taking the
+ * REASON with it. A finding closed on an agent's recommendation kept no record of the
+ * recommendation, so "why is this resolved" was answerable only from the raw log.
+ */
+test("accepting an ask keeps the reason it was asked for", async () => {
+  const root = tmp();
+  try {
+    const id = await createFinding(root, 264, izzie, NEW);
+    // The agent concludes; the gate turns it into an ask (izzie filed it).
+    await setState(root, 264, opus, id, "refuted", "the guard is two lines up, at Startup.cs:88");
+    const asked = await one(root);
+    assert.equal(asked.pending?.ask, "refute");
+    assert.equal(asked.asks?.length, 1);
+
+    // Izzie accepts, saying nothing of her own.
+    await setState(root, 264, izzie, id, "refuted");
+    const done = await one(root);
+    assert.equal(done.state, "refuted");
+    assert.equal(done.pending, undefined, "the banner is gone");
+    assert.equal(done.asks?.[0]?.settled?.as, "applied", "but the ask is settled, not erased");
+    assert.equal(done.asks?.[0]?.rationale, "the guard is two lines up, at Startup.cs:88");
+    assert.equal(done.closed?.reason, "the guard is two lines up, at Startup.cs:88",
+      "and the close carries the reason it was granted for, rather than the bare state word");
+    assert.equal(done.closed?.grantedAsk?.by.principal, "izzie@x.com");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+/** A person's own words win over the ask's when they give some. */
+test("a person's own closing reason is not overwritten by the ask", async () => {
+  const root = tmp();
+  try {
+    const id = await createFinding(root, 264, izzie, NEW);
+    await setState(root, 264, opus, id, "refuted", "agent's reasoning");
+    await setState(root, 264, izzie, id, "refuted", "I checked it myself");
+    const f = await one(root);
+    assert.equal(f.closed?.reason, "I checked it myself");
+    assert.equal(f.closed?.grantedAsk?.rationale, "agent's reasoning", "and the ask is still attributed");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+/** A second ask supersedes the first, and the first keeps its rationale. */
+test("a superseded ask is settled, not lost", async () => {
+  const root = tmp();
+  try {
+    const id = await createFinding(root, 264, izzie, NEW);
+    await setState(root, 264, opus, id, "refuted", "first read: not reachable");
+    await setState(root, 264, opus, id, "resolved", "second read: it was reachable, and is now fixed");
+    const f = await one(root);
+    assert.equal(f.asks?.length, 2);
+    assert.equal(f.asks?.[0]?.settled?.as, "superseded");
+    assert.equal(f.asks?.[0]?.rationale, "first read: not reachable");
+    assert.equal(f.pending?.ask, "resolve", "and the open one is the latest");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

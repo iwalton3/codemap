@@ -498,6 +498,19 @@ function view(f: SharedFinding) {
     thread: f.thread.map((c) => ({ id: c.id, by: c.actor.principal, model: c.actor.via?.model, at: c.at, body: c.body, inReplyTo: c.inReplyTo })),
     pending: f.pending ? { ask: f.pending.ask, by: f.pending.by.principal, rationale: f.pending.rationale } : undefined,
     outcome: f.outcome ? { result: f.outcome.result, detail: f.outcome.detail, by: f.outcome.by.principal, files: f.outcome.files } : undefined,
+    // THE HISTORY, not just the last line. A multi-round verification overwrote itself
+    // when this was one field — see `docs/finding-event-shape-audit.md`.
+    outcomes: (f.outcomes ?? []).map((o) => ({ result: o.result, detail: o.detail, by: o.by.principal, at: o.at, files: o.files })),
+    // Every ask and what became of it, so a finding closed on an agent's recommendation
+    // still says whose recommendation it was and why.
+    asks: (f.asks ?? []).map((a) => ({
+      ask: a.ask, by: a.by.principal, at: a.at, rationale: a.rationale,
+      settled: a.settled ? { as: a.settled.as, by: a.settled.by.principal, at: a.settled.at, state: a.settled.state } : undefined,
+    })),
+    closedReason: f.closed?.reason,
+    closedGranting: f.closed?.grantedAsk
+      ? { ask: f.closed.grantedAsk.ask, by: f.closed.grantedAsk.by.principal, rationale: f.closed.grantedAsk.rationale }
+      : undefined,
     // ALWAYS present, defaulting to `outstanding`. Absent-means-outstanding is the same
     // fact, and a field that appears only once somebody has acted is one a reader learns
     // to stop looking for.

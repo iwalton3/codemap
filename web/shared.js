@@ -289,7 +289,11 @@ class SharedPage extends Component {
           </div>`)}
         ${when(f.target?.where === 'retained' || f.target?.where === 'lost', () => html`
           <div class="dim">target is ${f.target.where}${f.target.lastFile ? ` — last seen in ${f.target.lastFile}` : ''}</div>`)}
-        ${when(!!f.outcome, () => html`<div class="dim">${f.outcome.by} reported <b>${f.outcome.result}</b>: ${f.outcome.detail}</div>`)}
+        ${when(!!f.closedReason, () => html`<div class="dim"><b>closed</b>: ${f.closedReason}${when(!!f.closedGranting, () => html` <span class="dim">— granting ${f.closedGranting.by}'s request to ${f.closedGranting.ask}</span>`)}</div>`)}
+        ${each(f.asks ?? [], a => html`
+          <div class="dim"><b>${a.by}</b> asked to <b>${a.ask}</b>: ${a.rationale}${when(!!a.settled, () => html` <span class="dim">— ${a.settled.as}${a.settled.by ? ' by ' + a.settled.by : ''}</span>`)}</div>`, (a, i) => `ask${i}`)}
+        ${each(f.outcomes?.length ? f.outcomes : (f.outcome ? [f.outcome] : []), o => html`
+          <div class="dim">${o.by} reported <b>${o.result}</b>: ${o.detail}</div>`, (o, i) => `out${i}`)}
         ${each(f.corroboration ?? [], c => html`
           <div class="corr">
             <span class="${c.verdict === 'confirm' ? 'ok' : c.verdict === 'refute' ? 'bad' : 'dim'}">${c.verdict}</span>

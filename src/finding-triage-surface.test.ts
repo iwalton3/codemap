@@ -501,3 +501,82 @@ test("every lifecycle act works on a finding the fold does not own", async () =>
     assert.equal(done.pending, undefined, "the ask is answered by the act it asked for");
   } finally { u.cleanup(); }
 });
+
+/**
+ * `close_finding` is named for closing and, until now, could not close.
+ *
+ * There was no MCP tool that set a finding's state at all — `setFindingState` was
+ * reachable only from a web POST — and the description promised the pending-ask
+ * conversion anyway. An agent following it passed a `state` the schema did not declare,
+ * `violates()` validates enums and not unknown keys, so the field was dropped silently
+ * and the call returned `ok: true` having queued nothing. That is the zero-`request_human`
+ * failure the ask conversion exists to end, recreated by its own documentation.
+ *
+ * Found by a Fable 5 review of the agent-facing surface.
+ */
+test("close_finding can actually close, and the ask conversion is reachable from it", async () => {
+  const u = await universe();
+  try {
+    // The schema has to DECLARE it, or an agent reading the description sends a field the
+    // server drops on the floor. Asserted against the SOURCE, the way `ops-reach.test.ts`
+    // does — `mcp.ts` exports no tool table, and the declaration is what matters.
+    const { readFileSync } = await import("node:fs");
+    const mcp = readFileSync("src/mcp.ts", "utf8");
+    const close = mcp.slice(mcp.indexOf('name: "close_finding"'));
+    const schema = close.slice(close.indexOf("inputSchema"), close.indexOf("mutates:"));
+    assert.match(schema, /\bstate:\s*\{/, "`state` is declared, so it survives validation");
+    assert.match(schema, /"refuted"/, "and its enum carries the closing states");
+
+    // Agent-filed and unconfirmed: it just happens.
+    let mine!: { id: string };
+    await asAgent(async () => { mine = await shared.shareFinding(u.root, 269, NEW) as { id: string }; });
+    await asAgent(async () => {
+      const r = await closeFinding(u.root, { id: mine.id, result: "answered", detail: "not reachable", state: "refuted" }) as
+        { ok?: boolean; state?: string; applied?: string[] };
+      assert.equal(r.state, "refuted");
+      assert.ok(r.applied?.includes("state"));
+    });
+    assert.equal((await readFinding(u.root, mine.id))!.state, "refuted");
+
+    // Person-filed: the same call becomes an ask, carrying `detail` as the reason.
+    const theirs = await shared.shareFinding(u.root, 269, { ...NEW, text: "theirs" }) as { id: string };
+    await asAgent(async () => {
+      const r = await closeFinding(u.root, { id: theirs.id, result: "fixed", detail: "fixed at head abc123", state: "resolved" }) as
+        { asked?: string; applied?: string[] };
+      assert.equal(r.asked, "resolve", "recorded as an ask, not dropped");
+      assert.ok(r.applied?.includes("ask"));
+    });
+    const t = (await readFinding(u.root, theirs.id))!;
+    assert.equal(t.state, "created", "nothing moved");
+    assert.equal(t.pending?.ask, "resolve");
+    assert.equal(t.pending?.rationale, "fixed at head abc123");
+    assert.equal(t.remediation?.state, "fixed-on-branch", "and `fixed` set the remediation for free");
+  } finally { u.cleanup(); }
+});
+
+/**
+ * A rejected comment must not land half a call.
+ *
+ * `checkComment` ran AFTER the outcome, corroboration and remediation were written, so a
+ * verdict-lead comment returned a bare error over three events that had already
+ * happened — and the natural response to an error is to retry, which re-emits
+ * `finding.outcome`. The tool's own response shape drove the duplication the audit
+ * measured on PR 270.
+ */
+test("a refused comment is refused before anything is written", async () => {
+  const u = await universe();
+  try {
+    const f = await shared.shareFinding(u.root, 269, NEW) as { id: string };
+    const before = (await readFinding(u.root, f.id))!;
+    await asAgent(async () => {
+      const r = await closeFinding(u.root, {
+        id: f.id, result: "fixed", detail: "d",
+        comment: "CONFIRMED — the by-id branch has no tenant predicate",
+      }) as { error?: string };
+      assert.ok(r.error, "refused");
+    });
+    const after = (await readFinding(u.root, f.id))!;
+    assert.equal(after.outcomes?.length ?? 0, before.outcomes?.length ?? 0, "no outcome was recorded");
+    assert.equal(after.remediation, before.remediation, "and no remediation");
+  } finally { u.cleanup(); }
+});
