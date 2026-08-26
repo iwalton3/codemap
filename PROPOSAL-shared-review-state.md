@@ -1,5 +1,8 @@
 # Proposal: shared review state — the sidecar
 
+> **Kind: archive** — superseded or finished. Do NOT plan from it; read it only for history.
+> **SUPERSEDED by `docs/sidecar-architecture.md`**, which says so itself and wins wherever they disagree. Still cited from source for its long-form arguments, which is why it is kept rather than deleted.
+
 Status: **PROPOSAL — not approved.** Written 2026-08-21, from a design session
 about running PR review across a team where every reviewer has codemap and
 several agents review alongside them.

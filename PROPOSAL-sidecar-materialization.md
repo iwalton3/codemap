@@ -1,5 +1,8 @@
 # Proposal: materialize the sidecar fold into SQLite, behind `store.ts`
 
+> **Kind: archive** — superseded or finished. Do NOT plan from it; read it only for history.
+> **SUPERSEDED by `docs/sidecar-architecture.md`.** Nine source files cite sections of it for the reasoning behind a decision; read those sections, not the plan.
+
 Status: **draft for review; steps 0, 1, 2 and 4 landed, 3b partly. 3a and 5 open.** Written in response
 to the `store.ts`-seam finding in `COLLABORATION-STATIC-REVIEW.md`, and to two
 goals stated more narrowly than that finding did: **consistency** and

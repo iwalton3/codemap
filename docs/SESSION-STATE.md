@@ -100,5 +100,6 @@ the tools said they did.
   PR under review) and inverted five verdicts. `Acme.API` was re-audited and is clean —
   by branch topology, not by design, which is why the verdict guard now exists.
 - `Acme.Settlement` still has not been re-indexed under the overload-id scheme.
-- `docs/mcp-complaints.md` is the durable home for use reports; `docs/mcp-use-reports.md`
-  and `docs/bug-walkthrough-republish-conflict.md` sit beside it.
+- `docs/mcp-complaints.md` is the durable home for use reports. `docs/mcp-use-reports.md`
+  and `docs/bug-walkthrough-republish-conflict.md` were retired 2026-08-26 — every entry
+  in both was marked addressed and nothing cited them; `git log --diff-filter=D` finds them.

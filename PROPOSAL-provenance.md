@@ -1,5 +1,8 @@
 # Proposal: immutable provenance
 
+> **Kind: decision record** — why the code looks like this. Done — kept for the argument, not as a to-do.
+> the provenance design, largely landed. Its §5 `AnchorReceipt` was CANCELLED — see `docs/decision-receipts-vs-prefix.md` and `docs/anchor-id-provenance.md`. Cited from a dozen source files.
+
 Status: **draft — design settled, implementation begun.** Ten review rounds are
 folded in; §10 records what each changed, and §8 lists what is still open.
 

@@ -1,5 +1,8 @@
 # codemap
 
+> **Kind: current reference** — describes how codemap works today. Trust it; fix it if it is wrong.
+> the project front door: what codemap is, the CLI, and the MCP tools.
+
 A codebase-agnostic **semantic map** that anchors documented claims to hashed
 code, so documentation staleness becomes *visible* instead of silent.
 

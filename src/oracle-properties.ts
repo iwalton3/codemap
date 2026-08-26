@@ -6,7 +6,8 @@
  * step of every scenario — so a defect that only appears on the sixth operation of a
  * chain has something watching when it does.
  *
- * Where they come from: `docs/HANDOFF.md` § "Make them oracles, not assertions".
+ * Where they come from: `docs/HANDOFF.md` § "Make them oracles, not assertions" (archive
+ * — it is the origin of these six, not a live list to extend from).
  *
  *   1. CONVERGENCE   — after everyone syncs twice, their projections are identical.
  *   2. NO LOSS       — no clone ever loses an event it once held.

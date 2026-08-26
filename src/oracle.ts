@@ -15,7 +15,9 @@
  * driving the whole chain and checking, after every step, that the properties that
  * must always hold still do.
  *
- * `docs/HANDOFF.md` § "Your job: build the oracle" is the brief.
+ * Built from the brief in `docs/HANDOFF.md` § "Your job: build the oracle" — which is
+ * ARCHIVE now that this exists. Read it for why the oracle is shaped this way, not for
+ * what to do next.
  */
 
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync } from "node:fs";

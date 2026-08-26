@@ -1,5 +1,8 @@
 # Static review: codemap collaboration branch against `main`
 
+> **Kind: archive** — superseded or finished. Do NOT plan from it; read it only for history.
+> a one-off review of the collaboration branch against `main`, at commits that are long merged.
+
 Reviewed `main` (`0af6bba`) through `worktree-shared-review-hashscheme` (`7dc55e0`), including the intended-state proposal in `PROPOSAL-shared-review-state.md` and the vdx contract in `/working/vdx-web/FRAMEWORK.md`.
 
 This was a static review. I did not rerun the test suites (the request states they are passing); `git diff --check main...HEAD` is clean. A second pass assigned three independent reviewers to event/Git convergence, witness/spec/security, and web/framework/protocol behavior. They were asked to refute as well as extend the first pass. No original finding was materially refuted; the same-principal manifest finding was replaced below with the deeper immutable-provenance defect.
