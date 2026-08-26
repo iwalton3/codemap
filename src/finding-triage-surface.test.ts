@@ -1,7 +1,7 @@
 /**
  * The triage surface, as an agent actually reaches it.
  *
- * Every test here is a use-report from `CODEMAP_COMPLAINTS.md`: an agent asked to
+ * Every test here is a use-report from `docs/mcp-complaints.md`: an agent asked to
  * triage four findings on a pull request could not revise one, could not record a
  * re-rating anywhere filterable, and could not ask for the untriaged ones at all.
  * None of that was a missing capability — the fold has revised findings since it was

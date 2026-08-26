@@ -125,7 +125,7 @@ export async function closeFinding(
   // STRUCTURED, not prose. This returned `ok: true` with every refusal buried in `note`,
   // and `ok` means success everywhere else — so an agent that set `comment` and had it
   // refused believed it landed and moved on. Reported by an agent that only caught it by
-  // re-reading the prose (`WORKFLOW_ISSUES.md` §2).
+  // re-reading the prose (`docs/mcp-complaints.md` § workflow-issues §2).
   const applied: string[] = ["outcome"];
   const refused: { field: string; why: string }[] = [];
   // Ungated, unlike the comment/severity half below: what HAPPENED about a finding is an
@@ -133,7 +133,7 @@ export async function closeFinding(
   // other people confirmed — exactly the case a confirmation gate would refuse.
   // `result: "fixed"` with no remediation used to leave it at `outstanding` — so a call
   // that literally says the code was fixed left "what is still open on this PR" counting
-  // it as open. A prior pass lost nine findings that way (`WORKFLOW_ISSUES.md` §8).
+  // it as open. A prior pass lost nine findings that way (`docs/mcp-complaints.md` § workflow-issues §8).
   // Inferred rather than refused, and `fixed-on-BRANCH` rather than `-on-default`: a
   // report on a pull request's finding is about the branch, and claiming the mainline is
   // clean would let a linked bug be closed while the defect still ships.

@@ -166,7 +166,7 @@ either proposal above. Recorded here because the audit is the evidence for them.
    zero `request_human` asks in the entire sidecar against fifteen thread comments doing
    the job by hand.
 
-Also built, from `WORKFLOW_ISSUES.md`: `close_finding` returns `applied`/`refused` with
+Also built, from the workflow-issues section of `docs/mcp-complaints.md`: `close_finding` returns `applied`/`refused` with
 an honest `ok` (§2 there), `result:"fixed"` infers `fixed-on-branch` (§8), and
 `remediation` is rendered on the shared view (§1) — it was on every record and no
 surface, which is why five findings verified fixed still read as live defects.
