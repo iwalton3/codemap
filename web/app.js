@@ -265,6 +265,11 @@ const flowsUrl = (u) => `/u/${u}/flows/`;
 const flowUrl = (u, id) => `/u/${u}/flow/${id}/`;
 const nodesUrl = (u) => `/u/${u}/nodes/`;
 const matrixUrl = (u) => `/u/${u}/matrix/`;
+// Up here with its siblings, not beside its page: `VIEW_LINKS` reads it at module
+// level now that the nav is links rather than closures, so a later `const` is a TDZ
+// error at header render — which is exactly what it was.
+const orphansUrl = (u) => `/u/${u}/orphans/`;
+const diffUrl = (u) => `/u/${u}/diff/`;
 const pipelineUrl = (u) => `/u/${u}/pipeline/`;
 const stateMapUrl = (u) => `/u/${u}/statemap/`;
 const REV_COLOR = { reviewed: '#7ee787', stale: '#f0a35e', unreviewed: '#3a4250' };
@@ -937,7 +942,7 @@ class CodemapHeader extends Component {
     return html`<header>
       <a class="brand" href="${href('/')}">codemap<span> · map browser</span></a>
       <div class="uni">${each(n.universes, u => html`<a class="${u.id === n.current ? 'active' : ''}" href="${href(dashUrl(u.id))}">${u.id}<span class="n">${u.anchors ?? '–'}</span></a>`)}</div>
-      ${each(VIEW_LINKS.filter(l => viewEnabled(cur, l[2])), l => html`<a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(l[1](u)); }}">${l[0]}</a>`, l => l[0])}
+      ${each(VIEW_LINKS.filter(l => viewEnabled(cur, l[2])), l => html`<a class="viewlink" href="${href(l[1](n.current || (n.universes[0] && n.universes[0].id) || ''))}">${l[0]}</a>`, l => l[0])}
       <div class="search"><input placeholder="search symbols & docs…" on-change="${(e, v) => this.search(e, v)}"></div>
       ${when(!!cur && !!cur.sidecar, () => html`${when(!!this.state.note, () => html`<span class="pullnote" title="${this.state.note}">${this.state.note}</span>`)}
         <button class="pullbtn" disabled="${this.state.pulling}"
@@ -1051,12 +1056,13 @@ class DashboardPage extends Component {
     const u = this.props.params.universe, d = this.state.d;
     // Same gating as the header's view bar (`viewEnabled`): the event-graph views
     // only appear once this universe has the nodes behind them.
-    /** @type {[label: string, act: () => void, gate?: string][]} */
-    /** @type {[label: string, act: () => void, gate?: string][]} */
+    // Same shape as the header's `VIEW_LINKS` now — a URL, not a closure — so both
+    // renderers are real links and neither builds a function per render.
+    /** @type {[label: string, url: string, gate?: string][]} */
     const navAll = [
-      ['nodes', () => go(nodesUrl(u))], ['matrix', () => go(matrixUrl(u)), 'matrix'], ['pipeline', () => go(pipelineUrl(u)), 'pipeline'],
-      ['states', () => go(stateMapUrl(u)), 'states'], ['flows', () => go(flowsUrl(u))], ['bugs', () => go(bugsUrl(u))], ['orphans', () => go(orphansUrl(u))], ['diff', () => go(diffUrl(u))], ['shared', () => go(`/u/${u}/shared/`)],
-      ['pull requests', () => go(prsUrl(u)), 'prs'], ['browse files', () => goTree(u, '')],
+      ['nodes', nodesUrl(u)], ['matrix', matrixUrl(u), 'matrix'], ['pipeline', pipelineUrl(u), 'pipeline'],
+      ['states', stateMapUrl(u), 'states'], ['flows', flowsUrl(u)], ['bugs', bugsUrl(u)], ['orphans', orphansUrl(u)],
+      ['pull requests', prsUrl(u), 'prs'], ['browse files', treeUrl(u, '')],
     ];
     const nav2 = navAll.filter(x => viewEnabled(d, x[2]));
     return pageShell(d, taskError(this.load), () => html`
@@ -1130,7 +1136,7 @@ class DashboardPage extends Component {
         </div>`, ln => ln.id)}`)}
 
       <div class="sec">explore</div>
-      <div class="dnav">${each(nav2, x => html`<button on-click="${x[1]}">${x[0]}</button>`, x => x[0])}</div>
+      <div class="dnav">${each(nav2, x => html`<a class="btnlike" href="${href(x[1])}">${x[0]}</a>`, x => x[0])}</div>
     `);
   }
 }
@@ -2535,7 +2541,6 @@ class BugsPage extends Component {
 }
 defineComponent('bugs-page', BugsPage);
 
-const orphansUrl = (u) => `/u/${u}/orphans/`;
 
 /**
  * What is pointing at code the working tree no longer has.
@@ -2751,7 +2756,6 @@ class SharedHubPage extends Component {
 }
 defineComponent('shared-hub-page', SharedHubPage);
 
-const diffUrl = (u) => `/u/${u}/diff/`;
 const DTAG = { '+': 'added', '-': 'removed', '~': 'changed' };
 
 /**
