@@ -11,7 +11,7 @@
  */
 
 import { Component, defineComponent, html, when, each } from './vendor/vdx/framework.js';
-import { api, apiPost, pageShell, nav, go, errText, taskError } from './app.js';
+import { api, apiPost, pageShell, nav, go, href, errText, taskError } from './app.js';
 
 /**
  * What a pending ask reads as on the row.
@@ -286,7 +286,7 @@ class SharedPage extends Component {
           <button on-click="${() => this.act('promote', { id: f.id })}">promote</button>
           <button on-click="${() => this.act('close', { id: f.id, state: 'resolved', reason: 'closed from the shared view' })}">resolve</button>
           <button on-click="${() => this.act('close', { id: f.id, state: 'refuted', reason: 'closed from the shared view' })}">refute</button>
-          ${when(!!f.bug, () => html`<button on-click="${() => go(`/u/${this.props.params.universe}/bugs/`, { bug: f.bug })}">open bug</button>`,
+          ${when(!!f.bug, () => html`<a class="btnlike" href="${href(`/u/${this.props.params.universe}/bugs/`, { bug: f.bug })}">open bug</a>`,
             () => html`<button title="keep this as a bug once the pull request closes"
               disabled="${this.state.busy === 'accept'}"
               on-click="${() => this.acceptAsBug(f.id)}">accept as bug</button>`)}

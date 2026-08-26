@@ -212,9 +212,29 @@ export const go = (path, query) => router.navigate(path, query);
  * `navigate()` builds its target with, so a link and a programmatic navigation cannot
  * drift on query encoding.
  */
-export const href = (path, query) => router.url(path, query);
+export const href = (path, query) => {
+  // The header renders at DEFINITION time, before `enableRouting` assigns `router` on
+  // the last line of this file — so unlike `go`, which only ever runs on a click, this
+  // is called with no router at all. Caught by the routes e2e as a render error on
+  // every page, which is what that suite exists for.
+  //
+  // The fallback builds the same string the router would: `#path?query`, with the same
+  // encoding `stringifyQuery` uses (`URLSearchParams`, empty values dropped). Kept in
+  // step by the assertion in `web-url.test`, not by hoping.
+  if (router) return router.url(path, query);
+  // Mirrors vdx's own `stringifyQuery` exactly: `encodeURIComponent`, and it drops only
+  // null/undefined. `URLSearchParams` would differ on both — it encodes a space as `+`
+  // and would have dropped empty strings.
+  const pairs = [];
+  for (const [k, v] of Object.entries(query ?? {})) {
+    if (v != null) pairs.push(`${encodeURIComponent(k)}=${encodeURIComponent(v)}`);
+  }
+  const qs = pairs.join('&');
+  return `#${qs ? `${path}?${qs}` : path}`;
+};
 const dashUrl = (u) => `/u/${u}/`;
-const goTree = (u, prefix) => router.navigate(`/u/${u}/tree/` + (prefix ? prefix + '/' : ''));
+const treeUrl = (u, prefix) => `/u/${u}/tree/` + (prefix ? prefix + '/' : '');
+const goTree = (u, prefix) => router.navigate(treeUrl(u, prefix));
 const anchorUrl = (u, id) => `/u/${u}/anchor/${id}/`;
 const nodeUrl = (u, id) => `/u/${u}/node/${id}/`;
 const nodeReviewUrl = (u, id) => `/u/${u}/node/${id}/review/`;
@@ -915,8 +935,8 @@ class CodemapHeader extends Component {
     const n = this.stores.nav;
     const cur = n.universes.find(x => x.id === n.current) || n.universes[0];
     return html`<header>
-      <div class="brand" on-click="${() => go('/')}">codemap<span> · map browser</span></div>
-      <div class="uni">${each(n.universes, u => html`<button class="${u.id === n.current ? 'active' : ''}" on-click="${() => go(dashUrl(u.id))}">${u.id}<span class="n">${u.anchors ?? '–'}</span></button>`)}</div>
+      <a class="brand" href="${href('/')}">codemap<span> · map browser</span></a>
+      <div class="uni">${each(n.universes, u => html`<a class="${u.id === n.current ? 'active' : ''}" href="${href(dashUrl(u.id))}">${u.id}<span class="n">${u.anchors ?? '–'}</span></a>`)}</div>
       ${each(VIEW_LINKS.filter(l => viewEnabled(cur, l[2])), l => html`<a class="viewlink" on-click="${() => { const u = n.current || (n.universes[0] && n.universes[0].id); if (u) go(l[1](u)); }}">${l[0]}</a>`, l => l[0])}
       <div class="search"><input placeholder="search symbols & docs…" on-change="${(e, v) => this.search(e, v)}"></div>
       ${when(!!cur && !!cur.sidecar, () => html`${when(!!this.state.note, () => html`<span class="pullnote" title="${this.state.note}">${this.state.note}</span>`)}
@@ -1044,11 +1064,11 @@ class DashboardPage extends Component {
       ${when(d.attention > 0, () => html`<div class="attn-banner">
         <span class="attn-n">⚠ ${d.attention}</span>
         <span>item${d.attention === 1 ? '' : 's'} need attention:</span>
-        ${when(d.docs.stale, () => html`<span class="attn-pill" on-click="${() => go(nodesUrl(u))}">${d.docs.stale} stale doc${d.docs.stale === 1 ? '' : 's'}</span>`)}
-        ${when(d.docs.dangling, () => html`<span class="attn-pill bad" on-click="${() => go(nodesUrl(u))}">${d.docs.dangling} dangling</span>`)}
-        ${when(d.bugs.possiblyFixed, () => html`<span class="attn-pill" on-click="${() => go(bugsUrl(u), { status: 'open' })}">${d.bugs.possiblyFixed} bug${d.bugs.possiblyFixed === 1 ? '' : 's'} possibly fixed</span>`)}
+        ${when(d.docs.stale, () => html`<a class="attn-pill" href="${href(nodesUrl(u))}">${d.docs.stale} stale doc${d.docs.stale === 1 ? '' : 's'}</a>`)}
+        ${when(d.docs.dangling, () => html`<a class="attn-pill bad" href="${href(nodesUrl(u))}">${d.docs.dangling} dangling</a>`)}
+        ${when(d.bugs.possiblyFixed, () => html`<a class="attn-pill" href="${href(bugsUrl(u), { status: 'open' })}">${d.bugs.possiblyFixed} bug${d.bugs.possiblyFixed === 1 ? '' : 's'} possibly fixed</a>`)}
         ${when(d.reverted, () => html`<span class="attn-pill bad" title="code moved BACK to a body signed before it was superseded here — the tick still reads green, and probably should not">${d.reverted} approval${d.reverted === 1 ? '' : 's'} on reverted code</span>`)}
-        ${when(d.tripwires && d.tripwires.fired.length, () => html`<span class="attn-pill bad" title="business-critical code you're watching changed" on-click="${() => go(nodesUrl(u))}">🔔 ${d.tripwires.fired.length} tripwire${d.tripwires.fired.length === 1 ? '' : 's'} fired</span>`)}
+        ${when(d.tripwires && d.tripwires.fired.length, () => html`<a class="attn-pill bad" title="business-critical code you're watching changed" href="${href(nodesUrl(u))}">🔔 ${d.tripwires.fired.length} tripwire${d.tripwires.fired.length === 1 ? '' : 's'} fired</a>`)}
         ${when(d.openQuestions, () => html`<span class="attn-pill q">${d.openQuestions} open question${d.openQuestions === 1 ? '' : 's'}</span>`)}
         <span class="attn-hint">re-validate via <code>check_stale</code> / the bugs tab</span>
       </div>`, () => html`<div class="attn-banner ok"><span class="attn-n">✓</span> <span>${d.bugs.unverifiable
@@ -1065,7 +1085,7 @@ class DashboardPage extends Component {
             ${this.stat('open anchors', d.coverage.open, 'the work queue')}
             ${this.stat('doc nodes', d.coverage.nodes)}
           </div>
-          <div class="dclink" on-click="${() => go(nodesUrl(u))}">browse nodes ›</div>
+          <a class="dclink" href="${href(nodesUrl(u))}">browse nodes ›</a>
         </div>
         <div class="dcard">
           <div class="dch">docs health</div>
@@ -1083,7 +1103,7 @@ class DashboardPage extends Component {
             ${when(d.bugs.unverifiable, () => this.stat("can't check", d.bugs.unverifiable, 'ids from another build'))}
             ${this.stat('total', d.bugs.total)}
           </div>
-          <div class="dclink" on-click="${() => go(bugsUrl(u))}">triage bugs ›</div>
+          <a class="dclink" href="${href(bugsUrl(u))}">triage bugs ›</a>
         </div>
         <div class="dcard">
           <div class="dch">map</div>
@@ -1098,14 +1118,14 @@ class DashboardPage extends Component {
 
       ${when(this.state.q && this.state.q.questions && this.state.q.questions.length, () => html`<div class="sec">open questions (${this.state.q.open}) <span class="dim">— left during review; answer by improving the doc, then resolve</span></div>
         ${each(this.state.q.questions, qn => html`<div class="dq ${qn.resolved ? 'resolved' : ''}">
-          <div class="dqh"><span class="qbadge">${qn.target.kind}</span> <span class="dqt" on-click="${() => go(this.qTarget(qn.target))}">${qn.targetLabel}</span> <span class="dim">${qn.author}</span>
+          <div class="dqh"><span class="qbadge">${qn.target.kind}</span> <a class="dqt" href="${href(this.qTarget(qn.target))}">${qn.targetLabel}</a> <span class="dim">${qn.author}</span>
             <button class="annores" on-click="${() => this.resolveQ(qn.id)}">${qn.resolved ? 'reopen' : 'resolve'}</button></div>
           <md-content text="${qn.text}"></md-content>
         </div>`, qn => qn.id)}`)}
 
       ${when(this.state.lint && this.state.lint.count, () => html`<div class="sec">summary-drift candidates (${this.state.lint.count}) <span class="dim">— summary asserts an absolute the body qualifies; re-read the body, bound the summary if it over-reaches</span></div>
         ${each(this.state.lint.candidates, ln => html`<div class="dq drift">
-          <div class="dqh"><span class="qbadge drift" title="summary says “${ln.absolute}”, body says “${ln.qualifier}”">“${ln.absolute}” vs “${ln.qualifier}”</span> <span class="dqt" on-click="${() => go(nodeUrl(u, ln.id))}">${ln.title}</span></div>
+          <div class="dqh"><span class="qbadge drift" title="summary says “${ln.absolute}”, body says “${ln.qualifier}”">“${ln.absolute}” vs “${ln.qualifier}”</span> <a class="dqt" href="${href(nodeUrl(u, ln.id))}">${ln.title}</a></div>
           <div class="dim" style="font-size:12.5px">${ln.summary}</div>
         </div>`, ln => ln.id)}`)}
 
@@ -1152,20 +1172,20 @@ class OutlinePage extends Component {
     return html`<div>
       <div class="rlegend"><span class="k"><span class="mini"></span>review heat — top: logical · bottom: code (green reviewed, amber stale) · hatched coverage = swept in by a <code>cover</code> selector, not cited by a doc</span></div>
       <div class="rows">${each(d.children, c => html`
-        <div class="row" on-click="${() => goTree(u, c.path)}">
+        <a class="row" href="${href(treeUrl(u, c.path))}">
           <span class="ico">${KICON[c.kind]}</span>
           <span class="name ${c.kind}">${c.name}</span>
           <span class="bar" title="${c.docPct}% documented — ${c.cited ?? '?'} cited, ${c.covered ?? '?'} covered by selector, ${c.open} open"><i style="width:${c.docPct}%;background:${barColor(c.docPct)}"></i>${when(c.citedPct !== undefined && c.citedPct < c.docPct, () => html`<b class="swept" style="left:${c.citedPct}%;width:${c.docPct - c.citedPct}%"></b>`)}</span>
           ${reviewHeat(c.review)}
           <span class="muted">${c.anchors} anc</span>
           <span class="muted">${c.nodes ? c.nodes + ' doc' : ''}${c.bugs ? ' · ' + c.bugs + '🐞' : ''}</span>
-        </div>`)}</div>
+        </a>`)}</div>
     </div>`;
   }
   template() {
     const u = this.props.params.universe, d = this.state.data;
     return html`<main>
-      <div class="crumbs">${each(this.crumbs(), c => html`${when(c.sep, () => html`<span class="sep">/</span>`)}<a on-click="${() => goTree(u, c.prefix)}">${c.label}</a>`)}</div>
+      <div class="crumbs">${each(this.crumbs(), c => html`${when(c.sep, () => html`<span class="sep">/</span>`)}<a href="${href(treeUrl(u, c.prefix))}">${c.label}</a>`)}</div>
       ${when(this.load.pending, () => html`<div class="loading">loading…</div>`, () => d ? this.body(d, u) : '')}
     </main>`;
   }
@@ -1214,12 +1234,12 @@ class AnchorPage extends Component {
     const err = taskError(this.load) ?? (isErr(a) ? a.error : null);
     if (err || !a || isErr(a)) return pageShell(null, err, html``);
     return pageShell(a, null, () => html`<div class="detail">
-      <div class="back" on-click="${() => goTree(u, a.file)}">← ${a.file}</div>
+      <a class="back" href="${href(treeUrl(u, a.file))}">← ${a.file}</a>
       <h2>${a.symbol}</h2>
       <div class="meta">${a.kind} · ${a.file}:${a.lines} · ${a.present ? 'present' : 'not found (lost)'}</div>
       <div style="margin:8px 0">${reviewRowEl(a.review, a.viewed, (att, st, actor, via) => this.mark(att, st, actor, via))}</div>
       <div style="margin:8px 0">${triageRowEl(a.triage, (imp) => this.triage(imp), (on) => this.armTripwire(on))}</div>
-      ${when(a.citedBy && a.citedBy.length, () => html`<div class="sec">documented by</div><div class="chips">${each(a.citedBy, n => html`<span class="chip" on-click="${() => go(nodeUrl(u, n.id))}">${n.title || n.id}</span>`)}</div>`)}
+      ${when(a.citedBy && a.citedBy.length, () => html`<div class="sec">documented by</div><div class="chips">${each(a.citedBy, n => html`<a class="chip" href="${href(nodeUrl(u, n.id))}">${n.title || n.id}</a>`)}</div>`)}
       ${when(a.bugs && a.bugs.length, () => html`<div class="sec">bugs</div><div class="chips">${each(a.bugs, b => html`<span class="chip">${b.state} · ${b.title}</span>`)}</div>`)}
       ${when(a.findings && a.findings.length, () => html`
         <div class="sec">findings on this symbol</div>
@@ -1296,10 +1316,10 @@ class NodePage extends Component {
     return pageShell(n, taskError(this.load) ?? (n && n.error), () => {
     const cr = deriveCode(n.resolvedAnchors);
     return html`<div class="detail">
-      <div class="meta">${n.type}${n.universe ? ' · ' + n.universe : ''} · ${n.id} ${statusChip(n.status)}${trustChip(n.trust)}${sevChip(n.triage)}${divergeChip(n.triage)}<span class="viewlink" on-click="${() => go(graphUrl(u, n.id))}">◆ graph</span></div>
+      <div class="meta">${n.type}${n.universe ? ' · ' + n.universe : ''} · ${n.id} ${statusChip(n.status)}${trustChip(n.trust)}${sevChip(n.triage)}${divergeChip(n.triage)}<a class="viewlink" href="${href(graphUrl(u, n.id))}">◆ graph</a></div>
       <h2>${n.title}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions (forked across branches)">⑂${n.versionCount}</span>`)}</h2>
       <div style="margin:6px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="dim" style="font-size:12px">doc sign-off:</span>${reviewRowEl(n.review, n.viewed, (att, st, actor, via) => this.signNode(att, st, actor, via), 'logical')}<span class="dim" style="font-size:12px">— vouches for the doc, not its code</span></div>
-      <div style="margin:6px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">${codeRollupEl(cr)}${when(cr.total, () => html`<button on-click="${() => go(nodeReviewUrl(u, n.id))}">open code review →</button>`)}</div>
+      <div style="margin:6px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">${codeRollupEl(cr)}${when(cr.total, () => html`<a class="btnlike" href="${href(nodeReviewUrl(u, n.id))}">open code review →</a>`)}</div>
       <div style="margin:6px 0">${triageRowEl(n.triage, (imp) => this.triageNode(imp), (on) => this.armTripwireNode(on))}</div>
       ${when(n.status === 'stale', () => html`<div class="vaction"><span>This doc cites code that changed since it was written.</span> <button on-click="${() => this.confirm()}">confirm still accurate</button> <span class="dim">— or edit it (forks a new version).</span></div>`)}
       ${when(n.status === 'unverifiable', () => html`<div class="vaction"><span>Whether the code changed since this was written cannot be decided here — it is not a claim that anything drifted. Either it was confirmed under an older hashing scheme, or it cites anchor ids a different build derived.</span> <button on-click="${() => this.confirm()}">confirm at the current code</button> <span class="dim">— which clears the first cause. For the second there is no live hash to add: re-document it against the symbols you have.</span></div>`)}
@@ -1309,7 +1329,7 @@ class NodePage extends Component {
       <div class="sec">referenced code (${(n.resolvedAnchors || []).length})${when(cr.total, () => html` — <span class="dim">${cr.signed}/${cr.total} signed${cr.stale ? ' · ' + cr.stale + ' stale' : ''}</span>`)} <span class="dim" style="font-weight:400">— read &amp; sign each segment to complete the node's code review</span></div>
       ${each(n.resolvedAnchors ?? [], a => this.anchorReviewRow(a, u), a => a.id)}
       ${when(n.edges && n.edges.length, () => html`<div class="sec">edges</div><div class="chips">${each(n.edges, e => html`<span class="chip" on-click="${() => e.toRef && go(nodeUrl(e.toRef.universe, e.toRef.id))}">${e.type}: ${e.toRef ? e.toRef.universe + '::' + (e.toRef.title || e.toRef.id) : e.to}</span>`)}</div>`)}
-      ${when(n.inboundCrossUniverse && n.inboundCrossUniverse.length, () => html`<div class="sec">called by (other universes)</div><div class="chips">${each(n.inboundCrossUniverse, i => html`<span class="chip" on-click="${() => go(nodeUrl(i.fromUniverse, i.from))}">${i.fromUniverse}::${i.from} (${i.type})</span>`)}</div>`)}
+      ${when(n.inboundCrossUniverse && n.inboundCrossUniverse.length, () => html`<div class="sec">called by (other universes)</div><div class="chips">${each(n.inboundCrossUniverse, i => html`<a class="chip" href="${href(nodeUrl(i.fromUniverse, i.from))}">${i.fromUniverse}::${i.from} (${i.type})</a>`)}</div>`)}
       ${when(versions && versions.length > 1, () => html`<div class="sec">versions (${versions.length}) — the one matching this branch wins</div>
         ${each(versions, v => html`<div class="nver ${v.status}"><span class="stchip ${v.status}">${v.status}</span> <span class="nvbranch">${v.createdBranch || '(?)'} @ ${(v.createdCommit || '').slice(0, 8) || '—'}</span> <span class="dim">${v.removed ? '(tombstone)' : v.title}</span></div>`, v => v.versionId)}`)}
       ${annoThread(this, u, 'node', n.id, n.annotations)}
@@ -1437,7 +1457,7 @@ class NodeReviewPage extends Component {
       const shown = this.state.hideSigned ? segs.filter(s => !this.isDone(s) || openFindingCount(s.annotations) > 0) : segs;
       const pct = cr.total ? Math.round(cr.signed / cr.total * 100) : 0;
       return html`
-        <div class="crumbs"><a on-click="${() => go(nodeUrl(u, d.id))}">← ${d.title}</a> <span class="sep">·</span> code review</div>
+        <div class="crumbs"><a href="${href(nodeUrl(u, d.id))}">← ${d.title}</a> <span class="sep">·</span> code review</div>
         <div class="rvbar">
           <b style="color:${cr.stale || cr.unverifiable ? '#f0a35e' : pct === 100 ? '#7ee787' : '#8b949e'}">${codeMark(cr)}</b>
           <span>${cr.signed}/${cr.total} segment${cr.total === 1 ? '' : 's'} signed${cr.stale ? ` · ${cr.stale} stale` : ''}${cr.unverifiable ? ` · ${cr.unverifiable} unverifiable` : ''}</span>
@@ -1488,8 +1508,8 @@ class SearchPage extends Component {
   group(g) {
     const u = g.universe, hits = (g.nodes?.length || 0) + (g.anchors?.length || 0);
     return html`<div class="detail" style="margin-bottom:12px">
-      <div class="dch"><span class="uref" on-click="${() => go(dashUrl(u))}">${u}</span> <span class="dim">· ${hits} hit${hits === 1 ? '' : 's'}</span></div>
-      ${when(g.nodes && g.nodes.length, () => html`<div class="sec">nodes</div><div class="chips">${each(g.nodes, n => html`<span class="chip" on-click="${() => go(nodeUrl(u, n.id))}">${n.title || n.id}</span>`, n => n.id)}</div>`)}
+      <div class="dch"><a class="uref" href="${href(dashUrl(u))}">${u}</a> <span class="dim">· ${hits} hit${hits === 1 ? '' : 's'}</span></div>
+      ${when(g.nodes && g.nodes.length, () => html`<div class="sec">nodes</div><div class="chips">${each(g.nodes, n => html`<a class="chip" href="${href(nodeUrl(u, n.id))}">${n.title || n.id}</a>`, n => n.id)}</div>`)}
       ${when(g.anchors && g.anchors.length, () => html`<div class="sec">anchors</div><div class="rows">${each(g.anchors, a => html`<a class="sym" href="${href(anchorUrl(u, a.id))}"><span class="k">${a.kind}</span><span>${a.symbol}</span><span class="muted">${a.file}</span></a>`, a => a.id)}</div>`)}
       ${when(!hits, () => html`<div class="dim" style="padding:4px 0">no matches</div>`)}
     </div>`;
@@ -1497,7 +1517,7 @@ class SearchPage extends Component {
   template() {
     const u = this.props.params.universe, groups = this.state.groups, multi = (this.stores.nav.universes || []).length > 1;
     return html`<main>
-      <div class="crumbs"><a on-click="${() => go(dashUrl(u))}">${u}</a> <span class="sep">/</span> search: ${this.props.query.q || ''}</div>
+      <div class="crumbs"><a href="${href(dashUrl(u))}">${u}</a> <span class="sep">/</span> search: ${this.props.query.q || ''}</div>
       ${when(multi, () => html`<div class="dtoggle"><span class="dim">scope</span>
         <button class="${this.scope() === 'all' ? 'on' : ''}" on-click="${() => this.setScope('all')}">all universes</button>
         <button class="${this.scope() === 'one' ? 'on' : ''}" on-click="${() => this.setScope('one')}">${u} only</button>
@@ -1669,7 +1689,7 @@ class GraphPage extends Component {
       <rect x="${-hw}" y="-9" width="${w}" height="18" rx="9"></rect><text x="0" y="4">${t}</text>${when(n.hidden > 0, () => html`<circle class="more" cx="${hw}" cy="-9" r="6"></circle><text class="morec" x="${hw}" y="-6">${n.hidden}</text>`)}
     </g>`; };
     return html`<main class="wide">
-      <div class="crumbs"><a on-click="${() => go(nodeUrl(u, this.props.params.id))}">← detail</a> <span class="sep">·</span> graph explorer <span class="dim">· ${d.nodes.length} nodes</span></div>
+      <div class="crumbs"><a href="${href(nodeUrl(u, this.props.params.id))}">← detail</a> <span class="sep">·</span> graph explorer <span class="dim">· ${d.nodes.length} nodes</span></div>
       <div class="gtools">
         <span class="gfl">edges:</span>${each(d.edgeTypes, (t) => html`<span class="gchip ${this._hidden.edge.has(t) ? 'off' : ''}" style="border-color:${edgeColor(t)}" on-click="${(e) => this.toggleFilter('edge', t, e)}">${t}</span>`, (t) => 'e' + t)}
         <span class="gfl">nodes:</span>${each(d.nodeTypes, (t) => html`<span class="gchip ${this._hidden.node.has(t) ? 'off' : ''}" style="border-color:${nodeColor(t)}" on-click="${(e) => this.toggleFilter('node', t, e)}">${t}</span>`, (t) => 'n' + t)}
@@ -1711,7 +1731,7 @@ class FlowsPage extends Component {
     return pageShell(d, taskError(this.load), () => html`
       <div class="crumbs">${u} <span class="sep">·</span> flows (${d.flows.length})</div>
       ${when(!d.flows.length, () => html`<div class="empty">no flows (process nodes) documented in this universe yet</div>`)}
-      ${each(d.flows, (f) => html`<div class="flow-card" on-click="${() => go(flowUrl(u, f.id))}">
+      ${each(d.flows, (f) => html`<a class="flow-card" href="${href(flowUrl(u, f.id))}">
         <div class="ft">${f.title} <span class="n">${f.steps} step${f.steps === 1 ? '' : 's'}</span></div>
         <div class="fs">${f.summary}</div>
         <div class="progress">
@@ -1719,7 +1739,7 @@ class FlowsPage extends Component {
           <span><span class="rev-dot" style="background:${revColorA(f.review && f.review.code)}"></span>code</span>
           <span>steps: ${f.stepReview.logical}/${f.stepReview.total} logical · ${f.stepReview.code}/${f.stepReview.total} code${f.stepReview.stale ? ' · ' + f.stepReview.stale + ' ⚠' : ''}</span>
         </div>
-      </div>`, (f) => f.id)}
+      </a>`, (f) => f.id)}
     `);
   }
 }
@@ -1793,7 +1813,7 @@ class FlowPage extends Component {
     // steps aren't "changed since you looked", so the filter leaves them out.
     const steps = this.state.onlyChanged ? d.steps.filter((s) => s.changed && (s.changed.signed || s.changed.viewed)) : d.steps;
     return html`
-      <div class="crumbs"><a on-click="${() => go(flowsUrl(u))}">← flows</a> <span class="sep">·</span> ${d.title}</div>
+      <div class="crumbs"><a href="${href(flowsUrl(u))}">← flows</a> <span class="sep">·</span> ${d.title}</div>
       ${when(nChanged > 0, () => html`<div class="diff-banner" style="margin:10px 0;padding:8px 12px;border-left:3px solid #f0a35e;background:#2a2016;border-radius:4px">
         ⟳ <b>${ch.signed.length}</b> step${ch.signed.length === 1 ? '' : 's'} changed since you signed${when(ch.viewed.length > 0, () => html` · <b>${ch.viewed.length}</b> since you viewed`)} — re-review just these.
         <button style="margin-left:10px" on-click="${() => this.setOnlyChanged(!this.state.onlyChanged)}">${this.state.onlyChanged ? 'show all steps' : 'show only changed'}</button>
@@ -1807,7 +1827,7 @@ class FlowPage extends Component {
         <div class="shead"><span class="num">${s.order + 1}</span><span class="stitle">${s.title}</span>${when(s.changed && s.changed.signed, () => html`<span class="badge" title="a mark you signed here went stale" style="color:#f0a35e;font-size:12px">⚠ changed since signed</span>`)}${when(s.changed && !s.changed.signed && s.changed.viewed, () => html`<span class="badge" title="a mark you viewed here went stale" style="color:#f0a35e;font-size:12px">⚠ changed since viewed</span>`)}${this.revBtns('node', s.id, s.review, s.viewed, s.codeReview)}</div>
         <div class="sbody">
           <md-content text="${s.summary}"></md-content>
-          ${when(s.touches && s.touches.length, () => html`<div class="chips">${each(s.touches, (t) => html`<span class="chip" on-click="${() => go(nodeUrl(u, t.id))}">↳ ${t.title}</span>`, (t) => t.id)}</div>`)}
+          ${when(s.touches && s.touches.length, () => html`<div class="chips">${each(s.touches, (t) => html`<a class="chip" href="${href(nodeUrl(u, t.id))}">↳ ${t.title}</a>`, (t) => t.id)}</div>`)}
           ${each(s.anchors, (a) => this.codeBlock(a), (a) => a.id)}
         </div>
       </div>`, (s) => s.id)}
@@ -1889,7 +1909,7 @@ class NodeCatalogPage extends Component {
   nodeRow(n, u) {
     return html`<div class="nrow" on-click="${() => go(nodeUrl(u, n.id))}">
       <span class="nt" style="border-color:${nodeColor(n.type)}">${n.type}</span>
-      <span class="ntitle">${n.title || n.id}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions (forked)">⑂${n.versionCount}</span>`)}</span>
+      <a class="ntitle" href="${href(nodeUrl(u, n.id))}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">${n.title || n.id}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions (forked)">⑂${n.versionCount}</a>`)}</span>
       ${statusChip(n.status)}${trustChip(n.trust, (act) => this.verify(n.id, act))}${sevChip(n.triage)}${divergeChip(n.triage)}
       <span class="ndom">${n.domain}</span>
       <span class="nmeta">${n.anchors}a · ${n.edgesIn}↓${n.edgesOut}↑</span>
@@ -1924,7 +1944,7 @@ class NodeCatalogPage extends Component {
       ${when(d.coverage, () => html`<div style="margin:4px 0 8px">${coverageBar(d.coverage)}</div>`)}
       ${when(this.state.tw && this.state.tw.fired && this.state.tw.fired.length, () => html`<div class="diff-banner" style="margin:6px 0;padding:8px 12px;border-left:3px solid #f85149;background:#2a1618;border-radius:4px">
         🔔 <b>${this.state.tw.fired.length}</b> tripwire${this.state.tw.fired.length === 1 ? '' : 's'} fired — business-critical code you're watching has changed:
-        ${each(this.state.tw.fired, f => html` <span class="chip" on-click="${() => go(f.target.kind === 'anchor' ? anchorUrl(u, f.target.id) : nodeUrl(u, f.target.id))}">${f.target.id.slice(0, 14)}</span>`, f => f.target.kind + f.target.id)}
+        ${each(this.state.tw.fired, f => html` <a class="chip" href="${href(f.target.kind === 'anchor' ? anchorUrl(u, f.target.id) : nodeUrl(u, f.target.id))}">${f.target.id.slice(0, 14)}</a>`, f => f.target.kind + f.target.id)}
       </div>`)}
       <div class="ncount">${todo ? `${outstanding} outstanding, ranked by priority` : `${list.length} shown`} <button style="margin-left:10px" title="graph-derive likely stakes across the map (safe: only proposals a human confirms)" on-click="${() => this.deriveStakes()}">⚙ derive stakes</button></div>
       ${when(todo,
@@ -1996,11 +2016,11 @@ class MatrixPage extends Component {
       <div class="mwrap">
         <div class="mhead">
           <span class="mev">event <em>· domain · emitters↑</em></span>
-          ${each(d.sinks, s => html`<span class="msink ${s.type}" on-click="${() => go(nodeUrl(u, s.id))}" title="${s.title} (${s.type})">${s.title}</span>`, s => s.id)}
+          ${each(d.sinks, s => html`<a class="msink ${s.type}" href="${href(nodeUrl(u, s.id))}" title="${s.title} (${s.type})">${s.title}</a>`, s => s.id)}
           <span class="mrevh">review</span>
         </div>
         ${each(rows, e => html`<div class="mrow ${isOrphan(e) ? 'orphan' : ''} ${pendingAnalyzer(e) !== null ? 'pending-analyzer' : ''}" title="${pendingAnalyzer(e) !== null ? `nothing here folds or projects this — but its wiring is analyzer output${pendingAnalyzer(e) ? ` (${pendingAnalyzer(e)})` : ''}, which never travels between clones because every clone regenerates it. Run the analyzer to resolve it.` : ''}">
-          <span class="mev" on-click="${() => go(nodeUrl(u, e.id))}"><b>${e.title}</b><small>${e.domain} · ${e.emitters}↑</small></span>
+          <a class="mev" href="${href(nodeUrl(u, e.id))}"><b>${e.title}</b><small>${e.domain} · ${e.emitters}↑</small></a>
           ${each(d.sinks, s => html`<span class="mcell">${when(e.cells[s.id], () => html`<i class="cdot ${e.cells[s.id]}" title="${e.cells[s.id]}"></i>`)}</span>`, s => s.id)}
           <span class="mrevh"><span class="nrev">${this.revBtn(e.id, 'logical', e.review.logical, e.reviewBy && e.reviewBy.logical, e.reviewVia && e.reviewVia.logical)}${codeCellBtn(e.codeReview, () => go(nodeUrl(u, e.id)))}</span></span>
         </div>`, e => e.id)}
@@ -2439,7 +2459,7 @@ class BugsPage extends Component {
     return html`<div class="ddetail">
       <div class="dsymhead"><span class="sevdot" style="background:${SEV_COLOR[b.severity] || SEV_COLOR.medium}"></span> <b>${b.title}</b> <span class="bchip ${b.state}">${b.state}</span>${when(b.possiblyFixed, () => html`<span class="bchip poss">possibly fixed</span>`)}</div>
       <div class="meta">${b.severity} · ${b.id}${b.createdCommit ? ' · filed @ ' + b.createdCommit.slice(0, 8) : ''}${b.shared ? ' · shared' : ' · local only'}${b.filedAt && !unknownAt(b.filedAt) ? ' · originally ' + b.filedAt.slice(0, 10) : ''}</div>
-      ${when(!!b.from, () => html`<div class="meta">accepted from finding ${b.from.finding} on <span class="lk" on-click="${() => go(`/u/${u}/pr/${b.from.pr}/`)}">PR ${b.from.pr}</span></div>`)}
+      ${when(!!b.from, () => html`<div class="meta">accepted from finding ${b.from.finding} on <a class="lk" href="${href(`/u/${u}/pr/${b.from.pr}/`)}">PR ${b.from.pr}</a></div>`)}
       ${when(!!b.pending, () => html`<div class="attn-banner"><span>${b.pending.by} asked to <b>${b.pending.ask}</b>: ${b.pending.rationale}</span></div>`)}
       <div class="drev">
         <span class="dim">state:</span>
@@ -2692,19 +2712,19 @@ class SharedHubPage extends Component {
         <div class="hubhead">
           <div><span class="dim">sidecar</span> <code>${ok.sidecar}</code></div>
           <div><span class="dim">you</span> ${ok.you || '—'} <span class="sep">·</span>
-            <span class="dim">team</span> ${(ok.peers || []).length} <a on-click="${() => go(`/u/${u}/shared/0/peers/`)}">peers ›</a></div>
+            <span class="dim">team</span> ${(ok.peers || []).length} <a href="${href(`/u/${u}/shared/0/peers/`)}">peers ›</a></div>
           <button disabled="${!!this.state.busy}" on-click="${() => this.act('sync', 'sync')}">${this.state.busy === 'sync' ? 'syncing…' : 'sync now'}</button>
         </div>
 
         ${when(!!(ok.prs && ok.prs.length), () => html`
           <div class="hubsec">pull requests with findings</div>
-          ${each(ok.prs, p => html`<div class="hubpr" on-click="${() => go(`/u/${u}/shared/${p.pr}/`)}">
+          ${each(ok.prs, p => html`<a class="hubpr" href="${href(`/u/${u}/shared/${p.pr}/`)}">
             <b>PR ${p.pr}</b>
             <span class="dim">${p.total} finding${p.total === 1 ? '' : 's'}</span>
             ${when(!!p.waiting, () => html`<span class="warn">${p.waiting} waiting on a person</span>`)}
             ${when(!!p.unshared, () => html`<span class="dim" title="filed here and not sent to the team">${p.unshared} not shared</span>`)}
             <span class="hubgo">›</span>
-          </div>`, p => p.pr)}`)}
+          </a>`, p => p.pr)}`)}
 
         ${when(ok.blocked && ok.blocked.length, () => html`<div class="hubblocked">
           <b class="bad">${ok.blocked.length} scope(s) cannot be read</b>
@@ -2878,13 +2898,13 @@ class DiffPage extends Component {
   bugRow(bug) {
     const u = this.props.params.universe, bi = this.briefIndex();
     return html`<div class="dbug ${bug.possiblyFixed ? 'poss' : ''}">
-      <div class="dbugh" on-click="${() => go(bugsUrl(u), { bug: bug.id })}">
+      <a class="dbugh" href="${href(bugsUrl(u), { bug: bug.id })}">
         <span class="sevdot" style="background:${SEV_COLOR[bug.severity] || SEV_COLOR.medium}" title="severity: ${bug.severity}"></span>
         <span class="dbugt">${bug.title}</span>
         ${when(bug.possiblyFixed, () => html`<span class="bchip poss" title="open bug on code that changed — this diff may fix it">possibly fixed</span>`)}
         ${when(bug.removed, () => html`<span class="bchip changed" title="cited code was removed in this diff">code removed</span>`)}
         <span class="bchip ${bug.status}">${bug.status}</span>
-      </div>
+      </a>
       <div class="chips">${each(bug.anchors, aid => { const b = bi.get(aid); const s = this.state.sel && this.state.sel.id === aid; return html`<span class="chip mini ${s ? 'sel' : ''}" on-click="${() => this.openCodeById(aid)}">${b ? b.symbol : aid.slice(0, 10)}</span>`; }, aid => aid)}</div>
     </div>`;
   }
@@ -2900,7 +2920,7 @@ class DiffPage extends Component {
     const u = this.props.params.universe, n = this.state.selDoc, dd = this.state.docDiff;
     return html`<div class="ddetail">
       <div class="dsymhead">📄 <b>${n.title || n.id}</b> ${statusChip(n.status)}${when(n.versionCount > 1, () => html`<span class="vfork">⑂${n.versionCount}</span>`)}</div>
-      <div class="meta"><span class="viewlink" on-click="${() => go(nodeUrl(u, n.id))}">open doc ›</span></div>
+      <div class="meta"><a class="viewlink" href="${href(nodeUrl(u, n.id))}">open doc ›</a></div>
       <div class="drev">${this.docActions(n)}</div>
       ${when(this.state.docPending, () => html`<div class="loading">loading…</div>`)}
       ${when(dd && dd.forked, () => html`<div class="sec">doc changes · ${dd.base.branch || 'base'} → ${dd.head.branch || 'head'} <span class="viewlink" on-click="${() => this.openModal()}">⛶ side-by-side</span></div>
@@ -2975,7 +2995,7 @@ class DiffPage extends Component {
           <div class="dleft">
             ${when(d.impact.flows.length, () => html`<div class="sec">flows changed (${d.impact.flows.length})</div>
               ${each(d.impact.flows, f => html`<div class="dflow">
-                <div class="dflowt" on-click="${() => go(flowUrl(u, f.id))}">⇒ ${f.title}</div>
+                <a class="dflowt" href="${href(flowUrl(u, f.id))}">⇒ ${f.title}</a>
                 ${each(f.steps, s => html`<div class="dstep"><span class="stn">${s.title}</span>
                   <span class="chips">${each(s.anchors, aid => html`<span class="chip mini" on-click="${() => this.openCodeById(aid)}">${aid.slice(0, 10)}</span>`, aid => aid)}</span>
                 </div>`, s => s.id)}
@@ -3022,7 +3042,7 @@ class DiffPage extends Component {
     const u = this.props.params.universe, d = this.state.diff, bf = this.byFile(d);
     if (!bf.length) return html`<div class="dim" style="padding:8px 2px">no symbol-level changes</div>`;
     return html`${each(bf, g => html`<div class="dfile">
-      <div class="dfileh" on-click="${() => goTree(u, g.file)}">${g.file} <span class="dim">${g.items.length}</span></div>
+      <a class="dfileh" href="${href(treeUrl(u, g.file))}">${g.file} <span class="dim">${g.items.length}</span></a>
       ${each(g.items, b => this.symRow(b), b => b.id + b.tag)}
     </div>`, g => g.file)}`;
   }
@@ -4362,14 +4382,14 @@ class PrInboxPage extends Component {
     return pageShell(d, null, html`
       <div class="crumbs"><b>${u}</b> <span class="sep">·</span> pull requests <span class="dim">· ${d.prs.length} open</span></div>
       ${when(!d.prs.length, () => html`<div class="dim">no open pull requests.</div>`)}
-      ${each(d.prs, p => html`<div class="prrow" on-click="${() => go(prUrl(u, p.number))}">
+      ${each(d.prs, p => html`<a class="prrow" href="${href(prUrl(u, p.number))}">
         <span class="prnum">#${p.number}</span>
         <span class="prtitle">${p.title}</span>
         ${when(p.draft, () => html`<span class="prbadge orphan">draft</span>`)}
         <span class="dim prmeta">${p.author}</span>
         <span class="dim prmeta">${p.headRef} → ${p.baseRef}</span>
         <span class="prsize" title="${p.changedFiles} files changed"><span class="pradd">+${p.additions}</span> <span class="prdel">−${p.deletions}</span></span>
-      </div>`, p => p.number)}
+      </a>`, p => p.number)}
     `);
   }
 }
