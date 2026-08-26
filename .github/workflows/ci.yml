@@ -4,6 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Run it by hand, on any ref. Added after an Actions outage swallowed the trigger
+  # for a pull request: GitHub created no run at all, and the web UI offers no retry
+  # for a run that does not exist — so the only ways back were a fresh commit or
+  # closing and reopening the PR. `workflow_dispatch` is usable from the Actions tab
+  # and from `gh workflow run ci.yml --ref <branch>`, but ONLY once this file is on
+  # the default branch, which is why it is worth having before the next outage.
+  workflow_dispatch:
 
 # A push on top of a push should not leave the older run burning a Windows
 # runner for a commit nobody will look at.
