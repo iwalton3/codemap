@@ -382,7 +382,11 @@ test("a symbol this build minted, now absent, is still real drift", () => {
  * `none`, which is the red tick. See docs/anchor-id-provenance.md §6.
  */
 test("a mark whose accepted ids came from another build reads unverifiable, not stale", async () => {
-  const { mkdtempSync: mk, rmSync: rm } = await import("node:fs");
+  const { mkdtempSync: mk } = await import("node:fs");
+  // `discard`, not a bare `rm`: this test writes a store, and Windows will not delete
+  // a directory holding an open `codemap.db`. The aliased import is why the sweep in
+  // this commit missed it — the pattern was `rmSync(`, and this reads `rm(`.
+  const { discard } = await import("./test-tmp.js");
   const { tmpdir: td } = await import("node:os");
   const { join: jn } = await import("node:path");
   const { writeReviews } = await import("./store.js");
@@ -414,5 +418,5 @@ test("a mark whose accepted ids came from another build reads unverifiable, not 
     await writeReviews(root, [mark(hashTokens(["body"], mine))]);
     st = (await reviewStatesFor(root, [{ kind: "anchor", id: "a_absent" }])).get("anchor:a_absent")!;
     assert.equal(st.code.state, "stale", "this index would have resolved it, so its absence is drift");
-  } finally { rm(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });

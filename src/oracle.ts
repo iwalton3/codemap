@@ -22,7 +22,7 @@
 
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import type { Actor } from "./schema.js";
 import { gitBin } from "./git.js";
@@ -414,7 +414,12 @@ export async function whileApart(
 export function rewriteHistory(m: Member, message: string, mutate: (paths: string[], sidecar: string) => void): void {
   const scopes = readdirSync(m.sidecar, { withFileTypes: true, recursive: true })
     .filter((d) => d.isFile() && d.name.endsWith(".ndjson"))
-    .map((d) => relative(m.sidecar, join(d.parentPath, d.name)));
+    // POSIX-separated: callers filter these with `startsWith("graph/")` and compare
+    // them against scope paths, which are `/`-separated on every platform. `relative`
+    // is not — on win32 it returned `graph\\acme-api`, every filter matched nothing,
+    // and a scenario that rewrote no history asserted against history it never
+    // rewrote. Same contract as `scopesOnDisk`; see COD-12.
+    .map((d) => relative(m.sidecar, join(d.parentPath, d.name)).split(sep).join("/"));
   mutate(scopes, m.sidecar);
   git(m.sidecar, "add", "-A");
   const r = git(m.sidecar, "commit", "-qm", message);
@@ -446,7 +451,9 @@ export function appendRaw(m: Member, shardPath: string, event: Record<string, un
 export function shardsIn(m: Member, scope: string): string[] {
   const dir = join(m.sidecar, scope);
   if (!existsSync(dir)) return [];
-  return readdirSync(dir).filter((f) => f.endsWith(".ndjson")).map((f) => join(scope, f));
+  // `${scope}/${f}`, not `join`: this is compared against the `path` a restore
+  // reports, which is a scope path and therefore POSIX on every platform.
+  return readdirSync(dir).filter((f) => f.endsWith(".ndjson")).map((f) => `${scope}/${f}`);
 }
 
 /**
