@@ -48,7 +48,11 @@ export async function reindex(root: string) {
   // After the write, because it reads the new index: anything retained earlier that
   // this index produces again is live code, not a ghost.
   const recovered = releaseRecoveredOrphans(root);
-  if (commit) await writeSnapshot(root, commit, branch, anchors, new Date().toISOString());
+  // `isDirty` here, and NOT on `snapshotAt` below: this indexes the working TREE, so
+  // on a dirty checkout the row is the branch's uncommitted work wearing the commit's
+  // name. `snapshotAt` reads git objects and is truthful by construction.
+  const dirty = isDirty(root);
+  if (commit) await writeSnapshot(root, commit, branch, anchors, new Date().toISOString(), { dirty });
   const files = new Set(anchors.map((a) => a.file)).size;
   // Two symbols on one id. The store is keyed `(ref, id)` and written
   // `INSERT OR REPLACE`, so the loser has just silently ceased to exist for the
@@ -58,6 +62,10 @@ export async function reindex(root: string) {
   const collisions = collidingAnchors(anchors);
   return {
     ok: true, anchors: anchors.length, files, commit, branch,
+    // Reported, not just recorded. A snapshot taken from a dirty tree is labelled
+    // with the bare sha and is not that commit, and until this was surfaced nothing
+    // above the store could say so — `isDirty` existed and had exactly one caller.
+    ...(commit && dirty ? { dirtySnapshot: true } : {}),
     ...(collisions.size ? {
       idCollisions: [...collisions].map(([id, list]) => ({
         id, file: list[0]!.file, symbols: list.map((a) => a.symbolPath.join(" › ")),
@@ -294,8 +302,9 @@ export async function snapshot(root: string) {
   const commit = headCommit(root);
   if (!commit) return { error: "no git commit to snapshot (not a git repo, or no HEAD)" };
   const anchors = await indexRepo(root);
-  await writeSnapshot(root, commit, currentBranch(root), anchors, new Date().toISOString());
-  return { ok: true, ref: commit, branch: currentBranch(root), anchors: anchors.length, dirty: isDirty(root) };
+  const dirty = isDirty(root);
+  await writeSnapshot(root, commit, currentBranch(root), anchors, new Date().toISOString(), { dirty });
+  return { ok: true, ref: commit, branch: currentBranch(root), anchors: anchors.length, dirty };
 }
 
 /**

@@ -405,7 +405,7 @@ function migrate(d: DatabaseSync): void {
     -- One row per cached commit snapshot (the anchors themselves live in the
     -- anchors table under ref = the commit sha). This is the branch-diff cache:
     -- a commit maps to an immutable anchor set, and old-branch data is never lost.
-    CREATE TABLE IF NOT EXISTS snapshots (ref TEXT PRIMARY KEY, branch TEXT, at TEXT, count INTEGER);
+    CREATE TABLE IF NOT EXISTS snapshots (ref TEXT PRIMARY KEY, branch TEXT, at TEXT, count INTEGER, dirty INTEGER);
 
     -- Materialized sidecar folds. The sidecar's event log stays authoritative;
     -- these are a cache of the projection, rebuildable and gitignored with the rest
@@ -647,6 +647,19 @@ function migrate(d: DatabaseSync): void {
   // which symbols pair up across two snapshots, the hashes say which pairs changed,
   // so a mismatch on either makes the whole diff meaningless.
   try { d.exec("ALTER TABLE snapshots ADD COLUMN hash_scheme INTEGER"); } catch { /* already present */ }
+
+  // Was this snapshot taken from a working tree that had uncommitted changes?
+  //
+  // A snapshot is supposed to BE a commit, and `init`/`snapshot` build one by
+  // indexing what is on disk — so on a dirty tree the branch's uncommitted work is
+  // baked into a row labelled with the bare sha. `diff <sha>` then compares that
+  // against the same working tree and reports NOTHING changed, which is a confidently
+  // wrong answer at the first step of the review protocol. See COD-3.
+  //
+  // NULL means "written before this column existed", which cannot be distinguished
+  // from clean and is therefore treated as clean — the alternative is refusing every
+  // pre-existing snapshot on a suspicion.
+  try { d.exec("ALTER TABLE snapshots ADD COLUMN dirty INTEGER"); } catch { /* already present */ }
   // node_versions provenance (docs unification). Additive, and additive is
   // load-bearing here: local rows are the ONE thing in this database that is not
   // regenerable — human docs live there and nowhere else — so "delete it and re-init"
