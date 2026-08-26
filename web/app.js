@@ -868,7 +868,12 @@ class CodemapHeader extends Component {
     this.state.pulling = true;
     this.state.note = null;
     try {
-      const r = await apiPost('/api/shared/pull', { u });
+      // SYNC, not pull. There is no case in practice where somebody wants the team's
+      // state and does not want their own to travel — a pull-only button meant the
+      // findings an agent had just filed sat unpublished until somebody remembered a
+      // different button on a different page. `sharedSync` pulls FIRST either way, so
+      // this is the pull that was here plus the push nobody was choosing to skip.
+      const r = await apiPost('/api/shared/sync', { u });
       // ops-shared refusals come back 200 with an `error` — a reason, not a failure.
       if (r.error) { this.state.note = r.error; return; }
       // A full reload, for the reason `CheckoutBanner.rebaseline` gives: what arrived
@@ -877,7 +882,9 @@ class CodemapHeader extends Component {
       // reloading on an empty pull would throw away scroll position to show the same
       // page back.
       if (r.gained) { location.reload(); return; }
-      this.state.note = 'up to date';
+      // A push with nothing to receive is still work done, and saying "up to date"
+      // about it reads as "nothing happened".
+      this.state.note = r.pushed ? 'sent; nothing new to receive' : 'up to date';
     } catch (e) { this.state.note = errText(e); } finally { this.state.pulling = false; }
   }
   search(e, v) {
@@ -894,8 +901,8 @@ class CodemapHeader extends Component {
       <div class="search"><input placeholder="search symbols & docs…" on-change="${(e, v) => this.search(e, v)}"></div>
       ${when(!!cur && !!cur.sidecar, () => html`${when(!!this.state.note, () => html`<span class="pullnote" title="${this.state.note}">${this.state.note}</span>`)}
         <button class="pullbtn" disabled="${this.state.pulling}"
-          title="receive the team's shared review state — findings, docs, notes, triage. This never sends yours; publishing lives on the shared page."
-          on-click="${() => this.pull()}">${this.state.pulling ? 'pulling…' : '⤓ pull'}</button>`)}
+          title="send and receive the team's shared review state — findings, docs, notes, triage. Pull happens first, always, so the guard against publishing something somebody already published has seen what they published."
+          on-click="${() => this.pull()}">${this.state.pulling ? 'syncing…' : '⇅ sync'}</button>`)}
     </header>`;
   }
 }

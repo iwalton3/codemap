@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { type Actor, type Anchor, type LogicalNode, type BugSeverity, type Annotation, type Disposition, DISPOSITIONS, COMMENT_MAX } from "../schema.js";
 import { indexFile, indexBlob } from "../repo.js";
 import { headCommit, readBlobs } from "../git.js";
-import { readAnchorStore, loadNodes, readAnnotations, writeAnnotations, readFindings, readFinding, writeLocalFinding, findAnchorsOutsideWork, readPushes, bodyHashAt, readOrphans, readSharedNotes } from "../store.js";
+import { readAnchorStore, loadNodes, readAnnotations, writeAnnotations, readFindings, readFinding, writeLocalFinding, findAnchorsOutsideWork, readPushes, bodyHashAt, readOrphans, readSharedNotes, idsStartingWith } from "../store.js";
 import { resolveSidecar } from "../sidecar-config.js";
 import {
   findingTier, isClosed, mayTransition, needsHumanAck, ASK_FOR_STATE, REOPEN_STATES,
@@ -443,7 +443,7 @@ export async function reviseAnnotation(
   // Names both namespaces because this is the LAST branch `ops.reviseOn` tries: an id
   // that is not a finding lands here, and answering a shared id with `no annotation`
   // named the one store the caller had not asked about.
-  if (!ann) return { error: `no finding or annotation "${input.id}" — ids come from \`findings\`, \`shared_findings\` or \`review_queue\`` };
+  if (!ann) return { error: `no finding or annotation "${input.id}" — ids come from \`findings\`, \`shared_findings\` or \`review_queue\`${suggestId(root, input.id)}` };
   // Editing what the submitter can already see, without editing it there too, makes
   // the map and the pull request disagree about what was said — and the pull request
   // is the copy the other person is acting on.
@@ -1189,6 +1189,15 @@ const RERATE_REFUSED = (id: string, sev?: string | undefined) =>
   `${id}'s severity is ${sev ?? "unset"} and somebody has confirmed the finding, so re-rating it is theirs. `
   + "Everything else — the description, the comment, the category, the line — you may rewrite right now.";
 
+/** `didYouMean` for the annotation paths — see `ops.ts`. Prefixes are what people copy. */
+const suggestId = (root: string, id: string): string => {
+  const hits = idsStartingWith(root, id);
+  if (!hits.length) return "";
+  return hits.length === 1
+    ? ` — did you mean \`${hits[0]}\`? (ids are not truncatable; that one starts with what you passed)`
+    : ` — that is the start of ${hits.length}: ${hits.map((h) => `\`${h}\``).join(", ")}`;
+};
+
 export const setLocalFindingState = (root: string, id: string, state: FindingState, reason?: string) =>
   localFindingWrite(root, id, (f, actor, at) => {
     if (!mayTransition(f, actor, state)) {
@@ -1289,7 +1298,7 @@ export async function closeAssignment(
   // A non-annotation id is a canonical finding, and `ops.closeFinding` routes those —
   // this function is the annotation half, and the last branch it tries, so the message
   // names every namespace an id can come from rather than only this one.
-  if (!ann) return { error: `no finding or annotation "${input.id}" — ids come from \`findings\`, \`shared_findings\` or \`review_queue\`` };
+  if (!ann) return { error: `no finding or annotation "${input.id}" — ids come from \`findings\`, \`shared_findings\` or \`review_queue\`${suggestId(root, input.id)}` };
   if (!ann.assignment) return { error: "that annotation was not assigned to an agent" };
   // `assignAnnotation` refuses a resolved annotation for the same reason: an agent
   // holding a queue read from before the human closed this would otherwise stamp an

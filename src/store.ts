@@ -1322,6 +1322,33 @@ export async function readFindings(root: string, opts: { pr?: number | string } 
  * caller's finding to another. Omitting `pr` is allowed for a caller that genuinely
  * has only an id, and REFUSED rather than guessed when it turns out not to be unique.
  */
+/**
+ * Ids that START with this prefix, across findings and bugs.
+ *
+ * A finding renders as `f_00mt8zvn7m-cc017f2546` and the prefix alone is the natural
+ * thing to copy — it is the distinctive half, and the suffix looks like a checksum. It
+ * failed as `no finding or annotation "f_00mt8zvn7m"`, which says the record does not
+ * exist. It does; the id is half of one. Cost an agent four failed calls before it
+ * spotted the pattern (`docs/mcp-complaints.md` § workflow-issues §3).
+ *
+ * Returns the matches rather than resolving, because a prefix that matches two records
+ * must not silently pick one — the caller says "did you mean", which is the answer that
+ * is useful whether it matched one or several.
+ *
+ * Capped: a one-character prefix matches everything, and a suggestion listing 200 ids is
+ * not a suggestion.
+ */
+export function idsStartingWith(root: string, prefix: string, limit = 5): string[] {
+  if (prefix.length < 6) return [];        // shorter than this is not a truncated id
+  const like = prefix.replace(/[%_\\]/g, "\\$&") + "%";
+  const d = db(root);
+  const rows = [
+    ...d.prepare("SELECT id FROM findings WHERE id LIKE ? ESCAPE '\\' LIMIT ?").all(like, limit + 1),
+    ...d.prepare("SELECT id FROM bugs WHERE id LIKE ? ESCAPE '\\' LIMIT ?").all(like, limit + 1),
+  ] as unknown as { id: string }[];
+  return [...new Set(rows.map((r) => r.id))].slice(0, limit);
+}
+
 export async function readFinding(
   root: string, id: string, opts: { pr?: number | string } = {},
 ): Promise<SharedFinding | null> {

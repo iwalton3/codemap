@@ -813,7 +813,33 @@ const cachedNotes = async (root: string, cfg: { path: string; universe: string }
  * findings, and refusing to list them was the shared/local split showing through a
  * surface that should not know about it.
  */
-export async function sharedFindings(root: string, pr: number | string, opts: { queue?: boolean; tier?: FindingTier; remediation?: Remediation } = {}) {
+/**
+ * The heavy half of a finding row, dropped for a triage listing.
+ *
+ * `view` returns 27 fields including the investigation `text`, the whole thread, every
+ * corroboration and now every outcome and ask — 342,526 characters over 25 findings on
+ * one real pull request, which spills to a file and turns "what is still open" into a
+ * three-step detour (`docs/mcp-complaints.md` § workflow-issues §5).
+ *
+ * SUBTRACTED from the full row rather than built as its own shape: one declared type
+ * means the web, which reads `f.thread` and `f.corroboration`, keeps typechecking
+ * against the same `ApiMap` entry — and a field that stops being returned still fails
+ * at the page that reads it, which is the whole point of that map. JSON drops
+ * `undefined`, so the payload shrinks by the same amount either way.
+ */
+const HEAVY = ["text", "thread", "corroboration", "outcomes", "outcome", "asks", "closedGranting",
+  "author", "authorModel", "createdAt", "posted", "upstream", "bug", "confirms", "independentConfirms",
+  "refutes", "needsAck", "promoted", "settled", "ask", "closedReason", "target",
+  // Measured, not guessed: these two carry the verification prose an agent writes when
+  // it records a remediation or a close, and they were 36,798 of the 46,819 characters a
+  // "terse" listing still cost. The STATE of each is kept (`remediation`, `state`); the
+  // paragraph explaining it is what `finding` is for.
+  "remediatedAt", "closed", "relocation"] as const;
+
+export async function sharedFindings(
+  root: string, pr: number | string,
+  opts: { queue?: boolean; tier?: FindingTier; remediation?: Remediation; terse?: boolean; limit?: number; offset?: number } = {},
+) {
   const cfg = resolveSidecar(root);
   let scope: { status?: string; diagnostic?: ScopeDiagnostic } = { status: "complete" };
   if (cfg) {
@@ -832,6 +858,10 @@ export async function sharedFindings(root: string, pr: number | string, opts: { 
   if (opts.tier) chosen = chosen.filter((f) => findingTier(f) === opts.tier);
   if (opts.remediation) chosen = chosen.filter((f) => (f.remediation?.state ?? "outstanding") === opts.remediation);
   const place = (f: SharedFinding) => places.get(f.target.id) ?? { state: "unknown" as const };
+  const offset = Math.max(0, Math.floor(opts.offset ?? 0));
+  const limit = opts.limit !== undefined ? Math.max(1, Math.floor(opts.limit)) : undefined;
+  const rows = limit === undefined ? chosen.slice(offset) : chosen.slice(offset, offset + limit);
+  const page = { rows, offset, remaining: chosen.length - offset - rows.length, truncated: offset > 0 || rows.length < chosen.length };
   // The shape of the list, always — the queue answers "what is waiting on a person",
   // and an UNTRIAGED finding is waiting on nobody by that definition, so the most
   // ordinary triage question ("what has nobody looked at?") had no surface at all and
@@ -861,7 +891,24 @@ export async function sharedFindings(root: string, pr: number | string, opts: { 
     waitingOnYou: ackQueue(all).length,
     contested: all.filter((f) => f.contested?.length).length,
     tiers,
-    findings: chosen.map((f) => ({ ...view(f), tier: findingTier(f), target: { ...f.target, where: place(f).state, at: place(f).at, lastFile: place(f).file } })),
+    // PAGED, and the page is described. A caller that got 20 of 50 and is not told so
+    // reports "20 open findings", which is the shape of wrongness this whole surface
+    // keeps producing — a partial answer read as a total.
+    ...(page.truncated
+      ? { shown: page.rows.length, offset: page.offset, more: page.remaining, nextOffset: page.offset + page.rows.length }
+      : {}),
+    findings: page.rows.map((f) => {
+      const row = { ...view(f), tier: findingTier(f), target: { ...f.target, where: place(f).state, at: place(f).at, lastFile: place(f).file } };
+      if (!opts.terse) return row;
+      const light = { ...row } as Record<string, unknown>;
+      for (const k of HEAVY) light[k] = undefined;
+      // The first line only, and capped: a `comment` is up to 800 characters, and fifty
+      // of those is the problem this is solving. It is what identifies the row.
+      light.comment = (f.comment || f.text || "").split("\n")[0]!.slice(0, 160);
+      light.remediation = f.remediation?.state ?? "outstanding";
+      light.pending = f.pending ? { ask: f.pending.ask, by: f.pending.by.principal, rationale: "" } : undefined;
+      return light as typeof row;
+    }),
   };
 }
 

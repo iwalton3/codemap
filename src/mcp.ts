@@ -874,8 +874,18 @@ const tools: Tool[] = [
       tier: { type: "string", enum: ["unconfirmed", "confirmed", "doubted", "settled"], description: "Only findings at this tier. `unconfirmed` = nobody has weighed in yet." },
       remediation: { type: "string", enum: ["outstanding", "fixed-on-branch", "fixed-on-default", "deferred", "wont-fix"], description: "Only findings whose remediation is this — what HAPPENED about them, as opposed to whether they are true." },
       queue: { type: "boolean", description: "Only what needs a human decision. Excludes the untriaged — use `tier` for those." },
+      terse: { type: "boolean", description: "DEFAULT TRUE, and what you want for triage: `id`, `tier`, `state`, `severity`, `remediation`, any pending ask, and the first line of the comment. `false` returns everything — the investigation text, the thread, every verdict, outcome and ask — which on 25 findings is ~195k characters and spills to a file. Read one in full with `finding` instead." },
+      limit: { type: "number", description: "How many to return. The answer says `shown`, `more` and `nextOffset` when it is a page rather than the whole list." },
+      offset: { type: "number", description: "Where to start, for the next page." },
     }, ["pr"]),
-    handler: (a, c) => shared.sharedFindings(c.universe.path, a.pr, { queue: !!a.queue, tier: a.tier as never, remediation: a.remediation as never }),
+    handler: (a, c) => shared.sharedFindings(c.universe.path, a.pr, {
+      queue: !!a.queue, tier: a.tier as never, remediation: a.remediation as never,
+      // TERSE BY DEFAULT for an agent. The web calls the same op and passes nothing,
+      // so it keeps the full shape its expanded rows render from.
+      terse: a.terse !== false,
+      limit: typeof a.limit === "number" ? a.limit : undefined,
+      offset: typeof a.offset === "number" ? a.offset : undefined,
+    }),
   },
   {
     name: "report_defect",

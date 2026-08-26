@@ -73,7 +73,7 @@ import {
   setLocalFindingPosted, relocateLocalFinding,
 } from "./ops/annotations.js";
 import { commentBug, corroborateBugOp, requestOnBugOp, acceptFinding } from "./ops/bugs.js";
-import { readFinding, readBug } from "./store.js";
+import { readFinding, readBug, idsStartingWith} from "./store.js";
 import { isRemediation, type Ask, type FindingState, type Remediation, type Verdict } from "./shared-findings.js";
 export { reportDefect, type DefectContext, type DefectInput } from "./ops/defect.js";
 
@@ -322,13 +322,28 @@ export async function reviseOn(
  * These live in `ops.ts` for the reason `closeFinding` does: the branches span two
  * layers that may not import each other.
  */
+/**
+ * "did you mean" for an id that is the FRONT of a real one.
+ *
+ * `no finding or bug "f_00mt8zvn7m"` says the record does not exist. It does — the id is
+ * half of one, and the half a person naturally copies. Appended to the refusal rather
+ * than resolved silently: a prefix matching two records must not pick one, and the
+ * suggestion is the useful answer either way.
+ */
+function didYouMean(root: string, id: string): string {
+  const hits = idsStartingWith(root, id);
+  if (!hits.length) return "";
+  if (hits.length === 1) return ` — did you mean \`${hits[0]}\`? (ids are not truncatable; that one starts with what you passed)`;
+  return ` — that is the start of ${hits.length}: ${hits.map((h) => `\`${h}\``).join(", ")}`;
+}
+
 async function whichRecord(root: string, id: string): Promise<
   { bug: true } | { finding: { pr: string; shared: boolean } } | { error: string }
 > {
   const f = await readFinding(root, id).catch((e: any) => { throw e; });
   if (f) return { finding: { pr: f.pr!, shared: !!f.origin } };
   if (await readBug(root, id)) return { bug: true };
-  return { error: `no finding or bug "${id}"` };
+  return { error: `no finding or bug "${id}"${didYouMean(root, id)}` };
 }
 
 /** Say something on a finding or a bug — the reviewers' thread, wherever it lives. */
@@ -460,6 +475,6 @@ export async function deferFinding(
   root: string, id: string, opts: { title?: string; severity?: "low" | "medium" | "high" | "critical" } = {},
 ): Promise<Record<string, unknown>> {
   const f = await readFinding(root, id).catch(() => null);
-  if (!f) return { error: `no finding "${id}" — ids come from \`findings\` or \`shared_findings\`` };
+  if (!f) return { error: `no finding "${id}" — ids come from \`findings\` or \`shared_findings\`${didYouMean(root, id)}` };
   return acceptFinding(root, f.pr!, id, opts) as Promise<Record<string, unknown>>;
 }

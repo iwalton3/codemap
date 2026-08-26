@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import * as shared from "./ops-shared.js";
-import { reviseOn, closeFinding, reviewQueue } from "./ops.js";
+import { reviseOn, closeFinding, reviewQueue, commentOn } from "./ops.js";
 import { readFinding, writeLocalFinding, writeStore } from "./store.js";
 import { indexBlob } from "./repo.js";
 import type { State } from "./schema.js";
@@ -798,5 +798,55 @@ test("a verdict records the commit it was formed on", async () => {
     await shared.corroborateFinding(u.root, 269, f.id, "confirm", "read it");
     const row = (await readFinding(u.root, f.id))!;
     assert.equal(row.corroboration[0]!.ref, head, "the reviewer's own head, on the record");
+  } finally { u.cleanup(); }
+});
+
+/**
+ * A truncated id says "does not exist" about a record that does.
+ *
+ * Findings render as `f_00mt8zvn7m-cc017f2546` and the prefix is the natural thing to
+ * copy — it is the distinctive half and the suffix looks like a checksum. The refusal
+ * asserted the record was not there. It was; the id was half of one. Cost an agent four
+ * failed calls (`docs/mcp-complaints.md` § workflow-issues §3).
+ */
+test("a truncated finding id is answered with the whole one", async () => {
+  const u = await universe();
+  try {
+    const f = await shared.shareFinding(u.root, 269, NEW) as { id: string };
+    const half = f.id.slice(0, f.id.indexOf("-"));
+    assert.notEqual(half, f.id, "the fixture really is a prefix");
+
+    const r = await commentOn(u.root, { id: half, body: "x" }) as { error: string };
+    assert.match(r.error, /did you mean/);
+    assert.ok(r.error.includes(f.id), "and it names the id in full, so it can be copied");
+  } finally { u.cleanup(); }
+});
+
+/** An ambiguous prefix must not resolve to one — it says which ones it is the start of. */
+test("a prefix matching several says so rather than picking", async () => {
+  const u = await universe();
+  try {
+    const { writeLocalFinding } = await import("./store.js");
+    const base = {
+      target: { kind: "anchor" as const, id: "a_1" }, text: "t", comment: "c",
+      author: { principal: "izzie@x.com" }, createdAt: "2026-01-01T00:00:00Z",
+      state: "created" as const, corroboration: [], thread: [], revisions: [], outcomes: [], asks: [],
+    };
+    await writeLocalFinding(u.root, { ...base, id: "f_prefix_aaaa" } as never, 269);
+    await writeLocalFinding(u.root, { ...base, id: "f_prefix_bbbb" } as never, 269);
+
+    const r = await commentOn(u.root, { id: "f_prefix", body: "x" }) as { error: string };
+    assert.match(r.error, /the start of 2/);
+    assert.ok(r.error.includes("f_prefix_aaaa") && r.error.includes("f_prefix_bbbb"));
+  } finally { u.cleanup(); }
+});
+
+/** And a genuinely unknown id is still just unknown — no invented suggestion. */
+test("an id that is nobody's prefix gets no suggestion", async () => {
+  const u = await universe();
+  try {
+    const r = await commentOn(u.root, { id: "f_nothing_like_this", body: "x" }) as { error: string };
+    assert.match(r.error, /no finding or bug/);
+    assert.doesNotMatch(r.error, /did you mean|the start of/);
   } finally { u.cleanup(); }
 });
