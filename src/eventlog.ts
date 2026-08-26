@@ -496,6 +496,13 @@ export async function readScopeChecked(logRoot: string, scope: string): Promise<
  *
  * Used by sync to decide what to materialize. Cheap on purpose — it stats
  * directories and never opens a shard.
+ *
+ * **A scope is a POSIX path on every platform, and `path.join` may not build one.**
+ * The string returned here is not just a path: `projectionFor` prefix-matches it
+ * against `"notes/"`/`"docs/"`/… and `inUniverse` slices it at the first `/`. On
+ * win32 `join` yields `notes\acme\d7`, which both reject — so materialization
+ * silently scanned zero scopes there, every read fell back to folding the log, and
+ * the projection the whole architecture rests on was never built. See COD-12.
  */
 export async function scopesOnDisk(logRoot: string): Promise<string[]> {
   const found: string[] = [];
@@ -504,7 +511,7 @@ export async function scopesOnDisk(logRoot: string): Promise<string[]> {
     try { entries = await readdir(join(logRoot, rel), { withFileTypes: true }); } catch { return; }
     if (entries.some((e) => e.isFile() && e.name.endsWith(SHARD_EXT))) found.push(rel);
     for (const e of entries) {
-      if (e.isDirectory() && e.name !== ".git") await walk(rel ? join(rel, e.name) : e.name);
+      if (e.isDirectory() && e.name !== ".git") await walk(rel ? `${rel}/${e.name}` : e.name);
     }
   };
   await walk("");

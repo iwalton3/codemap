@@ -117,11 +117,24 @@ await walk(rel ? `${rel}/${e.name}` : e.name);
 `readScope`/`collect` already `join(logRoot, scope)`, which tolerates forward slashes on
 Windows, so nothing downstream changes.
 
-Then two regression tests that are hermetic and run **on Linux**: `scopesOnDisk` never
-returns a path containing `\`, and `projectionFor` / `inUniverse` against a
-`path.win32.join`-built scope string. Both would have failed at `2009fdb`. This is the
-point — the platform-specific bug gets a platform-independent test, so it stays caught
-even when nobody is looking at the Windows job.
+Then three regression tests in `eventlog.test.ts`, and an honest note about what they
+can and cannot do.
+
+Two of them are the real guard: a discovered scope must be the same string the writer
+built (`docScope`/`noteScope`/`bugScope`), and every discovered scope must route through
+`projectionFor` and carry no backslash. **They only fail on win32.** An earlier draft of
+this plan claimed they would fail at `2009fdb` on Linux; that was wrong, and it matters
+because a test that cannot fail on the machine you are sitting at is exactly the vacuous
+kind `CLAUDE.md` warns about. `path.join` already yields `/` on POSIX, so there is no
+arrangement of a hermetic fixture that catches a *producer*-side separator bug there.
+
+That is not an argument against them — it is the argument for having built the Windows
+job first. Verified non-vacuous by patching the compiled walk to `win32.join` and
+re-running: both fail, and pass again on rebuild.
+
+The third test runs everywhere and pins *why*: the win32 form of the same scope routes
+nowhere. If a consumer is ever made backslash-tolerant, that test fails and the edit has
+to be deliberate, rather than quietly making the producer fix look unnecessary.
 
 Do this first. Smallest change, largest blast radius, and the only one of the Windows set
 that is wrong in production rather than in the test harness.

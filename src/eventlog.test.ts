@@ -3,11 +3,15 @@ import { testEvent } from "./test-events.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, appendFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import type { Actor } from "./schema.js";
 import { ACK_KIND, evidenceDigest, chainCycles, wellFormed, mintId, shardFor, appendEvents, readShard, readScope, readScopeChecked, sortEvents, causalHeads,
-  causality, writerFor, detectForks, scopeStatus, emitEvent, GENESIS, SIDECAR_PROTOCOL, EVENT_SCHEMA,
+  causality, writerFor, detectForks, scopeStatus, emitEvent, scopesOnDisk, SHARD_EXT, GENESIS, SIDECAR_PROTOCOL, EVENT_SCHEMA,
   type LogEvent } from "./eventlog.js";
+import { projectionFor } from "./shared-projections.js";
+import { docScope } from "./shared-docs.js";
+import { noteScope } from "./shared-notes.js";
+import { bugScope } from "./shared-bugs.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
 const dana: Actor = { principal: "dana@x.com" };
@@ -882,4 +886,64 @@ test("a newer protocol can never be acknowledged away", () => {
   // The ack is well formed and covers the digest; `sharedHeal` is what refuses to
   // write it. Pinned here so the refusal is not quietly dropped later.
   assert.equal(scopeStatus([ahead, ack]).diagnostic?.reason, "protocol");
+});
+
+// --- a scope is a POSIX path, on every platform ----------------------------------
+
+/**
+ * The string `scopesOnDisk` returns is not merely a path.
+ *
+ * `projectionFor` prefix-matches it against `"notes/"`/`"docs/"`/…, and `inUniverse`
+ * slices it at the first `/`. A separator that is right for the filesystem and wrong
+ * for those two consumers makes `materializeUniverse` skip every scope in silence —
+ * which is what `path.join` did on win32 for as long as the sidecar has existed, so
+ * the projection the architecture rests on was never built there and every read fell
+ * back to folding the log. See COD-12.
+ *
+ * These pass on POSIX either way, because `path.join` already yields `/` there. That
+ * is not a vacuous test: it is one whose failing platform now runs in CI, which is
+ * why the Windows job was added BEFORE this fix rather than after it.
+ */
+const scopeFixture = (root: string, scopes: string[]): void => {
+  for (const s of scopes) {
+    mkdirSync(join(root, s), { recursive: true });
+    writeFileSync(join(root, s, `w_fixture${SHARD_EXT}`), "");
+  }
+};
+
+test("a discovered scope is the same string the writer built", async () => {
+  const root = tmp();
+  try {
+    // Two segments, which is what a GitHub slug gives and what the bug was found on:
+    // `notes/<universe>/<bucket>` is then FOUR path segments deep.
+    const universe = "acme/api";
+    const built = [docScope(universe), noteScope(universe, "d7"), noteScope(universe, "cc")];
+    scopeFixture(root, built);
+    assert.deepEqual(await scopesOnDisk(root), [...built].sort());
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("every scope on disk routes to a projection — what materialization iterates", async () => {
+  const root = tmp();
+  try {
+    const universe = "acme/api";
+    scopeFixture(root, [docScope(universe), noteScope(universe, "d7"), bugScope(universe)]);
+    const scopes = await scopesOnDisk(root);
+    assert.equal(scopes.length, 3, "the fixture is what is being iterated");
+    for (const scope of scopes) {
+      assert.ok(projectionFor(scope), `no projection for ${scope} — materializeUniverse would skip it`);
+      assert.ok(!scope.includes("\\"), `${scope} carries a backslash, which no consumer accepts`);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the win32 form of the same scope routes nowhere — the separator is not cosmetic", () => {
+  // Pins WHY the walk above may not use `path.join`. If a consumer is ever made
+  // tolerant of backslashes this fails, and that should be a deliberate edit rather
+  // than something that quietly makes the fix above look unnecessary.
+  const posix = noteScope("acme/api", "d7");
+  const win = posix.split("/").reduce((a, b) => win32.join(a, b));
+  assert.equal(win, "notes\\acme\\api\\d7", "the shape win32 produces");
+  assert.ok(projectionFor(posix), "the POSIX form routes");
+  assert.equal(projectionFor(win), null, "and the win32 form does not");
 });
