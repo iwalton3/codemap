@@ -44,27 +44,6 @@ jobs:
       - name: Leave line endings alone
         run: git config --global core.autocrlf false
 
-      # Windows runs this suite in ~29 minutes against ubuntu's ~3, and the gap is
-      # broad rather than concentrated — it is every file write and every process
-      # start, which is exactly what real-time scanning inspects. The suite writes
-      # thousands of small files into TEMP (a store, a sidecar and several git clones
-      # per test) and spawns git constantly.
-      #
-      # Best-effort on purpose: `|| true` and `continue-on-error`, because this is a
-      # speed measure and a runner image that will not take the exclusion must not
-      # fail the build over it. If it stops helping, delete it — it is not load-bearing.
-      - name: Exclude the workspace from Defender (Windows only)
-        if: runner.os == 'Windows'
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE" -ErrorAction SilentlyContinue
-          Add-MpPreference -ExclusionPath "$env:RUNNER_TEMP"      -ErrorAction SilentlyContinue
-          Add-MpPreference -ExclusionPath "$env:TEMP"             -ErrorAction SilentlyContinue
-          Add-MpPreference -ExclusionProcess "node.exe"           -ErrorAction SilentlyContinue
-          Add-MpPreference -ExclusionProcess "git.exe"            -ErrorAction SilentlyContinue
-          Write-Host "defender exclusions requested"
-
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
