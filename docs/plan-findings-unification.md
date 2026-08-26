@@ -482,6 +482,20 @@ fold validated only the envelope (`pr`, `head`).
   so it was checking the projection plumbing against a fiction. It now round-trips a real
   walkthrough. A cast to `never` in a fixture is worth treating as a finding on its own.
 
+## After this: retiring the local path entirely
+
+`docs/plan-retire-local-findings.md`. The end state this plan describes — one canonical
+table, one way to file — leaves TWO write paths into it, and the local one is a second
+implementation that drifts rather than a thinner version of the other. Three separate
+reviews this session each found a different divergence in it.
+
+The claim that makes it feasible is checked there and worth stating here: a store with no
+sidecar loses nothing, because "no sidecar" can become "a sidecar nobody else pulls from".
+The event log is plain files, a remote-less sidecar is already supported and documented as
+such, `resolveSidecar` already accepts a bare directory, and `unify-findings` already
+replays local rows into a log preserving ids. Parked deliberately until the lifecycle
+stops moving.
+
 ## What this plan does not cover
 
 - **`shared_note` stays.** Notes are symbol-scoped knowledge that outlives branches;
