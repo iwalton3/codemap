@@ -22,11 +22,15 @@ jobs:
   unit:
     name: unit (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Windows is deliberately NOT blocking yet. It is red today — COD-7 leaves
-    # ~290 EPERM failures from `db.ts` never closing its DatabaseSync cache — and
-    # a required job that is red by design is how a team learns to ignore CI.
-    # Flip `required: true` below, and delete this comment, when COD-7 §1-§3 land.
-    # See docs/plan-bug-backlog-and-ci.md § Phase 1.
+    # Both legs block now. Windows was non-blocking while COD-7 left it red by
+    # design; §1-§3 landed, it went 454 failures -> 0, and the flip was the stated
+    # acceptance criterion for that phase. A job that stays advisory after it goes
+    # green is how a team learns to ignore CI, which is the thing the original
+    # exemption was avoiding in the other direction.
+    #
+    # The cost is real and worth knowing: the Windows leg is ~29m against ubuntu's
+    # ~3m, so it is the critical path of every pull request. COD-14 has the
+    # measurements and what is left to try.
     continue-on-error: ${{ !matrix.required }}
     strategy:
       fail-fast: false
@@ -34,8 +38,20 @@ jobs:
         include:
           - os: ubuntu-latest
             required: true
+            oneCell: ''
           - os: windows-latest
-            required: false
+            required: true
+            # One cell of each combinatorial matrix instead of the cross-product.
+            # The cross-product proves the FOLD picks the right winner, and the fold
+            # is deterministic and platform-independent, so ubuntu proves it for
+            # everyone; what a second platform adds is coverage of paths, temp dirs,
+            # spawns and handles, which one cell exercises just as well. Measured:
+            # 28,132 -> 24,062 spawns (-14.5%), and every Windows-only defect this
+            # project has hit was plumbing, never fold semantics. See src/test-matrix.ts.
+            oneCell: '1'
+    env:
+      # Empty on ubuntu, so `matrix()` returns every cell there.
+      CODEMAP_ONE_CELL: ${{ matrix.oneCell }}
     steps:
       # BEFORE checkout: autocrlf is applied as files are written, so setting it
       # afterwards changes nothing. Hashing itself survives CRLF (`src/indexer.ts`
@@ -44,26 +60,34 @@ jobs:
       - name: Leave line endings alone
         run: git config --global core.autocrlf false
 
-      # Windows runs this suite in ~29 minutes against ubuntu's ~3, and the gap is
-      # broad rather than concentrated — it is every file write and every process
-      # start, which is exactly what real-time scanning inspects. The suite writes
-      # thousands of small files into TEMP (a store, a sidecar and several git clones
-      # per test) and spawns git constantly.
+      # `C:` is the Azure managed OS disk — high latency; `D:` is the VM's physically
+      # local temp disk. The runner puts GITHUB_WORKSPACE on D: and leaves TEMP on C:,
+      # so this suite writes thousands of small files — a store, a sidecar and several
+      # git clones per test — to the slow one. pip made exactly this change and cut
+      # their Windows CI by up to 30% (pypa/pip#13129); when GitHub moved RUNNER_TEMP
+      # from D: to C: in June 2025, workflows slowed 40-50% (runner-images#12386).
       #
-      # Best-effort on purpose: `|| true` and `continue-on-error`, because this is a
-      # speed measure and a runner image that will not take the exclusion must not
-      # fail the build over it. If it stops helping, delete it — it is not load-bearing.
-      - name: Exclude the workspace from Defender (Windows only)
+      # Node reads TEMP then TMP for `os.tmpdir()`, which is what every `mkdtempSync`
+      # in the suite goes through, so setting both is enough.
+      #
+      # Guarded on D: existing, and it REPORTS what it did. There was a plan to drop
+      # user-accessible D: from the Windows Server 2025 image (runner-images#12416);
+      # our image still has it, but if that lands this must degrade to "leave TEMP
+      # alone" rather than fail — and the log line is how the next person tells which
+      # happened. The Defender step this replaces could not report whether it applied,
+      # which is why its null result taught us nothing.
+      - name: Put TEMP on the fast drive (Windows only)
         if: runner.os == 'Windows'
-        continue-on-error: true
         shell: pwsh
         run: |
-          Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE" -ErrorAction SilentlyContinue
-          Add-MpPreference -ExclusionPath "$env:RUNNER_TEMP"      -ErrorAction SilentlyContinue
-          Add-MpPreference -ExclusionPath "$env:TEMP"             -ErrorAction SilentlyContinue
-          Add-MpPreference -ExclusionProcess "node.exe"           -ErrorAction SilentlyContinue
-          Add-MpPreference -ExclusionProcess "git.exe"            -ErrorAction SilentlyContinue
-          Write-Host "defender exclusions requested"
+          if (Test-Path 'D:\') {
+            New-Item -ItemType Directory -Force -Path 'D:\t' | Out-Null
+            "TEMP=D:\t" >> $env:GITHUB_ENV
+            "TMP=D:\t"  >> $env:GITHUB_ENV
+            Write-Host "TEMP moved to D:\t (was $env:TEMP)"
+          } else {
+            Write-Host "no D: drive on this image — TEMP left at $env:TEMP"
+          }
 
       - uses: actions/checkout@v4
 

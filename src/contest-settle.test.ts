@@ -8,6 +8,7 @@ import { scenario, who, concurrently, settle, asAgent, type Scenario } from "./s
 import { createFinding, revise, resolveContest, readFindings, ackQueue } from "./shared-findings.js";
 import * as shared from "./ops-shared.js";
 import { discard } from "./test-tmp.js";
+import { matrix } from "./test-matrix.js";
 
 const git = (root: string, ...args: string[]) => spawnSync("git", args, { cwd: root, encoding: "utf8" });
 
@@ -63,8 +64,12 @@ async function assertSettled(s: Scenario, id: string, expected: string) {
 
 // --- the matrix: who settles it × which value they pick -------------------------
 
-for (const settler of ["izzie@x.com", "dana@x.com", "carol@x.com"]) {
-  for (const [label, value] of [["their own", "critical"], ["dana's", "low"], ["a third", "high"]] as const) {
+// One cell of the 3x3 on a platform run. The cross-product proves the fold picks the
+// right winner and the fold is platform-independent, so Linux proves it for everyone;
+// what Windows adds is the plumbing underneath, and one cell exercises all of it.
+// The `both buttons` test below is deliberately NOT collapsed — see its comment.
+for (const settler of matrix(["izzie@x.com", "dana@x.com", "carol@x.com"])) {
+  for (const [label, value] of matrix([["their own", "critical"], ["dana's", "low"], ["a third", "high"]] as const)) {
     test(`${settler} settles on ${label} value (${value})`, async () => {
       await contested(async (s, id) => {
         const p = who(s, settler);
