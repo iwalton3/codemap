@@ -26,7 +26,7 @@ import { ensureSidecar, sync as sidecarSync, receive as sidecarReceive, healMerg
 import {
   createFinding, corroborate, comment, promote, request, setState, recordOutcome,
   markPosted, markUpstreamed, promoteToBug, needsHumanAck, ackQueue, mayRevise,
-  revise, resolveContest, relocate, remediate, agentClosureNeedsAck, declineAsk, type Remediation,
+  revise, resolveContest, relocate, remediate, agentClosureNeedsAck, declineAsk, isStandingBehind, type Remediation,
   foldFindings, findingScope, findingTier, byReadingOrder,
   type SharedFinding, type Verdict, type Ask, type FindingState, type NewFinding, type FindingTier,
 } from "./shared-findings.js";
@@ -546,7 +546,8 @@ export async function recordPublished(root: string, pr: number | string, id: str
 
 /** A finding, flattened for a front-end: derived fields resolved, actors named. */
 function view(f: SharedFinding) {
-  const confirms = f.corroboration.filter((c) => c.verdict === "confirm");
+  // `partial` stands behind the finding too — it says real, with a correction.
+  const confirms = f.corroboration.filter((c) => isStandingBehind(c.verdict));
   return {
     id: f.id,
     state: f.state,
@@ -680,7 +681,7 @@ export async function reviseFinding(
   // one-liner is the write-up an agent exists for — it is re-rating a number somebody
   // has since stood behind that is theirs. (Burying the finding is the stricter act and
   // keeps the wider gate; see `agentClosureNeedsAck`.)
-  const confirmed = f.corroboration.some((c) => c.verdict === "confirm");
+  const confirmed = f.corroboration.some((c) => isStandingBehind(c.verdict));
   if ("severity" in now && isAgentActor(b.actor) && confirmed && f.severity !== now.severity) {
     return {
       error: `${id}'s severity is ${f.severity ?? "unset"} and somebody has confirmed the finding, so re-rating it is theirs. `

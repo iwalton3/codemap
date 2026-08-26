@@ -611,3 +611,44 @@ test("declining without a reason is dropped", async () => {
     assert.equal((await one(root)).pending?.ask, "refute");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+/**
+ * `partial` — the answer triage reaches for constantly and could not say.
+ *
+ * The old annotation store had it as a `disposition`: "real in part; `comment` states
+ * the part that is real, in full". The canonical store's three verdicts had no home for
+ * it, so it landed in prose nothing can filter on — measured on a real triage pass,
+ * where an agent's `partial` conclusion lived in the corroboration rationale and the
+ * close detail and in no field.
+ */
+test("`partial` stands behind a finding, everywhere `confirm` does", async () => {
+  const root = tmp();
+  try {
+    const id = await createFinding(root, 264, opus, NEW);
+    await corroborate(root, 264, dana, id, "partial", "the read is unbounded; the stated impact is not");
+    const f = await one(root);
+
+    assert.equal(f.corroboration[0]!.verdict, "partial", "the fold keeps it — a fourth word, not a dropped event");
+    assert.equal(findingTier(f), "confirmed", "somebody stood behind it, so it leaves the untriaged pile");
+    assert.equal(needsHumanAck(f), true, "and it reaches the human queue");
+    assert.equal(ackQueue([f]).length, 1);
+    // The gate that matters: an agent may no longer bury a finding somebody stood behind,
+    // and standing behind PART of it is still standing behind it.
+    assert.equal(mayTransition(f, opus, "refuted"), false);
+    assert.equal(mayTransition(f, izzie, "refuted"), true, "a person still may");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+/** And it is a distinct opinion, not a synonym — the rationale says which part is real. */
+test("`partial` is its own verdict, replacing that reviewer's earlier one", async () => {
+  const root = tmp();
+  try {
+    const id = await createFinding(root, 264, izzie, NEW);
+    await corroborate(root, 264, dana, id, "confirm", "real as filed");
+    await corroborate(root, 264, dana, id, "partial", "on re-reading, only the second of the three reads is unbounded");
+    const f = await one(root);
+    assert.equal(f.corroboration.length, 1, "one entry per reviewer — a correction is not a second opinion");
+    assert.equal(f.corroboration[0]!.verdict, "partial");
+    assert.match(f.corroboration[0]!.rationale, /only the second/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

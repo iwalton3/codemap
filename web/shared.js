@@ -312,7 +312,8 @@ class SharedPage extends Component {
           <div class="dim">${o.by} reported <b>${o.result}</b>: ${o.detail}</div>`, (o, i) => `out${i}`)}
         ${each(f.corroboration ?? [], c => html`
           <div class="corr">
-            <span class="${c.verdict === 'confirm' ? 'ok' : c.verdict === 'refute' ? 'bad' : 'dim'}">${c.verdict}</span>
+            <span class="${c.verdict === 'confirm' ? 'ok' : c.verdict === 'partial' ? 'ok' : c.verdict === 'refute' ? 'bad' : 'dim'}"
+              title="${c.verdict === 'partial' ? 'real, but not as filed — the rationale says which part' : ''}">${c.verdict}</span>
             <b>${c.by}</b>${when(!!c.model, () => html` <span class="dim">(${c.model})</span>`)}
             ${when(!c.independent, () => html`<span class="dim" title="same principal as the author — not a second opinion"> · not independent</span>`)}
             ${when(!!c.ref, () => html`<span class="dim" title="the commit this verdict was formed on — a verdict is a claim about CODE, and this says which"> · at ${c.ref.slice(0, 8)}</span>`)}

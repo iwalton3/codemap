@@ -128,7 +128,10 @@ export async function closeFinding(
   const r = await shared.reportOnFinding(root, f.pr!, f.id, input.result, input.detail, input.files) as Record<string, unknown>;
   if (r.error) return r;
   const d = (input as { disposition?: string }).disposition;
-  const verdict = d === "refuted" ? "refute" as const : d === "confirmed" ? "confirm" as const : null;
+  // `partial` now has a verdict of its own, so triage's commonest honest answer stops
+  // living in prose. `rerated` still has none — see docs/plan-finding-parity.md.
+  const verdict = d === "refuted" ? "refute" as const : d === "confirmed" ? "confirm" as const
+    : d === "partial" ? "partial" as const : null;
   // Captured, not fired and forgotten: `corroborateFinding` can now REFUSE a verdict
   // formed on a tree that does not contain the code the finding is about, and a refusal
   // nobody reports is the silent-drop shape this envelope exists to end.
@@ -275,7 +278,8 @@ export async function reviseOn(
     out = { ...r, pr: f.pr, shared: true };
   }
   const verdict = input.disposition === "refuted" ? "refute" as const
-    : input.disposition === "confirmed" ? "confirm" as const : null;
+    : input.disposition === "confirmed" ? "confirm" as const
+    : input.disposition === "partial" ? "partial" as const : null;
   if (verdict) {
     // `corroborateFinding` refuses a verdict with no rationale, and it is right to:
     // a verdict without one is a vote. So it is only recorded when the revision
@@ -358,7 +362,7 @@ export async function commentOn(root: string, input: { id: string; body: string;
 }
 
 /** A second opinion on somebody's finding or bug: confirm, refute or unsure. */
-export async function corroborateOn(root: string, input: { id: string; verdict: "confirm" | "refute" | "unsure"; rationale: string; model?: string; harness?: string; anyway?: boolean }) {
+export async function corroborateOn(root: string, input: { id: string; verdict: "confirm" | "partial" | "refute" | "unsure"; rationale: string; model?: string; harness?: string; anyway?: boolean }) {
   const w = await whichRecord(root, input.id);
   if ("error" in w) return w;
   if ("bug" in w) return corroborateBugOp(root, input.id, input.verdict, input.rationale);

@@ -950,7 +950,7 @@ const tools: Tool[] = [
     description: "Weigh in on somebody else's finding or bug: is it real? This is the point of several models reviewing — DISAGREEMENT is the signal, so refute plainly when you think it is wrong rather than deferring. Your verdict never replaces anyone else's, only your own earlier one. A rationale is required: a verdict without one is a vote, not a review.\n\nCorroborating something raised by the person you are running as does not count as independent — say so anyway, it is still worth recording, and passing `model` is what makes cross-model agreement measurable at all.",
     inputSchema: obj({
       id: { type: "string", description: "A finding or bug id." },
-      verdict: { type: "string", enum: ["confirm", "refute", "unsure"] },
+      verdict: { type: "string", enum: ["confirm", "partial", "refute", "unsure"], description: "`partial` — real, but not as filed: the defect is there and the stated impact or scope is not. Say the part that IS real, in full, in `rationale`; it is the commonest honest answer in triage and it counts as standing behind the finding." },
       anyway: { type: "boolean", description: "Record the verdict even though this checkout does not contain the commit the finding was witnessed at. Only when you have read the RIGHT code by another route — `git show <ref>:<file>`, or the pull request on GitHub. The refusal exists because a triage pass once refuted five findings for being \"not present\" while standing on a branch that predated them." },
       rationale: { type: "string", description: "What you actually checked." },
       model: { type: "string", description: "YOUR model id. Never guess it." },

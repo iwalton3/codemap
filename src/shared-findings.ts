@@ -44,7 +44,26 @@ export type FindingState = "issued" | "created" | "invalid" | "refuted" | "resol
 export const CLOSED_STATES: readonly FindingState[] = ["invalid", "refuted", "resolved", "withdrawn"];
 export const isClosed = (s: FindingState): boolean => CLOSED_STATES.includes(s);
 
-export type Verdict = "confirm" | "refute" | "unsure";
+/**
+ * A reviewer's opinion of a finding.
+ *
+ * `partial` is the one triage reaches for constantly and could not say. The old
+ * annotation store had it as a `disposition` — "real in part; `comment` states the part
+ * that is real, in full" — and the canonical store's three verdicts had no home for it,
+ * so it landed in prose that nothing can filter on. It is the commonest honest answer:
+ * the defect is real, the stated impact is not, or two of the three reads it names are
+ * unbounded and the third is fine.
+ *
+ * It STANDS BEHIND the finding — `partial` means real, with a correction — so it counts
+ * everywhere `confirm` counts: the tier, the human queue, and the gates on closing and
+ * re-rating. What it does not do is claim the finding is right as filed, which is why it
+ * is its own word rather than a `confirm` with a caveat in the rationale.
+ */
+export type Verdict = "confirm" | "partial" | "refute" | "unsure";
+
+/** Verdicts that mean "this is real" — `partial` says so about part of it. */
+export const STANDS_BEHIND: readonly Verdict[] = ["confirm", "partial"];
+export const isStandingBehind = (v: Verdict): boolean => STANDS_BEHIND.includes(v);
 
 /**
  * What a request asks a human to do. Anyone may ask, at any state.
@@ -359,7 +378,7 @@ export function findingTier(f: Pick<SharedFinding, "state" | "corroboration"> & 
   // just happened, and hid it in the pile the reader is told is untriaged. Ahead of the
   // corroboration checks deliberately: a person promoting outranks an agent refuting.
   if (f.promotion) return "confirmed";
-  if (f.corroboration.some((c) => c.verdict === "confirm")) return "confirmed";
+  if (f.corroboration.some((c) => isStandingBehind(c.verdict))) return "confirmed";
   if (f.corroboration.some((c) => c.verdict === "refute")) return "doubted";
   return "unconfirmed";
 }
@@ -383,7 +402,7 @@ export function byReadingOrder(
 
 /** Derived, never stored — an OR over a latch and a grow-only set, so it cannot race. */
 export function needsHumanAck(f: Ratcheted): boolean {
-  return !!f.promotion || f.corroboration.some((c) => c.verdict === "confirm");
+  return !!f.promotion || f.corroboration.some((c) => isStandingBehind(c.verdict));
 }
 
 /**
@@ -409,7 +428,7 @@ export function needsHumanAck(f: Ratcheted): boolean {
  * act that froze it.
  */
 export function agentClosureNeedsAck(f: Ratcheted & { author?: Actor }): boolean {
-  return f.corroboration.some((c) => c.verdict === "confirm")
+  return f.corroboration.some((c) => isStandingBehind(c.verdict))
     || (!!f.author && !isAgentActor(f.author));
 }
 
@@ -574,7 +593,7 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
 
       case "finding.corroborated": {
         const verdict = str(d, "verdict") as Verdict | undefined;
-        if (verdict !== "confirm" && verdict !== "refute" && verdict !== "unsure") break;
+        if (verdict !== "confirm" && verdict !== "partial" && verdict !== "refute" && verdict !== "unsure") break;
         // One entry per REVIEWER — the person, plus the model if one spoke for
         // them. A re-review replaces that reviewer's own opinion and nobody else's,
         // and never collapses two: the disagreement IS the signal, and keying on
