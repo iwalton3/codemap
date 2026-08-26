@@ -1,12 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Anchor, State } from "./schema.js";
 import { writeStore, writeSnapshot, readReviews } from "./store.js";
 import { markReviewed, reviewStatesFor, liveHashes } from "./reviews.js";
 import { fixtureHash } from "./fixture-hash.js";
+import { discard } from "./test-tmp.js";
 
 const anchor = (bodyHash: string): Anchor => ({
   id: "a_pay", file: "src/pay.cs", symbolPath: ["Pay", "Handle"], kind: "function", bodyHash, lastVerifiedCommit: null,
@@ -29,7 +30,7 @@ test("a PR sign-off witnesses the code that was read, not the working tree's cop
 
     const w = (await readReviews(root)).reviews[0]!.witnesses;
     assert.deepEqual(w, [{ anchorId: "a_pay", bodyHash: fixtureHash("NEW") }], "must witness the PR head, not the working tree");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("that mark reads fresh on the PR and stale on the base — and lands when the change does", async () => {
@@ -48,7 +49,7 @@ test("that mark reads fresh on the PR and stale on the base — and lands when t
     // pre-merge sign-off activates on its own rather than needing to be redone.
     await writeSnapshot(root, "mergedsha", "develop", [anchor(fixtureHash("NEW"))], "2026-08-18T01:00:00Z");
     assert.equal(await at("mergedsha"), "reviewed", "a pre-merge sign-off activates when the code lands");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a symbol that exists only on the branch is witnessed, not recorded as absent", async () => {
@@ -62,5 +63,5 @@ test("a symbol that exists only on the branch is witnessed, not recorded as abse
 
     await markReviewed(root, { targetKind: "anchor", targetId: "a_pay", level: "code", actor: "human", attestation: "signed", ref: "headsha" });
     assert.equal((await readReviews(root)).reviews[0]!.witnesses[0]!.bodyHash, fixtureHash("NEW"), "an added symbol must not witness sha256:absent");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });

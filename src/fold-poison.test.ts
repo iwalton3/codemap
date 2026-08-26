@@ -1,13 +1,14 @@
 import { test } from "node:test";
 import { testEvent } from "./test-events.js";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, appendFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { shardFor, causality, type LogEvent } from "./eventlog.js";
 import { readFindings } from "./shared-findings.js";
 import { publishDocVersion, readDocs } from "./shared-docs.js";
 import { fixtureHash } from "./fixture-hash.js";
+import { discard } from "./test-tmp.js";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "codemap-poison-"));
 const izzie = { principal: "izzie@x.com" };
@@ -42,7 +43,7 @@ test("an event with no actor is skipped, not fatal", async () => {
 
     const out = await readFindings(root, PR);
     assert.deepEqual([...out.keys()], ["f_1"], "the good finding still reads");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("and neither is one with a blank principal, or no id", async () => {
@@ -58,7 +59,7 @@ test("and neither is one with a blank principal, or no id", async () => {
     ]) appendFileSync(file, JSON.stringify(bad) + "\n", "utf8");
 
     assert.deepEqual([...(await readFindings(root, PR)).keys()], ["f_1"]);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 /** Called directly with a hand-built array, it must not crash either. */
@@ -93,7 +94,7 @@ test("a doc version with malformed citations does not poison the universe", asyn
     const docs = await readDocs(side, U);
     assert.deepEqual([...docs.keys()], ["n_good"], "the healthy doc survives its neighbour");
     assert.equal(docs.get("n_good")!.versions[0]!.citations.length, 1);
-  } finally { rmSync(side, { recursive: true, force: true }); }
+  } finally { discard(side); }
 });
 
 test("and neither does a citation that is not an object", async () => {
@@ -107,7 +108,7 @@ test("and neither does a citation that is not an object", async () => {
     const v = (await readDocs(side, U)).get("n_1")!.versions[0]!;
     assert.deepEqual(v.citations.map((c) => c.anchorId), ["a_2"], "only the usable citation is kept");
     assert.deepEqual(v.citations[0]!.acceptedHashes, [], "and a non-array hash list reads as none");
-  } finally { rmSync(side, { recursive: true, force: true }); }
+  } finally { discard(side); }
 });
 
 /**
@@ -154,7 +155,7 @@ test("a doc version missing a nullable scalar does not poison the universe", asy
     assert.equal(thin.createdCommit, null);
     assert.equal(thin.createdBranch, null);
     assert.equal(thin.createdAt, "");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a doc version whose type is not a string never arrives at all", async () => {
@@ -170,5 +171,5 @@ test("a doc version whose type is not a string never arrives at all", async () =
       citations: [], createdCommit: null, createdBranch: null, createdAt: "2026-01-01T00:00:00Z",
     }), "utf8");
     assert.equal((await readDocs(root, "acme/api")).size, 0, "no node, not an empty one");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });

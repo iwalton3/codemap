@@ -9,7 +9,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -17,6 +17,7 @@ import { unifyFindings, splitState, activationGate, unifiedAt } from "./findings
 import { readFinding, writeLocalFinding } from "./store.js";
 import * as shared from "./ops-shared.js";
 import type { SharedFinding } from "./shared-findings.js";
+import { discard } from "./test-tmp.js";
 
 const tmp = (t: string) => mkdtempSync(join(tmpdir(), `codemap-uf-${t}-`));
 
@@ -28,7 +29,7 @@ function universe(withSidecar = true) {
   mkdirSync(join(root, ".codemap"), { recursive: true });
   const side = tmp("side");
   if (withSidecar) writeFileSync(join(root, ".codemap", "sidecar"), side, "utf8");
-  return { root, side, cleanup: () => [root, side].forEach((r) => rmSync(r, { recursive: true, force: true })) };
+  return { root, side, cleanup: () => [root, side].forEach((r) => discard(r)) };
 }
 
 const local = (id: string, over: Partial<SharedFinding> = {}): SharedFinding => ({

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { readFileSync, mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -9,6 +9,7 @@ import { universeKey } from "./sidecar-config.js";
 import { document } from "./ops.js";
 import { publishLocalDocs, sharedDocs } from "./ops-shared.js";
 import { readAnchorStore } from "./store.js";
+import { discard } from "./test-tmp.js";
 
 const A = "ana@acme.test";
 const B = "ben@acme.test";
@@ -105,7 +106,7 @@ test("real GitHub remotes resolve to ONE universe from differently-named checkou
     }
     assert.deepEqual([...keys], ["acme/api"],
       "https and ssh remotes for one repository are one universe, whatever the directory is called");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a doc one person publishes is readable by the other after a sync", async () => {

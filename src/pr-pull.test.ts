@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Anchor, State } from "./schema.js";
@@ -8,6 +8,7 @@ import { writeStore, writeSnapshot, readReviews } from "./store.js";
 import { markReviewedBatch, reviewStatesFor } from "./reviews.js";
 import { pullViewedFromGitHub } from "./pr-push.js";
 import { fixtureHash } from "./fixture-hash.js";
+import { discard } from "./test-tmp.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 const anchor = (id: string, hash: string): Anchor => ({ id, file: "src/pay.cs", symbolPath: [id], kind: "function", bodyHash: hash, lastVerifiedCommit: null });
@@ -75,5 +76,5 @@ test("batch marking keeps the accepted set and witnesses at the ref", async () =
 
     const st = await reviewStatesFor(root, [{ kind: "anchor", id: "a1" }], { viewed: true, ref: "headsha" });
     assert.equal(st.get("anchor:a1")!.code.state, "reviewed", "reads fresh against the code it covered");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -11,6 +11,7 @@ import { indexBlob } from "./repo.js";
 import { derivationFingerprint, derivationMark } from "./normalize.js";
 
 import { fixtureHash } from "./fixture-hash.js";
+import { discard } from "./test-tmp.js";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "codemap-deriv-"));
 
@@ -45,7 +46,7 @@ test("one ref holds rows derived two different ways, and each keeps its own", as
     const byId = new Map(anchorsUnderRef(root, "@work").map((a) => [a.id, a]));
     assert.deepEqual(byId.get("a_before")!.derivation, OLD, "the old row was relabelled");
     assert.deepEqual(byId.get("a_after")!.derivation, NEW, "the new row lost its tag");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 /**
@@ -67,7 +68,7 @@ test("provenance survives the delete-and-reinsert round trip, repeatedly", async
     const byId = new Map(anchors.map((a) => [a.id, a]));
     assert.deepEqual(byId.get("a_1")!.derivation, OLD);
     assert.deepEqual(byId.get("a_2")!.derivation, NEW);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 /**
@@ -85,7 +86,7 @@ test("an orphan keeps the derivation it was evicted under", async () => {
     // A later pass under a new derivation must not overwrite it.
     retainOrphans(root, [anchor("a_gone", NEW)]);
     assert.deepEqual(readOrphans(root).get("a_gone")!.derivation, OLD, "re-derived an orphan");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 /**
@@ -100,7 +101,7 @@ test("an untagged row reads as untagged, not as the current derivation", async (
   try {
     await writeAnchorStore(root, [anchor("a_legacy")]);
     assert.equal(anchorsUnderRef(root, "@work")[0]!.derivation, undefined);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 /** Interned, because there are five tags at most against any number of anchors. */
@@ -112,7 +113,7 @@ test("identical tags are stored once", async () => {
     const { n } = d.prepare("SELECT count(*) AS n FROM derivations").get() as { n: number };
     d.close();
     assert.equal(n, 1, "50 anchors, one distinct tag, one row");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 /**
@@ -181,7 +182,7 @@ test("a fingerprint resolves back to its derivation, when this store has seen it
     assert.deepEqual(derivationLookup(root)(derivationFingerprint(NEW)), [],
       "a derivation this machine has never used is unknown, not wrong");
     assert.deepEqual(derivationLookup(root)("0000000000000000"), []);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 /**

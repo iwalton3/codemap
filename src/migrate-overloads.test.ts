@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Anchor, Review, Triage, Annotation, State } from "./schema.js";
@@ -11,6 +11,7 @@ import { writeStore, readReviews, writeReviews, readAnchorStore } from "./store.
 import { markReviewed } from "./reviews.js";
 import { reindex } from "./ops.js";
 import { fixtureHash } from "./fixture-hash.js";
+import { discard } from "./test-tmp.js";
 
 const anchor = (over: Partial<Anchor> & { id: string; disambiguator?: string }): Anchor => ({
   file: "Agg.cs", symbolPath: ["D", "Agg", "Apply"], kind: "function",
@@ -150,7 +151,7 @@ test("a sign-off on an overload survives the re-index that changes its id", asyn
     const rev = (await readReviews(root)).reviews[0]!;
     assert.equal(rev.target.id, ticket.id, "the sign-off followed the method, not the ordinal");
     assert.equal(rev.witnesses[0]!.anchorId, ticket.id);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a snapshot from another derivation never reports phantom changes", async () => {
@@ -191,5 +192,5 @@ test("a snapshot from another derivation never reports phantom changes", async (
     const d = await computeDiff(root, "basesha") as any;
     assert.ok(d.error, "a wrong answer has no handler; 'not cached' has one");
     assert.match(d.error, /codemap (init|snapshot)/, "and it says how to fix it");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });

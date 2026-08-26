@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { db } from "./db.js";
+import { discard } from "./test-tmp.js";
 
 /**
  * A store written by an older codemap, at the schema before the provenance columns.
@@ -52,5 +53,5 @@ test("a store from before the provenance columns still opens", () => {
     assert.equal(row.node_id, "n_old");
     assert.equal(row.body, "b");
     assert.equal(row.origin, null, "and an existing local row is not retroactively fold-owned");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });

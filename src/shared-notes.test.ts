@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import { testEvent } from "./test-events.js";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -14,6 +14,7 @@ import {
 import * as shared from "./ops-shared.js";
 import { annotate } from "./ops.js";
 import { resolveSidecar } from "./sidecar-config.js";
+import { discard } from "./test-tmp.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
 const dana: Actor = { principal: "dana@x.com" };
@@ -46,7 +47,7 @@ test("a note is readable by its target", async () => {
     assert.equal(notes.length, 1);
     assert.equal(notes[0]!.id, id);
     assert.equal(notes[0]!.author.principal, "izzie@x.com");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("notes about other symbols do not leak into a target's list", async () => {
@@ -56,7 +57,7 @@ test("notes about other symbols do not leak into a target's list", async () => {
     await createNote(root, U, izzie, { ...NEW, targetId: "a_2", text: "different symbol" });
     assert.equal((await notesForTarget(root, U, "a_1")).length, 1);
     assert.equal((await allNotes(root, U)).length, 2, "both are still in the universe");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("answers are append-only and keep every voice", async () => {
@@ -68,7 +69,7 @@ test("answers are append-only and keep every voice", async () => {
     const n = (await notesForTarget(root, U, "a_1"))[0]!;
     assert.equal(n.answers.length, 2);
     assert.equal(n.answers[1]!.actor.via?.model, "claude-opus-5");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an agent may answer a question and may not declare it settled", async () => {
@@ -85,7 +86,7 @@ test("an agent may answer a question and may not declare it settled", async () =
 
     await resolveNote(root, U, "a_1", izzie, id, true, "documented in the node");
     assert.equal((await notesForTarget(root, U, "a_1"))[0]!.resolved?.by.principal, "izzie@x.com");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("the fold is order-independent", () => {
@@ -113,7 +114,7 @@ function universe() {
   mkdirSync(join(root, ".codemap"), { recursive: true });
   const side = tmp("side");
   writeFileSync(join(root, ".codemap", "sidecar"), side, "utf8");
-  return { root, side, cleanup: () => [root, side].forEach((r) => rmSync(r, { recursive: true, force: true })) };
+  return { root, side, cleanup: () => [root, side].forEach((r) => discard(r)) };
 }
 
 /**
@@ -129,7 +130,7 @@ test("no sidecar configured is not an error — mirroring is additive", async ()
   const root = tmp("bare");
   try {
     assert.deepEqual(await shared.mirrorNote(root, NEW), { shared: false });
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("annotating mirrors onto the sidecar, keyed by the same id", async () => {

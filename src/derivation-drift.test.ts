@@ -1,12 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Anchor, DerivationTag } from "./schema.js";
 import { writeAnchorStore, liveDerivationDrift } from "./store.js";
 import { derivationTag } from "./grammars.js";
 import { fixtureHash } from "./fixture-hash.js";
+import { discard } from "./test-tmp.js";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "codemap-drift-"));
 const CURRENT = derivationTag("c_sharp");
@@ -35,7 +36,7 @@ test("a live index built by another grammar is detected", async () => {
     const d = liveDerivationDrift(root);
     assert.equal(d.stale, true);
     assert.equal(d.tagged, 2);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an index built by this build is not flagged", async () => {
@@ -43,7 +44,7 @@ test("an index built by this build is not flagged", async () => {
   try {
     await writeAnchorStore(root, [anchor("a_1", CURRENT), anchor("a_2", derivationTag("python"))]);
     assert.equal(liveDerivationDrift(root).stale, false, "several languages is not drift");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 /**
@@ -59,7 +60,7 @@ test("a pre-provenance index is silent, not suspicious", async () => {
     const d = liveDerivationDrift(root);
     assert.equal(d.stale, false);
     assert.equal(d.untagged, 2);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 /**
@@ -75,5 +76,5 @@ test("one stale row among current ones is enough", async () => {
   try {
     await writeAnchorStore(root, [anchor("a_new", CURRENT), anchor("a_old", FOREIGN)]);
     assert.equal(liveDerivationDrift(root).stale, true);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });

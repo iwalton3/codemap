@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseSubmoduleStatus, submoduleDrift } from "./git.js";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { discard } from "./test-tmp.js";
 
 test("an in-sync submodule is not reported", () => {
   const out = " d748b4537be9985d747673ced94abe5abd87423a Acme.BaseClasses (heads/main)\n";
@@ -65,7 +66,7 @@ test("a repo with no submodules reports no drift and no error", () => {
     const r = submoduleDrift(root);
     assert.deepEqual(r.drift, []);
     assert.equal(r.error, undefined, "empty output is a real answer, not a failure");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a directory that is not a repo is not a submodule problem", () => {
@@ -75,7 +76,7 @@ test("a directory that is not a repo is not a submodule problem", () => {
     const r = submoduleDrift(root);
     assert.deepEqual(r.drift, []);
     assert.equal(r.error, undefined);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a broken submodule gitdir is REPORTED, not silently read as nothing", () => {
@@ -96,5 +97,5 @@ test("a broken submodule gitdir is REPORTED, not silently read as nothing", () =
     // Either it reports drift for `lib` or it reports an error — what it must NOT
     // do is return a clean empty answer, which reads as "everything is in sync".
     assert.ok(r.drift.length > 0 || !!r.error, `expected drift or an error, got ${JSON.stringify(r)}`);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });

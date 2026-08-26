@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { reportDefect } from "./ops/defect.js";
 import { readFindings, readBugs } from "./store.js";
+import { discard } from "./test-tmp.js";
 
 /**
  * One verb, and the CONTEXT decides what the record becomes. What is asserted here is
@@ -28,7 +29,7 @@ const repo = async (withSidecar = false) => {
   const { readAnchorStore } = await import("./store.js");
   return {
     root, anchor: (await readAnchorStore(root)).anchors[0]!.id,
-    cleanup: () => [root, side].forEach((r) => rmSync(r, { recursive: true, force: true })),
+    cleanup: () => [root, side].forEach((r) => discard(r)),
   };
 };
 

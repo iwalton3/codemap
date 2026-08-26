@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import { testEvent } from "./test-events.js";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Actor } from "./schema.js";
@@ -12,6 +12,7 @@ import {
   needsHumanAck, mayTransition, mayRevise, ackQueue, alreadyPosted, isClosed, findingTier, byReadingOrder,
   type SharedFinding, type FindingState,
 } from "./shared-findings.js";
+import { discard } from "./test-tmp.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
 const dana: Actor = { principal: "dana@x.com" };
@@ -31,7 +32,7 @@ test("a person's finding opens as `created` — writing it IS the assertion", as
   try {
     await createFinding(root, 264, izzie, NEW);
     assert.equal((await one(root)).state, "created");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an agent's finding opens as `issued` — a proposal awaiting triage", async () => {
@@ -41,7 +42,7 @@ test("an agent's finding opens as `issued` — a proposal awaiting triage", asyn
     const f = await one(root);
     assert.equal(f.state, "issued");
     assert.equal(f.author.via?.model, "claude-opus-5", "and it records which model raised it");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 // --- the ratchet ---------------------------------------------------------------
@@ -52,7 +53,7 @@ test("an agent may promote its own proposal to `created`", async () => {
     const id = await createFinding(root, 264, opus, NEW);
     assert.ok(!("error" in (await setState(root, 264, fable, id, "created"))));
     assert.equal((await one(root)).state, "created");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an agent may kill a proposal nobody has stood behind", async () => {
@@ -61,7 +62,7 @@ test("an agent may kill a proposal nobody has stood behind", async () => {
     const id = await createFinding(root, 264, opus, NEW);
     assert.ok(!("error" in (await setState(root, 264, fable, id, "invalid"))));
     assert.equal((await one(root)).state, "invalid");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an agent closing a finding a person raised is recorded as an ASK, not refused", async () => {
@@ -79,7 +80,7 @@ test("an agent closing a finding a person raised is recorded as an ASK, not refu
     assert.equal(f.state, "created", "the state is untouched — that is the whole point of the gate");
     assert.equal(f.pending?.ask, "resolve", "and it is on the RECORD, so the badge says `fixed pending`");
     assert.equal(f.pending?.rationale, "fixed at head abc123");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("once anything confirms it, an agent asks rather than closes", async () => {
@@ -92,7 +93,7 @@ test("once anything confirms it, an agent asks rather than closes", async () => 
     const f = await one(root);
     assert.equal(f.state, "issued", "an agent's own finding opens at `issued`, and stays there");
     assert.equal(f.pending?.ask, "invalidate");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 /** An agent's OWN unconfirmed finding is still its own to close — that is triage. */
@@ -105,7 +106,7 @@ test("an agent still closes its own unconfirmed finding outright", async () => {
     const f = await one(root);
     assert.equal(f.state, "refuted");
     assert.equal(f.pending, undefined);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a person may close anything", async () => {
@@ -118,7 +119,7 @@ test("a person may close anything", async () => {
     assert.equal(f.state, "resolved");
     assert.equal(f.closed?.reason, "fixed in abc123");
     assert.ok(isClosed(f.state));
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("THE FOLD enforces the ratchet, not just the write path", () => {
@@ -141,7 +142,7 @@ test("corroboration keeps every opinion — disagreement is the signal", async (
     const f = await one(root);
     assert.equal(f.corroboration.length, 2);
     assert.deepEqual(f.corroboration.map((c) => c.verdict).sort(), ["confirm", "refute"]);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("one entry per actor — a re-review replaces its own opinion, nobody else's", async () => {
@@ -153,7 +154,7 @@ test("one entry per actor — a re-review replaces its own opinion, nobody else'
     const f = await one(root);
     assert.equal(f.corroboration.length, 1);
     assert.equal(f.corroboration[0]!.verdict, "confirm");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an agent's corroboration of its own principal's finding is not independent", async () => {
@@ -164,7 +165,7 @@ test("an agent's corroboration of its own principal's finding is not independent
     const id = await createFinding(root, 264, izzie, NEW);
     await corroborate(root, 264, opus, id, "confirm", "looks right");
     assert.equal((await one(root)).corroboration[0]!.independent, false);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("another person's agent IS independent", async () => {
@@ -173,7 +174,7 @@ test("another person's agent IS independent", async () => {
     const id = await createFinding(root, 264, izzie, NEW);
     await corroborate(root, 264, danasAgent, id, "confirm", "reproduced");
     assert.equal((await one(root)).corroboration[0]!.independent, true);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 // --- the derived ack gate -------------------------------------------------------
@@ -196,7 +197,7 @@ test("promotion is a latch — surfacing twice is not a state change", async () 
     const f = await one(root);
     assert.equal(f.promotion!.at, first, "the first promotion stands");
     assert.equal(f.promotion!.by.principal, "izzie@x.com");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("promotion does NOT gate another person's agent from triaging", async () => {
@@ -206,7 +207,7 @@ test("promotion does NOT gate another person's agent from triaging", async () =>
     await promote(root, 264, izzie, id);
     await corroborate(root, 264, danasAgent, id, "refute", "handled by the guard above");
     assert.equal((await one(root)).corroboration.length, 1);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 // --- requests: the ack queue ----------------------------------------------------
@@ -220,7 +221,7 @@ test("an agent that may not act may still ask, and the ask lands in the queue", 
     assert.equal(f.pending?.ask, "resolve");
     assert.equal(f.pending?.by.via?.model, "claude-opus-5");
     assert.equal(ackQueue([f]).length, 1);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a second ask replaces the first, and the superseded one stays in the log", async () => {
@@ -230,7 +231,7 @@ test("a second ask replaces the first, and the superseded one stays in the log",
     await request(root, 264, opus, id, "refute", "not reachable");
     await request(root, 264, fable, id, "resolve", "actually it is fixed");
     assert.equal((await one(root)).pending?.ask, "resolve");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("acting on an ask clears it", async () => {
@@ -242,7 +243,7 @@ test("acting on an ask clears it", async () => {
     const f = await one(root);
     assert.equal(f.pending, undefined);
     assert.equal(ackQueue([f]).length, 0, "closed findings leave the queue");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an agent reports, a human resolves — outcome does not close anything", async () => {
@@ -254,7 +255,7 @@ test("an agent reports, a human resolves — outcome does not close anything", a
     assert.equal(f.outcome?.result, "fixed");
     assert.deepEqual(f.outcome?.files, ["src/pay.cs"]);
     assert.equal(f.state, "created", "still open — reporting is not resolving");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 // --- threads --------------------------------------------------------------------
@@ -269,7 +270,7 @@ test("a thread is append-only and keeps every voice in order", async () => {
     assert.equal(f.thread.length, 2);
     assert.equal(f.thread[1]!.inReplyTo, a.id);
     assert.equal(f.thread[1]!.actor.via?.model, "claude-opus-5");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 // --- external refs and bug promotion --------------------------------------------
@@ -283,7 +284,7 @@ test("posting is a latch — the duplicate publish this log exists to prevent", 
     const f = await one(root);
     assert.equal(f.posted?.url, "https://gh/1", "the first post is the record");
     assert.equal(alreadyPosted([f]).size, 1);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("upstreaming records the ticket without closing the finding", async () => {
@@ -294,7 +295,7 @@ test("upstreaming records the ticket without closing the finding", async () => {
     const f = await one(root);
     assert.equal(f.upstream?.key, "ABC-123");
     assert.equal(f.state, "created", "tracked in JIRA is not fixed");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("promoting to a bug cross-links and hands over the obligation", async () => {
@@ -307,7 +308,7 @@ test("promoting to a bug cross-links and hands over the obligation", async () =>
     assert.equal(f.bug, "b_31a");
     assert.equal(f.state, "created", "the finding survives — the PR history should still show it was raised");
     assert.equal(ackQueue([f]).length, 0, "its successor is asking now, not it");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 // --- the fold's contract ---------------------------------------------------------
@@ -327,7 +328,7 @@ test("the fold is order-independent", async () => {
       return `${f.state}|${f.corroboration.length}|${!!f.promotion}|${f.thread.length}`;
     });
     assert.equal(new Set(shapes).size, 1, `folds must agree, got ${JSON.stringify(shapes)}`);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an event about an unknown finding is ignored, not fatal", () => {
@@ -503,7 +504,7 @@ test("every report is kept, and the field still says where it got to", async () 
       "round 3: verified at head ccc",
     ], "oldest first, nothing overwritten");
     assert.equal(f.outcome?.detail, "round 3: verified at head ccc", "and the field is the latest");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 /**
@@ -531,7 +532,7 @@ test("accepting an ask keeps the reason it was asked for", async () => {
     assert.equal(done.closed?.reason, "the guard is two lines up, at Startup.cs:88",
       "and the close carries the reason it was granted for, rather than the bare state word");
     assert.equal(done.closed?.grantedAsk?.by.principal, "izzie@x.com");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 /** A person's own words win over the ask's when they give some. */
@@ -544,7 +545,7 @@ test("a person's own closing reason is not overwritten by the ask", async () => 
     const f = await one(root);
     assert.equal(f.closed?.reason, "I checked it myself");
     assert.equal(f.closed?.grantedAsk?.rationale, "agent's reasoning", "and the ask is still attributed");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 /** A second ask supersedes the first, and the first keeps its rationale. */
@@ -559,7 +560,7 @@ test("a superseded ask is settled, not lost", async () => {
     assert.equal(f.asks?.[0]?.settled?.as, "superseded");
     assert.equal(f.asks?.[0]?.rationale, "first read: not reachable");
     assert.equal(f.pending?.ask, "resolve", "and the open one is the latest");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 /**
@@ -586,7 +587,7 @@ test("declining an ask clears the badge and the queue, and keeps the reason", as
     assert.equal(f.asks?.[0]?.settled?.reason, "it is reachable — see Startup.cs:88");
     assert.equal(f.asks?.[0]?.rationale, "not reachable from the controller", "both sides of the disagreement survive");
     assert.equal(f.state, "created", "declining is not closing");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 /** An ask is a request to a person, so an agent cannot answer its own. */
@@ -598,7 +599,7 @@ test("an agent may not decline an ask", async () => {
     await declineAsk(root, 264, opus, id, "changed my mind");
     const f = await one(root);
     assert.equal(f.pending?.ask, "refute", "the fold ignores it — a write-time check only binds the honest writer");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 /** And a decline with no reason is not an answer. */
@@ -609,7 +610,7 @@ test("declining without a reason is dropped", async () => {
     await setState(root, 264, opus, id, "refuted", "not reachable");
     await declineAsk(root, 264, izzie, id, "");
     assert.equal((await one(root)).pending?.ask, "refute");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 /**
@@ -636,7 +637,7 @@ test("`partial` stands behind a finding, everywhere `confirm` does", async () =>
     // and standing behind PART of it is still standing behind it.
     assert.equal(mayTransition(f, opus, "refuted"), false);
     assert.equal(mayTransition(f, izzie, "refuted"), true, "a person still may");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 /** And it is a distinct opinion, not a synonym — the rationale says which part is real. */
@@ -650,7 +651,7 @@ test("`partial` is its own verdict, replacing that reviewer's earlier one", asyn
     assert.equal(f.corroboration.length, 1, "one entry per reviewer — a correction is not a second opinion");
     assert.equal(f.corroboration[0]!.verdict, "partial");
     assert.match(f.corroboration[0]!.rationale, /only the second/);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 /**

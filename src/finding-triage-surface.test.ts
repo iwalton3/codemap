@@ -10,7 +10,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -20,6 +20,7 @@ import { readFinding, writeLocalFinding, writeStore } from "./store.js";
 import { indexBlob } from "./repo.js";
 import type { State } from "./schema.js";
 import type { SharedFinding } from "./shared-findings.js";
+import { discard } from "./test-tmp.js";
 
 const git = (root: string, ...args: string[]) =>
   spawnSync("git", ["-c", "user.email=izzie@x.com", "-c", "user.name=t", ...args], { cwd: root, encoding: "utf8" });
@@ -45,7 +46,7 @@ async function universe() {
   await writeStore(root, await indexBlob(src, "src/pay.ts"), state);
   const side = tmp("side");
   writeFileSync(join(root, ".codemap", "sidecar"), side, "utf8");
-  return { root, side, cleanup: () => [root, side].forEach((r) => rmSync(r, { recursive: true, force: true })) };
+  return { root, side, cleanup: () => [root, side].forEach((r) => discard(r)) };
 }
 
 const withEnv = async (vars: Record<string, string | undefined>, fn: () => Promise<void>) => {

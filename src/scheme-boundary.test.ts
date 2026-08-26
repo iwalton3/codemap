@@ -22,6 +22,7 @@ import assert from "node:assert/strict";
 import { resolveAcceptance, type Ancestry } from "./acceptance.js";
 import { comparableHashes, hashSchemeOf, ABSENT_HASH } from "./normalize.js";
 import type { AcceptedEntry } from "./schema.js";
+import { discard } from "./test-tmp.js";
 
 /** No git in play: every commit is on-ref and known, so ancestry decides nothing. */
 const flat: Ancestry = { onRef: () => true, precedes: () => false, known: () => true };
@@ -93,5 +94,5 @@ test("a doc whose citations all predate the bump is unverifiable, not stale", as
     assert.equal(after?.status, "unverifiable",
       "the code is byte-identical; only the hashing rules moved");
     assert.notEqual(after?.status, "stale", "this is the 985-of-985 failure");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });

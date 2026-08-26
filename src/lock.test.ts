@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile, mkdir, readFile, rm } from "node:fs/promises";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { withLock, touchHeldLocks, SIDECAR_LOCK_STALE_MS } from "./lock.js";
 import { GIT_CALL_TIMEOUT_MS } from "./sidecar.js";
+import { discard } from "./test-tmp.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -70,7 +71,7 @@ test("a holder that outlives staleMs is not stolen from, and never deletes anoth
     assert.equal(overlap, false, "the heartbeat must keep a live holder from being stolen from");
     assert.deepEqual(inside, ["A-in", "A-out", "B-in"], "B waits for A rather than running beside it");
     assert.equal(existsSync(join(root, ".codemap", ".lock")), false, "and the lock is released at the end");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("the sidecar's stale window outlasts one git call", () => {
@@ -116,7 +117,7 @@ test("a held lock can be refreshed from inside a synchronous block", async () =>
 
     assert.equal(existsSync(lockFile), false, "and the lock is still released normally");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    discard(root);
   }
 });
 
@@ -131,6 +132,6 @@ test("a released lock is no longer refreshed", async () => {
     touchHeldLocks();
     assert.equal(existsSync(lockFile), false, "touchHeldLocks did not resurrect a released lock");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    discard(root);
   }
 });

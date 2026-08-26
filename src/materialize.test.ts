@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import { testEvent } from "./test-events.js";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, appendFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, appendFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Actor } from "./schema.js";
@@ -23,6 +23,7 @@ const readCached = async <T>(
   fold: (events: LogEvent[]) => T, proj: Projection<T>,
 ): Promise<T> => (await readCachedChecked(root, logRoot, scope, identity, fold, proj)).value;
 import { findingsProjection, docsProjection } from "./shared-projections.js";
+import { discard } from "./test-tmp.js";
 
 /**
  * A materialized fold is a cache, and "it's only a cache" is exactly the sentence
@@ -49,7 +50,7 @@ const fixture = async () => {
     targetKind: "node", targetId: "n_pay", text: "this flow drops the tender", comment: "and here",
   } as never);
   await comment(logRoot, PR, dana, a, "agreed, and it double-charges");
-  return { logRoot, root, cleanup: () => [logRoot, root].forEach((r) => rmSync(r, { recursive: true, force: true })) };
+  return { logRoot, root, cleanup: () => [logRoot, root].forEach((r) => discard(r)) };
 };
 
 /**
@@ -185,7 +186,7 @@ test("a doc's authors Map and version order survive the round trip", async () =>
     assert.equal(folds, 0);
     assert.deepEqual(again.get("n_pay")!.authors, doc.authors);
     assert.equal(JSON.stringify(again.get("n_pay")!.versions), JSON.stringify(direct.get("n_pay")!.versions));
-  } finally { [logRoot, root].forEach((r) => rmSync(r, { recursive: true, force: true })); }
+  } finally { [logRoot, root].forEach((r) => discard(r)); }
 });
 
 /**
@@ -223,7 +224,7 @@ test("a bug's fold order survives the round trip, adopted rows included", async 
     assert.equal(folds, 0, "and the second read is a hit");
     same(again, direct, "…served from rows, in the FOLD's order, not the order the rows were written");
     assert.deepEqual([...again.keys()], ["bug_first", "bug_second"]);
-  } finally { [logRoot, root].forEach((r) => rmSync(r, { recursive: true, force: true })); }
+  } finally { [logRoot, root].forEach((r) => discard(r)); }
 });
 
 test("a folded doc lands as a canonical row, and its citations are answerable", async () => {
@@ -255,7 +256,7 @@ test("a folded doc lands as a canonical row, and its citations are answerable", 
     const cites = JSON.parse((db(root).prepare("SELECT citations FROM node_versions WHERE version_id = ?")
       .get(vid) as { citations: string }).citations) as { anchorId: string }[];
     assert.deepEqual(cites.map((c) => c.anchorId).sort(), ["a_1", "a_2"]);
-  } finally { [logRoot, root].forEach((r) => rmSync(r, { recursive: true, force: true })); }
+  } finally { [logRoot, root].forEach((r) => discard(r)); }
 });
 
 /**
@@ -304,7 +305,7 @@ test("notes round-trip through the projection", async () => {
     const hit = await readCached(root, logRoot, scope, ID, (e) => { folds++; return foldNotes(e); }, notesProjection);
     assert.equal(folds, 0);
     same(hit, direct, "and the rows rebuild it");
-  } finally { [logRoot, root].forEach((r) => rmSync(r, { recursive: true, force: true })); }
+  } finally { [logRoot, root].forEach((r) => discard(r)); }
 });
 
 /**
@@ -493,7 +494,7 @@ test("the docs projection preserves the fold's OUTER order, not just each node's
     const hit = await readCached(root, logRoot, scope, ID, foldDocs, docsProjection);
     assert.deepEqual([...miss.keys()], ["n_zebra", "n_alpha"], "the fold's own order");
     assert.deepEqual([...hit.keys()], [...miss.keys()], "and the cache agrees with it");
-  } finally { [logRoot, root].forEach((r) => rmSync(r, { recursive: true, force: true })); }
+  } finally { [logRoot, root].forEach((r) => discard(r)); }
 });
 
 test("walkthroughs round-trip through their projection, and are read from the cache", async () => {
@@ -538,7 +539,7 @@ test("walkthroughs round-trip through their projection, and are read from the ca
     const again = await readCached(root, logRoot, scope, ID, foldWalkthroughs, walkthroughsProjection);
     assert.equal(again.length, 2, "still two authors");
     assert.equal(again.find((w) => w.actor.principal === izzie.principal)!.walkthrough.head, "h2");
-  } finally { [logRoot, root].forEach((r) => rmSync(r, { recursive: true, force: true })); }
+  } finally { [logRoot, root].forEach((r) => discard(r)); }
 });
 
 /**

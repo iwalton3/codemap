@@ -20,13 +20,14 @@
 import { test } from "node:test";
 import { testEvent } from "./test-events.js";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, realpathSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { ensureSidecar, sync } from "./sidecar.js";
 import { appendEvents, mintId } from "./eventlog.js";
 import type { Actor } from "./schema.js";
+import { discard } from "./test-tmp.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
 
@@ -60,7 +61,7 @@ function codeRepo() {
   return {
     root, remote, head, status,
     remoteLog: () => git(remote, "log", "--oneline").stdout.trim(),
-    cleanup: () => [root, remote].forEach((d) => rmSync(d, { recursive: true, force: true })),
+    cleanup: () => [root, remote].forEach((d) => discard(d)),
   };
 }
 

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Anchor, State } from "./schema.js";
@@ -10,6 +10,7 @@ import { spineRole, backendSpineRole, layerOf } from "./pr-story.js";
 import { workShapes } from "./pr.js";
 import { spawnSync } from "node:child_process";
 import { fixtureHash } from "./fixture-hash.js";
+import { discard } from "./test-tmp.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 const anchor = (id: string, hash: string): Anchor => ({ id, file: "src/x.cs", symbolPath: ["X"], kind: "function", bodyHash: hash, lastVerifiedCommit: null });
@@ -33,7 +34,7 @@ test("batch triage witnesses against the given ref, not the working tree", async
     const t = (await readTriage(root)).triage.find((x) => x.target.id === "a_new")!;
     assert.equal(t.witnesses[0]!.bodyHash, fixtureHash("NEW"), "a symbol only on the branch must not witness sha256:absent");
     assert.equal(t.likely, true, "an agent proposes; it does not confirm");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("batch triage obeys the same ratchet as a single set — agents never lower a human mark", async () => {
@@ -48,7 +49,7 @@ test("batch triage obeys the same ratchet as a single set — agents never lower
     const t = (await readTriage(root)).triage.find((x) => x.target.id === "a_1")!;
     assert.equal(t.importance, "business-critical", "the human's tier stands");
     assert.equal(t.source, "human");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("batch triage still escalates — raising is always allowed", async () => {
@@ -61,7 +62,7 @@ test("batch triage still escalates — raising is always allowed", async () => {
     const t = (await readTriage(root)).triage.find((x) => x.target.id === "a_1")!;
     assert.equal(t.importance, "business-critical");
     assert.equal(t.complexity, "deep");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("the extracted ratchet is what both paths use", () => {
@@ -97,7 +98,7 @@ test("a PR's parse-derived shapes are computed once per commit pair, not per req
     // A different commit pair is a different question and is computed afresh.
     const other = await workShapes(root, "other-base", head, entries);
     assert.notEqual(other, first);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("the batch ratchet is judged on BAR and severity, not just on importance", async () => {
@@ -123,7 +124,7 @@ test("the batch ratchet is judged on BAR and severity, not just on importance", 
     assert.equal(after.bar, "signed", "the bar a human set is what an agent must not lower");
     assert.equal(after.severity, before.severity);
     assert.equal(after.likely, before.likely, "and it stays a confirmed human mark, not an agent proposal");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("front-end paths order a PR but never assert stakes", async () => {

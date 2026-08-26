@@ -31,6 +31,7 @@ import { sharedSync } from "./ops-shared.js";
 import { forgetWriter, principalKey } from "./eventlog.js";
 import { init } from "./ops.js";
 import { clearPrMetaCache } from "./pr.js";
+import { discard } from "./test-tmp.js";
 
 /**
  * Every member's universe directory has the SAME basename, and that is load-bearing.
@@ -177,7 +178,7 @@ export const SEED: Tree = {
  */
 export async function team(principals: string[], opts: { seed?: Tree } = {}): Promise<Team> {
   const root = mkdtempSync(join(tmpdir(), "codemap-oracle-"));
-  const dispose = () => rmSync(root, { recursive: true, force: true });
+  const dispose = () => discard(root);
 
   const codeOrigin = join(root, "code-origin.git");
   const sidecarOrigin = join(root, "sidecar-origin.git");
@@ -195,7 +196,7 @@ export async function team(principals: string[], opts: { seed?: Tree } = {}): Pr
   git(seedDir, "add", "-A");
   git(seedDir, "commit", "-qm", "seed");
   git(seedDir, "push", "-q", "origin", "main");
-  rmSync(seedDir, { recursive: true, force: true });
+  discard(seedDir);
 
   const members = new Map<string, Member>();
   const all: Member[] = [];

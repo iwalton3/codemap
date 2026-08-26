@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +9,7 @@ import { writeStore, readViewedImports, writeViewedImport } from "./store.js";
 import { surveyViewed, viewedPaths, changedSymbolsIn } from "./pr-bulk.js";
 import { prBaseCommit, mergeBase } from "./git.js";
 import { fixtureHash } from "./fixture-hash.js";
+import { discard } from "./test-tmp.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 
@@ -24,7 +25,7 @@ test("import progress is recorded per PR so a long run resumes instead of restar
     const got = (await readViewedImports(root)).imported;
     assert.equal(got["94"]!.marked, 124);
     assert.ok(got["227"], "a PR that yielded nothing is still recorded — otherwise it is retried forever");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 /**
@@ -61,7 +62,7 @@ test("a merged PR still resolves to the commit it forked from", () => {
 
     // and with no recorded base it refuses rather than returning the collapsed answer
     assert.notEqual(prBaseCommit(root, { recordedBase: null, baseRef: "develop", headSha: head }), head);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 /**
@@ -88,7 +89,7 @@ test("acceptances accumulate oldest-first, each stamped with its own PR head", a
     const entries = (await readReviews(root)).reviews[0]!.accepted![0]!.entries;
     assert.deepEqual(entries.map((e) => e.bodyHash), [fixtureHash("V1"), fixtureHash("V2"), fixtureHash("V3")], "oldest first");
     assert.deepEqual(entries.map((e) => e.commit), ["c_old", "c_mid", "c_new"], "each acceptance carries its own PR head, not the working tree's commit");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 /**

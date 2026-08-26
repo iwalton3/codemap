@@ -13,6 +13,7 @@ import { sortEvents, type LogEvent } from "./eventlog.js";
 import type { Actor, Importance, Complexity } from "./schema.js";
 import { ratchet } from "./triage.js";
 import { foldTriage, triageSubject, triageOf, isTombstone, type SharedTriage } from "./shared-triage.js";
+import { discard } from "./test-tmp.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
 const ben: Actor = { principal: "ben@x.com" };
@@ -471,7 +472,7 @@ test("a failed append with a sidecar configured writes NOTHING", async () => {
       (await readLocalTriage(root)).triage, [],
       "NOTHING was written — a row here is the causality-fabrication path, not a safety net",
     );
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("but with NO sidecar the local row is still the whole story", async () => {
@@ -492,7 +493,7 @@ test("but with NO sidecar the local row is still the whole story", async () => {
     }) as { ok: boolean };
     assert.equal(r.ok, true);
     assert.equal((await readLocalTriage(root)).triage[0]?.importance, "business-critical");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a failed shared clear does not delete the local row on its way out", async () => {
@@ -525,7 +526,7 @@ test("a failed shared clear does not delete the local row on its way out", async
       (await readLocalTriage(root)).triage.length, 1,
       "the mark is STILL THERE — a failed clear that deleted it locally is the worst of both",
     );
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a complexity-only assertion does not erase a tombstone", () => {

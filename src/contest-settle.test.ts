@@ -1,12 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { scenario, who, concurrently, settle, asAgent, type Scenario } from "./scenario.js";
 import { createFinding, revise, resolveContest, readFindings, ackQueue } from "./shared-findings.js";
 import * as shared from "./ops-shared.js";
+import { discard } from "./test-tmp.js";
 
 const git = (root: string, ...args: string[]) => spawnSync("git", args, { cwd: root, encoding: "utf8" });
 
@@ -168,7 +169,7 @@ test("settleContest, the op behind the route and the MCP tool, clears it", async
         assert.equal(v.findings[0]!.severity, "low");
       }
     });
-  } finally { dirs.forEach((d) => rmSync(d, { recursive: true, force: true })); }
+  } finally { dirs.forEach((d) => discard(d)); }
 });
 
 // --- the ratchet still holds ----------------------------------------------------

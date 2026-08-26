@@ -9,7 +9,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DerivationTag, LogicalNode } from "./schema.js";
@@ -18,6 +18,7 @@ import { anchorIndex } from "./anchor-resolve.js";
 import { spawnSync } from "node:child_process";
 import { writeNode, writeAnnotations, readAnchorStore, readAnnotations, loadNodes, readSnapshot } from "./store.js";
 import { init, ackHole, reviewQueue, closeAssignment, snapshotAt, UNPLACEABLE_CATEGORY } from "./ops.js";
+import { discard } from "./test-tmp.js";
 
 const THEIRS: DerivationTag = {
   anchorScheme: 3, hashScheme: 2, parserIntegrity: "p".repeat(64), grammarDigest: "f".repeat(64),
@@ -71,7 +72,7 @@ test("acking a hole nobody can see files the question instead of refusing", asyn
 
     const inQueue = (await reviewQueue(root)).queue.find((x) => x.id === r.queued);
     assert.ok(inQueue, "and it is in the queue an agent already reads");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an answered question is not re-asked, and a changed doc revises the one open item", async () => {
@@ -103,7 +104,7 @@ test("an answered question is not re-asked, and a changed doc revises the one op
     assert.ok(q.revisions?.length, "and what it used to say is kept");
     assert.equal(q.outcome, undefined, "the stale answer is cleared — it answered a different question");
     assert.equal(q.assignment?.kind, "investigate", "and it is asked again");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("the queued question carries the address, not instructions for finding it", async () => {
@@ -140,7 +141,7 @@ test("the queued question carries the address, not instructions for finding it",
     assert.match(q.text, new RegExp(first.slice(0, 12)), "and the commit it checked at");
     assert.match(q.text, /marked WAS are settled/, "…and it says which part is settled and which is not");
     assert.doesNotMatch(q.text, /no record of it anywhere/);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("rewording the question does not throw away an answer", async () => {
@@ -165,7 +166,7 @@ test("rewording the question does not throw away an answer", async () => {
     assert.equal(again.revised, undefined);
     assert.ok((await readAnnotations(root)).annotations.find((a) => a.id === first.queued)!.outcome,
       "and the answer survived the rewording");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("asking twice does not queue it twice", async () => {
@@ -180,7 +181,7 @@ test("asking twice does not queue it twice", async () => {
     assert.equal(second.queued, first.queued);
     assert.equal(second.alreadyQueued, true);
     assert.equal((await readAnnotations(root)).annotations.length, 1);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a doc with live code and one foreign id is not queued — it needs a new version", async () => {
@@ -205,7 +206,7 @@ test("a doc with live code and one foreign id is not queued — it needs a new v
     assert.match(r.error, /write a new version/);
     assert.equal(r.queued, undefined, "and it is not an investigation");
     assert.deepEqual((await readAnnotations(root)).annotations, []);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("one absent citation does not license retiring the ones nobody could place", async () => {
@@ -236,7 +237,7 @@ test("one absent citation does not license retiring the ones nobody could place"
     assert.doesNotMatch(q.text, new RegExp(live.id), "…and not about the one that is decidably gone");
     assert.ok((await loadNodes(root)).find((n) => n.id === "n_pay"),
       "the doc is still on the map — hiding it is the direction with no recovery");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a real hole is still acked, and the doc really is retired", async () => {
@@ -257,7 +258,7 @@ test("a real hole is still acked, and the doc really is retired", async () => {
     assert.deepEqual((await readAnnotations(root)).annotations, [], "and nothing was queued");
     assert.equal((await loadNodes(root)).find((n) => n.id === "n_pay"), undefined,
       "the tombstone was actually written and actually wins — the doc is off this branch's map");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a commit that is not HEAD can be indexed without checking it out", async () => {
@@ -281,5 +282,5 @@ test("a commit that is not HEAD can be indexed without checking it out", async (
     const snap = await readSnapshot(root, first);
     assert.ok(snap!.some((a) => a.symbolPath.join(".") === "transfer"),
       "the symbol as it was there — which is the whole point of asking a commit you are not on");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });

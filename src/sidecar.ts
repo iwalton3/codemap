@@ -37,7 +37,12 @@ import type { Actor } from "./schema.js";
  */
 function samePath(a: string, b: string): boolean {
   if (!a || !b) return false;
-  try { return realpathSync(a) === realpathSync(b); } catch { return a === b; }
+  // `.native` goes through the OS resolver (`GetFinalPathNameByHandle` on Windows),
+  // which expands 8.3 short names; the JS implementation walks lstat and does not.
+  // `os.tmpdir()` on Windows is often the short form (`C:\Users\RUNNER~1\...`) while
+  // `git rev-parse --show-toplevel` returns the long one, so without this the two
+  // never compare equal and the guard below refuses every sidecar under a temp dir.
+  try { return realpathSync.native(a) === realpathSync.native(b); } catch { return a === b; }
 }
 
 /**

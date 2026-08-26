@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import type { Actor } from "./schema.js";
 import { resolveActor, resolvePrincipal, requireActor, isAgentActor, isIndependent, actorLabel } from "./identity.js";
+import { discard } from "./test-tmp.js";
 
 function repoWithEmail(email: string | null): string {
   const root = mkdtempSync(join(tmpdir(), "codemap-id-"));
@@ -32,7 +33,7 @@ test("a principal comes from git, and an override beats it", () => {
     withEnv({ CODEMAP_PRINCIPAL: "someone@else.com" }, () => {
       assert.equal(resolvePrincipal(root), "someone@else.com");
     });
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a human acts as themselves — no `via`", () => {
@@ -44,7 +45,7 @@ test("a human acts as themselves — no `via`", () => {
       assert.equal(a.via, undefined);
       assert.equal(isAgentActor(a), false);
     });
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an agent acts ON BEHALF OF a person — the principal is still a person", () => {
@@ -57,7 +58,7 @@ test("an agent acts ON BEHALF OF a person — the principal is still a person", 
       assert.equal(a.via?.harness, "claude-code");
       assert.equal(isAgentActor(a), true);
     });
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a harness that sets the env is an agent session without anyone passing a flag", () => {
@@ -68,7 +69,7 @@ test("a harness that sets the env is an agent session without anyone passing a f
       assert.equal(isAgentActor(a), true, "an MCP server started by a harness is never a person typing");
       assert.equal(a.via?.model, "claude-fable-5");
     });
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a model id is never invented — `agent` with no model says so honestly", () => {
@@ -79,7 +80,7 @@ test("a model id is never invented — `agent` with no model says so honestly", 
       assert.equal(isAgentActor(a), true);
       assert.equal(a.via?.model, undefined, "a model that does not know its own id must not guess one");
     });
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("no git identity yields null, never a placeholder principal", () => {
@@ -90,7 +91,7 @@ test("no git identity yields null, never a placeholder principal", () => {
     withEnv({ CODEMAP_PRINCIPAL: undefined, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" }, () => {
       assert.equal(resolveActor(root), null);
     });
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 // --- the rule this exists to make enforceable ---------------------------------
@@ -134,7 +135,7 @@ test("a write that records attribution is REFUSED when there is nobody to name",
       assert.match(r.error, /git config user\.email/, "and must say how to fix it");
       assert.match(r.error, /Reading the map needs none of this/, "reads are not gated on this");
     });
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("with an identity set, the same write is allowed", () => {
@@ -144,7 +145,7 @@ test("with an identity set, the same write is allowed", () => {
       const r = requireActor(root);
       assert.ok(!("error" in r));
     });
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("the label names the person, and the model when one acted for them", () => {

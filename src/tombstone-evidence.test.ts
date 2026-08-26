@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { reindex, document as documentNode, ackHole } from "./ops.js";
 import { readAnchorStore, loadNodeVersions } from "./store.js";
 import { derivationMark } from "./normalize.js";
+import { discard } from "./test-tmp.js";
 
 /**
  * A tombstone's citations keep their accepted hashes.
@@ -56,5 +57,5 @@ test("acking a hole keeps the hashes the removal claim rests on", async () => {
       "the tombstone carries the prior version's hashes — its only evidence that this index could resolve the id");
     assert.ok(derivationMark(tomb.citations[0]!.acceptedHashes[0]!),
       "and they are annotated, which is what makes them evidence rather than decoration");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });

@@ -4,7 +4,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildMartenModel, deriveStateMachines, analyzeMarten } from "./marten.js";
@@ -13,6 +13,7 @@ import { writeStore, loadNodes, readGraph } from "../store.js";
 import { indexRepo } from "../repo.js";
 import { document as documentNode, connect, stateMap, nodeCatalog } from "../ops.js";
 import { markReviewed } from "../reviews.js";
+import { discard } from "../test-tmp.js";
 
 // Hold: class aggregate — object-initializer Create, `this.`/bare assignments,
 // if/else branch targets, ternary (dynamic), `e.X` RHS (dynamic), a second
@@ -263,7 +264,7 @@ test("state machines: extraction and derivation", async () => {
     assert.equal(order.transitions.some((t) => t.dynamic), false);
     assert.deepEqual(order.initialMembers.sort(), ["Draft"]);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    discard(root);
   }
 });
 
@@ -292,7 +293,7 @@ test("state machines: findings", async () => {
     const quiet = await analyzeMarten(root, {});
     assert.ok(quiet.findings.some((f) => f.check === "state-unreachable"));
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    discard(root);
   }
 });
 
@@ -349,7 +350,7 @@ test("state machines: emission, idempotence, enrichment survival", async () => {
       "authored from_state edge survives re-emit",
     );
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    discard(root);
   }
 });
 
@@ -396,7 +397,7 @@ test("stateMap op: fully authored machine (no analyzer involvement)", async () =
     assert.deepEqual(t.sources, ["st-widget-text"]);
     assert.deepEqual(t.targets, ["st-widget-number"]);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    discard(root);
   }
 });
 
@@ -464,6 +465,6 @@ test("stateMap op: layout, enrichment join, work queue, trust", async () => {
     // unpaired skeletons still list normally
     assert.ok(cat.nodes.some((n: { id: string }) => n.id === "mtr-hold-holdrouted"));
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    discard(root);
   }
 });

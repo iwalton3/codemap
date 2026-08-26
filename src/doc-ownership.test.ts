@@ -10,6 +10,7 @@ import { selectWinner } from "./doc-version.js";
 import { anchorIndex } from "./anchor-resolve.js";
 import { headCommit } from "./git.js";
 import type { NodeVersion } from "./schema.js";
+import { discard } from "./test-tmp.js";
 
 /**
  * Fold-owned rows, hand-written.
@@ -47,7 +48,7 @@ async function repo(): Promise<{ root: string; anchorId: string; cleanup: () => 
   const { init } = await import("./ops.js");
   await init(root);
   const anchorId = (await readAnchorStore(root)).anchors[0]!.id;
-  return { root, anchorId, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+  return { root, anchorId, cleanup: () => discard(root) };
 }
 
 /**
@@ -81,7 +82,7 @@ async function sharedUniverse(): Promise<{ root: string; anchorId: string; clean
     citations: [{ anchorId, acceptedHashes: [] }],
     createdCommit: null, createdBranch: null,
   } as never);
-  return { root, anchorId, cleanup: () => [root, side].forEach((d) => rmSync(d, { recursive: true, force: true })) };
+  return { root, anchorId, cleanup: () => [root, side].forEach((d) => discard(d)) };
 }
 
 const withEnv = async (vars: Record<string, string | undefined>, fn: () => Promise<void>) => {

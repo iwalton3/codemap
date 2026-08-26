@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
-import { dirname, join, normalize } from "node:path";
+import { dirname, join, normalize, sep } from "node:path";
 
 /**
  * The module graph must stay acyclic.
@@ -33,7 +33,12 @@ function moduleGraph(root: string, ext: ".ts" | ".js"): Map<string, string[]> {
       // ours to fix and would fail this test on every re-vendor.
       if (e.isDirectory()) { if (e.name !== "vendor") walk(join(dir, e.name)); continue; }
       if (!e.name.endsWith(ext) || e.name.endsWith(".test" + ext) || e.name.endsWith(".d.ts")) continue;
-      const rel = join(dir, e.name).replace(new RegExp("^" + root + "/"), "").replace(new RegExp("\\" + ext + "$"), "");
+      // POSIX-separated, on every platform. The key is compared against import
+      // SPECIFIERS, which are always `/`-separated — so on win32 `join` produced
+      // `web\core` here, nothing matched, `cyclesIn` found no edges to walk, and this
+      // guard reported a clean graph while checking nothing. Same class as COD-12.
+      const rel = join(dir, e.name).split(sep).join("/")
+        .replace(new RegExp("^" + root + "/"), "").replace(new RegExp("\\" + ext + "$"), "");
       const src = readFileSync(join(dir, e.name), "utf8");
       // Every spelling: `from "./x.js"`, `await import("./x.js")`, and the bare
       // side-effect `import "./x.js"`. The last one is easy to leave out and is the
@@ -43,8 +48,12 @@ function moduleGraph(root: string, ext: ".ts" | ".js"): Map<string, string[]> {
       // so a double-quote-only pattern finds ZERO edges in web/ — the graph comes back
       // as isolated nodes and every cycle assertion passes vacuously. Caught by
       // reintroducing the app<->shared cycle and watching this stay green.
+      // Same normalization as `rel` above, and for the same reason: `join`/`normalize`
+      // are platform-dependent, so on win32 a dep resolving into a subdirectory came
+      // back as `ops\docs` and matched no node key. Single-segment names happen to
+      // survive, which is what makes this the half that would have been missed.
       const deps = [...src.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)['"](\.\.?\/[\w./-]+)\.js['"]/g)]
-        .map((m) => normalize(join(dirname(rel), m[1]!)));
+        .map((m) => normalize(join(dirname(rel), m[1]!)).split(sep).join("/"));
       g.set(rel, [...new Set(deps)]);
     }
   };

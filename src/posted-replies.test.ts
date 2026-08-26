@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -9,6 +9,7 @@ import type { GhRunner } from "./pr-push.js";
 import { migrateLocalFindings } from "./findings-migrate.js";
 import { writeAnnotations, readFinding } from "./store.js";
 import type { Annotation } from "./schema.js";
+import { discard } from "./test-tmp.js";
 
 const git = (root: string, ...args: string[]) => spawnSync("git", args, { cwd: root, encoding: "utf8" });
 const NEW = { targetKind: "anchor" as const, targetId: "a_1", text: "evidence", comment: "the submitter-facing ask" };
@@ -25,7 +26,7 @@ function universe() {
   git(root, "remote", "add", "origin", "https://github.com/acme/api.git");
   mkdirSync(join(root, ".codemap"), { recursive: true });
   writeFileSync(join(root, ".codemap", "sidecar"), side, "utf8");
-  return { root, cleanup: () => dirs.forEach((d) => rmSync(d, { recursive: true, force: true })) };
+  return { root, cleanup: () => dirs.forEach((d) => discard(d)) };
 }
 
 const withEnv = async (vars: Record<string, string | undefined>, fn: () => Promise<void>) => {

@@ -17,18 +17,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { resolveActor, markAgentSession, clearAgentSession, isAgentActor, isIndependent } from "./identity.js";
+import { discard } from "./test-tmp.js";
 
 function repo() {
   const root = mkdtempSync(join(tmpdir(), "codemap-mcpid-"));
   spawnSync("git", ["init", "-q", "-b", "main"], { cwd: root });
   spawnSync("git", ["config", "user.email", "izzie@x.com"], { cwd: root });
   spawnSync("git", ["config", "user.name", "izzie"], { cwd: root });
-  return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+  return { root, cleanup: () => discard(root) };
 }
 
 test("the MCP server marks itself as an agent session", () => {

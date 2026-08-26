@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeStore, readTriage, writeTriage, writeAnchorStore, writeNode, readGraph, writeGraph, readReviews } from "./store.js";
@@ -10,6 +10,7 @@ import type { Anchor, Triage } from "./schema.js";
 import { setTriage, setTriageBatch, clearTriage, triageStatus, triageSeverity, deriveTriage, rollupCoverage, triageDrift, tripwires, reviewTriageFor } from "./triage.js";
 import type { TriageInfo } from "./triage.js";
 import { fixtureHash } from "./fixture-hash.js";
+import { discard } from "./test-tmp.js";
 
 const initRoot = () => {
   const root = mkdtempSync(join(tmpdir(), "codemap-triage-"));
@@ -65,7 +66,7 @@ test("the ratchet: escalation always allowed, lowering human-only, graph respect
     assert.equal(r.ok, false);
     assert.equal((await readTriage(root)).triage[0]!.importance, "low");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    discard(root);
   }
 });
 
@@ -87,7 +88,7 @@ test("complexity ratchets independently: agents raise it, humans set it freely",
     r = await setTriage(root, { ...t, importance: "important", complexity: "wiring", source: "human" });
     assert.equal(r.ok, true); assert.equal(r.complexity, "wiring");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    discard(root);
   }
 });
 
@@ -133,7 +134,7 @@ test("deriveTriage: graph signals → likely stakes; human marks are preserved",
     const projRow = (await readTriage(root)).triage.find((t) => t.target.id === "proj")!;
     assert.equal(projRow.source, "human");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    discard(root);
   }
 });
 
@@ -159,7 +160,7 @@ test("triageDrift + tripwires surface marks whose witnessed code moved", async (
     assert.equal(tw.fired.length, 1); // and it has fired (its code moved)
     assert.equal(tw.fired[0]!.target.id, "a_moved");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    discard(root);
   }
 });
 
@@ -179,7 +180,7 @@ test("re-triage on drift: a human mark escalates when its code changed AND stake
     assert.equal(info.importance, "business-critical");
     assert.equal(info.likely, true); // re-enters the confirm queue, not silently owned
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    discard(root);
   }
 });
 
@@ -194,7 +195,7 @@ test("no drift → a human mark is NOT re-escalated (blind graph respects it)", 
     assert.equal(r.escalated, 0);
     assert.equal((await triageStatus(root, { kind: "node", id: "pay2" })).importance, "low");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    discard(root);
   }
 });
 
@@ -223,7 +224,7 @@ test("triageStatus crosses stakes with attestation to a severity + bar", async (
     info = await triageStatus(root, { kind: "anchor", id: "a_s" });
     assert.equal(info.severity, "untriaged");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    discard(root);
   }
 });
 
@@ -275,7 +276,7 @@ export function refund(amount: number) { return -amount; }
     await unmarkReviewed(root, { targetKind: "anchor", targetId: a1!.id, level: "code", attestation: "signed" });
     assert.equal(await sev(), "critical");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    discard(root);
   }
 });
 
@@ -293,7 +294,7 @@ test("untriaged escalates only while a review gap remains — a live sign-off co
     assert.equal(info.severity, "complete");
     assert.equal(info.importance, null); // still unclassified — completing isn't triaging
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    discard(root);
   }
 });
 
@@ -324,7 +325,7 @@ test("an agent cannot lower a human's review bar through the complexity axis", a
     const up = await setTriage(root, { ...t, complexity: "deep", source: "agent" });
     assert.equal(up.ok, true);
     assert.equal(up.complexity, "deep");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("the derive pass uses the SAME ratchet — it cannot lower a human's bar through complexity", async () => {
@@ -347,7 +348,7 @@ test("the derive pass uses the SAME ratchet — it cannot lower a human's bar th
     assert.equal(info.importance, "business-critical", "the human's stakes stand");
     assert.equal(info.bar, "signed", "and a derived `wiring` must not drop the bar they set");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    discard(root);
   }
 });
 
@@ -375,7 +376,7 @@ test("an agent that asserts no stakes does not get `important` invented for it",
     assert.equal(h.ok, true);
     assert.equal(h.importance, "important");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    discard(root);
   }
 });
 
@@ -390,7 +391,7 @@ test("witnessing against a commit that was never indexed is an error, not an abs
       () => setTriageBatch(root, [{ anchorId: "a_x", importance: "important", complexity: "rote" }], { source: "agent", ref: "nosuchcommit" }),
       /no cached snapshot/i,
     );
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a human write clears analyzer provenance in the batch path too", async () => {
@@ -414,5 +415,5 @@ test("a human write clears analyzer provenance in the batch path too", async () 
     await writeTriage(root, [{ ...t, source: "graph", generatedBy: "marten", importance: "low" }]);
     await setTriageBatch(root, [{ anchorId: "a_g", importance: "business-critical" }], { source: "graph" });
     assert.equal((await readTriage(root)).triage.find((x) => x.target.id === "a_g")!.generatedBy, "marten");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });

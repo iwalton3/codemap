@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +13,7 @@ import {
 import { setTriage, clearTriage, setTriageBatch, deriveTriage } from "./triage.js";
 import { triageProjection } from "./shared-projections.js";
 import type { Triage } from "./schema.js";
+import { discard } from "./test-tmp.js";
 
 /**
  * Triage as one canonical table, and the seam that keeps a local write off a teammate's
@@ -88,7 +89,7 @@ test("a mark survives the trip out to rows and back", async () => {
     assert.equal(back[0]!.axes?.importance?.source, "human");
     assert.equal(back[0]!.axes?.complexity?.source, "human", "one write, one receipt shared by its fields");
     assert.equal(back[1]!.axes?.tripwire?.likely, true, "an agent's mark, per field");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an absent tripwire stays absent — it is not the same as disarmed", async () => {
@@ -102,7 +103,7 @@ test("an absent tripwire stays absent — it is not the same as disarmed", async
 
     await replaceLocalTriage(root, [mark({ id: "a_1", tripwire: false })]);
     assert.equal((await readTriage(root)).triage[0]!.tripwire, false, "an explicit false is kept, and is different");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a row with no importance is not a mark", async () => {
@@ -115,7 +116,7 @@ test("a row with no importance is not a mark", async () => {
       + "VALUES('anchor','a_orphan','complexity','deep','agent',1,'2026-01-01T00:00:00Z','[]')",
     ).run();
     assert.deepEqual((await readTriage(root)).triage, [], "it answers with nothing rather than inventing stakes");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a local write never reaches a row the fold owns", async () => {
@@ -144,7 +145,7 @@ test("a local write never reaches a row the fold owns", async () => {
     // The reader sees both; the local reader sees only its own.
     assert.deepEqual((await readTriage(root)).triage.map((t) => t.target.id).sort(), ["a_mine", "a_theirs"]);
     assert.deepEqual((await readLocalTriage(root)).triage.map((t) => t.target.id), ["a_mine"]);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a disagreement resolves PESSIMISTICALLY, and the record says it is a merge", async () => {
@@ -167,7 +168,7 @@ test("a disagreement resolves PESSIMISTICALLY, and the record says it is a merge
       back[0]!.divergence, [{ field: "importance", yours: "low", theirs: "business-critical" }],
       "flagged: this record is the safe reading, and it is not what either side asserted",
     );
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("and a local mark on a target the scope has never heard of is untouched", async () => {
@@ -180,7 +181,7 @@ test("and a local mark on a target the scope has never heard of is untouched", a
     const back = new Map((await readTriage(root)).triage.map((t) => [t.target.id, t.importance]));
     assert.equal(back.get("a_mine"), "business-critical");
     assert.equal(back.get("a_theirs"), "low");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("replacing the graph rows leaves human and agent marks alone", async () => {
@@ -208,7 +209,7 @@ test("replacing the graph rows leaves human and agent marks alone", async () => 
     // function is just `replaceLocalTriage` with extra steps.
     await replaceLocalGraphTriage(root, [mark({ id: "a_sneak", source: "human" })]);
     assert.equal((await readTriage(root)).triage.some((t) => t.target.id === "a_sneak"), false);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("an upsert replaces a target whole, so a dropped complexity really drops", async () => {
@@ -222,7 +223,7 @@ test("an upsert replaces a target whole, so a dropped complexity really drops", 
     assert.equal("complexity" in back, false,
       "a stale complexity row would survive under a receipt that no longer mentions it");
     assert.equal((await readTriage(root)).triage.length, 1, "and it did not duplicate the target");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 // --- the blob migration -------------------------------------------------------------
@@ -270,7 +271,7 @@ test("the legacy blob becomes rows, and every mark survives", async () => {
     assert.equal(n.likely, true);
     assert.equal(n.source, "agent");
     assert.equal("tripwire" in n, false, "and an absent tripwire did not become disarmed");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("every migrated mark is LOCAL, and nothing is published by an upgrade", async () => {
@@ -285,7 +286,7 @@ test("every migrated mark is LOCAL, and nothing is published by an upgrade", asy
       "no migrated row claims a scope or an origin",
     );
     assert.equal((await readLocalTriage(root)).triage.length, 2, "they are all this clone's own");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("the migration is idempotent, and a later write is not undone by re-opening", async () => {
@@ -309,7 +310,7 @@ test("the migration is idempotent, and a later write is not undone by re-opening
       (await readTriage(root)).triage.map((t) => t.target.id), ["a_only"],
       "re-opening did not re-import marks a later write had removed",
     );
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a blob this build cannot parse does not stop the store opening", async () => {
@@ -328,7 +329,7 @@ test("a blob this build cannot parse does not stop the store opening", async () 
       "and the unreadable blob is LEFT rather than dropped — nothing is destroyed, and a "
       + "later build can still look at it",
     );
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 // --- the write PATHS, not just the seam ---------------------------------------------
@@ -407,7 +408,7 @@ for (const { what, run, ownsTheirTarget } of WRITE_PATHS) {
         assert.equal(localForTheirs, undefined,
           `${what} copied the teammate's mark into this clone's own rows`);
       }
-    } finally { rmSync(root, { recursive: true, force: true }); }
+    } finally { discard(root); }
   });
 }
 
@@ -432,7 +433,7 @@ test("CONTROL: the write paths really do write — they are not all no-ops here"
     const cleared = await clearTriage(root, { targetKind: "anchor", targetId: "a_mine" });
     assert.equal(cleared.removed, 1, "clearTriage removed the local mark");
     assert.equal((await readLocalTriage(root)).triage.some((t) => t.target.id === "a_mine"), false);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("the ratchet judges against the MERGED value, not this clone's own", async () => {
@@ -454,7 +455,7 @@ test("the ratchet judges against the MERGED value, not this clone's own", async 
       targetKind: "anchor", targetId: "a_2", importance: "business-critical", source: "agent",
     }) as { ok: boolean };
     assert.equal(up.ok, true, "raising over a teammate's mark is allowed");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a tripwire is judged against the body it was ARMED with, not another field's", async () => {
@@ -481,7 +482,7 @@ test("a tripwire is judged against the body it was ARMED with, not another field
       "the tripwire's own receipt reaches the reader — without this the rest cannot work",
     );
     assert.deepEqual(back.witnesses.map((w) => w.anchorId), ["a_1"], "and the alias is still importance's");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("`likely` is DERIVED from every effective field, not read off importance", async () => {
@@ -504,7 +505,7 @@ test("`likely` is DERIVED from every effective field, not read off importance", 
       back.likely, true,
       "an agent supplied one of the effective values, so the mark is not a confirmed human one",
     );
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("a bulk publish holds back EVERY target the log already answers", async () => {
@@ -543,7 +544,7 @@ test("a bulk publish holds back EVERY target the log already answers", async () 
       (r.heldBack ?? []).map((h) => h.target.id).sort(), ["a_cleared", "a_same_imp"],
       "the matching-importance one AND the tombstoned one both need a per-target decision",
     );
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("where both have something to say, the PESSIMISTIC value wins and is flagged", async () => {
@@ -572,7 +573,7 @@ test("where both have something to say, the PESSIMISTIC value wins and is flagge
     assert.equal(t.complexity, "deep", "over-reviewing costs minutes; under-reviewing costs the thing this prevents");
     assert.deepEqual(t.divergence, [{ field: "complexity", yours: "deep", theirs: "wiring" }],
       "flagged, because the record is now the SAFE reading rather than either side's assertion");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
 
 test("asking what is unpublished does not WRITE to the shared repo", async () => {
@@ -595,5 +596,5 @@ test("asking what is unpublished does not WRITE to the shared repo", async () =>
     await publishLocalTriage(root, { dryRun: true });
 
     assert.deepEqual(readdirSync(side).sort(), before, "a dry run left the sidecar exactly as it found it");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { discard(root); }
 });
