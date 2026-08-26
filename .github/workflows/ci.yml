@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A push on top of a push should not leave the older run burning a Windows
+# runner for a commit nobody will look at.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: unit (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # Windows is deliberately NOT blocking yet. It is red today — COD-7 leaves
+    # ~290 EPERM failures from `db.ts` never closing its DatabaseSync cache — and
+    # a required job that is red by design is how a team learns to ignore CI.
+    # Flip `required: true` below, and delete this comment, when COD-7 §1-§3 land.
+    # See docs/plan-bug-backlog-and-ci.md § Phase 1.
+    continue-on-error: ${{ !matrix.required }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            required: true
+          - os: windows-latest
+            required: false
+    steps:
+      # BEFORE checkout: autocrlf is applied as files are written, so setting it
+      # afterwards changes nothing. Hashing itself survives CRLF (`src/indexer.ts`
+      # strips CR before tokenizing), but byte-exact fixtures do not — and CRLF is
+      # what forced HASH_SCHEME 2 in the first place.
+      - name: Leave line endings alone
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # The store uses node:sqlite (DatabaseSync) unflagged, which needs >=23.4.
+          node-version: '24'
+          cache: npm
+
+      # `resolvePrincipal` (src/identity.ts) shells out to `git config user.email`,
+      # and every write op refuses without one — a runner has no identity by default.
+      # Deliberately not CODEMAP_PRINCIPAL: identity.test.ts unsets that env var in
+      # order to test the git path, so setting it here would hide a real regression.
+      - name: Give the runner an identity
+        run: |
+          git config --global user.email "ci@codemap.invalid"
+          git config --global user.name "codemap CI"
+
+      - run: npm ci
+
+      # Through the npm script, never `node --test` directly: --test-isolation=none
+      # and --test-concurrency=1 are load-bearing. Isolation because the runner's
+      # per-file child intermittently never exits (see CLAUDE.md § "The stall"),
+      # concurrency because a few tests set CODEMAP_AGENT_MODEL around a call.
+      # `unit` typechecks src and web/ on the way in.
+      - run: npm run unit
+
+  e2e:
+    name: e2e (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Give the runner an identity
+        run: |
+          git config --global user.email "ci@codemap.invalid"
+          git config --global user.name "codemap CI"
+
+      - run: npm ci
+
+      # Most of this suite skips here, and that is the point: the browser suites
+      # resolve playwright/puppeteer from an external checkout (CODEMAP_E2E_*),
+      # vdx-lint needs CODEMAP_VDX_TOOLS, and pr-import needs a jellyfin clone.
+      # CLAUDE.md requires each to SKIP when its prerequisite is absent rather than
+      # fail, and nothing else checks that they still do.
+      #
+      # api.e2e.ts is not among them — it needs a server but no browser, so it runs
+      # here for real, over every HTTP write route the review loop uses.
+      - run: npm run e2e
