@@ -1141,6 +1141,62 @@ export async function readSharedWiring(root: string, scope: string): Promise<{ n
     .all(scope) as unknown as { nodeId: string; body: string }[];
 }
 
+/**
+ * Every scope whose last fold did NOT reach `complete`, with the reason.
+ *
+ * Read from the STORED verdict rather than by re-reading shards: materialization writes
+ * the status it reached, so this is a table scan instead of a walk over every event byte
+ * in the sidecar on every page load. A scope with no row has never been folded here,
+ * which is not the same as blocked and is correctly absent.
+ */
+export async function readBlockedScopes(root: string): Promise<{ scope: string; reason: string }[]> {
+  const rows = db(root).prepare("SELECT scope, status, diagnostic FROM shared_scope WHERE status != 'complete'")
+    .all() as unknown as { scope: string; status: string; diagnostic: string | null }[];
+  return rows.map((r) => {
+    let reason = r.status;
+    try { reason = r.diagnostic ? (JSON.parse(r.diagnostic).detail ?? r.status) : r.status; } catch { /* keep the status */ }
+    return { scope: r.scope, reason };
+  });
+}
+
+/**
+ * Findings per pull request, counted in SQL.
+ *
+ * One grouped query rather than a fold per scope: the table IS the projection, it holds
+ * local rows as well as the team's, and counting only the scopes on disk would miss a
+ * finding filed on a machine with no sidecar.
+ */
+export async function findingCountsByPr(root: string): Promise<{ pr: string; total: number; waiting: number; unshared: number }[]> {
+  return (db(root).prepare(
+    "SELECT pr, COUNT(*) AS total, SUM(needs_ack) AS waiting, "
+    + "SUM(CASE WHEN source_scope IS NULL THEN 1 ELSE 0 END) AS mine "
+    + "FROM findings GROUP BY pr",
+  ).all() as unknown as { pr: string; total: number; waiting: number; mine: number }[])
+    .map((r) => ({ pr: r.pr, total: Number(r.total), waiting: Number(r.waiting), unshared: Number(r.mine) }));
+}
+
+/**
+ * Walkthroughs written HERE and not yet published — what `publishLocalWalkthroughs` sends.
+ *
+ * `total` is every local row and `ready` only the ones that parse, and the CALLER REPORTS
+ * BOTH. The gap between them is the only signal that a row is unreadable: an unreadable
+ * one is counted rather than made fatal, so collapsing these to one number would make a
+ * corrupt walkthrough silently indistinguishable from one that was never written.
+ */
+export async function readUnpublishedWalkthroughs(root: string): Promise<{ total: number; ready: { pr: string; walkthrough: PrWalkthrough }[] }> {
+  const rows = db(root).prepare(
+    "SELECT pr, body FROM walkthroughs WHERE source_scope IS NULL ORDER BY pr",
+  ).all() as unknown as { pr: string; body: string }[];
+  const ready: { pr: string; walkthrough: PrWalkthrough }[] = [];
+  for (const r of rows) {
+    try {
+      const env = JSON.parse(r.body) as { walkthrough?: PrWalkthrough };
+      if (env?.walkthrough) ready.push({ pr: r.pr, walkthrough: env.walkthrough });
+    } catch { /* counted in `total`, not published */ }
+  }
+  return { total: rows.length, ready };
+}
+
 /** This clone's OWN edges. What every WRITER must read before it writes. */
 export async function readLocalGraph(root: string): Promise<Graph> {
   const rows = db(root).prepare("SELECT from_id,to_id,type,ord,generated_by FROM edges WHERE source_scope IS NULL")

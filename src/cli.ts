@@ -4,12 +4,8 @@
 
 import { parseArgs } from "node:util";
 import { resolve } from "node:path";
-import { currentBranch } from "./git.js";
-import { readAnchorStore, readState, writeState, loadNodes } from "./store.js";
-import { computeStaleness } from "./stale.js";
 import { analyzeMarten } from "./analyzers/marten.js";
-import { enableAnalyzer, refreshAnalyzers } from "./analyzers/run.js";
-import { applyIndexUpdate } from "./sync.js";
+import { enableAnalyzer } from "./analyzers/run.js";
 import { withLock } from "./lock.js";
 import * as ops from "./ops.js";
 import * as shared from "./ops-shared.js";
@@ -616,46 +612,50 @@ async function cmdDiff(root: string, base: string, head?: string): Promise<void>
   }
 }
 
+/**
+ * `codemap check`, which is FORMATTING ONLY.
+ *
+ * It used to reimplement the workflow: its own branch detection, its own
+ * `computeStaleness` call, its own index update and analyzer refresh — a second
+ * implementation of `ops.checkStale`, and one that had already drifted. It read
+ * `loadNodes` where ops reads `loadNodesShared` (so a teammate's doc was invisible to
+ * the CLI), and it reported neither dangling citations nor derivation drift, both of
+ * which ops returns and both of which are things you want `check` to tell you.
+ *
+ * The rule the layering states and this broke: the CLI is a front-end over ops. If
+ * output needs a field ops does not return, add it to ops — `added` was added here for
+ * exactly that reason rather than recomputed locally.
+ */
 async function cmdCheck(root: string): Promise<void> {
-  // Branch switch → re-baseline first (same detection the MCP check_stale uses).
-  const before = await readState(root);
-  const cur = currentBranch(root);
-  if (cur && before.branch != null && cur !== before.branch) {
-    const r = await ops.reindex(root);
-    console.log(`branch changed ${before.branch} → ${cur}: re-indexed ${r.anchors} anchors at ${r.commit?.slice(0, 8) ?? "?"}`);
-  } else if (cur && before.branch == null) {
-    await writeState(root, { ...before, branch: cur }); // start tracking
+  const r = await ops.checkStale(root);
+  if (r.rebaselined) {
+    const b = r.rebaselined;
+    console.log(`branch changed ${b.from} → ${b.to}: re-indexed ${b.anchors} anchors at ${b.commit?.slice(0, 8) ?? "?"}`);
   }
-  const store = await readAnchorStore(root);
-  const state = await readState(root);
-  const nodes = await loadNodes(root);
-  const r = await computeStaleness(root, store, nodes, state.lastVerifiedCommit);
-
-  console.log(`scope: ${r.scope}   ok: ${r.okCount}   stale: ${r.checks.length}   added: ${r.addedAnchorIds.length}`);
-  const byStatus = (s: string) => r.checks.filter((c) => c.status === s);
-  for (const c of byStatus("candidate_stale")) {
-    const a = store.anchors.find((x) => x.id === c.anchorId)!;
-    console.log(`  ~ candidate-stale  ${a.file}  ${a.symbolPath.join(" › ")}`);
-  }
-  for (const c of byStatus("lost")) {
-    const a = store.anchors.find((x) => x.id === c.anchorId)!;
-    console.log(`  ✗ lost             ${a.file}  ${a.symbolPath.join(" › ")}`);
-  }
-  if (r.flaggedNodes.length) {
-    console.log(`\nflagged docs (${r.flaggedNodes.length}):`);
-    for (const { node, reasons } of r.flaggedNodes) {
-      console.log(`  • ${node.id} "${node.title}" — ${reasons.length} anchor(s): ${reasons.map((x) => x.status).join(", ")}`);
+  console.log(`scope: ${r.scope}   ok: ${r.ok}   stale: ${r.stale.length}   added: ${r.added}`);
+  const where = (c: { anchor?: { file: string; symbol: string } }) =>
+    c.anchor ? `${c.anchor.file}  ${c.anchor.symbol}` : "(anchor no longer in the index)";
+  for (const c of r.stale.filter((x) => x.status === "candidate_stale")) console.log(`  ~ candidate-stale  ${where(c)}`);
+  for (const c of r.stale.filter((x) => x.status === "lost")) console.log(`  ✗ lost             ${where(c)}`);
+  if (r.flaggedDocs.length) {
+    console.log(`\nflagged docs (${r.flaggedDocs.length}):`);
+    for (const f of r.flaggedDocs) {
+      console.log(`  • ${f.node} "${f.title}" — ${f.reasons.length} anchor(s): ${f.reasons.map((x) => x.status).join(", ")}`);
     }
-  } else if (r.checks.length) {
+  } else if (r.stale.length) {
     console.log("\n(no logical nodes cite the affected anchors yet)");
   }
-  const changed = r.checks.length > 0 || r.addedAnchorIds.length > 0;
-  const upd = await applyIndexUpdate(root);
-  if (upd.added || upd.movedLoc) console.log(`index update: +${upd.added} new anchors, ${upd.movedLoc} relocated`);
-  for (const rf of await refreshAnalyzers(root, { changed })) {
-    console.log(`refreshed ${rf.name} graph: ${JSON.stringify(rf.emitted)}`);
+  // Both new to the CLI, and both were already computed on every run — ops returned
+  // them and this command threw them away.
+  if (r.danglingDocs?.length) {
+    console.log(`\ndocs citing code that is no longer indexed (${r.danglingDocs.length}):`);
+    for (const d of r.danglingDocs) console.log(`  ! ${d.node} "${d.title}" — ${d.missingAnchors.length} anchor(s)`);
   }
+  if (r.indexUpdate) console.log(`index update: +${r.indexUpdate.added} new anchors, ${r.indexUpdate.movedLoc} relocated`);
+  for (const rf of r.refreshedAnalyzers ?? []) console.log(`refreshed ${rf.name} graph: ${JSON.stringify(rf.emitted)}`);
+  if (r.derivationDrift) console.log(`\nderivation drift: ${r.derivationDrift.note}`);
 }
+
 
 const { positionals, values } = parseArgs({ allowPositionals: true, options: { verbose: { type: "boolean" }, emit: { type: "boolean" }, repo: { type: "string" }, "no-fetch": { type: "boolean" }, json: { type: "boolean" }, limit: { type: "string" }, offset: { type: "string" }, "dry-run": { type: "boolean" }, confirm: { type: "boolean" }, viewed: { type: "boolean" }, all: { type: "boolean" }, "min-severity": { type: "string" }, force: { type: "boolean" }, "max-prs": { type: "string" }, summary: { type: "string" }, approve: { type: "boolean" }, "request-changes": { type: "boolean" }, pull: { type: "boolean" }, anyone: { type: "boolean" }, only: { type: "string" }, queue: { type: "boolean" }, tier: { type: "string" }, locate: { type: "boolean" }, "show-elsewhere": { type: "boolean" }, apply: { type: "boolean" }, assign: { type: "string", multiple: true } } });
 

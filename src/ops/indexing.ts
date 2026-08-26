@@ -257,6 +257,10 @@ export async function checkStale(root: string) {
   return {
     scope: r.scope,
     ok: r.okCount,
+    // Symbols present in the tree and not yet in the store. Distinct from
+    // `indexUpdate.added`, which is what the update that follows actually wrote:
+    // this is measured BEFORE it, and `codemap check` has always printed it.
+    added: r.addedAnchorIds.length,
     stale: r.checks.map((c) => ({ ...c, anchor: byId.get(c.anchorId) ? anchorBrief(byId.get(c.anchorId)!) : undefined })),
     flaggedDocs: r.flaggedNodes.map((f) => ({
       node: f.node.id,

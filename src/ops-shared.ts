@@ -14,7 +14,6 @@ import { realpathSync } from "node:fs";
 import { classifyCitations } from "./citation-state.js";
 import { evalVersion } from "./doc-version.js";
 import { readCached, ensureMaterialized, type Projection } from "./materialize.js";
-import { db } from "./db.js";
 import type { ScopeStatus, ScopeDiagnostic, LogEvent } from "./eventlog.js";
 import { scopesOnDisk, readScopeChecked, writerFor, rotateWriter, acknowledgeScope } from "./eventlog.js";
 import { findingsProjection, docsProjection, notesProjection, walkthroughsProjection, triageProjection, docsByNode, projectionFor } from "./shared-projections.js";
@@ -42,7 +41,7 @@ export { sharedKnowsNode, docsVerdict, type DocsVerdict } from "./docs-lookup.js
 import { docsVerdict } from "./docs-lookup.js";
 import { queueContestedTriage } from "./ops/triage.js";
 export { mirrorTriage, mirrorTriageBatch, mirrorTriageClear } from "./triage-publish.js";
-import { readSharedNotes, readAnnotations, readAnchorStore, readFindings, loadNodes, loadNodeVersions, nodeIdsWithPublishableVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets, attributeLocalWalkthrough } from "./store.js";
+import { readSharedNotes, readAnnotations, readAnchorStore, readFindings, loadNodes, loadNodeVersions, nodeIdsWithPublishableVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets, attributeLocalWalkthrough, readBlockedScopes, findingCountsByPr, readUnpublishedWalkthroughs } from "./store.js";
 import {
   publishDocVersion, acceptDocHash, resolveDoc, foldDocs, docScope,
   type NewDocVersion,
@@ -1597,18 +1596,9 @@ export async function shareWalkthrough(root: string, w: PrWalkthrough) {
 export async function publishLocalWalkthroughs(root: string, opts: { dryRun?: boolean } = {}) {
   const cfg = resolveSidecar(root);
   if (!cfg) return { error: NO_SIDECAR };
-  const rows = db(root).prepare(
-    "SELECT pr, body FROM walkthroughs WHERE source_scope IS NULL ORDER BY pr",
-  ).all() as unknown as { pr: string; body: string }[];
-  const todo: { pr: string; walkthrough: PrWalkthrough }[] = [];
-  for (const r of rows) {
-    try {
-      const env = JSON.parse(r.body) as { walkthrough?: PrWalkthrough };
-      if (env?.walkthrough) todo.push({ pr: r.pr, walkthrough: env.walkthrough });
-    } catch { /* an unreadable row is reported by the count, not by refusing to run */ }
-  }
+  const { total, ready: todo } = await readUnpublishedWalkthroughs(root);
   if (opts.dryRun) {
-    return { universe: cfg.universe, local: rows.length, wouldPublish: todo.map((t) => t.pr) };
+    return { universe: cfg.universe, local: total, wouldPublish: todo.map((t) => t.pr) };
   }
   const published: string[] = [];
   const failed: { pr: string; error: string }[] = [];
@@ -1619,7 +1609,7 @@ export async function publishLocalWalkthroughs(root: string, opts: { dryRun?: bo
     if (r.error) failed.push({ pr: t.pr, error: r.error }); else published.push(t.pr);
   }
   return {
-    universe: cfg.universe, local: rows.length, published,
+    universe: cfg.universe, local: total, published,
     ...(failed.length ? { failed } : {}),
     note: published.length ? "run `codemap sync` to send them" : "nothing new to publish",
   };
@@ -1850,14 +1840,7 @@ export async function sharedHub(root: string) {
   // the status the last fold reached, and materialization writes it — so this is a
   // table scan rather than a walk over every event byte in the sidecar on every page
   // load. A scope with no row has never been folded here, which is not blocked.
-  const blocked: { scope: string; reason: string }[] = [];
-  for (const r of db(root).prepare("SELECT scope, status, diagnostic FROM shared_scope WHERE status != 'complete'")
-    .all() as unknown as { scope: string; status: string; diagnostic: string | null }[]) {
-    if (!inUniverse(r.scope, cfg.universe)) continue;
-    let reason = r.status;
-    try { reason = r.diagnostic ? (JSON.parse(r.diagnostic).detail ?? r.status) : r.status; } catch { /* keep the status */ }
-    blocked.push({ scope: r.scope, reason });
-  }
+  const blocked = (await readBlockedScopes(root)).filter((b) => inUniverse(b.scope, cfg.universe));
 
   // Every pull request that has findings, from the canonical table. The hub had no
   // per-PR index at all, so there was no navigational path from here to a pull
@@ -1866,12 +1849,7 @@ export async function sharedHub(root: string) {
   // One grouped query rather than a fold per scope: the table is the projection, it
   // holds local rows as well as the team's, and a hub that listed only the scopes on
   // disk would miss a finding filed on a machine with no sidecar.
-  const prs = (db(root).prepare(
-    "SELECT pr, COUNT(*) AS total, SUM(needs_ack) AS waiting, "
-    + "SUM(CASE WHEN source_scope IS NULL THEN 1 ELSE 0 END) AS mine "
-    + "FROM findings GROUP BY pr",
-  ).all() as unknown as { pr: string; total: number; waiting: number; mine: number }[])
-    .map((r) => ({ pr: r.pr, total: Number(r.total), waiting: Number(r.waiting), unshared: Number(r.mine) }))
+  const prs = (await findingCountsByPr(root))
     // Newest first where the key is a number, which is what a pull request key is;
     // anything else sorts after rather than being dropped.
     .sort((a, b) => (Number(b.pr) || -1) - (Number(a.pr) || -1) || a.pr.localeCompare(b.pr));
