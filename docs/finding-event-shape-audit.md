@@ -140,3 +140,38 @@ person confirming needs to see.
   itself as that queue's report-back verb is a description problem before it is a design one.
 - That the latch shape is wrong for `state`. 56 `stateChanged` events, zero overwritten:
   a state machine is exactly what a latch is for.
+
+## Addendum — what was built from this (2026-08-25)
+
+Izzie set six rules after reading the audit, and they cut the gate differently from
+either proposal above. Recorded here because the audit is the evidence for them.
+
+1. **The triage log is append-only, read on expand.** (`outcome` is still a latch — the
+   one item NOT yet built; see below.)
+2. **Agents may always revise the description.** `mayRevise` is unconditional.
+   `severity` keeps a gate, on CONFIRMATION only — supplying a severity to a person's
+   raw one-liner is the write-up an agent exists for; re-rating a number somebody has
+   since stood behind is theirs.
+3. **Promotion is optional triage, never a gate.** It left `mayTransition` entirely, and
+   it now counts in `findingTier` — clicking promote used to leave a finding sitting in
+   `unconfirmed`, the pile documented as "filed, and nobody has weighed in".
+4. **State never blocks remediation.** Already true; `remediate` had no gate.
+5. **Closing needs an ack when confirmed OR filed by a person** — `agentClosureNeedsAck`,
+   which is deliberately not `needsHumanAck`. That predicate was doing two opposite jobs:
+   populating the human queue and locking agents out.
+6. **The ask is marked on the item.** An agent's close is no longer REFUSED — it is
+   recorded as a pending ask carrying its reason, and rendered `fixed pending` /
+   `refuted pending`. That is the whole fix for §2 above: the agent reached for
+   `close_finding`, the tool said no, and what it reached for next was prose. There were
+   zero `request_human` asks in the entire sidecar against fifteen thread comments doing
+   the job by hand.
+
+Also built, from `WORKFLOW_ISSUES.md`: `close_finding` returns `applied`/`refused` with
+an honest `ok` (§2 there), `result:"fixed"` infers `fixed-on-branch` (§8), and
+`remediation` is rendered on the shared view (§1) — it was on every record and no
+surface, which is why five findings verified fixed still read as live defects.
+
+**Still open from this audit:** `finding.outcome` remains last-write-wins, so PR 270's
+37 overwritten reports are still unreachable. Rule 1 wants it append-only. Nothing else
+in the sidecar loses an event, so this is one PR's damage plus a shape that will do it
+again the next time somebody runs a multi-round verification.

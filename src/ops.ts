@@ -122,14 +122,36 @@ export async function closeFinding(
   // and it inherits that verb's refusals, which is why the failure is reported back
   // instead of swallowed.
   const notes: string[] = ["reported — a person still has to close it"];
+  // STRUCTURED, not prose. This returned `ok: true` with every refusal buried in `note`,
+  // and `ok` means success everywhere else — so an agent that set `comment` and had it
+  // refused believed it landed and moved on. Reported by an agent that only caught it by
+  // re-reading the prose (`WORKFLOW_ISSUES.md` §2).
+  const applied: string[] = ["outcome"];
+  const refused: { field: string; why: string }[] = [];
   // Ungated, unlike the comment/severity half below: what HAPPENED about a finding is an
   // observation, and the commonest reason to record one is a submitter fixing something
   // other people confirmed — exactly the case a confirmation gate would refuse.
-  if (input.remediation) {
-    const rr = await shared.remediateFinding(root, f.pr!, f.id, input.remediation, { detail: input.detail }) as { error?: string };
-    if (rr.error) notes.push(`remediation NOT recorded: ${rr.error}`);
+  // `result: "fixed"` with no remediation used to leave it at `outstanding` — so a call
+  // that literally says the code was fixed left "what is still open on this PR" counting
+  // it as open. A prior pass lost nine findings that way (`WORKFLOW_ISSUES.md` §8).
+  // Inferred rather than refused, and `fixed-on-BRANCH` rather than `-on-default`: a
+  // report on a pull request's finding is about the branch, and claiming the mainline is
+  // clean would let a linked bug be closed while the defect still ships.
+  const remediation = input.remediation
+    ?? (input.result === "fixed" ? ("fixed-on-branch" as const) : undefined);
+  if (remediation) {
+    const rr = await shared.remediateFinding(root, f.pr!, f.id, remediation, { detail: input.detail }) as { error?: string };
+    if (rr.error) { refused.push({ field: "remediation", why: rr.error }); notes.push(`remediation NOT recorded: ${rr.error}`); }
+    else {
+      applied.push("remediation");
+      if (!input.remediation) notes.push(`remediation set to \`fixed-on-branch\` because you reported \`fixed\` — pass \`remediation\` to say otherwise`);
+    }
   }
-  if (d && !verdict) notes.push(`disposition "${d}" is not recorded on a shared finding — verdicts are`);
+  if (verdict) applied.push("corroboration");
+  if (d && !verdict) {
+    refused.push({ field: "disposition", why: "a shared finding records verdicts, not dispositions" });
+    notes.push(`disposition "${d}" is not recorded on a shared finding — verdicts are`);
+  }
   const patch = {
     ...(input.comment !== undefined ? { comment: input.comment } : {}),
     ...(Number.isFinite(input.line) ? { line: Math.floor(input.line as number) } : {}),
@@ -139,9 +161,19 @@ export async function closeFinding(
     const c = checkComment(input.comment, d);
     if ("error" in c) return c;
     const rev = await shared.reviseFinding(root, f.pr!, f.id, patch) as { error?: string };
-    if (rev.error) notes.push(`${Object.keys(patch).join(" and ")} NOT changed: ${rev.error}`);
+    if (rev.error) {
+      for (const k of Object.keys(patch)) refused.push({ field: k, why: rev.error });
+      notes.push(`${Object.keys(patch).join(" and ")} NOT changed: ${rev.error}`);
+    } else applied.push(...Object.keys(patch));
   }
-  return { ok: true, id: f.id, pr: f.pr, shared: true, note: notes.join("; ") };
+  return {
+    // `ok` now means what it means everywhere else. A caller that asked for four things
+    // and got three has not succeeded, and finding that out should not require reading.
+    ok: refused.length === 0,
+    id: f.id, pr: f.pr, shared: true, applied,
+    ...(refused.length ? { refused } : {}),
+    note: notes.join("; "),
+  };
 }
 
 /**

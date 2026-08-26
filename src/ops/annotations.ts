@@ -6,7 +6,7 @@ import { headCommit, readBlobs } from "../git.js";
 import { readAnchorStore, loadNodes, readAnnotations, writeAnnotations, readFindings, readFinding, writeLocalFinding, findAnchorsOutsideWork, readPushes, bodyHashAt, readOrphans, readSharedNotes } from "../store.js";
 import { resolveSidecar } from "../sidecar-config.js";
 import {
-  findingTier, isClosed, mayTransition, needsHumanAck,
+  findingTier, isClosed, mayTransition, needsHumanAck, ASK_FOR_STATE,
   type Ask, type FindingState, type FindingTier, type Remediation, type SharedFinding, type Verdict,
 } from "../shared-findings.js";
 import { requireActor, isAgentActor, actorLabel, reviewerKey, isIndependent } from "../identity.js";
@@ -1136,10 +1136,16 @@ async function localFindingWrite<T>(
 export const setLocalFindingState = (root: string, id: string, state: FindingState, reason?: string) =>
   localFindingWrite(root, id, (f, actor, at) => {
     if (!mayTransition(f, actor, state)) {
+      // Asked, not refused — the same rule the shared path follows, and for the same
+      // reason: an agent told "no" goes looking for another verb, and the one it finds
+      // is prose. See `setState` in `shared-findings.ts`.
+      const ask = ASK_FOR_STATE[state];
+      if (!ask) return { error: `an agent may not move ${id} from ${f.state} to ${state} — request it instead` };
+      f.pending = { ask, by: actor, at, rationale: reason ?? `agent concluded ${state}` };
       return {
-        error: needsHumanAck(f)
-          ? `${id} needs a person: it is promoted or somebody has confirmed it, so an agent may only request \`${state}\`, not do it`
-          : `an agent may not move ${id} from ${f.state} to ${state} — request it instead`,
+        asked: ask,
+        note: `${id} is confirmed or was filed by a person, so \`${state}\` is a person's to apply. `
+          + `Recorded as a pending \`${ask}\` — it shows on the finding and in their queue.`,
       };
     }
     f.state = state;

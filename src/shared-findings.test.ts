@@ -64,23 +64,47 @@ test("an agent may kill a proposal nobody has stood behind", async () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("an agent may NOT close a finding a person raised", async () => {
+test("an agent closing a finding a person raised is recorded as an ASK, not refused", async () => {
+  // The guarantee is unchanged — the state does not move. What changed is the answer:
+  // an agent told "no" goes looking for another verb, and the one it reaches for is
+  // prose. Fifteen of fifteen thread comments in the production sidecar are state
+  // changes written as remarks, against zero `request_human` asks ever recorded.
   const root = tmp();
   try {
     const id = await createFinding(root, 264, izzie, NEW);
-    const r = await setState(root, 264, opus, id, "resolved") as { error: string };
-    assert.match(r.error, /request it instead|only request/);
-    assert.equal((await one(root)).state, "created", "and the state is untouched");
+    const r = await setState(root, 264, opus, id, "resolved", "fixed at head abc123") as { asked?: string; error?: string };
+    assert.equal(r.error, undefined);
+    assert.equal(r.asked, "resolve");
+    const f = await one(root);
+    assert.equal(f.state, "created", "the state is untouched — that is the whole point of the gate");
+    assert.equal(f.pending?.ask, "resolve", "and it is on the RECORD, so the badge says `fixed pending`");
+    assert.equal(f.pending?.rationale, "fixed at head abc123");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("once anything confirms it, an agent may no longer close it", async () => {
+test("once anything confirms it, an agent asks rather than closes", async () => {
   const root = tmp();
   try {
     const id = await createFinding(root, 264, opus, NEW);
     await corroborate(root, 264, dana, id, "confirm", "reproduced");
-    const r = await setState(root, 264, fable, id, "invalid") as { error: string };
-    assert.match(r.error, /needs a person/);
+    const r = await setState(root, 264, fable, id, "invalid") as { asked?: string };
+    assert.equal(r.asked, "invalidate");
+    const f = await one(root);
+    assert.equal(f.state, "issued", "an agent's own finding opens at `issued`, and stays there");
+    assert.equal(f.pending?.ask, "invalidate");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+/** An agent's OWN unconfirmed finding is still its own to close — that is triage. */
+test("an agent still closes its own unconfirmed finding outright", async () => {
+  const root = tmp();
+  try {
+    const id = await createFinding(root, 264, opus, NEW);
+    const r = await setState(root, 264, fable, id, "refuted", "not reachable") as { asked?: string };
+    assert.equal(r.asked, undefined, "no ask — it just happens");
+    const f = await one(root);
+    assert.equal(f.state, "refuted");
+    assert.equal(f.pending, undefined);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -330,8 +354,16 @@ test("mayTransition is the single rule both the fold and the writer use", () => 
   // one-liner — the likeliest false positive, and the one an agent is best placed to
   // check — the one thing an agent could not close.
   const created = { ...issued, state: "created" as FindingState };
-  assert.equal(mayTransition(created, opus, "invalid"), true, "unconfirmed: an agent may close it");
+  assert.equal(mayTransition(created, opus, "invalid"), true, "unconfirmed and agent-filed: an agent may close it");
   assert.equal(mayTransition(created, opus, "refuted"), true);
+
+  // AND WHO FILED IT is now half the gate. A person's own report is not an agent's to
+  // retire, whatever it later concluded — it asks instead, and `setState` records that
+  // ask rather than erroring, which is what answers the old objection to this rule:
+  // an agent CAN still say a human's one-liner is invalid, it just cannot bury it.
+  const humanFiled = { ...created, author: izzie } as unknown as SharedFinding;
+  assert.equal(mayTransition(humanFiled, opus, "invalid"), false, "a person filed it");
+  assert.equal(mayTransition(humanFiled, opus, "created"), true, "but reopening it is not burying it");
 
   const confirmed = {
     ...created,
@@ -340,8 +372,11 @@ test("mayTransition is the single rule both the fold and the writer use", () => 
   assert.equal(mayTransition(confirmed, opus, "refuted"), false, "somebody stood behind it — a person closes it");
   assert.equal(mayTransition(confirmed, izzie, "refuted"), true, "and that person still may");
 
+  // PROMOTION IS NOT A GATE. It means "this is real, the team should know" — a measure
+  // of triage, and an optional one. Gating on it made saying a finding matters the act
+  // that froze it, which is backwards.
   const promoted = { ...created, promotion: { at: "2026-01-01T00:00:00Z", by: izzie } } as unknown as SharedFinding;
-  assert.equal(mayTransition(promoted, opus, "invalid"), false, "promotion is the other half of the gate");
+  assert.equal(mayTransition(promoted, opus, "invalid"), true, "promotion says it matters, not that it is settled");
 
   // Reopening is a person's call even unconfirmed: whoever closed it wrote a reason.
   const closed = { ...issued, state: "refuted" as FindingState };
@@ -359,7 +394,11 @@ test("mayRevise is that same gate, so a human's raw note can be written up", () 
     ...created,
     corroboration: [{ actor: izzie, verdict: "confirm", at: "2026-01-01T00:00:00Z", rationale: "r", independent: true }],
   } as unknown as SharedFinding;
-  assert.equal(mayRevise(confirmed, opus), false, "confirmed carries somebody's name");
+  // ALWAYS, now. What a finding SAYS is the text that gets published and acted on, and
+  // leaving a wrong summary standing with a correction three entries below it is worse
+  // for the reader than replacing it. Nothing is lost: `revisions` keeps every prior
+  // wording. The judgements — severity, state, whether it is real — stay gated.
+  assert.equal(mayRevise(confirmed, opus), true, "a confirmed finding's description is still improvable");
   assert.equal(mayRevise(confirmed, izzie), true, "and a person may always");
 });
 
@@ -408,4 +447,33 @@ test("within a tier the oldest is first, so nothing waits unseen", () => {
   const older = { ...tiered("created", ["confirm"], "high"), createdAt: "2026-01-01T00:00:00Z" };
   const newer = { ...tiered("created", ["confirm"], "high"), createdAt: "2026-06-01T00:00:00Z" };
   assert.deepEqual([newer, older].sort(byReadingOrder).map((f) => f.createdAt), [older.createdAt, newer.createdAt]);
+});
+
+/**
+ * Promoting a finding takes it OUT of the untriaged pile.
+ *
+ * `unconfirmed` is documented as "filed, and nobody has weighed in", and it is the tier
+ * a reader is told to check for what still needs triage. Promotion is a person weighing
+ * in — "this is real, the team should know" — so a promoted finding sitting in that pile
+ * said the opposite of what had just happened, and hid it in the one list nobody is
+ * meant to skim. Reported from the shared view: clicking promote left it in
+ * `unconfirmed`.
+ */
+test("promoting a finding moves it out of the untriaged tier", () => {
+  const base = { state: "issued" as FindingState, corroboration: [] } as unknown as SharedFinding;
+  assert.equal(findingTier(base), "unconfirmed");
+
+  const promoted = { ...base, promotion: { at: "2026-01-01T00:00:00Z", by: izzie } } as unknown as SharedFinding;
+  assert.equal(findingTier(promoted), "confirmed", "a person said it is real");
+
+  // A person promoting outranks an agent refuting — the corroboration is still on the
+  // record and still rendered, but the tier follows the person.
+  const alsoRefuted = {
+    ...promoted,
+    corroboration: [{ actor: opus, verdict: "refute", at: "2026-01-02T00:00:00Z", rationale: "r", independent: true }],
+  } as unknown as SharedFinding;
+  assert.equal(findingTier(alsoRefuted), "confirmed");
+
+  // And closing still wins over both: a promoted finding that got fixed is settled.
+  assert.equal(findingTier({ ...promoted, state: "resolved" } as unknown as SharedFinding), "settled");
 });

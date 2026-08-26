@@ -174,9 +174,13 @@ test("an agent asks rather than closing, and the ask carries its rationale", asy
     await withEnv({ CODEMAP_SIDECAR: undefined, CODEMAP_AGENT_MODEL: undefined }, async () => {
       const { id } = await shared.shareFinding(u.root, 264, NEW) as { id: string };
       await withEnv({ CODEMAP_AGENT_MODEL: "claude-opus-5" }, async () => {
-        const denied = await shared.closeFinding(u.root, 264, id, "resolved") as { error: string };
-        assert.match(denied.error, /request it instead|only request/);
-        await shared.requestOnFinding(u.root, 264, id, "resolve", "the guard was added in abc123");
+        // Closing IS the ask now: the agent states its conclusion once, in the verb it
+        // reached for, and the rationale it gave becomes the ask's. Making it call a
+        // second tool is what sent it to prose instead.
+        const asked = await shared.closeFinding(u.root, 264, id, "resolved", "the guard was added in abc123") as
+          { asked?: string; error?: string };
+        assert.equal(asked.error, undefined);
+        assert.equal(asked.asked, "resolve");
       });
       const list = await shared.sharedFindings(u.root, 264, { queue: true }) as any;
       assert.equal(list.findings[0].pending.ask, "resolve");

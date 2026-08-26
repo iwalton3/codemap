@@ -59,6 +59,15 @@ export type Verdict = "confirm" | "refute" | "unsure";
  * word for it.
  */
 export const ASKS = ["promote", "invalidate", "refute", "resolve", "withdraw"] as const;
+
+/**
+ * The ask that corresponds to closing into each state, so an agent's attempt to close
+ * becomes a request rather than an error. `issued`/`created` are not closes and have no
+ * ask — an agent may move a finding back to the open pile itself.
+ */
+export const ASK_FOR_STATE: Partial<Record<FindingState, Ask>> = {
+  invalid: "invalidate", refuted: "refute", resolved: "resolve", withdrawn: "withdraw",
+};
 export type Ask = (typeof ASKS)[number];
 
 /**
@@ -286,9 +295,15 @@ export type FindingTier = "confirmed" | "unconfirmed" | "doubted" | "settled";
 
 const TIER_ORDER: Record<FindingTier, number> = { confirmed: 0, unconfirmed: 1, doubted: 2, settled: 3 };
 
-export function findingTier(f: Pick<SharedFinding, "state" | "corroboration">): FindingTier {
+export function findingTier(f: Pick<SharedFinding, "state" | "corroboration"> & { promotion?: unknown }): FindingTier {
   if (f.state === "resolved" || f.state === "invalid") return "settled";
   if (f.state === "refuted" || f.state === "withdrawn") return "doubted";
+  // PROMOTION IS WEIGHING IN, and it outranks a verdict because a person did it. It
+  // means "this is real, the team should know" — so a promoted finding reading
+  // `unconfirmed` ("filed, and nobody has weighed in") said the opposite of what had
+  // just happened, and hid it in the pile the reader is told is untriaged. Ahead of the
+  // corroboration checks deliberately: a person promoting outranks an agent refuting.
+  if (f.promotion) return "confirmed";
   if (f.corroboration.some((c) => c.verdict === "confirm")) return "confirmed";
   if (f.corroboration.some((c) => c.verdict === "refute")) return "doubted";
   return "unconfirmed";
@@ -303,8 +318,8 @@ export function findingTier(f: Pick<SharedFinding, "state" | "corroboration">): 
 const SEVERITY_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 
 export function byReadingOrder(
-  a: Pick<SharedFinding, "state" | "corroboration" | "severity" | "createdAt">,
-  b: Pick<SharedFinding, "state" | "corroboration" | "severity" | "createdAt">,
+  a: Pick<SharedFinding, "state" | "corroboration" | "severity" | "createdAt" | "promotion">,
+  b: Pick<SharedFinding, "state" | "corroboration" | "severity" | "createdAt" | "promotion">,
 ): number {
   return TIER_ORDER[findingTier(a)] - TIER_ORDER[findingTier(b)]
     || (SEVERITY_ORDER[a.severity ?? ""] ?? 4) - (SEVERITY_ORDER[b.severity ?? ""] ?? 4)
@@ -314,6 +329,33 @@ export function byReadingOrder(
 /** Derived, never stored — an OR over a latch and a grow-only set, so it cannot race. */
 export function needsHumanAck(f: Ratcheted): boolean {
   return !!f.promotion || f.corroboration.some((c) => c.verdict === "confirm");
+}
+
+/**
+ * May an agent BURY this finding — move it to a closed state — without asking?
+ *
+ * This is the only thing an agent may not do on its own, and it is deliberately not
+ * `needsHumanAck`. That predicate does two unrelated jobs: it populates the human queue
+ * ("somebody needs to look at this") and it locked agents out ("nobody may improve this
+ * any more"). Those are opposites in effect — the moment a finding mattered enough to be
+ * queued, the agent best placed to sharpen it was shut out, which is what produced
+ * fifteen thread comments reading "Submitter-facing replacement (supersedes the current
+ * wording)" against three actual revisions. See `docs/finding-event-shape-audit.md`.
+ *
+ * Two conditions, and neither is promotion:
+ *
+ * - **Somebody CONFIRMED it.** A verdict is a person putting their name to "this is
+ *   real", and one wrong call losing it is not recoverable from anywhere.
+ * - **A PERSON filed it.** Their own report is not an agent's to retire, whatever the
+ *   agent later concluded.
+ *
+ * Promotion is deliberately absent. It means "this is real, the team should know" — a
+ * measure of triage, and an optional one. Gating on it made saying a finding matters the
+ * act that froze it.
+ */
+export function agentClosureNeedsAck(f: Ratcheted & { author?: Actor }): boolean {
+  return f.corroboration.some((c) => c.verdict === "confirm")
+    || (!!f.author && !isAgentActor(f.author));
 }
 
 /**
@@ -342,13 +384,18 @@ export function needsHumanAck(f: Ratcheted): boolean {
  * rather than about the report), `withdrawn` (retires a record somebody may still want),
  * or reopening anything already closed. Those stay `request_human`'s.
  */
-export function mayTransition(f: Ratcheted, actor: Actor, next: FindingState): boolean {
+export function mayTransition(f: Ratcheted & { author?: Actor }, actor: Actor, next: FindingState): boolean {
   if (!isAgentActor(actor)) return true;
-  if (needsHumanAck(f)) return false;
   // Reopening is a person's call even on an unconfirmed finding: whoever closed it
   // wrote a reason, and an agent re-litigating it is not triage.
   if (isClosed(f.state)) return false;
-  return next === "created" || next === "invalid" || next === "refuted";
+  // Moving it back to the open pile is triage and always an agent's to do.
+  if (next === "created" || next === "issued") return true;
+  // Everything else here is a CLOSE. Confirmed, or filed by a person, and it needs an
+  // ack — `setState` turns the attempt into a pending ask rather than refusing it, so
+  // the badge says so on the item instead of the reason living in a thread comment.
+  if (agentClosureNeedsAck(f)) return false;
+  return next === "invalid" || next === "refuted";
 }
 
 /**
@@ -361,7 +408,21 @@ export function mayTransition(f: Ratcheted, actor: Actor, next: FindingState): b
  * agent that has just read the code is best placed to supply.
  */
 export function mayRevise(f: Ratcheted, actor: Actor): boolean {
-  return !isAgentActor(actor) || !needsHumanAck(f);
+  void f;
+  void actor;
+  // ALWAYS. An agent may rewrite what a finding SAYS at any point in its life.
+  //
+  // This used to refuse once anything confirmed it, on the grounds that "a confirmed one
+  // carries somebody's name and only they change it". That is a real concern about the
+  // JUDGEMENTS — the severity, the state, whether it is real — and not about the prose
+  // describing the defect, which is the text that actually gets published and acted on.
+  // Leaving a wrong summary standing with a correction three entries below it is worse
+  // for the reader than replacing it, and replacing it loses nothing: `revisions` is
+  // append-only and keeps the `was` of every field it changes.
+  //
+  // `severity` is the exception and is filtered at the write path, not here — see
+  // `reviseFinding`.
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -698,11 +759,21 @@ export async function setState(
   const current = (await readFindings(logRoot, pr)).get(id);
   if (!current) return { error: `no finding ${id} on pr ${pr}` };
   if (!mayTransition(current, actor, next)) {
-    return {
-      error: needsHumanAck(current)
-        ? `${id} needs a person: it is promoted or somebody has confirmed it, so an agent may only request \`${next}\`, not do it`
-        : `an agent may not move ${id} from ${current.state} to ${next} — request it instead`,
-    };
+    // ASKED, not refused. The agent has reached a conclusion and this is the moment it
+    // says so; erroring here sent it looking for another verb, and what it reached for
+    // was prose — 15 of 15 thread comments in the sidecar are state changes and
+    // corrections written as remarks, against zero `request_human` asks ever recorded.
+    // Recording the ask puts a `refuted pending` badge on the item, which is the whole
+    // point: a person approves it from the row instead of reading the log for it.
+    const ask = ASK_FOR_STATE[next];
+    if (ask) {
+      const e = await emit(logRoot, pr, actor, id, "finding.requested", {
+        ask,
+        rationale: reason ?? `agent concluded ${next}`,
+      });
+      return { ...e, asked: ask } as LogEvent & { asked: Ask };
+    }
+    return { error: `an agent may not move ${id} from ${current.state} to ${next} — request it instead` };
   }
   return emit(logRoot, pr, actor, id, "finding.stateChanged", { state: next, ...(reason ? { reason } : {}) });
 }

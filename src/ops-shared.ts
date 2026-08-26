@@ -26,7 +26,7 @@ import { ensureSidecar, sync as sidecarSync, receive as sidecarReceive, healMerg
 import {
   createFinding, corroborate, comment, promote, request, setState, recordOutcome,
   markPosted, markUpstreamed, promoteToBug, needsHumanAck, ackQueue, mayRevise,
-  revise, resolveContest, relocate, remediate, type Remediation,
+  revise, resolveContest, relocate, remediate, agentClosureNeedsAck, type Remediation,
   foldFindings, findingScope, findingTier, byReadingOrder,
   type SharedFinding, type Verdict, type Ask, type FindingState, type NewFinding, type FindingTier,
 } from "./shared-findings.js";
@@ -387,6 +387,16 @@ export async function closeFinding(root: string, pr: number | string, id: string
   const r = await setState(b.cfg.path, prKey(b.cfg, pr), b.actor, id, state, reason);
   if ("error" in r) return r;
   const mz = await materializeFindings(root, b.cfg, pr);
+  // The state did not move — it was recorded as an ask, and saying `state` here would
+  // tell the caller it landed. `asked` is what actually happened.
+  const asked = (r as { asked?: string }).asked;
+  if (asked) {
+    return {
+      ...mz, ok: true, id, asked,
+      note: `${id} is confirmed or was filed by a person, so \`${state}\` is a person's to apply. `
+        + `Recorded as a pending \`${asked}\` — it shows on the finding and in their queue; nothing else is needed from you.`,
+    };
+  }
   return { ...mz, ok: true, id, state };
 }
 
@@ -573,11 +583,22 @@ export async function reviseFinding(
   if ("error" in b) return b;
   const f = (await cachedFindings(root, b.cfg, pr)).value.get(id);
   if (!f) return { error: `no finding ${id} on pr ${pr}` };
-  if (!mayRevise(f, b.actor)) {
+  // WHAT it says is always an agent's to improve; what it is WORTH is not. `mayRevise`
+  // is now unconditional (the description is the text that gets published, and leaving a
+  // wrong one standing under a correction is worse for the reader than replacing it —
+  // `revisions` keeps the old wording either way). Severity is the one field where
+  // "somebody stood behind this number" is the entire content, so it keeps the gate,
+  // and it keeps it under the same condition as burying the finding.
+  // CONFIRMATION only, and not authorship. Supplying a severity to a person's raw
+  // one-liner is the write-up an agent exists for — it is re-rating a number somebody
+  // has since stood behind that is theirs. (Burying the finding is the stricter act and
+  // keeps the wider gate; see `agentClosureNeedsAck`.)
+  const confirmed = f.corroboration.some((c) => c.verdict === "confirm");
+  if ("severity" in now && isAgentActor(b.actor) && confirmed && f.severity !== now.severity) {
     return {
-      error: `${id} has been confirmed${f.promotion ? " and promoted" : ""}, so only a person rewrites it now — `
-        + "losing what somebody stood behind to one wrong call is what that gate is for. "
-        + "Say what you found with `comment`, and `request_human` if the wording itself has to change.",
+      error: `${id}'s severity is ${f.severity ?? "unset"} and somebody has confirmed the finding, so re-rating it is theirs. `
+        + "Everything else — the description, the comment, the category, the line — you may rewrite right now; "
+        + "send this revision without `severity`, and say what you found with `comment`.",
     };
   }
   if (f.posted && !opts.allowPostEdit) {

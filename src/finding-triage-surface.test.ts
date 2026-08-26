@@ -119,14 +119,22 @@ test("an agent may write up a person's raw finding — until somebody stands beh
       assert.equal((await readFinding(u.root, r.id))!.line, 42);
     });
 
-    // Now somebody stands behind it. THE GATE: losing what a person confirmed to one
-    // wrong call is not recoverable from anywhere, so past here an agent may only ask.
+    // Now somebody stands behind it. THE GATE IS THE NUMBER, not the prose. What a
+    // finding SAYS is the text that gets published and acted on, and an agent that has
+    // just re-read the code is the one placed to correct it — leaving a wrong summary
+    // standing with a note below it is worse for the reader, and `revisions` keeps the
+    // old wording regardless. What it is WORTH is somebody's judgement and stays theirs.
     await shared.corroborateFinding(u.root, 269, r.id, "confirm", "read it, it is real");
     await asAgent(async () => {
-      const out = await reviseOn(u.root, { id: r.id, severity: "critical" });
-      assert.match(String(out.error), /confirmed/);
-      assert.match(String(out.error), /request_human/, "and it names what the agent CAN do");
-      assert.equal((await readFinding(u.root, r.id))!.severity, "low", "nothing moved");
+      const words = await reviseOn(u.root, { id: r.id, comment: "sharper submitter-facing version" });
+      assert.ok(!words.error, String(words.error));
+      assert.equal((await readFinding(u.root, r.id))!.comment, "sharper submitter-facing version",
+        "the description is replaced, not appended to");
+
+      const rate = await reviseOn(u.root, { id: r.id, severity: "critical" });
+      assert.match(String(rate.error), /confirmed the finding/);
+      assert.match(String(rate.error), /description/, "and it names what the agent CAN still rewrite");
+      assert.equal((await readFinding(u.root, r.id))!.severity, "low", "the number did not move");
     });
   } finally { u.cleanup(); }
 });
@@ -134,25 +142,40 @@ test("an agent may write up a person's raw finding — until somebody stands beh
 test("an agent closes what nobody has confirmed, and only asks once somebody has", async () => {
   const u = await universe();
   try {
-    const open = await shared.shareFinding(u.root, 269, NEW) as { id: string };
+    // AGENT-filed, so nobody has stood behind it in either sense.
+    let open!: { id: string };
+    await asAgent(async () => { open = await shared.shareFinding(u.root, 269, NEW) as { id: string }; });
     const held = await shared.shareFinding(u.root, 269, { ...NEW, text: "second" }) as { id: string };
     await shared.corroborateFinding(u.root, 269, held.id, "confirm", "real");
+    // Filed by a PERSON and unconfirmed: not an agent's to retire either, so it asks.
+    const theirs = await shared.shareFinding(u.root, 269, { ...NEW, text: "third" }) as { id: string };
 
     await asAgent(async () => {
       // Triage. A queue of unconfirmed false positives that only a person may clear is a
-      // queue nobody clears, so refuting one directly to the closed section is the agent's
-      // job — this is the half the gate was never meant to cover.
+      // queue nobody clears, so refuting its OWN unstood-behind finding straight to the
+      // closed section is the agent's job — the half the gate was never meant to cover.
       const a = await shared.closeFinding(u.root, 269, open.id, "refuted", "the guard is two lines up");
       assert.ok(!("error" in a), JSON.stringify(a));
       assert.equal((await readFinding(u.root, open.id))!.state, "refuted");
 
-      const b = await shared.closeFinding(u.root, 269, held.id, "refuted", "same") as { error?: string };
-      assert.match(String(b.error), /may only request|needs a person/);
-      assert.equal((await readFinding(u.root, held.id))!.state, "created", "confirmed findings keep their person-gate");
+      const t = await shared.closeFinding(u.root, 269, theirs.id, "refuted", "not reachable") as { asked?: string };
+      assert.equal(t.asked, "refute", "a person's own report is not an agent's to retire");
+      assert.equal((await readFinding(u.root, theirs.id))!.state, "created", "it stays open, with the ask on it");
 
-      // And `resolved` is nobody's to write from here: it claims the CODE was fixed.
-      const c = await shared.closeFinding(u.root, 269, open.id, "resolved", "fixed") as { error?: string };
-      assert.ok(c.error, "an agent does not get to declare a defect fixed");
+      // ASKED, not refused: the conclusion is recorded where a person can approve it from
+      // the row, instead of being turned away and written into a thread comment.
+      const b = await shared.closeFinding(u.root, 269, held.id, "refuted", "same") as { error?: string; asked?: string };
+      assert.equal(b.error, undefined);
+      assert.equal(b.asked, "refute");
+      const heldNow = (await readFinding(u.root, held.id))!;
+      assert.equal(heldNow.state, "created", "confirmed findings keep their person-gate");
+      assert.equal(heldNow.pending?.ask, "refute", "and the badge reads `refuted pending`");
+      assert.equal(heldNow.pending?.rationale, "same");
+
+      // And `resolved` claims the CODE was fixed, which is never an agent's to write —
+      // it asks even on a finding the agent filed itself and nobody has confirmed.
+      const c = await shared.closeFinding(u.root, 269, open.id, "resolved", "fixed") as { asked?: string };
+      assert.equal(c.asked, "resolve", "an agent does not get to declare a defect fixed");
     });
   } finally { u.cleanup(); }
 });
@@ -461,11 +484,14 @@ test("every lifecycle act works on a finding the fold does not own", async () =>
     assert.ok(f.promotion);
     assert.equal(f.pending!.ask, "resolve");
 
-    // And the ratchet is the SAME rule: this one is confirmed and promoted now, so an
-    // agent may only ask — being local does not buy an agent a weaker gate.
+    // And the ratchet is the SAME rule: this one is confirmed now, so an agent's close
+    // becomes an ASK — being local does not buy an agent a weaker gate, nor a different
+    // answer from the shared path.
     await asAgent(async () => {
-      const no = await setFindingState(u.root, { id: "f_local", state: "resolved", reason: "done" });
-      assert.match(String(no.error), /needs a person|may not/);
+      const no = await setFindingState(u.root, { id: "f_local", state: "resolved", reason: "done" }) as { asked?: string; note?: string };
+      assert.equal(no.asked, "resolve");
+      assert.match(String(no.note), /pending/);
+      assert.equal((await readFinding(u.root, "f_local"))!.state, "issued", "and nothing moved");
     });
     const yes = await setFindingState(u.root, { id: "f_local", state: "resolved", reason: "closed from the shared view" });
     assert.ok(!yes.error, String(yes.error));

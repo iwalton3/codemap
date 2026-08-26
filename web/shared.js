@@ -14,6 +14,37 @@ import { Component, defineComponent, html, when, each } from './vendor/vdx/frame
 import { api, apiPost, pageShell, nav, go, errText, taskError } from './app.js';
 
 /**
+ * What a pending ask reads as on the row.
+ *
+ * The verb an agent requests and the state a person is approving are different words —
+ * `refute` is the act, `refuted` is where the finding lands — and the badge is read by
+ * the person deciding, so it names the outcome. Rule from the workflow review: approving
+ * one must not require reading the log for an ad-hoc message asking for it.
+ */
+/**
+ * What HAPPENED about a finding, rendered beside what it CLAIMS.
+ *
+ * `remediation` was on every record and on no surface, so five findings verified fixed
+ * at head still read as live defects — the eye lands on `comment`, which is the original
+ * defect prose. Reported twice: by Izzie ("I still see 4 findings which don't have
+ * comments saying they're fixed") and in `WORKFLOW_ISSUES.md` §1.
+ *
+ * `outstanding` renders nothing: it is the default, and a badge on every row is a badge
+ * nobody reads.
+ */
+const REMEDIATION_LABEL = {
+  'fixed-on-branch': ['fixed on branch', 'ok', 'verified fixed on this branch — the mainline may still carry it, so a linked bug stays open'],
+  'fixed-on-default': ['fixed on main', 'ok', 'fixed on the default branch'],
+  'deferred': ['deferred', '', 'real, and deliberately not being fixed now'],
+  'wont-fix': ["won't fix", '', 'real, and a decision was taken not to fix it'],
+};
+
+const PENDING_LABEL = {
+  refute: 'refuted', resolve: 'fixed', invalidate: 'invalid',
+  withdraw: 'withdrawn', promote: 'promotion',
+};
+
+/**
  * The banner for a scope that cannot be answered from authoritatively.
  *
  * The rows are still shown — see PROPOSAL-provenance.md §7: a reviewer who can see
@@ -150,7 +181,8 @@ class SharedPage extends Component {
       ${when(f.independentConfirms > 0, () => html`<span class="prbadge ok">${f.independentConfirms} independent</span>`)}
       ${when(f.confirms > f.independentConfirms, () => html`<span class="prbadge ok" title="confirmed, but by the same principal as the author — not a second opinion">+${f.confirms - f.independentConfirms} confirmed</span>`)}
       ${when(f.refutes > 0, () => html`<span class="prbadge warnb">${f.refutes} refuted</span>`)}
-      ${when(!!f.pending, () => html`<span class="prbadge ask">asked: ${f.pending.ask}</span>`)}
+      ${when(!!REMEDIATION_LABEL[f.remediation], () => html`<span class="prbadge ${REMEDIATION_LABEL[f.remediation][1]}" title="${REMEDIATION_LABEL[f.remediation][2]}${f.remediatedAt ? ` — ${f.remediatedAt.by}${f.remediatedAt.detail ? ': ' + f.remediatedAt.detail : ''}` : ''}">${REMEDIATION_LABEL[f.remediation][0]}</span>`)}
+      ${when(!!f.pending, () => html`<span class="prbadge ask" title="${f.pending.by} asked for this and it is yours to apply — ${f.pending.rationale}">${PENDING_LABEL[f.pending.ask] || f.pending.ask} pending</span>`)}
       ${when(!!f.upstream, () => html`<span class="prbadge">${f.upstream}</span>`)}
       ${when(!!f.bug, () => html`<span class="prbadge">→ bug</span>`)}
       ${when(f.target?.where === 'offTree', () => html`<span class="prbadge" title="the symbol is on another branch — nothing to do here">elsewhere</span>`)}
