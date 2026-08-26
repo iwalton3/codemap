@@ -1,5 +1,8 @@
 # Review-target identity — what a review is *about*
 
+> **Kind: decision record** — why the code looks like this. Done — kept for the argument, not as a to-do.
+> branch-canonical keying was REFUTED. Nothing built; kept for the counterexample.
+
 Written 2026-08-23, after branch-canonical keying was proposed, reviewed and
 **refuted**. Nothing here is built. It exists so the next attempt starts from the
 counterexample rather than rediscovering it.

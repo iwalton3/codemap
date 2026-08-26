@@ -25,31 +25,46 @@ import { dirname, join, normalize } from "node:path";
  * case it was extended to cover — the guard would still pass while guarding
  * nothing.
  */
-function moduleGraph(): Map<string, string[]> {
+function moduleGraph(root: string, ext: ".ts" | ".js"): Map<string, string[]> {
   const g = new Map<string, string[]>();
   const walk = (dir: string) => {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
-      if (e.isDirectory()) { walk(join(dir, e.name)); continue; }
-      if (!e.name.endsWith(".ts") || e.name.endsWith(".test.ts") || e.name.endsWith(".d.ts")) continue;
-      const rel = join(dir, e.name).replace(/^src\//, "").replace(/\.ts$/, "");
+      // `vendor/` is third-party and re-vendored wholesale; a cycle inside it is not
+      // ours to fix and would fail this test on every re-vendor.
+      if (e.isDirectory()) { if (e.name !== "vendor") walk(join(dir, e.name)); continue; }
+      if (!e.name.endsWith(ext) || e.name.endsWith(".test" + ext) || e.name.endsWith(".d.ts")) continue;
+      const rel = join(dir, e.name).replace(new RegExp("^" + root + "/"), "").replace(new RegExp("\\" + ext + "$"), "");
       const src = readFileSync(join(dir, e.name), "utf8");
       // Every spelling: `from "./x.js"`, `await import("./x.js")`, and the bare
       // side-effect `import "./x.js"`. The last one is easy to leave out and is the
       // one a cycle can hide behind — an earlier version of this test did, and
       // silently passed a probe that reintroduced the exact cycle it exists for.
-      const deps = [...src.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)"(\.\.?\/[\w./-]+)\.js"/g)]
+      // BOTH quote styles. The src tree is double-quoted and `web/` is single-quoted,
+      // so a double-quote-only pattern finds ZERO edges in web/ — the graph comes back
+      // as isolated nodes and every cycle assertion passes vacuously. Caught by
+      // reintroducing the app<->shared cycle and watching this stay green.
+      const deps = [...src.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)['"](\.\.?\/[\w./-]+)\.js['"]/g)]
         .map((m) => normalize(join(dirname(rel), m[1]!)));
       g.set(rel, [...new Set(deps)]);
     }
   };
-  walk("src");
+  walk(root);
   return g;
 }
 
-test("no import cycles among src modules", () => {
-  const g = moduleGraph();
-  assert.ok(g.size > 20, `expected the source tree, found ${g.size} modules`);
-
+/**
+ * `web/` is walked too, and that is not symmetry for its own sake.
+ *
+ * The blank-page failure this test exists for SHIPPED IN THE WEB APP, and until
+ * 2026-08-26 this walked `src` only — so the guard covered the tree where the bug had
+ * never happened and skipped the one where it had. `web/app.js` and `web/shared.js`
+ * were in a live cycle the whole time, safe only because `shared.js` touched the
+ * imported bindings inside method bodies; `web/core.js` now sits below both.
+ *
+ * Same graph, different extension: the web app is plain `.js` the browser loads
+ * directly, so there is no build step and the import specifiers are the real ones.
+ */
+const cyclesIn = (g: Map<string, string[]>): string[] => {
   const seen = new Set<string>(), stack: string[] = [], cycles = new Set<string>();
   const walk = (n: string) => {
     if (stack.includes(n)) { cycles.add([...stack.slice(stack.indexOf(n)), n].join(" -> ")); return; }
@@ -60,8 +75,24 @@ test("no import cycles among src modules", () => {
     stack.pop();
   };
   for (const n of g.keys()) walk(n);
+  return [...cycles];
+};
 
-  assert.deepEqual([...cycles], [], "an ES-module cycle fails silently — break it at the pure half");
+test("no import cycles among web modules", () => {
+  const g = moduleGraph("web", ".js");
+  // The app is three modules and would be three if a page split landed badly, so the
+  // floor is low on purpose — it is here to catch the walk finding NOTHING, which is
+  // how a directory rename empties this test while leaving it green.
+  assert.ok(g.size >= 3, `expected the web app, found ${g.size} modules`);
+  assert.ok(g.has("core"), "web/core.js is the dependency-free half — if it is gone, so is the split");
+  assert.deepEqual(cyclesIn(g), [], "an ES-module cycle in web/ is a BLANK PAGE with nothing in the console");
+});
+
+test("no import cycles among src modules", () => {
+  const g = moduleGraph("src", ".ts");
+  assert.ok(g.size > 20, `expected the source tree, found ${g.size} modules`);
+
+  assert.deepEqual(cyclesIn(g), [], "an ES-module cycle fails silently — break it at the pure half");
 });
 
 /**
@@ -71,7 +102,7 @@ test("no import cycles among src modules", () => {
  * but so is a long chain, and the message should say which rule was broken.
  */
 test("nothing store.ts depends on depends on store.ts", () => {
-  const g = moduleGraph();
+  const g = moduleGraph("src", ".ts");
   const reach = (from: string, seen = new Set<string>()): Set<string> => {
     for (const d of g.get(from) ?? []) if (!seen.has(d)) { seen.add(d); reach(d, seen); }
     return seen;

@@ -1,5 +1,8 @@
 # Spec: promoting codemap findings to batched GitHub PR review comments
 
+> **Kind: current reference** — describes how codemap works today. Trust it; fix it if it is wrong.
+> built, with deviations in §0. §5 is quoted verbatim by `src/mcp.ts`.
+
 **Status:** BUILT (2026-08-19), with four deliberate deviations — see §0.
 **Provenance:** written by a review agent during a live Acme.API #264 session and
 copied into the repo verbatim; it was living in a scratchpad that will not survive.

@@ -1,5 +1,8 @@
 # Causal vectors under a fork, and repairing one
 
+> **Kind: current reference** — describes how codemap works today. Trust it; fix it if it is wrong.
+> built 2026-08-23. Read before touching `eventlog.ts` or `contest.ts`.
+
 **Status: BUILT** (2026-08-23, commits `64db969` and `4f16311`).
 `docs/sidecar-architecture.md` is the architecture; this is the mechanism behind its
 "Conflict repair" section and wins on detail wherever that document is only

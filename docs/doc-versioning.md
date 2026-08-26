@@ -1,6 +1,16 @@
 # Design: hash-versioned, branch-aware docs
 
-Status: **APPROVED 2026-07-16.** Building Phase 1.
+> **Kind: current reference** — describes how codemap works today. Trust it; fix it if it is wrong.
+> hash-versioned docs, BUILT. The schema section is aspirational — see the note there.
+
+Status: **BUILT.** Corrected 2026-08-26 — this said "Building Phase 1" for six weeks
+after Phase 1 landed.
+
+**One thing below was never built as described:** the schema section names
+`node_citations` and `accepted_hashes` as their own tables. They are not. Citations are
+a JSON `citations` column on `node_versions`, and `acceptedHashes` is a field inside
+each citation (`src/doc-version.ts`). The MODEL is right and is what the code implements;
+the table decomposition is not what shipped.
 
 ## Decisions (approved)
 

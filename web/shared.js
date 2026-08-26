@@ -11,7 +11,7 @@
  */
 
 import { Component, defineComponent, html, when, each } from './vendor/vdx/framework.js';
-import { api, apiPost, pageShell, nav, go, href, errText, taskError } from './app.js';
+import { api, apiPost, pageShell, nav, go, href, errText, taskError } from './core.js';
 
 /**
  * What a pending ask reads as on the row.

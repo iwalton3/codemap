@@ -1,5 +1,9 @@
 # Design: agent reports — a witness-hashed, decaying cache of exploration
 
+> **Kind: archive** — superseded or finished. Do NOT plan from it; read it only for history.
+> unapproved draft, never built. The study it carried moved out.
+
+
 Status: **DRAFT / for brainstorm** (not approved). Sketch to argue over.
 
 ## Why

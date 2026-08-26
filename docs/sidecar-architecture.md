@@ -1,24 +1,44 @@
 # The sidecar architecture — normative
 
+> **Kind: current reference** — describes how codemap works today. Trust it; fix it if it is wrong.
+> NORMATIVE for shared state — it outranks the proposal docs where they disagree.
+
 This supersedes the scattered authority statements in
 `PROPOSAL-shared-review-state.md` and `PROPOSAL-sidecar-materialization.md`. Where
 they disagree with this, this wins. Settled 2026-08-23 after two independent
 architecture reviews (Fable 5 and codex), both of which argued the polarity below
 from the same evidence.
 
-## Nothing here is deployed yet
+## This is deployed, and the schema is no longer free to reshape
 
-`main` has no `eventlog.ts`, no `ops-shared.ts` and no `shared_*` tables — its
-schema is `anchors nodes node_versions edges meta snapshots`. The entire shared
-system is **134 commits on this branch that have never been used for real**.
+**Corrected 2026-08-26.** This section said the opposite until then — *"`main` has no
+`eventlog.ts`, no `ops-shared.ts` and no `shared_*` tables … there is no deployed schema
+to protect, so reshaping the tables, the event envelope or the projection is free right
+now"*. That was true when it was written on a branch (2026-08-23) and stopped being true
+two days later, when the log landed on `main` (`e5875cc`, 2026-08-21 authored). It is kept
+as a correction rather than deleted because the paragraph was **normative and actively
+dangerous**: it told a reader that reshaping was free, in the one document `CLAUDE.md`
+sends people to before they touch shared state.
 
-Two consequences, worth checking before anyone plans around compatibility. There
-is **no deployed schema to protect**, so reshaping the tables, the event envelope
-or the projection is free right now and will not be later. And the only migration
-that exists is from a `main`-era store, which holds local docs in `node_versions`
-and nothing else — no events, no shared rows, no publication history. Defects
-phrased as "existing logs may already contain X" are therefore forward-design
-constraints, not data-repair problems.
+What is actually true at the time of writing:
+
+- Nine shared/canonical tables exist in `db.ts` — the log, its projections, and the
+  canonical `findings`, `bugs`, `walkthroughs` and `triage` tables.
+- Two live universes hold **285 findings** between them, plus notes, pointers, triage and
+  walkthroughs.
+- The sidecar has a real remote and has been pushed to. Other clones exist.
+
+So both consequences invert. **There is a deployed schema to protect**, and reshaping a
+table, the event envelope or the projection is a migration with real rows behind it. And a
+defect phrased as "existing logs may already contain X" is a **data-repair problem**, not a
+forward-design constraint — the logs exist and they are somebody's.
+
+The mechanisms that carry that weight, so a reader knows what to reach for rather than
+inventing one: `MATERIALIZER_VERSION` (bump it and every projection refolds),
+`ANCHOR_SCHEME`/`HASH_SCHEME` for derivation changes, and four suites that exist for
+exactly this — `db-eras.test.ts`, `db-migrate.test.ts`, `oracle-schema-movement.test.ts`
+and `oracle-upgrade-skew.test.ts`. A projection can still be reshaped freely, because it
+is derived and refolds; the LOG and the canonical tables cannot.
 
 ## Why a sidecar at all
 

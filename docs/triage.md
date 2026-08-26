@@ -1,6 +1,13 @@
 # Design: stakes triage — routing scarce human attention on big changes
 
-Status: **DRAFT / for brainstorm** (not approved). Sketch to argue over.
+> **Kind: current reference** — describes how codemap works today. Trust it; fix it if it is wrong.
+> the stakes-triage model, BUILT: `src/triage*.ts` and 5 MCP tools.
+
+Status: **BUILT.** Corrected 2026-08-26 — this said "DRAFT / for brainstorm (not
+approved), sketch to argue over" while `src/triage.ts`, `src/triage-rules.ts`,
+`src/triage-publish.ts`, `src/shared-triage.ts` and five MCP tools (`triage`,
+`triage_derive`, `triage_drift`, `shared_triage`, `contested_triage`) were all shipped.
+The phase list at the end of this file had said so for weeks; the header had not.
 
 ## Why
 

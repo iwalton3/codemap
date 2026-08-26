@@ -1,5 +1,8 @@
 # Sharing triage
 
+> **Kind: current reference** — describes how codemap works today. Trust it; fix it if it is wrong.
+> triage on the sidecar, built.
+
 Normative for how stakes travel between people. Written 2026-08-24.
 `docs/sidecar-architecture.md` outranks this where they disagree.
 

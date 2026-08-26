@@ -1,6 +1,12 @@
 # Design: the PR walkthrough as an auto-built stacked PR
 
-**Status:** proposal, for review before implementation
+> **Kind: current reference** — describes how codemap works today. Trust it; fix it if it is wrong.
+> BUILT: `src/walkthrough.ts`, `src/shared-walkthrough.ts`, 3 MCP tools.
+
+**Status:** **BUILT.** Corrected 2026-08-26 — this said "proposal, for review before
+implementation" while `src/walkthrough.ts`, `src/shared-walkthrough.ts` and the three
+`pr_walkthrough*` MCP tools were shipped. Parts of the design have since been revisited;
+where this and the code disagree, the code is what runs
 **Problem:** "people keep flinging 22 KLOC PRs at me and they're basically impossible
 to review coherently."
 

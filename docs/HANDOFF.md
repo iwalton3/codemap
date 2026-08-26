@@ -1,5 +1,9 @@
 # Handoff — `worktree-shared-review-hashscheme`
 
+> **Kind: archive** — superseded or finished. Do NOT plan from it; read it only for history.
+> three stacked session logs. `CLAUDE.md`, `src/oracle.ts` and `src/oracle-properties.ts` cite SECTIONS of it, so extract those before retiring it.
+
+
 Green (824 unit + 82 e2e, nothing skipped; `tsc -p .` and `tsc -p web` clean). All
 committed. Last updated 2026-08-24, at the end of the session that REVIEWED the shared
 triage fold and fixed the nine defects three review rounds found in it.

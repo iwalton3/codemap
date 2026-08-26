@@ -1,5 +1,8 @@
 # Where this is — handoff, 2026-08-26
 
+> **Kind: current reference** — describes how codemap works today. Trust it; fix it if it is wrong.
+> the live handoff. Replace it, do not append to it.
+
 On `main`. `npm test` green (1022 unit + 89 e2e), `tsc -p web` clean.
 
 Read `CLAUDE.md`, then this. The work queue is `docs/plan-findings-unification.md`

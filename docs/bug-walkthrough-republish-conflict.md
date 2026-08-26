@@ -1,5 +1,9 @@
 # `pr_walkthrough` cannot re-walk a PR that has already been published
 
+> **Kind: archive** — superseded or finished. Do NOT plan from it; read it only for history.
+> resolved; the fix that shipped is deliberately not the one proposed here.
+
+
 > **RESOLVED** in `cd7a711`, 2026-08-25. Kept because the diagnosis is the reason the
 > fix looks the way it does — and because the fix is NOT the one suggested below.
 >

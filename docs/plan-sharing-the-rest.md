@@ -1,7 +1,13 @@
 # What else should travel: flows, bugs, contest talk, and an inbox
 
-Design, not yet built. Written 2026-08-24, after shared triage landed and the beta
-readiness review named four remaining cross-team gaps.
+> **Kind: active plan** — decided, not yet built. The work queue.
+> PARTLY BUILT — see the status line below; §4 is cut, not pending.
+
+**Partly built.** Corrected 2026-08-26 — this said "Design, not yet built" while its own
+§2 says bugs are BUILT (2026-08-24) and its own §4 says the inbox watermark is unsound
+and should be **cut** from any build plan. What is still design: flows and contest talk.
+Written 2026-08-24, after shared triage landed and the beta readiness review named four
+remaining cross-team gaps.
 
 `docs/sidecar-architecture.md` is normative and outranks this. The one sentence that
 decides most of what follows:

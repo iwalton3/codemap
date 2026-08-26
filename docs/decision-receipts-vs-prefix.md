@@ -1,5 +1,8 @@
 # Decision: receipts, or a fingerprint in the hash string?
 
+> **Kind: decision record** — why the code looks like this. Done — kept for the argument, not as a to-do.
+> decided and landed: B for hashes, A for ids.
+
 Status: **decided and landed (2026-08-22)** — B for hashes; A for anchor ids only,
 which is still open and is step 2 of `PROPOSAL-provenance.md` §7. Everything below
 was written to decide rather than to advocate, and is kept for the reasoning; where

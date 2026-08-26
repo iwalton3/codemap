@@ -1,5 +1,5 @@
 /**
- * `web/app.js` carries an `ApiMap` typedef saying what each GET route returns,
+ * `web/core.js` carries an `ApiMap` typedef saying what each GET route returns,
  * which is what makes `api()` typed at every call site. It is DERIVED from the
  * route table in `serve.ts` and lives in another file, so it can fall behind.
  *
@@ -24,11 +24,11 @@ function servedRoutes(): string[] {
   return [...body.matchAll(/\n    case "(\/api\/[^"]+)":/g)].map((m) => m[1]!);
 }
 
-/** Keys of the ApiMap typedef in web/app.js. */
+/** Keys of the ApiMap typedef in web/core.js. */
 function mappedRoutes(): string[] {
-  const src = readFileSync("web/app.js", "utf8");
+  const src = readFileSync("web/core.js", "utf8");
   const start = src.indexOf(" * @typedef {{");
-  assert.ok(start > 0, "could not find the ApiMap typedef in web/app.js");
+  assert.ok(start > 0, "could not find the ApiMap typedef in web/core.js");
   const body = src.slice(start, src.indexOf("}} ApiMap", start));
   return [...body.matchAll(/'(\/api\/[^']+)':/g)].map((m) => m[1]!);
 }
@@ -37,7 +37,7 @@ test("every GET route the server serves is typed for the web app", () => {
   const served = servedRoutes(), mapped = new Set(mappedRoutes());
   assert.ok(served.length > 20, `only found ${served.length} routes — the parse is wrong, not the code`);
   const missing = served.filter((r) => !mapped.has(r));
-  assert.deepEqual(missing, [], "add these to the ApiMap typedef in web/app.js");
+  assert.deepEqual(missing, [], "add these to the ApiMap typedef in web/core.js");
 });
 
 test("the ApiMap names no route the server does not serve", () => {

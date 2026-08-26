@@ -116,7 +116,7 @@ db.ts + store.ts     SQLite persistence (store.ts is the abstraction SEAM)
 ops.ts               plain async API — all real logic; protocol-free
   ↑
 mcp.ts   serve.ts+web/   two co-equal front-ends over ops (+ multi.ts for workspaces)
-analyzers/*          OPT-IN framework plugins (Marten) — never in the agnostic core
+src/analyzers/*      OPT-IN framework plugins (Marten) — see the caveat below
 ```
 
 - **`store.ts` is the seam.** Everything above it calls store functions; keep
@@ -184,6 +184,12 @@ analyzers/*          OPT-IN framework plugins (Marten) — never in the agnostic
 
 ### The web app is typechecked in place
 
+It is three modules: `core.js` (fetch, nav, page frame — imports NEITHER of the
+others), `app.js` (the pages and the route table) and `shared.js`. `core.js` exists
+to break a real `app.js` <-> `shared.js` cycle, whose failure mode here is a blank
+page that logs nothing; `src/import-cycles.test.ts` walks `web/` and fails if it
+returns.
+
 It stays plain `.js` that the browser loads directly — `web/tsconfig.json` is
 `allowJs` + `checkJs` + `noEmit`, so there is no second build target and no
 generated file to drift. Both test targets run it (`tsc -p web`, well under a second).
@@ -202,8 +208,9 @@ generated file to drift. Both test targets run it (`tsc -p web`, well under a se
 - **A page that can fail must pass `taskError(this.load)` to `pageShell`.**
   `createTask` never rejects — it parks the failure on `task.error` — so a page
   that ignores it shows its spinner forever. That was all eighteen of them once.
-- `noImplicitAny` and `strictNullChecks` are **off**: on 3.5k lines of untyped JS
-  they produced 1293 of 1345 errors and no defects. Turn them on per-file later
+- `noImplicitAny` and `strictNullChecks` are **off**: measured on 3.5k lines of
+  untyped JS they produced 1293 of 1345 errors and no defects. The tree is ~5k lines
+  now, so treat that as the reason they were turned off, not as a current count. Turn them on per-file later
   if it earns its keep; leaving them on now just trains people to ignore output.
 - **Reactivity is READ-TRACKING, and lifecycle hooks are not a substitute.** A
   store field consulted only inside a side effect is never a dependency, so the
@@ -246,9 +253,14 @@ dropping it.
 
 ## Analyzers (opt-in only)
 
-- Framework analyzers (currently Marten/Wolverine) live in `analyzers/` and are
-  never baked into the agnostic core. `analyze marten --emit` registers the
-  analyzer; `check` then auto-refreshes the generated graph when code changes.
+- Framework analyzers (currently Marten/Wolverine) live in `src/analyzers/`.
+  `analyze marten --emit` registers the analyzer; `check` then auto-refreshes the
+  generated graph when code changes.
+- **"Opt-in" is a runtime property, not a dependency one, and this used to say
+  otherwise.** Nothing framework-specific RUNS unless it is enabled — but Marten is in
+  the core's static import graph: `ops/indexing.ts` imports `refreshAnalyzers`, which
+  imports `marten-emit.ts`, on the ordinary staleness path. It costs no runtime
+  dependency, so it has not been worth inverting; it is worth not claiming otherwise.
 - **Always adversarially verify analyzer findings before presenting them.** The
   first Marten pass had 138 false positives; it took ~5 rounds to get to 4 genuine.
 

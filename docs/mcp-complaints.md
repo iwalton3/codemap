@@ -1,3 +1,8 @@
+# MCP complaints — a use log
+
+> **Kind: archive** — superseded or finished. Do NOT plan from it; read it only for history.
+> a use log, newest first, partly resolved in code. Verify any entry against HEAD before acting on it.
+
 
 ---
 

@@ -1,5 +1,8 @@
 # Parity: what the annotation store did that the findings table does not
 
+> **Kind: active plan** — decided, not yet built. The work queue.
+> the field-by-field prerequisite to the retirement.
+
 Prerequisite to `docs/plan-retire-local-findings.md`. The old system got several things
 right, and dropping it before the new one covers them would lose capability rather than
 duplication. This is the field-by-field diff, not an impression.

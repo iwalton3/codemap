@@ -1,5 +1,9 @@
 # Closing the gap: the sidecar as designed vs as implemented
 
+> **Kind: archive** — superseded or finished. Do NOT plan from it; read it only for history.
+> says so itself at §"The plan, in order".
+
+
 Written 2026-08-23, after the five-step sequence finished and the whole arc was
 exercised end to end against a clone of a real 148MB universe (`Acme.Settlement`,
 275 docs, 1,222 anchors).

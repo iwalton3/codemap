@@ -1,5 +1,9 @@
 # Proposal: `xagent` — external-model subagents
 
+> **Kind: archive** — superseded or finished. Do NOT plan from it; read it only for history.
+> explicitly not a codemap feature.
+
+
 Status: **draft.** Transport verified against `codex-cli 0.149.0` — see §6.
 
 Not a codemap feature. A general utility: spin up an agent from a *different*

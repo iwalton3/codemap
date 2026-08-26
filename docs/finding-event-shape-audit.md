@@ -1,5 +1,8 @@
 # Event-shape audit: what the finding log actually records
 
+> **Kind: decision record** — why the code looks like this. Done — kept for the argument, not as a to-do.
+> the measurement the finding-lifecycle work was built from.
+
 **Measured 2026-08-25** over every findings scope in `codemap-sidecar` — 491 events,
 155 findings, 8 pull requests across two universes. Prompted by PR 270 reading as "a
 genuine mess"; the audit says that is true, that it is one workflow rather than one

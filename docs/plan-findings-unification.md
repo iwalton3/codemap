@@ -1,5 +1,8 @@
 # Plan: one canonical `findings` table, and one way to file into it
 
+> **Kind: decision record** — why the code looks like this. Done — kept for the argument, not as a to-do.
+> all six steps done.
+
 **Status: ALL SIX STEPS DONE** on `findings-unification`. Kept because the arguments
 are still the reasons the code looks like this, and because two of them changed under
 review — see the notes on step 2's key and on what step 4 did not merge. Written 2026-08-25 from a live investigation of the

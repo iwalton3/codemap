@@ -1,5 +1,8 @@
 # State map — per-aggregate state machines
 
+> **Kind: current reference** — describes how codemap works today. Trust it; fix it if it is wrong.
+> implemented in the Marten analyzer.
+
 Status: **implemented** (Marten analyzer).
 
 ## Why

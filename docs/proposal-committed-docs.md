@@ -1,5 +1,9 @@
 # Proposal: committed documentation nodes
 
+> **Kind: archive** — superseded or finished. Do NOT plan from it; read it only for history.
+> unapproved proposal.
+
+
 Status: **PROPOSAL — not approved.** Written 2026-08-05, from a session auditing
 a Python codebase (`jellyfin-mpv-shim`) where twelve bugs were found and fixed,
 five of them *led to by comments that stated a property the code no longer had*.

@@ -1,5 +1,8 @@
 # Plan: unify shared docs into `node_versions`
 
+> **Kind: decision record** — why the code looks like this. Done — kept for the argument, not as a to-do.
+> done 2026-08-23.
+
 **Status: DONE** (2026-08-23; `1322e6c`, `87586db`, `0e097b2`, `ce1e027`, `1771aff`,
 `e70e5fa`). Kept because the arguments are still the reasons the code looks like this,
 and because three of its steps changed under review — see "What the build changed"

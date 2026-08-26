@@ -1,5 +1,9 @@
 # Use reports: codemap through its own MCP surface
 
+> **Kind: archive** — superseded or finished. Do NOT plan from it; read it only for history.
+> every entry marked addressed 2026-08-25.
+
+
 Issues hit while USING codemap to do real review work, logged as encountered rather
 than found by reading the code. Each entry states what the task was, what happened,
 the evidence checked in this repo, and what would fix it; each is answered in an

@@ -1,6 +1,13 @@
 # Design: derivation provenance for anchor ids
 
-Status: **draft 4.** Written against `20a1884`, the commit that turned hash emission
+> **Kind: decision record** — why the code looks like this. Done — kept for the argument, not as a to-do.
+> MIXED and the longest doc here: landed mechanism, cancelled `AnchorReceipt`, and unlanded recovery work. Cited from source, so it cannot simply be retired.
+
+Status: **draft 4 — MIXED, and read the kind line above before planning from it.**
+At 1200+ lines this is the longest document here and it holds three different things:
+the landed mechanism (§6, §7 — built and emitting), a CANCELLED design (`AnchorReceipt`,
+which does not exist in the source), and unlanded recovery work. It is cited from source,
+so it cannot simply be retired — splitting it is queued, not done. Written against `20a1884`, the commit that turned hash emission
 on. Supersedes the id half of `PROPOSAL-provenance.md` §5's Comparability bullet,
 and **cancels** §5's `AnchorReceipt` struct. Read
 `docs/decision-receipts-vs-prefix.md` first — it decided *B for hashes, A for ids*,

@@ -1,5 +1,8 @@
 # Plan: retire the local-finding code path
 
+> **Kind: active plan** — decided, not yet built. The work queue.
+> ready and deliberately soaking. The next substantial change.
+
 **Status: ready, and deliberately SOAKING.** Written 2026-08-25 while the evidence was in
 hand and parked until the finding lifecycle stopped moving; unblocked 2026-08-26 by the
 decision in "Comment push is a fallback" below, which was the one question everything
