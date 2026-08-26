@@ -564,6 +564,16 @@ const tools: Tool[] = [
     handler: (a, c) => ops.trackBugExternally(c.universe.path, a.id, { system: a.system, key: a.key, url: a.url }),
   },
   {
+    name: "promote_annotation",
+    description: "Turn a `pointer`, `question` or `note` into a FINDING on a pull request — for when a watch-out you left turns out to be a real defect.\n\nThe only route. Filing a second record with `report_defect` and resolving the first loses the id, the history, the original author and the time it was raised, and leaves the team's copy pointing at an id nothing tracks any more.\n\nIt MOVES: the annotation becomes the finding and stops being an annotation. A pointer confirmed as a defect is not a separate thing from the finding — leaving both is the two-records-for-one-defect problem `codemap unify-findings` exists to drain. (`defer_finding` is different on purpose: a finding and the bug it defers to are two real obligations.)\n\n`pr` is REQUIRED and never inferred. An annotation carries no pull request of its own, and guessing one by intersecting its target with a worklist is wrong the moment two pull requests touch the same symbol.",
+    inputSchema: obj({
+      id: { type: "string", description: "An annotation id — from `get_anchor`, `questions` or `review_queue`." },
+      pr: { type: "string", description: "Which pull request the finding belongs to. Say it; nothing infers it." },
+    }, ["id", "pr"]),
+    mutates: true,
+    handler: (a, c) => ops.promoteAnnotation(c.universe.path, a.id, a.pr),
+  },
+  {
     name: "defer_finding",
     description: "Defer a pull-request finding into a bug, so it is not lost when the PR closes. The ONLY route from a finding to a bug — filing a second copy with `report_defect` loses the cross-link and the history.\n\nThe bug is witnessed at the ref the FINDING was witnessed at, so a finding about code the pull request INTRODUCES defers like any other — that code is in this store under the branch's snapshot, which `codemap pr <N>` wrote.\n\nThe finding SURVIVES and cross-links — the PR's history should still show it was raised there — and what transfers is the obligation: the finding stops asking for a decision because the bug is asking now. The bug's id is derived from the finding's, so two people accepting the same finding independently land on ONE bug rather than two.\n\nThe bug is filed against the anchors the finding names, witnessed here. A finding on a node takes that node's citations in THIS checkout, which is a judgement about what the defect covers — check it is the right code first.",
     inputSchema: obj({

@@ -76,6 +76,7 @@ import { commentBug, corroborateBugOp, requestOnBugOp, acceptFinding } from "./o
 import { readFinding, readBug, idsStartingWith} from "./store.js";
 import { isRemediation, type Ask, type FindingState, type Remediation, type Verdict } from "./shared-findings.js";
 export { reportDefect, type DefectContext, type DefectInput } from "./ops/defect.js";
+export { promoteAnnotation } from "./promote-annotation.js";
 
 /**
  * Report back on whatever `review_queue` handed you — annotation or finding.

@@ -850,3 +850,75 @@ test("an id that is nobody's prefix gets no suggestion", async () => {
     assert.doesNotMatch(r.error, /did you mean|the start of/);
   } finally { u.cleanup(); }
 });
+
+// --- promoting an annotation, the verb whose absence made pointers parallel ---------
+
+/**
+ * A pointer that turns out to be a defect becomes the finding, keeping its id.
+ *
+ * `defer_finding` (finding -> bug) was the only promotion in the tool. There was no way
+ * to say "this pointer was real", so the route was to file a SECOND record and resolve
+ * the first — losing the id, the history, the original author and the filing time, and
+ * leaving the team's `shared_note` copy pointing at an id nothing tracks. That happened
+ * six times in one afternoon on `Acme.React`.
+ */
+test("a pointer promotes to a finding, keeping its id and its authorship", async () => {
+  const u = await universe();
+  try {
+    const { annotate, promoteAnnotation } = await import("./ops.js");
+    const { readAnchorStore, readAnnotations } = await import("./store.js");
+    const anchorId = (await readAnchorStore(u.root)).anchors[0]!.id;
+    const p = await annotate(u.root, {
+      targetKind: "anchor", targetId: anchorId, kind: "pointer", author: "dana",
+      text: "watch out: the retry here is not idempotent", severity: "high", category: "Logic", line: 2,
+    }) as { id: string };
+
+    const r = await promoteAnnotation(u.root, p.id, "269") as { ok?: boolean; was?: string; error?: string };
+    assert.ok(r.ok, r.error ?? "");
+    assert.equal(r.was, "pointer");
+
+    const f = (await readFinding(u.root, p.id, { pr: "269" }))!;
+    assert.equal(f.id, p.id, "the SAME id — the team's copy still points at something");
+    // `filed` carries WHEN it was originally raised, which is the evidence that this is a
+    // republication of something already said rather than a new claim today. The
+    // principal is the machine's resolved actor, not the free-text `author` label — the
+    // rule `actorOf` states: a name is not a principal, and inventing one would put a
+    // person's identity on a record they did not make.
+    assert.ok(f.filed, "it records that it was filed earlier, not raised now");
+    assert.ok(f.filed!.at <= f.createdAt, "and the original time, not the promotion's");
+    assert.equal(f.severity, "high");
+    assert.equal(f.line, 2);
+    assert.match(f.text, /not idempotent/);
+
+    // It MOVED: two records for one defect is what this avoids.
+    assert.equal((await readAnnotations(u.root)).annotations.find((a) => a.id === p.id), undefined);
+  } finally { u.cleanup(); }
+});
+
+/** The pull request is never inferred — an annotation carries none. */
+test("promoting without a pull request is refused, not guessed", async () => {
+  const u = await universe();
+  try {
+    const { annotate, promoteAnnotation } = await import("./ops.js");
+    const { readAnchorStore } = await import("./store.js");
+    const anchorId = (await readAnchorStore(u.root)).anchors[0]!.id;
+    const p = await annotate(u.root, { targetKind: "anchor", targetId: anchorId, kind: "pointer", text: "x", author: "izzie" }) as { id: string };
+    const r = await promoteAnnotation(u.root, p.id, "") as { error: string };
+    assert.match(r.error, /which pull request/);
+    assert.match(r.error, /wrong review/, "and it says why guessing is not on offer");
+  } finally { u.cleanup(); }
+});
+
+/** An unknown id gets the same prefix suggestion every other id refusal gives. */
+test("promoting an unknown id suggests the whole one", async () => {
+  const u = await universe();
+  try {
+    const { annotate, promoteAnnotation } = await import("./ops.js");
+    const { readAnchorStore } = await import("./store.js");
+    const anchorId = (await readAnchorStore(u.root)).anchors[0]!.id;
+    await annotate(u.root, { targetKind: "anchor", targetId: anchorId, kind: "pointer", text: "x", author: "izzie" });
+    const r = await promoteAnnotation(u.root, "nope_nothing", "269") as { error: string };
+    assert.match(r.error, /no annotation/);
+    assert.match(r.error, /defer_finding/, "and points at the neighbouring verb rather than leaving a dead end");
+  } finally { u.cleanup(); }
+});

@@ -82,7 +82,7 @@ function actorOf(a: Annotation): Actor {
   return { principal: a.author || "unknown" };
 }
 
-function toFinding(a: Annotation, now: string): { finding: SharedFinding; stamped: boolean } {
+export function toFinding(a: Annotation, now: string): { finding: SharedFinding; stamped: boolean } {
   const actor = actorOf(a);
   const known = earliestKnown(a);
   return {
