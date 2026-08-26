@@ -70,11 +70,33 @@ to the code:
    `--test-concurrency=1` are load-bearing, not leftover: isolation because of the
    `DrainTasks` stall in the runner's per-file child, concurrency because a few tests set
    `CODEMAP_AGENT_MODEL` around a call that resolves its own actor.
-4. **e2e on ubuntu only, and it will mostly skip.** playwright and puppeteer resolve from
-   an external checkout via `CODEMAP_E2E_*`, `vdx-lint` needs `CODEMAP_VDX_TOOLS`, and
-   `pr-import` needs a jellyfin clone. Run it anyway — the value is proving it *skips
-   cleanly* rather than fails, which is the property `CLAUDE.md` asks of that tree.
-   Wiring a real browser into CI is a separate decision, not part of this phase.
+4. **e2e on ubuntu only, with all four prerequisites supplied.** Every one of them lives
+   outside the repo by the golden rule, so CI provides them the way a developer machine
+   does — from somewhere else, named by an env var, never added to `package.json`:
+
+   | prerequisite | how | cost |
+   |---|---|---|
+   | vdx template lint | shallow clone of `iwalton3/vdx-web` → `CODEMAP_VDX_TOOLS` | zero install — vdx-web has no `package.json` and `tools/` is stdlib-only |
+   | playwright (3 suites) | `npm install` into a scratch dir outside the checkout | one chromium |
+   | puppeteer (`ui.e2e.ts`) | same dir, `PUPPETEER_SKIP_DOWNLOAD` | shares playwright's chromium via `CODEMAP_E2E_CHROMIUM` |
+   | `pr-import` | `git clone --no-checkout` of jellyfin **plus** an explicit pull-ref fetch | ~97 MB, cached on `hashFiles('src/e2e/real-repo.ts')` |
+
+   Two traps, both of which only fail on the runner. `puppeteer`'s launch sets
+   `executablePath` unconditionally (`harness.ts:171`) where playwright's is conditional
+   (`:64`), so puppeteer needs a real binary path or it fails instead of skipping — and
+   `CODEMAP_E2E_CHROMIUM` must therefore *not* appear in the job-level `env`, which would
+   outrank the `$GITHUB_ENV` write that fills it in. And a git clone brings branches and
+   tags but **never pull refs**, which is the actual prerequisite now that PR resolution
+   is git-only, so the fetch is a second step rather than a clone flag.
+
+   The suites still skip individually if a step is removed or fails, which is what
+   `CLAUDE.md` requires of that tree and what nothing else checks.
+
+   **`vdx-web` is tracked at `main`, not pinned.** Today that is the same revision as the
+   checkout the local green run used (`91b95e1`), and the test's own doc says "any
+   vdx-web checkout's `tools/`". The consequence to accept knowingly: a change in that
+   repo can turn this job red with no change here. Pinning is the alternative, and it
+   wants a SHA recorded in `web/vendor/vdx/PROVENANCE.md`, which currently records dates.
 
 **Windows starts non-blocking (`continue-on-error: true`).** It is red today by COD-7's
 own measurement, and a required job that is red by design is how a team learns to ignore

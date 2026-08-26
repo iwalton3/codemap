@@ -66,6 +66,23 @@ jobs:
   e2e:
     name: e2e (ubuntu-latest)
     runs-on: ubuntu-latest
+    env:
+      # Every prerequisite this suite needs lives OUTSIDE the repo, by the golden
+      # rule — the test tree may not add a runtime dependency, and `npm test` must
+      # never depend on a browser being installed. So CI supplies them the same way
+      # a developer machine does: from somewhere else, named by an env var.
+      CODEMAP_VDX_TOOLS: ${{ github.workspace }}/../vdx-web/tools
+      CODEMAP_E2E_PLAYWRIGHT: ${{ github.workspace }}/../browsers
+      CODEMAP_E2E_PUPPETEER: ${{ github.workspace }}/../browsers
+      CODEMAP_E2E_GIT_REPO: ${{ github.workspace }}/../jellyfin
+      # CODEMAP_E2E_CHROMIUM is deliberately NOT declared here. puppeteer's launch
+      # sets `executablePath` unconditionally (harness.ts:171) — unlike playwright's,
+      # which only sets it when the path exists — so both drivers share the one
+      # chromium playwright installs, which is what the harness comment already asks
+      # for. Its path is only known after that install, so the browser step writes it
+      # to $GITHUB_ENV. A job-level `env` entry would OUTRANK that write and pin it to
+      # whatever was declared, which for an empty string means puppeteer launches with
+      # `executablePath: ''` and fails instead of skipping.
     steps:
       - uses: actions/checkout@v4
 
@@ -81,12 +98,48 @@ jobs:
 
       - run: npm ci
 
-      # Most of this suite skips here, and that is the point: the browser suites
-      # resolve playwright/puppeteer from an external checkout (CODEMAP_E2E_*),
-      # vdx-lint needs CODEMAP_VDX_TOOLS, and pr-import needs a jellyfin clone.
-      # CLAUDE.md requires each to SKIP when its prerequisite is absent rather than
-      # fail, and nothing else checks that they still do.
+      # Zero install: vdx-web has no package.json and no dependencies — `tools/`
+      # is plain Node against the stdlib. A shallow clone is the whole cost.
+      - name: vdx tools (for the template lint)
+        run: git clone --quiet --depth 1 https://github.com/iwalton3/vdx-web.git "$GITHUB_WORKSPACE/../vdx-web"
+
+      # Installed into a throwaway directory OUTSIDE the repo, never into
+      # package.json: `resolvePuppeteer`/`resolvePlaywright` take a directory and
+      # `createRequire` from it, precisely so a browser driver stays something the
+      # machine has rather than something this repo pulls in.
       #
-      # api.e2e.ts is not among them — it needs a server but no browser, so it runs
-      # here for real, over every HTTP write route the review loop uses.
+      # PUPPETEER_SKIP_DOWNLOAD avoids a second ~170MB Chrome — it drives the
+      # chromium playwright installs, via CODEMAP_E2E_CHROMIUM.
+      - name: Browser drivers, outside the project
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/../browsers"
+          cd "$GITHUB_WORKSPACE/../browsers"
+          npm init -y > /dev/null
+          PUPPETEER_SKIP_DOWNLOAD=true npm install --silent playwright puppeteer
+          npx playwright install --with-deps chromium
+          echo "CODEMAP_E2E_CHROMIUM=$(node -p "require('playwright').chromium.executablePath()")" >> "$GITHUB_ENV"
+
+      # Keyed on real-repo.ts, so the cache follows the fixture definition: a
+      # merged PR's baseRefOid/headRefOid are immutable, so this never rots on its
+      # own, but editing the fixture invalidates it exactly when it should.
+      - name: Cache the jellyfin fixture
+        id: jellyfin-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/../jellyfin
+          key: jellyfin-${{ hashFiles('src/e2e/real-repo.ts') }}
+
+      # Two steps, and the second is not optional. A clone brings branches and
+      # tags, NEVER pull refs — and since PR resolution is git-only, the pull ref
+      # is the actual prerequisite. `--no-checkout` because every test works on a
+      # `--local` clone of this and never on the checkout (~97MB, no worktree).
+      - name: Fetch the jellyfin fixture
+        if: steps.jellyfin-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --quiet --no-checkout https://github.com/jellyfin/jellyfin.git "$GITHUB_WORKSPACE/../jellyfin"
+          git -C "$GITHUB_WORKSPACE/../jellyfin" fetch --quiet origin '+refs/pull/17463/head:refs/pull/17463/head'
+
+      # With the four prerequisites above supplied, this suite runs in full rather
+      # than skipping. Each one still degrades to a SKIP if its step fails or is
+      # removed, which CLAUDE.md requires and nothing else checks.
       - run: npm run e2e
