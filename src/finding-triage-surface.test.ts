@@ -58,6 +58,9 @@ const NEW = { targetKind: "anchor" as const, targetId: "a_1", text: "evidence", 
 
 /** As an agent — which is what decides a new finding opens at `issued`. */
 const asAgent = (fn: () => Promise<void>) => withEnv({ CODEMAP_AGENT_MODEL: "claude-opus-5" }, fn);
+/** The same, naming the model — `reviewerKey` treats a model as part of the reviewer. */
+const withModel = (model: string, fn: () => Promise<unknown>) =>
+  withEnv({ CODEMAP_AGENT_MODEL: model }, async () => { await fn(); });
 
 const localFinding = (id: string, over: Partial<SharedFinding> = {}): SharedFinding => ({
   id, target: { kind: "anchor", id: "a_local" }, text: "filed here",
@@ -661,5 +664,68 @@ test("an agent asks to REOPEN rather than writing it in the thread", async () =>
     assert.equal(f.state, "refuted", "still closed until a person acts");
     assert.equal(f.pending?.ask, "reopen");
     assert.match(f.pending!.rationale, /force-pushed/);
+  } finally { u.cleanup(); }
+});
+
+/**
+ * One rule for recording a verdict, whichever local writer runs.
+ *
+ * Three writers did it three ways: `closeLocalFinding` appended without dedupe (so a
+ * multi-round verification stacked duplicate confirms and inflated the counts a reader
+ * triages by), `reviseLocalFinding` deduped by PRINCIPAL — clobbering the same person's
+ * other model's verdict, the precise thing `reviewerKey` exists to prevent — and only
+ * `corroborateLocalFinding` matched the fold. Two also hardcoded `independent: false`.
+ * Found by a Fable 5 review (§9).
+ */
+test("a local verdict is recorded per REVIEWER, whichever verb records it", async () => {
+  const u = await universe();
+  try {
+    const { writeLocalFinding } = await import("./store.js");
+    const { corroborateLocalFinding } = await import("./ops/annotations.js");
+    await writeLocalFinding(u.root, {
+      id: "f_v1", target: { kind: "anchor" as const, id: "a_1" }, text: "t", comment: "c",
+      author: { principal: "dana@x.com" }, createdAt: "2026-01-01T00:00:00Z",
+      state: "created" as const, corroboration: [], thread: [], revisions: [], outcomes: [], asks: [],
+    } as never, 269);
+
+    // The same principal, two models: two opinions, never collapsed.
+    await withModel("claude-opus-5", () => corroborateLocalFinding(u.root, "f_v1", "confirm", "opus read it"));
+    await withModel("claude-sonnet-5", () => corroborateLocalFinding(u.root, "f_v1", "refute", "sonnet disagrees"));
+    let f = (await readFinding(u.root, "f_v1"))!;
+    assert.equal(f.corroboration.length, 2, "one entry per reviewer, and a model is part of the reviewer");
+
+    // `close_finding` re-verifying: replaces ITS OWN, does not stack a duplicate.
+    await withModel("claude-opus-5", () => closeFinding(u.root, {
+      id: "f_v1", result: "answered", detail: "opus, round 2", disposition: "confirmed" as never,
+    }));
+    f = (await readFinding(u.root, "f_v1"))!;
+    assert.equal(f.corroboration.length, 2, "still two — a re-review is not a second reviewer");
+    const opus = f.corroboration.find((c) => c.actor.via?.model === "claude-opus-5")!;
+    assert.equal(opus.rationale, "opus, round 2", "its own entry moved");
+    assert.equal(opus.independent, true, "and independence is COMPUTED — dana filed it, izzie's agent confirmed it");
+  } finally { u.cleanup(); }
+});
+
+/**
+ * An annotation has no remediation axis, so passing one did nothing and said nothing —
+ * the §8 trap on a third path. A caller that says a defect is fixed must not be told
+ * that landed when it did not.
+ */
+test("remediation on an annotation-backed finding is refused, not dropped", async () => {
+  const u = await universe();
+  try {
+    const { writeAnnotations } = await import("./store.js");
+    await writeAnnotations(u.root, [{
+      id: "n_assigned", kind: "finding", target: { kind: "anchor", id: "a_1" },
+      text: "t", comment: "c", author: "izzie", createdCommit: null, resolved: false, revisions: [],
+      assignment: { kind: "investigate", by: "izzie", at: "2026-01-01T00:00:00Z" },
+    } as never]);
+    const { closeAssignment } = await import("./ops/annotations.js");
+    const r = await closeAssignment(u.root, {
+      id: "n_assigned", result: "fixed", detail: "fixed at head abc", remediation: "fixed-on-branch",
+    } as never) as { ok?: boolean; applied?: string[]; refused?: { field: string }[] };
+    assert.equal(r.ok, false, "it did not do everything it was asked");
+    assert.deepEqual(r.refused?.map((x) => x.field), ["remediation"]);
+    assert.ok(r.applied?.includes("outcome"), "and it says what DID land");
   } finally { u.cleanup(); }
 });

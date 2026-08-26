@@ -945,7 +945,7 @@ export async function closeLocalFinding(
   const rerateOk = mayRerate(f, actor, input.severity);
   if (rerateOk) set("severity", input.severity);
   if (Object.keys(was).length) f.revisions = [...f.revisions, { at, by: actor, was }];
-  if (verdict) f.corroboration = [...f.corroboration, { actor, verdict, at, rationale: input.detail, independent: false }];
+  if (verdict) recordVerdict(f, actor, verdict, at, input.detail);
   await writeLocalFinding(root, f, f.pr!);
   // The same envelope the shared branch returns. `ok` meant "the call happened" here
   // while a field was being dropped, and the description promises `applied`/`refused`
@@ -1082,13 +1082,7 @@ export async function reviseLocalFinding(
       : input.disposition === "confirmed" ? "confirm" as const : null;
     const rationale = (input.text ?? input.comment ?? "").trim();
     if (verdict && rationale) {
-      // One entry per reviewer, replacing this actor's own earlier opinion and nobody
-      // else's — the same rule the shared fold applies, so the two halves of one verb
-      // record a verdict identically.
-      f.corroboration = [
-        ...f.corroboration.filter((c) => c.actor.principal !== actor.principal),
-        { actor, verdict, at, rationale, independent: false },
-      ];
+      recordVerdict(row as unknown as SharedFinding, actor, verdict, at, rationale);
       changed.push("disposition");
     } else if (verdict) {
       notes.push(`disposition "${input.disposition}" NOT recorded — a verdict needs a rationale; pass \`text\``);
@@ -1165,6 +1159,28 @@ async function localFindingWrite<T>(
  * for most of their life. The predicate is `reviseFinding`'s: confirmation, not
  * authorship, and only when the value actually moves.
  */
+/**
+ * Record a verdict on a LOCAL finding, the way the fold records one.
+ *
+ * Three writers did this three different ways: `closeLocalFinding` appended without
+ * dedupe (so a multi-round verification stacked duplicate confirms and inflated the
+ * counts a reader triages by), `reviseLocalFinding` deduped by PRINCIPAL — which
+ * clobbers the same person's other model's verdict, the precise thing `reviewerKey`
+ * exists to prevent — and only `corroborateLocalFinding` matched. Two of the three also
+ * hardcoded `independent: false`, so a genuinely independent confirmation read as
+ * self-agreement on the field `independentConfirms` is derived from.
+ *
+ * One entry per REVIEWER (principal plus the model that spoke for them), replacing that
+ * reviewer's own earlier opinion and nobody else's: the disagreement IS the signal.
+ */
+function recordVerdict(
+  f: SharedFinding, actor: Actor, verdict: Verdict, at: string, rationale: string,
+): void {
+  const i = f.corroboration.findIndex((c) => reviewerKey(c.actor) === reviewerKey(actor));
+  const entry = { actor, verdict, at, rationale, independent: isIndependent(actor, f.author) };
+  if (i >= 0) f.corroboration[i] = entry; else f.corroboration.push(entry);
+}
+
 const mayRerate = (f: { corroboration: { verdict: string }[]; severity?: string }, actor: Actor, next?: string): boolean =>
   !isAgentActor(actor) || next === undefined || next === f.severity
   || !f.corroboration.some((c) => c.verdict === "confirm");
@@ -1201,9 +1217,7 @@ export const corroborateLocalFinding = (root: string, id: string, verdict: Verdi
     // One entry per REVIEWER, replacing that reviewer's own earlier opinion and nobody
     // else's — `reviewerKey`, the same rule the fold applies, so the two halves of one
     // verb cannot disagree about who has spoken.
-    const i = f.corroboration.findIndex((c) => reviewerKey(c.actor) === reviewerKey(actor));
-    const entry = { actor, verdict, at, rationale, independent: isIndependent(actor, f.author) };
-    if (i >= 0) f.corroboration[i] = entry; else f.corroboration.push(entry);
+    recordVerdict(f, actor, verdict, at, rationale);
     return { verdict };
   });
 
@@ -1311,7 +1325,29 @@ export async function closeAssignment(
   }
   ann.outcome = { at: new Date().toISOString(), by: input.by || "agent", result: input.result, detail: input.detail, files: files.length ? files : undefined };
   await writeAnnotations(root, store.annotations);
-  return { ok: true, id: ann.id, result: input.result, disposition: ann.disposition, awaitingHuman: true, target: ann.target };
+  // The same envelope the other two branches return, so a caller can read `applied` and
+  // `refused` without knowing which store the id lives in — which is a detail it cannot
+  // see from the id and should not have to.
+  //
+  // `remediation` is the one thing genuinely REFUSED here rather than applied: an
+  // annotation has no such field, so passing it did nothing and said nothing — the §8
+  // trap ("nine findings that had been fixed a day earlier") on a third path. A caller
+  // that says a defect is fixed must not be told that landed when it did not.
+  const applied = ["outcome", ...(c.comment ? ["comment"] : []), ...(disposition ? ["disposition"] : []),
+    ...(line !== undefined ? ["line"] : []), ...(input.severity !== undefined ? ["severity"] : [])];
+  const refused = (input as { remediation?: string }).remediation
+    ? [{
+      field: "remediation",
+      why: "this finding is still an annotation, which has no remediation axis. `codemap migrate-findings` moves it "
+        + "into the findings table, where the field exists; until then say it in `detail`.",
+    }]
+    : [];
+  return {
+    ok: refused.length === 0,
+    id: ann.id, result: input.result, disposition: ann.disposition, awaitingHuman: true, target: ann.target,
+    applied,
+    ...(refused.length ? { refused, note: `remediation NOT recorded: ${refused[0]!.why}` } : {}),
+  };
 }
 
 /**
