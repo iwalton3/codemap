@@ -315,6 +315,7 @@ class SharedPage extends Component {
             <span class="${c.verdict === 'confirm' ? 'ok' : c.verdict === 'refute' ? 'bad' : 'dim'}">${c.verdict}</span>
             <b>${c.by}</b>${when(!!c.model, () => html` <span class="dim">(${c.model})</span>`)}
             ${when(!c.independent, () => html`<span class="dim" title="same principal as the author — not a second opinion"> · not independent</span>`)}
+            ${when(!!c.ref, () => html`<span class="dim" title="the commit this verdict was formed on — a verdict is a claim about CODE, and this says which"> · at ${c.ref.slice(0, 8)}</span>`)}
             <span class="dim">${c.rationale}</span>
           </div>`, (c, i) => `${c.by}:${i}`)}
         ${each(f.thread ?? [], t => html`

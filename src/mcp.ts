@@ -931,6 +931,7 @@ const tools: Tool[] = [
     inputSchema: obj({
       id: { type: "string", description: "A finding or bug id." },
       verdict: { type: "string", enum: ["confirm", "refute", "unsure"] },
+      anyway: { type: "boolean", description: "Record the verdict even though this checkout does not contain the commit the finding was witnessed at. Only when you have read the RIGHT code by another route — `git show <ref>:<file>`, or the pull request on GitHub. The refusal exists because a triage pass once refuted five findings for being \"not present\" while standing on a branch that predated them." },
       rationale: { type: "string", description: "What you actually checked." },
       model: { type: "string", description: "YOUR model id. Never guess it." },
       harness: { type: "string" },

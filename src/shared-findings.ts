@@ -96,6 +96,20 @@ export interface Corroboration {
    * queue is ranked by, and it must not change meaning as the fold is re-run.
    */
   independent: boolean;
+  /**
+   * The commit the reviewer was standing on when they formed this verdict.
+   *
+   * A verdict is a claim about CODE, and nothing recorded which code. A triage pass on
+   * `Acme.React` re-read every finding against whatever `@work` pointed at — a branch
+   * that predated the pull request under review — so five findings were refuted for
+   * being "not present" when they were merged to main the next day. One of the
+   * refutations is exactly inverted from what the code says. See
+   * `docs/finding-event-shape-audit.md`.
+   *
+   * Absent on verdicts recorded before this existed, and on any reviewer whose tree has
+   * no commits at all. `staleVerdicts` reports what it can check.
+   */
+  ref?: string;
 }
 
 /**
@@ -571,6 +585,7 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
           actor: e.actor, verdict, at: e.at,
           rationale: str(d, "rationale") ?? "",
           independent: isIndependent(e.actor, f.author),
+          ...(str(d, "ref") ? { ref: str(d, "ref") } : {}),
         };
         if (i >= 0) f.corroboration[i] = entry; else f.corroboration.push(entry);
         break;
@@ -757,8 +772,9 @@ export async function createFinding(logRoot: string, pr: number | string, actor:
   return id;
 }
 
-export const corroborate = (logRoot: string, pr: number | string, actor: Actor, id: string, verdict: Verdict, rationale: string) =>
-  emit(logRoot, pr, actor, id, "finding.corroborated", { verdict, rationale });
+export const corroborate = (
+  logRoot: string, pr: number | string, actor: Actor, id: string, verdict: Verdict, rationale: string, ref?: string,
+) => emit(logRoot, pr, actor, id, "finding.corroborated", { verdict, rationale, ...(ref ? { ref } : {}) });
 
 export const comment = (logRoot: string, pr: number | string, actor: Actor, id: string, body: string, inReplyTo?: string) =>
   emit(logRoot, pr, actor, id, "finding.commented", { body, ...(inReplyTo ? { inReplyTo } : {}) });

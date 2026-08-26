@@ -729,3 +729,74 @@ test("remediation on an annotation-backed finding is refused, not dropped", asyn
     assert.ok(r.applied?.includes("outcome"), "and it says what DID land");
   } finally { u.cleanup(); }
 });
+
+// --- a verdict is a claim about CODE, and now it says which ------------------------
+
+/**
+ * The guard for the failure that inverted five verdicts on `Acme.React`.
+ *
+ * A triage pass re-read every finding against whatever `@work` pointed at — `document-ui`,
+ * a branch that PREDATED the pull request under review — and refuted five findings for
+ * being "not present". They merged to main the next day; one refutation reads exactly
+ * inverted from what the code says. `sourceRef` recorded the discrepancy faithfully and
+ * nothing looked at it.
+ *
+ * The test is local: the finding was witnessed at `sourceRef`, so a checkout that does
+ * not CONTAIN that commit is missing the code the finding is about.
+ */
+test("a verdict formed on a tree that lacks the finding's code is refused", async () => {
+  const u = await universe();
+  try {
+    // Two commits, then a checkout rolled back to the FIRST — the shape `document-ui`
+    // was in: a tree that predates the code the finding is about.
+    const g = (...a: string[]) => spawnSync("git", ["-c", "user.email=izzie@x.com", "-c", "user.name=t", ...a], { cwd: u.root, encoding: "utf8" });
+    g("add", "-A"); g("commit", "-q", "-m", "base");
+    writeFileSync(join(u.root, "later.txt"), "the code the finding is about\n", "utf8");
+    g("add", "-A"); g("commit", "-q", "-m", "the commit the finding was written against");
+    const later = g("rev-parse", "HEAD").stdout.trim();
+
+    const f = await shared.shareFinding(u.root, 269, { ...NEW, sourceRef: later } as never) as { id: string };
+    g("checkout", "-q", "HEAD~1");
+
+    const r = await shared.corroborateFinding(u.root, 269, f.id, "refute", "not present in this tree") as { error?: string };
+    assert.match(String(r.error), /does not contain/);
+    assert.match(String(r.error), /different tree/, "and it says what went wrong, not just that it refused");
+    assert.match(String(r.error), /anyway/, "and names the override");
+
+    // The override exists for the reviewer who read the right code another way.
+    const ok = await shared.corroborateFinding(u.root, 269, f.id, "refute", "read it at its own ref", { anyway: true }) as { error?: string };
+    assert.equal(ok.error, undefined);
+  } finally { u.cleanup(); }
+});
+
+/**
+ * And a verdict that CANNOT be grounded says so rather than passing silently.
+ *
+ * 29 of 43 records on that universe carried no `sourceRef` at all, which is why the
+ * error was invisible: there was nothing to check and nothing saying so.
+ */
+test("a verdict on a finding with no witness ref is recorded, and reported as ungrounded", async () => {
+  const u = await universe();
+  try {
+    const f = await shared.shareFinding(u.root, 269, NEW) as { id: string };
+    const r = await shared.corroborateFinding(u.root, 269, f.id, "confirm", "read it") as
+      { error?: string; grounded?: boolean; note?: string };
+    assert.equal(r.error, undefined, "absence of evidence is not evidence — it is not refused");
+    assert.equal(r.grounded, false);
+    assert.match(String(r.note), /records no ref/);
+  } finally { u.cleanup(); }
+});
+
+/** Every verdict now stamps the commit it was formed on — the field whose absence hid this. */
+test("a verdict records the commit it was formed on", async () => {
+  const u = await universe();
+  try {
+    const g = (...a: string[]) => spawnSync("git", ["-c", "user.email=izzie@x.com", "-c", "user.name=t", ...a], { cwd: u.root, encoding: "utf8" });
+    g("add", "-A"); g("commit", "-q", "-m", "base");
+    const head = g("rev-parse", "HEAD").stdout.trim();
+    const f = await shared.shareFinding(u.root, 269, NEW) as { id: string };
+    await shared.corroborateFinding(u.root, 269, f.id, "confirm", "read it");
+    const row = (await readFinding(u.root, f.id))!;
+    assert.equal(row.corroboration[0]!.ref, head, "the reviewer's own head, on the record");
+  } finally { u.cleanup(); }
+});

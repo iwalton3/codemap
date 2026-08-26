@@ -128,7 +128,12 @@ export async function closeFinding(
   if (r.error) return r;
   const d = (input as { disposition?: string }).disposition;
   const verdict = d === "refuted" ? "refute" as const : d === "confirmed" ? "confirm" as const : null;
-  if (verdict) await shared.corroborateFinding(root, f.pr!, f.id, verdict, input.detail);
+  // Captured, not fired and forgotten: `corroborateFinding` can now REFUSE a verdict
+  // formed on a tree that does not contain the code the finding is about, and a refusal
+  // nobody reports is the silent-drop shape this envelope exists to end.
+  const vr = verdict
+    ? await shared.corroborateFinding(root, f.pr!, f.id, verdict, input.detail) as { error?: string }
+    : null;
   // The corrected wording is the point of reporting back, so it goes onto the RECORD
   // rather than into the outcome's prose: a `comment` the submitter reads and a `line`
   // the publisher places by are fields, and an outcome paragraph is neither filterable
@@ -142,6 +147,7 @@ export async function closeFinding(
   // re-reading the prose (`docs/mcp-complaints.md` § workflow-issues §2).
   const applied: string[] = ["outcome"];
   const refused: { field: string; why: string }[] = [];
+  if (vr?.error) refused.push({ field: "disposition", why: vr.error });
   // Ungated, unlike the comment/severity half below: what HAPPENED about a finding is an
   // observation, and the commonest reason to record one is a submitter fixing something
   // other people confirmed — exactly the case a confirmation gate would refuse.
@@ -161,7 +167,7 @@ export async function closeFinding(
       if (!input.remediation) notes.push(`remediation set to \`fixed-on-branch\` because you reported \`fixed\` — pass \`remediation\` to say otherwise`);
     }
   }
-  if (verdict) applied.push("corroboration");
+  if (verdict && !vr?.error) applied.push("corroboration");
   if (d && !verdict) {
     refused.push({ field: "disposition", why: "a shared finding records verdicts, not dispositions" });
     notes.push(`disposition "${d}" is not recorded on a shared finding — verdicts are`);
@@ -274,7 +280,12 @@ export async function reviseOn(
     // a verdict without one is a vote. So it is only recorded when the revision
     // carried the reasoning that justifies it.
     const rationale = (input.text ?? input.comment ?? "").trim();
-    if (rationale) await shared.corroborateFinding(root, f.pr!, f.id, verdict, rationale);
+    if (rationale) {
+      const r = await shared.corroborateFinding(root, f.pr!, f.id, verdict, rationale) as { error?: string };
+      // Same reason as `closeFinding`'s: the ground check can refuse, and a refusal
+      // reported nowhere is worse than the wrong verdict it prevented.
+      if (r.error) notes.push(`disposition NOT recorded: ${r.error}`);
+    }
     else notes.push(`disposition "${input.disposition}" not recorded — a verdict on a shared finding needs a rationale; pass \`text\`, or use \`corroborate\``);
   } else if (input.disposition) {
     notes.push(`disposition "${input.disposition}" is not recorded on a shared finding — verdicts are`);
@@ -331,7 +342,7 @@ export async function commentOn(root: string, input: { id: string; body: string;
 }
 
 /** A second opinion on somebody's finding or bug: confirm, refute or unsure. */
-export async function corroborateOn(root: string, input: { id: string; verdict: "confirm" | "refute" | "unsure"; rationale: string; model?: string; harness?: string }) {
+export async function corroborateOn(root: string, input: { id: string; verdict: "confirm" | "refute" | "unsure"; rationale: string; model?: string; harness?: string; anyway?: boolean }) {
   const w = await whichRecord(root, input.id);
   if ("error" in w) return w;
   if ("bug" in w) return corroborateBugOp(root, input.id, input.verdict, input.rationale);
@@ -341,7 +352,7 @@ export async function corroborateOn(root: string, input: { id: string; verdict: 
   // point of running several, sidecar or no sidecar.
   if (!w.finding.shared) return corroborateLocalFinding(root, input.id, input.verdict as Verdict, input.rationale);
   const shared = await import("./ops-shared.js");
-  return shared.corroborateFinding(root, w.finding.pr, input.id, input.verdict, input.rationale, { model: input.model, harness: input.harness });
+  return shared.corroborateFinding(root, w.finding.pr, input.id, input.verdict, input.rationale, { model: input.model, harness: input.harness, anyway: input.anyway });
 }
 
 /** Ask a PERSON to do what you may not: promote, invalidate, refute or resolve. */

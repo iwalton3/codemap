@@ -20,7 +20,7 @@ import { scopesOnDisk, readScopeChecked, writerFor, rotateWriter, acknowledgeSco
 import { findingsProjection, docsProjection, notesProjection, walkthroughsProjection, triageProjection, docsByNode, projectionFor } from "./shared-projections.js";
 import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
 import { resolveSidecar, scopeFor, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
-import { originSlug, headCommit, currentBranch } from "./git.js";
+import { originSlug, headCommit, currentBranch, isAncestor } from "./git.js";
 import { fetchReviewThreads, type GhRunner } from "./pr-push.js";
 import { ensureSidecar, sync as sidecarSync, receive as sidecarReceive, healMerge, readManifests, checkPeers, currentManifest } from "./sidecar.js";
 import {
@@ -327,13 +327,63 @@ export async function shareFinding(root: string, pr: number | string, f: NewFind
   return { ...mz, ok: true, id, note: "recorded locally — run `codemap sync` to send it" };
 }
 
-export async function corroborateFinding(root: string, pr: number | string, id: string, verdict: Verdict, rationale: string, via: Via = {}) {
+/**
+ * Is the tree this verdict is being formed on actually reading the code in question?
+ *
+ * A verdict is a claim about CODE, and nothing checked which code. A triage pass on
+ * `Acme.React` re-read every finding against whatever `@work` pointed at — `document-ui`,
+ * a branch that predated the pull request under review — and refuted five findings for
+ * being "not present". They merged to main the next day; one refutation reads exactly
+ * inverted from what the code says. `sourceRef` recorded the discrepancy faithfully and
+ * nobody looked at it.
+ *
+ * The test is local and needs no network: the finding was witnessed at `sourceRef`, so
+ * if this checkout does not CONTAIN that commit, it is missing the code the finding is
+ * about. `isAncestor` is memoised inside `git.ts` and shells out once per ref.
+ *
+ * Three answers, and the middle one is the point:
+ *
+ * - `ok` — the ref is contained, or there is nothing to check against.
+ * - `unknown` — the finding carries no `sourceRef`, or was witnessed at `@work` (which
+ *   names no commit). 29 of 43 records on that universe were in this state, which is why
+ *   the error was invisible. Recorded, not refused: absence of evidence is not evidence.
+ * - `missing` — the checkout demonstrably lacks the code. REFUSED.
+ */
+function verdictGround(root: string, f: SharedFinding): { state: "ok" | "unknown" | "missing"; ref?: string; head?: string } {
+  const ref = f.sourceRef;
+  const head = headCommit(root);
+  if (!ref || ref === "@work" || !head) return { state: "unknown", ref, head: head ?? undefined };
+  return { state: isAncestor(root, ref, head) ? "ok" : "missing", ref, head };
+}
+
+export async function corroborateFinding(
+  root: string, pr: number | string, id: string, verdict: Verdict, rationale: string,
+  via: Via & { anyway?: boolean } = {},
+) {
   const b = bind(root, via);
   if ("error" in b) return b;
   if (!rationale.trim()) return { error: "a verdict without a rationale is a vote, not a review — say what you checked" };
-  await corroborate(b.cfg.path, prKey(b.cfg, pr), b.actor, id, verdict, rationale);
+  const f = (await cachedFindings(root, b.cfg, pr)).value.get(id);
+  const ground = f ? verdictGround(root, f) : { state: "unknown" as const };
+  if (ground.state === "missing" && !via.anyway) {
+    return {
+      error: `${id} was witnessed at ${ground.ref!.slice(0, 12)}, which this checkout does not contain — so the code it `
+        + `is about is not the code you are reading. A verdict formed here is a verdict about a different tree: that is `
+        + `how five findings on another universe were refuted for being "not present" the day before they merged.\n\n`
+        + `Read it at its own ref (\`git show ${ground.ref!.slice(0, 12)}:<file>\`, or check out the pull request's head), `
+        + `then say the verdict. Pass \`anyway\` if you have read the right code by some other route and know this is fine.`,
+    };
+  }
+  await corroborate(b.cfg.path, prKey(b.cfg, pr), b.actor, id, verdict, rationale, ground.head);
   const mz = await materializeFindings(root, b.cfg, pr);
-  return { ...mz, ok: true, id, verdict };
+  return {
+    ...mz, ok: true, id, verdict,
+    // Said out loud rather than only stamped: a verdict nobody could ground is the state
+    // that made the original error undetectable, and the reader should know which it is.
+    ...(ground.state === "unknown"
+      ? { grounded: false as const, note: "this finding records no ref it was witnessed at, so nothing could check that you are reading the code it is about. Your verdict is stamped with this checkout's head." }
+      : {}),
+  };
 }
 
 export async function commentOnFinding(root: string, pr: number | string, id: string, body: string, inReplyTo?: string, via: Via = {}) {
@@ -518,7 +568,7 @@ function view(f: SharedFinding) {
     confirms: confirms.length,
     independentConfirms: confirms.filter((c) => c.independent).length,
     refutes: f.corroboration.filter((c) => c.verdict === "refute").length,
-    corroboration: f.corroboration.map((c) => ({ by: c.actor.principal, model: c.actor.via?.model, verdict: c.verdict, rationale: c.rationale, independent: c.independent })),
+    corroboration: f.corroboration.map((c) => ({ by: c.actor.principal, model: c.actor.via?.model, verdict: c.verdict, rationale: c.rationale, independent: c.independent, ref: c.ref })),
     thread: f.thread.map((c) => ({ id: c.id, by: c.actor.principal, model: c.actor.via?.model, at: c.at, body: c.body, inReplyTo: c.inReplyTo })),
     pending: f.pending ? { ask: f.pending.ask, by: f.pending.by.principal, rationale: f.pending.rationale } : undefined,
     outcome: f.outcome ? { result: f.outcome.result, detail: f.outcome.detail, by: f.outcome.by.principal, files: f.outcome.files } : undefined,
