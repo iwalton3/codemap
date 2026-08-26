@@ -16,7 +16,7 @@ import { computeDiff, lineDiff, stripCR, type DiffResult, type DiffLine } from "
 import { indexBlob, indexCommit } from "./repo.js";
 import { readSnapshot, writeSnapshot, readAnnotations, readAnchorStore, retainOrphans, referencedAnchorIds, anchorsUnderRef } from "./store.js";
 import { loadLanes, LANE_POLICY, type Lane } from "./lanes.js";
-import { teamNotesByAnchor, type PinnedNote } from "./notes-lookup.js";
+import { teamNotesByAnchor, findingsByAnchor, type PinnedNote } from "./notes-lookup.js";
 import { containedAnchorIds } from "./reviews.js";
 import { complexityOf, MONEY_RX, reviewTriageFor, setTriageBatch } from "./triage.js";
 import { readTriage } from "./store.js";
@@ -739,6 +739,11 @@ export async function prStory(
   // is a review aid whose value is being pinned to the line while somebody reads the
   // diff, and this pane showed only the ones this machine wrote.
   const teamNotes = await teamNotesByAnchor(root, new Set(anns.map((a) => a.id)));
+  // FINDINGS, which reached this page only through a collapsed panel. Raising one from
+  // the diff calls `report_defect`, which files a canonical finding — so pressing the
+  // line's ✎ and typing produced nothing at the line it was typed at, and read as a
+  // no-op. Local annotations rendered inline and the store that replaced them did not.
+  const findingsHere = await findingsByAnchor(root, t.pr.number);
 
   const steps: StoryStep[] = t.worklist
     .filter((w) => w.lane === "code")
@@ -750,6 +755,7 @@ export async function prStory(
       review: w.review, viewedMark: w.viewedMark,
       annotations: byAnchor.get(w.id) ?? [],
       ...(teamNotes.get(w.id)?.length ? { sharedNotes: teamNotes.get(w.id)! } : {}),
+      ...(findingsHere.get(w.id)?.length ? { findings: findingsHere.get(w.id)! } : {}),
     }));
 
   // Symbol names this universe knows about at all — live plus the PR head — so a

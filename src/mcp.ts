@@ -943,7 +943,7 @@ const tools: Tool[] = [
     description: "Ask a PERSON for something that is not a state change you have already concluded — chiefly `promote` (\"this is real, the team should know\"), or a close you want to flag WITHOUT having reached it yourself.\n\nYou usually do not need this to close something. `close_finding` records the ask for you: if the finding is confirmed, or a person filed it, your close is written as a pending `<state> pending` on the record with your reason attached, and it shows in their queue. That is the same act, in the verb you already reached for — two tools that looked more appropriate is exactly why this one went unused.\n\nAsks: `promote | invalidate | refute | resolve | withdraw`. `withdraw` retires the record with the claim intact — a duplicate.",
     inputSchema: obj({
       id: { type: "string", description: "A finding or bug id." },
-      action: { type: "string", enum: ["promote", "invalidate", "refute", "resolve", "withdraw"], description: "`withdraw` retires the record with the claim intact — a duplicate. The other four say something about whether it is true." },
+      action: { type: "string", enum: ["promote", "invalidate", "refute", "resolve", "withdraw", "reopen"], description: "`withdraw` retires the record with the claim intact — a duplicate. The other four say something about whether it is true." },
       rationale: { type: "string", description: "Why. This is what the human reads to decide." },
     }, ["id", "action", "rationale"]),
     mutates: true,

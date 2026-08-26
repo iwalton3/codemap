@@ -580,3 +580,86 @@ test("a refused comment is refused before anything is written", async () => {
     assert.equal(after.remediation, before.remediation, "and no remediation");
   } finally { u.cleanup(); }
 });
+
+/**
+ * The local branch had none of the guarantees the descriptions promise unconditionally.
+ *
+ * "Local" is not an edge case: it is every finding before `unify-findings`/`sync`, and
+ * everything on a machine with no sidecar. Reported by a Fable 5 review of the surface.
+ */
+test("a local finding gets the same envelope and the same severity gate", async () => {
+  const u = await universe();
+  try {
+    const { writeLocalFinding } = await import("./store.js");
+    const base = {
+      id: "f_loc2", target: { kind: "anchor" as const, id: "a_1" }, text: "t", comment: "c",
+      severity: "high" as const, author: { principal: "izzie@x.com" }, createdAt: "2026-01-01T00:00:00Z",
+      state: "created" as const, corroboration: [], thread: [], revisions: [], outcomes: [], asks: [],
+    };
+    await writeLocalFinding(u.root, base as never, 269);
+
+    // Unconfirmed: the write-up lands, envelope included.
+    await asAgent(async () => {
+      const r = await closeFinding(u.root, { id: "f_loc2", result: "answered", detail: "read it", severity: "low" }) as
+        { ok?: boolean; applied?: string[]; refused?: unknown[] };
+      assert.equal(r.ok, true);
+      assert.ok(r.applied?.includes("severity"), `applied: ${JSON.stringify(r.applied)}`);
+      assert.equal(r.refused, undefined);
+    });
+    assert.equal((await readFinding(u.root, "f_loc2"))!.severity, "low");
+
+    // Now somebody stands behind it — and the gate is the SAME one, not absent.
+    await shared.corroborateFinding(u.root, 269, "f_loc2", "confirm", "real").catch(() => null);
+    const withConfirm = (await readFinding(u.root, "f_loc2"))!;
+    withConfirm.corroboration = [{ actor: { principal: "dana@x.com" }, verdict: "confirm", at: "2026-01-02T00:00:00Z", rationale: "r", independent: true } as never];
+    await writeLocalFinding(u.root, withConfirm, 269);
+
+    await asAgent(async () => {
+      const r = await closeFinding(u.root, { id: "f_loc2", result: "answered", detail: "again", severity: "critical" }) as
+        { ok?: boolean; refused?: { field: string }[] };
+      assert.equal(r.ok, false, "`ok` is false when a field was refused — it is not a 'the call happened' flag");
+      assert.deepEqual(r.refused?.map((x) => x.field), ["severity"]);
+    });
+    assert.equal((await readFinding(u.root, "f_loc2"))!.severity, "low", "the number a person stood behind did not move");
+  } finally { u.cleanup(); }
+});
+
+/** And `result:"fixed"` sets the remediation on this branch too — the §8 trap. */
+test("a local finding reported fixed is not left counted as open", async () => {
+  const u = await universe();
+  try {
+    const { writeLocalFinding } = await import("./store.js");
+    await writeLocalFinding(u.root, {
+      id: "f_loc3", target: { kind: "anchor" as const, id: "a_1" }, text: "t", comment: "c",
+      author: { principal: "izzie@x.com" }, createdAt: "2026-01-01T00:00:00Z",
+      state: "created" as const, corroboration: [], thread: [], revisions: [], outcomes: [], asks: [],
+    } as never, 269);
+    await asAgent(async () => {
+      await closeFinding(u.root, { id: "f_loc3", result: "fixed", detail: "fixed at head abc", files: ["a.cs"] });
+    });
+    assert.equal((await readFinding(u.root, "f_loc3"))!.remediation?.state, "fixed-on-branch");
+  } finally { u.cleanup(); }
+});
+
+/** A closed finding an agent finds live again has a word for it now. */
+test("an agent asks to REOPEN rather than writing it in the thread", async () => {
+  const u = await universe();
+  try {
+    let mine!: { id: string };
+    await asAgent(async () => { mine = await shared.shareFinding(u.root, 269, NEW) as { id: string }; });
+    await asAgent(async () => { await closeFinding(u.root, { id: mine.id, result: "answered", detail: "not real", state: "refuted" }); });
+    assert.equal((await readFinding(u.root, mine.id))!.state, "refuted");
+
+    await asAgent(async () => {
+      const r = await closeFinding(u.root, {
+        id: mine.id, result: "answered", detail: "the submitter force-pushed the guard away; it is live again",
+        state: "created",
+      }) as { asked?: string };
+      assert.equal(r.asked, "reopen", "reopening is a person's, and now it is sayable");
+    });
+    const f = (await readFinding(u.root, mine.id))!;
+    assert.equal(f.state, "refuted", "still closed until a person acts");
+    assert.equal(f.pending?.ask, "reopen");
+    assert.match(f.pending!.rationale, /force-pushed/);
+  } finally { u.cleanup(); }
+});

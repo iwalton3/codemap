@@ -58,7 +58,12 @@ export type Verdict = "confirm" | "refute" | "unsure";
  * already a terminal state and a `doubted` tier; the gap was only that an agent had no
  * word for it.
  */
-export const ASKS = ["promote", "invalidate", "refute", "resolve", "withdraw"] as const;
+// `reopen` is the one an agent needed and could not say. A finding closed as `resolved`
+// that the submitter then force-pushed the fix away from is live again, and every other
+// channel was prose — `mayTransition` refuses agents any move off a closed state, and
+// the four closing asks are all the wrong direction. Same lexical-gap shape as the
+// `withdraw` complaint, one state over.
+export const ASKS = ["promote", "invalidate", "refute", "resolve", "withdraw", "reopen"] as const;
 
 /**
  * The ask that corresponds to closing into each state, so an agent's attempt to close
@@ -68,6 +73,9 @@ export const ASKS = ["promote", "invalidate", "refute", "resolve", "withdraw"] a
 export const ASK_FOR_STATE: Partial<Record<FindingState, Ask>> = {
   invalid: "invalidate", refuted: "refute", resolved: "resolve", withdrawn: "withdraw",
 };
+
+/** Reopening is always a person's, so an agent's attempt is always the ask. */
+export const REOPEN_STATES: readonly FindingState[] = ["created", "issued"];
 export type Ask = (typeof ASKS)[number];
 
 /**
@@ -820,7 +828,7 @@ export async function setState(
     // corrections written as remarks, against zero `request_human` asks ever recorded.
     // Recording the ask puts a `refuted pending` badge on the item, which is the whole
     // point: a person approves it from the row instead of reading the log for it.
-    const ask = ASK_FOR_STATE[next];
+    const ask = isClosed(current.state) && REOPEN_STATES.includes(next) ? "reopen" as const : ASK_FOR_STATE[next];
     if (ask) {
       const e = await emit(logRoot, pr, actor, id, "finding.requested", {
         ask,

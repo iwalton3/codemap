@@ -600,6 +600,55 @@ const OUTCOME_ICON = { fixed: '✔', answered: '💬', declined: '⊘' };
  * escalate and resolve, and a fold-owned note is not locally mutable, so those buttons
  * would be writes that cannot land. `shared_notes` on the anchor is where you answer one.
  */
+/**
+ * A FINDING, pinned to the line it is about.
+ *
+ * Findings reached this page only through a collapsed panel, while local annotations
+ * rendered inline — so raising one from the diff (the ✎ button calls `report_defect`,
+ * which files a canonical finding) put nothing at the line it was typed at and read as
+ * a no-op. Its own store had replaced the one with the good surface.
+ *
+ * `resolve` / `reopen` are here because a closed finding had no way back from any
+ * shared surface: the op allows a person to move it anywhere, and only the UI was
+ * missing. Everything richer — corroboration, asks, the thread — stays on the findings
+ * panel and the shared view; this is the reading position, not the triage position.
+ */
+const findingPinEl = (c, u, f) => {
+  const closed = f.state === 'resolved' || f.state === 'refuted' || f.state === 'invalid' || f.state === 'withdrawn';
+  return html`<div class="rvfind k-finding ${closed ? 'resolved' : ''}">
+    <span class="rvfpin" title="finding${f.line ? ' · line ' + f.line : ''}">⚑${f.line ? ' ' + f.line : ''}</span>
+    ${when(f.severity, () => html`<span class="rvfsev" style="background:${SEV_COLOR[f.severity] || '#3a4250'}" title="severity: ${f.severity}"></span>`)}
+    ${when(f.category, () => html`<span class="rvfcat">${f.category}</span>`)}
+    <span class="rvftext">${f.text}</span>
+    <span class="rvfacts">
+      <span class="dim rvfauthor">${f.by}${f.shared ? ' · team' : ''}</span>
+      ${when(!!REMEDIATION_LABEL_APP[f.remediation], () => html`<span class="prbadge ok" title="${REMEDIATION_LABEL_APP[f.remediation][1]}">${REMEDIATION_LABEL_APP[f.remediation][0]}</span>`)}
+      ${when(!!f.pending, () => html`<span class="prbadge ask" title="${f.pending.by} asked for this — ${f.pending.rationale}">${PENDING_LABEL_APP[f.pending.ask] || f.pending.ask} pending</span>`)}
+      ${when(closed && !!f.closedReason, () => html`<span class="dim" title="${f.closedReason}">closed</span>`)}
+      <button class="annores" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); setFindingState(c, u, f.id, closed ? 'created' : 'resolved'); }}">${closed ? 'reopen' : 'resolve'}</button>
+    </span>
+  </div>`;
+};
+
+/** Shared with `shared.js`; duplicated rather than imported — these are separate bundles. */
+const REMEDIATION_LABEL_APP = {
+  'fixed-on-branch': ['fixed on branch', 'verified fixed here — the mainline may still carry it'],
+  'fixed-on-default': ['fixed on main', 'fixed on the default branch'],
+  'deferred': ['deferred', 'real, and deliberately not being fixed now'],
+  'wont-fix': ["won't fix", 'real, and a decision was taken not to fix it'],
+};
+const PENDING_LABEL_APP = { refute: 'refuted', resolve: 'fixed', invalidate: 'invalid', withdraw: 'withdrawn', promote: 'promotion' };
+
+/** Move a finding's state, and refresh whatever is showing it. */
+async function setFindingState(c, u, id, state) {
+  const res = await asJson(fetch('/api/shared/act', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ u, action: 'close', id, state, reason: state === 'created' ? 'reopened from the diff' : 'resolved from the diff' }),
+  }));
+  if (res && res.error) { c.state.raiseErr = { key: id, error: res.error }; return; }
+  await c.load.run();
+}
+
 const teamNoteEl = (n) => html`<div class="rvfind rvteam k-${n.kind} ${n.resolved ? 'resolved' : ''}">
   <span class="rvfpin" title="${n.kind} · ${n.by}${n.line ? ' · line ' + n.line : ''}">${ANNO_ICON[n.kind] || '✎'}${n.line ? ' ' + n.line : ''}</span>
   ${when(n.severity, () => html`<span class="rvfsev" style="background:${SEV_COLOR[n.severity] || '#3a4250'}" title="severity: ${n.severity}"></span>`)}
@@ -655,12 +704,13 @@ function pinTeamNotes(shared) {
 // findings render inline under their line, unlocated notes below. The `annotations`
 // this reads are refreshed either by `c.load.run()` or, where the host implements
 // it, by `c.patchAnnotations` updating just this anchor (see afterAnnotationWrite).
-function codeReviewLines(c, u, anchorId, code, lang, startLine, annotations, shared) {
+function codeReviewLines(c, u, anchorId, code, lang, startLine, annotations, shared, findings) {
   if (code == null) return html`<pre class="code rvcode">(source unavailable — anchor renamed/removed?)</pre>`;
   const base = startLine || 1;
   const byLine = new Map(); const noLine = [];
   for (const a of (annotations || [])) { if (a.line) { (byLine.get(a.line) || byLine.set(a.line, []).get(a.line)).push(a); } else noLine.push(a); }
   const [teamByLine, teamNoLine] = pinTeamNotes(shared);
+  const [findByLine, findNoLine] = pinTeamNotes(findings);
   const lines = highlightLines(code, lang);
   return html`<div class="rvpre hljs">
     ${each(lines, (lineHtml, i) => {
@@ -669,11 +719,12 @@ function codeReviewLines(c, u, anchorId, code, lang, startLine, annotations, sha
       return html`<div class="flrow">
         <div class="fline"><span class="flno">${n}</span><span class="fltext">${raw(lineHtml)}</span><button class="flcomment" title="raise a finding on line ${n}" on-click="${() => openFindingForm(c, anchorId, n)}">💬</button></div>
         ${each(finds, f => findingItemEl(c, u, f), f => f.id)}
+        ${each(findByLine.get(n) || [], f => findingPinEl(c, u, f), f => f.id)}
         ${each(teamByLine.get(n) || [], t => teamNoteEl(t), t => t.id)}
         ${when(c.state.finding === findingKey(anchorId, n), () => findingForm(c, u, anchorId, n))}
       </div>`;
     }, (lineHtml, i) => i)}
-    ${when(noLine.length || teamNoLine.length, () => html`<div class="rvfinds">${each(noLine, f => findingItemEl(c, u, f), f => f.id)}${each(teamNoLine, t => teamNoteEl(t), t => t.id)}</div>`)}
+    ${when(noLine.length || teamNoLine.length || findNoLine.length, () => html`<div class="rvfinds">${each(noLine, f => findingItemEl(c, u, f), f => f.id)}${each(findNoLine, f => findingPinEl(c, u, f), f => f.id)}${each(teamNoLine, t => teamNoteEl(t), t => t.id)}</div>`)}
   </div>`;
 }
 const highlight = (code, lang) => {
@@ -1298,7 +1349,7 @@ class NodeReviewPage extends Component {
         ${when(nf, () => html`<span class="rvfbadge" title="${nf} open finding${nf === 1 ? '' : 's'}">⚑ ${nf}</span>`)}
         <span class="rev" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">${reviewRowEl(s.review, s.viewed, (att, st, actor, via) => this.markSeg(s.id, att, st, actor, via))}<button title="read the whole file in context" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.openFile(s.file, s.id); }}">view file</button><span class="viewlink" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); go(anchorUrl(u, s.id)); }}" title="open anchor page">↗</span></span>
       </div>
-      ${when(open, () => codeReviewLines(this, u, s.id, s.code, s.lang, s.startLine, s.annotations, s.sharedNotes))}
+      ${when(open, () => codeReviewLines(this, u, s.id, s.code, s.lang, s.startLine, s.annotations, s.sharedNotes, s.findings))}
     </div>`;
   }
   fileLines(f) {
@@ -2962,11 +3013,12 @@ defineComponent('diff-page', DiffPage);
 //
 // Highlighted per line rather than as a block: the +/- signs are not part of the
 // language, so a whole-block highlight would lex them as syntax.
-function diffReviewLines(c, u, anchorId, lines, lang, startLine, annotations, shared) {
+function diffReviewLines(c, u, anchorId, lines, lang, startLine, annotations, shared, findings) {
   if (!lines || !lines.length) return html`<pre class="code rvcode">(no diff available)</pre>`;
   const byLine = new Map(); const noLine = [];
   for (const a of (annotations || [])) { if (a.line) { (byLine.get(a.line) || byLine.set(a.line, []).get(a.line)).push(a); } else noLine.push(a); }
   const [teamByLine, teamNoLine] = pinTeamNotes(shared);
+  const [findByLine, findNoLine] = pinTeamNotes(findings);
   let head = (startLine || 1) - 1;
   // Highlight through `diffCodeRows`, which reconstructs each SIDE and highlights it
   // as one block. Lexing a line on its own loses the multi-line context that a block
@@ -2989,11 +3041,12 @@ function diffReviewLines(c, u, anchorId, lines, lang, startLine, annotations, sh
           ${when(r.n, () => html`<button class="flcomment" title="raise a finding on line ${r.n}" on-click="${() => openFindingForm(c, anchorId, r.n)}">💬</button>`)}
         </div>
         ${each(finds, f => findingItemEl(c, u, f), f => f.id)}
+        ${each(r.n ? (findByLine.get(r.n) || []) : [], f => findingPinEl(c, u, f), f => f.id)}
         ${each(r.n ? (teamByLine.get(r.n) || []) : [], t => teamNoteEl(t), t => t.id)}
         ${when(r.n && c.state.finding === findingKey(anchorId, r.n), () => findingForm(c, u, anchorId, r.n))}
       </div>`;
     }, (r, i) => i)}
-    ${when(noLine.length || teamNoLine.length, () => html`<div class="rvfinds">${each(noLine, f => findingItemEl(c, u, f), f => f.id)}${each(teamNoLine, t => teamNoteEl(t), t => t.id)}</div>`)}
+    ${when(noLine.length || teamNoLine.length || findNoLine.length, () => html`<div class="rvfinds">${each(noLine, f => findingItemEl(c, u, f), f => f.id)}${each(findNoLine, f => findingPinEl(c, u, f), f => f.id)}${each(teamNoLine, t => teamNoteEl(t), t => t.id)}</div>`)}
   </div>`;
 }
 
@@ -4117,8 +4170,8 @@ class PrStoryPage extends Component {
           <span class="viewlink" title="open the full anchor page" on-click="${() => go(anchorUrl(u, step.anchorId))}">↗</span>
         </div>
         ${when(this.showsDiff(step),
-          () => diffReviewLines(this, u, step.anchorId, code.lines, code.lang, code.startLine, code.annotations, code.sharedNotes),
-          () => codeReviewLines(this, u, step.anchorId, src.text, code.lang, src.startLine, code.annotations, code.sharedNotes))}
+          () => diffReviewLines(this, u, step.anchorId, code.lines, code.lang, code.startLine, code.annotations, code.sharedNotes, step.findings),
+          () => codeReviewLines(this, u, step.anchorId, src.text, code.lang, src.startLine, code.annotations, code.sharedNotes, step.findings))}
       </div>`)}
       ${when(isErr(held), () => html`<div class="prsbody dim">${isErr(held) ? held.error : ''}</div>`)}
     </div>`;

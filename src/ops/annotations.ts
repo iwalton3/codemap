@@ -6,7 +6,7 @@ import { headCommit, readBlobs } from "../git.js";
 import { readAnchorStore, loadNodes, readAnnotations, writeAnnotations, readFindings, readFinding, writeLocalFinding, findAnchorsOutsideWork, readPushes, bodyHashAt, readOrphans, readSharedNotes } from "../store.js";
 import { resolveSidecar } from "../sidecar-config.js";
 import {
-  findingTier, isClosed, mayTransition, needsHumanAck, ASK_FOR_STATE,
+  findingTier, isClosed, mayTransition, needsHumanAck, ASK_FOR_STATE, REOPEN_STATES,
   type Ask, type FindingState, type FindingTier, type Remediation, type SharedFinding, type Verdict,
 } from "../shared-findings.js";
 import { requireActor, isAgentActor, actorLabel, reviewerKey, isIndependent } from "../identity.js";
@@ -935,14 +935,32 @@ export async function closeLocalFinding(
     was[k] = f[k];
     f[k] = v;
   };
-  f.outcome = { result: input.result, detail: input.detail, ...(files.length ? { files } : {}), by: actor, at };
+  const report = { result: input.result, detail: input.detail, ...(files.length ? { files } : {}), by: actor, at };
+  // Appended AND latched, the same as the fold — a local row that gets several rounds
+  // of verification must not overwrite them either.
+  f.outcomes = [...(f.outcomes ?? []), report];
+  f.outcome = report;
   set("comment", c.comment);
   set("line", Number.isFinite(input.line) ? Math.floor(input.line as number) : undefined);
-  set("severity", input.severity);
+  const rerateOk = mayRerate(f, actor, input.severity);
+  if (rerateOk) set("severity", input.severity);
   if (Object.keys(was).length) f.revisions = [...f.revisions, { at, by: actor, was }];
   if (verdict) f.corroboration = [...f.corroboration, { actor, verdict, at, rationale: input.detail, independent: false }];
   await writeLocalFinding(root, f, f.pr!);
-  return { ok: true, id: f.id, pr: f.pr, shared: false, ...(unmapped ? { note: `disposition "${unmapped}" is not recorded on a finding — verdicts are` } : {}) };
+  // The same envelope the shared branch returns. `ok` meant "the call happened" here
+  // while a field was being dropped, and the description promises `applied`/`refused`
+  // unconditionally — so the half of the surface that carries most findings for most of
+  // their life was the half that overpromised.
+  const applied = ["outcome", ...Object.keys(was)];
+  const refused: { field: string; why: string }[] = [];
+  if (!rerateOk) refused.push({ field: "severity", why: RERATE_REFUSED(f.id, f.severity) });
+  if (unmapped) refused.push({ field: "disposition", why: `"${unmapped}" is not recorded on a finding — verdicts are` });
+  if (verdict) applied.push("corroboration");
+  return {
+    ok: refused.length === 0, id: f.id, pr: f.pr, shared: false, applied,
+    ...(refused.length ? { refused } : {}),
+    ...(refused.length ? { note: refused.map((r) => `${r.field} NOT changed: ${r.why}`).join("; ") } : {}),
+  };
 }
 
 /**
@@ -1029,6 +1047,12 @@ export async function reviseLocalFinding(
   const row = f as unknown as Record<string, unknown>;
   const was: Record<string, unknown> = {};
   const changed: string[] = [];
+  // The severity gate, which lived only on the fold-owned path — so an agent's re-rate
+  // of a CONFIRMED local finding applied silently, on the one field the design says is
+  // somebody else's. See `mayRerate`.
+  if (!mayRerate(row as never, actor, next.severity as string | undefined)) {
+    return { error: RERATE_REFUSED(String(row.id), row.severity as string | undefined) };
+  }
   for (const k of REVISABLE) {
     if (!(k in next) || next[k] === row[k]) continue;
     was[k] = row[k];
@@ -1133,13 +1157,29 @@ async function localFindingWrite<T>(
   return { ok: true, id: f.id, pr: f.pr, shared: false, ...(r as object ?? {}) };
 }
 
+/**
+ * May this actor re-rate THIS finding's severity?
+ *
+ * The gate existed only on the fold-owned path, so the same call on a local row applied
+ * silently — and "local" is every finding before it is published, which is most of them
+ * for most of their life. The predicate is `reviseFinding`'s: confirmation, not
+ * authorship, and only when the value actually moves.
+ */
+const mayRerate = (f: { corroboration: { verdict: string }[]; severity?: string }, actor: Actor, next?: string): boolean =>
+  !isAgentActor(actor) || next === undefined || next === f.severity
+  || !f.corroboration.some((c) => c.verdict === "confirm");
+
+const RERATE_REFUSED = (id: string, sev?: string | undefined) =>
+  `${id}'s severity is ${sev ?? "unset"} and somebody has confirmed the finding, so re-rating it is theirs. `
+  + "Everything else — the description, the comment, the category, the line — you may rewrite right now.";
+
 export const setLocalFindingState = (root: string, id: string, state: FindingState, reason?: string) =>
   localFindingWrite(root, id, (f, actor, at) => {
     if (!mayTransition(f, actor, state)) {
       // Asked, not refused — the same rule the shared path follows, and for the same
       // reason: an agent told "no" goes looking for another verb, and the one it finds
       // is prose. See `setState` in `shared-findings.ts`.
-      const ask = ASK_FOR_STATE[state];
+      const ask = isClosed(f.state) && REOPEN_STATES.includes(state) ? "reopen" as const : ASK_FOR_STATE[state];
       if (!ask) return { error: `an agent may not move ${id} from ${f.state} to ${state} — request it instead` };
       f.pending = { ask, by: actor, at, rationale: reason ?? `agent concluded ${state}` };
       return {

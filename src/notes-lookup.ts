@@ -82,3 +82,60 @@ export async function teamNotesByAnchor(
   } catch { /* a local read must still answer */ }
   return out;
 }
+
+/** What a code-review pane shows for a finding pinned to a line. */
+export interface PinnedFinding {
+  id: string;
+  pr?: string;
+  state: string;
+  tier: string;
+  text: string;
+  by: string;
+  line?: number;
+  severity?: string;
+  category?: string;
+  /** Set when it is somebody else's, so the pane can say whose without a second read. */
+  shared?: boolean;
+  remediation?: string;
+  /** An outstanding request a person has to answer — `refuted pending` and friends. */
+  pending?: { ask: string; by: string; rationale: string };
+  closedReason?: string;
+}
+
+/**
+ * This pull request's findings, grouped by the anchor they are about.
+ *
+ * The pane that pins an annotation to its line never saw a finding: `report_defect` —
+ * which is what the diff's own ✎ button calls — files a canonical row, and canonical
+ * rows reached the pull-request page only through a collapsed panel. So raising a
+ * finding at line 264 put nothing at line 264, and read as a no-op.
+ *
+ * One read for the whole page, like `teamNotesByAnchor`, and it never throws: a store
+ * with no findings table yet must still render its diff.
+ */
+export async function findingsByAnchor(root: string, pr: number | string): Promise<Map<string, PinnedFinding[]>> {
+  const out = new Map<string, PinnedFinding[]>();
+  try {
+    const { readFindings } = await import("./store.js");
+    const { findingTier } = await import("./shared-findings.js");
+    for (const f of (await readFindings(root, { pr })).findings) {
+      if (f.target.kind !== "anchor") continue;
+      const row: PinnedFinding = {
+        id: f.id, pr: f.pr, state: f.state, tier: findingTier(f),
+        // The submitter-facing version is the one this pane is for; `text` is the
+        // investigation and would be a wall beside the code.
+        text: f.comment || f.text,
+        by: f.author.principal,
+        ...(f.line !== undefined ? { line: f.line } : {}),
+        ...(f.severity ? { severity: f.severity } : {}),
+        ...(f.category ? { category: f.category } : {}),
+        ...(f.origin ? { shared: true } : {}),
+        ...(f.remediation ? { remediation: f.remediation.state } : {}),
+        ...(f.pending ? { pending: { ask: f.pending.ask, by: f.pending.by.principal, rationale: f.pending.rationale } } : {}),
+        ...(f.closed?.reason ? { closedReason: f.closed.reason } : {}),
+      };
+      (out.get(f.target.id) ?? out.set(f.target.id, []).get(f.target.id)!).push(row);
+    }
+  } catch { /* a local read must still answer */ }
+  return out;
+}

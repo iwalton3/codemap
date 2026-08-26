@@ -22,7 +22,7 @@
 import type { Lane } from "./lanes.js";
 import { scanMarkdown } from "./markdown.js";
 import type { Annotation, Complexity } from "./schema.js";
-import type { PinnedNote } from "./notes-lookup.js";
+import type { PinnedNote, PinnedFinding } from "./notes-lookup.js";
 
 export interface SpecSection { specPath: string; heading: string; level: number; text: string; durable: boolean }
 
@@ -185,6 +185,12 @@ export interface StoryStep {
    * fold-owned note is not locally mutable. See `notes-lookup.ts`.
    */
   sharedNotes?: PinnedNote[];
+  /**
+   * Findings about this symbol, pinned to their line. Separate from `annotations` for
+   * the same reason `sharedNotes` is: these are canonical rows with their own verbs,
+   * not annotations the annotation actions apply to.
+   */
+  findings?: PinnedFinding[];
 }
 
 export interface StoryChapter {
