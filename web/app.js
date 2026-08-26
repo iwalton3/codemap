@@ -193,6 +193,26 @@ export const nav = new NavStore();
 
 let router;
 export const go = (path, query) => router.navigate(path, query);
+/**
+ * The href form of `go`, for navigation that should be a real link.
+ *
+ * A `<div on-click="${() => go(url)}">` cannot be middle-clicked into a tab,
+ * cmd-clicked, right-click-copied, hovered for a preview, or announced as a link — all
+ * of which people do constantly in a review tool, where you want a symbol open beside
+ * the diff.
+ *
+ * The router is in HASH mode (no `<base href>`), so `location.hash = x` and clicking
+ * `<a href="#x">` are the same act: both fire `hashchange`, which is what the router
+ * listens on. A pure-navigation site therefore needs NO click handler at all — the
+ * browser routes a plain click and handles a modified one natively. vdx's own
+ * `router-link` says the same thing from the other side: it calls `preventDefault()`
+ * only when `useHTML5`.
+ *
+ * `router.url()` rather than `'#' + path` deliberately: it is the same function
+ * `navigate()` builds its target with, so a link and a programmatic navigation cannot
+ * drift on query encoding.
+ */
+export const href = (path, query) => router.url(path, query);
 const dashUrl = (u) => `/u/${u}/`;
 const goTree = (u, prefix) => router.navigate(`/u/${u}/tree/` + (prefix ? prefix + '/' : ''));
 const anchorUrl = (u, id) => `/u/${u}/anchor/${id}/`;
@@ -1125,8 +1145,8 @@ class OutlinePage extends Component {
     if (d.error) return html`<div class="empty">${d.error}</div>`;
     if (d.kind === 'file') {
       return html`<div class="rows">${each(d.symbols, s => html`
-        <div class="sym" on-click="${() => go(anchorUrl(u, s.id))}"><span class="k">${s.kind}</span>
-          <span><span class="dot ${(s.coverage === 'cited' || s.coverage === 'covered') ? 'on' : ''}" title="coverage: ${s.coverage}"></span>${s.symbol}${when(s.review, () => html`<span class="rdots" title="logical ${s.review.logical} · code ${s.review.code}">${revDot(s.review.logical, s.review.logicalActor, s.review.logicalVia)}${revDot(s.review.code, s.review.codeActor, s.review.codeVia)}</span>`)}</span><span class="muted">${s.lines ?? ''}</span></div>`)}</div>`;
+        <a class="sym" href="${href(anchorUrl(u, s.id))}"><span class="k">${s.kind}</span>
+          <span><span class="dot ${(s.coverage === 'cited' || s.coverage === 'covered') ? 'on' : ''}" title="coverage: ${s.coverage}"></span>${s.symbol}${when(s.review, () => html`<span class="rdots" title="logical ${s.review.logical} · code ${s.review.code}">${revDot(s.review.logical, s.review.logicalActor, s.review.logicalVia)}${revDot(s.review.code, s.review.codeActor, s.review.codeVia)}</span>`)}</span><span class="muted">${s.lines ?? ''}</span></a>`)}</div>`;
     }
     if (!d.children || !d.children.length) return html`<div class="empty">no anchors here</div>`;
     return html`<div>
@@ -1260,7 +1280,7 @@ class NodePage extends Component {
     return html`<div class="anchor-code">
       <div class="sym" on-click="${() => this.toggleSeg(a.id)}">
         <span style="width:auto">${open ? '▾' : '▸'}</span>${sevDot(a.severity)}<span style="width:auto">${a.symbol ?? a.id}</span><span class="dim" style="width:auto">${a.file ?? ''}${a.lines ? ':' + a.lines : ''}</span>${when(nf, () => html`<span class="rvfbadge" title="${nf} open finding${nf === 1 ? '' : 's'}">⚑ ${nf}</span>`)}
-        <span class="rev">${reviewRowEl(a.review, a.viewed, (att, st, actor, via) => this.markAnchor(a.id, att, st, actor, via))}<span class="viewlink" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); go(anchorUrl(u, a.id)); }}" title="open full anchor page">↗</span></span>
+        <span class="rev">${reviewRowEl(a.review, a.viewed, (att, st, actor, via) => this.markAnchor(a.id, att, st, actor, via))}<a class="viewlink" href="${href(anchorUrl(u, a.id))}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}" title="open full anchor page">↗</a></span>
       </div>
       ${when(open, () => !c ? html`<div class="loading" style="padding:6px 0">loading…</div>`
         : isErr(c) ? html`<div class="empty">${c.error}</div>`
@@ -1354,7 +1374,7 @@ class NodeReviewPage extends Component {
         <span class="rvsym">${s.symbol}</span>
         <span class="dim rvfile">${s.file}:${s.lines || '?'}</span>
         ${when(nf, () => html`<span class="rvfbadge" title="${nf} open finding${nf === 1 ? '' : 's'}">⚑ ${nf}</span>`)}
-        <span class="rev" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">${reviewRowEl(s.review, s.viewed, (att, st, actor, via) => this.markSeg(s.id, att, st, actor, via))}<button title="read the whole file in context" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.openFile(s.file, s.id); }}">view file</button><span class="viewlink" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); go(anchorUrl(u, s.id)); }}" title="open anchor page">↗</span></span>
+        <span class="rev" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">${reviewRowEl(s.review, s.viewed, (att, st, actor, via) => this.markSeg(s.id, att, st, actor, via))}<button title="read the whole file in context" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.openFile(s.file, s.id); }}">view file</button><a class="viewlink" href="${href(anchorUrl(u, s.id))}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}" title="open anchor page">↗</a></span>
       </div>
       ${when(open, () => codeReviewLines(this, u, s.id, s.code, s.lang, s.startLine, s.annotations, s.sharedNotes, s.findings))}
     </div>`;
@@ -1470,7 +1490,7 @@ class SearchPage extends Component {
     return html`<div class="detail" style="margin-bottom:12px">
       <div class="dch"><span class="uref" on-click="${() => go(dashUrl(u))}">${u}</span> <span class="dim">· ${hits} hit${hits === 1 ? '' : 's'}</span></div>
       ${when(g.nodes && g.nodes.length, () => html`<div class="sec">nodes</div><div class="chips">${each(g.nodes, n => html`<span class="chip" on-click="${() => go(nodeUrl(u, n.id))}">${n.title || n.id}</span>`, n => n.id)}</div>`)}
-      ${when(g.anchors && g.anchors.length, () => html`<div class="sec">anchors</div><div class="rows">${each(g.anchors, a => html`<div class="sym" on-click="${() => go(anchorUrl(u, a.id))}"><span class="k">${a.kind}</span><span>${a.symbol}</span><span class="muted">${a.file}</span></div>`, a => a.id)}</div>`)}
+      ${when(g.anchors && g.anchors.length, () => html`<div class="sec">anchors</div><div class="rows">${each(g.anchors, a => html`<a class="sym" href="${href(anchorUrl(u, a.id))}"><span class="k">${a.kind}</span><span>${a.symbol}</span><span class="muted">${a.file}</span></a>`, a => a.id)}</div>`)}
       ${when(!hits, () => html`<div class="dim" style="padding:4px 0">no matches</div>`)}
     </div>`;
   }
@@ -2443,14 +2463,14 @@ class BugsPage extends Component {
         </div>`, c => c.field)}`)}
 
       <div class="sec">cited code (${b.anchors.length})${when(b.staleAnchors, () => html` · <span class="warn">${b.staleAnchors} stale</span>`)}</div>
-      ${each(b.anchors, a => html`<div class="banchor ${a.stale ? 'stale' : ''} ${a.present ? '' : 'gone'} ${a.removed ? 'dropped' : ''}" on-click="${() => go(anchorUrl(u, a.id))}">
+      ${each(b.anchors, a => html`<a class="banchor ${a.stale ? 'stale' : ''} ${a.present ? '' : 'gone'} ${a.removed ? 'dropped' : ''}" href="${href(anchorUrl(u, a.id))}">
         <span class="basym">${a.symbol}</span>
         <span class="bafile">${a.file || '(unresolved)'}${a.lines ? ':' + a.lines : ''}</span>
         ${when(!!a.removed, () => html`<span class="bchip" title="dropped by ${a.removed.by}: ${a.removed.reason}">dropped</span>`,
           () => when(a.unverifiable, () => html`<span class="bchip" title="this anchor id was minted by a build whose ids are derived differently — it is not resolvable here, which is not the same as gone">can't check</span>`,
             () => when(!a.present, () => html`<span class="bchip changed" title="anchor no longer found (renamed/removed)">lost</span>`,
               () => when(a.stale, () => html`<span class="bchip changed" title="code changed since the bug's witness — re-validate">stale</span>`))))}
-      </div>`, a => a.id)}
+      </a>`, a => a.id)}
 
       ${when(!!b.corroboration.length, () => html`<div class="sec">second opinions (${b.corroboration.length})</div>
         ${each(b.corroboration, c => html`<div class="bcomment">
@@ -2548,7 +2568,7 @@ class OrphansPage extends Component {
         ${when(x.why, () => html`<span class="dim owhy" title="why nothing was found for it">${x.why}</span>`)}
         ${when(x.at, () => html`<span class="dim oat" title="where it was read">${String(x.at).slice(0, 12)}</span>`)}
       </div>
-      ${when(x.file && x.symbol, () => html`<button class="ghost" title="open the anchor if this build still has it" on-click="${() => go(anchorUrl(u, x.id))}">open</button>`)}
+      ${when(x.file && x.symbol, () => html`<a class="ghost" title="open the anchor if this build still has it" href="${href(anchorUrl(u, x.id))}">open</a>`)}
     </div>`;
   }
 
@@ -2900,7 +2920,7 @@ class DiffPage extends Component {
     return html`<div class="ddetail">
       <div class="dsymhead"><span class="dt ${DTAG[b.tag]}">${b.tag}</span> <b>${b.symbol}</b> <span class="dk">${b.kind}</span></div>
       <div class="meta">${b.file}${c ? ' · ' + (c.hasBase ? 'base' : '∅') + ' → ' + (c.hasHead ? 'head' : '∅') : ''}
-        <span class="viewlink" on-click="${() => go(anchorUrl(u, b.id))}">open anchor ›</span></div>
+        <a class="viewlink" href="${href(anchorUrl(u, b.id))}">open anchor ›</a></div>
       ${when(c && c.review, () => html`<div class="drev"><span class="dim">mark this change reviewed:</span>
         <span class="rev">${this.revBtn('anchor', b.id, 'logical', c.review.logical, () => this.loadCode(b.id), c.reviewBy && c.reviewBy.logical, c.reviewVia && c.reviewVia.logical)}${this.revBtn('anchor', b.id, 'code', c.review.code, () => this.loadCode(b.id), c.reviewBy && c.reviewBy.code, c.reviewVia && c.reviewVia.code)}</span></div>`)}
       <div class="sec">code diff</div>
@@ -4176,7 +4196,7 @@ class PrStoryPage extends Component {
           <span class="dim">${code.file}</span>
           ${when(src && src.text != null && code.lines && code.lines.length, () => html`<button class="ghost" on-click="${() => { this.state.showDiff = { ...this.state.showDiff, [step.anchorId]: !this.showsDiff(step) }; }}">${this.showsDiff(step) ? 'show full source' : 'show diff'}</button>`)}
           ${when(code.lineEndingsChanged, () => html`<span class="crlf" title="one side uses CRLF and the other LF. The diff below is normalised so a line-ending flip does not read as a full rewrite — but the change is real and will show in the file diff on GitHub.">⚠ line endings changed</span>`)}
-          <span class="viewlink" title="open the full anchor page" on-click="${() => go(anchorUrl(u, step.anchorId))}">↗</span>
+          <a class="viewlink" title="open the full anchor page" href="${href(anchorUrl(u, step.anchorId))}">↗</a>
         </div>
         ${when(this.showsDiff(step),
           () => diffReviewLines(this, u, step.anchorId, code.lines, code.lang, code.startLine, code.annotations, code.sharedNotes, step.findings),

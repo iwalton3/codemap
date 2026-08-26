@@ -16,6 +16,11 @@
     codemap-app { display: block; min-height: 100vh; }
     /* Themed base for any button without a container-specific rule (container rules
        win on specificity). Keeps ad-hoc buttons from falling back to browser white. */
+    /* Converted navigation carries its row's class, which sets everything; without this
+       the UA blue-underline shows through. The `target` rule keeps the EXTERNAL links
+       (GitHub) visible — they have no class of their own and relied on UA styling. */
+    a { color: inherit; text-decoration: none; cursor: pointer; }
+    a[target="_blank"] { color: var(--accent); }
     button { background: var(--panel2); color: var(--dim); border: 1px solid var(--border); border-radius: 6px; padding: 3px 10px; cursor: pointer; font-size: 12px; font-family: inherit; }
     button:hover { border-color: var(--dim); }
 
