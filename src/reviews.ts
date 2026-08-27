@@ -6,13 +6,13 @@
 
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { type Anchor, type Review, type ReviewLevel, type ReviewState, type BugWitness } from "./schema.js";
+import { type Anchor, type Review, type ReviewLevel, type ReviewState, type BugWitness, type Actor } from "./schema.js";
 import { readReviews, writeReviews, readAnchorStore, loadNodes, readSnapshot, snapshotRefusal, snapshotBranch, derivationLookup } from "./store.js";
 import { resolveAcceptance, recordAcceptance, type Ancestry } from "./acceptance.js";
 import { ACCEPTED_CAP, type AcceptedCitation, type AcceptedEntry, type AcceptanceVia } from "./schema.js";
 import { isAncestor, isGitRepo, currentBranch as gitBranch, hasObject } from "./git.js";
 import { ABSENT_HASH, comparableHashes, sameBody } from "./normalize.js";
-import { resolveActor, actorLabel } from "./identity.js";
+import { resolveActor, actorLabel, reviewerKey } from "./identity.js";
 import { indexFile } from "./repo.js";
 import { currentDerivations } from "./grammars.js";
 import { anchorIndex, derivationsOf, resolveAnchor, type AnchorIndex } from "./anchor-resolve.js";
@@ -33,6 +33,44 @@ export function effectiveAttestation(r: Review): Attestation | "checked" {
 
 /** A `viewed` row records exposure only; every other row is a vouch (`signed`/`checked`). */
 const isViewedRow = (r: Review) => r.attestation === "viewed";
+
+/**
+ * WHOSE mark a row is.
+ *
+ * Rows used to be keyed on target + level + viewed alone, so there was exactly one
+ * per level and a new mark REPLACED whatever was there — an agent's `checked` wiping
+ * a person's `signed`, silently. That is why `confirm` had to refuse to record on a
+ * signed doc, and why `Vouch.evidence` cannot count distinct error profiles: the
+ * count is pinned at 1 by the storage.
+ *
+ * `reviewerKey` is the established answer and is reused rather than reinvented —
+ * corroborations key on it, and its own comment already argues this case: a reviewer
+ * running two models produces two opinions, not one revised one, and collapsing them
+ * makes the second silently overwrite the first, disagreement included.
+ *
+ * Legacy rows carry no `by`. They key on the display string, which every row has, so
+ * they stay one-per-level — which is what they already are.
+ */
+const vouchKey = (by: Actor | null, actor: "human" | "agent" | undefined, label: string): string => {
+  if (!by) return `legacy\0${label}`;
+  // `reviewerKey` alone is NOT enough here, and reusing it unchanged was the first
+  // version of this. It is `principal \0 model`, so with nothing setting
+  // CODEMAP_AGENT_MODEL a person and their agent share a key — and the agent goes on
+  // overwriting the sign-off, which is the entire defect. Corroborations are right to
+  // key that way; reviews need two more components:
+  //
+  //   `actor`  — accountability and evidence are the two claims the trust split
+  //              separated. They must never share a row, by construction, whatever
+  //              is or is not recorded about the model.
+  //   harness  — transport-observed (see `markObservedClient`) and unforgeable, and
+  //              the field that actually varies for a cross-vendor check. `model` is
+  //              self-reported and only ever ADDS separation.
+  return `${reviewerKey(by)}\0${actor ?? "agent"}\0${by.via?.harness ?? ""}`;
+};
+const rowIdentity = (r: Review): string =>
+  (r.by ? vouchKey(r.by, r.actor, r.reviewer) : `legacy\0${r.reviewer}`);
+const actorIdentity = (by: Actor | null, label: string, actor?: "human" | "agent"): string =>
+  vouchKey(by, actor, label);
 
 export interface ReviewInfo {
   state: ReviewState;
@@ -213,12 +251,19 @@ export async function markReviewed(
   const viewed = attestation === "viewed";
 
   const rs = await readReviews(root);
+  const label = input.reviewer || (by ? actorLabel(by) : "me");
+  const me = actorIdentity(by, label, actor);
+  // MY mark at this slot, not everyone's. Replacing the slot is what let an agent
+  // overwrite a person's sign-off; see `rowIdentity`.
   const sameMark = (r: Review) =>
-    r.target.kind === target.kind && r.target.id === target.id && r.level === input.level && isViewedRow(r) === viewed;
+    r.target.kind === target.kind && r.target.id === target.id && r.level === input.level
+    && isViewedRow(r) === viewed && rowIdentity(r) === me;
 
-  // Carry forward what this mark has already approved. The row is replaced below,
+  // Carry forward what THIS reviewer has already approved. The row is replaced below,
   // so without this every earlier acceptance is dropped — and the same symbol
-  // signed on two branches of a stack would keep only the last one.
+  // signed on two branches of a stack would keep only the last one. Per-reviewer,
+  // because an acceptance is a statement by somebody; anywhere the question is "has
+  // ANYONE accepted this body", take the union at read time.
   const prior = rs.reviews.find(sameMark);
   const priorAccepted = new Map((prior ? acceptedOf(prior) : []).map((c) => [c.anchorId, c.entries]));
   const { commit, branch } = markedAt(root, input.ref);
@@ -240,7 +285,7 @@ export async function markReviewed(
     id: "rev_" + randomBytes(6).toString("hex"),
     target,
     level: input.level,
-    reviewer: input.reviewer || (by ? actorLabel(by) : "me"),
+    reviewer: label,
     ...(by ? { by } : {}),
     actor,
     attestation,
@@ -263,12 +308,26 @@ export async function unmarkReviewed(
   // exposure row; `signed` → drop only the vouch, leaving any `viewed` intact.
   const dropViewed = input.attestation === undefined || input.attestation === "viewed";
   const dropVouch = input.attestation === undefined || input.attestation === "signed";
+  // YOUR OWN mark. This used to drop every row at the level regardless of who made
+  // it, which was harmless only because there was one row — the moment rows are
+  // actor-keyed, the unchanged version is a way for an agent to delete a person's
+  // sign-off through the ordinary `review(unmark: true)` call, with no guard and no
+  // record. Unmarking is withdrawing YOUR vouch; it was never a licence to withdraw
+  // somebody else's, and it must not become one in the commit that makes it possible.
+  // No `actor` kind: withdrawing is symmetric — a person clears their own sign-off
+  // and an agent its own check, and neither identity can name the other's row
+  // because the kind is part of the key. Passing `undefined` here would key on
+  // "agent" and let a person fail to clear their own mark, so both are tried.
+  const by = resolveActor(root, {});
+  const label = by ? actorLabel(by) : "me";
+  const mine = new Set([actorIdentity(by, label, "human"), actorIdentity(by, label, "agent")]);
   rs.reviews = rs.reviews.filter(
     (r) =>
       !(
         r.target.kind === input.targetKind &&
         r.target.id === input.targetId &&
         r.level === input.level &&
+        mine.has(rowIdentity(r)) &&
         (isViewedRow(r) ? dropViewed : dropVouch)
       ),
   );
@@ -366,11 +425,7 @@ export async function reviewStatesFor(
   // committed a move back to it".
   const ancestry = ancestryProbe(root, opts?.ref ?? headCommit(root));
 
-  const forLevel = (t: Target, level: ReviewLevel): ReviewInfo => {
-    // Default: only vouches (`signed`/`checked`) set the reviewed state — a `viewed`
-    // row is exposure, not a blessing. With `{viewed:true}` we read exactly those rows.
-    const r = rs.reviews.find((x) => x.target.kind === t.kind && x.target.id === t.id && x.level === level && isViewedRow(x) === wantViewed);
-    if (!r) return { state: "unreviewed" };
+  const infoFor = (r: Review): ReviewInfo => {
     const base = { by: r.reviewer, actor: r.actor ?? "agent", at: r.at, coveredBy: r.coveredBy } as const;
 
     const cites = acceptedOf(r);
@@ -407,6 +462,31 @@ export async function reviewStatesFor(
     const replayed = resolved.find((x) => x.via === "replayed");
     if (replayed) return { state: "reviewed", ...base, via: "replayed", acceptedAt: entryStamp(replayed.entry) };
     return { state: "reviewed", ...base, via: "direct" };
+  };
+
+  /**
+   * N rows, one `ReviewInfo` — because ~25 call sites read the collapsed shape and
+   * none of them wants a list. HUMAN before agent, then CURRENT before stale.
+   *
+   * The identity property that makes this a non-migration: every store written before
+   * rows were actor-keyed holds at most one row per slot, so this is the identity on
+   * all of them and `trust` reads exactly as it read before. A multi-row slot cannot
+   * exist until this ships, so nothing stored is reinterpreted.
+   *
+   * It DOES answer a case that could not previously occur: a stale human sign-off
+   * beside a current agent check reads `checked` rather than `stale`, because somebody
+   * has confirmed the body in front of you. That is new behaviour, not preserved
+   * behaviour, and `vouchOf` reports both marks regardless.
+   */
+  const forLevel = (t: Target, level: ReviewLevel): ReviewInfo => {
+    // Default: only vouches (`signed`/`checked`) set the reviewed state — a `viewed`
+    // row is exposure, not a blessing. With `{viewed:true}` we read exactly those rows.
+    const rows = rs.reviews.filter((x) => x.target.kind === t.kind && x.target.id === t.id && x.level === level && isViewedRow(x) === wantViewed);
+    if (!rows.length) return { state: "unreviewed" };
+    if (rows.length === 1) return infoFor(rows[0]!);
+    const rank = (i: ReviewInfo) =>
+      ((i.actor ?? "agent") === "human" ? 2 : 0) + (i.state === "reviewed" ? 1 : 0);
+    return rows.map(infoFor).reduce((best, i) => (rank(i) > rank(best) ? i : best));
   };
   for (const t of targets) out.set(key(t), { logical: forLevel(t, "logical"), code: forLevel(t, "code") });
   return out;
@@ -723,14 +803,18 @@ export async function markReviewedBatch(
   const { commit, branch } = markedAt(root, input.ref);
   const stamp = new Date().toISOString();
 
-  // A repeated id would mint two independent rows for one (target, level,
-  // attestation), and every reader — `reviewStatesFor`, `forLevel`, `changedSince`
-  // — uses `.find` and assumes there is one.
+  // A repeated id would mint two rows for one (target, level, attestation, reviewer),
+  // which is one slot however many reviewers there are.
   anchorIds = [...new Set(anchorIds)];
   const wanted = new Set(anchorIds);
+  const label = input.reviewer || (by ? actorLabel(by) : "me");
+  const me = actorIdentity(by, label, actor);
+  // MY prior row per anchor. Someone else's mark on the same symbol is a separate
+  // row now and this must neither read from it nor replace it.
   const priorFor = new Map<string, Review>();
   for (const r of rs.reviews) {
-    if (r.target.kind === "anchor" && wanted.has(r.target.id) && r.level === input.level && isViewedRow(r) === viewed) {
+    if (r.target.kind === "anchor" && wanted.has(r.target.id) && r.level === input.level
+        && isViewedRow(r) === viewed && rowIdentity(r) === me) {
       priorFor.set(r.target.id, r);
     }
   }
@@ -747,7 +831,7 @@ export async function markReviewedBatch(
       id: "rev_" + randomBytes(6).toString("hex"),
       target: { kind: "anchor" as const, id },
       level: input.level,
-      reviewer: input.reviewer || (by ? actorLabel(by) : "me"),
+      reviewer: label,
     ...(by ? { by } : {}),
       actor,
       attestation,
@@ -763,8 +847,13 @@ export async function markReviewedBatch(
   });
 
   const replaced = new Set(fresh.map((r) => r.target.id));
+  // Replaces only this reviewer's rows — see `rowIdentity`. Without the identity
+  // clause a batch mark would clear every OTHER reviewer's marks across a whole
+  // pull request's worth of anchors in one call, which is the same defect as
+  // `unmarkReviewed`'s and considerably louder.
   rs.reviews = rs.reviews.filter(
-    (r) => !(r.target.kind === "anchor" && replaced.has(r.target.id) && r.level === input.level && isViewedRow(r) === viewed),
+    (r) => !(r.target.kind === "anchor" && replaced.has(r.target.id) && r.level === input.level
+             && isViewedRow(r) === viewed && rowIdentity(r) === me),
   ).concat(fresh);
   await writeReviews(root, rs.reviews);
   return { marked: fresh.length };

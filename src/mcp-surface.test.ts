@@ -25,7 +25,7 @@ const TOOLS = new Set([...SRC.matchAll(/^\s*name: "([a-z_]+)",$/gm)].map((m) => 
 const NOT_TOOLS = new Set([
   "disposition", "tier", "category", "line", "offset", "locate", // parameters
   "untriaged", "unverified", "refuted", "settled", "transitions_to", // enum values
-  "witnesses", "anchors", "citations", // record fields
+  "witnesses", "anchors", "citations", "vouch", // record fields
 ]);
 
 /** `use \`x\``, `see \`x\``, `with \`x\`` … — a reference to something callable. */
@@ -100,16 +100,15 @@ test("the explore agent names only tools that exist", () => {
     "the agent's instructions tell it to call a tool that is not on the surface");
 });
 
-test("confirm records its read, and refuses to overwrite a person", () => {
-  // Both halves matter and only one is obvious. Recording is the fix; the guard is
-  // what stops a maintenance sweep from replacing every human sign-off on the map
-  // with an agent mark, because review rows key on target+level and not on actor
-  // (characterized in `confirm-review.test.ts`). Source-read: the handler is not
-  // exported, and the behaviour it depends on is pinned in that file.
+test("confirm records the read it performs", () => {
+  // Recording is the fix. The don't-overwrite-a-person guard that used to sit beside
+  // it is gone — review rows are keyed on the reviewer now, so an agent's read cannot
+  // replace a sign-off and the guard has nothing left to prevent. What must NOT come
+  // back is a `?? "human"` style default, which is why the no-self-vouching check is
+  // still asserted here. Source-read: the handler is not exported.
   const at = SRC.indexOf('name: "confirm"');
   assert.ok(at > 0, "confirm is gone");
   const block = SRC.slice(at, at + 4000);
   assert.match(block, /markReviewed\(/, "confirming must record the read it performed");
   assert.match(block, /guardSelfCheck\(/, "and obey the same no-self-vouching rule as sanity_check");
-  assert.match(block, /actor === "human"/, "and never replace a person's sign-off");
 });

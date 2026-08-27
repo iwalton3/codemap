@@ -499,20 +499,11 @@ const tools: Tool[] = [
       // A sweep that verified the whole map left the whole map looking unverified.
       const g = guardSelfCheck(c.universe.id, "node", a.id);
       if (g) return { ...r, reviewed: false, reviewNote: g.error };
-      // A human `signed` mark is NOT overwritten. `sameMark` keys on target+level and
-      // not on actor, so recording an agent review here would REPLACE a person's
-      // sign-off row — and a maintenance sweep would erase every sign-off on the map
-      // while reporting success. The mark is stale and that is honest: it says a
-      // person vouched for code that has since changed, which is true and is a
-      // different claim from this agent's read. Until accountability and evidence are
-      // separate marks, the non-destructive answer is to leave it and say so.
-      const { reviews } = await readReviews(c.universe.path);
-      const signed = reviews.find((x) => x.target.kind === "node" && x.target.id === a.id
-        && x.level === "logical" && x.actor === "human" && x.attestation !== "viewed");
-      if (signed) {
-        return { ...r, reviewed: false,
-          reviewNote: `a person has signed this doc; confirming does not replace their sign-off. It stays stale until they re-sign — their mark is about code that changed.` };
-      }
+      // The don't-overwrite-a-person guard that used to stand here is GONE, and
+      // deliberately: review rows are keyed on the reviewer now (`rowIdentity`), so an
+      // agent's read is its own row and cannot replace a sign-off. Both marks coexist
+      // and `vouch` reports them separately — which is what the guard was approximating
+      // while accountability and evidence shared one slot.
       const m = await markReviewed(c.universe.path, {
         targetKind: "node", targetId: a.id, level: "logical", actor: "agent",
       }) as { ok?: boolean };

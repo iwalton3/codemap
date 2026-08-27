@@ -7,11 +7,11 @@
  * change had invalidated. A sweep that verified the whole map left the whole map
  * looking unverified.
  *
- * The fix cannot be unconditional, and the first test here is why: review rows are
- * keyed on target+level and NOT on actor, so an agent mark replaces a human's
- * sign-off outright. That is a characterization test — it pins the behaviour the
- * guard exists for, so a future change making reviews actor-keyed fails here and
- * is pointed at the guard it makes unnecessary.
+ * It shipped with a guard — do not record on a doc a person has signed — because
+ * review rows were keyed on target+level and an agent mark replaced a sign-off
+ * outright. Step 3 of the trust split keyed rows on the reviewer, the
+ * characterization test below failed exactly as it was written to, and the guard
+ * was removed. What is left is the record: both marks now coexist.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -51,19 +51,22 @@ const logicalRows = async (root: string) =>
   (await readReviews(root)).reviews.filter(
     (r) => r.target.kind === "node" && r.target.id === "payments" && r.level === "logical");
 
-test("an agent's logical mark REPLACES a human sign-off — which is why confirm guards", async () => {
+test("an agent's mark sits BESIDE a human sign-off — the guard's reason is gone", async () => {
+  // This test previously asserted the opposite, and was written to fail here: rows
+  // were keyed on (target, level) so an agent mark replaced the sign-off, which is
+  // why `confirm` refused to record on a signed doc at all. Rows are keyed on the
+  // reviewer now (`rowIdentity` — principal, model, actor kind, observed harness),
+  // so the two are different rows and the guard has nothing left to prevent.
   const u = await universe();
   try {
     await markReviewed(u.root, { targetKind: "node", targetId: "payments", level: "logical", actor: "human" });
-    const signed = await logicalRows(u.root);
-    assert.equal(signed.length, 1);
-    assert.equal(signed[0]!.actor, "human", "a person signed it");
+    assert.equal((await logicalRows(u.root)).length, 1);
 
     await markReviewed(u.root, { targetKind: "node", targetId: "payments", level: "logical", actor: "agent" });
     const after = await logicalRows(u.root);
-    assert.equal(after.length, 1, "one row per (target, level) — not one per actor");
-    assert.equal(after[0]!.actor, "agent",
-      "the person's sign-off is GONE. `confirm` must not do this on a maintenance sweep");
+    assert.equal(after.length, 2, "two claims, two rows");
+    assert.deepEqual(after.map((r) => r.actor).sort(), ["agent", "human"],
+      "the person's sign-off survived a maintenance sweep");
   } finally { u.cleanup(); }
 });
 

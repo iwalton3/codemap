@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Review, BugWitness, Anchor, State } from "./schema.js";
 import { readReviews, writeStore } from "./store.js";
-import { markReviewed, unmarkReviewed, changedSince, reviewStatesFor, witnessDrift, realDrift, effectiveAttestation, deriveCodeReview } from "./reviews.js";
+import { reviewStatus, markReviewed, unmarkReviewed, changedSince, reviewStatesFor, witnessDrift, realDrift, effectiveAttestation, deriveCodeReview } from "./reviews.js";
 import { anchorMark } from "./ops.js";
 import { indexBlob } from "./repo.js";
 import { fixtureHash } from "./fixture-hash.js";
@@ -59,11 +59,18 @@ test("viewed and signed are independent rows; each replaces only its own kind", 
     assert.deepEqual(rows.map((r) => effectiveAttestation(r)).sort(), ["signed", "viewed"]);
     assert.equal(rows.filter((r) => effectiveAttestation(r) === "viewed").length, 1);
 
-    // An agent `checked` supersedes... no: a human sign-off outranks; but a fresh agent
-    // check is still a vouch and replaces the existing vouch at this level.
+    // An agent's check no longer replaces the sign-off. It used to — rows were keyed
+    // on (target, level, viewed) — and this test asserted `["checked", "viewed"]`,
+    // with a comment that argued itself out loud about whether that was right. It was
+    // not: accountability and evidence are different claims and were sharing a slot.
+    // Rows are keyed on the reviewer now (`rowIdentity`), so all three coexist.
     await markReviewed(root, { ...t, actor: "agent" });
     rows = (await readReviews(root)).reviews.filter((r) => r.target.id === "a_x");
-    assert.deepEqual(rows.map((r) => effectiveAttestation(r)).sort(), ["checked", "viewed"]);
+    assert.deepEqual(rows.map((r) => effectiveAttestation(r)).sort(), ["checked", "signed", "viewed"]);
+
+    // And the collapsed view still leads with the person — human before agent.
+    const pair = await reviewStatus(root, { kind: "anchor", id: "a_x" });
+    assert.equal(pair.code.actor, "human", "the sign-off is what the one-value view reports");
   } finally {
     discard(root);
   }
