@@ -281,9 +281,12 @@ const tools: Tool[] = [
   },
   {
     name: "get_node",
-    description: "Read a node: summary/body, anchors, edges (with cross-universe endpoints resolved), inbound cross-universe links, and annotations.",
-    inputSchema: obj({ id: { type: "string" } }, ["id"]),
-    handler: (a, c) => multi.getNodeEnriched(ws, c.universe.id, a.id),
+    description: "Read a node: summary/body, anchors, edges (with cross-universe endpoints resolved), inbound cross-universe links, and annotations.\n\nIf you are reading this node to LEARN WHAT IT DOCUMENTS, pass `compact: true` — you get the prose, the anchors as {file, symbol, kind, lines}, the edges and the node's `trust`, without the per-anchor review/triage/annotation payload. That payload is most of the response on a well-annotated node (an annotation carries its full revision chain, superseded text included), and none of it answers what the node says. Omit `compact` only when you are actually working the review/triage queue; for one anchor's detail use `get_anchor`.",
+    inputSchema: obj({
+      id: { type: "string" },
+      compact: { type: "boolean", description: "Documentation view: drop per-anchor review/viewed/severity/triage and all annotations." },
+    }, ["id"]),
+    handler: (a, c) => multi.getNodeEnriched(ws, c.universe.id, a.id, { compact: !!a.compact }),
   },
   {
     name: "get_anchor",

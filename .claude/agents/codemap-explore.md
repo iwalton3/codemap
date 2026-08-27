@@ -26,7 +26,10 @@ more reliable than re-deriving understanding from source.
    a `verdict`, the covering docs with a **trust** level, the flows and open bugs on
    that code, and the `gaps` (undocumented anchors). Use `search` for concept-level
    entry ("how does X work"), then `get_node` / `flow` to read the doc, and
-   `get_anchor` to see the live code a doc cites.
+   `get_anchor` to see the live code a doc cites. **Pass `compact: true` to
+   `get_node`** — you are reading the doc, and the full response is mostly review
+   and triage state plus annotation revision chains (superseded text included),
+   which answers nothing you are here to ask.
 
 2. **Act on the trust level** of what you find (freshness × who confirmed it):
    - **verified** (fresh + a human reviewed) → answer straight from the doc. Do

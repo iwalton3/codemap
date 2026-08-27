@@ -76,7 +76,7 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
     case "/api/anchor":
       return ops.getAnchor(root, q.get("id") ?? "");
     case "/api/node":
-      return multi.getNodeEnriched(ws, u ?? ws.primary.id, q.get("id") ?? "");
+      return multi.getNodeEnriched(ws, u ?? ws.primary.id, q.get("id") ?? "", { compact: q.get("compact") === "1" });
     case "/api/neighborhood":
       return ops.neighborhood(root, q.get("id") ?? "");
     case "/api/subgraph":

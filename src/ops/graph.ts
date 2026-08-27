@@ -4,7 +4,7 @@ import { annotate, assignAnnotation, reviseAnnotation, resolveAnnotation } from 
 import type { SharedWiring } from "../shared-graph.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { type Anchor, type LogicalNode, type Edge } from "../schema.js";
+import { type Anchor, type LogicalNode, type Edge, type Annotation } from "../schema.js";
 import { indexFile } from "../repo.js";
 import { readAnchorStore, loadNodes, readGraph, readAnnotations } from "../store.js";
 import { reviewStatesFor, deriveCodeReview, type ReviewPair, type DerivedCodeReview } from "../reviews.js";
@@ -260,14 +260,32 @@ export async function eventMatrix(root: string) {
   };
 }
 
-export async function getNode(root: string, id: string) {
+/**
+ * Read a node.
+ *
+ * `compact` is the DOCUMENTATION view: the prose, the anchors as briefs, the edges
+ * and the node's own trust — and none of the per-anchor review/triage/annotation
+ * payload. That payload dominates a well-annotated node, because an annotation
+ * carries its whole revision chain including superseded text, so a reader asking
+ * "what does this node say" pays for findings that were withdrawn and rewritten.
+ * A caller that wants one anchor's detail has `get_anchor`. See COD-16.
+ *
+ * Anchors stay BRIEFS rather than bare ids (which is what the ticket proposed):
+ * `{file, symbol, kind, lines}` is what tells a reader which code the node covers,
+ * it is five short fields, and dropping it would trade one fat call for N
+ * `get_anchor` calls — a loss on the very axis this exists to improve.
+ */
+export async function getNode(root: string, id: string, opts: { compact?: boolean } = {}) {
   const [nodes, graph, store, annStore] = await Promise.all([
-    loadNodesShared(root), readGraph(root), readAnchorStore(root), readAnnotations(root),
+    loadNodesShared(root), readGraph(root), readAnchorStore(root),
+    opts.compact ? { annotations: [] as Annotation[] } : readAnnotations(root),
   ]);
   const node = nodes.find((n) => n.id === id);
   if (!node) return { error: `no node "${id}"` };
   const byId = new Map(store.anchors.map((a) => [a.id, a]));
   // One batch for the node and all its anchors → review (vouch) + viewed + severity.
+  // Still needed under `compact`: the node's own `trust` is derived from its anchors'
+  // code review, so this is the cost of reporting trust at all, not of the detail.
   const rt = await reviewTriageFor(root, [
     { kind: "node", id },
     ...node.anchors.map((aid) => ({ kind: "anchor" as const, id: aid })),
@@ -286,17 +304,33 @@ export async function getNode(root: string, id: string) {
     resolvedAnchors.filter((a) => a.review && !("missing" in a && a.missing)).map((a) => a.review!.code),
   );
   const review = { logical: nodeRt.review.logical, code: { state: codeReview.state, actor: codeReview.actor ?? undefined } };
+  const edges = graph.edges.filter((e) => e.from === id || e.to === id);
+  const trust = trustOf(node.status, review);
+  if (opts.compact) {
+    return {
+      ...node,
+      compact: true as const,
+      resolvedAnchors: resolvedAnchors.map((a) => {
+        const { review: _r, viewed: _v, severity: _s, triage: _t, annotations: _a, ...brief } = a;
+        return brief;
+      }),
+      edges,
+      review,
+      severity: nodeRt.triage.severity,
+      trust,
+    };
+  }
   return {
     ...node,
     resolvedAnchors,
-    edges: graph.edges.filter((e) => e.from === id || e.to === id),
+    edges,
     annotations: annStore.annotations.filter((a) => a.target.kind === "node" && a.target.id === id),
     review,
     codeReview,
     viewed: nodeRt.viewed,
     triage: nodeRt.triage,
     severity: nodeRt.triage.severity,
-    trust: trustOf(node.status, review),
+    trust,
   };
 }
 
