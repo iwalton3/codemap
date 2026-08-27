@@ -12,7 +12,7 @@ import { resolveAcceptance, recordAcceptance, type Ancestry } from "./acceptance
 import { ACCEPTED_CAP, type AcceptedCitation, type AcceptedEntry, type AcceptanceVia } from "./schema.js";
 import { isAncestor, isGitRepo, currentBranch as gitBranch, hasObject } from "./git.js";
 import { ABSENT_HASH, comparableHashes, sameBody } from "./normalize.js";
-import { resolveActor, actorLabel, reviewerKey } from "./identity.js";
+import { resolveActor, actorLabel, reviewerKey, errorProfile } from "./identity.js";
 import { indexFile } from "./repo.js";
 import { currentDerivations } from "./grammars.js";
 import { anchorIndex, derivationsOf, resolveAnchor, type AnchorIndex } from "./anchor-resolve.js";
@@ -67,6 +67,14 @@ const vouchKey = (by: Actor | null, actor: "human" | "agent" | undefined, label:
   //              self-reported and only ever ADDS separation.
   return `${reviewerKey(by)}\0${actor ?? "agent"}\0${by.via?.harness ?? ""}`;
 };
+/**
+ * Distinct error profiles among a slot's rows. A row with no `by` predates identity
+ * and cannot be placed, so it counts as its own unknown profile rather than merging
+ * with a real one — the direction that under-claims independence.
+ */
+const profilesIn = (rows: Review[]): number =>
+  new Set(rows.map((r) => (r.by ? errorProfile(r.by) : `unknown\0${r.reviewer}`))).size;
+
 const rowIdentity = (r: Review): string =>
   (r.by ? vouchKey(r.by, r.actor, r.reviewer) : `legacy\0${r.reviewer}`);
 const actorIdentity = (by: Actor | null, label: string, actor?: "human" | "agent"): string =>
@@ -101,6 +109,18 @@ export interface ReviewInfo {
   acceptedAt?: { branch: string | null; commit: string | null; at: string };
   /** For `reverted`: the newer body on this lineage that the code went back from. */
   revertedFrom?: { branch: string | null; commit: string | null; at: string };
+  /**
+   * How many distinct ERROR PROFILES have vouched at this level (see `errorProfile`).
+   *
+   * Not a count of reads. Reads are a heat signature — more reads means more
+   * references means the cited code is more likely to be churning — so counting acts
+   * would point the wrong way. Two looks from one harness are one look for this
+   * purpose; a person and an agent are two; one person's two vendors are two.
+   *
+   * Only meaningful since review rows were keyed on the reviewer; before that exactly
+   * one row existed per level and this was pinned at 1, which is why it was withheld.
+   */
+  profiles?: number;
 }
 export interface ReviewPair {
   logical: ReviewInfo;
@@ -483,10 +503,11 @@ export async function reviewStatesFor(
     // row is exposure, not a blessing. With `{viewed:true}` we read exactly those rows.
     const rows = rs.reviews.filter((x) => x.target.kind === t.kind && x.target.id === t.id && x.level === level && isViewedRow(x) === wantViewed);
     if (!rows.length) return { state: "unreviewed" };
-    if (rows.length === 1) return infoFor(rows[0]!);
+    if (rows.length === 1) return { ...infoFor(rows[0]!), profiles: profilesIn(rows) };
     const rank = (i: ReviewInfo) =>
       ((i.actor ?? "agent") === "human" ? 2 : 0) + (i.state === "reviewed" ? 1 : 0);
-    return rows.map(infoFor).reduce((best, i) => (rank(i) > rank(best) ? i : best));
+    const best = rows.map(infoFor).reduce((b, i) => (rank(i) > rank(b) ? i : b));
+    return { ...best, profiles: profilesIn(rows) };
   };
   for (const t of targets) out.set(key(t), { logical: forLevel(t, "logical"), code: forLevel(t, "code") });
   return out;

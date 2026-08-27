@@ -109,15 +109,14 @@ export function trustOf(status: string | undefined, review?: { logical: ReviewLi
  *   - `viewed` — "I looked at this and want to come back to it". A personal
  *     work-tracking bookmark, not a claim about the doc, so it stays its own field
  *     and is not an input to either axis.
- *   - a count of corroborating reads. Reads are a heat signature, not evidence:
- *     more reads means more references means the cited code is MORE likely to be
- *     churning, so a count would point the wrong way. What matters is how many
- *     distinct ERROR PROFILES have looked (see `isErrorIndependent`) — and that
- *     cannot vary yet, because `sameMark` keys review rows on target+level rather
- *     than on actor, so exactly one mark exists per level. Shipping the field now
- *     would be shipping a number structurally pinned at 1, which is the vacuous
- *     shape `independent` already demonstrated. It lands when rows become
- *     actor-keyed.
+ *   - a count of corroborating READS, which is what `profiles` is deliberately not.
+ *     Reads are a heat signature: more reads means more references means the cited
+ *     code is MORE likely to be churning, so counting acts would point the wrong way.
+ *     `Mark.profiles` counts distinct ERROR PROFILES instead (see `errorProfile`),
+ *     which is the quantity that says whether two looks could have failed
+ *     differently. It was withheld until review rows were keyed on the reviewer,
+ *     because before that exactly one mark existed per level and the number was
+ *     structurally pinned at 1 — the vacuous shape `independent` demonstrated.
  *   - `coverage` beyond `"unknown"`. It is only ever `"derived"` when a recorded
  *     derivation re-runs clean (COD-17); an author-set value is a self-report of
  *     exhaustiveness by the party whose exhaustiveness is in doubt.
@@ -125,6 +124,12 @@ export function trustOf(status: string | undefined, review?: { logical: ReviewLi
 export type Mark = {
   at?: string;
   level: "logical" | "code";
+  /**
+   * Distinct ERROR PROFILES that have vouched at this level, not a count of reads.
+   * `>= 2` is the interesting reading: two looks that could have failed differently.
+   * See `errorProfile`. Absent when the level was never marked.
+   */
+  profiles?: number;
   /**
    * The witnessed body still matches. FALSE does not mean the mark is gone — it
    * means the act happened and the code has since moved, which is the whole point:
@@ -145,7 +150,7 @@ export type Vouch = {
   coverage: "derived" | "unknown";
 };
 
-type ReviewFull = { state: string; actor?: "human" | "agent"; at?: string };
+type ReviewFull = { state: string; actor?: "human" | "agent"; at?: string; profiles?: number };
 
 /** A mark EXISTS in both states: `reviewed` is current, `stale` is one whose body moved. */
 const isMark = (r?: ReviewFull) => r?.state === "reviewed" || r?.state === "stale";
@@ -162,7 +167,7 @@ export function vouchOf(
       // `?? "agent"`, matching every other default in `reviews.ts`: a row that
       // cannot show a person stood behind it must not be read as accountability.
       if (isMark(r) && (r!.actor ?? "agent") === want) {
-        return { at: r!.at, level, current: r!.state === "reviewed" };
+        return { at: r!.at, level, current: r!.state === "reviewed", profiles: r!.profiles };
       }
     }
     return null;

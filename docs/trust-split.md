@@ -1,8 +1,9 @@
 # Splitting `trust`
 
-**Status: steps 1–2 SHIPPED (`a5f091a`, `e95899d`); step 3 designed, not built.**
-Written 2026-08-27 out of the COD-17 / COD-18 discussion. It supersedes nothing;
-`trustOf` is correct for what it measures and is unchanged.
+**Status: BUILT.** Steps 1–3 shipped (`a5f091a`, `e95899d`, `d5020cc`), plus
+`Mark.profiles`. Step 4 (removing `trust`) is deliberately not done — `trustOf`
+computes something real, 25 call sites read it, and it is unchanged. Written
+2026-08-27 out of the COD-17 / COD-18 discussion.
 
 ## The problem in one line
 
@@ -125,12 +126,35 @@ did nothing on every real stale doc. Only rendering a real universe caught it. S
 multiplies the states a review can be in, so a test built from hand-written rows is
 even less likely to be testing something reachable — **drive it through the real ops.**
 
-## Step 3, designed — actor-keyed review rows
+## Step 3, as built — actor-keyed review rows
 
-Steps 1–2 shipped (`a5f091a`, `e95899d`). This is the one that touches stored rows,
-and it is the hinge: it unblocks `evidence` counting distinct error profiles, lets
-`confirm` drop its don't-overwrite-a-person guard, and lets a human sign-off and an
-agent check coexist instead of one silently replacing the other.
+The hinge, and it delivered all three: `evidence` counts distinct error profiles,
+`confirm` dropped its don't-overwrite-a-person guard, and a human sign-off and an
+agent check now coexist instead of one silently replacing the other.
+
+### THE DESIGN WAS WRONG ON THE KEY, and this is the part to read
+
+This section said *"the key already exists: `reviewerKey`. Do not invent a second
+one."* That was insufficient, and following it left the hazard open in the common
+case. `reviewerKey` is `principal \0 model`, **nothing sets `CODEMAP_AGENT_MODEL`**,
+so a person and their agent shared a key and the agent went on overwriting the
+sign-off.
+
+What caught it: the full suite passed 1075/1075 **including**
+`confirm-review.test.ts`'s characterization test, which asserts that an agent mark
+replaces a human's and was written to FAIL at this point. It passing was the signal
+— a green suite as evidence that the change had not landed.
+
+Reviews key on `principal + model + ACTOR KIND + observed HARNESS`:
+
+- **actor kind**, because accountability and evidence are the two claims this split
+  separated and must never share a row, whatever is recorded about the model.
+- **harness**, because it is transport-observed (`markObservedClient`) and
+  unforgeable, and is the field that actually varies for a cross-vendor check.
+  `model` is self-reported and only ever ADDS separation.
+
+`reviewerKey` itself is untouched — corroborations depend on its semantics, and
+changing it there would change their dedup.
 
 ### What is actually stored, and what that rules out
 
@@ -143,17 +167,18 @@ below rests on.
 
 ### The change
 
-`sameMark` keys on `target.kind + target.id + level + isViewedRow`. Add reviewer
-identity to that key, so one row per *reviewer* per level rather than one row per level.
+`sameMark` used to key on `target.kind + target.id + level + isViewedRow`. Reviewer
+identity is now part of that key (`rowIdentity`), so there is one row per *reviewer*
+per level.
 
-**The key already exists: `reviewerKey` = `principal \0 model`.** Corroborations use it,
-and its doc comment already argues the case — *"A reviewer running two models produces
-two verdicts, and they are two opinions rather than one revised one: collapsing them
-makes the second silently overwrite the first, disagreement included."* That is exactly
-the sentence this step is applying to reviews. Do not invent a second key.
+The reasoning that justifies keying on the reviewer at all is `reviewerKey`'s own
+comment — *"A reviewer running two models produces two verdicts, and they are two
+opinions rather than one revised one: collapsing them makes the second silently
+overwrite the first, disagreement included."* That is correct and is why reviews now
+key this way; it is just not the whole key (see above).
 
-Legacy rows carry no `by`. Key them on the `reviewer` display string, which every row
-has; they collapse to roughly one row per level, which is what they are today.
+Legacy rows carry no `by` and key on the `reviewer` display string, which every row
+has, so they stay one-per-level — which is what they already are.
 
 ### The compat surface: 25 call sites read the collapsed shape
 
@@ -179,7 +204,7 @@ yet: a stale human sign-off beside a current agent check reads `checked` rather 
 `stale`. That is the right answer — somebody has confirmed the body in front of you —
 but it is a new behaviour, not a preserved one, and it should be tested as such.
 
-### The hazard this creates, which is latent in the code today
+### The hazard it creates — CLOSED in the same commit, in both write paths
 
 `unmarkReviewed` filters out **every** row matching (target, level, attestation-class),
 regardless of who made it. Today that is harmless because there is only one row, so
@@ -187,8 +212,12 @@ regardless of who made it. Today that is harmless because there is only one row,
 
 **The moment rows multiply, that function becomes a way for an agent to delete a
 person's sign-off** — through the ordinary `review(unmark: true)` tool, with no guard
-and no record. It must become "drop the caller's own mark" in the same commit that
-multiplies the rows, not afterwards.
+and no record. It now drops only the caller's own mark.
+
+`markReviewedBatch` had the same defect and considerably louder: one
+`review(ids: [...])` call spans a whole `pr_packet` page, so an unnarrowed replace
+would wipe a reviewer's marks across an entire pull request in a single call. Also
+narrowed.
 
 This is the same shape as the `confirm` guard: two claims sharing one slot, where the
 code that was correct for one becomes destructive for two.
@@ -201,14 +230,26 @@ carries their own set, which is the honest reading — an acceptance is a statem
 somebody. Anywhere the question is "has ANYONE accepted this body", take the union at
 read time rather than merging on write.
 
-### Then, and only then
+### `Mark.profiles`, shipped with it
 
-`evidence` gains `profiles` (count of distinct error profiles via `isErrorIndependent`)
-and `errorIndependent`. Both are vacuous before this step — one row per level means the
-count is pinned at 1 — which is why they were deliberately not shipped in step 1.
+`errorProfile(actor)` is the profile as a KEY rather than a pairwise predicate, so
+"how many distinct profiles vouched" is a set size rather than an O(n²) scan, and
+`isErrorIndependent` is **derived from it** rather than duplicating the rule — the
+two cannot drift.
 
-`confirm` drops its guard, and `confirm-review.test.ts`'s characterization test fails,
-which is by design: it exists to fail here and point at the guard it makes unnecessary.
+- a person is their own profile, keyed on the principal
+- an agent is keyed on harness + model, NOT the principal: two people running one
+  harness make the same mistakes, which is the point
+- a person and an agent are never the same profile
+- conservative when unknown: two agents with neither harness nor model recorded key
+  the same, because nothing establishes that they differ
+
+`profiles: 1` is reported rather than omitted, so a reader can tell one profile from
+"this build does not compute it". It is **absent on derived rollups** — a node's code
+review is folded from its anchors by `deriveCodeReview`, which has no rows to count.
+
+`confirm` dropped its guard. Its characterization test now asserts the opposite of
+what it did, which is what it was written to prompt.
 
 ## Open decisions
 

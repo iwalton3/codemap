@@ -151,3 +151,50 @@ test("a batch mark does not clear other reviewers across a whole PR's anchors", 
     assert.equal(after.filter((r) => r.actor === "agent").length, u.anchors.length, "and the agent's landed");
   } finally { u.cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// Distinct error profiles — the count that could not vary before step 3.
+// ---------------------------------------------------------------------------
+
+test("profiles counts distinct error profiles, not reads", async () => {
+  const u = await universe();
+  try {
+    const level = (n: string) => reviewStatus(u.root, { kind: "node", id: n }).then((p) => p.logical);
+
+    await asModel("claude-opus-5", () =>
+      markReviewed(u.root, { targetKind: "node", targetId: "payments", level: "logical", actor: "agent" }));
+    assert.equal((await level("payments")).profiles, 1);
+
+    // The SAME profile looking again is not a second profile. This is the whole
+    // reason the field counts profiles rather than acts.
+    await asModel("claude-opus-5", () =>
+      markReviewed(u.root, { targetKind: "node", targetId: "payments", level: "logical", actor: "agent" }));
+    assert.equal((await level("payments")).profiles, 1, "re-reading is not corroboration");
+
+    // A different vendor is.
+    await asModel("codex-1", () =>
+      markReviewed(u.root, { targetKind: "node", targetId: "payments", level: "logical", actor: "agent" }));
+    assert.equal((await level("payments")).profiles, 2, "two looks that could have failed differently");
+
+    // And a person is their own profile, distinct from any agent.
+    await markReviewed(u.root, { targetKind: "node", targetId: "payments", level: "logical", actor: "human" });
+    assert.equal((await level("payments")).profiles, 3);
+  } finally { u.cleanup(); }
+});
+
+test("the count reaches the vouch, and 1 is reported rather than omitted", async () => {
+  // A reader must be able to tell "one profile" from "this build does not compute it".
+  const u = await universe();
+  try {
+    await asModel("claude-opus-5", () =>
+      markReviewed(u.root, { targetKind: "node", targetId: "payments", level: "logical", actor: "agent" }));
+    const n = await getNode(u.root, "payments") as any;
+    assert.ok(n.vouch.evidence, "an agent read it");
+    assert.equal(n.vouch.evidence.profiles, 1);
+
+    await asModel("codex-1", () =>
+      markReviewed(u.root, { targetKind: "node", targetId: "payments", level: "logical", actor: "agent" }));
+    const n2 = await getNode(u.root, "payments") as any;
+    assert.equal(n2.vouch.evidence.profiles, 2, "cross-vendor corroboration is visible on the node");
+  } finally { u.cleanup(); }
+});

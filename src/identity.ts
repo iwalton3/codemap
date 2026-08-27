@@ -193,17 +193,28 @@ export function isIndependent(a: Actor | undefined, b: Actor | undefined): boole
  */
 export function isErrorIndependent(a: Actor | undefined, b: Actor | undefined): boolean {
   if (!a || !b) return false;
-  const [va, vb] = [a.via, b.via];
-  // A person and an agent read differently enough that this is the easy case.
-  if (!va !== !vb) return true;
-  // Two people: their error profiles differ exactly when they are different people.
-  if (!va && !vb) return a.principal !== b.principal;
-  // Two agents. `harness` is transport-observed (see `markObservedClient`) and is
-  // the one an agent cannot spell for itself, so it is checked first; `model` is a
-  // self-report and only ever ADDS evidence of difference, never removes it.
-  if (va!.harness && vb!.harness && va!.harness !== vb!.harness) return true;
-  if (va!.model && vb!.model && va!.model !== vb!.model) return true;
-  return false;
+  return errorProfile(a) !== errorProfile(b);
+}
+
+/**
+ * The error profile an actor reads from — what would have to differ for two looks to
+ * be able to fail differently.
+ *
+ * Expressed as a KEY rather than a pairwise predicate so that "how many distinct
+ * profiles have vouched for this" is a set size rather than an O(n²) scan, and so
+ * `isErrorIndependent` cannot drift from the counting. It is derived above rather
+ * than duplicated for that reason.
+ *
+ *   - a person is their own profile, keyed on the principal
+ *   - an agent is keyed on harness + model, and NOT on the principal: two people
+ *     running the same harness make the same mistakes, which is the whole point
+ *   - a person and an agent are never the same profile
+ *
+ * Conservative when unknown: two agents with neither harness nor model recorded key
+ * the same, so they do not count as two. Nothing establishes that they differ.
+ */
+export function errorProfile(a: Actor): string {
+  return a.via ? `agent\0${a.via.harness ?? ""}\0${a.via.model ?? ""}` : `human\0${a.principal}`;
 }
 
 /**
