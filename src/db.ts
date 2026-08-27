@@ -701,6 +701,32 @@ function migrate(d: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS ix_op_spec ON operations(spec_id, ord);
     CREATE INDEX IF NOT EXISTS ix_op_req ON operations(requirement_id);
     CREATE INDEX IF NOT EXISTS ix_op_scope ON operations(source_scope);
+
+    -- Acknowledgements. One table for gap and debt: they differ only on whether
+    -- conforming code exists, and there must be exactly ONE thing to count when asking
+    -- how much of the standard is currently silenced.
+    --
+    -- No stored "due" column. Whether a record is due for revalidation is derived from
+    -- revalidate_by at read time, the way recheck-due is derived from witnesses -- a
+    -- stored status is a field, and a field is something a writer can satisfy.
+    CREATE TABLE IF NOT EXISTS acknowledgements (
+      id TEXT NOT NULL,
+      basis TEXT NOT NULL,
+      state TEXT NOT NULL,
+      operation_id TEXT,
+      requirement_id TEXT,
+      priority TEXT NOT NULL,
+      revalidate_by TEXT NOT NULL,
+      granted_at TEXT NOT NULL,
+      origin TEXT, source_scope TEXT,
+      body TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ix_ack_identity ON acknowledgements(id);
+    -- "What is silencing this rule" and "what falls due next" are the two hot reads.
+    CREATE INDEX IF NOT EXISTS ix_ack_req ON acknowledgements(requirement_id, state);
+    CREATE INDEX IF NOT EXISTS ix_ack_due ON acknowledgements(state, revalidate_by);
+    CREATE INDEX IF NOT EXISTS ix_ack_op ON acknowledgements(operation_id);
+    CREATE INDEX IF NOT EXISTS ix_ack_scope ON acknowledgements(source_scope);
   `);
   // anchors.derivation — NULL on rows indexed before provenance existed, which is
   // `legacy_live_derivation`: this machine cannot say how its own index was made.

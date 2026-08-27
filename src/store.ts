@@ -39,7 +39,7 @@ import {
   type Graph, type Edge, type Annotation, type AnnotationStore,
   type CoverageRule, type CoverageStore, type AnalyzerConfig, type Review, type ReviewStore, type Triage, type TriageStore,
   type BugWitness, type Importance, type Complexity, type TriageSource,
-  type Requirement, type RequirementStore, type Spec, type Operation,
+  type Requirement, type RequirementStore, type Spec, type Operation, type Acknowledgement,
   SCHEMA_VERSION, ANCHOR_SCHEME, HASH_SCHEME,
 } from "./schema.js";
 
@@ -2221,4 +2221,47 @@ export async function requirementSectionCounts(root: string): Promise<{ section:
   return db(root).prepare(
     "SELECT section, COUNT(*) AS count FROM requirements GROUP BY section ORDER BY section",
   ).all() as unknown as { section: string; count: number }[];
+}
+
+const hydrateAck = (body: string, origin: string | null): Acknowledgement | null => {
+  try {
+    const a = JSON.parse(body) as Acknowledgement;
+    return origin ? { ...a, origin } : a;
+  } catch { return null; }
+};
+
+export async function readAcknowledgements(
+  root: string,
+  opts: { requirementId?: string; operationId?: string; state?: Acknowledgement["state"] } = {},
+): Promise<Acknowledgement[]> {
+  const clauses: string[] = [];
+  const args: string[] = [];
+  if (opts.requirementId) { clauses.push("requirement_id = ?"); args.push(opts.requirementId); }
+  if (opts.operationId) { clauses.push("operation_id = ?"); args.push(opts.operationId); }
+  if (opts.state) { clauses.push("state = ?"); args.push(opts.state); }
+  const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+  const rows = db(root).prepare(
+    `SELECT body, origin FROM acknowledgements${where} ORDER BY revalidate_by, granted_at, id`,
+  ).all(...args as []) as unknown as { body: string; origin: string | null }[];
+  const out: Acknowledgement[] = [];
+  for (const r of rows) { const a = hydrateAck(r.body, r.origin); if (a) out.push(a); }
+  return out;
+}
+
+export async function readAcknowledgement(root: string, id: string): Promise<Acknowledgement | null> {
+  const row = db(root).prepare("SELECT body, origin FROM acknowledgements WHERE id = ?")
+    .get(id) as { body: string; origin: string | null } | undefined;
+  return row ? hydrateAck(row.body, row.origin) : null;
+}
+
+export async function writeLocalAcknowledgement(root: string, a: Acknowledgement): Promise<void> {
+  const d = db(root);
+  const owner = d.prepare("SELECT source_scope FROM acknowledgements WHERE id = ? AND source_scope IS NOT NULL")
+    .get(a.id) as { source_scope: string } | undefined;
+  if (owner) throw new Error(`${a.id} is owned by the sidecar fold (${owner.source_scope}) — write an event, not a row.`);
+  d.prepare(
+    "INSERT OR REPLACE INTO acknowledgements(id,basis,state,operation_id,requirement_id,priority,"
+    + "revalidate_by,granted_at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+  ).run(a.id, a.basis, a.state, a.operationId ?? null, a.requirementId ?? null, a.priority,
+        a.revalidateBy, a.grantedAt, a.origin ?? null, null, JSON.stringify(a));
 }

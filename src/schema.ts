@@ -1081,6 +1081,67 @@ export interface Requirement {
   origin?: string;
 }
 
+/**
+ * An **acknowledgement** — the rule stands, we know it is not met, do not raise it.
+ *
+ * ONE record for both shapes rather than two, because they differ only on whether
+ * conforming code exists and share an identical lifecycle. The specific reason, beyond
+ * the general one-canonical-table rule: an acknowledgement is a **silencer**, and there
+ * must be exactly one thing to count when asking how much of the standard is currently
+ * silenced.
+ *
+ * `basis` routes the reporting — *how much have we not built* stays a different question
+ * from *how much do we owe* — without splitting the mechanism.
+ *
+ * There is deliberately **no magnitude field**. A gap's size is its population, which is
+ * counted rather than estimated; an estimate here would be a self-report by the party
+ * whose judgement is in doubt, which is COD-17's refuted `coverage.method` in different
+ * clothes. It arrives when the population predicate does.
+ */
+export type AcknowledgementBasis = "gap" | "debt";
+
+export type AcknowledgementState = "active" | "released";
+
+/** Orders the revalidation queue among records falling due together. */
+export type AcknowledgementPriority = "high" | "medium" | "low";
+
+export interface Acknowledgement {
+  id: string;
+  basis: AcknowledgementBasis;
+  /**
+   * For a `gap`: the operation it was raised against, while the spec was still a draft.
+   *
+   * This is what makes the mint-time asymmetry structural rather than advisory — a gap
+   * cannot be minted against a ratified requirement because the path takes an operation
+   * in a draft spec. Filing one in response to a raised problem would be the laundering
+   * pattern arriving through a third door: not *amend the rule to match the code*, but
+   * *declare the rule not yet applicable*.
+   */
+  operationId?: string;
+  /** The rule. Bound at ratification for a gap; required up front for debt. */
+  requirementId?: string;
+  rationale: string;
+  priority: AcknowledgementPriority;
+  /**
+   * ISO date. **The release condition**, and the only one.
+   *
+   * Never an external work item: `track_bug` already settled that shape — being tracked
+   * elsewhere is not being fixed — and a condition living in a system nothing guarantees
+   * becomes unreachable when a ticket is closed as won't-do, moved, renamed or deleted.
+   * The acknowledgement would then silence the audit permanently, and silently.
+   */
+  revalidateBy: string;
+  /** A ticket, a commit, a conversation. EVIDENCE, never the release condition. */
+  workItem?: string;
+  state: AcknowledgementState;
+  grantedBy: Actor;
+  grantedAt: string;
+  releasedBy?: Actor;
+  releasedAt?: string;
+  releasedReason?: string;
+  origin?: string;
+}
+
 export interface RequirementStore {
   schemaVersion: number;
   requirements: Requirement[];

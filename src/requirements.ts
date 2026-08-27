@@ -361,6 +361,11 @@ export async function ratifySpec(
 
   const next: Spec = { ...sp, status: "ratified", ratifiedBy: who, ratifiedAt: at };
   await writeLocalSpec(root, next);
+  // Gaps raised against this spec's operations named an operation, because the rule did
+  // not exist yet. Bind them to what the operations produced, or nothing asking "what is
+  // silencing this requirement" would ever find them.
+  const { bindGapsForSpec } = await import("./acknowledgements.js");
+  await bindGapsForSpec(root, sp.id);
   return { ok: true, spec: next, applied };
 }
 
