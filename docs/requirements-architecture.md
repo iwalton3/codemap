@@ -152,6 +152,36 @@ arriving through a third door — not *amend the rule to match the code*, but *d
 rule not yet applicable*. Closing that path at mint time is why the two bases share a
 record and not a constructor.
 
+### A gap has a magnitude, and it is counted rather than estimated
+
+**Ratification cost is decoupled from conformance cost.** A one-sentence requirement can
+imply rebuilding the product: write *"the client must be a native iOS application"* against
+a web app and the standard updates happily — the operation is well-formed, the provenance
+is real, the ratification is one act. The gap is the entire system.
+
+As described so far, an acknowledgement cannot say that. A gap for a missing null check and
+a gap for a rewrite are the same record, so a ratifier sees *N gaps* rather than *N gaps of
+this size*, and the cavern arrives in a bulk acknowledgement alongside two hundred trivial
+ones. That is the batch-ratification failure with a new payload.
+
+**Magnitude is the population, not an estimate.** An agent's cost estimate is a self-report
+by the party whose judgement is in question — COD-17's refuted `coverage.method` wearing
+different clothes. What is honestly available is countable: how much of the system the rule
+ranges over, and how much of that conforms.
+
+So the population predicate does **three** jobs, not one — it is what makes gap-versus-debt
+decidable, what makes a gap's size honest, and what COD-17's `re-derive` was always for.
+Three arguments for the same mechanism is a reason to pull it forward rather than defer it.
+
+The rendering rule that follows is not a threshold, which would be arbitrary: a bulk
+acknowledgement always shows the distribution and always itemises the largest gaps by
+population, whatever the batch size.
+
+One thing this correctly does *not* do. A requirement whose gap is the whole system is
+usually a product-strategy statement wearing a requirement's clothes, and the design
+already routes it correctly — gaps are roadmap work, and elicitation is explicitly out of
+scope. The failure was never the routing; it was that the routing happened silently.
+
 ### Release is a date, never an external work item
 
 An acknowledgement carries a **priority** and an **expected revalidate-by date**. It may
