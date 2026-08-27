@@ -7,7 +7,7 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { type Anchor, type Review, type ReviewLevel, type ReviewState, type BugWitness } from "./schema.js";
-import { readReviews, writeReviews, readAnchorStore, loadNodes, readSnapshot, snapshotBranch, derivationLookup } from "./store.js";
+import { readReviews, writeReviews, readAnchorStore, loadNodes, readSnapshot, snapshotIsDirty, snapshotBranch, derivationLookup } from "./store.js";
 import { resolveAcceptance, recordAcceptance, type Ancestry } from "./acceptance.js";
 import { ACCEPTED_CAP, type AcceptedCitation, type AcceptedEntry, type AcceptanceVia } from "./schema.js";
 import { isAncestor, isGitRepo, currentBranch as gitBranch, hasObject } from "./git.js";
@@ -94,6 +94,18 @@ export async function liveHashes(root: string, anchorIds: Iterable<string>, ref?
   if (ref) {
     const snap = await readSnapshot(root, ref);
     if (!snap) throw new Error(`no cached snapshot for ${ref.slice(0, 12)} — index that commit before witnessing against it`);
+    // Refused for the reason `diff` refuses the same snapshot (diff.ts, COD-3), and
+    // it bites harder here: `ref` exists SO THAT a pull-request sign-off witnesses
+    // the head rather than whatever is checked out, and a snapshot `reindex` cached
+    // from a dirty tree is the working tree wearing the commit's name. Witnessing
+    // against it records exactly the body the caller passed `ref` to avoid, and the
+    // resulting mark reads as a review of code nobody looked at. `snapshotAt` reads
+    // git objects and is never dirty, so the honest path is unaffected.
+    if (snapshotIsDirty(root, ref)) {
+      throw new Error(`the cached snapshot for ${ref.slice(0, 12)} was indexed from a working tree with uncommitted changes, `
+        + `so it is not that commit — witnessing against it would record the working tree's body under that sha. `
+        + `Re-cache it from git objects with \`codemap snapshot ${ref.slice(0, 12)}\`, which needs no clean checkout.`);
+    }
     const want = new Set(anchorIds);
     const out = new Map<string, string>();
     for (const a of snap) if (want.has(a.id)) out.set(a.id, a.bodyHash);
