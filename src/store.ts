@@ -39,7 +39,7 @@ import {
   type Graph, type Edge, type Annotation, type AnnotationStore,
   type CoverageRule, type CoverageStore, type AnalyzerConfig, type Review, type ReviewStore, type Triage, type TriageStore,
   type BugWitness, type Importance, type Complexity, type TriageSource,
-  type Requirement, type RequirementStore, type Spec, type Operation, type Acknowledgement, type Audit,
+  type Requirement, type RequirementStore, type Spec, type Operation, type Acknowledgement, type Audit, type Problem,
   SCHEMA_VERSION, ANCHOR_SCHEME, HASH_SCHEME,
 } from "./schema.js";
 
@@ -2295,4 +2295,45 @@ export async function writeLocalAudit(root: string, a: Audit): Promise<void> {
     "INSERT OR REPLACE INTO audits(id,requirement_id,outcome,at,origin,source_scope,body)"
     + " VALUES(?,?,?,?,?,?,?)",
   ).run(a.id, a.requirementId, a.outcome, a.at, a.origin ?? null, null, JSON.stringify(a));
+}
+
+const hydrateProblem = (body: string, origin: string | null): Problem | null => {
+  try {
+    const p = JSON.parse(body) as Problem;
+    return origin ? { ...p, origin } : p;
+  } catch { return null; }
+};
+
+export async function readProblems(
+  root: string, opts: { requirementId?: string; unadjudicated?: boolean } = {},
+): Promise<Problem[]> {
+  const clauses: string[] = [];
+  const args: string[] = [];
+  if (opts.requirementId) { clauses.push("requirement_id = ?"); args.push(opts.requirementId); }
+  if (opts.unadjudicated) clauses.push("disposition IS NULL");
+  const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+  const rows = db(root).prepare(
+    `SELECT body, origin FROM problems${where} ORDER BY raised_at, id`,
+  ).all(...args as []) as unknown as { body: string; origin: string | null }[];
+  const out: Problem[] = [];
+  for (const r of rows) { const p = hydrateProblem(r.body, r.origin); if (p) out.push(p); }
+  return out;
+}
+
+export async function readProblem(root: string, id: string): Promise<Problem | null> {
+  const row = db(root).prepare("SELECT body, origin FROM problems WHERE id = ?")
+    .get(id) as { body: string; origin: string | null } | undefined;
+  return row ? hydrateProblem(row.body, row.origin) : null;
+}
+
+export async function writeLocalProblem(root: string, p: Problem): Promise<void> {
+  const d = db(root);
+  const owner = d.prepare("SELECT source_scope FROM problems WHERE id = ? AND source_scope IS NOT NULL")
+    .get(p.id) as { source_scope: string } | undefined;
+  if (owner) throw new Error(`${p.id} is owned by the sidecar fold (${owner.source_scope}) — write an event, not a row.`);
+  d.prepare(
+    "INSERT OR REPLACE INTO problems(id,requirement_id,audit_id,disposition,raised_at,adjudicated_at,"
+    + "origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?,?)",
+  ).run(p.id, p.requirementId, p.auditId, p.disposition ?? null, p.raisedAt, p.adjudicatedAt ?? null,
+        p.origin ?? null, null, JSON.stringify(p));
 }

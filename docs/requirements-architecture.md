@@ -323,8 +323,7 @@ reliance on it, which is why savings clauses exist. Ours is the acknowledgement 
 
 ## Built, and not
 
-Built (`src/requirements.ts`, `src/schema.ts`, `src/db.ts`, `src/store.ts`), **local rows
-only** — so a ratification is not yet something a teammate can read:
+Built, **local rows only** — so none of it is yet something a teammate can read:
 
 - The `requirement` record: no `stale`, no trust, `recheckDue` derived at read time.
   Structurally separated from the node path; `requirements.test.ts` holds that true.
@@ -333,10 +332,23 @@ only** — so a ratification is not yet something a teammate can read:
 - Propose / ratify / reject / retire, principal-gated on adoption, and `reorganize`
   gated once ratified because retitling a binding rule is laundering one field over.
 
-Not built: the **spec** (so `Amendment` is still a single-requirement operation and must
-grow into an operation *on a spec*), the acknowledgement record, audit records, the
-problem/discrepancy record and its refusal, and the sidecar scope that makes any of it
-shared.
+- `requirements.ts` — the record (no `stale`, no trust, `recheckDue` derived), the
+  **spec** and its **operations**, and the fold. Context is verified per operation and
+  adoption is all-or-nothing.
+- `acknowledgements.ts` — one record, `basis: gap | debt`, with the mint-time asymmetry.
+- `audits.ts` — the audit record with non-vacuity as a refusal, plus the conformance
+  classification (`conformant` is reachable only through a code-backed audit).
+- `problems.ts` — the un-adjudicated record, `adjudicate`, and **no close verb at all**.
+
+**Adjudication and closure are separate events**, which was not obvious until it was
+built. Naming which side moves does not move it, so a problem stays open until the named
+move actually happens — `adjudicate and forget` is then visible rather than silent. And an
+un-adjudicated problem whose disagreement quietly disappears does **not** close: somebody
+settled a business question by changing code, which is the failure this whole record exists
+to catch, so it is reported (`settledWithoutAdjudication`) instead of tidied away.
+
+Not built: section move/rename operations, spec withdrawal and repeal, the population
+predicate, and the sidecar scope that makes any of this shared.
 
 ## Deliberately open
 

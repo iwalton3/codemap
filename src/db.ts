@@ -744,6 +744,26 @@ function migrate(d: DatabaseSync): void {
     -- ordered by time.
     CREATE INDEX IF NOT EXISTS ix_audit_req ON audits(requirement_id, at);
     CREATE INDEX IF NOT EXISTS ix_audit_scope ON audits(source_scope);
+
+    -- Problems. No state column on purpose: open / adjudicated / closed are DERIVED
+    -- from the disposition and from whether the move it names has actually happened. A
+    -- stored state is a field, and a field is something a writer can satisfy -- which is
+    -- the entire failure this record exists to prevent.
+    CREATE TABLE IF NOT EXISTS problems (
+      id TEXT NOT NULL,
+      requirement_id TEXT NOT NULL,
+      audit_id TEXT NOT NULL,
+      -- NULL until a principal has said which side moves. The queue is WHERE it IS NULL.
+      disposition TEXT,
+      raised_at TEXT NOT NULL,
+      adjudicated_at TEXT,
+      origin TEXT, source_scope TEXT,
+      body TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ix_problem_identity ON problems(id);
+    CREATE INDEX IF NOT EXISTS ix_problem_req ON problems(requirement_id);
+    CREATE INDEX IF NOT EXISTS ix_problem_queue ON problems(disposition, raised_at);
+    CREATE INDEX IF NOT EXISTS ix_problem_scope ON problems(source_scope);
   `);
   // anchors.derivation — NULL on rows indexed before provenance existed, which is
   // `legacy_live_derivation`: this machine cannot say how its own index was made.

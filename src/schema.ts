@@ -1198,6 +1198,57 @@ export interface Audit {
   origin?: string;
 }
 
+/**
+ * A **problem** — two authorities disagree, and neither is presumed right.
+ *
+ * A finding says *the code is wrong*. A doc says *the code does X*. A problem says only
+ * that a ratified rule and the code do not agree, and it is **un-adjudicated by
+ * construction**: there is no verdict field an agent can set, and no input that accepts
+ * one. If the auditor filed this as a finding, the filing act would already have decided
+ * the question in the direction the agent is least entitled to decide — an agent can
+ * establish non-conformance, it cannot establish which side should move.
+ *
+ * Note what is NOT here: a `state`. Open, adjudicated and closed are DERIVED, because a
+ * stored state is a field, and a field is something a writer can satisfy. There is no
+ * `closeProblem` verb anywhere for the same reason — you cannot close a problem, you can
+ * only do the thing that closes it.
+ */
+export type ProblemDisposition =
+  /** The rule stands and the code violates it. Closed by a conformant audit. */
+  | "code-wrong"
+  /** The business moved. Closed by a ratified spec amending the rule. */
+  | "requirement-changed"
+  /** The rule did not change; our statement of it was incomplete. Closed the same way. */
+  | "requirement-misstated"
+  /** Non-conformant and we are living with it. Closed by a granted debt acknowledgement. */
+  | "accepted";
+
+export interface Problem {
+  id: string;
+  requirementId: string;
+  /**
+   * The audit that established non-conformance. **Positive evidence only** — a problem
+   * cannot be raised from an `indeterminate` audit, because "I could not verify this" is
+   * an unverified requirement rather than a violation. Without that gate this becomes the
+   * 138-false-positives problem again.
+   */
+  auditId: string;
+  summary: string;
+  /**
+   * What the auditor thinks should happen. **Context, never a resolution** — it is
+   * recorded precisely so it does not have to be smuggled in as one.
+   */
+  prior?: string;
+  raisedBy: Actor;
+  raisedAt: string;
+  /** Set only by `adjudicate`, and only by a principal. */
+  disposition?: ProblemDisposition;
+  adjudicatedBy?: Actor;
+  adjudicatedAt?: string;
+  adjudicationReason?: string;
+  origin?: string;
+}
+
 export interface RequirementStore {
   schemaVersion: number;
   requirements: Requirement[];
