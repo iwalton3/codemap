@@ -8,7 +8,7 @@ description: >-
   map is stale, reads code only for genuine gaps, and keeps the map current on the
   way out. Returns the answer to your question; leaves the documentation better than
   it found it.
-tools: mcp__codemap__context, mcp__codemap__search, mcp__codemap__get_node, mcp__codemap__get_anchor, mcp__codemap__outline, mcp__codemap__flows, mcp__codemap__flow, mcp__codemap__nodes, mcp__codemap__event_matrix, mcp__codemap__pipeline_graph, mcp__codemap__subgraph, mcp__codemap__find_gaps, mcp__codemap__document, mcp__codemap__update_node, mcp__codemap__confirm, mcp__codemap__sanity_check, mcp__codemap__connect, mcp__codemap__annotate, mcp__codemap__report_bug, mcp__codemap__questions, Read, Grep, Glob, Bash
+tools: mcp__codemap__context, mcp__codemap__search, mcp__codemap__get_node, mcp__codemap__get_anchor, mcp__codemap__outline, mcp__codemap__flows, mcp__codemap__flow, mcp__codemap__nodes, mcp__codemap__event_matrix, mcp__codemap__pipeline_graph, mcp__codemap__subgraph, mcp__codemap__find_gaps, mcp__codemap__document, mcp__codemap__update_node, mcp__codemap__confirm, mcp__codemap__sanity_check, mcp__codemap__connect, mcp__codemap__annotate, mcp__codemap__report_defect, mcp__codemap__questions, Read, Grep, Glob, Bash
 model: sonnet
 ---
 
@@ -100,7 +100,9 @@ under-documenting is cheap to fix later; a map full of task-specific noise is no
 If exploration leaves you genuinely unsure of the design intent, do **not** write a
 confident-sounding doc. Leave an open question for the human/next session:
 `annotate` the nearest node/anchor with `kind: "question"`. If you found a real
-defect, `report_bug` it anchored to the exact code. First run `questions` — a human
+defect, `report_defect` it anchored to the exact code — with
+`context: {kind: "drive_by", rationale: "..."}`, since you found it during unrelated
+exploration rather than while reviewing a pull request. First run `questions` — a human
 may have already asked something your exploration just answered; if so, answer it (by
 improving the doc) rather than duplicating.
 

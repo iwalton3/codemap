@@ -669,7 +669,16 @@ export async function stateMap(root: string, opts: { aggregate?: string } = {}) 
 }
 
 /** One flow: its ordered steps, each with touched modules + the live source of its anchors. */
-export async function flow(root: string, id: string) {
+/**
+ * One flow, its steps in order, with the live source of every anchor of every step.
+ *
+ * `brief` drops that source. A 20-step flow otherwise returns twenty symbols'
+ * bodies in one response whether or not the caller is walking them — and the two
+ * jobs this serves are different: reviewing a flow step-by-step wants the code,
+ * while orienting in one ("what are the steps, where does it touch") wants the
+ * shape and can fetch a body with `get_anchor` when it reaches one.
+ */
+export async function flow(root: string, id: string, opts: { brief?: boolean } = {}) {
   const [nodes, graph, store, annStore] = await Promise.all([loadNodesShared(root), readGraph(root), readAnchorStore(root), readAnnotations(root)]);
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const anchorById = new Map(store.anchors.map((a) => [a.id, a]));
@@ -747,7 +756,7 @@ export async function flow(root: string, id: string) {
     for (const aid of s.anchors) {
       const a = anchorById.get(aid);
       if (!a) { anchors.push({ id: aid, missing: true }); continue; }
-      anchors.push({ id: a.id, symbol: a.symbolPath.join(" › "), file: a.file, lines: a.loc ? `${a.loc.startLine}-${a.loc.endLine}` : undefined, startLine: a.loc?.startLine, kind: a.kind, lang: langFor(a.file), code: await codeFor(a), review: rev.get("anchor:" + a.id), viewed: revView.get("anchor:" + a.id), annotations: annFor(a.id) });
+      anchors.push({ id: a.id, symbol: a.symbolPath.join(" › "), file: a.file, lines: a.loc ? `${a.loc.startLine}-${a.loc.endLine}` : undefined, startLine: a.loc?.startLine, kind: a.kind, lang: langFor(a.file), ...(opts.brief ? {} : { code: await codeFor(a) }), review: rev.get("anchor:" + a.id), viewed: revView.get("anchor:" + a.id), annotations: annFor(a.id) });
     }
     // A step "changed since signed/viewed" iff its own mark or any of its anchors'
     // marks went stale under that attestation.

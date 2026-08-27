@@ -98,7 +98,7 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
     case "/api/flows":
       return ops.flows(root);
     case "/api/flow":
-      return ops.flow(root, q.get("id") ?? "");
+      return ops.flow(root, q.get("id") ?? "", { brief: q.get("brief") === "1" });
     case "/api/search":
       return q.get("all") === "1"
         ? multi.searchAll(ws, q.get("q") ?? "")

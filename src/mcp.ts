@@ -20,7 +20,7 @@ import { loadWorkspace, type Workspace, type Universe } from "./workspace.js";
 import { METHODOLOGY } from "./guide.js";
 import { analyzeMarten } from "./analyzers/marten.js";
 import { enableAnalyzer } from "./analyzers/run.js";
-import { markReviewed, unmarkReviewed } from "./reviews.js";
+import { markReviewed, markReviewedBatch, unmarkReviewed } from "./reviews.js";
 import { withLock } from "./lock.js";
 
 /**
@@ -332,22 +332,35 @@ const tools: Tool[] = [
   },
   {
     name: "flow",
-    description: "One flow: its ordered steps, each with touched modules and the live source of its anchors, plus per-step review state. For stepping through a process and reviewing the code.",
-    inputSchema: obj({ id: { type: "string" } }, ["id"]),
-    handler: (a, c) => ops.flow(c.universe.path, a.id),
+    description: "One flow: its ordered steps, each with touched modules and the live source of its anchors, plus per-step review state. For stepping through a process and reviewing the code.\n\nPass `brief: true` when you are ORIENTING rather than walking it — you get the steps, what each touches and its review state, without every anchor's source inlined. A long flow otherwise returns twenty symbols' bodies in one response; fetch the one you stop at with `get_anchor`.",
+    inputSchema: obj({
+      id: { type: "string" },
+      brief: { type: "boolean", description: "Omit each anchor's inlined source. The shape of the flow, not its code." },
+    }, ["id"]),
+    handler: (a, c) => ops.flow(c.universe.path, a.id, { brief: !!a.brief }),
   },
   {
     name: "review",
-    description: "Mark (or unmark: unmark:true) a node or anchor as reviewed — the agent's first-pass 'I read this' mark. level 'logical' = the doc is accurate; 'code' = the source was read (mark ANCHORS at code level — a node's code review is DERIVED from its segments). Recorded as an AGENT review → `checked` trust (blue); only a human via the web UI grants `verified` (green sign-off). Staleness-aware: reverts to stale when the reviewed code changes. Pair with `report_defect` when you find something — `context:{kind:\"pull_request\"}` puts it on the PR under review — or `annotate` for a pointer or a durable remark about the code itself, to leave the human reviewer your findings and watch-outs on the exact lines.",
+    description: "Mark (or unmark: unmark:true) a node or anchor as reviewed — the agent's first-pass 'I read this' mark. level 'logical' = the doc is accurate; 'code' = the source was read (mark ANCHORS at code level — a node's code review is DERIVED from its segments). Recorded as an AGENT review → `checked` trust (blue); only a human via the web UI grants `verified` (green sign-off). Staleness-aware: reverts to stale when the reviewed code changes.\n\nREVIEWING A PULL REQUEST: pass `ids` (a whole `pr_packet` page in one call) and `ref: <refs.head>`. Both matter — without `ref` the mark witnesses the working tree, which during a PR review is a third version that is neither the head you read nor the base. Pair with `report_defect` when you find something — `context:{kind:\"pull_request\"}` puts it on the PR under review — or `annotate` for a pointer or a durable remark about the code itself, to leave the human reviewer your findings and watch-outs on the exact lines.",
     inputSchema: obj({
       targetKind: { type: "string", enum: ["node", "anchor"] },
       targetId: { type: "string" },
+      ids: { type: "array", items: { type: "string" }, description: "Mark MANY anchors at once — the form for a pull request, where a page of `pr_packet` is one call rather than forty. Anchors only (a node's code review is derived from its segments). Mutually exclusive with `targetKind`/`targetId`." },
       level: { type: "string", enum: ["logical", "code"] },
+      ref: { type: "string", description: "Witness the code AT THIS COMMIT rather than in the working tree. On a pull request pass `pr_packet`'s `refs.head`: an anchor id carries no ref, so without this a sign-off made while reviewing a PR records whatever branch happens to be checked out — usually the base — and reads as a review of code nobody looked at." },
       unmark: { type: "boolean" },
       reviewer: { type: "string" },
-    }, ["targetKind", "targetId", "level"]),
+    }, ["level"]),
     mutates: true,
     handler: async (a, c) => {
+      const ids = Array.isArray(a.ids) ? (a.ids as string[]) : undefined;
+      if (ids?.length) {
+        // `unmark` has no batch behind it, and silently marking when the caller asked
+        // to unmark is the worse failure of the two.
+        if (a.unmark) return { error: "`unmark` takes one target — pass `targetKind`/`targetId`." };
+        return markReviewedBatch(c.universe.path, ids, { level: a.level, reviewer: a.reviewer, actor: "agent", ref: a.ref });
+      }
+      if (!a.targetKind || !a.targetId) return { error: "review needs `ids` (anchors) or `targetKind` + `targetId`." };
       if (a.unmark) return unmarkReviewed(c.universe.path, a);
       const g = guardSelfCheck(c.universe.id, a.targetKind, a.targetId);
       if (g) return g;
@@ -388,7 +401,11 @@ const tools: Tool[] = [
     handler: async (a, c) => {
       const g = guardSelfCheck(c.universe.id, "node", a.id);
       if (g) return g;
-      return markReviewed(c.universe.path, { targetKind: "node", targetId: a.id, level: "logical", reviewer: a.reviewer || "agent", actor: "agent" });
+      // No `|| "agent"` default: `actor` already carries agent-ness, and defaulting
+      // the reviewer to the literal string dropped the identity `markReviewed` would
+      // otherwise derive (`principal (model)`). The same act through `review` kept it,
+      // so a sanity_check and a review of the same node disagreed about who did it.
+      return markReviewed(c.universe.path, { targetKind: "node", targetId: a.id, level: "logical", reviewer: a.reviewer, actor: "agent" });
     },
   },
   {
@@ -580,12 +597,17 @@ const tools: Tool[] = [
     name: "defer_finding",
     description: "Defer a pull-request finding into a bug, so it is not lost when the PR closes. The ONLY route from a finding to a bug — filing a second copy with `report_defect` loses the cross-link and the history.\n\nThe bug is witnessed at the ref the FINDING was witnessed at, so a finding about code the pull request INTRODUCES defers like any other — that code is in this store under the branch's snapshot, which `codemap pr <N>` wrote.\n\nThe finding SURVIVES and cross-links — the PR's history should still show it was raised there — and what transfers is the obligation: the finding stops asking for a decision because the bug is asking now. The bug's id is derived from the finding's, so two people accepting the same finding independently land on ONE bug rather than two.\n\nThe bug is filed against the anchors the finding names, witnessed here. A finding on a node takes that node's citations in THIS checkout, which is a judgement about what the defect covers — check it is the right code first.",
     inputSchema: obj({
-      finding: { type: "string", description: "A finding id, from `findings` or `shared_findings`. It carries its own pull request." },
+      id: { type: "string", description: "A finding id, from `findings` or `shared_findings`. It carries its own pull request." },
+      finding: { type: "string", description: "Deprecated alias for `id` — every sibling tool in this workflow spells it `id`." },
       title: { type: "string", description: "Defaults to the finding's first line." },
       severity: { type: "string", enum: ["low", "medium", "high", "critical"] },
-    }, ["finding"]),
+    }, []),
     mutates: true,
-    handler: (a, c) => ops.deferFinding(c.universe.path, String(a.finding ?? ""), { title: a.title, severity: a.severity }),
+    handler: (a, c) => {
+      const id = String(a.id ?? a.finding ?? "");
+      if (!id) return Promise.resolve({ error: "defer_finding needs a finding `id`." });
+      return ops.deferFinding(c.universe.path, id, { title: a.title, severity: a.severity });
+    },
   },
   {
     name: "publish_bugs",
@@ -734,11 +756,16 @@ const tools: Tool[] = [
       limit: { type: "number" },
       offset: { type: "number" },
       disposition: { type: "string", enum: ["open", "confirmed", "partial", "rerated", "refuted", "accepted"], description: "Only items triage concluded this about — `open` is the untouched work." },
+      tier: { type: "string", enum: ["unconfirmed", "confirmed", "doubted", "settled"], description: "How settled it is. PREFER this over `disposition` where they disagree — see `findings`." },
+      remediation: { type: "string", enum: ["outstanding", "fixed-on-branch", "fixed-on-default", "deferred", "wont-fix"], description: "What HAPPENED about it — the other axis from `tier`." },
+      pr: { type: "string", description: "Only items on this pull request." },
       publishState: { type: "string", enum: ["local", "approved", "withdrawn", "posted"], description: "Where it stands on its way to the pull request." },
     }, []),
     handler: (a, c) => ops.reviewQueue(c.universe.path, {
       includeAnswered: Boolean(a.includeAnswered), brief: a.brief !== false,
       limit: a.limit as number | undefined, offset: a.offset as number | undefined,
+      pr: a.pr as string | undefined, tier: a.tier as string | undefined,
+      remediation: a.remediation as string | undefined,
       disposition: a.disposition as string | undefined, publishState: a.publishState as string | undefined,
     }),
   },
@@ -787,13 +814,21 @@ const tools: Tool[] = [
       disposition: { type: "string", enum: ["open", "confirmed", "partial", "rerated", "refuted", "accepted"] },
       publishState: { type: "string", enum: ["local", "approved", "withdrawn", "posted"] },
       includeResolved: { type: "boolean", description: "Also list findings a human has closed out (default false)." },
+      includeAnswered: { type: "boolean", description: "Also return items an agent has already reported on." },
+      ids: { type: "array", items: { type: "string" }, description: "Exactly these findings, by id — how you DEREFERENCE an id you were handed by `close_finding`, `revise_finding`, `comment`, `corroborate` or `shared_findings`. Applied before paging, and it implies `includeResolved`: you asked for this record, so its state is the answer, not a filter. Pair with `brief: false` to read one in full." },
       brief: { type: "boolean", description: "Default TRUE. `false` inlines each symbol's current source — large." },
       limit: { type: "number" },
       offset: { type: "number" },
     }, []),
     handler: (a, c) => ops.reviewQueue(c.universe.path, {
       assignedOnly: false,
-      includeResolved: Boolean(a.includeResolved), brief: a.brief !== false,
+      ids: a.ids as string[] | undefined,
+      // Asking for a record by id and being told nothing exists, because a human
+      // closed it, is the failure this whole affordance is for — so an id lookup
+      // implies `includeResolved` rather than being filtered by it.
+      includeResolved: Boolean(a.includeResolved) || !!(Array.isArray(a.ids) && a.ids.length),
+      includeAnswered: Boolean(a.includeAnswered),
+      brief: a.brief !== false,
       limit: a.limit as number | undefined, offset: a.offset as number | undefined,
       pr: a.pr as string | undefined, tier: a.tier as string | undefined,
       remediation: a.remediation as string | undefined,
@@ -888,7 +923,7 @@ const tools: Tool[] = [
       remediation: { type: "string", enum: ["outstanding", "fixed-on-branch", "fixed-on-default", "deferred", "wont-fix"], description: "Only findings whose remediation is this — what HAPPENED about them, as opposed to whether they are true." },
       queue: { type: "boolean", description: "Only what needs a human decision. Excludes the untriaged — use `tier` for those." },
       rerated: { type: "boolean", description: "Only findings whose severity is not the one they were filed at — \"real, but not as bad (or worse) than it looked\". Derived from the revision trail, so it cannot disagree with it." },
-      terse: { type: "boolean", description: "DEFAULT TRUE, and what you want for triage: `id`, `tier`, `state`, `severity`, `remediation`, any pending ask, and the first line of the comment. `false` returns everything — the investigation text, the thread, every verdict, outcome and ask — which on 25 findings is ~195k characters and spills to a file. Read one in full with `finding` instead." },
+      terse: { type: "boolean", description: "DEFAULT TRUE, and what you want for triage: `id`, `tier`, `state`, `severity`, `remediation`, any pending ask, and the first line of the comment. `false` returns everything — the investigation text, the thread, every verdict, outcome and ask — which on 25 findings is ~195k characters and spills to a file. Read one in full with `findings` + `ids: [\"f_…\"]`, `brief: false`." },
       limit: { type: "number", description: "How many to return. The answer says `shown`, `more` and `nextOffset` when it is a page rather than the whole list." },
       offset: { type: "number", description: "Where to start, for the next page." },
     }, ["pr"]),
@@ -989,8 +1024,12 @@ const tools: Tool[] = [
   {
     name: "shared_docs",
     description: "The TEAM's documentation, each doc resolved against the code you have checked out. One sidecar serves every branch: a doc is a set of immutable versions, each recording the anchors it cites with the body hashes it was confirmed against, and the version whose hashes match your checkout is the one you get — no branch tags, no git. Read `citations[].matches` to tell fresh from stale; a version being returned does NOT mean it describes your code.",
-    inputSchema: obj({ nodeId: { type: "string", description: "Only this node (default: all)." } }),
-    handler: (a, c) => shared.sharedDocs(c.universe.path, { nodeId: a.nodeId }),
+    inputSchema: obj({
+      nodeId: { type: "string", description: "Only this node (default: all)." },
+      terse: { type: "boolean", description: "Titles, summaries and status without the doc BODIES — and `citations`/`citationsMatching` as counts instead of the array. What you want to ask \"does the team already document this?\"; re-read the one you want with `nodeId`." },
+      limit: { type: "number", description: "Cap the rows returned. `total` still counts the corpus and the reply says `truncated`." },
+    }),
+    handler: (a, c) => shared.sharedDocs(c.universe.path, { nodeId: a.nodeId, terse: !!a.terse, limit: a.limit as number | undefined }),
   },
   {
     name: "confirm_shared_doc",

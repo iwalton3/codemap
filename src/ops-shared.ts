@@ -1137,7 +1137,16 @@ const liveHashes = async (root: string, ids: Iterable<string>): Promise<AnchorIn
  * written on develop are both here, and each machine sees the one that describes
  * what it has checked out.
  */
-export async function sharedDocs(root: string, opts: { nodeId?: string } = {}) {
+/**
+ * The team's docs, each resolved against this checkout.
+ *
+ * `terse` drops the resolved BODY (and, with it, the per-citation detail). Both
+ * `find_gaps` and `context` point an agent here, and the first such call on a
+ * mature sidecar otherwise returns the entire corpus's prose — while the question
+ * that sent it here ("does the team already document this?") is answered by the
+ * titles, summaries and statuses. Read the body with `nodeId` once you know which.
+ */
+export async function sharedDocs(root: string, opts: { nodeId?: string; terse?: boolean; limit?: number } = {}) {
   const cfg = resolveSidecar(root);
   if (!cfg) return { error: NO_SIDECAR };
   const { value: docs, ...scope } = await cachedDocs(root, cfg);
@@ -1206,9 +1215,28 @@ export async function sharedDocs(root: string, opts: { nodeId?: string } = {}) {
       } : undefined,
     });
   }
+  // Terse keeps the FRESHNESS signal in scalar form. The description sends a reader
+  // to `citations[].matches`; dropping the array without replacing that would make
+  // the lean mode answer a different question than the full one.
+  const shaped = opts.terse
+    ? rows.map((r) => ({
+        ...r,
+        resolved: r.resolved ? {
+          versionId: r.resolved.versionId, type: r.resolved.type, title: r.resolved.title,
+          summary: r.resolved.summary, removed: r.resolved.removed,
+          generatedBy: r.resolved.generatedBy, by: r.resolved.by, status: r.resolved.status,
+          citations: r.resolved.citations.length,
+          citationsMatching: r.resolved.citations.filter((c) => c.matches).length,
+        } : undefined,
+      }))
+    : rows;
+  const page = opts.limit && opts.limit > 0 ? shaped.slice(0, opts.limit) : shaped;
   return {
     scope: nonAuthoritative(scope),
     universe: cfg.universe, total: rows.length,
+    // Never a silent cap: a caller that reads `docs` as the whole corpus and is
+    // handed a page has been told something false about the team's map.
+    ...(page.length < shaped.length ? { returned: page.length, truncated: true } : {}),
     // The number worth acting on, as opposed to the number that merely mention
     // code you do not have checked out.
     // From the one verdict, not from a second scan of the citations. `unverifiable`
@@ -1216,7 +1244,7 @@ export async function sharedDocs(root: string, opts: { nodeId?: string } = {}) {
     // neither of which is the reader's, and rendering it as a queue item is the
     // 985-docs shape this codebase already learned once.
     needAttention: rows.filter((r) => r.resolved?.status === "stale" || r.resolved?.status === "dangling").length,
-    docs: rows,
+    docs: page,
   };
 }
 
