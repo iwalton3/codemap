@@ -144,6 +144,29 @@ function violates(schema: unknown, args: Record<string, unknown>, path = ""): st
   return null;
 }
 
+/**
+ * The surface is large on purpose, and the obvious tidy-up — collapsing sibling reads
+ * behind one `kind` parameter — costs more than the tool count it saves.
+ *
+ * A tool is two things besides a handler: a DESCRIPTION, which is where per-call
+ * steering lives ("read this before filing", `context`'s ANSWER-FIRST), and a NAME.
+ * Which of the two actually reaches an agent depends on the client:
+ *
+ *  - A client that sends every tool eagerly puts the descriptions in context, so the
+ *    steering lands before the agent picks. Merging six `shared_*` reads into one tool
+ *    turns six pre-write nudges into one description, read once, by an agent that has
+ *    already decided.
+ *  - A client that DEFERS tools (Claude Code does) sends only names; the schema and
+ *    description load on demand. The description then arrives AFTER the choice — too
+ *    late to redirect anything — so the name is the whole steering surface, and
+ *    `event_matrix` is findable where `view(kind:"matrix")` is not.
+ *
+ * Both readings point the same way. Never put a guard in a description: COD-24 is the
+ * standing evidence that unenforced steering does not reach the consumer, and deferral
+ * is a second, independent reason it may not even arrive. Guards are refusals in the
+ * handler. Descriptions are for agents that already got here, and names are for the
+ * ones still looking.
+ */
 const tools: Tool[] = [
   {
     name: "list_universes",
