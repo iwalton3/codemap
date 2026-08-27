@@ -122,37 +122,53 @@ export function trustOf(status: string | undefined, review?: { logical: ReviewLi
  *     derivation re-runs clean (COD-17); an author-set value is a self-report of
  *     exhaustiveness by the party whose exhaustiveness is in doubt.
  */
+export type Mark = {
+  at?: string;
+  level: "logical" | "code";
+  /**
+   * The witnessed body still matches. FALSE does not mean the mark is gone — it
+   * means the act happened and the code has since moved, which is the whole point:
+   * "a person signed this, about a body that has changed" is two facts, and the
+   * single `trust` word could only carry the second.
+   */
+  current: boolean;
+};
+
 export type Vouch = {
-  /** The cited code still matches what was witnessed. Freshness, and nothing else. */
+  /** Nothing has drifted: the node is not stale AND no mark's witness moved. */
   fresh: boolean;
   /** A person signed it. Never inferred, and no agent act produces it. */
-  accountable: { at?: string; level: "logical" | "code" } | null;
+  accountable: Mark | null;
   /** An agent read the code and the claims held. */
-  evidence: { at?: string; level: "logical" | "code" } | null;
+  evidence: Mark | null;
   /** Whether the cited set is known to BE the subject. See COD-17. */
   coverage: "derived" | "unknown";
 };
 
 type ReviewFull = { state: string; actor?: "human" | "agent"; at?: string };
 
+/** A mark EXISTS in both states: `reviewed` is current, `stale` is one whose body moved. */
+const isMark = (r?: ReviewFull) => r?.state === "reviewed" || r?.state === "stale";
+
 export function vouchOf(
   status: string | undefined,
   review?: { logical: ReviewFull; code: ReviewFull },
 ): Vouch {
-  const fresh = !(status === "stale" || status === "dangling" || status === "removed");
-  const pick = (want: "human" | "agent") => {
+  const statusFresh = !(status === "stale" || status === "dangling" || status === "removed");
+  const markStale = review?.logical.state === "stale" || review?.code.state === "stale";
+  const pick = (want: "human" | "agent"): Mark | null => {
     for (const level of ["logical", "code"] as const) {
       const r = review?.[level];
-      // A mark whose own witness went stale is not evidence of anything now — but
-      // unlike `trustOf` this does not erase the OTHER axis, which is the point.
       // `?? "agent"`, matching every other default in `reviews.ts`: a row that
       // cannot show a person stood behind it must not be read as accountability.
-      if (r?.state === "reviewed" && (r.actor ?? "agent") === want) return { at: r.at, level };
+      if (isMark(r) && (r!.actor ?? "agent") === want) {
+        return { at: r!.at, level, current: r!.state === "reviewed" };
+      }
     }
     return null;
   };
   return {
-    fresh,
+    fresh: statusFresh && !markStale,
     accountable: pick("human"),
     evidence: pick("agent"),
     coverage: "unknown",

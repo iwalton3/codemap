@@ -114,19 +114,32 @@ const VIA_TIP = { reverted: ' — approved before the code moved BACK to this bo
 // Doc-version status (see docs/doc-versioning.md).
 const STATUS = { fresh: '#7ee787', stale: '#f0a35e', dangling: '#f27b7b', removed: '#8b95a3', generated: '#6b7684' };
 const statusChip = (s, extra) => s && s !== 'generated' ? html`<span class="stchip ${s}" title="doc version: ${s}${extra || ''}">${s}</span>` : html``;
-// Trust tier (freshness × who confirmed): verified (human) / checked (agent) / stale.
-// unverified + generated are the baseline — not chipped, to keep lists quiet.
-const TRUST_TIP = { verified: 'human-reviewed — rely on it', checked: 'agent-checked against code — solid, spot-check if critical', stale: 'code changed — needs re-validation' };
-// A clickable chip when `onClick` is given: click a `checked`/`unverified` doc to
-// promote it to human-`verified`; click `verified` to drop the human mark. Baseline
-// `unverified` only chips when actionable (keeps read-only lists quiet).
-const trustChip = (t, onClick) => {
-  if (!TRUST_TIP[t] && t !== 'unverified') return html``;
-  if (t === 'unverified' && !onClick) return html``;
-  const can = onClick && t !== 'stale';
-  const act = t === 'verified' ? 'unverify' : 'verify';
-  const tip = `trust: ${t}${TRUST_TIP[t] ? ' — ' + TRUST_TIP[t] : ''}${can ? ' · click to ' + act : ''}`;
-  return html`<span class="tchip ${t} ${can ? 'clickable' : ''}" title="${tip}" on-click="${can ? (e) => { if (e.stopPropagation) e.stopPropagation(); onClick(act); } : null}">${t}</span>`;
+// WHO VOUCHED — deliberately not freshness, which is the `statusChip` sitting right
+// next to this one. The old chip folded both into one word, so it duplicated its
+// neighbour AND destroyed the vouch: a doc a person had signed rendered `stale`,
+// identical to one nobody ever opened. Those are two different situations.
+//
+// A vouch on code that has since moved is shown MUTED rather than hidden. "Somebody
+// signed this, about a body that has changed" is two true facts, and dropping the
+// first is what made `stale` lossy. See docs/trust-split.md.
+const VOUCH_TIP = {
+  signed: 'a person signed this — they are answerable for it',
+  checked: 'an agent read the code and the claims held — evidence, not a sign-off',
+  unverified: 'nobody has confirmed this yet',
+};
+// Clickable when `onClick` is given and the code has not moved: click to sign, or
+// click `signed` to drop the mark. Signing a moved body is refused here for the same
+// reason the server refuses it — you would be vouching for something you have not read.
+// Baseline `unverified` only chips when actionable, to keep read-only lists quiet.
+const vouchChip = (v, onClick) => {
+  if (!v) return html``;
+  const tier = v.accountable ? 'signed' : v.evidence ? 'checked' : 'unverified';
+  if (tier === 'unverified' && !onClick) return html``;
+  const moved = !v.fresh && tier !== 'unverified';
+  const can = !!onClick && !!v.fresh;
+  const act = tier === 'signed' ? 'unverify' : 'verify';
+  const tip = `${VOUCH_TIP[tier]}${moved ? ' — but the code has moved since, so this is about the old body' : ''}${can ? ' · click to ' + act : ''}`;
+  return html`<span class="tchip ${tier} ${moved ? 'moved' : ''} ${can ? 'clickable' : ''}" title="${tip}" on-click="${can ? (e) => { if (e.stopPropagation) e.stopPropagation(); onClick(act); } : null}">${tier}</span>`;
 };
 const postConfirm = (u, id) => fetch('/api/confirm', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id }) });
 const postAckHole = (u, id) => fetch('/api/ack_hole', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id }) });
@@ -1127,7 +1140,7 @@ class NodePage extends Component {
     return pageShell(n, taskError(this.load) ?? (n && n.error), () => {
     const cr = deriveCode(n.resolvedAnchors);
     return html`<div class="detail">
-      <div class="meta">${n.type}${n.universe ? ' · ' + n.universe : ''} · ${n.id} ${statusChip(n.status)}${trustChip(n.trust)}${sevChip(n.triage)}${divergeChip(n.triage)}<a class="viewlink" href="${href(graphUrl(u, n.id))}">◆ graph</a></div>
+      <div class="meta">${n.type}${n.universe ? ' · ' + n.universe : ''} · ${n.id} ${statusChip(n.status)}${vouchChip(n.vouch)}${sevChip(n.triage)}${divergeChip(n.triage)}<a class="viewlink" href="${href(graphUrl(u, n.id))}">◆ graph</a></div>
       <h2>${n.title}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions (forked across branches)">⑂${n.versionCount}</span>`)}</h2>
       <div style="margin:6px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="dim" style="font-size:12px">doc sign-off:</span>${reviewRowEl(n.review, n.viewed, (att, st, actor, via) => this.signNode(att, st, actor, via), 'logical')}<span class="dim" style="font-size:12px">— vouches for the doc, not its code</span></div>
       <div style="margin:6px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">${codeRollupEl(cr)}${when(cr.total, () => html`<a class="btnlike" href="${href(nodeReviewUrl(u, n.id))}">open code review →</a>`)}</div>
@@ -1721,7 +1734,7 @@ class NodeCatalogPage extends Component {
     return html`<div class="nrow" on-click="${() => go(nodeUrl(u, n.id))}">
       <span class="nt" style="border-color:${nodeColor(n.type)}">${n.type}</span>
       <a class="ntitle" href="${href(nodeUrl(u, n.id))}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">${n.title || n.id}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions (forked)">⑂${n.versionCount}</a>`)}</span>
-      ${statusChip(n.status)}${trustChip(n.trust, (act) => this.verify(n.id, act))}${sevChip(n.triage)}${divergeChip(n.triage)}
+      ${statusChip(n.status)}${vouchChip(n.vouch, (act) => this.verify(n.id, act))}${sevChip(n.triage)}${divergeChip(n.triage)}
       <span class="ndom">${n.domain}</span>
       <span class="nmeta">${n.anchors}a · ${n.edgesIn}↓${n.edgesOut}↑</span>
       ${when(n.generatedBy, () => html`<span class="gen">${n.generatedBy}</span>`)}

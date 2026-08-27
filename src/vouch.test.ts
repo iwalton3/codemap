@@ -9,36 +9,70 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { trustOf, vouchOf } from "./ops/shared.js";
+import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { document, reindex, getNode } from "./ops.js";
+import { markReviewed } from "./reviews.js";
+import { writeStore } from "./store.js";
+import { indexBlob } from "./repo.js";
+import type { State } from "./schema.js";
+import { discard } from "./test-tmp.js";
 
 const signed = { state: "reviewed", actor: "human" as const, at: "2026-01-01T00:00:00Z" };
 const checked = { state: "reviewed", actor: "agent" as const, at: "2026-02-02T00:00:00Z" };
 const none = { state: "unreviewed" };
 
-test("a stale doc keeps its signature — which trust throws away", () => {
-  const review = { logical: signed, code: none };
+/**
+ * Driven through the REAL ops, not hand-built review states.
+ *
+ * The first version of this test constructed `{state: "reviewed"}` alongside a stale
+ * node status — a pairing the system never produces. When code moves, the MARK's own
+ * state becomes `stale` too, so the implementation it validated returned
+ * `accountable: null` on every real stale doc, and the test passed anyway. Vacuous in
+ * the exact way this project keeps warning about: the property could not have failed
+ * on the inputs it was given. Only rendering a real universe caught it.
+ */
+test("a stale doc keeps its signature — which trust throws away", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-vouch-"));
+  try {
+    for (const a of [["init", "-q", "-b", "main"], ["config", "user.email", "izzie@x.com"], ["config", "user.name", "izzie"]]) {
+      spawnSync("git", a as string[], { cwd: root });
+    }
+    mkdirSync(join(root, ".codemap"), { recursive: true });
+    mkdirSync(join(root, "src"), { recursive: true });
+    const SRC = "export function charge(cents) {\n  return cents;\n}\n";
+    writeFileSync(join(root, "src/pay.js"), SRC, "utf8");
+    const ix = await indexBlob(SRC, "src/pay.js");
+    await writeStore(root, ix, { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State);
+    await document(root, { id: "payments", type: "module", title: "Payments", summary: "charging", anchors: ix.map((a) => a.id) });
 
-  // What the single word does today, and it is not wrong — just lossy.
-  assert.equal(trustOf("fresh", review), "verified");
-  assert.equal(trustOf("stale", review), "stale");
-  assert.equal(trustOf("stale", { logical: none, code: none }), "stale",
-    "signed and never-read are the SAME word once the code moves");
+    // A PERSON signs it, then the code moves underneath them.
+    await markReviewed(root, { targetKind: "node", targetId: "payments", level: "logical", actor: "human" });
+    const before = await getNode(root, "payments") as any;
+    assert.equal(before.trust, "verified");
+    assert.equal(before.vouch.accountable.current, true, "signed, and about the current body");
 
-  // What the split says instead.
-  const v = vouchOf("stale", review);
-  assert.equal(v.fresh, false, "the code did move — that stays true");
-  assert.ok(v.accountable, "and a person still signed it, which is also true");
-  assert.equal(v.accountable!.at, signed.at);
+    writeFileSync(join(root, "src/pay.js"), SRC.replace("return cents;", "return cents * 3;"), "utf8");
+    await reindex(root);
 
-  const never = vouchOf("stale", { logical: none, code: none });
-  assert.equal(never.accountable, null);
-  // The distinction trust cannot express.
-  assert.notDeepEqual(v.accountable, never.accountable);
+    const after = await getNode(root, "payments") as any;
+    // The single word: signed-and-then-changed is now spelled exactly like never-read.
+    assert.equal(after.trust, "stale");
+    // The split: both facts survive.
+    assert.equal(after.vouch.fresh, false, "the code did move");
+    assert.ok(after.vouch.accountable, "and a person still signed it");
+    assert.equal(after.vouch.accountable.current, false, "about a body that has since changed");
+    assert.equal(after.vouch.accountable.at, before.vouch.accountable.at, "the same act, not a new one");
+  } finally { discard(root); }
 });
 
 test("accountability and evidence are independent, in both directions", () => {
   const both = vouchOf("fresh", { logical: signed, code: checked });
   assert.ok(both.accountable && both.evidence, "a person signed AND an agent checked");
   assert.equal(both.accountable!.level, "logical");
+  assert.equal(both.accountable!.current, true, "a `reviewed` mark is current");
   assert.equal(both.evidence!.level, "code");
 
   const agentOnly = vouchOf("fresh", { logical: checked, code: none });
