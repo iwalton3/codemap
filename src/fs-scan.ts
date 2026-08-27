@@ -50,13 +50,24 @@ export function toPosixRel(root: string, abs: string): string {
  * ("any nested `.git`, file or directory") would have silently stopped indexing
  * submodules, which is a feature with its own user-facing warning.
  *
+ * The two markers NEST, and only the LAST one says what this directory is: a
+ * submodule of a worktree is `…/worktrees/<wt>/modules/<sub>`, a worktree of a
+ * submodule is `…/modules/<sub>/worktrees/<wt>`. Testing for `worktrees` anywhere
+ * read the first marker and so pruned every submodule of any repo scanned from a
+ * worktree — silently, because `git submodule status` reports it in sync and the
+ * only symptom is nodes citing its anchors going dangling. See COD-15. Matching the
+ * last marker also survives a repo that merely lives under a directory named
+ * `modules` or `worktrees`, which a "check `modules` first" fix would not.
+ *
  * A nested plain clone (`.git` as a directory) is also left alone for the same
  * reason — an old-style submodule has one — and `.codemapignore` covers that case.
  */
 async function isLinkedWorktree(dir: string): Promise<boolean> {
   try {
     const m = /^gitdir:\s*(.+)$/m.exec(await readFile(join(dir, ".git"), "utf8"));
-    return !!m && /[\\/]worktrees[\\/]/.test(m[1]!.trim());
+    if (!m) return false;
+    const last = /.*[\\/](worktrees|modules)[\\/]/.exec(m[1]!.trim()); // greedy: the LAST marker
+    return last?.[1] === "worktrees";
   } catch {
     return false; // no `.git`, or it is a directory — neither is a linked worktree
   }

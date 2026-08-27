@@ -30,6 +30,19 @@ const fixture = () => {
   writeFileSync(join(root, "vendorlib", ".git"), "gitdir: ../.git/modules/vendorlib\n");
   writeFileSync(join(root, "vendorlib", "lib.ts"), "export const lib = 2;\n");
 
+  // A submodule of a repo scanned FROM a worktree — the gitdir carries both markers,
+  // and the submodule's is last. This is the COD-15 shape.
+  mkdirSync(join(root, "kernel"), { recursive: true });
+  writeFileSync(join(root, "kernel", ".git"),
+    "gitdir: ../../repos/acme.git/worktrees/acme/modules/kernel\n");
+  writeFileSync(join(root, "kernel", "kern.ts"), "export const kern = 3;\n");
+
+  // The mirror image: a worktree OF a submodule. Both markers again, `worktrees` last.
+  mkdirSync(join(root, "subwt"), { recursive: true });
+  writeFileSync(join(root, "subwt", ".git"),
+    "gitdir: ../.git/modules/vendorlib/worktrees/wt2\n");
+  writeFileSync(join(root, "subwt", "dup.ts"), "export const dup = 4;\n");
+
   return root;
 };
 
@@ -58,13 +71,35 @@ test("a submodule IS walked — its gitdir says modules, not worktrees", async (
   } finally { discard(root); }
 });
 
+test("a submodule of a WORKTREE is walked — the last marker decides, not the first", async () => {
+  // COD-15: the gitdir is `…/worktrees/<wt>/modules/<sub>`, so a `worktrees`-anywhere
+  // test pruned every submodule of a worktree-scanned repo. On Acme.API that hid the
+  // entire shared kernel, and silently: `git submodule status` calls it in sync, so
+  // the only symptom was nodes citing its anchors reading as dangling.
+  const root = fixture();
+  try {
+    assert.ok((await rels(root)).includes("kernel/kern.ts"),
+      "a submodule does not stop being one because the superproject is a worktree");
+  } finally { discard(root); }
+});
+
+test("a worktree of a SUBMODULE is still pruned — the nesting works both ways", async () => {
+  // The mirror of the case above, and the reason the fix reads the last marker rather
+  // than testing `modules` first: that ordering would walk this duplicate checkout.
+  const root = fixture();
+  try {
+    assert.deepEqual((await rels(root)).filter((f) => f.startsWith("subwt/")), [],
+      "`…/modules/<sub>/worktrees/<wt>` is a worktree — a second copy of the same tree");
+  } finally { discard(root); }
+});
+
 test("the two are told apart by the gitdir target, not by `.git` existing", async () => {
   // Pins the discriminator itself. If someone later 'simplifies' this to an existsSync
   // check, the submodule test above fails — this one says why in one place.
   const root = fixture();
   try {
     const found = await rels(root);
-    assert.deepEqual(found, ["own.ts", "vendorlib/lib.ts"],
-      "exactly the root's own code and the submodule's — not the worktree's copy");
+    assert.deepEqual(found, ["kernel/kern.ts", "own.ts", "vendorlib/lib.ts"],
+      "exactly the root's own code and the two submodules' — not either worktree's copy");
   } finally { discard(root); }
 });
