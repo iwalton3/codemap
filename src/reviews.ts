@@ -12,7 +12,7 @@ import { resolveAcceptance, recordAcceptance, type Ancestry } from "./acceptance
 import { ACCEPTED_CAP, type AcceptedCitation, type AcceptedEntry, type AcceptanceVia } from "./schema.js";
 import { isAncestor, isGitRepo, currentBranch as gitBranch, hasObject } from "./git.js";
 import { ABSENT_HASH, comparableHashes, sameBody } from "./normalize.js";
-import { resolveActor, actorLabel, reviewerKey, errorProfile } from "./identity.js";
+import { resolveActor, actorLabel, reviewerKey, errorProfiles } from "./identity.js";
 import { indexFile } from "./repo.js";
 import { currentDerivations } from "./grammars.js";
 import { anchorIndex, derivationsOf, resolveAnchor, type AnchorIndex } from "./anchor-resolve.js";
@@ -68,12 +68,11 @@ const vouchKey = (by: Actor | null, actor: "human" | "agent" | undefined, label:
   return `${reviewerKey(by)}\0${actor ?? "agent"}\0${by.via?.harness ?? ""}`;
 };
 /**
- * Distinct error profiles among a slot's rows. A row with no `by` predates identity
- * and cannot be placed, so it counts as its own unknown profile rather than merging
- * with a real one — the direction that under-claims independence.
+ * Mutually error-independent looks among a slot's rows — see `errorProfiles`, which
+ * owns the rule. A legacy row with no `by` cannot be placed at all and is skipped
+ * rather than counted, which under-claims rather than inventing a second opinion.
  */
-const profilesIn = (rows: Review[]): number =>
-  new Set(rows.map((r) => (r.by ? errorProfile(r.by) : `unknown\0${r.reviewer}`))).size;
+const profilesIn = (rows: Review[]): number => errorProfiles(rows.map((r) => r.by));
 
 const rowIdentity = (r: Review): string =>
   (r.by ? vouchKey(r.by, r.actor, r.reviewer) : `legacy\0${r.reviewer}`);
@@ -334,20 +333,25 @@ export async function unmarkReviewed(
   // sign-off through the ordinary `review(unmark: true)` call, with no guard and no
   // record. Unmarking is withdrawing YOUR vouch; it was never a licence to withdraw
   // somebody else's, and it must not become one in the commit that makes it possible.
-  // No `actor` kind: withdrawing is symmetric — a person clears their own sign-off
-  // and an agent its own check, and neither identity can name the other's row
-  // because the kind is part of the key. Passing `undefined` here would key on
-  // "agent" and let a person fail to clear their own mark, so both are tried.
+  // ONE key, taken from what the caller actually is. `resolveActor` already decides
+  // that — an MCP session is an agent by construction (`markAgentSession`), the web
+  // UI is a person — and `markReviewed` derives `by.via` from the same fact, so the
+  // two agree by construction.
+  //
+  // Trying BOTH spellings, as the first version did, is not defensive: a human
+  // caller's agent-spelling is `principal\0\0agent\0`, which is exactly the key of an
+  // agent row that recorded no model and no harness. A person clearing their own
+  // sign-off silently took that agent's mark with it — the very thing keying rows on
+  // the reviewer is for.
   const by = resolveActor(root, {});
-  const label = by ? actorLabel(by) : "me";
-  const mine = new Set([actorIdentity(by, label, "human"), actorIdentity(by, label, "agent")]);
+  const me = actorIdentity(by, by ? actorLabel(by) : "me", by?.via ? "agent" : "human");
   rs.reviews = rs.reviews.filter(
     (r) =>
       !(
         r.target.kind === input.targetKind &&
         r.target.id === input.targetId &&
         r.level === input.level &&
-        mine.has(rowIdentity(r)) &&
+        rowIdentity(r) === me &&
         (isViewedRow(r) ? dropViewed : dropVouch)
       ),
   );

@@ -132,6 +132,29 @@ test("unmark withdraws YOUR vouch, not everybody's", async () => {
   } finally { u.cleanup(); }
 });
 
+test("a person's unmark spares an agent row that recorded no model or harness", async () => {
+  // The collision the first version of this had, and the reason `unmarkReviewed`
+  // takes ONE key rather than trying both spellings of its own. A human caller has
+  // no `via`, so its agent-spelling is `principal\0\0agent\0` — which is exactly the
+  // key of an agent row with nothing recorded about it. Clearing your own sign-off
+  // silently took that agent's mark with it.
+  //
+  // Not covered by the sibling test above: that one runs the agent WITH a model, so
+  // the keys could not collide and it passed against the broken version.
+  const u = await universe();
+  try {
+    await markReviewed(u.root, { targetKind: "node", targetId: "payments", level: "logical", actor: "agent" });
+    await markReviewed(u.root, { targetKind: "node", targetId: "payments", level: "logical", actor: "human" });
+    assert.equal((await rowsFor(u.root)).length, 2, "an unattributed agent mark and a sign-off");
+
+    await unmarkReviewed(u.root, { targetKind: "node", targetId: "payments", level: "logical" });
+
+    const left = await rowsFor(u.root);
+    assert.equal(left.length, 1, "only the person's own mark went");
+    assert.equal(left[0]!.actor, "agent", "the agent's read survived");
+  } finally { u.cleanup(); }
+});
+
 test("a batch mark does not clear other reviewers across a whole PR's anchors", async () => {
   // The same defect, louder: one `review(ids: [...])` call spans every anchor in a
   // packet page, so an unnarrowed replace would wipe a reviewer's marks wholesale.

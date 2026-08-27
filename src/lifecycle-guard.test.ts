@@ -13,7 +13,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { checkLifecycle } from "./ops/annotations.js";
-import { resolveActor, markObservedClient, clearObservedClient, markAgentSession, clearAgentSession, isIndependent, isErrorIndependent } from "./identity.js";
+import { resolveActor, markObservedClient, clearObservedClient, markAgentSession, clearAgentSession, isIndependent, isErrorIndependent, errorProfiles } from "./identity.js";
 import type { Actor } from "./schema.js";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -170,4 +170,58 @@ test("a person checking an agent is error-independent", () => {
   assert.equal(isErrorIndependent(person("izzie@x.com"), agent("izzie@x.com", "claude-code")), true);
   assert.equal(isErrorIndependent(person("izzie@x.com"), person("izzie@x.com")), false, "themselves");
   assert.equal(isErrorIndependent(person("izzie@x.com"), person("sam@x.com")), true);
+});
+
+test("independence stays CONSERVATIVE across the whole actor space", () => {
+  // A differential check against the rule as specified, run exhaustively rather than
+  // on hand-picked cases. It exists because a refactor that expressed independence as
+  // a profile KEY disagreed with the rule on 160 of 400 pairs — every disagreement
+  // over-claiming independence — while all the hand-written cases still passed. A key
+  // cannot say "unknown matches anything", and that is the whole conservatism.
+  const spec = (a: Actor, b: Actor): boolean => {
+    const [va, vb] = [a.via, b.via];
+    if (!va !== !vb) return true;                        // a person and an agent
+    if (!va && !vb) return a.principal !== b.principal;  // two people
+    if (va!.harness && vb!.harness && va!.harness !== vb!.harness) return true;
+    if (va!.model && vb!.model && va!.model !== vb!.model) return true;
+    return false;                                        // cannot establish a difference
+  };
+  const actors: Actor[] = [];
+  for (const principal of ["izzie@x.com", "sam@x.com"]) {
+    actors.push({ principal });
+    for (const harness of [undefined, "claude-code", "codex"]) {
+      for (const model of [undefined, "opus", "gpt"]) {
+        actors.push({ principal, via: { kind: "agent", ...(harness ? { harness } : {}), ...(model ? { model } : {}) } });
+      }
+    }
+  }
+  let pairs = 0;
+  for (const a of actors) for (const b of actors) {
+    pairs++;
+    assert.equal(isErrorIndependent(a, b), spec(a, b),
+      `disagreed on ${JSON.stringify(a)} vs ${JSON.stringify(b)}`);
+  }
+  assert.ok(pairs >= 400, `covered ${pairs} pairs`);
+
+  // The specific class the key-based version got wrong: nothing recorded is not a
+  // distinct profile, it is an unanswered question.
+  const bare: Actor = { principal: "izzie@x.com", via: { kind: "agent" } };
+  const known: Actor = { principal: "izzie@x.com", via: { kind: "agent", model: "opus" } };
+  assert.equal(isErrorIndependent(bare, known), false, "it MIGHT be the same agent");
+});
+
+test("counting profiles under-claims rather than inventing corroboration", () => {
+  const person: Actor = { principal: "izzie@x.com" };
+  const claude: Actor = { principal: "izzie@x.com", via: { kind: "agent", harness: "claude-code" } };
+  const codex: Actor = { principal: "izzie@x.com", via: { kind: "agent", harness: "codex" } };
+  const bare: Actor = { principal: "izzie@x.com", via: { kind: "agent" } };
+
+  assert.equal(errorProfiles([]), 0);
+  assert.equal(errorProfiles([claude]), 1);
+  assert.equal(errorProfiles([claude, claude]), 1, "the same look twice is one look");
+  assert.equal(errorProfiles([claude, codex]), 2, "one person's two vendors");
+  assert.equal(errorProfiles([person, claude]), 2, "a person and an agent");
+  assert.equal(errorProfiles([claude, bare]), 1, "an unidentifiable agent adds nothing");
+  assert.equal(errorProfiles([undefined, claude]), 1, "a legacy row is skipped, not counted");
+  assert.equal(errorProfiles([person, claude, codex]), 3);
 });

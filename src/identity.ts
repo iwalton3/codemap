@@ -193,28 +193,47 @@ export function isIndependent(a: Actor | undefined, b: Actor | undefined): boole
  */
 export function isErrorIndependent(a: Actor | undefined, b: Actor | undefined): boolean {
   if (!a || !b) return false;
-  return errorProfile(a) !== errorProfile(b);
+  const [va, vb] = [a.via, b.via];
+  // A person and an agent read differently enough that this is the easy case.
+  if (!va !== !vb) return true;
+  // Two people: their error profiles differ exactly when they are different people.
+  if (!va && !vb) return a.principal !== b.principal;
+  // Two agents. `harness` is transport-observed (see `markObservedClient`) and is
+  // the one an agent cannot spell for itself, so it is checked first; `model` is a
+  // self-report and only ever ADDS evidence of difference, never removes it.
+  //
+  // BOTH sides must carry a field before it can separate them, and that is the
+  // conservatism this rule exists for: an agent with nothing recorded MIGHT BE the
+  // other one, and nothing here establishes otherwise. A `profile` KEY cannot say
+  // that — an unknown has to equal everything, which no key does — which is why an
+  // attempt to derive this from one produced 160 disagreements over 400 pairs, every
+  // one of them over-claiming independence. See `errorProfiles`.
+  if (va!.harness && vb!.harness && va!.harness !== vb!.harness) return true;
+  if (va!.model && vb!.model && va!.model !== vb!.model) return true;
+  return false;
 }
 
 /**
- * The error profile an actor reads from — what would have to differ for two looks to
- * be able to fail differently.
+ * How many mutually error-independent looks a set of actors represents — a LOWER
+ * BOUND, and deliberately.
  *
- * Expressed as a KEY rather than a pairwise predicate so that "how many distinct
- * profiles have vouched for this" is a set size rather than an O(n²) scan, and so
- * `isErrorIndependent` cannot drift from the counting. It is derived above rather
- * than duplicated for that reason.
+ * Not a set of keys. `isErrorIndependent` is not an equivalence relation: an agent
+ * with nothing recorded is "cannot establish a difference" against every other
+ * agent, so it merges with all of them and transitivity fails. Greedy accumulation
+ * of a mutually-independent set is what that relation supports, and n here is the
+ * number of marks on one level — small.
  *
- *   - a person is their own profile, keyed on the principal
- *   - an agent is keyed on harness + model, and NOT on the principal: two people
- *     running the same harness make the same mistakes, which is the whole point
- *   - a person and an agent are never the same profile
- *
- * Conservative when unknown: two agents with neither harness nor model recorded key
- * the same, so they do not count as two. Nothing establishes that they differ.
+ * Under-claiming is the safe direction: reporting one profile where there were two
+ * costs a little credit, and reporting two where there was one manufactures
+ * corroboration that nobody performed.
  */
-export function errorProfile(a: Actor): string {
-  return a.via ? `agent\0${a.via.harness ?? ""}\0${a.via.model ?? ""}` : `human\0${a.principal}`;
+export function errorProfiles(actors: (Actor | undefined)[]): number {
+  const kept: Actor[] = [];
+  for (const a of actors) {
+    if (!a) continue;
+    if (kept.every((k) => isErrorIndependent(k, a))) kept.push(a);
+  }
+  return kept.length;
 }
 
 /**
