@@ -1,0 +1,326 @@
+# The requirements architecture — normative
+
+> **Kind: current design** — settled 2026-08-27. NORMATIVE for requirements, specs,
+> audits and acknowledgements: it outranks COD-29's description and comments, and the
+> *Requirement Kernel* draft, where they disagree.
+
+COD-29 states the problem — requirements and explanations are different claims with
+inverted truthmakers, and codemap models only the second. This document settles the
+shape of the first. It is short on purpose; the argument is on the ticket, the
+mechanisms are here.
+
+One sentence carries most of it: **the standard is the authority, a spec is a set of
+operations on it, and every mechanism that silences an audit is one record with one
+lifecycle.**
+
+## Two documents, two hierarchies, and they are not the same hierarchy
+
+- **The standard** is the master requirements document. It is a **reference**, organized
+  taxonomically (`Credit/Limits`, `Settlement/Float`), and read by someone who needs the
+  rule governing an area without knowing which spec introduced it.
+- **A spec** is a **narrative** document — background, argument, locked decisions. It is
+  organized to make a case, and read once.
+
+These are different axes over the same content, so a spec's sections are **not** the
+standard's sections. A statute does not share an outline with the code it amends: a bill
+section says *"Section 4 of this Act amends 12 U.S.C. § 1831o(b)(2)…"* — it argues in its
+own order and names the code locations it operates on. Nobody has made those one
+hierarchy, and it is not for want of trying.
+
+**So the mapping is per-requirement, not per-spec-section.** A spec's hierarchy organizes
+the reading; each requirement's `section` says where it files in the standard.
+
+## The standard is positive law
+
+A folded spec is **repealed as authority and retained as history**. The standard is the
+only place a rule is binding.
+
+This has to be decided once, up front, for everything. The US Code has spent since 1947
+converting titles from *prima facie evidence* — where the underlying statute still governs
+and the code is an editorial compilation — to *positive law*, and is not finished. The
+default, the state reached by not deciding, is the bad one: two representations of the
+same rules, the original still authoritative, drifting.
+
+We have already shipped that failure once at smaller scale. `Pricing-Engine.md` is a
+requirements document that was later read as an as-built description, and the misnomer it
+introduced propagated into code comments and a codemap node (COD-18 §candidate directions).
+
+## A spec is operations, not a diff
+
+The operative content of a spec is a list of **operations** on the standard — add a
+requirement to a section, amend a statement, retire a requirement, move or rename a
+section. The before/after view a reviewer reads is a **rendering** of those operations.
+
+Storing a rendered diff would make the fold a parser. Storing operations makes it an
+executor: deterministic, replayable, and dispositionable one at a time, which is what
+per-section comment-and-propose needs anyway.
+
+**Amending language is operational for a reason worth stating.** Legal drafting says
+*strike "shall" and insert "may"* rather than reprinting the section, so a provision
+cannot be deleted by forgetting to retype it. Section-level replacement makes **omission
+destructive**, and omission is the one error class review cannot see — a missing thing
+looks like nothing (COD-18 §"diffs are structurally blind to omission"). Nothing unnamed
+by an operation is ever touched by a fold.
+
+### Every operation carries its own context, and the fold verifies it
+
+An instruction with no context fails **silently** against a base that moved: it applies
+cleanly to the wrong thing. This is why `patch` carries context lines and refuses a hunk
+that does not match.
+
+So each operation records the state it was written against, and the fold refuses when that
+state has moved. Same mechanism as `NodeCitation.acceptedHashes` (`schema.ts`) one level
+up, and the same reason: a reviewer who approved a rendering built from the standard *as
+of sign-off* did not approve the result of applying it to a standard another spec has since
+changed. The before/after view feels most verified exactly when it is least reliable.
+
+### Business context is not binding, and is marked so
+
+Rationale and background live in the spec and are **explicitly non-operative**. Two
+traditions converged on pairing plain language with an operative change — a legislative
+explanatory memorandum, an ITIL change record's business justification — and both
+document the same failure: the two halves drift, the reviewer reads the prose, and the
+operative half is what lands.
+
+The structural fix is not discipline. **Each operation carries its own rationale**, so
+there is no free-floating prose to drift, and any document-level narrative is a reading
+aid that is never the thing signed.
+
+## Two queues, because they are two practices
+
+| | Change enablement | Problem management |
+|---|---|---|
+| Record | spec, operations, acknowledgements | problem (discrepancy) |
+| Raised by | anyone authoring | auditor agents |
+| Disposed by | a principal, at ratification | a principal, by adjudication |
+| Question | what should the standard say | does the system conform to it |
+
+Conflating them is why "what happens at adoption" reads as unresolved. They have
+different owners and different clocks.
+
+## Effective dates are the wrong shape; classification is the right one
+
+An effective date exists because parties with obligations need notice and can be
+sanctioned. Neither half applies here — there is nobody to notify and nothing to sanction,
+so an effective date is a shield against a punishment that does not exist.
+
+The real question at adoption is **what state the system is in relative to the new rule**.
+Four states, and the fourth is the dangerous one:
+
+- **conformant** — checked, and it holds.
+- **gap** — no code that should conform exists yet. Not a defect. Roadmap work.
+- **debt** — conforming code should exist and does not. Owed. Engineering work.
+- **unknown** — nobody has checked.
+
+**`unknown` must never render as `conformant`.** COD-29 already forbids absence of
+evidence from *filing* a discrepancy; the corollary is that it must not read as *fine*
+either. At seeding scale most harvested criteria land here, and a standard that looks
+satisfied because it is merely unexamined is confidence manufactured at scale — a vacuous
+test one level up.
+
+**`gap` is only decidable against an enumerable population.** Saying *no code should
+conform to this yet* requires knowing what the rule ranges over; without that it means
+*I looked and did not find any*, which is absence of evidence being used to avoid filing.
+Note the asymmetry: the guard exists in the filing direction and not in this one, and this
+one is worse because it is silent. An agent that calls debt a gap has written off real
+non-conformance, and it looks like diligence.
+
+## One acknowledgement record, `basis: gap | debt`
+
+Both say *the rule stands, we know, do not raise it*. They differ only on whether
+conforming code exists — the gap/debt axis. Identical lifecycle: granted, scoped, carrying
+a priority and a **revalidate-by date**, released.
+
+One record rather than two, for the reason the sidecar architecture gives generally (one
+canonical table per entity kind) and one that is specific here: **an acknowledgement is a
+silencer, and there should be exactly one thing to count when asking how much of the
+standard is currently silenced.**
+
+The `basis` routes reporting — *how much have we not built* stays a different question
+from *how much do we owe* — without splitting the mechanism.
+
+### The mint-time rules differ by basis, and this is the load-bearing part
+
+- **`gap` may only be minted before ratification.** An auditor agent classifies ahead of
+  adoption so holes are poked *while the spec is still a proposal*. There is no path to a
+  gap notice after the fact.
+- **`debt` is post-hoc and principal-granted**, at the cost of a waiver.
+
+This is what keeps the record from becoming the cheapest way to clear an audit finding.
+Filing a gap notice in response to a raised problem would be the laundering pattern
+arriving through a third door — not *amend the rule to match the code*, but *declare the
+rule not yet applicable*. Closing that path at mint time is why the two bases share a
+record and not a constructor.
+
+### Release is a date, never an external work item
+
+An acknowledgement carries a **priority** and an **expected revalidate-by date**. It may
+link a ticket as evidence; the link is never the release condition.
+
+`track_bug` already settled this shape: *"It does NOT close the bug: being tracked
+elsewhere is not being fixed."* A release condition living in a system nothing guarantees
+becomes unreachable — tickets get closed as won't-do, duplicate or stale, and get moved,
+renamed and deleted — and the acknowledgement then silences the audit permanently and
+silently.
+
+## Audits produce records whether or not they find something
+
+A **positive audit** — the rule was checked at commit X and holds — is a first-class
+record, not the absence of a problem. It does two jobs nothing else does:
+
+1. **It closes a gap.** A gap has no code to witness, so it cannot drift and would
+   otherwise outlive its truth in silence. A positive audit is the event that says the
+   code now exists and conforms.
+2. **It makes regression detectable.** Once a rule has been met, a later failure is a
+   problem rather than a gap that was always there.
+
+Cheap secondary trigger: **a gap notice on a requirement that acquires citations is due
+for review.** Someone linking code to the rule is evidence the gap may have become debt or
+conformance.
+
+### Non-vacuity applies to audits, not only to tests
+
+A positive audit has an **effect** — it closes a gap and silences the mechanism that would
+have caught the thing. So *"I checked and it conforms"* from an agent that did not really
+check is worse than a vacuous test: it manufactures confidence and disables the detector.
+
+The evidence base for this is not hypothetical. Two of three tests examined in one session
+were vacuous when written (COD-18, 2026-08-27), and four of six of the oracle's own
+invariants were vacuous as written. Assume the same rate here.
+
+## The auditor pipeline
+
+1. A **documenting agent** produces descriptive documentation of the code, anchored to it.
+   This is codemap's original concept, enriched by `codemap-explore` passes and review.
+2. **Auditor agents** check those documents against the standard, reading code as needed,
+   and file **problems** — never resolutions.
+3. A contradiction between two requirements, caught at review, is a problem filed **against
+   the requirements**.
+
+### The blind spot is purchased, not inherent — which is why it is fixable
+
+Auditing documentation against requirements inherits the documentation's errors, and the
+failure is silent: a stale or missing doc yields a *pass*, not a flag.
+
+COD-27 is the nearest measurement and it must be read carefully, because the obvious
+reading is wrong. The map-backed agent was **efficient at confirming what was written and
+incurious about what was not**, missing six real defects a code-reading agent found in the
+same domain. That is not evidence that a map makes an agent incurious: **its instructions
+told it not to double-check, in order to save tokens.** The incuriosity was bought.
+
+The real lesson is more general and more useful. **Verification effort is a policy
+setting, and economizing on it buys a silent pass.** A positive audit is the worst place
+in this system to make that trade, because the saving is immediate and visible while the
+cost — a closed gap and a disabled detector — is neither.
+
+And the fix cannot be the prompt. *"Check thoroughly"* is steering, and the standing
+evidence here (COD-24) is that unenforced steering does not reach the consumer — a tool
+description may not even be sent (see the note above the tool table in `mcp.ts`). So it is
+a **recorded fact**: a positive audit records what was actually read and run, and one that
+records nothing is not a positive audit. That is the same non-vacuity rule the assertion
+side already needs, applied to the actor instead of the test.
+
+### Requirement-vs-requirement audits carry a known false-positive budget
+
+Contradiction detection is O(N²) over the standard and is the same shape that produced
+138 false positives in the first Marten pass. Two rules that appear to contradict very
+often have an unstated scope distinction — which is `requirement-misstated`, the
+highest-value record the system holds. So: an agent may **raise** it and may not resolve
+it, which is already the discrepancy rule and needs no new machinery. Budget for the
+false positives rather than discovering them.
+
+## Backout is two problems, and only one of them is ours
+
+ITIL requires every change to say how it is undone. Here that question splits, and the two
+halves have different mechanisms, different authorities, and different owners.
+
+### The standard is a projection of the ratified specs
+
+This is what makes any backout possible, and it is a stronger argument for operations over
+diffs than the one given above: **operations replay, a rendered diff does not.** The
+standard is folded from the ordered set of ratified specs, the way every other shared
+entity here is folded from its log.
+
+### Spec backout: withdrawal before reliance, repeal after
+
+Re-folding without a spec is **not** the same as reverting it. If a later spec amended a
+requirement the withdrawn one introduced, that later operation now targets nothing and the
+fold is invalid — the same shape as the sidecar's fork, where a prefix claim other events
+depend on turns out to be false (`docs/fork-repair.md`).
+
+So there is a window, and which side of it you are on decides the mechanism:
+
+- **Before anything relies on it** — no later spec operates on its requirements, and no
+  audit, acknowledgement or problem cites them — a spec may be **withdrawn**. This is
+  mistake correction, and it is honest because nothing downstream is falsified.
+- **After** — repeal by **compensating spec**: a new spec whose operations reverse the
+  old one's. Legal practice does not remove acts from history; it passes an act that
+  repeals another and re-derives the code from the whole history.
+
+Deleting a ratified spec from the log destroys the audit trail of the act most worth
+auditing. Reliance is mechanically checkable — it is a reference count — so which of the
+two applies is decided by the store, not by the person asking.
+
+### Implementation backout is not codemap's job
+
+Reverse migrations, and the data they lose, are a deployment concern. Modelling them here
+would be scope this project has no business taking, and it could not be truthful about
+them anyway.
+
+**What codemap owes is a correct conformance state afterwards, and that needs no new
+machinery.** Backing out an implementation while the rule stands produces **debt**, which
+already has a record. Backing out the rule while the implementation stands leaves code
+that is *unregulated*, not wrong — a distinction worth keeping, because treating it as
+wrong would file problems against code nobody has any rule about.
+
+The two are authorized independently on purpose: very often the code is fine and the rule
+was the mistake.
+
+### Reversibility is declared before ratification, not discovered after
+
+ITIL writes the backout plan **before** approval. If satisfying a requirement takes an
+irreversible step, the ratifier should know while deciding, because it changes the
+decision. So an operation carries a reversibility declaration, and *irreversible* is an
+honest value. This makes nothing reversible; it makes irreversibility visible before the
+decision rather than after.
+
+**And it constrains the future, not just the past.** A requirement whose implementation was
+irreversible is effectively harder to amend — the next amendment may be unimplementable, or
+implementable only at further cost — so it must be visible to somebody *opening* an
+amendment against it, not only in the spec that introduced it. Legal systems call the
+general shape reliance: you can repeal the statute and you cannot unwind what was done in
+reliance on it, which is why savings clauses exist. Ours is the acknowledgement record.
+
+## Built, and not
+
+Built (`src/requirements.ts`, `src/schema.ts`, `src/db.ts`, `src/store.ts`), **local rows
+only** — so a ratification is not yet something a teammate can read:
+
+- The `requirement` record: no `stale`, no trust, `recheckDue` derived at read time.
+  Structurally separated from the node path; `requirements.test.ts` holds that true.
+- `title` and `section`, both required, with section paths normalized and a case-variant
+  of an existing section refused.
+- Propose / ratify / reject / retire, principal-gated on adoption, and `reorganize`
+  gated once ratified because retitling a binding rule is laundering one field over.
+
+Not built: the **spec** (so `Amendment` is still a single-requirement operation and must
+grow into an operation *on a spec*), the acknowledgement record, audit records, the
+problem/discrepancy record and its refusal, and the sidecar scope that makes any of it
+shared.
+
+## Deliberately open
+
+- **Who owns the standard's taxonomy.** If sections only ever arrive via specs it is
+  emergent, and emergent will not stay sane. Legal codes have an Office of the Law
+  Revision Counsel for exactly this. Reorganizing the standard needs to be a first-class
+  principal act, independent of any spec, or the only way to fix filing is to write a spec
+  about filing — which nobody will do.
+- **Partial ratification.** Approving 18 of 20 operations is tempting and the two held
+  back may be what makes the other 18 coherent. If allowed at all it is an explicit
+  reviewer choice, and the remainder becomes a new spec rather than a lingering
+  half-ratified one.
+- **Renumbering.** Moving a section breaks every citation to it. Legal codes keep
+  redesignation tables; the local equivalent is `where_was` for section paths.
+- **Principal-time.** Every mechanism above spends one person's attention and none of it
+  is budgeted. The arithmetic gates the seeding phase, not the audit phase — seeding is
+  what first produces a queue nobody can clear.

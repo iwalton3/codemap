@@ -251,6 +251,28 @@ chain instead of fold order. A design that looked like a soundness argument was 
 here for two reviews; both documents open with the counterexample rather than quietly
 dropping it.
 
+## Requirements — read `docs/requirements-architecture.md` before touching them
+
+Also short, also normative, and it outranks COD-29 and the *Requirement Kernel* draft
+where they disagree. A **requirement** is the other kind of claim: a doc explains code and
+is downstream of it, a requirement is upstream and the code exists to satisfy it. That
+inversion is why it is a separate record kind and not a `LogicalNodeType` — every member
+of that union is code-shaped, so a business rule stored as a node goes `stale` when code
+drifts, and the standing instruction for stale is `update_node`, i.e. rewrite the rule to
+match the drifted code.
+
+Three things worth knowing before deciding whether you need the document: the **standard
+is the authority** and a folded spec is repealed as authority (retained as history); a
+spec is a set of **operations** carrying their own context, never a stored diff or
+free-floating prose; and every mechanism that silences an audit is **one acknowledgement
+record** whose mint-time rules differ by basis — a `gap` may only be minted before
+ratification, `debt` is post-hoc and principal-granted. That last one is the whole defence
+against "declare the rule not yet applicable" becoming the cheap way to clear a finding.
+
+`LogicalNodeType` ends `| (string & {})` and is therefore OPEN: adding `"requirement"` to
+it type-checks and silently inherits all of the above. `src/requirements.test.ts` fails if
+a requirement ever reaches the node path.
+
 ## Analyzers (opt-in only)
 
 - Framework analyzers (currently Marten/Wolverine) live in `src/analyzers/`.
