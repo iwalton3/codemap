@@ -99,3 +99,17 @@ test("the explore agent names only tools that exist", () => {
   assert.deepEqual([...referenced], [],
     "the agent's instructions tell it to call a tool that is not on the surface");
 });
+
+test("confirm records its read, and refuses to overwrite a person", () => {
+  // Both halves matter and only one is obvious. Recording is the fix; the guard is
+  // what stops a maintenance sweep from replacing every human sign-off on the map
+  // with an agent mark, because review rows key on target+level and not on actor
+  // (characterized in `confirm-review.test.ts`). Source-read: the handler is not
+  // exported, and the behaviour it depends on is pinned in that file.
+  const at = SRC.indexOf('name: "confirm"');
+  assert.ok(at > 0, "confirm is gone");
+  const block = SRC.slice(at, at + 4000);
+  assert.match(block, /markReviewed\(/, "confirming must record the read it performed");
+  assert.match(block, /guardSelfCheck\(/, "and obey the same no-self-vouching rule as sanity_check");
+  assert.match(block, /actor === "human"/, "and never replace a person's sign-off");
+});

@@ -21,6 +21,7 @@ import { METHODOLOGY } from "./guide.js";
 import { analyzeMarten } from "./analyzers/marten.js";
 import { enableAnalyzer } from "./analyzers/run.js";
 import { markReviewed, markReviewedBatch, unmarkReviewed } from "./reviews.js";
+import { readReviews } from "./store.js";
 import { withLock } from "./lock.js";
 
 /**
@@ -486,10 +487,37 @@ const tools: Tool[] = [
   },
   {
     name: "confirm",
-    description: "Confirm a doc is still accurate at the CURRENT code without editing or forking it: accepts the current anchor hashes, clearing a `stale` flag. Use when a change touched code the doc cites but the doc's claims still hold. (Editing a stale doc instead FORKS a new version — confirm is the 'no change needed' path.) Docs versioning: see how a node resolves per branch via get_node/node_versions.",
+    description: "Confirm a doc is still accurate at the CURRENT code without editing or forking it: accepts the current anchor hashes, clearing a `stale` flag. Use when a change touched code the doc cites but the doc's claims still hold. (Editing a stale doc instead FORKS a new version — confirm is the 'no change needed' path.) Docs versioning: see how a node resolves per branch via get_node/node_versions.\n\nConfirming IS a corroborating read, so it also records an agent review — the same mark `sanity_check` makes, under the same no-self-vouching rule. The reply says whether it did: `reviewed: false` with a `reviewNote` when your own connection authored the doc, or when a person has signed it (see below).",
     inputSchema: obj({ id: { type: "string" } }, ["id"]),
     mutates: true,
-    handler: (a, c) => ops.confirm(c.universe.path, a.id),
+    handler: async (a, c) => {
+      const r = await ops.confirm(c.universe.path, a.id) as Record<string, unknown>;
+      if (r.error) return r;
+      // Confirming is the strongest read the maintenance loop has — it compares the
+      // doc against code that CHANGED — and it recorded nothing, so `trustOf` kept
+      // reading `stale` off the review mark whose witness the same change invalidated.
+      // A sweep that verified the whole map left the whole map looking unverified.
+      const g = guardSelfCheck(c.universe.id, "node", a.id);
+      if (g) return { ...r, reviewed: false, reviewNote: g.error };
+      // A human `signed` mark is NOT overwritten. `sameMark` keys on target+level and
+      // not on actor, so recording an agent review here would REPLACE a person's
+      // sign-off row — and a maintenance sweep would erase every sign-off on the map
+      // while reporting success. The mark is stale and that is honest: it says a
+      // person vouched for code that has since changed, which is true and is a
+      // different claim from this agent's read. Until accountability and evidence are
+      // separate marks, the non-destructive answer is to leave it and say so.
+      const { reviews } = await readReviews(c.universe.path);
+      const signed = reviews.find((x) => x.target.kind === "node" && x.target.id === a.id
+        && x.level === "logical" && x.actor === "human" && x.attestation !== "viewed");
+      if (signed) {
+        return { ...r, reviewed: false,
+          reviewNote: `a person has signed this doc; confirming does not replace their sign-off. It stays stale until they re-sign — their mark is about code that changed.` };
+      }
+      const m = await markReviewed(c.universe.path, {
+        targetKind: "node", targetId: a.id, level: "logical", actor: "agent",
+      }) as { ok?: boolean };
+      return { ...r, reviewed: !!m.ok };
+    },
   },
   {
     name: "ack_hole",
