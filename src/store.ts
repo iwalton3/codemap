@@ -39,6 +39,7 @@ import {
   type Graph, type Edge, type Annotation, type AnnotationStore,
   type CoverageRule, type CoverageStore, type AnalyzerConfig, type Review, type ReviewStore, type Triage, type TriageStore,
   type BugWitness, type Importance, type Complexity, type TriageSource,
+  type Requirement, type RequirementStore, type Amendment,
   SCHEMA_VERSION, ANCHOR_SCHEME, HASH_SCHEME,
 } from "./schema.js";
 
@@ -2075,4 +2076,125 @@ export async function writePush(root: string, pr: string, rec: PushRecord): Prom
     }
     : rec;
   setMeta(db(root), "pr_push", store);
+}
+
+// --- requirements & amendments (COD-29) -------------------------------------
+//
+// Deliberately NOT reachable from any node path. `loadNodes` does not see these
+// tables and nothing here touches `nodes`/`node_versions`, which is the structural
+// half of "a requirement has no stale state": it cannot acquire one, because the
+// code that computes one is never handed a requirement. `requirements.test.ts`
+// holds that true.
+
+const hydrateRequirement = (body: string, origin: string | null): Requirement | null => {
+  try {
+    const r = JSON.parse(body) as Requirement;
+    return origin ? { ...r, origin } : r;
+  } catch { return null; }
+};
+
+const requirementRow = (r: Requirement): unknown[] => [
+  r.id, r.status, r.title, r.section, r.provenance, r.createdAt, r.ratifiedAt ?? null,
+  r.origin ?? null, null, JSON.stringify(r),
+];
+
+export async function readRequirements(
+  root: string,
+  opts: { status?: Requirement["status"]; section?: string } = {},
+): Promise<RequirementStore> {
+  const clauses: string[] = [];
+  const args: string[] = [];
+  if (opts.status) { clauses.push("status = ?"); args.push(opts.status); }
+  // Prefix match, so asking for "Credit" answers with "Credit/Limits" too — a section
+  // is a path and the useful question about one is almost always "and everything under".
+  if (opts.section) { clauses.push("(section = ? OR section LIKE ?)"); args.push(opts.section, opts.section.replace(/[%_\\]/g, "\\$&") + "/%"); }
+  const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+  const rows = db(root).prepare(
+    `SELECT body, origin FROM requirements${where} ORDER BY section, created_at, id`,
+  ).all(...args as []) as unknown as { body: string; origin: string | null }[];
+  const requirements: Requirement[] = [];
+  // A row this build cannot parse is not a reason to fail every requirement read —
+  // the same rule `readFindings` follows, for the same reason.
+  for (const row of rows) { const r = hydrateRequirement(row.body, row.origin); if (r) requirements.push(r); }
+  return { schemaVersion: SCHEMA_VERSION, requirements };
+}
+
+export async function readRequirement(root: string, id: string): Promise<Requirement | null> {
+  const row = db(root).prepare("SELECT body, origin FROM requirements WHERE id = ?")
+    .get(id) as { body: string; origin: string | null } | undefined;
+  return row ? hydrateRequirement(row.body, row.origin) : null;
+}
+
+/**
+ * Write a requirement this machine owns.
+ *
+ * Refuses a row the fold owns, for the reason `writeLocalFinding` refuses one: a local
+ * edit to folded state is erased by the next sync and invisible until then, so it reads
+ * as having worked. The right move on a shared record is to write an event.
+ */
+export async function writeLocalRequirement(root: string, r: Requirement): Promise<void> {
+  const d = db(root);
+  const owner = d.prepare("SELECT source_scope FROM requirements WHERE id = ? AND source_scope IS NOT NULL")
+    .get(r.id) as { source_scope: string } | undefined;
+  if (owner) {
+    throw new Error(
+      `${r.id} is owned by the sidecar fold (${owner.source_scope}) — write an event, not a row.`,
+    );
+  }
+  d.prepare(
+    "INSERT OR REPLACE INTO requirements(id,status,title,section,provenance,created_at,ratified_at,origin,source_scope,body)"
+    + " VALUES(?,?,?,?,?,?,?,?,?,?)",
+  ).run(...requirementRow(r) as any);
+}
+
+const hydrateAmendment = (body: string, origin: string | null): Amendment | null => {
+  try {
+    const a = JSON.parse(body) as Amendment;
+    return origin ? { ...a, origin } : a;
+  } catch { return null; }
+};
+
+export async function readAmendments(
+  root: string,
+  opts: { requirementId?: string; status?: Amendment["status"] } = {},
+): Promise<Amendment[]> {
+  const clauses: string[] = [];
+  const args: string[] = [];
+  if (opts.requirementId) { clauses.push("requirement_id = ?"); args.push(opts.requirementId); }
+  if (opts.status) { clauses.push("status = ?"); args.push(opts.status); }
+  const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+  const rows = db(root).prepare(
+    `SELECT body, origin FROM amendments${where} ORDER BY created_at, id`,
+  ).all(...args as []) as unknown as { body: string; origin: string | null }[];
+  const out: Amendment[] = [];
+  for (const row of rows) { const a = hydrateAmendment(row.body, row.origin); if (a) out.push(a); }
+  return out;
+}
+
+export async function readAmendment(root: string, id: string): Promise<Amendment | null> {
+  const row = db(root).prepare("SELECT body, origin FROM amendments WHERE id = ?")
+    .get(id) as { body: string; origin: string | null } | undefined;
+  return row ? hydrateAmendment(row.body, row.origin) : null;
+}
+
+export async function writeLocalAmendment(root: string, a: Amendment): Promise<void> {
+  const d = db(root);
+  const owner = d.prepare("SELECT source_scope FROM amendments WHERE id = ? AND source_scope IS NOT NULL")
+    .get(a.id) as { source_scope: string } | undefined;
+  if (owner) {
+    throw new Error(
+      `${a.id} is owned by the sidecar fold (${owner.source_scope}) — write an event, not a row.`,
+    );
+  }
+  d.prepare(
+    "INSERT OR REPLACE INTO amendments(id,requirement_id,kind,status,created_at,origin,source_scope,body)"
+    + " VALUES(?,?,?,?,?,?,?,?)",
+  ).run(a.id, a.requirementId, a.kind, a.status, a.createdAt, a.origin ?? null, null, JSON.stringify(a));
+}
+
+/** Section -> how many requirements file under it. The index a flat list cannot be. */
+export async function requirementSectionCounts(root: string): Promise<{ section: string; count: number }[]> {
+  return db(root).prepare(
+    "SELECT section, COUNT(*) AS count FROM requirements GROUP BY section ORDER BY section",
+  ).all() as unknown as { section: string; count: number }[];
 }

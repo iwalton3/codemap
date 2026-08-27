@@ -633,6 +633,58 @@ function migrate(d: DatabaseSync): void {
       PRIMARY KEY (scope, id)
     );
     CREATE INDEX IF NOT EXISTS ix_sn_target ON shared_note(target_id);
+
+    -- Requirements (COD-29). A separate table from nodes/node_versions on purpose,
+    -- not a new LogicalNodeType: the two kinds have inverted truthmakers, and sharing
+    -- storage is what would let a requirement reach the staleness path. See schema.ts.
+    --
+    -- ONE canonical table, origin/source_scope like findings and node_versions,
+    -- so a teammate's ratified requirement is an ordinary row with a marker rather than
+    -- a parallel table needing a bridge onto every surface.
+    --
+    -- Note what has no column here: no state, no trust, no witness-derived status.
+    -- Recheck-due is computed at READ time from witnesses against live hashes. Storing
+    -- it would create the thing this record exists to not have — a status field a reader
+    -- could clear by editing the statement.
+    CREATE TABLE IF NOT EXISTS requirements (
+      id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      -- Organization, lifted out because a flat list of statements is unreadable and
+      -- the index over sections is the first thing any surface renders.
+      title TEXT NOT NULL,
+      section TEXT NOT NULL,
+      -- Lifted out of the JSON because they are the columns anything filters or orders
+      -- on: the ratification queue is WHERE status = 'proposed', and provenance is how
+      -- a reader separates the immovable rules from the ones that are ours to revisit.
+      provenance TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      ratified_at TEXT,
+      origin TEXT, source_scope TEXT,
+      body TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ix_req_identity ON requirements(id);
+    CREATE INDEX IF NOT EXISTS ix_req_status ON requirements(status);
+    CREATE INDEX IF NOT EXISTS ix_req_section ON requirements(section);
+    CREATE INDEX IF NOT EXISTS ix_req_scope ON requirements(source_scope);
+
+    -- Amendments — the proposal log, and the requirement's version history. There is no
+    -- separate versions table: an amendment IS the record of a change, so keeping both
+    -- would mean two accounts of the same event that can disagree.
+    CREATE TABLE IF NOT EXISTS amendments (
+      id TEXT NOT NULL,
+      requirement_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      origin TEXT, source_scope TEXT,
+      body TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ix_amend_identity ON amendments(id);
+    -- The review surface is "everything pending, oldest first", and the blast-radius
+    -- lookup is by requirement. Both are hot enough to index from the start.
+    CREATE INDEX IF NOT EXISTS ix_amend_pending ON amendments(status, created_at);
+    CREATE INDEX IF NOT EXISTS ix_amend_req ON amendments(requirement_id);
+    CREATE INDEX IF NOT EXISTS ix_amend_scope ON amendments(source_scope);
   `);
   // anchors.derivation — NULL on rows indexed before provenance existed, which is
   // `legacy_live_derivation`: this machine cannot say how its own index was made.

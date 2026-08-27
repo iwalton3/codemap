@@ -921,3 +921,120 @@ export interface TriageStore {
   schemaVersion: number;
   triage: Triage[];
 }
+
+// ---------------------------------------------------------------------------
+// Requirements — the OTHER kind of claim (COD-29). A doc explains code and is
+// therefore downstream of it; a requirement is upstream, and the code exists to
+// satisfy it. That inversion is the whole reason this is a separate record kind
+// and not a `LogicalNodeType`: every member of that union is code-shaped, so a
+// business rule stored as a node inherits explanation semantics — it goes
+// `stale` when code drifts, and the standing instruction for stale is
+// `update_node`, i.e. rewrite the rule to match the drifted code. That launders
+// a defect into documentation at the highest-authority place in the system.
+//
+// `LogicalNodeType` ends `| (string & {})` and is therefore OPEN: adding
+// "requirement" to it type-checks and inherits all of the above silently.
+// `requirements.test.ts` fails if a requirement ever reaches the node path.
+// ---------------------------------------------------------------------------
+
+/**
+ * A requirement's lifecycle. There is deliberately **no `stale`**, and no trust.
+ *
+ * The load-bearing property of this type is what it omits. Cited code moving is
+ * evidence about the CODE, not about the rule, so it produces a recheck-due signal
+ * (derived at read time from `witnesses`, never stored) and never a status a reader
+ * could clear by editing the statement.
+ */
+export type RequirementStatus = "proposed" | "ratified" | "retired";
+
+/**
+ * What a proposer claims moved — COD-29's resolution shapes, lifted from the
+ * resolution onto the proposal so an agent must STATE which side it thinks moves
+ * without being allowed to decide.
+ *
+ * `code-wrong` carries no `statement`: there is no new text, the rule stands, and
+ * ratifying it means "go fix the code". It is stored rather than refused because
+ * refusing it would leave an agent no way to say the code is at fault — the exact
+ * signal the kind exists to capture. The discrepancy record (COD-29 §mechanism)
+ * is what will eventually give it a queue; until then it is a recorded claim.
+ */
+export type AmendmentKind = "code-wrong" | "requirement-changed" | "requirement-misstated";
+
+export type AmendmentStatus = "pending" | "ratified" | "rejected";
+
+export interface Requirement {
+  id: string;
+  /**
+   * A short name for the rule — what a queue row, an index and a cross-reference show.
+   *
+   * Required, because most readers read the title and not the statement, which is why a
+   * title that has drifted from its statement is the "confidently wrong prose suppresses
+   * scrutiny" failure (COD-18) sitting on the most authoritative record in the system.
+   */
+  title: string;
+  /**
+   * Where the rule files, as a `/`-delimited path — "Credit/Limits", "Settlement/Float".
+   *
+   * Required for the same reason `provenance` is: optional organization is no
+   * organization, and the alternative is what the merged spec clusters already are — a
+   * few hundred well-formed claims in a flat heap that nothing can be read out of. The
+   * hierarchy is the BUSINESS's, not the code's, so it is authored rather than derived
+   * from anchors the way `outline` is.
+   */
+  section: string;
+  /** The rule itself. Only a ratification may change this — there is no in-place edit. */
+  statement: string;
+  /**
+   * Where the rule comes from: a contract term, an IATA standard, a credit policy, one
+   * customer's demand, or our own past choice. Free text on purpose — the vocabulary is
+   * the business's and an enum would be wrong within a quarter.
+   *
+   * Not optional. It is what tells a reader which rules are immovable and which are ours
+   * to revisit; a rule with no stated source reads as arbitrary and gets worked around.
+   */
+  provenance: string;
+  status: RequirementStatus;
+  /**
+   * Anchors the rule is about. **MAY be empty**, and that is not a floating claim:
+   * "no floating claims" governs the downstream direction, where a doc must point at
+   * what it explains. An uncited requirement is one the code does not yet satisfy —
+   * the missing gate, the absent default arm — which is a well-formed record.
+   */
+  cites: string[];
+  /** Hashes of `cites` at ratification. A later mismatch is recheck-due, never stale. */
+  witnesses: BugWitness[];
+  author: Actor;
+  createdAt: string;
+  ratifiedBy?: Actor;
+  ratifiedAt?: string;
+  retiredBy?: Actor;
+  retiredAt?: string;
+  /** Set by the sidecar fold only; a local row has none. Same marker as `node_versions`. */
+  origin?: string;
+}
+
+/** A proposed change to a requirement. The live text does not move until `ratify`. */
+export interface Amendment {
+  id: string;
+  requirementId: string;
+  kind: AmendmentKind;
+  /** The proposed replacement text. Absent for `code-wrong` — see `AmendmentKind`. */
+  statement?: string;
+  rationale: string;
+  /** What provoked it: a discrepancy id, a finding id, a commit, a conversation. */
+  evidence?: string;
+  status: AmendmentStatus;
+  author: Actor;
+  createdAt: string;
+  ratifiedBy?: Actor;
+  ratifiedAt?: string;
+  rejectedBy?: Actor;
+  rejectedAt?: string;
+  rejectedReason?: string;
+  origin?: string;
+}
+
+export interface RequirementStore {
+  schemaVersion: number;
+  requirements: Requirement[];
+}
