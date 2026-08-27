@@ -496,36 +496,70 @@ export function bodyHashAt(root: string, ref: string, anchorId: string): string 
 }
 
 /**
- * Read a cached snapshot's anchors, or null when that commit was never indexed —
- * or was indexed under a DIFFERENT anchor-id derivation.
+ * Why a cached snapshot for `ref` is not usable AS THAT COMMIT, or null if it is.
  *
- * The second case reads as "not cached" on purpose. Such a snapshot cannot be
- * compared with a current one: a diff is a set operation over ids, so every symbol
- * whose id derivation changed comes out removed-and-added. Callers already handle
- * "not cached" — `ensureSnapshot` rebuilds, and `diff` says to run `codemap
- * snapshot` — whereas a silently wrong answer has no handler at all.
+ * ONE predicate and ONE explanation, because this rule diffused. `diff` refused a
+ * dirty base snapshot (COD-3) and the witnessing path did not check at all — so a
+ * `reindex` on a dirty tree re-cached HEAD from the working tree and a later
+ * `review(ref: head)` recorded the working tree's body under that sha, defeating
+ * the very thing `ref` exists for. Two shapes of one rule, each locally correct.
+ * The other nine `readSnapshot` callers had no check either.
+ *
+ * The message is here rather than at the call sites because a wrong one traps the
+ * reader: "not cached — run `init`" is what `diff` used to say, and `init` is the
+ * command that PRODUCED the dirty snapshot. `codemap snapshot` reads git objects
+ * and needs no clean checkout, so it is the exit in every case.
+ */
+export function snapshotRefusal(
+  root: string, ref: string,
+): { reason: "absent" | "derivation" | "dirty"; message: string } | null {
+  const d = db(root);
+  const short = ref.slice(0, 12);
+  const meta = d.prepare("SELECT scheme, hash_scheme FROM snapshots WHERE ref = ?").get(ref) as
+    { scheme: number | null; hash_scheme: number | null } | undefined;
+  if (!meta) return { reason: "absent", message: `no cached snapshot for ${short}. Cache it with \`codemap snapshot ${short}\`.` };
+  // Both derivations must match. The ids decide WHICH symbols pair up; the hashes
+  // decide which of those pairs count as changed — so a snapshot carrying the right
+  // ids and another scheme's hashes reports the whole commit as rewritten.
+  //
+  // And the same question the scheme numbers cannot ask: a re-vendored grammar or a
+  // rebuilt parser moves every body hash without touching either number. A snapshot
+  // is minted atomically by one build, so unlike `@work` it HAS a truthful
+  // derivation, and the right answer is the one this codebase already gives for a
+  // stale cache — rebuild it, which takes seconds. Reporting the mismatch downstream
+  // instead would leave a repairable cache in place and flood the diff.
+  if (meta.scheme !== ANCHOR_SCHEME || meta.hash_scheme !== HASH_SCHEME || staleDerivation(d, ref)) {
+    return { reason: "derivation", message: `the cached snapshot for ${short} was built by a different anchor/hash derivation than this one, so its ids and bodies cannot be compared with today's. Re-cache it with \`codemap snapshot ${short}\`.` };
+  }
+  if (snapshotIsDirty(root, ref)) {
+    return { reason: "dirty", message: `the cached snapshot for ${short} was indexed from a working tree with uncommitted changes, so it is NOT that commit. Re-cache it from git objects with \`codemap snapshot ${short}\`, which needs no clean checkout.` };
+  }
+  return null;
+}
+
+/**
+ * Read a cached snapshot's anchors, or null when it is not usable as that commit —
+ * never indexed, indexed under a DIFFERENT derivation, or indexed from a dirty tree.
+ *
+ * All three read as "not cached" on purpose, and callers already handle that:
+ * `ensureSnapshot` and `snapshotAt` rebuild (which REPAIRS the cache), `diff` and
+ * `liveHashes` explain with `snapshotRefusal`. A silently wrong answer has no
+ * handler at all — a diff against a dirty base compares the branch's uncommitted
+ * work with itself and reports nothing changed.
+ *
+ * Pass `allowDirty` only where the snapshot is wanted as a record of what some
+ * build produced rather than as the commit. Nothing does today.
  *
  * Deliberately NOT applied to the raw by-ref lookups (`findAnchorsOutsideWork`,
  * `bodyHashAt`): those resolve an id somebody already holds, and an id from an old
  * snapshot is exactly what needs finding there.
  */
-export async function readSnapshot(root: string, ref: string): Promise<Anchor[] | null> {
-  const d = db(root);
-  const meta = d.prepare("SELECT scheme, hash_scheme FROM snapshots WHERE ref = ?").get(ref) as
-    { scheme: number | null; hash_scheme: number | null } | undefined;
-  // Both derivations must match. The ids decide WHICH symbols pair up; the hashes
-  // decide which of those pairs count as changed — so a snapshot carrying the right
-  // ids and another scheme's hashes reports the whole commit as rewritten.
-  if (!meta || meta.scheme !== ANCHOR_SCHEME || meta.hash_scheme !== HASH_SCHEME) return null;
-  // And the same question the scheme numbers cannot ask: a re-vendored grammar or a
-  // rebuilt parser moves every body hash without touching either number. A snapshot
-  // is minted atomically by one build, so unlike `@work` it HAS a truthful
-  // derivation, and the right answer is the one this codebase already gives for a
-  // stale cache — NOT CACHED, so `ensureSnapshot` rebuilds it in seconds. Reporting
-  // the mismatch downstream instead would leave a repairable cache in place and
-  // flood the diff.
-  if (staleDerivation(d, ref)) return null;
-  return anchorsUnder(d, ref);
+export async function readSnapshot(
+  root: string, ref: string, opts: { allowDirty?: boolean } = {},
+): Promise<Anchor[] | null> {
+  const refusal = snapshotRefusal(root, ref);
+  if (refusal && !(opts.allowDirty && refusal.reason === "dirty")) return null;
+  return anchorsUnder(db(root), ref);
 }
 
 /**

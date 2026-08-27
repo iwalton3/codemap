@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { comparableHashDerivation, type Anchor, type Review } from "./schema.js";
 import { indexRepo, indexFile, indexBlob } from "./repo.js";
 import { citedAnchors, isClosed } from "./shared-bugs.js";
-import { readSnapshot, snapshotIsDirty, readAnchorStore, loadNodes, loadNodeVersions, winningVersionAt, readGraph, readReviews, readBugs, derivationLookup, loadNodesAt, resolvable} from "./store.js";
+import { readSnapshot, snapshotRefusal, readAnchorStore, loadNodes, loadNodeVersions, winningVersionAt, readGraph, readReviews, readBugs, derivationLookup, loadNodesAt, resolvable} from "./store.js";
 import { reviewStatesFor } from "./reviews.js";
 import { reviewTriageFor, coverageFor, type Coverage } from "./triage.js";
 import { revParse, headCommit, currentBranch, showFile } from "./git.js";
@@ -63,17 +63,17 @@ async function resolveSnapshot(root: string, ref: string): Promise<{ sha: string
 export async function computeDiff(root: string, baseRef: string, headRef?: string): Promise<DiffResult | { error: string }> {
   const base = await resolveSnapshot(root, baseRef);
   if (!base.anchors) {
-    return { error: `no cached snapshot for base "${baseRef}" (${base.sha.slice(0, 12)}). Check out that commit and run \`codemap init\` (or \`codemap snapshot\`) to cache it.` };
-  }
-  // Refused rather than answered, and refused SEPARATELY from "not cached" because
-  // the advice differs: this snapshot exists and is unusable, and the not-cached
-  // message says to run `init` — which is the thing that produced it. Left to run,
-  // the diff compares a base that already contains the branch's uncommitted work
-  // against the same working tree and reports nothing changed. See COD-3.
-  if (snapshotIsDirty(root, base.sha)) {
-    return { error: `the cached snapshot for base "${baseRef}" (${base.sha.slice(0, 12)}) was indexed from a working tree with uncommitted changes, `
-      + `so it is not that commit — diffing against it would hide the very changes you are reviewing. `
-      + `Commit or stash them and re-run \`codemap snapshot\`, or cache it from git objects instead, which needs no clean checkout.` };
+    // WHY it is unusable comes from `snapshotRefusal`, which owns the rule and the
+    // wording for every reader of a cached snapshot. This used to be two checks here
+    // with two hand-written messages, and the same rule was missing entirely from the
+    // witnessing path — one pattern, two shapes, each locally correct. See COD-3.
+    //
+    // The consequence sentence stays local because it is this caller's: a diff against
+    // a dirty base compares the branch's uncommitted work with the same working tree
+    // and reports nothing changed.
+    const why = snapshotRefusal(root, base.sha);
+    return { error: `base "${baseRef}": ${why?.message ?? `no cached snapshot for ${base.sha.slice(0, 12)}.`}`
+      + (why?.reason === "dirty" ? " Diffing against it would hide the very changes you are reviewing." : "") };
   }
 
   let headAnchors: Anchor[];

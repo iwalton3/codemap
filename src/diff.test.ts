@@ -108,7 +108,12 @@ test("a snapshot from a different build reads as not cached, not as drift", asyn
 
     const d = await computeDiff(root, "base_sha", "head_sha");
     assert.ok("error" in d, "a foreign-derivation snapshot must not be silently compared");
-    assert.match(d.error, /no cached snapshot for base/);
+    // Asserted on the CAUSE and the remedy, not on a literal sentence. The wording now
+    // comes from `snapshotRefusal`, which owns this rule for every reader of a cached
+    // snapshot; pinning the phrase made a message improvement look like a regression.
+    assert.match(d.error, /base "base_sha"/, "says which side");
+    assert.match(d.error, /different anchor\/hash derivation/, "and why it is unusable");
+    assert.match(d.error, /codemap snapshot/, "and the command that repairs it");
   } finally { discard(root); }
 });
 
