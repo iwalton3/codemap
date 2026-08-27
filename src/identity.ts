@@ -80,6 +80,29 @@ let agentSession = false;
 export function markAgentSession(): void { agentSession = true; }
 
 /**
+ * The harness on the other end of the connection, as the TRANSPORT saw it.
+ *
+ * `via.harness` otherwise comes from the caller's own argument or an env var — a
+ * self-report, and the one field corroboration depends on. `checked` is sold as
+ * "a DIFFERENT session confirmed it", and cross-checking a finding across vendors
+ * (one model finds, another verifies) is the practice that gives the tier meaning;
+ * both are worthless if a caller can spell its own harness. MCP's `initialize`
+ * carries `clientInfo`, sent by the host before the model has any say, so it is the
+ * one identity a model cannot choose for itself. Observed beats self-reported here
+ * for exactly that reason — a disagreement means the self-report was wrong.
+ *
+ * Normalised to a slug because it is compared, not displayed: "Claude Code" and
+ * "claude-code" are one harness and must not read as independent corroboration.
+ */
+let observedClient: string | undefined;
+export function markObservedClient(name: string | undefined): void {
+  const slug = name?.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  observedClient = slug || undefined;
+}
+/** For tests — the latch is process-wide and the suite runs in one process. */
+export function clearObservedClient(): void { observedClient = undefined; }
+
+/**
  * Give the process back. **For tests, and there is no production caller.**
  *
  * Nothing un-becomes an agent mid-session, so this is not a state the design has
@@ -94,7 +117,9 @@ export function resolveActor(root: string, input: ActorInput = {}): Actor | null
   const principal = input.principal?.trim() || resolvePrincipal(root);
   if (!principal) return null;
   const model = input.model?.trim() || process.env.CODEMAP_AGENT_MODEL?.trim();
-  const harness = input.harness?.trim() || process.env.CODEMAP_AGENT_HARNESS?.trim();
+  // Observed first: see `markObservedClient`. The self-report is the fallback for
+  // the CLI, where there is no handshake to observe.
+  const harness = observedClient || input.harness?.trim() || process.env.CODEMAP_AGENT_HARNESS?.trim();
   // The SURFACE decides, not just the environment: `markAgentSession` covers MCP,
   // whose caller is an agent by construction, and the env vars cover a harness
   // driving the CLI. Making every call site pass a flag is how one ends up not
@@ -145,6 +170,40 @@ export const isAgentActor = (a: Actor | undefined): boolean => !!a?.via;
 export function isIndependent(a: Actor | undefined, b: Actor | undefined): boolean {
   if (!a || !b) return false;
   return a.principal !== b.principal;
+}
+
+/**
+ * Whether `b` is likely to make DIFFERENT MISTAKES than `a` — a distinct error
+ * profile, not a distinct interest.
+ *
+ * `isIndependent` above answers "is this a second person who might disagree",
+ * which is the right question for authority: three models run by one person are
+ * that person's opinion three times. But it is the WRONG question for "is this
+ * defect real", and on a team where the reviewer is also the one dispatching the
+ * agents it is structurally always false — a field that cannot vary tells the
+ * queue nothing.
+ *
+ * So this is the other half, recorded beside it rather than replacing it. The
+ * practice it exists to score: one vendor's model finds, another's verifies.
+ *
+ * Conservative by construction — two agents whose harness and model are both
+ * unknown are NOT independent here. Nothing establishes it, and claiming a
+ * corroboration is error-independent when it may be the same model twice is the
+ * direction with no recovery.
+ */
+export function isErrorIndependent(a: Actor | undefined, b: Actor | undefined): boolean {
+  if (!a || !b) return false;
+  const [va, vb] = [a.via, b.via];
+  // A person and an agent read differently enough that this is the easy case.
+  if (!va !== !vb) return true;
+  // Two people: their error profiles differ exactly when they are different people.
+  if (!va && !vb) return a.principal !== b.principal;
+  // Two agents. `harness` is transport-observed (see `markObservedClient`) and is
+  // the one an agent cannot spell for itself, so it is checked first; `model` is a
+  // self-report and only ever ADDS evidence of difference, never removes it.
+  if (va!.harness && vb!.harness && va!.harness !== vb!.harness) return true;
+  if (va!.model && vb!.model && va!.model !== vb!.model) return true;
+  return false;
 }
 
 /**

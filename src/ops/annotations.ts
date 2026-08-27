@@ -9,7 +9,7 @@ import {
   findingTier, isClosed, mayTransition, needsHumanAck, ASK_FOR_STATE, REOPEN_STATES,
   type Ask, type FindingState, type FindingTier, type Remediation, type SharedFinding, type Verdict,
 } from "../shared-findings.js";
-import { requireActor, isAgentActor, actorLabel, reviewerKey, isIndependent } from "../identity.js";
+import { requireActor, isAgentActor, actorLabel, reviewerKey, isIndependent, isErrorIndependent } from "../identity.js";
 import { isAgentAuthored, publishStateOf, type PublishState } from "../pr-push.js";
 import { genId, liveAnchors, resolveRefs, loadNodesShared} from "./shared.js";
 
@@ -1177,7 +1177,7 @@ function recordVerdict(
   f: SharedFinding, actor: Actor, verdict: Verdict, at: string, rationale: string,
 ): void {
   const i = f.corroboration.findIndex((c) => reviewerKey(c.actor) === reviewerKey(actor));
-  const entry = { actor, verdict, at, rationale, independent: isIndependent(actor, f.author) };
+  const entry = { actor, verdict, at, rationale, independent: isIndependent(actor, f.author), errorIndependent: isErrorIndependent(actor, f.author) };
   if (i >= 0) f.corroboration[i] = entry; else f.corroboration.push(entry);
 }
 

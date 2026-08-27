@@ -82,8 +82,15 @@ import { readScopeChecked, SHARD_EXT, type LogEvent, type ScopeStatus } from "./
  * the SHARDS, which do not move when the fold's mind changes, so every existing store
  * would keep serving rows folded under the old rule and the events it used to ignore
  * would stay ignored for ever.
+ *
+ * 11 -> 12 adds `errorIndependent` to every corroboration — a SHAPE change, and the
+ * bump is what makes it visible. The field is derived in the fold from actors the log
+ * already carries, so nothing migrates and no event changes; but the projection is
+ * CACHED on the shards plus this number, and the shards do not move when a fold starts
+ * emitting a new field. Without the bump every store that had already folded a scope
+ * would serve corroborations without it, for ever, while new stores had it.
  */
-export const MATERIALIZER_VERSION = 11;
+export const MATERIALIZER_VERSION = 12;
 
 /**
  * What the events in a scope are, cheaply.

@@ -14,7 +14,7 @@
 
 import * as ops from "./ops.js";
 import * as shared from "./ops-shared.js";
-import { markAgentSession } from "./identity.js";
+import { markAgentSession, markObservedClient } from "./identity.js";
 import * as multi from "./multi.js";
 import { loadWorkspace, type Workspace, type Universe } from "./workspace.js";
 import { METHODOLOGY } from "./guide.js";
@@ -1131,6 +1131,10 @@ async function handle(msg: any): Promise<void> {
 
   switch (method) {
     case "initialize":
+      // Who is on the other end, as the transport saw it — the host sends this
+      // before the model has any say, so it is the one piece of agent identity a
+      // model cannot spell for itself. Everything else about `via` is self-report.
+      markObservedClient(params?.clientInfo?.name);
       send({
         jsonrpc: "2.0",
         id,

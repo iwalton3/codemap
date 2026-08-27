@@ -456,7 +456,7 @@ test("the fold's output is pinned — change it and bump MATERIALIZER_VERSION", 
   const folded = [...foldFindings(GOLDEN_LOG)];
   assert.equal(
     createHash("sha256").update(JSON.stringify(folded)).digest("hex").slice(0, 32),
-    "35f898e33b2384370b8472f499830b2f",
+    "9c118d63232dd6dea9a06bc4044e68d5",
     "the fold produces something different from what MATERIALIZER_VERSION "
     + `${MATERIALIZER_VERSION} was set for — bump it, or fix the fold`,
   );
@@ -470,6 +470,11 @@ test("…and the vector actually contains the two rules it claims to", () => {
   const c = (f.contested ?? []).find((c) => c.field === "severity");
   assert.ok(c, "two clones, one contest");
   assert.deepEqual([c.held.writer, c.incoming.writer], ["w_laptop", "w_desktop"]);
+  // Both corroborators are agents speaking for a DIFFERENT principal than the author,
+  // so the two independence axes agree here. They come apart elsewhere — see
+  // `lifecycle-guard.test.ts` — and what this pins is that the fold emits both.
+  assert.deepEqual(f.corroboration.map((x) => x.independent), [true, true]);
+  assert.deepEqual(f.corroboration.map((x) => x.errorIndependent), [true, true]);
 });
 
 test("the docs projection preserves the fold's OUTER order, not just each node's", async () => {

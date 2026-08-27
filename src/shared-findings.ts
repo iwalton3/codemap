@@ -30,7 +30,7 @@
  */
 
 import type { Actor, BugSeverity, BugWitness } from "./schema.js";
-import { isAgentActor, isIndependent, reviewerKey } from "./identity.js";
+import { isAgentActor, isIndependent, isErrorIndependent, reviewerKey } from "./identity.js";
 import { emitEvent, mintId, readScope, causality, type LogEvent } from "./eventlog.js";
 import { applyRevision, newContestState, type Contested } from "./contest.js";
 
@@ -137,6 +137,22 @@ export interface Corroboration {
    * queue is ranked by, and it must not change meaning as the fold is re-run.
    */
   independent: boolean;
+  /**
+   * The actor is unlikely to share the author's blind spots — a different person, a
+   * different vendor's harness, or a person checking an agent. See
+   * `isErrorIndependent`.
+   *
+   * Beside `independent` rather than instead of it because they answer different
+   * questions and both are worth having: that one asks whether a SECOND PERSON
+   * agreed, which is about authority; this one asks whether the agreement is worth
+   * anything as evidence. Where one reviewer dispatches every agent, `independent`
+   * is always false and only this can vary.
+   *
+   * Optional: derived from actor fields that historical records do not carry, so an
+   * old corroboration reads `undefined` — not-established, which is not the same
+   * claim as false.
+   */
+  errorIndependent?: boolean;
   /**
    * The commit the reviewer was standing on when they formed this verdict.
    *
@@ -626,6 +642,7 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
           actor: e.actor, verdict, at: e.at,
           rationale: str(d, "rationale") ?? "",
           independent: isIndependent(e.actor, f.author),
+          errorIndependent: isErrorIndependent(e.actor, f.author),
           ...(str(d, "ref") ? { ref: str(d, "ref") } : {}),
         };
         if (i >= 0) f.corroboration[i] = entry; else f.corroboration.push(entry);

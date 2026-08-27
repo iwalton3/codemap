@@ -38,7 +38,10 @@ test("the MCP server marks itself as an agent session", () => {
   // thing worth asserting.
   const src = readFileSync("src/mcp.ts", "utf8");
   assert.match(src, /markAgentSession\(\)/, "mcp.ts must mark its session — the ratchet depends on it");
-  assert.match(src, /import \{ markAgentSession \} from "\.\/identity\.js"/);
+  // The NAME must come from identity.js — not the exact import line. Pinning the
+  // whole line failed the moment a second identity import was added beside it,
+  // which is a true statement about the file and not a regression.
+  assert.match(src, /import \{[^}]*\bmarkAgentSession\b[^}]*\} from "\.\/identity\.js"/);
 });
 
 test("a marked session is an agent even with no model in the environment", () => {

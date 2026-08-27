@@ -29,7 +29,7 @@
 
 import { createHash } from "node:crypto";
 import type { Actor, BugSeverity, BugWitness } from "./schema.js";
-import { isAgentActor, isIndependent, reviewerKey } from "./identity.js";
+import { isAgentActor, isIndependent, isErrorIndependent, reviewerKey } from "./identity.js";
 import { emitEvent, mintId, readScope, causality, type LogEvent } from "./eventlog.js";
 import { applyRevision, newContestState, type Contested } from "./contest.js";
 import {
@@ -285,6 +285,7 @@ export function foldBugs(events: LogEvent[]): Map<string, SharedBug> {
           actor: e.actor, verdict, at: e.at,
           rationale: str(d, "rationale") ?? "",
           independent: isIndependent(e.actor, b.author),
+          errorIndependent: isErrorIndependent(e.actor, b.author),
         };
         if (i >= 0) b.corroboration[i] = entry; else b.corroboration.push(entry);
         break;
