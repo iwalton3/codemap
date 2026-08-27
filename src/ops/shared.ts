@@ -150,27 +150,55 @@ export type Vouch = {
   coverage: "derived" | "unknown";
 };
 
-type ReviewFull = { state: string; actor?: "human" | "agent"; at?: string; profiles?: number };
+type OneMark = { actor: "human" | "agent"; state: string; at?: string };
+type ReviewFull = {
+  state: string; actor?: "human" | "agent"; at?: string; profiles?: number;
+  /** Every vouch at this level. See `ReviewInfo.marks`. */
+  marks?: OneMark[];
+};
 
 /** A mark EXISTS in both states: `reviewed` is current, `stale` is one whose body moved. */
-const isMark = (r?: ReviewFull) => r?.state === "reviewed" || r?.state === "stale";
+const isMark = (state: string) => state === "reviewed" || state === "stale";
+
+/**
+ * Every vouch across both levels, as (level, mark) pairs.
+ *
+ * Reads `marks` and falls back to the collapsed row for a caller that does not supply
+ * it (`deriveCodeReview`'s rollup has no rows behind it). Reading ONLY the collapsed
+ * row was the defect: the collapse keeps one mark per level, so a person's sign-off
+ * beside an agent's check reported `evidence: null` — hiding exactly the coexistence
+ * that keying rows on the reviewer exists to allow.
+ */
+const allMarks = (review?: { logical: ReviewFull; code: ReviewFull }) => {
+  const out: { level: "logical" | "code"; m: OneMark; profiles?: number }[] = [];
+  for (const level of ["logical", "code"] as const) {
+    const r = review?.[level];
+    if (!r) continue;
+    // `?? "agent"`, matching every other default in `reviews.ts`: a row that cannot
+    // show a person stood behind it must not be read as accountability.
+    const rows = r.marks ?? (isMark(r.state) ? [{ actor: r.actor ?? "agent", state: r.state, at: r.at }] : []);
+    for (const m of rows) if (isMark(m.state)) out.push({ level, m, profiles: r.profiles });
+  }
+  return out;
+};
 
 export function vouchOf(
   status: string | undefined,
   review?: { logical: ReviewFull; code: ReviewFull },
 ): Vouch {
   const statusFresh = !(status === "stale" || status === "dangling" || status === "removed");
-  const markStale = review?.logical.state === "stale" || review?.code.state === "stale";
+  const marks = allMarks(review);
+  // ANY mark whose witness moved makes this not fresh — not just the one the collapse
+  // chose. A current human sign-off beside a stale agent check used to read `fresh`.
+  const markStale = marks.some((x) => x.m.state === "stale");
   const pick = (want: "human" | "agent"): Mark | null => {
-    for (const level of ["logical", "code"] as const) {
-      const r = review?.[level];
-      // `?? "agent"`, matching every other default in `reviews.ts`: a row that
-      // cannot show a person stood behind it must not be read as accountability.
-      if (isMark(r) && (r!.actor ?? "agent") === want) {
-        return { at: r!.at, level, current: r!.state === "reviewed", profiles: r!.profiles };
-      }
-    }
-    return null;
+    // Current before stale, so a reviewer who re-confirmed is not reported as stale
+    // because of an older mark of the same kind at the other level.
+    const hits = marks.filter((x) => x.m.actor === want);
+    const best = hits.find((x) => x.m.state === "reviewed") ?? hits[0];
+    return best
+      ? { at: best.m.at, level: best.level, current: best.m.state === "reviewed", profiles: best.profiles }
+      : null;
   };
   return {
     fresh: statusFresh && !markStale,

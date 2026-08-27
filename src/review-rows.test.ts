@@ -123,8 +123,11 @@ test("unmark withdraws YOUR vouch, not everybody's", async () => {
       markReviewed(u.root, { targetKind: "node", targetId: "payments", level: "logical", actor: "agent" }));
     assert.equal((await rowsFor(u.root)).length, 2);
 
+    // The AGENT withdraws, as an agent. A blanket patch once made this say "human",
+    // which correctly deleted the person's row and failed — the parameter is doing
+    // exactly its job.
     await asModel("claude-opus-5", () =>
-      unmarkReviewed(u.root, { targetKind: "node", targetId: "payments", level: "logical" }));
+      unmarkReviewed(u.root, { targetKind: "node", targetId: "payments", level: "logical", actor: "agent" }));
 
     const left = await rowsFor(u.root);
     assert.equal(left.length, 1, "only the agent's own mark went");
@@ -147,7 +150,7 @@ test("a person's unmark spares an agent row that recorded no model or harness", 
     await markReviewed(u.root, { targetKind: "node", targetId: "payments", level: "logical", actor: "human" });
     assert.equal((await rowsFor(u.root)).length, 2, "an unattributed agent mark and a sign-off");
 
-    await unmarkReviewed(u.root, { targetKind: "node", targetId: "payments", level: "logical" });
+    await unmarkReviewed(u.root, { targetKind: "node", targetId: "payments", level: "logical", actor: "human" });
 
     const left = await rowsFor(u.root);
     assert.equal(left.length, 1, "only the person's own mark went");
@@ -219,5 +222,104 @@ test("the count reaches the vouch, and 1 is reported rather than omitted", async
       markReviewed(u.root, { targetKind: "node", targetId: "payments", level: "logical", actor: "agent" }));
     const n2 = await getNode(u.root, "payments") as any;
     assert.equal(n2.vouch.evidence.profiles, 2, "cross-vendor corroboration is visible on the node");
+  } finally { u.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// What two review passes found that the tests above did not.
+// ---------------------------------------------------------------------------
+
+test("a sign-off and an agent's check are BOTH reported, at one level", async () => {
+  // The defect keying rows on the reviewer exists to prevent, surviving at the
+  // reporting layer: `vouchOf` read the COLLAPSED row, which keeps one mark per
+  // level, so a person's sign-off hid the agent's read entirely and `evidence` was
+  // null. The storage held both; nothing surfaced both.
+  const u = await universe();
+  try {
+    await markReviewed(u.root, { targetKind: "node", targetId: "payments", level: "logical", actor: "human" });
+    await asModel("claude-opus-5", () =>
+      markReviewed(u.root, { targetKind: "node", targetId: "payments", level: "logical", actor: "agent" }));
+
+    const n = await getNode(u.root, "payments") as any;
+    assert.ok(n.vouch.accountable, "a person signed");
+    assert.ok(n.vouch.evidence, "AND an agent read it — this was null");
+    assert.equal(n.vouch.accountable.level, "logical");
+    assert.equal(n.vouch.evidence.level, "logical", "both at the SAME level");
+    assert.equal(n.vouch.evidence.profiles, 2);
+  } finally { u.cleanup(); }
+});
+
+test("any stale mark makes the vouch not fresh, not just the collapsed one", async () => {
+  // A current human sign-off beside a stale agent check reported `fresh: true`,
+  // because `fresh` read the one row the collapse chose.
+  const { vouchOf } = await import("./ops/shared.js");
+  const marks = [{ actor: "human" as const, state: "reviewed" }, { actor: "agent" as const, state: "stale" }];
+  const v = vouchOf("fresh", { logical: { state: "reviewed", actor: "human", marks }, code: { state: "unreviewed" } });
+  assert.equal(v.fresh, false, "the agent's witness moved, and that is visible");
+  assert.ok(v.accountable?.current, "while the person's mark is still current");
+  assert.equal(v.evidence?.current, false);
+});
+
+test("unmark works when the environment names a harness", async () => {
+  // `resolveActor` sets `via` from CODEMAP_AGENT_MODEL or _HARNESS, so a `serve.js`
+  // launched from a shell exporting either wrote web sign-offs under the human key
+  // and computed the AGENT key to withdraw them: nothing matched, the call returned
+  // `{ ok: true, removed: 0 }`, and the chip stayed green. Mark and unmark must
+  // derive identity the same way.
+  const u = await universe();
+  const saved = process.env.CODEMAP_AGENT_HARNESS;
+  process.env.CODEMAP_AGENT_HARNESS = "some-harness";
+  try {
+    await markReviewed(u.root, { targetKind: "node", targetId: "payments", level: "logical", actor: "human" });
+    assert.equal((await rowsFor(u.root)).length, 1);
+    await unmarkReviewed(u.root, { targetKind: "node", targetId: "payments", level: "logical", actor: "human" });
+    assert.equal((await rowsFor(u.root)).length, 0, "the person's own mark was withdrawn");
+  } finally {
+    if (saved === undefined) delete process.env.CODEMAP_AGENT_HARNESS; else process.env.CODEMAP_AGENT_HARNESS = saved;
+    u.cleanup();
+  }
+});
+
+test("a pre-identity row can still be replaced and withdrawn", async () => {
+  // Rows written before `Review.by` existed key as `legacy\0<reviewer>`, which the
+  // modern form cannot produce once a git identity resolves. Matching only the modern
+  // key left them unreachable: re-marking accumulated a duplicate, and unmarking
+  // removed nothing while reporting success.
+  const u = await universe();
+  try {
+    const { writeReviews } = await import("./store.js");
+    const { actorLabel } = await import("./identity.js");
+    const { resolveActor } = await import("./identity.js");
+    const label = actorLabel(resolveActor(u.root, {})!);
+    await writeReviews(u.root, [{
+      id: "rev_legacy", target: { kind: "node", id: "payments" }, level: "logical",
+      reviewer: label, at: "2025-01-01T00:00:00Z", witnesses: [], accepted: [],
+    } as never]);
+    assert.equal((await rowsFor(u.root)).length, 1, "a legacy row with no `by`");
+
+    await markReviewed(u.root, { targetKind: "node", targetId: "payments", level: "logical", actor: "human" });
+    assert.equal((await rowsFor(u.root)).length, 1, "replaced, not duplicated");
+
+    await unmarkReviewed(u.root, { targetKind: "node", targetId: "payments", level: "logical", actor: "human" });
+    assert.equal((await rowsFor(u.root)).length, 0, "and it can be cleared");
+  } finally { u.cleanup(); }
+});
+
+test("withdrawing a cover takes only the caller's cover rows", async () => {
+  // The THIRD write path. `docs/trust-split.md` claimed the hazard was closed "in
+  // both write paths"; this one still dropped every reviewer's covered rows.
+  const u = await universe();
+  try {
+    const { markReviewedBatch, unmarkCovered } = await import("./reviews.js");
+    await markReviewedBatch(u.root, u.anchors, { level: "code", actor: "human", coveredBy: "payments" });
+    await asModel("codex-1", () =>
+      markReviewedBatch(u.root, u.anchors, { level: "code", actor: "agent", coveredBy: "payments" }));
+    const all = (await readReviews(u.root)).reviews.filter((r) => r.coveredBy === "payments");
+    assert.equal(all.length, u.anchors.length * 2, "two reviewers' covers");
+
+    await unmarkCovered(u.root, "payments", { level: "code", actor: "human" });
+    const left = (await readReviews(u.root)).reviews.filter((r) => r.coveredBy === "payments");
+    assert.equal(left.length, u.anchors.length, "only the person's covers went");
+    assert.ok(left.every((r) => r.actor === "agent"), "the agent's survived");
   } finally { u.cleanup(); }
 });

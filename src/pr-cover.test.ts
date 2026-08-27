@@ -76,7 +76,7 @@ test("withdrawing a container's sign-off takes its cover with it, and nothing el
     const after = (await readReviews(root)).reviews;
     assert.equal(after.find((r) => r.target.id === "a_m2")!.coveredBy, undefined, "a cover never overwrites a direct mark");
 
-    const { removed } = await unmarkCovered(root, "a_cls", { level: "code", attestation: "signed" });
+    const { removed } = await unmarkCovered(root, "a_cls", { level: "code", attestation: "signed", actor: "human" });
     assert.deepEqual(removed, ["a_m1"]);
     const left = (await readReviews(root)).reviews.map((r) => r.target.id).sort();
     assert.deepEqual(left, ["a_m2"], "the member signed in its own right survives");
@@ -90,7 +90,7 @@ test("a viewed cover and a signed cover are independent marks", async () => {
     await writeSnapshot(root, "headsha", "feature", [CLASS, M1], "2026-08-19T00:00:00Z");
     await markReviewedBatch(root, ["a_m1"], { level: "code", actor: "human", attestation: "viewed", ref: "headsha", coveredBy: "a_cls" });
     await markReviewedBatch(root, ["a_m1"], { level: "code", actor: "human", attestation: "signed", ref: "headsha", coveredBy: "a_cls" });
-    assert.deepEqual((await unmarkCovered(root, "a_cls", { level: "code", attestation: "signed" })).removed, ["a_m1"]);
+    assert.deepEqual((await unmarkCovered(root, "a_cls", { level: "code", attestation: "signed", actor: "human" })).removed, ["a_m1"]);
     const left = (await readReviews(root)).reviews;
     assert.equal(left.length, 1);
     assert.equal(left[0]!.attestation, "viewed", "unsigning must not clear the exposure mark");

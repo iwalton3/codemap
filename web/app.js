@@ -131,8 +131,14 @@ const VOUCH_TIP = {
 // click `signed` to drop the mark. Signing a moved body is refused here for the same
 // reason the server refuses it — you would be vouching for something you have not read.
 // Baseline `unverified` only chips when actionable, to keep read-only lists quiet.
-const vouchChip = (v, onClick) => {
+const vouchChip = (v, onClick, status) => {
   if (!v) return html``;
+  // Analyzer-emitted nodes are not a prose claim and never carried a chip — the
+  // replaced code folded that into `trustOf` returning "generated", and dropping it
+  // put a clickable `unverified` chip on every generated row (hundreds on a
+  // Marten-analyzed map), where clicking signs an analyzer's output. `status` is the
+  // origin and is where that fact lives; see docs/trust-split.md.
+  if (status === 'generated') return html``;
   const tier = v.accountable ? 'signed' : v.evidence ? 'checked' : 'unverified';
   if (tier === 'unverified' && !onClick) return html``;
   const moved = !v.fresh && tier !== 'unverified';
@@ -1140,7 +1146,7 @@ class NodePage extends Component {
     return pageShell(n, taskError(this.load) ?? (n && n.error), () => {
     const cr = deriveCode(n.resolvedAnchors);
     return html`<div class="detail">
-      <div class="meta">${n.type}${n.universe ? ' · ' + n.universe : ''} · ${n.id} ${statusChip(n.status)}${vouchChip(n.vouch)}${sevChip(n.triage)}${divergeChip(n.triage)}<a class="viewlink" href="${href(graphUrl(u, n.id))}">◆ graph</a></div>
+      <div class="meta">${n.type}${n.universe ? ' · ' + n.universe : ''} · ${n.id} ${statusChip(n.status)}${vouchChip(n.vouch, null, n.status)}${sevChip(n.triage)}${divergeChip(n.triage)}<a class="viewlink" href="${href(graphUrl(u, n.id))}">◆ graph</a></div>
       <h2>${n.title}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions (forked across branches)">⑂${n.versionCount}</span>`)}</h2>
       <div style="margin:6px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="dim" style="font-size:12px">doc sign-off:</span>${reviewRowEl(n.review, n.viewed, (att, st, actor, via) => this.signNode(att, st, actor, via), 'logical')}<span class="dim" style="font-size:12px">— vouches for the doc, not its code</span></div>
       <div style="margin:6px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">${codeRollupEl(cr)}${when(cr.total, () => html`<a class="btnlike" href="${href(nodeReviewUrl(u, n.id))}">open code review →</a>`)}</div>
@@ -1734,7 +1740,7 @@ class NodeCatalogPage extends Component {
     return html`<div class="nrow" on-click="${() => go(nodeUrl(u, n.id))}">
       <span class="nt" style="border-color:${nodeColor(n.type)}">${n.type}</span>
       <a class="ntitle" href="${href(nodeUrl(u, n.id))}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">${n.title || n.id}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions (forked)">⑂${n.versionCount}</a>`)}</span>
-      ${statusChip(n.status)}${vouchChip(n.vouch, (act) => this.verify(n.id, act))}${sevChip(n.triage)}${divergeChip(n.triage)}
+      ${statusChip(n.status)}${vouchChip(n.vouch, (act) => this.verify(n.id, act), n.status)}${sevChip(n.triage)}${divergeChip(n.triage)}
       <span class="ndom">${n.domain}</span>
       <span class="nmeta">${n.anchors}a · ${n.edgesIn}↓${n.edgesOut}↑</span>
       ${when(n.generatedBy, () => html`<span class="gen">${n.generatedBy}</span>`)}

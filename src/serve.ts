@@ -264,7 +264,7 @@ const server = createServer(async (req, res) => {
       const attestation = body.attestation === "viewed" ? "viewed" : "signed";
       const out = await withLock<unknown>(root, async () => {
         const r = body.unmark
-          ? await unmarkReviewed(root, { targetKind: body.targetKind, targetId: body.targetId, level: body.level, attestation })
+          ? await unmarkReviewed(root, { targetKind: body.targetKind, targetId: body.targetId, level: body.level, attestation, actor: "human" })
           // `ref` (the PR head) makes the witness cover the code actually read.
           : await markReviewed(root, { targetKind: body.targetKind, targetId: body.targetId, level: body.level, reviewer: body.reviewer, actor: "human", attestation, ref: body.ref });
         // Hand back the resulting mark so a caller can update that one symbol in

@@ -55,12 +55,18 @@ test("a false positive and a fix for it cannot both be true", () => {
   }
 });
 
-test("fixed-on-default is a claim a branch report cannot make", () => {
-  // It also has teeth beyond tidiness: a linked bug closes on it, so the defect
-  // ships while the map says it is gone.
-  assert.match(err(checkLifecycle({ result: "fixed", files: ["a.ts"], remediation: "fixed-on-default" }))!,
-    /MAINLINE/);
-  assert.equal(err(checkLifecycle({ result: "fixed", files: ["a.ts"], remediation: "fixed-on-branch" })), null);
+test("fixed-on-default is a claim an AGENT cannot make, and a person can", () => {
+  // Teeth beyond tidiness: a linked bug closes on it, so the defect ships while the
+  // map says it is gone. But refusing it unconditionally — as the first version did —
+  // left the value advertised in four MCP schemas and rendered in the web while being
+  // reachable from nowhere, and named an escape hatch that did not exist.
+  const fixed = { result: "fixed", files: ["a.ts"], remediation: "fixed-on-default" };
+  assert.match(err(checkLifecycle(fixed, { agent: true }))!, /MAINLINE/);
+  assert.match(err(checkLifecycle(fixed, { agent: true }))!, /request_human/, "and names a route that exists");
+  assert.equal(err(checkLifecycle(fixed, { agent: false })), null,
+    "a person CAN establish it — that is what accountability means");
+  assert.equal(err(checkLifecycle(fixed)), null, "and the default caller is a person");
+  assert.equal(err(checkLifecycle({ result: "fixed", files: ["a.ts"], remediation: "fixed-on-branch" }, { agent: true })), null);
 });
 
 test("an empty report is not a contradiction", () => {

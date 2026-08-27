@@ -110,9 +110,10 @@ export function checkComment(
  * turned into an ask rather than an error (`ASK_FOR_STATE`), which is the better
  * answer — closing is a person's act and the attempt is a legitimate request.
  */
-export function checkLifecycle(input: {
-  result?: string; remediation?: string; disposition?: string; files?: string[];
-}): { ok: true } | { error: string } {
+export function checkLifecycle(
+  input: { result?: string; remediation?: string; disposition?: string; files?: string[] },
+  opts: { agent?: boolean } = {},
+): { ok: true } | { error: string } {
   const { result, remediation, disposition } = input;
   const claimsCodeChanged = !!remediation && remediation.startsWith("fixed-on-");
 
@@ -125,8 +126,17 @@ export function checkLifecycle(input: {
   if (result === "fixed" && disposition === "refuted") {
     return { error: "`disposition: \"refuted\"` says this is not a defect, and `result: \"fixed\"` says you changed the code to remove it. Both cannot hold: a false positive needs no fix. Use `refuted` alone if it is not real, or `confirmed`/`partial` with the fix." };
   }
-  if (remediation === "fixed-on-default") {
-    return { error: "`fixed-on-default` is a claim about the MAINLINE, which a report back from a branch cannot establish — and it lets a linked bug be closed while the defect still ships. Use `fixed-on-branch` for a fix you made here; a person confirms the default." };
+  // Refused for an AGENT only, and that distinction is the whole point: it is a claim
+  // about the MAINLINE, which a report from a branch cannot establish, and it lets a
+  // linked bug be closed while the defect still ships. A person CAN establish it —
+  // they are on the default branch, or they looked — and taking responsibility for a
+  // claim nobody can mechanically check is what accountability means (COD-17).
+  //
+  // Refusing it unconditionally, as the first version did, left the value advertised
+  // in four MCP schemas and rendered in the web while being reachable from nowhere,
+  // and named an escape hatch ("a person confirms the default") that did not exist.
+  if (opts.agent && remediation === "fixed-on-default") {
+    return { error: "`fixed-on-default` is a claim about the MAINLINE, which a report back from a branch cannot establish — and it lets a linked bug be closed while the defect still ships. Use `fixed-on-branch` for a fix you made here. If you have actually verified the default branch, say so and ask: `request_human` with the evidence, and a person records it." };
   }
   return { ok: true };
 }

@@ -76,8 +76,20 @@ const profilesIn = (rows: Review[]): number => errorProfiles(rows.map((r) => r.b
 
 const rowIdentity = (r: Review): string =>
   (r.by ? vouchKey(r.by, r.actor, r.reviewer) : `legacy\0${r.reviewer}`);
-const actorIdentity = (by: Actor | null, label: string, actor?: "human" | "agent"): string =>
-  vouchKey(by, actor, label);
+
+/**
+ * The keys a caller may act on: their own, and their own LEGACY spelling.
+ *
+ * A row written before `Review.by` existed keys as `legacy\0<reviewer>`, which the
+ * modern form can never produce once a git identity resolves. Matching only the
+ * modern key left every pre-identity row unreachable: re-marking that target
+ * accumulated a duplicate instead of replacing, and unmarking removed nothing while
+ * returning `{ ok: true, removed: 0 }` — a mark that renders forever and no way to
+ * clear it. The legacy key is the display label, which is what `actorLabel` produces,
+ * so a person matches their own history and nobody else's.
+ */
+const identitiesOf = (by: Actor | null, label: string, actor?: "human" | "agent"): Set<string> =>
+  new Set([vouchKey(by, actor, label), `legacy\0${label}`]);
 
 export interface ReviewInfo {
   state: ReviewState;
@@ -109,7 +121,17 @@ export interface ReviewInfo {
   /** For `reverted`: the newer body on this lineage that the code went back from. */
   revertedFrom?: { branch: string | null; commit: string | null; at: string };
   /**
-   * How many distinct ERROR PROFILES have vouched at this level (see `errorProfile`).
+   * EVERY vouch at this level, not just the one the collapse chose.
+   *
+   * The collapse exists so ~25 call sites keep reading one value, and it necessarily
+   * discards the others — which silently defeated the thing actor-keyed rows are FOR:
+   * with a person's sign-off and an agent's check on one level, `vouchOf` saw only
+   * the human and reported `evidence: null`, and a stale agent mark beside a current
+   * human one reported `fresh: true`. The storage held both; nothing surfaced both.
+   */
+  marks?: { actor: "human" | "agent"; state: ReviewState; at?: string }[];
+  /**
+   * How many distinct ERROR PROFILES have vouched at this level (see `errorProfiles`).
    *
    * Not a count of reads. Reads are a heat signature — more reads means more
    * references means the cited code is more likely to be churning — so counting acts
@@ -271,12 +293,12 @@ export async function markReviewed(
 
   const rs = await readReviews(root);
   const label = input.reviewer || (by ? actorLabel(by) : "me");
-  const me = actorIdentity(by, label, actor);
+  const me = identitiesOf(by, label, actor);
   // MY mark at this slot, not everyone's. Replacing the slot is what let an agent
   // overwrite a person's sign-off; see `rowIdentity`.
   const sameMark = (r: Review) =>
     r.target.kind === target.kind && r.target.id === target.id && r.level === input.level
-    && isViewedRow(r) === viewed && rowIdentity(r) === me;
+    && isViewedRow(r) === viewed && me.has(rowIdentity(r));
 
   // Carry forward what THIS reviewer has already approved. The row is replaced below,
   // so without this every earlier acceptance is dropped — and the same symbol
@@ -319,7 +341,26 @@ export async function markReviewed(
 
 export async function unmarkReviewed(
   root: string,
-  input: { targetKind: "node" | "anchor"; targetId: string; level: ReviewLevel; attestation?: Attestation },
+  input: {
+    targetKind: "node" | "anchor"; targetId: string; level: ReviewLevel; attestation?: Attestation;
+    /**
+     * WHOSE mark to withdraw, defaulted exactly as `markReviewed` defaults it.
+     *
+     * Inferring this from ambient state instead was a silent no-op: `resolveActor`
+     * sets `via` when CODEMAP_AGENT_MODEL or _HARNESS is in the environment, so a
+     * `serve.js` launched from a shell exporting either wrote every web sign-off
+     * under the human key and then computed the AGENT key to withdraw it. Nothing
+     * matched, the call returned `{ ok: true, removed: 0 }`, and the chip stayed
+     * green. Mark and unmark must derive identity identically or they cannot name
+     * the same row.
+     *
+     * REQUIRED rather than defaulted: a default is exactly what makes the mismatch
+     * silent. `markReviewed` defaults to "agent", so a caller that signed as a human
+     * and then unmarked without saying so would withdraw nothing and report success.
+     * The type is the guard.
+     */
+    actor: "human" | "agent";
+  },
 ) {
   const rs = await readReviews(root);
   const before = rs.reviews.length;
@@ -333,25 +374,22 @@ export async function unmarkReviewed(
   // sign-off through the ordinary `review(unmark: true)` call, with no guard and no
   // record. Unmarking is withdrawing YOUR vouch; it was never a licence to withdraw
   // somebody else's, and it must not become one in the commit that makes it possible.
-  // ONE key, taken from what the caller actually is. `resolveActor` already decides
-  // that — an MCP session is an agent by construction (`markAgentSession`), the web
-  // UI is a person — and `markReviewed` derives `by.via` from the same fact, so the
-  // two agree by construction.
-  //
-  // Trying BOTH spellings, as the first version did, is not defensive: a human
-  // caller's agent-spelling is `principal\0\0agent\0`, which is exactly the key of an
-  // agent row that recorded no model and no harness. A person clearing their own
-  // sign-off silently took that agent's mark with it — the very thing keying rows on
-  // the reviewer is for.
-  const by = resolveActor(root, {});
-  const me = actorIdentity(by, by ? actorLabel(by) : "me", by?.via ? "agent" : "human");
+  // Identical derivation to `markReviewed`, which is the invariant that matters:
+  // the two must compute the same key for the same act or neither can name the
+  // other's row. Trying BOTH spellings, as an earlier version did, is not defensive
+  // either — a human caller's agent-spelling is `principal\0\0agent\0`, exactly the
+  // key of an agent row that recorded no model and no harness, so clearing your own
+  // sign-off silently took that agent's mark with it.
+  const actor = input.actor;
+  const by = resolveActor(root, { agent: actor === "agent" });
+  const me = identitiesOf(by, by ? actorLabel(by) : "me", actor);
   rs.reviews = rs.reviews.filter(
     (r) =>
       !(
         r.target.kind === input.targetKind &&
         r.target.id === input.targetId &&
         r.level === input.level &&
-        rowIdentity(r) === me &&
+        me.has(rowIdentity(r)) &&
         (isViewedRow(r) ? dropViewed : dropVouch)
       ),
   );
@@ -370,13 +408,21 @@ export async function unmarkReviewed(
 export async function unmarkCovered(
   root: string,
   containerId: string,
-  input: { level: ReviewLevel; attestation?: Attestation },
+  input: { level: ReviewLevel; attestation?: Attestation; actor: "human" | "agent" },
 ): Promise<{ removed: string[] }> {
   const rs = await readReviews(root);
   const dropViewed = input.attestation === undefined || input.attestation === "viewed";
   const dropVouch = input.attestation === undefined || input.attestation === "signed";
+  // Reviewer-scoped, like the other two write paths. `docs/trust-split.md` claimed
+  // the hazard was closed "in both write paths" and this is a third: withdrawing a
+  // container dropped EVERY reviewer's cover rows on its members, not just the
+  // caller's. Latent while covers are minted only by the web (one principal), and
+  // the same defect regardless.
+  const by = resolveActor(root, { agent: input.actor === "agent" });
+  const me = identitiesOf(by, by ? actorLabel(by) : "me", input.actor);
   const doomed = (r: Review) =>
-    r.coveredBy === containerId && r.level === input.level && (isViewedRow(r) ? dropViewed : dropVouch);
+    r.coveredBy === containerId && r.level === input.level && me.has(rowIdentity(r))
+    && (isViewedRow(r) ? dropViewed : dropVouch);
   const removed = rs.reviews.filter(doomed).map((r) => r.target.id);
   if (!removed.length) return { removed };
   rs.reviews = rs.reviews.filter((r) => !doomed(r));
@@ -497,21 +543,28 @@ export async function reviewStatesFor(
    * all of them and `trust` reads exactly as it read before. A multi-row slot cannot
    * exist until this ships, so nothing stored is reinterpreted.
    *
-   * It DOES answer a case that could not previously occur: a stale human sign-off
-   * beside a current agent check reads `checked` rather than `stale`, because somebody
-   * has confirmed the body in front of you. That is new behaviour, not preserved
-   * behaviour, and `vouchOf` reports both marks regardless.
+   * The sort is strictly human-first: a STALE human sign-off outranks a current agent
+   * check, so the one word stays `stale`. That is the conservative reading — a
+   * person's vouch no longer applying is not something an agent's read should mask —
+   * and it is a case that could not previously occur, so it is new behaviour rather
+   * than preserved behaviour.
+   *
+   * An earlier version of this comment claimed the opposite (`checked`) and also
+   * claimed `vouchOf` reports both marks regardless. Neither was true of the code:
+   * the collapse discards every mark but one. `marks` below is what makes the second
+   * sentence true; the first was simply wrong about the sort.
    */
   const forLevel = (t: Target, level: ReviewLevel): ReviewInfo => {
     // Default: only vouches (`signed`/`checked`) set the reviewed state — a `viewed`
     // row is exposure, not a blessing. With `{viewed:true}` we read exactly those rows.
     const rows = rs.reviews.filter((x) => x.target.kind === t.kind && x.target.id === t.id && x.level === level && isViewedRow(x) === wantViewed);
     if (!rows.length) return { state: "unreviewed" };
-    if (rows.length === 1) return { ...infoFor(rows[0]!), profiles: profilesIn(rows) };
+    const infos = rows.map(infoFor);
+    const marks = infos.map((i) => ({ actor: (i.actor ?? "agent") as "human" | "agent", state: i.state, at: i.at }));
     const rank = (i: ReviewInfo) =>
       ((i.actor ?? "agent") === "human" ? 2 : 0) + (i.state === "reviewed" ? 1 : 0);
-    const best = rows.map(infoFor).reduce((b, i) => (rank(i) > rank(b) ? i : b));
-    return { ...best, profiles: profilesIn(rows) };
+    const best = infos.reduce((b, i) => (rank(i) > rank(b) ? i : b));
+    return { ...best, marks, profiles: profilesIn(rows) };
   };
   for (const t of targets) out.set(key(t), { logical: forLevel(t, "logical"), code: forLevel(t, "code") });
   return out;
@@ -833,13 +886,13 @@ export async function markReviewedBatch(
   anchorIds = [...new Set(anchorIds)];
   const wanted = new Set(anchorIds);
   const label = input.reviewer || (by ? actorLabel(by) : "me");
-  const me = actorIdentity(by, label, actor);
+  const me = identitiesOf(by, label, actor);
   // MY prior row per anchor. Someone else's mark on the same symbol is a separate
   // row now and this must neither read from it nor replace it.
   const priorFor = new Map<string, Review>();
   for (const r of rs.reviews) {
     if (r.target.kind === "anchor" && wanted.has(r.target.id) && r.level === input.level
-        && isViewedRow(r) === viewed && rowIdentity(r) === me) {
+        && isViewedRow(r) === viewed && me.has(rowIdentity(r))) {
       priorFor.set(r.target.id, r);
     }
   }
@@ -878,7 +931,7 @@ export async function markReviewedBatch(
   // `unmarkReviewed`'s and considerably louder.
   rs.reviews = rs.reviews.filter(
     (r) => !(r.target.kind === "anchor" && replaced.has(r.target.id) && r.level === input.level
-             && isViewedRow(r) === viewed && rowIdentity(r) === me),
+             && isViewedRow(r) === viewed && me.has(rowIdentity(r))),
   ).concat(fresh);
   await writeReviews(root, rs.reviews);
   return { marked: fresh.length };

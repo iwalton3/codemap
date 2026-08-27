@@ -66,6 +66,7 @@ export {
   annotateLegacyFinding,
 } from "./ops/annotations.js";
 
+import { resolveActor } from "./identity.js";
 import {
   closeAssignment as closeAnnotation, closeLocalFinding as closeLocal, commentOnLocalFinding,
   reviseLocalFinding, reviseAnnotation, remediateLocalFinding, checkComment, checkLifecycle, REVISABLE,
@@ -111,7 +112,8 @@ export async function closeFinding(
     // Same position, same reason: a lifecycle contradiction caught after the outcome
     // and the corroboration have landed is a half-completed call, and the natural
     // response to an error is a retry that re-emits them.
-    const l = checkLifecycle({ ...input, disposition: (input as { disposition?: string }).disposition });
+    const l = checkLifecycle({ ...input, disposition: (input as { disposition?: string }).disposition },
+      { agent: !!resolveActor(root, {})?.via });
     if ("error" in l) return l;
   }
   const f = await readFinding(root, input.id).catch(() => null);
@@ -256,7 +258,7 @@ export async function reviseOn(
   // inside `reviseLocalFinding`; a lifecycle rule checked in only one of those is
   // a rule the caller learns is optional.
   {
-    const l = checkLifecycle(input);
+    const l = checkLifecycle(input, { agent: !!resolveActor(root, {})?.via });
     if ("error" in l) return l;
   }
   const f = await readFinding(root, input.id).catch(() => null);

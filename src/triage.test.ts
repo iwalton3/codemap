@@ -273,7 +273,7 @@ export function refund(amount: number) { return -amount; }
     assert.equal(rt.triage.bar, null);
 
     // Unsigning one segment re-opens the node (a green check never outlives its code).
-    await unmarkReviewed(root, { targetKind: "anchor", targetId: a1!.id, level: "code", attestation: "signed" });
+    await unmarkReviewed(root, { targetKind: "anchor", targetId: a1!.id, level: "code", attestation: "signed", actor: "human" });
     assert.equal(await sev(), "critical");
   } finally {
     discard(root);

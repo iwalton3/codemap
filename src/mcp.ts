@@ -21,7 +21,6 @@ import { METHODOLOGY } from "./guide.js";
 import { analyzeMarten } from "./analyzers/marten.js";
 import { enableAnalyzer } from "./analyzers/run.js";
 import { markReviewed, markReviewedBatch, unmarkReviewed } from "./reviews.js";
-import { readReviews } from "./store.js";
 import { withLock } from "./lock.js";
 
 /**
@@ -362,7 +361,7 @@ const tools: Tool[] = [
         return markReviewedBatch(c.universe.path, ids, { level: a.level, reviewer: a.reviewer, actor: "agent", ref: a.ref });
       }
       if (!a.targetKind || !a.targetId) return { error: "review needs `ids` (anchors) or `targetKind` + `targetId`." };
-      if (a.unmark) return unmarkReviewed(c.universe.path, a);
+      if (a.unmark) return unmarkReviewed(c.universe.path, { ...a, actor: "agent" });
       const g = guardSelfCheck(c.universe.id, a.targetKind, a.targetId);
       if (g) return g;
       return markReviewed(c.universe.path, { ...a, actor: "agent" });

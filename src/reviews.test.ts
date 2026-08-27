@@ -83,7 +83,7 @@ test("unmark scopes to a single attestation", async () => {
     const t = { targetKind: "anchor" as const, targetId: "a_y", level: "code" as const };
     await markReviewed(root, { ...t, actor: "human", attestation: "viewed" });
     await markReviewed(root, { ...t, actor: "human", attestation: "signed" });
-    await unmarkReviewed(root, { ...t, attestation: "signed" }); // drop sign-off only
+    await unmarkReviewed(root, { ...t, attestation: "signed", actor: "human" }); // drop sign-off only
     const rows = (await readReviews(root)).reviews.filter((r) => r.target.id === "a_y");
     assert.deepEqual(rows.map((r) => effectiveAttestation(r)), ["viewed"]);
   } finally {
@@ -105,7 +105,7 @@ test("reviewStatesFor reads the vouch by default, the viewed marks with {viewed:
     assert.ok(found(vouch.code.state), "default read finds the sign-off row");
     assert.ok(found(view.code.state), "{viewed:true} finds the exposure row");
     // Dropping the sign-off empties the vouch but leaves the viewed mark selectable.
-    await unmarkReviewed(root, { ...t, attestation: "signed" });
+    await unmarkReviewed(root, { ...t, attestation: "signed", actor: "human" });
     assert.equal((await reviewStatesFor(root, [tgt])).get("anchor:a_v")!.code.state, "unreviewed");
     assert.ok(found((await reviewStatesFor(root, [tgt], { viewed: true })).get("anchor:a_v")!.code.state));
   } finally {
@@ -204,7 +204,7 @@ test("a review write reports the resulting mark, so one symbol can be updated in
     await markReviewed(root, { targetKind: "anchor", targetId: id, level: "code", actor: "human", attestation: "viewed" });
     assert.equal((await anchorMark(root, id)).viewed, true);
 
-    await unmarkReviewed(root, { targetKind: "anchor", targetId: id, level: "code", attestation: "signed" });
+    await unmarkReviewed(root, { targetKind: "anchor", targetId: id, level: "code", attestation: "signed", actor: "human" });
     assert.equal((await anchorMark(root, id)).reviewed, false, "taking it back is reported too");
   } finally { discard(root); }
 });

@@ -80,7 +80,13 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
   let headSide: DiffSide;
   if (headRef) {
     const h = await resolveSnapshot(root, headRef);
-    if (!h.anchors) return { error: `no cached snapshot for head "${headRef}" (${h.sha.slice(0, 12)}). Cache it with \`codemap snapshot\` while it's checked out.` };
+    // Same owner as the base side. Left hand-written, this told a reader with a DIRTY
+    // head snapshot to run the command that reproduces it — the exact trap the base
+    // side was refactored out of, two lines above.
+    if (!h.anchors) {
+      const why = snapshotRefusal(root, h.sha);
+      return { error: `head "${headRef}": ${why?.message ?? `no cached snapshot for ${h.sha.slice(0, 12)}.`}` };
+    }
     headAnchors = h.anchors;
     headSide = { ref: headRef, sha: h.sha, label: headRef, anchors: h.anchors.length };
   } else {

@@ -1136,9 +1136,6 @@ const liveHashes = async (root: string, ids: Iterable<string>): Promise<AnchorIn
  * tags and without consulting git. A doc written on a feature branch and one
  * written on develop are both here, and each machine sees the one that describes
  * what it has checked out.
- */
-/**
- * The team's docs, each resolved against this checkout.
  *
  * `terse` drops the resolved BODY (and, with it, the per-citation detail). Both
  * `find_gaps` and `context` point an agent here, and the first such call on a

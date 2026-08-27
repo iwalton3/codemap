@@ -385,8 +385,8 @@ export async function prStepMark(
 
   let cleared: string[] = [];
   if (opts.unmark) {
-    await unmarkReviewed(root, { targetKind: "anchor", targetId: id, level: "code", attestation: opts.attestation });
-    cleared = (await unmarkCovered(root, id, { level: "code", attestation: opts.attestation })).removed;
+    await unmarkReviewed(root, { targetKind: "anchor", targetId: id, level: "code", attestation: opts.attestation, actor: "human" });
+    cleared = (await unmarkCovered(root, id, { level: "code", attestation: opts.attestation, actor: "human" })).removed;
   } else {
     const mark = { level: "code" as const, actor: "human" as const, attestation: opts.attestation, reviewer: opts.reviewer, ref: c.head };
     await markReviewedBatch(root, [id], mark);
@@ -435,8 +435,8 @@ export async function prChapterMark(
   const cleared: string[] = [];
   if (opts.unmark) {
     for (const id of ids) {
-      await unmarkReviewed(root, { targetKind: "anchor", targetId: id, level: "code", attestation: opts.attestation });
-      cleared.push(...(await unmarkCovered(root, id, { level: "code", attestation: opts.attestation })).removed);
+      await unmarkReviewed(root, { targetKind: "anchor", targetId: id, level: "code", attestation: opts.attestation, actor: "human" });
+      cleared.push(...(await unmarkCovered(root, id, { level: "code", attestation: opts.attestation, actor: "human" })).removed);
     }
   } else {
     const mark = { level: "code" as const, actor: "human" as const, attestation: opts.attestation, reviewer: opts.reviewer, ref: t.refs.head };

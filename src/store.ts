@@ -507,7 +507,7 @@ export function bodyHashAt(root: string, ref: string, anchorId: string): string 
  *
  * The message is here rather than at the call sites because a wrong one traps the
  * reader: "not cached — run `init`" is what `diff` used to say, and `init` is the
- * command that PRODUCED the dirty snapshot. `codemap snapshot` reads git objects
+ * command that PRODUCED the dirty snapshot. `codemap snapshot --ref` reads git objects
  * and needs no clean checkout, so it is the exit in every case.
  */
 export function snapshotRefusal(
@@ -517,7 +517,7 @@ export function snapshotRefusal(
   const short = ref.slice(0, 12);
   const meta = d.prepare("SELECT scheme, hash_scheme FROM snapshots WHERE ref = ?").get(ref) as
     { scheme: number | null; hash_scheme: number | null } | undefined;
-  if (!meta) return { reason: "absent", message: `no cached snapshot for ${short}. Cache it with \`codemap snapshot ${short}\`.` };
+  if (!meta) return { reason: "absent", message: `no cached snapshot for ${short}. Cache it with \`codemap snapshot --ref ${short}\`.` };
   // Both derivations must match. The ids decide WHICH symbols pair up; the hashes
   // decide which of those pairs count as changed — so a snapshot carrying the right
   // ids and another scheme's hashes reports the whole commit as rewritten.
@@ -529,10 +529,10 @@ export function snapshotRefusal(
   // stale cache — rebuild it, which takes seconds. Reporting the mismatch downstream
   // instead would leave a repairable cache in place and flood the diff.
   if (meta.scheme !== ANCHOR_SCHEME || meta.hash_scheme !== HASH_SCHEME || staleDerivation(d, ref)) {
-    return { reason: "derivation", message: `the cached snapshot for ${short} was built by a different anchor/hash derivation than this one, so its ids and bodies cannot be compared with today's. Re-cache it with \`codemap snapshot ${short}\`.` };
+    return { reason: "derivation", message: `the cached snapshot for ${short} was built by a different anchor/hash derivation than this one, so its ids and bodies cannot be compared with today's. Re-cache it with \`codemap snapshot --ref ${short}\`.` };
   }
   if (snapshotIsDirty(root, ref)) {
-    return { reason: "dirty", message: `the cached snapshot for ${short} was indexed from a working tree with uncommitted changes, so it is NOT that commit. Re-cache it from git objects with \`codemap snapshot ${short}\`, which needs no clean checkout.` };
+    return { reason: "dirty", message: `the cached snapshot for ${short} was indexed from a working tree with uncommitted changes, so it is NOT that commit. Re-cache it from git objects with \`codemap snapshot --ref ${short}\`, which needs no clean checkout. (Plain \`codemap snapshot\` re-indexes the WORKING TREE and would reproduce this.)` };
   }
   return null;
 }
