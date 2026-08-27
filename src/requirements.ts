@@ -1,35 +1,41 @@
 /**
- * Requirements — the upstream half of the double gradient (COD-29).
+ * Requirements, specs and the fold that turns one into the other (COD-29).
+ * `docs/requirements-architecture.md` is normative; this implements it.
  *
- * A doc explains code, so it is DOWNSTREAM and must cite what it explains; that
- * citation is what makes its staleness detectable. A requirement is UPSTREAM: it is
- * true because somebody with authority decided it, and the code exists to satisfy it.
- * The two have inverted truthmakers, so they get separate records and separate verbs.
+ * A doc explains code, so it is DOWNSTREAM and must cite what it explains; that citation
+ * is what makes its staleness detectable. A requirement is UPSTREAM: it is true because
+ * somebody with authority decided it, and the code exists to satisfy it. The two have
+ * inverted truthmakers, so they get separate records and separate verbs.
  *
- * Three rules hold this module together, and each exists because breaking it
- * reintroduces the defect the record was created to prevent:
+ * Four rules hold this module together, and each exists because breaking it reintroduces
+ * the defect the record was created to prevent:
  *
- *  1. **No in-place edit.** Nothing here changes a ratified `statement` except
- *     `ratifyAmendment`. There is no `updateRequirement`, deliberately — an edit path
- *     is how "the code drifted" becomes "rewrite the rule to match the code".
- *  2. **Authorship is open; adoption is not.** Any actor may propose. Only a principal
- *     may ratify, reject or retire, and that is a REFUSAL here rather than a line in a
- *     tool description (COD-24: unenforced steering does not reach the consumer, and a
- *     description may not even be sent — see the note above the tool table in mcp.ts).
- *  3. **Nothing in this file computes a status from code.** `recheckDue` is derived at
- *     read time and is a signal ABOUT THE CODE. A requirement has no `stale`, and no
- *     state a reader could clear by editing the statement.
+ *  1. **The standard is a projection of the ratified specs.** Nothing writes a requirement
+ *     except `ratifySpec` applying an operation. There is no `updateRequirement`, and no
+ *     second cheaper path for a one-line change — a single amendment is a spec with one
+ *     operation. Two paths to amend means the cheap one is the real policy.
+ *  2. **Authorship is open; adoption is not.** Any actor may draft and propose. Only a
+ *     principal may ratify, and that is a REFUSAL here rather than a line in a tool
+ *     description (COD-24, and a description may not even be sent — see the note above the
+ *     tool table in `mcp.ts`).
+ *  3. **Every operation carries the state it was written against, and the fold verifies
+ *     it.** An instruction with no context applies cleanly to the wrong thing.
+ *  4. **Nothing here computes a status from code.** `recheckDue` is derived at read time
+ *     and is a signal ABOUT THE CODE. A requirement has no `stale`, and no state a reader
+ *     could clear by editing the statement.
  *
- * Not built yet, and named so their absence is legible: the discrepancy record, the
- * waiver, and the sidecar scope that makes any of this shared. Until the last one lands
- * these are local rows — which is why `ratify` is not yet a claim a teammate can read.
+ * Not built, and named so their absence is legible: section move/rename operations,
+ * withdrawal and repeal, the acknowledgement record, audits, the problem record, and the
+ * sidecar scope that makes any of this shared. Until the last one, these are local rows.
  */
 
 import { randomBytes } from "node:crypto";
-import type { Actor, Amendment, AmendmentKind, BugWitness, Requirement } from "./schema.js";
+import type {
+  Actor, BugWitness, Operation, OperationKind, Requirement, Reversibility, Spec,
+} from "./schema.js";
 import {
-  readAmendment, readAmendments, readRequirement, readRequirements,
-  requirementSectionCounts, workHas, writeLocalAmendment, writeLocalRequirement,
+  readOperations, readRequirement, readRequirements, readSpec, readSpecs,
+  requirementSectionCounts, workHas, writeLocalOperation, writeLocalRequirement, writeLocalSpec,
 } from "./store.js";
 import { liveHashes, witnessDrift, realDrift } from "./reviews.js";
 import { ABSENT_HASH } from "./normalize.js";
@@ -42,29 +48,38 @@ const now = () => new Date().toISOString();
 export type Err = { error: string };
 const isErr = (x: unknown): x is Err => !!x && typeof x === "object" && "error" in (x as object);
 
+const REVERSIBILITY: Reversibility[] = ["reversible", "irreversible", "unknown"];
+
 /**
  * A requirement as served: the record, plus what is DERIVED about it.
  *
- * `recheckDue` is the whole reason this wrapper exists rather than returning the row.
- * It is not a status and it is not stored — storing it would make it a field, and a
- * field is something an editor can satisfy.
+ * `recheckDue` is the whole reason this wrapper exists rather than returning the row. It
+ * is not a status and it is not stored — storing it would make it a field, and a field is
+ * something an editor can satisfy.
  */
 export interface ServedRequirement extends Requirement {
   /**
-   * Cited code has moved since ratification. Says the code changed, NOT that the rule
-   * is wrong or the record is degraded: somebody should re-check conformance.
+   * Cited code has moved since ratification. Says the code changed, NOT that the rule is
+   * wrong or the record is degraded: somebody should re-check conformance.
    */
   recheckDue: boolean;
-  /** Which anchors moved, for a reader who wants to go look. */
   drifted: string[];
-  /** Cited anchors that are no longer in the index at all. */
+  /** Cited anchors no longer in the index at all — the stronger conformance signal. */
   missing: string[];
+  /**
+   * Some operation that shaped this rule was declared irreversible.
+   *
+   * Surfaced on the requirement and not only on the spec that introduced it, because it
+   * constrains the FUTURE: the next amendment may be unimplementable, or implementable
+   * only at further cost, and whoever opens one has to see that before drafting.
+   */
+  irreversible: boolean;
 }
 
 /**
- * Principal gate. An agent acting for a person is NOT that person for this purpose:
- * `Actor.via` is set, and adoption is the one act that cannot be delegated because it
- * is the act that produces accountability (COD-17 — accountability, never evidence).
+ * Principal gate. An agent acting for a person is NOT that person here: `Actor.via` is
+ * set, and adoption is the one act that cannot be delegated, because it is the act that
+ * produces accountability (COD-17 — accountability, never evidence).
  */
 function principal(root: string, input: ActorInput, verb: string): Actor | Err {
   const a = requireActor(root, input);
@@ -81,25 +96,21 @@ function principal(root: string, input: ActorInput, verb: string): Actor | Err {
 }
 
 /**
- * A section is a `/`-delimited path, normalized so that trivially different spellings of
- * one place cannot become two places: segments trimmed, internal whitespace collapsed,
- * empty segments dropped.
+ * A section is a `/`-delimited path, normalized so trivially different spellings of one
+ * place cannot become two places.
  */
 function normalizeSection(raw: string): string {
   return raw.split("/").map((seg) => seg.trim().replace(/\s+/g, " ")).filter(Boolean).join("/");
 }
 
 /**
- * Refuse a section that differs from an existing one only by case.
+ * Refuse a section differing from an existing one only by case.
  *
- * This is the failure mode free-text grouping actually has, and it is silent: "Credit"
- * and "credit" render as two sections, each looking complete, and nothing anywhere
- * reports that a rule is filed in the wrong one. Normalization above cannot fix it,
- * because both spellings are already normal.
- *
- * Deliberately NOT fuzzy. Matching "Credit Lines" against "Credit" would refuse
- * legitimately new sections, and a guard that cries wolf is turned off. Case and
- * whitespace are the mechanical cases, so they are the ones enforced.
+ * This is the failure mode free-text grouping actually has, and it is silent: "Credit" and
+ * "credit" render as two sections, each looking complete, and nothing reports that a rule
+ * is filed in the wrong one. Normalization cannot fix it — both spellings are already
+ * normal. Deliberately NOT fuzzy: matching "Credit Lines" against "Credit" would refuse
+ * legitimately new sections, and a guard that cries wolf is turned off.
  */
 async function checkSection(root: string, section: string): Promise<Err | null> {
   const existing = await requirementSectionCounts(root);
@@ -132,238 +143,241 @@ async function witness(root: string, cites: string[]): Promise<BugWitness[]> {
 }
 
 async function serve(root: string, r: Requirement): Promise<ServedRequirement> {
-  // An unratified requirement has no witnesses, so nothing can have drifted from it.
-  // Answering `recheckDue: true` there would be reporting drift from a baseline that
-  // was never taken.
-  if (!r.witnesses.length) return { ...r, recheckDue: false, drifted: [], missing: [] };
-  const live = await liveHashes(root, r.witnesses.map((w) => w.anchorId));
-  // `realDrift` filters the changes a normalized re-hash explains away, so a cosmetic
-  // edit does not send a reader back to a rule that is still satisfied.
+  const ops = await readOperations(root, { requirementId: r.id });
+  const irreversible = ops.some((o) => o.reversibility === "irreversible");
+  // An unwitnessed requirement has no baseline, so nothing can have drifted from it.
+  // Answering `recheckDue: true` there would report drift from a snapshot never taken.
+  if (!r.witnesses.length) return { ...r, recheckDue: false, drifted: [], missing: [], irreversible };
+  const live = await liveHashes(root, r.witnesses.map((w: BugWitness) => w.anchorId));
+  // `realDrift` drops the changes a scheme difference explains away, so a re-normalization
+  // does not send every reader back to a rule that is still satisfied.
   const changes = realDrift(witnessDrift(r.witnesses, live));
-  // `now === ABSENT_HASH` is how `witnessDrift` says the symbol is not in the index —
-  // which for a requirement is the more interesting half: cited code that VANISHED is a
-  // stronger signal about conformance than cited code that merely changed.
   const missing = changes.filter((c) => c.now === ABSENT_HASH).map((c) => c.anchorId);
   const drifted = changes.filter((c) => c.now !== ABSENT_HASH).map((c) => c.anchorId);
-  return { ...r, recheckDue: changes.length > 0, drifted, missing };
+  return { ...r, recheckDue: changes.length > 0, drifted, missing, irreversible };
 }
 
 // --- authoring ---------------------------------------------------------------
 
-/**
- * Propose a requirement. Any actor — agent, human, CI job.
- *
- * It lands `proposed`, which is USABLE and carries no authority. That is what stops the
- * ratification queue becoming a blocker: the queue may run behind without stopping
- * anybody, so the pressure that produces bulk approval never builds. Block laundering on
- * ratification, never work.
- */
-export async function proposeRequirement(
-  root: string,
-  input: { title: string; section: string; statement: string; provenance: string; cites?: string[] } & ActorInput,
-): Promise<{ ok: true; id: string; requirement: Requirement } | Err> {
-  const statement = input.statement?.trim();
-  const provenance = input.provenance?.trim();
+/** Open a spec. Any actor — agent, human, CI job. */
+export async function draftSpec(
+  root: string, input: { title: string; narrative?: string } & ActorInput,
+): Promise<{ ok: true; id: string; spec: Spec } | Err> {
   const title = input.title?.trim();
-  const section = normalizeSection(input.section ?? "");
-  if (!statement) return { error: "a requirement needs a statement" };
-  if (!title) return { error: "a requirement needs a title — the name a queue row and an index show" };
-  if (!section) {
-    return {
-      error:
-        "a requirement needs a `section` — a `/`-delimited path saying where it files "
-        + "(\"Credit/Limits\", \"Settlement/Float\"). Optional organization is no organization, "
-        + "and a few hundred unsectioned rules is a heap nothing can be read out of.",
-    };
-  }
-  const clash = await checkSection(root, section);
-  if (clash) return clash;
-  if (!provenance) {
-    return {
-      error:
-        "a requirement needs `provenance` — where the rule comes from (a contract term, an "
-        + "IATA standard, a credit policy, a customer's demand, or our own past choice). It is "
-        + "what tells a reader which rules are immovable and which are ours to revisit; a rule "
-        + "with no stated source reads as arbitrary and gets worked around.",
-    };
-  }
+  if (!title) return { error: "a spec needs a title" };
   const actor = requireActor(root, input);
   if (isErr(actor)) return actor;
-  const cites = input.cites ?? [];
-  const bad = checkCitations(root, cites);
-  if (bad) return bad;
-
-  const r: Requirement = {
-    id: mint("r_"), title, section, statement, provenance, status: "proposed",
-    cites, witnesses: [], author: actor, createdAt: now(),
+  const sp: Spec = {
+    id: mint("sp_"), title, ...(input.narrative?.trim() ? { narrative: input.narrative.trim() } : {}),
+    status: "draft", author: actor, createdAt: now(),
   };
-  await writeLocalRequirement(root, r);
-  return { ok: true, id: r.id, requirement: r };
+  await writeLocalSpec(root, sp);
+  return { ok: true, id: sp.id, spec: sp };
 }
 
 /**
- * Propose a change to a requirement. Any actor.
+ * Add an operation to a draft spec. Any actor.
  *
- * `kind` is not decoration: it makes the proposer state which side it thinks moves
- * without letting it decide. `requirement-misstated` is the highest-value record the
- * system can hold — the rule did not change, our statement of it was incomplete — and
- * the resilience-engineering literature is emphatic that this gap is frequently not a
- * defect at all. Nothing here makes it harder to file than the others.
+ * `rationale` and `reversibility` are required per operation, not per spec. That is the
+ * structural defence against the drift both legislative drafting and ITIL change records
+ * document: with the rationale attached to the operation there is no free-floating prose
+ * to disagree with what actually lands.
  */
-export async function proposeAmendment(
+export async function addOperation(
   root: string,
   input: {
-    requirementId: string; kind: AmendmentKind; rationale: string;
-    statement?: string; evidence?: string;
+    specId: string; kind: OperationKind; rationale: string; reversibility: Reversibility;
+    requirementId?: string; title?: string; section?: string; statement?: string;
+    provenance?: string; cites?: string[]; evidence?: string;
   } & ActorInput,
-): Promise<{ ok: true; id: string; amendment: Amendment } | Err> {
-  const r = await readRequirement(root, input.requirementId);
-  if (!r) return { error: `no requirement "${input.requirementId}"` };
-  if (r.status === "retired") return { error: `${r.id} is retired — propose a new requirement rather than amending a withdrawn one` };
+): Promise<{ ok: true; id: string; operation: Operation } | Err> {
+  const sp = await readSpec(root, input.specId);
+  if (!sp) return { error: `no spec "${input.specId}"` };
+  if (sp.status !== "draft") return { error: `${sp.id} is ${sp.status} — operations may only be added to a draft` };
+
   const rationale = input.rationale?.trim();
-  if (!rationale) return { error: "an amendment needs a rationale — what provoked it" };
-
-  const statement = input.statement?.trim();
-  if (input.kind === "code-wrong") {
-    // There is no new text: the claim is that the rule stands and the code violates it.
-    // Accepting a statement here would quietly turn "fix the code" into an edit of the
-    // rule, which is the exact substitution this whole record kind exists to prevent.
-    if (statement) {
-      return { error: "`code-wrong` says the rule stands and the code violates it — it takes no `statement`. To propose new text, the kind is `requirement-changed` or `requirement-misstated`." };
-    }
-  } else if (!statement) {
-    return { error: `kind "${input.kind}" proposes new text and needs a \`statement\`` };
-  } else if (statement === r.statement) {
-    return { error: "the proposed statement is identical to the current one" };
+  if (!rationale) return { error: "an operation needs a rationale — what provoked it" };
+  if (!REVERSIBILITY.includes(input.reversibility)) {
+    return {
+      error:
+        "an operation needs `reversibility` (reversible | irreversible | unknown). It is "
+        + "declared before ratification because it changes the decision — a rule whose "
+        + "implementation cannot be undone is also a rule that is harder to amend later.",
+    };
   }
-
   const actor = requireActor(root, input);
   if (isErr(actor)) return actor;
-  const a: Amendment = {
-    id: mint("am_"), requirementId: r.id, kind: input.kind,
-    ...(statement ? { statement } : {}),
+
+  const statement = input.statement?.trim();
+  let payload: Partial<Operation> = {};
+  let context: Operation["context"];
+
+  if (input.kind === "add_requirement") {
+    const title = input.title?.trim();
+    const section = normalizeSection(input.section ?? "");
+    const provenance = input.provenance?.trim();
+    if (!statement) return { error: "`add_requirement` needs a statement" };
+    if (!title) return { error: "a requirement needs a title — the name a queue row and an index show" };
+    if (!section) {
+      return {
+        error:
+          "a requirement needs a `section` — a `/`-delimited path saying where it files "
+          + "(\"Credit/Limits\", \"Settlement/Float\"). Optional organization is no organization, "
+          + "and a few hundred unsectioned rules is a heap nothing can be read out of.",
+      };
+    }
+    if (!provenance) {
+      return {
+        error:
+          "a requirement needs `provenance` — where the rule comes from (a contract term, an "
+          + "IATA standard, a credit policy, a customer's demand, or our own past choice). It is "
+          + "what tells a reader which rules are immovable and which are ours to revisit.",
+      };
+    }
+    const clash = await checkSection(root, section);
+    if (clash) return clash;
+    const bad = checkCitations(root, input.cites ?? []);
+    if (bad) return bad;
+    payload = { title, section, statement, provenance, cites: input.cites ?? [] };
+  } else {
+    if (!input.requirementId) return { error: `kind "${input.kind}" needs a \`requirementId\`` };
+    const r = await readRequirement(root, input.requirementId);
+    if (!r) return { error: `no requirement "${input.requirementId}"` };
+    if (r.status === "retired") return { error: `${r.id} is retired` };
+    if (input.kind === "amend_statement") {
+      if (!statement) return { error: "`amend_statement` needs the new `statement`" };
+      if (statement === r.statement) return { error: "the proposed statement is identical to the current one" };
+      payload = { statement };
+    }
+    // The state this was written against. Verified at ratification, so an operation
+    // drafted before another spec changed the same rule is refused rather than applied
+    // to a base its author never saw.
+    context = { requirementId: r.id, statement: r.statement };
+    payload = { ...payload, requirementId: r.id };
+  }
+
+  const existing = await readOperations(root, { specId: sp.id });
+  const op: Operation = {
+    id: mint("op_"), specId: sp.id, kind: input.kind, ...payload,
     rationale, ...(input.evidence ? { evidence: input.evidence } : {}),
-    status: "pending", author: actor, createdAt: now(),
-  };
-  await writeLocalAmendment(root, a);
-  return { ok: true, id: a.id, amendment: a };
+    ...(context ? { context } : {}),
+    reversibility: input.reversibility, ord: existing.length,
+  } as Operation;
+  await writeLocalOperation(root, op);
+  return { ok: true, id: op.id, operation: op };
 }
 
 // --- adoption (principal only) -----------------------------------------------
 
-/** Adopt a proposed requirement. The act that makes it binding. */
-export async function ratifyRequirement(
-  root: string, id: string, input: ActorInput = {},
-): Promise<{ ok: true; requirement: Requirement } | Err> {
-  const who = principal(root, input, "ratify");
-  if (isErr(who)) return who;
-  const r = await readRequirement(root, id);
-  if (!r) return { error: `no requirement "${id}"` };
-  if (r.status === "ratified") return { error: `${id} is already ratified` };
-  if (r.status === "retired") return { error: `${id} is retired` };
-
-  const next: Requirement = {
-    ...r, status: "ratified", ratifiedBy: who, ratifiedAt: now(),
-    witnesses: await witness(root, r.cites),
-  };
-  await writeLocalRequirement(root, next);
-  return { ok: true, requirement: next };
+/** One operation's disposition when the fold checked it. */
+export interface OperationCheck {
+  operation: Operation;
+  ok: boolean;
+  reason?: string;
 }
 
 /**
- * Adopt an amendment — the only path by which a ratified statement changes.
+ * Adopt a spec: verify every operation, then apply them in order.
  *
- * A `code-wrong` amendment ratifies to "the rule stands": the statement is untouched and
- * the follow-up is a defect against the code. The discrepancy record will give that a
- * queue; today it is a recorded adjudication and nothing more, which is honest and is
- * better than routing it somewhere that would read as the rule having moved.
+ * **All or nothing.** A spec is an argument, and applying the half of it that still fits
+ * yields a standard nobody approved — the held-back operations are often what makes the
+ * applied ones coherent. Partial ratification, if it is ever wanted, has to be an explicit
+ * reviewer choice with the remainder becoming a new spec, not a default of the fold.
  */
-export async function ratifyAmendment(
-  root: string, amendmentId: string, input: ActorInput = {},
-): Promise<{ ok: true; requirement: Requirement; amendment: Amendment; statementChanged: boolean } | Err> {
+export async function ratifySpec(
+  root: string, specId: string, input: ActorInput = {},
+): Promise<{ ok: true; spec: Spec; applied: Operation[] } | (Err & { checks?: OperationCheck[] })> {
   const who = principal(root, input, "ratify");
   if (isErr(who)) return who;
-  const a = await readAmendment(root, amendmentId);
-  if (!a) return { error: `no amendment "${amendmentId}"` };
-  if (a.status !== "pending") return { error: `${amendmentId} is already ${a.status}` };
-  const r = await readRequirement(root, a.requirementId);
-  if (!r) return { error: `amendment ${amendmentId} points at missing requirement ${a.requirementId}` };
+  const sp = await readSpec(root, specId);
+  if (!sp) return { error: `no spec "${specId}"` };
+  if (sp.status !== "draft") return { error: `${specId} is already ${sp.status}` };
 
-  const at = now();
-  const decided: Amendment = { ...a, status: "ratified", ratifiedBy: who, ratifiedAt: at };
-  await writeLocalAmendment(root, decided);
+  const ops = await readOperations(root, { specId });
+  if (!ops.length) return { error: `${specId} has no operations — there is nothing to adopt` };
 
-  if (a.kind === "code-wrong") {
-    await writeLocalRequirement(root, { ...r, witnesses: await witness(root, r.cites) });
-    const refreshed = (await readRequirement(root, r.id))!;
-    return { ok: true, requirement: refreshed, amendment: decided, statementChanged: false };
+  const checks: OperationCheck[] = [];
+  for (const op of ops) {
+    if (op.context) {
+      const r = await readRequirement(root, op.context.requirementId);
+      if (!r) { checks.push({ operation: op, ok: false, reason: `requirement ${op.context.requirementId} no longer exists` }); continue; }
+      if (r.status === "retired") { checks.push({ operation: op, ok: false, reason: `${r.id} has been retired since this was written` }); continue; }
+      if (r.statement !== op.context.statement) {
+        checks.push({
+          operation: op, ok: false,
+          reason: `${r.id} has changed since this operation was written — it was drafted against "${op.context.statement}"`,
+        });
+        continue;
+      }
+    }
+    if (op.kind === "add_requirement") {
+      const clash = await checkSection(root, op.section!);
+      if (clash) { checks.push({ operation: op, ok: false, reason: clash.error }); continue; }
+    }
+    checks.push({ operation: op, ok: true });
   }
 
-  // Adopting new text re-baselines the witnesses: the principal has just looked, so the
-  // current code is what the ratified rule was adopted against. Leaving the old hashes
-  // would serve the fresh ratification as already recheck-due.
-  const next: Requirement = {
-    ...r, statement: a.statement!, status: "ratified",
-    ratifiedBy: who, ratifiedAt: at, witnesses: await witness(root, r.cites),
-  };
-  await writeLocalRequirement(root, next);
-  return { ok: true, requirement: next, amendment: decided, statementChanged: true };
-}
+  const failed = checks.filter((c) => !c.ok);
+  if (failed.length) {
+    return {
+      error:
+        `${specId} cannot be adopted: ${failed.length} of ${ops.length} operation(s) were written against a standard that has since moved. `
+        + `Re-draft them against the current text. (${failed.map((f) => `${f.operation.id}: ${f.reason}`).join("; ")})`,
+      checks,
+    };
+  }
 
-export async function rejectAmendment(
-  root: string, amendmentId: string, reason: string, input: ActorInput = {},
-): Promise<{ ok: true; amendment: Amendment } | Err> {
-  const who = principal(root, input, "reject an amendment");
-  if (isErr(who)) return who;
-  if (!reason?.trim()) return { error: "rejecting an amendment needs a reason — the proposer has to learn something" };
-  const a = await readAmendment(root, amendmentId);
-  if (!a) return { error: `no amendment "${amendmentId}"` };
-  if (a.status !== "pending") return { error: `${amendmentId} is already ${a.status}` };
-  const next: Amendment = { ...a, status: "rejected", rejectedBy: who, rejectedAt: now(), rejectedReason: reason.trim() };
-  await writeLocalAmendment(root, next);
-  return { ok: true, amendment: next };
+  const at = now();
+  const applied: Operation[] = [];
+  for (const op of ops) {
+    if (op.kind === "add_requirement") {
+      const r: Requirement = {
+        id: mint("r_"), title: op.title!, section: op.section!, statement: op.statement!,
+        provenance: op.provenance!, status: "ratified", cites: op.cites ?? [],
+        witnesses: await witness(root, op.cites ?? []),
+        author: sp.author, createdAt: at,
+        introducedBy: sp.id, ratifiedBy: who, ratifiedAt: at,
+      };
+      // Bind the operation to what it created, so `readOperations({requirementId})` is the
+      // rule's whole history and `serve` can see an irreversible ancestor.
+      await writeLocalOperation(root, { ...op, requirementId: r.id });
+      await writeLocalRequirement(root, r);
+    } else {
+      const r = (await readRequirement(root, op.requirementId!))!;
+      const next: Requirement = op.kind === "retire_requirement"
+        ? { ...r, status: "retired", retiredBy: who, retiredAt: at }
+        : {
+          ...r, statement: op.statement!, ratifiedBy: who, ratifiedAt: at,
+          amendedBy: [...(r.amendedBy ?? []), sp.id],
+          // Adopting new text re-baselines the witnesses: the principal has just looked, so
+          // the current code is what the ratified rule was adopted against. Keeping the old
+          // hashes would serve a fresh ratification as already recheck-due.
+          witnesses: await witness(root, r.cites),
+        };
+      await writeLocalRequirement(root, next);
+    }
+    applied.push(op);
+  }
+
+  const next: Spec = { ...sp, status: "ratified", ratifiedBy: who, ratifiedAt: at };
+  await writeLocalSpec(root, next);
+  return { ok: true, spec: next, applied };
 }
 
 /**
- * Withdraw a requirement. Principal-only for the same reason `ratify` is, and for one
- * more: retire-and-recreate is the obvious way around "no in-place edit", so it has to
- * be gated by whoever the edit path is gated by or the gate is decorative.
- */
-export async function retireRequirement(
-  root: string, id: string, input: ActorInput = {},
-): Promise<{ ok: true; requirement: Requirement } | Err> {
-  const who = principal(root, input, "retire a requirement");
-  if (isErr(who)) return who;
-  const r = await readRequirement(root, id);
-  if (!r) return { error: `no requirement "${id}"` };
-  if (r.status === "retired") return { error: `${id} is already retired` };
-  const next: Requirement = { ...r, status: "retired", retiredBy: who, retiredAt: now() };
-  await writeLocalRequirement(root, next);
-  return { ok: true, requirement: next };
-}
-
-/**
- * Re-file or rename a requirement. Touches organization only — never the statement.
+ * Re-file or rename a requirement. Organization only — never the statement.
  *
- * Gated like the adoption verbs once a requirement is RATIFIED, and the reason is not
- * symmetry: a title is what most readers read, so retitling a binding rule to agree with
- * the code is laundering that leaves the statement untouched and therefore leaves the
- * amendment trail empty. Before ratification nothing is binding, so the author may still
- * fix their own filing.
+ * Principal-gated, and the reason is not symmetry: a title is what most readers read, so
+ * retitling a binding rule to agree with the code launders it one field over, leaving the
+ * statement untouched and the operation trail empty.
  */
 export async function reorganizeRequirement(
   root: string, id: string, changes: { title?: string; section?: string }, input: ActorInput = {},
 ): Promise<{ ok: true; requirement: Requirement } | Err> {
+  const who = principal(root, input, "re-file a requirement");
+  if (isErr(who)) return who;
   const r = await readRequirement(root, id);
   if (!r) return { error: `no requirement "${id}"` };
-
-  const actor = requireActor(root, input);
-  if (isErr(actor)) return actor;
-  const ownProposal = r.status === "proposed" && actor.principal === r.author.principal;
-  if (!ownProposal) {
-    const who = principal(root, input, "re-file a ratified requirement");
-    if (isErr(who)) return who;
-  }
 
   const title = changes.title === undefined ? r.title : changes.title.trim();
   const section = changes.section === undefined ? r.section : normalizeSection(changes.section);
@@ -374,7 +388,6 @@ export async function reorganizeRequirement(
     const clash = await checkSection(root, section);
     if (clash) return clash;
   }
-
   const next: Requirement = { ...r, title, section };
   await writeLocalRequirement(root, next);
   return { ok: true, requirement: next };
@@ -396,46 +409,62 @@ export async function listRequirements(
 
 export async function getRequirement(
   root: string, id: string,
-): Promise<{ requirement: ServedRequirement; amendments: Amendment[] } | Err> {
+): Promise<{ requirement: ServedRequirement; history: Operation[] } | Err> {
   const r = await readRequirement(root, id);
   if (!r) return { error: `no requirement "${id}"` };
-  return { requirement: await serve(root, r), amendments: await readAmendments(root, { requirementId: id }) };
+  return { requirement: await serve(root, r), history: await readOperations(root, { requirementId: id }) };
+}
+
+/** One operation rendered for review: what it does, to what, and what it would produce. */
+export interface RenderedOperation {
+  operation: Operation;
+  /** The rule as it stands. Absent for `add_requirement`, which has no before. */
+  before?: ServedRequirement;
+  /** The statement this operation would produce. Absent for a retirement. */
+  after?: string;
+  /** The context has moved; this operation cannot be adopted as drafted. */
+  contextMoved: boolean;
 }
 
 /**
- * The ratification queue — what a principal has to dispose of.
+ * A spec rendered for a principal to dispose of.
  *
- * Carries the blast radius with each row (current text, proposed text, and what else
- * hangs off the requirement) because the whole trade is that a principal reads N
- * requirement diffs instead of 5,000 lines of code. If disposing of one means leaving
- * this surface to go find the cited code or the provoking evidence, the trade fails at
- * its last step and the process reverts to reading code.
+ * This is what replaces reading lines of code, and the whole trade is that a principal
+ * reads N operations instead of 5,000 lines. If disposing of one means leaving this
+ * surface to find the current text, the rationale or what else the rule touches, the trade
+ * fails at its last step and the process reverts to reading code.
  */
-export async function pendingAmendments(root: string): Promise<{
-  amendment: Amendment;
-  requirement: ServedRequirement;
-  /** How many other amendments are pending against the same requirement. */
-  alsoPending: number;
-}[]> {
-  const pending = await readAmendments(root, { status: "pending" });
-  const counts = new Map<string, number>();
-  for (const a of pending) counts.set(a.requirementId, (counts.get(a.requirementId) ?? 0) + 1);
+export async function getSpec(
+  root: string, specId: string,
+): Promise<{ spec: Spec; operations: RenderedOperation[]; adoptable: boolean } | Err> {
+  const sp = await readSpec(root, specId);
+  if (!sp) return { error: `no spec "${specId}"` };
+  const ops = await readOperations(root, { specId });
+  const operations: RenderedOperation[] = [];
+  for (const op of ops) {
+    const target = op.requirementId ? await readRequirement(root, op.requirementId) : null;
+    const before = target ? await serve(root, target) : undefined;
+    const contextMoved = !!op.context && (!target || target.statement !== op.context.statement);
+    operations.push({
+      operation: op,
+      ...(before ? { before } : {}),
+      ...(op.kind === "retire_requirement" ? {} : { after: op.statement }),
+      contextMoved,
+    });
+  }
+  return {
+    spec: sp, operations,
+    adoptable: sp.status === "draft" && ops.length > 0 && !operations.some((o) => o.contextMoved),
+  };
+}
 
-  const served = new Map<string, ServedRequirement>();
-  const out: { amendment: Amendment; requirement: ServedRequirement; alsoPending: number }[] = [];
-  for (const a of pending) {
-    let r = served.get(a.requirementId);
-    if (!r) {
-      const row = await readRequirement(root, a.requirementId);
-      // A pending amendment whose requirement is gone is not renderable, and dropping it
-      // silently would hide it from the only queue that would surface it. It cannot
-      // happen through this module — nothing deletes a requirement — so if it appears,
-      // it came from somewhere that should be found rather than tolerated.
-      if (!row) throw new Error(`amendment ${a.id} points at missing requirement ${a.requirementId}`);
-      r = await serve(root, row);
-      served.set(a.requirementId, r);
-    }
-    out.push({ amendment: a, requirement: r, alsoPending: (counts.get(a.requirementId) ?? 1) - 1 });
+/** The ratification queue — every draft, oldest first. */
+export async function pendingSpecs(root: string): Promise<{ spec: Spec; operations: number; irreversible: boolean }[]> {
+  const drafts = await readSpecs(root, { status: "draft" });
+  const out: { spec: Spec; operations: number; irreversible: boolean }[] = [];
+  for (const spec of drafts) {
+    const ops = await readOperations(root, { specId: spec.id });
+    out.push({ spec, operations: ops.length, irreversible: ops.some((o) => o.reversibility === "irreversible") });
   }
   return out;
 }

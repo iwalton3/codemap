@@ -945,22 +945,89 @@ export interface TriageStore {
  * (derived at read time from `witnesses`, never stored) and never a status a reader
  * could clear by editing the statement.
  */
-export type RequirementStatus = "proposed" | "ratified" | "retired";
+export type RequirementStatus = "ratified" | "retired";
 
 /**
- * What a proposer claims moved — COD-29's resolution shapes, lifted from the
- * resolution onto the proposal so an agent must STATE which side it thinks moves
- * without being allowed to decide.
+ * A **spec** — the unit of proposal, and the only way anything enters the standard.
  *
- * `code-wrong` carries no `statement`: there is no new text, the rule stands, and
- * ratifying it means "go fix the code". It is stored rather than refused because
- * refusing it would leave an agent no way to say the code is at fault — the exact
- * signal the kind exists to capture. The discrepancy record (COD-29 §mechanism)
- * is what will eventually give it a queue; until then it is a recorded claim.
+ * There is deliberately no second, cheaper path for a one-line change: a single amendment
+ * is a spec with one operation. Two paths to amend means the cheap one is the real policy,
+ * which is what happened to ITIL's "standard change" everywhere it was tried.
+ *
+ * The spec is NARRATIVE — it argues in its own order. The standard is a taxonomy. They are
+ * different axes over the same content, which is why a spec's shape never becomes the
+ * standard's shape; each operation says where its content files.
  */
-export type AmendmentKind = "code-wrong" | "requirement-changed" | "requirement-misstated";
+export type SpecStatus = "draft" | "ratified" | "withdrawn" | "repealed";
 
-export type AmendmentStatus = "pending" | "ratified" | "rejected";
+export interface Spec {
+  id: string;
+  title: string;
+  /**
+   * Background and argument. **Non-operative**, and marked so on every surface.
+   *
+   * Both legislative drafting and ITIL change records pair plain language with an
+   * operative change, and both document the same failure: the halves drift, the reviewer
+   * reads the prose, the operative half is what lands. The structural defence is that
+   * every operation carries its OWN rationale, so nothing here is load-bearing.
+   */
+  narrative?: string;
+  status: SpecStatus;
+  author: Actor;
+  createdAt: string;
+  ratifiedBy?: Actor;
+  ratifiedAt?: string;
+  origin?: string;
+}
+
+export type OperationKind = "add_requirement" | "amend_statement" | "retire_requirement";
+
+/**
+ * Whether satisfying this operation can be undone — declared BEFORE ratification.
+ *
+ * ITIL writes the backout plan before approval because it changes the decision. This
+ * makes nothing reversible; it makes irreversibility visible in time to matter, and it
+ * constrains the future as much as it records the past: a requirement whose implementation
+ * was irreversible is harder to amend later, which the next proposer has to see.
+ */
+export type Reversibility = "reversible" | "irreversible" | "unknown";
+
+/**
+ * The state an operation was written against.
+ *
+ * An instruction with no context applies cleanly to the wrong thing when the base has
+ * moved — which is why `patch` carries context lines and refuses a hunk that does not
+ * match. The fold verifies this and refuses; a reviewer who approved a rendering built
+ * from the standard as of sign-off did not approve applying it to a standard that has
+ * since changed.
+ */
+export interface OperationContext {
+  requirementId: string;
+  statement: string;
+}
+
+export interface Operation {
+  id: string;
+  specId: string;
+  kind: OperationKind;
+  /** Target. Absent for `add_requirement`, which creates one. */
+  requirementId?: string;
+  /** Payload for `add_requirement`, and the new statement for `amend_statement`. */
+  title?: string;
+  section?: string;
+  statement?: string;
+  provenance?: string;
+  cites?: string[];
+  /** Operative pairing — the rationale rides on the operation, never on the document. */
+  rationale: string;
+  /** What provoked it: a problem id, a finding id, a commit, a conversation. */
+  evidence?: string;
+  context?: OperationContext;
+  reversibility: Reversibility;
+  /** Application order within the spec. */
+  ord: number;
+  origin?: string;
+}
 
 export interface Requirement {
   id: string;
@@ -973,24 +1040,22 @@ export interface Requirement {
    */
   title: string;
   /**
-   * Where the rule files, as a `/`-delimited path — "Credit/Limits", "Settlement/Float".
+   * Where the rule files in the STANDARD, as a `/`-delimited path — "Credit/Limits",
+   * "Settlement/Float".
    *
    * Required for the same reason `provenance` is: optional organization is no
    * organization, and the alternative is what the merged spec clusters already are — a
-   * few hundred well-formed claims in a flat heap that nothing can be read out of. The
-   * hierarchy is the BUSINESS's, not the code's, so it is authored rather than derived
-   * from anchors the way `outline` is.
+   * few hundred well-formed claims in a flat heap. This is the standard's taxonomy, not
+   * the shape of the spec that introduced the rule; those are different axes and each
+   * operation says where its content files.
    */
   section: string;
-  /** The rule itself. Only a ratification may change this — there is no in-place edit. */
+  /** The rule itself. Only a ratified operation may change this — there is no edit path. */
   statement: string;
   /**
    * Where the rule comes from: a contract term, an IATA standard, a credit policy, one
    * customer's demand, or our own past choice. Free text on purpose — the vocabulary is
    * the business's and an enum would be wrong within a quarter.
-   *
-   * Not optional. It is what tells a reader which rules are immovable and which are ours
-   * to revisit; a rule with no stated source reads as arbitrary and gets worked around.
    */
   provenance: string;
   status: RequirementStatus;
@@ -1005,32 +1070,14 @@ export interface Requirement {
   witnesses: BugWitness[];
   author: Actor;
   createdAt: string;
+  /** The spec that introduced it, and the ones that amended it. Its whole history. */
+  introducedBy: string;
+  amendedBy?: string[];
   ratifiedBy?: Actor;
   ratifiedAt?: string;
   retiredBy?: Actor;
   retiredAt?: string;
   /** Set by the sidecar fold only; a local row has none. Same marker as `node_versions`. */
-  origin?: string;
-}
-
-/** A proposed change to a requirement. The live text does not move until `ratify`. */
-export interface Amendment {
-  id: string;
-  requirementId: string;
-  kind: AmendmentKind;
-  /** The proposed replacement text. Absent for `code-wrong` — see `AmendmentKind`. */
-  statement?: string;
-  rationale: string;
-  /** What provoked it: a discrepancy id, a finding id, a commit, a conversation. */
-  evidence?: string;
-  status: AmendmentStatus;
-  author: Actor;
-  createdAt: string;
-  ratifiedBy?: Actor;
-  ratifiedAt?: string;
-  rejectedBy?: Actor;
-  rejectedAt?: string;
-  rejectedReason?: string;
   origin?: string;
 }
 

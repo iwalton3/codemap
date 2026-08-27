@@ -39,7 +39,7 @@ import {
   type Graph, type Edge, type Annotation, type AnnotationStore,
   type CoverageRule, type CoverageStore, type AnalyzerConfig, type Review, type ReviewStore, type Triage, type TriageStore,
   type BugWitness, type Importance, type Complexity, type TriageSource,
-  type Requirement, type RequirementStore, type Amendment,
+  type Requirement, type RequirementStore, type Spec, type Operation,
   SCHEMA_VERSION, ANCHOR_SCHEME, HASH_SCHEME,
 } from "./schema.js";
 
@@ -2078,7 +2078,7 @@ export async function writePush(root: string, pr: string, rec: PushRecord): Prom
   setMeta(db(root), "pr_push", store);
 }
 
-// --- requirements & amendments (COD-29) -------------------------------------
+// --- requirements, specs & operations (COD-29) ------------------------------
 //
 // Deliberately NOT reachable from any node path. `loadNodes` does not see these
 // tables and nothing here touches `nodes`/`node_versions`, which is the structural
@@ -2147,49 +2147,73 @@ export async function writeLocalRequirement(root: string, r: Requirement): Promi
   ).run(...requirementRow(r) as any);
 }
 
-const hydrateAmendment = (body: string, origin: string | null): Amendment | null => {
+const hydrateSpec = (body: string, origin: string | null): Spec | null => {
   try {
-    const a = JSON.parse(body) as Amendment;
-    return origin ? { ...a, origin } : a;
+    const sp = JSON.parse(body) as Spec;
+    return origin ? { ...sp, origin } : sp;
   } catch { return null; }
 };
 
-export async function readAmendments(
-  root: string,
-  opts: { requirementId?: string; status?: Amendment["status"] } = {},
-): Promise<Amendment[]> {
-  const clauses: string[] = [];
-  const args: string[] = [];
-  if (opts.requirementId) { clauses.push("requirement_id = ?"); args.push(opts.requirementId); }
-  if (opts.status) { clauses.push("status = ?"); args.push(opts.status); }
-  const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+export async function readSpecs(root: string, opts: { status?: Spec["status"] } = {}): Promise<Spec[]> {
+  const where = opts.status ? " WHERE status = ?" : "";
+  const args = opts.status ? [opts.status] : [];
   const rows = db(root).prepare(
-    `SELECT body, origin FROM amendments${where} ORDER BY created_at, id`,
+    `SELECT body, origin FROM specs${where} ORDER BY created_at, id`,
   ).all(...args as []) as unknown as { body: string; origin: string | null }[];
-  const out: Amendment[] = [];
-  for (const row of rows) { const a = hydrateAmendment(row.body, row.origin); if (a) out.push(a); }
+  const out: Spec[] = [];
+  for (const r of rows) { const sp = hydrateSpec(r.body, r.origin); if (sp) out.push(sp); }
   return out;
 }
 
-export async function readAmendment(root: string, id: string): Promise<Amendment | null> {
-  const row = db(root).prepare("SELECT body, origin FROM amendments WHERE id = ?")
+export async function readSpec(root: string, id: string): Promise<Spec | null> {
+  const row = db(root).prepare("SELECT body, origin FROM specs WHERE id = ?")
     .get(id) as { body: string; origin: string | null } | undefined;
-  return row ? hydrateAmendment(row.body, row.origin) : null;
+  return row ? hydrateSpec(row.body, row.origin) : null;
 }
 
-export async function writeLocalAmendment(root: string, a: Amendment): Promise<void> {
+export async function writeLocalSpec(root: string, sp: Spec): Promise<void> {
   const d = db(root);
-  const owner = d.prepare("SELECT source_scope FROM amendments WHERE id = ? AND source_scope IS NOT NULL")
-    .get(a.id) as { source_scope: string } | undefined;
-  if (owner) {
-    throw new Error(
-      `${a.id} is owned by the sidecar fold (${owner.source_scope}) — write an event, not a row.`,
-    );
-  }
+  const owner = d.prepare("SELECT source_scope FROM specs WHERE id = ? AND source_scope IS NOT NULL")
+    .get(sp.id) as { source_scope: string } | undefined;
+  if (owner) throw new Error(`${sp.id} is owned by the sidecar fold (${owner.source_scope}) — write an event, not a row.`);
   d.prepare(
-    "INSERT OR REPLACE INTO amendments(id,requirement_id,kind,status,created_at,origin,source_scope,body)"
+    "INSERT OR REPLACE INTO specs(id,status,title,created_at,ratified_at,origin,source_scope,body)"
     + " VALUES(?,?,?,?,?,?,?,?)",
-  ).run(a.id, a.requirementId, a.kind, a.status, a.createdAt, a.origin ?? null, null, JSON.stringify(a));
+  ).run(sp.id, sp.status, sp.title, sp.createdAt, sp.ratifiedAt ?? null, sp.origin ?? null, null, JSON.stringify(sp));
+}
+
+const hydrateOperation = (body: string, origin: string | null): Operation | null => {
+  try {
+    const op = JSON.parse(body) as Operation;
+    return origin ? { ...op, origin } : op;
+  } catch { return null; }
+};
+
+export async function readOperations(
+  root: string, opts: { specId?: string; requirementId?: string } = {},
+): Promise<Operation[]> {
+  const clauses: string[] = [];
+  const args: string[] = [];
+  if (opts.specId) { clauses.push("spec_id = ?"); args.push(opts.specId); }
+  if (opts.requirementId) { clauses.push("requirement_id = ?"); args.push(opts.requirementId); }
+  const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+  const rows = db(root).prepare(
+    `SELECT body, origin FROM operations${where} ORDER BY spec_id, ord`,
+  ).all(...args as []) as unknown as { body: string; origin: string | null }[];
+  const out: Operation[] = [];
+  for (const r of rows) { const op = hydrateOperation(r.body, r.origin); if (op) out.push(op); }
+  return out;
+}
+
+export async function writeLocalOperation(root: string, op: Operation): Promise<void> {
+  const d = db(root);
+  const owner = d.prepare("SELECT source_scope FROM operations WHERE id = ? AND source_scope IS NOT NULL")
+    .get(op.id) as { source_scope: string } | undefined;
+  if (owner) throw new Error(`${op.id} is owned by the sidecar fold (${owner.source_scope}) — write an event, not a row.`);
+  d.prepare(
+    "INSERT OR REPLACE INTO operations(id,spec_id,kind,requirement_id,ord,origin,source_scope,body)"
+    + " VALUES(?,?,?,?,?,?,?,?)",
+  ).run(op.id, op.specId, op.kind, op.requirementId ?? null, op.ord, op.origin ?? null, null, JSON.stringify(op));
 }
 
 /** Section -> how many requirements file under it. The index a flat list cannot be. */

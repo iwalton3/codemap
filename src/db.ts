@@ -667,24 +667,40 @@ function migrate(d: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS ix_req_section ON requirements(section);
     CREATE INDEX IF NOT EXISTS ix_req_scope ON requirements(source_scope);
 
-    -- Amendments — the proposal log, and the requirement's version history. There is no
-    -- separate versions table: an amendment IS the record of a change, so keeping both
-    -- would mean two accounts of the same event that can disagree.
-    CREATE TABLE IF NOT EXISTS amendments (
+    -- Specs and their operations. The standard is a PROJECTION of the ratified specs,
+    -- which is what makes backout possible at all: operations replay, a rendered diff
+    -- does not. There is no separate requirement-version table -- the operations ARE the
+    -- version history, and two accounts of one event can disagree.
+    CREATE TABLE IF NOT EXISTS specs (
       id TEXT NOT NULL,
-      requirement_id TEXT NOT NULL,
-      kind TEXT NOT NULL,
       status TEXT NOT NULL,
+      title TEXT NOT NULL,
       created_at TEXT NOT NULL,
+      ratified_at TEXT,
       origin TEXT, source_scope TEXT,
       body TEXT NOT NULL
     );
-    CREATE UNIQUE INDEX IF NOT EXISTS ix_amend_identity ON amendments(id);
-    -- The review surface is "everything pending, oldest first", and the blast-radius
-    -- lookup is by requirement. Both are hot enough to index from the start.
-    CREATE INDEX IF NOT EXISTS ix_amend_pending ON amendments(status, created_at);
-    CREATE INDEX IF NOT EXISTS ix_amend_req ON amendments(requirement_id);
-    CREATE INDEX IF NOT EXISTS ix_amend_scope ON amendments(source_scope);
+    CREATE UNIQUE INDEX IF NOT EXISTS ix_spec_identity ON specs(id);
+    -- The review surface is "every draft, oldest first".
+    CREATE INDEX IF NOT EXISTS ix_spec_status ON specs(status, created_at);
+    CREATE INDEX IF NOT EXISTS ix_spec_scope ON specs(source_scope);
+
+    CREATE TABLE IF NOT EXISTS operations (
+      id TEXT NOT NULL,
+      spec_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      -- NULL for add_requirement, which creates its target rather than naming one.
+      requirement_id TEXT,
+      -- Lifted out because the blast-radius question on a draft spec is "what else is
+      -- proposed against this requirement", asked once per row rendered.
+      ord INTEGER NOT NULL,
+      origin TEXT, source_scope TEXT,
+      body TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ix_op_identity ON operations(id);
+    CREATE INDEX IF NOT EXISTS ix_op_spec ON operations(spec_id, ord);
+    CREATE INDEX IF NOT EXISTS ix_op_req ON operations(requirement_id);
+    CREATE INDEX IF NOT EXISTS ix_op_scope ON operations(source_scope);
   `);
   // anchors.derivation — NULL on rows indexed before provenance existed, which is
   // `legacy_live_derivation`: this machine cannot say how its own index was made.
