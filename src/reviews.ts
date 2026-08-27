@@ -43,7 +43,13 @@ export interface ReviewInfo {
    * here, so the surface has to be able to say which it is (see `via`).
    */
   coveredBy?: string;
-  /** "human" (verified) or "agent" (checked); absent legacy reviews are treated as human. */
+  /**
+   * "human" (verified) or "agent" (checked). ABSENT reads as **agent**, not human:
+   * every default in this file is `?? "agent"` (see `reviewStatesFor` and the
+   * migration note in `anchorReviewMap`), because a legacy row cannot show that a
+   * person stood behind it and the safe reading of "cannot tell" is the lower tier.
+   * This said "treated as human" and was wrong in the direction that INFLATES trust.
+   */
   actor?: "human" | "agent";
   at?: string;
   /**

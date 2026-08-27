@@ -9,7 +9,7 @@ import { indexFile } from "../repo.js";
 import { readAnchorStore, loadNodes, readGraph, readAnnotations } from "../store.js";
 import { reviewStatesFor, deriveCodeReview, type ReviewPair, type DerivedCodeReview } from "../reviews.js";
 import { reviewTriageFor, coverageFor as triageCoverageFor, rollupCoverage } from "../triage.js";
-import { langFor, anchorBrief, trustOf, loadNodesShared} from "./shared.js";
+import { langFor, anchorBrief, trustOf, vouchOf, loadNodesShared} from "./shared.js";
 
 /**
  * Derived code review per node — a node reads code-reviewed only when every code
@@ -116,6 +116,7 @@ export async function nodeCatalog(root: string) {
       codeReview,
       viewed: { logical: e?.viewed.logical.state ?? "unreviewed", code: e?.viewed.code.state ?? "unreviewed" },
       trust: trustOf(n.status, review),
+      vouch: vouchOf(n.status, review),
       triage: e?.triage,
       severity: e?.triage.severity ?? "untriaged",
     };
@@ -306,6 +307,7 @@ export async function getNode(root: string, id: string, opts: { compact?: boolea
   const review = { logical: nodeRt.review.logical, code: { state: codeReview.state, actor: codeReview.actor ?? undefined } };
   const edges = graph.edges.filter((e) => e.from === id || e.to === id);
   const trust = trustOf(node.status, review);
+  const vouch = vouchOf(node.status, review);
   if (opts.compact) {
     return {
       ...node,
@@ -318,6 +320,7 @@ export async function getNode(root: string, id: string, opts: { compact?: boolea
       review,
       severity: nodeRt.triage.severity,
       trust,
+      vouch,
     };
   }
   return {
@@ -331,6 +334,7 @@ export async function getNode(root: string, id: string, opts: { compact?: boolea
     triage: nodeRt.triage,
     severity: nodeRt.triage.severity,
     trust,
+    vouch,
   };
 }
 
@@ -579,7 +583,7 @@ export async function stateMap(root: string, opts: { aggregate?: string } = {}) 
       // a fully-AUTHORED transition (no generatedBy) is its own enrichment.
       const en = n.generatedBy ? byId.get(trIdOf(tid)) : n;
       const enrichment = en && en.type === "transition" && !en.generatedBy
-        ? { id: en.id, title: en.title, summary: en.summary, status: en.status, review: reviewOf(en.id), trust: trustOf(en.status, reviews.get(`node:${en.id}`)) }
+        ? { id: en.id, title: en.title, summary: en.summary, status: en.status, review: reviewOf(en.id), trust: trustOf(en.status, reviews.get(`node:${en.id}`)), vouch: vouchOf(en.status, reviews.get(`node:${en.id}`)) }
         : null;
       return {
         id: tid, title: n.title, summary: n.summary,
@@ -651,7 +655,7 @@ export async function stateMap(root: string, opts: { aggregate?: string } = {}) 
         return {
           id: sid, member: n.title.split("·").pop()!.trim(), title: n.title,
           initial: initial.has(sid), layer: layerOf.get(sid)!, row: pos.get(sid) ?? 0,
-          review: reviewOf(sid), trust: trustOf(n.status, reviews.get(`node:${sid}`)),
+          review: reviewOf(sid), trust: trustOf(n.status, reviews.get(`node:${sid}`)), vouch: vouchOf(n.status, reviews.get(`node:${sid}`)),
         };
       }),
       transitions,

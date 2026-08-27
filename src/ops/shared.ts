@@ -91,6 +91,74 @@ export function trustOf(status: string | undefined, review?: { logical: ReviewLi
   return "unverified";
 }
 
+/**
+ * The claims `trust` collapses into one word, said separately.
+ *
+ * `trustOf` above computes freshness × (accountability ⊔ evidence) over the CITED
+ * anchors and returns a single tier, which a reader takes as a verdict on four
+ * independent things. The sharpest consequence is that `stale` short-circuits: a doc
+ * a person signed and an agent re-checked becomes indistinguishable from one nobody
+ * ever read, the moment the code moves. That is a freshness answer erasing two
+ * unrelated facts. See `docs/trust-split.md`.
+ *
+ * Additive: `trustOf` is unchanged and still emitted beside this, so nothing stored
+ * changes meaning and no reader breaks.
+ *
+ * What is deliberately NOT here:
+ *
+ *   - `viewed` — "I looked at this and want to come back to it". A personal
+ *     work-tracking bookmark, not a claim about the doc, so it stays its own field
+ *     and is not an input to either axis.
+ *   - a count of corroborating reads. Reads are a heat signature, not evidence:
+ *     more reads means more references means the cited code is MORE likely to be
+ *     churning, so a count would point the wrong way. What matters is how many
+ *     distinct ERROR PROFILES have looked (see `isErrorIndependent`) — and that
+ *     cannot vary yet, because `sameMark` keys review rows on target+level rather
+ *     than on actor, so exactly one mark exists per level. Shipping the field now
+ *     would be shipping a number structurally pinned at 1, which is the vacuous
+ *     shape `independent` already demonstrated. It lands when rows become
+ *     actor-keyed.
+ *   - `coverage` beyond `"unknown"`. It is only ever `"derived"` when a recorded
+ *     derivation re-runs clean (COD-17); an author-set value is a self-report of
+ *     exhaustiveness by the party whose exhaustiveness is in doubt.
+ */
+export type Vouch = {
+  /** The cited code still matches what was witnessed. Freshness, and nothing else. */
+  fresh: boolean;
+  /** A person signed it. Never inferred, and no agent act produces it. */
+  accountable: { at?: string; level: "logical" | "code" } | null;
+  /** An agent read the code and the claims held. */
+  evidence: { at?: string; level: "logical" | "code" } | null;
+  /** Whether the cited set is known to BE the subject. See COD-17. */
+  coverage: "derived" | "unknown";
+};
+
+type ReviewFull = { state: string; actor?: "human" | "agent"; at?: string };
+
+export function vouchOf(
+  status: string | undefined,
+  review?: { logical: ReviewFull; code: ReviewFull },
+): Vouch {
+  const fresh = !(status === "stale" || status === "dangling" || status === "removed");
+  const pick = (want: "human" | "agent") => {
+    for (const level of ["logical", "code"] as const) {
+      const r = review?.[level];
+      // A mark whose own witness went stale is not evidence of anything now — but
+      // unlike `trustOf` this does not erase the OTHER axis, which is the point.
+      // `?? "agent"`, matching every other default in `reviews.ts`: a row that
+      // cannot show a person stood behind it must not be read as accountability.
+      if (r?.state === "reviewed" && (r.actor ?? "agent") === want) return { at: r.at, level };
+    }
+    return null;
+  };
+  return {
+    fresh,
+    accountable: pick("human"),
+    evidence: pick("agent"),
+    coverage: "unknown",
+  };
+}
+
 /** Effective coverage state per anchor, from citation + stored rules. */
 /**
  * Nodes, with the shared docs folded in first.

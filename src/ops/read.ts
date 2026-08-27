@@ -9,7 +9,7 @@ import { teamNotesByAnchor, type PinnedNote } from "../notes-lookup.js";
 import { resolveAnchorRefs } from "../refs.js";
 import { reviewStatus, reviewStatesFor, anchorReviewMap, deriveCodeReview, type ReviewPair } from "../reviews.js";
 import { triageStatus } from "../triage.js";
-import { langFor, anchorBrief, type Trust, trustOf, coverageFor, loadNodesShared} from "./shared.js";
+import { langFor, anchorBrief, type Trust, trustOf, vouchOf, coverageFor, loadNodesShared} from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Reading the graph & code
@@ -130,7 +130,7 @@ export async function search(root: string, query: string, limit = 30) {
   const nodeHits = matched.map((n) => {
     const rp = reviews.get(`node:${n.id}`);
     const review = { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" };
-    return { id: n.id, type: n.type, title: n.title, summary: n.summary, status: n.status ?? "fresh", review, trust: trustOf(n.status, rp) };
+    return { id: n.id, type: n.type, title: n.title, summary: n.summary, status: n.status ?? "fresh", review, trust: trustOf(n.status, rp), vouch: vouchOf(n.status, rp) };
   });
   return { anchors, nodes: nodeHits };
 }
@@ -192,7 +192,7 @@ export async function context(root: string, refs: string[]) {
   const view = (n: LogicalNode) => {
     const rp = reviewed.get(`node:${n.id}`);
     return { id: n.id, title: n.title, type: n.type, summary: n.summary, status: n.status ?? "fresh",
-      review: { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" }, trust: trustOf(n.status, rp) };
+      review: { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" }, trust: trustOf(n.status, rp), vouch: vouchOf(n.status, rp) };
   };
   const docs = covering.map((n) => ({ ...view(n), coversInScope: n.anchors.filter((id) => scope.has(id)).length }))
     .sort((a, b) => (rank[a.trust] - rank[b.trust]) || b.coversInScope - a.coversInScope);
@@ -356,7 +356,7 @@ export async function getAnchor(root: string, id: string) {
     // trust it?" is answerable from the anchor alone.
     citedBy: citing.map((n) => {
       const rp = citeReviews.get(`node:${n.id}`);
-      return { id: n.id, title: n.title, status: n.status ?? "fresh", trust: trustOf(n.status, rp) };
+      return { id: n.id, title: n.title, status: n.status ?? "fresh", trust: trustOf(n.status, rp), vouch: vouchOf(n.status, rp) };
     }),
     // Separate from `citedBy` rather than merged: one is this machine's store and
     // the other is the sidecar's, and merging them makes "who says so"
