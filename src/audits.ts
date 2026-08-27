@@ -1,0 +1,260 @@
+/**
+ * Audits, and the conformance classification they decide (COD-29).
+ * `docs/requirements-architecture.md` is normative; this implements it.
+ *
+ * An audit records that somebody checked a rule against the code, and **what they did**.
+ * It is produced whether or not anything was found, because a positive audit is the only
+ * record that can do two jobs nothing else can:
+ *
+ *  1. **Close a gap.** A gap has no code to witness, so it cannot drift and would
+ *     otherwise outlive its truth in silence. A positive audit is the event that says the
+ *     code now exists and conforms.
+ *  2. **Make a regression detectable.** Once a rule has been met, a later failure is a
+ *     problem rather than a gap that was always there.
+ *
+ * The non-vacuity rule is enforced here rather than asked for. A positive audit has an
+ * EFFECT — it closes a gap and silences the mechanism that would have caught the thing —
+ * so *"I checked and it conforms"* from an actor that did not really check manufactures
+ * confidence and disables the detector at the same time. Prompt wording cannot fix that:
+ * steering is not merely ignorable, it may never be sent (see the note above the tool table
+ * in `mcp.ts`). So an audit that records nothing about what it read or ran cannot claim an
+ * outcome, and doc-only evidence does not reach `conformant`.
+ *
+ * Not built: the problem record a nonconformant audit should file, and the population
+ * predicate — without which "no code should conform to this yet" means "I looked and did
+ * not find any".
+ */
+
+import { randomBytes } from "node:crypto";
+import type {
+  Actor, Audit, AuditEvidence, AuditOutcome, BugWitness, Requirement,
+} from "./schema.js";
+import {
+  readAcknowledgements, readAudits, readRequirement, readRequirements,
+  workHas, writeLocalAudit,
+} from "./store.js";
+import { liveHashes, witnessDrift, realDrift } from "./reviews.js";
+import { headCommit, isGitRepo } from "./git.js";
+import { requireActor } from "./identity.js";
+import type { ActorInput } from "./identity.js";
+import { releaseAcknowledgement, type ServedAcknowledgement } from "./acknowledgements.js";
+
+const mint = () => "au_" + randomBytes(6).toString("hex");
+const now = () => new Date().toISOString();
+
+export type Err = { error: string };
+const isErr = (x: unknown): x is Err => !!x && typeof x === "object" && "error" in (x as object);
+
+const OUTCOMES: AuditOutcome[] = ["conformant", "nonconformant", "indeterminate"];
+
+/**
+ * Did the auditor touch the code, as opposed to only reading about it?
+ *
+ * The distinction is load-bearing rather than descriptive: a doc-only pass inherits the
+ * doc's errors and fails SILENTLY, yielding a pass rather than a flag. COD-27's incurious
+ * map-backed agent is the nearest measurement, and it must be read carefully — its
+ * instructions told it not to double-check in order to save tokens, so the incuriosity was
+ * bought rather than inherent. The general lesson is the useful one: **verification effort
+ * is a policy setting, and economising on it buys a silent pass.** Here, economising simply
+ * does not buy the state change.
+ */
+const touchedCode = (e: AuditEvidence): boolean => !!(e.read?.length || e.ran?.length);
+
+/** Any evidence at all — enough to file a finding, not enough to certify one. */
+const hasEvidence = (e: AuditEvidence): boolean => touchedCode(e) || !!e.consulted?.length;
+
+export interface ServedAudit extends Audit {
+  /**
+   * The code this audit examined has moved since. The audit is not wrong — it was true of
+   * the code it read — but it no longer speaks about what is there now.
+   */
+  superseded: boolean;
+  drifted: string[];
+}
+
+async function serve(root: string, a: Audit): Promise<ServedAudit> {
+  if (!a.witnesses.length) return { ...a, superseded: false, drifted: [] };
+  const live = await liveHashes(root, a.witnesses.map((w: BugWitness) => w.anchorId));
+  const changes = realDrift(witnessDrift(a.witnesses, live));
+  return { ...a, superseded: changes.length > 0, drifted: changes.map((c) => c.anchorId) };
+}
+
+// --- recording ---------------------------------------------------------------
+
+/**
+ * Record an audit. Open to any actor — establishing conformance is exactly what an
+ * auditor agent is for, and this record makes no adjudication.
+ *
+ * The refusals are about EVIDENCE, in both directions:
+ *
+ *  - `conformant` needs code touched. Doc-only is recorded as `indeterminate` territory,
+ *    never as a certification.
+ *  - `nonconformant` needs evidence too. *"I could not verify this"* is not a
+ *    non-conformance, it is an unverified requirement, and absence of evidence must never
+ *    file — without that gate this becomes the 138-false-positives problem again.
+ *  - `indeterminate` is the quiet bucket, and the only outcome that may carry nothing.
+ */
+export async function recordAudit(
+  root: string,
+  input: {
+    requirementId: string; outcome: AuditOutcome; finding: string; evidence?: AuditEvidence;
+  } & ActorInput,
+): Promise<{ ok: true; id: string; audit: Audit; released: string[] } | Err> {
+  if (!OUTCOMES.includes(input.outcome)) return { error: `outcome must be one of ${OUTCOMES.join(" | ")}` };
+  const finding = input.finding?.trim();
+  if (!finding) return { error: "an audit needs a finding — what you concluded, in your own words" };
+  const r = await readRequirement(root, input.requirementId);
+  if (!r) return { error: `no requirement "${input.requirementId}"` };
+
+  const evidence: AuditEvidence = input.evidence ?? {};
+  if (input.outcome === "conformant" && !touchedCode(evidence)) {
+    return {
+      error:
+        "a `conformant` audit must record code it READ or a command it RAN. Consulting "
+        + "documentation is not enough: a stale or missing doc yields a pass rather than a "
+        + "flag, so a doc-only check certifies nothing. Record `evidence.read` / "
+        + "`evidence.ran`, or file this as `indeterminate`.",
+    };
+  }
+  if (input.outcome === "nonconformant" && !hasEvidence(evidence)) {
+    return {
+      error:
+        "a `nonconformant` audit needs demonstrated non-conformance. \"I could not verify "
+        + "this\" is an unverified requirement, not a violation — file it as `indeterminate`, "
+        + "which is the quieter bucket it belongs in.",
+    };
+  }
+
+  const read = evidence.read ?? [];
+  if (read.length) {
+    let have: Set<string>;
+    try { have = workHas(root, read); } catch { have = new Set(); }
+    const unknown = read.filter((id) => !have.has(id));
+    if (unknown.length) return { error: `unknown anchor(s) in evidence.read: ${unknown.join(", ")}` };
+  }
+
+  const actor = requireActor(root, input);
+  if (isErr(actor)) return actor;
+  const live = read.length ? await liveHashes(root, read) : null;
+  const audit: Audit = {
+    id: mint(), requirementId: r.id, outcome: input.outcome, evidence, finding,
+    witnesses: read.map((id) => ({ anchorId: id, bodyHash: live?.get(id) ?? "sha256:absent" })),
+    auditor: actor, at: now(), commit: isGitRepo(root) ? headCommit(root) : null,
+  };
+  await writeLocalAudit(root, audit);
+  return { ok: true, id: audit.id, audit, released: await settleAcknowledgements(root, audit) };
+}
+
+/**
+ * An audit result can falsify what an acknowledgement asserts, and then the record has to
+ * go — a silencer nobody rechecks is how a standard comes to look satisfied.
+ *
+ * Releasing is the safe direction (its failure mode is noise), so this is automatic where
+ * granting never could be.
+ */
+async function settleAcknowledgements(root: string, audit: Audit): Promise<string[]> {
+  const active = await readAcknowledgements(root, { requirementId: audit.requirementId, state: "active" });
+  const released: string[] = [];
+  for (const a of active) {
+    // A conformant audit pays both: the work is done, whatever the record said.
+    // A nonconformant one falsifies a GAP specifically — a gap claims no code that should
+    // conform exists, and the audit just found some that does not. Debt survives it,
+    // because debt and non-conformance are consistent by construction.
+    const falsified = audit.outcome === "conformant"
+      || (audit.outcome === "nonconformant" && a.basis === "gap");
+    if (!falsified) continue;
+    const reason = audit.outcome === "conformant"
+      ? `audit ${audit.id} found the rule met`
+      : `audit ${audit.id} found code that does not conform — this was recorded as a gap, which claims there is none`;
+    const done = await releaseAcknowledgement(root, a.id, reason, { principal: audit.auditor.principal });
+    if (!isErr(done)) released.push(a.id);
+  }
+  return released;
+}
+
+// --- reading -----------------------------------------------------------------
+
+export async function auditsFor(root: string, requirementId: string): Promise<ServedAudit[]> {
+  const rows = await readAudits(root, { requirementId });
+  return Promise.all(rows.map((a) => serve(root, a)));
+}
+
+/**
+ * What state the system is in relative to a rule.
+ *
+ * Four states, and the fourth is the dangerous one: **`unknown` must never render as
+ * `conformant`**. A standard that looks satisfied because it is merely unexamined is
+ * confidence manufactured at scale — a vacuous test one level up — and at seeding scale
+ * most harvested criteria land exactly there.
+ *
+ * The order of resolution matters and is not arbitrary:
+ *
+ *  1. A **live** nonconformant audit is the strongest thing anyone knows. Debt exists to
+ *     silence it, so the acknowledgement decides how it reads, not the audit.
+ *  2. An acknowledgement is the next word: somebody looked and decided to accept this.
+ *  3. A **live** conformant audit reaches `conformant`.
+ *  4. Everything else is `unknown` — including a SUPERSEDED conformant audit, because
+ *     nobody has checked the code that is actually there. That the rule was once met is
+ *     kept on the record rather than in the state, which is what makes a later failure a
+ *     regression rather than a gap that was always there.
+ */
+export type Conformance = "conformant" | "gap" | "debt" | "unknown";
+
+export interface RequirementConformance {
+  requirement: Requirement;
+  conformance: Conformance;
+  acknowledgements: ServedAcknowledgement[];
+  /** The most recent audit, whatever it said. */
+  lastAudit?: ServedAudit;
+  /** It was conformant once, and the code has moved since. */
+  wasConformant: boolean;
+}
+
+export async function conformance(
+  root: string, opts: { asOf?: string } = {},
+): Promise<RequirementConformance[]> {
+  const asOf = opts.asOf ?? now();
+  const { requirements } = await readRequirements(root);
+  const { listAcknowledgements } = await import("./acknowledgements.js");
+  const out: RequirementConformance[] = [];
+  for (const requirement of requirements) {
+    const acks = await listAcknowledgements(root, { requirementId: requirement.id, state: "active", asOf });
+    const audits = await auditsFor(root, requirement.id);
+    const last = audits[audits.length - 1];
+    const live = audits.filter((a) => !a.superseded);
+    const liveConformant = live.some((a) => a.outcome === "conformant");
+    const liveNonconformant = live.some((a) => a.outcome === "nonconformant");
+    const wasConformant = audits.some((a) => a.outcome === "conformant");
+
+    const basis = acks.some((a) => a.basis === "debt") ? "debt"
+      : acks.some((a) => a.basis === "gap") ? "gap"
+        : undefined;
+
+    const state: Conformance = basis ?? (liveNonconformant ? "unknown" : liveConformant ? "conformant" : "unknown");
+    out.push({
+      requirement, conformance: state, acknowledgements: acks,
+      ...(last ? { lastAudit: last } : {}), wasConformant,
+    });
+  }
+  return out;
+}
+
+/** How much of the standard is currently silenced, checked, or simply unexamined. */
+export async function silenced(root: string, opts: { asOf?: string } = {}): Promise<{
+  total: number; conformant: number; gap: number; debt: number; unknown: number;
+  due: number; regressed: number;
+}> {
+  const rows = await conformance(root, opts);
+  const { dueForRevalidation } = await import("./acknowledgements.js");
+  const count = (c: Conformance) => rows.filter((r) => r.conformance === c).length;
+  return {
+    total: rows.length,
+    conformant: count("conformant"),
+    gap: count("gap"),
+    debt: count("debt"),
+    unknown: count("unknown"),
+    due: (await dueForRevalidation(root, opts)).length,
+    // Met once, and no longer known to be. The signal a never-audited rule cannot give.
+    regressed: rows.filter((r) => r.wasConformant && r.conformance !== "conformant").length,
+  };
+}

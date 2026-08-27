@@ -20,8 +20,9 @@ import { discard } from "./test-tmp.js";
 import { draftSpec, addOperation, ratifySpec, listRequirements } from "./requirements.js";
 import {
   acknowledgeGap, acknowledgeDebt, releaseAcknowledgement,
-  listAcknowledgements, dueForRevalidation, conformance, silenced,
+  listAcknowledgements, dueForRevalidation,
 } from "./acknowledgements.js";
+import { conformance, silenced } from "./audits.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 const SRC = "export function creditLine(cents) { return cents; }\n";

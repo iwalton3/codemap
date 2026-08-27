@@ -20,20 +20,20 @@
  *  - **Gate what silences, never what unsilences.** Releasing is open to any actor: its
  *    failure mode is noise, and noise is recoverable. Granting is what needs the gate.
  *
- * Not built, and named so their absence is legible: the audit record, which is what will
- * RELEASE a gap on its own (a gap has no code to witness, so nothing else can) and make a
- * later regression a problem rather than a gap that was always there; the problem record
- * these silence; and the population predicate, which is what will give a gap an honest
- * magnitude.
+ * The conformance classification these feed lives in `audits.ts`, one layer up, because it
+ * depends on audits too — and a gap is RELEASED by a positive audit rather than from here.
+ *
+ * Not built, and named so their absence is legible: the problem record these silence, and
+ * the population predicate, which is what will give a gap an honest magnitude.
  */
 
 import { randomBytes } from "node:crypto";
 import type {
-  Acknowledgement, AcknowledgementBasis, AcknowledgementPriority, Actor, Requirement,
+  Acknowledgement, AcknowledgementPriority, Actor,
 } from "./schema.js";
 import {
   readAcknowledgement, readAcknowledgements, readOperations, readRequirement,
-  readRequirements, readSpec, writeLocalAcknowledgement,
+  readSpec, writeLocalAcknowledgement,
 } from "./store.js";
 import { isAgentActor, requireActor } from "./identity.js";
 import type { ActorInput } from "./identity.js";
@@ -245,57 +245,4 @@ export async function dueForRevalidation(
     .map((a) => serve(a, asOf))
     .filter((a) => a.revalidateDue)
     .sort((x, y) => rank[x.priority] - rank[y.priority] || x.revalidateBy.localeCompare(y.revalidateBy));
-}
-
-/**
- * What state the system is in relative to a rule.
- *
- * `conformant` is **not currently reachable**, and that is correct rather than a gap in
- * this function: only a positive audit can establish it, and the audit record is not
- * built. So a standard with no audits reads entirely `unknown` — which is the honest
- * answer, and the one the design insists on. `unknown` must never render as `conformant`:
- * a standard that looks satisfied because it is merely unexamined is confidence
- * manufactured at scale, a vacuous test one level up.
- */
-export type Conformance = "conformant" | "gap" | "debt" | "unknown";
-
-export interface RequirementConformance {
-  requirement: Requirement;
-  conformance: Conformance;
-  /** The active acknowledgements deciding it, if any. */
-  acknowledgements: ServedAcknowledgement[];
-}
-
-export async function conformance(
-  root: string, opts: { asOf?: string } = {},
-): Promise<RequirementConformance[]> {
-  const asOf = opts.asOf ?? now();
-  const { requirements } = await readRequirements(root);
-  const out: RequirementConformance[] = [];
-  for (const requirement of requirements) {
-    const active = (await readAcknowledgements(root, { requirementId: requirement.id, state: "active" }))
-      .map((a) => serve(a, asOf));
-    // Debt outranks gap when both are somehow present: owing something is a stronger and
-    // more actionable statement than not having built it.
-    const basis: AcknowledgementBasis | undefined =
-      active.some((a) => a.basis === "debt") ? "debt"
-        : active.some((a) => a.basis === "gap") ? "gap"
-          : undefined;
-    out.push({ requirement, conformance: basis ?? "unknown", acknowledgements: active });
-  }
-  return out;
-}
-
-/** How much of the standard is currently silenced, and by what. */
-export async function silenced(root: string, opts: { asOf?: string } = {}): Promise<{
-  total: number; gap: number; debt: number; unknown: number; due: number;
-}> {
-  const rows = await conformance(root, opts);
-  return {
-    total: rows.length,
-    gap: rows.filter((r) => r.conformance === "gap").length,
-    debt: rows.filter((r) => r.conformance === "debt").length,
-    unknown: rows.filter((r) => r.conformance === "unknown").length,
-    due: (await dueForRevalidation(root, opts)).length,
-  };
 }

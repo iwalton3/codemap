@@ -727,6 +727,23 @@ function migrate(d: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS ix_ack_due ON acknowledgements(state, revalidate_by);
     CREATE INDEX IF NOT EXISTS ix_ack_op ON acknowledgements(operation_id);
     CREATE INDEX IF NOT EXISTS ix_ack_scope ON acknowledgements(source_scope);
+
+    -- Audits. Recorded whether or not anything was found: a positive audit is the only
+    -- thing that can close a gap (which has no code to witness) or make a later failure a
+    -- regression rather than a gap that was always there.
+    CREATE TABLE IF NOT EXISTS audits (
+      id TEXT NOT NULL,
+      requirement_id TEXT NOT NULL,
+      outcome TEXT NOT NULL,
+      at TEXT NOT NULL,
+      origin TEXT, source_scope TEXT,
+      body TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ix_audit_identity ON audits(id);
+    -- "What is the latest word on this rule" is the hot read, and it is per requirement
+    -- ordered by time.
+    CREATE INDEX IF NOT EXISTS ix_audit_req ON audits(requirement_id, at);
+    CREATE INDEX IF NOT EXISTS ix_audit_scope ON audits(source_scope);
   `);
   // anchors.derivation — NULL on rows indexed before provenance existed, which is
   // `legacy_live_derivation`: this machine cannot say how its own index was made.

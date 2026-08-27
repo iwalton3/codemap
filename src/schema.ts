@@ -1142,6 +1142,62 @@ export interface Acknowledgement {
   origin?: string;
 }
 
+/**
+ * An **audit** — somebody checked a rule against the code, and this is what they did.
+ *
+ * Produced whether or not anything was found. A positive audit is a first-class record
+ * rather than the absence of a problem, because it is the only thing that can do two jobs
+ * nothing else does: **close a gap** (a gap has no code to witness, so it cannot drift and
+ * would otherwise outlive its truth in silence) and **make a regression detectable** (once
+ * a rule has been met, a later failure is a problem rather than a gap that was always
+ * there).
+ */
+export type AuditOutcome = "conformant" | "nonconformant" | "indeterminate";
+
+/**
+ * What the auditor ACTUALLY did — the non-vacuity requirement, as a recorded fact.
+ *
+ * A positive audit has an effect: it closes a gap and silences the mechanism that would
+ * have caught the thing. So *"I checked and it conforms"* from an actor that did not
+ * really check is worse than a vacuous test — it manufactures confidence AND disables the
+ * detector. Two of three tests examined in one session were vacuous when written, and four
+ * of six of the oracle's own invariants were; assume the same rate here.
+ *
+ * The fix cannot be prompt wording. *"Check thoroughly"* is steering, and steering is not
+ * merely ignorable — a tool description may never be sent at all (see the note above the
+ * tool table in `mcp.ts`). So it is recorded and enforced: an audit that says nothing about
+ * what it read or ran cannot claim an outcome.
+ */
+export interface AuditEvidence {
+  /** Anchors whose source was actually read. */
+  read?: string[];
+  /** Commands actually executed, and whether they passed. */
+  ran?: { command: string; passed: boolean }[];
+  /**
+   * Documentation consulted.
+   *
+   * Recorded but **weaker on purpose**: auditing a doc against a requirement inherits the
+   * doc's errors, and the failure is silent — a stale or missing doc yields a pass, not a
+   * flag. Doc-only evidence therefore does not move a rule to `conformant`.
+   */
+  consulted?: string[];
+}
+
+export interface Audit {
+  id: string;
+  requirementId: string;
+  outcome: AuditOutcome;
+  evidence: AuditEvidence;
+  /** Hashes of what was read. A later mismatch means this audit is about older code. */
+  witnesses: BugWitness[];
+  /** What the auditor concluded, in their own words. */
+  finding: string;
+  auditor: Actor;
+  at: string;
+  commit?: string | null;
+  origin?: string;
+}
+
 export interface RequirementStore {
   schemaVersion: number;
   requirements: Requirement[];
