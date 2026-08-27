@@ -96,6 +96,41 @@ export function checkComment(
   return { comment: c };
 }
 
+/**
+ * Validate the LIFECYCLE half — the axes a report back is stated on.
+ *
+ * `result` is what you DID, `remediation` is what HAPPENED to the code, and
+ * `disposition` is what turned out to be TRUE of the claim. Three axes, explained
+ * at length in the tool descriptions and enforced nowhere, which is why models
+ * conflate them: reported as `fixed` meaning "settled", and `resolved` meaning
+ * "the code changed". Prose has not made that reliable, so these are the
+ * combinations that cannot both be true, refused the way an over-length comment is.
+ *
+ * Deliberately NOT here: an agent setting `state: "resolved"`. That is already
+ * turned into an ask rather than an error (`ASK_FOR_STATE`), which is the better
+ * answer — closing is a person's act and the attempt is a legitimate request.
+ */
+export function checkLifecycle(input: {
+  result?: string; remediation?: string; disposition?: string; files?: string[];
+}): { ok: true } | { error: string } {
+  const { result, remediation, disposition } = input;
+  const claimsCodeChanged = !!remediation && remediation.startsWith("fixed-on-");
+
+  if (claimsCodeChanged && (result === "answered" || result === "declined")) {
+    return { error: `\`result: "${result}"\` says you did not change the code, but \`remediation: "${remediation}"\` says the code was fixed. If you fixed it, report \`result: "fixed"\`; if somebody ELSE fixed it, that is an observation about the finding — record it with \`revise_finding\`, not as your own report back.` };
+  }
+  if (result === "fixed" && !input.files?.length) {
+    return { error: "`result: \"fixed\"` means YOU changed the code, so `files` must name what you touched. Reporting `fixed` to mean the finding is settled is the commonest mix-up here: what you DID is `result`, what is TRUE of the claim is `disposition` (`refuted` for a false positive), and closing it out is a person's act you can ask for with `state`." };
+  }
+  if (result === "fixed" && disposition === "refuted") {
+    return { error: "`disposition: \"refuted\"` says this is not a defect, and `result: \"fixed\"` says you changed the code to remove it. Both cannot hold: a false positive needs no fix. Use `refuted` alone if it is not real, or `confirmed`/`partial` with the fix." };
+  }
+  if (remediation === "fixed-on-default") {
+    return { error: "`fixed-on-default` is a claim about the MAINLINE, which a report back from a branch cannot establish — and it lets a linked bug be closed while the defect still ships. Use `fixed-on-branch` for a fix you made here; a person confirms the default." };
+  }
+  return { ok: true };
+}
+
 const checkDisposition = (d: string | undefined): Disposition | undefined =>
   d && (DISPOSITIONS as readonly string[]).includes(d) ? (d as Disposition) : undefined;
 

@@ -545,7 +545,9 @@ test("close_finding can actually close, and the ask conversion is reachable from
     // Person-filed: the same call becomes an ask, carrying `detail` as the reason.
     const theirs = await shared.shareFinding(u.root, 269, { ...NEW, text: "theirs" }) as { id: string };
     await asAgent(async () => {
-      const r = await closeFinding(u.root, { id: theirs.id, result: "fixed", detail: "fixed at head abc123", state: "resolved" }) as
+      // `files` because `result: "fixed"` now requires it (`checkLifecycle`) — this
+      // test is about the ASK conversion, and the fix it reports is incidental.
+      const r = await closeFinding(u.root, { id: theirs.id, result: "fixed", files: ["src/pay.ts"], detail: "fixed at head abc123", state: "resolved" }) as
         { asked?: string; applied?: string[] };
       assert.equal(r.asked, "resolve", "recorded as an ask, not dropped");
       assert.ok(r.applied?.includes("ask"));

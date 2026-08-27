@@ -68,7 +68,7 @@ export {
 
 import {
   closeAssignment as closeAnnotation, closeLocalFinding as closeLocal, commentOnLocalFinding,
-  reviseLocalFinding, reviseAnnotation, remediateLocalFinding, checkComment, REVISABLE,
+  reviseLocalFinding, reviseAnnotation, remediateLocalFinding, checkComment, checkLifecycle, REVISABLE,
   setLocalFindingState, corroborateLocalFinding, promoteLocalFinding, requestOnLocalFinding,
   setLocalFindingPosted, relocateLocalFinding,
 } from "./ops/annotations.js";
@@ -108,6 +108,11 @@ export async function closeFinding(
   {
     const c = checkComment(input.comment, (input as { disposition?: string }).disposition);
     if ("error" in c) return c;
+    // Same position, same reason: a lifecycle contradiction caught after the outcome
+    // and the corroboration have landed is a half-completed call, and the natural
+    // response to an error is a retry that re-emits them.
+    const l = checkLifecycle({ ...input, disposition: (input as { disposition?: string }).disposition });
+    if ("error" in l) return l;
   }
   const f = await readFinding(root, input.id).catch(() => null);
   if (!f) return closeAnnotation(root, input as never) as Promise<Record<string, unknown>>;
@@ -246,6 +251,14 @@ export async function reviseOn(
     remediation?: Remediation;
   },
 ): Promise<Record<string, unknown>> {
+  // Before the dispatch, so all three stores refuse the same contradictions. The
+  // shared branch's `checkComment` sits after it and the local branch validates
+  // inside `reviseLocalFinding`; a lifecycle rule checked in only one of those is
+  // a rule the caller learns is optional.
+  {
+    const l = checkLifecycle(input);
+    if ("error" in l) return l;
+  }
   const f = await readFinding(root, input.id).catch(() => null);
   if (!f) return reviseAnnotation(root, input as never) as Promise<Record<string, unknown>>;
   if (!f.origin) {
