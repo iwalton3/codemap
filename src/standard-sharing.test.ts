@@ -19,7 +19,7 @@ import { resolveSidecar } from "./sidecar-config.js";
 import { materializeStandard } from "./standard-publish.js";
 import { readScope } from "./eventlog.js";
 import { standardScope } from "./shared-standard.js";
-import { draftSpec, addOperation, ratifySpec, listRequirements } from "./requirements.js";
+import { draftSpec, addOperation, ratifySpec, listRequirements, withdrawSpec } from "./requirements.js";
 import { readSpec } from "./store.js";
 import { recordAudit, promotableAudits, promoteProvisionalAudit } from "./audits.js";
 import { raiseProblem, listProblems } from "./problems.js";
@@ -309,5 +309,129 @@ test("a shared ratification reports what the FOLD did, not what it was asked to 
     // And the standard is A's text, on both clones.
     assert.equal((await listRequirements(a))[0]!.statement, "All credit lines are in USD or EUR.");
     assert.equal((await listRequirements(b))[0]!.statement, "All credit lines are in USD or EUR.");
+  } finally { discard(a); discard(b); discard(side); }
+});
+
+/** Adopt one rule into `section`, through the shared path. */
+async function adoptInto(root: string, section: string, title: string, statement: string) {
+  const sp = ok(await draftSpec(root, { title: `open ${section}` }));
+  ok(await addOperation(root, {
+    specId: sp.id, kind: "add_requirement", rationale: "seed", reversibility: "reversible",
+    title, section, statement, provenance: "policy",
+  }));
+  ok(await ratifySpec(root, sp.id));
+}
+
+test("a section move is applied by the FOLD, subtree and all", async () => {
+  const { root, side } = await shared();
+  try {
+    await adoptInto(root, "Credit/Limits", "Currency", "All credit lines are in USD.");
+    await adoptInto(root, "Credit/Limits/Daily", "Daily cap", "Daily draw is capped.");
+    await adoptInto(root, "Settlement/Float", "Float", "Float settles T+1.");
+
+    const sp = ok(await draftSpec(root, { title: "credit is risk" }));
+    ok(await addOperation(root, {
+      specId: sp.id, kind: "move_section", rationale: "ownership", reversibility: "reversible",
+      fromSection: "Credit", toSection: "Risk",
+    }));
+    ok(await ratifySpec(root, sp.id));
+
+    const rules = (await readRequirements(root)).requirements;
+    assert.deepEqual(
+      rules.map((r) => r.section).sort(),
+      ["Risk/Limits", "Risk/Limits/Daily", "Settlement/Float"],
+    );
+    // The fold is the writer on this path, so these rows carry the sync origin. Without
+    // that the assertion above would also pass on a purely local apply.
+    assert.ok(rules.every((r) => r.origin === "sync"), "the FOLD moved them, not a local write");
+    assert.ok((await events(root, side)).some((e) => e.kind === "spec.ratified"));
+  } finally { discard(root); discard(side); }
+});
+
+test("the fold refuses a move whose source another clone has already emptied", async () => {
+  // The tool's re-check is TOCTOU across clones: the log is pull/push and never read on an
+  // ordinary read, so both principals validate against a section that still exists locally
+  // and both append. A move with nothing to move applies cleanly and does NOTHING, so
+  // without the fold's own check the loser is told a re-organization landed that did not.
+  const { a, b, side } = await twoClones();
+  try {
+    await adoptInto(a, "Credit/Limits", "Currency", "All credit lines are in USD.");
+    assert.equal(await materializeStandard(b, resolveSidecar(b)!), true);
+    assert.equal((await listRequirements(b))[0]!.section, "Credit/Limits");
+
+    // B drafts against the section as it stands...
+    const mine = ok(await draftSpec(b, { title: "credit becomes exposure" }));
+    ok(await addOperation(b, {
+      specId: mine.id, kind: "move_section", rationale: "ownership", reversibility: "reversible",
+      fromSection: "Credit", toSection: "Exposure",
+    }));
+
+    // ...and A moves it somewhere else first.
+    const theirs = ok(await draftSpec(a, { title: "credit becomes risk" }));
+    ok(await addOperation(a, {
+      specId: theirs.id, kind: "move_section", rationale: "ownership", reversibility: "reversible",
+      fromSection: "Credit", toSection: "Risk",
+    }));
+    ok(await ratifySpec(a, theirs.id));
+
+    const race = await ratifySpec(b, mine.id);
+    assert.ok("error" in race, "the fold applied nothing, so this is not an ok ratification");
+    assert.match(race.error, /applied NOTHING/);
+    assert.equal((await listRequirements(b))[0]!.section, "Risk/Limits", "A's move stands; B's did not double-apply");
+  } finally { discard(a); discard(b); discard(side); }
+});
+
+test("a withdrawal is applied by the FOLD, and takes its criteria with it", async () => {
+  const { root, side } = await shared();
+  try {
+    const sp = ok(await draftSpec(root, { title: "float policy" }));
+    const op = ok(await addOperation(root, {
+      specId: sp.id, kind: "add_requirement", rationale: "policy", reversibility: "reversible",
+      title: "Float", section: "Settlement/Float", statement: "Float settles T+1.", provenance: "policy",
+    }));
+    ok(await addOperation(root, {
+      specId: sp.id, kind: "add_criterion", targetOperationId: op.id, rationale: "policy",
+      reversibility: "reversible", criterion: "Settlement runs on T+1.",
+      falsifier: "A settlement dated T+2 is accepted.", evidenceKind: "automated-test",
+    }));
+    ok(await ratifySpec(root, sp.id));
+    assert.equal((await readRequirements(root)).requirements.length, 1);
+
+    ok(await withdrawSpec(root, sp.id, { reason: "the cluster was never adopted" }));
+    assert.deepEqual((await readRequirements(root)).requirements, [], "the fold dropped it from the projection");
+    assert.equal((await readSpecs(root))[0]!.status, "withdrawn", "the spec itself survives, as the act it was");
+    assert.ok((await events(root, side)).some((e) => e.kind === "spec.withdrawn"));
+  } finally { discard(root); discard(side); }
+});
+
+test("the fold refuses a withdrawal that another clone's citation raced, in either order", async () => {
+  // The tool counts reliance against ITS store, and the log is pull/push — so a clone can
+  // withdraw a rule that somebody else has just audited and neither machine can see the
+  // other. The fold sees both, whichever way they sort, and the withdrawal is the act that
+  // loses: removing a rule is the quieting direction.
+  const { a, b, side } = await twoClones();
+  try {
+    await adoptInto(a, "Settlement/Float", "Float", "Float settles T+1.");
+    assert.equal(await materializeStandard(b, resolveSidecar(b)!), true);
+    const rule = (await listRequirements(b))[0]!;
+
+    // B cites it. A cannot see this.
+    ok(await recordAudit(b, {
+      requirementId: rule.id, outcome: "indeterminate", finding: "could not reach the handler",
+    }));
+
+    const spec = (await readSpecs(a))[0]!;
+    const asked = await withdrawSpec(a, spec.id, { reason: "never adopted" });
+    // A's own store has no audit, so its reference count is zero and it appends. The fold
+    // then refuses — and A must be told THAT, not "this machine has not folded it yet",
+    // which would send the caller back to wait for a removal that will never happen.
+    assert.ok("error" in asked, "the fold refused, so this is not an ok withdrawal");
+    assert.match(asked.error, /already relies on what the spec introduced/);
+    assert.equal((await listRequirements(a)).length, 1, "and A's own rule is still there");
+
+    assert.equal(await materializeStandard(b, resolveSidecar(b)!), true);
+    assert.equal((await listRequirements(b)).length, 1, "the audited rule is still there");
+    assert.equal((await readSpecs(b)).find((s) => s.id === spec.id)!.status, "ratified",
+      "and the withdrawal did not take effect");
   } finally { discard(a); discard(b); discard(side); }
 });

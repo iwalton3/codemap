@@ -24,6 +24,7 @@
 
 import {
   draftSpec as draftSpecRec, addOperation as addOperationRec, ratifySpec as ratifySpecRec,
+  withdrawSpec as withdrawSpecRec,
   reorganizeRequirement as reorganizeRec, requirementSections as requirementSectionsRec,
   listRequirements as listRequirementsRec, getRequirement as getRequirementRec,
   getSpec as getSpecRec, pendingSpecs as pendingSpecsRec,
@@ -171,11 +172,15 @@ export const addOperation = (
     provenance?: string; cites?: string[]; evidence?: string;
     criterion?: string; falsifier?: string; evidenceKind?: EvidenceKind;
     assertedBy?: string[]; targetOperationId?: string;
+    fromSection?: string; toSection?: string;
   } & ActorInput,
 ) => addOperationRec(root, input);
 
 export const ratifySpec = (root: string, input: { specId: string } & ActorInput) =>
   ratifySpecRec(root, input.specId, input);
+
+export const withdrawSpec = (root: string, input: { specId: string; reason: string } & ActorInput) =>
+  withdrawSpecRec(root, input.specId, input);
 
 export const getSpec = async (root: string, input: { specId: string }) =>
   served(root, () => getSpecRec(root, input.specId));

@@ -754,9 +754,31 @@ depend on turns out to be false (`docs/fork-repair.md`).
 
 So there is a window, and which side of it you are on decides the mechanism:
 
-- **Before anything relies on it** — no later spec operates on its requirements, and no
-  audit, acknowledgement or problem cites them — a spec may be **withdrawn**. This is
-  mistake correction, and it is honest because nothing downstream is falsified.
+- **Before anything relies on it** — no later spec operates on its requirements, and
+  nothing cites them — a spec may be **withdrawn**. This is mistake correction, and it is
+  honest because nothing downstream is falsified.
+
+  *"Nothing cites them"* is wider than the three records this passage originally named.
+  Audits, acknowledgements and problems were all that could cite a rule when it was
+  written; criteria, pointers and population pins can now, and a withdrawal that left one
+  of those pointing at a rule nobody can read is the orphan the count exists to prevent.
+  `relianceOn` is the list, and it is what to extend when a new record learns to name a
+  requirement.
+
+  Two exclusions are deliberate rather than convenient: a spec's own operations and
+  criteria are not reliance on itself, and a **pre-approved gap chained to one of its
+  operations ends with it** — released rather than deleted, because the grant really
+  happened. That is the job withdrawal gives a `pending` gap.
+
+  **A draft may always be withdrawn**: nothing applied, so nothing can be falsified.
+
+  **Withdrawal is not a revert.** A spec that amended, retired or re-filed something that
+  already existed is refused however little relies on it. Undoing it would mean restoring a
+  statement *together with the witnesses taken when it was adopted* — and the row no longer
+  holds them, because adopting the new text re-baselined them. The restored statement would
+  therefore be witnessed against today's code as though the amendment had never happened,
+  which is a fabricated observation on the most authoritative record here. That case is
+  repeal, below, whatever the reference count says.
 - **After** — repeal by **compensating spec**: a new spec whose operations reverse the
   old one's. Legal practice does not remove acts from history; it passes an act that
   repeals another and re-derives the code from the whole history.
@@ -823,6 +845,14 @@ MCP surface via `ops/standard.ts`:
 - `population.ts` — the hash-pinned lint, the member delta, and the narrowing gate.
 - `scrub.ts` — the stated schedule, the coverage queue, the baseline sweep, and the
   derived firing rates. The RECORD is an `Audit`; this module is the selection.
+- `move_section` — one operation for move AND rename, because on a path tree they are one
+  rewrite; it takes the whole subtree. Refuses a landing that would merge two headings, and
+  refuses two overlapping moves in one spec (they apply in `ord` order and the second reads
+  the first's output, so the rendering a principal approved is not what lands). Repairing a
+  case split *is* a legal move, which is why the guard excludes the subtree being moved.
+- `withdrawSpec` — withdrawal, below. `relianceOn` is the reference count; the fold carries
+  its own independent copy plus a look-ahead, since a citation appended on another clone can
+  sort AFTER the withdrawal and would otherwise be orphaned by it.
 
 **Adjudication and closure are separate events**, which was not obvious until it was
 built. Naming which side moves does not move it, so a problem stays open until the named
@@ -834,7 +864,9 @@ to catch, so it is reported (`settledWithoutAdjudication`) instead of tidied awa
 Not built, roughly in the order they are worth building — `docs/population-predicate.md`
 carries the detail and the reasoning:
 
-- Section move/rename operations, and spec withdrawal / repeal. Mechanical.
+- Severity/consequence banding, which wants measured firing rates first. Two fields, not
+  one: *consequence* is about the rule and routes adjudication authority, *priority* is
+  about one instance of not-conforming and already exists on `Acknowledgement`.
 
 The web front end has no routes for any of it — `mcp.ts` is wired and `serve.ts` is not, so
 this surface is currently agent-only. The one exception is the diff rollup above, which

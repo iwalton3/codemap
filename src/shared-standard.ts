@@ -45,7 +45,7 @@ import type {
   AcceptanceCriterion, Acknowledgement, Actor, Audit, BugWitness, Operation, Pointer,
   PopulationPredicate, Problem, Requirement, ScrubPolicy, Spec, VacuityCheck,
 } from "./schema.js";
-import { criterionIdFor, requirementIdFor, EVIDENCE_KINDS, AUDIT_TRIGGERS, COVERING_TRIGGERS } from "./schema.js";
+import { criterionIdFor, movedSection, normalizeSection, requirementIdFor, EVIDENCE_KINDS, AUDIT_TRIGGERS, COVERING_TRIGGERS } from "./schema.js";
 import type { LogEvent } from "./eventlog.js";
 import { emitEvent } from "./eventlog.js";
 
@@ -94,6 +94,10 @@ export const publishSpecRatified = (
   logRoot: string, scope: string, actor: Actor, specId: string, at: string,
   witnesses: Record<string, BugWitness[]>, operations: string[],
 ) => put(logRoot, scope, actor, "spec.ratified", specId, { at, witnesses, operations });
+
+export const publishSpecWithdrawn = (
+  logRoot: string, scope: string, actor: Actor, specId: string, at: string, reason: string,
+) => put(logRoot, scope, actor, "spec.withdrawn", specId, { at, reason });
 
 export const publishAckGranted = (logRoot: string, scope: string, actor: Actor, ack: Acknowledgement) =>
   put(logRoot, scope, actor, "ack.granted", ack.id, { ack });
@@ -189,7 +193,8 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
   const audits = new Map<string, Audit>();
   const problems = new Map<string, Problem>();
 
-  for (const e of events) {
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i]!;
     switch (e.kind) {
       case "spec.drafted": {
         const spec = obj(e.data, "spec") as Spec | undefined;
@@ -229,6 +234,11 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
         // ALL OR NOTHING, exactly as `ratifySpec` refuses: applying the half that still
         // fits yields a standard nobody approved.
         const stale = mine.some((op) => {
+          // A section move carries no `context` — its subject is a path, not a statement —
+          // so it needs its own applicability test or it is the ONE operation kind that
+          // slips through this check on every clone. A move whose source has since been
+          // emptied applies cleanly and does nothing, which is the silent half.
+          if (op.kind === "move_section") return !moveApplicable(requirements, op, mine);
           if (!op.context) return false;
           const cur = requirements.get(op.context.requirementId);
           return !cur || cur.status === "retired" || cur.statement !== op.context.statement;
@@ -270,6 +280,61 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
             }
           }
         }
+        break;
+      }
+      case "spec.withdrawn": {
+        const sp = specs.get(e.subject);
+        if (!sp || sp.status === "withdrawn" || sp.status === "repealed") break;
+        // Withdrawal takes something OUT of the standard, so it is a principal's act — the
+        // same gate `withdrawSpec` applies, restated where a remote clone can see it.
+        if (e.actor.via) break;
+        const at = str(e.data, "at") ?? e.at;
+        const mine = [...operations.values()].filter((o) => o.specId === sp.id);
+        if (sp.status === "ratified") {
+          // Both refusals, in the fold and not only in the tool. The tool's reliance count
+          // is TOCTOU across clones — an audit or a pointer appended elsewhere is invisible
+          // to it — so without this a withdrawal races a citation and orphans it on every
+          // machine but the one that asked.
+          if (mine.some((o) => o.kind !== "add_requirement" && o.kind !== "add_criterion")) break;
+          if (foldReliance(sp, mine, { operations, acknowledgements, audits, problems, criteria, pointers, populations, vacuityChecks }).length) break;
+          // Reliance that arrives LATER in the log. The fold is one forward pass, so a
+          // citation appended concurrently on another clone may sort after this event —
+          // and then the rule is deleted here and the audit or pointer that cites it lands
+          // on nothing. Looking ahead is deterministic (every clone folds the same ordered
+          // log) and it makes the WITHDRAWAL lose the race, which is the direction this
+          // subsystem gates in: removing a rule is the quieting act.
+          //
+          // Deliberately crude — a substring match on the serialized event rather than a
+          // per-kind reader. It cannot miss a reference, every false positive refuses the
+          // withdrawal rather than allowing it, and a per-kind version would have to be
+          // extended in lockstep with every record kind that learns to cite a rule, which
+          // is the maintenance shape `foldReliance` already has to carry once.
+          const doomed = [
+            ...mine.filter((o) => o.kind === "add_requirement").map((o) => requirementIdFor(o.id)),
+            // The criteria go too, and a `vacuity.checked` names one of these and no rule.
+            ...mine.filter((o) => o.kind === "add_criterion").map((o) => criterionIdFor(o.id)),
+          ];
+          const later = events.slice(i + 1).some((n) => {
+            if (n.kind === "spec.withdrawn") return false;
+            const blob = JSON.stringify(n.data ?? {});
+            return doomed.some((rid) => blob.includes(rid));
+          });
+          if (later) break;
+          for (const o of mine) {
+            if (o.kind === "add_requirement") requirements.delete(requirementIdFor(o.id));
+            if (o.kind === "add_criterion") criteria.delete(criterionIdFor(o.id));
+          }
+        }
+        for (const o of mine) {
+          for (const [id, ack] of acknowledgements) {
+            // Released, not deleted: the grant really happened, and the rule it approved is
+            // the thing that stops existing.
+            if (ack.operationId === o.id && ack.state !== "released") {
+              acknowledgements.set(id, { ...ack, state: "released", releasedAt: at });
+            }
+          }
+        }
+        specs.set(sp.id, { ...sp, status: "withdrawn", withdrawnBy: e.actor, withdrawnAt: at });
         break;
       }
       case "ack.granted": {
@@ -527,6 +592,80 @@ const VACUITY_VERDICTS: VacuityCheck["verdict"][] = ["demonstrated", "vacuous", 
 const MEMBER_STATES = ["conforms", "violates", "undecidable"];
 
 /** The same application `ratifySpec` performs locally, over folded state. */
+/**
+ * The fold's half of `relianceOn` — what already depends on the rules a spec introduced.
+ *
+ * Written from the fold's maps rather than from store queries, so the two halves are
+ * genuinely independent implementations of one rule; the correspondence is registered in
+ * `sharing-boundary.test.ts`. Only the COUNT is used here — the tool reports which things
+ * relied, because it is the end with a person reading the answer.
+ */
+function foldReliance(
+  sp: Spec, mine: Operation[],
+  m: {
+    operations: Map<string, Operation>; acknowledgements: Map<string, Acknowledgement>;
+    audits: Map<string, Audit>; problems: Map<string, Problem>;
+    criteria: Map<string, AcceptanceCriterion>; pointers: Map<string, Pointer>;
+    populations: Map<string, PopulationPredicate>; vacuityChecks: Map<string, VacuityCheck>;
+  },
+): string[] {
+  const introduced = new Set(mine.filter((o) => o.kind === "add_requirement").map((o) => requirementIdFor(o.id)));
+  const own = new Set(mine.map((o) => o.id));
+  const hit: string[] = [];
+  const cites = (rid: string | undefined) => !!rid && introduced.has(rid);
+  for (const o of m.operations.values()) if (!own.has(o.id) && (cites(o.requirementId) || cites(o.context?.requirementId))) hit.push(o.id);
+  for (const a of m.acknowledgements.values()) {
+    if (a.state === "released") continue;
+    if (a.operationId && own.has(a.operationId)) continue;
+    if (cites(a.requirementId)) hit.push(a.id);
+  }
+  for (const a of m.audits.values()) if (cites(a.requirementId)) hit.push(a.id);
+  for (const p of m.problems.values()) if (cites(p.requirementId)) hit.push(p.id);
+  for (const c of m.criteria.values()) if (!own.has(c.introducedBy) && cites(c.requirementId)) hit.push(c.id);
+  for (const p of m.pointers.values()) if (cites(p.requirementId)) hit.push(p.id);
+  for (const p of m.populations.values()) if (cites(p.requirementId)) hit.push(p.id);
+  // Hangs off a CRITERION, so `cites` cannot see it — and this spec's criteria go too.
+  const doomedCriteria = new Set(mine.filter((o) => o.kind === "add_criterion").map((o) => criterionIdFor(o.id)));
+  for (const v of m.vacuityChecks.values()) if (doomedCriteria.has(v.criterionId)) hit.push(v.id);
+  void sp;
+  return hit;
+}
+
+/**
+ * Whether a `move_section` still means what it said — the fold's half of `checkMove`.
+ *
+ * Both halves must agree, and they are written from different inputs (a store query there,
+ * this map here), so the correspondence is registered in `sharing-boundary.test.ts`. The
+ * asymmetry worth knowing: a heading INSIDE the moving subtree is vacated by the move, so
+ * it is never what `to` collides or case-clashes with — which is what makes `credit` →
+ * `Credit`, the repair for a case split, a legal move rather than a refused one.
+ */
+function moveApplicable(
+  requirements: Map<string, Requirement>, op: Operation, siblings: Operation[],
+): boolean {
+  const from = normalizeSection(op.fromSection ?? "");
+  const to = normalizeSection(op.toSection ?? "");
+  if (!from || !to || from === to) return false;
+  const others = siblings.filter((o) => o.id !== op.id);
+  const moving = (sec: string) => sec === from || sec.startsWith(`${from}/`);
+  const known = new Set<string>([
+    ...[...requirements.values()].map((r) => r.section),
+    // Sections this same ratification opens have no row yet and count on both sides.
+    ...others.filter((o) => o.kind === "add_requirement" && o.section).map((o) => normalizeSection(o.section!)),
+  ]);
+  const members = [...known].filter(moving);
+  if (!members.length) return false;
+  const produced = new Set(members.map((sec) => movedSection(sec, from, to)));
+  const stay = [...known].filter((sec) => !moving(sec));
+  if (stay.some((sec) => produced.has(sec))) return false;
+  if (stay.some((sec) => sec.toLowerCase() === to.toLowerCase() && sec !== to)) return false;
+  return !others.some((o) => {
+    if (o.kind !== "move_section" || !o.fromSection) return false;
+    const f = normalizeSection(o.fromSection);
+    return f === from || from.startsWith(`${f}/`) || f.startsWith(`${from}/`);
+  });
+}
+
 function applyOperation(
   requirements: Map<string, Requirement>, criteria: Map<string, AcceptanceCriterion>,
   op: Operation, sp: Spec, who: Actor, at: string, witnesses: BugWitness[],
@@ -574,6 +713,21 @@ function applyOperation(
       author: sp.author, createdAt: at, introducedBy: sp.id,
       ratifiedBy: who, ratifiedAt: at, origin: "sync",
     });
+    return;
+  }
+  if (op.kind === "move_section") {
+    // Ahead of the `requirementId` lookup below on purpose: a move names no rule, so
+    // falling through would take the amend branch and write `statement: undefined` over
+    // whatever rule the operation happened not to name.
+    const from = normalizeSection(op.fromSection ?? "");
+    const to = normalizeSection(op.toSection ?? "");
+    if (!from || !to || from === to) return;
+    // One pass over a snapshot of the entries: rewriting in place while iterating could
+    // re-enter a row whose new path is still under `from` (`A` → `A/B`) and move it twice.
+    for (const [id, r] of [...requirements]) {
+      const next = movedSection(r.section, from, to);
+      if (next !== r.section) requirements.set(id, { ...r, section: next });
+    }
     return;
   }
   const r = op.requirementId ? requirements.get(op.requirementId) : undefined;

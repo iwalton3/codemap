@@ -992,10 +992,48 @@ export interface Spec {
    * happened — what did not happen is the application, and saying so is the honest record.
    */
   conflicted?: boolean;
+  /**
+   * Withdrawal — the BEFORE-reliance half of backout. See `withdrawSpec`.
+   *
+   * The spec stays in the log and keeps its ratification: deleting a ratified spec would
+   * destroy the audit trail of the act most worth auditing. What withdrawal removes is
+   * what the spec PUT into the standard, and only while nothing downstream has relied on
+   * it. After that the mechanism is a compensating spec, which is an ordinary spec.
+   */
+  withdrawnBy?: Actor;
+  withdrawnAt?: string;
   origin?: string;
 }
 
-export type OperationKind = "add_requirement" | "amend_statement" | "retire_requirement" | "add_criterion";
+export type OperationKind =
+  | "add_requirement" | "amend_statement" | "retire_requirement" | "add_criterion"
+  /**
+   * Move or rename a section — one operation, because in a path tree they are one act:
+   * `Credit/Limits` → `Credit/Exposure` renames, `Credit/Limits` → `Risk/Limits` re-parents,
+   * and the rewrite is identical. It moves the whole SUBTREE, so descendants follow.
+   *
+   * It is an operation rather than a verb for the reason `reorganizeRequirement` is
+   * principal-gated: where a rule files is what a reader searching the standard finds it
+   * by, so re-filing a binding rule is laundering one field over, and the only way the
+   * standard changes is a ratified spec.
+   */
+  | "move_section";
+
+/**
+ * A section is a `/`-delimited path, normalized so trivially different spellings of one
+ * place cannot become two places.
+ *
+ * Here rather than in `requirements.ts` because the FOLD needs it too, and a normalization
+ * only one end applies is the shape this subsystem keeps re-producing: a guard in the tool
+ * and not in the fold binds one machine.
+ */
+export function normalizeSection(raw: string): string {
+  return raw.split("/").map((seg) => seg.trim().replace(/\s+/g, " ")).filter(Boolean).join("/");
+}
+
+/** Where a path under `from` lands when the subtree moves to `to`. Pure, and shared. */
+export const movedSection = (section: string, from: string, to: string): string =>
+  section === from || section.startsWith(`${from}/`) ? to + section.slice(from.length) : section;
 
 /**
  * How a criterion is discharged. A CLOSED list, adopted from the Acme.API spec playbook's
@@ -1076,6 +1114,15 @@ export interface Operation {
   title?: string;
   section?: string;
   statement?: string;
+  /**
+   * Payload for `move_section`: the subtree being moved and where it lands.
+   *
+   * Named apart from `section` on purpose — a single `section` field on a move reads as
+   * one end or the other depending on who is looking, and the one thing a reviewer must
+   * not have to guess is which direction an operation goes.
+   */
+  fromSection?: string;
+  toSection?: string;
   provenance?: string;
   cites?: string[];
   /** Payload for `add_criterion`. See `AcceptanceCriterion` for what each one is. */

@@ -30,6 +30,7 @@ import { standardProjection } from "./shared-projections.js";
 import {
   foldStandard, standardScope, publishSpecDrafted, publishOperation, publishSpecRatified,
   publishAckGranted, publishAckReleased, publishAudit, publishProblemRaised, publishAdjudication,
+  publishSpecWithdrawn,
   publishVacuityCheck, publishPointerDeclared, publishPointerRestated, publishPointerRetired,
   publishPopulationPinned, publishScrubPolicy,
 } from "./shared-standard.js";
@@ -133,6 +134,10 @@ export const shareSpecRatified = (
   root: string, specId: string, at: string, witnesses: Record<string, BugWitness[]>,
   operations: string[],
 ): Promise<Shared> => share(root, (l, s, a) => publishSpecRatified(l, s, a, specId, at, witnesses, operations));
+
+export const shareSpecWithdrawn = (
+  root: string, specId: string, at: string, reason: string,
+): Promise<Shared> => share(root, (l, s, a) => publishSpecWithdrawn(l, s, a, specId, at, reason));
 
 export const shareAckGranted = (root: string, ack: Acknowledgement): Promise<Shared> =>
   share(root, (l, s, a) => publishAckGranted(l, s, a, ack));

@@ -21,7 +21,7 @@ import {
   foldStandard, standardScope, publishSpecDrafted, publishOperation, publishSpecRatified,
   publishAckGranted, publishAckReleased, publishAudit, publishProblemRaised, publishAdjudication,
   publishVacuityCheck, publishPointerDeclared, publishPointerRestated, publishPointerRetired,
-  publishPopulationPinned, publishScrubPolicy, emptyStandard,
+  publishPopulationPinned, publishScrubPolicy, publishSpecWithdrawn, emptyStandard,
 } from "./shared-standard.js";
 import { criterionIdFor, requirementIdFor, type Acknowledgement, type Actor, type Audit, type Operation, type Problem, type Spec } from "./schema.js";
 
@@ -910,5 +910,96 @@ test("the fold activates a pre-approved gap in the same act that adopts its rule
     a = (await fold(root)).acknowledgements[0]!;
     assert.equal(a.state, "active", "adopted in the same act that created the rule");
     assert.equal(a.requirementId, requirementIdFor("op_1"), "and bound to it");
+  } finally { discard(root); }
+});
+
+/** The events that put `ADD`'s rule into the standard, in order. */
+async function ratified(root: string, extra: Operation[] = []) {
+  await publishSpecDrafted(root, SCOPE, opus, SPEC);
+  await publishOperation(root, SCOPE, opus, ADD);
+  for (const o of extra) await publishOperation(root, SCOPE, opus, o);
+  await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {},
+    ["op_1", ...extra.map((o) => o.id)]);
+}
+
+test("THE FOLD REFUSES A WITHDRAWAL A LATER EVENT CITES, however the log happens to sort", async () => {
+  // A citation appended on another clone can sort AFTER the withdrawal — the two are
+  // concurrent and neither writer saw the other. `foldReliance` reads state built from
+  // events already folded, so it cannot see this one; only the look-ahead can. Without it
+  // the rule is deleted here and the audit that cites it lands on nothing, on every clone.
+  const root = await log("withdraw-race");
+  try {
+    await ratified(root);
+    await publishSpecWithdrawn(root, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", "never adopted");
+    // Ordered after the withdrawal, and about the rule it was about to remove.
+    const audit: Audit = {
+      id: "au_1", requirementId: requirementIdFor("op_1"), outcome: "indeterminate",
+      evidence: {}, witnesses: [], finding: "could not reach the handler",
+      auditor: opus, at: "2026-08-03T00:00:01.000Z",
+    };
+    await publishAudit(root, SCOPE, opus, audit);
+
+    const after = await fold(root);
+    assert.equal(after.requirements.length, 1, "the withdrawal lost the race — removing is the quieting act");
+    assert.equal(after.specs[0]!.status, "ratified", "and it did not take effect");
+    assert.equal(after.audits.length, 1, "while the citation stands");
+  } finally { discard(root); }
+});
+
+test("the same withdrawal with nothing citing it DOES apply — so the refusal above is not blanket", async () => {
+  const root = await log("withdraw-clean");
+  try {
+    await ratified(root);
+    await publishSpecWithdrawn(root, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", "never adopted");
+    const after = await fold(root);
+    assert.equal(after.requirements.length, 0);
+    assert.equal(after.specs[0]!.status, "withdrawn");
+    assert.equal(after.specs[0]!.withdrawnBy!.principal, izzie.principal);
+  } finally { discard(root); }
+});
+
+test("THE FOLD REFUSES WITHDRAWING A SPEC THAT AMENDED SOMETHING — that case is repeal", async () => {
+  const root = await log("withdraw-amend");
+  try {
+    // The rule this spec amends has to exist first, so it comes from its own spec.
+    await ratified(root);
+    const amender: Spec = { ...SPEC, id: "sp_2", title: "widen it" };
+    const amend: Operation = {
+      id: "op_2", specId: "sp_2", kind: "amend_statement", ord: 0,
+      requirementId: requirementIdFor("op_1"), statement: "All credit lines are in USD or EUR.",
+      context: { requirementId: requirementIdFor("op_1"), statement: "All credit lines are in USD." },
+      rationale: "EU launch", reversibility: "reversible",
+    };
+    await publishSpecDrafted(root, SCOPE, opus, amender);
+    await publishOperation(root, SCOPE, opus, amend);
+    await publishSpecRatified(root, SCOPE, izzie, "sp_2", "2026-08-03T00:00:00.000Z", {}, ["op_2"]);
+    assert.equal((await fold(root)).requirements[0]!.statement, "All credit lines are in USD or EUR.");
+
+    // Nothing cites the amending spec at all, so this refusal is about the operation KIND.
+    await publishSpecWithdrawn(root, SCOPE, izzie, "sp_2", "2026-08-04T00:00:00.000Z", "EU launch slipped");
+    const after = await fold(root);
+    assert.equal(after.specs.find((s) => s.id === "sp_2")!.status, "ratified", "refused");
+    assert.equal(after.requirements[0]!.statement, "All credit lines are in USD or EUR.",
+      "and no statement was restored against witnesses the amendment had already re-baselined");
+  } finally { discard(root); }
+});
+
+test("a vacuity check on the spec's own criterion blocks its withdrawal", async () => {
+  // The criteria a spec introduced are deleted with it, and a vacuity check hangs off a
+  // CRITERION rather than a rule — so it is invisible to a reliance scan that walks
+  // requirement ids, which is what both halves originally did. Somebody established
+  // whether that assertion can fail; withdrawing over it discards the answer.
+  const root = await log("withdraw-vacuity");
+  try {
+    const criterionId = await withCriterion(root);
+    await publishVacuityCheck(root, SCOPE, opus, {
+      id: "vc_1", criterionId, witnesses: [{ anchorId: "a_lint", bodyHash: "h1:sha256:def" }],
+      checkedBy: opus, at: "2026-08-03T00:00:00.000Z", verdict: "vacuous", method: "",
+    });
+    await publishSpecWithdrawn(root, SCOPE, izzie, "sp_1", "2026-08-04T00:00:00.000Z", "never adopted");
+
+    const after = await fold(root);
+    assert.equal(after.specs[0]!.status, "ratified", "refused");
+    assert.equal(after.criteria.length, 1, "and the criterion the check is about is still there");
   } finally { discard(root); }
 });

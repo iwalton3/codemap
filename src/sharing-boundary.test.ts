@@ -244,6 +244,30 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     fold: ["src/shared-standard.ts", /!p \|\| p\.disposition\) break;[\s\S]{0,240}?if \(e\.actor\.via\) break;/],
     publish: ["src/problems.ts", /principal\(root, input, "adjudicate a problem"\)/],
   },
+  {
+    // A `move_section` carries no `context`, so it is the one operation kind the fold's
+    // staleness sweep does not cover by default — and a move whose source has been emptied
+    // applies cleanly and does nothing. Silent, and on every clone but the one that ran it.
+    what: "a section move that no longer means what it said",
+    fold: ["src/shared-standard.ts", /if \(op\.kind === "move_section"\) return !moveApplicable/],
+    publish: ["src/requirements.ts", /const bad = await checkMove\(root, op\.fromSection!/],
+  },
+  {
+    // Reliance is a reference count, and the count is TOCTOU across clones: an audit or a
+    // pointer appended elsewhere is invisible to the machine asking to withdraw. One end
+    // alone lets a withdrawal race a citation and orphan it everywhere but there.
+    what: "a withdrawal that would orphan something already citing the rule",
+    fold: ["src/shared-standard.ts", /if \(foldReliance\(sp, mine, \{/],
+    publish: ["src/requirements.ts", /const reliance = await relianceOn\(root, ops\);/],
+  },
+  {
+    // Withdrawal is not a revert. A spec that changed something that already existed can
+    // only be REPEALED, because putting the old statement back would witness it against
+    // today's code as though the amendment had never happened.
+    what: "withdrawing a spec that amended, retired or re-filed pre-existing state",
+    fold: ["src/shared-standard.ts", /if \(mine\.some\(\(o\) => o\.kind !== "add_requirement" && o\.kind !== "add_criterion"\)\) break;/],
+    publish: ["src/requirements.ts", /const changed = ops\.find\(\(o\) => o\.kind !== "add_requirement"/],
+  },
 ];
 
 test("derived content is refused at BOTH the publish surface and the fold", () => {

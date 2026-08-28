@@ -34,18 +34,19 @@ import type {
   AcceptanceCriterion, Acknowledgement, Actor, BugWitness, EvidenceKind, Operation, OperationKind,
   Pointer, Requirement, Reversibility, Spec,
 } from "./schema.js";
-import { criterionIdFor, EVIDENCE_KINDS, requirementIdFor } from "./schema.js";
+import { criterionIdFor, EVIDENCE_KINDS, movedSection, normalizeSection, requirementIdFor } from "./schema.js";
 import {
-  readAcknowledgements, readOperations, readRequirement, readRequirements, readSpec, readSpecs,
+  readAcknowledgements, readAudits, readCriteria, readOperations, readPopulations, readProblems,
+  readRequirement, readRequirements, readSpec, readSpecs, readVacuityChecks,
   readPointers, requirementSectionCounts, workHas, writeLocalCriterion, writeLocalOperation,
-  writeLocalRequirement, writeLocalSpec,
+  writeLocalRequirement, writeLocalSpec, deleteLocalCriterion, deleteLocalRequirement,
 } from "./store.js";
 import { liveHashes, witnessDrift, realDrift } from "./reviews.js";
 import { ABSENT_HASH } from "./normalize.js";
 import { isAgentActor, requireActor } from "./identity.js";
 import type { ActorInput } from "./identity.js";
 import {
-  disposition, shareOperation, shareSpecDrafted, shareSpecRatified, type Shared,
+  disposition, shareOperation, shareSpecDrafted, shareSpecRatified, shareSpecWithdrawn, type Shared,
 } from "./standard-publish.js";
 
 const mint = (p: string) => p + randomBytes(6).toString("hex");
@@ -103,14 +104,6 @@ function principal(root: string, input: ActorInput, verb: string): Actor | Err {
 }
 
 /**
- * A section is a `/`-delimited path, normalized so trivially different spellings of one
- * place cannot become two places.
- */
-function normalizeSection(raw: string): string {
-  return raw.split("/").map((seg) => seg.trim().replace(/\s+/g, " ")).filter(Boolean).join("/");
-}
-
-/**
  * Refuse a section differing from an existing one only by case.
  *
  * This is the failure mode free-text grouping actually has, and it is silent: "Credit" and
@@ -137,6 +130,86 @@ async function checkSection(root: string, section: string, alsoInPlay: string[] 
 /** The sections a spec's `add_requirement` operations bring into existence. */
 const sectionsIntroducedBy = (ops: Operation[]): string[] =>
   ops.filter((o) => o.kind === "add_requirement" && o.section).map((o) => o.section!);
+
+/**
+ * Refuse a section move that cannot mean what it says.
+ *
+ * The collision rule is exact rather than conservative, and it has to be: moved rules land
+ * at `to + suffix`, so the only real hazard is a produced path an existing rule already
+ * occupies — two rules from different origins silently sharing one heading, which is the
+ * conflation a section index exists to prevent. Refusing every landing inside an occupied
+ * subtree would also refuse `Credit` → `Risk` beside an untouched `Risk/Legacy`, which is
+ * an ordinary re-parent, and a guard that cries wolf is turned off (see `checkSection`).
+ */
+async function checkMove(
+  root: string, from: string, to: string, alsoInSpec: Operation[] = [],
+): Promise<Err | null> {
+  // A section this same spec introduces counts on BOTH sides. It has no row yet, so a
+  // store-only view refuses a legitimate "create the rules, then move the subtree" spec
+  // and — the direction that matters — misses a move that lands on top of a heading the
+  // spec itself is opening, which is the merge this refuses everywhere else.
+  const sibling = sectionsIntroducedBy(alsoInSpec);
+  const moving = (sec: string) => sec === from || sec.startsWith(`${from}/`);
+  const { requirements } = await readRequirements(root, { section: from });
+  if (!requirements.length && !sibling.some(moving)) {
+    return {
+      error:
+        `no section "${from}" — nothing files there, so there is nothing to move. Sections are `
+        + `derived from the rules filed in them; check the spelling against \`requirement_sections\`.`,
+    };
+  }
+  const existing = await requirementSectionCounts(root);
+  const produced = new Set(
+    [...requirements.map((r) => r.section), ...sibling.filter(moving)].map((sec) => movedSection(sec, from, to)),
+  );
+  // A section inside the moving subtree is about to be VACATED, so it is never a collision
+  // with itself — `A` → `A/B` produces `A/B`, and any rule already at `A/B` is under `A`
+  // and moves too. Only a path that stays put can be landed on.
+  const occupied = [
+    ...existing.filter((e) => !moving(e.section)).map((e) => ({ section: e.section, who: `${e.count} rule(s) already file` })),
+    ...sibling.filter((sec) => !moving(sec)).map((sec) => ({ section: sec, who: "this same spec opens" })),
+  ];
+  const collision = occupied.find((e) => produced.has(e.section));
+  if (collision) {
+    return {
+      error:
+        `moving "${from}" to "${to}" would land rules in "${collision.section}", where `
+        + `${collision.who}. That MERGES two sections: the standard's index is how a reader finds `
+        + `the rule governing an area, and two origins under one heading is what makes it stop `
+        + `answering. Move to a path nothing occupies, or re-file the rules individually so each `
+        + `move is a decision somebody made.`,
+    };
+  }
+  // The case-variant guard, done HERE rather than through `checkSection`, because that one
+  // compares against every existing heading — including the subtree being moved. Under it
+  // `credit` → `Credit` is refused as a case variant of itself, and that rename is the
+  // documented REPAIR for the split `checkSection` exists to warn about. Only a heading
+  // that stays put can be the thing `to` is confusable with.
+  const variant = occupied.find((e) => e.section.toLowerCase() === to.toLowerCase() && e.section !== to);
+  if (variant) {
+    return {
+      error:
+        `"${to}" differs from "${variant.section}" (${variant.who}) only by case — two spellings `
+        + `of one place render as two sections, each looking complete. Use that one, or pick a `
+        + `genuinely different name.`,
+    };
+  }
+  // Two moves whose subtrees overlap apply in `ord` order and the second one reads the
+  // output of the first, so the rendering a principal approved shows neither where the
+  // rules end up nor that the order decided it. Same hazard as two amendments on one rule.
+  const overlap = alsoInSpec.find((o) =>
+    o.kind === "move_section" && !!o.fromSection
+    && (o.fromSection === from || from.startsWith(`${o.fromSection}/`) || o.fromSection.startsWith(`${from}/`)));
+  if (overlap) {
+    return {
+      error:
+        `${overlap.id} already moves "${overlap.fromSection}" in this spec, and "${from}" overlaps it. `
+        + `Two overlapping moves apply in order and the second sees the first's output, so the `
+        + `before/after a reviewer reads is not what lands. Say the whole re-organization as one move.`,
+    };
+  }
+  return null;
+}
 
 /** Cited anchors must exist WHEN CITED — an empty citation list is fine, a wrong one is not. */
 function checkCitations(root: string, cites: string[]): Err | null {
@@ -211,6 +284,7 @@ export async function addOperation(
     provenance?: string; cites?: string[]; evidence?: string;
     criterion?: string; falsifier?: string; evidenceKind?: EvidenceKind;
     assertedBy?: string[]; targetOperationId?: string;
+    fromSection?: string; toSection?: string;
   } & ActorInput,
 ): Promise<{ ok: true; id: string; operation: Operation } | Err> {
   const sp = await readSpec(root, input.specId);
@@ -318,6 +392,16 @@ export async function addOperation(
       context = { requirementId: r.id, statement: r.statement };
       payload = { criterion, falsifier, evidenceKind: input.evidenceKind, assertedBy: input.assertedBy ?? [], requirementId: r.id };
     }
+  } else if (input.kind === "move_section") {
+    const from = normalizeSection(input.fromSection ?? "");
+    const to = normalizeSection(input.toSection ?? "");
+    if (!from || !to) {
+      return { error: "`move_section` needs `fromSection` and `toSection` — `/`-delimited paths naming the subtree and where it lands" };
+    }
+    if (from === to) return { error: "the destination is the source — nothing to move" };
+    const bad = await checkMove(root, from, to, await readOperations(root, { specId: sp.id }));
+    if (bad) return bad;
+    payload = { fromSection: from, toSection: to };
   } else {
     if (!input.requirementId) return { error: `kind "${input.kind}" needs a \`requirementId\`` };
     const r = await readRequirement(root, input.requirementId);
@@ -469,6 +553,14 @@ export async function ratifySpec(
         continue;
       }
     }
+    if (op.kind === "move_section") {
+      // Re-checked here and not only at drafting: another spec may have moved, emptied or
+      // occupied either end since. The source vanishing is the one that would otherwise
+      // pass silently — a move that finds nothing to move applies cleanly and does nothing,
+      // so the principal would be told a re-organization landed that never happened.
+      const bad = await checkMove(root, op.fromSection!, op.toSection!, ops.filter((o) => o.id !== op.id));
+      if (bad) { checks.push({ operation: op, ok: false, reason: bad.error }); continue; }
+    }
     checks.push({ operation: op, ok: true });
   }
 
@@ -495,7 +587,12 @@ export async function ratifySpec(
       // stale means the DETECTOR moved — which is the pathology nothing else catches.
       : op.kind === "add_criterion"
         ? op.assertedBy ?? []
-        : (await readRequirement(root, op.requirementId!))?.cites ?? [];
+        // A move's subject is a PATH, not code, so it witnesses nothing. It also names no
+        // rule, and every branch below this one assumes one — which is the trap this
+        // operation kind sets in each place that switches on the others by elimination.
+        : op.kind === "move_section"
+          ? []
+          : (await readRequirement(root, op.requirementId!))?.cites ?? [];
     witnesses[op.id] = await witness(root, cites);
   }
   const outcome = await shareSpecRatified(root, sp.id, at, witnesses, ops.map((o) => o.id));
@@ -547,6 +644,13 @@ export async function ratifySpec(
       bound = { ...op, requirementId: rid };
       await writeLocalOperation(root, bound);
       await writeLocalCriterion(root, c);
+    } else if (op.kind === "move_section") {
+      // Read fresh, in `ord` order with everything else, so a rule this same spec adds to
+      // the subtree at an earlier ord moves with it.
+      const { requirements: members } = await readRequirements(root, { section: op.fromSection! });
+      for (const m of members) {
+        await writeLocalRequirement(root, { ...m, section: movedSection(m.section, op.fromSection!, op.toSection!) });
+      }
     } else {
       const r = (await readRequirement(root, op.requirementId!))!;
       const next: Requirement = op.kind === "retire_requirement"
@@ -614,6 +718,193 @@ async function sharedRatification(
   return { ok: true, spec: folded, applied: await readOperations(root, { specId: sp.id }) };
 }
 
+/** One thing that has come to depend on a rule, and would be falsified by removing it. */
+export interface Reliance {
+  kind: "operation" | "acknowledgement" | "audit" | "problem" | "criterion" | "pointer" | "population" | "vacuity";
+  id: string;
+  /** The rule relied on. */
+  requirementId: string;
+  detail: string;
+}
+
+/**
+ * What relies on the rules a spec introduced.
+ *
+ * Reliance is a REFERENCE COUNT, which is why which backout applies is decided by the
+ * store rather than by the person asking. Two exclusions, and both are the point rather
+ * than convenience: this spec's own operations and its own criteria are not reliance on
+ * itself, and a gap chained to one of its operations is an approval of a rule that is
+ * about to stop existing — it ends with the spec, which is the job withdrawal gives it.
+ *
+ * The list is longer than `docs/requirements-architecture.md` enumerates, and deliberately:
+ * that passage was written when audits, acknowledgements and problems were the only things
+ * that could cite a rule. Criteria, pointers and population pins all can now, and a
+ * withdrawal that left one of them pointing at a rule nobody can read is the orphan the
+ * reference count exists to prevent.
+ */
+export async function relianceOn(root: string, ops: Operation[]): Promise<Reliance[]> {
+  const introduced = ops.filter((o) => o.kind === "add_requirement").map((o) => requirementIdFor(o.id));
+  const own = new Set(ops.map((o) => o.id));
+  const out: Reliance[] = [];
+  for (const requirementId of introduced) {
+    for (const o of await readOperations(root, { requirementId })) {
+      if (own.has(o.id)) continue;
+      out.push({ kind: "operation", id: o.id, requirementId, detail: `${o.kind} in ${o.specId}` });
+    }
+    for (const a of await readAcknowledgements(root, { requirementId })) {
+      if (a.operationId && own.has(a.operationId)) continue;
+      if (a.state === "released") continue;
+      out.push({ kind: "acknowledgement", id: a.id, requirementId, detail: `${a.basis} (${a.state})` });
+    }
+    for (const a of await readAudits(root, { requirementId })) {
+      out.push({ kind: "audit", id: a.id, requirementId, detail: a.outcome });
+    }
+    for (const pr of await readProblems(root, { requirementId })) {
+      out.push({ kind: "problem", id: pr.id, requirementId, detail: "raised against this rule" });
+    }
+    for (const c of await readCriteria(root, { requirementId })) {
+      if (own.has(c.introducedBy)) continue;
+      out.push({ kind: "criterion", id: c.id, requirementId, detail: c.evidenceKind });
+    }
+    for (const p of await readPointers(root, { requirementId })) {
+      out.push({ kind: "pointer", id: p.id, requirementId, detail: p.state });
+    }
+    for (const p of await readPopulations(root, { requirementId })) {
+      out.push({ kind: "population", id: p.id, requirementId, detail: p.state });
+    }
+  }
+  // A vacuity check hangs off a CRITERION, not off a rule, so it is invisible to the loop
+  // above — and the criteria a spec introduced are deleted along with its rules. Somebody
+  // established whether that criterion's assertion can fail; withdrawing over it discards
+  // the answer and leaves the check pointing at nothing.
+  for (const o of ops) {
+    if (o.kind !== "add_criterion") continue;
+    const criterionId = criterionIdFor(o.id);
+    for (const v of await readVacuityChecks(root, { criterionId })) {
+      out.push({ kind: "vacuity", id: v.id, requirementId: o.requirementId ?? criterionId, detail: v.verdict });
+    }
+  }
+  return out;
+}
+
+/**
+ * Withdraw a spec — the BEFORE-reliance half of backout.
+ *
+ * A draft may always be withdrawn: nothing has applied, so there is nothing to falsify,
+ * and it is what ends a pre-approved gap's life along with the proposal it was attached to.
+ *
+ * A RATIFIED spec may be withdrawn only while its effects are still self-contained, and
+ * `relianceOn` decides that rather than the caller. Two things it is not:
+ *
+ * - **It is not a delete.** The spec keeps its row and its ratification. Removing a ratified
+ *   spec from the log would destroy the audit trail of the act most worth auditing; what
+ *   comes out of the standard is what the spec PUT there.
+ * - **It is not a revert.** A spec that amended, retired or re-filed something that already
+ *   existed is refused outright, however little relies on it, because undoing it means
+ *   restoring a statement together with the witnesses taken when it was adopted — and the
+ *   row no longer holds them, the amendment re-baselined them. A "revert" would therefore
+ *   re-baseline the old text against today's code as though the amendment had never
+ *   happened, which is a fabricated observation on the most authoritative record here. A
+ *   compensating spec restores the text as its own witnessed act, which is honest and is
+ *   what `docs/requirements-architecture.md` means by repeal.
+ */
+export async function withdrawSpec(
+  root: string, specId: string, input: { reason: string } & ActorInput,
+): Promise<{ ok: true; spec: Spec; removed: string[] } | (Err & { reliance?: Reliance[] })> {
+  const who = principal(root, input, "withdraw a spec");
+  if (isErr(who)) return who;
+  const reason = input.reason?.trim();
+  if (!reason) return { error: "a withdrawal needs a `reason` — it stays on the record as the act it is" };
+  const sp = await readSpec(root, specId);
+  if (!sp) return { error: `no spec "${specId}"` };
+  if (sp.status === "withdrawn" || sp.status === "repealed") return { error: `${specId} is already ${sp.status}` };
+
+  const ops = await readOperations(root, { specId });
+  if (sp.status === "ratified") {
+    const changed = ops.find((o) => o.kind !== "add_requirement" && o.kind !== "add_criterion");
+    if (changed) {
+      return {
+        error:
+          `${specId} cannot be withdrawn: ${changed.id} is a ${changed.kind}, so it changed something `
+          + `that already existed. Undoing that means restoring a statement AND the witnesses taken `
+          + `when it was adopted, which the row no longer holds — the amendment re-baselined them — `
+          + `so the restored text would be witnessed against today's code as if it had never been `
+          + `amended. Repeal it instead: a new spec whose operations reverse this one's, which puts `
+          + `the old text back as its own witnessed act.`,
+      };
+    }
+    const reliance = await relianceOn(root, ops);
+    if (reliance.length) {
+      return {
+        error:
+          `${specId} cannot be withdrawn: ${reliance.length} thing(s) already rely on what it `
+          + `introduced (${reliance.slice(0, 5).map((r) => `${r.kind} ${r.id}`).join(", ")}`
+          + `${reliance.length > 5 ? ", …" : ""}). Withdrawal is mistake correction and is honest only `
+          + `while nothing downstream is falsified. Repeal it instead: a new spec whose operations `
+          + `reverse this one's.`,
+        reliance,
+      };
+    }
+  }
+
+  const at = now();
+  const outcome = await shareSpecWithdrawn(root, sp.id, at, reason);
+  const d = disposition(outcome);
+  if ("error" in d) return d;
+  const removed = sp.status === "ratified"
+    ? [
+      ...ops.filter((o) => o.kind === "add_requirement").map((o) => requirementIdFor(o.id)),
+      ...ops.filter((o) => o.kind === "add_criterion").map((o) => criterionIdFor(o.id)),
+    ]
+    : [];
+  if (!d.local) {
+    // Three outcomes, and collapsing the middle two is the mistake `sharedRatification`
+    // documents: the FOLD decides on this path and it can REFUSE, because the local
+    // reference count cannot see a citation another clone appended concurrently. Reporting
+    // a refusal as "not folded yet" would tell the caller to wait for a removal that is
+    // never going to happen.
+    const folded = await readSpec(root, sp.id);
+    if (folded?.status === "withdrawn") return { ok: true, spec: folded, removed };
+    if (outcome.shared && outcome.folded) {
+      return {
+        error:
+          `${sp.id} was NOT withdrawn: this machine folded the log and something appended `
+          + `elsewhere already relies on what the spec introduced — the local reference count `
+          + `could not see it, because the log is pull/push and never read on an ordinary read. `
+          + `The standard is unchanged and the spec stays ratified. Sync, then repeal it with a `
+          + `compensating spec if it still needs to go.`,
+      };
+    }
+    return {
+      error:
+        `${sp.id} is appended to the shared log and durable, but this machine has not folded it `
+        + `yet, so what it removed is not knowable here. Re-read the spec after the next sync.`,
+    };
+  }
+
+  // Guarded on status, the way the fold guards it: a DRAFT applied nothing, so there is
+  // nothing of its to remove. The deletes would be harmless no-ops — `requirementIdFor` on
+  // an operation that was never adopted names a row that does not exist — but two ends that
+  // read differently is how one of them later stops meaning what the other does.
+  if (sp.status === "ratified") {
+    for (const op of ops) {
+      if (op.kind === "add_requirement") await deleteLocalRequirement(root, requirementIdFor(op.id));
+      if (op.kind === "add_criterion") await deleteLocalCriterion(root, criterionIdFor(op.id));
+    }
+  }
+  // A gap chained to one of these operations approved a rule that will now never exist. It
+  // is RELEASED rather than deleted, for the reason the spec is: the grant really happened.
+  const { releaseAcknowledgement } = await import("./acknowledgements.js");
+  for (const op of ops) {
+    for (const a of await readAcknowledgements(root, { operationId: op.id })) {
+      if (a.state !== "released") await releaseAcknowledgement(root, a.id, `${sp.id} was withdrawn`, input);
+    }
+  }
+  const next: Spec = { ...sp, status: "withdrawn", withdrawnBy: who, withdrawnAt: at };
+  await writeLocalSpec(root, next);
+  return { ok: true, spec: next, removed };
+}
+
 /**
  * Re-file or rename a requirement. Organization only — never the statement.
  *
@@ -641,9 +932,10 @@ export async function reorganizeRequirement(
   if (r.origin) {
     return {
       error:
-        `${r.id} is the team's, and re-filing has no shared act yet — a section move or rename `
-        + `belongs in a spec as an operation, which is not built (see `
-        + `docs/requirements-architecture.md). Writing it locally would be erased by the next sync.`,
+        `${r.id} is the team's, and re-filing one shared rule has no shared act — writing it `
+        + `locally would be erased by the next sync. Move the whole heading with a `
+        + `\`move_section\` operation in a spec, or amend the rule so the re-filing is a `
+        + `decision somebody ratified rather than one machine's edit.`,
     };
   }
   const next: Requirement = { ...r, title, section };
@@ -680,7 +972,12 @@ export interface RenderedOperation {
   before?: ServedRequirement;
   /** The statement this operation would produce. Absent for a retirement. */
   after?: string;
-  /** The context has moved; this operation cannot be adopted as drafted. */
+  /**
+   * The ground this operation was written against has moved; it cannot be adopted as
+   * drafted. For most kinds that is `context` — the statement. For a `move_section`, whose
+   * subject is a path rather than a rule, it is the ends of the move: `moves.blocked` says
+   * which, and ratification refuses on the same test.
+   */
   contextMoved: boolean;
   /**
    * Gap acknowledgements already raised against this operation — a SILENCER that binds the
@@ -704,6 +1001,21 @@ export interface RenderedOperation {
    * move. Absent for `add_requirement`, which has no rule to be watching yet.
    */
   watchedBy: Pointer[];
+  /**
+   * For `move_section`: the rules that would actually move, and where each lands.
+   *
+   * Rendered rather than left to the operation's two path fields because the trade this
+   * surface exists for is "read N operations instead of 5,000 lines" — and the one thing a
+   * principal cannot see from `Credit` → `Risk` is how much is filed under it. The set is
+   * read LIVE, so a rule added to the subtree since drafting shows up here rather than
+   * moving unannounced.
+   */
+  moves?: {
+    from: string; to: string;
+    /** Why it can no longer be applied, when `contextMoved` says it cannot. */
+    blocked?: string;
+    members: { id: string; title: string; from: string; to: string }[];
+  };
 }
 
 /**
@@ -724,11 +1036,31 @@ export async function getSpec(
   for (const op of ops) {
     const target = op.requirementId ? await readRequirement(root, op.requirementId) : null;
     const before = target ? await serve(root, target) : undefined;
-    const contextMoved = !!op.context && (!target || target.statement !== op.context.statement);
+    let contextMoved = !!op.context && (!target || target.statement !== op.context.statement);
+    let moves: RenderedOperation["moves"];
+    if (op.kind === "move_section") {
+      // A move carries no `context` — its subject is a path — so the check above cannot
+      // see that its ends have shifted, and the spec would render `adoptable` right up to
+      // the ratification that refuses it. That is the failure this surface exists to
+      // prevent: a principal who is told they can dispose of a spec and then cannot goes
+      // back to reading code, which is the trade lost at its last step.
+      const bad = await checkMove(root, op.fromSection!, op.toSection!, ops.filter((o) => o.id !== op.id));
+      if (bad) contextMoved = true;
+      const { requirements: members } = await readRequirements(root, { section: op.fromSection! });
+      moves = {
+        from: op.fromSection!, to: op.toSection!,
+        ...(bad ? { blocked: bad.error } : {}),
+        members: members.map((m) => ({
+          id: m.id, title: m.title, from: m.section,
+          to: movedSection(m.section, op.fromSection!, op.toSection!),
+        })),
+      };
+    }
     operations.push({
       operation: op,
       ...(before ? { before } : {}),
-      ...(op.kind === "retire_requirement" ? {} : { after: op.statement }),
+      ...(op.kind === "retire_requirement" || op.kind === "move_section" ? {} : { after: op.statement }),
+      ...(moves ? { moves } : {}),
       contextMoved,
       // PENDING, not active — and this is the surface that makes the distinction worth
       // having. A pre-approved gap silences nothing until this spec is adopted, so it is
