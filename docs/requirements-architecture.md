@@ -333,6 +333,31 @@ This generalises what already exists in pieces — `cites` (staleness means the 
 and COD-18's `asserted_by` (staleness means the build is red) — into one relation whose
 question is *what would make this claim need re-checking*.
 
+### A pointer is WHERE TO LOOK; the acceptance criterion is WHAT and HOW to verify
+
+These are two records, not one, and conflating them is easy because both sit at the same
+seam. The criterion states the check and its falsifier — *what would discharge this rule,
+and what would refute it*. The pointer is the **address the auditor goes to**. One
+criterion can be watched from several pointers; one pointer can serve several rules.
+
+**And a pointer aims as HIGH up the abstraction ladder as it can reach.** COD-29's two
+gradients run along that ladder in opposite directions — a requirement is a rule about
+*what should be*, a doc is a compression of *what is*, and the code is *what is* — so the
+interface between them is not flat, and where a pointer attaches decides how much it is
+worth:
+
+| pointer target | covers | survives |
+|---|---|---|
+| a test or lint enforcing an invariant | a whole population | any single site changing |
+| a doc describing a general pattern | everything the pattern governs | refactors within it |
+| one anchor | one symbol | almost nothing — a rename mints a new id |
+
+So **an anchor is the last resort, not the default**, which cuts against the instinct: the
+map's own primitive is a citation to an anchor, and reaching for one here produces a
+pointer that goes quiet exactly when the code it governs is edited. Point at the highest
+artifact that still actually constrains the thing — which is why an executable check ranks
+where it does. It is a compression *and* it runs.
+
 ### They make re-auditing cheaper; they do not replace auditing
 
 A requirement whose pointers were checked recently and are quiet is **less likely** to be
