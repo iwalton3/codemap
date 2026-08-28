@@ -430,3 +430,31 @@ test("a requirement's id is derived from its operation, so every clone agrees", 
     assert.equal(rule.introducedBy, sp.id);
   } finally { discard(root); }
 });
+
+test("one spec cannot open two sections that differ only by case", async () => {
+  const { root } = await universe();
+  try {
+    const sp = ok(await draftSpec(root, { title: "Two sections at once" }));
+    const base = {
+      specId: sp.id, kind: "add_requirement" as const, rationale: "x",
+      reversibility: "reversible" as const, provenance: "policy",
+    };
+    ok(await addOperation(root, { ...base, title: "One", section: "Credit/Limits", statement: "A." }));
+
+    // Comparing only against EXISTING rows let a spec introduce "Credit/Limits" and
+    // "credit/limits" in one breath: neither had rows yet, so neither could see the
+    // other, and both landed as complete-looking sections. Found by probing, not by a
+    // review.
+    const clash = await addOperation(root, { ...base, title: "Two", section: "credit/limits", statement: "B." });
+    assert.ok("error" in clash);
+    assert.match((clash as any).error, /this same spec already introduces/);
+
+    // A genuinely different section in the same spec is still fine.
+    ok(await addOperation(root, { ...base, title: "Three", section: "Settlement/Float", statement: "C." }));
+    ok(await ratifySpec(root, sp.id));
+    assert.deepEqual(
+      (await requirementSections(root)).map((x) => x.section),
+      ["Credit/Limits", "Settlement/Float"],
+    );
+  } finally { discard(root); }
+});

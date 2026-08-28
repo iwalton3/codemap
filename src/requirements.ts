@@ -117,13 +117,24 @@ function normalizeSection(raw: string): string {
  * normal. Deliberately NOT fuzzy: matching "Credit Lines" against "Credit" would refuse
  * legitimately new sections, and a guard that cries wolf is turned off.
  */
-async function checkSection(root: string, section: string): Promise<Err | null> {
+async function checkSection(root: string, section: string, alsoInPlay: string[] = []): Promise<Err | null> {
   const existing = await requirementSectionCounts(root);
   const clash = existing.find((e) => e.section.toLowerCase() === section.toLowerCase() && e.section !== section);
-  return clash
-    ? { error: `section "${section}" differs from the existing "${clash.section}" (${clash.count} requirement(s)) only by case — use that one, or pick a genuinely different name` }
+  if (clash) {
+    return { error: `section "${section}" differs from the existing "${clash.section}" (${clash.count} requirement(s)) only by case — use that one, or pick a genuinely different name` };
+  }
+  // Sections THIS spec is introducing have no rows yet, so comparing against the store
+  // alone lets one spec open "Credit/Limits" and "credit/limits" in the same breath —
+  // the exact silent split the guard exists to prevent, walking straight past it.
+  const sibling = alsoInPlay.find((x) => x.toLowerCase() === section.toLowerCase() && x !== section);
+  return sibling
+    ? { error: `section "${section}" differs from "${sibling}", which this same spec already introduces, only by case — pick one` }
     : null;
 }
+
+/** The sections a spec's `add_requirement` operations bring into existence. */
+const sectionsIntroducedBy = (ops: Operation[]): string[] =>
+  ops.filter((o) => o.kind === "add_requirement" && o.section).map((o) => o.section!);
 
 /** Cited anchors must exist WHEN CITED — an empty citation list is fine, a wrong one is not. */
 function checkCitations(root: string, cites: string[]): Err | null {
@@ -241,7 +252,7 @@ export async function addOperation(
           + "what tells a reader which rules are immovable and which are ours to revisit.",
       };
     }
-    const clash = await checkSection(root, section);
+    const clash = await checkSection(root, section, sectionsIntroducedBy(await readOperations(root, { specId: sp.id })));
     if (clash) return clash;
     const bad = checkCitations(root, input.cites ?? []);
     if (bad) return bad;
@@ -320,7 +331,8 @@ export async function ratifySpec(
       }
     }
     if (op.kind === "add_requirement") {
-      const clash = await checkSection(root, op.section!);
+      const siblings = sectionsIntroducedBy(ops.filter((o) => o.id !== op.id));
+      const clash = await checkSection(root, op.section!, siblings);
       if (clash) { checks.push({ operation: op, ok: false, reason: clash.error }); continue; }
     }
     checks.push({ operation: op, ok: true });
