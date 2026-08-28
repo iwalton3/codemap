@@ -96,8 +96,16 @@ import { readScopeChecked, SHARD_EXT, type LogEvent, type ScopeStatus } from "./
  * specs, and every store that had already cached any scope would keep serving under the
  * old number. Bumped for the reason 6 -> 7 gives: the fingerprint is over the shards,
  * which do not move when the fold's mind changes.
+ *
+ * 13 -> 14 adds six projected tables to that same scope — criteria, vacuity checks,
+ * pointers, populations, scrubs and the scrub policy — and `foldStandard` now derives
+ * criteria from ratified `add_criterion` operations. Exactly the 12 -> 13 case: the scope
+ * is not new, so every store that has already folded it keeps its cached rows, and the
+ * shards do not move when the fold's mind changes. Without the bump such a store serves a
+ * standard with none of the new records in it FOR EVER — and worse than at 12 -> 13,
+ * because `served()` now reports that answer as authoritative.
  */
-export const MATERIALIZER_VERSION = 13;
+export const MATERIALIZER_VERSION = 14;
 
 /**
  * What the events in a scope are, cheaply.

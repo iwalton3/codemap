@@ -137,6 +137,14 @@ export async function recordScrub(
   if (observations.some((o) => typeof o.firing !== "boolean")) {
     return { error: "every observation needs `firing: true|false` — that boolean IS the history a rate is derived from" };
   }
+  // The same pointer twice in one scrub is one look counted as several, and it defeats
+  // `minObservations` exactly: three copies of one observation reaches the default floor
+  // from a single call and reports a pathology. That is the error the floor exists to
+  // prevent, arriving through the door the floor does not watch. `checkMembers` in
+  // `population.ts` refuses duplicates for the same reason.
+  if (seen.size !== observations.length) {
+    return { error: "the same pointer is observed twice — one look counted as several is how a rate stops being a rate" };
+  }
   const actor = requireActor(root, input);
   if (isErr(actor)) return actor;
 
@@ -226,10 +234,14 @@ export interface ScrubPlan {
   /** Past the coverage period, oldest first: coverage is guaranteed, not sampled. */
   due: ScrubDue[];
   /**
-   * The budget, stated: rules per day to cover the population every `coverageDays`.
+   * The budget, stated: the AVERAGE rules per day needed to cover the population every
+   * `coverageDays`. The number that makes the cost visible before it is incurred, which is
+   * the difference between a schedule and an intention.
    *
-   * The number that makes the cost visible BEFORE it is incurred, which is the whole
-   * difference between a schedule and an intention.
+   * Not rounded up. `Math.ceil` reports one rule every 365 days as "1 per day" — 365 times
+   * the real workload — and the only reading that would justify a ceiling is a quota that
+   * must be performed daily, which this schedule does not require. The number that answers
+   * *what must I do today* is `due.length`, and it is right there.
    */
   perDay: number | null;
   /** Pointers whose firing rate says they are not doing the job they look like they do. */
@@ -278,7 +290,7 @@ export async function scrubPlan(root: string, opts: { asOf?: string } = {}): Pro
     policy, population: requirements.length,
     neverScrubbed: rows.filter((x) => x.lastScrubbed === null).length,
     due: overdue,
-    perDay: policy ? Math.ceil(requirements.length / policy.coverageDays) : null,
+    perDay: policy ? Math.round((requirements.length / policy.coverageDays) * 100) / 100 : null,
     pathologies: (await pointerRates(root, { live: true })).filter((p) => p.pathology !== null),
     suspect: [...latest]
       .filter(([rid, x]) => inForce.has(rid) && x.verdict === "suspect")

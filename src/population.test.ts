@@ -53,6 +53,11 @@ async function universe() {
   const rule = await indexBlob(RULE, "src/credit.js");
   const lint = await indexBlob(LINT, "tests/endpoints.lint.js");
   await writeStore(root, [...rule, ...lint], state);
+  // COMMITTED, and on the default branch. A pin is an observation of what is checked out,
+  // so an uncommitted fixture makes every pin provisional and every gap-release test
+  // vacuous — which is exactly how this fixture first behaved.
+  spawnSync("git", ["add", "-A"], { cwd: root });
+  spawnSync("git", ["commit", "-qm", "base"], { cwd: root });
   return { root, rule: rule.map((a) => a.id), lint: lint.map((a) => a.id) };
 }
 
@@ -275,5 +280,71 @@ test("a pin needs its lint, and the lint must be in the live index", async () =>
       requirementId: rid, lint: u.lint, members: [{ id: "x", state: "maybe" } as never],
     })), /must be one of/);
     ok(await pinPopulation(u.root, { requirementId: rid, lint: u.lint, members: [M("x", "conforms")] }));
+  } finally { discard(u.root); }
+});
+
+/**
+ * A pin from a branch is that BRANCH's population, not the team's.
+ *
+ * A lint enumerates whatever is checked out, so the branch is not incidental to a member
+ * list the way it is to a rule's text. Publishing one would release a gap on evidence that
+ * may never merge — and a later honest pin from the default branch would then read as
+ * NARROWING and need a principal to clear up after an abandoned branch.
+ */
+test("a pin taken off the default branch is provisional, and settles nothing", async () => {
+  const u = await universe();
+  try {
+    const rid = await rule(u.root, { gap: true });
+    spawnSync("git", ["checkout", "-qb", "feat"], { cwd: u.root });
+
+    const pinned = ok(await pinPopulation(u.root, {
+      requirementId: rid, lint: u.lint, members: [M("GET /orders", "violates")],
+    }));
+    assert.equal(pinned.population.provisional, true);
+    assert.equal(pinned.population.branch, "feat");
+    assert.deepEqual(pinned.released, [], "a gap is not released on evidence that may never merge");
+    assert.equal((await listAcknowledgements(u.root, { requirementId: rid, state: "active" })).length, 1);
+
+    // Back on the default branch the same pin is the codebase's, and it settles.
+    spawnSync("git", ["checkout", "-q", "main"], { cwd: u.root });
+    const real = ok(await pinPopulation(u.root, {
+      requirementId: rid, lint: u.lint, members: [M("GET /orders", "violates")],
+    }));
+    assert.equal(real.population.provisional, undefined);
+    assert.deepEqual(real.released.length, 1);
+  } finally { discard(u.root); }
+});
+
+test("a dirty tree makes a pin provisional — its witnesses are of code in no commit", async () => {
+  const u = await universe();
+  try {
+    const rid = await rule(u.root);
+    // Clean: the ordinary case, and the control that stops the assertion below passing
+    // against an implementation that calls everything provisional.
+    assert.equal(ok(await pinPopulation(u.root, {
+      requirementId: rid, lint: u.lint, members: [M("GET /orders", "conforms")],
+    })).population.provisional, undefined);
+
+    writeFileSync(join(u.root, "src/credit.js"), RULE + "// edited\n", "utf8");
+    assert.equal(ok(await pinPopulation(u.root, {
+      requirementId: rid, lint: u.lint, members: [M("GET /orders", "conforms"), M("GET /x", "conforms")],
+    })).population.provisional, true, "witnessing from a dirty tree records a body that is in no commit");
+  } finally { discard(u.root); }
+});
+
+test("a retired rule takes no population, by either basis", async () => {
+  const u = await universe();
+  try {
+    const rid = await rule(u.root);
+    const sp = ok(await draftSpec(u.root, { title: "retire" }));
+    ok(await addOperation(u.root, {
+      specId: sp.id, kind: "retire_requirement", rationale: "superseded",
+      reversibility: "reversible", requirementId: rid,
+    }));
+    ok(await ratifySpec(u.root, sp.id));
+    // Both doors, because the gates on this surface are deliberately symmetric and this
+    // one was open on only one of them.
+    assert.match(err(await pinPopulation(u.root, { requirementId: rid, lint: u.lint, members: [M("x", "conforms")] })), /retired/);
+    assert.match(err(await declareNotExpressible(u.root, { requirementId: rid, reason: "spans repos" })), /retired/);
   } finally { discard(u.root); }
 });

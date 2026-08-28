@@ -103,6 +103,47 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     publish: ["src/scrub.ts", /const missed = active\.filter\(\(p\) => !seen\.has\(p\.id\)\);/],
   },
   {
+    // A falsifier that restates its criterion asserts nothing about what failure looks
+    // like — it is the one vacuous form a machine can see, and it was refused only by the
+    // authoring path. Same for an evidence kind outside the closed list: a vocabulary this
+    // build cannot read is one no reader can either.
+    what: "a criterion whose falsifier restates it",
+    fold: ["src/shared-standard.ts", /if \(flat\(op\.falsifier\) === flat\(op\.criterion\)\) return;/],
+    publish: ["src/requirements.ts", /the falsifier restates the criterion/],
+  },
+  {
+    // A `demonstrated` check with no witnesses can NEVER be superseded, so it certifies a
+    // check across every later rewrite of that check — the pathology the pin exists for,
+    // reintroduced through the record meant to detect it.
+    what: "a vacuity demonstration that can never be superseded",
+    fold: ["src/shared-standard.ts", /check\.verdict === "demonstrated" && !check\.witnesses\?\.length/],
+    publish: ["src/criteria.ts", /no \\`assertedBy\\` — there is no check to demonstrate/],
+  },
+  {
+    // A PHANTOM observation names a pointer that is not on the rule, and fabricates history
+    // for it: `pointerRates` tallies by pointer id and takes the requirement from the first
+    // scrub that mentions it. Only the omission half of this gate was registered, which is
+    // how the fold ended up with one of the two checks the tool has.
+    what: "a scrub observing a pointer that is not on the rule",
+    fold: ["src/shared-standard.ts", /!watching\.some\(\(p\) => p\.id === o\.pointerId\)/],
+    publish: ["src/scrub.ts", /const phantom = observations\.filter/],
+  },
+  {
+    // One look counted as several. Three copies of one observation reaches the default
+    // `minObservations` from a single call and reports a pathology — the floor defeated
+    // through the one door it does not watch.
+    what: "the same pointer observed twice in one scrub",
+    fold: ["src/shared-standard.ts", /if \(seen\.size !== sc\.observations\.length\) break;/],
+    publish: ["src/scrub.ts", /if \(seen\.size !== observations\.length\)/],
+  },
+  {
+    // A lint enumerates whatever is CHECKED OUT, so a pin from a feature branch is that
+    // branch's population and not the team's — the same rule `shareAudit` follows.
+    what: "a population pinned off the default branch",
+    fold: ["src/shared-standard.ts", /if \(pin\.provisional\) break;/],
+    publish: ["src/standard-publish.ts", /pin\.provisional\s*\n?\s*\? Promise\.resolve\(localOnly\)/],
+  },
+  {
     // A firing rate from a single look is not a rate. A policy admitting one would make the
     // scrub commit the exact error it exists to catch — a confident verdict from a check
     // that could not have produced one — for every clone that folded it.

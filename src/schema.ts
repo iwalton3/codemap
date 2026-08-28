@@ -1548,8 +1548,26 @@ export interface PopulationPredicate {
   /** Required for `not-expressible`: why no lint can express this. */
   reason?: string;
   state: "active" | "superseded";
+  /**
+   * Taken off the default branch, or from a dirty tree — so it is about somebody's work in
+   * progress rather than about the codebase.
+   *
+   * The same rule `Audit.provisional` carries, and for a sharper reason. A lint enumerates
+   * whatever is checked out, so a pin taken on a feature branch publishes that branch's
+   * population as the TEAM's: it would release a gap on evidence that may never merge, and
+   * a later honest pin from the default branch would then read as NARROWING and need a
+   * principal to clear up after an abandoned branch. From a dirty tree it is worse — the
+   * witnesses record a body that is in no commit, so the pin can never be quiet (COD-3).
+   *
+   * A provisional pin stays local. There is no promotion path and none is needed: pinning
+   * again after the merge is the whole act, and it is one call.
+   */
+  provisional?: boolean;
   pinnedBy: Actor;
   pinnedAt: string;
+  /** Where it was taken, so a reader can see what the member list is an observation OF. */
+  commit?: string | null;
+  branch?: string | null;
   /** The pin this replaced, so a re-pin's delta has a chain to be read against. */
   supersedes?: string;
   origin?: string;

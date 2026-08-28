@@ -1,15 +1,27 @@
-import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff } from "../diff.js";
+import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff, type DiffResult } from "../diff.js";
 import { reviewTriageFor } from "../triage.js";
+import { standardScopeWarning, type StandardScope } from "../standard-publish.js";
 
 /**
  * Diff two anchor snapshots — added/removed/changed symbols plus the impact on
- * the nodes, flows, and reviews that cite them. `base` is a cached snapshot; omit
+ * the nodes, flows, reviews and requirements that cite them. Carries `standardScope`
+ * when the requirement rollup may not be presented as the team's. `base` is a cached snapshot; omit
  * `head` to diff against a fresh index of the current working tree (the PR-review
  * path), or pass a second cached ref for a pure historical set-op.
  */
-export async function diff(root: string, base: string, head?: string) {
+export async function diff(
+  root: string, base: string, head?: string,
+): Promise<(DiffResult & { standardScope?: StandardScope }) | { error: string }> {
   await materializeDocs(root);
-  return computeDiff(root, base, head);
+  // The STANDARD scope too, and for the same two reasons `served()` exists. The diff's
+  // requirement rollup reads requirements, criteria, pointers and audits straight from the
+  // rows, so it needs the fold to have run (that is what `standardScopeWarning` does on the
+  // way to its verdict) — and it needs the verdict itself, or a `standard/` scope blocked
+  // by a fork is presented as the team's truth on the one surface people actually read.
+  // `ops/standard.ts`'s sweep cannot see this call site: the diff does not live there.
+  const standardScope = await standardScopeWarning(root);
+  const result = await computeDiff(root, base, head);
+  return standardScope && !("error" in result) ? { ...result, standardScope } : result;
 }
 
 /**

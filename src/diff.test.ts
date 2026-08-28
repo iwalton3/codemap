@@ -266,3 +266,52 @@ test("diff cannot reach an uncited requirement, and does not invent one", async 
     discard(root);
   }
 });
+
+/**
+ * A record witnessed at HEAD was not moved by the change that produced head.
+ *
+ * Membership in the changed set and "this diff moved what the witness recorded" are
+ * different questions, and conflating them errs in the direction that matters: an audit
+ * taken on the branch after the change holds the post-change hash, so reporting it as
+ * moved says a live `conformant` is not evidence any more when it is exactly the evidence
+ * a reviewer wants. Both arms are here — witnessed at base MUST still fire — because a
+ * fix that simply stopped reporting movement would pass the first half alone.
+ */
+test("movement is decided by the witness hash, not by the anchor being in the diff", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-diff-witness-"));
+  try {
+    const baseHash = fixtureHash("h_base");
+    const headHash = fixtureHash("h_head");
+    await writeSnapshot(root, "base_sha", "main", [anchor("a_chg", "transfer", "h_base")], "2026-08-01T00:00:00Z");
+    await writeSnapshot(root, "head_sha", "feature", [anchor("a_chg", "transfer", "h_head")], "2026-08-01T01:00:00Z");
+
+    const req = (id: string): Requirement => ({
+      id, title: "Rule", section: "S", statement: "…", provenance: "p", status: "ratified",
+      cites: ["a_chg"], witnesses: [{ anchorId: "a_chg", bodyHash: baseHash }],
+      author: { principal: "izzie" }, createdAt: "2026-07-01T00:00:00Z", introducedBy: "sp",
+    });
+    await writeLocalRequirement(root, req("r_head"));
+    await writeLocalRequirement(root, req("r_base"));
+
+    const audit = (id: string, rid: string, hash: string): Audit => ({
+      id, requirementId: rid, outcome: "conformant", evidence: { read: ["a_chg"] },
+      witnesses: [{ anchorId: "a_chg", bodyHash: hash }], finding: "checked",
+      auditor: { principal: "izzie" }, at: "2026-07-02T00:00:00Z",
+    });
+    await writeLocalAudit(root, audit("au_head", "r_head", headHash));
+    await writeLocalAudit(root, audit("au_base", "r_base", baseHash));
+
+    const r = await computeDiff(root, "base_sha", "head_sha");
+    assert.ok(!("error" in r), "expected a diff result");
+    if ("error" in r) return;
+
+    const at = (id: string) => r.impact.requirements.find((x) => x.id === id)!;
+    assert.equal(at("r_head").auditMoved, false, "audited AT head — the change did not rewrite what it read");
+    assert.equal(at("r_base").auditMoved, true, "audited at base — the change did rewrite it");
+    // The rule itself is still raised in both cases: its CITED code moved either way, which
+    // is the weaker signal and the one that is genuinely about the anchor set.
+    assert.deepEqual(at("r_head").anchors, ["a_chg"]);
+  } finally {
+    discard(root);
+  }
+});

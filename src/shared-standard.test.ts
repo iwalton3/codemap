@@ -503,11 +503,26 @@ test("a ratified add_criterion folds to a criterion, under an id every clone der
  * client, a hand-written line, a future build. This subsystem has shipped that mistake
  * four times (see `sharing-boundary.test.ts` §BOTH_ENDS), always in this direction.
  */
+/** A ratified spec that really creates the criterion the checks below are about. */
+async function withCriterion(root: string): Promise<string> {
+  await publishSpecDrafted(root, SCOPE, opus, SPEC);
+  await publishOperation(root, SCOPE, opus, ADD);
+  await publishOperation(root, SCOPE, opus, ADD_CRITERION);
+  await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {
+    op_2: [{ anchorId: "a_lint", bodyHash: "h1:sha256:def" }],
+  }, ["op_1", "op_2"]);
+  return criterionIdFor("op_2");
+}
+
 test("the fold drops a `demonstrated` vacuity check that records no method", async () => {
   const root = await log("vacuity");
   try {
+    // A REAL criterion: a check against an id nothing created is a verdict about nothing,
+    // and the fold now refuses it — which would make every assertion below pass for the
+    // wrong reason.
+    const criterionId = await withCriterion(root);
     const base = {
-      criterionId: "ac_1", witnesses: [{ anchorId: "a_lint", bodyHash: "h1:sha256:def" }],
+      criterionId, witnesses: [{ anchorId: "a_lint", bodyHash: "h1:sha256:def" }],
       checkedBy: opus, at: "2026-08-03T00:00:00.000Z",
     };
     await publishVacuityCheck(root, SCOPE, opus, { ...base, id: "vc_1", verdict: "demonstrated", method: "" });
@@ -713,5 +728,148 @@ test("the scrub policy is one decision, and one that cannot do its job is droppe
     await publishScrubPolicy(root, SCOPE, izzie, { coverageDays: 7, minObservations: 5, setBy: izzie, setAt: "2026-08-20T00:00:00.000Z" });
     const p = (await fold(root)).scrubPolicy!;
     assert.deepEqual([p.coverageDays, p.minObservations], [7, 5]);
+  } finally { discard(root); }
+});
+
+/**
+ * The fold must find the pin being replaced ITSELF, never take the writer's word for it.
+ *
+ * This is the shape the `ack.granted` case already names — *"the fold took the record's
+ * word for it"* — arriving at the newest record in the subsystem. An event that simply
+ * omits `supersedes` was accepted verbatim: the narrowing gate never ran, and the rule was
+ * left holding TWO active populations, which is a state nothing else models.
+ */
+test("an agent cannot narrow a population by omitting what it supersedes", async () => {
+  const root = await log("population-supersede");
+  try {
+    await publishPopulationPinned(root, SCOPE, izzie, POP);
+    assert.deepEqual((await fold(root)).populations.map((p) => [p.id, p.state]), [["pop_1", "active"]]);
+
+    // No `supersedes`, and the member list drops the violating one. Under a fold that
+    // trusts the field, this lands active beside pop_1 with the gate never consulted.
+    await publishPopulationPinned(root, SCOPE, opus, {
+      ...POP, id: "pop_sneak", pinnedAt: "2026-08-20T00:00:00.000Z",
+      members: [{ id: "GET /orders", state: "conforms" as const }],
+    });
+    const p = (await fold(root)).populations;
+    assert.deepEqual(p.map((x) => [x.id, x.state]), [["pop_1", "active"]],
+      "narrowing is a principal's act however the event describes itself");
+  } finally { discard(root); }
+});
+
+/**
+ * And one rule never holds two active populations, whatever order the shards arrive in.
+ *
+ * A superseding event can fold BEFORE the pin it names — an un-synced clone's shard sorts
+ * where the log puts it, not where the writer expected — which is the same ordering hazard
+ * `spec.ratified` pins its operation list against.
+ */
+test("a rule holds exactly one active population, whatever order the events arrive in", async () => {
+  const root = await log("population-order");
+  try {
+    // The superseding pin arrives FIRST, naming a pin this fold has not seen.
+    await publishPopulationPinned(root, SCOPE, izzie, {
+      ...POP, id: "pop_late", pinnedAt: "2026-08-20T00:00:00.000Z",
+      members: [...POP.members, { id: "GET /credits", state: "violates" as const }],
+    }, "pop_1");
+    await publishPopulationPinned(root, SCOPE, izzie, POP);
+
+    const active = (await fold(root)).populations.filter((p) => p.state === "active");
+    assert.equal(active.length, 1, "two active populations for one rule is a state nothing models");
+  } finally { discard(root); }
+});
+
+test("the fold blocks an agent erasing a populated rule by declaring it inexpressible", async () => {
+  const root = await log("population-inexpressible");
+  try {
+    await publishPopulationPinned(root, SCOPE, izzie, POP);
+    // Replacing a lint pin of 2 members with "no lint can express this" drops both — it is
+    // narrowing at its limit, and it reaches the gate through a different door than a
+    // shorter member list does.
+    await publishPopulationPinned(root, SCOPE, opus, {
+      ...POP, id: "pop_ne", basis: "not-expressible", lint: [], witnesses: [], members: [],
+      reason: "spans two repos", pinnedAt: "2026-08-21T00:00:00.000Z",
+    });
+    assert.deepEqual((await fold(root)).populations.map((p) => [p.id, p.state]), [["pop_1", "active"]]);
+
+    // A principal may, and then it is the active one.
+    await publishPopulationPinned(root, SCOPE, izzie, {
+      ...POP, id: "pop_ne2", basis: "not-expressible", lint: [], witnesses: [], members: [],
+      reason: "spans two repos", pinnedAt: "2026-08-22T00:00:00.000Z",
+    });
+    assert.deepEqual((await fold(root)).populations.map((p) => [p.id, p.state]),
+      [["pop_1", "superseded"], ["pop_ne2", "active"]]);
+  } finally { discard(root); }
+});
+
+test("the fold refuses a scrub observing pointers that are not on the rule", async () => {
+  const root = await log("scrub-phantom");
+  try {
+    await publishPointerDeclared(root, SCOPE, opus, { ...PTR, id: "pt_mine", requirementId: "r_x" });
+    await publishPointerDeclared(root, SCOPE, opus, { ...PTR, id: "pt_other", requirementId: "r_other" });
+    const base = {
+      id: "sc_1", requirementId: "r_x", finding: "looked", verdict: "sound" as const,
+      scrubbedBy: opus, at: "2026-08-23T00:00:00.000Z",
+    };
+    // A phantom fabricates history for a pointer on ANOTHER rule: `pointerRates` tallies by
+    // pointer id and takes the rule from the first scrub that mentions it.
+    await publishScrub(root, SCOPE, opus, {
+      ...base, observations: [{ pointerId: "pt_mine", firing: false }, { pointerId: "pt_other", firing: true }],
+    });
+    assert.deepEqual((await fold(root)).scrubs.map((s) => s.id), []);
+
+    // The same pointer twice reaches `minObservations` from one look.
+    await publishScrub(root, SCOPE, opus, {
+      ...base, id: "sc_dup",
+      observations: [{ pointerId: "pt_mine", firing: false }, { pointerId: "pt_mine", firing: false }],
+    });
+    assert.deepEqual((await fold(root)).scrubs.map((s) => s.id), []);
+
+    await publishScrub(root, SCOPE, opus, { ...base, id: "sc_ok", observations: [{ pointerId: "pt_mine", firing: false }] });
+    assert.deepEqual((await fold(root)).scrubs.map((s) => s.id), ["sc_ok"]);
+  } finally { discard(root); }
+});
+
+test("the fold refuses a vacuity check about a criterion nothing created, or one that can never be superseded", async () => {
+  const root = await log("vacuity-subject");
+  try {
+    const criterionId = await withCriterion(root);
+    const base = { witnesses: [{ anchorId: "a_lint", bodyHash: "h1:sha256:def" }], checkedBy: opus, at: "2026-08-03T00:00:00.000Z" };
+
+    // A verdict about nothing: `criteriaFor` would never surface it and nothing could ever
+    // supersede it, so it would sit in the log for ever looking like a demonstration.
+    await publishVacuityCheck(root, SCOPE, opus, { ...base, id: "vc_ghost", criterionId: "ac_nothing", verdict: "demonstrated", method: "broke it" });
+    assert.deepEqual((await fold(root)).vacuityChecks.map((v) => v.id), []);
+
+    // A `demonstrated` check with NO witnesses can never go superseded — `serveCheck`
+    // reads an empty witness list as nothing to drift from — so it would certify a check
+    // across every later rewrite of that check. That is the pathology the pin exists for.
+    await publishVacuityCheck(root, SCOPE, opus, { ...base, id: "vc_eternal", criterionId, verdict: "demonstrated", method: "broke it", witnesses: [] });
+    assert.deepEqual((await fold(root)).vacuityChecks.map((v) => v.id), []);
+
+    // The weakening verdicts need no witnesses: they take nothing on trust.
+    await publishVacuityCheck(root, SCOPE, opus, { ...base, id: "vc_weak", criterionId, verdict: "vacuous", method: "", witnesses: [] });
+    assert.deepEqual((await fold(root)).vacuityChecks.map((v) => v.id), ["vc_weak"]);
+  } finally { discard(root); }
+});
+
+test("the fold refuses a criterion whose falsifier restates it, or whose kind it cannot read", async () => {
+  const root = await log("criterion-weak");
+  try {
+    for (const [id, bad] of [
+      ["op_same", { criterion: "A line above the limit is rejected.", falsifier: "a line above the limit is REJECTED" }],
+      ["op_kind", { evidenceKind: "invented-kind" as never }],
+      ["op_ghost", { targetOperationId: "op_missing" }],
+    ] as const) {
+      const root2 = await log(`cw-${id}`);
+      await publishSpecDrafted(root2, SCOPE, opus, SPEC);
+      await publishOperation(root2, SCOPE, opus, ADD);
+      await publishOperation(root2, SCOPE, opus, { ...ADD_CRITERION, ...bad });
+      await publishSpecRatified(root2, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1", "op_2"]);
+      assert.deepEqual((await fold(root2)).criteria.map((c) => c.id), [], `${id} should not fold`);
+      // The REQUIREMENT still lands — refusing the criterion must not refuse the spec.
+      assert.equal((await fold(root2)).requirements.length, 1, `${id} must not take the rule with it`);
+      discard(root2);
+    }
   } finally { discard(root); }
 });

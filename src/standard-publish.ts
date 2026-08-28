@@ -177,13 +177,20 @@ export const sharePointerRetired = (root: string, p: Pointer): Promise<Shared> =
   share(root, (l, s, a) => publishPointerRetired(l, s, a, p.id, p.retiredAt!, p.retiredReason ?? ""));
 
 /**
- * A pin travels, carrying the pin it replaces. What a rule ranges over is a fact about the
+ * A pin travels UNLESS it is provisional, carrying the pin it replaces.
+ *
+ * A lint enumerates whatever is checked out, so a pin from a feature branch is that
+ * branch's population and not the team's — publishing it would release a gap on evidence
+ * that may never merge, and would make a later honest pin from the default branch read as
+ * narrowing. The same rule `shareAudit` follows, for the same reason. What a rule ranges over is a fact about the
  * standard rather than about one branch's code, and the supersession has to ride WITH it —
  * two events would let a clone fold half and hold two active populations for one rule.
  */
 export const sharePopulationPinned = (
   root: string, pin: PopulationPredicate, supersedes?: string,
-): Promise<Shared> => share(root, (l, s, a) => publishPopulationPinned(l, s, a, pin, supersedes));
+): Promise<Shared> => pin.provisional
+  ? Promise.resolve(localOnly)
+  : share(root, (l, s, a) => publishPopulationPinned(l, s, a, pin, supersedes));
 
 /**
  * A scrub and its schedule both travel. Coverage is a property of the TEAM's standard —

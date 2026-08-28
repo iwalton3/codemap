@@ -45,7 +45,7 @@ import type {
   AcceptanceCriterion, Acknowledgement, Actor, Audit, BugWitness, Operation, Pointer,
   PopulationPredicate, Problem, Requirement, Scrub, ScrubPolicy, Spec, VacuityCheck,
 } from "./schema.js";
-import { criterionIdFor, requirementIdFor } from "./schema.js";
+import { criterionIdFor, requirementIdFor, EVIDENCE_KINDS } from "./schema.js";
 import type { LogEvent } from "./eventlog.js";
 import { emitEvent } from "./eventlog.js";
 
@@ -242,7 +242,10 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
           break;
         }
         specs.set(sp.id, { ...sp, status: "ratified", ratifiedBy: e.actor, ratifiedAt: at });
-        for (const op of mine) applyOperation(requirements, criteria, op, sp, e.actor, at, witnesses[op.id] ?? []);
+        // The `add_requirement` operations this ratification carries, so a criterion naming
+        // one can be checked against what actually landed rather than against a derived id.
+        const creating = new Set(mine.filter((o) => o.kind === "add_requirement").map((o) => o.id));
+        for (const op of mine) applyOperation(requirements, criteria, op, sp, e.actor, at, witnesses[op.id] ?? [], creating);
 
         // Bind what the operations produced. The LOCAL path does this at ratification
         // (`writeLocalOperation` with the new id, and `bindGapsForSpec`); without the same
@@ -329,6 +332,17 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
         const check = obj(e.data, "check") as VacuityCheck | undefined;
         if (!check?.id || !check.criterionId) break;
         if (!VACUITY_VERDICTS.includes(check.verdict)) break;
+        // The criterion has to EXIST here. A check against an id nothing created is a
+        // verdict about nothing that `criteriaFor` will never surface and no reader will
+        // ever see — and it can never be superseded, so it would sit in the log for ever.
+        const subject = criteria.get(check.criterionId);
+        if (!subject) break;
+        // A `demonstrated` check with no witnesses can NEVER be superseded — `serveCheck`
+        // treats an empty witness list as "nothing to drift from" — so it would certify a
+        // check for ever, across every rewrite of that check. `recordVacuityCheck` cannot
+        // produce one (it refuses `demonstrated` on an unasserted criterion and witnesses
+        // whatever `assertedBy` names); this is that refusal at the end that binds a clone.
+        if (check.verdict === "demonstrated" && !check.witnesses?.length) break;
         // The evidence gate, restated where it binds every clone and not only the machine
         // whose tool ran it. `demonstrated` is the SILENCING direction — it says the check
         // is trustworthy, which is what lets an audit lean on it — so a demonstration that
@@ -347,6 +361,12 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
         // problem arriving at the record that exists to make auditing cheaper. Refused in
         // `declarePointer` and restated here, because the tool binds only writers who ask.
         if (!p.rationale?.trim()) break;
+        // A pointer with NO witnesses can never fire, and a pointer that cannot fire reads
+        // as coverage while providing none — the `never fires → false calm` pathology
+        // arriving at declaration time rather than through a rate. `declarePointer` refuses
+        // an address that does not resolve, which is what guarantees witnesses locally; a
+        // doc citing nothing is the one legitimate empty case and it is a `node` target.
+        if (p.target.kind === "anchor" && !p.witnesses?.length) break;
         // ACTIVE, whatever the payload said. A `declared` event carrying `state:
         // "retired"` would fold to a pointer that was never watching anything and cannot
         // be retired again — the same partial-strip shape that let `problem.raised` name a
@@ -390,13 +410,23 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
         // The one basis nothing can check needs its argument, or it is a silent route to
         // "this rule ranges over nothing" that no reader can evaluate.
         if (pin.basis === "not-expressible" && !pin.reason?.trim()) break;
+        // Provisional work is about somebody's branch, not about the codebase.
+        // `sharePopulationPinned` will not send one; this binds a client that did.
+        if (pin.provisional) break;
 
+        // The pin being replaced is found HERE, from this fold's own map — never read off
+        // the event's `supersedes`. Trusting that field is the shape the `ack.granted` case
+        // above already names: the fold took the record's word for it. An event that simply
+        // OMITS `supersedes` then bypassed the narrowing gate entirely and left the rule
+        // holding two active populations, which is a state nothing else models. It also
+        // survives arrival order, which the field cannot: a superseding event can fold
+        // before the pin it names, because an un-synced clone's shard sorts where the log
+        // puts it and not where its writer expected.
+        const prior = [...populations.values()]
+          .find((x) => x.requirementId === pin.requirementId && x.state === "active");
         // NARROWING is a principal's act, and only this end binds a clone whose tool did
-        // not check: dropping members can flip debt into a gap, which is silencing. Read
-        // off the superseded pin the event names, so the fold decides it from the same two
-        // member lists the writer had rather than taking the writer's word.
-        const priorId = str(e.data, "supersedes");
-        const prior = priorId ? populations.get(priorId) : undefined;
+        // not check: dropping members can flip debt into a gap, which is silencing. Decided
+        // from the two member lists rather than from the writer's account of the change.
         if (prior && e.actor.via) {
           const after = new Set(pin.members.map((m) => m.id));
           if (prior.members.some((m) => !after.has(m.id))) break;
@@ -424,6 +454,15 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
           .filter((p) => p.requirementId === sc.requirementId && p.state === "active");
         const seen = new Set(sc.observations.map((o) => o.pointerId));
         if (watching.some((p) => !seen.has(p.id))) break;
+        // PHANTOMS, and the tool's half of this was registered at both ends while only the
+        // omission half was: an observation naming a pointer that is not on this rule
+        // fabricates history for one that is, because `pointerRates` tallies by pointer id
+        // and attributes the rule from the first scrub that mentions it.
+        if (sc.observations.some((o) => !watching.some((p) => p.id === o.pointerId))) break;
+        // And the same pointer twice is one look counted as several, which reaches
+        // `minObservations` from a single scrub — the floor defeated through the one door
+        // it does not watch.
+        if (seen.size !== sc.observations.length) break;
         scrubs.set(sc.id, { ...sc, origin: "sync" });
         break;
       }
@@ -489,13 +528,31 @@ const MEMBER_STATES = ["conforms", "violates", "undecidable"];
 function applyOperation(
   requirements: Map<string, Requirement>, criteria: Map<string, AcceptanceCriterion>,
   op: Operation, sp: Spec, who: Actor, at: string, witnesses: BugWitness[],
+  /** The other operations this same ratification carries — see `targetOperationId` below. */
+  siblings: Set<string>,
 ): void {
   if (op.kind === "add_criterion") {
     // The rule it attaches to: named outright, or derived from the `add_requirement` in
     // this same spec — which is only possible because the id is a function of the
     // operation. `witnesses` here are of `assertedBy`, not of the rule's `cites`.
+    //
+    // A `targetOperationId` naming an operation this spec does not carry would derive an id
+    // for a requirement nobody creates, leaving a criterion attached to a phantom rule —
+    // so the caller resolves it and passes `undefined` when it cannot.
+    // And it must be an `add_requirement` IN THIS SPEC. `requirementIdFor` is a pure
+    // function of an operation id, so a `targetOperationId` naming something the spec does
+    // not carry derives a perfectly well-formed id for a rule nobody ever creates — a
+    // criterion attached to a phantom, which no surface can show and nothing can retire.
+    if (op.targetOperationId && !siblings.has(op.targetOperationId)) return;
     const rid = op.targetOperationId ? requirementIdFor(op.targetOperationId) : op.requirementId;
-    if (!rid || !op.criterion || !op.falsifier || !op.evidenceKind) return;
+    if (!rid || !op.criterion?.trim() || !op.falsifier?.trim() || !op.evidenceKind) return;
+    // The closed list, and the falsifier that restates its criterion — both refused by
+    // `addOperation` and neither by this end, which binds every clone. A criterion whose
+    // "falsifier" repeats it asserts nothing about what failure looks like, and an
+    // evidence kind this build does not model is a vocabulary nobody can read.
+    if (!EVIDENCE_KINDS.includes(op.evidenceKind)) return;
+    const flat = (x: string) => x.replace(/\W+/g, "").toLowerCase();
+    if (flat(op.falsifier) === flat(op.criterion)) return;
     const id = criterionIdFor(op.id);
     criteria.set(id, {
       id, requirementId: rid, criterion: op.criterion, falsifier: op.falsifier,

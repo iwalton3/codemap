@@ -664,10 +664,21 @@ export const standardProjection: Projection<SharedStandard> = {
     for (const sc of value.scrubs) {
       scr.run(sc.id, sc.requirementId, sc.verdict, sc.at, "sync", scope, JSON.stringify(sc));
     }
-    // The policy is a singleton, so it is written under the fixed id rather than its own —
-    // one decision, one row, and the fold owning it is what stops a local write drifting.
+    // The policy is a SINGLETON — one decision, one row — so it is the only thing here
+    // whose id is a constant, and that breaks the delete-by-scope rule above. A store that
+    // set a policy locally and then joined a team holds `pol_standard` with a null
+    // `source_scope`; the scoped DELETE does not touch it and the plain INSERT then raises
+    // a UNIQUE violation INSIDE `readCached`'s transaction, so the fold throws, nothing
+    // moves the fingerprint, and it never self-heals — and here that is worse than a crash,
+    // because `standardScopeWarning` catches it and reports `stale`, so the machine stops
+    // syncing the team's standard silently and for ever.
+    //
+    // So the fold ADOPTS the row, which is `findingsProjection`'s rule and unconditional
+    // for the same reason: adoption fires only when an EVENT exists, and a policy is two
+    // numbers regenerable from that event — there is no local content to lose the way a
+    // bug's prose is. One universe per database, so one standard scope, so one row.
     if (value.scrubPolicy) {
-      d.prepare("INSERT INTO scrub_policy(id,set_at,origin,source_scope,body) VALUES(?,?,?,?,?)")
+      d.prepare("INSERT OR REPLACE INTO scrub_policy(id,set_at,origin,source_scope,body) VALUES(?,?,?,?,?)")
         .run(SCRUB_POLICY_ID, value.scrubPolicy.setAt, "sync", scope, JSON.stringify(value.scrubPolicy));
     }
     const ack = d.prepare("INSERT INTO acknowledgements(id,basis,state,operation_id,requirement_id,priority,revalidate_by,granted_at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?,?,?,?)");

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -54,4 +54,66 @@ test("a store from before the provenance columns still opens", () => {
     assert.equal(row.body, "b");
     assert.equal(row.origin, null, "and an existing local row is not retroactively fold-owned");
   } finally { discard(root); }
+});
+
+/**
+ * The scrub policy is the only record in the standard whose id is a CONSTANT, so
+ * "replaces only what it owns" cannot be expressed by scope alone.
+ *
+ * A store that set a policy locally and then joined a team holds `pol_standard` with a null
+ * `source_scope`. The scoped DELETE does not touch it and a plain INSERT then raises a
+ * UNIQUE violation inside `readCached`'s transaction — the fold throws, nothing moves the
+ * fingerprint, and it never self-heals. Worse than a crash here: `standardScopeWarning`
+ * catches it and reports `stale`, so the machine stops syncing the standard silently.
+ */
+test("the fold adopts a locally-set scrub policy instead of colliding with it", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-pol-"));
+  try {
+    mkdirSync(join(root, ".codemap"), { recursive: true });
+    const { writeLocalScrubPolicy, readScrubPolicy } = await import("./store.js");
+    const { standardProjection } = await import("./shared-projections.js");
+    const { emptyStandard } = await import("./shared-standard.js");
+    const izzie = { principal: "izzie@x.com" };
+
+    await writeLocalScrubPolicy(root, { coverageDays: 30, minObservations: 3, setBy: izzie, setAt: "2026-08-01T00:00:00.000Z" });
+    assert.equal((await readScrubPolicy(root))!.coverageDays, 30);
+
+    standardProjection.write(db(root), "standard/acme/api", {
+      ...emptyStandard(),
+      scrubPolicy: { coverageDays: 7, minObservations: 5, setBy: izzie, setAt: "2026-08-02T00:00:00.000Z" },
+    });
+    // Adopted, not duplicated and not crashed. The team's decision is the one that stands.
+    const rows = db(root).prepare("SELECT id, source_scope FROM scrub_policy").all() as unknown as { source_scope: string | null }[];
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]!.source_scope, "standard/acme/api");
+    assert.equal((await readScrubPolicy(root))!.coverageDays, 7);
+  } finally { discard(root); }
+});
+
+/**
+ * Changing what the standard fold PROJECTS requires bumping `MATERIALIZER_VERSION`.
+ *
+ * The fingerprint is over the sidecar's shards, which do not move when the fold's mind
+ * changes — so a store that has already folded a scope keeps serving its cached rows under
+ * the old number for ever. That is stated at 6 -> 7 and again at 12 -> 13, and it was still
+ * missed when six tables were added to this scope at once: nothing failed, because nothing
+ * checked. Here is the check.
+ *
+ * It cannot know whether a fold's LOGIC changed — only a reader can — but the table set is
+ * the coarse signal that catches the case that has actually happened twice.
+ */
+test("the standard projection's table set is pinned to a materializer version", async () => {
+  const { MATERIALIZER_VERSION } = await import("./materialize.js");
+  const src = readFileSync("src/shared-projections.ts", "utf8");
+  const block = src.slice(src.indexOf("export const standardProjection"));
+  const tables = [...new Set([...block.matchAll(/INSERT (?:OR REPLACE )?INTO (\w+)\(/g)].map((m) => m[1]!))].sort();
+
+  // Bump BOTH when the standard fold starts projecting something new. If you are reading
+  // this because the assertion failed: the table list changing means clones with cached
+  // rows will not re-fold unless the version moves.
+  assert.deepEqual(tables, [
+    "acknowledgements", "audits", "criteria", "operations", "pointers", "populations",
+    "problems", "requirements", "scrub_policy", "scrubs", "specs", "vacuity_checks",
+  ], "the standard projection's tables changed — bump MATERIALIZER_VERSION with them");
+  assert.equal(MATERIALIZER_VERSION, 14, "and record the new number here");
 });

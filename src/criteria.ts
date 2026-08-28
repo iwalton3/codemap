@@ -21,13 +21,14 @@
 
 import { randomBytes } from "node:crypto";
 import type {
-  AcceptanceCriterion, BugWitness, EvidenceKind, Vacuity, VacuityCheck,
+  AcceptanceCriterion, EvidenceKind, Vacuity, VacuityCheck,
 } from "./schema.js";
 import {
   readCriteria, readCriterion, readRequirement, readRequirements, readVacuityChecks,
   writeLocalVacuityCheck,
 } from "./store.js";
 import { liveHashes, witnessDrift, realDrift } from "./reviews.js";
+import { legacyIndex, type AnchorIndex } from "./anchor-resolve.js";
 import { requireActor } from "./identity.js";
 import type { ActorInput } from "./identity.js";
 import { disposition, shareVacuityCheck } from "./standard-publish.js";
@@ -76,19 +77,32 @@ export interface ServedCriterion extends AcceptanceCriterion {
   unasserted: boolean;
 }
 
-async function serveCheck(root: string, v: VacuityCheck): Promise<ServedVacuityCheck> {
+/**
+ * One live-hash pass for a whole read, rather than one per record.
+ *
+ * `liveHashes` reads the WHOLE `@work` anchor table and re-parses the files it needs with
+ * tree-sitter, so calling it per criterion AND per vacuity check is that work repeated
+ * twice per criterion. Measured at 2,400 anchors and 150 rules, `weakAssertions` spent
+ * 681 ms doing exactly that; it takes an iterable, so one call with the union costs the
+ * same as one criterion.
+ */
+async function liveFor(root: string, ids: Iterable<string>): Promise<AnchorIndex> {
+  const want = [...new Set(ids)];
+  return want.length ? liveHashes(root, want) : legacyIndex(new Map());
+}
+
+function serveCheck(v: VacuityCheck, live: AnchorIndex): ServedVacuityCheck {
   if (!v.witnesses.length) return { ...v, superseded: false, drifted: [] };
-  const live = await liveHashes(root, v.witnesses.map((w: BugWitness) => w.anchorId));
   const changes = realDrift(witnessDrift(v.witnesses, live));
   return { ...v, superseded: changes.length > 0, drifted: changes.map((c) => c.anchorId) };
 }
 
-export async function serve(root: string, c: AcceptanceCriterion): Promise<ServedCriterion> {
-  const checks = await Promise.all(
-    (await readVacuityChecks(root, { criterionId: c.id })).map((v) => serveCheck(root, v)),
-  );
-  const live = checks.filter((v) => !v.superseded);
-  const last = live[live.length - 1];
+async function serveWith(
+  root: string, c: AcceptanceCriterion, checksFor: VacuityCheck[], live: AnchorIndex,
+): Promise<ServedCriterion> {
+  const checks = checksFor.map((v) => serveCheck(v, live));
+  const standing = checks.filter((v) => !v.superseded);
+  const last = standing[standing.length - 1];
 
   const unasserted = c.assertedBy.length === 0;
   if (!c.witnesses.length) {
@@ -97,19 +111,37 @@ export async function serve(root: string, c: AcceptanceCriterion): Promise<Serve
       assertionMoved: false, drifted: [], unasserted,
     };
   }
-  const liveHash = await liveHashes(root, c.witnesses.map((w: BugWitness) => w.anchorId));
-  const changes = realDrift(witnessDrift(c.witnesses, liveHash));
+  const changes = realDrift(witnessDrift(c.witnesses, live));
   return {
     ...c, vacuity: last?.verdict ?? "unchecked", ...(last ? { lastCheck: last } : {}),
     assertionMoved: changes.length > 0, drifted: changes.map((x) => x.anchorId), unasserted,
   };
 }
 
+/** All the anchors one batch of criteria and their checks witness. */
+const witnessedBy = (cs: AcceptanceCriterion[], vs: VacuityCheck[]): string[] =>
+  [...cs.flatMap((c) => c.witnesses.map((w) => w.anchorId)),
+    ...vs.flatMap((v) => v.witnesses.map((w) => w.anchorId))];
+
+export async function serve(root: string, c: AcceptanceCriterion): Promise<ServedCriterion> {
+  const checks = await readVacuityChecks(root, { criterionId: c.id });
+  return serveWith(root, c, checks, await liveFor(root, witnessedBy([c], checks)));
+}
+
+/** Serve a batch with ONE live-hash pass and ONE vacuity-check query. */
+async function serveAll(root: string, cs: AcceptanceCriterion[]): Promise<ServedCriterion[]> {
+  const ids = new Set(cs.map((c) => c.id));
+  const checks = (await readVacuityChecks(root)).filter((v) => ids.has(v.criterionId));
+  const byCriterion = new Map<string, VacuityCheck[]>();
+  for (const v of checks) byCriterion.set(v.criterionId, [...(byCriterion.get(v.criterionId) ?? []), v]);
+  const live = await liveFor(root, witnessedBy(cs, checks));
+  return Promise.all(cs.map((c) => serveWith(root, c, byCriterion.get(c.id) ?? [], live)));
+}
+
 // --- reading -----------------------------------------------------------------
 
 export async function criteriaFor(root: string, requirementId: string): Promise<ServedCriterion[]> {
-  const rows = await readCriteria(root, { requirementId });
-  return Promise.all(rows.map((c) => serve(root, c)));
+  return serveAll(root, await readCriteria(root, { requirementId }));
 }
 
 export async function getCriterion(root: string, id: string): Promise<ServedCriterion | Err> {
@@ -121,8 +153,7 @@ export async function getCriterion(root: string, id: string): Promise<ServedCrit
 export async function listCriteria(
   root: string, opts: { evidenceKind?: EvidenceKind } = {},
 ): Promise<ServedCriterion[]> {
-  const rows = await readCriteria(root, opts);
-  return Promise.all(rows.map((c) => serve(root, c)));
+  return serveAll(root, await readCriteria(root, opts));
 }
 
 /**

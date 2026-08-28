@@ -79,7 +79,9 @@ test("no stated policy is a FINDING, not a default", async () => {
     const after = await scrubPlan(u.root);
     assert.equal(after.policy!.coverageDays, 30);
     assert.equal(after.policy!.minObservations, 3, "a sane default, not 1");
-    assert.equal(after.perDay, 1, "the budget, stated: ceil(1 rule / 30 days)");
+    // The AVERAGE, not a ceiling: `Math.ceil` would report one rule every 30 days as "1 a
+    // day", thirty times the real workload. What must I do today is `due.length`.
+    assert.equal(after.perDay, 0.03);
   } finally { discard(u.root); }
 });
 
@@ -103,7 +105,7 @@ test("the budget scales with the population, which is what makes the cost visibl
     ok(await setScrubPolicy(u.root, { coverageDays: 2 }));
     const plan = await scrubPlan(u.root);
     assert.equal(plan.population, 7);
-    assert.equal(plan.perDay, 4, "ceil(7 / 2) — everything covered every 2 days costs 4 a day");
+    assert.equal(plan.perDay, 3.5, "7 rules covered every 2 days costs 3.5 a day on average");
   } finally { discard(u.root); }
 });
 
@@ -309,5 +311,33 @@ test("a pathology is about a live pointer on a rule in force, not about history"
     assert.deepEqual((await scrubPlan(u.root)).pathologies, []);
     assert.equal((await pointerRates(u.root)).find((x) => x.pointerId === p.id)!.observations, 2,
       "the history is kept — a rate is derived from it, and deleting it would destroy the evidence");
+  } finally { discard(u.root); }
+});
+
+/**
+ * One look counted as several defeats `minObservations` through the door it does not watch.
+ *
+ * Three copies of one observation reaches the default floor from a SINGLE call and reports
+ * a pathology — which is precisely the error the floor exists to prevent, so a duplicate is
+ * refused for the reason `checkMembers` refuses a duplicate member.
+ */
+test("the same pointer observed twice in one scrub is refused", async () => {
+  const u = await universe();
+  try {
+    ok(await setScrubPolicy(u.root, { coverageDays: 30, minObservations: 3 }));
+    const rid = await rule(u.root, "Capped", "Credit");
+    const p = ok(await declarePointer(u.root, { requirementId: rid, targetKind: "node", targetId: u.doc, rationale: "r" }));
+
+    assert.match(err(await recordScrub(u.root, {
+      requirementId: rid, finding: "looked", verdict: "sound",
+      observations: [{ pointerId: p.id, firing: false }, { pointerId: p.id, firing: false }, { pointerId: p.id, firing: false }],
+    })), /observed twice/);
+    // And a real single observation still lands, so the refusal is not "nothing works".
+    ok(await recordScrub(u.root, {
+      requirementId: rid, finding: "looked", verdict: "sound",
+      observations: [{ pointerId: p.id, firing: false }],
+    }));
+    assert.equal((await pointerRates(u.root))[0]!.observations, 1);
+    assert.equal((await pointerRates(u.root))[0]!.pathology, null, "one look is still one look");
   } finally { discard(u.root); }
 });

@@ -212,3 +212,45 @@ test("a teammate's ratification is visible to the very next read, not the one af
     assert.equal(r.scope, undefined, "and the log is healthy, so nothing warns");
   } finally { u.cleanup(); }
 });
+
+/**
+ * EXHAUSTIVE, rather than the hand-kept list above.
+ *
+ * The defect this whole mechanism fixes was "a surface that never looked", and a test that
+ * enumerates the surfaces by hand reproduces it the moment somebody adds a read: the list
+ * is maintained by the same person who forgot. So this sweeps the ops module itself.
+ *
+ * It is a lint over one file's source, not a reachability claim about another module —
+ * which is the distinction `ops-reach.test.ts` got wrong once, sweeping `src/ops/` to check
+ * something outside it and passing with the whole surface deleted.
+ */
+test("every read on the standard ops surface goes through the scope marker", () => {
+  const src = readFileSync("src/ops/standard.ts", "utf8");
+  // A read is an export that is not a write. Writes are the ones that take an ActorInput
+  // and mutate; they carry no marker because their answer is an outcome, not a projection.
+  const WRITES = new Set([
+    "draftSpec", "addOperation", "ratifySpec", "reorganizeRequirement", "acknowledgeGap",
+    "acknowledgeDebt", "releaseAcknowledgement", "recordAudit", "recordVacuityCheck",
+    "promoteProvisionalAudit", "raiseProblem", "adjudicate", "declarePointer",
+    "restatePointer", "retirePointer", "pinPopulation", "declareNotExpressible",
+    "setScrubPolicy", "recordScrub",
+  ]);
+  const exported = [...src.matchAll(/^export (?:const|async function) (\w+)/gm)].map((m) => m[1]!);
+  const reads = exported.filter((n) => !WRITES.has(n));
+  // Could this pass vacuously? Only if the regex found nothing. At the commit that
+  // introduced `served` there were 23 reads; fewer than that means the sweep broke.
+  assert.ok(reads.length >= 23, `expected the sweep to find the reads, found ${reads.length}`);
+
+  const missing = reads.filter((name) => {
+    const at = src.indexOf(`export const ${name}`) >= 0
+      ? src.indexOf(`export const ${name}`)
+      : src.indexOf(`export async function ${name}`);
+    return !src.slice(at, at + 600).includes("served(");
+  });
+  assert.deepEqual(missing, [],
+    "a read on this surface answers without saying whether the standard may be presented as the team's");
+
+  // And every name in WRITES still exists, so the exemption list cannot outlive its reason.
+  const stale = [...WRITES].filter((w) => !exported.includes(w));
+  assert.deepEqual(stale, [], "an exemption naming an export that is gone");
+});

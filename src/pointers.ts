@@ -23,12 +23,13 @@
  */
 
 import { randomBytes } from "node:crypto";
-import type { BugWitness, LogicalNode, NodeStatus, Pointer } from "./schema.js";
+import type { LogicalNode, NodeStatus, Pointer } from "./schema.js";
 import {
   loadNodes, readPointer, readPointers, readRequirement, readRequirements, workFiles, workHas,
   writeLocalPointer,
 } from "./store.js";
 import { liveHashes, witnessDrift, realDrift } from "./reviews.js";
+import { legacyIndex, type AnchorIndex } from "./anchor-resolve.js";
 import { loadIgnore } from "./ignore.js";
 import { requireActor } from "./identity.js";
 import type { ActorInput } from "./identity.js";
@@ -74,14 +75,33 @@ export interface ServedPointer extends Pointer {
  * loads each — at the seeding scale this record exists for (~150 rules) that is hundreds
  * of scans to answer one queue.
  */
-interface Ctx { nodes: Map<string, LogicalNode>; isTest: (f: string) => boolean }
+interface Ctx {
+  nodes: Map<string, LogicalNode>;
+  isTest: (f: string) => boolean;
+  /** Live hashes for every anchor the caller is about to ask about, fetched ONCE. */
+  live: AnchorIndex;
+}
 
-async function context(root: string): Promise<Ctx> {
+/**
+ * @param witnessed every anchor id the pointers being served witness. `liveHashes` reads
+ * the WHOLE `@work` anchor table and re-parses the files it needs with tree-sitter, so
+ * calling it per pointer is that work repeated per pointer — measured at 2,400 anchors and
+ * 150 rules, `auditQueue` spent 547 ms doing it once per pointer and is linear in the
+ * product. It takes an iterable, so one call with the union costs the same as one pointer.
+ */
+async function context(root: string, witnessed: Iterable<string> = []): Promise<Ctx> {
   const nodes = new Map((await loadNodes(root)).map((n) => [n.id, n]));
   let ig: Awaited<ReturnType<typeof loadIgnore>> | null = null;
   try { ig = await loadIgnore(root); } catch { /* no ignore file: nothing is a test */ }
-  return { nodes, isTest: (f: string) => ig?.isTest(f, false) ?? false };
+  const ids = [...witnessed];
+  return {
+    nodes, isTest: (f: string) => ig?.isTest(f, false) ?? false,
+    live: ids.length ? await liveHashes(root, ids) : legacyIndex(new Map()),
+  };
 }
+
+const witnessedBy = (ps: Pointer[]): Set<string> =>
+  new Set(ps.flatMap((p) => p.witnesses.map((w) => w.anchorId)));
 
 /** The anchors a pointer's baseline is taken over: the anchor itself, or a doc's citations. */
 function watched(root: string, ctx: Ctx, target: Pointer["target"]): string[] | null {
@@ -109,13 +129,12 @@ async function serveWith(root: string, ctx: Ctx, p: Pointer): Promise<ServedPoin
     ...(node?.status ? { docStatus: node.status } : {}),
   };
   if (!p.witnesses.length) return { ...base, moved: false, drifted: [] };
-  const live = await liveHashes(root, p.witnesses.map((w: BugWitness) => w.anchorId));
-  const changes = realDrift(witnessDrift(p.witnesses, live));
+  const changes = realDrift(witnessDrift(p.witnesses, ctx.live));
   return { ...base, moved: changes.length > 0, drifted: changes.map((c) => c.anchorId) };
 }
 
 export async function serve(root: string, p: Pointer): Promise<ServedPointer> {
-  return serveWith(root, await context(root), p);
+  return serveWith(root, await context(root, witnessedBy([p])), p);
 }
 
 // --- declaring ---------------------------------------------------------------
@@ -258,8 +277,9 @@ export async function retirePointer(
 // --- reading -----------------------------------------------------------------
 
 export async function pointersFor(root: string, requirementId: string): Promise<ServedPointer[]> {
-  const ctx = await context(root);
-  return Promise.all((await readPointers(root, { requirementId })).map((p) => serveWith(root, ctx, p)));
+  const ps = await readPointers(root, { requirementId });
+  const ctx = await context(root, witnessedBy(ps));
+  return Promise.all(ps.map((p) => serveWith(root, ctx, p)));
 }
 
 /** Which rules were watching this address — the reverse read a diff rollup needs. */
@@ -286,11 +306,13 @@ export async function auditQueue(root: string): Promise<{
   // Ratified only, the way `conformance()` and the diff rollup filter: a retired rule does
   // not bind, so neither its silence nor its noise is anybody's work.
   const { requirements } = await readRequirements(root, { status: "ratified" });
-  const ctx = await context(root);
-  // One query and one grouping, not one query per rule. The queue is the read this record
-  // exists to serve, so it is the one that must not be O(rules) round trips.
+  // One query and one grouping, not one query per rule — and ONE live-hash pass for every
+  // pointer in the queue rather than one each. The queue is the read this record exists to
+  // serve, so it is the one that must not be O(rules) round trips.
+  const all = await readPointers(root, { state: "active" });
+  const ctx = await context(root, witnessedBy(all));
   const byRule = new Map<string, Pointer[]>();
-  for (const p of await readPointers(root, { state: "active" })) {
+  for (const p of all) {
     byRule.set(p.requirementId, [...(byRule.get(p.requirementId) ?? []), p]);
   }
   const firing: { requirementId: string; title: string; section: string; pointers: ServedPointer[] }[] = [];

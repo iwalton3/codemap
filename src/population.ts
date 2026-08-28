@@ -38,12 +38,14 @@
  */
 
 import { randomBytes } from "node:crypto";
-import type { BugWitness, PopulationMember, PopulationPredicate } from "./schema.js";
+import type { PopulationMember, PopulationPredicate } from "./schema.js";
 import {
   readAcknowledgements, readPopulations, readRequirement, workHas, writeLocalPopulation,
 } from "./store.js";
 import { liveHashes, witnessDrift, realDrift } from "./reviews.js";
+import { legacyIndex, type AnchorIndex } from "./anchor-resolve.js";
 import { requireActor, isAgentActor } from "./identity.js";
+import { currentBranch, headCommit, isDirty, isGitRepo, onDefaultBranch } from "./git.js";
 import type { ActorInput } from "./identity.js";
 import { disposition, sharePopulationPinned } from "./standard-publish.js";
 import { releaseAcknowledgement } from "./acknowledgements.js";
@@ -82,15 +84,27 @@ export interface ServedPopulation extends PopulationPredicate {
   missing: boolean;
 }
 
-export async function serve(root: string, p: PopulationPredicate): Promise<ServedPopulation> {
+function serveWith(root: string, p: PopulationPredicate, live: AnchorIndex): ServedPopulation {
   const base = {
     ...p, counts: counts(p.members),
     missing: p.basis === "lint" && p.lint.length > 0 && workHas(root, p.lint).size < p.lint.length,
   };
   if (!p.witnesses.length) return { ...base, pinBroken: false, drifted: [] };
-  const live = await liveHashes(root, p.witnesses.map((w: BugWitness) => w.anchorId));
   const changes = realDrift(witnessDrift(p.witnesses, live));
   return { ...base, pinBroken: changes.length > 0, drifted: changes.map((c) => c.anchorId) };
+}
+
+/**
+ * `liveHashes` reads the whole `@work` anchor table and re-parses the files it needs, so a
+ * batch read must ask ONCE for the union rather than once per pin.
+ */
+const liveFor = (root: string, pins: PopulationPredicate[]): Promise<AnchorIndex> => {
+  const ids = [...new Set(pins.flatMap((p) => p.witnesses.map((w) => w.anchorId)))];
+  return ids.length ? liveHashes(root, ids) : Promise.resolve(legacyIndex(new Map()));
+};
+
+export async function serve(root: string, p: PopulationPredicate): Promise<ServedPopulation> {
+  return serveWith(root, p, await liveFor(root, [p]));
 }
 
 // --- the delta ---------------------------------------------------------------
@@ -161,6 +175,22 @@ function checkMembers(members: PopulationMember[] | undefined): Err | null {
   return null;
 }
 
+/**
+ * Where this pin was taken, and whether that makes it somebody's work in progress.
+ *
+ * A lint enumerates whatever is CHECKED OUT, so the branch is not incidental to a member
+ * list the way it is to a rule's text — it is what the list is an observation of.
+ */
+function provenance(root: string): Pick<PopulationPredicate, "provisional" | "commit" | "branch"> {
+  const git = isGitRepo(root);
+  const provisional = !onDefaultBranch(root) || (git && isDirty(root));
+  return {
+    commit: git ? headCommit(root) : null,
+    branch: git ? currentBranch(root) : null,
+    ...(provisional ? { provisional: true } : {}),
+  };
+}
+
 export interface Pinned { ok: true; id: string; population: ServedPopulation; delta?: PopulationDelta; released: string[] }
 
 /**
@@ -214,6 +244,7 @@ export async function pinPopulation(
     id: mint(), requirementId: r.id, basis: "lint", lint,
     witnesses: lint.map((id) => ({ anchorId: id, bodyHash: live.get(id) ?? "sha256:absent" })),
     members: input.members, state: "active", pinnedBy: actor, pinnedAt: now(),
+    ...provenance(root),
     ...(current ? { supersedes: current.id } : {}),
   };
 
@@ -252,6 +283,7 @@ export async function declareNotExpressible(
   }
   const r = await readRequirement(root, input.requirementId);
   if (!r) return { error: `no requirement "${input.requirementId}"` };
+  if (r.status === "retired") return { error: `${r.id} is retired` };
   const actor = requireActor(root, input);
   if (isErr(actor)) return actor;
 
@@ -269,6 +301,7 @@ export async function declareNotExpressible(
   const pin: PopulationPredicate = {
     id: mint(), requirementId: r.id, basis: "not-expressible", lint: [], witnesses: [],
     members: [], reason, state: "active", pinnedBy: actor, pinnedAt: now(),
+    ...provenance(root),
     ...(current ? { supersedes: current.id } : {}),
   };
   const d = disposition(await sharePopulationPinned(root, pin, current?.id));
@@ -288,6 +321,11 @@ export async function declareNotExpressible(
  * automatic here exactly as it is after an audit. Granting never could be.
  */
 async function settleGaps(root: string, pin: PopulationPredicate): Promise<string[]> {
+  // A PROVISIONAL pin settles nothing, the second half of `shareX` holding it back. This
+  // is `settleAcknowledgements`'s rule and its reason: releasing is a shared act, and
+  // releasing on the strength of branch work un-silences a rule for the whole team on a
+  // population that may never merge — citing a pin id no other clone can resolve.
+  if (pin.provisional) return [];
   if (pin.basis !== "lint" || !pin.members.length) return [];
   const active = await readAcknowledgements(root, { requirementId: pin.requirementId, state: "active" });
   const released: string[] = [];
@@ -335,6 +373,6 @@ export async function brokenPins(root: string): Promise<ServedPopulation[]> {
   const { readRequirements } = await import("./store.js");
   const inForce = new Set((await readRequirements(root, { status: "ratified" })).requirements.map((r) => r.id));
   const active = (await readPopulations(root, { state: "active" })).filter((p) => inForce.has(p.requirementId));
-  const served = await Promise.all(active.map((p) => serve(root, p)));
-  return served.filter((p) => p.pinBroken || p.missing);
+  const live = await liveFor(root, active);
+  return active.map((p) => serveWith(root, p, live)).filter((p) => p.pinBroken || p.missing);
 }

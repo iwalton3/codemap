@@ -14,7 +14,7 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { comparableHashDerivation, type Anchor, type Audit, type Review } from "./schema.js";
+import { comparableHashDerivation, type Anchor, type Audit, type BugWitness, type Review } from "./schema.js";
 import { indexRepo, indexFile, indexBlob } from "./repo.js";
 import { citedAnchors, isClosed } from "./shared-bugs.js";
 import { readSnapshot, snapshotRefusal, readAnchorStore, loadNodes, loadNodeVersions, winningVersionAt, readGraph, readReviews, readBugs, readRequirements, readAudits, readCriteria, readPointers, derivationLookup, loadNodesAt, resolvable} from "./store.js";
@@ -28,7 +28,7 @@ import { anchorIndex, derivationsOf, type AnchorIndex } from "./anchor-resolve.j
 const HL_LANG: Record<string, string> = { c_sharp: "csharp", python: "python", javascript: "javascript", typescript: "typescript", tsx: "typescript" };
 const langFor = (file: string) => HL_LANG[grammarForPath(file) ?? ""] ?? "plaintext";
 
-interface Brief { id: string; file: string; symbol: string; kind: string }
+export interface Brief { id: string; file: string; symbol: string; kind: string }
 const brief = (a: Anchor): Brief => ({ id: a.id, file: a.file, symbol: a.symbolPath.join(" › "), kind: a.kind });
 
 export interface DiffSide { ref: string; sha: string | null; label: string; anchors: number }
@@ -136,6 +136,25 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
   // surfaced separately as `added`, not as invalidation.)
   const impacted = new Set<string>([...changed, ...removed].map((b) => b.id));
 
+  /**
+   * Did THIS diff move the code a witness actually recorded?
+   *
+   * Membership in `impacted` is not the same question, and conflating them was wrong in the
+   * direction that matters. A record witnessed against HEAD — an audit taken on the branch
+   * after the change, a criterion ratified there — holds the post-change hash, so the
+   * change did not rewrite the source it examined. Reporting it as moved says a live
+   * `conformant` "is not evidence any more" when it is exactly the evidence you want.
+   *
+   * So an id in `impacted` moved the witness UNLESS the witness already matches head. A
+   * witness matching neither side examined some third state and is reported as moved,
+   * which is the conservative reading and the honest one.
+   */
+  const witnessMoved = (w: BugWitness): boolean => {
+    if (!impacted.has(w.anchorId)) return false;
+    const at = headById.get(w.anchorId)?.bodyHash;
+    return !at || !sameBody(w.bodyHash, at);
+  };
+
   // Resolved against the HEAD being diffed. `loadNodes` uses the working index, and a
   // doc retired on whatever branch is checked out then vanished from a pull request's
   // impact for two entirely different refs — `computeDiff` takes explicit cached refs
@@ -223,7 +242,9 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
   // is *fired → was edited → now quiet*, which is the one pathology a scrub cannot reach.
   const assertionsByRequirement = new Map<string, DiffResult["impact"]["requirements"][number]["assertionsMoved"]>();
   for (const c of await readCriteria(root)) {
-    const hit = c.assertedBy.filter((id) => impacted.has(id));
+    // The witnesses, not the citation list: `assertedBy` says WHICH anchors, and the
+    // witness says what they looked like when the criterion was ratified.
+    const hit = c.witnesses.filter(witnessMoved).map((w) => w.anchorId);
     if (!hit.length) continue;
     const arr = assertionsByRequirement.get(c.requirementId) ?? [];
     arr.push({ id: c.id, criterion: c.criterion, evidenceKind: c.evidenceKind, anchors: hit });
@@ -241,7 +262,7 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
   const nodeTitle = new Map(nodes.map((n) => [n.id, n.title]));
   const pointersByRequirement = new Map<string, DiffResult["impact"]["requirements"][number]["pointersFired"]>();
   for (const pt of await readPointers(root, { state: "active" })) {
-    const hit = pt.witnesses.map((w) => w.anchorId).filter((id) => impacted.has(id));
+    const hit = pt.witnesses.filter(witnessMoved).map((w) => w.anchorId);
     if (!hit.length) continue;
     const arr = pointersByRequirement.get(pt.requirementId) ?? [];
     arr.push({
@@ -279,7 +300,7 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
         id: rq.id, title: rq.title, section: rq.section, anchors: hit,
         removed: hit.some((id) => removedIds.has(id)),
         lastAudit: a ? { id: a.id, outcome: a.outcome, at: a.at, provisional: a.provisional === true } : null,
-        auditMoved: a ? a.witnesses.some((w) => impacted.has(w.anchorId)) : false,
+        auditMoved: a ? a.witnesses.some(witnessMoved) : false,
         assertionsMoved: assertions,
         pointersFired: fired,
       };
