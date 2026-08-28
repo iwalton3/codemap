@@ -445,7 +445,9 @@ settled a business question by changing code, which is the failure this whole re
 to catch, so it is reported (`settledWithoutAdjudication`) instead of tidied away.
 
 Not built: section move/rename operations, spec withdrawal and repeal, the population
-predicate, and the audit pointers described above. The web front end has no routes for
+predicate (`docs/population-predicate.md` states what one has to handle, and why narrowing
+a population is a laundering door that has to be gated like an amendment), and the audit
+pointers described above. The web front end has no routes for
 any of it either — `mcp.ts` is wired and `serve.ts` is not, so this surface is currently
 agent-only.
 
