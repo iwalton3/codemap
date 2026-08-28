@@ -58,7 +58,7 @@ Superseded or finished. **Do not plan from these.** They are kept, rather than d
 | doc | lines | |
 |---|---:|---|
 | [`PROPOSAL-sidecar-materialization.md`](../PROPOSAL-sidecar-materialization.md) | 1084 | **SUPERSEDED by `docs/sidecar-architecture.md`.** Nine source files cite sections of it for the reasoning behind a decision; read those sections, not the plan. |
-| [`docs/HANDOFF.md`](HANDOFF.md) | 782 | three stacked session logs. `CLAUDE.md`, `src/oracle.ts` and `src/oracle-properties.ts` cite SECTIONS of it, so extract those before retiring it. |
+| [`docs/session-log-2026-08.md`](session-log-2026-08.md) | 782 | three stacked session logs. `CLAUDE.md`, `src/oracle.ts` and `src/oracle-properties.ts` cite SECTIONS of it, so extract those before retiring it. |
 | [`docs/mcp-complaints.md`](mcp-complaints.md) | 723 | a use log, newest first, partly resolved in code. Verify any entry against HEAD before acting on it. |
 | [`PROPOSAL-shared-review-state.md`](../PROPOSAL-shared-review-state.md) | 662 | **SUPERSEDED by `docs/sidecar-architecture.md`**, which says so itself and wins wherever they disagree. Still cited from source for its long-form arguments, which is why it is kept rather than deleted. |
 | [`COLLABORATION-STATIC-REVIEW.md`](../COLLABORATION-STATIC-REVIEW.md) | 257 | a one-off review of the collaboration branch against `main`, at commits that are long merged. |

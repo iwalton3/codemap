@@ -1,7 +1,10 @@
-# Handoff — `worktree-shared-review-hashscheme`
+# Session logs, August 2026 — shared review, hash scheme, the test stall
 
 > **Kind: archive** — superseded or finished. Do NOT plan from it; read it only for history.
-> three stacked session logs. `CLAUDE.md`, `src/oracle.ts` and `src/oracle-properties.ts` cite SECTIONS of it, so extract those before retiring it.
+> Renamed from `HANDOFF.md` on 2026-08-27: the name said "handoff", so it read as the
+> current pick-up point and sent readers to a finished arc. The live one is in memory
+> (`codemap-now`), which is rewritten rather than appended so it cannot grow into this.
+> Three stacked session logs. `CLAUDE.md`, `src/oracle.ts` and `src/oracle-properties.ts` cite SECTIONS of it, so extract those before retiring it.
 
 
 Green (824 unit + 82 e2e, nothing skipped; `tsc -p .` and `tsc -p web` clean). All

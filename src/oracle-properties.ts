@@ -6,7 +6,7 @@
  * step of every scenario — so a defect that only appears on the sixth operation of a
  * chain has something watching when it does.
  *
- * Where they come from: `docs/HANDOFF.md` § "Make them oracles, not assertions" (archive
+ * Where they come from: `docs/session-log-2026-08.md` § "Make them oracles, not assertions" (archive
  * — it is the origin of these six, not a live list to extend from).
  *
  *   1. CONVERGENCE   — after everyone syncs twice, their projections are identical.

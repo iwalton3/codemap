@@ -286,7 +286,7 @@ every incoming owner (`:75`) and detects divergence without testing either side 
 That defect is live for findings and notes today (`src/shared-findings.ts:237`,
 `src/shared-notes.ts:127`) and is deliberately **not fixed here** — a global actor rule
 has consequences for both that are unrelated to this decision. It is filed in
-`docs/HANDOFF.md`.
+`docs/session-log-2026-08.md`.
 
 ## Storage
 

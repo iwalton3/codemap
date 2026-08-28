@@ -99,7 +99,7 @@ reviewer's cognitive load, and that is not measurable from a test.
 
 ## The plan, in order
 
-**SUPERSEDED for the next session** — see `docs/HANDOFF.md` § "Your job: build the
+**SUPERSEDED for the next session** — see `docs/session-log-2026-08.md` § "Your job: build the
 oracle". The owner's direction is that the tests REPLACE the week of real use rather
 than follow it, so item 3 below moves to last and items 1 and 2 become the shape of
 the whole job rather than its first two steps.

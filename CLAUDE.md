@@ -83,7 +83,7 @@ checked after every step of a scenario. Use it for anything multi-person.
 `--test-isolation=none`. The runner's default is a child process per file, and
 that child intermittently never exits — parked in Node's own
 `NodePlatform::DrainTasks` after every test in it has passed, wedging the run for
-as long as you let it. One process cannot hit it. See `docs/HANDOFF.md` § "The
+as long as you let it. One process cannot hit it. See `docs/session-log-2026-08.md` § "The
 stall" for the stack and the four hypotheses that died.
 
 Two rules follow, and neither is optional now that nothing separates the files:

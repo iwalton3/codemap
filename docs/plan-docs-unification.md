@@ -29,7 +29,7 @@ teammate version reaches SQLite *only* if sync put it there — so without it th
 choice is between a version that is invisible indefinitely and a `loadNodes` that
 folds on an ordinary query. The second breaks both "the log is not read during
 normal operation" and "the hot path is SQLite". It is step 2 of the sequence in
-`docs/HANDOFF.md`; this plan is blocked on it, and that dependency was missing from
+`docs/session-log-2026-08.md`; this plan is blocked on it, and that dependency was missing from
 both earlier drafts.
 
 ## Two decisions taken before any step
