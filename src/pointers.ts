@@ -32,6 +32,7 @@ import { liveHashes, witnessDrift, realDrift } from "./reviews.js";
 import { legacyIndex, type AnchorIndex } from "./anchor-resolve.js";
 import { loadIgnore } from "./ignore.js";
 import { requireActor } from "./identity.js";
+import { universeKey } from "./sidecar-config.js";
 import type { ActorInput } from "./identity.js";
 import { disposition, sharePointerDeclared, sharePointerRestated, sharePointerRetired } from "./standard-publish.js";
 
@@ -192,7 +193,7 @@ export async function declarePointer(
 
   const live = anchors.length ? await liveHashes(root, anchors) : new Map<string, string>();
   const pointer: Pointer = {
-    id: mint(), requirementId: r.id, target, rationale,
+    id: mint(), requirementId: r.id, universe: universeKey(root), target, rationale,
     witnesses: anchors.map((id) => ({ anchorId: id, bodyHash: live.get(id) ?? "sha256:absent" })),
     state: "active", declaredBy: actor, declaredAt: now(),
   };

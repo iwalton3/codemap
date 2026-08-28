@@ -47,7 +47,8 @@ import type {
 } from "./schema.js";
 import { criterionIdFor, movedSection, normalizeSection, requirementIdFor, EVIDENCE_KINDS, AUDIT_TRIGGERS, COVERING_TRIGGERS } from "./schema.js";
 import type { LogEvent } from "./eventlog.js";
-import { emitEvent } from "./eventlog.js";
+import { causality, emitEvent } from "./eventlog.js";
+import { applyRevision, newContestState } from "./contest.js";
 
 export const standardScope = (universe: string): string => `standard/${universe}`;
 
@@ -180,6 +181,26 @@ const str = (d: unknown, k: string): string | undefined => {
  * build does not model, and folding what it does understand is better than answering
  * nothing. What it must never do is drop a row it cannot PARSE — see `CorruptProjection`.
  */
+/** The one rewritable value on a pointer, and therefore the only one that can conflict. */
+const POINTER_CONTESTABLE = ["witnesses"] as const;
+
+/**
+ * Do two baselines say the same thing?
+ *
+ * Identity is wrong here — two identical witness arrays are different objects, so `===`
+ * would raise a contest on every concurrent restate, including the ordinary case where
+ * both auditors baselined the same hashes and agree completely. Order-insensitive on
+ * `anchorId`, because the set is what the baseline means and `watched()` makes no
+ * ordering promise.
+ */
+function sameBaseline(a: unknown, b: unknown): boolean {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  const key = (w: BugWitness) => `${w.anchorId}\0${w.bodyHash}`;
+  const left = [...(a as BugWitness[])].map(key).sort();
+  const right = [...(b as BugWitness[])].map(key).sort();
+  return left.every((k, i) => k === right[i]);
+}
+
 export function foldStandard(events: LogEvent[]): SharedStandard {
   const specs = new Map<string, Spec>();
   const operations = new Map<string, Operation>();
@@ -192,6 +213,8 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
   const acknowledgements = new Map<string, Acknowledgement>();
   const audits = new Map<string, Audit>();
   const problems = new Map<string, Problem>();
+  const contest = newContestState();
+  const causal = causality(events);
 
   for (let i = 0; i < events.length; i++) {
     const e = events[i]!;
@@ -475,7 +498,15 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
         if (!p || p.state !== "active") break;
         const witnesses = obj(e.data, "witnesses") as BugWitness[] | undefined;
         if (!Array.isArray(witnesses)) break;
-        pointers.set(p.id, { ...p, witnesses, restatedBy: e.actor, restatedAt: str(e.data, "at") ?? e.at });
+        // A re-baseline REWRITES a value, which is the one shape in this design that can
+        // genuinely conflict — everything else is append-only or a latch. Two auditors
+        // restating one pointer from two branches were silently resolved to whoever
+        // folded last, and in load-bearing code that is where the other auditor's
+        // observation was worth most. Both sides are correct; the fold keeps the residue
+        // and hands it to whoever audits next rather than picking.
+        const next: Pointer = { ...p, witnesses, restatedBy: e.actor, restatedAt: str(e.data, "at") ?? e.at };
+        applyRevision(next, e, { witnesses }, POINTER_CONTESTABLE, contest, causal, sameBaseline);
+        pointers.set(p.id, next);
         break;
       }
       case "pointer.retired": {

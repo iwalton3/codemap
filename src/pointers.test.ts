@@ -23,6 +23,7 @@ import type { LogicalNode, State } from "./schema.js";
 import { discard } from "./test-tmp.js";
 import { draftSpec, addOperation, ratifySpec, getSpec } from "./requirements.js";
 import { declarePointer, restatePointer, retirePointer, pointersFor, auditQueue } from "./pointers.js";
+import { universeKey } from "./sidecar-config.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 const RULE = "export function creditLine(cents) { return cents; }\n";
@@ -311,5 +312,24 @@ test("a retired pointer does not fire a diff", async () => {
     if ("error" in r) return;
     assert.equal(r.impact.requirements.find((x) => x.id === rid), undefined,
       "retired means stopped watching, not kept for the record and still firing");
+  } finally { discard(u.root); }
+});
+
+test("a pointer records which universe's code it watches", async () => {
+  // The reason the standard can be workspace-scoped at all: ONE rule points into
+  // several universes, and neither pointer is the other's duplicate. Without the key a
+  // rule's watchers collapse into one undifferentiated list, and nothing downstream can
+  // say which repo was actually looked at.
+  const u = await universe();
+  try {
+    const rid = await rule(u.root);
+    const p = ok(await declarePointer(u.root, {
+      requirementId: rid, targetKind: "anchor", targetId: u.rule[0]!,
+      rationale: "the one function that applies the cap",
+    }));
+    assert.equal(p.pointer.universe, universeKey(u.root));
+    assert.ok(p.pointer.universe, "a real key, not an empty string");
+    // And it survives the round trip, which is what a reader actually sees.
+    assert.equal((await readPointers(u.root, { requirementId: rid }))[0]!.universe, universeKey(u.root));
   } finally { discard(u.root); }
 });

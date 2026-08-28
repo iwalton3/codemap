@@ -1354,6 +1354,14 @@ export interface AuditEvidence {
 export interface Audit {
   id: string;
   requirementId: string;
+  /**
+   * Which universe was actually looked at.
+   *
+   * A conformance verdict is about code, and code lives in a repo — so an audit that
+   * examined the API says nothing about the React app, and `conformance()` must not
+   * read it as though it had. Absent on pre-split rows: the folding scope's universe.
+   */
+  universe?: string;
   outcome: AuditOutcome;
   evidence: AuditEvidence;
   /** Hashes of what was read. A later mismatch means this audit is about older code. */
@@ -1692,9 +1700,54 @@ export interface PopulationPredicate {
  * gate but visibility: **a requirement with no pointer can never rise**, so "unwatched" is
  * the requirement-side twin of `unknown` and must not read as settled.
  */
+/**
+ * Two writers set one field without having seen each other. See `contest.ts` for the
+ * rule; the shape lives here because it is persisted on notes, findings, bugs and pointers.
+ */
+export interface Contested {
+  field: string;
+  held: ContestSide;
+  incoming: ContestSide;
+}
+
+export interface ContestSide {
+  value: unknown;
+  /** The PERSON. Attribution and independence want the human, and always did. */
+  by: string;
+  at: string;
+  /**
+   * The CLONE. Present so a reader can tell the two sides apart when `by` cannot:
+   * one person's laptop and desktop genuinely disagreeing shows the same name
+   * twice, and a disagreement whose sides look identical is one nobody acts on.
+   */
+  writer?: string;
+}
+
 export interface Pointer {
   id: string;
   requirementId: string;
+  /**
+   * Which universe's code this address is in.
+   *
+   * The standard is workspace-scoped and the code is not, so ONE rule points into
+   * several universes — "a credit limit change needs dual approval" is watched at the
+   * API handler AND at the React screen, and neither pointer is the other's duplicate.
+   * That is the whole reason the rule does not have to be copied per repo.
+   *
+   * Absent on rows written before the split: read it as the scope the row was folded
+   * from, which was the universe by construction back then.
+   */
+  universe?: string;
+  /**
+   * Two writers re-baselined this pointer without having seen each other.
+   *
+   * Kept rather than resolved, and that is the point: both baselines are CORRECT —
+   * they are observations from two directions the codebase is being taken in, not a
+   * disagreement to adjudicate. Silently keeping the last one destroys the context an
+   * auditor needs most in exactly the load-bearing code where two branches touch one
+   * rule at once. The fold cannot pick and must not pretend to.
+   */
+  contested?: Contested[];
   /**
    * The observable. **Aim as HIGH up the abstraction ladder as it reaches** — a lint
    * covers a population and survives any single site changing, a doc-of-a-pattern covers

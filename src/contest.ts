@@ -20,28 +20,14 @@
  * and somewhere to put the residue.
  */
 
-import type { Actor } from "./schema.js";
+import type { Actor, Contested } from "./schema.js";
 import { isAgentActor } from "./identity.js";
 import type { Causality, LogEvent } from "./eventlog.js";
 
-export interface Contested {
-  field: string;
-  held: ContestSide;
-  incoming: ContestSide;
-}
-
-export interface ContestSide {
-  value: unknown;
-  /** The PERSON. Attribution and independence want the human, and always did. */
-  by: string;
-  at: string;
-  /**
-   * The CLONE. Present so a reader can tell the two sides apart when `by` cannot:
-   * one person's laptop and desktop genuinely disagreeing shows the same name
-   * twice, and a disagreement whose sides look identical is one nobody acts on.
-   */
-  writer?: string;
-}
+// `Contested` and `ContestSide` live in `schema.ts` — they are part of the PERSISTED
+// shape of a note, finding, bug and pointer, and this module imports the data model
+// rather than the other way round. Re-exported so no consumer had to move.
+export type { Contested, ContestSide } from "./schema.js";
 
 /** Anything that can carry the residue. */
 export interface Contestable {
@@ -66,6 +52,17 @@ export const newContestState = (): ContestState => ({ owned: new Map(), raisedAt
 export function applyRevision(
   entity: Contestable, e: LogEvent, now: Record<string, unknown>,
   fields: readonly string[], st: ContestState, causal: Causality,
+  /**
+   * How to tell "these two agree" for a field that is not a scalar.
+   *
+   * Defaults to `===`, which is right for every authored scalar here and WRONG for a
+   * structured value: two identical witness arrays are different objects, so the
+   * default would raise a contest on every concurrent restate — including the common
+   * case where both writers baselined to the same hashes and agree completely. A
+   * conflict marker that fires when nobody disagrees is the eager failure this module's
+   * own header warns trains people to clear the state without reading it.
+   */
+  same: (a: unknown, b: unknown) => boolean = (a, b) => a === b,
 ): void {
   const saw = (target: string) => causal.saw(e.id, target);
   for (const k of fields) {
@@ -101,7 +98,7 @@ export function applyRevision(
     }
 
     if (!held) continue;
-    if (held.value === incoming) continue;                          // agreeing is not conflict
+    if (same(held.value, incoming)) continue;                       // agreeing is not conflict
     // Revising your OWN write is not conflict, and `saw` is the whole test for it.
     //
     // There used to be a `sameWriter` short-circuit here, ahead of this line. It was

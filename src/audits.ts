@@ -37,6 +37,7 @@ import {
 import { liveHashes, witnessDrift, realDrift } from "./reviews.js";
 import { currentBranch, headCommit, isDirty, isGitRepo, onDefaultBranch } from "./git.js";
 import { requireActor } from "./identity.js";
+import { universeKey } from "./sidecar-config.js";
 import type { ActorInput } from "./identity.js";
 import { disposition, shareAudit } from "./standard-publish.js";
 import { releaseAcknowledgement, type ServedAcknowledgement } from "./acknowledgements.js";
@@ -227,7 +228,7 @@ export async function recordAudit(
 
   const provisional = !onDefaultBranch(root) || (isGitRepo(root) && isDirty(root));
   const audit: Audit = {
-    id: mint(), requirementId: r.id, outcome: input.outcome, evidence, finding,
+    id: mint(), requirementId: r.id, universe: universeKey(root), outcome: input.outcome, evidence, finding,
     witnesses: read.map((id) => ({ anchorId: id, bodyHash: live?.get(id) ?? "sha256:absent" })),
     auditor: actor, at: now(), trigger,
     ...(observations.length ? { observations } : {}),
