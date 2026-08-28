@@ -108,6 +108,13 @@ export async function apiPost(path, body) {
  *   '/api/tripwires':           Awaited<ReturnType<Ops['tripwires']>>,
  *   '/api/triage_drift':        Awaited<ReturnType<Ops['triageDriftList']>>,
  *   '/api/changed_since':       Awaited<ReturnType<Ops['changedSince']>>,
+ *   '/api/standard':            Awaited<ReturnType<Ops['standardStatus']>>,
+ *   '/api/standard/queue':      Awaited<ReturnType<Ops['pendingSpecs']>>,
+ *   '/api/standard/spec':       Awaited<ReturnType<Ops['getSpec']>>,
+ *   '/api/standard/sections':   Awaited<ReturnType<Ops['requirementSections']>>,
+ *   '/api/standard/requirements': Awaited<ReturnType<Ops['listRequirements']>>,
+ *   '/api/standard/requirement': Awaited<ReturnType<Ops['getRequirement']>>,
+ *   '/api/standard/conformance': Awaited<ReturnType<Ops['conformance']>>,
  * }} ApiMap
  */
 

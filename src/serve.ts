@@ -220,6 +220,28 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return ops.tripwires(root);
     case "/api/triage_drift":
       return ops.triageDriftList(root);
+    // --- the standard ---------------------------------------------------------
+    // Agent-only until now: `mcp.ts` has carried the whole surface since it was built
+    // and `serve.ts` none of it, which left ratification — the one act an agent
+    // structurally cannot perform, because the latch is a ratchet — with nowhere to
+    // happen. These are the reads behind that.
+    case "/api/standard":
+      return ops.standardStatus(root);
+    case "/api/standard/queue":
+      return ops.pendingSpecs(root);
+    case "/api/standard/spec":
+      return ops.getSpec(root, { specId: q.get("id") ?? "" });
+    case "/api/standard/sections":
+      return ops.requirementSections(root);
+    case "/api/standard/requirements":
+      return ops.listRequirements(root, {
+        ...(q.get("section") ? { section: q.get("section")! } : {}),
+        ...(q.get("status") ? { status: q.get("status") as "ratified" | "retired" } : {}),
+      });
+    case "/api/standard/requirement":
+      return ops.getRequirement(root, { id: q.get("id") ?? "" });
+    case "/api/standard/conformance":
+      return ops.conformance(root);
     case "/api/changed_since":
       return ops.changedSince(root, {
         targetKind: (q.get("targetKind") as "node" | "anchor") ?? "node",
@@ -254,6 +276,25 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
 
     // The one write path from the UI: mark/unmark a review (under the write lock).
+    // Ratifying and withdrawing are PRINCIPAL acts, and this is a person at a browser
+    // — so no `agent`/`model` is threaded through and `requireActor` resolves the git
+    // identity, exactly as it does for a human MCP session. An agent cannot reach here
+    // to borrow it: the latch lives in the MCP transport, not in ops.
+    if (req.method === "POST" && url.pathname.startsWith("/api/standard/")) {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      const root = rootFor(body.u ?? null);
+      const act = url.pathname.slice("/api/standard/".length);
+      const out = await withLock<unknown>(root, async () => {
+        if (act === "ratify") return ops.ratifySpec(root, { specId: body.specId });
+        if (act === "withdraw") return ops.withdrawSpec(root, { specId: body.specId, reason: body.reason ?? "" });
+        return { error: `no such action "${act}"` };
+      });
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(out));
+      return;
+    }
     if (req.method === "POST" && url.pathname === "/api/review") {
       const chunks: Buffer[] = [];
       for await (const c of req) chunks.push(c as Buffer);

@@ -28,8 +28,10 @@
     button:hover { border-color: var(--dim); }
 
     header { display: flex; align-items: center; gap: 16px; padding: 10px 18px; background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 5; }
-    .brand { font-weight: 700; letter-spacing: 0.5px; color: var(--accent2); }
-    .brand span { color: var(--dim); font-weight: 400; }
+    /* `nowrap` + `flex-shrink: 0` on the brand: without it the wordmark wraps to three
+       lines at ~720px and takes the whole header with it — which is most of what the
+       "menus overflow" report actually was. The subtitle is the part that goes. */
+    .brand { font-weight: 700; letter-spacing: 0.5px; color: var(--accent2); white-space: nowrap; flex: 0 0 auto; }
     .uni { display: flex; gap: 6px; }
     .uni button, .uni a { background: var(--panel2); color: var(--dim); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 13px; }
     .uni button.active, .uni a.active { color: var(--bg); background: var(--accent); border-color: var(--accent); font-weight: 600; }
@@ -42,8 +44,19 @@
     .pullbtn:hover:not(:disabled) { border-color: var(--accent); color: var(--text); }
     .pullbtn:disabled { opacity: 0.6; cursor: default; }
     .pullnote { color: var(--dim); font-size: 12px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .search { margin-left: auto; }
-    .search input { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 5px 10px; width: 240px; font-size: 13px; }
+    /* `min-width: 0` is what lets it actually shrink — a flex item's floor is its
+       content width otherwise, so a 240px input pushed itself off the right edge
+       instead of narrowing. */
+    .search { margin-left: auto; min-width: 0; flex: 0 1 auto; }
+    .search input { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 5px 10px; width: 240px; max-width: 100%; font-size: 13px; }
+    .uni { flex: 0 0 auto; }
+
+    /* Half of a 1440p display, beside an editor. The wordmark's subtitle and the
+       search placeholder are the first things that stop earning their width. */
+    @media (max-width: 900px) {
+      header { gap: 10px; padding: 10px 12px; }
+      .search input { width: 150px; }
+    }
 
     main { padding: 16px 18px; max-width: 1100px; margin: 0 auto; }
     /* Graph pages use the full window width + viewport height for legibility. */
@@ -125,6 +138,18 @@
     .legend .k { display: inline-flex; align-items: center; gap: 5px; }
     .legend .sw { width: 10px; height: 10px; border-radius: 3px; }
     .viewlink { color: var(--accent); cursor: pointer; font-size: 13px; margin-left: 10px; }
+    /* Grouped nav. The header is one flex row and it OVERFLOWED at ~720px wide — a
+       tiled half of a 1440p display — so the graph views and the standard live behind
+       a <details>, which needs no state and no lifecycle hook to open and close. */
+    .vmenu { position: relative; }
+    .vmenu > summary { list-style: none; color: var(--accent); cursor: pointer; font-size: 13px; margin-left: 10px; white-space: nowrap; }
+    .vmenu > summary::-webkit-details-marker { display: none; }
+    .vmenu[open] > summary { color: var(--accent2); }
+    .vmenu-panel { position: absolute; top: calc(100% + 8px); left: 0; z-index: 10; display: flex; flex-direction: column; gap: 2px;
+      min-width: 150px; padding: 6px 4px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.45); }
+    .vmenu-panel .viewlink { margin-left: 0; padding: 5px 10px; border-radius: 5px; }
+    .vmenu-panel .viewlink:hover { background: var(--panel2); }
 
     /* review + flow walker */
     .rev { display: inline-flex; gap: 6px; }
@@ -143,8 +168,32 @@
     .anchor-code .sym { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11.5px; color: var(--dim); margin: 12px 0 4px; padding: 4px 6px; background: var(--bg); position: sticky; top: var(--hdr-h); z-index: 3; }
     .anchor-code .sym .rev { margin-left: auto; }
     pre.hljs, .hljs { background: #0b0e13 !important; border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-size: 12.5px; line-height: 1.5; overflow-x: auto; margin: 0; font-family: var(--mono); }
-    .flow-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin: 8px 0; cursor: pointer; }
+    /* `display: block` is load-bearing: this is an <a>, and an inline box wrapping the
+       block children below collapses the card. It was a <div on-click> until the
+       real-links sweep (23f4876) and nothing here had to say so before. */
+    .flow-card { display: block; border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin: 8px 0; cursor: pointer; }
     .flow-card:hover { background: var(--panel); }
+    /* The standard. `display: block` on the card for the same reason `.flow-card`
+       carries it — these are anchors wrapping block children. */
+    .spec-card { display: block; border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin: 8px 0; cursor: pointer; }
+    .spec-card:hover { background: var(--panel); }
+    .spec-card .ft { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+    .spec-card .ft .n { color: var(--dim); font-size: 12px; }
+    .spec-card .fs { color: var(--dim); font-size: 12.5px; margin-top: 3px; }
+    .op-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin: 8px 0; }
+    .op-card.moved { border-color: var(--warn); }
+    .op-card .ft { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .op-card .fs { font-size: 12.5px; margin-top: 4px; }
+    .op-card .fs.dim, .op-card .dim { color: var(--dim); }
+    .op-before, .op-after { font-size: 12.5px; margin-top: 5px; padding: 5px 9px; border-radius: 6px; background: var(--panel2); }
+    .op-before { text-decoration: line-through; color: var(--dim); }
+    .op-after { border-left: 2px solid var(--accent); }
+    .op-move { margin-top: 6px; padding: 6px 9px; border-radius: 6px; background: var(--panel2); }
+    .op-moverow { font-size: 12px; color: var(--dim); font-family: var(--mono); margin-top: 2px; }
+    .op-blocked { font-size: 12px; color: var(--warn); margin-top: 3px; }
+    .op-gap { margin-top: 6px; padding: 6px 9px; border-radius: 6px; border: 1px solid var(--warn); color: var(--warn); font-size: 12.5px; }
+    .op-actions { display: flex; align-items: center; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+    .op-actions input { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 5px 10px; font-size: 13px; min-width: 220px; }
     .flow-card .ft { display: flex; align-items: baseline; gap: 10px; }
     .flow-card .ft .n { color: var(--dim); font-size: 12px; }
     .flow-card .fs { color: var(--dim); font-size: 12.5px; margin-top: 3px; }
@@ -467,7 +516,7 @@
     .dsv { font-size: 22px; font-weight: 700; font-family: var(--mono); }
     .dsl { font-size: 11.5px; color: var(--dim); }
     .dsx { font-size: 10.5px; color: var(--warn); margin-top: 1px; }
-    .dclink { margin-top: 12px; color: var(--accent); cursor: pointer; font-size: 13px; }
+    .dclink { display: inline-block; margin-top: 12px; color: var(--accent); cursor: pointer; font-size: 13px; }
     .dclink.dim { color: var(--dim); cursor: default; font-family: var(--mono); font-size: 11.5px; }
     .dnav { display: flex; flex-wrap: wrap; gap: 8px; }
     .dnav button, .dnav a { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 13px; }

@@ -25,6 +25,7 @@ import { enableRouting } from './vendor/vdx/router.js';
 // with no console output. Both now import `./core.js`, which imports neither.
 // `src/import-cycles.test.ts` walks `web/` and fails if the edge comes back.
 import './shared.js';
+import { standardUrl, rulesUrl } from './standard.js';
 
 import {
   errText, hitTarget, apiPost, api, loaded, taskError, isErr, pageShell, nav, go, href, setRouter,
@@ -704,14 +705,60 @@ defineComponent('md-content', MdContent);
  * @type {ViewLink[]}
  */
 const VIEW_LINKS = [
-  ['nodes', u => nodesUrl(u)], ['matrix', u => matrixUrl(u), 'matrix'], ['pipeline', u => pipelineUrl(u), 'pipeline'],
-  ['states', u => stateMapUrl(u), 'states'], ['flows', u => flowsUrl(u)], ['bugs', u => bugsUrl(u)], ['orphans', u => orphansUrl(u)], ['diff', u => diffUrl(u)], ['shared', u => `/u/${u}/shared/`],
-  ['pull requests', u => prsUrl(u), 'prs'],
+  ['nodes', u => nodesUrl(u)], ['bugs', u => bugsUrl(u)], ['orphans', u => orphansUrl(u)],
+  ['diff', u => diffUrl(u)], ['shared', u => `/u/${u}/shared/`], ['PRs', u => prsUrl(u), 'prs'],
 ];
+
+/**
+ * The wiring views, behind one menu.
+ *
+ * The header is a single flex row and it overflowed onto a second at ~720px — half
+ * of a 1440p display, which is an ordinary way to have this open beside an editor.
+ * These four answer one question ("what is wired to what") and are visited far less
+ * often than nodes or diff, so they are the ones that give up their top-level slot.
+ *
+ * @type {ViewLink[]}
+ */
+/**
+ * Two REAL destinations, not one page listed twice. The queue is the act (adopt a
+ * proposal); the requirements browser is the reference (what the rule here is).
+ *
+ * @type {ViewLink[]}
+ */
+const STANDARD_LINKS = [
+  ['ratification queue', u => standardUrl(u)], ['requirements', u => rulesUrl(u)],
+];
+
+const GRAPH_LINKS = [
+  ['event matrix', u => matrixUrl(u), 'matrix'], ['pipeline', u => pipelineUrl(u), 'pipeline'],
+  ['state map', u => stateMapUrl(u), 'states'], ['flows', u => flowsUrl(u)],
+];
+
+/**
+ * A group of view links behind a `<details>`.
+ *
+ * `<details>` rather than component state, and that is a deliberate trade: the open
+ * flag lives in the DOM, so there is no store field for read-tracking to miss and no
+ * lifecycle hook to get one-shot wrong — both of which this app has already paid for
+ * (see CLAUDE.md § Reactivity). The cost is that it does not close on an outside
+ * click; clicking a link inside it does, which is the case that matters.
+ */
+const viewMenu = (label, links, uni, u) => {
+  const shown = links.filter(l => viewEnabled(uni, l[2]));
+  return when(shown.length > 0, () => html`<details class="vmenu">
+    <summary>${label} ▾</summary>
+    <div class="vmenu-panel" on-click="${(e) => { const d = e.currentTarget && e.currentTarget.parentElement; if (d) d.open = false; }}">
+      ${each(shown, l => html`<a class="viewlink" href="${href(l[1](u))}">${l[0]}</a>`, l => l[0])}
+    </div>
+  </details>`);
+};
 // Ungated links always show. A gated one needs the universe's `views` to say so —
 // unknown-yet (nav still loading) hides it so a link can't flash and vanish, while
 // a payload with no `views` at all shows everything rather than hiding the UI.
 const viewEnabled = (uni, gate) => !gate || (!!uni && (!uni.views || !!uni.views[gate]));
+
+/** The universe the header's links point at — current, else the first known one. */
+const headerUniverse = (n) => n.current || (n.universes[0] && n.universes[0].id) || '';
 
 /** @extends {Component<{}, {pulling: boolean, note: string|null}>} */
 class CodemapHeader extends Component {
@@ -764,9 +811,11 @@ class CodemapHeader extends Component {
     const n = this.stores.nav;
     const cur = n.universes.find(x => x.id === n.current) || n.universes[0];
     return html`<header>
-      <a class="brand" href="${href('/')}">codemap<span> · map browser</span></a>
+      <a class="brand" href="${href('/')}">codemap</a>
       <div class="uni">${each(n.universes, u => html`<a class="${u.id === n.current ? 'active' : ''}" href="${href(dashUrl(u.id))}">${u.id}<span class="n">${u.anchors ?? '–'}</span></a>`)}</div>
-      ${each(VIEW_LINKS.filter(l => viewEnabled(cur, l[2])), l => html`<a class="viewlink" href="${href(l[1](n.current || (n.universes[0] && n.universes[0].id) || ''))}">${l[0]}</a>`, l => l[0])}
+      ${each(VIEW_LINKS.filter(l => viewEnabled(cur, l[2])), l => html`<a class="viewlink" href="${href(l[1](headerUniverse(n)))}">${l[0]}</a>`, l => l[0])}
+      ${viewMenu('graph', GRAPH_LINKS, cur, headerUniverse(n))}
+      ${viewMenu('standard', STANDARD_LINKS, cur, headerUniverse(n))}
       <div class="search"><input placeholder="search symbols & docs…" on-change="${(e, v) => this.search(e, v)}"></div>
       ${when(!!cur && !!cur.sidecar, () => html`${when(!!this.state.note, () => html`<span class="pullnote" title="${this.state.note}">${this.state.note}</span>`)}
         <button class="pullbtn" disabled="${this.state.pulling}"
@@ -884,9 +933,9 @@ class DashboardPage extends Component {
     // renderers are real links and neither builds a function per render.
     /** @type {[label: string, url: string, gate?: string][]} */
     const navAll = [
-      ['nodes', nodesUrl(u)], ['matrix', matrixUrl(u), 'matrix'], ['pipeline', pipelineUrl(u), 'pipeline'],
-      ['states', stateMapUrl(u), 'states'], ['flows', flowsUrl(u)], ['bugs', bugsUrl(u)], ['orphans', orphansUrl(u)],
-      ['pull requests', prsUrl(u), 'prs'], ['browse files', treeUrl(u, '')],
+      ['nodes', nodesUrl(u)], ['event matrix', matrixUrl(u), 'matrix'], ['pipeline', pipelineUrl(u), 'pipeline'],
+      ['state map', stateMapUrl(u), 'states'], ['flows', flowsUrl(u)], ['bugs', bugsUrl(u)], ['orphans', orphansUrl(u)],
+      ['PRs', prsUrl(u), 'prs'], ['browse files', treeUrl(u, '')],
     ];
     const nav2 = navAll.filter(x => viewEnabled(d, x[2]));
     return pageShell(d, taskError(this.load), () => html`
@@ -4276,4 +4325,8 @@ setRouter(enableRouting(document.querySelector('router-outlet'), {
   '/u/:universe/shared/:pr/peers/': { component: 'shared-peers-page' },
   '/u/:universe/shared/': { component: 'shared-hub-page' },
   '/u/:universe/shared-docs/': { component: 'shared-docs-page' },
+  '/u/:universe/standard/': { component: 'standard-page' },
+  '/u/:universe/standard/rules/': { component: 'rules-page' },
+  '/u/:universe/standard/spec/:id/': { component: 'spec-page' },
+  '/u/:universe/standard/r/:id/': { component: 'requirement-page' },
 }));
