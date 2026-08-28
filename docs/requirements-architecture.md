@@ -417,7 +417,10 @@ reliance on it, which is why savings clauses exist. Ours is the acknowledgement 
 
 ## Built, and not
 
-Built, **local rows only** — so none of it is yet something a teammate can read:
+Built, as local rows **and** as shared state over the `standard/<universe>` sidecar scope
+(`shared-standard.ts` holds the events and the fold, `standard-publish.ts` the mirror
+layer, `standard-sharing.test.ts` the correspondence). Reachable from `ops.ts` and the
+MCP surface via `ops/standard.ts`:
 
 - The `requirement` record: no `stale`, no trust, `recheckDue` derived at read time.
   Structurally separated from the node path; `requirements.test.ts` holds that true.
@@ -442,7 +445,9 @@ settled a business question by changing code, which is the failure this whole re
 to catch, so it is reported (`settledWithoutAdjudication`) instead of tidied away.
 
 Not built: section move/rename operations, spec withdrawal and repeal, the population
-predicate, and the sidecar scope that makes any of this shared.
+predicate, and the audit pointers described above. The web front end has no routes for
+any of it either — `mcp.ts` is wired and `serve.ts` is not, so this surface is currently
+agent-only.
 
 ## Deliberately open
 

@@ -1131,6 +1131,253 @@ const tools: Tool[] = [
     mutates: true,
     handler: (a, c) => shared.shareDoc(c.universe.path, a.version),
   },
+  // --- the standard -----------------------------------------------------------
+  //
+  // The reads are named individually, per the note above this table — except the six
+  // QUEUES, which are collapsed behind `standard_queue`. That is not the tidy-up the note
+  // warns against: an agent finds the queues through `standard_status`, whose RESULT names
+  // them, and a result always reaches the caller where a deferred description may not. The
+  // steering is not carried by those six names, so collapsing them costs nothing.
+  {
+    name: "standard_status",
+    description: "The state of the standard — the binding business rules — and every queue over it. START HERE for anything about requirements. Reports how much of the standard is `conformant` / `gap` / `debt` / `unknown`, plus `regressed` (met once, no longer known to be). `unknown` means nobody has checked, and is never the same as fine. `settledWithoutAdjudication` counts business questions that got answered by somebody changing code — read that queue if it is nonzero.",
+    inputSchema: obj({}),
+    handler: (_a, c) => ops.standardStatus(c.universe.path),
+  },
+  {
+    name: "standard_queue",
+    description: "Open one of the queues `standard_status` counts. `pending_specs` — proposals awaiting a principal. `awaiting_adjudication` — discrepancies nobody has decided; this is deliberately NOT a fix queue. `actionable` — problems already decided, i.e. work that is owed. `settled_without_adjudication` — the andon signal. `promotable_audits` — branch findings whose evidence still holds on the default branch. `acknowledgements_due` — silencers past their revalidate-by date.",
+    inputSchema: obj({
+      queue: {
+        type: "string",
+        enum: ["pending_specs", "awaiting_adjudication", "actionable", "settled_without_adjudication", "promotable_audits", "acknowledgements_due"],
+      },
+    }, ["queue"]),
+    handler: (a, c) => {
+      const p = c.universe.path;
+      switch (a.queue) {
+        case "pending_specs": return ops.pendingSpecs(p);
+        case "awaiting_adjudication": return ops.awaitingAdjudication(p);
+        case "actionable": return ops.actionableProblems(p);
+        case "settled_without_adjudication": return ops.settledWithoutAdjudication(p);
+        case "promotable_audits": return ops.promotableAudits(p);
+        default: return ops.dueForRevalidation(p);
+      }
+    },
+  },
+  {
+    name: "requirements",
+    description: "The standard itself: the binding rules, filed taxonomically. A requirement is UPSTREAM of the code — the code exists to satisfy it — so it never goes `stale` when code drifts, and there is no edit path on it. Filter by `section` or `status`. To see where the sections are, call `requirement_sections`.",
+    inputSchema: obj({
+      section: { type: "string", description: "Filter to one section path, e.g. \"Credit/Limits\"." },
+      status: { type: "string", enum: ["ratified", "retired"] },
+    }),
+    handler: (a, c) => ops.listRequirements(c.universe.path, a),
+  },
+  {
+    name: "requirement",
+    description: "One rule, with the whole history of operations that introduced and amended it, and `recheckDue` when the code it cites has moved since it was ratified.",
+    inputSchema: obj({ id: { type: "string" } }, ["id"]),
+    handler: (a, c) => ops.getRequirement(c.universe.path, a),
+  },
+  {
+    name: "requirement_sections",
+    description: "The standard's taxonomy — the section index a reader opens before any individual rule, with a count per section. These are the STANDARD's sections, not the shape of whatever spec introduced a rule; they are different axes.",
+    inputSchema: obj({}),
+    handler: (_a, c) => ops.requirementSections(c.universe.path),
+  },
+  {
+    name: "conformance",
+    description: "Per-requirement classification: `conformant` (checked, and it holds) / `gap` (no code that should conform exists yet — roadmap, not a defect) / `debt` (conforming code should exist and does not) / `unknown` (nobody has checked). `conformant` is reachable only through an audit that touched code, so nothing about merging or time passing ever produces it.",
+    inputSchema: obj({ asOf: { type: "string", description: "ISO timestamp — classify as of then rather than now." } }),
+    handler: (a, c) => ops.conformance(c.universe.path, a),
+  },
+  {
+    name: "spec",
+    description: "A proposal against the standard, rendered per operation as what the rule says now and what it would say — plus `adoptable`, which is false when any operation's context has moved since it was written.",
+    inputSchema: obj({ specId: { type: "string" } }, ["specId"]),
+    handler: (a, c) => ops.getSpec(c.universe.path, a),
+  },
+  {
+    name: "audits",
+    description: "Every audit recorded against one requirement, newest first, each marked `superseded` when the code it examined has moved. A superseded audit is not wrong — it was true of what it read — it just no longer speaks about what is there now.",
+    inputSchema: obj({ requirementId: { type: "string" } }, ["requirementId"]),
+    handler: (a, c) => ops.auditsFor(c.universe.path, a),
+  },
+  {
+    name: "acknowledgements",
+    description: "The silencers: records saying the rule stands, we know it is not met, do not raise it. `basis` is `gap` (nothing that should conform exists yet) or `debt` (it should and does not). One record kind for both, so there is exactly one thing to count when asking how much of the standard is currently silenced.",
+    inputSchema: obj({
+      requirementId: { type: "string" },
+      state: { type: "string", enum: ["active", "released"] },
+      asOf: { type: "string" },
+    }),
+    handler: (a, c) => ops.listAcknowledgements(c.universe.path, a),
+  },
+  {
+    name: "problems",
+    description: "Discrepancies between the standard and the code. Each carries the audit that established it and, once decided, its disposition. Closure is DERIVED from the named move actually happening, so a problem that has been adjudicated is not thereby closed.",
+    inputSchema: obj({ requirementId: { type: "string" } }),
+    handler: (a, c) => ops.listProblems(c.universe.path, a),
+  },
+  {
+    name: "draft_spec",
+    description: "Open a proposal against the standard. A spec is the only way the standard ever changes — a ratified rule has no edit path — so this is where a disagreement between code and rule goes when the rule is what should move. Add operations with `add_operation`, then a principal ratifies. The narrative is a reading aid and is never the thing signed.",
+    inputSchema: obj({
+      title: { type: "string" },
+      narrative: { type: "string", description: "Background and argument. Explicitly NON-OPERATIVE: nothing here changes the standard." },
+      model: { type: "string", description: "YOUR model id, e.g. \"claude-opus-5\". Never guess it." },
+      harness: { type: "string" },
+    }, ["title"]),
+    mutates: true,
+    handler: (a, c) => ops.draftSpec(c.universe.path, a as never),
+  },
+  {
+    name: "add_operation",
+    description: "Add one operation to a draft spec: `add_requirement`, `amend_statement`, or `retire_requirement`. Operations are the operative content — the before/after a reviewer reads is rendered FROM them. Amending replaces one statement rather than reprinting a section, so nothing unnamed by an operation is ever touched. `rationale` and `reversibility` are per operation, not per spec, so there is no free-floating prose to drift from what lands.",
+    inputSchema: obj({
+      specId: { type: "string" },
+      kind: { type: "string", enum: ["add_requirement", "amend_statement", "retire_requirement"] },
+      rationale: { type: "string", description: "What provoked this operation." },
+      reversibility: { type: "string", enum: ["reversible", "irreversible", "unknown"], description: "Whether SATISFYING this can be undone. Declared before ratification because it changes the decision, and because it makes the rule harder to amend later." },
+      requirementId: { type: "string", description: "The rule being amended or retired." },
+      title: { type: "string", description: "New requirements: the name a queue row is read by." },
+      section: { type: "string", description: "New requirements: where it files in the standard, e.g. \"Settlement/Float\"." },
+      statement: { type: "string", description: "The rule itself." },
+      provenance: { type: "string", description: "Where the rule comes from — a contract term, an IATA standard, a credit policy, a customer demand, our own past choice." },
+      cites: { type: "array", items: { type: "string" }, description: "Code the rule is about. MAY be empty: an uncited requirement is one the code does not satisfy yet, which is a well-formed record." },
+      evidence: { type: "string", description: "For an amendment: what shows the base state you wrote this against." },
+      model: { type: "string", description: "YOUR model id. Never guess it." },
+      harness: { type: "string" },
+    }, ["specId", "kind", "rationale", "reversibility"]),
+    mutates: true,
+    handler: (a, c) => ops.addOperation(c.universe.path, a as never),
+  },
+  {
+    name: "ratify_spec",
+    description: "Adopt a draft spec: apply every operation to the standard, all or nothing. Each operation is re-checked against the state it was written against, and the whole spec refuses if any of them has moved — a reviewer who approved a rendering built from the standard as of sign-off did not approve the result of applying it to a standard something else has since changed.",
+    inputSchema: obj({
+      specId: { type: "string" },
+      model: { type: "string", description: "YOUR model id. Never guess it." },
+      harness: { type: "string" },
+    }, ["specId"]),
+    mutates: true,
+    handler: (a, c) => ops.ratifySpec(c.universe.path, a as never),
+  },
+  {
+    name: "refile_requirement",
+    description: "Change a rule's title or the section it files under, leaving the statement alone. This is filing, not amendment — amendment goes through a spec.",
+    inputSchema: obj({
+      id: { type: "string" },
+      title: { type: "string" },
+      section: { type: "string" },
+      model: { type: "string", description: "YOUR model id. Never guess it." },
+      harness: { type: "string" },
+    }, ["id"]),
+    mutates: true,
+    handler: (a, c) => ops.reorganizeRequirement(c.universe.path, a as never),
+  },
+  {
+    name: "record_audit",
+    description: "Record that a rule was checked against the code. `evidence` is what you ACTUALLY read and ran — it is the audit's substance, not paperwork, because a positive audit closes a gap and silences the mechanism that would have caught the thing. Doc-only evidence is recorded but is weaker on purpose: auditing a document against a rule inherits the document's errors, and that failure is silent. Use `indeterminate` for \"I could not verify this\" — that is an unverified rule, not a violation.",
+    inputSchema: obj({
+      requirementId: { type: "string" },
+      outcome: { type: "string", enum: ["conformant", "nonconformant", "indeterminate"] },
+      finding: { type: "string", description: "What you concluded, in your own words." },
+      evidence: {
+        type: "object",
+        description: "What you actually did.",
+        properties: {
+          read: { type: "array", items: { type: "string" }, description: "Anchors whose source you read." },
+          ran: { type: "array", items: { type: "object" }, description: "Commands you executed: `{command, passed}`." },
+          consulted: { type: "array", items: { type: "string" }, description: "Documentation you read. Weaker than the other two." },
+        },
+      },
+      model: { type: "string", description: "YOUR model id. Never guess it." },
+      harness: { type: "string" },
+    }, ["requirementId", "outcome", "finding"]),
+    mutates: true,
+    handler: (a, c) => ops.recordAudit(c.universe.path, a as never),
+  },
+  {
+    name: "promote_audit",
+    description: "Put a provisional audit — one taken off the default branch — in front of the team. Decided on WITNESSES: whether the exact source it examined is still verbatim present. Never on commit ancestry, because a commit being in history does not mean the code is still that way. Re-records the finding as a fresh observation rather than rewriting the branch audit to claim it was something else.",
+    inputSchema: obj({
+      auditId: { type: "string" },
+      model: { type: "string", description: "YOUR model id. Never guess it." },
+      harness: { type: "string" },
+    }, ["auditId"]),
+    mutates: true,
+    handler: (a, c) => ops.promoteProvisionalAudit(c.universe.path, a as never),
+  },
+  {
+    name: "raise_problem",
+    description: "File a discrepancy: the standard and the code disagree. Takes the AUDIT that established it rather than prose, so a problem cannot rest on a suspicion. Raising is what an auditor is for; it says nothing about which side should move.",
+    inputSchema: obj({
+      auditId: { type: "string", description: "The non-conformant audit this rests on." },
+      summary: { type: "string", description: "The disagreement, stated plainly." },
+      prior: { type: "string", description: "A pointer that raised this in the queue, if one did. Never a verdict." },
+      model: { type: "string", description: "YOUR model id. Never guess it." },
+      harness: { type: "string" },
+    }, ["auditId", "summary"]),
+    mutates: true,
+    handler: (a, c) => ops.raiseProblem(c.universe.path, a as never),
+  },
+  {
+    name: "adjudicate_problem",
+    description: "Decide which side moves. `code-wrong` — the rule stands and the code violates it. `requirement-changed` — the business moved. `requirement-misstated` — the rule did not change, our statement of it was incomplete. `accepted` — non-conformant and we are living with it. Adjudication is NOT closure: naming the move does not make it, and the problem stays open until the named move actually happens.",
+    inputSchema: obj({
+      problemId: { type: "string" },
+      disposition: { type: "string", enum: ["code-wrong", "requirement-changed", "requirement-misstated", "accepted"] },
+      reason: { type: "string" },
+      model: { type: "string", description: "YOUR model id. Never guess it." },
+      harness: { type: "string" },
+    }, ["problemId", "disposition", "reason"]),
+    mutates: true,
+    handler: (a, c) => ops.adjudicate(c.universe.path, a as never),
+  },
+  {
+    name: "acknowledge_gap",
+    description: "Record that a rule has no code that should conform to it yet — roadmap work, not a defect. Minted against an `add_requirement` operation on a spec that is still a draft, so holes are poked while the rule is a proposal. Saying \"no code should conform to this yet\" is only decidable against a population you can enumerate; without one it means \"I looked and did not find any\", which is a different claim.",
+    inputSchema: obj({
+      operationId: { type: "string", description: "The `add_requirement` operation this gaps." },
+      rationale: { type: "string" },
+      priority: { type: "string", enum: ["high", "medium", "low"] },
+      revalidateBy: { type: "string", description: "ISO date this must be looked at again. A linked work item is evidence, never the release condition." },
+      workItem: { type: "string", description: "A ticket, as evidence. It does not close this." },
+      model: { type: "string", description: "YOUR model id. Never guess it." },
+      harness: { type: "string" },
+    }, ["operationId", "rationale", "priority", "revalidateBy"]),
+    mutates: true,
+    handler: (a, c) => ops.acknowledgeGap(c.universe.path, a as never),
+  },
+  {
+    name: "acknowledge_debt",
+    description: "Record that conforming code should exist, does not, and we are living with it — at the cost of a waiver. Post-hoc, unlike a gap. Carries a priority and a revalidate-by DATE, because a release condition living in a system nothing guarantees becomes unreachable and silences the audit permanently.",
+    inputSchema: obj({
+      requirementId: { type: "string" },
+      rationale: { type: "string" },
+      priority: { type: "string", enum: ["high", "medium", "low"] },
+      revalidateBy: { type: "string", description: "ISO date this must be looked at again." },
+      workItem: { type: "string", description: "A ticket, as evidence. It does not close this." },
+      model: { type: "string", description: "YOUR model id. Never guess it." },
+      harness: { type: "string" },
+    }, ["requirementId", "rationale", "priority", "revalidateBy"]),
+    mutates: true,
+    handler: (a, c) => ops.acknowledgeDebt(c.universe.path, a as never),
+  },
+  {
+    name: "release_acknowledgement",
+    description: "Lift a silencer, so the rule is audited again. Open to any actor: gating what UNSILENCES would be backwards — granting is the act that needs authority.",
+    inputSchema: obj({
+      id: { type: "string" },
+      reason: { type: "string" },
+      model: { type: "string", description: "YOUR model id. Never guess it." },
+      harness: { type: "string" },
+    }, ["id", "reason"]),
+    mutates: true,
+    handler: (a, c) => ops.releaseAcknowledgement(c.universe.path, a as never),
+  },
 ];
 
 function send(msg: unknown): void {

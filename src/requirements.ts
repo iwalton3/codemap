@@ -373,6 +373,7 @@ export async function ratifySpec(
     // Shared: the fold applies the operations, and writing rows here would be erased by
     // the next sync. The loop still runs so the caller gets what was applied.
     if (!shared.local) { applied.push(op); continue; }
+    let bound = op;
     if (op.kind === "add_requirement") {
       const r: Requirement = {
         id: requirementIdFor(op.id), title: op.title!, section: op.section!, statement: op.statement!,
@@ -382,8 +383,12 @@ export async function ratifySpec(
         introducedBy: sp.id, ratifiedBy: who, ratifiedAt: at,
       };
       // Bind the operation to what it created, so `readOperations({requirementId})` is the
-      // rule's whole history and `serve` can see an irreversible ancestor.
-      await writeLocalOperation(root, { ...op, requirementId: r.id });
+      // rule's whole history and `serve` can see an irreversible ancestor. The RETURNED
+      // copy is bound too: it used to be the unbound original, so a caller that ratified a
+      // spec and then wanted to audit the rule it had just adopted got `undefined` from the
+      // one operation kind that creates one, and had to go re-find it by listing.
+      bound = { ...op, requirementId: r.id };
+      await writeLocalOperation(root, bound);
       await writeLocalRequirement(root, r);
     } else {
       const r = (await readRequirement(root, op.requirementId!))!;
@@ -399,7 +404,7 @@ export async function ratifySpec(
         };
       await writeLocalRequirement(root, next);
     }
-    applied.push(op);
+    applied.push(bound);
   }
 
   const next: Spec = { ...sp, status: "ratified", ratifiedBy: who, ratifiedAt: at };

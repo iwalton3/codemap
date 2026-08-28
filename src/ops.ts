@@ -54,6 +54,15 @@ export {
 } from "./ops/docs.js";
 
 export {
+  standardStatus, requirementSections, listRequirements, getRequirement, conformance,
+  draftSpec, addOperation, ratifySpec, getSpec, pendingSpecs, reorganizeRequirement,
+  acknowledgeGap, acknowledgeDebt, releaseAcknowledgement, listAcknowledgements, dueForRevalidation,
+  recordAudit, auditsFor, promotableAudits, promoteProvisionalAudit,
+  raiseProblem, adjudicate, listProblems, awaitingAdjudication, actionableProblems,
+  settledWithoutAdjudication,
+} from "./ops/standard.js";
+
+export {
   reportBug, listBugs, bugDetail, updateBug, commentBug, trackBugExternally,
   corroborateBugOp, promoteBugOp, requestOnBugOp, resolveBugContestOp, unanchorBugOp,
   publishBugs, acceptFinding,
