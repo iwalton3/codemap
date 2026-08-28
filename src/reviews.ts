@@ -88,8 +88,36 @@ const rowIdentity = (r: Review): string =>
  * clear it. The legacy key is the display label, which is what `actorLabel` produces,
  * so a person matches their own history and nobody else's.
  */
+/**
+ * `"me"` is not an identity — it is `markReviewed`'s label for "no git identity
+ * resolved", and a row carrying it becomes UNREACHABLE the moment one does.
+ *
+ * The modern key can never produce it, and `legacy\0me` is not the caller's display
+ * label either, so `sameMark` stops matching: re-marking appends a second row beside
+ * the old one and the reduction keeps reporting the old one. That is a sign-off
+ * nobody can refresh and no click can clear. Seen on a real store —
+ * `Quote.cs#Apply(TicketInvoiced)` read `unverifiable` across three clicks
+ * while the mark that matched the live hash sat right beside it, because the stuck
+ * row's hashes predate the HASH_SCHEME bump and nothing could replace them.
+ */
+const PLACEHOLDER_REVIEWER = "me";
+
+/**
+ * The keys a caller may act on: their own, their own LEGACY spelling, and — for a
+ * person only — the placeholder above.
+ *
+ * The asymmetry is the point, and it is the same one every other gate here uses.
+ * Marks are not in `SHARED_KINDS` and never travel, so every `"me"` row was written
+ * on this machine by whoever uses it; letting a PERSON adopt one recovers their own
+ * history, and letting an agent adopt one would be an agent taking over a person's
+ * sign-off, which is exactly what `rowIdentity` exists to prevent.
+ */
 const identitiesOf = (by: Actor | null, label: string, actor?: "human" | "agent"): Set<string> =>
-  new Set([vouchKey(by, actor, label), `legacy\0${label}`]);
+  new Set([
+    vouchKey(by, actor, label),
+    `legacy\0${label}`,
+    ...(actor === "human" ? [`legacy\0${PLACEHOLDER_REVIEWER}`] : []),
+  ]);
 
 export interface ReviewInfo {
   state: ReviewState;

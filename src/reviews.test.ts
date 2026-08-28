@@ -7,7 +7,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Review, BugWitness, Anchor, State } from "./schema.js";
-import { readReviews, writeStore } from "./store.js";
+import { readReviews, writeReviews, writeStore } from "./store.js";
 import { reviewStatus, markReviewed, unmarkReviewed, changedSince, reviewStatesFor, witnessDrift, realDrift, effectiveAttestation, deriveCodeReview } from "./reviews.js";
 import { anchorMark } from "./ops.js";
 import { indexBlob } from "./repo.js";
@@ -425,5 +425,65 @@ test("a mark whose accepted ids came from another build reads unverifiable, not 
     await writeReviews(root, [mark(hashTokens(["body"], mine))]);
     st = (await reviewStatesFor(root, [{ kind: "anchor", id: "a_absent" }])).get("anchor:a_absent")!;
     assert.equal(st.code.state, "stale", "this index would have resolved it, so its absence is drift");
+  } finally { discard(root); }
+});
+
+/**
+ * A row whose reviewer is the placeholder `"me"` must stay reachable.
+ *
+ * `"me"` is what `markReviewed` writes when no git identity resolves. Once one does,
+ * the modern key can never produce it and `legacy\0me` is not the caller's display
+ * label — so `sameMark` stopped matching and the row became permanent: every later
+ * click appended a SECOND row beside it while the reduction kept reporting the first.
+ * With pre-HASH_SCHEME hashes on the stuck row that reads `unverifiable` for ever,
+ * which is a sign-off nobody can refresh and no click can clear.
+ *
+ * Found on a real store (`Quote.cs#Apply(TicketInvoiced)`, three rows, the one
+ * matching the live hash sitting unused beside the one being displayed).
+ */
+async function withPlaceholderRow(actorOfRow: "human" | "agent") {
+  const root = mkdtempSync(join(tmpdir(), "codemap-me-"));
+  mkdirSync(join(root, "src"));
+  const src = "export function transfer(cents: number) {\n  return cents;\n}\n";
+  writeFileSync(join(root, "src/pay.ts"), src);
+  const anchors = await indexBlob(src, "src/pay.ts");
+  await writeStore(root, anchors, { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State);
+  const id = anchors[0]!.id;
+  await writeReviews(root, [{
+    id: "rev_legacy", target: { kind: "anchor", id }, level: "code", reviewer: "me",
+    actor: actorOfRow, attestation: "signed", at: "2026-08-19T15:56:21.070Z", reviewedCommit: null,
+    // A hash from before the scheme bump: not comparable with a live one, so it
+    // resolves `unverifiable` rather than merely stale.
+    witnesses: [{ anchorId: id, bodyHash: "sha256:oldscheme" }],
+    accepted: [{ anchorId: id, entries: [{ bodyHash: "sha256:oldscheme", commit: null, branch: null, at: "2026-08-19T15:56:21.070Z" }] }],
+  } as Review]);
+  return { root, id };
+}
+
+test("a person can reclaim a mark left under the placeholder identity", async () => {
+  const { root, id } = await withPlaceholderRow("human");
+  try {
+    const stuck = (await reviewStatus(root, { kind: "anchor", id })).code;
+    assert.equal(stuck.via, "unverifiable", "the fixture must actually be stuck or the rest proves nothing");
+    assert.equal(stuck.by, "me");
+
+    await markReviewed(root, { targetKind: "anchor", targetId: id, level: "code", actor: "human", attestation: "signed" });
+    const after = (await reviewStatus(root, { kind: "anchor", id })).code;
+    assert.equal(after.via, "direct", "one click clears it");
+    assert.notEqual(after.by, "me");
+    // Replaced, not accumulated. The duplicate row IS the bug — the reduction kept
+    // reporting the old one while the fresh mark sat beside it doing nothing.
+    assert.equal((await readReviews(root)).reviews.filter((r) => r.target.id === id).length, 1);
+  } finally { discard(root); }
+});
+
+test("…but an AGENT may not — adopting a placeholder row is a person's act only", async () => {
+  const { root, id } = await withPlaceholderRow("human");
+  try {
+    await markReviewed(root, { targetKind: "anchor", targetId: id, level: "code", actor: "agent" });
+    const rows = (await readReviews(root)).reviews.filter((r) => r.target.id === id);
+    assert.ok(rows.some((r) => r.reviewer === "me" && r.actor === "human"),
+      "the person's sign-off survives — an agent claiming it is what `rowIdentity` exists to prevent");
+    assert.equal(rows.length, 2, "the agent's check sits BESIDE it rather than replacing it");
   } finally { discard(root); }
 });
