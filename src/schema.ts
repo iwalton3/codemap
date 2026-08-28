@@ -1195,6 +1195,26 @@ export interface Audit {
   auditor: Actor;
   at: string;
   commit?: string | null;
+  branch?: string | null;
+  /**
+   * Taken somewhere other than the default branch, so it is about somebody's work in
+   * progress rather than about the codebase.
+   *
+   * A provisional audit is real work and stays local: it never enters the shared log,
+   * because broadcasting "the code violates rule X" from a feature branch announces a
+   * non-conformance that may not exist on the default branch and may never. What makes
+   * the same finding live is a fresh audit after the merge — and that is honest, because
+   * the merged code is different code.
+   */
+  provisional?: boolean;
+  /**
+   * The provisional audit this re-records as an observation of the codebase.
+   *
+   * Present on the promotion, not on the original: the original was taken on a branch and
+   * rewriting it would falsify its own record. It also stops a finding being promoted
+   * twice, which is otherwise invisible — the original stays non-superseded for ever.
+   */
+  promotedFrom?: string;
   origin?: string;
 }
 
@@ -1241,6 +1261,8 @@ export interface Problem {
   prior?: string;
   raisedBy: Actor;
   raisedAt: string;
+  /** Raised from a provisional audit — local to this branch, never broadcast. */
+  provisional?: boolean;
   /** Set only by `adjudicate`, and only by a principal. */
   disposition?: ProblemDisposition;
   adjudicatedBy?: Actor;

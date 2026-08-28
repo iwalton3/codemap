@@ -42,6 +42,9 @@ import { liveHashes, witnessDrift, realDrift } from "./reviews.js";
 import { ABSENT_HASH } from "./normalize.js";
 import { isAgentActor, requireActor } from "./identity.js";
 import type { ActorInput } from "./identity.js";
+import {
+  disposition, shareOperation, shareSpecDrafted, shareSpecRatified,
+} from "./standard-publish.js";
 
 const mint = (p: string) => p + randomBytes(6).toString("hex");
 
@@ -173,7 +176,9 @@ export async function draftSpec(
     id: mint("sp_"), title, ...(input.narrative?.trim() ? { narrative: input.narrative.trim() } : {}),
     status: "draft", author: actor, createdAt: now(),
   };
-  await writeLocalSpec(root, sp);
+  const d = disposition(await shareSpecDrafted(root, sp));
+  if ("error" in d) return d;
+  if (d.local) await writeLocalSpec(root, sp);
   return { ok: true, id: sp.id, spec: sp };
 }
 
@@ -265,7 +270,9 @@ export async function addOperation(
     ...(context ? { context } : {}),
     reversibility: input.reversibility, ord: existing.length,
   } as Operation;
-  await writeLocalOperation(root, op);
+  const d = disposition(await shareOperation(root, op));
+  if ("error" in d) return d;
+  if (d.local) await writeLocalOperation(root, op);
   return { ok: true, id: op.id, operation: op };
 }
 
@@ -330,8 +337,24 @@ export async function ratifySpec(
   }
 
   const at = now();
+
+  // Witnesses are an observation of THIS checkout, so they ride on the ratification event
+  // rather than being recomputed by every clone — see `shared-standard.ts`.
+  const witnesses: Record<string, BugWitness[]> = {};
+  for (const op of ops) {
+    const cites = op.kind === "add_requirement"
+      ? op.cites ?? []
+      : (await readRequirement(root, op.requirementId!))?.cites ?? [];
+    witnesses[op.id] = await witness(root, cites);
+  }
+  const shared = disposition(await shareSpecRatified(root, sp.id, at, witnesses));
+  if ("error" in shared) return shared;
+
   const applied: Operation[] = [];
   for (const op of ops) {
+    // Shared: the fold applies the operations, and writing rows here would be erased by
+    // the next sync. The loop still runs so the caller gets what was applied.
+    if (!shared.local) { applied.push(op); continue; }
     if (op.kind === "add_requirement") {
       const r: Requirement = {
         id: requirementIdFor(op.id), title: op.title!, section: op.section!, statement: op.statement!,
@@ -362,12 +385,14 @@ export async function ratifySpec(
   }
 
   const next: Spec = { ...sp, status: "ratified", ratifiedBy: who, ratifiedAt: at };
-  await writeLocalSpec(root, next);
+  if (shared.local) await writeLocalSpec(root, next);
   // Gaps raised against this spec's operations named an operation, because the rule did
   // not exist yet. Bind them to what the operations produced, or nothing asking "what is
   // silencing this requirement" would ever find them.
-  const { bindGapsForSpec } = await import("./acknowledgements.js");
-  await bindGapsForSpec(root, sp.id);
+  if (shared.local) {
+    const { bindGapsForSpec } = await import("./acknowledgements.js");
+    await bindGapsForSpec(root, sp.id);
+  }
   return { ok: true, spec: next, applied };
 }
 
@@ -394,6 +419,14 @@ export async function reorganizeRequirement(
   if (section !== r.section) {
     const clash = await checkSection(root, section);
     if (clash) return clash;
+  }
+  if (r.origin) {
+    return {
+      error:
+        `${r.id} is the team's, and re-filing has no shared act yet — a section move or rename `
+        + `belongs in a spec as an operation, which is not built (see `
+        + `docs/requirements-architecture.md). Writing it locally would be erased by the next sync.`,
+    };
   }
   const next: Requirement = { ...r, title, section };
   await writeLocalRequirement(root, next);

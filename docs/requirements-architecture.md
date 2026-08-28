@@ -259,6 +259,64 @@ highest-value record the system holds. So: an agent may **raise** it and may not
 it, which is already the discrepancy rule and needs no new machinery. Budget for the
 false positives rather than discovering them.
 
+## An audit is about a branch, and only the default branch is "the codebase"
+
+A problem says the rule and the code disagree — but *which* code? On a feature branch the
+code is somebody's work in progress. Broadcasting a non-conformance from there announces a
+violation that may not exist on the default branch and may never, because the branch can
+be fixed or abandoned before it merges.
+
+So an audit records its branch, and one taken off the default branch is **provisional**: it
+is real work, fully usable locally, and it never enters the shared log. A problem raised
+from it inherits that — a problem is exactly as shareable as the evidence it rests on. So
+does an adjudication of one, which would otherwise arrive at a clone with no problem to
+attach it to.
+
+### What becomes of it after the merge: evidence, never ancestry
+
+Both obvious answers are wrong. Publishing every provisional failure on merge floods the
+team with findings that were fixed before they ever landed. And concluding anything from
+the commit being an **ancestor** of the default branch is unsound in the other direction:
+a commit being in history does not mean the code is still that way, because a later commit
+on the same branch may have fixed it.
+
+The sound discriminator is the one this codebase already uses everywhere — **the
+witnesses.** If the hashes the audit recorded still match live code, the exact source it
+examined is verbatim present, so the finding still holds and that is evidence rather than
+inference. If they differ, the audit is superseded and says nothing: it falls away
+silently, which is exactly the no-noise answer for the fixed case.
+
+Two properties fall out, and both are load-bearing:
+
+- **Nothing about merging ever makes anything `conformant`.** Only a positive audit does,
+  so there is no path by which code passes an audit by having landed.
+- **Promotion is explicit.** The list is derived so nobody has to remember, but the act of
+  putting a finding in front of the team is a decision, and it re-records the finding as a
+  fresh observation rather than rewriting a branch audit to claim it was something else.
+
+## Audit pointers — what makes the queue populate itself
+
+*Designed, not built.* A **pointer** is a standing declaration that a requirement's
+conformance depends on some observable: a set of anchors, a test, a lint, a query, any
+runnable check. When a pointer moves, the requirement rises in the audit queue.
+
+This generalises what already exists in pieces — `cites` (staleness means the code moved)
+and COD-18's `asserted_by` (staleness means the build is red) — into one relation whose
+question is *what would make this claim need re-checking*. It is what makes the audit queue
+**self-populating** rather than dependent on somebody remembering, and it is the answer to
+a residue already recorded above: an uncited requirement can raise neither *recheck-due*
+nor an assertion failure, so nothing ever fires on it and the highest-value record in the
+store is also the quietest. A pointer gives it something to fire on.
+
+Two things to design in rather than discover:
+
+- **A requirement with no pointer can never rise**, so the absence has to be visible. "No
+  pointer" is the requirement-side twin of `unknown`, and must not read as settled.
+- **Vacuity applies here too.** A pointer at something that cannot change — a constant, a
+  test that passes by construction — is a pointer that never fires, and it manufactures
+  the same false calm as a vacuous assertion while looking like coverage. Whatever
+  demonstrates non-vacuity for an assertion has to demonstrate it for a pointer.
+
 ## Backout is two problems, and only one of them is ours
 
 ITIL requires every change to say how it is undone. Here that question splits, and the two

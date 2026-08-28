@@ -22,7 +22,7 @@ import { complexityOf, MONEY_RX, reviewTriageFor, setTriageBatch } from "./triag
 import { readTriage } from "./store.js";
 import type { Importance } from "./schema.js";
 import type { Complexity } from "./schema.js";
-import { revParse, mergeBase, hasObject, fetchRef, numstat, readBlobs, isGitRepo, originSlug, prBaseCommit, isAncestor, gitBin } from "./git.js";
+import { revParse, mergeBase, hasObject, fetchRef, numstat, readBlobs, isGitRepo, originSlug, prBaseCommit, isAncestor, gitBin, defaultBranch } from "./git.js";
 import { splitSpec, buildStory, layerOf, spineRole, type PrStory, type StoryStep, type StoryChapter, backendSpineRole } from "./pr-story.js";
 import { planPromotion, type Promotion } from "./pr-promote.js";
 import { sameBody } from "./normalize.js";
@@ -162,13 +162,7 @@ export function listOpenPrs(repoSlug: string): { prs: PrMeta[] } | { error: stri
  * for a remote added by hand, which never gets the symbolic ref.
  */
 export function defaultBaseRef(root: string, remote = "origin"): string {
-  const sym = spawnSync(gitBin(), ["symbolic-ref", "--short", `refs/remotes/${remote}/HEAD`], { cwd: root, encoding: "utf8" });
-  const name = sym.status === 0 ? (sym.stdout ?? "").trim() : "";
-  if (name.startsWith(`${remote}/`)) return name.slice(remote.length + 1);
-  for (const candidate of ["main", "master"]) {
-    if (revParse(root, `${remote}/${candidate}`)) return candidate;
-  }
-  return "main";
+  return defaultBranch(root, remote);
 }
 
 /**

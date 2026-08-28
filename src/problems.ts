@@ -37,6 +37,7 @@ import {
 } from "./store.js";
 import { isAgentActor, requireActor } from "./identity.js";
 import type { ActorInput } from "./identity.js";
+import { disposition as shareDisposition, shareAdjudication, shareProblemRaised } from "./standard-publish.js";
 import { auditsFor, type ServedAudit } from "./audits.js";
 
 const mint = () => "pr_" + randomBytes(6).toString("hex");
@@ -119,8 +120,13 @@ export async function raiseProblem(
     id: mint(), requirementId: audit.requirementId, auditId: audit.id, summary,
     ...(input.prior?.trim() ? { prior: input.prior.trim() } : {}),
     raisedBy: actor, raisedAt: now(),
+    // Inherited from the audit, never decided here: a problem is exactly as shareable as
+    // the evidence it rests on.
+    ...(audit.provisional ? { provisional: true } : {}),
   };
-  await writeLocalProblem(root, problem);
+  const d = shareDisposition(await shareProblemRaised(root, problem));
+  if ("error" in d) return d;
+  if (d.local) await writeLocalProblem(root, problem);
   return { ok: true, id: problem.id, problem };
 }
 
@@ -146,10 +152,13 @@ export async function adjudicate(
   if (!p) return { error: `no problem "${problemId}"` };
   if (p.disposition) return { error: `${problemId} was already adjudicated as \`${p.disposition}\`` };
 
+  const at = now();
   const next: Problem = {
-    ...p, disposition, adjudicatedBy: who, adjudicatedAt: now(), adjudicationReason: reason.trim(),
+    ...p, disposition, adjudicatedBy: who, adjudicatedAt: at, adjudicationReason: reason.trim(),
   };
-  await writeLocalProblem(root, next);
+  const d = shareDisposition(await shareAdjudication(root, p, disposition, reason.trim(), at));
+  if ("error" in d) return d;
+  if (d.local) await writeLocalProblem(root, next);
   return { ok: true, problem: next };
 }
 

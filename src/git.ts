@@ -68,6 +68,34 @@ export function currentBranch(root: string): string | null {
 }
 
 /** True if the working tree has uncommitted changes (tracked or untracked). */
+/**
+ * The repository's default branch — what "the codebase" means when nobody says otherwise.
+ *
+ * `git clone` records it as `refs/remotes/origin/HEAD`, so this is a local lookup rather
+ * than a guess in the overwhelming majority of repos. The fallbacks exist for a remote
+ * added by hand, which never gets the symbolic ref.
+ *
+ * Lives here rather than in `pr.ts` because it is no longer only a pull-request question:
+ * an audit taken off the default branch is about somebody's work in progress, not about
+ * the codebase, and must not be broadcast as if it were.
+ */
+export function defaultBranch(root: string, remote = "origin"): string {
+  const sym = spawnSync(gitBin(), ["symbolic-ref", "--short", `refs/remotes/${remote}/HEAD`], { cwd: root, encoding: "utf8" });
+  const name = sym.status === 0 ? (sym.stdout ?? "").trim() : "";
+  if (name.startsWith(`${remote}/`)) return name.slice(remote.length + 1);
+  for (const candidate of ["main", "master"]) {
+    if (revParse(root, `${remote}/${candidate}`)) return candidate;
+  }
+  return "main";
+}
+
+/** Is the working tree on the default branch — i.e. is this about the codebase? */
+export function onDefaultBranch(root: string): boolean {
+  if (!isGitRepo(root)) return true;   // not a repo: there is only one state of the code
+  const here = currentBranch(root);
+  return !!here && here === defaultBranch(root);
+}
+
 export function isDirty(root: string): boolean {
   if (!isGitRepo(root)) return false;
   return git(root, ["status", "--porcelain"]).out.trim().length > 0;

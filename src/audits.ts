@@ -34,9 +34,10 @@ import {
   workHas, writeLocalAudit,
 } from "./store.js";
 import { liveHashes, witnessDrift, realDrift } from "./reviews.js";
-import { headCommit, isGitRepo } from "./git.js";
+import { currentBranch, headCommit, isGitRepo, onDefaultBranch } from "./git.js";
 import { requireActor } from "./identity.js";
 import type { ActorInput } from "./identity.js";
+import { disposition, shareAudit } from "./standard-publish.js";
 import { releaseAcknowledgement, type ServedAcknowledgement } from "./acknowledgements.js";
 
 const mint = () => "au_" + randomBytes(6).toString("hex");
@@ -98,6 +99,7 @@ export async function recordAudit(
   root: string,
   input: {
     requirementId: string; outcome: AuditOutcome; finding: string; evidence?: AuditEvidence;
+    promotedFrom?: string;
   } & ActorInput,
 ): Promise<{ ok: true; id: string; audit: Audit; released: string[] } | Err> {
   if (!OUTCOMES.includes(input.outcome)) return { error: `outcome must be one of ${OUTCOMES.join(" | ")}` };
@@ -136,12 +138,21 @@ export async function recordAudit(
   const actor = requireActor(root, input);
   if (isErr(actor)) return actor;
   const live = read.length ? await liveHashes(root, read) : null;
+  // Off the default branch this is about somebody's work in progress, not about the
+  // codebase — so it is recorded and never broadcast. See `standard-publish.ts`.
+  const provisional = !onDefaultBranch(root);
   const audit: Audit = {
     id: mint(), requirementId: r.id, outcome: input.outcome, evidence, finding,
     witnesses: read.map((id) => ({ anchorId: id, bodyHash: live?.get(id) ?? "sha256:absent" })),
-    auditor: actor, at: now(), commit: isGitRepo(root) ? headCommit(root) : null,
+    auditor: actor, at: now(),
+    commit: isGitRepo(root) ? headCommit(root) : null,
+    branch: isGitRepo(root) ? currentBranch(root) : null,
+    ...(provisional ? { provisional: true } : {}),
+    ...(input.promotedFrom ? { promotedFrom: input.promotedFrom } : {}),
   };
-  await writeLocalAudit(root, audit);
+  const d = disposition(await shareAudit(root, audit));
+  if ("error" in d) return d;
+  if (d.local) await writeLocalAudit(root, audit);
   return { ok: true, id: audit.id, audit, released: await settleAcknowledgements(root, audit) };
 }
 
@@ -173,6 +184,80 @@ async function settleAcknowledgements(root: string, audit: Audit): Promise<strin
 }
 
 // --- reading -----------------------------------------------------------------
+
+/**
+ * Provisional findings whose evidence still holds on the codebase.
+ *
+ * The question this answers is what becomes of a branch audit after the branch merges,
+ * and the tempting answers are both wrong. Publishing every provisional failure on merge
+ * floods the team with findings that were fixed before they ever landed. Concluding
+ * anything from the commit being an ANCESTOR of the default branch is unsound in the
+ * other direction: a commit being in history does not mean the code is still that way,
+ * because a later commit on the same branch may have fixed it.
+ *
+ * The sound discriminator is the one this codebase already uses everywhere — **the
+ * witnesses**. If the hashes the audit recorded still match live code, the exact source it
+ * examined is verbatim present, so the finding still holds and it is evidence rather than
+ * inference. If they differ, the audit is superseded and says nothing; it falls away
+ * silently, which is precisely the no-noise answer for the fixed case.
+ *
+ * Note what is NOT here: nothing about merging ever makes anything `conformant`. Only a
+ * positive audit does that, so there is no path by which code passes by having landed.
+ *
+ * Derived, so nobody has to remember; and promotion is an explicit act, because
+ * broadcasting a finding to the team without a decision is the thing being avoided.
+ */
+export async function promotableAudits(root: string): Promise<ServedAudit[]> {
+  if (!onDefaultBranch(root)) return [];
+  const all = await readAudits(root);
+  const alreadyPromoted = new Set(all.map((a) => a.promotedFrom).filter(Boolean) as string[]);
+  const out: ServedAudit[] = [];
+  for (const a of all) {
+    if (!a.provisional || a.outcome !== "nonconformant" || !a.witnesses.length) continue;
+    // A promoted finding stays non-superseded for ever — the code it cited is exactly
+    // what is there — so without this it would offer itself again on every read.
+    if (alreadyPromoted.has(a.id)) continue;
+    const served = await serve(root, a);
+    if (!served.superseded) out.push(served);
+  }
+  return out;
+}
+
+/**
+ * Re-record a provisional finding as an observation of the codebase.
+ *
+ * A NEW audit rather than a rewrite of the old one: the original was taken on a branch and
+ * saying otherwise would falsify its own record. What is fresh here is the claim that the
+ * same evidence applies to the default branch — which `promotableAudits` has just
+ * established from the hashes rather than from anybody's assertion.
+ */
+export async function promoteProvisionalAudit(
+  root: string, auditId: string, input: ActorInput = {},
+): Promise<{ ok: true; id: string; audit: Audit } | Err> {
+  if (!onDefaultBranch(root)) {
+    return { error: "promotion is a claim about the codebase, so it must be made from the default branch" };
+  }
+  const original = (await readAudits(root)).find((a) => a.id === auditId);
+  if (!original) return { error: `no audit "${auditId}"` };
+  if (!original.provisional) return { error: `${auditId} is already an audit of the codebase` };
+  if (original.outcome !== "nonconformant") {
+    return { error: `only a nonconformant finding is promotable — nothing about a merge makes code conformant` };
+  }
+  const served = await serve(root, original);
+  if (served.superseded || !original.witnesses.length) {
+    return {
+      error:
+        `${auditId} examined code that has since changed, so it says nothing about what is here now. `
+        + `Re-audit rather than promote: concluding from the merge alone is how a finding survives its own fix.`,
+    };
+  }
+  return recordAudit(root, {
+    ...input, promotedFrom: original.id,
+    requirementId: original.requirementId, outcome: "nonconformant",
+    finding: `${original.finding} (promoted from provisional audit ${original.id} on ${original.branch ?? "a branch"}; the cited code is unchanged)`,
+    evidence: original.evidence,
+  });
+}
 
 export async function auditsFor(root: string, requirementId: string): Promise<ServedAudit[]> {
   const rows = await readAudits(root, { requirementId });

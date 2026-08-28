@@ -37,6 +37,7 @@ import {
 } from "./store.js";
 import { isAgentActor, requireActor } from "./identity.js";
 import type { ActorInput } from "./identity.js";
+import { disposition, shareAckGranted, shareAckReleased } from "./standard-publish.js";
 
 const mint = () => "ack_" + randomBytes(6).toString("hex");
 const now = () => new Date().toISOString();
@@ -141,7 +142,9 @@ export async function acknowledgeGap(
     revalidateBy: input.revalidateBy, ...(input.workItem ? { workItem: input.workItem } : {}),
     state: "active", grantedBy: actor, grantedAt: now(),
   };
-  await writeLocalAcknowledgement(root, a);
+  const d = disposition(await shareAckGranted(root, a));
+  if ("error" in d) return d;
+  if (d.local) await writeLocalAcknowledgement(root, a);
   return { ok: true, id: a.id, acknowledgement: a };
 }
 
@@ -173,14 +176,20 @@ export async function acknowledgeDebt(
     revalidateBy: input.revalidateBy, ...(input.workItem ? { workItem: input.workItem } : {}),
     state: "active", grantedBy: who, grantedAt: now(),
   };
-  await writeLocalAcknowledgement(root, a);
+  const d = disposition(await shareAckGranted(root, a));
+  if ("error" in d) return d;
+  if (d.local) await writeLocalAcknowledgement(root, a);
   return { ok: true, id: a.id, acknowledgement: a };
 }
 
 /**
  * Bind a spec's gap acknowledgements to the requirements its operations produced.
  *
- * Called by the fold at ratification. Before this a gap names an operation, because the
+ * Called on the LOCAL path at ratification. The sidecar fold does the same binding from
+ * the same derivation (`requirementIdFor`), so a shared acknowledgement never needs a
+ * second event to find its rule.
+ *
+ * Historically called by the fold at ratification. Before this a gap names an operation, because the
  * rule does not exist yet; afterwards it has to name the rule, or nothing asking "what is
  * silencing this requirement" would find it.
  */
@@ -217,10 +226,13 @@ export async function releaseAcknowledgement(
   if (a.state === "released") return { error: `${id} is already released` };
   const actor = requireActor(root, input);
   if (isErr(actor)) return actor;
+  const at = now();
   const next: Acknowledgement = {
-    ...a, state: "released", releasedBy: actor, releasedAt: now(), releasedReason: reason.trim(),
+    ...a, state: "released", releasedBy: actor, releasedAt: at, releasedReason: reason.trim(),
   };
-  await writeLocalAcknowledgement(root, next);
+  const d = disposition(await shareAckReleased(root, a.id, at, reason.trim()));
+  if ("error" in d) return d;
+  if (d.local) await writeLocalAcknowledgement(root, next);
   return { ok: true, acknowledgement: next };
 }
 
