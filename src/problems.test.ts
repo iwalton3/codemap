@@ -294,3 +294,40 @@ test("acts in the same millisecond still close the problem they resolve", async 
     assert.equal((await listProblems(root))[0]!.state, "closed");
   } finally { discard(root); }
 });
+
+test("branch work does not close an adjudicated problem, or the fix queue depends on the checkout", async () => {
+  // `settleAcknowledgements` already refuses to let branch work release a silencer — "a
+  // provisional audit settles NOTHING" — and closure had no such filter. A conformant audit
+  // recorded on a feature branch made an adjudicated, TEAM-WIDE `code-wrong` problem read
+  // as `closed` and drop out of `actionable`, so owed work vanished on the strength of code
+  // that had not landed and might never. Leaving the branch brought it back, which made the
+  // fix queue's contents a function of what happened to be checked out.
+  const { root, anchors } = await universe();
+  try {
+    const { rule, problem } = await disagreement(root, anchors);
+    ok(await adjudicate(root, problem.id, "code-wrong", "the rule stands"));
+    assert.equal((await actionable(root)).length, 1, "decided, and owed");
+
+    // Onto a branch, where an audit is provisional by construction.
+    spawnSync("git", ["checkout", "-q", "-b", "fix/currency"], { cwd: root });
+    const provisional = ok(await recordAudit(root, {
+      requirementId: rule.id, outcome: "conformant", finding: "fixed it here",
+      evidence: { read: anchors }, ...AGENT,
+    }));
+    assert.equal(provisional.audit.provisional, true, "the fixture must actually be provisional");
+
+    assert.equal((await actionable(root)).length, 1,
+      "the work is still owed: nothing has landed on the default branch");
+    assert.equal((await listProblems(root))[0]!.state, "adjudicated");
+
+    // And the same audit on the default branch DOES close it, or this passes by never
+    // closing anything.
+    spawnSync("git", ["checkout", "-q", "main"], { cwd: root });
+    ok(await recordAudit(root, {
+      requirementId: rule.id, outcome: "conformant", finding: "and it landed",
+      evidence: { read: anchors }, ...AGENT,
+    }));
+    assert.equal((await listProblems(root))[0]!.state, "closed");
+    assert.equal((await actionable(root)).length, 0);
+  } finally { discard(root); }
+});

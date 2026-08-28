@@ -183,7 +183,13 @@ async function moveMade(root: string, p: Problem, audits: ServedAudit[]): Promis
       // `>=`, not `>`: two acts in the same millisecond are ordinary — adjudicate, then
       // record the audit that closes it — and string-comparing equal stamps left the
       // problem open for ever with nothing to show why.
-      return audits.some((a) => a.outcome === "conformant" && !a.superseded && a.at >= since);
+      // NOT a provisional one. `settleAcknowledgements` already states this rule for the
+      // other consumer — "a provisional audit settles NOTHING" — and closure is the same
+      // shape: a conformant audit taken on a feature branch made an adjudicated, team-wide
+      // problem read as `closed` and drop out of the fix queue, so owed work vanished on
+      // the strength of code that had not landed. It reappeared on leaving the branch,
+      // which made the queue's contents depend on what was checked out.
+      return audits.some((a) => a.outcome === "conformant" && !a.provisional && !a.superseded && a.at >= since);
     case "requirement-changed":
     case "requirement-misstated": {
       // A ratified spec that amended this rule after the decision. The operation is the
@@ -217,8 +223,11 @@ async function serve(root: string, p: Problem): Promise<ServedProblem> {
     // settled a business question by changing code or retiring the rule, and that is the
     // thing worth surfacing rather than tidying away.
     const r = await readRequirement(root, p.requirementId);
+    // Same rule on the andon signal: branch work is not the disagreement going away, and
+    // reporting `settledWithoutAdjudication` off it would accuse somebody of settling a
+    // business question they may yet abandon.
     const resolvedAnyway = r?.status === "retired"
-      || audits.some((a) => a.outcome === "conformant" && !a.superseded && a.at >= p.raisedAt);
+      || audits.some((a) => a.outcome === "conformant" && !a.provisional && !a.superseded && a.at >= p.raisedAt);
     return {
       ...p, state: "open", awaiting: "a principal to say which side moves",
       settledWithoutAdjudication: !!resolvedAnyway,
