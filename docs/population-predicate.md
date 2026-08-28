@@ -190,34 +190,49 @@ machine can take.
 
 ## Build order
 
-1. **`asserted_by`** — the second citation relation, and the **vacuity field** beside it.
-   COD-18 is explicit that it must not ship without one: pointing at a vacuous assertion
-   converts *nobody edited the cited code* into *green as of the last build*, a
-   stronger-reading claim over a check that cannot fail. Two of three tests examined in one
-   session were vacuous when written, and four of six of the oracle's own invariants were —
-   assume the same rate.
-2. **Test indexing in the target — one line, now that the bin exists.** codemap has no
-   built-in test exclusion (`src/ignore.ts` has no default patterns); it is the target
-   repo's `.codemapignore`, which currently reads *"tests & test tooling (revisit later,
-   e.g. for a coverage feature)"*. Move those patterns under a `[tests]` header and the
-   ~3,856 test methods are indexed — citable, hashable, pinnable — while staying out of the
-   documentation denominator.
+**Step 0 is independent of everything else here** and is the cheapest visible win, so it
+does not wait on the rest.
 
-   **This used to be two acts that could not both be committed, which is why the bin was
-   built.** An earlier draft of this document said to lift the ignore line and apply a
-   `cover ... as trivial` rule in the same commit. That is impossible: coverage rules live
-   in `.codemap/codemap.db` under the `coverage` meta key, which is gitignored and is not in
-   `SHARED_KINDS`, so the rule is one machine's local state and never reaches a teammate's
-   fresh clone. A repo-wide policy declared in a committed file cannot have its other half
-   in an uncommitted one — every clone would report thousands of phantom gaps until somebody
-   remembered. `.codemapignore` is already the committed declaration of what codemap does
-   with paths, so the bin belongs there and there is nothing left to keep in sync.
+0. **Roll the branch diff up to requirements.** `computeDiff` already rolls changed symbols
+   up to nodes, flows, reviews and bugs; requirements are simply not among them. It needs
+   no new relation — a requirement's own `cites` and `witnesses` already exist, and
+   `recheckDue` is already derived from them. One rollup target turns `/diff`, a surface
+   people already use, into the audit trigger the subsystem otherwise has none of.
 
-   `tests` is deliberately a `CoverageState` and **not** a `CoverageMark`: every other state
-   is reachable by a local `cover` rule, and this one is reachable only from the committed
-   file. It also outranks `cited`, because the reason tests are in the map at all is so a
-   requirement can pin a lint — letting a citation promote a test back into the denominator
-   would put it there through exactly the mechanism the bin exists to serve.
+1. **`asserted_by`, and the three fields that must ship with it.** The second citation
+   relation — `cites` is the code a claim is ABOUT (staleness = that code moved),
+   `asserted_by` is the check that would FAIL if the claim stopped holding (staleness = the
+   build is red). Snapshot versus live. Beside it:
+   - **the vacuity field.** COD-18 is explicit it must not ship without one: pointing at a
+     vacuous assertion converts *nobody edited the cited code* into *green as of the last
+     build*, a stronger-reading claim over a check that cannot fail. Two of three tests
+     examined in one session were vacuous when written, and four of six of the oracle's own
+     invariants were — assume that rate.
+   - **the falsifier**, adopted from the playbook's §13.1. We have no analogue and it is not
+     a naming gap: every non-vacuity guard in `audits.ts` fires at AUDIT time, when the
+     author already knows what passed. A falsifier is written before the code exists, so it
+     cannot be fitted to whatever the check turned out to do. Its payoff, in the playbook's
+     words: *"seeing, before a line is written, which criteria are unprovable as stated."*
+   - **the evidence kind**, adopted from the playbook's §13.2 closed list of seven with its
+     why-it-holds column. `Audit.evidence` cannot stand in — `read`/`ran`/`consulted` records
+     what one auditor did once, after the fact, where an evidence kind is a standing
+     declaration made at drafting.
 
-3. **The pin and its delta rendering**, then the gating split above.
-4. **The scrub**, which now has a third pathology to detect and a hash with which to detect it.
+2. **The pointer relation** — WHERE an auditor looks, distinct from the criterion's what and
+   how. Aims as high up the abstraction ladder as it can reach; an anchor is the last
+   resort. Then extend step 0's rollup to reach requirements through pointers, which is
+   what makes the second differential path (`code → doc stales → pointer`) light up.
+
+3. **The pin, the delta rendering, and the gating split.** Hash the lint; render a change as
+   a POPULATION DELTA rather than two diffed selectors; leave re-pinning open for queue
+   purposes and principal-gate it where it changes a gap/debt classification.
+
+4. **The scrub** — not an optional complement. Differential audit covers what MOVED, so a
+   requirement whose pointers never move is never audited; the scrub is the only thing
+   covering what did not. It now has a third pathology to detect and a hash to detect it
+   with.
+
+5. **Test indexing in the target.** One line, now that `.codemapignore` has a `[tests]` bin:
+   move `*.Tests/` and friends under a `[tests]` header and the ~3,856 test methods are
+   indexed — citable, hashable, pinnable — while staying out of the documentation
+   denominator. **This is an edit in a live repo, so it is their act, not ours.**

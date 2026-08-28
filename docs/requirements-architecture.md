@@ -555,12 +555,23 @@ un-adjudicated problem whose disagreement quietly disappears does **not** close:
 settled a business question by changing code, which is the failure this whole record exists
 to catch, so it is reported (`settledWithoutAdjudication`) instead of tidied away.
 
-Not built: section move/rename operations, spec withdrawal and repeal, the population
-predicate (`docs/population-predicate.md` states what one has to handle, and why narrowing
-a population is a laundering door that has to be gated like an amendment), and the audit
-pointers described above. The web front end has no routes for
-any of it either — `mcp.ts` is wired and `serve.ts` is not, so this surface is currently
-agent-only.
+Not built, roughly in the order they are worth building — `docs/population-predicate.md`
+carries the detail and the reasoning:
+
+- **The branch diff does not reach requirements.** `computeDiff` rolls changed symbols up to
+  nodes, flows, reviews and bugs. Adding requirements needs no new relation (`cites` and
+  `witnesses` are already there) and turns `/diff` into the audit trigger this subsystem
+  otherwise lacks entirely. Cheapest thing on this list.
+- **`asserted_by`**, with its vacuity field, a **falsifier**, and an **evidence kind** —
+  the last two adopted from the spec playbook's §13.1/§13.2 rather than re-derived.
+- **Audit pointers**, and then the **scrub**, which is their necessary counterweight rather
+  than hygiene: differential audit covers what moved and only a scrub covers what did not.
+- **The population predicate**, which is a hash-pinned lint. Narrowing a population is a
+  laundering door and has to be gated like an amendment.
+- Section move/rename operations, and spec withdrawal / repeal. Mechanical.
+
+The web front end has no routes for any of it — `mcp.ts` is wired and `serve.ts` is not, so
+this surface is currently agent-only.
 
 ## Deliberately open
 
