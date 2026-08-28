@@ -383,6 +383,63 @@ record in the store is also the quietest. A pointer gives it something to fire o
 own right — "no pointer" is the requirement-side twin of `unknown`, and must not read as
 settled.
 
+### What the wiring is FOR: differential audit
+
+The payoff, and the reason a pointer is worth its cost. Without one, re-checking the
+standard is a sweep — every rule against the whole tree, which is the cost that makes an
+auditor agent unaffordable and its output noise. With one, an audit is provoked by what
+actually MOVED, and arrives with the chain already assembled:
+
+```
+test fails / test changes  ──pointer──▶  requirement possibly broken   + the backtrace
+code changes ─▶ doc stales ──pointer──▶  requirement possibly broken   + the backtrace
+```
+
+**The second path is the one nobody would have designed on purpose, and it is free.** Doc
+staleness is codemap's ORIGINAL machinery — witness hashes on the downstream gradient,
+shipped years before any of this. A doc is a compression of what is; a compression going
+stale is a cheap, high-level signal that something underneath it moved. The pointer just
+connects that existing detector upward. It is also the second reason to aim a pointer at a
+doc-describing-a-pattern rather than at an anchor: drift detection is already attached to it.
+
+**The backtrace is what makes the audit cheap**, and it is the same move as the population
+delta — convert *judgement* into *reading*. Not "requirement R may be broken, go and
+audit it" but "R points at this lint, whose hash moved in commit X, and here is the doc
+that covers the same code". An auditor that starts from an assembled chain is doing
+arithmetic; one that starts from a rule and a codebase is doing the perplexity evaluation
+COD-18 says no longer works.
+
+Both paths yield a **prior, never a verdict**, and that survives inspection: even a failing
+test only proves the *invariant* broke, and whether the *requirement* broke depends on
+whether the check faithfully encodes it. So `conformant` stays reachable only through a
+code-backed audit, in both directions.
+
+**The same wiring runs DOWNWARD, and that is what prices a proposal.** A ratified
+amendment means code that was conformant may not be any more — `requirement changes →
+pointer → code now suspect`. Upward, the mechanism populates the audit queue; downward, it
+tells a ratifier what their amendment is about to break, before they adopt it. One
+relation, both audiences.
+
+*Not built.* `diff.ts` already rolls changed symbols up to nodes, flows, reviews and bugs
+(`impact` at the end of `computeDiff`) — requirements are simply not among them, so the
+branch-diff surface is one rollup target away from being the audit trigger the subsystem
+otherwise lacks.
+
+### Differential audit has a blind spot, and the scrub is its complement
+
+A differential audit is cheap precisely because change drives it. The corollary is that a
+requirement whose pointers never move is **never audited** — and that is the *never fires →
+false calm* pathology promoted from an accident to a structural property.
+
+So the two mechanisms are not alternatives and neither is optional:
+
+- **Differential audit covers what moved.**
+- **The scrub covers what did not.**
+
+Which is the stronger argument for the scrub than vacuity-hygiene: without it the system is
+systematically blind exactly where nothing has changed for a long time, which is also where
+a quietly wrong rule has had the most time to matter.
+
 ### Pointers are scrubbed on a schedule, not trusted
 
 Vacuity is **silent corruption**. You do not find it by using the thing, because a vacuous
