@@ -294,7 +294,7 @@ Two properties fall out, and both are load-bearing:
   putting a finding in front of the team is a decision, and it re-records the finding as a
   fresh observation rather than rewriting a branch audit to claim it was something else.
 
-## Audit pointers — what makes the queue populate itself
+## Audit pointers — a prior on where to look, never a verdict
 
 *Designed, not built.* A **pointer** is a standing declaration that a requirement's
 conformance depends on some observable: a set of anchors, a test, a lint, a query, any
@@ -302,20 +302,56 @@ runnable check. When a pointer moves, the requirement rises in the audit queue.
 
 This generalises what already exists in pieces — `cites` (staleness means the code moved)
 and COD-18's `asserted_by` (staleness means the build is red) — into one relation whose
-question is *what would make this claim need re-checking*. It is what makes the audit queue
-**self-populating** rather than dependent on somebody remembering, and it is the answer to
-a residue already recorded above: an uncited requirement can raise neither *recheck-due*
-nor an assertion failure, so nothing ever fires on it and the highest-value record in the
-store is also the quietest. A pointer gives it something to fire on.
+question is *what would make this claim need re-checking*.
 
-Two things to design in rather than discover:
+### They make re-auditing cheaper; they do not replace auditing
 
-- **A requirement with no pointer can never rise**, so the absence has to be visible. "No
-  pointer" is the requirement-side twin of `unknown`, and must not read as settled.
-- **Vacuity applies here too.** A pointer at something that cannot change — a constant, a
-  test that passes by construction — is a pointer that never fires, and it manufactures
-  the same false calm as a vacuous assertion while looking like coverage. Whatever
-  demonstrates non-vacuity for an assertion has to demonstrate it for a pointer.
+A requirement whose pointers were checked recently and are quiet is **less likely** to be
+broken than one with no pointers at all. That is a prior, not a verdict, and the
+distinction is the whole discipline here:
+
+- **A pointer never changes the conformance state.** `conformant` stays reachable only
+  through a code-backed audit. What a pointer changes is **queue position**.
+- The temptation to resist is letting green pointers read as conformance. That is the
+  vacuity trap one level up — a cheap signal certifying — and it is exactly the trade the
+  audit's own evidence refusal already forbids.
+
+What this buys is the thing the queue needs at seeding scale, where nearly everything is
+`unknown`: **`unknown` stops being uniform.** A rule audited last week with three quiet
+pointers and a rule never audited with none are both honestly `unknown` — nobody has
+checked what is there right now — and they belong in very different places in the queue.
+Pointers are what make that difference legible without weakening the state.
+
+And the residue recorded above closes: an uncited requirement can raise neither
+*recheck-due* nor an assertion failure, so nothing ever fires on it and the highest-value
+record in the store is also the quietest. A pointer gives it something to fire on. But
+**a requirement with no pointer can never rise**, so the absence has to be visible in its
+own right — "no pointer" is the requirement-side twin of `unknown`, and must not read as
+settled.
+
+### Pointers are scrubbed on a schedule, not trusted
+
+Vacuity is **silent corruption**. You do not find it by using the thing, because a vacuous
+pointer looks fine every single time you look at it. You find it the way an array finds a
+bad block — by going and checking, on a schedule, across the whole population, rather than
+waiting for an access to stumble on it. The documentation-scrub agents are the same idea
+already running against a different corpus.
+
+Two symmetric pathologies, and both are visible in a pointer's own history:
+
+- **Never fires** → false calm. It looks like coverage and is not.
+- **Always fires** → cry-wolf. A pointer that goes off on every commit gets ignored, and
+  then so does the requirement behind it. This is the same reason the section guard is
+  case-and-whitespace rather than fuzzy.
+
+Both are a **rate**, which is derived rather than asserted — the same reason a gap's
+magnitude is a population and not an estimate.
+
+A scrub therefore needs a stated **rate and coverage period**, the way an array does: some
+share of the population per period, so everything is covered every *T*. Without one it is
+"whenever somebody remembers", which is the thing the whole mechanism exists to replace,
+and its cost is unbudgeted — which is the principal-time failure recorded below arriving
+from a third direction.
 
 ## Backout is two problems, and only one of them is ours
 
