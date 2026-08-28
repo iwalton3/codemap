@@ -615,7 +615,7 @@ export const graphProjection: Projection<Map<string, SharedWiring>> = {
  * front-end (`src/ops-reach.test.ts`). This is not an op.
  */
 /**
- * A universe's whole standard, into the eight canonical tables.
+ * A universe's whole standard, into the nine canonical tables.
  *
  * One projection rather than six, because it folds from one scope: the kinds
  * cross-reference each other (a problem closes on an audit or on a ratified spec) and a
@@ -627,7 +627,7 @@ export const graphProjection: Projection<Map<string, SharedWiring>> = {
  */
 export const standardProjection: Projection<SharedStandard> = {
   write(d: DatabaseSync, scope: string, value: SharedStandard): void {
-    for (const t of ["specs", "operations", "requirements", "criteria", "vacuity_checks", "acknowledgements", "audits", "problems"]) {
+    for (const t of ["specs", "operations", "requirements", "criteria", "vacuity_checks", "pointers", "acknowledgements", "audits", "problems"]) {
       d.prepare(`DELETE FROM ${t} WHERE source_scope = ?`).run(scope);
     }
     const spec = d.prepare("INSERT INTO specs(id,status,title,created_at,ratified_at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?)");
@@ -649,6 +649,10 @@ export const standardProjection: Projection<SharedStandard> = {
     const vac = d.prepare("INSERT INTO vacuity_checks(id,criterion_id,verdict,at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?)");
     for (const v of value.vacuityChecks) {
       vac.run(v.id, v.criterionId, v.verdict, v.at, "sync", scope, JSON.stringify(v));
+    }
+    const ptr = d.prepare("INSERT INTO pointers(id,requirement_id,target_kind,target_id,state,declared_at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?,?)");
+    for (const p of value.pointers) {
+      ptr.run(p.id, p.requirementId, p.target.kind, p.target.id, p.state, p.declaredAt, "sync", scope, JSON.stringify(p));
     }
     const ack = d.prepare("INSERT INTO acknowledgements(id,basis,state,operation_id,requirement_id,priority,revalidate_by,granted_at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?,?,?,?)");
     for (const a of value.acknowledgements) {
@@ -674,7 +678,7 @@ export const standardProjection: Projection<SharedStandard> = {
         });
     return {
       specs: all("specs"), operations: all("operations"), requirements: all("requirements"),
-      criteria: all("criteria"), vacuityChecks: all("vacuity_checks"),
+      criteria: all("criteria"), vacuityChecks: all("vacuity_checks"), pointers: all("pointers"),
       acknowledgements: all("acknowledgements"), audits: all("audits"), problems: all("problems"),
     };
   },

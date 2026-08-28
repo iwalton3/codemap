@@ -94,6 +94,23 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     publish: ["src/audits.ts", /e\.ran\?\.some\(\(r\) => r\.passed && !!r\.command\?\.trim\(\)\)/],
   },
   {
+    // A pointer nobody can evaluate. The rationale is the only thing a later reader has to
+    // judge a pointer BY — codemap cannot tell a well-aimed address from a laundered one —
+    // so an empty one is the vacuity problem arriving at the record whose whole job is to
+    // make auditing cheaper.
+    what: "a pointer with no rationale",
+    fold: ["src/shared-standard.ts", /if \(!p\.rationale\?\.trim\(\)\) break;/],
+    publish: ["src/pointers.ts", /const rationale = input\.rationale\?\.trim\(\);/],
+  },
+  {
+    // Retiring a pointer is a rule losing what watches it. It cannot silence a conformance
+    // state — which is why it is open to any actor — but an unexplained one leaves the rule
+    // unwatched with nothing on the record saying why, and unwatched must not read as calm.
+    what: "a pointer retired with no reason",
+    fold: ["src/shared-standard.ts", /if \(!reason\?\.trim\(\)\) break;/],
+    publish: ["src/pointers.ts", /retiring a pointer needs a reason/],
+  },
+  {
     // The evidence gate on a vacuity demonstration. `demonstrated` is the SILENCING
     // direction — it is what lets an audit lean on a check — so a demonstration recording
     // no method is the vacuous claim wearing the shape of evidence. Registered here from

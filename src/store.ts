@@ -40,7 +40,7 @@ import {
   type CoverageRule, type CoverageStore, type AnalyzerConfig, type Review, type ReviewStore, type Triage, type TriageStore,
   type BugWitness, type Importance, type Complexity, type TriageSource,
   type Requirement, type RequirementStore, type Spec, type Operation, type Acknowledgement, type Audit, type Problem,
-  type AcceptanceCriterion, type VacuityCheck, type EvidenceKind,
+  type AcceptanceCriterion, type VacuityCheck, type EvidenceKind, type Pointer,
   SCHEMA_VERSION, ANCHOR_SCHEME, HASH_SCHEME,
 } from "./schema.js";
 
@@ -466,6 +466,25 @@ export function workHas(root: string, ids: string[]): Set<string> {
     const chunk = ids.slice(i, i + 400);
     const q = `SELECT id FROM anchors WHERE ref = ? AND id IN (${chunk.map(() => "?").join(",")})`;
     for (const r of d.prepare(q).all(WORK_REF, ...chunk) as unknown as { id: string }[]) out.add(r.id);
+  }
+  return out;
+}
+
+/**
+ * The files `@work` holds these anchors in — membership plus the one field a caller
+ * usually wants next, without materializing every anchor to get it.
+ *
+ * Exists because `ServedPointer.rank` asks "is this anchor in a `[tests]` path" once per
+ * pointer, and answering it by loading the whole anchor store made an audit queue O(n)
+ * full scans.
+ */
+export function workFiles(root: string, ids: string[]): Map<string, string> {
+  const d = requireIndex(root);
+  const out = new Map<string, string>();
+  for (let i = 0; i < ids.length; i += 400) {
+    const chunk = ids.slice(i, i + 400);
+    const q = `SELECT id, file FROM anchors WHERE ref = ? AND id IN (${chunk.map(() => "?").join(",")})`;
+    for (const r of d.prepare(q).all(WORK_REF, ...chunk) as unknown as { id: string; file: string }[]) out.set(r.id, r.file);
   }
   return out;
 }
@@ -2370,6 +2389,48 @@ export async function writeLocalVacuityCheck(root: string, v: VacuityCheck): Pro
     "INSERT OR REPLACE INTO vacuity_checks(id,criterion_id,verdict,at,origin,source_scope,body)"
     + " VALUES(?,?,?,?,?,?,?)",
   ).run(v.id, v.criterionId, v.verdict, v.at, v.origin ?? null, null, JSON.stringify(v));
+}
+
+const hydratePointer = (body: string, origin: string | null): Pointer | null => {
+  try {
+    const p = JSON.parse(body) as Pointer;
+    return origin ? { ...p, origin } : p;
+  } catch { return null; }
+};
+
+export async function readPointers(
+  root: string,
+  opts: { requirementId?: string; state?: Pointer["state"]; target?: { kind: string; id: string } } = {},
+): Promise<Pointer[]> {
+  const clauses: string[] = [];
+  const args: string[] = [];
+  if (opts.requirementId) { clauses.push("requirement_id = ?"); args.push(opts.requirementId); }
+  if (opts.state) { clauses.push("state = ?"); args.push(opts.state); }
+  if (opts.target) { clauses.push("target_kind = ? AND target_id = ?"); args.push(opts.target.kind, opts.target.id); }
+  const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+  const rows = db(root).prepare(
+    `SELECT body, origin FROM pointers${where} ORDER BY declared_at, id`,
+  ).all(...args as []) as unknown as { body: string; origin: string | null }[];
+  const out: Pointer[] = [];
+  for (const r of rows) { const p = hydratePointer(r.body, r.origin); if (p) out.push(p); }
+  return out;
+}
+
+export async function readPointer(root: string, id: string): Promise<Pointer | null> {
+  const row = db(root).prepare("SELECT body, origin FROM pointers WHERE id = ?")
+    .get(id) as { body: string; origin: string | null } | undefined;
+  return row ? hydratePointer(row.body, row.origin) : null;
+}
+
+export async function writeLocalPointer(root: string, p: Pointer): Promise<void> {
+  const d = db(root);
+  const owner = d.prepare("SELECT source_scope FROM pointers WHERE id = ? AND source_scope IS NOT NULL")
+    .get(p.id) as { source_scope: string } | undefined;
+  if (owner) throw new Error(`${p.id} is owned by the sidecar fold (${owner.source_scope}) — write an event, not a row.`);
+  d.prepare(
+    "INSERT OR REPLACE INTO pointers(id,requirement_id,target_kind,target_id,state,declared_at,origin,source_scope,body)"
+    + " VALUES(?,?,?,?,?,?,?,?,?)",
+  ).run(p.id, p.requirementId, p.target.kind, p.target.id, p.state, p.declaredAt, p.origin ?? null, null, JSON.stringify(p));
 }
 
 const hydrateProblem = (body: string, origin: string | null): Problem | null => {

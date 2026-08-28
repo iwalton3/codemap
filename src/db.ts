@@ -766,6 +766,30 @@ function migrate(d: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS ix_vac_crit ON vacuity_checks(criterion_id, at);
     CREATE INDEX IF NOT EXISTS ix_vac_scope ON vacuity_checks(source_scope);
 
+    -- Pointers: WHERE an auditor looks. Never a verdict -- a pointer changes queue
+    -- position and can never reach the conformance state, which is why declaring one is
+    -- open to any actor while an acceptance criterion is not.
+    --
+    -- No "fired" column. Whether a pointer is firing is derived at read time from its
+    -- witnesses against live hashes, the way recheck-due is -- a stored one is a field,
+    -- and a field is something a writer can satisfy.
+    CREATE TABLE IF NOT EXISTS pointers (
+      id TEXT NOT NULL,
+      requirement_id TEXT NOT NULL,
+      target_kind TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      state TEXT NOT NULL,
+      declared_at TEXT NOT NULL,
+      origin TEXT, source_scope TEXT,
+      body TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ix_ptr_identity ON pointers(id);
+    -- "what is watching this rule" is the hot read, and it is per requirement by state.
+    CREATE INDEX IF NOT EXISTS ix_ptr_req ON pointers(requirement_id, state);
+    -- And the reverse: "this doc just went stale -- what rules were watching it".
+    CREATE INDEX IF NOT EXISTS ix_ptr_target ON pointers(target_kind, target_id, state);
+    CREATE INDEX IF NOT EXISTS ix_ptr_scope ON pointers(source_scope);
+
     -- Audits. Recorded whether or not anything was found: a positive audit is the only
     -- thing that can close a gap (which has no code to witness) or make a later failure a
     -- regression rather than a gap that was always there.

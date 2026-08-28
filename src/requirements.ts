@@ -32,13 +32,13 @@
 import { randomBytes } from "node:crypto";
 import type {
   AcceptanceCriterion, Acknowledgement, Actor, BugWitness, EvidenceKind, Operation, OperationKind,
-  Requirement, Reversibility, Spec,
+  Pointer, Requirement, Reversibility, Spec,
 } from "./schema.js";
 import { criterionIdFor, EVIDENCE_KINDS, requirementIdFor } from "./schema.js";
 import {
   readAcknowledgements, readOperations, readRequirement, readRequirements, readSpec, readSpecs,
-  requirementSectionCounts, workHas, writeLocalCriterion, writeLocalOperation, writeLocalRequirement,
-  writeLocalSpec,
+  readPointers, requirementSectionCounts, workHas, writeLocalCriterion, writeLocalOperation,
+  writeLocalRequirement, writeLocalSpec,
 } from "./store.js";
 import { liveHashes, witnessDrift, realDrift } from "./reviews.js";
 import { ABSENT_HASH } from "./normalize.js";
@@ -694,6 +694,16 @@ export interface RenderedOperation {
    * rule is not approving the classification, and it was impossible to tell them apart.
    */
   silencedBy: Acknowledgement[];
+  /**
+   * What is watching the rule this operation changes — the DOWNWARD half of the pointer
+   * relation, and the reason it is one relation and not two.
+   *
+   * Upward it populates the audit queue; downward it prices a proposal. A ratified
+   * amendment means code that was conformant may not be any more, and the person deciding
+   * is the one who cannot otherwise see how much is pointed at the rule they are about to
+   * move. Absent for `add_requirement`, which has no rule to be watching yet.
+   */
+  watchedBy: Pointer[];
 }
 
 /**
@@ -721,6 +731,7 @@ export async function getSpec(
       ...(op.kind === "retire_requirement" ? {} : { after: op.statement }),
       contextMoved,
       silencedBy: await readAcknowledgements(root, { operationId: op.id, state: "active" }),
+      watchedBy: target ? await readPointers(root, { requirementId: target.id, state: "active" }) : [],
     });
   }
   return {

@@ -429,9 +429,9 @@ rule, and the distinction is worth keeping: a guard is a rule about what a WRITE
 so it has to bind the fold as well; a scope status is this machine's verdict on its own log
 shards, and has no other end to bind.
 
-## Audit pointers — a prior on where to look, never a verdict
+## Audit pointers — a prior on where to look, never a verdict — BUILT
 
-*Designed, not built.* A **pointer** is a standing declaration that a requirement's
+`pointers.ts`. A **pointer** is a standing declaration that a requirement's
 conformance depends on some observable: a set of anchors, a test, a lint, a query, any
 runnable check. When a pointer moves, the requirement rises in the audit queue.
 
@@ -543,11 +543,32 @@ is deliberate: `ServedRequirement.recheckDue` and `ServedAudit.superseded` answe
 shape of question **against the working tree**, and a diff of two cached commits must not
 depend on what is checked out — the same constraint `loadNodesAt` exists for.
 
-*Still not built:* the DOWNWARD direction above (a ratified amendment pricing what it
-breaks) needs pointers, and the rollup reaches only rules that CITE something. An uncited
-requirement is a well-formed record — the rule the code does not yet satisfy — and no
-set-op over anchors can find it. That hole is exactly what pointers fill, and it is pinned
-in `diff.test.ts` rather than left as a comment.
+**And the residue is closed.** `impact.requirements[].pointersFired` raises a rule through
+what WATCHES it, so a requirement that cites nothing and asserts nothing — the highest-value
+record in the store, and previously the quietest — is reachable at last. The DOWNWARD
+direction is `RenderedOperation.watchedBy`: a ratifier sees what is currently pointed at the
+rule an operation moves, which is the half a proposal is priced by.
+
+### What is built, and the three decisions inside it
+
+- **Two target kinds, three rungs.** `node` and `anchor` are the kinds; `rank` DERIVES the
+  third — a `check` is an anchor in a `[tests]` path, which is why tests are indexed at all
+  (`docs/population-predicate.md`). Asking a writer to declare the rung would make the
+  ladder a field somebody can satisfy.
+- **Open to any actor, unlike an acceptance criterion.** A criterion can NARROW what
+  discharges a rule, which is silencing and therefore ratified; a pointer cannot reach the
+  conformance state at all, so the gate would protect nothing. The defence against a rule
+  quietly having nothing watching it is visibility, not a gate — `auditQueue().unwatched`.
+- **An anchor target is flagged, never refused**, and where a doc already cites that anchor
+  the reply names it. Nothing here can know whether a higher rung existed, so this is advice
+  rather than a rule; what it must not do is stay silent, because the map's own primitive is
+  an anchor citation and the instinct runs the wrong way.
+
+*Not built:* the **scrub**, which is what makes a pointer's firing RATE legible. Re-baselining
+is an explicit act (`restatePointer`) rather than something `recordAudit` implies — folding it
+in would make one act silently emit N others, each needing its own honest actor and causal
+position, and the cost of the split is that a pointer nobody restates fires for ever. That is
+the `always fires` pathology, and it is the scrub's job.
 
 ### Differential audit has a blind spot, and the scrub is its complement
 
@@ -674,6 +695,7 @@ MCP surface via `ops/standard.ts`:
 - `criteria.ts` — the acceptance criterion (falsifier, evidence kind, `assertedBy`) and the
   `VacuityCheck` that keeps it honest.
 - `ops/standard.ts`'s `served()` — the non-authoritative marker on every read.
+- `pointers.ts` — where to look, the derived ladder, and the audit queue.
 
 **Adjudication and closure are separate events**, which was not obvious until it was
 built. Naming which side moves does not move it, so a problem stays open until the named
@@ -685,8 +707,8 @@ to catch, so it is reported (`settledWithoutAdjudication`) instead of tidied awa
 Not built, roughly in the order they are worth building — `docs/population-predicate.md`
 carries the detail and the reasoning:
 
-- **Audit pointers**, and then the **scrub**, which is their necessary counterweight rather
-  than hygiene: differential audit covers what moved and only a scrub covers what did not.
+- **The scrub** — pointers' necessary counterweight rather than hygiene: differential audit
+  covers what moved and only a scrub covers what did not.
 - **The population predicate**, which is a hash-pinned lint. Narrowing a population is a
   laundering door and has to be gated like an amendment.
 - Section move/rename operations, and spec withdrawal / repeal. Mechanical.

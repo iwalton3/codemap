@@ -20,7 +20,8 @@ import { standardProjection } from "./shared-projections.js";
 import {
   foldStandard, standardScope, publishSpecDrafted, publishOperation, publishSpecRatified,
   publishAckGranted, publishAckReleased, publishAudit, publishProblemRaised, publishAdjudication,
-  publishVacuityCheck, emptyStandard,
+  publishVacuityCheck, publishPointerDeclared, publishPointerRestated, publishPointerRetired,
+  emptyStandard,
 } from "./shared-standard.js";
 import { criterionIdFor, requirementIdFor, type Acknowledgement, type Actor, type Audit, type Operation, type Problem, type Spec } from "./schema.js";
 
@@ -526,5 +527,68 @@ test("the fold drops a `demonstrated` vacuity check that records no method", asy
     // A verdict this build does not model is dropped rather than folded as something else.
     await publishVacuityCheck(root, SCOPE, opus, { ...base, id: "vc_4", verdict: "fine" as never, method: "x" });
     assert.deepEqual((await fold(root)).vacuityChecks.map((v) => v.id), ["vc_2", "vc_3"]);
+  } finally { discard(root); }
+});
+
+const PTR = {
+  id: "pt_1", requirementId: "r_x", target: { kind: "node" as const, id: "n_credit" },
+  rationale: "the doc describing the pattern",
+  witnesses: [{ anchorId: "a_credit", bodyHash: "h1:sha256:abc" }],
+  state: "active" as const, declaredBy: opus, declaredAt: "2026-08-11T00:00:00.000Z",
+};
+
+/**
+ * Pointers ARE acts, unlike requirements and criteria — somebody decided where to look,
+ * so there is an honest actor and an honest causal position and they enter the log
+ * directly rather than being derived by replaying operations.
+ */
+test("a pointer folds through its three acts, and the guards bind at this end too", async () => {
+  const root = await log("pointer");
+  try {
+    await publishPointerDeclared(root, SCOPE, opus, PTR);
+    let p = (await fold(root)).pointers;
+    assert.equal(p.length, 1);
+    assert.equal(p[0]!.state, "active");
+    assert.equal(p[0]!.origin, "sync");
+
+    await publishPointerRestated(root, SCOPE, izzie, "pt_1", "2026-08-12T00:00:00.000Z",
+      [{ anchorId: "a_credit", bodyHash: "h1:sha256:NEW" }]);
+    p = (await fold(root)).pointers;
+    assert.deepEqual(p[0]!.witnesses, [{ anchorId: "a_credit", bodyHash: "h1:sha256:NEW" }]);
+    assert.equal(p[0]!.restatedBy?.principal, izzie.principal);
+
+    // A retirement with no reason is a rule quietly losing what watches it, which is how a
+    // standard comes to look settled. Refused in the tool AND here — the tool binds only
+    // writers who ask, and this subsystem has shipped the one-end version four times.
+    await publishPointerRetired(root, SCOPE, opus, "pt_1", "2026-08-13T00:00:00.000Z", "  ");
+    assert.equal((await fold(root)).pointers[0]!.state, "active", "still watching");
+
+    await publishPointerRetired(root, SCOPE, opus, "pt_1", "2026-08-13T00:00:00.000Z", "the doc was folded away");
+    p = (await fold(root)).pointers;
+    assert.equal(p[0]!.state, "retired");
+    assert.equal(p[0]!.retiredReason, "the doc was folded away");
+  } finally { discard(root); }
+});
+
+test("the fold refuses a pointer nobody can evaluate, and one that arrives pre-retired", async () => {
+  const root = await log("pointer-guards");
+  try {
+    await publishPointerDeclared(root, SCOPE, opus, { ...PTR, id: "pt_mute", rationale: "   " });
+    assert.deepEqual((await fold(root)).pointers.map((x) => x.id), [], "no rationale, nothing to judge");
+
+    await publishPointerDeclared(root, SCOPE, opus, { ...PTR, id: "pt_bad", target: { kind: "spec" as never, id: "x" } });
+    assert.deepEqual((await fold(root)).pointers.map((x) => x.id), [], "a target kind this build does not model");
+
+    // A `declared` event carrying retirement fields would fold to a pointer that never
+    // watched anything and cannot be retired again — the partial-strip shape that let
+    // `problem.raised` name a decider who never decided.
+    await publishPointerDeclared(root, SCOPE, opus, {
+      ...PTR, id: "pt_sneaky", state: "retired" as never,
+      retiredBy: opus, retiredAt: "2026-08-01T00:00:00.000Z", retiredReason: "pre-retired",
+    });
+    const p = (await fold(root)).pointers;
+    assert.deepEqual(p.map((x) => x.id), ["pt_sneaky"]);
+    assert.equal(p[0]!.state, "active", "declaring is declaring, whatever the payload said");
+    assert.equal(p[0]!.retiredReason, undefined, "and every retirement field is stripped, not just the state");
   } finally { discard(root); }
 });

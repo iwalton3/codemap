@@ -2751,9 +2751,11 @@ class DiffPage extends Component {
         ${when(rq.removed, () => html`<span class="bchip changed" title="a cited symbol is gone in this diff — the rule's subject left the tree">subject removed</span>`)}
         ${when(rq.auditMoved, () => html`<span class="bchip poss" title="the last audit's witnesses moved in this diff — its verdict was reached against source this change rewrites">witnesses moved</span>`)}
         ${when((rq.assertionsMoved || []).length, () => html`<span class="bchip changed" title="the check that asserts this rule was rewritten by this diff — the detector moved, not just the code it guards">assertion moved</span>`)}
+        ${when((rq.pointersFired || []).length, () => html`<span class="bchip poss" title="something this rule watches moved in this diff — a prior on where to look, never a verdict">pointer fired</span>`)}
         <span class="bchip">${verdict}</span>
       </div>
       ${each(rq.assertionsMoved || [], ac => html`<div class="dstep"><span class="stn">⚑ ${ac.criterion}</span> <span class="dim">${ac.evidenceKind}</span></div>`, ac => ac.id)}
+      ${each(rq.pointersFired || [], pt => html`<div class="dstep"><span class="stn">▸ ${pt.via}</span> <span class="dim">${pt.rank} · ${pt.rationale}</span></div>`, pt => pt.id)}
       <div class="chips">${each(rq.anchors, aid => { const b = bi.get(aid); const s = this.state.sel && this.state.sel.id === aid; return html`<span class="chip mini ${s ? 'sel' : ''}" on-click="${() => this.openCodeById(aid)}">${b ? b.symbol : aid.slice(0, 10)}</span>`; }, aid => aid)}</div>
     </div>`;
   }

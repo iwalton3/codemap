@@ -1215,7 +1215,7 @@ const tools: Tool[] = [
   },
   {
     name: "spec",
-    description: "A proposal against the standard, rendered per operation as what the rule says now and what it would say — plus `adoptable`, which is false when any operation's context has moved since it was written. Read `silencedBy` before adopting: a gap acknowledgement raised against an operation binds the moment the spec is ratified, so the rule arrives classified `gap` rather than `unknown`. Approving the rule is not approving that classification.",
+    description: "A proposal against the standard, rendered per operation as what the rule says now and what it would say — plus `adoptable`, which is false when any operation's context has moved since it was written. Read `watchedBy` too: it is what is currently watching the rule an operation moves, and a ratified amendment means code that was conformant may not be any more — the person deciding is the one who cannot otherwise see how much is pointed at the rule they are about to change. Read `silencedBy` before adopting: a gap acknowledgement raised against an operation binds the moment the spec is ratified, so the rule arrives classified `gap` rather than `unknown`. Approving the rule is not approving that classification.",
     inputSchema: obj({ specId: { type: "string" } }, ["specId"]),
     handler: (a, c) => ops.getSpec(c.universe.path, a),
   },
@@ -1236,6 +1236,18 @@ const tools: Tool[] = [
     description: "The criteria nobody can currently lean on, in five buckets kept apart because the remedy differs. `unchecked` — has a check, nobody has tried to break it. `vacuous` — somebody tried and it cannot fail. `wrongLayer` — it fails, but somewhere that cannot observe the violation (a Validate-only test on a handler bug is green paint). `unasserted` — no check at all, which is a rule waiting for one rather than a defect. `moved` — the assertion's code changed, so every verdict about it is about code that is gone. Carries `scope` when the answer is not authoritative — see `standard_status`.",
     inputSchema: obj({}),
     handler: (_a, c) => ops.weakAssertions(c.universe.path),
+  },
+  {
+    name: "pointers",
+    description: "What is watching a rule — WHERE an auditor goes to decide whether it still holds.\n\nDistinct from the acceptance criterion beside it: the criterion says WHAT would discharge the rule and HOW it would be refuted, a pointer says the ADDRESS. `moved` means the watched code has changed since the baseline — the pointer is FIRING, which raises the rule in the queue and never touches its conformance.\n\n`rank` is the abstraction ladder, derived rather than declared. `check` (a test or lint) covers a whole population and survives any single site changing; `pattern` (a doc) covers everything the pattern governs and survives refactors within it; `symbol` (one anchor) is the LAST RESORT — it covers one symbol and a rename mints a new id, so it goes quiet exactly when the code it governs is edited.",
+    inputSchema: obj({ requirementId: { type: "string" } }, ["requirementId"]),
+    handler: (a, c) => ops.pointersFor(c.universe.path, a),
+  },
+  {
+    name: "audit_queue",
+    description: "What to audit next, ordered by what actually MOVED. This is the payoff of the whole relation: without it, re-checking the standard is a sweep of every rule against the whole tree, which is the cost that makes an auditor agent unaffordable and its output noise.\n\n`firing` — rules whose watched address changed, each with the pointers that fired, so the audit starts from an assembled backtrace rather than from a rule and a codebase. `unwatched` — rules with NO pointer, which matters just as much: a rule with nothing watching it can never rise, so its silence must not read as calm. It is the requirement-side twin of `unknown`. `broken` — pointers whose address no longer resolves; those fire never, which also reads as coverage.\n\nA firing pointer is a PRIOR, never a verdict. Even a failing test proves only that the invariant broke; whether the RULE broke depends on whether the check faithfully encodes it, so `conformant` still needs a code-backed audit.",
+    inputSchema: obj({}),
+    handler: (_a, c) => ops.auditQueue(c.universe.path),
   },
   {
     name: "acknowledgements",
@@ -1290,6 +1302,43 @@ const tools: Tool[] = [
     }, ["specId", "kind", "rationale", "reversibility"]),
     mutates: true,
     handler: (a, c) => ops.addOperation(c.universe.path, a as never),
+  },
+  {
+    name: "declare_pointer",
+    description: "Declare where an auditor should look for a rule. Open to any actor — a pointer cannot reach the conformance state, so there is nothing here to silence; what it changes is queue position.\n\nAIM AS HIGH UP THE ABSTRACTION LADDER AS YOU CAN REACH, which cuts against the instinct because this map's own primitive is a citation to an anchor. A lint covers a population; a doc describing a pattern covers everything the pattern governs and already has drift detection attached; an anchor covers one symbol and survives almost nothing. An anchor target is accepted and FLAGGED, never refused — and where a doc already cites it, the reply names that doc, because it is the better pointer.\n\nTwo target kinds only. A check is not a third: it is an anchor in a `[tests]` path, and `rank` derives that.",
+    inputSchema: obj({
+      requirementId: { type: "string" },
+      targetKind: { type: "string", enum: ["node", "anchor"], description: "`node` is a doc (prefer it); `anchor` is one symbol, the last resort." },
+      targetId: { type: "string" },
+      rationale: { type: "string", description: "Why this address is the one to watch. A pointer nobody can evaluate is the vacuity problem arriving at the record that exists to make auditing cheaper." },
+      model: { type: "string", description: "YOUR model id. Never guess it." },
+      harness: { type: "string" },
+    }, ["requirementId", "targetKind", "targetId", "rationale"]),
+    mutates: true,
+    handler: (a, c) => ops.declarePointer(c.universe.path, a as never),
+  },
+  {
+    name: "restate_pointer",
+    description: "Re-baseline a pointer: somebody looked, and this is the new quiet. Call it after auditing a rule whose pointers fired — otherwise they keep firing on the same movement for ever, which is the `always fires` pathology that gets a pointer ignored, and then the rule behind it.",
+    inputSchema: obj({
+      id: { type: "string" },
+      model: { type: "string", description: "YOUR model id. Never guess it." },
+      harness: { type: "string" },
+    }, ["id"]),
+    mutates: true,
+    handler: (a, c) => ops.restatePointer(c.universe.path, a as never),
+  },
+  {
+    name: "retire_pointer",
+    description: "Stop watching an address. RETIRED, never deleted — a pointer's own history is where its firing rate is read, and deleting it destroys the evidence that it was vacuous. Needs a reason: a rule quietly losing what watches it is how a standard comes to look settled.",
+    inputSchema: obj({
+      id: { type: "string" },
+      reason: { type: "string" },
+      model: { type: "string", description: "YOUR model id. Never guess it." },
+      harness: { type: "string" },
+    }, ["id", "reason"]),
+    mutates: true,
+    handler: (a, c) => ops.retirePointer(c.universe.path, a as never),
   },
   {
     name: "record_vacuity_check",

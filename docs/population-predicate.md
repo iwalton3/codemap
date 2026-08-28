@@ -228,10 +228,10 @@ does not wait on the rest.
      what one auditor did once, after the fact, where an evidence kind is a standing
      declaration made at drafting.
 
-2. **The pointer relation** — WHERE an auditor looks, distinct from the criterion's what and
-   how. Aims as high up the abstraction ladder as it can reach; an anchor is the last
-   resort. Then extend step 0's rollup to reach requirements through pointers, which is
-   what makes the second differential path (`code → doc stales → pointer`) light up.
+2. ~~**The pointer relation.**~~ **BUILT** — `pointers.ts`, and the rollup reaches through
+   them (`impact.requirements[].pointersFired`), so the second differential path
+   (`code → doc stales → pointer`) is lit. The rung is DERIVED, not declared: a `check` is
+   an anchor in a `[tests]` path, which is what the `[tests]` bin was for.
 
 3. **The pin, the delta rendering, and the gating split.** Hash the lint; render a change as
    a POPULATION DELTA rather than two diffed selectors; leave re-pinning open for queue

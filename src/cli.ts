@@ -641,6 +641,9 @@ async function cmdDiff(root: string, base: string, head?: string): Promise<void>
       // The detector itself moved in this diff — louder than the subject moving, because
       // the thing that would have caught a regression is what got rewritten.
       for (const ac of rq.assertionsMoved) console.log(`    ⚑ assertion moved (${ac.evidenceKind}): ${ac.criterion}`);
+      // The backtrace, which is what makes the audit cheap: not "go and look at rule R"
+      // but "R watches this, and this is what moved under it".
+      for (const pt of rq.pointersFired) console.log(`    ▸ pointer fired (${pt.rank}) → ${pt.via}: ${pt.rationale}`);
     }
   }
 }

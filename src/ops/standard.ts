@@ -47,6 +47,10 @@ import {
   recordVacuityCheck as recordVacuityCheckRec, weakAssertions as weakRec,
   criteriaSummary as criteriaSummaryRec,
 } from "../criteria.js";
+import {
+  declarePointer as declarePointerRec, restatePointer as restatePointerRec,
+  retirePointer as retirePointerRec, pointersFor as pointersForRec, auditQueue as auditQueueRec,
+} from "../pointers.js";
 import { standardScopeWarning, type StandardScope } from "../standard-publish.js";
 import type {
   AcknowledgementPriority, AuditEvidence, AuditOutcome, EvidenceKind, OperationKind,
@@ -220,6 +224,24 @@ export const recordVacuityCheck = (
   root: string,
   input: { criterionId: string; verdict: VacuityCheck["verdict"]; method?: string } & ActorInput,
 ) => recordVacuityCheckRec(root, input);
+
+// --- pointers -----------------------------------------------------------------
+
+export const declarePointer = (
+  root: string,
+  input: { requirementId: string; targetKind: "node" | "anchor"; targetId: string; rationale: string } & ActorInput,
+) => declarePointerRec(root, input);
+
+export const restatePointer = (root: string, input: { id: string } & ActorInput) =>
+  restatePointerRec(root, input);
+
+export const retirePointer = (root: string, input: { id: string; reason: string } & ActorInput) =>
+  retirePointerRec(root, input);
+
+export const pointersFor = async (root: string, input: { requirementId: string }) =>
+  served(root, async () => ({ pointers: await pointersForRec(root, input.requirementId) }));
+
+export const auditQueue = async (root: string) => served(root, () => auditQueueRec(root));
 
 export const auditsFor = async (root: string, input: { requirementId: string }) =>
   served(root, async () => ({ audits: await auditsForRec(root, input.requirementId) }));

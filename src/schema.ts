@@ -1422,6 +1422,72 @@ export function criterionIdFor(operationId: string): string {
 }
 
 /**
+ * WHERE an auditor should look to decide whether a rule still holds.
+ *
+ * Distinct from the acceptance criterion beside it, and conflating them is easy because
+ * both sit at the same seam: the criterion states WHAT would discharge the rule and HOW it
+ * would be refuted; the pointer is the ADDRESS. One criterion can be watched from several
+ * pointers, and one pointer can serve several rules.
+ *
+ * **A pointer never changes the conformance state — it changes queue position.** That is
+ * the whole discipline: `conformant` stays reachable only through a code-backed audit, in
+ * both directions, because even a failing test proves the *invariant* broke and whether
+ * the *requirement* broke depends on whether the check faithfully encodes it. Letting
+ * green pointers read as conformance is the vacuity trap one level up — a cheap signal
+ * certifying — and it is the trade `recordAudit`'s evidence refusal already forbids.
+ *
+ * What it buys is the thing the queue needs at seeding scale, where nearly everything is
+ * `unknown`: **`unknown` stops being uniform.** A rule audited last week with three quiet
+ * pointers and a rule never audited with none are both honestly unknown, and they belong
+ * in very different places in the queue.
+ *
+ * Because it cannot silence anything, declaring one is open to any actor — unlike an
+ * acceptance criterion, which can NARROW what discharges a rule and therefore goes through
+ * a ratification. The defence against a rule quietly having nothing watching it is not a
+ * gate but visibility: **a requirement with no pointer can never rise**, so "unwatched" is
+ * the requirement-side twin of `unknown` and must not read as settled.
+ */
+export interface Pointer {
+  id: string;
+  requirementId: string;
+  /**
+   * The observable. **Aim as HIGH up the abstraction ladder as it reaches** — a lint
+   * covers a population and survives any single site changing, a doc-of-a-pattern covers
+   * everything the pattern governs and survives refactors within it, and one anchor covers
+   * one symbol and survives almost nothing, because a rename mints a new id.
+   *
+   * So an anchor is the LAST RESORT rather than the default, which cuts against the
+   * instinct: the map's own primitive is a citation to an anchor, and reaching for one here
+   * produces a pointer that goes quiet exactly when the code it governs is edited.
+   *
+   * Only two kinds, because the third rung is not a separate kind — a check is an anchor in
+   * a `[tests]` path, and `ServedPointer.rank` derives that rather than asking a writer to
+   * declare it. That is also why tests are indexed at all (`docs/population-predicate.md`).
+   */
+  target: { kind: "node" | "anchor"; id: string };
+  /** Why this address is the one to watch — the reasoning a later reader has to judge. */
+  rationale: string;
+  /**
+   * Hashes of what it watches, at declaration: the anchor itself, or a doc's citations.
+   *
+   * A mismatch is the pointer FIRING. One mechanism for both kinds, deliberately — the
+   * `code changes → doc stales → pointer` path is not special-cased, because a doc going
+   * stale IS its cited anchors moving, observed from the other side.
+   */
+  witnesses: BugWitness[];
+  state: "active" | "retired";
+  declaredBy: Actor;
+  declaredAt: string;
+  /** Re-baselined by `restatePointer` — somebody looked, so this is the new quiet. */
+  restatedBy?: Actor;
+  restatedAt?: string;
+  retiredBy?: Actor;
+  retiredAt?: string;
+  retiredReason?: string;
+  origin?: string;
+}
+
+/**
  * Somebody tried to make a criterion's assertion fail, and reports what happened.
  *
  * A RECORD rather than a field on the criterion, and that is the load-bearing choice.

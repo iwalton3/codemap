@@ -17,7 +17,9 @@
  *                                     here fabricates causality that no clone can see.
  */
 
-import type { Acknowledgement, Actor, Audit, BugWitness, Operation, Problem, Spec, VacuityCheck } from "./schema.js";
+import type {
+  Acknowledgement, Actor, Audit, BugWitness, Operation, Pointer, Problem, Spec, VacuityCheck,
+} from "./schema.js";
 import type { ScopeDiagnostic } from "./eventlog.js";
 import { resolveSidecar, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
 import { requireActor } from "./identity.js";
@@ -27,7 +29,7 @@ import { standardProjection } from "./shared-projections.js";
 import {
   foldStandard, standardScope, publishSpecDrafted, publishOperation, publishSpecRatified,
   publishAckGranted, publishAckReleased, publishAudit, publishProblemRaised, publishAdjudication,
-  publishVacuityCheck,
+  publishVacuityCheck, publishPointerDeclared, publishPointerRestated, publishPointerRetired,
 } from "./shared-standard.js";
 
 /** One universe's standard, through the cache. */
@@ -157,6 +159,20 @@ export const shareAudit = (root: string, audit: Audit): Promise<Shared> =>
  */
 export const shareVacuityCheck = (root: string, check: VacuityCheck): Promise<Shared> =>
   share(root, (l, s, a) => publishVacuityCheck(l, s, a, check));
+
+/**
+ * A pointer always travels. It says where to LOOK, which is a fact about the standard
+ * rather than an observation of one branch's code, and it can reach no verdict that a
+ * provisional carve-out would need to hold back.
+ */
+export const sharePointerDeclared = (root: string, p: Pointer): Promise<Shared> =>
+  share(root, (l, s, a) => publishPointerDeclared(l, s, a, p));
+
+export const sharePointerRestated = (root: string, p: Pointer): Promise<Shared> =>
+  share(root, (l, s, a) => publishPointerRestated(l, s, a, p.id, p.restatedAt!, p.witnesses));
+
+export const sharePointerRetired = (root: string, p: Pointer): Promise<Shared> =>
+  share(root, (l, s, a) => publishPointerRetired(l, s, a, p.id, p.retiredAt!, p.retiredReason ?? ""));
 
 /** Same rule: a problem raised from a provisional audit is this branch's, not the team's. */
 export const shareProblemRaised = (root: string, problem: Problem): Promise<Shared> =>

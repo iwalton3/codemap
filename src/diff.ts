@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { comparableHashDerivation, type Anchor, type Audit, type Review } from "./schema.js";
 import { indexRepo, indexFile, indexBlob } from "./repo.js";
 import { citedAnchors, isClosed } from "./shared-bugs.js";
-import { readSnapshot, snapshotRefusal, readAnchorStore, loadNodes, loadNodeVersions, winningVersionAt, readGraph, readReviews, readBugs, readRequirements, readAudits, readCriteria, derivationLookup, loadNodesAt, resolvable} from "./store.js";
+import { readSnapshot, snapshotRefusal, readAnchorStore, loadNodes, loadNodeVersions, winningVersionAt, readGraph, readReviews, readBugs, readRequirements, readAudits, readCriteria, readPointers, derivationLookup, loadNodesAt, resolvable} from "./store.js";
 import { reviewStatesFor } from "./reviews.js";
 import { reviewTriageFor, coverageFor, type Coverage } from "./triage.js";
 import { revParse, headCommit, currentBranch, showFile } from "./git.js";
@@ -56,7 +56,7 @@ export interface DiffResult {
      * requirement is a well-formed record (the rule the code does not yet satisfy) and
      * no set-op over anchors can find it. That is what pointers are for.
      */
-    requirements: { id: string; title: string; section: string; anchors: string[]; removed: boolean; lastAudit: { id: string; outcome: string; at: string; provisional: boolean } | null; auditMoved: boolean; assertionsMoved: { id: string; criterion: string; evidenceKind: string; anchors: string[] }[] }[];
+    requirements: { id: string; title: string; section: string; anchors: string[]; removed: boolean; lastAudit: { id: string; outcome: string; at: string; provisional: boolean } | null; auditMoved: boolean; assertionsMoved: { id: string; criterion: string; evidenceKind: string; anchors: string[] }[]; pointersFired: { id: string; rank: string; target: { kind: string; id: string }; via: string; rationale: string; anchors: string[] }[] }[];
   };
   /** Review-complete rollup over the changed+added anchors — "am I done reviewing this?" */
   coverage: Coverage;
@@ -230,18 +230,50 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
     assertionsByRequirement.set(c.requirementId, arr);
   }
 
+  // Pointers, which is the reason the relation exists: an audit provoked by what actually
+  // MOVED, arriving with the backtrace assembled rather than as "rule R may be broken, go
+  // and look". A doc pointer is the path nobody would have designed on purpose and it is
+  // free — a doc going stale IS its cited anchors moving, so the original downstream
+  // machinery becomes an upstream trigger with no new detector.
+  //
+  // `via` is the address the auditor opens. For a doc that is the DOC, not the symbol: the
+  // whole point of aiming high is that the reader starts from the compression.
+  const nodeTitle = new Map(nodes.map((n) => [n.id, n.title]));
+  const pointersByRequirement = new Map<string, DiffResult["impact"]["requirements"][number]["pointersFired"]>();
+  for (const pt of await readPointers(root, { state: "active" })) {
+    const hit = pt.witnesses.map((w) => w.anchorId).filter((id) => impacted.has(id));
+    if (!hit.length) continue;
+    const arr = pointersByRequirement.get(pt.requirementId) ?? [];
+    arr.push({
+      id: pt.id,
+      // The ladder rung, as far as a snapshot set-op can tell. `check` needs the live
+      // index to say whether the file is a test, and this path must not consult it — so a
+      // diff reports node/anchor and `pointers` answers the rest.
+      rank: pt.target.kind === "node" ? "pattern" : "symbol",
+      target: pt.target, rationale: pt.rationale,
+      via: pt.target.kind === "node" ? (nodeTitle.get(pt.target.id) ?? pt.target.id) : pt.target.id,
+      anchors: hit,
+    });
+    pointersByRequirement.set(pt.requirementId, arr);
+  }
+
   const auditsByRequirement = new Map<string, Audit>();
   for (const a of await readAudits(root)) auditsByRequirement.set(a.requirementId, a); // ORDER BY at,id — last wins
   // Ratified only, for the reason `conformance()` filters the same way: a retired rule is
   // not part of the standard in force, so listing it as due for audit is asking for work
   // on a rule that no longer binds anything.
   const requirementImpact = (await readRequirements(root, { status: "ratified" })).requirements
-    .map((rq) => ({ rq, hit: rq.cites.filter((id) => impacted.has(id)), assertions: assertionsByRequirement.get(rq.id) ?? [] }))
-    // Either signal is enough. A rule whose subject this change does not touch but whose
-    // CHECK it rewrites belongs in this list — omitting it would hide precisely the edit
-    // that quietens a detector without touching what it guards.
-    .filter((x) => x.hit.length > 0 || x.assertions.length > 0)
-    .map(({ rq, hit, assertions }) => {
+    .map((rq) => ({
+      rq, hit: rq.cites.filter((id) => impacted.has(id)),
+      assertions: assertionsByRequirement.get(rq.id) ?? [],
+      fired: pointersByRequirement.get(rq.id) ?? [],
+    }))
+    // ANY signal is enough, and the third is what closes the residue: a requirement that
+    // cites nothing and asserts nothing — the rule the code does not yet satisfy — could
+    // not be reached by a set-op over anchors at all, so the highest-value record in the
+    // store was also the quietest. A pointer gives it something to fire on.
+    .filter((x) => x.hit.length > 0 || x.assertions.length > 0 || x.fired.length > 0)
+    .map(({ rq, hit, assertions, fired }) => {
       const a = auditsByRequirement.get(rq.id);
       return {
         id: rq.id, title: rq.title, section: rq.section, anchors: hit,
@@ -249,6 +281,7 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
         lastAudit: a ? { id: a.id, outcome: a.outcome, at: a.at, provisional: a.provisional === true } : null,
         auditMoved: a ? a.witnesses.some((w) => impacted.has(w.anchorId)) : false,
         assertionsMoved: assertions,
+        pointersFired: fired,
       };
     });
 

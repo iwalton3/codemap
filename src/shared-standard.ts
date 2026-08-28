@@ -12,6 +12,7 @@
  *   audit.recorded
  *   problem.raised · problem.adjudicated
  *   vacuity.checked
+ *   pointer.declared · pointer.restated · pointer.retired
  *
  * ACCEPTANCE CRITERIA are not among them either, for the reason requirements are not: a
  * criterion is created by a ratified `add_criterion` operation, so it is derived by
@@ -39,8 +40,8 @@
  */
 
 import type {
-  AcceptanceCriterion, Acknowledgement, Actor, Audit, BugWitness, Operation, Problem, Requirement,
-  Spec, VacuityCheck,
+  AcceptanceCriterion, Acknowledgement, Actor, Audit, BugWitness, Operation, Pointer, Problem,
+  Requirement, Spec, VacuityCheck,
 } from "./schema.js";
 import { criterionIdFor, requirementIdFor } from "./schema.js";
 import type { LogEvent } from "./eventlog.js";
@@ -55,13 +56,14 @@ export interface SharedStandard {
   requirements: Requirement[];
   criteria: AcceptanceCriterion[];
   vacuityChecks: VacuityCheck[];
+  pointers: Pointer[];
   acknowledgements: Acknowledgement[];
   audits: Audit[];
   problems: Problem[];
 }
 
 export const emptyStandard = (): SharedStandard => ({
-  specs: [], operations: [], requirements: [], criteria: [], vacuityChecks: [],
+  specs: [], operations: [], requirements: [], criteria: [], vacuityChecks: [], pointers: [],
   acknowledgements: [], audits: [], problems: [],
 });
 
@@ -105,6 +107,25 @@ export const publishAudit = (logRoot: string, scope: string, actor: Actor, audit
 export const publishVacuityCheck = (logRoot: string, scope: string, actor: Actor, check: VacuityCheck) =>
   put(logRoot, scope, actor, "vacuity.checked", check.criterionId, { check });
 
+/**
+ * Declaring, re-baselining and retiring a pointer are three ACTS, so three events.
+ *
+ * The whole record travels on `declared` and on `restated` — the witnesses are an
+ * observation of the writer's checkout and a fold cannot make one, which is the same
+ * reason ratification carries its witnesses rather than recomputing them per clone.
+ * `retired` carries only the decision, because nothing about it is an observation.
+ */
+export const publishPointerDeclared = (logRoot: string, scope: string, actor: Actor, p: Pointer) =>
+  put(logRoot, scope, actor, "pointer.declared", p.id, { pointer: p });
+
+export const publishPointerRestated = (
+  logRoot: string, scope: string, actor: Actor, id: string, at: string, witnesses: BugWitness[],
+) => put(logRoot, scope, actor, "pointer.restated", id, { at, witnesses });
+
+export const publishPointerRetired = (
+  logRoot: string, scope: string, actor: Actor, id: string, at: string, reason: string,
+) => put(logRoot, scope, actor, "pointer.retired", id, { at, reason });
+
 export const publishProblemRaised = (logRoot: string, scope: string, actor: Actor, problem: Problem) =>
   put(logRoot, scope, actor, "problem.raised", problem.id, { problem });
 
@@ -139,6 +160,7 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
   const requirements = new Map<string, Requirement>();
   const criteria = new Map<string, AcceptanceCriterion>();
   const vacuityChecks = new Map<string, VacuityCheck>();
+  const pointers = new Map<string, Pointer>();
   const acknowledgements = new Map<string, Acknowledgement>();
   const audits = new Map<string, Audit>();
   const problems = new Map<string, Problem>();
@@ -289,6 +311,43 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
         vacuityChecks.set(check.id, { ...check, origin: "sync" });
         break;
       }
+      case "pointer.declared": {
+        const p = obj(e.data, "pointer") as Pointer | undefined;
+        if (!p?.id || !p.requirementId) break;
+        if (p.target?.kind !== "node" && p.target?.kind !== "anchor") break;
+        // A pointer with no rationale is one nobody can evaluate, which is the vacuity
+        // problem arriving at the record that exists to make auditing cheaper. Refused in
+        // `declarePointer` and restated here, because the tool binds only writers who ask.
+        if (!p.rationale?.trim()) break;
+        // ACTIVE, whatever the payload said. A `declared` event carrying `state:
+        // "retired"` would fold to a pointer that was never watching anything and cannot
+        // be retired again — the same partial-strip shape that let `problem.raised` name a
+        // decider who never decided.
+        const { retiredBy, retiredAt, retiredReason, restatedBy, restatedAt, ...declared } = p;
+        pointers.set(p.id, { ...declared, state: "active", origin: "sync" });
+        break;
+      }
+      case "pointer.restated": {
+        const p = pointers.get(e.subject);
+        if (!p || p.state !== "active") break;
+        const witnesses = obj(e.data, "witnesses") as BugWitness[] | undefined;
+        if (!Array.isArray(witnesses)) break;
+        pointers.set(p.id, { ...p, witnesses, restatedBy: e.actor, restatedAt: str(e.data, "at") ?? e.at });
+        break;
+      }
+      case "pointer.retired": {
+        const p = pointers.get(e.subject);
+        if (!p || p.state === "retired") break;
+        const reason = str(e.data, "reason");
+        // A retirement with no reason is a rule quietly losing what watches it, which is
+        // how a standard comes to look settled. Refused at both ends.
+        if (!reason?.trim()) break;
+        pointers.set(p.id, {
+          ...p, state: "retired", retiredBy: e.actor,
+          retiredAt: str(e.data, "at") ?? e.at, retiredReason: reason,
+        });
+        break;
+      }
       case "problem.raised": {
         const p = obj(e.data, "problem") as Problem | undefined;
         if (!p?.id) break;
@@ -326,7 +385,8 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
   return {
     specs: [...specs.values()], operations: [...operations.values()],
     requirements: [...requirements.values()], criteria: [...criteria.values()],
-    vacuityChecks: [...vacuityChecks.values()], acknowledgements: [...acknowledgements.values()],
+    vacuityChecks: [...vacuityChecks.values()], pointers: [...pointers.values()],
+    acknowledgements: [...acknowledgements.values()],
     audits: [...audits.values()], problems: [...problems.values()],
   };
 }
