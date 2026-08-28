@@ -150,6 +150,44 @@ That is an empirical bet, not a design property, and the honest version of it is
   and not SOUNDNESS, provided the classification path stays principal-gated. That is the
   right place to put a bet that can only be settled by running it.
 
+## Tests occupy a different position from code, and the map has to say so
+
+The whole mechanism above puts tests into the map for the first time. They must not enter
+as more anchors in the same population, because the two are not the same kind of thing:
+
+- **Code is a liability**, justified only by a requirement it satisfies. Bringing it under
+  description reduces that liability, which is what `find_gaps` ranks and what every
+  coverage percentage measures. Uncited code is *unregulated*, not wrong — the distinction
+  the architecture doc already draws when an implementation outlives its rule.
+- **A test is an asset, conditional on non-vacuity.** It is already a claim in executable
+  form, so it does not need explaining; "document this test" is a work item worth close to
+  nothing. A **vacuous** test is a liability wearing an asset's clothes, which is worse than
+  either — the cost of a slow or brittle suite is bounded and announces itself, where the
+  cost of a test that cannot fail is unbounded and silent.
+- **A requirement is the only one of the three that is upstream**, and the thing that
+  decides which code was worth its liability.
+
+So the polarity inverts: **an uncovered piece of code is a gap; an uncovered test is not.**
+
+This is also a second, independent argument for the vacuity field. If value is not
+monotonic in the number of tests, then counting tests is a bad metric and the only useful
+count is of non-vacuous ones. COD-18 reaches the same requirement by another route — a link
+to a vacuous assertion upgrades *nobody edited this* into *green as of the last build*, a
+stronger claim over a weaker check. Two independent routes to one field.
+
+### And it corrects the review-load arithmetic
+
+COD-18's 524 KLOC/yr excludes deploy merges and vendored schemas, but not tests. To
+whatever extent that churn is test code, the ~33 forty-hour weeks **overstates** genuine
+review load: test lines do not need perplexity evaluation against a mental model of the
+system.
+
+They need a different question asked of them — *could this have failed?* — which is much
+closer to arithmetic than *is this behaviour right?*, and is therefore the more
+mechanizable of the two. That matters for a programme whose bottleneck is one principal's
+attention: it is not that tests need less review, it is that their review is the half a
+machine can take.
+
 ## Build order
 
 1. **`asserted_by`** — the second citation relation, and the **vacuity field** beside it.
@@ -158,10 +196,27 @@ That is an empirical bet, not a design property, and the honest version of it is
    stronger-reading claim over a check that cannot fail. Two of three tests examined in one
    session were vacuous when written, and four of six of the oracle's own invariants were —
    assume the same rate.
-2. **Test indexing in the target.** codemap has no built-in test exclusion (`src/ignore.ts`
-   has no default patterns); it is the target repo's `.codemapignore`, which currently reads
-   *"tests & test tooling (revisit later, e.g. for a coverage feature)"*. Lifting it puts
-   ~3,856 test methods into the map, which moves every coverage percentage and re-ranks
-   `find_gaps` — deliberate, not a side effect.
+2. **Test indexing in the target, WITH the coverage rule in the same act.** codemap has no
+   built-in test exclusion (`src/ignore.ts` has no default patterns); it is the target
+   repo's `.codemapignore`, which currently reads *"tests & test tooling (revisit later,
+   e.g. for a coverage feature)"*. Lifting that line puts ~3,856 test methods into the map.
+
+   **Lifting it alone silently wrecks every number the project reports.** Those anchors
+   would land as ordinary `open` ones — in the documentation denominator, ranked by
+   `find_gaps` — so coverage percentages drop for a reason that is not a regression, and the
+   work queue fills with items worth nothing. They enter the model with the WRONG SIGN.
+
+   No new machinery is needed. `coverage.ts` already excludes `trivial`, `deferred` and
+   `owned` from `DENOMINATOR`, and `cover` takes an `AnchorSelector` and stores a standing
+   RULE rather than a per-anchor mark — so one rule over the test path prefix does it, and
+   it refuses a selector matching zero anchors, so it cannot be applied vacuously. The two
+   acts belong in one commit; the ignore line and the coverage rule are not independently
+   correct.
+
+   The names are all wrong for this and that is worth knowing before somebody "fixes" it:
+   `trivial` means *we chose not to document this*, where the truth is *this is not the kind
+   of thing that gets documented*. Reuse the mechanism, and treat the misnomer as the
+   argument for eventually giving tests their own coverage state — a wrong name invites the
+   rule's removal.
 3. **The pin and its delta rendering**, then the gating split above.
 4. **The scrub**, which now has a third pathology to detect and a hash with which to detect it.
