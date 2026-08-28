@@ -173,6 +173,30 @@ from *how much do we owe* — without splitting the mechanism.
 - **`gap` may only be minted before ratification.** An auditor agent classifies ahead of
   adoption so holes are poked *while the spec is still a proposal*. There is no path to a
   gap notice after the fact.
+
+  It is **chained to the operation and merged atomically with ratification**, which is what
+  `state: "pending"` is for. A pre-approved gap is part of the argument a principal is being
+  asked to adopt — *this rule is worth binding even though nothing satisfies it yet, and
+  here is the plan* — so it silences nothing until that argument is accepted, and then it
+  does so in the same act that creates the rule. A spec nobody ratifies leaves behind no
+  silencer nobody approved.
+
+  It was previously `active` from the moment it was granted, and inert only because it
+  carried no `requirementId` and `conformance()` joins on one. Inert by accident of a join
+  is not the same as not existing, and spec withdrawal would have made the difference real.
+  It stays **visible to the ratifier while pending** (`getSpec().silencedBy`), because the
+  ratifier is the only person who can refuse it and that is the only screen it appears on.
+
+  **And this is the answer to "a gap is not population-backed".** It is not a claim about a
+  population; it is an approval artifact. The principal adopted a rule *knowing* nothing
+  satisfies it. A population predicate cannot be required of it, because there is no rule
+  yet for a lint to enumerate against.
+
+- **A gap accepted AFTER ratification is a WAIVER, and a different thing.** The standard
+  already binds, so nobody is arguing for a rule — somebody is accepting non-conformance
+  with one in force. That is `basis: "debt"`, post-hoc and principal-granted. Keeping the
+  two apart at mint time is the whole defence against *declare the rule not yet applicable*
+  becoming the cheap way to clear a finding.
 - **`debt` is post-hoc and principal-granted**, at the cost of a waiver.
 
 This is what keeps the record from becoming the cheapest way to clear an audit finding.

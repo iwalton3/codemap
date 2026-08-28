@@ -152,6 +152,21 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     publish: ["src/scrub.ts", /minObservations < 2\) \{/],
   },
   {
+    // A pre-approved gap is part of an argument nobody has adopted yet, so it silences
+    // nothing until ratification binds it — in the same act that creates the rule. Both
+    // halves have to be at both ends: fold it `active` and a spec nobody ratifies leaves a
+    // silencer nobody approved; bind without activating and the principal's approval never
+    // takes effect on any clone but the ratifier's.
+    what: "a gap that silences before its spec is adopted",
+    fold: ["src/shared-standard.ts", /ack\.basis === "gap" \? "pending" : "active"/],
+    publish: ["src/acknowledgements.ts", /state: "pending", grantedBy: actor/],
+  },
+  {
+    what: "a ratification that binds a gap without activating it",
+    fold: ["src/shared-standard.ts", /requirementId: rid, state: "active"/],
+    publish: ["src/acknowledgements.ts", /requirementId: op\.requirementId, state: "active"/],
+  },
+  {
     // An audit that concluded nothing. The tool has always refused it; the fold never did,
     // which was found only when folding the scrub in brought a test that exercised it.
     what: "an audit that records no finding",

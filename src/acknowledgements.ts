@@ -153,7 +153,11 @@ export async function acknowledgeGap(
     id: mint(), basis: "gap", operationId: op.id,
     rationale: input.rationale.trim(), priority: input.priority,
     revalidateBy: input.revalidateBy, ...(input.workItem ? { workItem: input.workItem } : {}),
-    state: "active", grantedBy: actor, grantedAt: now(),
+    // PENDING, not active. A pre-approved gap is part of the argument a principal is being
+    // asked to adopt, so it silences nothing until that argument is accepted — and then it
+    // does so in the same act that creates the rule. A spec nobody ratifies leaves behind
+    // no silencer nobody approved. See `AcknowledgementState`.
+    state: "pending", grantedBy: actor, grantedAt: now(),
   };
   const d = disposition(await shareAckGranted(root, a));
   if ("error" in d) return d;
@@ -212,7 +216,12 @@ export async function bindGapsForSpec(root: string, specId: string): Promise<num
     if (!op.requirementId) continue;
     for (const a of await readAcknowledgements(root, { operationId: op.id })) {
       if (a.requirementId) continue;
-      await writeLocalAcknowledgement(root, { ...a, requirementId: op.requirementId });
+      // Binding and activating are ONE step, which is what "atomic with ratification"
+      // means: the gap becomes a live silencer at the moment the rule it silences comes
+      // into force, and never before. A released one stays released — adopting the spec
+      // does not resurrect an acceptance somebody withdrew.
+      if (a.state === "released") continue;
+      await writeLocalAcknowledgement(root, { ...a, requirementId: op.requirementId, state: "active" });
       bound++;
     }
   }

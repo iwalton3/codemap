@@ -1171,7 +1171,28 @@ export interface Requirement {
  */
 export type AcknowledgementBasis = "gap" | "debt";
 
-export type AcknowledgementState = "active" | "released";
+/**
+ * `pending` is the pre-approved gap, and it is what makes "atomic with ratification" true
+ * rather than accidental.
+ *
+ * A gap is minted against an `add_requirement` operation on a DRAFT spec — it is part of
+ * the argument a principal is being asked to adopt: *this rule is worth binding even though
+ * nothing satisfies it yet, and here is the plan*. It therefore must not silence anything
+ * until that argument is accepted. It was previously `active` from the moment it was
+ * granted, and inert only because it carried no `requirementId` and `conformance()` joins
+ * on one — inert by accident of a join, which the first surface to read acknowledgements
+ * by operation would have undone, and which spec withdrawal will make real.
+ *
+ * So: `pending` on grant, `active` at ratification, in the same act that creates the rule.
+ * A spec that is never adopted leaves behind no silencer that nobody approved.
+ *
+ * **A gap accepted AFTER ratification is not this and cannot become it.** That is a
+ * waiver — the standard already binds, and somebody is accepting non-conformance against a
+ * rule in force rather than arguing for one. It is `basis: "debt"`, post-hoc and
+ * principal-granted, and the mint-time asymmetry between the two is the whole defence
+ * against *declare the rule not yet applicable* as a way to clear a finding.
+ */
+export type AcknowledgementState = "pending" | "active" | "released";
 
 /** Orders the revalidation queue among records falling due together. */
 export type AcknowledgementPriority = "high" | "medium" | "low";

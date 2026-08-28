@@ -262,8 +262,11 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
           const rid = requirementIdFor(op.id);
           operations.set(op.id, { ...op, requirementId: rid });
           for (const [id, ack] of acknowledgements) {
-            if (ack.operationId === op.id && !ack.requirementId) {
-              acknowledgements.set(id, { ...ack, requirementId: rid });
+            // Bind AND activate together — see `bindGapsForSpec`. A released one stays
+            // released: adopting the spec does not resurrect an acceptance somebody
+            // withdrew while it was still a proposal.
+            if (ack.operationId === op.id && !ack.requirementId && ack.state !== "released") {
+              acknowledgements.set(id, { ...ack, requirementId: rid, state: "active" });
             }
           }
         }
@@ -290,7 +293,13 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
           if (!op || op.kind !== "add_requirement") break;
           if (specs.get(op.specId)?.status === "ratified") break;
         }
-        acknowledgements.set(ack.id, { ...ack, state: "active", origin: "sync" });
+        // A GAP folds PENDING: it is part of an argument nobody has adopted yet, and it
+        // silences nothing until ratification binds it — in the same act that creates the
+        // rule. Folding it active would leave a silencer for a spec that may never land,
+        // and this end is the one that binds a clone whose tool did not check.
+        acknowledgements.set(ack.id, {
+          ...ack, state: ack.basis === "gap" ? "pending" : "active", origin: "sync",
+        });
         break;
       }
       case "ack.released": {

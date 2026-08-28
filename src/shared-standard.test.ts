@@ -165,7 +165,9 @@ test("an acknowledgement grants and releases across the log", async () => {
       grantedBy: opus, grantedAt: "2026-08-01T00:00:00.000Z",
     };
     await publishAckGranted(root, SCOPE, opus, ack);
-    assert.equal((await fold(root)).acknowledgements[0]!.state, "active");
+    // PENDING: a gap is part of an argument nobody has adopted yet, so it silences nothing
+    // until ratification binds it — in the same act that creates the rule.
+    assert.equal((await fold(root)).acknowledgements[0]!.state, "pending");
 
     await publishAckReleased(root, SCOPE, izzie, "ack_1", "2026-08-06T00:00:00.000Z", "the endpoints now key");
     const a = (await fold(root)).acknowledgements[0]!;
@@ -878,5 +880,35 @@ test("the fold refuses a criterion whose falsifier restates it, or whose kind it
       assert.equal((await fold(root2)).requirements.length, 1, `${id} must not take the rule with it`);
       discard(root2);
     }
+  } finally { discard(root); }
+});
+
+/**
+ * Ratification ACTIVATES the pre-approved gap, at the end that binds every clone.
+ *
+ * `bindGapsForSpec` does it locally; without the same step here a teammate's clone folds
+ * the ratification, binds the gap to the rule and leaves it `pending` for ever — a silencer
+ * the principal approved that silences nothing, which is the mirror of the bug this state
+ * was introduced to fix and just as invisible.
+ */
+test("the fold activates a pre-approved gap in the same act that adopts its rule", async () => {
+  const root = await log("gap-atomic");
+  try {
+    await publishSpecDrafted(root, SCOPE, opus, SPEC);
+    await publishOperation(root, SCOPE, opus, ADD);
+    await publishAckGranted(root, SCOPE, opus, {
+      id: "ack_1", basis: "gap", operationId: "op_1", rationale: "nothing implements it yet",
+      priority: "medium", revalidateBy: "2027-01-01", state: "active",
+      grantedBy: opus, grantedAt: "2026-08-01T00:00:00.000Z",
+    });
+    // PENDING however the event described itself — the payload said `active`.
+    let a = (await fold(root)).acknowledgements[0]!;
+    assert.equal(a.state, "pending");
+    assert.equal(a.requirementId, undefined);
+
+    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
+    a = (await fold(root)).acknowledgements[0]!;
+    assert.equal(a.state, "active", "adopted in the same act that created the rule");
+    assert.equal(a.requirementId, requirementIdFor("op_1"), "and bound to it");
   } finally { discard(root); }
 });

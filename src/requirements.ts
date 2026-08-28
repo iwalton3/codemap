@@ -730,7 +730,13 @@ export async function getSpec(
       ...(before ? { before } : {}),
       ...(op.kind === "retire_requirement" ? {} : { after: op.statement }),
       contextMoved,
-      silencedBy: await readAcknowledgements(root, { operationId: op.id, state: "active" }),
+      // PENDING, not active — and this is the surface that makes the distinction worth
+      // having. A pre-approved gap silences nothing until this spec is adopted, so it is
+      // pending right up to the moment the ratifier decides; reading only `active` here
+      // would hide it from the one person who can refuse it, on the one screen where they
+      // could. `released` is the state to exclude: somebody already withdrew that one.
+      silencedBy: (await readAcknowledgements(root, { operationId: op.id }))
+        .filter((a) => a.state !== "released"),
       watchedBy: target ? await readPointers(root, { requirementId: target.id, state: "active" }) : [],
     });
   }
@@ -757,7 +763,8 @@ export async function pendingSpecs(
     // has to be visible before they open it. `irreversible` is here for the same reason.
     let silenced = 0;
     for (const op of ops) {
-      silenced += (await readAcknowledgements(root, { operationId: op.id, state: "active" })).length;
+      silenced += (await readAcknowledgements(root, { operationId: op.id }))
+        .filter((a) => a.state !== "released").length;
     }
     out.push({
       spec, operations: ops.length,

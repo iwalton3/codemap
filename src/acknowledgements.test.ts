@@ -17,7 +17,7 @@ import { indexBlob } from "./repo.js";
 import { writeStore, readAcknowledgement } from "./store.js";
 import type { State } from "./schema.js";
 import { discard } from "./test-tmp.js";
-import { draftSpec, addOperation, ratifySpec, listRequirements } from "./requirements.js";
+import { draftSpec, addOperation, ratifySpec, listRequirements, getSpec } from "./requirements.js";
 import {
   acknowledgeGap, acknowledgeDebt, releaseAcknowledgement,
   listAcknowledgements, dueForRevalidation,
@@ -157,10 +157,16 @@ test("a work item is evidence, and never the release condition", async () => {
 test("revalidation is due by date, is derived rather than stored, and never auto-releases", async () => {
   const root = await universe();
   try {
-    const { operationId } = await draftRule(root);
+    // RATIFIED, because a pre-approved gap is `pending` until then and a proposal nobody
+    // has adopted cannot be overdue for revalidation — there is nothing being silenced yet.
+    const { operationId, specId } = await draftRule(root);
     const a = ok(await acknowledgeGap(root, {
       operationId, rationale: "not built yet", priority: "high", revalidateBy: PASSED,
     }));
+    assert.equal(a.acknowledgement.state, "pending", "it silences nothing until the spec is adopted");
+    assert.deepEqual(await dueForRevalidation(root, { asOf: "2026-01-01" }), [],
+      "and a proposal nobody has adopted cannot be overdue for revalidation");
+    ok(await ratifySpec(root, specId));
 
     // Not due when asked about a moment before the date — so the flip below is evidence
     // rather than a value that was true all along.
@@ -291,5 +297,58 @@ test("a gap may not be raised against an operation on a rule already in force", 
     assert.match((refused as any).error, /already in force/);
     ok(await ratifySpec(root, amend.id));
     assert.equal((await listAcknowledgements(root)).length, 0, "and nothing bound to the live rule");
+  } finally { discard(root); }
+});
+
+/**
+ * A pre-approved gap is chained to the operation and merged ATOMICALLY with ratification.
+ *
+ * It is part of the argument a principal is being asked to adopt — *this rule is worth
+ * binding even though nothing satisfies it yet* — so it silences nothing until that
+ * argument is accepted, and then it does so in the same act that creates the rule. A spec
+ * nobody ratifies must leave behind no silencer nobody approved.
+ *
+ * It was previously `active` from the moment it was granted, and inert only because it
+ * carried no `requirementId` and `conformance()` joins on one. Inert by accident of a join
+ * is not the same as not existing, and spec withdrawal will make the difference real.
+ *
+ * A gap accepted AFTER ratification is not this and cannot become it: the standard already
+ * binds, so that is a waiver — `basis: "debt"`, post-hoc and principal-granted.
+ */
+test("a pre-approved gap is pending until ratification, and is visible to the ratifier meanwhile", async () => {
+  const root = await universe();
+  try {
+    const { specId, operationId } = await draftRule(root);
+    const a = ok(await acknowledgeGap(root, {
+      operationId, rationale: "nothing implements this yet", priority: "low", revalidateBy: LATER,
+    }));
+
+    assert.equal(a.acknowledgement.state, "pending");
+    assert.equal(a.acknowledgement.requirementId, undefined, "there is no rule to attach it to yet");
+    // Silencing NOTHING: not in the active list, not in the revalidation queue.
+    assert.deepEqual(await listAcknowledgements(root, { state: "active" }), []);
+    // But VISIBLE where it has to be — the ratifier is the only person who can refuse it.
+    assert.equal(ok(await getSpec(root, specId)).silenced, 1);
+
+    ok(await ratifySpec(root, specId));
+    const bound = (await readAcknowledgement(root, a.id))!;
+    assert.equal(bound.state, "active", "adopted in the same act that created the rule");
+    assert.ok(bound.requirementId, "and bound to it");
+    assert.deepEqual((await listAcknowledgements(root, { state: "active" })).map((x) => x.id), [a.id]);
+  } finally { discard(root); }
+});
+
+test("a gap on a spec nobody adopts never silences anything", async () => {
+  const root = await universe();
+  try {
+    const { operationId } = await draftRule(root);
+    ok(await acknowledgeGap(root, {
+      operationId, rationale: "nothing implements this yet", priority: "low", revalidateBy: PASSED,
+    }));
+    // The spec is simply never ratified. Nothing here becomes a live acceptance, and the
+    // revalidation queue — which is where an overdue silencer would surface — stays empty.
+    assert.deepEqual(await listAcknowledgements(root, { state: "active" }), []);
+    assert.deepEqual(await dueForRevalidation(root, { asOf: "2030-01-01" }), []);
+    assert.deepEqual(await listRequirements(root), [], "and no rule came into force either");
   } finally { discard(root); }
 });
