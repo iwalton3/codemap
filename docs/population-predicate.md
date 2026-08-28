@@ -1,157 +1,167 @@
-# The population predicate — what it has to handle
+# The population predicate — a hash-pinned lint, and what it rests on
 
-> **Kind: design brief — NOT built and NOT settled.** It states the problem and the
-> constraints a solution has to satisfy, so that whoever builds it does not rediscover them
-> one at a time. `docs/requirements-architecture.md` is normative and outranks this;
-> where this document commits to a mechanism it is a proposal, not a decision.
+> **Kind: design brief — NOT built and NOT settled.** It states the shape and the
+> constraints, so whoever builds it does not rediscover them one at a time.
+> `docs/requirements-architecture.md` is normative and outranks this.
 
 The predicate is the largest unbuilt thing in the requirements subsystem, and it is
-load-bearing in **four** separate places. That is the argument for pulling it forward: four
-independent reasons for one mechanism is not a coincidence, it is the mechanism being
-central.
+load-bearing in four separate places: it makes **`gap` decidable** (*no code that should
+conform exists yet* needs to know what the rule ranges over), it makes a **gap's magnitude**
+honest (counted, never estimated — an estimate is a self-report by the party whose
+judgement is in question), it is what **COD-17's `re-derive`** was always for, and it is
+**what a ratifier is being asked to take on faith** when an agent attaches a gap to a draft
+operation. Four independent reasons for one mechanism is the mechanism being central.
 
-1. **It makes `gap` decidable.** *No code that should conform to this exists yet* requires
-   knowing what the rule ranges over. Without that it means *I looked and did not find
-   any*, which is absence of evidence deciding a classification — and an agent that calls
-   debt a gap has written off real non-conformance while looking diligent.
-2. **It makes a gap's magnitude honest.** A gap for a missing null check and a gap for a
-   rewrite are otherwise the same record, so a ratifier sees *N gaps* rather than *N gaps of
-   this size*. Magnitude is the population, counted; an estimate is a self-report by the
-   party whose judgement is in question (COD-17's refuted `coverage.method`).
-3. **It is what COD-17's `re-derive` was always for.**
-4. **It is what a ratifier is being asked to take on faith.** A gap attached to a draft
-   operation binds at ratification, so the rule arrives classified `gap` rather than
-   `unknown` on an assertion nothing can check. `getSpec` now shows the silencer; it cannot
-   yet show the evidence for it.
+## The answer is a lint, hash-pinned — not a query language
 
-## The core constraint: derived, never enumerated
+The obvious design is a query over the anchor graph: *every HTTP endpoint*, *every event
+handler*. Recorded here as the road not taken, because the reason it fails is worth
+keeping.
 
-A population is a **query**, not a list. COD-18 states the failure it exists to fix:
-an invariant "must hold over a derived population that grows on its own; new code should
-fall in scope automatically rather than requiring someone to add an anchor. The failure
-mode is *a member of the population that violates*, which the anchor model cannot express."
+Anything strong enough to express those populations is **framework knowledge**, which is
+the analyzer boundary — and the first Marten pass produced 138 false positives before it
+produced 4 genuine findings. A query language would make codemap responsible for
+understanding every target framework, and would inherit that error rate into the one record
+that is supposed to be more trustworthy than the code.
 
-So the thing codemap already has — a citation, a set of anchor ids — is exactly the wrong
-shape. A stored list is complete on the day it is written and silently incomplete every day
-after, and its incompleteness looks like conformance.
+A **lint** — an executable check living in the target repo, in the target language, against
+the real types — dissolves that entirely:
 
-Two consequences follow immediately:
+- **codemap never has to understand the population.** It hashes the lint and observes
+  whether it passed. The framework knowledge stays where the framework is.
+- **Population and conformance test fuse into one artifact**, which answers a question this
+  brief previously left open. And that artifact already has a review process: it is code, it
+  lands in a pull request, it is read like code.
+- **The cost collapses.** Not rules × tree per audit — CI runs the lint once for the whole
+  tree and codemap reads a result.
+- **It is proven here.** Four lint tests written 2026-08-26, ~600 lines, closed failure
+  modes that had already shipped bugs, and they are diff-independent: a new violating site
+  fails even though its own diff looks innocent (COD-18 §"what is known to work").
+- **The hash pin is the witness the scrub was missing.** The designed scrub catches *never
+  fires* and *always fires*; it does not catch **fired → was edited → now quiet**, which is
+  the detector being modified by the change it was meant to detect. A pin on the lint's own
+  normalized hash is exactly that witness.
 
-- **It survives anchor-id churn, because it does not name ids.** Ids are derived from
-  file + symbol path, so a rename or an overload-signature change mints a new one — and in
-  an event-sourced codebase that is `Apply(SomeEvent)`, i.e. the code people file findings
-  about. A rule pinned to ids goes quiet exactly when the code it governs is edited.
-- **It is evaluated against a commit, never stored as a result.** A count is a fact about a
-  tree. Persisting the number rather than re-deriving it reintroduces the staleness the
-  whole project exists to make visible.
+The relation this needs is COD-18's **`asserted_by`**, distinct from `cites`: `cites` is the
+code a claim is ABOUT and its staleness is *that code moved*; `asserted_by` is the check
+that WOULD FAIL if the claim stopped holding, and its staleness is *the build is red*.
+Snapshot versus live.
 
-## A member has three states, not two
+## A lint must report its population, or it answers none of the four jobs
 
-`conforms`, `violates`, and **`undecidable`** — the member is in the population and this
-check could not reach a verdict on it (unparseable, generated, behind an interface, needs a
-runtime fact).
+Pass/fail carries no arity. A green lint cannot say whether the population is empty
+(gap-versus-debt) or whether a gap is one null check or the entire system (magnitude). So
+the lint has to **emit the members it examined**, not just a verdict — which is a convention
+on an artifact that already exists, not a query language creeping back in. This codebase
+already writes lints that way, because non-vacuity already demanded it.
 
-Collapsing `undecidable` into `conforms` is `unknown` rendering as `conformant` one level
-down, and it is the same silent failure: coverage that looks total because the hard cases
-were dropped. Collapsing it into `violates` is the 138-false-positive shape. It has to be
-its own number and it has to be reported.
+The enumeration is also the only review anybody can perform on it: *is this predicate
+correct?* has no finite answer, *show me the members* does.
 
-## The empty population is the dangerous case
+### The empty population is the dangerous case, and it is caught in two layers
 
-A predicate that matches nothing reports `0/0`, which reads as *fully conformant* under any
-naive ratio and as *a gap* under another. Both are wrong: it means the predicate is broken,
-or the rule does not range over code at all.
+A lint over zero members is **green**, and green reads as conformant. With a query language
+that was an edge case; with a lint it is the DEFAULT failure mode. Two layers, and they
+catch different things — keep both, or the cheap one gets dropped as redundant:
 
-This is the vacuity problem in its purest form — **a predicate matching nothing looks like
-perfect coverage every single time you look at it** — and it is why the mechanism needs the
-same treatment as a scrub rather than trust: an empty population is a *finding about the
-predicate*, surfaced, never a conformance answer.
+- **Mechanical**: a lint reporting zero members is refused as a pin. Free, and it catches
+  the common case — a selector that matches nothing by accident.
+- **The auditor / the scrub**: codemap cannot run the lint, so a lint that *claims* 47
+  members and examined 0 is a self-report, and only a reader of the lint catches it. This is
+  the ordinary vacuous-test problem, on the artifact the whole mechanism now rests on.
 
-## Being wrong has two directions and they are not symmetric
+## A member has three states
 
-- **Too narrow** → violating members are outside the population → **false conformance**.
-  Silent, and it accumulates.
-- **Too broad** → members the rule never meant are judged → **false non-conformance**.
-  Noisy, and it corrects itself because somebody has to triage the noise.
+`conforms`, `violates`, and **`undecidable`** — in the population, and this check could not
+reach a verdict (unparseable, generated, behind an interface, needs a runtime fact).
 
-Design against the first. Where the two trade off, prefer the noisy failure — which is the
-same call the audit's evidence gates already make in the other direction.
+Folding `undecidable` into `conforms` is `unknown` rendering as `conformant` one level down.
+Folding it into `violates` is the 138-false-positive shape. Its own number, reported.
 
-## Narrowing a population is laundering, and must be gated as such
+## Narrowing the population is laundering, and the lint makes it easier
 
-This is the part most likely to be missed, because the predicate looks like metadata.
+The cheapest way to make a failing rule pass is to **narrow its population until the
+violators fall outside it**. That is not amending the rule and not fixing the code; it
+redefines what the rule was ever about, and leaves the statement — the part a human reads —
+untouched. After *amend the rule to match the code* and *declare the rule not yet
+applicable*, this is *declare those things were never in scope*.
 
-If a rule is failing, the cheapest way to make it pass is to **narrow its population until
-the violators fall outside it**. That is not amending the rule and it is not fixing the
-code; it is redefining what the rule was ever about, and it leaves the statement — the part
-a human reads — untouched. It is the third laundering door wearing a fourth disguise:
-after *amend the rule to match the code* and *declare the rule not yet applicable*, this is
-*declare those things were never in scope*.
+A lint makes this **more** invisible than a stored predicate would be, not less: the edit is
+buried in test code and looks like maintenance. That is the standing observation about
+agents editing tests, arriving in the mechanism built to prevent it.
 
-So the predicate is **operative content of the requirement**, not an annotation on it:
+The pin is what closes it — but only if **re-pinning is gated**. Narrow the selector, the
+pin breaks, `recheckDue`, re-witness, quiet again is the same door in two steps. So:
 
-- Changing it is a **spec operation**, principal-ratified, exactly like changing a
-  statement. There is no edit path, for the same reason there is none on `statement`.
-- The rendering a ratifier reads must show the **population delta** — how many members the
-  old predicate matched, how many the new one does, and which members left. A predicate
-  diff shown as two regexes is not reviewable; a diff shown as *"this drops 14 members, 9
-  of which currently violate"* is.
-- Broadening is the safe direction and narrowing is the gated one, the same asymmetry as
-  `gap`/`debt` and as raising versus lowering a severity.
+- The rendering a reviewer sees must show the **population delta**: not two diffed
+  selectors, which are not reviewable, but *"this drops 14 members, 9 of which currently
+  violate"*.
+- **Gate by consequence, not uniformly** — the same lint does two jobs with very different
+  blast radii, and this is the distinction that decides how much the whole design rests on
+  agent judgement:
+  - **As a pointer**, a laundered lint costs **queue position only**. A pointer never sets
+    conformance; `conformant` stays reachable solely through a code-backed audit. So a
+    missed underhanded edit makes the system slower and noisier — not wrong.
+  - **As a population predicate**, a laundered lint can flip **debt into gap**, which is
+    *silencing*. That is the laundering door with a lint in front of it.
 
-## It must be listable, not just countable
+  So re-pinning for queue purposes may stay open; re-pinning that changes a gap/debt
+  classification is a principal's act. Gate what silences, never what unsilences.
 
-A predicate that reports `47/53` and cannot say *which* 53 is a claim nobody can check, by
-the party whose judgement is in question. The mechanism must be able to enumerate its
-members on demand, because that enumeration is the only review anyone can perform on it.
+## Some rules have no lint, and saying so must be cheap
 
-This is also what makes the ratifier's problem tractable: *show me the members* is a
-question with a finite answer, where *is this predicate correct?* is not.
+*"The client must be a native iOS application"*, written against a web app. And the case a
+lint specifically cannot reach: **a population spanning repos** — a rule ranging over
+`Acme.API` and `Acme.React` together is not one lint, and that shape is real for this
+target. Two lints that can drift apart is not an answer.
 
-## It is a pointer, and inherits every pointer problem
+So the record needs an honest **`not-expressible`**, distinct from an empty population and
+from an absent one. Without it the field gets satisfied with a bad predicate, which is worse
+than none because it produces numbers. A rule that lands there is usually a product-strategy
+statement wearing a requirement's clothes; the design already routes those to roadmap work.
+The failure was never the routing, it was that the routing happened silently.
 
-A predicate is a standing declaration about what would need re-checking, which is the
-pointer relation. So it inherits the scrub:
+## What this rests on, stated as the bet it is
 
-- **Never changes** → false calm, or a dead query.
-- **Always changes** → cry-wolf, and the requirement behind it gets ignored.
-- **Changed in the same commit that made it go quiet** → the detector was edited by the
-  change it was meant to detect. This third pathology is not a rate and the scrub as
-  designed does not catch it; it needs a **witness on the predicate's own definition**, not
-  only on the members it selects. Codemap has that mechanism everywhere already.
+The pin makes an underhanded edit **visible**. It does not make it **caught**. Something has
+to look, and at the rate this has to run, that something is an auditor agent — so the design
+rests on requirements auditing being automatable by agents cross-checking each other.
 
-And the standing rule that outranks all of the above: **a predicate never changes the
-conformance state.** `conformant` stays reachable only through a code-backed audit. A
-predicate that reports every member conforming is a prior about where to look, not a
-verdict — letting it certify is the cheap-signal trap the audit's own evidence refusal
-already forbids.
+That is an empirical bet, not a design property, and the honest version of it is:
 
-## Some rules cannot be expressed, and saying so must be cheap
+- **Independence cannot be assumed between two agents.** COD-17 had to *measure* it
+  (`isErrorIndependent`, `clientInfo` from the transport rather than self-reported) because
+  two agent sessions are free and correlated by construction. Segregation of duties works
+  elsewhere because collusion is expensive; here it is not.
+- **What works is diversity of METHOD, not redundancy of agent.** Measured 2026-08-27 on
+  this repo: codex, `/code-review high` and the author's own re-reading found overlapping
+  but different defects, and the self-check found three neither review had. COD-18 says
+  the same from the other side — more agents and more findings does not close it.
+- **So structure the cross-check to decorrelate.** One reader sees the lint diff with the
+  population delta; one runs the lint at both hashes and diffs the member lists, which is
+  mechanical and needs no judgement at all; one sees only the requirement's statement and
+  the new selector — **never the diff** — and judges whether the selector is still a
+  faithful proxy. An agent that has not seen the edit cannot be anchored by it.
+- **Minimize what needs judgement.** The population delta converts *detect underhandedness*
+  into *read a number*. Take that conversion wherever it is available: agent arithmetic and
+  agent discernment do not have the same reliability.
+- **And know where the bet is load-bearing.** Because a pointer cannot set conformance,
+  this bet governs THROUGHPUT — how fast the queue moves and how much noise it carries —
+  and not SOUNDNESS, provided the classification path stays principal-gated. That is the
+  right place to put a bet that can only be settled by running it.
 
-*"The client must be a native iOS application"*, written against a web app. The population
-is the entire system; no query over anchors expresses it.
+## Build order
 
-The mechanism therefore needs an honest **`not-expressible`**, distinct from an empty
-population and distinct from an absent one. Without it, the field gets satisfied with a bad
-predicate — which is worse than no predicate, because a bad one produces numbers.
-
-A rule whose population is not expressible is usually a product-strategy statement wearing
-a requirement's clothes, and the design already routes it correctly: gaps are roadmap work
-and elicitation is out of scope. The failure was never the routing, it was that the routing
-happened silently. `not-expressible` is what makes it loud.
-
-## Open, in rough order of how much they change the design
-
-- **What language.** A structural query over the anchor graph (kind, path, symbol shape,
-  edges) is language-agnostic and weak. Anything strong enough for *"every HTTP endpoint"*
-  or *"every event handler"* is framework knowledge, which is the analyzer boundary — and
-  the first Marten pass produced 138 false positives before it produced 4 genuine findings.
-  Whatever is chosen inherits that error rate, so it inherits the requirement to be
-  adversarially verified before anyone is shown a number.
-- **Cost and caching.** Rules × tree, per audit, at seeding scale. The cache key has to be
-  the commit AND the predicate's own hash, or an edited predicate reads through to the old
-  answer — which is the edited-detector failure with a performance optimisation on top.
-- **Whether the conformance test is part of the predicate or beside it.** Jobs 1 and 2 need
-  only the population; job 3 needs the test as well. They may be two fields.
-- **Who authors it.** An agent that writes the predicate and evaluates it against its own
-  rule is grading its own work in both directions at once.
+1. **`asserted_by`** — the second citation relation, and the **vacuity field** beside it.
+   COD-18 is explicit that it must not ship without one: pointing at a vacuous assertion
+   converts *nobody edited the cited code* into *green as of the last build*, a
+   stronger-reading claim over a check that cannot fail. Two of three tests examined in one
+   session were vacuous when written, and four of six of the oracle's own invariants were —
+   assume the same rate.
+2. **Test indexing in the target.** codemap has no built-in test exclusion (`src/ignore.ts`
+   has no default patterns); it is the target repo's `.codemapignore`, which currently reads
+   *"tests & test tooling (revisit later, e.g. for a coverage feature)"*. Lifting it puts
+   ~3,856 test methods into the map, which moves every coverage percentage and re-ranks
+   `find_gaps` — deliberate, not a side effect.
+3. **The pin and its delta rendering**, then the gating split above.
+4. **The scrub**, which now has a third pathology to detect and a hash with which to detect it.
