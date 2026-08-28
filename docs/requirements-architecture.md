@@ -86,6 +86,35 @@ The structural fix is not discipline. **Each operation carries its own rationale
 there is no free-floating prose to drift, and any document-level narrative is a reading
 aid that is never the thing signed.
 
+## Finding the rule wrong while implementing: propose, do not edit
+
+The commonest real situation, and the one a no-edit-path design has to answer or people
+will route around it. An implementer — usually an agent — is writing the code and finds
+the rule is wrong in a detail: a status code, a field name, a state the enumeration
+missed.
+
+Acme.API's spec-authoring playbook says to **fix the spec in the same commit as the
+code** (§14.2), and its argument is good: *"a spec corrected at review time means every
+review of record between here and there analysed a design that never shipped"* — with a
+real incident behind it. That argument is entirely about keeping the **commit-review**
+record coherent, which is the practice COD-18 says has stopped producing signal. It pays
+an in-place edit to a business rule to buy coherence in a process being retired.
+
+**And it assumes the only alternative is a stall. It is not.** Proposing is open to any
+actor; only adoption is a principal's:
+
+1. The agent that found the error **sends the proposal** — `draft_spec` + `add_operation`,
+   both `requireActor` and neither principal-gated.
+2. The code lands. The requirement now reads **non-conformant**, which is true, visible,
+   and exactly what the record is for.
+3. The principal ratifies at their own cadence, and conformance is restored by an audit.
+
+Nothing blocks, and nothing is laundered. The playbook had two options — edit the spec, or
+stop — because it had no proposal channel; given a third, the case for editing in place
+disappears. **We are not, in the long run, reviewing commits the way we review business
+rules**, so the coherence of a commit's review record is the wrong thing to spend a rule's
+integrity on.
+
 ## Two queues, because they are two practices
 
 | | Change enablement | Problem management |
