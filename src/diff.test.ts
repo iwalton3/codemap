@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Anchor, DerivationTag, LogicalNode } from "./schema.js";
-import { writeSnapshot, writeNode, dropSnapshot, snapshotIsDirty } from "./store.js";
+import type { Anchor, Audit, DerivationTag, LogicalNode, Requirement } from "./schema.js";
+import { writeSnapshot, writeNode, writeLocalRequirement, writeLocalAudit, dropSnapshot, snapshotIsDirty } from "./store.js";
 import { computeDiff } from "./diff.js";
 import { fixtureHash } from "./fixture-hash.js";
 import { discard } from "./test-tmp.js";
@@ -179,4 +179,90 @@ test("a snapshot written from a clean tree diffs normally", async () => {
     assert.equal(r.error, undefined);
     assert.equal(r.added?.length, 1, "and it still reports the change it should");
   } finally { discard(root); }
+});
+
+/**
+ * The requirement rollup — `/diff` as the audit trigger the standard otherwise lacks.
+ *
+ * Three things are pinned here and each one is a way this could be wrong: the set-op
+ * reaches only the rule whose citation MOVED (`req_far` cites the untouched symbol),
+ * `auditMoved` is about the AUDIT's witnesses and not the requirement's citations (they
+ * are different sets and the audit is the one carrying a verdict), and the whole thing
+ * is computed from the two snapshots — a requirement citing an anchor no live index has
+ * still rolls up, because a diff of two cached commits must not consult the checkout.
+ */
+test("diff rolls changed symbols up to the requirements that cite them", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-diff-req-"));
+  try {
+    const base: Anchor[] = [anchor("a_keep", "keep", "h1"), anchor("a_drop", "refund", "h2"), anchor("a_chg", "transfer", "h3")];
+    const head: Anchor[] = [anchor("a_keep", "keep", "h1"), anchor("a_chg", "transfer", "h3_NEW")];
+    await writeSnapshot(root, "base_sha", "main", base, "2026-07-15T00:00:00Z");
+    await writeSnapshot(root, "head_sha", "feature", head, "2026-07-15T01:00:00Z");
+
+    const req = (id: string, title: string, cites: string[]): Requirement => ({
+      id, title, section: "Credit/Limits", statement: "…", provenance: "policy",
+      status: "ratified", cites, witnesses: cites.map((a) => ({ anchorId: a, bodyHash: fixtureHash("w") })),
+      author: { principal: "izzie" }, createdAt: "2026-07-01T00:00:00Z", introducedBy: "spec_1",
+    });
+    await writeLocalRequirement(root, req("req_hit", "Refunds never exceed the charge", ["a_chg", "a_drop"]));
+    await writeLocalRequirement(root, req("req_far", "Untouched rule", ["a_keep"]));
+    // Retired: cites the moved code and is deliberately absent from the rollup — it is not
+    // part of the standard in force, so listing it is asking for work on a dead rule.
+    await writeLocalRequirement(root, { ...req("req_old", "Repealed rule", ["a_chg"]), status: "retired" });
+
+    // Audited against `a_keep` ONLY — which this diff does not move. So the rule is worth
+    // re-auditing (its own citation changed) but the verdict on record still stands.
+    const audit: Audit = {
+      id: "aud_1", requirementId: "req_hit", outcome: "conformant",
+      evidence: { read: ["a_keep"] }, witnesses: [{ anchorId: "a_keep", bodyHash: fixtureHash("w") }],
+      finding: "checked", auditor: { principal: "izzie" }, at: "2026-07-02T00:00:00Z",
+    };
+    await writeLocalAudit(root, audit);
+
+    const r = await computeDiff(root, "base_sha", "head_sha");
+    assert.ok(!("error" in r), "expected a diff result");
+    if ("error" in r) return;
+
+    assert.deepEqual(r.impact.requirements.map((x) => x.id), ["req_hit"]);
+    const hit = r.impact.requirements[0]!;
+    assert.deepEqual(hit.anchors.sort(), ["a_chg", "a_drop"]);
+    assert.equal(hit.removed, true, "a_drop left the tree — the rule's subject is gone");
+    assert.equal(hit.lastAudit?.outcome, "conformant");
+    assert.equal(hit.auditMoved, false, "the audit witnessed a_keep, which this diff does not touch");
+
+    // Re-witness the audit onto the symbol the diff rewrites: now the verdict is suspect.
+    await writeLocalAudit(root, { ...audit, id: "aud_2", at: "2026-07-03T00:00:00Z", witnesses: [{ anchorId: "a_chg", bodyHash: fixtureHash("w") }] });
+    const r2 = await computeDiff(root, "base_sha", "head_sha");
+    assert.ok(!("error" in r2), "expected a diff result");
+    if ("error" in r2) return;
+    assert.equal(r2.impact.requirements[0]!.lastAudit?.id, "aud_2", "the LAST audit, by (at, id)");
+    assert.equal(r2.impact.requirements[0]!.auditMoved, true);
+  } finally {
+    discard(root);
+  }
+});
+
+/**
+ * An uncited requirement is a well-formed record (the rule the code does not yet
+ * satisfy), and no set-op over anchors can reach it. Pinned so the limit is stated in
+ * the suite rather than only in a comment — this is the hole pointers exist to fill.
+ */
+test("diff cannot reach an uncited requirement, and does not invent one", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-diff-req-uncited-"));
+  try {
+    await writeSnapshot(root, "base_sha", "main", [anchor("a_chg", "transfer", "h3")], "2026-07-15T00:00:00Z");
+    await writeSnapshot(root, "head_sha", "feature", [anchor("a_chg", "transfer", "h3_NEW")], "2026-07-15T01:00:00Z");
+    await writeLocalRequirement(root, {
+      id: "req_gap", title: "The gate nobody wrote yet", section: "Credit", statement: "…",
+      provenance: "policy", status: "ratified", cites: [], witnesses: [],
+      author: { principal: "izzie" }, createdAt: "2026-07-01T00:00:00Z", introducedBy: "spec_1",
+    });
+
+    const r = await computeDiff(root, "base_sha", "head_sha");
+    assert.ok(!("error" in r), "expected a diff result");
+    if ("error" in r) return;
+    assert.deepEqual(r.impact.requirements, []);
+  } finally {
+    discard(root);
+  }
 });

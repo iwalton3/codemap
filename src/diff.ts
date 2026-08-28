@@ -2,7 +2,7 @@
  * Branch/commit diff — a *logical* operation over two anchor snapshots (no
  * checkout, no blob reading): compare the anchor sets by id (added / removed
  * symbols) and by bodyHash (changed bodies), then roll the impact up to the
- * logical nodes, flows, and reviews that cite the affected anchors.
+ * logical nodes, flows, reviews and requirements that cite the affected anchors.
  *
  * Two modes:
  *   diff(base)        base = cached snapshot,  head = a fresh index of the
@@ -14,10 +14,10 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { comparableHashDerivation, type Anchor, type Review } from "./schema.js";
+import { comparableHashDerivation, type Anchor, type Audit, type Review } from "./schema.js";
 import { indexRepo, indexFile, indexBlob } from "./repo.js";
 import { citedAnchors, isClosed } from "./shared-bugs.js";
-import { readSnapshot, snapshotRefusal, readAnchorStore, loadNodes, loadNodeVersions, winningVersionAt, readGraph, readReviews, readBugs, derivationLookup, loadNodesAt, resolvable} from "./store.js";
+import { readSnapshot, snapshotRefusal, readAnchorStore, loadNodes, loadNodeVersions, winningVersionAt, readGraph, readReviews, readBugs, readRequirements, readAudits, derivationLookup, loadNodesAt, resolvable} from "./store.js";
 import { reviewStatesFor } from "./reviews.js";
 import { reviewTriageFor, coverageFor, type Coverage } from "./triage.js";
 import { revParse, headCommit, currentBranch, showFile } from "./git.js";
@@ -49,6 +49,14 @@ export interface DiffResult {
     flows: { id: string; title: string; steps: { id: string; title: string; anchors: string[] }[] }[];
     reviews: { id: string; target: { kind: string; id: string }; level: string; anchors: string[] }[];
     bugs: { id: string; title: string; state: string; severity: string; anchors: string[]; removed: boolean; possiblyFixed: boolean }[];
+    /**
+     * Rules of the standard whose cited code this change moves — the audit trigger.
+     *
+     * Reaches only rules that CITE something, which is the honest limit: an uncited
+     * requirement is a well-formed record (the rule the code does not yet satisfy) and
+     * no set-op over anchors can find it. That is what pointers are for.
+     */
+    requirements: { id: string; title: string; section: string; anchors: string[]; removed: boolean; lastAudit: { id: string; outcome: string; at: string; provisional: boolean } | null; auditMoved: boolean }[];
   };
   /** Review-complete rollup over the changed+added anchors — "am I done reviewing this?" */
   coverage: Coverage;
@@ -198,6 +206,35 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
       possiblyFixed: !isClosed(bug.state),
     }));
 
+  // Requirements the change puts back in question. Two different facts, and the second
+  // is the one a raw diff cannot give:
+  //
+  //  - the rule is ABOUT code this change moves, so its conformance is worth re-checking;
+  //  - the last audit's WITNESSES move too, so whatever verdict is on record was reached
+  //    against source this change rewrites. A `conformant` there is not evidence any more.
+  //
+  // Both are set-ops over the two snapshots, deliberately: nothing here consults live
+  // hashes. `ServedRequirement.recheckDue` and `ServedAudit.superseded` answer the same
+  // shape of question against the WORKING TREE, and a diff of two cached commits must not
+  // depend on what happens to be checked out — the same reason `loadNodesAt` exists above.
+  const auditsByRequirement = new Map<string, Audit>();
+  for (const a of await readAudits(root)) auditsByRequirement.set(a.requirementId, a); // ORDER BY at,id — last wins
+  // Ratified only, for the reason `conformance()` filters the same way: a retired rule is
+  // not part of the standard in force, so listing it as due for audit is asking for work
+  // on a rule that no longer binds anything.
+  const requirementImpact = (await readRequirements(root, { status: "ratified" })).requirements
+    .map((rq) => ({ rq, hit: rq.cites.filter((id) => impacted.has(id)) }))
+    .filter((x) => x.hit.length > 0)
+    .map(({ rq, hit }) => {
+      const a = auditsByRequirement.get(rq.id);
+      return {
+        id: rq.id, title: rq.title, section: rq.section, anchors: hit,
+        removed: hit.some((id) => removedIds.has(id)),
+        lastAudit: a ? { id: a.id, outcome: a.outcome, at: a.at, provisional: a.provisional === true } : null,
+        auditMoved: a ? a.witnesses.some((w) => impacted.has(w.anchorId)) : false,
+      };
+    });
+
   // Review-complete over the anchors this diff changed or added (removed ones need no
   // review). The number that answers "am I actually done reviewing this change?" —
   // stakes-relative, so it never demands a golden-window sign-off on plumbing.
@@ -213,7 +250,7 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
     removed,
     changed,
     unverifiable,
-    impact: { nodes: impactedNodes, flows, reviews: reviewImpact, bugs: bugImpact },
+    impact: { nodes: impactedNodes, flows, reviews: reviewImpact, bugs: bugImpact, requirements: requirementImpact },
     coverage,
   };
 }

@@ -629,6 +629,17 @@ async function cmdDiff(root: string, base: string, head?: string): Promise<void>
     console.log(`\nreviews that would go stale (${r.impact.reviews.length}):`);
     for (const rv of r.impact.reviews) console.log(`  ⚠ ${rv.level} review of ${rv.target.kind} ${rv.target.id}`);
   }
+  if (r.impact.requirements.length) {
+    console.log(`\nrequirements to re-audit (${r.impact.requirements.length}):`);
+    for (const rq of r.impact.requirements) {
+      // `auditMoved` is the part worth the extra words: without it a `conformant` on the
+      // record reads as reassurance about code this change has already rewritten.
+      const verdict = rq.lastAudit
+        ? `last audit ${rq.lastAudit.outcome}${rq.lastAudit.provisional ? " (provisional)" : ""}${rq.auditMoved ? ", witnesses moved" : ""}`
+        : "never audited";
+      console.log(`  § ${rq.section}  ${rq.id} "${rq.title}" — ${rq.anchors.length} anchor(s)${rq.removed ? ", subject removed" : ""}; ${verdict}`);
+    }
+  }
 }
 
 /**

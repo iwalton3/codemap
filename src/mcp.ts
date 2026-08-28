@@ -291,7 +291,7 @@ const tools: Tool[] = [
   },
   {
     name: "diff",
-    description: "Diff two anchor snapshots for reviewing a branch/PR: added/removed/changed symbols plus the impact on the docs, flows, and reviews that cite them. `base` is a cached snapshot (branch/tag/sha — cache it first with `init`/`snapshot`). Omit `head` to diff against a fresh index of the CURRENT working tree (the usual PR-review path: you've checked out the branch under review); or pass a second cached ref for a pure historical set-op.",
+    description: "Diff two anchor snapshots for reviewing a branch/PR: added/removed/changed symbols plus the impact on the docs, flows, reviews, bugs and REQUIREMENTS that cite them.\n\n`impact.requirements` is the audit trigger: a rule of the standard whose cited code this change moves is worth re-auditing, and `auditMoved` says the last audit\u2019s witnesses moved too \u2014 so whatever verdict is on record was reached against source this change rewrites, and a `conformant` there is not evidence any more. It reaches only rules that CITE something; an uncited requirement (the rule the code does not yet satisfy) is invisible to a set-op over anchors. `base` is a cached snapshot (branch/tag/sha — cache it first with `init`/`snapshot`). Omit `head` to diff against a fresh index of the CURRENT working tree (the usual PR-review path: you've checked out the branch under review); or pass a second cached ref for a pure historical set-op.",
     inputSchema: obj({ base: { type: "string" }, head: { type: "string" } }, ["base"]),
     handler: (a, c) => ops.diff(c.universe.path, a.base, a.head),
   },

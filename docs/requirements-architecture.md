@@ -420,10 +420,26 @@ pointer → code now suspect`. Upward, the mechanism populates the audit queue; 
 tells a ratifier what their amendment is about to break, before they adopt it. One
 relation, both audiences.
 
-*Not built.* `diff.ts` already rolls changed symbols up to nodes, flows, reviews and bugs
-(`impact` at the end of `computeDiff`) — requirements are simply not among them, so the
-branch-diff surface is one rollup target away from being the audit trigger the subsystem
-otherwise lacks.
+**The upward half is BUILT.** `computeDiff` rolls changed symbols up to the requirements
+that cite them (`impact.requirements`), and it reports two different facts, because they
+answer different questions:
+
+- the rule is *about* code this change moves — re-audit it;
+- `auditMoved`: the last audit's **witnesses** move too, so the verdict on record was
+  reached against source this change rewrites. A `conformant` there is not evidence any
+  more. Those are different anchor sets — a rule may cite ten symbols and have been
+  audited against one — and only the second one falsifies anything.
+
+Both are set-ops over the two snapshots. Nothing on this path consults live hashes, which
+is deliberate: `ServedRequirement.recheckDue` and `ServedAudit.superseded` answer the same
+shape of question **against the working tree**, and a diff of two cached commits must not
+depend on what is checked out — the same constraint `loadNodesAt` exists for.
+
+*Still not built:* the DOWNWARD direction above (a ratified amendment pricing what it
+breaks) needs pointers, and the rollup reaches only rules that CITE something. An uncited
+requirement is a well-formed record — the rule the code does not yet satisfy — and no
+set-op over anchors can find it. That hole is exactly what pointers fill, and it is pinned
+in `diff.test.ts` rather than left as a comment.
 
 ### Differential audit has a blind spot, and the scrub is its complement
 
@@ -558,10 +574,6 @@ to catch, so it is reported (`settledWithoutAdjudication`) instead of tidied awa
 Not built, roughly in the order they are worth building — `docs/population-predicate.md`
 carries the detail and the reasoning:
 
-- **The branch diff does not reach requirements.** `computeDiff` rolls changed symbols up to
-  nodes, flows, reviews and bugs. Adding requirements needs no new relation (`cites` and
-  `witnesses` are already there) and turns `/diff` into the audit trigger this subsystem
-  otherwise lacks entirely. Cheapest thing on this list.
 - **`asserted_by`**, with its vacuity field, a **falsifier**, and an **evidence kind** —
   the last two adopted from the spec playbook's §13.1/§13.2 rather than re-derived.
 - **Audit pointers**, and then the **scrub**, which is their necessary counterweight rather
@@ -571,7 +583,9 @@ carries the detail and the reasoning:
 - Section move/rename operations, and spec withdrawal / repeal. Mechanical.
 
 The web front end has no routes for any of it — `mcp.ts` is wired and `serve.ts` is not, so
-this surface is currently agent-only.
+this surface is currently agent-only. The one exception is the diff rollup above, which
+rides the existing `/api/diff` payload and renders on `/#/u/:u/diff/` with no route of its
+own; that is also why its rows do not link anywhere.
 
 ## Deliberately open
 

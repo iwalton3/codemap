@@ -2737,6 +2737,25 @@ class DiffPage extends Component {
     </div>`;
   }
 
+  // A rule of the standard whose cited code this diff moves. No link: the requirements
+  // surface is CLI/agent-only today, and a dead href reads worse than plain text.
+  reqRow(rq) {
+    const bi = this.briefIndex();
+    const verdict = rq.lastAudit
+      ? `${rq.lastAudit.outcome}${rq.lastAudit.provisional ? ' · provisional' : ''}`
+      : 'never audited';
+    return html`<div class="dreq ${rq.auditMoved ? 'moved' : ''}">
+      <div class="dbugh">
+        <span class="dreqs" title="section of the standard">${rq.section}</span>
+        <span class="dbugt">${rq.title}</span>
+        ${when(rq.removed, () => html`<span class="bchip changed" title="a cited symbol is gone in this diff — the rule's subject left the tree">subject removed</span>`)}
+        ${when(rq.auditMoved, () => html`<span class="bchip poss" title="the last audit's witnesses moved in this diff — its verdict was reached against source this change rewrites">witnesses moved</span>`)}
+        <span class="bchip">${verdict}</span>
+      </div>
+      <div class="chips">${each(rq.anchors, aid => { const b = bi.get(aid); const s = this.state.sel && this.state.sel.id === aid; return html`<span class="chip mini ${s ? 'sel' : ''}" on-click="${() => this.openCodeById(aid)}">${b ? b.symbol : aid.slice(0, 10)}</span>`; }, aid => aid)}</div>
+    </div>`;
+  }
+
   symRow(b) {
     const sel = this.state.sel && this.state.sel.id === b.id;
     return html`<div class="drow ${DTAG[b.tag]} ${sel ? 'sel' : ''}" on-click="${() => this.pickSel('sym', b.id)}">
@@ -2831,6 +2850,9 @@ class DiffPage extends Component {
 
             ${when(d.impact.bugs && d.impact.bugs.length, () => html`<div class="sec">bugs on changed code (${d.impact.bugs.length})</div>
               ${each(d.impact.bugs, bug => this.bugRow(bug), bug => bug.id)}`)}
+
+            ${when(d.impact.requirements && d.impact.requirements.length, () => html`<div class="sec">requirements to re-audit (${d.impact.requirements.length})</div>
+              ${each(d.impact.requirements, rq => this.reqRow(rq), rq => rq.id)}`)}
 
             <div class="dtoggle"><span class="dim">changes</span>
               <button class="${this.state.view === 'doc' ? 'on' : ''}" on-click="${() => this.setView('doc')}">by doc (${d.impact.nodes.length})</button>
