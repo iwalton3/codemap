@@ -25,7 +25,7 @@ const TOOLS = new Set([...SRC.matchAll(/^\s*name: "([a-z_]+)",$/gm)].map((m) => 
 const NOT_TOOLS = new Set([
   "disposition", "tier", "category", "line", "offset", "locate", "reversibility", // parameters
   "untriaged", "unverified", "refuted", "settled", "transitions_to", // enum values
-  "witnesses", "anchors", "citations", "vouch", "cites", // record fields
+  "witnesses", "anchors", "citations", "vouch", "cites", "diagnostic", // record fields
 ]);
 
 /** `use \`x\``, `see \`x\``, `with \`x\`` … — a reference to something callable. */

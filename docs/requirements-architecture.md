@@ -395,6 +395,40 @@ is precisely the edit that quietens a detector invisibly.
 conformance from one — a criterion changes what an audit's evidence is WORTH, and only
 `recordAudit` says whether the code conforms.
 
+## A blocked scope is served non-authoritatively — BUILT
+
+`materializeStandard` reduced the scope verdict to a boolean and ran only on the WRITE
+path, so nothing on the read path ever asked: a `standard/` scope blocked by a fork or an
+id collision still handed back projection rows that looked exactly like a healthy team's.
+§7 of `docs/sidecar-architecture.md` is a fail-CLOSED rule, and the way it fails in
+practice is a surface that never looked.
+
+`standardScopeWarning` (in `standard-publish.ts`) answers whether the standard may be
+presented as the team's, and `served()` in `ops/standard.ts` attaches the result to **every
+read** on the surface — the status rides WITH the value the way `Cached<T>` does one layer
+down, so a caller cannot take the rows and forget to ask. Two non-authoritative reasons,
+kept apart because the repair differs: `blocked` is the log refusing to be read as settled
+(with the `diagnostic` naming the evidence), `stale` is the rows being behind a log that is
+otherwise fine.
+
+Three things about the shape, each of which is a way to get this wrong:
+
+- **The rows still come back.** A blocked scope is rendered non-authoritative, never
+  hidden: a reader who can see what the team wrote is better placed to repair it than one
+  staring at an empty page. What the marker forbids is presenting it as settled.
+- **The marker is ABSENT when the answer is authoritative**, rather than a `complete` on
+  every response. A status on every read for every healthy team is noise, and noise is what
+  a warning has to outrank. No sidecar is likewise not a warning — local rows with no log
+  behind them are the whole story.
+- **List reads answer under a named key** (`{requirements: […]}`, `{problems: […]}`) rather
+  than as bare arrays, because a property set on an array does not survive
+  `JSON.stringify` — the marker would vanish on exactly the surfaces that carry it.
+
+This is the one thing that belongs in the ops layer despite its *"do not add a guard here"*
+rule, and the distinction is worth keeping: a guard is a rule about what a WRITER may do,
+so it has to bind the fold as well; a scope status is this machine's verdict on its own log
+shards, and has no other end to bind.
+
 ## Audit pointers — a prior on where to look, never a verdict
 
 *Designed, not built.* A **pointer** is a standing declaration that a requirement's
@@ -637,6 +671,9 @@ MCP surface via `ops/standard.ts`:
 - `audits.ts` — the audit record with non-vacuity as a refusal, plus the conformance
   classification (`conformant` is reachable only through a code-backed audit).
 - `problems.ts` — the un-adjudicated record, `adjudicate`, and **no close verb at all**.
+- `criteria.ts` — the acceptance criterion (falsifier, evidence kind, `assertedBy`) and the
+  `VacuityCheck` that keeps it honest.
+- `ops/standard.ts`'s `served()` — the non-authoritative marker on every read.
 
 **Adjudication and closure are separate events**, which was not obvious until it was
 built. Naming which side moves does not move it, so a problem stays open until the named
@@ -661,13 +698,6 @@ own; that is also why its rows do not link anywhere.
 
 ## Deliberately open
 
-- **A blocked scope has no non-authoritative carrier.** `readCached` returns a scope
-  status, `materializeStandard` reduces it to a boolean, and an ordinary requirement read
-  never consults it — so if the `standard/` scope is blocked by a fork or a collision, the
-  projection rows are still served and look authoritative. Requirements carry `origin:
-  "sync"` and nothing else. The sidecar architecture's §7 is a fail-closed rule and this is
-  the surface that never looked; the fix is a status that rides WITH the value, the way
-  `Cached<T>` already does one layer down. Found by review, not fixed.
 - **Who owns the standard's taxonomy.** If sections only ever arrive via specs it is
   emergent, and emergent will not stay sane. Legal codes have an Office of the Law
   Revision Counsel for exactly this. Reorganizing the standard needs to be a first-class

@@ -287,9 +287,12 @@ test("an undeclared argument cannot buy a principal, or forge provenance", async
     // Could this pass vacuously? Only if the server refused everything. It does not: the
     // spec is still a draft (so the forged ratification did NOT land) and an ordinary read
     // answers normally.
-    const rules = JSON.parse(honest!) as { title: string }[];
-    assert.equal(rules.length, 1, "only the legitimately ratified rule exists");
-    assert.equal(rules[0]!.title, "Credit line is never negative");
+    // Under `requirements`, not bare: every standard read answers under a named key so the
+    // non-authoritative `scope` marker has somewhere to ride that survives JSON.
+    const read = JSON.parse(honest!) as { requirements: { title: string }[]; scope?: unknown };
+    assert.equal(read.requirements.length, 1, "only the legitimately ratified rule exists");
+    assert.equal(read.requirements[0]!.title, "Credit line is never negative");
+    assert.equal(read.scope, undefined, "and this store has no sidecar, so nothing warns");
   } finally {
     discard(root);
   }

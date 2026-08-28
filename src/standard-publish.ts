@@ -18,10 +18,11 @@
  */
 
 import type { Acknowledgement, Actor, Audit, BugWitness, Operation, Problem, Spec, VacuityCheck } from "./schema.js";
+import type { ScopeDiagnostic } from "./eventlog.js";
 import { resolveSidecar, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
 import { requireActor } from "./identity.js";
 import { ensureSidecar } from "./sidecar.js";
-import { readCached } from "./materialize.js";
+import { readCached, ensureMaterialized } from "./materialize.js";
 import { standardProjection } from "./shared-projections.js";
 import {
   foldStandard, standardScope, publishSpecDrafted, publishOperation, publishSpecRatified,
@@ -44,6 +45,57 @@ export const cachedStandard = (root: string, cfg: { path: string; universe: stri
  */
 export async function materializeStandard(root: string, cfg: SidecarConfig): Promise<boolean> {
   try { await cachedStandard(root, cfg); return true; } catch { return false; }
+}
+
+/**
+ * Why the standard this read is about to answer from may NOT be presented as the team's.
+ *
+ * Two reasons, kept apart because the repair differs: `blocked` is the log itself refusing
+ * to be read as settled (a fork, a duplicate id, a broken chain — `diagnostic` says which
+ * and names the evidence), and `stale` is the rows being behind a log that is fine.
+ *
+ * There is no `complete` member on purpose. The value is `undefined` when the answer is
+ * authoritative, so an ordinary read keeps the shape it had — a status on every response
+ * for every healthy team is noise, and noise is what a warning has to outrank.
+ */
+export type StandardScope =
+  | { status: "blocked"; diagnostic?: ScopeDiagnostic }
+  | { status: "stale"; detail: string };
+
+/**
+ * Whether the standard may be answered from — for a read that is about to query the rows.
+ *
+ * The hole this closes: nothing on the read path ever asked. `materializeStandard` reduces
+ * the verdict to a boolean and runs only on the WRITE path, so a `standard/` scope blocked
+ * by a fork still served projection rows that looked exactly like a healthy team's. §7 of
+ * `docs/sidecar-architecture.md` is a fail-CLOSED rule, and the one way it fails in
+ * practice is a surface that never looked — which was this one.
+ *
+ * Fails closed itself: a sidecar that cannot be read at all is reported non-authoritative
+ * rather than passed over, because the alternative is answering as the team from rows
+ * nothing just checked.
+ *
+ * No sidecar is not a warning. Local rows with no log behind them ARE the whole story.
+ */
+export async function standardScopeWarning(root: string): Promise<StandardScope | undefined> {
+  const cfg = resolveSidecar(root);
+  if (!cfg) return undefined;
+  try {
+    const { fresh, folded, ...st } = await ensureMaterialized(
+      root, cfg.path, standardScope(cfg.universe), sidecarIdentity(cfg), foldStandard, standardProjection,
+    );
+    void folded;
+    if (st.status !== "complete") {
+      return { status: "blocked", ...(st.diagnostic ? { diagnostic: st.diagnostic } : {}) };
+    }
+    // `fresh: false` means somebody is appending faster than the fold can keep up, so the
+    // rows describe an input set already superseded. `sharedFindings` discards this; here
+    // it is reported, because the standard's reads are the ones that say a rule CONFORMS.
+    if (!fresh) return { status: "stale", detail: "the rows are behind the log — the next sync will retry" };
+    return undefined;
+  } catch (e: any) {
+    return { status: "stale", detail: `the shared standard could not be read: ${e?.message ?? e}` };
+  }
 }
 
 export interface Shared { shared: boolean; configured: boolean; folded?: boolean; error?: string }

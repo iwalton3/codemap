@@ -1156,13 +1156,13 @@ const tools: Tool[] = [
   // steering is not carried by those six names, so collapsing them costs nothing.
   {
     name: "standard_status",
-    description: "The state of the standard — the binding business rules — and every queue over it. START HERE for anything about requirements. Reports how much of the standard is `conformant` / `gap` / `debt` / `unknown`, plus `regressed` (met once, no longer known to be). `unknown` means nobody has checked, and is never the same as fine. `settledWithoutAdjudication` counts business questions that got answered by somebody changing code — read that queue if it is nonzero.",
+    description: "The state of the standard — the binding business rules — and every queue over it. START HERE for anything about requirements. Reports how much of the standard is `conformant` / `gap` / `debt` / `unknown`, plus `regressed` (met once, no longer known to be). `unknown` means nobody has checked, and is never the same as fine. `settledWithoutAdjudication` counts business questions that got answered by somebody changing code — read that queue if it is nonzero.\n\nEVERY read on this surface carries `scope` when the answer is NOT authoritative, and omits it otherwise. `blocked` means the shared log refuses to be read as settled — a fork, a duplicate id, a broken chain — and `diagnostic` names the evidence to repair. `stale` means the rows are behind a log that is otherwise fine. The rows still come back either way, because a reader who can see what the team wrote is better placed to fix it than one staring at an empty page; what the marker forbids is presenting the answer as settled.",
     inputSchema: obj({}),
     handler: (_a, c) => ops.standardStatus(c.universe.path),
   },
   {
     name: "standard_queue",
-    description: "Open one of the queues `standard_status` counts. `pending_specs` — proposals awaiting a principal, with how many operations each carries, whether any is irreversible, and how many arrive already `silenced` by a gap. `awaiting_adjudication` — discrepancies nobody has decided; this is deliberately NOT a fix queue. `actionable` — problems already decided, i.e. work that is owed. `settled_without_adjudication` — the andon signal. `promotable_audits` — branch findings whose evidence still holds on the default branch. `acknowledgements_due` — silencers past their revalidate-by date.",
+    description: "Open one of the queues `standard_status` counts. `pending_specs` — proposals awaiting a principal, with how many operations each carries, whether any is irreversible, and how many arrive already `silenced` by a gap. `awaiting_adjudication` — discrepancies nobody has decided; this is deliberately NOT a fix queue. `actionable` — problems already decided, i.e. work that is owed. `settled_without_adjudication` — the andon signal. `promotable_audits` — branch findings whose evidence still holds on the default branch. `acknowledgements_due` — silencers past their revalidate-by date.\n\nEach answers under its own key (`specs`, `problems`, `audits`, `acknowledgements`), plus `scope` when the answer is not authoritative — see `standard_status`.",
     inputSchema: obj({
       queue: {
         type: "string",
@@ -1188,7 +1188,7 @@ const tools: Tool[] = [
   },
   {
     name: "requirements",
-    description: "The standard itself: the binding rules, filed taxonomically. A requirement is UPSTREAM of the code — the code exists to satisfy it — so it never goes `stale` when code drifts, and there is no edit path on it. Filter by `section` or `status`. To see where the sections are, call `requirement_sections`.",
+    description: "The standard itself: the binding rules, filed taxonomically. A requirement is UPSTREAM of the code — the code exists to satisfy it — so it never goes `stale` when code drifts, and there is no edit path on it. Filter by `section` or `status`. To see where the sections are, call `requirement_sections`. Answers under `requirements`, plus `scope` when the answer is not authoritative — see `standard_status`.",
     inputSchema: obj({
       section: { type: "string", description: "Filter to one section path, e.g. \"Credit/Limits\"." },
       status: { type: "string", enum: ["ratified", "retired"] },
@@ -1203,13 +1203,13 @@ const tools: Tool[] = [
   },
   {
     name: "requirement_sections",
-    description: "The standard's taxonomy — the section index a reader opens before any individual rule, with a count per section. These are the STANDARD's sections, not the shape of whatever spec introduced a rule; they are different axes.",
+    description: "The standard's taxonomy — the section index a reader opens before any individual rule, with a count per section. These are the STANDARD's sections, not the shape of whatever spec introduced a rule; they are different axes. Answers under `sections`, plus `scope` when the answer is not authoritative — see `standard_status`.",
     inputSchema: obj({}),
     handler: (_a, c) => ops.requirementSections(c.universe.path),
   },
   {
     name: "conformance",
-    description: "Per-requirement classification: `conformant` (checked, and it holds) / `gap` (no code that should conform exists yet — roadmap, not a defect) / `debt` (conforming code should exist and does not) / `unknown` (nobody has checked). `conformant` is reachable only through an audit that touched code, so nothing about merging or time passing ever produces it.",
+    description: "Per-requirement classification: `conformant` (checked, and it holds) / `gap` (no code that should conform exists yet — roadmap, not a defect) / `debt` (conforming code should exist and does not) / `unknown` (nobody has checked). `conformant` is reachable only through an audit that touched code, so nothing about merging or time passing ever produces it. Answers under `conformance`, plus `scope` when the answer is not authoritative — see `standard_status`.",
     inputSchema: obj({ asOf: { type: "string", description: "ISO timestamp — classify as of then rather than now." } }),
     handler: (a, c) => ops.conformance(c.universe.path, a),
   },
@@ -1221,7 +1221,7 @@ const tools: Tool[] = [
   },
   {
     name: "audits",
-    description: "Every audit recorded against one requirement, OLDEST first — the LAST row is the current word on the rule, which is the one `conformance` reads. Each is marked `superseded` when the code it examined has moved. A superseded audit is not wrong — it was true of what it read — it just no longer speaks about what is there now.",
+    description: "Every audit recorded against one requirement, OLDEST first — the LAST row is the current word on the rule, which is the one `conformance` reads. Each is marked `superseded` when the code it examined has moved. A superseded audit is not wrong — it was true of what it read — it just no longer speaks about what is there now. Answers under `audits`, plus `scope` when the answer is not authoritative — see `standard_status`.",
     inputSchema: obj({ requirementId: { type: "string" } }, ["requirementId"]),
     handler: (a, c) => ops.auditsFor(c.universe.path, a),
   },
@@ -1233,13 +1233,13 @@ const tools: Tool[] = [
   },
   {
     name: "weak_assertions",
-    description: "The criteria nobody can currently lean on, in five buckets kept apart because the remedy differs. `unchecked` — has a check, nobody has tried to break it. `vacuous` — somebody tried and it cannot fail. `wrongLayer` — it fails, but somewhere that cannot observe the violation (a Validate-only test on a handler bug is green paint). `unasserted` — no check at all, which is a rule waiting for one rather than a defect. `moved` — the assertion's code changed, so every verdict about it is about code that is gone.",
+    description: "The criteria nobody can currently lean on, in five buckets kept apart because the remedy differs. `unchecked` — has a check, nobody has tried to break it. `vacuous` — somebody tried and it cannot fail. `wrongLayer` — it fails, but somewhere that cannot observe the violation (a Validate-only test on a handler bug is green paint). `unasserted` — no check at all, which is a rule waiting for one rather than a defect. `moved` — the assertion's code changed, so every verdict about it is about code that is gone. Carries `scope` when the answer is not authoritative — see `standard_status`.",
     inputSchema: obj({}),
     handler: (_a, c) => ops.weakAssertions(c.universe.path),
   },
   {
     name: "acknowledgements",
-    description: "The silencers: records saying the rule stands, we know it is not met, do not raise it. `basis` is `gap` (nothing that should conform exists yet) or `debt` (it should and does not). One record kind for both, so there is exactly one thing to count when asking how much of the standard is currently silenced.",
+    description: "The silencers: records saying the rule stands, we know it is not met, do not raise it. `basis` is `gap` (nothing that should conform exists yet) or `debt` (it should and does not). One record kind for both, so there is exactly one thing to count when asking how much of the standard is currently silenced. Answers under `acknowledgements`, plus `scope` when the answer is not authoritative — see `standard_status`.",
     inputSchema: obj({
       requirementId: { type: "string" },
       state: { type: "string", enum: ["active", "released"] },
@@ -1249,7 +1249,7 @@ const tools: Tool[] = [
   },
   {
     name: "problems",
-    description: "Discrepancies between the standard and the code. Each carries the audit that established it and, once decided, its disposition. Closure is DERIVED from the named move actually happening, so a problem that has been adjudicated is not thereby closed.",
+    description: "Discrepancies between the standard and the code. Each carries the audit that established it and, once decided, its disposition. Closure is DERIVED from the named move actually happening, so a problem that has been adjudicated is not thereby closed. Answers under `problems`, plus `scope` when the answer is not authoritative — see `standard_status`.",
     inputSchema: obj({ requirementId: { type: "string" } }),
     handler: (a, c) => ops.listProblems(c.universe.path, a),
   },
