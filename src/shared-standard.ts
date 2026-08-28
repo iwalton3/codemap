@@ -221,8 +221,15 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
         // certifies nothing, and this is the only place that binds a writer whose tool
         // did not check — which is the one path by which `conformant` could be reached
         // without a code-backed audit.
+        //
+        // `some(passed)`, NOT `ran.length`: a command that FAILED is evidence of
+        // non-conformance, never of conformance. `touchedCode` in `audits.ts` was tightened
+        // for exactly that reason and this end was left counting any nonempty `ran`, so
+        // `{command: "false", passed: false}` still certified a rule for every clone —
+        // the one-end fix, on the guard whose whole job is to bind the other end.
         const ev = audit.evidence ?? {};
-        if (audit.outcome === "conformant" && !(ev.read?.length || ev.ran?.length)) break;
+        const touched = !!(ev.read?.length || ev.ran?.some((r) => r.passed));
+        if (audit.outcome === "conformant" && !touched) break;
         audits.set(audit.id, { ...audit, origin: "sync" });
         break;
       }

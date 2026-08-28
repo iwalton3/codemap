@@ -84,9 +84,32 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     publish: ["src/acknowledgements.ts", /principal\(root, input, "acknowledge debt"\)/],
   },
   {
+    // Both ends must count a command the same way. They did NOT: `touchedCode` was tightened
+    // to `some(passed)` because `{command: "false", passed: false}` had certified a rule, and
+    // the fold was left on `ran.length` — so the identical audit the tool refused was accepted
+    // by every clone. The earlier regexes here matched both ends while they meant different
+    // things, which is why these pin the COUNTING RULE rather than the surrounding condition.
     what: "a conformant audit that touched no code",
-    fold: ["src/shared-standard.ts", /audit\.outcome === "conformant" && !\(ev\.read\?\.length/],
-    publish: ["src/audits.ts", /input\.outcome === "conformant" && !touchedCode\(evidence\)/],
+    fold: ["src/shared-standard.ts", /ev\.ran\?\.some\(\(r\) => r\.passed\)/],
+    publish: ["src/audits.ts", /e\.ran\?\.some\(\(r\) => r\.passed\)/],
+  },
+  // Two more that had both ends in the code and neither end registered here, so a future
+  // one-end deletion would have been silent. Found by walking the fold against the four
+  // principal-gated verbs when they were first exposed as tools.
+  //
+  // Both fold patterns anchor on the CODE of the surrounding case, not on its comment:
+  // `if (e.actor.via) break;` appears in two cases, so a bare match would be satisfied by
+  // whichever survived, and a comment match would be satisfied by a comment above a guard
+  // somebody had deleted.
+  {
+    what: "an agent's ratification of a spec",
+    fold: ["src/shared-standard.ts", /sp\.status === "ratified"\) break;[\s\S]{0,240}?if \(e\.actor\.via\) break;/],
+    publish: ["src/requirements.ts", /principal\(root, input, "ratify"\)/],
+  },
+  {
+    what: "an agent's adjudication of a problem",
+    fold: ["src/shared-standard.ts", /!p \|\| p\.disposition\) break;[\s\S]{0,240}?if \(e\.actor\.via\) break;/],
+    publish: ["src/problems.ts", /principal\(root, input, "adjudicate a problem"\)/],
   },
 ];
 

@@ -268,10 +268,27 @@ test("the fold refuses a conformant audit that touched no code", async () => {
     });
     assert.equal((await fold(root)).audits.length, 1, "one that read code does bind");
 
+    // A command that FAILED is evidence of NON-conformance, and this end used to count any
+    // nonempty `ran` — so `false` certified a rule for every clone while `audits.ts` refused
+    // the identical audit locally. The case the original test never reached: it checked an
+    // absent `ran` and a present `read`, so the difference between the two ends was invisible.
+    await publishAudit(root, SCOPE, opus, {
+      ...base, id: "au_3", evidence: { ran: [{ command: "false", passed: false }] },
+    });
+    assert.equal(
+      (await fold(root)).audits.length, 1,
+      "a failed command is not a certification — the fold must not be laxer than `touchedCode`",
+    );
+
+    await publishAudit(root, SCOPE, opus, {
+      ...base, id: "au_4", evidence: { ran: [{ command: "npm test", passed: true }] },
+    });
+    assert.equal((await fold(root)).audits.length, 2, "a command that PASSED does bind");
+
     // `indeterminate` is the quiet bucket and may carry nothing, so the gate is about the
     // OUTCOME rather than about evidence being present.
-    await publishAudit(root, SCOPE, opus, { ...base, id: "au_3", outcome: "indeterminate" });
-    assert.equal((await fold(root)).audits.length, 2);
+    await publishAudit(root, SCOPE, opus, { ...base, id: "au_5", outcome: "indeterminate" });
+    assert.equal((await fold(root)).audits.length, 3);
   } finally { discard(root); }
 });
 

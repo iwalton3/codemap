@@ -51,9 +51,9 @@ import type {
  * is the only nonzero row.
  */
 export async function standardStatus(root: string) {
-  const [state, specs, adjudication, fixes, settled, promotable, due] = await Promise.all([
+  const [state, specs, adjudication, fixes, settled, promotable] = await Promise.all([
     silenced(root), pendingSpecs(root), awaitingAdjudication(root), actionable(root),
-    settledWithoutAdjudication(root), promotableAudits(root), dueForRevalidation(root),
+    settledWithoutAdjudication(root), promotableAudits(root),
   ]);
   return {
     conformance: state,
@@ -62,7 +62,10 @@ export async function standardStatus(root: string) {
       awaitingAdjudication: adjudication.length,
       actionableProblems: fixes.length,
       promotableAudits: promotable.length,
-      acknowledgementsDue: due.length,
+      // `state.due`, not a second `dueForRevalidation` call. Both default `asOf` to their
+      // own `now()`, so an acknowledgement falling due between the two would be counted
+      // once in the distribution and not in the queue, in one response.
+      acknowledgementsDue: state.due,
       settledWithoutAdjudication: settled.length,
     },
   };

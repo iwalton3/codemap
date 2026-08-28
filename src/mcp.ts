@@ -1161,7 +1161,12 @@ const tools: Tool[] = [
         case "actionable": return ops.actionableProblems(p);
         case "settled_without_adjudication": return ops.settledWithoutAdjudication(p);
         case "promotable_audits": return ops.promotableAudits(p);
-        default: return ops.dueForRevalidation(p);
+        case "acknowledgements_due": return ops.dueForRevalidation(p);
+        // Unreachable while the enum above is enforced, and named rather than defaulted so
+        // that ADDING a queue and forgetting the case is an error instead of silently
+        // serving a different queue. That list-drifts-from-the-handlers shape has bitten
+        // this file twice before; see the note on `mutates`.
+        default: return Promise.resolve({ error: `unknown queue "${String(a.queue)}"` });
       }
     },
   },
