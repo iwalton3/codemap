@@ -8,7 +8,7 @@
  */
 
 import type { Actor, Triage } from "./schema.js";
-import { requireActor, isAgentActor } from "./identity.js";
+import { requireActor, isAgentActor, actorVia } from "./identity.js";
 import { comparableHashes, sameBody } from "./normalize.js";
 import { realpathSync } from "node:fs";
 import { classifyCitations } from "./citation-state.js";
@@ -556,7 +556,7 @@ function view(f: SharedFinding) {
     severity: f.severity,
     category: f.category,
     author: f.author.principal,
-    authorModel: f.author.via?.model,
+    authorModel: actorVia(f.author),
     createdAt: f.createdAt,
     needsAck: needsHumanAck(f),
     promoted: !!f.promotion,
@@ -568,8 +568,8 @@ function view(f: SharedFinding) {
     confirms: confirms.length,
     independentConfirms: confirms.filter((c) => c.independent).length,
     refutes: f.corroboration.filter((c) => c.verdict === "refute").length,
-    corroboration: f.corroboration.map((c) => ({ by: c.actor.principal, model: c.actor.via?.model, verdict: c.verdict, rationale: c.rationale, independent: c.independent, ref: c.ref })),
-    thread: f.thread.map((c) => ({ id: c.id, by: c.actor.principal, model: c.actor.via?.model, at: c.at, body: c.body, inReplyTo: c.inReplyTo })),
+    corroboration: f.corroboration.map((c) => ({ by: c.actor.principal, model: actorVia(c.actor), verdict: c.verdict, rationale: c.rationale, independent: c.independent, ref: c.ref })),
+    thread: f.thread.map((c) => ({ id: c.id, by: c.actor.principal, model: actorVia(c.actor), at: c.at, body: c.body, inReplyTo: c.inReplyTo })),
     pending: f.pending ? { ask: f.pending.ask, by: f.pending.by.principal, rationale: f.pending.rationale } : undefined,
     outcome: f.outcome ? { result: f.outcome.result, detail: f.outcome.detail, by: f.outcome.by.principal, files: f.outcome.files } : undefined,
     // THE HISTORY, not just the last line. A multi-round verification overwrote itself
@@ -601,7 +601,7 @@ function view(f: SharedFinding) {
     closed: f.closed ? { by: f.closed.by.principal, reason: f.closed.reason } : undefined,
     contested: f.contested?.map((c) => ({ field: c.field, held: c.held, incoming: c.incoming })),
     relocation: f.relocation
-      ? { kind: f.relocation.kind, to: f.relocation.to, by: f.relocation.by.principal, model: f.relocation.by.via?.model, rationale: f.relocation.rationale, applied: !!f.relocation.applied }
+      ? { kind: f.relocation.kind, to: f.relocation.to, by: f.relocation.by.principal, model: actorVia(f.relocation.by), rationale: f.relocation.rationale, applied: !!f.relocation.applied }
       : undefined,
   };
 }
@@ -1031,9 +1031,9 @@ export async function sharedNotes(root: string, targetId: string) {
       : {}),
     notes: notes.map((n) => ({
       id: n.id, kind: n.kind, text: n.text, severity: n.severity, category: n.category, line: n.line,
-      by: n.author.principal, model: n.author.via?.model, at: n.createdAt,
+      by: n.author.principal, model: actorVia(n.author), at: n.createdAt,
       resolved: n.resolved ? { by: n.resolved.by.principal, reason: n.resolved.reason } : undefined,
-      answers: n.answers.map((a) => ({ by: a.actor.principal, model: a.actor.via?.model, at: a.at, body: a.body })),
+      answers: n.answers.map((a) => ({ by: a.actor.principal, model: actorVia(a.actor), at: a.at, body: a.body })),
       // A disagreement nobody is shown is a disagreement nobody settles. Same
       // shape as a finding's, so a reader that renders one renders both.
       contested: n.contested?.map((c) => ({ field: c.field, held: c.held, incoming: c.incoming })),
@@ -1659,7 +1659,7 @@ export async function sharedWalkthroughs(root: string, pr: number | string, head
     // A blocked scope still SHOWS its walkthroughs — this suppresses nothing, so it
     // reports the verdict rather than emptying the list.
     ...(status.status !== "complete" ? { scope: status } : {}),
-    current: cur ? { by: cur.actor.principal, model: cur.actor.via?.model, at: cur.at, walkthrough: cur.walkthrough } : undefined,
+    current: cur ? { by: cur.actor.principal, model: actorVia(cur.actor), at: cur.at, walkthrough: cur.walkthrough } : undefined,
     // Named rather than hidden: a walkthrough about another commit is not wrong,
     // it is about something else, and saying so is the point of the head stamp.
     stale: head ? staleWalkthroughs(all, head).map((s) => ({ by: s.actor.principal, head: s.walkthrough.head })) : [],
@@ -1720,7 +1720,7 @@ function describeTriage(t: SharedTriage) {
   const axis = (a: { effective: any; baseline?: any; escalation?: any; concurrent?: any[]; contested?: boolean } | undefined) => a && ({
     value: a.effective.value,
     by: a.effective.actor.principal,
-    model: a.effective.actor.via?.model,
+    model: actorVia(a.effective.actor),
     at: a.effective.at,
     reason: a.effective.reason,
     likely: a.effective.likely,

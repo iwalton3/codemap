@@ -261,5 +261,21 @@ export const reviewerKey = (a: Actor): string => `${a.principal}\0${a.via?.model
  * still exist alongside the structured actor.
  */
 export function actorLabel(a: Actor): string {
-  return a.via ? `${a.principal} (${a.via.model ?? "agent"})` : a.principal;
+  return a.via ? `${a.principal} (${actorVia(a)})` : a.principal;
 }
+
+/**
+ * The agent mark for a surface that flattens an actor to `by` plus one string.
+ *
+ * **Never empty when `via` is present**, which is the whole point. Every such surface used
+ * to send `via?.model`, and every renderer shows `by (model)` only when that is non-empty —
+ * so an agent whose client identified neither itself nor its model rendered as a bare
+ * principal, indistinguishable from a person. `via.kind` had said "agent" all along; the
+ * flattening threw it away. Reported from real use, on MCP acts with no `clientInfo.name`.
+ *
+ * Derived rather than stored: filling the absence in at write time would put a synthetic
+ * value in the log for ever, and "we do not know which model" is a fact worth keeping as
+ * itself. `model ?? harness ?? "agent"` degrades in the order of how much it tells you.
+ */
+export const actorVia = (a: Actor): string | undefined =>
+  a.via ? (a.via.model ?? a.via.harness ?? "agent") : undefined;

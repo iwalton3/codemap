@@ -5,7 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import type { Actor } from "./schema.js";
-import { resolveActor, resolvePrincipal, requireActor, isAgentActor, isIndependent, actorLabel } from "./identity.js";
+import {
+  resolveActor, resolvePrincipal, requireActor, isAgentActor, isIndependent, actorLabel,
+  markAgentSession, clearAgentSession, markObservedClient, clearObservedClient, actorVia,
+} from "./identity.js";
 import { discard } from "./test-tmp.js";
 
 function repoWithEmail(email: string | null): string {
@@ -151,4 +154,40 @@ test("with an identity set, the same write is allowed", () => {
 test("the label names the person, and the model when one acted for them", () => {
   assert.equal(actorLabel(human("izzie@x.com")), "izzie@x.com");
   assert.equal(actorLabel(agentFor("izzie@x.com", "claude-opus-5")), "izzie@x.com (claude-opus-5)");
+});
+
+/**
+ * An agent that identified neither itself nor its model must not render as a person.
+ *
+ * `via.kind` said "agent" all along. What threw it away was the FLATTENING: every surface
+ * that reduces an actor to `by` plus one string sent `via?.model`, and every renderer shows
+ * `by (model)` only when that is non-empty — so an unidentified agent came out as a bare
+ * principal, indistinguishable from a human. Reported from real use.
+ *
+ * Derived, not stored: filling the absence in at write time would put a synthetic value in
+ * the log for ever, and "we do not know which model" is worth keeping as itself.
+ */
+test("an agent never flattens to something a human is indistinguishable from", () => {
+  const root = repoWithEmail("izzie@x.com");
+  try {
+    const human = resolveActor(root, {})!;
+    assert.equal(human.via, undefined);
+    assert.equal(actorVia(human), undefined, "a person carries no mark, which is what makes the agent's mean something");
+
+    markAgentSession();
+    clearObservedClient();
+    const bare = resolveActor(root, {})!;
+    assert.equal(bare.via?.model, undefined, "the model is genuinely unknown and stays unknown");
+    assert.equal(actorVia(bare), "agent", "and the flattening still says an agent did it");
+    assert.match(actorLabel(bare), /izzie@x\.com \(agent\)/);
+
+    // It degrades in the order of how much it tells you.
+    markObservedClient("codex");
+    assert.equal(actorVia(resolveActor(root, {})!), "codex");
+    assert.equal(actorVia(resolveActor(root, { model: "claude-opus-5" })!), "claude-opus-5");
+  } finally {
+    clearObservedClient();
+    clearAgentSession();
+    discard(root);
+  }
 });

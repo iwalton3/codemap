@@ -347,6 +347,7 @@ class SharedPage extends Component {
           <span class="fcaret">${open ? '▾' : '▸'}</span>
           <span class="prbadge">${f.state}</span>
           <span class="${sevClass(f.severity)}">${f.severity ?? '\u2014'}</span>
+          ${when(!!f.category, () => html`<span class="rvfcat">${f.category}</span>`)}
           ${this.marksEl(f)}
           <span class="fauthor dim">${f.author}${f.authorModel ? ` (${f.authorModel})` : ''}</span>
         </div>
