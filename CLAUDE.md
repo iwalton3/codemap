@@ -273,6 +273,30 @@ against "declare the rule not yet applicable" becoming the cheap way to clear a 
 it type-checks and silently inherits all of the above. `src/requirements.test.ts` fails if
 a requirement ever reaches the node path.
 
+## `.codemapignore` has TWO bins
+
+`excluded` (the default) and `[tests]`. A `[tests]` path is **indexed** — citable,
+hashable, pinnable — but never a documentation subject: it gets `CoverageState = "tests"`,
+which is outside `DENOMINATOR`, so `find_gaps` never offers it and no coverage percentage
+moves when a repo starts indexing its tests.
+
+The asymmetry is the point. **Code is a liability** and describing it reduces that, which is
+what `find_gaps` ranks. **A test is already a claim in executable form**, so an uncovered
+piece of code is a gap and an uncovered test is not — indexed as ordinary anchors they enter
+the model with the wrong sign.
+
+Two things not to "fix":
+
+- **`tests` is a `CoverageState` and not a `CoverageMark`.** Every other state is reachable
+  by a `cover` rule; this one is reachable only from the committed file. That is deliberate:
+  coverage rules live in the gitignored DB and are not in `SHARED_KINDS`, so a `cover` rule
+  binds ONE machine, and "tests are not documentation subjects" is a repo-wide fact.
+- **`tests` outranks `cited`.** The reason tests are indexed at all is so a requirement can
+  pin a lint by hash, so something will point at them; letting a citation promote one back
+  into the denominator would do it through exactly the mechanism the bin exists to serve.
+
+See `docs/population-predicate.md` — the lint a requirement pins is why tests are in the map.
+
 ## Analyzers (opt-in only)
 
 - Framework analyzers (currently Marten/Wolverine) live in `src/analyzers/`.

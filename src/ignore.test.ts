@@ -48,3 +48,40 @@ test("comments and blank lines are ignored", () => {
   assert.equal(ig.ignores("vendor/x.js", false), true);
   assert.equal(ig.ignores("src/x.js", false), false);
 });
+
+test("the [tests] bin is indexed, not excluded — and the two bins do not leak", () => {
+  // Tests belong IN the map: a requirement pins a lint by hash, so the lint has to be
+  // indexed and citable. What they must stay out of is the documentation denominator.
+  const ig = compileIgnore([
+    "**/Internal/Generated/",
+    "",
+    "[tests]",
+    "*.Tests/",
+    "test-scripts/",
+  ].join("\n"));
+
+  assert.equal(ig.ignores("src/Internal/Generated/Handlers.cs", false), true);
+  assert.equal(ig.isTest("src/Internal/Generated/Handlers.cs", false), false,
+    "an excluded path is not a test path — the bins are separate lists");
+
+  assert.equal(ig.isTest("Acme.Api.Tests/PayTests.cs", false), true);
+  assert.equal(ig.ignores("Acme.Api.Tests/PayTests.cs", false), false,
+    "a [tests] pattern must NOT exclude — indexing them is the whole point");
+  assert.equal(ig.isTest("test-scripts/seed.py", false), true);
+  assert.equal(ig.isTest("src/pay.ts", false), false);
+});
+
+test("an unknown section falls back to excluding, which is the visible failure", () => {
+  // A typo'd header that silently dropped its patterns would re-admit whatever they
+  // excluded — generated code flooding the map, quietly. Over-excluding is loud.
+  const ig = compileIgnore("[tetss]\nvendor/\n");
+  assert.equal(ig.ignores("vendor/thing.js", false), true);
+  assert.equal(ig.isTest("vendor/thing.js", false), false);
+});
+
+test("a file with no sections behaves exactly as before", () => {
+  const ig = compileIgnore("vendor/\n!vendor/keep.js\n");
+  assert.equal(ig.ignores("vendor/x.js", false), true);
+  assert.equal(ig.ignores("vendor/keep.js", false), false, "last match still wins");
+  assert.equal(ig.isTest("vendor/x.js", false), false);
+});

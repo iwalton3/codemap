@@ -196,27 +196,28 @@ machine can take.
    stronger-reading claim over a check that cannot fail. Two of three tests examined in one
    session were vacuous when written, and four of six of the oracle's own invariants were —
    assume the same rate.
-2. **Test indexing in the target, WITH the coverage rule in the same act.** codemap has no
+2. **Test indexing in the target — one line, now that the bin exists.** codemap has no
    built-in test exclusion (`src/ignore.ts` has no default patterns); it is the target
    repo's `.codemapignore`, which currently reads *"tests & test tooling (revisit later,
-   e.g. for a coverage feature)"*. Lifting that line puts ~3,856 test methods into the map.
+   e.g. for a coverage feature)"*. Move those patterns under a `[tests]` header and the
+   ~3,856 test methods are indexed — citable, hashable, pinnable — while staying out of the
+   documentation denominator.
 
-   **Lifting it alone silently wrecks every number the project reports.** Those anchors
-   would land as ordinary `open` ones — in the documentation denominator, ranked by
-   `find_gaps` — so coverage percentages drop for a reason that is not a regression, and the
-   work queue fills with items worth nothing. They enter the model with the WRONG SIGN.
+   **This used to be two acts that could not both be committed, which is why the bin was
+   built.** An earlier draft of this document said to lift the ignore line and apply a
+   `cover ... as trivial` rule in the same commit. That is impossible: coverage rules live
+   in `.codemap/codemap.db` under the `coverage` meta key, which is gitignored and is not in
+   `SHARED_KINDS`, so the rule is one machine's local state and never reaches a teammate's
+   fresh clone. A repo-wide policy declared in a committed file cannot have its other half
+   in an uncommitted one — every clone would report thousands of phantom gaps until somebody
+   remembered. `.codemapignore` is already the committed declaration of what codemap does
+   with paths, so the bin belongs there and there is nothing left to keep in sync.
 
-   No new machinery is needed. `coverage.ts` already excludes `trivial`, `deferred` and
-   `owned` from `DENOMINATOR`, and `cover` takes an `AnchorSelector` and stores a standing
-   RULE rather than a per-anchor mark — so one rule over the test path prefix does it, and
-   it refuses a selector matching zero anchors, so it cannot be applied vacuously. The two
-   acts belong in one commit; the ignore line and the coverage rule are not independently
-   correct.
+   `tests` is deliberately a `CoverageState` and **not** a `CoverageMark`: every other state
+   is reachable by a local `cover` rule, and this one is reachable only from the committed
+   file. It also outranks `cited`, because the reason tests are in the map at all is so a
+   requirement can pin a lint — letting a citation promote a test back into the denominator
+   would put it there through exactly the mechanism the bin exists to serve.
 
-   The names are all wrong for this and that is worth knowing before somebody "fixes" it:
-   `trivial` means *we chose not to document this*, where the truth is *this is not the kind
-   of thing that gets documented*. Reuse the mechanism, and treat the misnomer as the
-   argument for eventually giving tests their own coverage state — a wrong name invites the
-   rule's removal.
 3. **The pin and its delta rendering**, then the gating split above.
 4. **The scrub**, which now has a third pathology to detect and a hash with which to detect it.

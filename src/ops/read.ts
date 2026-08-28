@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { type Anchor, type LogicalNode, type CoverageState, type Annotation } from "../schema.js";
+import { emptyBreakdown } from "../coverage.js";
 import { indexFile, indexBlob } from "../repo.js";
 import { headCommit, readBlobs } from "../git.js";
 import { citedAnchors, isClosed } from "../shared-bugs.js";
@@ -69,7 +70,7 @@ export async function outline(root: string, prefix = "", opts: { compact?: boole
     const slash = rest.indexOf("/");
     const seg = slash === -1 ? rest : rest.slice(0, slash);
     let g = groups.get(seg);
-    if (!g) groups.set(seg, (g = { anchors: 0, b: { open: 0, cited: 0, covered: 0, trivial: 0, deferred: 0, owned: 0 }, isFile: slash === -1, rDenom: 0, rc: 0, rcStale: 0, rcReverted: 0, rl: 0, rlStale: 0 }));
+    if (!g) groups.set(seg, (g = { anchors: 0, b: emptyBreakdown(), isFile: slash === -1, rDenom: 0, rc: 0, rcStale: 0, rcReverted: 0, rl: 0, rlStale: 0 }));
     g.anchors++;
     g.b[state(a.id)]++;
     if (inScope(a.id)) { // review % over documentable anchors only

@@ -5,6 +5,7 @@ import { indexFile } from "../repo.js";
 import { readAnchorStore, loadNodes, readCoverage, readSnapshot, findAnchorsOutsideWork, readOrphans, derivationLookup, readWalkthroughsFor, type StoredWalkthrough } from "../store.js";
 import type { PrWalkthrough } from "../walkthrough.js";
 import { requireActor } from "../identity.js";
+import { loadIgnore } from "../ignore.js";
 import { resolveSidecar, scopeFor, sidecarIdentity } from "../sidecar-config.js";
 import { ensureMaterialized } from "../materialize.js";
 import { foldWalkthroughs, walkthroughScope } from "../shared-walkthrough.js";
@@ -247,11 +248,17 @@ export async function coverageFor(root: string): Promise<{
   verdict: { status: string; scope?: string; excludeFromDecisions: ReadonlySet<string> } | null;
 }> {
   const verdict = await import("../docs-lookup.js").then((m) => m.docsVerdict(root)).catch(() => null);
-  const [store, nodes, cov] = await Promise.all([readAnchorStore(root), loadNodes(root), readCoverage(root)]);
+  // `.codemapignore` as well as the stored rules: the `[tests]` bin is a repo-wide,
+  // COMMITTED declaration and a `cover` rule is one machine's uncommitted state, so this
+  // is the only half that reaches a teammate's fresh clone.
+  const [store, nodes, cov, ignore] = await Promise.all([
+    readAnchorStore(root), loadNodes(root), readCoverage(root), loadIgnore(root),
+  ]);
   const blocked = verdict?.excludeFromDecisions;
   const deciding = blocked?.size ? nodes.filter((n) => !n.origin || !blocked.has(n.origin)) : nodes;
   const cited = new Set(deciding.flatMap((n) => n.anchors));
-  return { store, nodes, deciding, result: resolveCoverage(store.anchors, cited, cov.rules), verdict };
+  const result = resolveCoverage(store.anchors, cited, cov.rules, (f) => ignore.isTest(f, false));
+  return { store, nodes, deciding, result, verdict };
 }
 
 /** Anchor→hash map for a cached commit — the hash source when documenting a branch. */

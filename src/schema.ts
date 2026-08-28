@@ -704,7 +704,14 @@ export interface AnnotationStore {
  *   deferred — a subtree intentionally not documented here; out of denominator
  *   owned    — documented in another universe (shared kernel); out of denominator
  */
-export type CoverageState = "open" | "cited" | "covered" | "trivial" | "deferred" | "owned";
+/**
+ * `tests` is NOT a `CoverageMark`, and that asymmetry is the point: every other state
+ * can be reached by a `cover` rule, which lives in the gitignored store and binds one
+ * machine. This one comes only from the `[tests]` bin in the committed `.codemapignore`,
+ * because "tests are not documentation subjects" is a repo-wide fact and a local rule
+ * cannot express one.
+ */
+export type CoverageState = "open" | "cited" | "covered" | "trivial" | "deferred" | "owned" | "tests";
 
 /** What a rule can assign (cited is derived from citation, never a rule). */
 export type CoverageMark = "covered" | "trivial" | "deferred" | "owned";

@@ -2,10 +2,16 @@
  * Coverage & scope resolution — turns the binary "is it cited" into the real
  * per-anchor state, from citation + stored selector rules.
  *
- * Precedence, strongest first: deferred/owned (subtree scope) → cited (explicit
- * human citation) → trivial → covered → open. So a scope rule wins over
+ * Precedence, strongest first: deferred/owned (subtree scope) → tests → cited
+ * (explicit human citation) → trivial → covered → open. So a scope rule wins over
  * everything, an explicit citation beats a blanket trivial/covered rule, and an
  * anchor nobody has touched is `open` — the actual work queue.
+ *
+ * `tests` outranks `cited` deliberately. A test is not a documentation subject, so it
+ * must stay out of the denominator even when something points at it — and something
+ * will: the whole reason tests are indexed is so a requirement can pin a lint. Letting
+ * a citation promote it back into the denominator would put it there via exactly the
+ * mechanism it exists to serve.
  */
 
 import { type Anchor, type AnchorSelector, type CoverageMark, type CoverageState, type CoverageRule } from "./schema.js";
@@ -39,10 +45,14 @@ export interface CoverageResult {
 }
 
 export function emptyBreakdown(): Record<CoverageState, number> {
-  return { open: 0, cited: 0, covered: 0, trivial: 0, deferred: 0, owned: 0 };
+  return { open: 0, cited: 0, covered: 0, trivial: 0, deferred: 0, owned: 0, tests: 0 };
 }
 
-export function resolveCoverage(anchors: Anchor[], citedIds: Set<string>, rules: CoverageRule[]): CoverageResult {
+export function resolveCoverage(
+  anchors: Anchor[], citedIds: Set<string>, rules: CoverageRule[],
+  /** The `[tests]` bin from `.codemapignore`. Absent means no repo declared one. */
+  isTest: (file: string) => boolean = () => false,
+): CoverageResult {
   // Strongest matching rule mark per anchor.
   const ruleMark = new Map<string, CoverageMark>();
   for (const r of rules) {
@@ -58,6 +68,7 @@ export function resolveCoverage(anchors: Anchor[], citedIds: Set<string>, rules:
     const mark = ruleMark.get(a.id);
     let s: CoverageState;
     if (mark === "deferred" || mark === "owned") s = mark; // scope wins
+    else if (isTest(a.file)) s = "tests"; // never a documentation subject, cited or not
     else if (citedIds.has(a.id)) s = "cited"; // explicit citation beats blanket rules
     else if (mark === "trivial") s = "trivial";
     else if (mark === "covered") s = "covered";
@@ -68,7 +79,13 @@ export function resolveCoverage(anchors: Anchor[], citedIds: Set<string>, rules:
   return { state, breakdown };
 }
 
-/** Anchors that count toward the coverage ratio (in-scope, documentable). */
+/**
+ * Anchors that count toward the coverage ratio (in-scope, documentable).
+ *
+ * `tests` is absent for the reason the whole bin exists: an uncovered piece of code is a
+ * gap and an uncovered test is not, so counting them here would drop every percentage
+ * for a reason that is not a regression.
+ */
 export const DENOMINATOR: CoverageState[] = ["open", "cited", "covered"];
 /** Anchors that count as documented. */
 export const DOCUMENTED: CoverageState[] = ["cited", "covered"];
