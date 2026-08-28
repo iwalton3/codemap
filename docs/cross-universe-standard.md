@@ -19,9 +19,12 @@ when auditors agree (`221d2b3`). **The law/evidence scope split itself**, folded
 `readCachedMerged`, with `MATERIALIZER_VERSION` at 16 and the guard that refuses a
 withdrawal whose evidence half could not be read.
 
-**Decided, NOT built:** removing `Requirement.cites` and re-deriving `recheckDue` from
-pointer staleness; provisional audits as commit-discovered documents. Those two sections
-below are written in the imperative and describe the target, not the tree.
+Also built: **a requirement cites nothing** — `Requirement.cites`, `Requirement.witnesses`
+and `Operation.cites` are gone, `recheckDue` derives from this universe's pointers, and the
+`/diff` rollup travels along pointers.
+
+**Decided, NOT built:** provisional audits as commit-discovered documents. That section
+below is written in the imperative and describes the target, not the tree.
 
 **Migration is free, and that was not a given.** Law events written before the split sit in
 `standard/<universe>`; the fold reads BOTH scopes and merges, so a pre-split log folds
@@ -93,7 +96,9 @@ Three consequences, and none is a loss:
 - **An auditor must cite what they read.** `recordAudit` merged the rule's `cites` into the
   audit's evidence, so an audit silently inherited citations it never looked at. With no
   `cites` to inherit, the auditor's own evidence is load-bearing — which is what an audit
-  was always supposed to mean.
+  was always supposed to mean. One consequence worth knowing before it surprises somebody:
+  a PASSING COMMAND ALONE no longer supports a `conformant` audit, because nothing can then
+  ever move under the claim. The rule's citations used to supply that baseline invisibly.
 
 **A pointer names exactly one universe at a time.** A requirement may carry pointers in
 several; a pointer that spanned two would have no coherent re-audit timing, because
