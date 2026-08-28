@@ -269,6 +269,15 @@ record** whose mint-time rules differ by basis — a `gap` may only be minted be
 ratification, `debt` is post-hoc and principal-granted. That last one is the whole defence
 against "declare the rule not yet applicable" becoming the cheap way to clear a finding.
 
+**Across repositories, read `docs/cross-universe-standard.md`** — also normative, and it
+outranks the above where they disagree. One business, several universes: the **law**
+(requirement, spec, operation, criterion, `gap`) is workspace-scoped so a rule governing the
+API and the React app is stated once; the **evidence** (audit, pointer, population, problem,
+`debt`) stays per-universe because each is an observation of code. A requirement therefore
+**cites nothing** — code linkage is pointers, which name exactly one universe each — and
+pointers are never provisional, because provisionality protects conformance and a pointer
+cannot reach it.
+
 `LogicalNodeType` ends `| (string & {})` and is therefore OPEN: adding `"requirement"` to
 it type-checks and silently inherits all of the above. `src/requirements.test.ts` fails if
 a requirement ever reaches the node path.

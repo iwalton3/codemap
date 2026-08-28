@@ -3,6 +3,12 @@
 > **Kind: current design** — settled 2026-08-27. NORMATIVE for requirements, specs,
 > audits and acknowledgements: it outranks COD-29's description and comments, and the
 > *Requirement Kernel* draft, where they disagree.
+>
+> **Read `docs/cross-universe-standard.md` alongside it.** This document assumes ONE
+> universe implicitly throughout — a single standard, a single anchor store to validate
+> citations against. That is superseded: the standard is workspace-scoped, the evidence
+> stays per-universe, and a requirement cites nothing at all. Where the two disagree about
+> scope, citations or pointers, the cross-universe document wins.
 
 COD-29 states the problem — requirements and explanations are different claims with
 inverted truthmakers, and codemap models only the second. This document settles the
