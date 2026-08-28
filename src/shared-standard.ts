@@ -11,6 +11,13 @@
  *   ack.granted · ack.released
  *   audit.recorded
  *   problem.raised · problem.adjudicated
+ *   vacuity.checked
+ *
+ * ACCEPTANCE CRITERIA are not among them either, for the reason requirements are not: a
+ * criterion is created by a ratified `add_criterion` operation, so it is derived by
+ * replaying operations and every clone must arrive at the same id (`criterionIdFor`). A
+ * vacuity check IS an act — somebody tried to break a check and reports what happened —
+ * so it has an honest actor and enters the log directly.
  *
  * And the REQUIREMENTS are not among them. The standard is a projection of the ratified
  * specs, so a requirement is derived by replaying operations — which is exactly why its
@@ -32,9 +39,10 @@
  */
 
 import type {
-  Acknowledgement, Actor, Audit, BugWitness, Operation, Problem, Requirement, Spec,
+  AcceptanceCriterion, Acknowledgement, Actor, Audit, BugWitness, Operation, Problem, Requirement,
+  Spec, VacuityCheck,
 } from "./schema.js";
-import { requirementIdFor } from "./schema.js";
+import { criterionIdFor, requirementIdFor } from "./schema.js";
 import type { LogEvent } from "./eventlog.js";
 import { emitEvent } from "./eventlog.js";
 
@@ -45,13 +53,16 @@ export interface SharedStandard {
   specs: Spec[];
   operations: Operation[];
   requirements: Requirement[];
+  criteria: AcceptanceCriterion[];
+  vacuityChecks: VacuityCheck[];
   acknowledgements: Acknowledgement[];
   audits: Audit[];
   problems: Problem[];
 }
 
 export const emptyStandard = (): SharedStandard => ({
-  specs: [], operations: [], requirements: [], acknowledgements: [], audits: [], problems: [],
+  specs: [], operations: [], requirements: [], criteria: [], vacuityChecks: [],
+  acknowledgements: [], audits: [], problems: [],
 });
 
 // --- writing -----------------------------------------------------------------
@@ -86,6 +97,14 @@ export const publishAckReleased = (
 export const publishAudit = (logRoot: string, scope: string, actor: Actor, audit: Audit) =>
   put(logRoot, scope, actor, "audit.recorded", audit.requirementId, { audit });
 
+/**
+ * Somebody tried to make a criterion's assertion fail. An ACT, so it enters the log.
+ *
+ * Subject-keyed on the criterion, which is what lets the fold find the row it supersedes.
+ */
+export const publishVacuityCheck = (logRoot: string, scope: string, actor: Actor, check: VacuityCheck) =>
+  put(logRoot, scope, actor, "vacuity.checked", check.criterionId, { check });
+
 export const publishProblemRaised = (logRoot: string, scope: string, actor: Actor, problem: Problem) =>
   put(logRoot, scope, actor, "problem.raised", problem.id, { problem });
 
@@ -118,6 +137,8 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
   const specs = new Map<string, Spec>();
   const operations = new Map<string, Operation>();
   const requirements = new Map<string, Requirement>();
+  const criteria = new Map<string, AcceptanceCriterion>();
+  const vacuityChecks = new Map<string, VacuityCheck>();
   const acknowledgements = new Map<string, Acknowledgement>();
   const audits = new Map<string, Audit>();
   const problems = new Map<string, Problem>();
@@ -171,7 +192,7 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
           break;
         }
         specs.set(sp.id, { ...sp, status: "ratified", ratifiedBy: e.actor, ratifiedAt: at });
-        for (const op of mine) applyOperation(requirements, op, sp, e.actor, at, witnesses[op.id] ?? []);
+        for (const op of mine) applyOperation(requirements, criteria, op, sp, e.actor, at, witnesses[op.id] ?? []);
 
         // Bind what the operations produced. The LOCAL path does this at ratification
         // (`writeLocalOperation` with the new id, and `bindGapsForSpec`); without the same
@@ -180,6 +201,14 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
         // GAP was attached to nothing, silencing a requirement that nothing could find it
         // by. Both are the "one team fact, invisible on every other clone" shape.
         for (const op of mine) {
+          // A criterion attached to a rule this spec creates binds the same way, and it
+          // has to happen HERE and not in `applyOperation`: the operation row is what
+          // `readOperations({requirementId})` reads, so without this a criterion added
+          // alongside its rule has no history on either end.
+          if (op.kind === "add_criterion") {
+            if (op.targetOperationId) operations.set(op.id, { ...op, requirementId: requirementIdFor(op.targetOperationId) });
+            continue;
+          }
           if (op.kind !== "add_requirement") continue;
           const rid = requirementIdFor(op.id);
           operations.set(op.id, { ...op, requirementId: rid });
@@ -246,6 +275,20 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
         audits.set(audit.id, { ...audit, origin: "sync" });
         break;
       }
+      case "vacuity.checked": {
+        const check = obj(e.data, "check") as VacuityCheck | undefined;
+        if (!check?.id || !check.criterionId) break;
+        if (!VACUITY_VERDICTS.includes(check.verdict)) break;
+        // The evidence gate, restated where it binds every clone and not only the machine
+        // whose tool ran it. `demonstrated` is the SILENCING direction — it says the check
+        // is trustworthy, which is what lets an audit lean on it — so a demonstration that
+        // records no method is the vacuous claim wearing the shape of evidence, which is
+        // `audit.recorded`'s argument arriving one layer down. The weakening verdicts are
+        // deliberately not gated: gating them would gate what UNSILENCES.
+        if (check.verdict === "demonstrated" && !check.method?.trim()) break;
+        vacuityChecks.set(check.id, { ...check, origin: "sync" });
+        break;
+      }
       case "problem.raised": {
         const p = obj(e.data, "problem") as Problem | undefined;
         if (!p?.id) break;
@@ -282,16 +325,33 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
 
   return {
     specs: [...specs.values()], operations: [...operations.values()],
-    requirements: [...requirements.values()], acknowledgements: [...acknowledgements.values()],
+    requirements: [...requirements.values()], criteria: [...criteria.values()],
+    vacuityChecks: [...vacuityChecks.values()], acknowledgements: [...acknowledgements.values()],
     audits: [...audits.values()], problems: [...problems.values()],
   };
 }
 
+const VACUITY_VERDICTS: VacuityCheck["verdict"][] = ["demonstrated", "vacuous", "wrong-layer"];
+
 /** The same application `ratifySpec` performs locally, over folded state. */
 function applyOperation(
-  requirements: Map<string, Requirement>, op: Operation, sp: Spec,
-  who: Actor, at: string, witnesses: BugWitness[],
+  requirements: Map<string, Requirement>, criteria: Map<string, AcceptanceCriterion>,
+  op: Operation, sp: Spec, who: Actor, at: string, witnesses: BugWitness[],
 ): void {
+  if (op.kind === "add_criterion") {
+    // The rule it attaches to: named outright, or derived from the `add_requirement` in
+    // this same spec — which is only possible because the id is a function of the
+    // operation. `witnesses` here are of `assertedBy`, not of the rule's `cites`.
+    const rid = op.targetOperationId ? requirementIdFor(op.targetOperationId) : op.requirementId;
+    if (!rid || !op.criterion || !op.falsifier || !op.evidenceKind) return;
+    const id = criterionIdFor(op.id);
+    criteria.set(id, {
+      id, requirementId: rid, criterion: op.criterion, falsifier: op.falsifier,
+      evidenceKind: op.evidenceKind, assertedBy: op.assertedBy ?? [], witnesses,
+      author: sp.author, createdAt: at, introducedBy: op.id, specId: sp.id, origin: "sync",
+    });
+    return;
+  }
   if (op.kind === "add_requirement") {
     // The operation event was published when the operation was ADDED, before anything
     // bound a requirement to it — so the id is derived here rather than read off a field

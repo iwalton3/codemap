@@ -40,6 +40,7 @@ import {
   type CoverageRule, type CoverageStore, type AnalyzerConfig, type Review, type ReviewStore, type Triage, type TriageStore,
   type BugWitness, type Importance, type Complexity, type TriageSource,
   type Requirement, type RequirementStore, type Spec, type Operation, type Acknowledgement, type Audit, type Problem,
+  type AcceptanceCriterion, type VacuityCheck, type EvidenceKind,
   SCHEMA_VERSION, ANCHOR_SCHEME, HASH_SCHEME,
 } from "./schema.js";
 
@@ -2298,6 +2299,77 @@ export async function writeLocalAudit(root: string, a: Audit): Promise<void> {
     "INSERT OR REPLACE INTO audits(id,requirement_id,outcome,at,origin,source_scope,body)"
     + " VALUES(?,?,?,?,?,?,?)",
   ).run(a.id, a.requirementId, a.outcome, a.at, a.origin ?? null, null, JSON.stringify(a));
+}
+
+const hydrateCriterion = (body: string, origin: string | null): AcceptanceCriterion | null => {
+  try {
+    const c = JSON.parse(body) as AcceptanceCriterion;
+    return origin ? { ...c, origin } : c;
+  } catch { return null; }
+};
+
+export async function readCriteria(
+  root: string, opts: { requirementId?: string; evidenceKind?: EvidenceKind } = {},
+): Promise<AcceptanceCriterion[]> {
+  const clauses: string[] = [];
+  const args: string[] = [];
+  if (opts.requirementId) { clauses.push("requirement_id = ?"); args.push(opts.requirementId); }
+  if (opts.evidenceKind) { clauses.push("evidence_kind = ?"); args.push(opts.evidenceKind); }
+  const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+  const rows = db(root).prepare(
+    `SELECT body, origin FROM criteria${where} ORDER BY created_at, id`,
+  ).all(...args as []) as unknown as { body: string; origin: string | null }[];
+  const out: AcceptanceCriterion[] = [];
+  for (const r of rows) { const c = hydrateCriterion(r.body, r.origin); if (c) out.push(c); }
+  return out;
+}
+
+export async function readCriterion(root: string, id: string): Promise<AcceptanceCriterion | null> {
+  const row = db(root).prepare("SELECT body, origin FROM criteria WHERE id = ?")
+    .get(id) as { body: string; origin: string | null } | undefined;
+  return row ? hydrateCriterion(row.body, row.origin) : null;
+}
+
+export async function writeLocalCriterion(root: string, c: AcceptanceCriterion): Promise<void> {
+  const d = db(root);
+  const owner = d.prepare("SELECT source_scope FROM criteria WHERE id = ? AND source_scope IS NOT NULL")
+    .get(c.id) as { source_scope: string } | undefined;
+  if (owner) throw new Error(`${c.id} is owned by the sidecar fold (${owner.source_scope}) — write an event, not a row.`);
+  d.prepare(
+    "INSERT OR REPLACE INTO criteria(id,requirement_id,evidence_kind,created_at,origin,source_scope,body)"
+    + " VALUES(?,?,?,?,?,?,?)",
+  ).run(c.id, c.requirementId, c.evidenceKind, c.createdAt, c.origin ?? null, null, JSON.stringify(c));
+}
+
+const hydrateVacuityCheck = (body: string, origin: string | null): VacuityCheck | null => {
+  try {
+    const v = JSON.parse(body) as VacuityCheck;
+    return origin ? { ...v, origin } : v;
+  } catch { return null; }
+};
+
+export async function readVacuityChecks(
+  root: string, opts: { criterionId?: string } = {},
+): Promise<VacuityCheck[]> {
+  const where = opts.criterionId ? " WHERE criterion_id = ?" : "";
+  const args = opts.criterionId ? [opts.criterionId] : [];
+  const rows = db(root).prepare(
+    `SELECT body, origin FROM vacuity_checks${where} ORDER BY at, id`,
+  ).all(...args as []) as unknown as { body: string; origin: string | null }[];
+  const out: VacuityCheck[] = [];
+  for (const r of rows) { const v = hydrateVacuityCheck(r.body, r.origin); if (v) out.push(v); }
+  return out;
+}
+
+export async function writeLocalVacuityCheck(root: string, v: VacuityCheck): Promise<void> {
+  const d = db(root);
+  const owner = d.prepare("SELECT source_scope FROM vacuity_checks WHERE id = ? AND source_scope IS NOT NULL")
+    .get(v.id) as { source_scope: string } | undefined;
+  if (owner) throw new Error(`${v.id} is owned by the sidecar fold (${owner.source_scope}) — write an event, not a row.`);
+  d.prepare(
+    "INSERT OR REPLACE INTO vacuity_checks(id,criterion_id,verdict,at,origin,source_scope,body)"
+    + " VALUES(?,?,?,?,?,?,?)",
+  ).run(v.id, v.criterionId, v.verdict, v.at, v.origin ?? null, null, JSON.stringify(v));
 }
 
 const hydrateProblem = (body: string, origin: string | null): Problem | null => {

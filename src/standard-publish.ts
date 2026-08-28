@@ -17,7 +17,7 @@
  *                                     here fabricates causality that no clone can see.
  */
 
-import type { Acknowledgement, Actor, Audit, BugWitness, Operation, Problem, Spec } from "./schema.js";
+import type { Acknowledgement, Actor, Audit, BugWitness, Operation, Problem, Spec, VacuityCheck } from "./schema.js";
 import { resolveSidecar, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
 import { requireActor } from "./identity.js";
 import { ensureSidecar } from "./sidecar.js";
@@ -26,6 +26,7 @@ import { standardProjection } from "./shared-projections.js";
 import {
   foldStandard, standardScope, publishSpecDrafted, publishOperation, publishSpecRatified,
   publishAckGranted, publishAckReleased, publishAudit, publishProblemRaised, publishAdjudication,
+  publishVacuityCheck,
 } from "./shared-standard.js";
 
 /** One universe's standard, through the cache. */
@@ -93,6 +94,17 @@ export const shareAckReleased = (root: string, id: string, at: string, reason: s
  */
 export const shareAudit = (root: string, audit: Audit): Promise<Shared> =>
   audit.provisional ? Promise.resolve(localOnly) : share(root, (l, s, a) => publishAudit(l, s, a, audit));
+
+/**
+ * A vacuity check always travels.
+ *
+ * Unlike an audit, it says nothing about whether the codebase conforms — it says whether a
+ * CHECK can fail, which is a property of a check that every clone shares. There is no
+ * provisional carve-out to make: the branch a demonstration was performed on does not
+ * change what it established, and the witnesses say which code it established it about.
+ */
+export const shareVacuityCheck = (root: string, check: VacuityCheck): Promise<Shared> =>
+  share(root, (l, s, a) => publishVacuityCheck(l, s, a, check));
 
 /** Same rule: a problem raised from a provisional audit is this branch's, not the team's. */
 export const shareProblemRaised = (root: string, problem: Problem): Promise<Shared> =>

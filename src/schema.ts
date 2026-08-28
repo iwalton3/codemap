@@ -995,7 +995,52 @@ export interface Spec {
   origin?: string;
 }
 
-export type OperationKind = "add_requirement" | "amend_statement" | "retire_requirement";
+export type OperationKind = "add_requirement" | "amend_statement" | "retire_requirement" | "add_criterion";
+
+/**
+ * How a criterion is discharged. A CLOSED list, adopted from the Acme.API spec playbook's
+ * §13.2 rather than re-derived — it is production wording with a why-it-holds column, and
+ * we would have arrived somewhere worse.
+ *
+ * `attestation` is the one that has to be watched. It is *"last resort only"*, weak by
+ * construction, and the playbook's rule is the useful half: **an author who reaches for
+ * attestation for something renderable has skipped the evidence, not chosen a type.**
+ * Nothing here can decide whether a thing was renderable, so that stays a reader's job —
+ * which is why `attestation` is named rather than quietly allowed as a default.
+ */
+export const EVIDENCE_KINDS = [
+  "automated-test",         // behaviour: a named test, re-runnable by anyone
+  "lint-test",              // an invariant — fails when the thing is REINTRODUCED
+  "characterization-test",  // a refactor that must not change behaviour
+  "screenshot",             // a UI surface; a human looks at it
+  "persona-walk",           // reachability/visibility — reached VIA the entry point
+  "recorded-run",           // jobs, migrations, reports: the artifact is the proof
+  "attestation",            // last resort — see above
+] as const;
+
+/** Derived from the list, so the vocabulary cannot drift from what validation accepts. */
+export type EvidenceKind = typeof EVIDENCE_KINDS[number];
+
+/**
+ * Whether anyone has established that a criterion's assertion CAN FAIL.
+ *
+ * COD-18 is explicit that `asserted_by` must not ship without this, and the reason is that
+ * the citation makes a claim STRONGER: it converts *nobody edited the cited code* into
+ * *green as of the last build*. Over a check that cannot fail, that is manufactured
+ * confidence with a mechanism attached. The measured base rate is not reassuring — two of
+ * three tests examined in one session were vacuous when written, and four of the oracle's
+ * six invariants were.
+ *
+ * `unchecked` is the default and **must never render as `demonstrated`**, the same rule
+ * `Conformance.unknown` carries for the same reason one level up.
+ *
+ * `wrong-layer` is the fourth state and neither COD-18 nor `audits.ts` names it: the check
+ * is non-vacuous, it exercises a real falsifier, and it runs somewhere that cannot observe
+ * the violation — the playbook's *"a Validate-only test on a handler bug is green paint"*
+ * (§14.4). Folding it into `demonstrated` is the failure it describes; folding it into
+ * `vacuous` misreports a check that does work, just not this work.
+ */
+export type Vacuity = "unchecked" | "demonstrated" | "vacuous" | "wrong-layer";
 
 /**
  * Whether satisfying this operation can be undone — declared BEFORE ratification.
@@ -1033,6 +1078,17 @@ export interface Operation {
   statement?: string;
   provenance?: string;
   cites?: string[];
+  /** Payload for `add_criterion`. See `AcceptanceCriterion` for what each one is. */
+  criterion?: string;
+  falsifier?: string;
+  evidenceKind?: EvidenceKind;
+  assertedBy?: string[];
+  /**
+   * For an `add_criterion` attaching to a rule THIS SPEC creates: the `add_requirement`
+   * operation, because the rule has no id until the spec is ratified. The same shape
+   * `Acknowledgement.operationId` uses, for the same reason.
+   */
+  targetOperationId?: string;
   /** Operative pairing — the rationale rides on the operation, never on the document. */
   rationale: string;
   /** What provoked it: a problem id, a finding id, a commit, a conversation. */
@@ -1303,4 +1359,101 @@ export function requirementIdFor(operationId: string): string {
 export interface RequirementStore {
   schemaVersion: number;
   requirements: Requirement[];
+}
+
+/**
+ * An acceptance criterion: **what** discharges a rule and **how** it would be refuted.
+ *
+ * The second citation relation lives here. `Requirement.cites` is the code a rule is
+ * ABOUT — its staleness is *that code moved*. `assertedBy` is the check that WOULD FAIL if
+ * the rule stopped holding — its staleness is *the build is red*. Snapshot versus live,
+ * and codemap can only observe the first half: it never runs anything, so what it watches
+ * is the assertion's own hash. That is deliberate and it is the pin the scrub was missing —
+ * *fired → was edited → now quiet* is the detector being modified by the change it exists
+ * to detect, and nothing else catches it.
+ *
+ * Separate from `Requirement` because it is a separate record in the design: a pointer is
+ * WHERE TO LOOK, a criterion is WHAT and HOW to verify, and one criterion can be watched
+ * from several pointers. Created only by a ratified `add_criterion` operation — declaring
+ * what discharges a rule can NARROW it in practice, which is the silencing direction, and
+ * the standing asymmetry gates what silences.
+ */
+export interface AcceptanceCriterion {
+  id: string;
+  requirementId: string;
+  /** What must be true — concrete and verifiable, in the playbook's §7 sense. */
+  criterion: string;
+  /**
+   * The observation that would show the criterion is **not** met.
+   *
+   * Required, and it is the highest-value thing adopted from the playbook (§13.1): *"if
+   * you cannot write what observation would show the criterion is not met, it is prose,
+   * not a criterion."* It is the PRE-COMMITMENT form of non-vacuity — written at drafting,
+   * before the code exists, so it cannot be fitted to whatever the check turned out to do.
+   * Every non-vacuity guard in `audits.ts` fires at AUDIT time, when the author already
+   * knows what passed; this is the only one that cannot.
+   */
+  falsifier: string;
+  evidenceKind: EvidenceKind;
+  /**
+   * The check itself, as anchors. **MAY be empty**: a criterion is written before the code
+   * exists, so an unasserted criterion is a rule waiting for its check, not a malformed
+   * record — the same shape as an uncited requirement being *unsatisfied* rather than
+   * floating.
+   */
+  assertedBy: string[];
+  /** Hashes of `assertedBy` at ratification. A later mismatch means the DETECTOR moved. */
+  witnesses: BugWitness[];
+  author: Actor;
+  createdAt: string;
+  /** The operation that introduced it — its whole provenance. */
+  introducedBy: string;
+  specId: string;
+  origin?: string;
+}
+
+/**
+ * A criterion's id, DERIVED from the operation that creates it — for the reason
+ * `requirementIdFor` is derived: every clone replays the same operations and must arrive
+ * at the same ids, and a random id never fails locally where there is only one clone.
+ */
+export function criterionIdFor(operationId: string): string {
+  return "ac_" + createHash("sha256").update(operationId).digest("hex").slice(0, 12);
+}
+
+/**
+ * Somebody tried to make a criterion's assertion fail, and reports what happened.
+ *
+ * A RECORD rather than a field on the criterion, and that is the load-bearing choice.
+ * COD-18 asks for a "vacuity field"; a stored field is something a writer can satisfy, and
+ * worse, **a derived value with nothing to invalidate it is permanent** — a `demonstrated`
+ * flag would survive a rewrite of the very lint it certifies, which is the exact pathology
+ * `assertedBy` exists to catch, reintroduced one level up. So this is witnessed like an
+ * audit, and it goes `superseded` when the assertion it examined moves.
+ *
+ * Open to any actor, gated on EVIDENCE, in both directions:
+ *
+ *  - `demonstrated` is the SILENCING direction — it says the check is trustworthy, which
+ *    is what lets an audit lean on it — so it must say what was broken and what went red.
+ *  - `vacuous` / `wrong-layer` weaken a criterion, which is the safe direction, and the
+ *    same rule that lets anyone RELEASE an acknowledgement applies: its failure mode is
+ *    noise, and gating it would be gating what unsilences.
+ */
+export interface VacuityCheck {
+  id: string;
+  criterionId: string;
+  verdict: Exclude<Vacuity, "unchecked">;
+  /**
+   * What was done: the mutation made, and what the assertion did in response.
+   *
+   * The evidence, and required for `demonstrated` — *"I checked and it can fail"* from an
+   * actor that did not really check manufactures exactly the confidence the record exists
+   * to supply, which is `recordAudit`'s argument arriving one layer down.
+   */
+  method: string;
+  /** Hashes of the criterion's `assertedBy` AS EXAMINED. A mismatch supersedes this. */
+  witnesses: BugWitness[];
+  checkedBy: Actor;
+  at: string;
+  origin?: string;
 }

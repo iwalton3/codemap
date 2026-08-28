@@ -728,6 +728,44 @@ function migrate(d: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS ix_ack_op ON acknowledgements(operation_id);
     CREATE INDEX IF NOT EXISTS ix_ack_scope ON acknowledgements(source_scope);
 
+    -- Acceptance criteria: what discharges a rule, and what would refute it. Created only
+    -- by a ratified add_criterion operation, so there is no authoring path that is not a
+    -- ratification -- declaring what discharges a rule can narrow it, which silences.
+    --
+    -- No vacuity column, and that is the point of the vacuity_checks table below: a stored
+    -- flag would survive a rewrite of the very check it certifies, which is the pathology
+    -- asserted_by exists to catch, reintroduced one level up.
+    CREATE TABLE IF NOT EXISTS criteria (
+      id TEXT NOT NULL,
+      requirement_id TEXT NOT NULL,
+      -- Lifted out because "show me the invariants that have no lint" is the review this
+      -- record exists to make possible, and it filters on the kind.
+      evidence_kind TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      origin TEXT, source_scope TEXT,
+      body TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ix_crit_identity ON criteria(id);
+    CREATE INDEX IF NOT EXISTS ix_crit_req ON criteria(requirement_id, created_at);
+    CREATE INDEX IF NOT EXISTS ix_crit_kind ON criteria(evidence_kind);
+    CREATE INDEX IF NOT EXISTS ix_crit_scope ON criteria(source_scope);
+
+    -- Vacuity checks: somebody tried to make an assertion fail and says what happened.
+    -- Witnessed like an audit, so the verdict is superseded when the assertion moves --
+    -- which is the only reason this is a table and not a column on criteria.
+    CREATE TABLE IF NOT EXISTS vacuity_checks (
+      id TEXT NOT NULL,
+      criterion_id TEXT NOT NULL,
+      verdict TEXT NOT NULL,
+      at TEXT NOT NULL,
+      origin TEXT, source_scope TEXT,
+      body TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ix_vac_identity ON vacuity_checks(id);
+    -- "What is the latest word on this criterion" -- per criterion, ordered by time.
+    CREATE INDEX IF NOT EXISTS ix_vac_crit ON vacuity_checks(criterion_id, at);
+    CREATE INDEX IF NOT EXISTS ix_vac_scope ON vacuity_checks(source_scope);
+
     -- Audits. Recorded whether or not anything was found: a positive audit is the only
     -- thing that can close a gap (which has no code to witness) or make a later failure a
     -- regression rather than a gap that was always there.

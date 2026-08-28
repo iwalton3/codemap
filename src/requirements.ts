@@ -31,12 +31,14 @@
 
 import { randomBytes } from "node:crypto";
 import type {
-  Acknowledgement, Actor, BugWitness, Operation, OperationKind, Requirement, Reversibility, Spec,
+  AcceptanceCriterion, Acknowledgement, Actor, BugWitness, EvidenceKind, Operation, OperationKind,
+  Requirement, Reversibility, Spec,
 } from "./schema.js";
-import { requirementIdFor } from "./schema.js";
+import { criterionIdFor, EVIDENCE_KINDS, requirementIdFor } from "./schema.js";
 import {
   readAcknowledgements, readOperations, readRequirement, readRequirements, readSpec, readSpecs,
-  requirementSectionCounts, workHas, writeLocalOperation, writeLocalRequirement, writeLocalSpec,
+  requirementSectionCounts, workHas, writeLocalCriterion, writeLocalOperation, writeLocalRequirement,
+  writeLocalSpec,
 } from "./store.js";
 import { liveHashes, witnessDrift, realDrift } from "./reviews.js";
 import { ABSENT_HASH } from "./normalize.js";
@@ -207,6 +209,8 @@ export async function addOperation(
     specId: string; kind: OperationKind; rationale: string; reversibility: Reversibility;
     requirementId?: string; title?: string; section?: string; statement?: string;
     provenance?: string; cites?: string[]; evidence?: string;
+    criterion?: string; falsifier?: string; evidenceKind?: EvidenceKind;
+    assertedBy?: string[]; targetOperationId?: string;
   } & ActorInput,
 ): Promise<{ ok: true; id: string; operation: Operation } | Err> {
   const sp = await readSpec(root, input.specId);
@@ -257,6 +261,63 @@ export async function addOperation(
     const bad = checkCitations(root, input.cites ?? []);
     if (bad) return bad;
     payload = { title, section, statement, provenance, cites: input.cites ?? [] };
+  } else if (input.kind === "add_criterion") {
+    const criterion = input.criterion?.trim();
+    const falsifier = input.falsifier?.trim();
+    if (!criterion) return { error: "`add_criterion` needs a `criterion` — what must be true, concretely" };
+    if (!falsifier) {
+      return {
+        error:
+          "`add_criterion` needs a `falsifier` — the observation that would show the criterion "
+          + "is NOT met. It is the part authors skip and the part that does the work: if you "
+          + "cannot write what would refute it, it is prose rather than a criterion, and you "
+          + "have found that out now, while the rule is still cheap to change.",
+      };
+    }
+    // The laziest vacuous form, and the only one a machine can see: a "falsifier" that
+    // restates the criterion asserts nothing about what failure would look like. Everything
+    // past this is a reader's job, which is why `VacuityCheck` exists.
+    if (falsifier.replace(/\W+/g, "").toLowerCase() === criterion.replace(/\W+/g, "").toLowerCase()) {
+      return { error: "the falsifier restates the criterion — say what OBSERVATION would show it is not met" };
+    }
+    if (!EVIDENCE_KINDS.includes(input.evidenceKind as EvidenceKind)) {
+      return {
+        error:
+          `\`evidenceKind\` must be one of ${EVIDENCE_KINDS.join(" | ")}. The list is closed on `
+          + "purpose. `attestation` is the last resort and weak by construction — reaching for it "
+          + "for anything that can be rendered, captured or run is skipping the evidence rather "
+          + "than choosing a type.",
+      };
+    }
+    const bad = checkCitations(root, input.assertedBy ?? []);
+    if (bad) return bad;
+
+    // Target: a rule that already stands, or one this same draft is about to create. The
+    // second case is the authoring flow the playbook actually describes — criteria are
+    // written WITH the rule, in one reviewed artifact — and the rule has no id yet, so the
+    // operation is named instead. `Acknowledgement.operationId` solved this same shape.
+    if (input.targetOperationId) {
+      const target = (await readOperations(root, { specId: sp.id }))
+        .find((o) => o.id === input.targetOperationId);
+      if (!target) return { error: `no operation "${input.targetOperationId}" in ${sp.id}` };
+      if (target.kind !== "add_requirement") {
+        return { error: `${target.id} is a ${target.kind} — a criterion attaches to the rule an \`add_requirement\` creates` };
+      }
+      payload = { criterion, falsifier, evidenceKind: input.evidenceKind, assertedBy: input.assertedBy ?? [], targetOperationId: target.id };
+    } else {
+      if (!input.requirementId) {
+        return { error: "`add_criterion` needs a `requirementId`, or a `targetOperationId` naming an `add_requirement` in this spec" };
+      }
+      const r = await readRequirement(root, input.requirementId);
+      if (!r) return { error: `no requirement "${input.requirementId}"` };
+      if (r.status === "retired") return { error: `${r.id} is retired` };
+      // Context still applies: a criterion written against a statement that has since been
+      // amended states what discharges a rule nobody has now. It does NOT take the
+      // one-operation-per-rule refusal below — a rule legitimately gets several criteria,
+      // and they do not overwrite one another the way two amendments would.
+      context = { requirementId: r.id, statement: r.statement };
+      payload = { criterion, falsifier, evidenceKind: input.evidenceKind, assertedBy: input.assertedBy ?? [], requirementId: r.id };
+    }
   } else {
     if (!input.requirementId) return { error: `kind "${input.kind}" needs a \`requirementId\`` };
     const r = await readRequirement(root, input.requirementId);
@@ -270,7 +331,7 @@ export async function addOperation(
     // statement, and approves an outcome the rendering never displayed — which is the one
     // thing "review N operations instead of 5,000 lines" has to get right.
     const already = (await readOperations(root, { specId: sp.id }))
-      .find((o) => o.requirementId === r.id);
+      .find((o) => o.requirementId === r.id && o.kind !== "add_criterion");
     if (already) {
       return {
         error:
@@ -352,7 +413,11 @@ export async function ratifySpec(
   // overwrites the earlier silently. Adoption is all-or-nothing, so this refuses the spec.
   const targets = new Map<string, string>();
   for (const op of ops) {
-    if (!op.requirementId) continue;
+    // Criteria are exempt, and it is not an oversight: two amendments against one rule
+    // overwrite each other, two criteria on one rule do not. A rule with three acceptance
+    // criteria is the ordinary case the playbook describes (`AC-1`…`AC-n` per cluster) and
+    // refusing it here would make the natural authoring flow un-ratifiable.
+    if (!op.requirementId || op.kind === "add_criterion") continue;
     const first = targets.get(op.requirementId);
     if (first) {
       return {
@@ -390,6 +455,20 @@ export async function ratifySpec(
       const gone = checkCitations(root, op.cites ?? []);
       if (gone) { checks.push({ operation: op, ok: false, reason: gone.error }); continue; }
     }
+    if (op.kind === "add_criterion") {
+      // Same reason, on the assertion rather than the subject — and it bites harder here.
+      // A criterion whose check has vanished baselines every witness `sha256:absent`, so
+      // the detector reads as never having moved, for ever: the assertion is gone and the
+      // rule looks exactly as asserted as it did the day it was ratified.
+      const gone = checkCitations(root, op.assertedBy ?? []);
+      if (gone) { checks.push({ operation: op, ok: false, reason: gone.error }); continue; }
+      // A criterion attaching to a rule this same spec creates is only coherent if that
+      // operation is still here — the reviewer approved them as one argument.
+      if (op.targetOperationId && !ops.some((o) => o.id === op.targetOperationId)) {
+        checks.push({ operation: op, ok: false, reason: `the \`add_requirement\` it attaches to (${op.targetOperationId}) is no longer in this spec` });
+        continue;
+      }
+    }
     checks.push({ operation: op, ok: true });
   }
 
@@ -411,7 +490,12 @@ export async function ratifySpec(
   for (const op of ops) {
     const cites = op.kind === "add_requirement"
       ? op.cites ?? []
-      : (await readRequirement(root, op.requirementId!))?.cites ?? [];
+      // A criterion witnesses its ASSERTION, not the rule's subject. Different sets and
+      // different questions: `cites` going stale means the code moved, `assertedBy` going
+      // stale means the DETECTOR moved — which is the pathology nothing else catches.
+      : op.kind === "add_criterion"
+        ? op.assertedBy ?? []
+        : (await readRequirement(root, op.requirementId!))?.cites ?? [];
     witnesses[op.id] = await witness(root, cites);
   }
   const outcome = await shareSpecRatified(root, sp.id, at, witnesses, ops.map((o) => o.id));
@@ -446,6 +530,23 @@ export async function ratifySpec(
       bound = { ...op, requirementId: r.id };
       await writeLocalOperation(root, bound);
       await writeLocalRequirement(root, r);
+    } else if (op.kind === "add_criterion") {
+      // Resolve the target the same way the fold does. `targetOperationId` names an
+      // `add_requirement` in this same spec, whose rule id is a function of its operation
+      // id — which is the whole reason `requirementIdFor` is derived rather than random.
+      const rid = op.targetOperationId ? requirementIdFor(op.targetOperationId) : op.requirementId!;
+      const c: AcceptanceCriterion = {
+        id: criterionIdFor(op.id), requirementId: rid,
+        criterion: op.criterion!, falsifier: op.falsifier!, evidenceKind: op.evidenceKind!,
+        assertedBy: op.assertedBy ?? [], witnesses: await witness(root, op.assertedBy ?? []),
+        author: sp.author, createdAt: at, introducedBy: op.id, specId: sp.id,
+      };
+      // Bind, for the reason `add_requirement` binds: without it `readOperations({requirementId})`
+      // is not the rule's whole history, and a criterion added alongside its rule is attached
+      // to an operation that names no requirement at all.
+      bound = { ...op, requirementId: rid };
+      await writeLocalOperation(root, bound);
+      await writeLocalCriterion(root, c);
     } else {
       const r = (await readRequirement(root, op.requirementId!))!;
       const next: Requirement = op.kind === "retire_requirement"

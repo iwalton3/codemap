@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { comparableHashDerivation, type Anchor, type Audit, type Review } from "./schema.js";
 import { indexRepo, indexFile, indexBlob } from "./repo.js";
 import { citedAnchors, isClosed } from "./shared-bugs.js";
-import { readSnapshot, snapshotRefusal, readAnchorStore, loadNodes, loadNodeVersions, winningVersionAt, readGraph, readReviews, readBugs, readRequirements, readAudits, derivationLookup, loadNodesAt, resolvable} from "./store.js";
+import { readSnapshot, snapshotRefusal, readAnchorStore, loadNodes, loadNodeVersions, winningVersionAt, readGraph, readReviews, readBugs, readRequirements, readAudits, readCriteria, derivationLookup, loadNodesAt, resolvable} from "./store.js";
 import { reviewStatesFor } from "./reviews.js";
 import { reviewTriageFor, coverageFor, type Coverage } from "./triage.js";
 import { revParse, headCommit, currentBranch, showFile } from "./git.js";
@@ -56,7 +56,7 @@ export interface DiffResult {
      * requirement is a well-formed record (the rule the code does not yet satisfy) and
      * no set-op over anchors can find it. That is what pointers are for.
      */
-    requirements: { id: string; title: string; section: string; anchors: string[]; removed: boolean; lastAudit: { id: string; outcome: string; at: string; provisional: boolean } | null; auditMoved: boolean }[];
+    requirements: { id: string; title: string; section: string; anchors: string[]; removed: boolean; lastAudit: { id: string; outcome: string; at: string; provisional: boolean } | null; auditMoved: boolean; assertionsMoved: { id: string; criterion: string; evidenceKind: string; anchors: string[] }[] }[];
   };
   /** Review-complete rollup over the changed+added anchors — "am I done reviewing this?" */
   coverage: Coverage;
@@ -217,21 +217,38 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
   // hashes. `ServedRequirement.recheckDue` and `ServedAudit.superseded` answer the same
   // shape of question against the WORKING TREE, and a diff of two cached commits must not
   // depend on what happens to be checked out — the same reason `loadNodesAt` exists above.
+  // A criterion's assertion moving is the THIRD signal and the sharpest of the three: the
+  // rule's subject changing means the claim may no longer hold, but the CHECK changing
+  // means the thing that would have told you has itself been rewritten by this diff. That
+  // is *fired → was edited → now quiet*, which is the one pathology a scrub cannot reach.
+  const assertionsByRequirement = new Map<string, DiffResult["impact"]["requirements"][number]["assertionsMoved"]>();
+  for (const c of await readCriteria(root)) {
+    const hit = c.assertedBy.filter((id) => impacted.has(id));
+    if (!hit.length) continue;
+    const arr = assertionsByRequirement.get(c.requirementId) ?? [];
+    arr.push({ id: c.id, criterion: c.criterion, evidenceKind: c.evidenceKind, anchors: hit });
+    assertionsByRequirement.set(c.requirementId, arr);
+  }
+
   const auditsByRequirement = new Map<string, Audit>();
   for (const a of await readAudits(root)) auditsByRequirement.set(a.requirementId, a); // ORDER BY at,id — last wins
   // Ratified only, for the reason `conformance()` filters the same way: a retired rule is
   // not part of the standard in force, so listing it as due for audit is asking for work
   // on a rule that no longer binds anything.
   const requirementImpact = (await readRequirements(root, { status: "ratified" })).requirements
-    .map((rq) => ({ rq, hit: rq.cites.filter((id) => impacted.has(id)) }))
-    .filter((x) => x.hit.length > 0)
-    .map(({ rq, hit }) => {
+    .map((rq) => ({ rq, hit: rq.cites.filter((id) => impacted.has(id)), assertions: assertionsByRequirement.get(rq.id) ?? [] }))
+    // Either signal is enough. A rule whose subject this change does not touch but whose
+    // CHECK it rewrites belongs in this list — omitting it would hide precisely the edit
+    // that quietens a detector without touching what it guards.
+    .filter((x) => x.hit.length > 0 || x.assertions.length > 0)
+    .map(({ rq, hit, assertions }) => {
       const a = auditsByRequirement.get(rq.id);
       return {
         id: rq.id, title: rq.title, section: rq.section, anchors: hit,
         removed: hit.some((id) => removedIds.has(id)),
         lastAudit: a ? { id: a.id, outcome: a.outcome, at: a.at, provisional: a.provisional === true } : null,
         auditMoved: a ? a.witnesses.some((w) => impacted.has(w.anchorId)) : false,
+        assertionsMoved: assertions,
       };
     });
 

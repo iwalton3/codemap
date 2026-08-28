@@ -34,9 +34,12 @@ import {
   awaitingAdjudication, actionable, settledWithoutAdjudication,
 } from "../problems.js";
 import type { ActorInput } from "../identity.js";
+import {
+  recordVacuityCheck as recordVacuityCheckRec, weakAssertions, criteriaSummary as criteriaSummaryRec,
+} from "../criteria.js";
 import type {
-  AcknowledgementPriority, AuditEvidence, AuditOutcome, OperationKind, ProblemDisposition,
-  Requirement, Reversibility,
+  AcknowledgementPriority, AuditEvidence, AuditOutcome, EvidenceKind, OperationKind,
+  ProblemDisposition, Requirement, Reversibility, VacuityCheck,
 } from "../schema.js";
 
 // --- the standard ------------------------------------------------------------
@@ -98,6 +101,8 @@ export const addOperation = (
     specId: string; kind: OperationKind; rationale: string; reversibility: Reversibility;
     requirementId?: string; title?: string; section?: string; statement?: string;
     provenance?: string; cites?: string[]; evidence?: string;
+    criterion?: string; falsifier?: string; evidenceKind?: EvidenceKind;
+    assertedBy?: string[]; targetOperationId?: string;
   } & ActorInput,
 ) => addOperationRec(root, input);
 
@@ -146,6 +151,18 @@ export const recordAudit = (
     promotedFrom?: string;
   } & ActorInput,
 ) => recordAuditRec(root, input);
+
+// --- acceptance criteria -----------------------------------------------------
+
+export { weakAssertions };
+
+export const criteriaSummary = (root: string, input: { requirementId: string }) =>
+  criteriaSummaryRec(root, input.requirementId);
+
+export const recordVacuityCheck = (
+  root: string,
+  input: { criterionId: string; verdict: VacuityCheck["verdict"]; method?: string } & ActorInput,
+) => recordVacuityCheckRec(root, input);
 
 export const auditsFor = (root: string, input: { requirementId: string }) =>
   auditsForRec(root, input.requirementId);

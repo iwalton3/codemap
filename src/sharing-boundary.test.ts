@@ -94,6 +94,16 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     publish: ["src/audits.ts", /e\.ran\?\.some\(\(r\) => r\.passed && !!r\.command\?\.trim\(\)\)/],
   },
   {
+    // The evidence gate on a vacuity demonstration. `demonstrated` is the SILENCING
+    // direction — it is what lets an audit lean on a check — so a demonstration recording
+    // no method is the vacuous claim wearing the shape of evidence. Registered here from
+    // the start rather than after the fold was found permissive, which is what the four
+    // entries above cost.
+    what: "a `demonstrated` vacuity check that records no method",
+    fold: ["src/shared-standard.ts", /check\.verdict === "demonstrated" && !check\.method\?\.trim\(\)/],
+    publish: ["src/criteria.ts", /input\.verdict === "demonstrated" && !method/],
+  },
+  {
     // Found independently by two reviews. The local path calls this asymmetry "structural
     // rather than advisory" and it was advisory anywhere but here: the fold took the
     // record's word, so an appended row naming a ratified `requirementId` and no operation

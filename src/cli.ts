@@ -638,6 +638,9 @@ async function cmdDiff(root: string, base: string, head?: string): Promise<void>
         ? `last audit ${rq.lastAudit.outcome}${rq.lastAudit.provisional ? " (provisional)" : ""}${rq.auditMoved ? ", witnesses moved" : ""}`
         : "never audited";
       console.log(`  § ${rq.section}  ${rq.id} "${rq.title}" — ${rq.anchors.length} anchor(s)${rq.removed ? ", subject removed" : ""}; ${verdict}`);
+      // The detector itself moved in this diff — louder than the subject moving, because
+      // the thing that would have caught a regression is what got rewritten.
+      for (const ac of rq.assertionsMoved) console.log(`    ⚑ assertion moved (${ac.evidenceKind}): ${ac.criterion}`);
     }
   }
 }

@@ -199,7 +199,17 @@ does not wait on the rest.
    `recheckDue` is already derived from them. One rollup target turns `/diff`, a surface
    people already use, into the audit trigger the subsystem otherwise has none of.
 
-1. **`asserted_by`, and the three fields that must ship with it.** The second citation
+1. ~~**`asserted_by`, and the three fields that must ship with it.**~~ **BUILT** — see
+   `docs/requirements-architecture.md` § *Acceptance criteria and `asserted_by`*. One
+   departure from the wording below, made deliberately: the vacuity FIELD is a `VacuityCheck`
+   RECORD, because a stored flag would survive a rewrite of the very lint it certifies —
+   the pathology this relation exists to catch, one level up. What it still waits on is the
+   population predicate itself: `evidenceKind: "lint-test"` is declarable, and nothing yet
+   reads a lint's members.
+
+   The original brief, kept because its reasoning is what the build followed:
+
+   **`asserted_by`, and the three fields that must ship with it.** The second citation
    relation — `cites` is the code a claim is ABOUT (staleness = that code moved),
    `asserted_by` is the check that would FAIL if the claim stopped holding (staleness = the
    build is red). Snapshot versus live. Beside it:

@@ -323,15 +323,89 @@ Two properties fall out, and both are load-bearing:
   putting a finding in front of the team is a decision, and it re-records the finding as a
   fresh observation rather than rewriting a branch audit to claim it was something else.
 
+## Acceptance criteria and `asserted_by` — BUILT
+
+The second citation relation. `Requirement.cites` is the code a rule is ABOUT and its
+staleness means *that code moved*; `AcceptanceCriterion.assertedBy` is the check that would
+FAIL if the rule stopped holding, and its staleness means *the build is red*. Snapshot
+versus live — and codemap observes only the first half, because it never runs anything.
+What it watches is the assertion's own normalized hash, which is not a limitation being
+apologised for: the designed scrub catches *never fires* and *always fires*, and the one
+thing it cannot catch is **fired → was edited → now quiet**, the detector being modified by
+the change it exists to detect. A hash pin on the assertion is exactly that witness.
+
+A criterion is its own record because the design says it is one: a pointer is WHERE TO
+LOOK, a criterion is WHAT and HOW to verify, and one criterion can be watched from several
+pointers. It carries three things adopted rather than re-derived:
+
+- **The falsifier** (playbook §13.1), required. *"If you cannot write what observation would
+  show the criterion is not met, it is prose, not a criterion."* It is the PRE-COMMITMENT
+  form of non-vacuity, and that is the whole reason to import it: every non-vacuity guard in
+  `audits.ts` fires at AUDIT time, when the author already knows what passed. Only one
+  mechanical check is possible here — a falsifier that restates the criterion is refused —
+  and everything past that is a reader's job.
+- **The evidence kind** (playbook §13.2), a closed list of seven. `Audit.evidence` cannot
+  stand in: `read`/`ran`/`consulted` records what one auditor did once, after the fact,
+  where an evidence kind is a standing declaration made at drafting.
+- **The vacuity state**, which COD-18 says must not ship without.
+
+### Vacuity is a RECORD, not a field, and that is the load-bearing choice
+
+COD-18 asks for a "vacuity field". A stored field is something a writer can satisfy — and
+worse, **a derived value with nothing to invalidate it is permanent**, so a `demonstrated`
+flag would survive a rewrite of the very lint it certifies. That is the exact pathology
+`assertedBy` exists to catch, reintroduced one level up. So a `VacuityCheck` is witnessed
+like an audit and goes superseded when the assertion it examined moves, and the served
+`vacuity` is derived from the latest LIVE check.
+
+Four states, and the fourth was named by neither COD-18 nor `audits.ts`:
+
+- `unchecked` — the default, and **it must never render as `demonstrated`**, the same rule
+  `Conformance.unknown` carries one level up. An assertion moving returns a criterion here.
+- `demonstrated` — somebody broke the check and it went red.
+- `vacuous` — somebody tried and it cannot fail.
+- `wrong-layer` — non-vacuous, exercises a real falsifier, and runs somewhere that cannot
+  observe the violation. The playbook's *"a Validate-only test on a handler bug is green
+  paint"* (§14.4). Folding it into `demonstrated` is the failure it describes; folding it
+  into `vacuous` misreports a check that does work, just not this work.
+
+Gated the way everything else in this subsystem is: `demonstrated` is the SILENCING
+direction — it is what lets an audit lean on a check — so it needs a `method` saying what
+was broken and what went red, and it is refused outright on a criterion with no assertion
+(the empty population reading as green). The weakening verdicts need nothing: their failure
+mode is noise, and gating them would gate what unsilences. There is **no way to record
+`unchecked`** — that is the absence of a check, not a finding, and a verb for it would let
+an actor clear a real verdict by asserting ignorance.
+
+Authoring is a **ratified `add_criterion` operation**, never a free-standing write:
+declaring what discharges a rule can NARROW it in practice, which is the silencing
+direction. It may name a standing rule, or the `add_requirement` operation in its own draft
+spec — the flow the playbook actually describes, criteria written WITH the rule in one
+reviewed artifact — and the rule has no id until ratification, which is why
+`criterionIdFor` is derived from the operation exactly as `requirementIdFor` is. Criteria
+are exempt from the one-operation-per-rule refusal: two amendments overwrite each other,
+three acceptance criteria do not.
+
+**The branch diff reaches a rule through its check.** `impact.requirements[].assertionsMoved`
+raises a rule whose lint this change rewrites even when nothing the rule cites moved — which
+is precisely the edit that quietens a detector invisibly.
+
+*Not built:* the population predicate the `lint-test` kind is waiting for
+(`docs/population-predicate.md`), and the scrub. Nothing here runs a check or concludes
+conformance from one — a criterion changes what an audit's evidence is WORTH, and only
+`recordAudit` says whether the code conforms.
+
 ## Audit pointers — a prior on where to look, never a verdict
 
 *Designed, not built.* A **pointer** is a standing declaration that a requirement's
 conformance depends on some observable: a set of anchors, a test, a lint, a query, any
 runnable check. When a pointer moves, the requirement rises in the audit queue.
 
-This generalises what already exists in pieces — `cites` (staleness means the code moved)
-and COD-18's `asserted_by` (staleness means the build is red) — into one relation whose
-question is *what would make this claim need re-checking*.
+This generalises what now exists in pieces — `cites` (staleness means the code moved) and
+`AcceptanceCriterion.assertedBy` (staleness means the DETECTOR moved) — into one relation
+whose question is *what would make this claim need re-checking*. Both halves are built, so
+what a pointer adds is the ADDRESS: aiming higher up the abstraction ladder than an anchor,
+and being shareable between rules.
 
 ### A pointer is WHERE TO LOOK; the acceptance criterion is WHAT and HOW to verify
 
@@ -574,8 +648,6 @@ to catch, so it is reported (`settledWithoutAdjudication`) instead of tidied awa
 Not built, roughly in the order they are worth building — `docs/population-predicate.md`
 carries the detail and the reasoning:
 
-- **`asserted_by`**, with its vacuity field, a **falsifier**, and an **evidence kind** —
-  the last two adopted from the spec playbook's §13.1/§13.2 rather than re-derived.
 - **Audit pointers**, and then the **scrub**, which is their necessary counterweight rather
   than hygiene: differential audit covers what moved and only a scrub covers what did not.
 - **The population predicate**, which is a hash-pinned lint. Narrowing a population is a

@@ -58,6 +58,7 @@ export {
   draftSpec, addOperation, ratifySpec, getSpec, pendingSpecs, reorganizeRequirement,
   acknowledgeGap, acknowledgeDebt, releaseAcknowledgement, listAcknowledgements, dueForRevalidation,
   recordAudit, auditsFor, promotableAudits, promoteProvisionalAudit,
+  criteriaSummary, recordVacuityCheck, weakAssertions,
   raiseProblem, adjudicate, listProblems, awaitingAdjudication, actionableProblems,
   settledWithoutAdjudication,
 } from "./ops/standard.js";

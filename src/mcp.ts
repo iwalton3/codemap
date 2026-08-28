@@ -22,6 +22,7 @@ import { analyzeMarten } from "./analyzers/marten.js";
 import { enableAnalyzer } from "./analyzers/run.js";
 import { markReviewed, markReviewedBatch, unmarkReviewed } from "./reviews.js";
 import { withLock } from "./lock.js";
+import { EVIDENCE_KINDS } from "./schema.js";
 
 /**
  * Tools that write to a universe's `.codemap/` are held under the write lock, so a
@@ -291,7 +292,7 @@ const tools: Tool[] = [
   },
   {
     name: "diff",
-    description: "Diff two anchor snapshots for reviewing a branch/PR: added/removed/changed symbols plus the impact on the docs, flows, reviews, bugs and REQUIREMENTS that cite them.\n\n`impact.requirements` is the audit trigger: a rule of the standard whose cited code this change moves is worth re-auditing, and `auditMoved` says the last audit\u2019s witnesses moved too \u2014 so whatever verdict is on record was reached against source this change rewrites, and a `conformant` there is not evidence any more. It reaches only rules that CITE something; an uncited requirement (the rule the code does not yet satisfy) is invisible to a set-op over anchors. `base` is a cached snapshot (branch/tag/sha — cache it first with `init`/`snapshot`). Omit `head` to diff against a fresh index of the CURRENT working tree (the usual PR-review path: you've checked out the branch under review); or pass a second cached ref for a pure historical set-op.",
+    description: "Diff two anchor snapshots for reviewing a branch/PR: added/removed/changed symbols plus the impact on the docs, flows, reviews, bugs and REQUIREMENTS that cite them.\n\n`impact.requirements` is the audit trigger: a rule of the standard whose cited code this change moves is worth re-auditing, and `auditMoved` says the last audit\u2019s witnesses moved too \u2014 so whatever verdict is on record was reached against source this change rewrites, and a `conformant` there is not evidence any more. `assertionsMoved` is the sharper signal: this change rewrote the CHECK that asserts the rule \u2014 the detector being modified rather than the code it guards \u2014 and a rule appears for that reason alone even when nothing it cites moved. What the rollup cannot reach is a rule that neither cites nor is asserted by anything, which is invisible to a set-op over anchors. `base` is a cached snapshot (branch/tag/sha — cache it first with `init`/`snapshot`). Omit `head` to diff against a fresh index of the CURRENT working tree (the usual PR-review path: you've checked out the branch under review); or pass a second cached ref for a pure historical set-op.",
     inputSchema: obj({ base: { type: "string" }, head: { type: "string" } }, ["base"]),
     handler: (a, c) => ops.diff(c.universe.path, a.base, a.head),
   },
@@ -1225,6 +1226,18 @@ const tools: Tool[] = [
     handler: (a, c) => ops.auditsFor(c.universe.path, a),
   },
   {
+    name: "criteria",
+    description: "The acceptance criteria on one rule: what discharges it, what would REFUTE it (`falsifier`), how it gets discharged (`evidenceKind`), and the check that asserts it (`assertedBy`).\n\nThree derived fields carry the warning COD-18 attaches to this relation. `assertionMoved` — the check's own code has changed since ratification, so the DETECTOR moved, which is a different and stronger signal than the rule's subject moving. `vacuity` — whether anybody has established the check CAN fail (`unchecked` by default, and it must never be read as `demonstrated`); it reverts to `unchecked` when the assertion moves, because whatever was established was established about code that is no longer there. `unasserted` — no check at all.\n\nWhy it matters: citing an assertion makes a claim STRONGER — it converts \"nobody edited the cited code\" into \"green as of the last build\". Over a check that cannot fail, that is manufactured confidence with a mechanism attached.",
+    inputSchema: obj({ requirementId: { type: "string" } }, ["requirementId"]),
+    handler: (a, c) => ops.criteriaSummary(c.universe.path, a),
+  },
+  {
+    name: "weak_assertions",
+    description: "The criteria nobody can currently lean on, in five buckets kept apart because the remedy differs. `unchecked` — has a check, nobody has tried to break it. `vacuous` — somebody tried and it cannot fail. `wrongLayer` — it fails, but somewhere that cannot observe the violation (a Validate-only test on a handler bug is green paint). `unasserted` — no check at all, which is a rule waiting for one rather than a defect. `moved` — the assertion's code changed, so every verdict about it is about code that is gone.",
+    inputSchema: obj({}),
+    handler: (_a, c) => ops.weakAssertions(c.universe.path),
+  },
+  {
     name: "acknowledgements",
     description: "The silencers: records saying the rule stands, we know it is not met, do not raise it. `basis` is `gap` (nothing that should conform exists yet) or `debt` (it should and does not). One record kind for both, so there is exactly one thing to count when asking how much of the standard is currently silenced.",
     inputSchema: obj({
@@ -1254,10 +1267,10 @@ const tools: Tool[] = [
   },
   {
     name: "add_operation",
-    description: "Add one operation to a draft spec: `add_requirement`, `amend_statement`, or `retire_requirement`. Operations are the operative content — the before/after a reviewer reads is rendered FROM them. Amending replaces one statement rather than reprinting a section, so nothing unnamed by an operation is ever touched. `rationale` and `reversibility` are per operation, not per spec, so there is no free-floating prose to drift from what lands.",
+    description: "Add one operation to a draft spec: `add_requirement`, `amend_statement`, `retire_requirement`, or `add_criterion`. Operations are the operative content — the before/after a reviewer reads is rendered FROM them. Amending replaces one statement rather than reprinting a section, so nothing unnamed by an operation is ever touched. `rationale` and `reversibility` are per operation, not per spec, so there is no free-floating prose to drift from what lands.",
     inputSchema: obj({
       specId: { type: "string" },
-      kind: { type: "string", enum: ["add_requirement", "amend_statement", "retire_requirement"] },
+      kind: { type: "string", enum: ["add_requirement", "amend_statement", "retire_requirement", "add_criterion"] },
       rationale: { type: "string", description: "What provoked this operation." },
       reversibility: { type: "string", enum: ["reversible", "irreversible", "unknown"], description: "Whether SATISFYING this can be undone. Declared before ratification because it changes the decision, and because it makes the rule harder to amend later." },
       requirementId: { type: "string", description: "The rule being amended or retired." },
@@ -1267,11 +1280,29 @@ const tools: Tool[] = [
       provenance: { type: "string", description: "Where the rule comes from — a contract term, an IATA standard, a credit policy, a customer demand, our own past choice." },
       cites: { type: "array", items: { type: "string" }, description: "Code the rule is about. MAY be empty: an uncited requirement is one the code does not satisfy yet, which is a well-formed record." },
       evidence: { type: "string", description: "For an amendment: what shows the base state you wrote this against." },
+      criterion: { type: "string", description: "`add_criterion`: what must be true, concretely and verifiably." },
+      falsifier: { type: "string", description: "`add_criterion`, REQUIRED: the observation that would show the criterion is NOT met. The part authors skip and the part that does the work — if you cannot write what would refute it, it is prose rather than a criterion, and finding that out now is the whole point of writing it at drafting time." },
+      evidenceKind: { type: "string", enum: [...EVIDENCE_KINDS], description: "`add_criterion`: how it gets discharged. A closed list. An invariant — anything phrased always/never/every, and \"writes zero rows\" counts — wants `lint-test`, because a green suite at merge does not prove nobody reintroduces the thing next quarter. `attestation` is the last resort and weak by construction: reaching for it for anything that can be rendered, captured or run is skipping the evidence rather than choosing a type." },
+      assertedBy: { type: "array", items: { type: "string" }, description: "`add_criterion`: anchors of the CHECK — the test or lint that would fail if the rule stopped holding. Distinct from `cites`, which is the code the rule is ABOUT: `cites` going stale means the code moved, this going stale means the DETECTOR moved. MAY be empty — a criterion is written before the code exists." },
+      targetOperationId: { type: "string", description: "`add_criterion` attaching to a rule THIS SAME SPEC creates: the `add_requirement` operation, since the rule has no id until ratification. Use instead of `requirementId`." },
       model: { type: "string", description: "YOUR model id. Never guess it." },
       harness: { type: "string" },
     }, ["specId", "kind", "rationale", "reversibility"]),
     mutates: true,
     handler: (a, c) => ops.addOperation(c.universe.path, a as never),
+  },
+  {
+    name: "record_vacuity_check",
+    description: "Record that you tried to make a criterion's assertion FAIL, and what happened. Open to any actor — verifying a check is exactly what an auditor agent is for, and the gate is what was DONE, not who did it.\n\n`demonstrated` needs a `method`: what you broke and what went red. It is the silencing direction — it makes the check trustworthy enough for an audit to lean on — so a demonstration recording nothing is the vacuous claim wearing the shape of evidence. `vacuous` and `wrong-layer` WEAKEN a criterion and need no method: their failure mode is noise, and gating what unsilences is the wrong asymmetry.\n\nThere is no way to record `unchecked`. That is the absence of a check, not a finding — and writing one would let an actor clear a real verdict by asserting ignorance. What does return a criterion to `unchecked` is the assertion moving, which supersedes every verdict about it.",
+    inputSchema: obj({
+      criterionId: { type: "string" },
+      verdict: { type: "string", enum: ["demonstrated", "vacuous", "wrong-layer"] },
+      method: { type: "string", description: "REQUIRED for `demonstrated`: the mutation you made and what the assertion did in response." },
+      model: { type: "string", description: "YOUR model id. Never guess it." },
+      harness: { type: "string" },
+    }, ["criterionId", "verdict"]),
+    mutates: true,
+    handler: (a, c) => ops.recordVacuityCheck(c.universe.path, a as never),
   },
   {
     name: "ratify_spec",

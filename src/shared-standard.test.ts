@@ -20,8 +20,9 @@ import { standardProjection } from "./shared-projections.js";
 import {
   foldStandard, standardScope, publishSpecDrafted, publishOperation, publishSpecRatified,
   publishAckGranted, publishAckReleased, publishAudit, publishProblemRaised, publishAdjudication,
+  publishVacuityCheck, emptyStandard,
 } from "./shared-standard.js";
-import { requirementIdFor, type Acknowledgement, type Actor, type Audit, type Operation, type Problem, type Spec } from "./schema.js";
+import { criterionIdFor, requirementIdFor, type Acknowledgement, type Actor, type Audit, type Operation, type Problem, type Spec } from "./schema.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
 const opus: Actor = { principal: "izzie@x.com", via: { kind: "agent", model: "claude-opus-5" } };
@@ -199,9 +200,7 @@ test("the projection round-trips what the fold produced", async () => {
     assert.deepEqual(standardProjection.read(d, SCOPE), value);
 
     // Another universe's scope is untouched by this one's rows.
-    assert.deepEqual(standardProjection.read(d, standardScope("acme/settlement")), {
-      specs: [], operations: [], requirements: [], acknowledgements: [], audits: [], problems: [],
-    });
+    assert.deepEqual(standardProjection.read(d, standardScope("acme/settlement")), emptyStandard());
   } finally { discard(root); discard(store); }
 });
 
@@ -451,5 +450,81 @@ test("a ratification adopts exactly the operations it pinned", async () => {
     const f = await fold(root);
     assert.equal(f.requirements.length, 1, "only what was pinned");
     assert.equal(f.requirements[0]!.id, requirementIdFor("op_1"));
+  } finally { discard(root); }
+});
+
+const ADD_CRITERION: Operation = {
+  id: "op_2", specId: "sp_1", kind: "add_criterion", ord: 1, targetOperationId: "op_1",
+  criterion: "Every credit line row stores USD.", falsifier: "A row exists in another currency.",
+  evidenceKind: "lint-test", assertedBy: ["a_lint"],
+  rationale: "so the rule has a detector", reversibility: "reversible",
+};
+
+/**
+ * A criterion is DERIVED by replaying operations, exactly as a requirement is.
+ *
+ * That is why `criterionIdFor` is a function of the operation: the fold mints it on every
+ * clone independently, and a random id would give each machine its own name for the same
+ * criterion — a failure invisible locally, where there is only ever one clone.
+ */
+test("a ratified add_criterion folds to a criterion, under an id every clone derives", async () => {
+  const root = await log("criterion");
+  try {
+    await publishSpecDrafted(root, SCOPE, opus, SPEC);
+    await publishOperation(root, SCOPE, opus, ADD);
+    await publishOperation(root, SCOPE, opus, ADD_CRITERION);
+
+    assert.equal((await fold(root)).criteria.length, 0, "a draft spec writes no criteria either");
+
+    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {
+      // The criterion witnesses its ASSERTION; the requirement witnesses the rule's code.
+      op_1: [{ anchorId: "a_credit", bodyHash: "h1:sha256:abc" }],
+      op_2: [{ anchorId: "a_lint", bodyHash: "h1:sha256:def" }],
+    }, ["op_1", "op_2"]);
+
+    const after = await fold(root);
+    assert.equal(after.criteria.length, 1);
+    const c = after.criteria[0]!;
+    assert.equal(c.id, criterionIdFor("op_2"));
+    assert.equal(c.requirementId, requirementIdFor("op_1"), "bound to the rule its own spec created");
+    assert.equal(c.falsifier, "A row exists in another currency.");
+    assert.deepEqual(c.witnesses, [{ anchorId: "a_lint", bodyHash: "h1:sha256:def" }]);
+    // And the operation row is bound too, or `readOperations({requirementId})` is not the
+    // rule's whole history on any clone that folded it.
+    assert.equal(after.operations.find((o) => o.id === "op_2")!.requirementId, requirementIdFor("op_1"));
+  } finally { discard(root); }
+});
+
+/**
+ * The evidence gate on a demonstration, at the end that binds every clone.
+ *
+ * `recordVacuityCheck` refuses this, but the tool binds only writers who ask — an older
+ * client, a hand-written line, a future build. This subsystem has shipped that mistake
+ * four times (see `sharing-boundary.test.ts` §BOTH_ENDS), always in this direction.
+ */
+test("the fold drops a `demonstrated` vacuity check that records no method", async () => {
+  const root = await log("vacuity");
+  try {
+    const base = {
+      criterionId: "ac_1", witnesses: [{ anchorId: "a_lint", bodyHash: "h1:sha256:def" }],
+      checkedBy: opus, at: "2026-08-03T00:00:00.000Z",
+    };
+    await publishVacuityCheck(root, SCOPE, opus, { ...base, id: "vc_1", verdict: "demonstrated", method: "" });
+    assert.deepEqual((await fold(root)).vacuityChecks, [], "a demonstration recording nothing is not a demonstration");
+
+    // A verdict that WEAKENS a criterion needs no method — its failure mode is noise, and
+    // gating it would gate what unsilences.
+    await publishVacuityCheck(root, SCOPE, opus, { ...base, id: "vc_2", verdict: "vacuous", method: "" });
+    assert.deepEqual((await fold(root)).vacuityChecks.map((v) => v.id), ["vc_2"]);
+
+    // And a real demonstration lands.
+    await publishVacuityCheck(root, SCOPE, opus, {
+      ...base, id: "vc_3", verdict: "demonstrated", method: "inverted the currency check; 3 sites went red",
+    });
+    assert.deepEqual((await fold(root)).vacuityChecks.map((v) => v.id), ["vc_2", "vc_3"]);
+
+    // A verdict this build does not model is dropped rather than folded as something else.
+    await publishVacuityCheck(root, SCOPE, opus, { ...base, id: "vc_4", verdict: "fine" as never, method: "x" });
+    assert.deepEqual((await fold(root)).vacuityChecks.map((v) => v.id), ["vc_2", "vc_3"]);
   } finally { discard(root); }
 });
