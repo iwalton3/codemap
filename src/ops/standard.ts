@@ -51,10 +51,14 @@ import {
   declarePointer as declarePointerRec, restatePointer as restatePointerRec,
   retirePointer as retirePointerRec, pointersFor as pointersForRec, auditQueue as auditQueueRec,
 } from "../pointers.js";
+import {
+  pinPopulation as pinRec, declareNotExpressible as notExpressibleRec,
+  populationFor as populationForRec, brokenPins as brokenPinsRec,
+} from "../population.js";
 import { standardScopeWarning, type StandardScope } from "../standard-publish.js";
 import type {
   AcknowledgementPriority, AuditEvidence, AuditOutcome, EvidenceKind, OperationKind,
-  ProblemDisposition, Requirement, Reversibility, VacuityCheck,
+  PopulationMember, ProblemDisposition, Requirement, Reversibility, VacuityCheck,
 } from "../schema.js";
 
 /**
@@ -224,6 +228,23 @@ export const recordVacuityCheck = (
   root: string,
   input: { criterionId: string; verdict: VacuityCheck["verdict"]; method?: string } & ActorInput,
 ) => recordVacuityCheckRec(root, input);
+
+// --- population predicates ----------------------------------------------------
+
+export const pinPopulation = (
+  root: string,
+  input: { requirementId: string; lint: string[]; members: PopulationMember[] } & ActorInput,
+) => pinRec(root, input);
+
+export const declareNotExpressible = (
+  root: string, input: { requirementId: string; reason: string } & ActorInput,
+) => notExpressibleRec(root, input);
+
+export const populationFor = async (root: string, input: { requirementId: string }) =>
+  served(root, () => populationForRec(root, input.requirementId));
+
+export const brokenPins = async (root: string) =>
+  served(root, async () => ({ pins: await brokenPinsRec(root) }));
 
 // --- pointers -----------------------------------------------------------------
 

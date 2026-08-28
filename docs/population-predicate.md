@@ -1,8 +1,10 @@
 # The population predicate — a hash-pinned lint, and what it rests on
 
-> **Kind: design brief — NOT built and NOT settled.** It states the shape and the
-> constraints, so whoever builds it does not rediscover them one at a time.
-> `docs/requirements-architecture.md` is normative and outranks this.
+> **Kind: design brief. The mechanism is now BUILT** (`population.ts`) — this is retained
+> for the reasoning behind it, which the code cites rather than repeats. What is still open
+> is the last section: nothing runs the lint, so the auditor half of the empty-population
+> defence, and the scrub, are not built. `docs/requirements-architecture.md` is normative
+> and outranks this.
 
 The predicate is the largest unbuilt thing in the requirements subsystem, and it is
 load-bearing in four separate places: it makes **`gap` decidable** (*no code that should
@@ -233,9 +235,11 @@ does not wait on the rest.
    (`code → doc stales → pointer`) is lit. The rung is DERIVED, not declared: a `check` is
    an anchor in a `[tests]` path, which is what the `[tests]` bin was for.
 
-3. **The pin, the delta rendering, and the gating split.** Hash the lint; render a change as
-   a POPULATION DELTA rather than two diffed selectors; leave re-pinning open for queue
-   purposes and principal-gate it where it changes a gap/debt classification.
+3. ~~**The pin, the delta rendering, and the gating split.**~~ **BUILT.** The pin hashes the
+   lint anchors; the delta reports dropped / added / reclassified with `droppedViolating`;
+   narrowing needs a principal at BOTH ends while widening stays open. A populated pin
+   releases a gap. What is NOT built is anything that runs the lint — the empty-population
+   refusal is the mechanical layer only.
 
 4. **The scrub** — not an optional complement. Differential audit covers what MOVED, so a
    requirement whose pointers never move is never audited; the scrub is the only thing

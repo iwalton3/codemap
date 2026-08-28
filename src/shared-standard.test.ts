@@ -21,7 +21,7 @@ import {
   foldStandard, standardScope, publishSpecDrafted, publishOperation, publishSpecRatified,
   publishAckGranted, publishAckReleased, publishAudit, publishProblemRaised, publishAdjudication,
   publishVacuityCheck, publishPointerDeclared, publishPointerRestated, publishPointerRetired,
-  emptyStandard,
+  publishPopulationPinned, emptyStandard,
 } from "./shared-standard.js";
 import { criterionIdFor, requirementIdFor, type Acknowledgement, type Actor, type Audit, type Operation, type Problem, type Spec } from "./schema.js";
 
@@ -590,5 +590,73 @@ test("the fold refuses a pointer nobody can evaluate, and one that arrives pre-r
     assert.deepEqual(p.map((x) => x.id), ["pt_sneaky"]);
     assert.equal(p[0]!.state, "active", "declaring is declaring, whatever the payload said");
     assert.equal(p[0]!.retiredReason, undefined, "and every retirement field is stripped, not just the state");
+  } finally { discard(root); }
+});
+
+const POP = {
+  id: "pop_1", requirementId: "r_x", basis: "lint" as const, lint: ["a_lint"],
+  witnesses: [{ anchorId: "a_lint", bodyHash: "h1:sha256:abc" }],
+  members: [{ id: "GET /orders", state: "conforms" as const }, { id: "GET /invoices", state: "violates" as const }],
+  state: "active" as const, pinnedBy: izzie, pinnedAt: "2026-08-14T00:00:00.000Z",
+};
+
+test("a population pin folds, and supersedes the one it names in the same act", async () => {
+  const root = await log("population");
+  try {
+    await publishPopulationPinned(root, SCOPE, izzie, POP);
+    assert.deepEqual((await fold(root)).populations.map((p) => [p.id, p.state]), [["pop_1", "active"]]);
+
+    // Superseding rides WITH the pin. Two events would let a clone fold half of it and
+    // hold two active populations for one rule.
+    const wider = {
+      ...POP, id: "pop_2", pinnedAt: "2026-08-15T00:00:00.000Z",
+      members: [...POP.members, { id: "GET /credits", state: "violates" as const }],
+    };
+    await publishPopulationPinned(root, SCOPE, izzie, wider, "pop_1");
+    const after = (await fold(root)).populations;
+    assert.deepEqual(after.map((p) => [p.id, p.state]), [["pop_1", "superseded"], ["pop_2", "active"]]);
+  } finally { discard(root); }
+});
+
+/**
+ * The two gates that only this end can enforce.
+ *
+ * An empty lint pin is green reading as conformant; a NARROWING re-pin by an agent can flip
+ * debt into a gap, which is silencing. `pinPopulation` refuses both — and the tool binds
+ * only writers who ask, which is the one-end mistake this subsystem has shipped four times.
+ */
+test("the fold refuses an empty pin, and an agent narrowing a population", async () => {
+  const root = await log("population-guards");
+  try {
+    await publishPopulationPinned(root, SCOPE, izzie, { ...POP, id: "pop_empty", members: [] });
+    assert.deepEqual((await fold(root)).populations.map((p) => p.id), [], "zero members is green, and green reads as conformant");
+
+    await publishPopulationPinned(root, SCOPE, izzie, { ...POP, id: "pop_bad", members: [{ id: "x", state: "maybe" as never }] });
+    assert.deepEqual((await fold(root)).populations.map((p) => p.id), [], "a member state this build does not model");
+
+    await publishPopulationPinned(root, SCOPE, izzie, {
+      ...POP, id: "pop_mute", basis: "not-expressible", lint: [], witnesses: [], members: [], reason: "  ",
+    });
+    assert.deepEqual((await fold(root)).populations.map((p) => p.id), [], "the one basis nothing can check needs its argument");
+
+    await publishPopulationPinned(root, SCOPE, izzie, POP);
+    assert.deepEqual((await fold(root)).populations.map((p) => p.id), ["pop_1"], "and a real one lands");
+
+    // An AGENT dropping the violating member. Decided here from the two member lists the
+    // writer had, not from the writer's word about what it was doing.
+    await publishPopulationPinned(root, SCOPE, opus, {
+      ...POP, id: "pop_narrow", pinnedAt: "2026-08-16T00:00:00.000Z",
+      members: [{ id: "GET /orders", state: "conforms" as const }],
+    }, "pop_1");
+    let p = (await fold(root)).populations;
+    assert.deepEqual(p.map((x) => [x.id, x.state]), [["pop_1", "active"]], "narrowing is a principal's act");
+
+    // The same agent WIDENING is fine — gate what silences, never what unsilences.
+    await publishPopulationPinned(root, SCOPE, opus, {
+      ...POP, id: "pop_wide", pinnedAt: "2026-08-17T00:00:00.000Z",
+      members: [...POP.members, { id: "GET /credits", state: "violates" as const }],
+    }, "pop_1");
+    p = (await fold(root)).populations;
+    assert.deepEqual(p.map((x) => [x.id, x.state]), [["pop_1", "superseded"], ["pop_wide", "active"]]);
   } finally { discard(root); }
 });

@@ -18,7 +18,8 @@
  */
 
 import type {
-  Acknowledgement, Actor, Audit, BugWitness, Operation, Pointer, Problem, Spec, VacuityCheck,
+  Acknowledgement, Actor, Audit, BugWitness, Operation, Pointer, PopulationPredicate, Problem,
+  Spec, VacuityCheck,
 } from "./schema.js";
 import type { ScopeDiagnostic } from "./eventlog.js";
 import { resolveSidecar, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
@@ -30,6 +31,7 @@ import {
   foldStandard, standardScope, publishSpecDrafted, publishOperation, publishSpecRatified,
   publishAckGranted, publishAckReleased, publishAudit, publishProblemRaised, publishAdjudication,
   publishVacuityCheck, publishPointerDeclared, publishPointerRestated, publishPointerRetired,
+  publishPopulationPinned,
 } from "./shared-standard.js";
 
 /** One universe's standard, through the cache. */
@@ -173,6 +175,15 @@ export const sharePointerRestated = (root: string, p: Pointer): Promise<Shared> 
 
 export const sharePointerRetired = (root: string, p: Pointer): Promise<Shared> =>
   share(root, (l, s, a) => publishPointerRetired(l, s, a, p.id, p.retiredAt!, p.retiredReason ?? ""));
+
+/**
+ * A pin travels, carrying the pin it replaces. What a rule ranges over is a fact about the
+ * standard rather than about one branch's code, and the supersession has to ride WITH it —
+ * two events would let a clone fold half and hold two active populations for one rule.
+ */
+export const sharePopulationPinned = (
+  root: string, pin: PopulationPredicate, supersedes?: string,
+): Promise<Shared> => share(root, (l, s, a) => publishPopulationPinned(l, s, a, pin, supersedes));
 
 /** Same rule: a problem raised from a provisional audit is this branch's, not the team's. */
 export const shareProblemRaised = (root: string, problem: Problem): Promise<Shared> =>

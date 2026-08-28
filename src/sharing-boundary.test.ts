@@ -94,6 +94,23 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     publish: ["src/audits.ts", /e\.ran\?\.some\(\(r\) => r\.passed && !!r\.command\?\.trim\(\)\)/],
   },
   {
+    // A lint over zero members is GREEN, and green reads as conformant. With a query
+    // language that was an edge case; with a lint it is the DEFAULT failure mode, which is
+    // why the cheap mechanical layer exists at all — and why it has to exist at both ends.
+    what: "a population pinned from a lint that examined nothing",
+    fold: ["src/shared-standard.ts", /if \(pin\.basis === "lint" && !pin\.members\.length\) break;/],
+    publish: ["src/population.ts", /a lint reporting zero members cannot be pinned/],
+  },
+  {
+    // NARROWING a population until the violators fall outside it is the third laundering
+    // door, after "amend the rule to match the code" and "declare the rule not yet
+    // applicable". It can flip debt into a gap, which is silencing, so it is a principal's
+    // act — and the fold decides it from the two member lists rather than from the writer.
+    what: "an agent narrowing a rule's population",
+    fold: ["src/shared-standard.ts", /if \(prior\.members\.some\(\(m\) => !after\.has\(m\.id\)\)\) break;/],
+    publish: ["src/population.ts", /if \(delta\.narrows && isAgentActor\(actor\)\)/],
+  },
+  {
     // A pointer nobody can evaluate. The rationale is the only thing a later reader has to
     // judge a pointer BY — codemap cannot tell a well-aimed address from a laundered one —
     // so an empty one is the vacuity problem arriving at the record whose whole job is to

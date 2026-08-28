@@ -40,7 +40,7 @@ import {
   type CoverageRule, type CoverageStore, type AnalyzerConfig, type Review, type ReviewStore, type Triage, type TriageStore,
   type BugWitness, type Importance, type Complexity, type TriageSource,
   type Requirement, type RequirementStore, type Spec, type Operation, type Acknowledgement, type Audit, type Problem,
-  type AcceptanceCriterion, type VacuityCheck, type EvidenceKind, type Pointer,
+  type AcceptanceCriterion, type VacuityCheck, type EvidenceKind, type Pointer, type PopulationPredicate,
   SCHEMA_VERSION, ANCHOR_SCHEME, HASH_SCHEME,
 } from "./schema.js";
 
@@ -2389,6 +2389,40 @@ export async function writeLocalVacuityCheck(root: string, v: VacuityCheck): Pro
     "INSERT OR REPLACE INTO vacuity_checks(id,criterion_id,verdict,at,origin,source_scope,body)"
     + " VALUES(?,?,?,?,?,?,?)",
   ).run(v.id, v.criterionId, v.verdict, v.at, v.origin ?? null, null, JSON.stringify(v));
+}
+
+const hydratePopulation = (body: string, origin: string | null): PopulationPredicate | null => {
+  try {
+    const p = JSON.parse(body) as PopulationPredicate;
+    return origin ? { ...p, origin } : p;
+  } catch { return null; }
+};
+
+export async function readPopulations(
+  root: string, opts: { requirementId?: string; state?: PopulationPredicate["state"] } = {},
+): Promise<PopulationPredicate[]> {
+  const clauses: string[] = [];
+  const args: string[] = [];
+  if (opts.requirementId) { clauses.push("requirement_id = ?"); args.push(opts.requirementId); }
+  if (opts.state) { clauses.push("state = ?"); args.push(opts.state); }
+  const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+  const rows = db(root).prepare(
+    `SELECT body, origin FROM populations${where} ORDER BY pinned_at, id`,
+  ).all(...args as []) as unknown as { body: string; origin: string | null }[];
+  const out: PopulationPredicate[] = [];
+  for (const r of rows) { const p = hydratePopulation(r.body, r.origin); if (p) out.push(p); }
+  return out;
+}
+
+export async function writeLocalPopulation(root: string, p: PopulationPredicate): Promise<void> {
+  const d = db(root);
+  const owner = d.prepare("SELECT source_scope FROM populations WHERE id = ? AND source_scope IS NOT NULL")
+    .get(p.id) as { source_scope: string } | undefined;
+  if (owner) throw new Error(`${p.id} is owned by the sidecar fold (${owner.source_scope}) — write an event, not a row.`);
+  d.prepare(
+    "INSERT OR REPLACE INTO populations(id,requirement_id,basis,state,pinned_at,origin,source_scope,body)"
+    + " VALUES(?,?,?,?,?,?,?,?)",
+  ).run(p.id, p.requirementId, p.basis, p.state, p.pinnedAt, p.origin ?? null, null, JSON.stringify(p));
 }
 
 const hydratePointer = (body: string, origin: string | null): Pointer | null => {

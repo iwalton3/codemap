@@ -615,7 +615,7 @@ export const graphProjection: Projection<Map<string, SharedWiring>> = {
  * front-end (`src/ops-reach.test.ts`). This is not an op.
  */
 /**
- * A universe's whole standard, into the nine canonical tables.
+ * A universe's whole standard, into the ten canonical tables.
  *
  * One projection rather than six, because it folds from one scope: the kinds
  * cross-reference each other (a problem closes on an audit or on a ratified spec) and a
@@ -627,7 +627,7 @@ export const graphProjection: Projection<Map<string, SharedWiring>> = {
  */
 export const standardProjection: Projection<SharedStandard> = {
   write(d: DatabaseSync, scope: string, value: SharedStandard): void {
-    for (const t of ["specs", "operations", "requirements", "criteria", "vacuity_checks", "pointers", "acknowledgements", "audits", "problems"]) {
+    for (const t of ["specs", "operations", "requirements", "criteria", "vacuity_checks", "pointers", "populations", "acknowledgements", "audits", "problems"]) {
       d.prepare(`DELETE FROM ${t} WHERE source_scope = ?`).run(scope);
     }
     const spec = d.prepare("INSERT INTO specs(id,status,title,created_at,ratified_at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?)");
@@ -654,6 +654,10 @@ export const standardProjection: Projection<SharedStandard> = {
     for (const p of value.pointers) {
       ptr.run(p.id, p.requirementId, p.target.kind, p.target.id, p.state, p.declaredAt, "sync", scope, JSON.stringify(p));
     }
+    const pop = d.prepare("INSERT INTO populations(id,requirement_id,basis,state,pinned_at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?)");
+    for (const p of value.populations) {
+      pop.run(p.id, p.requirementId, p.basis, p.state, p.pinnedAt, "sync", scope, JSON.stringify(p));
+    }
     const ack = d.prepare("INSERT INTO acknowledgements(id,basis,state,operation_id,requirement_id,priority,revalidate_by,granted_at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?,?,?,?)");
     for (const a of value.acknowledgements) {
       ack.run(a.id, a.basis, a.state, a.operationId ?? null, a.requirementId ?? null, a.priority, a.revalidateBy, a.grantedAt, "sync", scope, JSON.stringify(a));
@@ -678,7 +682,7 @@ export const standardProjection: Projection<SharedStandard> = {
         });
     return {
       specs: all("specs"), operations: all("operations"), requirements: all("requirements"),
-      criteria: all("criteria"), vacuityChecks: all("vacuity_checks"), pointers: all("pointers"),
+      criteria: all("criteria"), vacuityChecks: all("vacuity_checks"), pointers: all("pointers"), populations: all("populations"),
       acknowledgements: all("acknowledgements"), audits: all("audits"), problems: all("problems"),
     };
   },

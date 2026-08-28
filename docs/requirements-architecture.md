@@ -609,6 +609,51 @@ share of the population per period, so everything is covered every *T*. Without 
 and its cost is unbudgeted — which is the principal-time failure recorded below arriving
 from a third direction.
 
+## The population predicate — a hash-pinned lint — BUILT
+
+`population.ts`. What a rule RANGES OVER, and `docs/population-predicate.md` carries the
+full reasoning. It is a **lint, not a query language**: anything strong enough for "every
+HTTP endpoint" is framework knowledge, which is the analyzer boundary and its 138 false
+positives before 4 genuine findings, so a query language would inherit that error rate into
+the record meant to be more trustworthy than the code. codemap hashes the lint and reads
+what it reported; nothing here parses a member id.
+
+**Members, not a verdict.** Pass/fail carries no arity, so a green lint cannot say whether
+the population is empty (which decides gap versus debt) or whether a gap is one null check
+or the whole system. Counts are derived from the member list rather than stored beside it,
+so they cannot disagree with it, and `undecidable` keeps its own number — folding it into
+`conforms` is `unknown` reading as `conformant` one level down, folding it into `violates`
+is the false-positive shape.
+
+**Three answers, not two.** `pinned`, `not-expressible` (with its reason — some rules have
+no lint, and a population spanning two repos is not one lint and must not become two that
+drift), and `absent`, which must not read as anything else: an unpinned rule is one where
+*no code should conform to this yet* still means *I looked and did not find any*.
+
+### The gating split, which is what makes the pin worth having
+
+The pin alone does not close the laundering door — narrow the selector, the pin breaks,
+re-pin, quiet again is the same door in two steps. Two things close it:
+
+- **The delta is the rendering.** Not two diffed selectors, which are not reviewable, but
+  *"this drops 2 members, 1 of which is violating"*. That converts *detect underhandedness*
+  into *read a number*, and agent arithmetic and agent discernment do not have the same
+  reliability. `reclassified` is reported on its own axis, because a member that stays but
+  flips verdict is invisible in a count of members.
+- **Gate by consequence, not uniformly.** Widening or re-stating is open; **narrowing is a
+  principal's act**, because dropping members can flip debt into a gap, which is silencing.
+  Both ends enforce it, and the fold decides it from the two member lists the writer had
+  rather than from the writer's account of what it was doing.
+
+A populated pin **releases a gap** on that rule automatically: a gap claims no code that
+should conform exists, and the lint just enumerated some. Releasing is the safe direction,
+which is why it is automatic here exactly as it is after an audit.
+
+*Not built:* nothing runs the lint. codemap records what a caller says it reported, so a
+lint that CLAIMS 47 members and examined none is a self-report that only a reader catches —
+the mechanical layer catches the empty case and the auditor layer is the other half, by
+design. See the bet stated in `docs/population-predicate.md`.
+
 ## Backout is two problems, and only one of them is ours
 
 ITIL requires every change to say how it is undone. Here that question splits, and the two
@@ -696,6 +741,7 @@ MCP surface via `ops/standard.ts`:
   `VacuityCheck` that keeps it honest.
 - `ops/standard.ts`'s `served()` — the non-authoritative marker on every read.
 - `pointers.ts` — where to look, the derived ladder, and the audit queue.
+- `population.ts` — the hash-pinned lint, the member delta, and the narrowing gate.
 
 **Adjudication and closure are separate events**, which was not obvious until it was
 built. Naming which side moves does not move it, so a problem stays open until the named
@@ -709,8 +755,6 @@ carries the detail and the reasoning:
 
 - **The scrub** — pointers' necessary counterweight rather than hygiene: differential audit
   covers what moved and only a scrub covers what did not.
-- **The population predicate**, which is a hash-pinned lint. Narrowing a population is a
-  laundering door and has to be gated like an amendment.
 - Section move/rename operations, and spec withdrawal / repeal. Mechanical.
 
 The web front end has no routes for any of it — `mcp.ts` is wired and `serve.ts` is not, so

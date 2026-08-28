@@ -13,6 +13,7 @@
  *   problem.raised · problem.adjudicated
  *   vacuity.checked
  *   pointer.declared · pointer.restated · pointer.retired
+ *   population.pinned
  *
  * ACCEPTANCE CRITERIA are not among them either, for the reason requirements are not: a
  * criterion is created by a ratified `add_criterion` operation, so it is derived by
@@ -40,8 +41,8 @@
  */
 
 import type {
-  AcceptanceCriterion, Acknowledgement, Actor, Audit, BugWitness, Operation, Pointer, Problem,
-  Requirement, Spec, VacuityCheck,
+  AcceptanceCriterion, Acknowledgement, Actor, Audit, BugWitness, Operation, Pointer,
+  PopulationPredicate, Problem, Requirement, Spec, VacuityCheck,
 } from "./schema.js";
 import { criterionIdFor, requirementIdFor } from "./schema.js";
 import type { LogEvent } from "./eventlog.js";
@@ -57,6 +58,7 @@ export interface SharedStandard {
   criteria: AcceptanceCriterion[];
   vacuityChecks: VacuityCheck[];
   pointers: Pointer[];
+  populations: PopulationPredicate[];
   acknowledgements: Acknowledgement[];
   audits: Audit[];
   problems: Problem[];
@@ -64,7 +66,7 @@ export interface SharedStandard {
 
 export const emptyStandard = (): SharedStandard => ({
   specs: [], operations: [], requirements: [], criteria: [], vacuityChecks: [], pointers: [],
-  acknowledgements: [], audits: [], problems: [],
+  populations: [], acknowledgements: [], audits: [], problems: [],
 });
 
 // --- writing -----------------------------------------------------------------
@@ -126,6 +128,15 @@ export const publishPointerRetired = (
   logRoot: string, scope: string, actor: Actor, id: string, at: string, reason: string,
 ) => put(logRoot, scope, actor, "pointer.retired", id, { at, reason });
 
+/**
+ * A pin, carrying the pin it supersedes. ONE act: superseding the previous pin is what
+ * pinning a new one MEANS, so splitting it would let a clone fold half of it and hold two
+ * active populations for one rule.
+ */
+export const publishPopulationPinned = (
+  logRoot: string, scope: string, actor: Actor, pin: PopulationPredicate, supersedes?: string,
+) => put(logRoot, scope, actor, "population.pinned", pin.id, { pin, ...(supersedes ? { supersedes } : {}) });
+
 export const publishProblemRaised = (logRoot: string, scope: string, actor: Actor, problem: Problem) =>
   put(logRoot, scope, actor, "problem.raised", problem.id, { problem });
 
@@ -161,6 +172,7 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
   const criteria = new Map<string, AcceptanceCriterion>();
   const vacuityChecks = new Map<string, VacuityCheck>();
   const pointers = new Map<string, Pointer>();
+  const populations = new Map<string, PopulationPredicate>();
   const acknowledgements = new Map<string, Acknowledgement>();
   const audits = new Map<string, Audit>();
   const problems = new Map<string, Problem>();
@@ -348,6 +360,35 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
         });
         break;
       }
+      case "population.pinned": {
+        const pin = obj(e.data, "pin") as PopulationPredicate | undefined;
+        if (!pin?.id || !pin.requirementId) break;
+        if (pin.basis !== "lint" && pin.basis !== "not-expressible") break;
+        if (!Array.isArray(pin.members)) break;
+        // Zero members is GREEN and green reads as conformant, so an empty lint pin is
+        // refused — the default failure mode here, not an edge case. Restated at the fold
+        // because the tool binds only writers who ask, which is the one-end mistake this
+        // subsystem has now shipped four times.
+        if (pin.basis === "lint" && !pin.members.length) break;
+        if (pin.basis === "lint" && pin.members.some((m) => !m?.id?.trim() || !MEMBER_STATES.includes(m.state))) break;
+        // The one basis nothing can check needs its argument, or it is a silent route to
+        // "this rule ranges over nothing" that no reader can evaluate.
+        if (pin.basis === "not-expressible" && !pin.reason?.trim()) break;
+
+        // NARROWING is a principal's act, and only this end binds a clone whose tool did
+        // not check: dropping members can flip debt into a gap, which is silencing. Read
+        // off the superseded pin the event names, so the fold decides it from the same two
+        // member lists the writer had rather than taking the writer's word.
+        const priorId = str(e.data, "supersedes");
+        const prior = priorId ? populations.get(priorId) : undefined;
+        if (prior && e.actor.via) {
+          const after = new Set(pin.members.map((m) => m.id));
+          if (prior.members.some((m) => !after.has(m.id))) break;
+        }
+        if (prior) populations.set(prior.id, { ...prior, state: "superseded" });
+        populations.set(pin.id, { ...pin, state: "active", origin: "sync" });
+        break;
+      }
       case "problem.raised": {
         const p = obj(e.data, "problem") as Problem | undefined;
         if (!p?.id) break;
@@ -386,12 +427,14 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
     specs: [...specs.values()], operations: [...operations.values()],
     requirements: [...requirements.values()], criteria: [...criteria.values()],
     vacuityChecks: [...vacuityChecks.values()], pointers: [...pointers.values()],
+    populations: [...populations.values()],
     acknowledgements: [...acknowledgements.values()],
     audits: [...audits.values()], problems: [...problems.values()],
   };
 }
 
 const VACUITY_VERDICTS: VacuityCheck["verdict"][] = ["demonstrated", "vacuous", "wrong-layer"];
+const MEMBER_STATES = ["conforms", "violates", "undecidable"];
 
 /** The same application `ratifySpec` performs locally, over folded state. */
 function applyOperation(

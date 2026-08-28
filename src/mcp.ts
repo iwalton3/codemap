@@ -1238,6 +1238,18 @@ const tools: Tool[] = [
     handler: (_a, c) => ops.weakAssertions(c.universe.path),
   },
   {
+    name: "population",
+    description: "What a rule RANGES OVER — a hash-pinned lint, with the members it examined.\n\nThree states and they are three different answers. `pinned` — a lint enumerated the population; `counts` gives conforms / violates / **undecidable** (its own number: folding it into conforms is unknown reading as conformant one level down, folding it into violates is the false-positive shape). `not-expressible` — no lint can express this, with the reason; some rules genuinely have none, and a population spanning two repos is not one lint. `absent` — nobody has pinned one, and that must not read as anything else: it is where \"no code should conform to this yet\" still means \"I looked and did not find any\".\n\n`pinBroken` means the LINT ITSELF was edited since it was pinned. That is the pathology a scrub cannot reach — fired, then edited, then quiet — and it is why the pin exists.",
+    inputSchema: obj({ requirementId: { type: "string" } }, ["requirementId"]),
+    handler: (a, c) => ops.populationFor(c.universe.path, a),
+  },
+  {
+    name: "broken_pins",
+    description: "Every pinned population whose lint has been edited or has left the tree since it was pinned. A broken pin is not an accusation — it says nobody has looked at the edit, on the one artifact the gap/debt classification rests on.",
+    inputSchema: obj({}),
+    handler: (_a, c) => ops.brokenPins(c.universe.path),
+  },
+  {
     name: "pointers",
     description: "What is watching a rule — WHERE an auditor goes to decide whether it still holds.\n\nDistinct from the acceptance criterion beside it: the criterion says WHAT would discharge the rule and HOW it would be refuted, a pointer says the ADDRESS. `moved` means the watched code has changed since the baseline — the pointer is FIRING, which raises the rule in the queue and never touches its conformance.\n\n`rank` is the abstraction ladder, derived rather than declared. `check` (a test or lint) covers a whole population and survives any single site changing; `pattern` (a doc) covers everything the pattern governs and survives refactors within it; `symbol` (one anchor) is the LAST RESORT — it covers one symbol and a rename mints a new id, so it goes quiet exactly when the code it governs is edited.",
     inputSchema: obj({ requirementId: { type: "string" } }, ["requirementId"]),
@@ -1302,6 +1314,38 @@ const tools: Tool[] = [
     }, ["specId", "kind", "rationale", "reversibility"]),
     mutates: true,
     handler: (a, c) => ops.addOperation(c.universe.path, a as never),
+  },
+  {
+    name: "pin_population",
+    description: "Pin what a rule ranges over: the lint's anchors, plus the MEMBERS it examined.\n\nMembers, not a verdict — pass/fail carries no arity, so a green lint cannot say whether the population is empty (which decides gap versus debt) or whether a gap is one null check or the whole system. Each member is `{id, state}` where state is `conforms`, `violates` or `undecidable`; `id` is whatever the lint calls it (a type, a route, a file:symbol) and codemap never parses it.\n\nA lint reporting ZERO members is refused. Zero members is green and green reads as conformant — with a lint that is the default failure mode, not an edge case.\n\nRe-pinning is gated BY CONSEQUENCE. Widening or re-stating the same members is open. NARROWING — dropping members — needs a principal, because it can turn debt into a gap, which is silencing; narrowing a population until the violators fall outside it is the third laundering door, after \"amend the rule to match the code\" and \"declare the rule not yet applicable\". The refusal reports the delta: how many members are dropped and how many of those were violating.",
+    inputSchema: obj({
+      requirementId: { type: "string" },
+      lint: { type: "array", items: { type: "string" }, description: "Anchors of the lint. These are what the pin HASHES, so an edit to the detector becomes visible." },
+      members: {
+        type: "array",
+        description: "Everything the lint examined. The enumeration is the only review anybody can perform on a predicate — `is this correct?` has no finite answer, `show me the members` does.",
+        items: obj({
+          id: { type: "string" },
+          state: { type: "string", enum: ["conforms", "violates", "undecidable"] },
+        }, ["id", "state"]),
+      },
+      model: { type: "string", description: "YOUR model id. Never guess it." },
+      harness: { type: "string" },
+    }, ["requirementId", "lint", "members"]),
+    mutates: true,
+    handler: (a, c) => ops.pinPopulation(c.universe.path, a as never),
+  },
+  {
+    name: "declare_not_expressible",
+    description: "Record that NO lint can express this rule's population — distinct from an empty one and from an absent one. Use it for a rule whose population spans repos (which is not one lint, and must not become two that drift), or a product-strategy statement wearing a requirement's clothes. Needs a reason: it is the one basis nothing can check, so the argument is all a reader gets. Replacing an existing pinned population with this drops every member it was counting, which is narrowing at its limit, so a principal has to make that call.",
+    inputSchema: obj({
+      requirementId: { type: "string" },
+      reason: { type: "string" },
+      model: { type: "string", description: "YOUR model id. Never guess it." },
+      harness: { type: "string" },
+    }, ["requirementId", "reason"]),
+    mutates: true,
+    handler: (a, c) => ops.declareNotExpressible(c.universe.path, a as never),
   },
   {
     name: "declare_pointer",
@@ -1438,7 +1482,7 @@ const tools: Tool[] = [
   },
   {
     name: "acknowledge_gap",
-    description: "Record that a rule has no code that should conform to it yet — roadmap work, not a defect. Minted against an `add_requirement` operation on a spec that is still a draft, so holes are poked while the rule is a proposal. Saying \"no code should conform to this yet\" is only decidable against a population you can enumerate; without one it means \"I looked and did not find any\", which is a different claim.",
+    description: "Record that a rule has no code that should conform to it yet — roadmap work, not a defect. Minted against an `add_requirement` operation on a spec that is still a draft, so holes are poked while the rule is a proposal. Saying \"no code should conform to this yet\" is only decidable against a population you can enumerate; without one it means \"I looked and did not find any\", which is a different claim — pin one with `pin_population`, and a pin that enumerates members RELEASES a gap on that rule automatically, because a gap claims there are none.",
     inputSchema: obj({
       operationId: { type: "string", description: "The `add_requirement` operation this gaps." },
       rationale: { type: "string" },

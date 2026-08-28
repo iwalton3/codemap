@@ -60,6 +60,7 @@ export {
   recordAudit, auditsFor, promotableAudits, promoteProvisionalAudit,
   criteriaSummary, recordVacuityCheck, weakAssertions,
   declarePointer, restatePointer, retirePointer, pointersFor, auditQueue,
+  pinPopulation, declareNotExpressible, populationFor, brokenPins,
   raiseProblem, adjudicate, listProblems, awaitingAdjudication, actionableProblems,
   settledWithoutAdjudication,
 } from "./ops/standard.js";

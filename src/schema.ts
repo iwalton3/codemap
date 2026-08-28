@@ -1422,6 +1422,72 @@ export function criterionIdFor(operationId: string): string {
 }
 
 /**
+ * One thing a rule ranges over, and what the check concluded about it.
+ *
+ * `id` is whatever the lint calls it — a type name, a route, a `file:symbol`. codemap does
+ * not interpret it and must not: the moment it does, it is back to owning framework
+ * knowledge, which is the analyzer boundary and its 138-false-positives-before-4-genuine
+ * rate. What codemap does with these is COUNT and DIFF them.
+ *
+ * `undecidable` is the state that has to exist. Folding it into `conforms` is `unknown`
+ * rendering as `conformant` one level down; folding it into `violates` is the
+ * false-positive shape. It gets its own number and is reported.
+ */
+export interface PopulationMember {
+  id: string;
+  state: "conforms" | "violates" | "undecidable";
+}
+
+/**
+ * What a rule ranges over — the thing that makes `gap` decidable and a gap's magnitude
+ * honest rather than estimated.
+ *
+ * **It is a hash-pinned LINT, and deliberately not a query language.** Anything strong
+ * enough to express "every HTTP endpoint" is framework knowledge, so a query language
+ * would make codemap responsible for understanding every target framework and would
+ * inherit that error rate into the record that is supposed to be more trustworthy than the
+ * code. A lint lives in the target repo, in the target language, against the real types;
+ * codemap hashes it and reads what it reported. Population and conformance test fuse into
+ * one artifact — and that artifact already has a review process, because it is code.
+ *
+ * The pin is also the witness the scrub was missing. A scrub catches *never fires* and
+ * *always fires*; what it cannot catch is **fired → was edited → now quiet**, the detector
+ * being modified by the change it was meant to detect. A hash on the lint is exactly that.
+ *
+ * `basis` carries the honest negative. `not-expressible` is DISTINCT from an empty
+ * population and from an absent one: some rules have no lint — "the client must be a
+ * native iOS application", or a population spanning `Acme.API` and `Acme.React`, which is
+ * not one lint and must not become two that drift. Without a way to say so the field gets
+ * satisfied with a bad predicate, which is worse than none because it produces numbers.
+ */
+export interface PopulationPredicate {
+  id: string;
+  requirementId: string;
+  basis: "lint" | "not-expressible";
+  /** The lint, as anchors. Empty for `not-expressible`. */
+  lint: string[];
+  /** Hashes of `lint` when pinned. A mismatch means the detector itself was edited. */
+  witnesses: BugWitness[];
+  /**
+   * What the lint reported. **Members, not a verdict** — pass/fail carries no arity, so a
+   * green lint cannot say whether the population is empty (which decides gap versus debt)
+   * or whether a gap is one null check or the entire system.
+   *
+   * Counts are derived from this rather than stored beside it, so they cannot disagree
+   * with it. Empty for `not-expressible`.
+   */
+  members: PopulationMember[];
+  /** Required for `not-expressible`: why no lint can express this. */
+  reason?: string;
+  state: "active" | "superseded";
+  pinnedBy: Actor;
+  pinnedAt: string;
+  /** The pin this replaced, so a re-pin's delta has a chain to be read against. */
+  supersedes?: string;
+  origin?: string;
+}
+
+/**
  * WHERE an auditor should look to decide whether a rule still holds.
  *
  * Distinct from the acceptance criterion beside it, and conflating them is easy because

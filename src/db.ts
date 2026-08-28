@@ -766,6 +766,28 @@ function migrate(d: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS ix_vac_crit ON vacuity_checks(criterion_id, at);
     CREATE INDEX IF NOT EXISTS ix_vac_scope ON vacuity_checks(source_scope);
 
+    -- Population predicates: what a rule RANGES OVER, as a hash-pinned lint. The record
+    -- that makes "gap" decidable and a gap's magnitude counted rather than estimated.
+    --
+    -- No member counts as columns. conforms/violates/undecidable are derived from the
+    -- member list at read time, so they cannot disagree with it -- a stored count is a
+    -- number a writer can satisfy without the members ever changing.
+    CREATE TABLE IF NOT EXISTS populations (
+      id TEXT NOT NULL,
+      requirement_id TEXT NOT NULL,
+      -- "lint" or "not-expressible". The honest negative is a basis and not an absence,
+      -- because absent, empty and inexpressible are three different answers.
+      basis TEXT NOT NULL,
+      state TEXT NOT NULL,
+      pinned_at TEXT NOT NULL,
+      origin TEXT, source_scope TEXT,
+      body TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ix_pop_identity ON populations(id);
+    -- "what does this rule range over" is the hot read, and it wants the ACTIVE pin.
+    CREATE INDEX IF NOT EXISTS ix_pop_req ON populations(requirement_id, state, pinned_at);
+    CREATE INDEX IF NOT EXISTS ix_pop_scope ON populations(source_scope);
+
     -- Pointers: WHERE an auditor looks. Never a verdict -- a pointer changes queue
     -- position and can never reach the conformance state, which is why declaring one is
     -- open to any actor while an acceptance criterion is not.
