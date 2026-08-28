@@ -766,25 +766,10 @@ function migrate(d: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS ix_vac_crit ON vacuity_checks(criterion_id, at);
     CREATE INDEX IF NOT EXISTS ix_vac_scope ON vacuity_checks(source_scope);
 
-    -- Scrubs: somebody looked at a rule ON THE SCHEDULE rather than because something
-    -- moved. Differential audit covers what moved; only this covers what did not, which is
-    -- where a quietly wrong rule has had the most time to matter.
+    -- There is no scrubs table: a scrub is an AUDIT with a covering trigger, so it is
+    -- already a row in "audits". Two tables both meaning "somebody checked this rule" is
+    -- how one of them stops participating in conformance.
     --
-    -- The rows ARE the history a firing rate is derived from. One scrub says nothing about
-    -- whether a pointer never fires or always does; a sequence says both.
-    CREATE TABLE IF NOT EXISTS scrubs (
-      id TEXT NOT NULL,
-      requirement_id TEXT NOT NULL,
-      verdict TEXT NOT NULL,
-      at TEXT NOT NULL,
-      origin TEXT, source_scope TEXT,
-      body TEXT NOT NULL
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS ix_scrub_identity ON scrubs(id);
-    -- "when was this last looked at" is the hot read, and it drives the whole queue.
-    CREATE INDEX IF NOT EXISTS ix_scrub_req ON scrubs(requirement_id, at);
-    CREATE INDEX IF NOT EXISTS ix_scrub_scope ON scrubs(source_scope);
-
     -- The stated rate and coverage period. ONE row per scope: a policy is a decision, and
     -- two of them is no policy. An absent row is a finding, never a default -- without a
     -- stated period the scrub is "whenever somebody remembers", which is the thing it

@@ -1239,13 +1239,19 @@ const tools: Tool[] = [
   },
   {
     name: "scrub_plan",
-    description: "What to look at because it has NOT been looked at lately — the complement to `audit_queue`, and neither is optional. Differential audit is cheap precisely because change drives it, so a rule whose pointers never move is never audited; that turns *never fires → false calm* from an accident into a structural property. Differential covers what moved; the scrub covers what did not, which is also where a quietly wrong rule has had the most time to matter.\n\n`due` is ordered least-recently-looked-at first, never by what moved — coverage is the property being guaranteed. `neverScrubbed` is the sharpest bucket and is where seeding lands everything. `perDay` is the BUDGET: rules per day to cover the population every `coverageDays`, so the cost is visible before it is incurred.\n\n`policy: null` is a FINDING, not a default. Without a stated period this is \"whenever somebody remembers\", which is the thing the scrub exists to replace — set one with `set_scrub_policy`.\n\n`pathologies` are firing rates that say a pointer is not doing the job it looks like it does: `never-fires` (false calm — it looks like coverage and is not) and `always-fires` (cry-wolf — a pointer that goes off on every commit gets ignored, and then so does the rule behind it). Neither is reported below `minObservations`, because a rate from one look is not a rate.",
+    description: "What to look at because it has NOT been looked at lately — the complement to `audit_queue`, and neither is optional. Differential audit is cheap precisely because change drives it, so a rule whose pointers never move is never audited; that turns *never fires → false calm* from an accident into a structural property. Differential covers what moved; the scrub covers what did not, which is also where a quietly wrong rule has had the most time to matter.\n\nA COVERING audit is what resets a deadline — `scrub` or `baseline`, or a `differential` one whose evidence is proven against the default branch. Branch work resets nothing, and an `ad-hoc` audit resets nothing because nobody asked what it would look at. `due` is ordered least-recently-covered first, never by what moved — coverage is the property being guaranteed. `neverScrubbed` is the sharpest bucket and is where seeding lands everything. `perDay` is the BUDGET: rules per day to cover the population every `coverageDays`, so the cost is visible before it is incurred.\n\n`policy: null` is a FINDING, not a default. Without a stated period this is \"whenever somebody remembers\", which is the thing the scrub exists to replace — set one with `set_scrub_policy`.\n\n`pathologies` are firing rates that say a pointer is not doing the job it looks like it does: `never-fires` (false calm — it looks like coverage and is not) and `always-fires` (cry-wolf — a pointer that goes off on every commit gets ignored, and then so does the rule behind it). Neither is reported below `minObservations`, because a rate from one look is not a rate.",
     inputSchema: obj({ asOf: { type: "string", description: "ISO timestamp — plan as of then rather than now." } }),
     handler: (a, c) => ops.scrubPlan(c.universe.path, a),
   },
   {
+    name: "baseline_plan",
+    description: "Every rule in force at once, with when it was last covered and how much is watching it — the sweep you run before a high-risk feature ships or a large refactor lands. Not a queue and not scheduled: it is expensive on purpose, so it is asked for. Record each pass with `record_audit` under `trigger: \"baseline\"`, which resets every coverage deadline it touches.",
+    inputSchema: obj({}),
+    handler: (_a, c) => ops.baselinePlan(c.universe.path),
+  },
+  {
     name: "scrubs",
-    description: "Every scrub against one rule, oldest first. This is the history a firing rate is derived from — one scrub says nothing about whether a pointer never fires or always does; a sequence says both.",
+    description: "Every COVERING audit of one rule, oldest first. This is the history a firing rate is derived from — one scrub says nothing about whether a pointer never fires or always does; a sequence says both.",
     inputSchema: obj({ requirementId: { type: "string" } }, ["requirementId"]),
     handler: (a, c) => ops.scrubsFor(c.universe.path, a),
   },
@@ -1338,24 +1344,6 @@ const tools: Tool[] = [
     }, ["coverageDays"]),
     mutates: true,
     handler: (a, c) => ops.setScrubPolicy(c.universe.path, a as never),
-  },
-  {
-    name: "record_scrub",
-    description: "Record that you went and looked at a rule on the schedule.\n\n`observations` must cover the rule's ACTIVE pointers exactly — no omissions and no phantoms. That is the evidence gate: a scrub resets the rule's coverage clock, which is the quieting direction, so \"I looked\" with nothing recorded is a self-report buying a fresh period. Get the pointer ids from `pointers`, and record `firing` for each — that boolean IS the history a rate is derived from.\n\nA rule with nothing watching it legitimately observes nothing, and saying so is the finding: unwatched is the requirement-side twin of `unknown`.\n\n`verdict` is `sound` (looked, nothing wrong) or `suspect` (something is off). Raising is open; only quieting is gated, which is the same asymmetry everywhere else on this surface.",
-    inputSchema: obj({
-      requirementId: { type: "string" },
-      finding: { type: "string", description: "What you concluded from looking. A scrub that records nothing is the vacuous check this mechanism exists to detect, one level up." },
-      verdict: { type: "string", enum: ["sound", "suspect"] },
-      observations: {
-        type: "array",
-        description: "One entry per ACTIVE pointer on the rule.",
-        items: obj({ pointerId: { type: "string" }, firing: { type: "boolean" } }, ["pointerId", "firing"]),
-      },
-      model: { type: "string", description: "YOUR model id. Never guess it." },
-      harness: { type: "string" },
-    }, ["requirementId", "finding", "verdict"]),
-    mutates: true,
-    handler: (a, c) => ops.recordScrub(c.universe.path, a as never),
   },
   {
     name: "pin_population",
@@ -1469,6 +1457,15 @@ const tools: Tool[] = [
     inputSchema: obj({
       requirementId: { type: "string" },
       outcome: { type: "string", enum: ["conformant", "nonconformant", "indeterminate"] },
+      trigger: {
+        type: "string", enum: ["differential", "scrub", "baseline", "ad-hoc"],
+        description: "WHY you are auditing, which decides what the record counts for. `differential` — something moved and may have broken this rule. `scrub` — its coverage deadline came up, whether or not anything moved. `baseline` — everything is being swept, because a landmark warrants it. `ad-hoc` (the default) — you looked because you wanted to; nobody asked what you would look at, so it resets no deadline.",
+      },
+      observations: {
+        type: "array",
+        description: "REQUIRED for `scrub` and `baseline`, and refused otherwise: what each of the rule's ACTIVE pointers was doing. Those triggers reset the rule's coverage deadline, which is the quieting direction, so a pass that skips a pointer buys a fresh period without having looked at it. Get the ids from `pointers`. This is also the history a firing rate is derived from. A rule with nothing watching it observes nothing, and that IS the finding.",
+        items: obj({ pointerId: { type: "string" }, firing: { type: "boolean" } }, ["pointerId", "firing"]),
+      },
       finding: { type: "string", description: "What you concluded, in your own words." },
       evidence: {
         type: "object",

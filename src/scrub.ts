@@ -31,14 +31,12 @@
  */
 
 import { randomBytes } from "node:crypto";
-import type { Actor, Scrub, ScrubPolicy } from "./schema.js";
-import {
-  readPointers, readRequirement, readRequirements, readScrubPolicy, readScrubs,
-  writeLocalScrub, writeLocalScrubPolicy,
-} from "./store.js";
+import type { Audit, ScrubPolicy } from "./schema.js";
+import { COVERING_TRIGGERS } from "./schema.js";
+import { readAudits, readPointers, readRequirements, readScrubPolicy, writeLocalScrubPolicy } from "./store.js";
 import { requireActor } from "./identity.js";
 import type { ActorInput } from "./identity.js";
-import { disposition, shareScrub, shareScrubPolicy } from "./standard-publish.js";
+import { disposition, shareScrubPolicy } from "./standard-publish.js";
 
 const mint = () => "sc_" + randomBytes(6).toString("hex");
 const now = () => new Date().toISOString();
@@ -82,81 +80,31 @@ export async function setScrubPolicy(
   return { ok: true, policy };
 }
 
-// --- recording a scrub --------------------------------------------------------
-
 /**
- * Record that somebody went and looked at a rule.
+ * Audits that RESET a rule's coverage deadline.
  *
- * The gate is the OBSERVATIONS, and it is the audit's evidence refusal transposed: a scrub
- * resets a rule's coverage clock, which is the quieting direction, so *"I looked"* with
- * nothing recorded is a self-report buying a fresh period. The observations must cover the
- * rule's active pointers exactly — no omissions, and no phantoms either, since an
- * observation of a pointer that is not there is the same self-report wearing evidence.
+ * **Branch work resets nothing**, whatever its trigger. A provisional audit is about
+ * somebody's work in progress and may never merge, and a coverage clock is a claim about
+ * the codebase. The proof that an audit examined code which LANDED is promotion, and
+ * `promotableAudits` decides that on WITNESSES — the exact source is verbatim present —
+ * rather than on commit ancestry, which is unsound in the other direction. A promoted
+ * audit is not provisional, so this one test covers both routes.
  *
- * A rule with nothing watching it legitimately observes nothing, and recording that IS the
- * finding: `unwatched` is the requirement-side twin of `unknown`.
+ * Then, among audits about the codebase:
+ *
+ *  - `scrub` and `baseline` cover by construction: they were asked to look at what did not
+ *    move, and they must report every active pointer to be recorded at all.
+ *  - `differential` covers too, but only having got past the provisional test above — it
+ *    looked at what CHANGED, so it says nothing until that change is proven present.
+ *  - `ad-hoc` covers nothing. Nobody asked what it looked at and nothing records what it
+ *    left out, so treating it as coverage is the self-report the deadline exists to
+ *    replace. An audit written before triggers existed reads `ad-hoc` for that reason.
  */
-export async function recordScrub(
-  root: string,
-  input: {
-    requirementId: string; finding: string; verdict: Scrub["verdict"];
-    observations?: { pointerId: string; firing: boolean }[];
-  } & ActorInput,
-): Promise<{ ok: true; id: string; scrub: Scrub } | Err> {
-  if (input.verdict !== "sound" && input.verdict !== "suspect") {
-    return { error: '`verdict` must be "sound" or "suspect"' };
-  }
-  const finding = input.finding?.trim();
-  if (!finding) {
-    return {
-      error:
-        "a scrub needs a `finding` — what you concluded from looking. A scrub that records "
-        + "nothing is the vacuous check this whole mechanism exists to detect, one level up.",
-    };
-  }
-  const r = await readRequirement(root, input.requirementId);
-  if (!r) return { error: `no requirement "${input.requirementId}"` };
-  if (r.status === "retired") return { error: `${r.id} is retired — a rule that does not bind is not on the schedule` };
-
-  const active = await readPointers(root, { requirementId: r.id, state: "active" });
-  const observations = input.observations ?? [];
-  const seen = new Set(observations.map((o) => o.pointerId));
-  const missed = active.filter((p) => !seen.has(p.id));
-  const phantom = observations.filter((o) => !active.some((p) => p.id === o.pointerId));
-  if (missed.length) {
-    return {
-      error:
-        `this scrub does not say what ${missed.length} of the rule's active pointer(s) were doing `
-        + `(${missed.map((p) => p.id).join(", ")}). A scrub resets the coverage clock, so one that `
-        + `skips a pointer buys a fresh period without having looked at it.`,
-    };
-  }
-  if (phantom.length) {
-    return { error: `observed pointer(s) that are not active on ${r.id}: ${phantom.map((o) => o.pointerId).join(", ")}` };
-  }
-  if (observations.some((o) => typeof o.firing !== "boolean")) {
-    return { error: "every observation needs `firing: true|false` — that boolean IS the history a rate is derived from" };
-  }
-  // The same pointer twice in one scrub is one look counted as several, and it defeats
-  // `minObservations` exactly: three copies of one observation reaches the default floor
-  // from a single call and reports a pathology. That is the error the floor exists to
-  // prevent, arriving through the door the floor does not watch. `checkMembers` in
-  // `population.ts` refuses duplicates for the same reason.
-  if (seen.size !== observations.length) {
-    return { error: "the same pointer is observed twice — one look counted as several is how a rate stops being a rate" };
-  }
-  const actor = requireActor(root, input);
-  if (isErr(actor)) return actor;
-
-  const scrub: Scrub = {
-    id: mint(), requirementId: r.id, observations, finding, verdict: input.verdict,
-    scrubbedBy: actor, at: now(),
-  };
-  const d = disposition(await shareScrub(root, scrub));
-  if ("error" in d) return d;
-  if (d.local) await writeLocalScrub(root, scrub);
-  return { ok: true, id: scrub.id, scrub };
-}
+const covers = (a: Audit): boolean => {
+  if (a.provisional) return false;
+  const trigger = a.trigger ?? "ad-hoc";
+  return COVERING_TRIGGERS.includes(trigger) || trigger === "differential";
+};
 
 // --- the rates ----------------------------------------------------------------
 
@@ -193,8 +141,8 @@ export async function pointerRates(root: string, opts: { live?: boolean } = {}):
       .filter((p) => inForce.has(p.requirementId)).map((p) => p.id));
   }
   const tally = new Map<string, { requirementId: string; observations: number; fired: number }>();
-  for (const sc of await readScrubs(root)) {
-    for (const o of sc.observations) {
+  for (const sc of (await readAudits(root)).filter(covers)) {
+    for (const o of sc.observations ?? []) {
       const t = tally.get(o.pointerId) ?? { requirementId: sc.requirementId, observations: 0, fired: 0 };
       t.observations++;
       if (o.firing) t.fired++;
@@ -246,14 +194,6 @@ export interface ScrubPlan {
   perDay: number | null;
   /** Pointers whose firing rate says they are not doing the job they look like they do. */
   pathologies: PointerRate[];
-  /**
-   * Rules whose most recent scrub said something is off and which nobody has looked at
-   * since — the OUTPUT of the mechanism, as opposed to its schedule.
-   *
-   * Derived from the latest scrub rather than from a status field, so it clears by
-   * somebody looking again rather than by anybody marking it clear.
-   */
-  suspect: { requirementId: string; at: string; finding: string }[];
 }
 
 export async function scrubPlan(root: string, opts: { asOf?: string } = {}): Promise<ScrubPlan> {
@@ -261,13 +201,11 @@ export async function scrubPlan(root: string, opts: { asOf?: string } = {}): Pro
   const policy = await readScrubPolicy(root);
   const { requirements } = await readRequirements(root, { status: "ratified" });
 
-  const inForce = new Set(requirements.map((r) => r.id));
+  // COVERING audits only. This is the whole reason the two queues stay apart: a rule
+  // audited yesterday because a diff touched it has still not been looked at for the
+  // things that did not move, so it is still due here.
   const last = new Map<string, string>();
-  const latest = new Map<string, { at: string; finding: string; verdict: string }>();
-  for (const sc of await readScrubs(root)) {   // ORDER BY at — last wins
-    last.set(sc.requirementId, sc.at);
-    latest.set(sc.requirementId, { at: sc.at, finding: sc.finding, verdict: sc.verdict });
-  }
+  for (const a of (await readAudits(root)).filter(covers)) last.set(a.requirementId, a.at);   // ORDER BY at — last wins
 
   const rows: ScrubDue[] = requirements.map((r) => {
     const at = last.get(r.id) ?? null;
@@ -292,13 +230,37 @@ export async function scrubPlan(root: string, opts: { asOf?: string } = {}): Pro
     due: overdue,
     perDay: policy ? Math.round((requirements.length / policy.coverageDays) * 100) / 100 : null,
     pathologies: (await pointerRates(root, { live: true })).filter((p) => p.pathology !== null),
-    suspect: [...latest]
-      .filter(([rid, x]) => inForce.has(rid) && x.verdict === "suspect")
-      .map(([requirementId, x]) => ({ requirementId, at: x.at, finding: x.finding })),
   };
 }
 
-/** Every scrub against one rule, oldest first — the history a rate is read from. */
-export async function scrubsFor(root: string, requirementId: string): Promise<Scrub[]> {
-  return readScrubs(root, { requirementId });
+/** The covering audits of one rule, oldest first — the history a rate is read from. */
+export async function scrubsFor(root: string, requirementId: string): Promise<Audit[]> {
+  return (await readAudits(root, { requirementId })).filter(covers);
+}
+
+/**
+ * A BASELINE is not a queue, it is a sweep: every rule in force, with what is known about
+ * each, because something warrants looking at all of it at once — a large refactor landing,
+ * a high-risk feature shipping. Expensive on purpose, which is why it is asked for rather
+ * than scheduled.
+ */
+export async function baselinePlan(root: string): Promise<{
+  population: number;
+  rules: { requirementId: string; title: string; section: string; lastCovered: string | null; pointers: number }[];
+}> {
+  const { requirements } = await readRequirements(root, { status: "ratified" });
+  const covering = (await readAudits(root)).filter(covers);
+  const last = new Map<string, string>();
+  for (const a of covering) last.set(a.requirementId, a.at);
+  const watching = new Map<string, number>();
+  for (const p of await readPointers(root, { state: "active" })) {
+    watching.set(p.requirementId, (watching.get(p.requirementId) ?? 0) + 1);
+  }
+  return {
+    population: requirements.length,
+    rules: requirements.map((r) => ({
+      requirementId: r.id, title: r.title, section: r.section,
+      lastCovered: last.get(r.id) ?? null, pointers: watching.get(r.id) ?? 0,
+    })),
+  };
 }

@@ -98,9 +98,9 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     // skips an active pointer buys a fresh period without having looked at it. The fold
     // reads the pointer state from its own map — the team's view of what was active, not
     // the writer's account of it.
-    what: "a scrub that skipped one of the rule's active pointers",
+    what: "a covering audit that skipped one of the rule's active pointers",
     fold: ["src/shared-standard.ts", /if \(watching\.some\(\(p\) => !seen\.has\(p\.id\)\)\) break;/],
-    publish: ["src/scrub.ts", /const missed = active\.filter\(\(p\) => !seen\.has\(p\.id\)\);/],
+    publish: ["src/audits.ts", /const missed = active\.filter\(\(p\) => !seen\.has\(p\.id\)\);/],
   },
   {
     // A falsifier that restates its criterion asserts nothing about what failure looks
@@ -124,17 +124,17 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     // for it: `pointerRates` tallies by pointer id and takes the requirement from the first
     // scrub that mentions it. Only the omission half of this gate was registered, which is
     // how the fold ended up with one of the two checks the tool has.
-    what: "a scrub observing a pointer that is not on the rule",
+    what: "a covering audit observing a pointer that is not on the rule",
     fold: ["src/shared-standard.ts", /!watching\.some\(\(p\) => p\.id === o\.pointerId\)/],
-    publish: ["src/scrub.ts", /const phantom = observations\.filter/],
+    publish: ["src/audits.ts", /const phantom = observations\.filter/],
   },
   {
     // One look counted as several. Three copies of one observation reaches the default
     // `minObservations` from a single call and reports a pathology — the floor defeated
     // through the one door it does not watch.
-    what: "the same pointer observed twice in one scrub",
-    fold: ["src/shared-standard.ts", /if \(seen\.size !== sc\.observations\.length\) break;/],
-    publish: ["src/scrub.ts", /if \(seen\.size !== observations\.length\)/],
+    what: "the same pointer observed twice in one covering audit",
+    fold: ["src/shared-standard.ts", /if \(seen\.size !== obs\.length\) break;/],
+    publish: ["src/audits.ts", /if \(seen\.size !== observations\.length\)/],
   },
   {
     // A lint enumerates whatever is CHECKED OUT, so a pin from a feature branch is that
@@ -150,6 +150,13 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     what: "a scrub policy whose observation floor cannot support a rate",
     fold: ["src/shared-standard.ts", /policy\.minObservations < 2\) break;/],
     publish: ["src/scrub.ts", /minObservations < 2\) \{/],
+  },
+  {
+    // An audit that concluded nothing. The tool has always refused it; the fold never did,
+    // which was found only when folding the scrub in brought a test that exercised it.
+    what: "an audit that records no finding",
+    fold: ["src/shared-standard.ts", /if \(!audit\.finding\?\.trim\(\)\) break;/],
+    publish: ["src/audits.ts", /an audit needs a finding/],
   },
   {
     // A lint over zero members is GREEN, and green reads as conformant. With a query

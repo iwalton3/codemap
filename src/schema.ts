@@ -1226,6 +1226,35 @@ export interface Acknowledgement {
 export type AuditOutcome = "conformant" | "nonconformant" | "indeterminate";
 
 /**
+ * WHY this audit happened. One act, four ways of being asked for it — and the reason it is
+ * a field rather than four record kinds is that the lifecycle is identical: an actor, a
+ * time, evidence, witnesses, supersession.
+ *
+ * What is NOT identical is the QUEUE each one is drawn from, and conflating those would
+ * lose the point:
+ *
+ *  - `differential` — driven by **staleness**: something moved, and the rule may be broken
+ *    by it. `computeDiff`'s requirement rollup and `auditQueue` select for this.
+ *  - `scrub` — driven by a **coverage deadline per target**: this rule has not been looked
+ *    at in *T*, whether or not anything moved. `scrubPlan` selects for this, and it is the
+ *    only thing covering what did NOT move.
+ *  - `baseline` — everything, at once, because something warrants it: a large refactor
+ *    landing, a high-risk feature shipping. Expensive on purpose.
+ *  - `ad-hoc` — somebody looked because they wanted to. The honest default; calling one of
+ *    these `differential` would put an unprompted audit in a queue's coverage statistics.
+ *
+ * A `differential` audit does not satisfy a scrub, and that is the whole reason the two
+ * queues stay apart: it looked at what CHANGED, and a scrub exists to cover what did not.
+ * A `baseline` satisfies both, having looked at everything.
+ */
+export type AuditTrigger = "differential" | "scrub" | "baseline" | "ad-hoc";
+
+export const AUDIT_TRIGGERS: AuditTrigger[] = ["differential", "scrub", "baseline", "ad-hoc"];
+
+/** Triggers that reset a rule's coverage clock — the ones that look at what did not move. */
+export const COVERING_TRIGGERS: AuditTrigger[] = ["scrub", "baseline"];
+
+/**
  * What the auditor ACTUALLY did — the non-vacuity requirement, as a recorded fact.
  *
  * A positive audit has an effect: it closes a gap and silences the mechanism that would
@@ -1263,6 +1292,21 @@ export interface Audit {
   witnesses: BugWitness[];
   /** What the auditor concluded, in their own words. */
   finding: string;
+  /** Why this audit happened. Absent on rows written before triggers existed: read `ad-hoc`. */
+  trigger?: AuditTrigger;
+  /**
+   * What each of the rule's ACTIVE pointers was doing when it was looked at.
+   *
+   * Required to cover the active set exactly on a `scrub` or `baseline` — no omissions and
+   * no phantoms. That is the evidence gate on the coverage clock: an audit under those
+   * triggers RESETS the deadline, which is the quieting direction, so *"I looked"* with
+   * nothing recorded buys a fresh period. A rule with nothing watching it observes nothing,
+   * and recording that IS the finding.
+   *
+   * It is also the history a firing rate is derived from — one look says nothing about
+   * whether a pointer never fires or always does; a sequence says both.
+   */
+  observations?: { pointerId: string; firing: boolean }[];
   auditor: Actor;
   at: string;
   commit?: string | null;
@@ -1433,6 +1477,18 @@ export function criterionIdFor(operationId: string): string {
  * everything is covered every *T*. Stating `coverageDays` and the population size derives
  * the daily rate, which is what makes the cost visible before it is incurred.
  */
+/*
+ * Why a scrub exists at all, kept where the policy that schedules it lives.
+ *
+ * Differential audit is cheap precisely BECAUSE change drives it — so a rule whose
+ * pointers never move is never audited, which promotes *never fires → false calm* from an
+ * accident to a structural property. **Differential covers what moved; the scrub covers
+ * what did not**, and that is where a quietly wrong rule has had the most time to matter.
+ *
+ * Vacuity is silent corruption: you do not find it by using the thing, because a vacuous
+ * pointer looks fine every single time you look at it. You find it the way an array finds
+ * a bad block — by going and checking, on a schedule, across the whole population.
+ */
 export interface ScrubPolicy {
   /** *T*: every rule in force is looked at at least this often. */
   coverageDays: number;
@@ -1450,44 +1506,13 @@ export interface ScrubPolicy {
   origin?: string;
 }
 
-/**
- * Somebody went and looked at a rule, on the schedule rather than because something moved.
- *
- * This is the complement to differential audit and neither is optional. Differential audit
- * is cheap precisely *because* change drives it — so a rule whose pointers never move is
- * never audited, and that is the *never fires → false calm* pathology promoted from an
- * accident to a structural property. **Differential covers what moved; the scrub covers
- * what did not.**
- *
- * Vacuity is silent corruption: you do not find it by using the thing, because a vacuous
- * pointer looks fine every single time you look at it. You find it the way an array finds a
- * bad block — by going and checking, on a schedule, across the whole population.
- *
- * The `observations` are what make a RATE derivable. A single scrub says nothing about
- * whether a pointer never fires or always does; a sequence of them says both, and derived
- * from a record rather than asserted by a writer — the same reason a gap's magnitude is a
- * population and not an estimate.
+/*
+ * There is no `Scrub` record. A scrub is an AUDIT with `trigger: "scrub"` — the lifecycle
+ * was identical (actor, time, evidence, witnesses) and two records both meaning "somebody
+ * checked this rule" is how one of them stops participating in conformance. What stays
+ * separate is the QUEUE: see `AuditTrigger`.
  */
-export interface Scrub {
-  id: string;
-  requirementId: string;
-  /**
-   * What each of the rule's ACTIVE pointers was doing at this moment.
-   *
-   * Must cover exactly the active set — no omissions and no phantoms. That is the evidence
-   * gate: a scrub resets the clock on a rule, which is the silencing direction, so *"I
-   * looked"* with nothing recorded is a self-report buying a fresh coverage period. A rule
-   * with nothing watching it legitimately has an empty list, and saying so is the finding.
-   */
-  observations: { pointerId: string; firing: boolean }[];
-  /** What the scrubber concluded, in their own words. */
-  finding: string;
-  /** `suspect` raises; `sound` quiets. Raising is open, which is why only `sound` is gated. */
-  verdict: "sound" | "suspect";
-  scrubbedBy: Actor;
-  at: string;
-  origin?: string;
-}
+
 
 /**
  * One thing a rule ranges over, and what the check concluded about it.

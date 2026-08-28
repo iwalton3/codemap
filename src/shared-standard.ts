@@ -14,7 +14,7 @@
  *   vacuity.checked
  *   pointer.declared · pointer.restated · pointer.retired
  *   population.pinned
- *   scrub.recorded · scrub.policy
+ *   scrub.policy
  *
  * ACCEPTANCE CRITERIA are not among them either, for the reason requirements are not: a
  * criterion is created by a ratified `add_criterion` operation, so it is derived by
@@ -43,9 +43,9 @@
 
 import type {
   AcceptanceCriterion, Acknowledgement, Actor, Audit, BugWitness, Operation, Pointer,
-  PopulationPredicate, Problem, Requirement, Scrub, ScrubPolicy, Spec, VacuityCheck,
+  PopulationPredicate, Problem, Requirement, ScrubPolicy, Spec, VacuityCheck,
 } from "./schema.js";
-import { criterionIdFor, requirementIdFor, EVIDENCE_KINDS } from "./schema.js";
+import { criterionIdFor, requirementIdFor, EVIDENCE_KINDS, AUDIT_TRIGGERS, COVERING_TRIGGERS } from "./schema.js";
 import type { LogEvent } from "./eventlog.js";
 import { emitEvent } from "./eventlog.js";
 
@@ -60,7 +60,7 @@ export interface SharedStandard {
   vacuityChecks: VacuityCheck[];
   pointers: Pointer[];
   populations: PopulationPredicate[];
-  scrubs: Scrub[];
+  scrubs: Audit[];
   /** One decision, so one row. `null` until somebody states it — which is itself a finding. */
   scrubPolicy: ScrubPolicy | null;
   acknowledgements: Acknowledgement[];
@@ -141,9 +141,6 @@ export const publishPopulationPinned = (
   logRoot: string, scope: string, actor: Actor, pin: PopulationPredicate, supersedes?: string,
 ) => put(logRoot, scope, actor, "population.pinned", pin.id, { pin, ...(supersedes ? { supersedes } : {}) });
 
-export const publishScrub = (logRoot: string, scope: string, actor: Actor, sc: Scrub) =>
-  put(logRoot, scope, actor, "scrub.recorded", sc.requirementId, { scrub: sc });
-
 /**
  * The schedule, subject-keyed on the scope: a policy is a decision and two of them is no
  * policy, so the LAST one wins rather than accumulating.
@@ -187,7 +184,6 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
   const vacuityChecks = new Map<string, VacuityCheck>();
   const pointers = new Map<string, Pointer>();
   const populations = new Map<string, PopulationPredicate>();
-  const scrubs = new Map<string, Scrub>();
   let scrubPolicy: ScrubPolicy | null = null;
   const acknowledgements = new Map<string, Acknowledgement>();
   const audits = new Map<string, Audit>();
@@ -325,6 +321,31 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
         const ev = audit.evidence ?? {};
         const touched = !!(ev.read?.length || ev.ran?.some((r) => r.passed && !!r.command?.trim()));
         if (audit.outcome === "conformant" && !touched) break;
+        if (audit.trigger && !AUDIT_TRIGGERS.includes(audit.trigger)) break;
+        // An audit that concluded nothing. `recordAudit` has always refused this and the
+        // fold never has — a pre-existing one-end gap, found because folding the scrub in
+        // brought a test that exercises it. What an auditor concluded IS the record; a row
+        // without it is a timestamp claiming somebody looked.
+        if (!audit.finding?.trim()) break;
+        // A COVERING audit resets this rule's coverage deadline, which is the quieting
+        // direction — so it must say what every ACTIVE pointer was doing. `recordAudit`
+        // refuses an omission, a phantom and a repeat; this end binds a clone whose tool
+        // did not. The pointer state is read from the fold's OWN map, so it is the team's
+        // view of what was active rather than the writer's account of it.
+        if (COVERING_TRIGGERS.includes(audit.trigger ?? "ad-hoc")) {
+          const obs = audit.observations ?? [];
+          if (obs.some((o) => !o?.pointerId || typeof o.firing !== "boolean")) break;
+          const watching = [...pointers.values()]
+            .filter((p) => p.requirementId === audit.requirementId && p.state === "active");
+          const seen = new Set(obs.map((o) => o.pointerId));
+          if (watching.some((p) => !seen.has(p.id))) break;
+          if (obs.some((o) => !watching.some((p) => p.id === o.pointerId))) break;
+          if (seen.size !== obs.length) break;
+        } else if (audit.observations?.length) {
+          // Observations from a pass that never covered anything would feed the rate while
+          // resetting no deadline — the rate detached from the coverage it describes.
+          break;
+        }
         audits.set(audit.id, { ...audit, origin: "sync" });
         break;
       }
@@ -435,37 +456,6 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
         populations.set(pin.id, { ...pin, state: "active", origin: "sync" });
         break;
       }
-      case "scrub.recorded": {
-        const sc = obj(e.data, "scrub") as Scrub | undefined;
-        if (!sc?.id || !sc.requirementId) break;
-        if (sc.verdict !== "sound" && sc.verdict !== "suspect") break;
-        // A scrub that records nothing is the vacuous check this mechanism exists to
-        // detect, one level up. Refused in `recordScrub` and restated here, because the
-        // tool binds only writers who ask.
-        if (!sc.finding?.trim()) break;
-        if (!Array.isArray(sc.observations)) break;
-        if (sc.observations.some((o) => !o?.pointerId || typeof o.firing !== "boolean")) break;
-        // The observations must cover the rule's active pointers EXACTLY. A scrub resets a
-        // coverage clock, which is the quieting direction, so one that skips a pointer buys
-        // a fresh period without having looked — and this end is where a clone whose tool
-        // did not check is bound. The pointer state is read from the fold's own map, so it
-        // is the team's view of what was active and not the writer's account of it.
-        const watching = [...pointers.values()]
-          .filter((p) => p.requirementId === sc.requirementId && p.state === "active");
-        const seen = new Set(sc.observations.map((o) => o.pointerId));
-        if (watching.some((p) => !seen.has(p.id))) break;
-        // PHANTOMS, and the tool's half of this was registered at both ends while only the
-        // omission half was: an observation naming a pointer that is not on this rule
-        // fabricates history for one that is, because `pointerRates` tallies by pointer id
-        // and attributes the rule from the first scrub that mentions it.
-        if (sc.observations.some((o) => !watching.some((p) => p.id === o.pointerId))) break;
-        // And the same pointer twice is one look counted as several, which reaches
-        // `minObservations` from a single scrub — the floor defeated through the one door
-        // it does not watch.
-        if (seen.size !== sc.observations.length) break;
-        scrubs.set(sc.id, { ...sc, origin: "sync" });
-        break;
-      }
       case "scrub.policy": {
         const policy = obj(e.data, "policy") as ScrubPolicy | undefined;
         if (!policy) break;
@@ -515,7 +505,10 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
     specs: [...specs.values()], operations: [...operations.values()],
     requirements: [...requirements.values()], criteria: [...criteria.values()],
     vacuityChecks: [...vacuityChecks.values()], pointers: [...pointers.values()],
-    populations: [...populations.values()], scrubs: [...scrubs.values()], scrubPolicy,
+    populations: [...populations.values()],
+    // Derived, not stored twice: a scrub IS an audit with a covering trigger.
+    scrubs: [...audits.values()].filter((a) => a.trigger === "scrub" || a.trigger === "baseline"),
+    scrubPolicy,
     acknowledgements: [...acknowledgements.values()],
     audits: [...audits.values()], problems: [...problems.values()],
   };

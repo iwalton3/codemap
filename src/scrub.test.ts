@@ -21,7 +21,22 @@ import type { LogicalNode, State } from "./schema.js";
 import { discard } from "./test-tmp.js";
 import { draftSpec, addOperation, ratifySpec } from "./requirements.js";
 import { declarePointer } from "./pointers.js";
-import { setScrubPolicy, recordScrub, scrubPlan, pointerRates, scrubsFor } from "./scrub.js";
+import { setScrubPolicy, scrubPlan, pointerRates, scrubsFor, baselinePlan } from "./scrub.js";
+import { recordAudit } from "./audits.js";
+
+/**
+ * A scrub is an AUDIT with a covering trigger — one record, one lifecycle. What stays
+ * separate is the QUEUE: `scrubPlan` selects on a coverage deadline per target, and the
+ * differential queue selects on staleness. A differential audit therefore does not satisfy
+ * a scrub unless its evidence is proven against the default branch.
+ */
+const scrub = (
+  root: string,
+  input: { requirementId: string; finding: string; observations?: { pointerId: string; firing: boolean }[] },
+) => recordAudit(root, {
+  requirementId: input.requirementId, outcome: "indeterminate", finding: input.finding,
+  trigger: "scrub", ...(input.observations ? { observations: input.observations } : {}),
+});
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 const SRC = "export function creditLine(cents) { return cents; }\n";
@@ -51,6 +66,10 @@ async function universe() {
     summary: "", anchors: anchors.map((a) => a.id), body: "",
   };
   await writeNode(root, doc);
+  // COMMITTED, on the default branch. Branch work resets no coverage deadline, so an
+  // uncommitted fixture makes every audit provisional and every clock assertion vacuous.
+  spawnSync("git", ["add", "-A"], { cwd: root });
+  spawnSync("git", ["commit", "-qm", "base"], { cwd: root });
   return { root, doc: doc.id };
 }
 
@@ -109,7 +128,7 @@ test("the budget scales with the population, which is what makes the cost visibl
   } finally { discard(u.root); }
 });
 
-test("a scrub must say what every active pointer was doing — a reset clock needs evidence", async () => {
+test("a covering audit must say what every active pointer was doing — a reset clock needs evidence", async () => {
   const u = await universe();
   try {
     const rid = await rule(u.root, "Capped", "Credit");
@@ -117,25 +136,16 @@ test("a scrub must say what every active pointer was doing — a reset clock nee
       requirementId: rid, targetKind: "node", targetId: u.doc, rationale: "the doc",
     }));
 
-    assert.match(err(await recordScrub(u.root, { requirementId: rid, finding: "looked", verdict: "sound" })),
-      /does not say what 1 of the rule's active pointer/);
+    assert.match(err(await scrub(u.root, { requirementId: rid, finding: "looked" })),
+      /must say what all 1 of its active pointer/);
     // The real pointer IS observed here: a phantom alongside an omission trips the
     // omission check first, and the test then proves nothing about phantoms.
-    assert.match(err(await recordScrub(u.root, {
-      requirementId: rid, finding: "looked", verdict: "sound",
-      observations: [{ pointerId: p.id, firing: false }, { pointerId: "pt_nope", firing: false }],
-    })), /not active on/);
+    assert.match(err(await scrub(u.root, { requirementId: rid, finding: "looked", observations: [{ pointerId: p.id, firing: false }, { pointerId: "pt_nope", firing: false }] })), /not active on/);
     // A scrub that records nothing is the vacuous check this mechanism exists to detect,
     // one level up.
-    assert.match(err(await recordScrub(u.root, {
-      requirementId: rid, finding: "  ", verdict: "sound",
-      observations: [{ pointerId: p.id, firing: false }],
-    })), /needs a `finding`/);
+    assert.match(err(await scrub(u.root, { requirementId: rid, finding: "  ", observations: [{ pointerId: p.id, firing: false }] })), /needs a finding/);
 
-    ok(await recordScrub(u.root, {
-      requirementId: rid, finding: "the doc still describes what the rule is about",
-      verdict: "sound", observations: [{ pointerId: p.id, firing: false }],
-    }));
+    ok(await scrub(u.root, { requirementId: rid, finding: "the doc still describes what the rule is about", observations: [{ pointerId: p.id, firing: false }] }));
     assert.equal((await scrubsFor(u.root, rid)).length, 1);
   } finally { discard(u.root); }
 });
@@ -147,9 +157,7 @@ test("a rule with nothing watching it can be scrubbed, and that IS the finding",
     // Unwatched is the requirement-side twin of `unknown`. Refusing to scrub it would make
     // the one class of rule that most needs looking at the one nobody can record having
     // looked at.
-    ok(await recordScrub(u.root, {
-      requirementId: rid, finding: "nothing watches this rule at all", verdict: "suspect",
-    }));
+    ok(await scrub(u.root, { requirementId: rid, finding: "nothing watches this rule at all" }));
     assert.equal((await scrubsFor(u.root, rid)).length, 1);
   } finally { discard(u.root); }
 });
@@ -170,16 +178,16 @@ test("never-fires and always-fires are both derived, and only past minObservatio
     const np = ok(await declarePointer(u.root, { requirementId: noisy, targetKind: "node", targetId: u.doc, rationale: "r" }));
 
     for (let i = 0; i < 2; i++) {
-      ok(await recordScrub(u.root, { requirementId: quiet, finding: "looked", verdict: "sound", observations: [{ pointerId: qp.id, firing: false }] }));
-      ok(await recordScrub(u.root, { requirementId: noisy, finding: "looked", verdict: "sound", observations: [{ pointerId: np.id, firing: true }] }));
+      ok(await scrub(u.root, { requirementId: quiet, finding: "looked", observations: [{ pointerId: qp.id, firing: false }] }));
+      ok(await scrub(u.root, { requirementId: noisy, finding: "looked", observations: [{ pointerId: np.id, firing: true }] }));
     }
     // Two observations is below the floor: a rate from two looks is not a rate, and the
     // absence here is what stops the scrub failing at its own standard.
     assert.deepEqual((await pointerRates(u.root)).map((r) => r.pathology), [null, null]);
     assert.deepEqual((await scrubPlan(u.root)).pathologies, []);
 
-    ok(await recordScrub(u.root, { requirementId: quiet, finding: "looked", verdict: "sound", observations: [{ pointerId: qp.id, firing: false }] }));
-    ok(await recordScrub(u.root, { requirementId: noisy, finding: "looked", verdict: "sound", observations: [{ pointerId: np.id, firing: true }] }));
+    ok(await scrub(u.root, { requirementId: quiet, finding: "looked", observations: [{ pointerId: qp.id, firing: false }] }));
+    ok(await scrub(u.root, { requirementId: noisy, finding: "looked", observations: [{ pointerId: np.id, firing: true }] }));
 
     const rates = await pointerRates(u.root);
     const q = rates.find((r) => r.pointerId === qp.id)!;
@@ -192,7 +200,7 @@ test("never-fires and always-fires are both derived, and only past minObservatio
     const mixed = await rule(u.root, "Mixed", "S3");
     const mp = ok(await declarePointer(u.root, { requirementId: mixed, targetKind: "node", targetId: u.doc, rationale: "r" }));
     for (const firing of [true, false, true]) {
-      ok(await recordScrub(u.root, { requirementId: mixed, finding: "looked", verdict: "sound", observations: [{ pointerId: mp.id, firing }] }));
+      ok(await scrub(u.root, { requirementId: mixed, finding: "looked", observations: [{ pointerId: mp.id, firing }] }));
     }
     assert.equal((await pointerRates(u.root)).find((r) => r.pointerId === mp.id)!.pathology, null);
     assert.deepEqual((await scrubPlan(u.root)).pathologies.map((p) => p.pathology).sort(),
@@ -206,7 +214,7 @@ test("no rate is reportable at all without a stated policy", async () => {
     const rid = await rule(u.root, "Capped", "Credit");
     const p = ok(await declarePointer(u.root, { requirementId: rid, targetKind: "node", targetId: u.doc, rationale: "r" }));
     for (let i = 0; i < 5; i++) {
-      ok(await recordScrub(u.root, { requirementId: rid, finding: "looked", verdict: "sound", observations: [{ pointerId: p.id, firing: false }] }));
+      ok(await scrub(u.root, { requirementId: rid, finding: "looked", observations: [{ pointerId: p.id, firing: false }] }));
     }
     // Five quiet observations, and still no verdict: `minObservations` comes from the
     // policy, and an unstated policy states no floor. Reporting a pathology against a
@@ -231,7 +239,7 @@ test("the queue is ordered by neglect, and a scrub removes a rule from it until 
     ok(await setScrubPolicy(u.root, { coverageDays: 30 }));
     const a = await rule(u.root, "Alpha", "S1");
     const b = await rule(u.root, "Beta", "S2");
-    ok(await recordScrub(u.root, { requirementId: a, finding: "looked", verdict: "sound" }));
+    ok(await scrub(u.root, { requirementId: a, finding: "looked" }));
 
     const plan = await scrubPlan(u.root);
     assert.deepEqual(plan.due.map((d) => d.requirementId), [b], "only the never-looked-at rule is due");
@@ -264,31 +272,10 @@ test("a retired rule leaves the schedule entirely", async () => {
     const plan = await scrubPlan(u.root);
     assert.equal(plan.population, 0, "a rule that does not bind is not on the schedule");
     assert.deepEqual(plan.due, []);
-    assert.match(err(await recordScrub(u.root, { requirementId: rid, finding: "x", verdict: "sound" })), /retired/);
-  } finally { discard(u.root); }
-});
-
-/**
- * The output of the mechanism, as opposed to its schedule.
- *
- * `suspect` clears by somebody LOOKING AGAIN, never by anybody marking it clear — derived
- * from the latest scrub rather than from a status field, for the reason nothing else in
- * this subsystem stores a state a writer can satisfy.
- */
-test("a suspect verdict stands until the next scrub, and clears by being looked at again", async () => {
-  const u = await universe();
-  try {
-    ok(await setScrubPolicy(u.root, { coverageDays: 30 }));
-    const rid = await rule(u.root, "Capped", "Credit");
-    ok(await recordScrub(u.root, { requirementId: rid, finding: "nothing watches this", verdict: "suspect" }));
-
-    let plan = await scrubPlan(u.root);
-    assert.deepEqual(plan.suspect.map((x) => x.requirementId), [rid]);
-    assert.equal(plan.suspect[0]!.finding, "nothing watches this");
-
-    ok(await recordScrub(u.root, { requirementId: rid, finding: "a pointer was added; it holds", verdict: "sound" }));
-    plan = await scrubPlan(u.root);
-    assert.deepEqual(plan.suspect, [], "the later look is the current word");
+    // A COVERING audit of a retired rule is refused — there is no deadline to reset. An
+    // ad-hoc one is still allowed: that is history, and losing it helps nobody.
+    assert.match(err(await scrub(u.root, { requirementId: rid, finding: "x" })), /retired/);
+    ok(await recordAudit(u.root, { requirementId: rid, outcome: "indeterminate", finding: "for the record" }));
   } finally { discard(u.root); }
 });
 
@@ -299,7 +286,7 @@ test("a pathology is about a live pointer on a rule in force, not about history"
     const rid = await rule(u.root, "Capped", "Credit");
     const p = ok(await declarePointer(u.root, { requirementId: rid, targetKind: "node", targetId: u.doc, rationale: "r" }));
     for (let i = 0; i < 2; i++) {
-      ok(await recordScrub(u.root, { requirementId: rid, finding: "looked", verdict: "sound", observations: [{ pointerId: p.id, firing: false }] }));
+      ok(await scrub(u.root, { requirementId: rid, finding: "looked", observations: [{ pointerId: p.id, firing: false }] }));
     }
     assert.deepEqual((await scrubPlan(u.root)).pathologies.map((x) => x.pointerId), [p.id]);
 
@@ -328,15 +315,9 @@ test("the same pointer observed twice in one scrub is refused", async () => {
     const rid = await rule(u.root, "Capped", "Credit");
     const p = ok(await declarePointer(u.root, { requirementId: rid, targetKind: "node", targetId: u.doc, rationale: "r" }));
 
-    assert.match(err(await recordScrub(u.root, {
-      requirementId: rid, finding: "looked", verdict: "sound",
-      observations: [{ pointerId: p.id, firing: false }, { pointerId: p.id, firing: false }, { pointerId: p.id, firing: false }],
-    })), /observed twice/);
+    assert.match(err(await scrub(u.root, { requirementId: rid, finding: "looked", observations: [{ pointerId: p.id, firing: false }, { pointerId: p.id, firing: false }, { pointerId: p.id, firing: false }] })), /observed twice/);
     // And a real single observation still lands, so the refusal is not "nothing works".
-    ok(await recordScrub(u.root, {
-      requirementId: rid, finding: "looked", verdict: "sound",
-      observations: [{ pointerId: p.id, firing: false }],
-    }));
+    ok(await scrub(u.root, { requirementId: rid, finding: "looked", observations: [{ pointerId: p.id, firing: false }] }));
     assert.equal((await pointerRates(u.root))[0]!.observations, 1);
     assert.equal((await pointerRates(u.root))[0]!.pathology, null, "one look is still one look");
   } finally { discard(u.root); }

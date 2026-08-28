@@ -113,7 +113,31 @@ test("the standard projection's table set is pinned to a materializer version", 
   // rows will not re-fold unless the version moves.
   assert.deepEqual(tables, [
     "acknowledgements", "audits", "criteria", "operations", "pointers", "populations",
-    "problems", "requirements", "scrub_policy", "scrubs", "specs", "vacuity_checks",
+    "problems", "requirements", "scrub_policy", "specs", "vacuity_checks",
   ], "the standard projection's tables changed — bump MATERIALIZER_VERSION with them");
-  assert.equal(MATERIALIZER_VERSION, 14, "and record the new number here");
+  assert.equal(MATERIALIZER_VERSION, 15, "and record the new number here");
+});
+
+/**
+ * No backticks inside the DDL, which is a template literal they would close.
+ *
+ * This has bitten three times — twice before it was written down in
+ * `codemap-requirement-kernel`'s defect shapes, and once after. The failure is loud (a
+ * syntax error) but the cost is a debugging round every time, and the habit that causes it
+ * is the ordinary one of quoting an identifier in a comment. A lint costs nothing.
+ */
+test("the schema DDL contains no backticks", () => {
+  const src = readFileSync("src/db.ts", "utf8");
+  // The literal itself, from `d.exec(\`` to its closing backtick — not a text window, which
+  // would sweep in the ordinary prose comments around it and fail on every one of them.
+  const open = src.indexOf("d.exec(`");
+  const close = src.indexOf("\n  `);", open);
+  assert.ok(open > 0 && close > open, "the DDL literal moved — this lint is looking in the wrong place");
+  const ddl = src.slice(open + "d.exec(`".length, close);
+  assert.ok(ddl.includes("CREATE TABLE"), "found something that is not the DDL");
+  const offenders = ddl.split("\n")
+    .map((line, i) => ({ line, n: i }))
+    .filter((x) => x.line.includes("`"));
+  assert.deepEqual(offenders.map((x) => x.line.trim()), [],
+    "a backtick inside db.ts's DDL closes the template literal — quote identifiers with \"double quotes\" instead");
 });

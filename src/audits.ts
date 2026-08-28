@@ -27,10 +27,11 @@
 
 import { randomBytes } from "node:crypto";
 import type {
-  Actor, Audit, AuditEvidence, AuditOutcome, BugWitness, Requirement,
+  Actor, Audit, AuditEvidence, AuditOutcome, AuditTrigger, BugWitness, Requirement,
 } from "./schema.js";
+import { AUDIT_TRIGGERS, COVERING_TRIGGERS } from "./schema.js";
 import {
-  readAcknowledgements, readAudits, readRequirement, readRequirements,
+  readAcknowledgements, readAudits, readPointers, readRequirement, readRequirements,
   workHas, writeLocalAudit,
 } from "./store.js";
 import { liveHashes, witnessDrift, realDrift } from "./reviews.js";
@@ -108,10 +109,13 @@ export async function recordAudit(
   root: string,
   input: {
     requirementId: string; outcome: AuditOutcome; finding: string; evidence?: AuditEvidence;
-    promotedFrom?: string;
+    promotedFrom?: string; trigger?: AuditTrigger;
+    observations?: { pointerId: string; firing: boolean }[];
   } & ActorInput,
 ): Promise<{ ok: true; id: string; audit: Audit; released: string[] } | Err> {
   if (!OUTCOMES.includes(input.outcome)) return { error: `outcome must be one of ${OUTCOMES.join(" | ")}` };
+  const trigger: AuditTrigger = input.trigger ?? "ad-hoc";
+  if (!AUDIT_TRIGGERS.includes(trigger)) return { error: `trigger must be one of ${AUDIT_TRIGGERS.join(" | ")}` };
   const finding = input.finding?.trim();
   if (!finding) return { error: "an audit needs a finding — what you concluded, in your own words" };
   const r = await readRequirement(root, input.requirementId);
@@ -185,11 +189,48 @@ export async function recordAudit(
   // filesystem while `commit` records an unchanged HEAD, so sharing it attributes
   // uncommitted work to a commit that does not contain it. codemap has shipped this exact
   // confusion once already, as the dirty-snapshot witness (COD-3).
+  // A COVERING audit resets the rule's coverage deadline, which is the quieting direction,
+  // so it has to say what every active pointer was doing — no omissions and no phantoms,
+  // and no pointer twice. Without that, "I looked" buys a fresh period on a self-report,
+  // and a repeated observation reaches `minObservations` from a single call.
+  const observations = input.observations ?? [];
+  if (COVERING_TRIGGERS.includes(trigger)) {
+    // A retired rule is not on the schedule, so there is no deadline for a covering audit
+    // to reset. An `ad-hoc` or `differential` audit of one is still allowed: that is
+    // history, and refusing it would lose an observation somebody actually made.
+    if (r.status === "retired") return { error: `${r.id} is retired — a rule that does not bind is not on the schedule` };
+    const active = await readPointers(root, { requirementId: r.id, state: "active" });
+    const seen = new Set(observations.map((o) => o.pointerId));
+    const missed = active.filter((p) => !seen.has(p.id));
+    if (missed.length) {
+      return {
+        error:
+          `a \`${trigger}\` audit resets this rule's coverage deadline, so it must say what all `
+          + `${active.length} of its active pointer(s) were doing — missing ${missed.map((p) => p.id).join(", ")}. `
+          + `A rule with nothing watching it observes nothing, and recording that is the finding.`,
+      };
+    }
+    const phantom = observations.filter((o) => !active.some((p) => p.id === o.pointerId));
+    if (phantom.length) return { error: `observed pointer(s) that are not active on ${r.id}: ${phantom.map((o) => o.pointerId).join(", ")}` };
+    if (seen.size !== observations.length) {
+      return { error: "the same pointer is observed twice — one look counted as several is how a rate stops being a rate" };
+    }
+  } else if (observations.length) {
+    // A differential or ad-hoc audit looked at what MOVED, not at the whole watching
+    // apparatus, so letting it carry observations would feed the coverage rate from a pass
+    // that never covered anything — and reset nothing, which is the honest half.
+    return { error: `\`observations\` belong to a ${COVERING_TRIGGERS.join(" or ")} audit; a \`${trigger}\` one covers what moved, not what did not` };
+  }
+  if (observations.some((o) => typeof o.firing !== "boolean")) {
+    return { error: "every observation needs `firing: true|false` — that boolean IS the history a rate is derived from" };
+  }
+
   const provisional = !onDefaultBranch(root) || (isGitRepo(root) && isDirty(root));
   const audit: Audit = {
     id: mint(), requirementId: r.id, outcome: input.outcome, evidence, finding,
     witnesses: read.map((id) => ({ anchorId: id, bodyHash: live?.get(id) ?? "sha256:absent" })),
-    auditor: actor, at: now(),
+    auditor: actor, at: now(), trigger,
+    ...(observations.length ? { observations } : {}),
     commit: isGitRepo(root) ? headCommit(root) : null,
     branch: isGitRepo(root) ? currentBranch(root) : null,
     ...(provisional ? { provisional: true } : {}),

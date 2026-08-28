@@ -629,7 +629,7 @@ export const graphProjection: Projection<Map<string, SharedWiring>> = {
  */
 export const standardProjection: Projection<SharedStandard> = {
   write(d: DatabaseSync, scope: string, value: SharedStandard): void {
-    for (const t of ["specs", "operations", "requirements", "criteria", "vacuity_checks", "pointers", "populations", "scrubs", "scrub_policy", "acknowledgements", "audits", "problems"]) {
+    for (const t of ["specs", "operations", "requirements", "criteria", "vacuity_checks", "pointers", "populations", "scrub_policy", "acknowledgements", "audits", "problems"]) {
       d.prepare(`DELETE FROM ${t} WHERE source_scope = ?`).run(scope);
     }
     const spec = d.prepare("INSERT INTO specs(id,status,title,created_at,ratified_at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?)");
@@ -659,10 +659,6 @@ export const standardProjection: Projection<SharedStandard> = {
     const pop = d.prepare("INSERT INTO populations(id,requirement_id,basis,state,pinned_at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?)");
     for (const p of value.populations) {
       pop.run(p.id, p.requirementId, p.basis, p.state, p.pinnedAt, "sync", scope, JSON.stringify(p));
-    }
-    const scr = d.prepare("INSERT INTO scrubs(id,requirement_id,verdict,at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?)");
-    for (const sc of value.scrubs) {
-      scr.run(sc.id, sc.requirementId, sc.verdict, sc.at, "sync", scope, JSON.stringify(sc));
     }
     // The policy is a SINGLETON — one decision, one row — so it is the only thing here
     // whose id is a constant, and that breaks the delete-by-scope rule above. A store that
@@ -705,7 +701,10 @@ export const standardProjection: Projection<SharedStandard> = {
         });
     return {
       specs: all("specs"), operations: all("operations"), requirements: all("requirements"),
-      criteria: all("criteria"), vacuityChecks: all("vacuity_checks"), pointers: all("pointers"), populations: all("populations"), scrubs: all("scrubs"),
+      criteria: all("criteria"), vacuityChecks: all("vacuity_checks"), pointers: all("pointers"), populations: all("populations"),
+      // Not projected: a scrub is an AUDIT with a covering trigger, so it is already in
+      // `audits` and a second table would be the same row twice.
+      scrubs: [],
       scrubPolicy: all<ScrubPolicy>("scrub_policy")[0] ?? null,
       acknowledgements: all("acknowledgements"), audits: all("audits"), problems: all("problems"),
     };

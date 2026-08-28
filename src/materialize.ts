@@ -104,8 +104,13 @@ import { readScopeChecked, SHARD_EXT, type LogEvent, type ScopeStatus } from "./
  * shards do not move when the fold's mind changes. Without the bump such a store serves a
  * standard with none of the new records in it FOR EVER — and worse than at 12 -> 13,
  * because `served()` now reports that answer as authoritative.
+ *
+ * 14 -> 15 folds the scrub INTO the audit: `scrubs` stops being projected (a scrub is an
+ * audit with a covering trigger, so it was the same row twice) and `audit.recorded` now
+ * carries the trigger and the pointer observations. Same rule again — the scope is not new
+ * and the shards do not move when the fold's mind changes.
  */
-export const MATERIALIZER_VERSION = 14;
+export const MATERIALIZER_VERSION = 15;
 
 /**
  * What the events in a scope are, cheaply.

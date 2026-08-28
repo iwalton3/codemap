@@ -585,6 +585,32 @@ Which is the stronger argument for the scrub than vacuity-hygiene: without it th
 systematically blind exactly where nothing has changed for a long time, which is also where
 a quietly wrong rule has had the most time to matter.
 
+### There is ONE audit record and three triggers, with two queues
+
+A scrub is an **audit with a covering trigger**, not a second record: the lifecycle was
+identical (actor, time, evidence, witnesses, supersession) and two records both meaning
+*somebody checked this rule* is how one of them stops participating in conformance.
+
+What stays separate is what each is drawn FROM, because they select on different things:
+
+| trigger | queue | selects on |
+|---|---|---|
+| `differential` | `auditQueue` / the `/diff` rollup | **staleness** — something moved |
+| `scrub` | `scrubPlan` | a **coverage deadline per target** — this has not been looked at in *T* |
+| `baseline` | `baselinePlan` | everything, because a landmark warrants it |
+| `ad-hoc` | none | somebody looked because they wanted to |
+
+So an agent can be asked for a differential audit, a scrub, both, or a full baseline before
+a high-risk feature ships.
+
+**What resets a coverage deadline** is the subtle part. Branch work resets nothing whatever
+its trigger — a provisional audit may never merge, and a deadline is a claim about the
+codebase. A `differential` audit *does* reset one, but only having got past that test: it
+looked at what CHANGED, so it says nothing until that change is proven present on the
+default branch, and the proof is promotion, which `promotableAudits` decides on WITNESSES
+rather than on commit ancestry. An `ad-hoc` audit resets nothing, because nobody asked what
+it would look at and nothing records what it left out.
+
 ### Pointers are scrubbed on a schedule, not trusted — BUILT
 
 Vacuity is **silent corruption**. You do not find it by using the thing, because a vacuous
@@ -771,7 +797,8 @@ MCP surface via `ops/standard.ts`:
 - `ops/standard.ts`'s `served()` — the non-authoritative marker on every read.
 - `pointers.ts` — where to look, the derived ladder, and the audit queue.
 - `population.ts` — the hash-pinned lint, the member delta, and the narrowing gate.
-- `scrub.ts` — the stated schedule, the coverage queue, and the derived firing rates.
+- `scrub.ts` — the stated schedule, the coverage queue, the baseline sweep, and the
+  derived firing rates. The RECORD is an `Audit`; this module is the selection.
 
 **Adjudication and closure are separate events**, which was not obvious until it was
 built. Naming which side moves does not move it, so a problem stays open until the named

@@ -21,7 +21,7 @@ import {
   foldStandard, standardScope, publishSpecDrafted, publishOperation, publishSpecRatified,
   publishAckGranted, publishAckReleased, publishAudit, publishProblemRaised, publishAdjudication,
   publishVacuityCheck, publishPointerDeclared, publishPointerRestated, publishPointerRetired,
-  publishPopulationPinned, publishScrub, publishScrubPolicy, emptyStandard,
+  publishPopulationPinned, publishScrubPolicy, emptyStandard,
 } from "./shared-standard.js";
 import { criterionIdFor, requirementIdFor, type Acknowledgement, type Actor, type Audit, type Operation, type Problem, type Spec } from "./schema.js";
 
@@ -676,22 +676,29 @@ test("the fold refuses an empty pin, and an agent narrowing a population", async
   } finally { discard(root); }
 });
 
-test("a scrub folds, and the fold restates the gates the tool cannot bind", async () => {
+/**
+ * A scrub is an AUDIT with a covering trigger, so the gates ride on `audit.recorded`.
+ * There is no second event and no second table — two records both meaning "somebody checked
+ * this rule" is how one of them stops participating in conformance.
+ */
+test("a covering audit folds, and the fold restates the gates the tool cannot bind", async () => {
   const root = await log("scrub");
   try {
     const base = {
-      id: "sc_1", requirementId: "r_x", observations: [], finding: "looked; nothing watches it",
-      verdict: "sound" as const, scrubbedBy: opus, at: "2026-08-18T00:00:00.000Z",
+      id: "sc_1", requirementId: "r_x", outcome: "indeterminate" as const, evidence: {},
+      observations: [] as { pointerId: string; firing: boolean }[],
+      finding: "looked; nothing watches it", trigger: "scrub" as const,
+      witnesses: [], auditor: opus, at: "2026-08-18T00:00:00.000Z",
     };
-    await publishScrub(root, SCOPE, opus, base);
+    await publishAudit(root, SCOPE, opus, base);
     assert.deepEqual((await fold(root)).scrubs.map((s) => s.id), ["sc_1"]);
 
     // A scrub that records nothing is the vacuous check this mechanism exists to detect,
     // one level up. Refused at both ends.
-    await publishScrub(root, SCOPE, opus, { ...base, id: "sc_mute", finding: "   " });
+    await publishAudit(root, SCOPE, opus, { ...base, id: "sc_mute", finding: "   " });
     assert.deepEqual((await fold(root)).scrubs.map((s) => s.id), ["sc_1"]);
 
-    await publishScrub(root, SCOPE, opus, { ...base, id: "sc_bad", verdict: "fine" as never });
+    await publishAudit(root, SCOPE, opus, { ...base, id: "sc_bad", trigger: "invented" as never });
     assert.deepEqual((await fold(root)).scrubs.map((s) => s.id), ["sc_1"]);
 
     // And the observation gate, which needs a pointer to exist to be meaningful: a scrub
@@ -699,10 +706,10 @@ test("a scrub folds, and the fold restates the gates the tool cannot bind", asyn
     // it. The fold reads the pointer state from its OWN map — the team's view of what was
     // active, not the writer's account of it.
     await publishPointerDeclared(root, SCOPE, opus, { ...PTR, id: "pt_w", requirementId: "r_x" });
-    await publishScrub(root, SCOPE, opus, { ...base, id: "sc_skip", at: "2026-08-19T00:00:00.000Z" });
+    await publishAudit(root, SCOPE, opus, { ...base, id: "sc_skip", at: "2026-08-19T00:00:00.000Z" });
     assert.deepEqual((await fold(root)).scrubs.map((s) => s.id), ["sc_1"], "an omitted pointer is an unlooked-at rule");
 
-    await publishScrub(root, SCOPE, opus, {
+    await publishAudit(root, SCOPE, opus, {
       ...base, id: "sc_full", at: "2026-08-20T00:00:00.000Z",
       observations: [{ pointerId: "pt_w", firing: true }],
     });
@@ -802,30 +809,30 @@ test("the fold blocks an agent erasing a populated rule by declaring it inexpres
   } finally { discard(root); }
 });
 
-test("the fold refuses a scrub observing pointers that are not on the rule", async () => {
+test("the fold refuses a covering audit observing pointers that are not on the rule", async () => {
   const root = await log("scrub-phantom");
   try {
     await publishPointerDeclared(root, SCOPE, opus, { ...PTR, id: "pt_mine", requirementId: "r_x" });
     await publishPointerDeclared(root, SCOPE, opus, { ...PTR, id: "pt_other", requirementId: "r_other" });
     const base = {
-      id: "sc_1", requirementId: "r_x", finding: "looked", verdict: "sound" as const,
-      scrubbedBy: opus, at: "2026-08-23T00:00:00.000Z",
+      id: "sc_1", requirementId: "r_x", finding: "looked", outcome: "indeterminate" as const,
+      evidence: {}, witnesses: [], trigger: "scrub" as const, auditor: opus, at: "2026-08-23T00:00:00.000Z",
     };
     // A phantom fabricates history for a pointer on ANOTHER rule: `pointerRates` tallies by
     // pointer id and takes the rule from the first scrub that mentions it.
-    await publishScrub(root, SCOPE, opus, {
+    await publishAudit(root, SCOPE, opus, {
       ...base, observations: [{ pointerId: "pt_mine", firing: false }, { pointerId: "pt_other", firing: true }],
     });
     assert.deepEqual((await fold(root)).scrubs.map((s) => s.id), []);
 
     // The same pointer twice reaches `minObservations` from one look.
-    await publishScrub(root, SCOPE, opus, {
+    await publishAudit(root, SCOPE, opus, {
       ...base, id: "sc_dup",
       observations: [{ pointerId: "pt_mine", firing: false }, { pointerId: "pt_mine", firing: false }],
     });
     assert.deepEqual((await fold(root)).scrubs.map((s) => s.id), []);
 
-    await publishScrub(root, SCOPE, opus, { ...base, id: "sc_ok", observations: [{ pointerId: "pt_mine", firing: false }] });
+    await publishAudit(root, SCOPE, opus, { ...base, id: "sc_ok", observations: [{ pointerId: "pt_mine", firing: false }] });
     assert.deepEqual((await fold(root)).scrubs.map((s) => s.id), ["sc_ok"]);
   } finally { discard(root); }
 });
