@@ -409,3 +409,24 @@ test("an empty spec cannot be adopted", async () => {
     assert.match((refused as any).error, /no operations/);
   } finally { discard(root); }
 });
+
+test("a requirement's id is derived from its operation, so every clone agrees", async () => {
+  const { root } = await universe();
+  try {
+    const sp = ok(await draftSpec(root, { title: "Credit currency policy" }));
+    const op = ok(await addOperation(root, {
+      specId: sp.id, kind: "add_requirement", rationale: "policy §4", reversibility: "reversible",
+      title: "Credit line currency", section: "Credit/Limits",
+      statement: "All credit lines are in USD.", provenance: "credit policy §4",
+    }));
+    ok(await ratifySpec(root, sp.id));
+    const rule = (await listRequirements(root))[0]!;
+
+    // The standard is a projection of the ratified specs, so replaying the same operation
+    // on another machine has to produce the same name for the same rule. A random id
+    // would never fail locally, where there is only ever one clone.
+    const { createHash } = await import("node:crypto");
+    assert.equal(rule.id, "r_" + createHash("sha256").update(op.id).digest("hex").slice(0, 12));
+    assert.equal(rule.introducedBy, sp.id);
+  } finally { discard(root); }
+});
