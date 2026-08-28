@@ -19,6 +19,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { db } from "./db.js";
 import { CorruptProjection, type Projection } from "./materialize.js";
+import { foldStandard, type SharedStandard } from "./shared-standard.js";
 import type { LogEvent } from "./eventlog.js";
 import { foldWalkthroughs, type SharedWalkthrough } from "./shared-walkthrough.js";
 import { needsHumanAck, foldFindings, prOfScope, type SharedFinding } from "./shared-findings.js";
@@ -613,6 +614,63 @@ export const graphProjection: Projection<Map<string, SharedWiring>> = {
  * and `ops-shared.ts` is an API surface whose every export must be reachable from a
  * front-end (`src/ops-reach.test.ts`). This is not an op.
  */
+/**
+ * A universe's whole standard, into the six canonical tables.
+ *
+ * One projection rather than six, because it folds from one scope: the kinds
+ * cross-reference each other (a problem closes on an audit or on a ratified spec) and a
+ * fold sees only its own scope's events.
+ *
+ * **Replaces only what it owns** — `DELETE ... WHERE source_scope = ?` on every table,
+ * never a bare delete. This clone's local rows are the one thing here the log cannot put
+ * back.
+ */
+export const standardProjection: Projection<SharedStandard> = {
+  write(d: DatabaseSync, scope: string, value: SharedStandard): void {
+    for (const t of ["specs", "operations", "requirements", "acknowledgements", "audits", "problems"]) {
+      d.prepare(`DELETE FROM ${t} WHERE source_scope = ?`).run(scope);
+    }
+    const spec = d.prepare("INSERT INTO specs(id,status,title,created_at,ratified_at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?)");
+    for (const sp of value.specs) {
+      spec.run(sp.id, sp.status, sp.title, sp.createdAt, sp.ratifiedAt ?? null, "sync", scope, JSON.stringify(sp));
+    }
+    const op = d.prepare("INSERT INTO operations(id,spec_id,kind,requirement_id,ord,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?)");
+    for (const o of value.operations) {
+      op.run(o.id, o.specId, o.kind, o.requirementId ?? null, o.ord, "sync", scope, JSON.stringify(o));
+    }
+    const req = d.prepare("INSERT INTO requirements(id,status,title,section,provenance,created_at,ratified_at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?,?,?)");
+    for (const r of value.requirements) {
+      req.run(r.id, r.status, r.title, r.section, r.provenance, r.createdAt, r.ratifiedAt ?? null, "sync", scope, JSON.stringify(r));
+    }
+    const ack = d.prepare("INSERT INTO acknowledgements(id,basis,state,operation_id,requirement_id,priority,revalidate_by,granted_at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?,?,?,?)");
+    for (const a of value.acknowledgements) {
+      ack.run(a.id, a.basis, a.state, a.operationId ?? null, a.requirementId ?? null, a.priority, a.revalidateBy, a.grantedAt, "sync", scope, JSON.stringify(a));
+    }
+    const aud = d.prepare("INSERT INTO audits(id,requirement_id,outcome,at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?)");
+    for (const a of value.audits) {
+      aud.run(a.id, a.requirementId, a.outcome, a.at, "sync", scope, JSON.stringify(a));
+    }
+    const prob = d.prepare("INSERT INTO problems(id,requirement_id,audit_id,disposition,raised_at,adjudicated_at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?,?)");
+    for (const p of value.problems) {
+      prob.run(p.id, p.requirementId, p.auditId, p.disposition ?? null, p.raisedAt, p.adjudicatedAt ?? null, "sync", scope, JSON.stringify(p));
+    }
+  },
+
+  read(d: DatabaseSync, scope: string): SharedStandard {
+    // `rowid`, so the fold's own insertion order survives the round trip — the contract
+    // is `read(write(x)) === x` and these are arrays, whose order IS a property.
+    const all = <T>(table: string): T[] =>
+      (d.prepare(`SELECT body FROM ${table} WHERE source_scope = ? ORDER BY rowid`).all(scope) as unknown as { body: string }[])
+        .map((r) => {
+          try { return JSON.parse(r.body) as T; } catch { throw new CorruptProjection(`${table} ${scope} holds an unreadable row`); }
+        });
+    return {
+      specs: all("specs"), operations: all("operations"), requirements: all("requirements"),
+      acknowledgements: all("acknowledgements"), audits: all("audits"), problems: all("problems"),
+    };
+  },
+};
+
 export function projectionFor(scope: string): { fold: (e: LogEvent[]) => any; proj: Projection<any> } | null {
   if (scope.startsWith("findings/")) return { fold: foldFindings, proj: findingsProjection };
   if (scope.startsWith("bugs/")) return { fold: foldBugs, proj: bugsProjection };
@@ -621,5 +679,6 @@ export function projectionFor(scope: string): { fold: (e: LogEvent[]) => any; pr
   if (scope.startsWith("walkthrough/")) return { fold: foldWalkthroughs, proj: walkthroughsProjection };
   if (scope.startsWith("triage/")) return { fold: foldTriage, proj: triageProjection };
   if (scope.startsWith("graph/")) return { fold: foldGraph, proj: graphProjection };
+  if (scope.startsWith("standard/")) return { fold: foldStandard, proj: standardProjection };
   return null;
 }

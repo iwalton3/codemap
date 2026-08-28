@@ -29,10 +29,11 @@
  * sidecar scope that makes any of this shared. Until the last one, these are local rows.
  */
 
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import type {
   Actor, BugWitness, Operation, OperationKind, Requirement, Reversibility, Spec,
 } from "./schema.js";
+import { requirementIdFor } from "./schema.js";
 import {
   readOperations, readRequirement, readRequirements, readSpec, readSpecs,
   requirementSectionCounts, workHas, writeLocalOperation, writeLocalRequirement, writeLocalSpec,
@@ -44,21 +45,6 @@ import type { ActorInput } from "./identity.js";
 
 const mint = (p: string) => p + randomBytes(6).toString("hex");
 
-/**
- * A requirement's id, DERIVED from the operation that creates it.
- *
- * Not random, and the reason is the fold rather than tidiness: the standard is a
- * projection of the ratified specs, so every clone replays the same operations and must
- * arrive at the same ids. A `randomBytes` id would give each machine its own name for the
- * same rule, which is the "one team fact, one record per clone" failure the sidecar
- * architecture exists to prevent — and it would not show up locally, where there is only
- * ever one clone.
- *
- * The id therefore points back at its own provenance, which is a small bonus: given a
- * requirement you can always name the operation that introduced it.
- */
-const requirementIdFor = (operationId: string): string =>
-  "r_" + createHash("sha256").update(operationId).digest("hex").slice(0, 12);
 const now = () => new Date().toISOString();
 
 export type Err = { error: string };

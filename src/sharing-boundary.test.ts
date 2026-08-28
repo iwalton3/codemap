@@ -20,8 +20,19 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-/** The scope kinds that travel. Adding one is a decision this test makes you state. */
-const SHARED_KINDS = ["findings/", "bugs/", "docs/", "notes/", "walkthrough/", "triage/", "graph/"];
+/**
+ * The scope kinds that travel. Adding one is a decision this test makes you state.
+ *
+ * `standard/` is the one that needs a word, because it looks like it breaks the rule and
+ * does not. Its EVENTS are all authored acts — drafting a spec, adding an operation,
+ * ratifying, granting an acknowledgement, recording an audit, adjudicating a problem. The
+ * requirements themselves are derived, but derived FROM THE LOG rather than from code:
+ * every clone replays the same ratified operations and reaches the same rules, which is
+ * why a requirement's id is a function of the operation that creates it. The rule this
+ * file guards is that a function of the CODE must not travel, and no part of `standard/`
+ * is one. See `docs/requirements-architecture.md`.
+ */
+const SHARED_KINDS = ["findings/", "bugs/", "docs/", "notes/", "walkthrough/", "triage/", "graph/", "standard/"];
 
 test("exactly the authored entity kinds travel", () => {
   const src = readFileSync("src/shared-projections.ts", "utf8");

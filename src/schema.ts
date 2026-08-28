@@ -1249,6 +1249,20 @@ export interface Problem {
   origin?: string;
 }
 
+/**
+ * A requirement's id, DERIVED from the operation that creates it.
+ *
+ * Lives here, in the leaf, because BOTH the local apply and the sidecar fold have to
+ * compute it and neither may import the other. Not random, and the reason is the fold
+ * rather than tidiness: the standard is a projection of the ratified specs, so every
+ * clone replays the same operations and must arrive at the same ids. A random id would
+ * give each machine its own name for the same rule — and would never fail locally, where
+ * there is only ever one clone.
+ */
+export function requirementIdFor(operationId: string): string {
+  return "r_" + createHash("sha256").update(operationId).digest("hex").slice(0, 12);
+}
+
 export interface RequirementStore {
   schemaVersion: number;
   requirements: Requirement[];

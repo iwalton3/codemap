@@ -89,8 +89,15 @@ import { readScopeChecked, SHARD_EXT, type LogEvent, type ScopeStatus } from "./
  * CACHED on the shards plus this number, and the shards do not move when a fold starts
  * emitting a new field. Without the bump every store that had already folded a scope
  * would serve corroborations without it, for ever, while new stores had it.
+ *
+ * 12 -> 13 adds the `standard/<universe>` scope — specs, operations, requirements,
+ * acknowledgements, audits and problems. A NEW scope needs no bump of its own (nothing
+ * has folded it before), but the fold also began deriving requirements from ratified
+ * specs, and every store that had already cached any scope would keep serving under the
+ * old number. Bumped for the reason 6 -> 7 gives: the fingerprint is over the shards,
+ * which do not move when the fold's mind changes.
  */
-export const MATERIALIZER_VERSION = 12;
+export const MATERIALIZER_VERSION = 13;
 
 /**
  * What the events in a scope are, cheaply.
