@@ -446,6 +446,13 @@ predicate, and the sidecar scope that makes any of this shared.
 
 ## Deliberately open
 
+- **A blocked scope has no non-authoritative carrier.** `readCached` returns a scope
+  status, `materializeStandard` reduces it to a boolean, and an ordinary requirement read
+  never consults it — so if the `standard/` scope is blocked by a fork or a collision, the
+  projection rows are still served and look authoritative. Requirements carry `origin:
+  "sync"` and nothing else. The sidecar architecture's §7 is a fail-closed rule and this is
+  the surface that never looked; the fix is a status that rides WITH the value, the way
+  `Cached<T>` already does one layer down. Found by review, not fixed.
 - **Who owns the standard's taxonomy.** If sections only ever arrive via specs it is
   emergent, and emergent will not stay sane. Legal codes have an Office of the Law
   Revision Counsel for exactly this. Reorganizing the standard needs to be a first-class
