@@ -299,3 +299,44 @@ test("an audit of a dirty tree is provisional, whatever branch it is on", async 
     assert.equal(dirty.audit.provisional, true);
   } finally { discard(root); }
 });
+
+test("a rule whose cited symbol was RENAMED can still be audited", async () => {
+  // `recordAudit` validated the merged list of `evidence.read` AND the requirement's own
+  // `cites`, so once a citation left `@work` every audit of that rule was refused — in all
+  // three outcomes, `indeterminate` included, which the module documents as "the quiet
+  // bucket, and the only outcome that may carry nothing". The rule was pinned at `unknown`
+  // for good and the error named ids the caller had never supplied.
+  //
+  // A rename is the ordinary way this happens: the anchor id is derived from the symbol
+  // path, so renaming a function changes it. CLAUDE.md flags the same churn for overload
+  // signatures — `Apply(SomeEvent)` in an event-sourced codebase, i.e. exactly the code
+  // people file findings about.
+  const { root, anchors } = await universe();
+  try {
+    const sp = ok(await draftSpec(root, { title: "Cited policy" }));
+    ok(await addOperation(root, {
+      specId: sp.id, kind: "add_requirement", rationale: "r", reversibility: "reversible",
+      title: "Credit line currency", section: "Credit/Cited",
+      statement: "All credit lines are in USD.", provenance: "policy", cites: [anchors[0]!],
+    }));
+    ok(await ratifySpec(root, sp.id));
+    const rule = (await listRequirements(root, { section: "Credit/Cited" }))[0]!;
+    assert.deepEqual(rule.cites, [anchors[0]!], "the fixture must actually cite code");
+
+    // The symbol is renamed, so the cited id no longer exists in the tree.
+    await editCode(root, "export function creditLimit(cents) { return cents; }\n");
+
+    const quiet = ok(await recordAudit(root, {
+      requirementId: rule.id, outcome: "indeterminate", finding: "could not reach the setter",
+    }));
+    assert.ok(quiet.id, "an unverifiable rule is `indeterminate`, not an unauditable one");
+
+    // And the caller's OWN evidence is still checked — the refusal moved, it did not go.
+    const bogus = await recordAudit(root, {
+      requirementId: rule.id, outcome: "indeterminate", finding: "f",
+      evidence: { read: ["a_not_a_real_anchor"] },
+    });
+    assert.match((bogus as { error: string }).error, /unknown anchor\(s\) in evidence\.read/,
+      "an id the caller passed must still have to exist");
+  } finally { discard(root); }
+});

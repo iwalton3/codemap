@@ -160,10 +160,18 @@ export async function recordAudit(
     };
   }
 
-  if (read.length) {
+  // Only what the CALLER supplied. This validated the merged list, `r.cites` included, so
+  // a rule whose cited symbol had been renamed — which changes the anchor id, and is
+  // ordinary in the target codebase — could never be audited again in any outcome, not even
+  // `indeterminate`, "the quiet bucket, and the only outcome that may carry nothing". The
+  // rule was then pinned at `unknown` for good, and the error named ids the caller had not
+  // passed. A citation that left the tree is what `ServedRequirement.missing` reports and
+  // what a `sha256:absent` witness records; it is not a malformed audit.
+  const supplied = evidence.read ?? [];
+  if (supplied.length) {
     let have: Set<string>;
-    try { have = workHas(root, read); } catch { have = new Set(); }
-    const unknown = read.filter((id) => !have.has(id));
+    try { have = workHas(root, supplied); } catch { have = new Set(); }
+    const unknown = supplied.filter((id) => !have.has(id));
     if (unknown.length) return { error: `unknown anchor(s) in evidence.read: ${unknown.join(", ")}` };
   }
 

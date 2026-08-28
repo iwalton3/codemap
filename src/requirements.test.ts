@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { indexBlob } from "./repo.js";
-import { writeStore, loadNodes, readRequirement, readSpec } from "./store.js";
+import { writeStore, loadNodes, readRequirement, readSpec, writeLocalOperation } from "./store.js";
 import type { State } from "./schema.js";
 import { discard } from "./test-tmp.js";
 import {
@@ -456,5 +456,66 @@ test("one spec cannot open two sections that differ only by case", async () => {
       (await requirementSections(root)).map((x) => x.section),
       ["Credit/Limits", "Settlement/Float"],
     );
+  } finally { discard(root); }
+});
+
+test("a spec may not carry two operations against the same rule", async () => {
+  // Both capture `context` from the stored row, so both hold the SAME pre-spec text: both
+  // pass ratification's context check, both render with an identical `before` and
+  // `adoptable: true`, and then they apply in `ord` order and the later one silently wins.
+  // The principal is shown two contradictory rewrites, each claiming to apply to the
+  // current statement, and approves an outcome the rendering never displayed.
+  const { root } = await universe();
+  try {
+    const { rule } = await adoptRule(root);
+    const sp = ok(await draftSpec(root, { title: "Currency amendment" }));
+    const first = ok(await addOperation(root, {
+      specId: sp.id, kind: "amend_statement", requirementId: rule.id,
+      statement: "All credit lines are in USD or EUR.", rationale: "the business moved",
+      reversibility: "reversible",
+    }));
+    const second = await addOperation(root, {
+      specId: sp.id, kind: "amend_statement", requirementId: rule.id,
+      statement: "All credit lines are in GBP.", rationale: "no, this",
+      reversibility: "reversible",
+    });
+    assert.match((second as { error: string }).error ?? "", /already has an operation against/,
+      "the second operation is written against a base the first one has already moved");
+
+    // The refusal must be about the DUPLICATE and not about amendments in general: one
+    // operation against the rule still ratifies, or this passes by forbidding the feature.
+    const adopted = ok(await ratifySpec(root, sp.id));
+    assert.equal(adopted.applied.length, 1);
+    assert.equal(adopted.applied[0]!.id, first.id);
+    const after = await getRequirement(root, rule.id);
+    assert.equal(ok(after).requirement.statement, "All credit lines are in USD or EUR.");
+  } finally { discard(root); }
+});
+
+test("and ratification refuses one even when authoring did not", async () => {
+  // The guard above cannot be the only one: a spec assembled by an OLDER BUILD arrives
+  // through the log already carrying both operations, and adoption is where it is caught.
+  // Written straight to the store on purpose — going through `addOperation` cannot produce
+  // this state any more, which is exactly why the second guard has to exist and why a test
+  // that drove the ops would have pinned nothing.
+  const { root } = await universe();
+  try {
+    const { rule } = await adoptRule(root);
+    const sp = ok(await draftSpec(root, { title: "Two amendments" }));
+    const base = {
+      specId: sp.id, kind: "amend_statement" as const, requirementId: rule.id,
+      rationale: "r", reversibility: "reversible" as const,
+      context: { requirementId: rule.id, statement: rule.statement },
+    };
+    await writeLocalOperation(root, { ...base, id: "op_dup_a", ord: 0, statement: "USD or EUR." });
+    await writeLocalOperation(root, { ...base, id: "op_dup_b", ord: 1, statement: "GBP." });
+
+    const res = await ratifySpec(root, sp.id);
+    assert.match((res as { error: string }).error ?? "", /carries two operations against/,
+      "both hold the same base, so the per-operation context check passes them both");
+
+    // All-or-nothing: the rule is untouched, not half-amended.
+    assert.equal(ok(await getRequirement(root, rule.id)).requirement.statement,
+      "All credit lines are in USD.");
   } finally { discard(root); }
 });

@@ -262,6 +262,24 @@ export async function addOperation(
     const r = await readRequirement(root, input.requirementId);
     if (!r) return { error: `no requirement "${input.requirementId}"` };
     if (r.status === "retired") return { error: `${r.id} is retired` };
+    // ONE operation per rule per spec. Every operation captures `context` from the stored
+    // row, so a second one against the same rule captures the SAME pre-spec text: both
+    // validate at ratification, both render with an identical `before`, both read as
+    // `adoptable`, and then they apply in `ord` order and the last one silently wins. The
+    // principal is shown two contradictory rewrites each claiming to apply to the current
+    // statement, and approves an outcome the rendering never displayed — which is the one
+    // thing "review N operations instead of 5,000 lines" has to get right.
+    const already = (await readOperations(root, { specId: sp.id }))
+      .find((o) => o.requirementId === r.id);
+    if (already) {
+      return {
+        error:
+          `${sp.id} already has an operation against ${r.id} (${already.id}). A spec carries one `
+          + `operation per rule: a second is written against the same base as the first, so it `
+          + `would render as if the first had not happened and then overwrite it. Amend `
+          + `${already.id} to say what you want the rule to end up saying.`,
+      };
+    }
     if (input.kind === "amend_statement") {
       if (!statement) return { error: "`amend_statement` needs the new `statement`" };
       if (statement === r.statement) return { error: "the proposed statement is identical to the current one" };
@@ -315,6 +333,25 @@ export async function ratifySpec(
 
   const ops = await readOperations(root, { specId });
   if (!ops.length) return { error: `${specId} has no operations — there is nothing to adopt` };
+
+  // Restated at adoption, not only in `addOperation`: a spec assembled by an older build
+  // can still arrive here, and the per-operation context check below cannot catch this —
+  // both duplicates hold the same pre-spec text, so both PASS and then the later one
+  // overwrites the earlier silently. Adoption is all-or-nothing, so this refuses the spec.
+  const targets = new Map<string, string>();
+  for (const op of ops) {
+    if (!op.requirementId) continue;
+    const first = targets.get(op.requirementId);
+    if (first) {
+      return {
+        error:
+          `${specId} carries two operations against ${op.requirementId} (${first} and ${op.id}). `
+          + `They were written against the same base, so the rendering a reviewer approved shows `
+          + `neither the order they apply in nor the statement they end at. Fold them into one.`,
+      };
+    }
+    targets.set(op.requirementId, op.id);
+  }
 
   const checks: OperationCheck[] = [];
   for (const op of ops) {
