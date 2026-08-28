@@ -60,7 +60,7 @@ async function seeded(root: string, anchor: string) {
     specId: spec.id, kind: "add_requirement", rationale: "the contract says so",
     reversibility: "reversible", title: "Credit line is never negative",
     section: "Credit/Limits", statement: "A credit line must never be negative.",
-    provenance: "master services agreement §4", cites: [anchor], ...AGENT,
+    provenance: "master services agreement §4", ...AGENT,
   }));
   const adopted = ok(await standard.ratifySpec(root, { specId: spec.id, ...PERSON }));
   // No sidecar here, so this machine applies the operations and can report what it did.

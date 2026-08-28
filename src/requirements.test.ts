@@ -23,6 +23,7 @@ import {
   listRequirements, getRequirement, requirementSections, reorganizeRequirement,
 } from "./requirements.js";
 import { acknowledgeGap, listAcknowledgements } from "./acknowledgements.js";
+import { declarePointer } from "./pointers.js";
 import { recordAudit } from "./audits.js";
 import { readOperations } from "./store.js";
 
@@ -197,7 +198,13 @@ test("adoption is all or nothing", async () => {
 test("drifted code makes a requirement recheck-due — never stale, and never untrusted", async () => {
   const { root, anchors } = await universe();
   try {
-    const { rule } = await adoptRule(root, { cites: anchors });
+    // Staleness comes from a POINTER now: a requirement cites nothing, so the thing that
+    // knows where the code is — and which universe it is in — is what carries the baseline.
+    const { rule } = await adoptRule(root);
+    ok(await declarePointer(root, {
+      requirementId: rule.id, targetKind: "anchor", targetId: anchors[0]!,
+      rationale: "the function that applies the rule",
+    } as any));
 
     // Before the edit: settled. Asserting this is what makes the flip below evidence.
     assert.equal(ok(await getRequirement(root, rule.id)).requirement.recheckDue, false);
@@ -205,9 +212,9 @@ test("drifted code makes a requirement recheck-due — never stale, and never un
     await editCode(root, "export function creditLine(cents) { return cents * 2; }\n");
 
     const after = ok(await getRequirement(root, rule.id));
-    assert.equal(after.requirement.recheckDue, true, "cited code moved");
+    assert.equal(after.requirement.recheckDue, true, "watched code moved");
     assert.equal(after.requirement.status, "ratified", "drift is evidence about the CODE, not a downgrade of the rule");
-    assert.deepEqual(after.requirement.drifted, anchors);
+    assert.deepEqual(after.requirement.drifted, [anchors[0]!]);
     // The served shape must carry nothing a doc carries: acquiring one of these is how
     // "update it to match the code" becomes the obvious next move.
     for (const forbidden of ["trust", "state", "stale", "vouch"]) {
@@ -216,26 +223,27 @@ test("drifted code makes a requirement recheck-due — never stale, and never un
   } finally { discard(root); }
 });
 
-test("a requirement may cite nothing, but not something that does not exist", async () => {
+test("a requirement cites nothing, and saying otherwise is refused rather than dropped", async () => {
   const { root, anchors } = await universe();
   try {
-    // Uncited is the "missing gate" case — a rule the code does not yet satisfy. A
-    // well-formed record, not a floating claim.
+    // A requirement cites nothing, and passing citations is REFUSED rather than dropped:
+    // an author who supplies them has a model of what a rule is, and silently ignoring
+    // them would leave that model intact and the rule looking connected to code it is not.
     const { rule } = await adoptRule(root);
-    assert.deepEqual(rule.cites, []);
+    assert.ok(!("cites" in rule), "a rule has no citation field at all");
+    const cited = ok(await draftSpec(root, { title: "cites code" } as any));
+    const refused = await addOperation(root, {
+      specId: cited.id, kind: "add_requirement", rationale: "r", reversibility: "reversible",
+      title: "T", section: "Credit/Cited", statement: "S.", provenance: "p", cites: [anchors[0]!],
+    } as any);
+    assert.match((refused as { error: string }).error, /a requirement cites nothing/);
 
-    const sp = ok(await draftSpec(root, { title: "Bogus" }));
-    const bogus = await addOperation(root, {
-      specId: sp.id, kind: "add_requirement", rationale: "x", reversibility: "reversible",
-      title: "Nonsense", section: "Credit/Limits", statement: "Nonsense.", provenance: "policy",
-      cites: ["a_does_not_exist"],
-    });
-    assert.ok("error" in bogus);
-    assert.match((bogus as any).error, /unknown anchor/);
-
+    // The control: without the citations it is an ordinary, adoptable operation. Otherwise
+    // the refusal above would pass against a branch that rejected everything.
+    const sp = ok(await draftSpec(root, { title: "Real" }));
     ok(await addOperation(root, {
       specId: sp.id, kind: "add_requirement", rationale: "x", reversibility: "reversible",
-      title: "Real", section: "Credit/Limits", statement: "Real rule.", provenance: "policy", cites: anchors,
+      title: "Real", section: "Credit/Limits", statement: "Real rule.", provenance: "policy",
     }));
   } finally { discard(root); }
 });
@@ -360,7 +368,7 @@ test("irreversibility is declared before adoption and surfaces on the rule after
 test("requirements do not appear on the node surface", async () => {
   const { root, anchors } = await universe();
   try {
-    await adoptRule(root, { cites: anchors });
+    await adoptRule(root);
     // The structural half of "a requirement has no stale state": it cannot acquire one,
     // because the code that computes one is never handed a requirement.
     const nodes = await loadNodes(root);

@@ -27,6 +27,12 @@ import { discard } from "../test-tmp.js";
 const pw = resolvePlaywright();
 const AGENT = { agent: true, model: "claude-opus-5" } as const;
 
+/** Assert an ops call succeeded. A silent `{error}` in `before` cancels the whole suite. */
+const ok = <T,>(r: T): T => {
+  assert.ok(!(r && typeof r === "object" && "error" in (r as object)), `fixture failed: ${(r as any)?.error}`);
+  return r;
+};
+
 describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set CODEMAP_E2E_PLAYWRIGHT)" }, () => {
   let root: string, side: string, server: Server, browser: any, universe: string;
   let anchor = "", draft = "", moveSpec = "", staleSpec = "", ruleId = "", opId = "";
@@ -54,10 +60,15 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
     await ops.addOperation(root, {
       specId: base.id, kind: "add_requirement", rationale: "policy §4 was never written down",
       reversibility: "reversible", title: "Credit line currency", section: "Credit/Limits",
-      statement: "All credit lines are in USD.", provenance: "credit policy §4", cites: [anchor], ...AGENT,
+      statement: "All credit lines are in USD.", provenance: "credit policy §4", ...AGENT,
     } as any);
-    await ops.ratifySpec(root, { specId: base.id });
-    ruleId = (await ops.listRequirements(root) as any).requirements[0].id;
+    // Fail LOUDLY if the fixture stops building. A `before` hook that throws reports
+    // `fail 0` with every test CANCELLED, which reads like a pass at a glance — this
+    // suite did exactly that when `cites` became a refusal.
+    ok(await ops.ratifySpec(root, { specId: base.id }));
+    const seeded = (await ops.listRequirements(root) as any).requirements;
+    assert.equal(seeded.length, 1, "the fixture must have a ratified rule or every test below is vacuous");
+    ruleId = seeded[0].id;
     await ops.recordAudit(root, {
       requirementId: ruleId, outcome: "nonconformant", finding: "no currency check on entry",
       evidence: { read: [anchor] }, ...AGENT,

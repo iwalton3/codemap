@@ -71,7 +71,7 @@ async function ruleWithCriterion(root: string, cites: string[], assertedBy: stri
   const add = ok(await addOperation(root, {
     specId: sp.id, kind: "add_requirement", rationale: "policy",
     reversibility: "reversible", title: "Credit line is capped", section: "Credit/Limits",
-    statement: "A credit line never exceeds the approved limit.", provenance: "credit policy", cites,
+    statement: "A credit line never exceeds the approved limit.", provenance: "credit policy",
   }));
   ok(await addOperation(root, {
     specId: sp.id, kind: "add_criterion", rationale: "policy", reversibility: "reversible",
@@ -115,7 +115,7 @@ test("a falsifier is required, and one that restates the criterion is refused", 
     const sp = ok(await draftSpec(u.root, { title: "s" }));
     const add = ok(await addOperation(u.root, {
       specId: sp.id, kind: "add_requirement", rationale: "r", reversibility: "reversible",
-      title: "t", section: "Credit", statement: "st", provenance: "p", cites: u.rule,
+      title: "t", section: "Credit", statement: "st", provenance: "p",
     }));
     const base = {
       specId: sp.id, kind: "add_criterion" as const, rationale: "r",
@@ -145,7 +145,7 @@ test("the evidence kind is a closed list", async () => {
     const sp = ok(await draftSpec(u.root, { title: "s" }));
     const add = ok(await addOperation(u.root, {
       specId: sp.id, kind: "add_requirement", rationale: "r", reversibility: "reversible",
-      title: "t", section: "Credit", statement: "st", provenance: "p", cites: u.rule,
+      title: "t", section: "Credit", statement: "st", provenance: "p",
     }));
     const base = {
       specId: sp.id, kind: "add_criterion" as const, rationale: "r", reversibility: "reversible" as const,
@@ -164,7 +164,7 @@ test("a rule may carry several criteria in one spec — they do not overwrite ea
     const sp = ok(await draftSpec(u.root, { title: "s" }));
     const add = ok(await addOperation(u.root, {
       specId: sp.id, kind: "add_requirement", rationale: "r", reversibility: "reversible",
-      title: "t", section: "Credit", statement: "st", provenance: "p", cites: u.rule,
+      title: "t", section: "Credit", statement: "st", provenance: "p",
     }));
     for (const n of [1, 2, 3]) {
       ok(await addOperation(u.root, {
@@ -317,7 +317,7 @@ test("a criterion is created ONLY by ratification — a draft spec makes none", 
     const sp = ok(await draftSpec(u.root, { title: "s" }));
     const add = ok(await addOperation(u.root, {
       specId: sp.id, kind: "add_requirement", rationale: "r", reversibility: "reversible",
-      title: "t", section: "Credit", statement: "st", provenance: "p", cites: u.rule,
+      title: "t", section: "Credit", statement: "st", provenance: "p",
     }));
     ok(await addOperation(u.root, {
       specId: sp.id, kind: "add_criterion", rationale: "r", reversibility: "reversible",

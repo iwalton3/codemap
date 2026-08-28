@@ -246,14 +246,15 @@ test("silenced separates checked from merely unexamined", async () => {
 test("a failed command is evidence of non-conformance, never of conformance", async () => {
   const { root, anchors } = await universe();
   try {
-    // The rule must CITE code, or the refusal below comes from the witness check instead
-    // and says nothing about the `passed` flag — which is how this test passed vacuously
-    // the first time it was written.
+    // Two guards fire on this path and they must not be confused, which is how this test
+    // passed vacuously the first time it was written: `touchedCode` is about the `passed`
+    // flag, and the baseline check is about having anything that could later invalidate
+    // the claim. Each assertion below names the message it expects.
     const sp = ok(await draftSpec(root, { title: "Cited rule" }));
     ok(await addOperation(root, {
       specId: sp.id, kind: "add_requirement", rationale: "x", reversibility: "reversible",
       title: "Credit line currency", section: "Credit/Limits",
-      statement: "All credit lines are in USD.", provenance: "credit policy §4", cites: anchors,
+      statement: "All credit lines are in USD.", provenance: "credit policy §4",
     }));
     ok(await ratifySpec(root, sp.id));
     const rule = (await listRequirements(root))[0]!;
@@ -262,13 +263,19 @@ test("a failed command is evidence of non-conformance, never of conformance", as
       requirementId: rule.id, outcome: "conformant", finding: "the suite ran",
       evidence: { ran: [{ command: "false", passed: false }] },
     });
-    assert.ok("error" in failed, "any nonempty `ran` used to count as touching code");
+    assert.match((failed as { error: string }).error, /must record code it READ or a command it RAN/,
+      "any nonempty `ran` used to count as touching code");
 
-    // A PASSING command alone is fine — the guard is about the result, not about `read`.
-    ok(await recordAudit(root, {
+    // A PASSING command alone gets PAST that guard and is stopped by the next one — and
+    // this is a real change: it used to be allowed, because the rule's own citations were
+    // merged in and silently supplied the baseline. A requirement cites nothing now, so
+    // there is nothing to inherit and the auditor has to say what they read. Nothing else
+    // could ever supersede a green command, which is the definition the guard applies.
+    const noBaseline = await recordAudit(root, {
       requirementId: rule.id, outcome: "conformant", finding: "the suite is green",
       evidence: { ran: [{ command: "npm test", passed: true }] },
-    }));
+    });
+    assert.match((noBaseline as { error: string }).error, /needs something that could later invalidate it/);
 
     ok(await recordAudit(root, {
       requirementId: rule.id, outcome: "conformant", finding: "the suite is green",
@@ -313,23 +320,28 @@ test("a rule whose cited symbol was RENAMED can still be audited", async () => {
   // people file findings about.
   const { root, anchors } = await universe();
   try {
+    // A requirement CITES NOTHING now, so the original defect is structurally impossible:
+    // there are no citations on a rule to leave the tree and refuse its audits. What the
+    // test still has to hold is the half that outlived it — the caller's own evidence.
     const sp = ok(await draftSpec(root, { title: "Cited policy" }));
     ok(await addOperation(root, {
       specId: sp.id, kind: "add_requirement", rationale: "r", reversibility: "reversible",
       title: "Credit line currency", section: "Credit/Cited",
-      statement: "All credit lines are in USD.", provenance: "policy", cites: [anchors[0]!],
+      statement: "All credit lines are in USD.", provenance: "policy",
     }));
     ok(await ratifySpec(root, sp.id));
     const rule = (await listRequirements(root, { section: "Credit/Cited" }))[0]!;
-    assert.deepEqual(rule.cites, [anchors[0]!], "the fixture must actually cite code");
 
-    // The symbol is renamed, so the cited id no longer exists in the tree.
+    // The symbol is renamed, so the id below no longer exists in the tree.
     await editCode(root, "export function creditLimit(cents) { return cents; }\n");
 
     const quiet = ok(await recordAudit(root, {
       requirementId: rule.id, outcome: "indeterminate", finding: "could not reach the setter",
     }));
     assert.ok(quiet.id, "an unverifiable rule is `indeterminate`, not an unauditable one");
+    assert.deepEqual(quiet.audit.witnesses, [],
+      "an audit witnesses what the AUDITOR read and nothing else — it used to inherit the "
+      + "rule's citations, so it claimed to have read code the auditor never opened");
 
     // And the caller's OWN evidence is still checked — the refusal moved, it did not go.
     const bogus = await recordAudit(root, {

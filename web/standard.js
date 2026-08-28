@@ -15,13 +15,28 @@
 import { Component, defineComponent, html, when, each } from './vendor/vdx/framework.js';
 import { api, apiPost, pageShell, nav, href, errText, taskError, isErr } from './core.js';
 
+/**
+ * The API contract, so a page's state is typed from the ops functions themselves.
+ *
+ * Without it `@typedef {{ d: any }}` is the easy default, and `any` is how this module
+ * kept rendering `requirement.cites` after the field was removed — a blank page on every
+ * load that neither `tsc -p web` nor any unit test could see.
+ *
+ * @typedef {import('./core.js').ApiMap} ApiMap
+ */
+
 export const standardUrl = (u) => `/u/${u}/standard/`;
 export const rulesUrl = (u) => `/u/${u}/standard/rules/`;
 export const specUrl = (u, id) => `/u/${u}/standard/spec/${id}/`;
 export const requirementUrl = (u, id) => `/u/${u}/standard/r/${id}/`;
 
 /**
- * How a rule's conformance reads.
+ * How a conformance DISTRIBUTION reads — the counts on the hub.
+ *
+ * Not used on a rule: a `ServedRequirement` carries no conformance state, and reading one
+ * off it rendered every rule grey whatever its real verdict. That went unnoticed because
+ * the page's state was typed `any`; the audit history is where a rule's verdict actually
+ * lives, and it carries its own dot.
  *
  * `unknown` is deliberately NOT green and never renders as conformant — the standing
  * rule from `docs/requirements-architecture.md`, restated here because a colour is the
@@ -254,7 +269,16 @@ defineComponent('spec-page', SpecPage);
  * conformance is a separate line here rather than a status on the record, and why an
  * uncited rule renders as a fact rather than as a defect.
  *
- * @typedef {{ d: any }} ReqState
+ * `d` is typed from the API map rather than `any`. It was `any`, and that is exactly how
+ * `d.requirement.cites.length` survived the field being removed: the page threw on every
+ * render and showed a blank screen, which `tsc -p web` could not see and no unit test
+ * could either. CLAUDE.md's rule — type a page and you must do it TWICE — is about this.
+ *
+ * The SUCCESS arm: `load` throws on an `{error}` reply, so by render time it is this one.
+ * Narrowing here rather than at every use is what makes the field access checked.
+ *
+ * @typedef {Extract<ApiMap['/api/standard/requirement'], { requirement: unknown }>} ReqData
+ * @typedef {{ d: ReqData | null }} ReqState
  * @extends {Component<StdProps, ReqState>}
  */
 class RequirementPage extends Component {
@@ -279,13 +303,13 @@ class RequirementPage extends Component {
       <div class="crumbs"><a class="back" href="${href(standardUrl(u))}">← standard</a> <span class="sep">·</span> ${d.requirement.section}</div>
       ${servedNote(d)}
       <div class="op-card">
-        <div class="ft">${confDot(d.requirement.conformance && d.requirement.conformance.state)}<b>${d.requirement.title}</b>
+        <div class="ft"><b>${d.requirement.title}</b>
+          ${when(d.requirement.recheckDue, () => html`<span class="qbadge drift" title="watched code has moved since it was last looked at — evidence about the CODE, not a downgrade of the rule">recheck due</span>`)}
           ${when(d.requirement.status === 'retired', () => html`<span class="qbadge">retired</span>`)}
         </div>
         <div class="fs">${d.requirement.statement}</div>
         <div class="fs dim">provenance: ${d.requirement.provenance}</div>
-        ${when(!d.requirement.cites.length, () => html`<div class="fs dim">cites no code — which means the code does not satisfy it yet, not that the record is malformed</div>`)}
-        ${when(d.requirement.cites.length > 0, () => html`<div class="dnav">${each(d.requirement.cites, (a) => html`<a class="chip" href="${href(`/u/${u}/anchor/${a}/`)}">${a.slice(0, 12)}</a>`, (a) => a)}</div>`)}
+        <div class="fs dim">a rule cites no code — it is upstream of the code, and where the code is lives in the pointers below</div>
       </div>
 
       <div class="sec">audit history (${d.audits.length})</div>
@@ -375,7 +399,8 @@ class RulesPage extends Component {
       ${when(!!this.state.rules, () => html`
         <div class="sec">${chosen} (${this.state.rules.requirements.length})</div>
         ${each(this.state.rules.requirements, (r) => html`<a class="spec-card" href="${href(requirementUrl(u, r.id))}">
-          <div class="ft">${confDot(r.conformance && r.conformance.state)}${r.title}
+          <div class="ft">${r.title}
+            ${when(r.recheckDue, () => html`<span class="qbadge drift">recheck due</span>`)}
             ${when(r.status === 'retired', () => html`<span class="qbadge">retired</span>`)}
           </div>
           <div class="fs">${r.statement}</div>

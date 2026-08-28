@@ -81,7 +81,7 @@ async function rule(root: string, cites: string[] = []) {
   ok(await addOperation(root, {
     specId: sp.id, kind: "add_requirement", rationale: "policy", reversibility: "reversible",
     title: "Credit line is capped", section: "Credit/Limits",
-    statement: "A credit line never exceeds the approved limit.", provenance: "credit policy", cites,
+    statement: "A credit line never exceeds the approved limit.", provenance: "credit policy",
   }));
   const rat = ok(await ratifySpec(root, sp.id));
   return rat.applied!.find((o) => o.kind === "add_requirement")!.requirementId!;
@@ -278,8 +278,9 @@ test("a diff raises a rule that cites nothing, through the doc watching it", asy
     if ("error" in r) return;
 
     const row = r.impact.requirements.find((x) => x.id === rid);
-    assert.ok(row, "a rule citing nothing is reachable through what watches it");
-    assert.deepEqual(row.anchors, [], "and for the right reason — it cites nothing at all");
+    assert.ok(row, "a rule is reachable through what watches it — the only way, now that a rule cites nothing");
+    assert.deepEqual(row.anchors, row.pointersFired.flatMap((f) => f.anchors),
+      "and the anchors reported are the POINTER's, which is the record that knows which universe they are in");
     assert.deepEqual(row.assertionsMoved, []);
     assert.equal(row.pointersFired.length, 1);
     assert.equal(row.pointersFired[0]!.id, p.id);

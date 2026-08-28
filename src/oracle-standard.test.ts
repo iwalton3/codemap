@@ -71,7 +71,7 @@ async function anchorFor(m: Member, file: string, symbol: string): Promise<strin
  */
 async function adopt(
   m: Member, title: string,
-  rules: { title: string; section: string; statement: string; cites?: string[] }[],
+  rules: { title: string; section: string; statement: string }[],
 ) {
   const sp = ok(await draftSpec(m.repo, { title }));
   const operationIds: string[] = [];
@@ -79,7 +79,7 @@ async function adopt(
     const op = ok(await addOperation(m.repo, {
       specId: sp.id, kind: "add_requirement", rationale: "the contract says so",
       reversibility: "reversible", title: r.title, section: r.section,
-      statement: r.statement, provenance: "MSA §4", cites: r.cites ?? [],
+      statement: r.statement, provenance: "MSA §4",
     }));
     operationIds.push(op.id);
   }
@@ -106,7 +106,7 @@ test("the standard is one law across machines, and a race for it has one winner"
       const { specId, operationIds } = await adopt(izzie, "Refund and settlement policy", [
         {
           title: "Refunds never move money the wrong way", section: "Payments/Refunds",
-          statement: "A refund must never call transfer with a negative amount.", cites: [transfer],
+          statement: "A refund must never call transfer with a negative amount.",
         },
         {
           title: "Settlement batches balance", section: "Settlement/Batches",
@@ -346,7 +346,7 @@ test("every fold refusal binds a writer whose tool never checked, on every clone
     // and one problem awaiting a decision.
     const adopted = await adopt(izzie, "Payments policy", [{
       title: "Refunds are positive", section: "Payments/Refunds",
-      statement: "A refund must be expressed as a positive amount.", cites: [transfer],
+      statement: "A refund must be expressed as a positive amount.",
     }]);
     ok(await ratifySpec(izzie.repo, adopted.specId));
     const pending = await adopt(izzie, "A proposal nobody has adopted", [{

@@ -214,7 +214,7 @@ test("a teammate's ratification is visible to the very next read, not the one af
     await publishOperation(cfg.path, scope, mate, {
       id: "op_mate", specId: "sp_mate", kind: "add_requirement", ord: 0,
       title: "Float settles daily", section: "Settlement/Float",
-      statement: "Float must be settled daily.", provenance: "treasury", cites: [],
+      statement: "Float must be settled daily.", provenance: "treasury",
       rationale: "policy", reversibility: "reversible",
     });
     await publishSpecRatified(cfg.path, scope, mate, "sp_mate", "2026-08-10T01:00:00.000Z", {}, ["op_mate"]);

@@ -1124,7 +1124,6 @@ export interface Operation {
   fromSection?: string;
   toSection?: string;
   provenance?: string;
-  cites?: string[];
   /** Payload for `add_criterion`. See `AcceptanceCriterion` for what each one is. */
   criterion?: string;
   falsifier?: string;
@@ -1178,14 +1177,18 @@ export interface Requirement {
   provenance: string;
   status: RequirementStatus;
   /**
-   * Anchors the rule is about. **MAY be empty**, and that is not a floating claim:
-   * "no floating claims" governs the downstream direction, where a doc must point at
-   * what it explains. An uncited requirement is one the code does not yet satisfy —
-   * the missing gate, the absent default arm — which is a well-formed record.
+   * A requirement CITES NOTHING, and there is no field for it.
+   *
+   * A rule is upstream of code — the code exists to satisfy it — so pointing down at an
+   * implementation is the inversion this record was separated from `LogicalNodeType` to
+   * avoid. It is also unrepresentable now that the standard is workspace-scoped: a rule
+   * governing two repositories cannot be witnessed from either checkout, and one that
+   * cited only the repo it happened to be written in would quietly become that repo's.
+   *
+   * Where the code is lives in **pointers** — auditor-maintained, aimed as high up the
+   * abstraction ladder as they reach, and each naming exactly one universe. Staleness and
+   * `recheckDue` derive from them; see `serve()` and `docs/cross-universe-standard.md`.
    */
-  cites: string[];
-  /** Hashes of `cites` at ratification. A later mismatch is recheck-due, never stale. */
-  witnesses: BugWitness[];
   author: Actor;
   createdAt: string;
   /** The spec that introduced it, and the ones that amended it. Its whole history. */
@@ -1484,7 +1487,7 @@ export interface RequirementStore {
 /**
  * An acceptance criterion: **what** discharges a rule and **how** it would be refuted.
  *
- * The second citation relation lives here. `Requirement.cites` is the code a rule is
+ * The ONLY citation relation on this side lives here. A requirement cites nothing — it is
  * ABOUT — its staleness is *that code moved*. `assertedBy` is the check that WOULD FAIL if
  * the rule stopped holding — its staleness is *the build is red*. Snapshot versus live,
  * and codemap can only observe the first half: it never runs anything, so what it watches

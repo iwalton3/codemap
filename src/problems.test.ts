@@ -69,7 +69,7 @@ async function disagreement(root: string, anchors: string[]) {
   ok(await addOperation(root, {
     specId: sp.id, kind: "add_requirement", rationale: "policy §4 was never written down",
     reversibility: "reversible", title: "Credit line currency", section: "Credit/Limits",
-    statement: "All credit lines are in USD.", provenance: "credit policy §4", cites: anchors,
+    statement: "All credit lines are in USD.", provenance: "credit policy §4",
   }));
   ok(await ratifySpec(root, sp.id));
   const rule = (await listRequirements(root))[0]!;
@@ -246,7 +246,7 @@ test("a problem cannot be raised from evidence that has already moved", async ()
     ok(await addOperation(root, {
       specId: sp.id, kind: "add_requirement", rationale: "x", reversibility: "reversible",
       title: "Credit line currency", section: "Credit/Limits",
-      statement: "All credit lines are in USD.", provenance: "credit policy §4", cites: anchors,
+      statement: "All credit lines are in USD.", provenance: "credit policy §4",
     }));
     ok(await ratifySpec(root, sp.id));
     const rule = (await listRequirements(root))[0]!;

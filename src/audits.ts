@@ -137,7 +137,11 @@ export async function recordAudit(
   // ever supersede it and `conformant` became permanent, surviving a rewrite of the very
   // code it certified. That is "unknown must never render as conformant" failing in the
   // one direction the design forbids.
-  const read = [...new Set([...(evidence.read ?? []), ...r.cites])];
+  // The auditor's OWN evidence, and only that. A requirement cites nothing now, so there
+  // is nothing to inherit — which is the honest arrangement: an audit that silently
+  // witnessed the rule's citations claimed to have read code the auditor may never have
+  // opened. `touchedCode` below is what keeps `conformant` code-backed.
+  const read = [...new Set(evidence.read ?? [])];
   if (input.outcome === "conformant" && !touchedCode(evidence)) {
     return {
       error:
@@ -150,10 +154,11 @@ export async function recordAudit(
   if (input.outcome === "conformant" && !read.length) {
     return {
       error:
-        "a `conformant` audit needs something that could later invalidate it — anchors in "
-        + "`evidence.read`, or a requirement that cites code. With neither, nothing can ever "
-        + "supersede the claim and it would read as verified for ever. A claim nothing can "
-        + "invalidate is not a claim.",
+        "a `conformant` audit needs something that could later invalidate it: anchors in "
+        + "`evidence.read`. Nothing else can supply them — a requirement cites nothing, so "
+        + "there is no baseline to inherit and this is the auditor's own to record. Without "
+        + "it nothing can ever supersede the claim and it would read as verified for ever. "
+        + "A claim nothing can invalidate is not a claim.",
     };
   }
   if (input.outcome === "nonconformant" && !hasEvidence(evidence)) {

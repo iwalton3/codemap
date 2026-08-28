@@ -46,7 +46,7 @@ const SPEC: Spec = {
 const ADD: Operation = {
   id: "op_1", specId: "sp_1", kind: "add_requirement", ord: 0,
   title: "Credit line currency", section: "Credit/Limits",
-  statement: "All credit lines are in USD.", provenance: "credit policy §4", cites: [],
+  statement: "All credit lines are in USD.", provenance: "credit policy §4",
   rationale: "policy §4 was never written down", reversibility: "reversible",
 };
 
@@ -78,7 +78,7 @@ test("a requirement appears only when the spec is ratified, under an id every cl
     assert.equal(r.id, requirementIdFor("op_1"));
     assert.equal(r.statement, "All credit lines are in USD.");
     assert.equal(r.introducedBy, "sp_1");
-    assert.deepEqual(r.witnesses, [{ anchorId: "a_credit", bodyHash: "h1:sha256:abc" }]);
+    assert.ok(!("witnesses" in r), "a rule has no baseline of its own — its pointers carry one");
     assert.equal(r.origin, "sync", "a folded row is marked as the team's");
   } finally { discard(root); }
 });

@@ -68,7 +68,7 @@ test("a spec travels, and the standard a teammate reads is folded from the log",
     ok(await addOperation(root, {
       specId: sp.id, kind: "add_requirement", rationale: "policy §4 was never written down",
       reversibility: "reversible", title: "Credit line currency", section: "Credit/Limits",
-      statement: "All credit lines are in USD.", provenance: "credit policy §4", cites: anchors,
+      statement: "All credit lines are in USD.", provenance: "credit policy §4",
     }));
     ok(await ratifySpec(root, sp.id));
 
@@ -84,8 +84,9 @@ test("a spec travels, and the standard a teammate reads is folded from the log",
     assert.equal(rules[0]!.origin, "sync");
     assert.equal((await readSpecs(root))[0]!.origin, "sync");
     assert.equal(rules[0]!.statement, "All credit lines are in USD.");
-    // Witnesses came from THIS checkout and travelled on the ratification.
-    assert.equal(rules[0]!.witnesses.length, anchors.length);
+    // No baseline on the rule itself: a requirement is upstream of code, and what watches
+    // the code is a pointer, which carries its own witnesses and names its own universe.
+    assert.ok(!("witnesses" in rules[0]!), "a folded rule carries no witnesses");
   } finally { discard(root); discard(side); }
 });
 
@@ -96,7 +97,7 @@ test("an audit and its problem travel from the default branch", async () => {
     ok(await addOperation(root, {
       specId: sp.id, kind: "add_requirement", rationale: "x", reversibility: "reversible",
       title: "Credit line currency", section: "Credit/Limits",
-      statement: "All credit lines are in USD.", provenance: "credit policy §4", cites: anchors,
+      statement: "All credit lines are in USD.", provenance: "credit policy §4",
     }));
     ok(await ratifySpec(root, sp.id));
     const rule = (await listRequirements(root))[0]!;
@@ -124,7 +125,7 @@ test("a PROVISIONAL audit stays put, however the sidecar is configured", async (
     ok(await addOperation(root, {
       specId: sp.id, kind: "add_requirement", rationale: "x", reversibility: "reversible",
       title: "Credit line currency", section: "Credit/Limits",
-      statement: "All credit lines are in USD.", provenance: "credit policy §4", cites: anchors,
+      statement: "All credit lines are in USD.", provenance: "credit policy §4",
     }));
     ok(await ratifySpec(root, sp.id));
     const rule = (await listRequirements(root))[0]!;
@@ -170,7 +171,7 @@ async function ruleAndCode() {
   ok(await addOperation(f.root, {
     specId: sp.id, kind: "add_requirement", rationale: "x", reversibility: "reversible",
     title: "Credit line currency", section: "Credit/Limits",
-    statement: "All credit lines are in USD.", provenance: "credit policy §4", cites: f.anchors,
+    statement: "All credit lines are in USD.", provenance: "credit policy §4",
   }));
   ok(await ratifySpec(f.root, sp.id));
   return { ...f, rule: (await listRequirements(f.root))[0]! };

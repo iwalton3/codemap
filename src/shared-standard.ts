@@ -774,7 +774,7 @@ function applyOperation(
     const id = requirementIdFor(op.id);
     requirements.set(id, {
       id, title: op.title!, section: op.section!, statement: op.statement!,
-      provenance: op.provenance!, status: "ratified", cites: op.cites ?? [], witnesses,
+      provenance: op.provenance!, status: "ratified",
       author: sp.author, createdAt: at, introducedBy: sp.id,
       ratifiedBy: who, ratifiedAt: at, origin: "sync",
     });
@@ -803,6 +803,6 @@ function applyOperation(
   }
   requirements.set(r.id, {
     ...r, statement: op.statement!, ratifiedBy: who, ratifiedAt: at,
-    amendedBy: [...(r.amendedBy ?? []), sp.id], witnesses,
+    amendedBy: [...(r.amendedBy ?? []), sp.id],
   });
 }

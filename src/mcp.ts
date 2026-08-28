@@ -1309,7 +1309,7 @@ const tools: Tool[] = [
   },
   {
     name: "add_operation",
-    description: "Add one operation to a draft spec: `add_requirement`, `amend_statement`, `retire_requirement`, `add_criterion`, or `move_section`. Operations are the operative content — the before/after a reviewer reads is rendered FROM them. Amending replaces one statement rather than reprinting a section, so nothing unnamed by an operation is ever touched. `rationale` and `reversibility` are per operation, not per spec, so there is no free-floating prose to drift from what lands.",
+    description: "Add one operation to a draft spec: `add_requirement`, `amend_statement`, `retire_requirement`, `add_criterion`, or `move_section`. A requirement CITES NOTHING — a rule is upstream of code, so where the code is goes in a `declare_pointer`, which names one universe and carries its own baseline. Operations are the operative content — the before/after a reviewer reads is rendered FROM them. Amending replaces one statement rather than reprinting a section, so nothing unnamed by an operation is ever touched. `rationale` and `reversibility` are per operation, not per spec, so there is no free-floating prose to drift from what lands.",
     inputSchema: obj({
       specId: { type: "string" },
       kind: { type: "string", enum: ["add_requirement", "amend_statement", "retire_requirement", "add_criterion", "move_section"] },
@@ -1320,7 +1320,6 @@ const tools: Tool[] = [
       section: { type: "string", description: "New requirements: where it files in the standard, e.g. \"Settlement/Float\"." },
       statement: { type: "string", description: "The rule itself." },
       provenance: { type: "string", description: "Where the rule comes from — a contract term, an IATA standard, a credit policy, a customer demand, our own past choice." },
-      cites: { type: "array", items: { type: "string" }, description: "Code the rule is about. MAY be empty: an uncited requirement is one the code does not satisfy yet, which is a well-formed record." },
       evidence: { type: "string", description: "For an amendment: what shows the base state you wrote this against." },
       criterion: { type: "string", description: "`add_criterion`: what must be true, concretely and verifiably." },
       falsifier: { type: "string", description: "`add_criterion`, REQUIRED: the observation that would show the criterion is NOT met. The part authors skip and the part that does the work — if you cannot write what would refute it, it is prose rather than a criterion, and finding that out now is the whole point of writing it at drafting time." },

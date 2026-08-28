@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Anchor, Audit, DerivationTag, LogicalNode, Requirement } from "./schema.js";
-import { writeSnapshot, writeNode, writeLocalRequirement, writeLocalAudit, dropSnapshot, snapshotIsDirty } from "./store.js";
+import { writeSnapshot, writeNode, writeLocalRequirement, writeLocalAudit, dropSnapshot, snapshotIsDirty, writeLocalPointer } from "./store.js";
 import { computeDiff } from "./diff.js";
 import { fixtureHash } from "./fixture-hash.js";
 import { discard } from "./test-tmp.js";
@@ -184,14 +184,18 @@ test("a snapshot written from a clean tree diffs normally", async () => {
 /**
  * The requirement rollup — `/diff` as the audit trigger the standard otherwise lacks.
  *
- * Three things are pinned here and each one is a way this could be wrong: the set-op
- * reaches only the rule whose citation MOVED (`req_far` cites the untouched symbol),
- * `auditMoved` is about the AUDIT's witnesses and not the requirement's citations (they
- * are different sets and the audit is the one carrying a verdict), and the whole thing
- * is computed from the two snapshots — a requirement citing an anchor no live index has
+ * Three things are pinned here and each one is a way this could be wrong: the rollup
+ * reaches only the rule whose WATCHED code moved (`req_far`'s pointer watches the
+ * untouched symbol), `auditMoved` is about the AUDIT's witnesses and not the pointer's
+ * (they are different sets and the audit is the one carrying a verdict), and the whole
+ * thing is computed from the two snapshots — a pointer on an anchor no live index has
  * still rolls up, because a diff of two cached commits must not consult the checkout.
+ *
+ * It reaches rules through POINTERS, not citations: a requirement cites nothing, because
+ * a rule is upstream of code and one governing two repositories could not be witnessed
+ * from either. The pointer is also the record that knows which universe it is in.
  */
-test("diff rolls changed symbols up to the requirements that cite them", async () => {
+test("diff rolls changed symbols up to the requirements watching them", async () => {
   const root = mkdtempSync(join(tmpdir(), "codemap-diff-req-"));
   try {
     const base: Anchor[] = [anchor("a_keep", "keep", "h1"), anchor("a_drop", "refund", "h2"), anchor("a_chg", "transfer", "h3")];
@@ -199,19 +203,33 @@ test("diff rolls changed symbols up to the requirements that cite them", async (
     await writeSnapshot(root, "base_sha", "main", base, "2026-07-15T00:00:00Z");
     await writeSnapshot(root, "head_sha", "feature", head, "2026-07-15T01:00:00Z");
 
-    const req = (id: string, title: string, cites: string[]): Requirement => ({
+    const req = (id: string, title: string): Requirement => ({
       id, title, section: "Credit/Limits", statement: "…", provenance: "policy",
-      status: "ratified", cites, witnesses: cites.map((a) => ({ anchorId: a, bodyHash: fixtureHash("w") })),
+      status: "ratified",
       author: { principal: "izzie" }, createdAt: "2026-07-01T00:00:00Z", introducedBy: "spec_1",
     });
-    await writeLocalRequirement(root, req("req_hit", "Refunds never exceed the charge", ["a_chg", "a_drop"]));
-    await writeLocalRequirement(root, req("req_far", "Untouched rule", ["a_keep"]));
-    // Retired: cites the moved code and is deliberately absent from the rollup — it is not
-    // part of the standard in force, so listing it is asking for work on a dead rule.
-    await writeLocalRequirement(root, { ...req("req_old", "Repealed rule", ["a_chg"]), status: "retired" });
+    /** What watches the code, and therefore what the rollup travels along. */
+    const watch = async (id: string, requirementId: string, anchors: string[]) => {
+      for (const [i, a] of anchors.entries()) {
+        await writeLocalPointer(root, {
+          id: `${id}_${i}`, requirementId, universe: "acme/api",
+          target: { kind: "anchor", id: a }, rationale: "watched",
+          witnesses: [{ anchorId: a, bodyHash: fixtureHash("w") }],
+          state: "active", declaredBy: { principal: "izzie" }, declaredAt: "2026-07-01T00:00:00Z",
+        });
+      }
+    };
+    await writeLocalRequirement(root, req("req_hit", "Refunds never exceed the charge"));
+    await writeLocalRequirement(root, req("req_far", "Untouched rule"));
+    // Retired: watched on the moved code and deliberately absent from the rollup — it is
+    // not part of the standard in force, so listing it is asking for work on a dead rule.
+    await writeLocalRequirement(root, { ...req("req_old", "Repealed rule"), status: "retired" });
+    await watch("pt_hit", "req_hit", ["a_chg", "a_drop"]);
+    await watch("pt_far", "req_far", ["a_keep"]);
+    await watch("pt_old", "req_old", ["a_chg"]);
 
     // Audited against `a_keep` ONLY — which this diff does not move. So the rule is worth
-    // re-auditing (its own citation changed) but the verdict on record still stands.
+    // re-auditing (its watched code changed) but the verdict on record still stands.
     const audit: Audit = {
       id: "aud_1", requirementId: "req_hit", outcome: "conformant",
       evidence: { read: ["a_keep"] }, witnesses: [{ anchorId: "a_keep", bodyHash: fixtureHash("w") }],
@@ -247,16 +265,18 @@ test("diff rolls changed symbols up to the requirements that cite them", async (
  * satisfy), and no set-op over anchors can reach it. Pinned so the limit is stated in
  * the suite rather than only in a comment — this is the hole pointers exist to fill.
  */
-test("diff cannot reach an uncited requirement, and does not invent one", async () => {
+test("diff cannot reach an UNWATCHED requirement, and does not invent one", async () => {
   const root = mkdtempSync(join(tmpdir(), "codemap-diff-req-uncited-"));
   try {
     await writeSnapshot(root, "base_sha", "main", [anchor("a_chg", "transfer", "h3")], "2026-07-15T00:00:00Z");
     await writeSnapshot(root, "head_sha", "feature", [anchor("a_chg", "transfer", "h3_NEW")], "2026-07-15T01:00:00Z");
     await writeLocalRequirement(root, {
       id: "req_gap", title: "The gate nobody wrote yet", section: "Credit", statement: "…",
-      provenance: "policy", status: "ratified", cites: [], witnesses: [],
+      provenance: "policy", status: "ratified",
       author: { principal: "izzie" }, createdAt: "2026-07-01T00:00:00Z", introducedBy: "spec_1",
     });
+    // No pointer, so nothing watches it. A rule with no pointer can never rise — which is
+    // why `auditQueue` reports `unwatched` in its own right rather than as calm freshness.
 
     const r = await computeDiff(root, "base_sha", "head_sha");
     assert.ok(!("error" in r), "expected a diff result");
@@ -287,11 +307,18 @@ test("movement is decided by the witness hash, not by the anchor being in the di
 
     const req = (id: string): Requirement => ({
       id, title: "Rule", section: "S", statement: "…", provenance: "p", status: "ratified",
-      cites: ["a_chg"], witnesses: [{ anchorId: "a_chg", bodyHash: baseHash }],
       author: { principal: "izzie" }, createdAt: "2026-07-01T00:00:00Z", introducedBy: "sp",
     });
     await writeLocalRequirement(root, req("r_head"));
     await writeLocalRequirement(root, req("r_base"));
+    for (const rid of ["r_head", "r_base"]) {
+      await writeLocalPointer(root, {
+        id: `pt_${rid}`, requirementId: rid, universe: "acme/api",
+        target: { kind: "anchor", id: "a_chg" }, rationale: "watched",
+        witnesses: [{ anchorId: "a_chg", bodyHash: baseHash }],
+        state: "active", declaredBy: { principal: "izzie" }, declaredAt: "2026-07-01T00:00:00Z",
+      });
+    }
 
     const audit = (id: string, rid: string, hash: string): Audit => ({
       id, requirementId: rid, outcome: "conformant", evidence: { read: ["a_chg"] },

@@ -2,11 +2,12 @@
  * Acceptance criteria and the vacuity checks that keep them honest (COD-29, COD-18).
  * `docs/requirements-architecture.md` is normative; this implements it.
  *
- * The second citation relation lives here. `Requirement.cites` is the code a rule is
- * ABOUT — staleness means *that code moved*. `AcceptanceCriterion.assertedBy` is the check
- * that WOULD FAIL if the rule stopped holding — staleness means *the build is red*.
- * Snapshot versus live, and codemap only ever observes the first half: it runs nothing, so
- * what it watches is the assertion's own normalized hash.
+ * The only citation a RULE carries lives here, and it is not a citation of the rule's
+ * subject. A requirement cites nothing at all: it is upstream of code, and where the code
+ * is lives in pointers. `AcceptanceCriterion.assertedBy` is a different relation — the
+ * check that WOULD FAIL if the rule stopped holding, so its staleness means *the detector
+ * moved*, not *the subject moved*. codemap runs nothing, so what it watches is the
+ * assertion's own normalized hash.
  *
  * That is not a limitation being apologised for, it is the mechanism. The designed scrub
  * catches *never fires* and *always fires*; the one thing it cannot catch is **fired → was

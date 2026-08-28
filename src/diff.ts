@@ -285,15 +285,20 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
   // on a rule that no longer binds anything.
   const requirementImpact = (await readRequirements(root, { status: "ratified" })).requirements
     .map((rq) => ({
-      rq, hit: rq.cites.filter((id) => impacted.has(id)),
+      rq,
       assertions: assertionsByRequirement.get(rq.id) ?? [],
       fired: pointersByRequirement.get(rq.id) ?? [],
+      // What the FIRING pointers watch — the anchors this change touched that something
+      // was actually watching. It used to be `rq.cites ∩ impacted`, but a requirement
+      // cites nothing: a rule is upstream of code, and where the code is lives in the
+      // pointers. This is the same set arrived at from the record that knows which
+      // universe it is talking about.
+      hit: [...new Set((pointersByRequirement.get(rq.id) ?? []).flatMap((p) => p.anchors))],
     }))
-    // ANY signal is enough, and the third is what closes the residue: a requirement that
-    // cites nothing and asserts nothing — the rule the code does not yet satisfy — could
-    // not be reached by a set-op over anchors at all, so the highest-value record in the
-    // store was also the quietest. A pointer gives it something to fire on.
-    .filter((x) => x.hit.length > 0 || x.assertions.length > 0 || x.fired.length > 0)
+    // Either signal is enough. The pointer one is what reaches a rule the code does not
+    // yet satisfy — no citations, no assertions, and unreachable by a set-op over anchors,
+    // so the highest-value record in the store was also the quietest.
+    .filter((x) => x.assertions.length > 0 || x.fired.length > 0)
     .map(({ rq, hit, assertions, fired }) => {
       const a = auditsByRequirement.get(rq.id);
       return {

@@ -35,6 +35,7 @@ import type {
   OperationKind, Pointer, Problem, Requirement, Reversibility, Spec,
 } from "./schema.js";
 import { criterionIdFor, EVIDENCE_KINDS, movedSection, normalizeSection, requirementIdFor } from "./schema.js";
+import { universeKey } from "./sidecar-config.js";
 import {
   readAcknowledgements, readAudits, readCriteria, readOperations, readPopulations, readProblems,
   readRequirement, readRequirements, readSpec, readSpecs, readVacuityChecks,
@@ -236,15 +237,31 @@ async function witness(root: string, cites: string[]): Promise<BugWitness[]> {
 async function serve(root: string, r: Requirement): Promise<ServedRequirement> {
   const ops = await readOperations(root, { requirementId: r.id });
   const irreversible = ops.some((o) => o.reversibility === "irreversible");
-  // An unwitnessed requirement has no baseline, so nothing can have drifted from it.
-  // Answering `recheckDue: true` there would report drift from a snapshot never taken.
-  if (!r.witnesses.length) return { ...r, recheckDue: false, drifted: [], missing: [], irreversible };
-  const live = await liveHashes(root, r.witnesses.map((w: BugWitness) => w.anchorId));
+
+  // Staleness comes from the POINTERS, because a requirement cites nothing. A rule is
+  // upstream of code and does not point down at an implementation; where the code is
+  // lives in auditor-maintained pointers, which is also the only record that knows WHICH
+  // REPOSITORY it is talking about.
+  //
+  // This universe's pointers only. The standard is workspace-scoped and a rule may be
+  // watched in several universes, but their anchors are not in this store and cannot be
+  // hashed from here — so a rule watched only elsewhere reads `recheckDue: false` HERE,
+  // which is honest: this checkout has nothing to say about it. A pointer written before
+  // the split carries no universe and is this one's by construction.
+  const mine = universeKey(root);
+  const pointers = (await readPointers(root, { requirementId: r.id, state: "active" }))
+    .filter((p) => !p.universe || p.universe === mine);
+  const witnesses = pointers.flatMap((p) => p.witnesses);
+  // Nothing watching it here, so nothing can have drifted. A rule with no pointer at all
+  // can never rise — that is the `unwatched` half of the audit queue, reported there
+  // rather than disguised as calm freshness.
+  if (!witnesses.length) return { ...r, recheckDue: false, drifted: [], missing: [], irreversible };
+  const live = await liveHashes(root, witnesses.map((w: BugWitness) => w.anchorId));
   // `realDrift` drops the changes a scheme difference explains away, so a re-normalization
   // does not send every reader back to a rule that is still satisfied.
-  const changes = realDrift(witnessDrift(r.witnesses, live));
-  const missing = changes.filter((c) => c.now === ABSENT_HASH).map((c) => c.anchorId);
-  const drifted = changes.filter((c) => c.now !== ABSENT_HASH).map((c) => c.anchorId);
+  const changes = realDrift(witnessDrift(witnesses, live));
+  const missing = [...new Set(changes.filter((c) => c.now === ABSENT_HASH).map((c) => c.anchorId))];
+  const drifted = [...new Set(changes.filter((c) => c.now !== ABSENT_HASH).map((c) => c.anchorId))];
   return { ...r, recheckDue: changes.length > 0, drifted, missing, irreversible };
 }
 
@@ -332,9 +349,20 @@ export async function addOperation(
     }
     const clash = await checkSection(root, section, sectionsIntroducedBy(await readOperations(root, { specId: sp.id })));
     if (clash) return clash;
-    const bad = checkCitations(root, input.cites ?? []);
-    if (bad) return bad;
-    payload = { title, section, statement, provenance, cites: input.cites ?? [] };
+    // Refused rather than ignored. An author who passes citations has a model of what a
+    // requirement is, and silently dropping them would leave that model intact and the
+    // rule looking connected to code it is not connected to.
+    if (input.cites?.length) {
+      return {
+        error:
+          "a requirement cites nothing — a rule is upstream of code, so it does not point down "
+          + "at an implementation, and one governing several repositories could not be witnessed "
+          + "from any single checkout anyway. Say where the code is with `declare_pointer`, which "
+          + "names one universe and carries its own baseline; that is also what makes the rule "
+          + "rise for re-audit when the code moves. See docs/cross-universe-standard.md.",
+      };
+    }
+    payload = { title, section, statement, provenance };
   } else if (input.kind === "add_criterion") {
     const criterion = input.criterion?.trim();
     const falsifier = input.falsifier?.trim();
@@ -532,12 +560,6 @@ export async function ratifySpec(
       const siblings = sectionsIntroducedBy(ops.filter((o) => o.id !== op.id));
       const clash = await checkSection(root, op.section!, siblings);
       if (clash) { checks.push({ operation: op, ok: false, reason: clash.error }); continue; }
-      // Citations were checked when the operation was drafted; a symbol can vanish
-      // between then and now. Ratifying anyway baselines the witness as `sha256:absent`,
-      // and every later comparison is absent-against-absent — so a rule citing code that
-      // is GONE reads as settled for ever.
-      const gone = checkCitations(root, op.cites ?? []);
-      if (gone) { checks.push({ operation: op, ok: false, reason: gone.error }); continue; }
     }
     if (op.kind === "add_criterion") {
       // Same reason, on the assertion rather than the subject — and it bites harder here.
@@ -581,7 +603,9 @@ export async function ratifySpec(
   const witnesses: Record<string, BugWitness[]> = {};
   for (const op of ops) {
     const cites = op.kind === "add_requirement"
-      ? op.cites ?? []
+      // A rule has no body to baseline: it is upstream of code, and what watches the code
+      // is a pointer, which carries its own witnesses and names its own universe.
+      ? []
       // A criterion witnesses its ASSERTION, not the rule's subject. Different sets and
       // different questions: `cites` going stale means the code moved, `assertedBy` going
       // stale means the DETECTOR moved — which is the pathology nothing else catches.
@@ -590,9 +614,11 @@ export async function ratifySpec(
         // A move's subject is a PATH, not code, so it witnesses nothing. It also names no
         // rule, and every branch below this one assumes one — which is the trap this
         // operation kind sets in each place that switches on the others by elimination.
-        : op.kind === "move_section"
-          ? []
-          : (await readRequirement(root, op.requirementId!))?.cites ?? [];
+        // An amendment or a retirement witnesses NOTHING. It used to witness the rule's
+        // citations; a requirement has none now, and a rule is not the sort of thing that
+        // has a body to baseline — the code it governs is watched by pointers, which carry
+        // their own witnesses and their own universe.
+        : [];
     witnesses[op.id] = await witness(root, cites);
   }
   const outcome = await shareSpecRatified(root, sp.id, at, witnesses, ops.map((o) => o.id));
@@ -614,8 +640,7 @@ export async function ratifySpec(
     if (op.kind === "add_requirement") {
       const r: Requirement = {
         id: requirementIdFor(op.id), title: op.title!, section: op.section!, statement: op.statement!,
-        provenance: op.provenance!, status: "ratified", cites: op.cites ?? [],
-        witnesses: await witness(root, op.cites ?? []),
+        provenance: op.provenance!, status: "ratified",
         author: sp.author, createdAt: at,
         introducedBy: sp.id, ratifiedBy: who, ratifiedAt: at,
       };
@@ -658,10 +683,6 @@ export async function ratifySpec(
         : {
           ...r, statement: op.statement!, ratifiedBy: who, ratifiedAt: at,
           amendedBy: [...(r.amendedBy ?? []), sp.id],
-          // Adopting new text re-baselines the witnesses: the principal has just looked, so
-          // the current code is what the ratified rule was adopted against. Keeping the old
-          // hashes would serve a fresh ratification as already recheck-due.
-          witnesses: await witness(root, r.cites),
         };
       await writeLocalRequirement(root, next);
     }
