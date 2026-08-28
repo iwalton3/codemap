@@ -68,6 +68,34 @@ test("a marked session is an agent even with no model in the environment", () =>
   }
 });
 
+test("THE AGENT LATCH IS A RATCHET — a caller-supplied flag cannot clear it", () => {
+  // `resolveActor` read `input.agent ?? (agentSession || …)`, so an explicit `agent: false`
+  // beat the latch. No MCP tool declares that field and nothing enforced the schemas'
+  // `additionalProperties: false`, so one undeclared boolean in a tool call bought a
+  // principal: `ratify_spec {agent: false}` adopted a spec from an agent session and stored
+  // `ratifiedBy` with no `via`. `mcp.ts` now also refuses undeclared parameters, which is a
+  // second and independent defence — this pins the one underneath it, because a test that
+  // only drives the transport passes on either.
+  const r = repo();
+  try {
+    markAgentSession();
+    const forged = resolveActor(r.root, { agent: false });
+    assert.ok(forged);
+    assert.ok(isAgentActor(forged), "a session that is an agent stays one, whatever it claims");
+  } finally { clearAgentSession(); r.cleanup(); }
+});
+
+test("and off the latch, an explicit `agent: false` is still honoured", () => {
+  // The other half, or the test above passes by pinning the flag to nothing: a CLI caller
+  // who says it is a person must still resolve as one.
+  const r = repo();
+  try {
+    const person = resolveActor(r.root, { agent: false });
+    assert.ok(person);
+    assert.equal(isAgentActor(person), false);
+  } finally { r.cleanup(); }
+});
+
 test("an agent's support of its own principal's finding is still not independent", () => {
   // The reason `via` has to be right: corroboration compares PRINCIPALS, so this
   // only holds if the agent's principal is the human it acts for — which is what

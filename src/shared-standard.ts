@@ -199,6 +199,19 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
         // GAP from an agent is legitimate: an auditor classifying ahead of adoption is
         // the intended caller, and a gap admits nothing.
         if (ack.basis === "debt" && e.actor.via) break;
+        // A GAP must still be MINTED BEFORE RATIFICATION, and only this end binds a writer
+        // whose tool did not check. `Acknowledgement.operationId` calls that asymmetry
+        // "structural rather than advisory" because the local path takes an operation in a
+        // draft spec — but the fold took the record's word for it, so an event naming a
+        // ratified `requirementId` and no operation at all was accepted verbatim and
+        // `conformance()` then reported a binding rule as `gap`. That is the laundering the
+        // whole record exists to close, arriving through the one door nobody was watching:
+        // not "amend the rule to match the code" but "declare the rule not yet applicable".
+        if (ack.basis === "gap") {
+          const op = ack.operationId ? operations.get(ack.operationId) : undefined;
+          if (!op || op.kind !== "add_requirement") break;
+          if (specs.get(op.specId)?.status === "ratified") break;
+        }
         acknowledgements.set(ack.id, { ...ack, state: "active", origin: "sync" });
         break;
       }
@@ -228,7 +241,7 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
         // `{command: "false", passed: false}` still certified a rule for every clone —
         // the one-end fix, on the guard whose whole job is to bind the other end.
         const ev = audit.evidence ?? {};
-        const touched = !!(ev.read?.length || ev.ran?.some((r) => r.passed));
+        const touched = !!(ev.read?.length || ev.ran?.some((r) => r.passed && !!r.command?.trim()));
         if (audit.outcome === "conformant" && !touched) break;
         audits.set(audit.id, { ...audit, origin: "sync" });
         break;

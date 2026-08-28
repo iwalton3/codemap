@@ -90,8 +90,17 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     // by every clone. The earlier regexes here matched both ends while they meant different
     // things, which is why these pin the COUNTING RULE rather than the surrounding condition.
     what: "a conformant audit that touched no code",
-    fold: ["src/shared-standard.ts", /ev\.ran\?\.some\(\(r\) => r\.passed\)/],
-    publish: ["src/audits.ts", /e\.ran\?\.some\(\(r\) => r\.passed\)/],
+    fold: ["src/shared-standard.ts", /ev\.ran\?\.some\(\(r\) => r\.passed && !!r\.command\?\.trim\(\)\)/],
+    publish: ["src/audits.ts", /e\.ran\?\.some\(\(r\) => r\.passed && !!r\.command\?\.trim\(\)\)/],
+  },
+  {
+    // Found independently by two reviews. The local path calls this asymmetry "structural
+    // rather than advisory" and it was advisory anywhere but here: the fold took the
+    // record's word, so an appended row naming a ratified `requirementId` and no operation
+    // was accepted by every clone and reported a binding rule as `gap`.
+    what: "a gap minted after the spec that introduced the rule was ratified",
+    fold: ["src/shared-standard.ts", /specs\.get\(op\.specId\)\?\.status === "ratified"\) break;/],
+    publish: ["src/acknowledgements.ts", /a gap may only be raised while the spec is still a draft/],
   },
   // Two more that had both ends in the code and neither end registered here, so a future
   // one-end deletion would have been silent. Found by walking the fold against the four

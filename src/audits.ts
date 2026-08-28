@@ -62,7 +62,13 @@ const OUTCOMES: AuditOutcome[] = ["conformant", "nonconformant", "indeterminate"
 const touchedCode = (e: AuditEvidence): boolean =>
   // A command that FAILED is evidence of non-conformance, never of conformance. Counting
   // any nonempty `ran` let `{ command: "false", passed: false }` certify a rule.
-  !!(e.read?.length || e.ran?.some((r) => r.passed));
+  //
+  // And it must NAME the command: `{ passed: true }` alone records nothing that was run,
+  // so it is the vacuous audit wearing the shape of evidence — and where the requirement
+  // cites code, `read` picks those citations up as witnesses and the result reads as
+  // code-backed. `recordAudit` refuses such an entry outright rather than quietly
+  // declining to count it, so the caller learns what the field is for.
+  !!(e.read?.length || e.ran?.some((r) => r.passed && !!r.command?.trim()));
 
 /** Any evidence at all — enough to file a finding, not enough to certify one. */
 const hasEvidence = (e: AuditEvidence): boolean => touchedCode(e) || !!e.consulted?.length;
@@ -112,6 +118,15 @@ export async function recordAudit(
   if (!r) return { error: `no requirement "${input.requirementId}"` };
 
   const evidence: AuditEvidence = input.evidence ?? {};
+  if ((evidence.ran ?? []).some((r) => !r?.command?.trim())) {
+    return {
+      error:
+        "every entry in `evidence.ran` needs the `command` you actually ran. An entry with "
+        + "only `passed` records nothing, and a positive audit that records nothing is not a "
+        + "positive audit — it closes a gap and silences the detector on the strength of an "
+        + "empty claim.",
+    };
+  }
   // Witness the cited code as well as what was read. `touchedCode` accepts `ran` alone,
   // and an audit built only from `evidence.read` then had NO witnesses — so nothing could
   // ever supersede it and `conformant` became permanent, surviving a rewrite of the very

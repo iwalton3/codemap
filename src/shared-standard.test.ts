@@ -153,6 +153,10 @@ test("a disposition smuggled into a raise payload is dropped", async () => {
 test("an acknowledgement grants and releases across the log", async () => {
   const root = await log("ack");
   try {
+    // The draft and its operation first: a gap names the operation it was raised against,
+    // and the fold verifies that rather than trusting the record.
+    await publishSpecDrafted(root, SCOPE, opus, SPEC);
+    await publishOperation(root, SCOPE, opus, ADD);
     const ack: Acknowledgement = {
       id: "ack_1", basis: "gap", operationId: "op_1", rationale: "nothing built yet",
       priority: "medium", revalidateBy: "2027-01-01", state: "active",
@@ -174,12 +178,15 @@ test("the projection round-trips what the fold produced", async () => {
   try {
     await publishSpecDrafted(root, SCOPE, opus, SPEC);
     await publishOperation(root, SCOPE, opus, ADD);
-    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
+    // The gap is granted while the spec is still a DRAFT — the only time one can be — and
+    // ratification then binds it to the rule the operation produced. Granting it after the
+    // ratification, as this fixture used to, is the post-hoc mint the fold now refuses.
     await publishAckGranted(root, SCOPE, opus, {
       id: "ack_1", basis: "gap", operationId: "op_1", rationale: "nothing built yet",
       priority: "medium", revalidateBy: "2027-01-01", state: "active",
       grantedBy: opus, grantedAt: "2026-08-01T00:00:00.000Z",
     });
+    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
     const value = await fold(root);
     assert.ok(value.requirements.length && value.acknowledgements.length, "the fixture must be non-empty or the round trip is vacuous");
 
@@ -239,13 +246,70 @@ test("the fold refuses an agent's debt acknowledgement", async () => {
 
     // A gap from an agent IS legitimate — an auditor classifying ahead of adoption is the
     // intended caller — so the refusal must be about the basis, not about the actor alone.
+    // The draft spec and its operation have to be in the log for that: a gap names the
+    // OPERATION it was raised against, and the fold checks it rather than taking the
+    // record's word. This test used to publish neither and assert the gap bound anyway.
+    await publishSpecDrafted(root, SCOPE, opus, SPEC);
+    await publishOperation(root, SCOPE, opus, ADD);
     await publishAckGranted(root, SCOPE, opus, {
-      ...base, id: "ack_2", basis: "gap", operationId: "op_1", requirementId: undefined, grantedBy: opus,
+      ...base, id: "ack_2", basis: "gap", operationId: ADD.id, requirementId: undefined, grantedBy: opus,
     });
     assert.equal((await fold(root)).acknowledgements.length, 1);
 
     await publishAckGranted(root, SCOPE, izzie, { ...base, id: "ack_3", grantedBy: izzie });
     assert.equal((await fold(root)).acknowledgements.length, 2, "a principal's debt binds");
+  } finally { discard(root); }
+});
+
+test("THE FOLD REFUSES A GAP MINTED AFTER RATIFICATION, which is the third laundering door", async () => {
+  // Not "amend the rule to match the code" but "declare the rule not yet applicable".
+  // `acknowledgeGap` closes it by taking an operation in a DRAFT spec — and the schema
+  // calls that "structural rather than advisory" — but the fold took the record's word,
+  // so a client that appended the row directly had it accepted by every clone and
+  // `conformance()` reported a binding rule as `gap`.
+  const root = await log("gapmint");
+  try {
+    const base = {
+      basis: "gap" as const, rationale: "nothing implements it yet", priority: "low" as const,
+      revalidateBy: "2027-01-01", state: "active" as const,
+      grantedAt: "2026-08-01T00:00:00.000Z", grantedBy: opus,
+    };
+    await publishSpecDrafted(root, SCOPE, opus, SPEC);
+    await publishOperation(root, SCOPE, opus, ADD);
+
+    // No operation at all, aimed straight at a rule — the shape the local path cannot mint.
+    await publishAckGranted(root, SCOPE, opus, {
+      ...base, id: "ack_bare", requirementId: requirementIdFor(ADD.id),
+    });
+    assert.equal((await fold(root)).acknowledgements.length, 0,
+      "a gap that names no operation was minted by something that skipped the gate");
+
+    // Before ratification: legitimate.
+    await publishAckGranted(root, SCOPE, opus, { ...base, id: "ack_before", operationId: ADD.id });
+    assert.equal((await fold(root)).acknowledgements.length, 1);
+
+    await publishSpecRatified(root, SCOPE, izzie, SPEC.id, "2026-08-02T00:00:00.000Z", {}, [ADD.id]);
+    assert.equal((await fold(root)).requirements.length, 1, "the rule is now binding");
+
+    // After ratification, naming the very same operation: refused.
+    await publishAckGranted(root, SCOPE, opus, { ...base, id: "ack_after", operationId: ADD.id });
+    assert.equal((await fold(root)).acknowledgements.length, 1,
+      "once the rule binds, `gap` is no longer an available answer — that is the asymmetry");
+
+    // And the route `acknowledgements.ts` names outright: draft a SECOND spec amending the
+    // now-ratified rule, gap the amendment, ratify. The amendment is an operation on a
+    // draft spec, so only the operation's KIND stands between that and a binding rule
+    // reported as `gap` on an agent's say-so.
+    const amend: Operation = {
+      id: "op_2", specId: "sp_2", kind: "amend_statement", ord: 0,
+      requirementId: requirementIdFor(ADD.id), statement: "All credit lines are in USD or EUR.",
+      rationale: "the business moved", reversibility: "reversible",
+    };
+    await publishSpecDrafted(root, SCOPE, opus, { ...SPEC, id: "sp_2", title: "Currency amendment" });
+    await publishOperation(root, SCOPE, opus, amend);
+    await publishAckGranted(root, SCOPE, opus, { ...base, id: "ack_amend", operationId: amend.id });
+    assert.equal((await fold(root)).acknowledgements.length, 1,
+      "a gap may only be raised against the operation that INTRODUCES a rule, never one amending it");
   } finally { discard(root); }
 });
 
@@ -280,14 +344,26 @@ test("the fold refuses a conformant audit that touched no code", async () => {
       "a failed command is not a certification — the fold must not be laxer than `touchedCode`",
     );
 
+    // Nor may it omit the command. `{passed: true}` names nothing that ran, and where the
+    // requirement cites code the citations become witnesses, so the result reads as
+    // code-backed. `recordAudit` refuses this outright; the fold has no such second check,
+    // so its copy of the predicate is the only thing standing here.
     await publishAudit(root, SCOPE, opus, {
-      ...base, id: "au_4", evidence: { ran: [{ command: "npm test", passed: true }] },
+      ...base, id: "au_4", evidence: { ran: [{ passed: true } as never] },
+    });
+    assert.equal(
+      (await fold(root)).audits.length, 1,
+      "an entry with no command records nothing, and a positive audit that records nothing is not one",
+    );
+
+    await publishAudit(root, SCOPE, opus, {
+      ...base, id: "au_5", evidence: { ran: [{ command: "npm test", passed: true }] },
     });
     assert.equal((await fold(root)).audits.length, 2, "a command that PASSED does bind");
 
     // `indeterminate` is the quiet bucket and may carry nothing, so the gate is about the
     // OUTCOME rather than about evidence being present.
-    await publishAudit(root, SCOPE, opus, { ...base, id: "au_5", outcome: "indeterminate" });
+    await publishAudit(root, SCOPE, opus, { ...base, id: "au_6", outcome: "indeterminate" });
     assert.equal((await fold(root)).audits.length, 3);
   } finally { discard(root); }
 });

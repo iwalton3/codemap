@@ -124,7 +124,16 @@ export function resolveActor(root: string, input: ActorInput = {}): Actor | null
   // whose caller is an agent by construction, and the env vars cover a harness
   // driving the CLI. Making every call site pass a flag is how one ends up not
   // passing it — which is what happened to MCP before `markAgentSession` existed.
-  const isAgent = input.agent ?? (agentSession || !!(model || harness));
+  //
+  // And the latch is a RATCHET: `input.agent` cannot clear it. This was
+  // `input.agent ?? (agentSession || …)`, so an explicit `agent: false` won — and no tool
+  // declares that field, while the `additionalProperties: false` on every tool schema was
+  // enforced nowhere. One undeclared boolean bought a principal: `ratify_spec` with
+  // `{agent: false}` adopted a spec from an MCP session and stored `ratifiedBy` with no
+  // `via`, recording an agent's act as a person's. `clearAgentSession` is the only way
+  // back and has no production caller — same precedent as `ops/annotations.ts`: a
+  // test-only export beats an input flag.
+  const isAgent = agentSession || (input.agent ?? !!(model || harness));
   return {
     principal,
     ...(input.github?.trim() ? { github: input.github.trim() } : {}),

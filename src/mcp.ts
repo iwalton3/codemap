@@ -126,6 +126,21 @@ const DISPOSITION_DOC =
 function violates(schema: unknown, args: Record<string, unknown>, path = ""): string | null {
   const props = (schema as { properties?: Record<string, unknown> })?.properties;
   if (!props) return null;
+  // Undeclared properties, where the schema says there are none. `obj()` has always
+  // emitted `additionalProperties: false` and nothing enforced it, so any field a HANDLER
+  // happened to read was reachable whether or not the tool offered it. That is how
+  // `{agent: false}` reached `resolveActor` and forged a principal, and how `promotedFrom`
+  // reached `recordAudit` without passing `promote_audit`'s default-branch and
+  // not-superseded gates. `required` is still deliberately unenforced, for the reason
+  // below; this is the opposite direction and carries none of that cost — a parameter the
+  // tool does not offer has no handler-level message to lose.
+  if ((schema as { additionalProperties?: unknown }).additionalProperties === false) {
+    const extra = Object.keys(args ?? {}).filter((k) => !(k in props));
+    if (extra.length) {
+      return `unknown parameter${extra.length > 1 ? "s" : ""} ${extra.map((x) => JSON.stringify(x)).join(", ")}`
+        + `${path ? ` in ${path}` : ""} — this tool does not take ${extra.length > 1 ? "them" : "it"}`;
+    }
+  }
   for (const [k, spec] of Object.entries(props)) {
     const v = args?.[k];
     if (v === undefined || v === null) continue;
@@ -1205,7 +1220,7 @@ const tools: Tool[] = [
   },
   {
     name: "audits",
-    description: "Every audit recorded against one requirement, newest first, each marked `superseded` when the code it examined has moved. A superseded audit is not wrong — it was true of what it read — it just no longer speaks about what is there now.",
+    description: "Every audit recorded against one requirement, OLDEST first — the LAST row is the current word on the rule, which is the one `conformance` reads. Each is marked `superseded` when the code it examined has moved. A superseded audit is not wrong — it was true of what it read — it just no longer speaks about what is there now.",
     inputSchema: obj({ requirementId: { type: "string" } }, ["requirementId"]),
     handler: (a, c) => ops.auditsFor(c.universe.path, a),
   },

@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawnSync, spawn } from "node:child_process";
 import { indexBlob } from "./repo.js";
 import { writeStore } from "./store.js";
 import type { State } from "./schema.js";
@@ -81,8 +81,12 @@ test("every op on the standard surface reaches a front end", () => {
   // than a regex because this file re-exports in three different syntaxes.
   const names = Object.keys(standard);
   assert.ok(names.length > 20, `expected the standard API, found ${names.length}`);
+  // NOT `src/ops/standard.ts` itself. `ops-reach.test.ts` scans `src/ops-shared.ts`, which
+  // lives outside `src/ops/`, so its sweep of that directory is harmless; copying the sweep
+  // for a module INSIDE it made every name match its own definition, and the test passed
+  // with the barrel and the whole MCP block deleted.
   const callers = ["src/serve.ts", "src/mcp.ts", "src/cli.ts", "src/ops.ts",
-    ...readdirSync("src/ops").map((f) => join("src/ops", f))]
+    ...readdirSync("src/ops").map((f) => join("src/ops", f)).filter((f) => f !== "src/ops/standard.ts")]
     .map((f) => readFileSync(f, "utf8")).join("\n");
   const orphans = names.filter((n) => !new RegExp(`\\b${n}\\b`).test(callers));
   assert.deepEqual(orphans, [], "wire these to a front-end, or delete them");
@@ -201,6 +205,88 @@ test("standard_status counts the queues it claims to", async () => {
     assert.equal(after.conformance.unknown, 1, "a non-conformant audit is not a conformance");
     assert.equal(after.queues.awaitingAdjudication, 1);
     assert.equal(after.queues.actionableProblems, 0, "nothing has been decided yet");
+  } finally {
+    discard(root);
+  }
+});
+
+/**
+ * Over the REAL transport, because two forgeries lived exactly where the tests above
+ * cannot look.
+ *
+ * Everything else here calls the ops layer directly with an explicit `agent: true`, so it
+ * never exercises JSON-RPC, `markAgentSession`, or — the part that mattered — the raw
+ * arguments object. `obj()` has always emitted `additionalProperties: false` and nothing
+ * enforced it, so an undeclared field reached any handler that read one:
+ *
+ *   - `{agent: false}` reached `resolveActor`, which preferred it to the MCP agent latch.
+ *     `ratify_spec` then adopted a spec from an agent session and recorded `ratifiedBy`
+ *     with no `via` — an agent's act stored as a person's, on the one verb this whole
+ *     subsystem exists to reserve.
+ *   - `{promotedFrom}` reached `recordAudit`, forging the provenance that
+ *     `promotableAudits` reads, without passing `promote_audit`'s gates.
+ *
+ * Both were found by review and reproduced here before being fixed.
+ */
+function rpc(root: string, calls: { name: string; arguments: Record<string, unknown> }[]) {
+  return new Promise<string[]>((resolve, reject) => {
+    const p = spawn("node", ["dist/mcp.js", root], { stdio: ["pipe", "pipe", "ignore"] });
+    const out: string[] = []; let buf = ""; let i = 0;
+    const timer = setTimeout(() => { p.kill(); reject(new Error("mcp did not answer")); }, 20000);
+    const next = () => {
+      if (i >= calls.length) { clearTimeout(timer); p.kill(); resolve(out); return; }
+      p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: i + 2, method: "tools/call", params: calls[i++] }) + "\n");
+    };
+    p.stdout.on("data", (d) => {
+      buf += d;
+      const lines = buf.split("\n"); buf = lines.pop()!;
+      for (const l of lines) {
+        if (!l.trim()) continue;
+        const r = JSON.parse(l) as { id: number; result?: { content?: { text?: string }[] } };
+        if (r.id === 1) { next(); continue; }
+        out.push(r.result?.content?.[0]?.text ?? JSON.stringify(r));
+        next();
+      }
+    });
+    p.on("error", reject);
+    p.stdin.write(JSON.stringify({
+      jsonrpc: "2.0", id: 1, method: "initialize",
+      params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "surface-test", version: "1" } },
+    }) + "\n");
+  });
+}
+
+test("an undeclared argument cannot buy a principal, or forge provenance", async () => {
+  const { root, anchor } = await universe();
+  try {
+    const { requirementId } = await seeded(root, anchor);
+    const spec = ok(await standard.draftSpec(root, { title: "Second", ...AGENT }));
+    ok(await standard.addOperation(root, {
+      specId: spec.id, kind: "add_requirement", rationale: "r", reversibility: "reversible",
+      title: "Float settles daily", section: "Settlement/Float",
+      statement: "Float must be settled daily.", provenance: "treasury", ...AGENT,
+    }));
+
+    const [ratify, audit, promoted, honest] = await rpc(root, [
+      { name: "ratify_spec", arguments: { specId: spec.id, agent: false } },
+      { name: "record_audit", arguments: { requirementId, outcome: "conformant", finding: "fine", evidence: { ran: [{ passed: true }] } } },
+      { name: "record_audit", arguments: { requirementId, outcome: "indeterminate", finding: "fine", promotedFrom: "au_forged" } },
+      { name: "requirements", arguments: {} },
+    ]);
+
+    assert.match(ratify!, /unknown parameter "agent"/,
+      "an undeclared `agent` reached resolveActor and outranked the MCP agent latch");
+    assert.match(audit!, /needs the `command` you actually ran/,
+      "`{passed: true}` names nothing that ran, and certified a rule whenever the rule cited code");
+    assert.match(promoted!, /unknown parameter "promotedFrom"/,
+      "provenance `promoteProvisionalAudit` sets was writable straight from record_audit");
+
+    // Could this pass vacuously? Only if the server refused everything. It does not: the
+    // spec is still a draft (so the forged ratification did NOT land) and an ordinary read
+    // answers normally.
+    const rules = JSON.parse(honest!) as { title: string }[];
+    assert.equal(rules.length, 1, "only the legitimately ratified rule exists");
+    assert.equal(rules[0]!.title, "Credit line is never negative");
   } finally {
     discard(root);
   }
