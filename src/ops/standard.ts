@@ -44,6 +44,11 @@ import {
   awaitingAdjudication as awaitingRec, actionable, settledWithoutAdjudication as settledRec,
 } from "../problems.js";
 import type { ActorInput } from "../identity.js";
+// Dynamic at call time, not a static edge: `ops-shared.ts` sits beside this module in
+// the layering and importing it here statically is the shape `import-cycles.test.ts`
+// exists to catch.
+const sharedNotesRec = async (root: string, targetId: string) =>
+  (await import("../ops-shared.js")).sharedNotes(root, targetId);
 import {
   recordVacuityCheck as recordVacuityCheckRec, weakAssertions as weakRec,
   criteriaSummary as criteriaSummaryRec,
@@ -182,8 +187,32 @@ export const ratifySpec = (root: string, input: { specId: string } & ActorInput)
 export const withdrawSpec = (root: string, input: { specId: string; reason: string } & ActorInput) =>
   withdrawSpecRec(root, input.specId, input);
 
-export const getSpec = async (root: string, input: { specId: string }) =>
-  served(root, () => getSpecRec(root, input.specId));
+/**
+ * A spec rendered for disposal, with the team's comments on it.
+ *
+ * The comments belong HERE and not one navigation away, for the reason every other
+ * panel on this surface does: the trade is that a principal reads N operations instead
+ * of 5,000 lines, and it fails at its last step if deciding means leaving to find what
+ * a teammate already said about the thing being decided.
+ *
+ * Threads are per TARGET — the spec, and each operation — so an objection to one
+ * amendment renders against that amendment rather than in a single running log.
+ */
+export const getSpec = async (root: string, input: { specId: string }) => {
+  const out = await served(root, () => getSpecRec(root, input.specId));
+  if ("error" in out) return out;
+  const notesFor = async (id: string) => {
+    const r = await sharedNotesRec(root, id);
+    return "error" in r ? [] : r.notes;
+  };
+  return {
+    ...out,
+    comments: await notesFor(input.specId),
+    operations: await Promise.all(
+      out.operations.map(async (o) => ({ ...o, comments: await notesFor(o.operation.id) })),
+    ),
+  };
+};
 
 export const reorganizeRequirement = (
   root: string, input: { id: string; title?: string; section?: string } & ActorInput,

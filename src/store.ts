@@ -2237,6 +2237,17 @@ const hydrateOperation = (body: string, origin: string | null): Operation | null
   } catch { return null; }
 };
 
+/** One operation by id — the lookup a comment needs to know what it is talking about. */
+export async function readOperation(root: string, id: string): Promise<Operation | null> {
+  const row = db(root).prepare("SELECT body, origin FROM operations WHERE id = ?").get(id) as
+    { body: string; origin: string | null } | undefined;
+  if (!row) return null;
+  try {
+    const op = JSON.parse(row.body) as Operation;
+    return row.origin ? { ...op, origin: row.origin } : op;
+  } catch { return null; }
+}
+
 export async function readOperations(
   root: string, opts: { specId?: string; requirementId?: string } = {},
 ): Promise<Operation[]> {

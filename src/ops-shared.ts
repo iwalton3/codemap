@@ -32,7 +32,7 @@ import {
 import { publishWalkthrough, currentWalkthrough, staleWalkthroughs, foldWalkthroughs, walkthroughScope, walkthroughShaped } from "./shared-walkthrough.js";
 import {
   createNote, answerNote, resolveNote, allNotes, foldNotes, noteScope, bucketFor,
-  type NewNote,
+  type NewNote, type NoteKind,
 } from "./shared-notes.js";
 import { assertTriageBatch, triageScope, triageOf, isTombstone, type SharedTriage } from "./shared-triage.js";
 import { cachedTriage, materializeTriage } from "./triage-publish.js";
@@ -1008,6 +1008,41 @@ export async function inboundReplies(root: string, pr: number | string, opts: { 
  */
 
 /** What the team knows about one symbol — everyone's notes, not just yours. */
+/**
+ * Comment on a PROPOSAL — a spec, or one operation inside it.
+ *
+ * Each call opens a THREAD rather than appending to one, which is where this differs
+ * from `comment` on a finding, and it is deliberate: a proposal draws several
+ * unrelated objections at once ("this amendment is too broad", "where did T+1 come
+ * from"), and collapsing them into one running log is what makes a review thread
+ * unusable. Replies go through `answer_shared_note`, the same as any other note.
+ *
+ * It changes NOTHING about the spec. Suggesting a change still means drafting one, so
+ * the operative content stays in the operations a principal actually ratifies — the
+ * §14.2 call, where the correcting agent sends a proposal rather than editing.
+ *
+ * Sidecar-required, and that is the honest constraint rather than a limitation: the
+ * whole point is reaching a teammate, and notes are the shared record.
+ */
+export async function commentOnProposal(
+  root: string,
+  input: { targetKind: "spec" | "operation"; targetId: string; body: string; kind?: NoteKind },
+) {
+  const b = bind(root);
+  if ("error" in b) return b;
+  const text = input.body?.trim();
+  if (!text) return { error: "a comment needs something in it" };
+  await ensureSidecar(b.cfg.path, b.actor);
+  const id = await createNote(b.cfg.path, b.cfg.universe, b.actor, {
+    targetKind: input.targetKind, targetId: input.targetId,
+    kind: input.kind ?? "note", text,
+  });
+  return {
+    ok: true as const, id, target: { kind: input.targetKind, id: input.targetId },
+    note: "appended locally — run `sync` to send it to the team",
+  };
+}
+
 export async function sharedNotes(root: string, targetId: string) {
   const cfg = resolveSidecar(root);
   if (!cfg) return { error: NO_SIDECAR };

@@ -1030,9 +1030,9 @@ const tools: Tool[] = [
   },
   {
     name: "comment",
-    description: "Say something on a finding or a bug — the reviewers' thread. For a finding this lives here rather than on GitHub so that findings about ABSENT code, and about code the branch never touched, can be discussed in place.\n\nOne verb for both: pass the id and the record decides. There is no separate tool per entity type, and no `pr` to get wrong — a finding carries its own.",
+    description: "Say something on a finding, a bug, or a SPEC PROPOSAL — the reviewers' thread. For a finding this lives here rather than on GitHub so that findings about ABSENT code, and about code the branch never touched, can be discussed in place.\n\nOne verb for all of them: pass the id and the record decides. There is no separate tool per entity type, and no `pr` to get wrong — a finding carries its own.\n\nOn a spec or an operation each call opens its OWN thread rather than appending to a running log, because a proposal draws several unrelated objections at once and one log makes them unreadable; reply with `answer_shared_note`. It changes nothing about the spec — suggesting a change still means drafting one, which is what keeps the operative content in the operations a principal ratifies. Comment on an OPERATION rather than the spec when the point is about one amendment: that is where the ratifier reads it.",
     inputSchema: obj({
-      id: { type: "string", description: "A finding or bug id, from `findings`, `shared_findings` or `list_bugs`." },
+      id: { type: "string", description: "A finding, bug, spec or operation id — from `findings`, `shared_findings`, `list_bugs`, `standard_queue` or `spec`." },
       body: { type: "string" },
       inReplyTo: { type: "string" },
       model: { type: "string", description: "YOUR model id. Never guess it." },
@@ -1113,7 +1113,7 @@ const tools: Tool[] = [
   {
     name: "shared_notes",
     description: "What the TEAM knows about a symbol — everyone's notes, questions and pointers on it, not just this store's. Read it before investigating: somebody may already have worked out why the obvious answer here is wrong, and that knowledge cost them real reading time. Answers to a question are listed with it.",
-    inputSchema: obj({ targetId: { type: "string", description: "The anchor or node id." } }, ["targetId"]),
+    inputSchema: obj({ targetId: { type: "string", description: "The anchor, node, spec or operation id." } }, ["targetId"]),
     handler: (a, c) => shared.sharedNotes(c.universe.path, a.targetId),
   },
   {

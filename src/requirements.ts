@@ -31,8 +31,8 @@
 
 import { randomBytes } from "node:crypto";
 import type {
-  AcceptanceCriterion, Acknowledgement, Actor, BugWitness, EvidenceKind, Operation, OperationKind,
-  Pointer, Requirement, Reversibility, Spec,
+  AcceptanceCriterion, Acknowledgement, Actor, Audit, BugWitness, EvidenceKind, Operation,
+  OperationKind, Pointer, Problem, Requirement, Reversibility, Spec,
 } from "./schema.js";
 import { criterionIdFor, EVIDENCE_KINDS, movedSection, normalizeSection, requirementIdFor } from "./schema.js";
 import {
@@ -957,12 +957,39 @@ export async function listRequirements(
   return Promise.all(requirements.map((r) => serve(root, r)));
 }
 
+/**
+ * One rule, and everything on the record about it.
+ *
+ * The AUDIT HISTORY is the half this used to omit, and omitting it made the record
+ * answer the wrong question: a rule renders its conformance verdict, and the reader
+ * who has to act on that verdict needs *when it was last looked at, by what, and what
+ * has been silencing it* — which is the difference between a state and an account of
+ * how it got there. None of it is a new record: audits, pointers, acknowledgements
+ * and problems all already key on `requirementId`; nothing here was unqueryable, it
+ * was just not on the one surface that reads a rule.
+ *
+ * Everything is read UNFILTERED — released acknowledgements, retired pointers,
+ * superseded audits and all. This is a history, and a history that shows only what is
+ * live is the one shape it must not take: a waiver somebody released is exactly the
+ * thing a reader is looking for when they ask why a rule went quiet for six months.
+ */
 export async function getRequirement(
   root: string, id: string,
-): Promise<{ requirement: ServedRequirement; history: Operation[] } | Err> {
+): Promise<{
+  requirement: ServedRequirement; history: Operation[];
+  audits: Audit[]; pointers: Pointer[]; acknowledgements: Acknowledgement[]; problems: Problem[];
+} | Err> {
   const r = await readRequirement(root, id);
   if (!r) return { error: `no requirement "${id}"` };
-  return { requirement: await serve(root, r), history: await readOperations(root, { requirementId: id }) };
+  const [requirement, history, audits, pointers, acknowledgements, problems] = await Promise.all([
+    serve(root, r),
+    readOperations(root, { requirementId: id }),
+    readAudits(root, { requirementId: id }),
+    readPointers(root, { requirementId: id }),
+    readAcknowledgements(root, { requirementId: id }),
+    readProblems(root, { requirementId: id }),
+  ]);
+  return { requirement, history, audits, pointers, acknowledgements, problems };
 }
 
 /** One operation rendered for review: what it does, to what, and what it would produce. */

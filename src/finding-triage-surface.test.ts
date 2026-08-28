@@ -849,7 +849,7 @@ test("an id that is nobody's prefix gets no suggestion", async () => {
   const u = await universe();
   try {
     const r = await commentOn(u.root, { id: "f_nothing_like_this", body: "x" }) as { error: string };
-    assert.match(r.error, /no finding or bug/);
+    assert.match(r.error, /no finding, bug, spec or operation/);
     assert.doesNotMatch(r.error, /did you mean|the start of/);
   } finally { u.cleanup(); }
 });

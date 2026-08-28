@@ -87,7 +87,7 @@ import {
   setLocalFindingPosted, relocateLocalFinding,
 } from "./ops/annotations.js";
 import { commentBug, corroborateBugOp, requestOnBugOp, acceptFinding } from "./ops/bugs.js";
-import { readFinding, readBug, idsStartingWith} from "./store.js";
+import { readFinding, readBug, idsStartingWith, readSpec, readOperation } from "./store.js";
 import { isRemediation, type Ask, type FindingState, type Remediation, type Verdict } from "./shared-findings.js";
 export { reportDefect, type DefectContext, type DefectInput } from "./ops/defect.js";
 export { promoteAnnotation } from "./promote-annotation.js";
@@ -371,12 +371,17 @@ function didYouMean(root: string, id: string): string {
 }
 
 async function whichRecord(root: string, id: string): Promise<
-  { bug: true } | { finding: { pr: string; shared: boolean } } | { error: string }
+  { bug: true } | { finding: { pr: string; shared: boolean } }
+  | { proposal: "spec" | "operation" } | { error: string }
 > {
   const f = await readFinding(root, id).catch((e: any) => { throw e; });
   if (f) return { finding: { pr: f.pr!, shared: !!f.origin } };
   if (await readBug(root, id)) return { bug: true };
-  return { error: `no finding or bug "${id}"${didYouMean(root, id)}` };
+  // Looked up, never sniffed from the prefix: an id shape is a convention and a row is
+  // a fact, and commenting on the wrong record is not the place to trade one for the other.
+  if (await readSpec(root, id)) return { proposal: "spec" };
+  if (await readOperation(root, id)) return { proposal: "operation" };
+  return { error: `no finding, bug, spec or operation "${id}"${didYouMean(root, id)}` };
 }
 
 /** Say something on a finding or a bug — the reviewers' thread, wherever it lives. */
@@ -384,6 +389,10 @@ export async function commentOn(root: string, input: { id: string; body: string;
   const w = await whichRecord(root, input.id);
   if ("error" in w) return w;
   if ("bug" in w) return commentBug(root, input.id, input.body, input.inReplyTo);
+  if ("proposal" in w) {
+    const shared = await import("./ops-shared.js");
+    return shared.commentOnProposal(root, { targetKind: w.proposal, targetId: input.id, body: input.body });
+  }
   if (!w.finding.shared) return commentOnLocalFinding(root, input.id, input.body, input.inReplyTo);
   const shared = await import("./ops-shared.js");
   return shared.commentOnFinding(root, w.finding.pr, input.id, input.body, input.inReplyTo, { model: input.model, harness: input.harness });
@@ -394,6 +403,14 @@ export async function corroborateOn(root: string, input: { id: string; verdict: 
   const w = await whichRecord(root, input.id);
   if ("error" in w) return w;
   if ("bug" in w) return corroborateBugOp(root, input.id, input.verdict, input.rationale);
+  if ("proposal" in w) {
+    return {
+      error:
+        `${input.id} is a ${w.proposal}, not a finding. A proposal is not corroborated — it is `
+        + `disposed of, by a principal ratifying or withdrawing it. To argue about one, `
+        + `\`comment\` on it; to change it, draft a spec.`,
+    };
+  }
   // A LOCAL canonical finding holds corroboration too — `closeLocalFinding` has written
   // it since the tables merged. Refusing here said "there is nobody to corroborate this
   // for", which was never the question: a second model reviewing your own finding is the
@@ -408,6 +425,14 @@ export async function requestHuman(root: string, input: { id: string; action: As
   const w = await whichRecord(root, input.id);
   if ("error" in w) return w;
   if ("bug" in w) return requestOnBugOp(root, input.id, input.action as never, input.rationale);
+  if ("proposal" in w) {
+    return {
+      error:
+        `${input.id} is a ${w.proposal}. The ask a proposal carries is ratification, and it is `
+        + `already in the queue a principal reads — asking here would be a second, quieter queue `
+        + `for the same act. \`comment\` on it if something needs saying first.`,
+    };
+  }
   // An ask on a local finding lands in the same queue the shared ones do — `reviewQueue`
   // reads the canonical table, so a person sees it either way.
   if (!w.finding.shared) return requestOnLocalFinding(root, input.id, input.action, input.rationale);

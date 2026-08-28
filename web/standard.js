@@ -45,6 +45,26 @@ const servedNote = (d) => when(!!(d && d.served), () => html`<div class="attn-ba
 </div>`);
 
 /**
+ * A comment thread on a proposal.
+ *
+ * Read-only here; posting is the page's job because only it knows how to reload. The
+ * author is rendered with `via` intact — a remark from an agent running as somebody is
+ * a different weight of evidence from one that person wrote, and collapsing the two is
+ * the misattribution this codebase has already shipped once.
+ */
+const thread = (notes) => when(notes && notes.length > 0, () => html`<div class="cmts">
+  ${each(notes, (n) => html`<div class="cmt">
+    <div class="cmt-h">${n.author && n.author.principal ? n.author.principal : 'unknown'}${n.author && n.author.via ? html` <span class="dim">via ${n.author.via.model || 'agent'}</span>` : ''}
+      <span class="dim">${(n.createdAt || '').slice(0, 16).replace('T', ' ')}</span>
+      ${when(n.kind === 'question', () => html`<span class="qbadge">question</span>`)}
+      ${when(!!n.resolved, () => html`<span class="qbadge">resolved</span>`)}
+    </div>
+    <div class="cmt-b">${n.text}</div>
+    ${each(n.answers || [], (a) => html`<div class="cmt-a"><span class="dim">${a.author && a.author.principal ? a.author.principal : 'unknown'}:</span> ${a.body}</div>`, (a) => a.at + (a.body || '').slice(0, 12))}
+  </div>`, (n) => n.id)}
+</div>`);
+
+/**
  * @typedef {{ params: { universe: string, id?: string }, query: Record<string, string> }} StdProps
  */
 
@@ -106,7 +126,7 @@ defineComponent('standard-page', StandardPage);
  * process reverts to reading code (`getSpec`'s own doc says this; this is the surface
  * it was describing).
  *
- * @typedef {{ d: any, busy: string|null, err: string|null, reason: string }} SpecState
+ * @typedef {{ d: any, busy: string|null, err: string|null, reason: string, draft: Record<string,string> }} SpecState
  * @extends {Component<StdProps, SpecState>}
  */
 class SpecPage extends Component {
@@ -115,7 +135,7 @@ class SpecPage extends Component {
   constructor(props) {
     super(props);
     /** @type {SpecState} */
-    this.state = { d: null, busy: null, err: null, reason: '' };
+    this.state = { d: null, busy: null, err: null, reason: '', draft: {} };
   }
   load = this.createTask(async () => {
     nav.current = this.props.params.universe;
@@ -148,6 +168,27 @@ class SpecPage extends Component {
     } catch (e) { this.state.err = errText(e); } finally { this.state.busy = null; }
   }
 
+  /** Post a comment against a spec or an operation, then reload so it is really there. */
+  async say(targetId) {
+    const body = (this.state.draft[targetId] || '').trim();
+    if (!body || this.state.busy) return;
+    this.state.busy = 'comment:' + targetId; this.state.err = null;
+    try {
+      const r = await apiPost('/api/standard/comment', { u: this.props.params.universe, id: targetId, body });
+      if (r && r.error) { this.state.err = r.error; return; }
+      this.state.draft = { ...this.state.draft, [targetId]: '' };
+      this.load.run();
+    } catch (e) { this.state.err = errText(e); } finally { this.state.busy = null; }
+  }
+
+  composer(targetId, placeholder) {
+    return html`<div class="cmt-new">
+      <input placeholder="${placeholder}" value="${this.state.draft[targetId] || ''}"
+        on-change="${(e, v) => { this.state.draft = { ...this.state.draft, [targetId]: v }; }}">
+      <button class="pullbtn" disabled="${!!this.state.busy}" on-click="${() => this.say(targetId)}">comment</button>
+    </div>`;
+  }
+
   op(o, u) {
     const k = o.operation.kind;
     return html`<div class="op-card ${o.contextMoved ? 'moved' : ''}">
@@ -170,6 +211,8 @@ class SpecPage extends Component {
         ${each(o.silencedBy, (a) => html`<div class="op-moverow">${a.basis} · ${a.state} · ${a.rationale}</div>`, (a) => a.id)}
       </div>`)}
       ${when(o.watchedBy.length > 0, () => html`<div class="fs dim">${o.watchedBy.length} pointer${o.watchedBy.length === 1 ? '' : 's'} watching this rule — a ratified amendment means code that was conformant may not be</div>`)}
+      ${thread(o.comments)}
+      ${this.composer(o.operation.id, 'comment on this operation…')}
     </div>`;
   }
 
@@ -183,6 +226,10 @@ class SpecPage extends Component {
 
       <div class="sec">operations (${d.operations.length})</div>
       ${each(d.operations, (o) => this.op(o, u), (o) => o.operation.id)}
+
+      <div class="sec">on this proposal</div>
+      ${thread(d.comments)}
+      ${this.composer(d.spec.id, 'comment on the proposal as a whole…')}
 
       ${when(!!this.state.err, () => html`<div class="attn-banner"><span class="attn-n">✕</span> <span>${this.state.err}</span></div>`)}
       ${when(d.spec.status === 'draft', () => html`<div class="op-actions">
@@ -241,7 +288,45 @@ class RequirementPage extends Component {
         ${when(d.requirement.cites.length > 0, () => html`<div class="dnav">${each(d.requirement.cites, (a) => html`<a class="chip" href="${href(`/u/${u}/anchor/${a}/`)}">${a.slice(0, 12)}</a>`, (a) => a)}</div>`)}
       </div>
 
-      <div class="sec">history (${d.history.length})</div>
+      <div class="sec">audit history (${d.audits.length})</div>
+      ${when(!d.audits.length, () => html`<div class="empty">never audited. A conformance verdict with no audit behind it is <code>unknown</code>, which must never read as conformant.</div>`)}
+      ${each(d.audits, (a) => html`<div class="op-card">
+        <div class="ft">${confDot(a.outcome === 'conformant' ? 'conformant' : a.outcome === 'nonconformant' ? 'nonconformant' : 'unknown')}
+          <b>${a.outcome}</b>
+          <span class="qbadge">${a.trigger || 'ad-hoc'}</span>
+          ${when(!!a.provisional, () => html`<span class="qbadge drift" title="taken off the default branch — it is about somebody's branch, not about the codebase">provisional</span>`)}
+          <span class="dim">${(a.at || '').slice(0, 16).replace('T', ' ')} · ${a.auditor && a.auditor.principal ? a.auditor.principal : 'unknown'}${a.auditor && a.auditor.via ? ' via ' + (a.auditor.via.model || 'agent') : ''}</span>
+        </div>
+        <div class="fs">${a.finding}</div>
+        ${when(!!(a.evidence && (a.evidence.read || a.evidence.ran)), () => html`<div class="fs dim">evidence: ${(a.evidence.read || []).length} anchor(s) read${(a.evidence.ran || []).length ? ', ' + a.evidence.ran.length + ' command(s) run' : ''}</div>`)}
+      </div>`, (a) => a.id)}
+
+      <div class="sec">watching this rule (${d.pointers.length})</div>
+      ${when(!d.pointers.length, () => html`<div class="empty">nothing points at it — a pointer is a prior on where to look, never a verdict</div>`)}
+      ${each(d.pointers, (p) => html`<div class="op-card">
+        <div class="ft"><span class="qbadge">${p.state}</span> <span class="dim">${p.target && p.target.kind} ${p.target && p.target.id}</span></div>
+        <div class="fs">${p.rationale}</div>
+      </div>`, (p) => p.id)}
+
+      <div class="sec">what has silenced it (${d.acknowledgements.length})</div>
+      ${when(!d.acknowledgements.length, () => html`<div class="empty">no gap or debt has ever been granted against it</div>`)}
+      ${each(d.acknowledgements, (a) => html`<div class="op-card ${a.state === 'active' ? 'moved' : ''}">
+        <div class="ft"><span class="qbadge ${a.state === 'active' ? 'drift' : ''}">${a.basis}</span>
+          <span class="qbadge">${a.state}</span>
+          <span class="dim">${(a.grantedAt || '').slice(0, 10)}${a.grantedBy && a.grantedBy.principal ? ' · ' + a.grantedBy.principal : ''}</span>
+        </div>
+        <div class="fs">${a.rationale}</div>
+        ${when(!!a.releasedAt, () => html`<div class="fs dim">released ${(a.releasedAt || '').slice(0, 10)} — kept because a waiver somebody lifted is exactly what a reader asking why this went quiet is looking for</div>`)}
+      </div>`, (a) => a.id)}
+
+      <div class="sec">problems (${d.problems.length})</div>
+      ${each(d.problems, (p) => html`<div class="op-card">
+        <div class="ft"><span class="qbadge ${p.disposition ? '' : 'drift'}">${p.disposition || 'un-adjudicated'}</span>
+          <span class="dim">${(p.raisedAt || '').slice(0, 10)}</span></div>
+        <div class="fs">${p.summary}</div>
+      </div>`, (p) => p.id)}
+
+      <div class="sec">how it got here (${d.history.length})</div>
       ${each(d.history, (o) => html`<div class="op-card">
         <div class="ft"><span class="qbadge">${o.kind.replace(/_/g, ' ')}</span> <span class="dim">${o.specId}</span></div>
         <div class="fs">${o.rationale}</div>

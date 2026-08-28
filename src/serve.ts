@@ -289,6 +289,13 @@ const server = createServer(async (req, res) => {
       const out = await withLock<unknown>(root, async () => {
         if (act === "ratify") return ops.ratifySpec(root, { specId: body.specId });
         if (act === "withdraw") return ops.withdrawSpec(root, { specId: body.specId, reason: body.reason ?? "" });
+        // One verb, record-dispatched — the same `comment` an agent calls over MCP, so a
+        // person and an agent write into one thread rather than two parallel ones.
+        if (act === "comment") return ops.commentOn(root, { id: body.id, body: body.body });
+        if (act === "answer") {
+          const shared = await import("./ops-shared.js");
+          return shared.answerSharedNote(root, body.targetId, body.id, body.body);
+        }
         return { error: `no such action "${act}"` };
       });
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });

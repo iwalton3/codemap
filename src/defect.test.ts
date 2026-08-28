@@ -175,7 +175,7 @@ test("an id that is neither is refused, not routed to a default", async () => {
       () => corroborateOn(r.root, { id: "nope", verdict: "confirm" as const, rationale: "x" }),
       () => requestHuman(r.root, { id: "nope", action: "resolve" as const, rationale: "x" }),
     ]) {
-      assert.match(String(((await call()) as { error: string }).error), /no finding or bug "nope"/);
+      assert.match(String(((await call()) as { error: string }).error), /no finding, bug, spec or operation "nope"/);
     }
   } finally { r.cleanup(); }
 });

@@ -229,7 +229,7 @@ test("every read on the standard ops surface goes through the scope marker", () 
   // A read is an export that is not a write. Writes are the ones that take an ActorInput
   // and mutate; they carry no marker because their answer is an outcome, not a projection.
   const WRITES = new Set([
-    "draftSpec", "addOperation", "ratifySpec", "reorganizeRequirement", "acknowledgeGap",
+    "draftSpec", "addOperation", "ratifySpec", "withdrawSpec", "reorganizeRequirement", "acknowledgeGap",
     "acknowledgeDebt", "releaseAcknowledgement", "recordAudit", "recordVacuityCheck",
     "promoteProvisionalAudit", "raiseProblem", "adjudicate", "declarePointer",
     "restatePointer", "retirePointer", "pinPopulation", "declareNotExpressible",
@@ -241,11 +241,17 @@ test("every read on the standard ops surface goes through the scope marker", () 
   // introduced `served` there were 23 reads; fewer than that means the sweep broke.
   assert.ok(reads.length >= 23, `expected the sweep to find the reads, found ${reads.length}`);
 
+  // To the NEXT export, not a fixed window. A 600-character slice reaches into whatever
+  // follows, so an unmarked read passed whenever its NEIGHBOUR was marked — which is how
+  // `withdrawSpec` (a write, and missing from the list above) sat here green until a doc
+  // comment pushed the neighbour's `served(` out of range. A window that can borrow its
+  // answer from the next function is a sweep that fails open.
   const missing = reads.filter((name) => {
     const at = src.indexOf(`export const ${name}`) >= 0
       ? src.indexOf(`export const ${name}`)
       : src.indexOf(`export async function ${name}`);
-    return !src.slice(at, at + 600).includes("served(");
+    const next = src.indexOf("\nexport ", at + 1);
+    return !src.slice(at, next === -1 ? src.length : next).includes("served(");
   });
   assert.deepEqual(missing, [],
     "a read on this surface answers without saying whether the standard may be presented as the team's");

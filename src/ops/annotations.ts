@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type Actor, type Anchor, type LogicalNode, type BugSeverity, type Annotation, type Disposition, DISPOSITIONS, COMMENT_MAX } from "../schema.js";
+import type { NoteTargetKind } from "../shared-notes.js";
 import { indexFile, indexBlob } from "../repo.js";
 import { headCommit, readBlobs } from "../git.js";
 import { readAnchorStore, loadNodes, readAnnotations, writeAnnotations, readFindings, readFinding, writeLocalFinding, findAnchorsOutsideWork, readPushes, bodyHashAt, readOrphans, readSharedNotes, idsStartingWith } from "../store.js";
@@ -1420,7 +1421,13 @@ export async function listQuestions(root: string, opts: { includeResolved?: bool
   ]);
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
   const anchorById = new Map(store.anchors.map((a) => [a.id, a]));
-  const labelOf = (target: { kind: "anchor" | "node"; id: string }): string => {
+  const labelOf = (target: { kind: NoteTargetKind; id: string }): string => {
+    // A question about a PROPOSAL belongs in this queue as much as one about code —
+    // an unanswered question on a spec somebody is about to ratify is exactly what a
+    // person should see before they do. It is labelled by id: the queue is universe-
+    // wide and resolving the title would mean a store read per row for the one target
+    // kind that already names itself in the link beside it.
+    if (target.kind === "spec" || target.kind === "operation") return `${target.kind} ${target.id}`;
     const t = target.kind === "node" ? nodeById.get(target.id) : anchorById.get(target.id);
     return target.kind === "node"
       ? (t as LogicalNode | undefined)?.title ?? target.id

@@ -41,7 +41,7 @@ export interface NoteAnswer {
 
 export interface SharedNote {
   id: string;
-  target: { kind: "anchor" | "node"; id: string };
+  target: { kind: NoteTargetKind; id: string };
   kind: NoteKind;
   text: string;
   severity?: BugSeverity;
@@ -71,6 +71,21 @@ export interface SharedNote {
  * `answers` is append-only and `resolved` is a latch, so neither is here.
  */
 const CONTESTABLE = ["text", "category", "severity", "line"] as const;
+
+/**
+ * What a note can be ABOUT.
+ *
+ * `anchor`/`node` are code; `spec`/`operation` are a PROPOSAL, which is the other
+ * kind of thing a team argues about before it lands. One list, exported, because the
+ * publish surface and the FOLD both filter on it — and a guard in the tool and not in
+ * the fold binds one machine, which is the defect this subsystem keeps re-producing.
+ *
+ * A note on a proposal is discourse, never an edit: nothing here changes a spec, and
+ * suggesting a change still means drafting one (`draft_spec`), which is what keeps the
+ * operative content in the operations a principal actually ratifies.
+ */
+export const NOTE_TARGET_KINDS = ["anchor", "node", "spec", "operation"] as const;
+export type NoteTargetKind = typeof NOTE_TARGET_KINDS[number];
 
 /** Which of 256 buckets a target's notes live in. */
 export const bucketFor = (targetId: string): string =>
@@ -102,11 +117,11 @@ export function foldNotes(events: LogEvent[]): Map<string, SharedNote> {
       const text = str(d, "text");
       const targetId = str(d, "targetId");
       const targetKind = str(d, "targetKind");
-      if (!text || !targetId || (targetKind !== "anchor" && targetKind !== "node")) continue;
+      if (!text || !targetId || !NOTE_TARGET_KINDS.includes(targetKind as NoteTargetKind)) continue;
       const kind = str(d, "kind");
       out.set(e.subject, {
         id: e.subject,
-        target: { kind: targetKind, id: targetId },
+        target: { kind: targetKind as NoteTargetKind, id: targetId },
         kind: (KINDS.includes(kind ?? "") ? kind : "note") as NoteKind,
         text,
         severity: str(d, "severity") as BugSeverity | undefined,
@@ -164,7 +179,7 @@ const emit = (
 
 export interface NewNote {
   id?: string;
-  targetKind: "anchor" | "node";
+  targetKind: NoteTargetKind;
   targetId: string;
   kind?: NoteKind;
   text: string;
