@@ -215,3 +215,80 @@ test("a spec ratifies once, so a replayed or duplicated event cannot apply it tw
     assert.equal(twice.specs[0]!.ratifiedAt, "2026-08-02T00:00:00.000Z", "and the first adoption is the one that counts");
   } finally { discard(root); }
 });
+
+/**
+ * The three gates below existed in the tools and NOT in the fold, which means they bound
+ * only the machine that ran them. `sharing-boundary.test.ts` states the rule this file
+ * broke: a publish check binds writers who ask, and the fold is the only gate that binds a
+ * writer this build did not write — an older client, a hand-written line, a future one
+ * that forgets.
+ */
+test("the fold refuses an agent's debt acknowledgement", async () => {
+  const root = await log("ackgate");
+  try {
+    const base = {
+      id: "ack_1", basis: "debt" as const, requirementId: "r_x", rationale: "living with it",
+      priority: "high" as const, revalidateBy: "2027-01-01", state: "active" as const,
+      grantedAt: "2026-08-01T00:00:00.000Z",
+    };
+    await publishAckGranted(root, SCOPE, opus, { ...base, grantedBy: opus });
+    assert.equal(
+      (await fold(root)).acknowledgements.length, 0,
+      "accepting non-conformance is an admission with an owner; an agent has none",
+    );
+
+    // A gap from an agent IS legitimate — an auditor classifying ahead of adoption is the
+    // intended caller — so the refusal must be about the basis, not about the actor alone.
+    await publishAckGranted(root, SCOPE, opus, {
+      ...base, id: "ack_2", basis: "gap", operationId: "op_1", requirementId: undefined, grantedBy: opus,
+    });
+    assert.equal((await fold(root)).acknowledgements.length, 1);
+
+    await publishAckGranted(root, SCOPE, izzie, { ...base, id: "ack_3", grantedBy: izzie });
+    assert.equal((await fold(root)).acknowledgements.length, 2, "a principal's debt binds");
+  } finally { discard(root); }
+});
+
+test("the fold refuses a conformant audit that touched no code", async () => {
+  const root = await log("auditgate");
+  try {
+    const base: Audit = {
+      id: "au_1", requirementId: "r_x", outcome: "conformant", evidence: {},
+      witnesses: [], finding: "looks fine to me", auditor: opus, at: "2026-08-03T00:00:00.000Z",
+    };
+    await publishAudit(root, SCOPE, opus, base);
+    assert.equal(
+      (await fold(root)).audits.length, 0,
+      "a doc-only or evidence-free certification must not reach `conformant` from anywhere",
+    );
+
+    await publishAudit(root, SCOPE, opus, {
+      ...base, id: "au_2", evidence: { read: ["a_credit"] },
+      witnesses: [{ anchorId: "a_credit", bodyHash: "h1:sha256:abc" }],
+    });
+    assert.equal((await fold(root)).audits.length, 1, "one that read code does bind");
+
+    // `indeterminate` is the quiet bucket and may carry nothing, so the gate is about the
+    // OUTCOME rather than about evidence being present.
+    await publishAudit(root, SCOPE, opus, { ...base, id: "au_3", outcome: "indeterminate" });
+    assert.equal((await fold(root)).audits.length, 2);
+  } finally { discard(root); }
+});
+
+test("the fold drops provisional work, which is never the team's", async () => {
+  const root = await log("provgate");
+  try {
+    await publishAudit(root, SCOPE, opus, {
+      id: "au_1", requirementId: "r_x", outcome: "nonconformant", evidence: { read: ["a_1"] },
+      witnesses: [], finding: "broken on my branch", auditor: opus,
+      at: "2026-08-03T00:00:00.000Z", provisional: true,
+    });
+    await publishProblemRaised(root, SCOPE, opus, {
+      id: "pr_1", requirementId: "r_x", auditId: "au_1", summary: "branch-local",
+      raisedBy: opus, raisedAt: "2026-08-03T00:00:01.000Z", provisional: true,
+    });
+    const f = await fold(root);
+    assert.equal(f.audits.length, 0, "a branch audit is about work in progress, not the codebase");
+    assert.equal(f.problems.length, 0, "and so is a problem raised from one");
+  } finally { discard(root); }
+});

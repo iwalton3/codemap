@@ -70,6 +70,24 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     fold: ["src/shared-graph.ts", /if \(raw\.generatedBy\) continue;/],
     publish: ["src/shared-graph.ts", /filter\(\(e\) => !e\.generatedBy\)/],
   },
+  // The three below shipped with the publish half only, which binds nobody but the
+  // machine that ran it. Found by re-reading the fold against the tools it mirrors, not
+  // by this test — which is why they are in it now.
+  {
+    what: "provisional (branch-local) audits and problems",
+    fold: ["src/shared-standard.ts", /if \(audit\.provisional\) break;/],
+    publish: ["src/standard-publish.ts", /audit\.provisional \? Promise\.resolve\(localOnly\)/],
+  },
+  {
+    what: "an agent's debt acknowledgement",
+    fold: ["src/shared-standard.ts", /ack\.basis === "debt" && e\.actor\.via/],
+    publish: ["src/acknowledgements.ts", /principal\(root, input, "acknowledge debt"\)/],
+  },
+  {
+    what: "a conformant audit that touched no code",
+    fold: ["src/shared-standard.ts", /audit\.outcome === "conformant" && !\(ev\.read\?\.length/],
+    publish: ["src/audits.ts", /input\.outcome === "conformant" && !touchedCode\(evidence\)/],
+  },
 ];
 
 test("derived content is refused at BOTH the publish surface and the fold", () => {

@@ -150,7 +150,13 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
       }
       case "ack.granted": {
         const ack = obj(e.data, "ack") as Acknowledgement | undefined;
-        if (ack?.id) acknowledgements.set(ack.id, { ...ack, state: "active", origin: "sync" });
+        if (!ack?.id) break;
+        // DEBT is an admission with an owner, so an agent may not grant one — the same
+        // rule `acknowledgeDebt` enforces, restated where a remote clone can see it. A
+        // GAP from an agent is legitimate: an auditor classifying ahead of adoption is
+        // the intended caller, and a gap admits nothing.
+        if (ack.basis === "debt" && e.actor.via) break;
+        acknowledgements.set(ack.id, { ...ack, state: "active", origin: "sync" });
         break;
       }
       case "ack.released": {
@@ -164,7 +170,17 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
       }
       case "audit.recorded": {
         const audit = obj(e.data, "audit") as Audit | undefined;
-        if (audit?.id) audits.set(audit.id, { ...audit, origin: "sync" });
+        if (!audit?.id) break;
+        // Provisional work is about somebody's branch, not about the codebase. `shareAudit`
+        // will not send one; this binds a client that did.
+        if (audit.provisional) break;
+        // Non-vacuity, restated at the fold. A `conformant` audit that touched no code
+        // certifies nothing, and this is the only place that binds a writer whose tool
+        // did not check — which is the one path by which `conformant` could be reached
+        // without a code-backed audit.
+        const ev = audit.evidence ?? {};
+        if (audit.outcome === "conformant" && !(ev.read?.length || ev.ran?.length)) break;
+        audits.set(audit.id, { ...audit, origin: "sync" });
         break;
       }
       case "problem.raised": {
@@ -175,6 +191,9 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
         // otherwise fold to a problem that names a decider who never decided. Dropping
         // the verdict alone was the first version of this, and the test below is what
         // found it. See `docs/requirements-architecture.md`.
+        // Same rule as the audit it rests on: a problem is exactly as shareable as its
+        // evidence, and branch-local work is nobody else's.
+        if (p.provisional) break;
         const { disposition, adjudicatedBy, adjudicatedAt, adjudicationReason, ...raised } = p;
         problems.set(p.id, { ...raised, origin: "sync" });
         break;
