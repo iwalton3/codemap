@@ -31,11 +31,11 @@
 
 import { randomBytes } from "node:crypto";
 import type {
-  Actor, BugWitness, Operation, OperationKind, Requirement, Reversibility, Spec,
+  Acknowledgement, Actor, BugWitness, Operation, OperationKind, Requirement, Reversibility, Spec,
 } from "./schema.js";
 import { requirementIdFor } from "./schema.js";
 import {
-  readOperations, readRequirement, readRequirements, readSpec, readSpecs,
+  readAcknowledgements, readOperations, readRequirement, readRequirements, readSpec, readSpecs,
   requirementSectionCounts, workHas, writeLocalOperation, writeLocalRequirement, writeLocalSpec,
 } from "./store.js";
 import { liveHashes, witnessDrift, realDrift } from "./reviews.js";
@@ -43,7 +43,7 @@ import { ABSENT_HASH } from "./normalize.js";
 import { isAgentActor, requireActor } from "./identity.js";
 import type { ActorInput } from "./identity.js";
 import {
-  disposition, shareOperation, shareSpecDrafted, shareSpecRatified,
+  disposition, shareOperation, shareSpecDrafted, shareSpecRatified, type Shared,
 } from "./standard-publish.js";
 
 const mint = (p: string) => p + randomBytes(6).toString("hex");
@@ -322,9 +322,21 @@ export interface OperationCheck {
  * applied ones coherent. Partial ratification, if it is ever wanted, has to be an explicit
  * reviewer choice with the remainder becoming a new spec, not a default of the fold.
  */
+/**
+ * What a ratification actually did.
+ *
+ * `applied: null` is the whole point of the shape: on the shared path the FOLD decides
+ * whether the operations landed, and until this machine has folded the event it cannot
+ * say. A caller that reads `applied` gets what really happened or nothing — never a list
+ * of what was asked for, dressed as a list of what was done.
+ */
+export type Ratification =
+  | { ok: true; spec: Spec; applied: Operation[] }
+  | { ok: true; spec: Spec; applied: null; submitted: Operation[]; pending: string };
+
 export async function ratifySpec(
   root: string, specId: string, input: ActorInput = {},
-): Promise<{ ok: true; spec: Spec; applied: Operation[] } | (Err & { checks?: OperationCheck[] })> {
+): Promise<Ratification | (Err & { checks?: OperationCheck[] })> {
   const who = principal(root, input, "ratify");
   if (isErr(who)) return who;
   const sp = await readSpec(root, specId);
@@ -402,14 +414,21 @@ export async function ratifySpec(
       : (await readRequirement(root, op.requirementId!))?.cites ?? [];
     witnesses[op.id] = await witness(root, cites);
   }
-  const shared = disposition(await shareSpecRatified(root, sp.id, at, witnesses, ops.map((o) => o.id)));
+  const outcome = await shareSpecRatified(root, sp.id, at, witnesses, ops.map((o) => o.id));
+  const shared = disposition(outcome);
   if ("error" in shared) return shared;
+
+  // SHARED: this machine does not apply anything — the fold does, and it can REFUSE. Two
+  // principals can each validate against the same statement and both append, because the
+  // log is pull/push and never read on an ordinary read; the fold then marks the loser
+  // `conflicted` and applies nothing from it. This used to push every operation onto
+  // `applied` and return `ok: true` regardless, so a ratification the fold threw away was
+  // indistinguishable from one it adopted — and `outcome.folded`, which is the thing that
+  // knows, was computed and discarded.
+  if (!shared.local) return sharedRatification(root, sp, ops, outcome, who, at);
 
   const applied: Operation[] = [];
   for (const op of ops) {
-    // Shared: the fold applies the operations, and writing rows here would be erased by
-    // the next sync. The loop still runs so the caller gets what was applied.
-    if (!shared.local) { applied.push(op); continue; }
     let bound = op;
     if (op.kind === "add_requirement") {
       const r: Requirement = {
@@ -454,6 +473,44 @@ export async function ratifySpec(
     await bindGapsForSpec(root, sp.id);
   }
   return { ok: true, spec: next, applied };
+}
+
+/**
+ * What the FOLD did with a ratification, read back rather than assumed.
+ *
+ * Three outcomes, and the middle one is why this exists at all:
+ *
+ *  - folded and clean → the real applied operations, bound to the rules they created.
+ *  - folded and `conflicted` → the act happened and applied NOTHING. That is a failure of
+ *    adoption even though the append succeeded, so it must not return `ok`.
+ *  - not folded here → appended and durable; this machine simply cannot say yet. Saying so
+ *    is the honest answer, and it is not an error: `materializeStandard` documents that its
+ *    failure is not failure of the write.
+ */
+async function sharedRatification(
+  root: string, sp: Spec, submitted: Operation[], outcome: Shared, who: Actor, at: string,
+): Promise<Ratification | Err> {
+  const asked: Spec = { ...sp, status: "ratified", ratifiedBy: who, ratifiedAt: at };
+  const folded = outcome.folded ? await readSpec(root, sp.id) : null;
+  if (!folded || folded.status !== "ratified") {
+    return {
+      ok: true, spec: asked, applied: null, submitted,
+      pending:
+        `${sp.id} is appended to the shared log and durable, but this machine has not folded `
+        + `it yet, so what it applied is not knowable here. Re-read the spec after the next sync.`,
+    };
+  }
+  if (folded.conflicted) {
+    return {
+      error:
+        `${sp.id} was ratified and the fold applied NOTHING from it: at least one operation was `
+        + `written against a statement another clone's ratification had already changed. The `
+        + `standard is unchanged. Do not retry — the ratification really happened, so the spec `
+        + `is spent and cannot be adopted again. Draft a new spec against the current text.`,
+    };
+  }
+  // Bound by the fold, which is the only writer on this path.
+  return { ok: true, spec: folded, applied: await readOperations(root, { specId: sp.id }) };
 }
 
 /**
@@ -524,6 +581,18 @@ export interface RenderedOperation {
   after?: string;
   /** The context has moved; this operation cannot be adopted as drafted. */
   contextMoved: boolean;
+  /**
+   * Gap acknowledgements already raised against this operation — a SILENCER that binds the
+   * moment the spec is ratified.
+   *
+   * Rendered because the ratifier is the only person who can refuse it and could not see
+   * it: a gap may only be minted while the spec is a draft, and ratification then binds it
+   * to the rule the operation creates, so the rule arrives already classified `gap` rather
+   * than `unknown` — on an agent's assertion that no code which should conform exists yet.
+   * That assertion is not checkable until the population predicate is built. Approving the
+   * rule is not approving the classification, and it was impossible to tell them apart.
+   */
+  silencedBy: Acknowledgement[];
 }
 
 /**
@@ -536,7 +605,7 @@ export interface RenderedOperation {
  */
 export async function getSpec(
   root: string, specId: string,
-): Promise<{ spec: Spec; operations: RenderedOperation[]; adoptable: boolean } | Err> {
+): Promise<{ spec: Spec; operations: RenderedOperation[]; adoptable: boolean; silenced: number } | Err> {
   const sp = await readSpec(root, specId);
   if (!sp) return { error: `no spec "${specId}"` };
   const ops = await readOperations(root, { specId });
@@ -550,21 +619,38 @@ export async function getSpec(
       ...(before ? { before } : {}),
       ...(op.kind === "retire_requirement" ? {} : { after: op.statement }),
       contextMoved,
+      silencedBy: await readAcknowledgements(root, { operationId: op.id, state: "active" }),
     });
   }
   return {
     spec: sp, operations,
     adoptable: sp.status === "draft" && ops.length > 0 && !operations.some((o) => o.contextMoved),
+    // Deliberately NOT folded into `adoptable`: a pre-attached gap is a thing to see and
+    // decide about, not a defect in the spec. Refusing adoption over one would make the
+    // silencer harder to raise than to ratify, which is backwards.
+    silenced: operations.reduce((n, o) => n + o.silencedBy.length, 0),
   };
 }
 
 /** The ratification queue — every draft, oldest first. */
-export async function pendingSpecs(root: string): Promise<{ spec: Spec; operations: number; irreversible: boolean }[]> {
+export async function pendingSpecs(
+  root: string,
+): Promise<{ spec: Spec; operations: number; irreversible: boolean; silenced: number }[]> {
   const drafts = await readSpecs(root, { status: "draft" });
-  const out: { spec: Spec; operations: number; irreversible: boolean }[] = [];
+  const out: { spec: Spec; operations: number; irreversible: boolean; silenced: number }[] = [];
   for (const spec of drafts) {
     const ops = await readOperations(root, { specId: spec.id });
-    out.push({ spec, operations: ops.length, irreversible: ops.some((o) => o.reversibility === "irreversible") });
+    // Counted in the QUEUE, not only inside the spec: a gap binds at ratification and the
+    // ratifier is the last person who can refuse it, so "this proposal arrives pre-silenced"
+    // has to be visible before they open it. `irreversible` is here for the same reason.
+    let silenced = 0;
+    for (const op of ops) {
+      silenced += (await readAcknowledgements(root, { operationId: op.id, state: "active" })).length;
+    }
+    out.push({
+      spec, operations: ops.length,
+      irreversible: ops.some((o) => o.reversibility === "irreversible"), silenced,
+    });
   }
   return out;
 }

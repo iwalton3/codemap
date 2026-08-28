@@ -16,9 +16,11 @@ import { writeStore, readRequirements, readSpecs, readAudits, readProblems } fro
 import type { State } from "./schema.js";
 import { discard } from "./test-tmp.js";
 import { resolveSidecar } from "./sidecar-config.js";
+import { materializeStandard } from "./standard-publish.js";
 import { readScope } from "./eventlog.js";
 import { standardScope } from "./shared-standard.js";
 import { draftSpec, addOperation, ratifySpec, listRequirements } from "./requirements.js";
+import { readSpec } from "./store.js";
 import { recordAudit, promotableAudits, promoteProvisionalAudit } from "./audits.js";
 import { raiseProblem, listProblems } from "./problems.js";
 
@@ -222,4 +224,90 @@ test("a provisional finding that was FIXED before merging makes no noise at all"
     assert.ok("error" in refused, "and it cannot be promoted by hand either");
     assert.match((refused as any).error, /survives its own fix/);
   } finally { discard(root); discard(side); }
+});
+
+/**
+ * Two clones of ONE universe on ONE log.
+ *
+ * They must share a directory BASENAME: a local origin is never a GitHub URL, so
+ * `universeKey` takes its fallback, and differently-named clones publish to different
+ * universes and never see each other — the fixture would pass while testing nothing.
+ */
+async function twoClones() {
+  const side = mkdtempSync(join(tmpdir(), "codemap-side2-"));
+  const roots: string[] = [];
+  for (const parent of [mkdtempSync(join(tmpdir(), "codemap-a-")), mkdtempSync(join(tmpdir(), "codemap-b-"))]) {
+    const root = join(parent, "acme-api");
+    mkdirSync(join(root, ".codemap"), { recursive: true });
+    mkdirSync(join(root, "src"), { recursive: true });
+    git(root, "init", "-q", "-b", "main");
+    git(root, "config", "user.email", "izzie@x.com");
+    git(root, "config", "user.name", "izzie");
+    writeFileSync(join(root, "src/credit.js"), SRC, "utf8");
+    git(root, "add", "-A");
+    git(root, "commit", "-qm", "init");
+    writeFileSync(join(root, ".codemap", "sidecar"), side, "utf8");
+    await writeStore(root, await indexBlob(SRC, "src/credit.js"), state);
+    roots.push(root);
+  }
+  return { a: roots[0]!, b: roots[1]!, side };
+}
+
+test("a shared ratification reports what the FOLD did, not what it was asked to do", async () => {
+  // `ratifySpec` used to push every operation onto `applied` and return `ok: true` the
+  // moment the append succeeded, without ever consulting the fold — which is the only
+  // thing that applies anything on this path, and which can refuse. A ratification the
+  // fold threw away was indistinguishable from one it adopted.
+  const { a, b, side } = await twoClones();
+  try {
+    assert.equal(resolveSidecar(a)!.universe, resolveSidecar(b)!.universe,
+      "the clones must be ONE universe or they never see each other");
+
+    // A rule both clones can see.
+    const base = ok(await draftSpec(a, { title: "Currency policy" }));
+    ok(await addOperation(a, {
+      specId: base.id, kind: "add_requirement", rationale: "policy §4", reversibility: "reversible",
+      title: "Credit line currency", section: "Credit/Limits",
+      statement: "All credit lines are in USD.", provenance: "policy",
+    }));
+    const adopted = ok(await ratifySpec(a, base.id));
+    assert.ok(adopted.applied, "folded here, so this clone can say what landed");
+    // Read back from the FOLD, so the operation carries the rule it created — the shared
+    // path used to return the unbound original and this was `undefined`.
+    assert.ok(adopted.applied[0]!.requirementId, "the returned operation names what it created");
+    // B syncs. An ordinary read never folds the log — it is pull/push — so without this
+    // B simply has no standard, and the race below could not be set up at all.
+    assert.equal(await materializeStandard(b, resolveSidecar(b)!), true);
+    const rule = (await listRequirements(b))[0]!;
+    assert.equal(rule.statement, "All credit lines are in USD.");
+
+    // B drafts an amendment against the text as it stands...
+    const mine = ok(await draftSpec(b, { title: "B's amendment" }));
+    ok(await addOperation(b, {
+      specId: mine.id, kind: "amend_statement", requirementId: rule.id,
+      statement: "All credit lines are in GBP.", rationale: "b", reversibility: "reversible",
+    }));
+
+    // ...and A ratifies a different one first. The log is pull/push and never read on an
+    // ordinary read, so B's local check cannot see this.
+    const theirs = ok(await draftSpec(a, { title: "A's amendment" }));
+    ok(await addOperation(a, {
+      specId: theirs.id, kind: "amend_statement", requirementId: rule.id,
+      statement: "All credit lines are in USD or EUR.", rationale: "a", reversibility: "reversible",
+    }));
+    ok(await ratifySpec(a, theirs.id));
+
+    const race = await ratifySpec(b, mine.id);
+    assert.ok("error" in race, `B's ratification applied nothing and must not report ok — got ${JSON.stringify(race)}`);
+    assert.match(race.error, /applied NOTHING/);
+    assert.match(race.error, /Do not retry/, "the spec is spent, and the natural response to an error is a retry");
+
+    // The record agrees with what was reported: spent, and conflicted.
+    const spent = await readSpec(b, mine.id);
+    assert.equal(spent!.status, "ratified");
+    assert.equal(spent!.conflicted, true);
+    // And the standard is A's text, on both clones.
+    assert.equal((await listRequirements(a))[0]!.statement, "All credit lines are in USD or EUR.");
+    assert.equal((await listRequirements(b))[0]!.statement, "All credit lines are in USD or EUR.");
+  } finally { discard(a); discard(b); discard(side); }
 });

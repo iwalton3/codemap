@@ -63,6 +63,9 @@ async function seeded(root: string, anchor: string) {
     provenance: "master services agreement §4", cites: [anchor], ...AGENT,
   }));
   const adopted = ok(await standard.ratifySpec(root, { specId: spec.id, ...PERSON }));
+  // No sidecar here, so this machine applies the operations and can report what it did.
+  // On the shared path the fold decides and `applied` is null until it has been folded.
+  assert.ok(adopted.applied, "the local path knows what it applied");
   const requirementId = adopted.applied[0]!.requirementId!;
 
   const audit = ok(await standard.recordAudit(root, {

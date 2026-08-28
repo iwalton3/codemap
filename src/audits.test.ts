@@ -16,7 +16,7 @@ import { indexBlob } from "./repo.js";
 import { writeStore, readAcknowledgement } from "./store.js";
 import type { State } from "./schema.js";
 import { discard } from "./test-tmp.js";
-import { draftSpec, addOperation, ratifySpec, listRequirements } from "./requirements.js";
+import { draftSpec, addOperation, ratifySpec, listRequirements, getSpec, pendingSpecs } from "./requirements.js";
 import { acknowledgeGap, acknowledgeDebt } from "./acknowledgements.js";
 import { recordAudit, auditsFor, conformance, silenced } from "./audits.js";
 
@@ -338,5 +338,39 @@ test("a rule whose cited symbol was RENAMED can still be audited", async () => {
     });
     assert.match((bogus as { error: string }).error, /unknown anchor\(s\) in evidence\.read/,
       "an id the caller passed must still have to exist");
+  } finally { discard(root); }
+});
+
+test("a spec shows the ratifier the silencers already attached to it", async () => {
+  // A gap may only be minted while the spec is a DRAFT, and ratification binds it to the
+  // rule the operation creates — so the rule arrives classified `gap` instead of `unknown`,
+  // on an agent's assertion that no code which should conform exists yet, which nothing can
+  // check until the population predicate exists. The ratifier is the only person who can
+  // refuse that, and neither `getSpec` nor `pendingSpecs` showed it: they could approve the
+  // rule without ever seeing the classification riding along with it.
+  const { root } = await universe();
+  try {
+    const { specId, operationId } = await adoptRule(root);
+
+    // Could this pass vacuously? Before the gap exists both readings are 0.
+    assert.equal(ok(await getSpec(root, specId)).silenced, 0);
+    assert.equal((await pendingSpecs(root))[0]!.silenced, 0);
+
+    ok(await acknowledgeGap(root, {
+      operationId, rationale: "nothing implements this yet", priority: "low",
+      revalidateBy: LATER,
+    }));
+
+    const rendered = ok(await getSpec(root, specId));
+    assert.equal(rendered.silenced, 1);
+    assert.equal(rendered.operations[0]!.silencedBy.length, 1);
+    assert.equal(rendered.operations[0]!.silencedBy[0]!.basis, "gap");
+    assert.equal((await pendingSpecs(root))[0]!.silenced, 1,
+      "visible in the QUEUE too, or it is only found by whoever already opened the spec");
+
+    // And it does not block adoption: a pre-attached gap is something to see and decide
+    // about, not a defect in the proposal.
+    assert.equal(rendered.adoptable, true);
+    ok(await ratifySpec(root, specId));
   } finally { discard(root); }
 });

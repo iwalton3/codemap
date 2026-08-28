@@ -485,6 +485,7 @@ test("a spec may not carry two operations against the same rule", async () => {
     // The refusal must be about the DUPLICATE and not about amendments in general: one
     // operation against the rule still ratifies, or this passes by forbidding the feature.
     const adopted = ok(await ratifySpec(root, sp.id));
+    assert.ok(adopted.applied, "no sidecar, so this machine applied them and knows which");
     assert.equal(adopted.applied.length, 1);
     assert.equal(adopted.applied[0]!.id, first.id);
     const after = await getRequirement(root, rule.id);

@@ -1161,7 +1161,7 @@ const tools: Tool[] = [
   },
   {
     name: "standard_queue",
-    description: "Open one of the queues `standard_status` counts. `pending_specs` — proposals awaiting a principal. `awaiting_adjudication` — discrepancies nobody has decided; this is deliberately NOT a fix queue. `actionable` — problems already decided, i.e. work that is owed. `settled_without_adjudication` — the andon signal. `promotable_audits` — branch findings whose evidence still holds on the default branch. `acknowledgements_due` — silencers past their revalidate-by date.",
+    description: "Open one of the queues `standard_status` counts. `pending_specs` — proposals awaiting a principal, with how many operations each carries, whether any is irreversible, and how many arrive already `silenced` by a gap. `awaiting_adjudication` — discrepancies nobody has decided; this is deliberately NOT a fix queue. `actionable` — problems already decided, i.e. work that is owed. `settled_without_adjudication` — the andon signal. `promotable_audits` — branch findings whose evidence still holds on the default branch. `acknowledgements_due` — silencers past their revalidate-by date.",
     inputSchema: obj({
       queue: {
         type: "string",
@@ -1214,7 +1214,7 @@ const tools: Tool[] = [
   },
   {
     name: "spec",
-    description: "A proposal against the standard, rendered per operation as what the rule says now and what it would say — plus `adoptable`, which is false when any operation's context has moved since it was written.",
+    description: "A proposal against the standard, rendered per operation as what the rule says now and what it would say — plus `adoptable`, which is false when any operation's context has moved since it was written. Read `silencedBy` before adopting: a gap acknowledgement raised against an operation binds the moment the spec is ratified, so the rule arrives classified `gap` rather than `unknown`. Approving the rule is not approving that classification.",
     inputSchema: obj({ specId: { type: "string" } }, ["specId"]),
     handler: (a, c) => ops.getSpec(c.universe.path, a),
   },
