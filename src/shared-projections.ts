@@ -719,6 +719,11 @@ export function projectionFor(scope: string): { fold: (e: LogEvent[]) => any; pr
   if (scope.startsWith("walkthrough/")) return { fold: foldWalkthroughs, proj: walkthroughsProjection };
   if (scope.startsWith("triage/")) return { fold: foldTriage, proj: triageProjection };
   if (scope.startsWith("graph/")) return { fold: foldGraph, proj: graphProjection };
-  if (scope.startsWith("standard/")) return { fold: foldStandard, proj: standardProjection };
+  // NOT `standard/`, and not `law/`. The standard is the one entity folded from TWO
+  // scopes — law (workspace) and evidence (universe) — because `spec.withdrawn` consults
+  // evidence to decide a law act. Folding either half ALONE here would write a partial
+  // standard under the real key: after a sync the rows would be missing every requirement
+  // and `served()` would present them as the team's. `materializeUniverse` calls
+  // `cachedStandard` explicitly instead. See `docs/cross-universe-standard.md`.
   return null;
 }

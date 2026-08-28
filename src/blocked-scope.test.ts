@@ -57,15 +57,28 @@ async function universeWithRule() {
   return { root, side, cleanup: () => [root, side].forEach((r) => discard(r)) };
 }
 
-/** Every shard file under the standard scope, wherever the writer id put it. */
+/**
+ * Every shard the standard folds from, wherever the writer id put it.
+ *
+ * BOTH halves: the law scope (`law/`) carries specs, operations and gaps, the evidence
+ * scope (`standard/<universe>`) carries audits and pointers. A fixture that only ratifies
+ * a rule writes nothing at all to the second one — so a fork test looking only there would
+ * find no shards and block nothing, and would have gone green proving it.
+ *
+ * Forking EITHER half must block the standard, which is the fail-closed reading: a standard
+ * whose law cannot be read as settled is not settled, whatever the evidence says.
+ */
 function shards(side: string): string[] {
   const out: string[] = [];
   const walk = (d: string) => {
-    for (const e of readdirSync(d, { withFileTypes: true })) {
+    let entries;
+    try { entries = readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
       if (e.isDirectory()) walk(join(d, e.name));
       else if (e.name.endsWith(".ndjson")) out.push(join(d, e.name));
     }
   };
+  walk(join(side, "law"));
   walk(join(side, "standard"));
   return out;
 }

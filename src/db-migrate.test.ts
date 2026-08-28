@@ -115,7 +115,12 @@ test("the standard projection's table set is pinned to a materializer version", 
     "acknowledgements", "audits", "criteria", "operations", "pointers", "populations",
     "problems", "requirements", "scrub_policy", "specs", "vacuity_checks",
   ], "the standard projection's tables changed — bump MATERIALIZER_VERSION with them");
-  assert.equal(MATERIALIZER_VERSION, 15, "and record the new number here");
+  // 16: the standard folds from TWO scopes now (law + evidence), so a store that cached
+  // the single-scope fold holds rows describing a different input set — and only the
+  // shards move a fingerprint. The table set did NOT change, which is exactly why the
+  // version has to be recorded here as well: this test's coarse signal would not have
+  // caught it.
+  assert.equal(MATERIALIZER_VERSION, 16, "and record the new number here");
 });
 
 /**

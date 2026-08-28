@@ -13,14 +13,28 @@ The design below is settled. Most of it is not implemented yet, and a document t
 as though it were is worse than no document — so the state is stated once, here, rather
 than hedged in every section.
 
-**Built** (`221d2b3`): `Pointer.universe` and `Audit.universe`; a pointer baseline is
-`contested` rather than overwritten, with the order-insensitive comparator that keeps it
-from firing when auditors agree.
+**Built:** `Pointer.universe` and `Audit.universe`; a pointer baseline is `contested`
+rather than overwritten, with the order-insensitive comparator that keeps it from firing
+when auditors agree (`221d2b3`). **The law/evidence scope split itself**, folded through
+`readCachedMerged`, with `MATERIALIZER_VERSION` at 16 and the guard that refuses a
+withdrawal whose evidence half could not be read.
 
-**Decided, NOT built:** the law/evidence scope split itself; removing `Requirement.cites`
-and re-deriving `recheckDue` from pointer staleness; provisional audits as commit-discovered
-documents; and the fold guard for an absent evidence scope. Everything below in the
-imperative — "is removed", "is workspace-scoped" — describes the target, not the tree.
+**Decided, NOT built:** removing `Requirement.cites` and re-deriving `recheckDue` from
+pointer staleness; provisional audits as commit-discovered documents. Those two sections
+below are written in the imperative and describe the target, not the tree.
+
+**Migration is free, and that was not a given.** Law events written before the split sit in
+`standard/<universe>`; the fold reads BOTH scopes and merges, so a pre-split log folds
+exactly as it did and only new law lands in the shared scope. Nothing rewrites history.
+
+**One materializer per entity, and this is where it bites.** The standard is folded from two
+scopes, so `projectionFor` deliberately does not offer it: the generic loop would fold one
+half alone and write a LAW-LESS standard under the real key. That bug was written twice
+during the split — once in `projectionFor`, and again on the READ path, where
+`standardScopeWarning` folded the evidence scope by itself and silently replaced the
+standard on every read, so requirements vanished from the rows moments after ratification.
+`materializeUniverse` and `standardScopeWarning` both go through `cachedStandard` now, and
+`sharing-boundary.test.ts` holds both halves of the rule.
 
 ## The problem, and why the obvious fix is the wrong one
 

@@ -1003,3 +1003,27 @@ test("a vacuity check on the spec's own criterion blocks its withdrawal", async 
     assert.equal(after.criteria.length, 1, "and the criterion the check is about is still there");
   } finally { discard(root); }
 });
+
+test("THE FOLD REFUSES A WITHDRAWAL IT CANNOT SEE THE EVIDENCE FOR", async () => {
+  // The one failure in the two-scope split that answers WRONGLY rather than incompletely.
+  // Withdrawal is permitted only when nothing relies on what a spec introduced, and
+  // reliance is counted from audits, pointers, populations, problems and criteria — all
+  // of which live in the EVIDENCE scope. A fold that cannot read that half does not find
+  // less reliance; it finds NONE, and lets the withdrawal through.
+  const root = await log("withdraw-no-evidence");
+  try {
+    await ratified(root);
+    await publishSpecWithdrawn(root, SCOPE, izzie, "sp_1", "2026-08-04T00:00:00.000Z", "never adopted");
+    const events = await readScope(root, SCOPE);
+
+    // With the evidence half readable — nothing relies on it, so it applies. This is the
+    // control: without it the assertion below would pass against a fold that refuses
+    // every withdrawal.
+    assert.equal(foldStandard(events).specs[0]!.status, "withdrawn");
+
+    // And with the evidence half unreadable, the same log must NOT decide it.
+    const blind = foldStandard(events, { evidence: false });
+    assert.equal(blind.specs[0]!.status, "ratified", "refused rather than permitted");
+    assert.equal(blind.requirements.length, 1, "and nothing it introduced was removed");
+  } finally { discard(root); }
+});

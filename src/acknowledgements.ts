@@ -251,7 +251,9 @@ export async function releaseAcknowledgement(
   const next: Acknowledgement = {
     ...a, state: "released", releasedBy: actor, releasedAt: at, releasedReason: reason.trim(),
   };
-  const d = disposition(await shareAckReleased(root, a.id, at, reason.trim()));
+  // The basis picks the scope — a gap released into the evidence half would leave its
+  // grant in the law half, and a clone folding only law would read it active for ever.
+  const d = disposition(await shareAckReleased(root, a.id, at, reason.trim(), a.basis));
   if ("error" in d) return d;
   if (d.local) await writeLocalAcknowledgement(root, next);
   return { ok: true, acknowledgement: next };

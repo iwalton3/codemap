@@ -25,10 +25,11 @@ import type { ScopeDiagnostic } from "./eventlog.js";
 import { resolveSidecar, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
 import { requireActor } from "./identity.js";
 import { ensureSidecar } from "./sidecar.js";
-import { readCached, ensureMaterialized } from "./materialize.js";
+import { readCached, readCachedMerged, ensureMaterialized } from "./materialize.js";
+import type { LogEvent } from "./eventlog.js";
 import { standardProjection } from "./shared-projections.js";
 import {
-  foldStandard, standardScope, publishSpecDrafted, publishOperation, publishSpecRatified,
+  foldStandard, standardScope, lawScope, isLawEvent, publishSpecDrafted, publishOperation, publishSpecRatified,
   publishAckGranted, publishAckReleased, publishAudit, publishProblemRaised, publishAdjudication,
   publishSpecWithdrawn,
   publishVacuityCheck, publishPointerDeclared, publishPointerRestated, publishPointerRetired,
@@ -36,8 +37,21 @@ import {
 } from "./shared-standard.js";
 
 /** One universe's standard, through the cache. */
+/**
+ * The standard: law (workspace) + evidence (this universe), folded together.
+ *
+ * Stored under the universe's own standard scope, so `source_scope` and every ownership
+ * guard built on it are exactly as they were. The fingerprint covers both scopes, so an
+ * append to either re-folds. See `docs/cross-universe-standard.md`.
+ */
 export const cachedStandard = (root: string, cfg: { path: string; universe: string }) =>
-  readCached(root, cfg.path, standardScope(cfg.universe), sidecarIdentity(cfg), foldStandard, standardProjection);
+  readCachedMerged(
+    root, cfg.path, [lawScope(), standardScope(cfg.universe)], standardScope(cfg.universe),
+    sidecarIdentity(cfg),
+    (events: LogEvent[], { readable }: { readable: Set<string> }) =>
+      foldStandard(events, { evidence: readable.has(standardScope(cfg.universe)) }),
+    standardProjection,
+  );
 
 /**
  * Fold this universe's standard into rows, now.
@@ -86,10 +100,12 @@ export async function standardScopeWarning(root: string): Promise<StandardScope 
   const cfg = resolveSidecar(root);
   if (!cfg) return undefined;
   try {
-    const { fresh, folded, ...st } = await ensureMaterialized(
-      root, cfg.path, standardScope(cfg.universe), sidecarIdentity(cfg), foldStandard, standardProjection,
-    );
-    void folded;
+    // `cachedStandard`, NOT a single-scope `ensureMaterialized`. This read used to fold
+    // `standard/<universe>` on its own and write the result under the same key the merged
+    // fold uses — so every read silently replaced the standard with a LAW-LESS one, and
+    // the requirements vanished from the rows a moment after they were ratified. One
+    // entity folded from two scopes has to have exactly one materializer.
+    const { fresh, ...st } = await cachedStandard(root, cfg);
     if (st.status !== "complete") {
       return { status: "blocked", ...(st.diagnostic ? { diagnostic: st.diagnostic } : {}) };
     }
@@ -108,8 +124,16 @@ export interface Shared { shared: boolean; configured: boolean; folded?: boolean
 /** Not shared, and nothing is wrong with that — there is no sidecar. */
 export const localOnly: Shared = { shared: false, configured: false };
 
+/**
+ * Append to the sidecar, choosing the half this act belongs in.
+ *
+ * `scope` defaults to the EVIDENCE half — an observation of this universe's code. Law
+ * (specs, operations, criteria, and a `gap`) goes to the workspace scope, so a rule
+ * governing several repositories is stated once. See `docs/cross-universe-standard.md`.
+ */
 async function share(
   root: string, emit: (logRoot: string, scope: string, actor: Actor) => Promise<unknown>,
+  scope?: string,
 ): Promise<Shared> {
   const cfg = resolveSidecar(root);
   if (!cfg) return localOnly;
@@ -117,7 +141,7 @@ async function share(
   if ("error" in actor) return { shared: false, configured: true, error: actor.error };
   try {
     await ensureSidecar(cfg.path, actor);
-    await emit(cfg.path, standardScope(cfg.universe), actor);
+    await emit(cfg.path, scope ?? standardScope(cfg.universe), actor);
   } catch (e: any) {
     return { shared: false, configured: true, error: `sidecar append failed: ${e?.message ?? e}` };
   }
@@ -125,25 +149,42 @@ async function share(
 }
 
 export const shareSpecDrafted = (root: string, spec: Spec): Promise<Shared> =>
-  share(root, (l, s, a) => publishSpecDrafted(l, s, a, spec));
+  share(root, (l, s, a) => publishSpecDrafted(l, s, a, spec), lawScope());
 
 export const shareOperation = (root: string, op: Operation): Promise<Shared> =>
-  share(root, (l, s, a) => publishOperation(l, s, a, op));
+  share(root, (l, s, a) => publishOperation(l, s, a, op), lawScope());
 
 export const shareSpecRatified = (
   root: string, specId: string, at: string, witnesses: Record<string, BugWitness[]>,
   operations: string[],
-): Promise<Shared> => share(root, (l, s, a) => publishSpecRatified(l, s, a, specId, at, witnesses, operations));
+): Promise<Shared> => share(root, (l, s, a) => publishSpecRatified(l, s, a, specId, at, witnesses, operations), lawScope());
 
 export const shareSpecWithdrawn = (
   root: string, specId: string, at: string, reason: string,
-): Promise<Shared> => share(root, (l, s, a) => publishSpecWithdrawn(l, s, a, specId, at, reason));
+): Promise<Shared> => share(root, (l, s, a) => publishSpecWithdrawn(l, s, a, specId, at, reason), lawScope());
 
+/**
+ * A GAP is law; DEBT is evidence.
+ *
+ * A gap says nothing satisfies this rule yet — a statement about the whole system, so it
+ * belongs beside the rule. A debt says this code does not conform and we accept that, which
+ * is a claim about ONE implementation: law-scoping it would let accepting debt for the
+ * React app silence the rule for the API, which is the "declare the rule not yet
+ * applicable" escape the mint-time asymmetry exists to close.
+ */
 export const shareAckGranted = (root: string, ack: Acknowledgement): Promise<Shared> =>
-  share(root, (l, s, a) => publishAckGranted(l, s, a, ack));
+  share(root, (l, s, a) => publishAckGranted(l, s, a, ack), ack.basis === "gap" ? lawScope() : undefined);
 
-export const shareAckReleased = (root: string, id: string, at: string, reason: string): Promise<Shared> =>
-  share(root, (l, s, a) => publishAckReleased(l, s, a, id, at, reason));
+/**
+ * Released into the half the grant went to — the caller passes the basis because only it
+ * has read the record. Releasing a gap into the evidence scope would leave the grant in the
+ * law scope with its release somewhere a clone folding only law can never see it, so the
+ * acknowledgement would read `active` for ever on exactly the machines that matter.
+ */
+export const shareAckReleased = (
+  root: string, id: string, at: string, reason: string, basis: Acknowledgement["basis"],
+): Promise<Shared> =>
+  share(root, (l, s, a) => publishAckReleased(l, s, a, id, at, reason), basis === "gap" ? lawScope() : undefined);
 
 /**
  * An audit travels only if it is about THE CODEBASE.

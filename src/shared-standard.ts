@@ -50,7 +50,27 @@ import type { LogEvent } from "./eventlog.js";
 import { causality, emitEvent } from "./eventlog.js";
 import { applyRevision, newContestState } from "./contest.js";
 
+/** The EVIDENCE half — audits, pointers, populations, problems, debt. Per universe. */
 export const standardScope = (universe: string): string => `standard/${universe}`;
+
+/**
+ * The LAW half — requirements, specs, operations, criteria, gaps. ONE per workspace.
+ *
+ * A constant, and that is correct rather than lazy: a sidecar is declared once per
+ * workspace (`codemap.workspace.json` names one for every universe in it), so the log this
+ * scope lives in already IS the workspace boundary. Keying it on something derived would
+ * invent a second, weaker way to say what the sidecar already says.
+ *
+ * Old law events still sit in `standard/<universe>` on stores written before the split.
+ * Nothing migrates them, and nothing needs to: the fold reads BOTH scopes and merges, so a
+ * pre-split log folds exactly as it did and new law lands in the shared scope.
+ */
+export const LAW_SCOPE = "law/standard";
+export const lawScope = (): string => LAW_SCOPE;
+
+/** Which scope an event kind belongs in. The publish side and the projection share it. */
+export const isLawEvent = (kind: string): boolean =>
+  kind.startsWith("spec.") || kind === "ack.granted" || kind === "ack.released";
 
 /** Everything one universe's standard scope folds to. */
 export interface SharedStandard {
@@ -201,7 +221,19 @@ function sameBaseline(a: unknown, b: unknown): boolean {
   return left.every((k, i) => k === right[i]);
 }
 
-export function foldStandard(events: LogEvent[]): SharedStandard {
+/**
+ * Fold the standard from a MERGED event stream — law plus evidence.
+ *
+ * `opts.evidence` says whether the evidence half could be read as settled. It defaults to
+ * true so every existing caller and test is unchanged, and it is load-bearing in exactly
+ * one place: `spec.withdrawn`. Withdrawal is permitted only when NOTHING relies on what a
+ * spec introduced, and reliance is counted from audits, pointers, populations, problems and
+ * criteria. A fold that cannot see those does not find *less* reliance — it finds NONE, and
+ * permits a withdrawal that something already cites. That is the one failure in this design
+ * that answers wrongly rather than incompletely, so it refuses instead.
+ */
+export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = {}): SharedStandard {
+  const evidenceReadable = opts.evidence !== false;
   const specs = new Map<string, Spec>();
   const operations = new Map<string, Operation>();
   const requirements = new Map<string, Requirement>();
@@ -308,6 +340,8 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
       case "spec.withdrawn": {
         const sp = specs.get(e.subject);
         if (!sp || sp.status === "withdrawn" || sp.status === "repealed") break;
+        // See the header. Absent evidence makes `foldReliance` answer zero, not unknown.
+        if (!evidenceReadable) break;
         // Withdrawal takes something OUT of the standard, so it is a principal's act — the
         // same gate `withdrawSpec` applies, restated where a remote clone can see it.
         if (e.actor.via) break;

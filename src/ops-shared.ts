@@ -138,6 +138,24 @@ export interface Materialized {
 async function materializeUniverse(root: string, cfg: SidecarConfig): Promise<Materialized> {
   const identity = sidecarIdentity(cfg);
   const out: Materialized = { scanned: 0, folded: 0, blocked: [] };
+  // The standard, explicitly, because it is folded from two scopes and `projectionFor`
+  // deliberately does not offer it. Skipping it here would leave the one projection that a
+  // ratification writes to un-refreshed until somebody happened to read it.
+  out.scanned++;
+  try {
+    // Dynamic: `standard-publish.ts` sits above this module, and a static edge would be
+    // the cycle `import-cycles.test.ts` exists to catch.
+    const { cachedStandard } = await import("./standard-publish.js");
+    const { standardScope } = await import("./shared-standard.js");
+    // `folded`, not unconditionally: an unchanged standard costs two shard fingerprints
+    // and nothing else, and counting it as work would make "a pull that moved nothing
+    // folds nothing" false for the one scope that is always scanned.
+    const { status, diagnostic, folded } = await cachedStandard(root, cfg);
+    if (folded) out.folded++;
+    if (status !== "complete") out.blocked.push({ scope: standardScope(cfg.universe), reason: diagnostic?.detail ?? status });
+  } catch (e: any) {
+    out.blocked.push({ scope: `standard/${cfg.universe}`, reason: `could not fold: ${e?.message ?? e}` });
+  }
   for (const scope of await scopesOnDisk(cfg.path)) {
     const which = projectionFor(scope);
     if (!which || !inUniverse(scope, cfg.universe)) continue;

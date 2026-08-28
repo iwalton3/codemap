@@ -18,7 +18,7 @@ import { discard } from "./test-tmp.js";
 import { resolveSidecar } from "./sidecar-config.js";
 import { materializeStandard } from "./standard-publish.js";
 import { readScope } from "./eventlog.js";
-import { standardScope } from "./shared-standard.js";
+import { standardScope, lawScope } from "./shared-standard.js";
 import { draftSpec, addOperation, ratifySpec, listRequirements, withdrawSpec } from "./requirements.js";
 import { readSpec } from "./store.js";
 import { recordAudit, promotableAudits, promoteProvisionalAudit } from "./audits.js";
@@ -53,8 +53,12 @@ const ok = <T>(r: T): Exclude<T, { error: string }> => {
   return r as Exclude<T, { error: string }>;
 };
 
+/** The EVIDENCE half — audits, pointers, problems, debt. */
 const events = async (root: string, side: string) =>
   readScope(side, standardScope(resolveSidecar(root)!.universe));
+
+/** The LAW half — specs, operations, criteria, gaps. One scope for the whole workspace. */
+const lawEvents = async (side: string) => readScope(side, lawScope());
 
 test("a spec travels, and the standard a teammate reads is folded from the log", async () => {
   const { root, side, anchors } = await shared();
@@ -68,8 +72,10 @@ test("a spec travels, and the standard a teammate reads is folded from the log",
     }));
     ok(await ratifySpec(root, sp.id));
 
-    const kinds = (await events(root, side)).map((e) => e.kind);
-    assert.deepEqual(kinds, ["spec.drafted", "spec.operation", "spec.ratified"]);
+    // Law, not evidence: a spec governs the workspace, so it does not live in one
+    // universe's scope. The evidence half stays empty here — nothing was audited.
+    assert.deepEqual((await lawEvents(side)).map((e) => e.kind), ["spec.drafted", "spec.operation", "spec.ratified"]);
+    assert.deepEqual(await events(root, side), [], "a spec is not an observation of this universe's code");
 
     // The rows exist because the FOLD wrote them, not because a local write did: they
     // carry the sync origin, which a local row never has.
@@ -344,7 +350,7 @@ test("a section move is applied by the FOLD, subtree and all", async () => {
     // The fold is the writer on this path, so these rows carry the sync origin. Without
     // that the assertion above would also pass on a purely local apply.
     assert.ok(rules.every((r) => r.origin === "sync"), "the FOLD moved them, not a local write");
-    assert.ok((await events(root, side)).some((e) => e.kind === "spec.ratified"));
+    assert.ok((await lawEvents(side)).some((e) => e.kind === "spec.ratified"));
   } finally { discard(root); discard(side); }
 });
 
@@ -400,7 +406,7 @@ test("a withdrawal is applied by the FOLD, and takes its criteria with it", asyn
     ok(await withdrawSpec(root, sp.id, { reason: "the cluster was never adopted" }));
     assert.deepEqual((await readRequirements(root)).requirements, [], "the fold dropped it from the projection");
     assert.equal((await readSpecs(root))[0]!.status, "withdrawn", "the spec itself survives, as the act it was");
-    assert.ok((await events(root, side)).some((e) => e.kind === "spec.withdrawn"));
+    assert.ok((await lawEvents(side)).some((e) => e.kind === "spec.withdrawn"));
   } finally { discard(root); discard(side); }
 });
 

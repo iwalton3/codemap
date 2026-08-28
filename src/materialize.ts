@@ -18,7 +18,7 @@ import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { db } from "./db.js";
-import { readScopeChecked, SHARD_EXT, type LogEvent, type ScopeStatus } from "./eventlog.js";
+import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeStatus } from "./eventlog.js";
 
 /**
  * Bumped whenever the FOLD or the PROJECTION changes shape.
@@ -110,7 +110,11 @@ import { readScopeChecked, SHARD_EXT, type LogEvent, type ScopeStatus } from "./
  * carries the trigger and the pointer observations. Same rule again — the scope is not new
  * and the shards do not move when the fold's mind changes.
  */
-export const MATERIALIZER_VERSION = 15;
+// 15 -> 16: the standard folds from TWO scopes (law + evidence). A store that folded the
+// old single scope holds rows whose input set is now different, and only the shards move a
+// fingerprint — so without this bump it would serve that standard for ever and `served()`
+// would call it authoritative. See `materialize.ts` 12 -> 13 for the same rule stated first.
+export const MATERIALIZER_VERSION = 16;
 
 /**
  * What the events in a scope are, cheaply.
@@ -127,6 +131,98 @@ export const MATERIALIZER_VERSION = 15;
  * grow a file and move its mtime, so this needs a same-nanosecond rewrite to the
  * same length. Every build system takes this bet.
  */
+/**
+ * One projection folded from SEVERAL scopes.
+ *
+ * The standard needs it: the law (requirements, specs, operations, criteria, gaps) is
+ * workspace-scoped while the evidence (audits, pointers, populations, problems, debt) stays
+ * per-universe, and `foldStandard` cannot be split to match — `spec.withdrawn` consults
+ * evidence to decide whether a law act is permitted. So the two streams are folded together.
+ *
+ * Merging is safe because `sortEvents` is a deterministic topological sort that treats a
+ * parent outside the input set as already satisfied: the union of two scopes yields the same
+ * order on every clone, with no new ordering machinery.
+ *
+ * The rows are stored under ONE key (`key`), which is the universe's own standard scope —
+ * a store belongs to exactly one universe, nothing downstream asks which scope a row arrived
+ * on, and keeping the existing key means `source_scope` and every ownership guard built on it
+ * are untouched. The FINGERPRINT covers every scope, so an append to either re-folds.
+ *
+ * The status is the WORST of them, which is the fail-closed reading §7 requires: a standard
+ * whose evidence half cannot be read as settled is not settled, whatever the law half says.
+ */
+export async function readCachedMerged<T>(
+  root: string,
+  logRoot: string,
+  scopes: string[],
+  key: string,
+  identity: string,
+  fold: (events: LogEvent[], opts: { readable: Set<string> }) => T,
+  proj: Projection<T>,
+): Promise<Cached<T> & { fresh: boolean; folded: boolean }> {
+  const d = db(root);
+  const fingerprint = async () =>
+    (await Promise.all(scopes.map((sc) => scopeFingerprint(logRoot, sc, identity)))).join("|");
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const before = await fingerprint();
+    const row = d.prepare("SELECT fingerprint, status, diagnostic FROM shared_scope WHERE scope = ?").get(key) as
+      { fingerprint: string; status: string; diagnostic: string | null } | undefined;
+    if (row?.fingerprint === before) {
+      try {
+        // A cache hit did no work — `folded` and `fresh` are different questions, and a
+        // caller that counts folds must not count this one.
+        return { value: proj.read(d, key), fresh: true, folded: false, ...storedStatus(row) };
+      } catch (e) {
+        if (!(e instanceof CorruptProjection)) throw e;
+        d.prepare("DELETE FROM shared_scope WHERE scope = ?").run(key);
+      }
+    }
+
+    const reads = await Promise.all(scopes.map(async (sc) => ({ sc, ...await readScopeChecked(logRoot, sc) })));
+    const events = sortEvents(reads.flatMap((r) => r.events));
+    // Which halves may be treated as settled. The fold needs this, not just the caller:
+    // deciding a withdrawal against evidence it could not read would answer WRONG rather
+    // than incompletely — no reliance found, so the withdrawal proceeds.
+    const readable = new Set(reads.filter((r) => r.status !== "blocked").map((r) => r.sc));
+    const blocked = reads.find((r) => r.status === "blocked");
+    const status: ScopeStatus = blocked
+      ? { status: "blocked", ...(blocked.diagnostic ? { diagnostic: blocked.diagnostic } : {}) }
+      : { status: "complete" };
+    foldsRun++;
+    const value = fold(events, { readable });
+    const after = await fingerprint();
+    if (after !== before) continue;
+
+    d.exec("BEGIN");
+    try {
+      proj.write(d, key, value);
+      d.prepare("INSERT INTO shared_scope(scope,fingerprint,folded_at,events,status,diagnostic) VALUES(?,?,?,?,?,?) "
+        + "ON CONFLICT(scope) DO UPDATE SET fingerprint=excluded.fingerprint, folded_at=excluded.folded_at, "
+        + "events=excluded.events, status=excluded.status, diagnostic=excluded.diagnostic")
+        .run(key, after, new Date().toISOString(), events.length,
+          status.status, status.diagnostic ? JSON.stringify(status.diagnostic) : null);
+      d.exec("COMMIT");
+    } catch (e) {
+      d.exec("ROLLBACK");
+      throw e;
+    }
+    return { value, fresh: true, folded: true, ...status };
+  }
+  // Given up after three attempts: somebody is appending faster than the fold. Answer from
+  // the log rather than caching something already behind — and say the rows are not fresh,
+  // because a caller that queried them anyway would get a complete-looking answer.
+  const reads = await Promise.all(scopes.map(async (sc) => ({ sc, ...await readScopeChecked(logRoot, sc) })));
+  const events = sortEvents(reads.flatMap((r) => r.events));
+  const readable = new Set(reads.filter((r) => r.status !== "blocked").map((r) => r.sc));
+  const blocked = reads.find((r) => r.status === "blocked");
+  foldsRun++;
+  return {
+    value: fold(events, { readable }), fresh: false, folded: true,
+    ...(blocked ? { status: "blocked" as const, ...(blocked.diagnostic ? { diagnostic: blocked.diagnostic } : {}) } : { status: "complete" as const }),
+  };
+}
+
 export async function scopeFingerprint(logRoot: string, scope: string, identity: string): Promise<string> {
   const dir = join(logRoot, scope);
   const h = createHash("sha256");

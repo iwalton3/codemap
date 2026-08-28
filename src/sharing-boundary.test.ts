@@ -32,7 +32,20 @@ import { readFileSync } from "node:fs";
  * file guards is that a function of the CODE must not travel, and no part of `standard/`
  * is one. See `docs/requirements-architecture.md`.
  */
-const SHARED_KINDS = ["findings/", "bugs/", "docs/", "notes/", "walkthrough/", "triage/", "graph/", "standard/"];
+const SHARED_KINDS = ["findings/", "bugs/", "docs/", "notes/", "walkthrough/", "triage/", "graph/"];
+
+/**
+ * `standard/` and `law/` travel and are deliberately NOT here.
+ *
+ * The sidecar is a git repo and sync moves the whole of it, so what travels is not decided
+ * by `projectionFor` — that function decides what can be folded from ONE scope on its own.
+ * The standard cannot: it folds from law (workspace) and evidence (universe) together,
+ * because `spec.withdrawn` consults evidence to decide a law act. Registering it here would
+ * let the generic loop fold either half alone and write a LAW-LESS standard under the real
+ * key, which is a shipped bug this list would otherwise invite back.
+ * `materializeUniverse` calls `cachedStandard` explicitly instead.
+ */
+const MERGED_KINDS = ["standard/", "law/"];
 
 test("exactly the authored entity kinds travel", () => {
   const src = readFileSync("src/shared-projections.ts", "utf8");
@@ -42,6 +55,19 @@ test("exactly the authored entity kinds travel", () => {
     "a scope kind was added or removed from `projectionFor`. Every kind here must be "
     + "AUTHORED — a person or an agent decided it. If the new one is derived from code, "
     + "it must not sync; if it is authored, add it to SHARED_KINDS and say so.",
+  );
+  // And the merged kinds must stay OUT of it, for the reason above.
+  for (const k of MERGED_KINDS) {
+    assert.ok(!registered.includes(k), `${k} is folded from two scopes and must not have a single-scope projection`);
+  }
+});
+
+test("the standard is materialized explicitly, since nothing generic will do it", () => {
+  // The other half of the rule above. Removing it from `projectionFor` without this is how
+  // a ratification stops reaching the rows until somebody happens to read them.
+  assert.match(
+    readFileSync("src/ops-shared.ts", "utf8"), /await cachedStandard\(root, cfg\)/,
+    "`materializeUniverse` no longer folds the standard, and `projectionFor` does not either",
   );
 });
 
