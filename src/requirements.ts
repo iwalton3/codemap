@@ -334,6 +334,12 @@ export async function ratifySpec(
       const siblings = sectionsIntroducedBy(ops.filter((o) => o.id !== op.id));
       const clash = await checkSection(root, op.section!, siblings);
       if (clash) { checks.push({ operation: op, ok: false, reason: clash.error }); continue; }
+      // Citations were checked when the operation was drafted; a symbol can vanish
+      // between then and now. Ratifying anyway baselines the witness as `sha256:absent`,
+      // and every later comparison is absent-against-absent — so a rule citing code that
+      // is GONE reads as settled for ever.
+      const gone = checkCitations(root, op.cites ?? []);
+      if (gone) { checks.push({ operation: op, ok: false, reason: gone.error }); continue; }
     }
     checks.push({ operation: op, ok: true });
   }
@@ -359,7 +365,7 @@ export async function ratifySpec(
       : (await readRequirement(root, op.requirementId!))?.cites ?? [];
     witnesses[op.id] = await witness(root, cites);
   }
-  const shared = disposition(await shareSpecRatified(root, sp.id, at, witnesses));
+  const shared = disposition(await shareSpecRatified(root, sp.id, at, witnesses, ops.map((o) => o.id)));
   if ("error" in shared) return shared;
 
   const applied: Operation[] = [];

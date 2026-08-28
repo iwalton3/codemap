@@ -110,6 +110,17 @@ export async function raiseProblem(
         + `is an unverified requirement rather than a violation; absence of evidence must never file.`,
     };
   }
+  // Evidence that has already moved says nothing about what is there now. Filing from it
+  // shares a finding whose own audit is superseded — and on the default branch that reaches
+  // the team.
+  const served = (await auditsFor(root, audit.requirementId)).find((a) => a.id === audit.id);
+  if (served?.superseded) {
+    return {
+      error:
+        `audit ${audit.id} examined code that has since changed, so it no longer speaks about `
+        + `what is here. Re-audit and raise from that.`,
+    };
+  }
   const dupe = (await readProblems(root, { requirementId: audit.requirementId }))
     .find((p) => p.auditId === audit.id);
   if (dupe) return { error: `${dupe.id} was already raised from audit ${audit.id}` };
@@ -169,7 +180,10 @@ async function moveMade(root: string, p: Problem, audits: ServedAudit[]): Promis
   const since = p.adjudicatedAt!;
   switch (p.disposition) {
     case "code-wrong":
-      return audits.some((a) => a.outcome === "conformant" && !a.superseded && a.at > since);
+      // `>=`, not `>`: two acts in the same millisecond are ordinary — adjudicate, then
+      // record the audit that closes it — and string-comparing equal stamps left the
+      // problem open for ever with nothing to show why.
+      return audits.some((a) => a.outcome === "conformant" && !a.superseded && a.at >= since);
     case "requirement-changed":
     case "requirement-misstated": {
       // A ratified spec that amended this rule after the decision. The operation is the
@@ -177,13 +191,13 @@ async function moveMade(root: string, p: Problem, audits: ServedAudit[]): Promis
       for (const op of await readOperations(root, { requirementId: p.requirementId })) {
         if (op.kind !== "amend_statement") continue;
         const sp = await readSpec(root, op.specId);
-        if (sp?.status === "ratified" && (sp.ratifiedAt ?? "") > since) return true;
+        if (sp?.status === "ratified" && (sp.ratifiedAt ?? "") >= since) return true;
       }
       return false;
     }
     case "accepted":
       return (await readAcknowledgements(root, { requirementId: p.requirementId, state: "active" }))
-        .some((a) => a.basis === "debt" && a.grantedAt > since);
+        .some((a) => a.basis === "debt" && a.grantedAt >= since);
     default:
       return false;
   }
@@ -204,7 +218,7 @@ async function serve(root: string, p: Problem): Promise<ServedProblem> {
     // thing worth surfacing rather than tidying away.
     const r = await readRequirement(root, p.requirementId);
     const resolvedAnyway = r?.status === "retired"
-      || audits.some((a) => a.outcome === "conformant" && !a.superseded && a.at > p.raisedAt);
+      || audits.some((a) => a.outcome === "conformant" && !a.superseded && a.at >= p.raisedAt);
     return {
       ...p, state: "open", awaiting: "a principal to say which side moves",
       settledWithoutAdjudication: !!resolvedAnyway,

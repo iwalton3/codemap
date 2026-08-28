@@ -74,7 +74,8 @@ export const shareOperation = (root: string, op: Operation): Promise<Shared> =>
 
 export const shareSpecRatified = (
   root: string, specId: string, at: string, witnesses: Record<string, BugWitness[]>,
-): Promise<Shared> => share(root, (l, s, a) => publishSpecRatified(l, s, a, specId, at, witnesses));
+  operations: string[],
+): Promise<Shared> => share(root, (l, s, a) => publishSpecRatified(l, s, a, specId, at, witnesses, operations));
 
 export const shareAckGranted = (root: string, ack: Acknowledgement): Promise<Shared> =>
   share(root, (l, s, a) => publishAckGranted(l, s, a, ack));

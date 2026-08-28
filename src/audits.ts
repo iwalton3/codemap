@@ -34,7 +34,7 @@ import {
   workHas, writeLocalAudit,
 } from "./store.js";
 import { liveHashes, witnessDrift, realDrift } from "./reviews.js";
-import { currentBranch, headCommit, isGitRepo, onDefaultBranch } from "./git.js";
+import { currentBranch, headCommit, isDirty, isGitRepo, onDefaultBranch } from "./git.js";
 import { requireActor } from "./identity.js";
 import type { ActorInput } from "./identity.js";
 import { disposition, shareAudit } from "./standard-publish.js";
@@ -59,7 +59,10 @@ const OUTCOMES: AuditOutcome[] = ["conformant", "nonconformant", "indeterminate"
  * is a policy setting, and economising on it buys a silent pass.** Here, economising simply
  * does not buy the state change.
  */
-const touchedCode = (e: AuditEvidence): boolean => !!(e.read?.length || e.ran?.length);
+const touchedCode = (e: AuditEvidence): boolean =>
+  // A command that FAILED is evidence of non-conformance, never of conformance. Counting
+  // any nonempty `ran` let `{ command: "false", passed: false }` certify a rule.
+  !!(e.read?.length || e.ran?.some((r) => r.passed));
 
 /** Any evidence at all — enough to file a finding, not enough to certify one. */
 const hasEvidence = (e: AuditEvidence): boolean => touchedCode(e) || !!e.consulted?.length;
@@ -109,6 +112,12 @@ export async function recordAudit(
   if (!r) return { error: `no requirement "${input.requirementId}"` };
 
   const evidence: AuditEvidence = input.evidence ?? {};
+  // Witness the cited code as well as what was read. `touchedCode` accepts `ran` alone,
+  // and an audit built only from `evidence.read` then had NO witnesses — so nothing could
+  // ever supersede it and `conformant` became permanent, surviving a rewrite of the very
+  // code it certified. That is "unknown must never render as conformant" failing in the
+  // one direction the design forbids.
+  const read = [...new Set([...(evidence.read ?? []), ...r.cites])];
   if (input.outcome === "conformant" && !touchedCode(evidence)) {
     return {
       error:
@@ -116,6 +125,15 @@ export async function recordAudit(
         + "documentation is not enough: a stale or missing doc yields a pass rather than a "
         + "flag, so a doc-only check certifies nothing. Record `evidence.read` / "
         + "`evidence.ran`, or file this as `indeterminate`.",
+    };
+  }
+  if (input.outcome === "conformant" && !read.length) {
+    return {
+      error:
+        "a `conformant` audit needs something that could later invalidate it — anchors in "
+        + "`evidence.read`, or a requirement that cites code. With neither, nothing can ever "
+        + "supersede the claim and it would read as verified for ever. A claim nothing can "
+        + "invalidate is not a claim.",
     };
   }
   if (input.outcome === "nonconformant" && !hasEvidence(evidence)) {
@@ -127,7 +145,6 @@ export async function recordAudit(
     };
   }
 
-  const read = evidence.read ?? [];
   if (read.length) {
     let have: Set<string>;
     try { have = workHas(root, read); } catch { have = new Set(); }
@@ -140,7 +157,12 @@ export async function recordAudit(
   const live = read.length ? await liveHashes(root, read) : null;
   // Off the default branch this is about somebody's work in progress, not about the
   // codebase — so it is recorded and never broadcast. See `standard-publish.ts`.
-  const provisional = !onDefaultBranch(root);
+  //
+  // A DIRTY TREE is the same thing wearing the branch's name: the witnesses come off the
+  // filesystem while `commit` records an unchanged HEAD, so sharing it attributes
+  // uncommitted work to a commit that does not contain it. codemap has shipped this exact
+  // confusion once already, as the dirty-snapshot witness (COD-3).
+  const provisional = !onDefaultBranch(root) || (isGitRepo(root) && isDirty(root));
   const audit: Audit = {
     id: mint(), requirementId: r.id, outcome: input.outcome, evidence, finding,
     witnesses: read.map((id) => ({ anchorId: id, bodyHash: live?.get(id) ?? "sha256:absent" })),
@@ -164,6 +186,11 @@ export async function recordAudit(
  * granting never could be.
  */
 async function settleAcknowledgements(root: string, audit: Audit): Promise<string[]> {
+  // A provisional audit settles NOTHING. Releasing is a shared act, and releasing on the
+  // strength of branch work would un-silence a rule for the whole team on evidence that
+  // may never merge — and cite an audit id no other clone can resolve. The audit itself
+  // stays local; this is the second half of that, and it was missing.
+  if (audit.provisional) return [];
   const active = await readAcknowledgements(root, { requirementId: audit.requirementId, state: "active" });
   const released: string[] = [];
   for (const a of active) {
@@ -299,7 +326,10 @@ export async function conformance(
   root: string, opts: { asOf?: string } = {},
 ): Promise<RequirementConformance[]> {
   const asOf = opts.asOf ?? now();
-  const { requirements } = await readRequirements(root);
+  // A retired rule is not part of the current standard, so counting it as unexamined
+  // misstates how much of what is IN FORCE nobody has checked — retire fifty and
+  // `silenced().unknown` jumps by fifty.
+  const { requirements } = await readRequirements(root, { status: "ratified" });
   const { listAcknowledgements } = await import("./acknowledgements.js");
   const out: RequirementConformance[] = [];
   for (const requirement of requirements) {

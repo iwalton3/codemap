@@ -67,7 +67,6 @@ export function currentBranch(root: string): string | null {
   return b && b !== "HEAD" ? b : null;
 }
 
-/** True if the working tree has uncommitted changes (tracked or untracked). */
 /**
  * The repository's default branch — what "the codebase" means when nobody says otherwise.
  *
@@ -86,7 +85,28 @@ export function defaultBranch(root: string, remote = "origin"): string {
   for (const candidate of ["main", "master"]) {
     if (revParse(root, `${remote}/${candidate}`)) return candidate;
   }
+  // No remote by that name at all. Guessing "main" is a trap — `onDefaultBranch` now gates
+  // whether an audit may be shared, so a local-only repo on `master` would mark EVERY
+  // audit provisional with no way for the user to satisfy it.
+  //
+  // Fall back to a LOCAL trunk, never to the current branch: answering "whatever you have
+  // checked out" makes every branch the default and the provisional distinction vanishes
+  // silently — which is worse than the problem, because it fails open.
+  if (!hasRemote(root, remote)) {
+    for (const candidate of ["main", "master", "develop", "trunk"]) {
+      if (revParse(root, `refs/heads/${candidate}`)) return candidate;
+    }
+    // Nothing recognisable, and no remote: there is one line of development, so whatever
+    // is checked out is it.
+    return currentBranch(root) ?? "main";
+  }
   return "main";
+}
+
+/** Does this repo have a remote by that name at all? */
+function hasRemote(root: string, remote: string): boolean {
+  const r = spawnSync(gitBin(), ["remote"], { cwd: root, encoding: "utf8" });
+  return r.status === 0 && (r.stdout ?? "").split("\n").some((l) => l.trim() === remote);
 }
 
 /** Is the working tree on the default branch — i.e. is this about the codebase? */
@@ -96,6 +116,7 @@ export function onDefaultBranch(root: string): boolean {
   return !!here && here === defaultBranch(root);
 }
 
+/** True if the working tree has uncommitted changes (tracked or untracked). */
 export function isDirty(root: string): boolean {
   if (!isGitRepo(root)) return false;
   return git(root, ["status", "--porcelain"]).out.trim().length > 0;

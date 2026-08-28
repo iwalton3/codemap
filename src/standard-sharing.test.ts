@@ -209,8 +209,10 @@ test("a provisional finding that was FIXED before merging makes no noise at all"
 
     // The branch author fixes it. The audited code is now different code.
     writeFileSync(join(root, "src/credit.js"), "export function creditLine(cents) { return cents; }\n", "utf8");
-    await writeStore(root, await indexBlob("export function creditLine(cents) { return cents; }\n", "src/credit.js"), state);
+    git(root, "commit", "-qam", "fix on the branch");
     git(root, "checkout", "-q", "main");
+    git(root, "merge", "-q", "--no-edit", "feature/credit");
+    await writeStore(root, await indexBlob("export function creditLine(cents) { return cents; }\n", "src/credit.js"), state);
 
     assert.equal(
       await promotableAudits(root).then((a) => a.length), 0,

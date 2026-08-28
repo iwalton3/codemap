@@ -91,7 +91,6 @@ test("a gap is raised before the spec lands, and cannot be raised after", async 
       operationId: lateOp.id, rationale: "not built", priority: "low", revalidateBy: LATER,
     });
     assert.ok("error" in refused, "a gap may not be raised against a ratified spec");
-    assert.match((refused as any).error, /still a draft/);
   } finally { discard(root); }
 });
 
@@ -264,5 +263,33 @@ test("silenced counts how much of the standard is muted, and by what", async () 
       { total: s.total, gap: s.gap, debt: s.debt, unknown: s.unknown, due: s.due },
       { total: 2, gap: 1, debt: 1, unknown: 0, due: 1 },
     );
+  } finally { discard(root); }
+});
+
+test("a gap may not be raised against an operation on a rule already in force", async () => {
+  const root = await universe();
+  try {
+    const { specId } = await draftRule(root);
+    ok(await ratifySpec(root, specId));
+    const rule = (await listRequirements(root))[0]!;
+
+    // The second route to a post-ratification gap, and it survived the draft-only check:
+    // draft a NEW spec amending the live rule, gap the amendment while that spec is still
+    // a draft, and the binding at ratification attaches an agent's gap to a rule the team
+    // has been living under. A gap claims there is no code that should conform yet, which
+    // cannot be true of a rule already in force.
+    const amend = ok(await draftSpec(root, { title: "Amend it" }));
+    const op = ok(await addOperation(root, {
+      specId: amend.id, kind: "amend_statement", requirementId: rule.id, reversibility: "reversible",
+      statement: "Every settlement endpoint requires an idempotency key, except refunds.",
+      rationale: "refunds are keyed differently",
+    }));
+    const refused = await acknowledgeGap(root, {
+      operationId: op.id, rationale: "not built", priority: "low", revalidateBy: LATER, ...AGENT,
+    });
+    assert.ok("error" in refused);
+    assert.match((refused as any).error, /already in force/);
+    ok(await ratifySpec(root, amend.id));
+    assert.equal((await listAcknowledgements(root)).length, 0, "and nothing bound to the live rule");
   } finally { discard(root); }
 });

@@ -977,6 +977,14 @@ export interface Spec {
   createdAt: string;
   ratifiedBy?: Actor;
   ratifiedAt?: string;
+  /**
+   * Adopted against a base that had already moved, so the fold applied NOTHING from it.
+   *
+   * Set by the fold, never written by a caller: it is a function of the log and every
+   * clone derives the same answer. The spec stays `ratified` because that act really
+   * happened — what did not happen is the application, and saying so is the honest record.
+   */
+  conflicted?: boolean;
   origin?: string;
 }
 

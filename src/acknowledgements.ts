@@ -122,6 +122,19 @@ export async function acknowledgeGap(
   const ops = await readOperations(root);
   const op = ops.find((o) => o.id === input.operationId);
   if (!op) return { error: `no operation "${input.operationId}"` };
+  // A gap says NO CODE THAT SHOULD CONFORM EXISTS YET, which can only be true of a rule
+  // that does not exist yet either. Allowing one against an `amend_statement` re-opened the
+  // door the mint-time asymmetry closes: draft a second spec amending a ratified rule, gap
+  // the amendment, ratify, and the binding attaches an agent's gap to a rule the team has
+  // been living under — post-ratification laundering by another route.
+  if (op.kind !== "add_requirement") {
+    return {
+      error:
+        `${op.id} is a \`${op.kind}\` on an existing rule, and a gap claims there is no code `
+        + `that should conform yet — which cannot be true of a rule already in force. After `
+        + `adoption the honest records are a problem, or debt granted by a principal.`,
+    };
+  }
   const sp = await readSpec(root, op.specId);
   if (!sp) return { error: `operation ${op.id} points at missing spec ${op.specId}` };
   if (sp.status !== "draft") {
@@ -185,11 +198,10 @@ export async function acknowledgeDebt(
 /**
  * Bind a spec's gap acknowledgements to the requirements its operations produced.
  *
- * Called on the LOCAL path at ratification. The sidecar fold does the same binding from
- * the same derivation (`requirementIdFor`), so a shared acknowledgement never needs a
- * second event to find its rule.
- *
- * Historically called by the fold at ratification. Before this a gap names an operation, because the
+ * Called on the LOCAL path at ratification. `foldStandard` does the same binding from the
+ * same derivation (`requirementIdFor`), so a shared acknowledgement needs no second event
+ * to find its rule — see `shared-standard.ts`'s `spec.ratified` case, which is where that
+ * became true rather than merely claimed here. Before this a gap names an operation, because the
  * rule does not exist yet; afterwards it has to name the rule, or nothing asking "what is
  * silencing this requirement" would find it.
  */

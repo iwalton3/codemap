@@ -32,13 +32,23 @@ async function universe() {
   mkdirSync(join(root, ".codemap"), { recursive: true });
   mkdirSync(join(root, "src"), { recursive: true });
   writeFileSync(join(root, "src/credit.js"), SRC, "utf8");
+  spawnSync("git", ["add", "-A"], { cwd: root });
+  spawnSync("git", ["commit", "-qm", "init"], { cwd: root });
   const indexed = await indexBlob(SRC, "src/credit.js");
   await writeStore(root, indexed, state);
   return { root, anchors: indexed.map((a) => a.id) };
 }
 
+/**
+ * Change the code the way a real edit does — INCLUDING the commit.
+ *
+ * Leaving the tree dirty makes every audit provisional, which is correct behaviour and was
+ * silently making these fixtures unrealistic: a dirty tree witnesses the filesystem while
+ * recording an unchanged HEAD, so an audit of it is about work in progress.
+ */
 async function editCode(root: string, src: string) {
   writeFileSync(join(root, "src/credit.js"), src, "utf8");
+  spawnSync("git", ["commit", "-qam", "edit"], { cwd: root });
   await writeStore(root, await indexBlob(src, "src/credit.js"), state);
 }
 
@@ -230,5 +240,62 @@ test("silenced separates checked from merely unexamined", async () => {
       { total: 2, conformant: 1, unknown: 1, gap: 0, debt: 0 },
       "one rule is checked and one is merely unexamined, and they must not read the same",
     );
+  } finally { discard(root); }
+});
+
+test("a failed command is evidence of non-conformance, never of conformance", async () => {
+  const { root, anchors } = await universe();
+  try {
+    // The rule must CITE code, or the refusal below comes from the witness check instead
+    // and says nothing about the `passed` flag — which is how this test passed vacuously
+    // the first time it was written.
+    const sp = ok(await draftSpec(root, { title: "Cited rule" }));
+    ok(await addOperation(root, {
+      specId: sp.id, kind: "add_requirement", rationale: "x", reversibility: "reversible",
+      title: "Credit line currency", section: "Credit/Limits",
+      statement: "All credit lines are in USD.", provenance: "credit policy §4", cites: anchors,
+    }));
+    ok(await ratifySpec(root, sp.id));
+    const rule = (await listRequirements(root))[0]!;
+
+    const failed = await recordAudit(root, {
+      requirementId: rule.id, outcome: "conformant", finding: "the suite ran",
+      evidence: { ran: [{ command: "false", passed: false }] },
+    });
+    assert.ok("error" in failed, "any nonempty `ran` used to count as touching code");
+
+    // A PASSING command alone is fine — the guard is about the result, not about `read`.
+    ok(await recordAudit(root, {
+      requirementId: rule.id, outcome: "conformant", finding: "the suite is green",
+      evidence: { ran: [{ command: "npm test", passed: true }] },
+    }));
+
+    ok(await recordAudit(root, {
+      requirementId: rule.id, outcome: "conformant", finding: "the suite is green",
+      evidence: { read: anchors, ran: [{ command: "npm test", passed: true }] },
+    }));
+  } finally { discard(root); }
+});
+
+test("an audit of a dirty tree is provisional, whatever branch it is on", async () => {
+  const { root, anchors } = await universe();
+  try {
+    const { specId } = await adoptRule(root);
+    ok(await ratifySpec(root, specId));
+    const rule = (await listRequirements(root))[0]!;
+
+    const clean = ok(await recordAudit(root, {
+      requirementId: rule.id, outcome: "conformant", finding: "verified", evidence: { read: anchors },
+    }));
+    assert.equal(clean.audit.provisional, undefined, "committed work on the default branch is about the codebase");
+
+    // Uncommitted. The witnesses come off the filesystem while `commit` records an
+    // unchanged HEAD, so sharing this attributes work in progress to a commit that does
+    // not contain it — the dirty-snapshot confusion codemap has shipped once already.
+    writeFileSync(join(root, "src/credit.js"), "export function creditLine(c) { return c * 3; }\n", "utf8");
+    const dirty = ok(await recordAudit(root, {
+      requirementId: rule.id, outcome: "indeterminate", finding: "mid-edit",
+    }));
+    assert.equal(dirty.audit.provisional, true);
   } finally { discard(root); }
 });

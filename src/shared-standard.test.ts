@@ -65,7 +65,7 @@ test("a requirement appears only when the spec is ratified, under an id every cl
 
     await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {
       op_1: [{ anchorId: "a_credit", bodyHash: "h1:sha256:abc" }],
-    });
+    }, ["op_1"]);
 
     const after = await fold(root);
     assert.equal(after.specs[0]!.status, "ratified");
@@ -86,7 +86,7 @@ test("the same events fold to the same standard, which is what lets two clones a
   try {
     await publishSpecDrafted(root, SCOPE, opus, SPEC);
     await publishOperation(root, SCOPE, opus, ADD);
-    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {});
+    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
     const events = await readScope(root, SCOPE);
     assert.deepEqual(foldStandard(events), foldStandard(events));
     // And it could have failed: an empty log folds to something different.
@@ -174,7 +174,7 @@ test("the projection round-trips what the fold produced", async () => {
   try {
     await publishSpecDrafted(root, SCOPE, opus, SPEC);
     await publishOperation(root, SCOPE, opus, ADD);
-    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {});
+    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
     await publishAckGranted(root, SCOPE, opus, {
       id: "ack_1", basis: "gap", operationId: "op_1", rationale: "nothing built yet",
       priority: "medium", revalidateBy: "2027-01-01", state: "active",
@@ -203,13 +203,13 @@ test("a spec ratifies once, so a replayed or duplicated event cannot apply it tw
   try {
     await publishSpecDrafted(root, SCOPE, opus, SPEC);
     await publishOperation(root, SCOPE, opus, ADD);
-    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {});
+    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
     const once = await fold(root);
 
     // A second ratification of the same spec. A fold that applied it again would amend
     // the rule a second time, and `amendedBy` would grow on every sync — the shape of bug
     // that only appears after a clone has synced more than once.
-    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-09T00:00:00.000Z", {});
+    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-09T00:00:00.000Z", {}, ["op_1"]);
     const twice = await fold(root);
     assert.deepEqual(twice.requirements, once.requirements, "applying a spec is idempotent");
     assert.equal(twice.specs[0]!.ratifiedAt, "2026-08-02T00:00:00.000Z", "and the first adoption is the one that counts");
@@ -290,5 +290,73 @@ test("the fold drops provisional work, which is never the team's", async () => {
     const f = await fold(root);
     assert.equal(f.audits.length, 0, "a branch audit is about work in progress, not the codebase");
     assert.equal(f.problems.length, 0, "and so is a problem raised from one");
+  } finally { discard(root); }
+});
+
+test("the fold refuses an agent's ratification", async () => {
+  const root = await log("ratifygate");
+  try {
+    await publishSpecDrafted(root, SCOPE, opus, SPEC);
+    await publishOperation(root, SCOPE, opus, ADD);
+    await publishSpecRatified(root, SCOPE, opus, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
+    const f = await fold(root);
+    assert.equal(f.requirements.length, 0, "adoption is a principal's act on every clone, not only on the one that ran the tool");
+    assert.equal(f.specs[0]!.status, "draft");
+
+    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", {}, ["op_1"]);
+    assert.equal((await fold(root)).requirements.length, 1, "and a principal's does bind");
+  } finally { discard(root); }
+});
+
+test("the fold refuses a spec adopted against a base that had already moved", async () => {
+  const root = await log("foldcontext");
+  try {
+    await publishSpecDrafted(root, SCOPE, opus, SPEC);
+    await publishOperation(root, SCOPE, opus, ADD);
+    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
+    const rid = requirementIdFor("op_1");
+
+    // Two principals, each drafting against "All credit lines are in USD." on their own
+    // clone. The local check passes for BOTH — the log is pull/push and is never read on
+    // an ordinary read — so the fold is the only thing that can catch it.
+    const amend = (id: string, statement: string): Operation => ({
+      id, specId: id.replace("op", "sp"), kind: "amend_statement", ord: 0, requirementId: rid,
+      statement, rationale: "r", reversibility: "reversible",
+      context: { requirementId: rid, statement: "All credit lines are in USD." },
+    });
+    for (const [sid, oid, text] of [["sp_a", "op_a", "USD, except settlement float."], ["sp_b", "op_b", "USD and EUR."]] as const) {
+      await publishSpecDrafted(root, SCOPE, izzie, { ...SPEC, id: sid, title: sid });
+      await publishOperation(root, SCOPE, izzie, amend(oid, text));
+    }
+    await publishSpecRatified(root, SCOPE, izzie, "sp_a", "2026-08-03T00:00:00.000Z", {}, ["op_a"]);
+    assert.match((await fold(root)).requirements[0]!.statement, /settlement float/);
+
+    await publishSpecRatified(root, SCOPE, izzie, "sp_b", "2026-08-04T00:00:00.000Z", {}, ["op_b"]);
+    const after = await fold(root);
+    assert.match(
+      after.requirements[0]!.statement, /settlement float/,
+      "B was drafted against text A has since replaced; applying it would erase an amendment a principal ratified",
+    );
+    assert.equal(after.specs.find((x) => x.id === "sp_b")!.conflicted, true, "and the spec says why nothing landed");
+  } finally { discard(root); }
+});
+
+test("a ratification adopts exactly the operations it pinned", async () => {
+  const root = await log("pinned");
+  try {
+    await publishSpecDrafted(root, SCOPE, opus, SPEC);
+    await publishOperation(root, SCOPE, opus, ADD);
+    // An operation from an un-synced clone, landing before the ratification in the log's
+    // total order. Collecting by specId at replay time would adopt it, though the principal
+    // never saw it in the diff they approved.
+    await publishOperation(root, SCOPE, opus, {
+      ...ADD, id: "op_sneak", ord: 1, title: "Unapproved", section: "Credit/Other",
+      statement: "Something nobody reviewed.",
+    });
+    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
+
+    const f = await fold(root);
+    assert.equal(f.requirements.length, 1, "only what was pinned");
+    assert.equal(f.requirements[0]!.id, requirementIdFor("op_1"));
   } finally { discard(root); }
 });

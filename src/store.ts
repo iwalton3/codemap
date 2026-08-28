@@ -2107,7 +2107,10 @@ export async function readRequirements(
   if (opts.status) { clauses.push("status = ?"); args.push(opts.status); }
   // Prefix match, so asking for "Credit" answers with "Credit/Limits" too — a section
   // is a path and the useful question about one is almost always "and everything under".
-  if (opts.section) { clauses.push("(section = ? OR section LIKE ?)"); args.push(opts.section, opts.section.replace(/[%_\\]/g, "\\$&") + "/%"); }
+  // ESCAPE is not optional: SQLite's LIKE has NO default escape character, so the
+  // backslash this inserts is a literal without it and a section path containing `_` or
+  // `%` loses its whole subtree from the listing.
+  if (opts.section) { clauses.push("(section = ? OR section LIKE ? ESCAPE '\\')"); args.push(opts.section, opts.section.replace(/[%_\\]/g, "\\$&") + "/%"); }
   const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
   const rows = db(root).prepare(
     `SELECT body, origin FROM requirements${where} ORDER BY section, created_at, id`,

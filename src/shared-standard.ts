@@ -73,8 +73,8 @@ export const publishOperation = (logRoot: string, scope: string, actor: Actor, o
  */
 export const publishSpecRatified = (
   logRoot: string, scope: string, actor: Actor, specId: string, at: string,
-  witnesses: Record<string, BugWitness[]>,
-) => put(logRoot, scope, actor, "spec.ratified", specId, { at, witnesses });
+  witnesses: Record<string, BugWitness[]>, operations: string[],
+) => put(logRoot, scope, actor, "spec.ratified", specId, { at, witnesses, operations });
 
 export const publishAckGranted = (logRoot: string, scope: string, actor: Actor, ack: Acknowledgement) =>
   put(logRoot, scope, actor, "ack.granted", ack.id, { ack });
@@ -139,13 +139,56 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
         // A ratification for a spec this fold never saw drafted is not fatal: the drafting
         // shard may simply not have arrived yet, and the next sync completes it.
         if (!sp || sp.status === "ratified") break;
+        // Adoption is a principal's act, and a remote clone sees only this row. Without
+        // this the tool's gate binds nobody but the machine that ran it.
+        if (e.actor.via) break;
         const at = str(e.data, "at") ?? e.at;
         const witnesses = (obj(e.data, "witnesses") ?? {}) as Record<string, BugWitness[]>;
-        specs.set(sp.id, { ...sp, status: "ratified", ratifiedBy: e.actor, ratifiedAt: at });
-        const mine = [...operations.values()]
-          .filter((o) => o.specId === sp.id)
+        // The operations the principal actually approved, pinned on the event. Collecting
+        // them at replay time instead let an operation authored by an un-synced clone sort
+        // BEFORE the ratification and be adopted though nobody ever saw it in the diff —
+        // or sort after and be dropped for ever while `addOperation` had returned ok.
+        const pinned = obj(e.data, "operations") as string[] | undefined;
+        const mine = (pinned
+          ? pinned.map((id) => operations.get(id)).filter(Boolean) as Operation[]
+          : [...operations.values()].filter((o) => o.specId === sp.id))
           .sort((a, b) => a.ord - b.ord);
+
+        // Context, verified here and not only in the tool. The local check is TOCTOU
+        // across clones — the log is pull/push and never read on an ordinary read — so two
+        // principals can each validate against the same statement and both append. Without
+        // this the second silently overwrites an amendment the first ratified.
+        //
+        // ALL OR NOTHING, exactly as `ratifySpec` refuses: applying the half that still
+        // fits yields a standard nobody approved.
+        const stale = mine.some((op) => {
+          if (!op.context) return false;
+          const cur = requirements.get(op.context.requirementId);
+          return !cur || cur.status === "retired" || cur.statement !== op.context.statement;
+        });
+        if (stale || (pinned && mine.length !== pinned.length)) {
+          specs.set(sp.id, { ...sp, status: "ratified", ratifiedBy: e.actor, ratifiedAt: at, conflicted: true });
+          break;
+        }
+        specs.set(sp.id, { ...sp, status: "ratified", ratifiedBy: e.actor, ratifiedAt: at });
         for (const op of mine) applyOperation(requirements, op, sp, e.actor, at, witnesses[op.id] ?? []);
+
+        // Bind what the operations produced. The LOCAL path does this at ratification
+        // (`writeLocalOperation` with the new id, and `bindGapsForSpec`); without the same
+        // binding here, a shared `add_requirement` kept `requirementId: null` for ever —
+        // so a folded rule had no history and never reported `irreversible`, and a folded
+        // GAP was attached to nothing, silencing a requirement that nothing could find it
+        // by. Both are the "one team fact, invisible on every other clone" shape.
+        for (const op of mine) {
+          if (op.kind !== "add_requirement") continue;
+          const rid = requirementIdFor(op.id);
+          operations.set(op.id, { ...op, requirementId: rid });
+          for (const [id, ack] of acknowledgements) {
+            if (ack.operationId === op.id && !ack.requirementId) {
+              acknowledgements.set(id, { ...ack, requirementId: rid });
+            }
+          }
+        }
         break;
       }
       case "ack.granted": {

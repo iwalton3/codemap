@@ -38,13 +38,23 @@ async function universe() {
   mkdirSync(join(root, ".codemap"), { recursive: true });
   mkdirSync(join(root, "src"), { recursive: true });
   writeFileSync(join(root, "src/credit.js"), SRC, "utf8");
+  spawnSync("git", ["add", "-A"], { cwd: root });
+  spawnSync("git", ["commit", "-qm", "init"], { cwd: root });
   const indexed = await indexBlob(SRC, "src/credit.js");
   await writeStore(root, indexed, state);
   return { root, anchors: indexed.map((a) => a.id) };
 }
 
+/**
+ * Change the code the way a real edit does — INCLUDING the commit.
+ *
+ * Leaving the tree dirty makes every audit provisional, which is correct behaviour and was
+ * silently making these fixtures unrealistic: a dirty tree witnesses the filesystem while
+ * recording an unchanged HEAD, so an audit of it is about work in progress.
+ */
 async function editCode(root: string, src: string) {
   writeFileSync(join(root, "src/credit.js"), src, "utf8");
+  spawnSync("git", ["commit", "-qam", "edit"], { cwd: root });
   await writeStore(root, await indexBlob(src, "src/credit.js"), state);
 }
 
@@ -226,5 +236,61 @@ test("retiring the rule does not close the problem either", async () => {
     const row = (await listProblems(root))[0]!;
     assert.equal(row.state, "open", "retire-the-rule is not an adjudication");
     assert.equal(row.settledWithoutAdjudication, true);
+  } finally { discard(root); }
+});
+
+test("a problem cannot be raised from evidence that has already moved", async () => {
+  const { root, anchors } = await universe();
+  try {
+    const sp = ok(await draftSpec(root, { title: "Credit currency policy" }));
+    ok(await addOperation(root, {
+      specId: sp.id, kind: "add_requirement", rationale: "x", reversibility: "reversible",
+      title: "Credit line currency", section: "Credit/Limits",
+      statement: "All credit lines are in USD.", provenance: "credit policy §4", cites: anchors,
+    }));
+    ok(await ratifySpec(root, sp.id));
+    const rule = (await listRequirements(root))[0]!;
+    const audit = ok(await recordAudit(root, {
+      requirementId: rule.id, outcome: "nonconformant", finding: "doubles the amount",
+      evidence: { read: anchors },
+    }));
+    // Raising it now works, so the refusal below is about the evidence having moved.
+    ok(await raiseProblem(root, { auditId: audit.id, summary: "still broken" }));
+
+    await editCode(root, "export function creditLine(cents) { return cents; }\n");
+    const second = ok(await recordAudit(root, {
+      requirementId: rule.id, outcome: "nonconformant", finding: "a second look",
+      evidence: { read: (await indexBlob("export function creditLine(cents) { return cents; }\n", "src/credit.js")).map((a) => a.id) },
+    }));
+    await editCode(root, "export function creditLine(cents) { return cents + 1; }\n");
+
+    const stale = await raiseProblem(root, { auditId: second.id, summary: "from stale evidence" });
+    assert.ok("error" in stale, "on the default branch this would reach the team from evidence that no longer speaks");
+    assert.match((stale as any).error, /no longer speaks/);
+  } finally { discard(root); }
+});
+
+test("acts in the same millisecond still close the problem they resolve", async () => {
+  const { root, anchors } = await universe();
+  try {
+    const { rule, problem } = await disagreement(root, anchors);
+    // String-comparing ISO stamps with `>` left a problem open for ever when the
+    // adjudication and the closing act landed in one millisecond, which is ordinary for
+    // two sequential calls.
+    const frozen = "2026-09-01T00:00:00.000Z";
+    const RealDate = Date;
+    // @ts-expect-error deliberately replacing the clock for one act
+    globalThis.Date = class extends RealDate {
+      constructor(...a: any[]) { super(...(a.length ? a : [frozen]) as []); }
+      static now() { return new RealDate(frozen).getTime(); }
+      toISOString() { return frozen; }
+    };
+    try {
+      ok(await adjudicate(root, problem.id, "code-wrong", "the rule stands"));
+      ok(await recordAudit(root, {
+        requirementId: rule.id, outcome: "conformant", finding: "fixed", evidence: { read: anchors },
+      }));
+    } finally { globalThis.Date = RealDate; }
+    assert.equal((await listProblems(root))[0]!.state, "closed");
   } finally { discard(root); }
 });
