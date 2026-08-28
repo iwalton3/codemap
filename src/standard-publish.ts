@@ -19,7 +19,7 @@
 
 import type {
   Acknowledgement, Actor, Audit, BugWitness, Operation, Pointer, PopulationPredicate, Problem,
-  Spec, VacuityCheck,
+  Scrub, ScrubPolicy, Spec, VacuityCheck,
 } from "./schema.js";
 import type { ScopeDiagnostic } from "./eventlog.js";
 import { resolveSidecar, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
@@ -31,7 +31,7 @@ import {
   foldStandard, standardScope, publishSpecDrafted, publishOperation, publishSpecRatified,
   publishAckGranted, publishAckReleased, publishAudit, publishProblemRaised, publishAdjudication,
   publishVacuityCheck, publishPointerDeclared, publishPointerRestated, publishPointerRetired,
-  publishPopulationPinned,
+  publishPopulationPinned, publishScrub, publishScrubPolicy,
 } from "./shared-standard.js";
 
 /** One universe's standard, through the cache. */
@@ -184,6 +184,17 @@ export const sharePointerRetired = (root: string, p: Pointer): Promise<Shared> =
 export const sharePopulationPinned = (
   root: string, pin: PopulationPredicate, supersedes?: string,
 ): Promise<Shared> => share(root, (l, s, a) => publishPopulationPinned(l, s, a, pin, supersedes));
+
+/**
+ * A scrub and its schedule both travel. Coverage is a property of the TEAM's standard —
+ * "everything is looked at every T" is not a claim one clone can make alone — and a scrub
+ * somebody else performed is exactly the work this clone then does not have to repeat.
+ */
+export const shareScrub = (root: string, sc: Scrub): Promise<Shared> =>
+  share(root, (l, s, a) => publishScrub(l, s, a, sc));
+
+export const shareScrubPolicy = (root: string, policy: ScrubPolicy): Promise<Shared> =>
+  share(root, (l, s, a) => publishScrubPolicy(l, s, a, policy));
 
 /** Same rule: a problem raised from a provisional audit is this branch's, not the team's. */
 export const shareProblemRaised = (root: string, problem: Problem): Promise<Shared> =>

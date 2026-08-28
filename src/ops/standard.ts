@@ -55,6 +55,10 @@ import {
   pinPopulation as pinRec, declareNotExpressible as notExpressibleRec,
   populationFor as populationForRec, brokenPins as brokenPinsRec,
 } from "../population.js";
+import {
+  setScrubPolicy as setScrubPolicyRec, recordScrub as recordScrubRec,
+  scrubPlan as scrubPlanRec, scrubsFor as scrubsForRec,
+} from "../scrub.js";
 import { standardScopeWarning, type StandardScope } from "../standard-publish.js";
 import type {
   AcknowledgementPriority, AuditEvidence, AuditOutcome, EvidenceKind, OperationKind,
@@ -228,6 +232,26 @@ export const recordVacuityCheck = (
   root: string,
   input: { criterionId: string; verdict: VacuityCheck["verdict"]; method?: string } & ActorInput,
 ) => recordVacuityCheckRec(root, input);
+
+// --- the scrub ------------------------------------------------------------------
+
+export const setScrubPolicy = (
+  root: string, input: { coverageDays: number; minObservations?: number } & ActorInput,
+) => setScrubPolicyRec(root, input);
+
+export const recordScrub = (
+  root: string,
+  input: {
+    requirementId: string; finding: string; verdict: "sound" | "suspect";
+    observations?: { pointerId: string; firing: boolean }[];
+  } & ActorInput,
+) => recordScrubRec(root, input);
+
+export const scrubPlan = async (root: string, input: { asOf?: string } = {}) =>
+  served(root, () => scrubPlanRec(root, input));
+
+export const scrubsFor = async (root: string, input: { requirementId: string }) =>
+  served(root, async () => ({ scrubs: await scrubsForRec(root, input.requirementId) }));
 
 // --- population predicates ----------------------------------------------------
 

@@ -1422,6 +1422,74 @@ export function criterionIdFor(operationId: string): string {
 }
 
 /**
+ * The stated rate and coverage period for scrubbing the standard.
+ *
+ * **Required for the scrub to mean anything.** Without a stated period it is "whenever
+ * somebody remembers", which is the thing the whole mechanism exists to replace, and its
+ * cost is unbudgeted — the principal-time failure arriving from a third direction. So an
+ * ABSENT policy is itself a finding that `scrubPlan` reports, never a quiet default.
+ *
+ * The shape is an array's, deliberately: some share of the population per period, so
+ * everything is covered every *T*. Stating `coverageDays` and the population size derives
+ * the daily rate, which is what makes the cost visible before it is incurred.
+ */
+export interface ScrubPolicy {
+  /** *T*: every rule in force is looked at at least this often. */
+  coverageDays: number;
+  /**
+   * How many observations a pointer needs before its firing RATE is reported as a
+   * pathology.
+   *
+   * A rate from one look is not a rate, and calling it one would make the scrub commit the
+   * exact error it exists to catch: a confident verdict from a check that could not have
+   * produced one. Minimum 2, and the default should be higher.
+   */
+  minObservations: number;
+  setBy: Actor;
+  setAt: string;
+  origin?: string;
+}
+
+/**
+ * Somebody went and looked at a rule, on the schedule rather than because something moved.
+ *
+ * This is the complement to differential audit and neither is optional. Differential audit
+ * is cheap precisely *because* change drives it — so a rule whose pointers never move is
+ * never audited, and that is the *never fires → false calm* pathology promoted from an
+ * accident to a structural property. **Differential covers what moved; the scrub covers
+ * what did not.**
+ *
+ * Vacuity is silent corruption: you do not find it by using the thing, because a vacuous
+ * pointer looks fine every single time you look at it. You find it the way an array finds a
+ * bad block — by going and checking, on a schedule, across the whole population.
+ *
+ * The `observations` are what make a RATE derivable. A single scrub says nothing about
+ * whether a pointer never fires or always does; a sequence of them says both, and derived
+ * from a record rather than asserted by a writer — the same reason a gap's magnitude is a
+ * population and not an estimate.
+ */
+export interface Scrub {
+  id: string;
+  requirementId: string;
+  /**
+   * What each of the rule's ACTIVE pointers was doing at this moment.
+   *
+   * Must cover exactly the active set — no omissions and no phantoms. That is the evidence
+   * gate: a scrub resets the clock on a rule, which is the silencing direction, so *"I
+   * looked"* with nothing recorded is a self-report buying a fresh coverage period. A rule
+   * with nothing watching it legitimately has an empty list, and saying so is the finding.
+   */
+  observations: { pointerId: string; firing: boolean }[];
+  /** What the scrubber concluded, in their own words. */
+  finding: string;
+  /** `suspect` raises; `sound` quiets. Raising is open, which is why only `sound` is gated. */
+  verdict: "sound" | "suspect";
+  scrubbedBy: Actor;
+  at: string;
+  origin?: string;
+}
+
+/**
  * One thing a rule ranges over, and what the check concluded about it.
  *
  * `id` is whatever the lint calls it — a type name, a route, a `file:symbol`. codemap does

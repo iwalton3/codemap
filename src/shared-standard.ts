@@ -14,6 +14,7 @@
  *   vacuity.checked
  *   pointer.declared · pointer.restated · pointer.retired
  *   population.pinned
+ *   scrub.recorded · scrub.policy
  *
  * ACCEPTANCE CRITERIA are not among them either, for the reason requirements are not: a
  * criterion is created by a ratified `add_criterion` operation, so it is derived by
@@ -42,7 +43,7 @@
 
 import type {
   AcceptanceCriterion, Acknowledgement, Actor, Audit, BugWitness, Operation, Pointer,
-  PopulationPredicate, Problem, Requirement, Spec, VacuityCheck,
+  PopulationPredicate, Problem, Requirement, Scrub, ScrubPolicy, Spec, VacuityCheck,
 } from "./schema.js";
 import { criterionIdFor, requirementIdFor } from "./schema.js";
 import type { LogEvent } from "./eventlog.js";
@@ -59,6 +60,9 @@ export interface SharedStandard {
   vacuityChecks: VacuityCheck[];
   pointers: Pointer[];
   populations: PopulationPredicate[];
+  scrubs: Scrub[];
+  /** One decision, so one row. `null` until somebody states it — which is itself a finding. */
+  scrubPolicy: ScrubPolicy | null;
   acknowledgements: Acknowledgement[];
   audits: Audit[];
   problems: Problem[];
@@ -66,7 +70,7 @@ export interface SharedStandard {
 
 export const emptyStandard = (): SharedStandard => ({
   specs: [], operations: [], requirements: [], criteria: [], vacuityChecks: [], pointers: [],
-  populations: [], acknowledgements: [], audits: [], problems: [],
+  populations: [], scrubs: [], scrubPolicy: null, acknowledgements: [], audits: [], problems: [],
 });
 
 // --- writing -----------------------------------------------------------------
@@ -137,6 +141,16 @@ export const publishPopulationPinned = (
   logRoot: string, scope: string, actor: Actor, pin: PopulationPredicate, supersedes?: string,
 ) => put(logRoot, scope, actor, "population.pinned", pin.id, { pin, ...(supersedes ? { supersedes } : {}) });
 
+export const publishScrub = (logRoot: string, scope: string, actor: Actor, sc: Scrub) =>
+  put(logRoot, scope, actor, "scrub.recorded", sc.requirementId, { scrub: sc });
+
+/**
+ * The schedule, subject-keyed on the scope: a policy is a decision and two of them is no
+ * policy, so the LAST one wins rather than accumulating.
+ */
+export const publishScrubPolicy = (logRoot: string, scope: string, actor: Actor, policy: ScrubPolicy) =>
+  put(logRoot, scope, actor, "scrub.policy", scope, { policy });
+
 export const publishProblemRaised = (logRoot: string, scope: string, actor: Actor, problem: Problem) =>
   put(logRoot, scope, actor, "problem.raised", problem.id, { problem });
 
@@ -173,6 +187,8 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
   const vacuityChecks = new Map<string, VacuityCheck>();
   const pointers = new Map<string, Pointer>();
   const populations = new Map<string, PopulationPredicate>();
+  const scrubs = new Map<string, Scrub>();
+  let scrubPolicy: ScrubPolicy | null = null;
   const acknowledgements = new Map<string, Acknowledgement>();
   const audits = new Map<string, Audit>();
   const problems = new Map<string, Problem>();
@@ -389,6 +405,39 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
         populations.set(pin.id, { ...pin, state: "active", origin: "sync" });
         break;
       }
+      case "scrub.recorded": {
+        const sc = obj(e.data, "scrub") as Scrub | undefined;
+        if (!sc?.id || !sc.requirementId) break;
+        if (sc.verdict !== "sound" && sc.verdict !== "suspect") break;
+        // A scrub that records nothing is the vacuous check this mechanism exists to
+        // detect, one level up. Refused in `recordScrub` and restated here, because the
+        // tool binds only writers who ask.
+        if (!sc.finding?.trim()) break;
+        if (!Array.isArray(sc.observations)) break;
+        if (sc.observations.some((o) => !o?.pointerId || typeof o.firing !== "boolean")) break;
+        // The observations must cover the rule's active pointers EXACTLY. A scrub resets a
+        // coverage clock, which is the quieting direction, so one that skips a pointer buys
+        // a fresh period without having looked — and this end is where a clone whose tool
+        // did not check is bound. The pointer state is read from the fold's own map, so it
+        // is the team's view of what was active and not the writer's account of it.
+        const watching = [...pointers.values()]
+          .filter((p) => p.requirementId === sc.requirementId && p.state === "active");
+        const seen = new Set(sc.observations.map((o) => o.pointerId));
+        if (watching.some((p) => !seen.has(p.id))) break;
+        scrubs.set(sc.id, { ...sc, origin: "sync" });
+        break;
+      }
+      case "scrub.policy": {
+        const policy = obj(e.data, "policy") as ScrubPolicy | undefined;
+        if (!policy) break;
+        // A period of zero covers nothing, and a rate from one look is not a rate. Both
+        // refused at both ends: a policy this build cannot honour would make the scrub
+        // report pathologies it has no basis for.
+        if (!Number.isFinite(policy.coverageDays) || policy.coverageDays <= 0) break;
+        if (!Number.isInteger(policy.minObservations) || policy.minObservations < 2) break;
+        scrubPolicy = { ...policy, origin: "sync" };
+        break;
+      }
       case "problem.raised": {
         const p = obj(e.data, "problem") as Problem | undefined;
         if (!p?.id) break;
@@ -427,7 +476,7 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
     specs: [...specs.values()], operations: [...operations.values()],
     requirements: [...requirements.values()], criteria: [...criteria.values()],
     vacuityChecks: [...vacuityChecks.values()], pointers: [...pointers.values()],
-    populations: [...populations.values()],
+    populations: [...populations.values()], scrubs: [...scrubs.values()], scrubPolicy,
     acknowledgements: [...acknowledgements.values()],
     audits: [...audits.values()], problems: [...problems.values()],
   };

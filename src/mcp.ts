@@ -1238,6 +1238,18 @@ const tools: Tool[] = [
     handler: (_a, c) => ops.weakAssertions(c.universe.path),
   },
   {
+    name: "scrub_plan",
+    description: "What to look at because it has NOT been looked at lately — the complement to `audit_queue`, and neither is optional. Differential audit is cheap precisely because change drives it, so a rule whose pointers never move is never audited; that turns *never fires → false calm* from an accident into a structural property. Differential covers what moved; the scrub covers what did not, which is also where a quietly wrong rule has had the most time to matter.\n\n`due` is ordered least-recently-looked-at first, never by what moved — coverage is the property being guaranteed. `neverScrubbed` is the sharpest bucket and is where seeding lands everything. `perDay` is the BUDGET: rules per day to cover the population every `coverageDays`, so the cost is visible before it is incurred.\n\n`policy: null` is a FINDING, not a default. Without a stated period this is \"whenever somebody remembers\", which is the thing the scrub exists to replace — set one with `set_scrub_policy`.\n\n`pathologies` are firing rates that say a pointer is not doing the job it looks like it does: `never-fires` (false calm — it looks like coverage and is not) and `always-fires` (cry-wolf — a pointer that goes off on every commit gets ignored, and then so does the rule behind it). Neither is reported below `minObservations`, because a rate from one look is not a rate.",
+    inputSchema: obj({ asOf: { type: "string", description: "ISO timestamp — plan as of then rather than now." } }),
+    handler: (a, c) => ops.scrubPlan(c.universe.path, a),
+  },
+  {
+    name: "scrubs",
+    description: "Every scrub against one rule, oldest first. This is the history a firing rate is derived from — one scrub says nothing about whether a pointer never fires or always does; a sequence says both.",
+    inputSchema: obj({ requirementId: { type: "string" } }, ["requirementId"]),
+    handler: (a, c) => ops.scrubsFor(c.universe.path, a),
+  },
+  {
     name: "population",
     description: "What a rule RANGES OVER — a hash-pinned lint, with the members it examined.\n\nThree states and they are three different answers. `pinned` — a lint enumerated the population; `counts` gives conforms / violates / **undecidable** (its own number: folding it into conforms is unknown reading as conformant one level down, folding it into violates is the false-positive shape). `not-expressible` — no lint can express this, with the reason; some rules genuinely have none, and a population spanning two repos is not one lint. `absent` — nobody has pinned one, and that must not read as anything else: it is where \"no code should conform to this yet\" still means \"I looked and did not find any\".\n\n`pinBroken` means the LINT ITSELF was edited since it was pinned. That is the pathology a scrub cannot reach — fired, then edited, then quiet — and it is why the pin exists.",
     inputSchema: obj({ requirementId: { type: "string" } }, ["requirementId"]),
@@ -1314,6 +1326,36 @@ const tools: Tool[] = [
     }, ["specId", "kind", "rationale", "reversibility"]),
     mutates: true,
     handler: (a, c) => ops.addOperation(c.universe.path, a as never),
+  },
+  {
+    name: "set_scrub_policy",
+    description: "State the rate and coverage period: every rule in force is looked at at least every `coverageDays`. Open to any actor — a schedule silences nothing, and the failure mode is a policy nobody set, so making this hard would gate in the wrong direction.\n\nThe shape is an array's scrub, deliberately: some share of the population per period, so everything is covered every T. Stating the period and knowing the population size is what derives the daily budget — and an unbudgeted schedule is an intention rather than a schedule.",
+    inputSchema: obj({
+      coverageDays: { type: "number", description: "T: the period within which every rule in force is looked at." },
+      minObservations: { type: "number", description: "How many observations a pointer needs before its firing RATE is reported as a pathology. At least 2, default 3 — a rate from one look is not a rate, and reporting one would make the scrub commit the error it exists to catch." },
+      model: { type: "string", description: "YOUR model id. Never guess it." },
+      harness: { type: "string" },
+    }, ["coverageDays"]),
+    mutates: true,
+    handler: (a, c) => ops.setScrubPolicy(c.universe.path, a as never),
+  },
+  {
+    name: "record_scrub",
+    description: "Record that you went and looked at a rule on the schedule.\n\n`observations` must cover the rule's ACTIVE pointers exactly — no omissions and no phantoms. That is the evidence gate: a scrub resets the rule's coverage clock, which is the quieting direction, so \"I looked\" with nothing recorded is a self-report buying a fresh period. Get the pointer ids from `pointers`, and record `firing` for each — that boolean IS the history a rate is derived from.\n\nA rule with nothing watching it legitimately observes nothing, and saying so is the finding: unwatched is the requirement-side twin of `unknown`.\n\n`verdict` is `sound` (looked, nothing wrong) or `suspect` (something is off). Raising is open; only quieting is gated, which is the same asymmetry everywhere else on this surface.",
+    inputSchema: obj({
+      requirementId: { type: "string" },
+      finding: { type: "string", description: "What you concluded from looking. A scrub that records nothing is the vacuous check this mechanism exists to detect, one level up." },
+      verdict: { type: "string", enum: ["sound", "suspect"] },
+      observations: {
+        type: "array",
+        description: "One entry per ACTIVE pointer on the rule.",
+        items: obj({ pointerId: { type: "string" }, firing: { type: "boolean" } }, ["pointerId", "firing"]),
+      },
+      model: { type: "string", description: "YOUR model id. Never guess it." },
+      harness: { type: "string" },
+    }, ["requirementId", "finding", "verdict"]),
+    mutates: true,
+    handler: (a, c) => ops.recordScrub(c.universe.path, a as never),
   },
   {
     name: "pin_population",

@@ -18,6 +18,8 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import { db } from "./db.js";
+import { SCRUB_POLICY_ID } from "./store.js";
+import type { ScrubPolicy } from "./schema.js";
 import { CorruptProjection, type Projection } from "./materialize.js";
 import { foldStandard, type SharedStandard } from "./shared-standard.js";
 import type { LogEvent } from "./eventlog.js";
@@ -615,7 +617,7 @@ export const graphProjection: Projection<Map<string, SharedWiring>> = {
  * front-end (`src/ops-reach.test.ts`). This is not an op.
  */
 /**
- * A universe's whole standard, into the ten canonical tables.
+ * A universe's whole standard, into the twelve canonical tables.
  *
  * One projection rather than six, because it folds from one scope: the kinds
  * cross-reference each other (a problem closes on an audit or on a ratified spec) and a
@@ -627,7 +629,7 @@ export const graphProjection: Projection<Map<string, SharedWiring>> = {
  */
 export const standardProjection: Projection<SharedStandard> = {
   write(d: DatabaseSync, scope: string, value: SharedStandard): void {
-    for (const t of ["specs", "operations", "requirements", "criteria", "vacuity_checks", "pointers", "populations", "acknowledgements", "audits", "problems"]) {
+    for (const t of ["specs", "operations", "requirements", "criteria", "vacuity_checks", "pointers", "populations", "scrubs", "scrub_policy", "acknowledgements", "audits", "problems"]) {
       d.prepare(`DELETE FROM ${t} WHERE source_scope = ?`).run(scope);
     }
     const spec = d.prepare("INSERT INTO specs(id,status,title,created_at,ratified_at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?)");
@@ -658,6 +660,16 @@ export const standardProjection: Projection<SharedStandard> = {
     for (const p of value.populations) {
       pop.run(p.id, p.requirementId, p.basis, p.state, p.pinnedAt, "sync", scope, JSON.stringify(p));
     }
+    const scr = d.prepare("INSERT INTO scrubs(id,requirement_id,verdict,at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?)");
+    for (const sc of value.scrubs) {
+      scr.run(sc.id, sc.requirementId, sc.verdict, sc.at, "sync", scope, JSON.stringify(sc));
+    }
+    // The policy is a singleton, so it is written under the fixed id rather than its own —
+    // one decision, one row, and the fold owning it is what stops a local write drifting.
+    if (value.scrubPolicy) {
+      d.prepare("INSERT INTO scrub_policy(id,set_at,origin,source_scope,body) VALUES(?,?,?,?,?)")
+        .run(SCRUB_POLICY_ID, value.scrubPolicy.setAt, "sync", scope, JSON.stringify(value.scrubPolicy));
+    }
     const ack = d.prepare("INSERT INTO acknowledgements(id,basis,state,operation_id,requirement_id,priority,revalidate_by,granted_at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?,?,?,?)");
     for (const a of value.acknowledgements) {
       ack.run(a.id, a.basis, a.state, a.operationId ?? null, a.requirementId ?? null, a.priority, a.revalidateBy, a.grantedAt, "sync", scope, JSON.stringify(a));
@@ -682,7 +694,8 @@ export const standardProjection: Projection<SharedStandard> = {
         });
     return {
       specs: all("specs"), operations: all("operations"), requirements: all("requirements"),
-      criteria: all("criteria"), vacuityChecks: all("vacuity_checks"), pointers: all("pointers"), populations: all("populations"),
+      criteria: all("criteria"), vacuityChecks: all("vacuity_checks"), pointers: all("pointers"), populations: all("populations"), scrubs: all("scrubs"),
+      scrubPolicy: all<ScrubPolicy>("scrub_policy")[0] ?? null,
       acknowledgements: all("acknowledgements"), audits: all("audits"), problems: all("problems"),
     };
   },

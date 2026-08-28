@@ -94,6 +94,23 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     publish: ["src/audits.ts", /e\.ran\?\.some\(\(r\) => r\.passed && !!r\.command\?\.trim\(\)\)/],
   },
   {
+    // A scrub RESETS a rule's coverage clock, which is the quieting direction, so one that
+    // skips an active pointer buys a fresh period without having looked at it. The fold
+    // reads the pointer state from its own map — the team's view of what was active, not
+    // the writer's account of it.
+    what: "a scrub that skipped one of the rule's active pointers",
+    fold: ["src/shared-standard.ts", /if \(watching\.some\(\(p\) => !seen\.has\(p\.id\)\)\) break;/],
+    publish: ["src/scrub.ts", /const missed = active\.filter\(\(p\) => !seen\.has\(p\.id\)\);/],
+  },
+  {
+    // A firing rate from a single look is not a rate. A policy admitting one would make the
+    // scrub commit the exact error it exists to catch — a confident verdict from a check
+    // that could not have produced one — for every clone that folded it.
+    what: "a scrub policy whose observation floor cannot support a rate",
+    fold: ["src/shared-standard.ts", /policy\.minObservations < 2\) break;/],
+    publish: ["src/scrub.ts", /minObservations < 2\) \{/],
+  },
+  {
     // A lint over zero members is GREEN, and green reads as conformant. With a query
     // language that was an edge case; with a lint it is the DEFAULT failure mode, which is
     // why the cheap mechanical layer exists at all — and why it has to exist at both ends.

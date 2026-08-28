@@ -585,7 +585,7 @@ Which is the stronger argument for the scrub than vacuity-hygiene: without it th
 systematically blind exactly where nothing has changed for a long time, which is also where
 a quietly wrong rule has had the most time to matter.
 
-### Pointers are scrubbed on a schedule, not trusted
+### Pointers are scrubbed on a schedule, not trusted — BUILT
 
 Vacuity is **silent corruption**. You do not find it by using the thing, because a vacuous
 pointer looks fine every single time you look at it. You find it the way an array finds a
@@ -608,6 +608,35 @@ share of the population per period, so everything is covered every *T*. Without 
 "whenever somebody remembers", which is the thing the whole mechanism exists to replace,
 and its cost is unbudgeted — which is the principal-time failure recorded below arriving
 from a third direction.
+
+`scrub.ts`. `ScrubPolicy` states *T* and `scrubPlan` derives `perDay` from it and the
+population, so **the cost is visible before it is incurred** — the difference between a
+schedule and an intention. **An absent policy is a FINDING**, reported as `policy: null`,
+never a quiet default; and with no policy stated no firing rate is reportable at all,
+because a threshold nobody set is not a threshold.
+
+Four things about the shape:
+
+- **The queue is ordered by neglect, never by what moved.** A scrub driven by movement
+  covers exactly what differential audit already covers and leaves the blind spot it exists
+  for untouched. Never-scrubbed sorts ahead of merely-overdue.
+- **The observations are the evidence gate.** A scrub resets a rule's coverage clock, which
+  is the quieting direction, so it must say what every ACTIVE pointer was doing — no
+  omissions and no phantoms. *"I looked"* with nothing recorded is a self-report buying a
+  fresh period. A rule with nothing watching it observes nothing, and recording that IS the
+  finding. The fold restates this from **its own** pointer map, so it is the team's view of
+  what was active rather than the writer's account of it.
+- **No rate below `minObservations`** (≥ 2, default 3). A rate from one look is not a rate,
+  and reporting one would make the scrub commit the exact error it exists to catch — a
+  confident verdict from a check that could not have produced one.
+- **`suspect` clears by being looked at again**, never by anybody marking it clear: it is
+  derived from the latest scrub rather than stored as a status.
+
+The third pathology — *fired → was edited → now quiet* — is not a rate and neither rate
+catches it. `brokenPins` detects it from the hash; what the scrub adds is the schedule.
+
+*Not built:* nothing runs a scrub on its own. The schedule says what is owed and by when;
+somebody (an agent, on the cadence the policy states) still has to go and look.
 
 ## The population predicate — a hash-pinned lint — BUILT
 
@@ -742,6 +771,7 @@ MCP surface via `ops/standard.ts`:
 - `ops/standard.ts`'s `served()` — the non-authoritative marker on every read.
 - `pointers.ts` — where to look, the derived ladder, and the audit queue.
 - `population.ts` — the hash-pinned lint, the member delta, and the narrowing gate.
+- `scrub.ts` — the stated schedule, the coverage queue, and the derived firing rates.
 
 **Adjudication and closure are separate events**, which was not obvious until it was
 built. Naming which side moves does not move it, so a problem stays open until the named
@@ -753,8 +783,6 @@ to catch, so it is reported (`settledWithoutAdjudication`) instead of tidied awa
 Not built, roughly in the order they are worth building — `docs/population-predicate.md`
 carries the detail and the reasoning:
 
-- **The scrub** — pointers' necessary counterweight rather than hygiene: differential audit
-  covers what moved and only a scrub covers what did not.
 - Section move/rename operations, and spec withdrawal / repeal. Mechanical.
 
 The web front end has no routes for any of it — `mcp.ts` is wired and `serve.ts` is not, so

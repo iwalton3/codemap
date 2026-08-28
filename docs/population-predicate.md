@@ -241,10 +241,11 @@ does not wait on the rest.
    releases a gap. What is NOT built is anything that runs the lint — the empty-population
    refusal is the mechanical layer only.
 
-4. **The scrub** — not an optional complement. Differential audit covers what MOVED, so a
-   requirement whose pointers never move is never audited; the scrub is the only thing
-   covering what did not. It now has a third pathology to detect and a hash to detect it
-   with.
+4. ~~**The scrub.**~~ **BUILT** (`scrub.ts`) — the stated period, the coverage queue ordered
+   by neglect, and the never-fires / always-fires rates derived from the observation
+   history. The third pathology is `brokenPins`, which the schedule now puts on a cadence.
+   What is still not built is anything that RUNS a scrub: the plan says what is owed and by
+   when, and somebody still has to go and look.
 
 5. **Test indexing in the target.** One line, now that `.codemapignore` has a `[tests]` bin:
    move `*.Tests/` and friends under a `[tests]` header and the ~3,856 test methods are

@@ -40,7 +40,7 @@ import {
   type CoverageRule, type CoverageStore, type AnalyzerConfig, type Review, type ReviewStore, type Triage, type TriageStore,
   type BugWitness, type Importance, type Complexity, type TriageSource,
   type Requirement, type RequirementStore, type Spec, type Operation, type Acknowledgement, type Audit, type Problem,
-  type AcceptanceCriterion, type VacuityCheck, type EvidenceKind, type Pointer, type PopulationPredicate,
+  type AcceptanceCriterion, type VacuityCheck, type EvidenceKind, type Pointer, type PopulationPredicate, type Scrub, type ScrubPolicy,
   SCHEMA_VERSION, ANCHOR_SCHEME, HASH_SCHEME,
 } from "./schema.js";
 
@@ -2389,6 +2389,58 @@ export async function writeLocalVacuityCheck(root: string, v: VacuityCheck): Pro
     "INSERT OR REPLACE INTO vacuity_checks(id,criterion_id,verdict,at,origin,source_scope,body)"
     + " VALUES(?,?,?,?,?,?,?)",
   ).run(v.id, v.criterionId, v.verdict, v.at, v.origin ?? null, null, JSON.stringify(v));
+}
+
+/**
+ * The scrub policy is a SINGLETON — a policy is a decision, and two of them is no policy.
+ * One fixed id, so the fold and a local write contend for the same row rather than
+ * accumulating one per writer.
+ */
+export const SCRUB_POLICY_ID = "pol_standard";
+
+const hydrateScrub = <T>(body: string, origin: string | null): T | null => {
+  try {
+    const x = JSON.parse(body) as T;
+    return origin ? { ...x, origin } : x;
+  } catch { return null; }
+};
+
+export async function readScrubPolicy(root: string): Promise<ScrubPolicy | null> {
+  const row = db(root).prepare("SELECT body, origin FROM scrub_policy WHERE id = ?")
+    .get(SCRUB_POLICY_ID) as { body: string; origin: string | null } | undefined;
+  return row ? hydrateScrub<ScrubPolicy>(row.body, row.origin) : null;
+}
+
+export async function writeLocalScrubPolicy(root: string, p: ScrubPolicy): Promise<void> {
+  const d = db(root);
+  const owner = d.prepare("SELECT source_scope FROM scrub_policy WHERE id = ? AND source_scope IS NOT NULL")
+    .get(SCRUB_POLICY_ID) as { source_scope: string } | undefined;
+  if (owner) throw new Error(`the scrub policy is owned by the sidecar fold (${owner.source_scope}) — write an event, not a row.`);
+  d.prepare("INSERT OR REPLACE INTO scrub_policy(id,set_at,origin,source_scope,body) VALUES(?,?,?,?,?)")
+    .run(SCRUB_POLICY_ID, p.setAt, p.origin ?? null, null, JSON.stringify(p));
+}
+
+export async function readScrubs(
+  root: string, opts: { requirementId?: string } = {},
+): Promise<Scrub[]> {
+  const where = opts.requirementId ? " WHERE requirement_id = ?" : "";
+  const args = opts.requirementId ? [opts.requirementId] : [];
+  const rows = db(root).prepare(
+    `SELECT body, origin FROM scrubs${where} ORDER BY at, id`,
+  ).all(...args as []) as unknown as { body: string; origin: string | null }[];
+  const out: Scrub[] = [];
+  for (const r of rows) { const x = hydrateScrub<Scrub>(r.body, r.origin); if (x) out.push(x); }
+  return out;
+}
+
+export async function writeLocalScrub(root: string, sc: Scrub): Promise<void> {
+  const d = db(root);
+  const owner = d.prepare("SELECT source_scope FROM scrubs WHERE id = ? AND source_scope IS NOT NULL")
+    .get(sc.id) as { source_scope: string } | undefined;
+  if (owner) throw new Error(`${sc.id} is owned by the sidecar fold (${owner.source_scope}) — write an event, not a row.`);
+  d.prepare(
+    "INSERT OR REPLACE INTO scrubs(id,requirement_id,verdict,at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?)",
+  ).run(sc.id, sc.requirementId, sc.verdict, sc.at, sc.origin ?? null, null, JSON.stringify(sc));
 }
 
 const hydratePopulation = (body: string, origin: string | null): PopulationPredicate | null => {

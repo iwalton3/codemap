@@ -21,7 +21,7 @@ import {
   foldStandard, standardScope, publishSpecDrafted, publishOperation, publishSpecRatified,
   publishAckGranted, publishAckReleased, publishAudit, publishProblemRaised, publishAdjudication,
   publishVacuityCheck, publishPointerDeclared, publishPointerRestated, publishPointerRetired,
-  publishPopulationPinned, emptyStandard,
+  publishPopulationPinned, publishScrub, publishScrubPolicy, emptyStandard,
 } from "./shared-standard.js";
 import { criterionIdFor, requirementIdFor, type Acknowledgement, type Actor, type Audit, type Operation, type Problem, type Spec } from "./schema.js";
 
@@ -658,5 +658,60 @@ test("the fold refuses an empty pin, and an agent narrowing a population", async
     }, "pop_1");
     p = (await fold(root)).populations;
     assert.deepEqual(p.map((x) => [x.id, x.state]), [["pop_1", "superseded"], ["pop_wide", "active"]]);
+  } finally { discard(root); }
+});
+
+test("a scrub folds, and the fold restates the gates the tool cannot bind", async () => {
+  const root = await log("scrub");
+  try {
+    const base = {
+      id: "sc_1", requirementId: "r_x", observations: [], finding: "looked; nothing watches it",
+      verdict: "sound" as const, scrubbedBy: opus, at: "2026-08-18T00:00:00.000Z",
+    };
+    await publishScrub(root, SCOPE, opus, base);
+    assert.deepEqual((await fold(root)).scrubs.map((s) => s.id), ["sc_1"]);
+
+    // A scrub that records nothing is the vacuous check this mechanism exists to detect,
+    // one level up. Refused at both ends.
+    await publishScrub(root, SCOPE, opus, { ...base, id: "sc_mute", finding: "   " });
+    assert.deepEqual((await fold(root)).scrubs.map((s) => s.id), ["sc_1"]);
+
+    await publishScrub(root, SCOPE, opus, { ...base, id: "sc_bad", verdict: "fine" as never });
+    assert.deepEqual((await fold(root)).scrubs.map((s) => s.id), ["sc_1"]);
+
+    // And the observation gate, which needs a pointer to exist to be meaningful: a scrub
+    // that skips an ACTIVE pointer buys a fresh coverage period without having looked at
+    // it. The fold reads the pointer state from its OWN map — the team's view of what was
+    // active, not the writer's account of it.
+    await publishPointerDeclared(root, SCOPE, opus, { ...PTR, id: "pt_w", requirementId: "r_x" });
+    await publishScrub(root, SCOPE, opus, { ...base, id: "sc_skip", at: "2026-08-19T00:00:00.000Z" });
+    assert.deepEqual((await fold(root)).scrubs.map((s) => s.id), ["sc_1"], "an omitted pointer is an unlooked-at rule");
+
+    await publishScrub(root, SCOPE, opus, {
+      ...base, id: "sc_full", at: "2026-08-20T00:00:00.000Z",
+      observations: [{ pointerId: "pt_w", firing: true }],
+    });
+    assert.deepEqual((await fold(root)).scrubs.map((s) => s.id), ["sc_1", "sc_full"]);
+  } finally { discard(root); }
+});
+
+test("the scrub policy is one decision, and one that cannot do its job is dropped", async () => {
+  const root = await log("scrub-policy");
+  try {
+    assert.equal((await fold(root)).scrubPolicy, null, "unstated is its own answer");
+
+    await publishScrubPolicy(root, SCOPE, izzie, { coverageDays: 0, minObservations: 3, setBy: izzie, setAt: "2026-08-18T00:00:00.000Z" });
+    assert.equal((await fold(root)).scrubPolicy, null, "a period of zero covers nothing");
+
+    await publishScrubPolicy(root, SCOPE, izzie, { coverageDays: 30, minObservations: 1, setBy: izzie, setAt: "2026-08-18T00:00:00.000Z" });
+    assert.equal((await fold(root)).scrubPolicy, null, "a rate from one look is not a rate");
+
+    await publishScrubPolicy(root, SCOPE, izzie, { coverageDays: 30, minObservations: 3, setBy: izzie, setAt: "2026-08-19T00:00:00.000Z" });
+    assert.equal((await fold(root)).scrubPolicy!.coverageDays, 30);
+
+    // A policy is a decision and two of them is no policy — the last one wins.
+    await publishScrubPolicy(root, SCOPE, izzie, { coverageDays: 7, minObservations: 5, setBy: izzie, setAt: "2026-08-20T00:00:00.000Z" });
+    const p = (await fold(root)).scrubPolicy!;
+    assert.deepEqual([p.coverageDays, p.minObservations], [7, 5]);
   } finally { discard(root); }
 });
