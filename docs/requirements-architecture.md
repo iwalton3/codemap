@@ -913,17 +913,46 @@ own; that is also why its rows do not link anywhere.
 
 ## Deliberately open
 
-- **Who owns the standard's taxonomy.** If sections only ever arrive via specs it is
-  emergent, and emergent will not stay sane. Legal codes have an Office of the Law
-  Revision Counsel for exactly this. Reorganizing the standard needs to be a first-class
-  principal act, independent of any spec, or the only way to fix filing is to write a spec
-  about filing — which nobody will do.
-- **Partial ratification.** Approving 18 of 20 operations is tempting and the two held
-  back may be what makes the other 18 coherent. If allowed at all it is an explicit
-  reviewer choice, and the remainder becomes a new spec rather than a lingering
-  half-ratified one.
-- **Renumbering.** Moving a section breaks every citation to it. Legal codes keep
-  redesignation tables; the local equivalent is `where_was` for section paths.
-- **Principal-time.** Every mechanism above spends one person's attention and none of it
-  is budgeted. The arithmetic gates the seeding phase, not the audit phase — seeding is
-  what first produces a queue nobody can clear.
+**Reviewed against the founding documents 2026-08-29** — this ticket's own §*Deliberately
+open*, COD-29 and COD-18 read back against what exists. Each entry now says which.
+
+- **Who owns the standard's taxonomy — STILL OPEN, and worse than it reads.**
+  `reorganizeRequirement` exists and is a first-class principal act independent of any spec,
+  which is what this entry asked for. But it refuses a requirement carrying an `origin`, and
+  on a store with a sidecar every requirement has one, because the fold wrote it. **So on a
+  team store the only way to fix filing IS to write a spec about filing** — the outcome this
+  entry names as the failure. A `move_section` operation does the job and is the documented
+  workaround; what does not exist is the light act. Legal codes have an Office of the Law
+  Revision Counsel for exactly this.
+- **Partial ratification — STILL OPEN.** Adoption is all-or-nothing (`ratifySpec` applies
+  every operation or none). Approving 18 of 20 is tempting and the two held back may be what
+  makes the other 18 coherent. If allowed at all it is an explicit reviewer choice, and the
+  remainder becomes a new spec rather than a lingering half-ratified one.
+- **Renumbering — DISSOLVED, not solved.** The concern was that moving a section breaks
+  every citation to it. It cannot: `requirementIdFor` derives a rule's id from the OPERATION
+  that created it, so the id is independent of where the rule is filed and a `move_section`
+  moves no citation at all. No redesignation table is needed, and `where_was` for section
+  paths would answer a question nothing asks.
+- **Principal-time — DONE, and it did not say what was expected.** The arithmetic is in
+  COD-18's companion analysis: the cost is a reallocation of an existing ~25 h/week line
+  item rather than new money, adjudication is the only unbounded act, and a high adjudication
+  rate is a health signal rather than a cost. What gates seeding is routing the first sweep
+  through classification-at-adoption rather than through the problem queue.
+- **Banding by consequence — NOT BUILT, and it is the last planned piece.** COD-18's
+  prior-art comment names it a delegation-of-authority matrix: approval rights banded by
+  risk, where we have no bands and everything routes to one principal. Two fields, not one —
+  *consequence* is about the rule and routes authority; *priority* already exists on an
+  acknowledgement and is about one instance of not conforming.
+- **The repeat-adjudication rate — NOT BUILT.** COD-29's prior-art comment proposes it as
+  *"the honest score for whether codemap is working"*, better than node counts or coverage
+  percentages, because it measures the thing the system exists to conserve: a decision the
+  principal makes twice is a bug in the memory, not a decision. Nothing computes it. It needs
+  a corpus to compute over, so it waits on seeding.
+- **Blast radius is pointer-shaped only.** COD-29's kernel asks the ratification surface for
+  *"which ACs, tests and discrepancies hang off this requirement"*. `RenderedOperation`
+  carries `watchedBy` (pointers) and `moves.members`; criteria, problems and acknowledgements
+  are not rendered, though `relianceOn` already computes exactly that set for withdrawal.
+- **Requirement-vs-requirement contradiction detection — NOT BUILT.** §*Requirement-vs-
+  requirement audits* budgets for its false positives; nothing raises them. It is an
+  auditor-agent behaviour rather than a record, and the auditor layer does not exist by
+  design, so this is a note about where it would go rather than a gap in the store.
