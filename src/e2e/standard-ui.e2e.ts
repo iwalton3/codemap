@@ -212,7 +212,15 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
     // Reload: it is in the shared log, not in the page's head.
     const again = await open(`/u/${universe}/standard/spec/${draft}/`);
     await again.page.waitForSelector(".op-card .cmt", { timeout: 10_000 });
-    assert.match((await again.page.textContent(".op-card .cmt"))!, /calendar or business days/);
+    const cmt = (await again.page.textContent(".op-card .cmt"))!;
+    assert.match(cmt, /calendar or business days/);
+    // WHO said it, which the assertion above cannot see and which is the point of the
+    // thread: `sharedNotes` flattens a note to `{by, model, at}` and the page read
+    // `n.author.principal` / `n.createdAt`, so every comment rendered as "unknown" with a
+    // blank date — losing exactly the `via` the module's own docstring calls load-bearing.
+    assert.match(cmt, /izzie@x\.com/, "a comment with no author is the misattribution this has shipped once already");
+    assert.doesNotMatch(cmt, /unknown/);
+    assert.match(cmt, /\d{4}-\d{2}-\d{2}/, "and when");
     await again.page.close();
   });
 
@@ -399,5 +407,44 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
     const acks = (await ops.listAcknowledgements(root) as any).acknowledgements;
     assert.ok(acks.some((a: any) => a.basis === "gap" && a.state === "active"),
       "and the pre-approved gap bound and activated in the same act");
+  });
+
+  /**
+   * The banner that says *this is not the team's standard*.
+   *
+   * It rendered on NOTHING for as long as these pages existed: `servedNote` read
+   * `d.served` and `served()` attaches `scope`. `tsc -p web` could not see it — the
+   * parameter is untyped — and no test blocked a scope in a browser, so a blocked team's
+   * rows were served with no warning on every page. That is the exact failure
+   * `standardScopeWarning` was written to close, reintroduced one layer up.
+   *
+   * LAST, because it corrupts the sidecar for every test after it.
+   */
+  test("a blocked log says so in the browser, on every page that serves its rows", async () => {
+    // Fork one writer's shard: replay the same events under a second writer id, which is
+    // the shape `scopeStatus` refuses to read as settled.
+    const { readdirSync, readFileSync: rf, writeFileSync: wf, statSync } = await import("node:fs");
+    const walk = (dir: string): string[] => readdirSync(dir).flatMap((f) => {
+      const p = join(dir, f);
+      return statSync(p).isDirectory() ? (f === ".git" ? [] : walk(p)) : p.endsWith(".ndjson") ? [p] : [];
+    });
+    const shard = walk(side)[0];
+    assert.ok(shard, "the fixture must have written events, or blocking it proves nothing");
+    const lines = rf(shard!, "utf8").split("\n").filter(Boolean)
+      .map((l: string) => JSON.stringify({ ...JSON.parse(l), subject: "tampered" }));
+    wf(shard!.replace(/[^/]+\.ndjson$/, "w_impostor.ndjson"), lines.join("\n") + "\n", "utf8");
+    assert.equal((await ops.listRequirements(root) as any).scope?.status, "blocked",
+      "the fixture must actually be blocked or the assertions below are vacuous");
+
+    for (const path of [`/u/${universe}/standard/`, `/u/${universe}/standard/conformance/`,
+                        `/u/${universe}/standard/r/${ruleId}/`]) {
+      const { page, errors } = await open(path);
+      await page.waitForSelector(".attn-banner", { timeout: 10_000 });
+      const text = await page.textContent("main");
+      assert.match(text!, /not the team's standard/i, `${path} served a blocked scope silently`);
+      assert.match(text!, /refusing to be read as settled/i);
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
   });
 });

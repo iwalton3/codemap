@@ -120,8 +120,14 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     // the fold was left on `ran.length` — so the identical audit the tool refused was accepted
     // by every clone. The earlier regexes here matched both ends while they meant different
     // things, which is why these pin the COUNTING RULE rather than the surrounding condition.
+    //
+    // The fold's copy now lives in `schema.ts`, inside `auditClaimStands` — which the fold
+    // and the file reader share. The counting rule is still written TWICE, here and in
+    // `audits.ts`'s `touchedCode`, and that is the pair this entry pins: it is the one
+    // place the two ends historically disagreed, and the authoring surface keeps its own
+    // copy so it can say which field is missing.
     what: "a conformant audit that touched no code",
-    fold: ["src/shared-standard.ts", /ev\.ran\?\.some\(\(r\) => r\.passed && !!r\.command\?\.trim\(\)\)/],
+    fold: ["src/schema.ts", /ev\.ran\?\.some\(\(r\) => r\.passed && !!r\.command\?\.trim\(\)\)/],
     publish: ["src/audits.ts", /e\.ran\?\.some\(\(r\) => r\.passed && !!r\.command\?\.trim\(\)\)/],
   },
   {
@@ -199,9 +205,10 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
   },
   {
     // An audit that concluded nothing. The tool has always refused it; the fold never did,
-    // which was found only when folding the scrub in brought a test that exercised it.
+    // which was found only when folding the scrub in brought a test that exercised it. Now
+    // in `auditClaimStands`, which the fold and the file reader share.
     what: "an audit that records no finding",
-    fold: ["src/shared-standard.ts", /if \(!audit\.finding\?\.trim\(\)\) break;/],
+    fold: ["src/schema.ts", /if \(!a\.finding\?\.trim\(\)\) return false;/],
     publish: ["src/audits.ts", /an audit needs a finding/],
   },
   {
@@ -237,6 +244,31 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     what: "a pointer retired with no reason",
     fold: ["src/shared-standard.ts", /if \(!reason\?\.trim\(\)\) break;/],
     publish: ["src/pointers.ts", /retiring a pointer needs a reason/],
+  },
+  // Three more the FOLD was missing, all found by a second reviewer running the fold on
+  // hand-built events rather than by reading it. Two were the same shape as the
+  // `touchedCode` entry above — a rule tightened at the writer and left permissive here —
+  // and the third had never been at this end at all.
+  //
+  // **The first two are now ONE PREDICATE**, `auditClaimStands`, shared by the fold and by
+  // `readProvisionalAudits`. That is a deliberate exception to this file's usual argument.
+  // Two independent implementations catch each other's mistakes, and here they did not:
+  // there were FOUR partly-independent audit validators — the writer, the fold, the file
+  // reader and promotion — and every one of the audit findings in the 2026-08-28 review was
+  // a disagreement between two of them. The authoring surface keeps its own, because its
+  // job is to say which field is missing and why; the two surfaces where an audit ARRIVES
+  // share, because neither has anybody to explain anything to.
+  {
+    what: "an audit that does not stand up as a record — no finding, wrong evidence for its outcome, or witnesses that do not match it",
+    fold: ["src/shared-standard.ts", /if \(!auditClaimStands\(audit\)\) break;/],
+    publish: ["src/provisional.ts", /&& auditClaimStands\(x\)/],
+  },
+  {
+    // Withdrawal removes rules from the standard. It stays on the record as the act it is,
+    // which needs the reason to be there — on both ends, not only where somebody typed it.
+    what: "a withdrawal with no reason on the record",
+    fold: ["src/shared-standard.ts", /if \(!str\(e\.data, "reason"\)\?\.trim\(\)\) break;/],
+    publish: ["src/requirements.ts", /a withdrawal needs a `reason`/],
   },
   {
     // The evidence gate on a vacuity demonstration. `demonstrated` is the SILENCING

@@ -1299,6 +1299,53 @@ export type AuditOutcome = "conformant" | "nonconformant" | "indeterminate";
 export const AUDIT_OUTCOMES: AuditOutcome[] = ["conformant", "nonconformant", "indeterminate"];
 
 /**
+ * Does this audit, as a RECORD, stand up — whatever produced it?
+ *
+ * `recordAudit` states these rules one at a time with an error apiece, because there a
+ * caller is authoring and has to learn what the field is for. This is the same rules for
+ * the two surfaces where an audit ARRIVES rather than being written: the fold, which
+ * applies a teammate's event, and `readProvisionalAudits`, which reads a teammate's file.
+ * Neither has anybody to explain anything to, and both bind a writer whose tool did not
+ * check.
+ *
+ * **One predicate for both, deliberately.** They had one each and they disagreed: the fold
+ * accepted a `conformant` audit with no witnesses and a `nonconformant` one with no
+ * evidence, and the file reader accepted an audit with an empty finding, empty evidence and
+ * no witnesses at all — which read `conformant` for ever, because a claim with no witnesses
+ * can never be superseded. Four partly-independent validators is what produced that; this
+ * is the repair, and the authoring surface keeps its own messages on purpose.
+ */
+export function auditClaimStands(a: Audit): boolean {
+  if (!AUDIT_OUTCOMES.includes(a.outcome)) return false;
+  if (a.trigger && !AUDIT_TRIGGERS.includes(a.trigger)) return false;
+  // What the auditor CONCLUDED is the record. A row without it is a timestamp claiming
+  // somebody looked.
+  if (!a.finding?.trim()) return false;
+
+  const ev = a.evidence ?? {};
+  // A command that FAILED is evidence of non-conformance, never of conformance — and it
+  // must NAME the command, because `{passed: true}` alone records nothing that ran.
+  const touched = !!(ev.read?.length || ev.ran?.some((r) => r.passed && !!r.command?.trim()));
+
+  // The witnesses ARE the cited anchors, in order: `recordAudit` derives one from the
+  // other. Requiring the correspondence is what keeps promotion honest — it re-records the
+  // document's `evidence` and re-derives witnesses from it, so a file whose two halves
+  // disagreed promoted to an audit with no witnesses and therefore a permanent verdict.
+  const read = [...new Set(ev.read ?? [])];
+  const witnessed = (a.witnesses ?? []).map((w) => w.anchorId);
+  if (read.length !== witnessed.length || read.some((id, i) => id !== witnessed[i])) return false;
+
+  // Doc-only certifies nothing: a stale or missing doc yields a pass rather than a flag.
+  // And a `conformant` audit needs something that can later MOVE under it, or the claim is
+  // one nothing can invalidate — which is not a claim.
+  if (a.outcome === "conformant" && (!touched || !witnessed.length)) return false;
+  // Absence of evidence must never FILE. "I could not verify this" is an unverified
+  // requirement, not a violation; `indeterminate` is the quiet bucket it belongs in.
+  if (a.outcome === "nonconformant" && !(touched || ev.consulted?.length)) return false;
+  return true;
+}
+
+/**
  * WHY this audit happened. One act, four ways of being asked for it — and the reason it is
  * a field rather than four record kinds is that the lifecycle is identical: an actor, a
  * time, evidence, witnesses, supersession.
@@ -1316,9 +1363,15 @@ export const AUDIT_OUTCOMES: AuditOutcome[] = ["conformant", "nonconformant", "i
  *  - `ad-hoc` — somebody looked because they wanted to. The honest default; calling one of
  *    these `differential` would put an unprompted audit in a queue's coverage statistics.
  *
- * A `differential` audit does not satisfy a scrub, and that is the whole reason the two
- * queues stay apart: it looked at what CHANGED, and a scrub exists to cover what did not.
- * A `baseline` satisfies both, having looked at everything.
+ * The two queues stay apart because they SELECT on different things — staleness versus a
+ * coverage deadline — not because a differential audit counts for nothing. It does reset
+ * the deadline (`covers()` in `scrub.ts`), having first proved the change is present on the
+ * default branch. `ad-hoc` resets nothing, because nobody asked what it would look at, and
+ * a `baseline` satisfies both queues, having looked at everything.
+ *
+ * This paragraph said the opposite until 2026-08-28 — a leftover from before `31ce28c`
+ * folded the scrub into the audit. `docs/requirements-architecture.md` § *What resets a
+ * coverage deadline* is the authority.
  */
 export type AuditTrigger = "differential" | "scrub" | "baseline" | "ad-hoc";
 

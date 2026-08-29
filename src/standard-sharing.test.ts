@@ -151,6 +151,33 @@ test("a PROVISIONAL audit stays put, however the sidecar is configured", async (
   } finally { discard(root); discard(side); }
 });
 
+/**
+ * The model an agent is told never to guess, on the one surface a principal reads.
+ *
+ * `commentOn` forwarded `{model, harness}` to the FINDING branch and not to the proposal
+ * branch, so an agent's objection to an amendment recorded no model and degraded to the
+ * bare string "agent" — on the spec page, where the reader is deciding whether to adopt
+ * the thing. `thread()`'s own docstring calls collapsing an agent's remark into a person's
+ * "the misattribution this codebase has already shipped once".
+ */
+test("an agent's comment on a proposal records WHICH agent", async () => {
+  const { root, side } = await shared();
+  try {
+    const sp = ok(await draftSpec(root, { title: "Credit currency policy" }));
+    const { commentOn } = await import("./ops.js");
+    ok(await commentOn(root, {
+      id: sp.id, body: "is T+1 calendar or business days?",
+      agent: true, model: "claude-opus-5", harness: "claude-code",
+    } as any));
+
+    const { sharedNotes } = await import("./ops-shared.js");
+    const r = await sharedNotes(root, sp.id) as { notes: { by: string; model?: string }[] };
+    assert.equal(r.notes.length, 1);
+    assert.equal(r.notes[0]!.model, "claude-opus-5",
+      "\"agent\" alone does not tell a ratifier whose objection this is");
+  } finally { discard(root); discard(side); }
+});
+
 test("a failed append writes nothing at all", async () => {
   const { root, side } = await shared();
   try {

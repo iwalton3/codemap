@@ -358,15 +358,40 @@ test("the fold refuses a conformant audit that touched no code", async () => {
       "an entry with no command records nothing, and a positive audit that records nothing is not one",
     );
 
+    // A passing command and NO WITNESSES. This used to bind, and the assertion here said
+    // so — `touchedCode` accepts `ran` alone, so nothing at this end asked what could later
+    // move under the claim. `serveWith` treats an empty witness list as never-superseded,
+    // so `conformant` was PERMANENT on every clone and survived a rewrite of the code the
+    // command was run against. `recordAudit` has always refused it; this end had not.
     await publishAudit(root, SCOPE, opus, {
       ...base, id: "au_5", evidence: { ran: [{ command: "npm test", passed: true }] },
     });
-    assert.equal((await fold(root)).audits.length, 2, "a command that PASSED does bind");
+    assert.equal(
+      (await fold(root)).audits.length, 1,
+      "a claim nothing can ever invalidate is not a claim, at the fold as at the writer",
+    );
+
+    await publishAudit(root, SCOPE, opus, {
+      ...base, id: "au_5b", evidence: { read: ["a_credit"], ran: [{ command: "npm test", passed: true }] },
+      witnesses: [{ anchorId: "a_credit", bodyHash: "h1:sha256:abc" }],
+    });
+    assert.equal((await fold(root)).audits.length, 2, "a command that PASSED, over code that can move, does bind");
+
+    // Absence of evidence must never FILE either. "I could not verify this" is an
+    // unverified requirement, not a violation — the 138-false-positives gate, restated
+    // where it binds a writer whose tool never applied it.
+    await publishAudit(root, SCOPE, opus, { ...base, id: "au_nc", outcome: "nonconformant", evidence: {} });
+    assert.equal((await fold(root)).audits.length, 2, "a non-conformance nobody demonstrated is not one");
+
+    await publishAudit(root, SCOPE, opus, {
+      ...base, id: "au_nc2", outcome: "nonconformant", evidence: { consulted: ["the settlement doc"] },
+    });
+    assert.equal((await fold(root)).audits.length, 3, "doc-only is enough to FILE, and never enough to certify");
 
     // `indeterminate` is the quiet bucket and may carry nothing, so the gate is about the
     // OUTCOME rather than about evidence being present.
     await publishAudit(root, SCOPE, opus, { ...base, id: "au_6", outcome: "indeterminate" });
-    assert.equal((await fold(root)).audits.length, 3);
+    assert.equal((await fold(root)).audits.length, 4);
   } finally { discard(root); }
 });
 
@@ -950,6 +975,13 @@ test("the same withdrawal with nothing citing it DOES apply — so the refusal a
   const root = await log("withdraw-clean");
   try {
     await ratified(root);
+    // With no reason first. `withdrawSpec` refuses one — "it stays on the record as the act
+    // it is" — and the fold did not, so a client that skipped the field removed rules from
+    // every clone's standard with nothing saying why.
+    await publishSpecWithdrawn(root, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", "   ");
+    assert.equal((await fold(root)).specs[0]!.status, "ratified",
+      "a withdrawal with no reason on the record is not a withdrawal");
+
     await publishSpecWithdrawn(root, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", "never adopted");
     const after = await fold(root);
     assert.equal(after.requirements.length, 0);

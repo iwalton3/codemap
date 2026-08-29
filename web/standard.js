@@ -56,10 +56,23 @@ const confDot = (state) => html`<span class="rev-dot" style="background:${CONF_C
  * `served()` marks every standard response when the shared scope is blocked or behind,
  * and the whole point of that marker is that a reader sees it — dropping it here would
  * reintroduce exactly the hole it was built to close.
+ *
+ * **The field is `scope`, and this read `d.served` for as long as the pages existed.** So
+ * the banner rendered on nothing: every standard page served a blocked team's projection
+ * rows with no warning at all — the exact failure `standardScopeWarning` was written to
+ * close, reintroduced one layer up by a reader that named the field wrong. `web/shared.js`
+ * had it right the whole time (`blockedBanner(d.scope)`), which is what makes this the
+ * cheapest kind of defect to have missed and the most embarrassing to explain.
+ *
+ * `tsc -p web` cannot see it — `d` is a parameter with no type, and `d.served` on an
+ * untyped value is `any`. That is why `standard-ui.e2e.ts` now blocks a scope for real and
+ * asserts the words appear.
+ *
+ * @param {{ scope?: { status: string, detail?: string, diagnostic?: { detail?: string } } }} d
  */
-const servedNote = (d) => when(!!(d && d.served), () => html`<div class="attn-banner">
+const servedNote = (d) => when(!!(d && d.scope), () => html`<div class="attn-banner">
   <span class="attn-n">⚠</span>
-  <span>this is not the team's standard: ${d.served.status === 'blocked' ? 'the shared log is refusing to be read as settled' : 'these rows are behind the log'}${d.served.detail ? ' — ' + d.served.detail : ''}. Sync, then re-read.</span>
+  <span>this is not the team's standard: ${d.scope.status === 'blocked' ? 'the shared log is refusing to be read as settled' : 'these rows are behind the log'}${d.scope.detail || (d.scope.diagnostic && d.scope.diagnostic.detail) ? ' — ' + (d.scope.detail || d.scope.diagnostic.detail) : ''}. Sync, then re-read.</span>
 </div>`);
 
 /**
@@ -69,16 +82,22 @@ const servedNote = (d) => when(!!(d && d.served), () => html`<div class="attn-ba
  * author is rendered with `via` intact — a remark from an agent running as somebody is
  * a different weight of evidence from one that person wrote, and collapsing the two is
  * the misattribution this codebase has already shipped once.
+ *
+ * **And it shipped again here.** `sharedNotes` FLATTENS a note to `{by, model, at}`; this
+ * read `n.author.principal` and `n.createdAt`, which are the record's field names and not
+ * the view's — so every comment rendered as `unknown` with a blank date, and the `via`
+ * this docstring calls the point was the first thing lost. The e2e asserted the body text
+ * and nothing else, which is exactly the assertion that cannot see it.
  */
 const thread = (notes) => when(notes && notes.length > 0, () => html`<div class="cmts">
   ${each(notes, (n) => html`<div class="cmt">
-    <div class="cmt-h">${n.author && n.author.principal ? n.author.principal : 'unknown'}${n.author && n.author.via ? html` <span class="dim">via ${n.author.via.model || 'agent'}</span>` : ''}
-      <span class="dim">${(n.createdAt || '').slice(0, 16).replace('T', ' ')}</span>
+    <div class="cmt-h">${n.by || 'unknown'}${n.model ? html` <span class="dim">via ${n.model}</span>` : ''}
+      <span class="dim">${(n.at || '').slice(0, 16).replace('T', ' ')}</span>
       ${when(n.kind === 'question', () => html`<span class="qbadge">question</span>`)}
       ${when(!!n.resolved, () => html`<span class="qbadge">resolved</span>`)}
     </div>
     <div class="cmt-b">${n.text}</div>
-    ${each(n.answers || [], (a) => html`<div class="cmt-a"><span class="dim">${a.author && a.author.principal ? a.author.principal : 'unknown'}:</span> ${a.body}</div>`, (a) => a.at + (a.body || '').slice(0, 12))}
+    ${each(n.answers || [], (a) => html`<div class="cmt-a"><span class="dim">${a.by || 'unknown'}${a.model ? ' via ' + a.model : ''}:</span> ${a.body}</div>`, (a) => a.at + (a.body || '').slice(0, 12))}
   </div>`, (n) => n.id)}
 </div>`);
 

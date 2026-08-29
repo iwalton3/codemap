@@ -201,9 +201,13 @@ export async function scrubPlan(root: string, opts: { asOf?: string } = {}): Pro
   const policy = await readScrubPolicy(root);
   const { requirements } = await readRequirements(root, { status: "ratified" });
 
-  // COVERING audits only. This is the whole reason the two queues stay apart: a rule
-  // audited yesterday because a diff touched it has still not been looked at for the
-  // things that did not move, so it is still due here.
+  // Audits that COVER — the covering triggers, plus `differential`, which resets the
+  // deadline having proved its change is on the default branch. Not `ad-hoc`: nobody asked
+  // what that one would look at.
+  //
+  // This comment used to say a rule "audited yesterday because a diff touched it … is still
+  // due here", which `covers()` two dozen lines up contradicts. Three comments said that
+  // and only the code and the architecture doc said otherwise.
   const last = new Map<string, string>();
   for (const a of (await readAudits(root)).filter(covers)) last.set(a.requirementId, a.at);   // ORDER BY at — last wins
 

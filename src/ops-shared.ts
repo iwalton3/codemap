@@ -1044,9 +1044,12 @@ export async function inboundReplies(root: string, pr: number | string, opts: { 
  */
 export async function commentOnProposal(
   root: string,
-  input: { targetKind: "spec" | "operation"; targetId: string; body: string; kind?: NoteKind },
+  input: {
+    targetKind: "spec" | "operation"; targetId: string; body: string; kind?: NoteKind;
+    model?: string; harness?: string;
+  },
 ) {
-  const b = bind(root);
+  const b = bind(root, input);
   if ("error" in b) return b;
   const text = input.body?.trim();
   if (!text) return { error: "a comment needs something in it" };

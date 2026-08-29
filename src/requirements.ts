@@ -777,10 +777,18 @@ export async function relianceOn(root: string, ops: Operation[]): Promise<Relian
       if (a.state === "released") continue;
       out.push({ kind: "acknowledgement", id: a.id, requirementId, detail: `${a.basis} (${a.state})` });
     }
+    // PROVISIONAL rows do not count, in either. Reliance is the one place the tool and the
+    // fold have to agree, and the fold cannot see them at all — `foldStandard` refuses a
+    // provisional audit, problem or pin — so counting them here refuses a withdrawal on
+    // evidence that exists on no other clone, naming an id no teammate can resolve. The
+    // failure is safe (it refuses before appending) and it is still a divergence, which is
+    // exactly what `sharing-boundary.test.ts` §BOTH_ENDS exists to keep out.
     for (const a of await readAudits(root, { requirementId })) {
+      if (a.provisional) continue;
       out.push({ kind: "audit", id: a.id, requirementId, detail: a.outcome });
     }
     for (const pr of await readProblems(root, { requirementId })) {
+      if (pr.provisional) continue;
       out.push({ kind: "problem", id: pr.id, requirementId, detail: "raised against this rule" });
     }
     for (const c of await readCriteria(root, { requirementId })) {
@@ -791,6 +799,7 @@ export async function relianceOn(root: string, ops: Operation[]): Promise<Relian
       out.push({ kind: "pointer", id: p.id, requirementId, detail: p.state });
     }
     for (const p of await readPopulations(root, { requirementId })) {
+      if (p.provisional) continue;
       out.push({ kind: "population", id: p.id, requirementId, detail: p.state });
     }
   }

@@ -692,8 +692,11 @@ Four things about the shape:
 - **No rate below `minObservations`** (≥ 2, default 3). A rate from one look is not a rate,
   and reporting one would make the scrub commit the exact error it exists to catch — a
   confident verdict from a check that could not have produced one.
-- **`suspect` clears by being looked at again**, never by anybody marking it clear: it is
-  derived from the latest scrub rather than stored as a status.
+- **Nothing here is stored as a status.** A rate is derived from the observation history
+  every time it is asked for, so it clears by being looked at again and never by anybody
+  marking it clear. (An earlier draft named a `suspect` bucket on `ScrubPlan` and a
+  `verdict` on a `Scrub` record; both went when `31ce28c` folded the scrub into the audit,
+  and neither exists.)
 
 The third pathology — *fired → was edited → now quiet* — is not a rate and neither rate
 catches it. `brokenPins` detects it from the hash; what the scrub adds is the schedule.

@@ -45,7 +45,7 @@ import type {
   AcceptanceCriterion, Acknowledgement, Actor, Audit, BugWitness, Operation, Pointer,
   PopulationPredicate, Problem, Requirement, ScrubPolicy, Spec, VacuityCheck,
 } from "./schema.js";
-import { criterionIdFor, movedSection, normalizeSection, requirementIdFor, EVIDENCE_KINDS, AUDIT_TRIGGERS, COVERING_TRIGGERS } from "./schema.js";
+import { criterionIdFor, movedSection, normalizeSection, requirementIdFor, EVIDENCE_KINDS, AUDIT_TRIGGERS, COVERING_TRIGGERS, auditClaimStands } from "./schema.js";
 import type { LogEvent } from "./eventlog.js";
 import { causality, emitEvent } from "./eventlog.js";
 import { applyRevision, newContestState } from "./contest.js";
@@ -340,6 +340,11 @@ export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = 
       case "spec.withdrawn": {
         const sp = specs.get(e.subject);
         if (!sp || sp.status === "withdrawn" || sp.status === "repealed") break;
+        // A withdrawal with no reason. `withdrawSpec` refuses one — "it stays on the record
+        // as the act it is" — and the fold did not, so a client that skipped the field
+        // removed rules from every clone's standard with nothing on the record saying why.
+        // Same shape as the retired-pointer gate below it.
+        if (!str(e.data, "reason")?.trim()) break;
         // See the header. Absent evidence makes `foldReliance` answer zero, not unknown.
         if (!evidenceReadable) break;
         // Withdrawal takes something OUT of the standard, so it is a principal's act — the
@@ -439,25 +444,12 @@ export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = 
         // Provisional work is about somebody's branch, not about the codebase. `shareAudit`
         // will not send one; this binds a client that did.
         if (audit.provisional) break;
-        // Non-vacuity, restated at the fold. A `conformant` audit that touched no code
-        // certifies nothing, and this is the only place that binds a writer whose tool
-        // did not check — which is the one path by which `conformant` could be reached
-        // without a code-backed audit.
-        //
-        // `some(passed)`, NOT `ran.length`: a command that FAILED is evidence of
-        // non-conformance, never of conformance. `touchedCode` in `audits.ts` was tightened
-        // for exactly that reason and this end was left counting any nonempty `ran`, so
-        // `{command: "false", passed: false}` still certified a rule for every clone —
-        // the one-end fix, on the guard whose whole job is to bind the other end.
-        const ev = audit.evidence ?? {};
-        const touched = !!(ev.read?.length || ev.ran?.some((r) => r.passed && !!r.command?.trim()));
-        if (audit.outcome === "conformant" && !touched) break;
-        if (audit.trigger && !AUDIT_TRIGGERS.includes(audit.trigger)) break;
-        // An audit that concluded nothing. `recordAudit` has always refused this and the
-        // fold never has — a pre-existing one-end gap, found because folding the scrub in
-        // brought a test that exercises it. What an auditor concluded IS the record; a row
-        // without it is a timestamp claiming somebody looked.
-        if (!audit.finding?.trim()) break;
+        // Every rule about the RECORD itself, restated where it binds a writer whose tool
+        // did not check: the outcome, the trigger, a finding, evidence that matches the
+        // outcome, and witnesses that match the evidence. `readProvisionalAudits` applies
+        // the same predicate to a teammate's file. See `auditClaimStands` for what each
+        // clause is and which of them the two ends used to disagree about.
+        if (!auditClaimStands(audit)) break;
         // A COVERING audit resets this rule's coverage deadline, which is the quieting
         // direction — so it must say what every ACTIVE pointer was doing. `recordAudit`
         // refuses an omission, a phantom and a repeat; this end binds a clone whose tool

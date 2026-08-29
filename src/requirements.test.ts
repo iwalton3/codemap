@@ -39,6 +39,13 @@ async function universe() {
   mkdirSync(join(root, ".codemap"), { recursive: true });
   mkdirSync(join(root, "src"), { recursive: true });
   writeFileSync(join(root, "src/credit.js"), SRC, "utf8");
+  // COMMITTED, and that is load-bearing rather than tidy. An uncommitted fixture makes
+  // every act `provisional`, and this file's reliance test was passing on exactly that:
+  // `relianceOn` counted a provisional audit the FOLD can never see, so the assertion that
+  // an audit blocks a withdrawal was really asserting a divergence between the two ends.
+  // The same shape has now bitten this subsystem three times.
+  spawnSync("git", ["add", "-A"], { cwd: root });
+  spawnSync("git", ["commit", "-qm", "fixture"], { cwd: root });
   const indexed = await indexBlob(SRC, "src/credit.js");
   await writeStore(root, indexed, state);
   return { root, anchors: indexed.map((a) => a.id) };

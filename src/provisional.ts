@@ -30,7 +30,7 @@
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Audit } from "./schema.js";
-import { AUDIT_OUTCOMES } from "./schema.js";
+import { auditClaimStands } from "./schema.js";
 import { resolveSidecar, type SidecarConfig } from "./sidecar-config.js";
 import { ensureSidecar } from "./sidecar.js";
 import { requireActor } from "./identity.js";
@@ -125,11 +125,18 @@ function usable(a: unknown, universe: string, commit: string, file: string): a i
     && x.universe === universe
     && x.commit === commit
     && typeof x.requirementId === "string" && !!x.requirementId
-    && AUDIT_OUTCOMES.includes(x.outcome)
     && typeof x.at === "string"
     && !!x.auditor && typeof x.auditor.principal === "string"
     && Array.isArray(x.witnesses)
-    && x.witnesses.every((w) => !!w && typeof w.anchorId === "string" && typeof w.bodyHash === "string");
+    && x.witnesses.every((w) => !!w && typeof w.anchorId === "string" && typeof w.bodyHash === "string")
+    // …and the audit has to stand up AS AN AUDIT, which this end did not ask.
+    //
+    // A file saying `{outcome: "conformant", witnesses: [], evidence: {}, finding: ""}`
+    // was read, and `conformance({about:"branch"})` reported the rule conformant — for
+    // ever, because a claim with no witnesses can never be superseded. The shape checks
+    // above are about the PATH matching the content; this is the same predicate the fold
+    // applies to an arriving event, and the reason it is shared rather than copied.
+    && auditClaimStands(x);
 }
 
 /**

@@ -212,10 +212,20 @@ So the two scopes are folded together, over a merged event stream. This is safe:
 as already satisfied, so folding the union of two scopes yields the same order on every
 clone with no new machinery.
 
-**The hazard, and it fails quietly:** a machine that has synced only the law scope computes
+**The hazard, and it fails quietly:** a machine that cannot read the evidence scope computes
 a WRONG withdrawal verdict rather than an incomplete one — `foldReliance` would see no
 reliance and permit a withdrawal that something already cites. So the fold refuses to decide
-a withdrawal when the evidence scope is absent, rather than deciding it optimistically.
+a withdrawal when the evidence half is BLOCKED, rather than deciding it optimistically.
+
+**Blocked, and not merely absent — the distinction is worth stating because the guard cannot
+make it.** An absent scope reads `complete` with zero events, because a scope that nobody
+has written and a scope this clone did not receive are the same thing on disk. Ordinarily
+that is right: the sidecar is one git repository, `pull` takes all of it, and a scope with no
+events genuinely has no reliance in it. The case it does not cover is a **universe-key
+mismatch** — one clone resolving `owner/repo` from its origin while another falls back to the
+directory basename — where a withdrawal decided on the first clone would see none of the
+second's evidence. That is the same misconfiguration `CLAUDE.md` warns about for the oracle's
+fixtures, and it is not separately defended here.
 
 ## What the build cost, kept because the next scope change pays it again
 

@@ -247,7 +247,13 @@ export async function recordAudit(
   } else if (observations.length) {
     // A differential or ad-hoc audit looked at what MOVED, not at the whole watching
     // apparatus, so letting it carry observations would feed the coverage rate from a pass
-    // that never covered anything — and reset nothing, which is the honest half.
+    // that never covered anything.
+    //
+    // This used to end "— and reset nothing, which is the honest half", which is FALSE for
+    // `differential`: `covers()` in `scrub.ts` counts it, so it does reset the coverage
+    // deadline. That leaves one trigger resetting the clock without saying what it saw,
+    // which is a real hole in the argument this gate rests on rather than a wording slip.
+    // See `docs/requirements-architecture.md` § *What resets a coverage deadline*.
     return { error: `\`observations\` belong to a ${COVERING_TRIGGERS.join(" or ")} audit; a \`${trigger}\` one covers what moved, not what did not` };
   }
   if (observations.some((o) => typeof o.firing !== "boolean")) {
@@ -536,7 +542,12 @@ async function auditsAbout(root: string, about: ConformanceSubject): Promise<Aud
   const local = await readAudits(root);
   if (about === "codebase") return local.filter((a) => !a.provisional);
   const seen = new Set(local.map((a) => a.id));
-  return [...local, ...(await readProvisionalAudits(root)).filter((a) => !seen.has(a.id))];
+  // MERGED, not concatenated. `conformance` reads `audits[audits.length - 1]` as the most
+  // recent word on a rule, and two independently sorted lists stuck end to end are not one
+  // sorted list — a teammate's document from last week sorted after this morning's local
+  // audit and reported the week-old finding as the latest.
+  return [...local, ...(await readProvisionalAudits(root)).filter((a) => !seen.has(a.id))]
+    .sort((x, y) => (x.at < y.at ? -1 : x.at > y.at ? 1 : x.id < y.id ? -1 : 1));
 }
 
 /** How much of the standard is currently silenced, checked, or simply unexamined. */

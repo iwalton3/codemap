@@ -63,7 +63,7 @@ async function fixture(opts: { sidecar?: boolean } = {}) {
   }));
   ok(await ratifySpec(root, sp.id));
   return {
-    root, side, anchors: indexed.map((a) => a.id),
+    root, side, anchors: indexed.map((a) => a.id), specId: sp.id,
     rule: (await listRequirements(root))[0]!,
     cleanup: () => { discard(root); discard(side); },
   };
@@ -191,7 +191,27 @@ test("the reader binds the writer: a document that does not match its own path i
     forge("au_othercommit.json", { id: "au_othercommit", commit: "0".repeat(40) });
     forge("au_otheruniverse.json", { id: "au_otheruniverse", universe: "someone/else" });
     forge("au_renamed.json", { id: "au_original" });
-    assert.equal(readdirSync(dir).length, 4, "the forgeries must actually be on disk");
+    // And the ones about the CLAIM rather than the path. The first is the one that mattered:
+    // a conformant audit with no witnesses read `conformant` under `about: "branch"` FOR
+    // EVER, because a claim with nothing to compare against can never be superseded.
+    forge("au_nowitness.json", {
+      id: "au_nowitness", outcome: "conformant", witnesses: [], evidence: {}, finding: "looks fine",
+    });
+    forge("au_nofinding.json", { id: "au_nofinding", finding: "   " });
+    forge("au_noevidence.json", {
+      id: "au_noevidence", outcome: "nonconformant", witnesses: [], evidence: {}, finding: "it is broken",
+    });
+    // Witnesses that do not match the evidence they were supposedly derived from. This is
+    // what promotion re-records: it validates the WITNESSES and then re-derives them from
+    // `evidence.read`, so a file whose halves disagree promotes to a verdict with nothing
+    // under it.
+    // Evidence that is real, witnesses that are of something else — so the outcome gates
+    // all pass and only the correspondence catches it.
+    forge("au_mismatched.json", {
+      id: "au_mismatched", outcome: "nonconformant", evidence: { read: [f.anchors[0]!] },
+      witnesses: [{ anchorId: "a_somethingelse", bodyHash: "sha256:whatever" }], finding: "it is broken",
+    });
+    assert.equal(readdirSync(dir).length, 8, "the forgeries must actually be on disk");
 
     assert.deepEqual(await readProvisionalAudits(f.root, { commit }), [],
       "none of these is a finding about this universe at this commit");
@@ -280,6 +300,69 @@ test("a TEAMMATE's branch finding counts toward the branch's conformance too", a
       ["nonconformant"], "the witnesses match this checkout, so it is about the code in front of us");
     assert.deepEqual((await conformance(f.root)).map((c) => c.lastAudit), [undefined],
       "and a document reaches the codebase's answer by no route at all");
+  } finally { f.cleanup(); }
+});
+
+/**
+ * `conformance` reads `audits[audits.length - 1]` as the most recent word on a rule, so the
+ * merged list has to BE sorted rather than be two sorted lists end to end.
+ */
+test("the branch view's last audit is the latest one, not the last list it came from", async () => {
+  const f = await fixture();
+  try {
+    git(f.root, "checkout", "-q", "-b", "feature/credit");
+    const commit = head(f.root);
+    // A teammate's document from LAST WEEK, hand-written the way a sync would leave it.
+    const old = ok(await recordAudit(f.root, {
+      requirementId: f.rule.id, outcome: "nonconformant",
+      finding: "stale finding from last week", evidence: { read: f.anchors },
+    }));
+    const dir = join(docDir(f.root, f.side), commit);
+    const backdated = { ...old.audit, at: "2020-01-01T00:00:00.000Z" };
+    writeFileSync(join(dir, old.id + ".json"), JSON.stringify(backdated), "utf8");
+    const { db } = await import("./db.js");
+    db(f.root).prepare("DELETE FROM audits").run();
+
+    // And this morning's local one.
+    const fresh = ok(await recordAudit(f.root, {
+      requirementId: f.rule.id, outcome: "conformant",
+      finding: "fixed on this branch", evidence: { read: f.anchors },
+    }));
+
+    const [row] = await conformance(f.root, { about: "branch" });
+    assert.equal(row!.lastAudit?.id, fresh.id,
+      "concatenating two sorted lists is not sorting them — the week-old document sorted last");
+  } finally { f.cleanup(); }
+});
+
+/**
+ * Reliance is one rule with two implementations, and the fold cannot see branch work.
+ *
+ * `foldStandard` refuses every provisional audit, problem and pin, so `foldReliance` — the
+ * fold's half — counts none of them. `relianceOn` read the raw rows and counted all of
+ * them, so a withdrawal was refused on this machine citing an audit id that exists on no
+ * other clone. The failure is safe (it refuses before appending, so nothing diverges in the
+ * log) and it is still the divergence §BOTH_ENDS exists to keep out.
+ */
+test("a branch finding is not reliance — the fold cannot see one, so neither may the tool", async () => {
+  const f = await fixture();
+  try {
+    git(f.root, "checkout", "-q", "-b", "feature/credit");
+    const branchFinding = ok(await recordAudit(f.root, {
+      requirementId: f.rule.id, outcome: "nonconformant",
+      finding: "creditLine doubles the amount", evidence: { read: f.anchors },
+    }));
+    assert.equal(branchFinding.audit.provisional, true, "the fixture must be provisional or this is vacuous");
+    git(f.root, "checkout", "-q", "main");
+
+    const { relianceOn, withdrawSpec } = await import("./requirements.js");
+    const { readOperations } = await import("./store.js");
+    assert.deepEqual(
+      await relianceOn(f.root, await readOperations(f.root, { specId: f.specId })), [],
+      "nothing the team can see relies on this rule",
+    );
+    const done = await withdrawSpec(f.root, f.specId, { reason: "never adopted" });
+    assert.ok(!("error" in done), `withdrawal refused on invisible evidence: ${(done as any).error}`);
   } finally { f.cleanup(); }
 });
 

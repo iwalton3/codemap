@@ -392,7 +392,13 @@ export async function commentOn(root: string, input: { id: string; body: string;
   if ("bug" in w) return commentBug(root, input.id, input.body, input.inReplyTo);
   if ("proposal" in w) {
     const shared = await import("./ops-shared.js");
-    return shared.commentOnProposal(root, { targetKind: w.proposal, targetId: input.id, body: input.body });
+    return shared.commentOnProposal(root, {
+      targetKind: w.proposal, targetId: input.id, body: input.body,
+      // The finding branch below forwards these and this one did not, so an agent's remark
+      // on a SPEC recorded no model and degraded to the bare string "agent" — on the one
+      // surface where the reader is a principal deciding whether to adopt the thing.
+      model: input.model, harness: input.harness,
+    });
   }
   if (!w.finding.shared) return commentOnLocalFinding(root, input.id, input.body, input.inReplyTo);
   const shared = await import("./ops-shared.js");
