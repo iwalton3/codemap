@@ -21,8 +21,9 @@
  * - **A gap minted on one clone binds on another.** The gap names an operation; the rule
  *   does not exist yet. Whoever folds the ratification has to bind it, or a silencer
  *   arrives attached to nothing and quietly silences a rule nobody can find it by.
- * - **Branch work stays home.** A provisional audit and the problem raised from it are one
- *   machine's, however the sidecar is configured.
+ * - **Branch work reaches the reviewer, and not the standard.** A provisional audit
+ *   travels as a commit-discovered document; the problem raised from it does not, and no
+ *   clone ends up with a row either could be counted in.
  * - **An adjudication travels with the problem it decides**, and lands on a clone that
  *   never saw the code.
  */
@@ -40,7 +41,7 @@ import {
   draftSpec, addOperation, ratifySpec, listRequirements, getSpec, pendingSpecs,
 } from "./requirements.js";
 import { acknowledgeGap, listAcknowledgements } from "./acknowledgements.js";
-import { recordAudit, conformance } from "./audits.js";
+import { recordAudit, conformance, provisionalAudits, promotableAudits } from "./audits.js";
 import { raiseProblem, adjudicate, listProblems, awaitingAdjudication } from "./problems.js";
 
 const OWNER = "izzie@acme.test";
@@ -190,20 +191,45 @@ test("the standard is one law across machines, and a race for it has one winner"
       assert.match(verdicts[0]!, /conflicted/, "one of the two must have lost, or there was no race");
     });
 
-    // 3 — branch work stays home, and the team's work travels.
-    await step("a provisional audit and its problem stay on ben's branch", async () => {
+    // 3 — branch work reaches the reviewer without reaching the standard.
+    await step("ben's branch finding is visible to izzie, and changes nothing she conforms to", async () => {
       branch(ben, "fix/refunds", { create: true });
+      const before = await conformance(izzie.repo);
       const local = ok(await recordAudit(ben.repo, {
         requirementId: ruleId, outcome: "nonconformant", finding: "refund() still negates",
         evidence: { read: [transfer] }, agent: true, model: "claude-opus-5",
       }));
-      assert.equal(local.audit.provisional, true, "off the default branch, so it is nobody else's");
+      assert.equal(local.audit.provisional, true, "off the default branch, so it is not the codebase");
+      assert.equal(local.notShared, undefined, "and it went to the team as a document");
       ok(await raiseProblem(ben.repo, {
         auditId: local.id, summary: "refund negates the amount", agent: true, model: "claude-opus-5",
       }));
       await settle(t);
+
+      // The finding travels; the problem raised from it does not. A problem is a claim
+      // that the team owes something, and nothing is owed until the branch lands.
+      const seen = await provisionalAudits(izzie.repo, { commit: local.audit.commit! });
+      assert.deepEqual(seen.map((a) => a.id), [local.id],
+        "the reviewer of a branch must be able to see that it fails a rule");
       assert.equal((await listProblems(izzie.repo)).length, 0,
         "a problem is exactly as shareable as the evidence under it");
+
+      // And it reached no row: izzie's conformance is byte-for-byte what it was. This is
+      // structural rather than filtered — a document is never folded, so there is nothing
+      // for `conformance` to have counted.
+      assert.deepEqual(
+        (await conformance(izzie.repo)).map((c) => `${c.requirement.id}:${c.conformance}`),
+        before.map((c) => `${c.requirement.id}:${c.conformance}`),
+        "a branch observation must not move the team's standard",
+      );
+      assert.deepEqual((await readAudits(izzie.repo)).map((a) => a.id), [],
+        "and no clone has a row for it at all");
+
+      // Ben's branch changed nothing, so the code izzie has IS the code he audited — which
+      // is what makes it promotable to her, on witnesses rather than on ancestry.
+      const promotable = await promotableAudits(izzie.repo);
+      assert.deepEqual(promotable.map((a) => a.id), [local.id],
+        "promotion used to be available only to the author, on the machine that took it");
       branch(ben, "main");
     });
 

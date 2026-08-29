@@ -100,9 +100,14 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
   // machine that ran it. Found by re-reading the fold against the tools it mirrors, not
   // by this test — which is why they are in it now.
   {
-    what: "provisional (branch-local) audits and problems",
+    // A provisional audit now TRAVELS — as a commit-discovered document, which nothing
+    // folds (`provisional.ts`). What both ends still refuse is its entering the LOG, and
+    // that is the half this registers: the document route is what makes the fold's guard
+    // matter more, not less, because a client publishing one as an event is exactly the
+    // mistake the new path invites.
+    what: "provisional (branch-local) audits and problems in the event log",
     fold: ["src/shared-standard.ts", /if \(audit\.provisional\) break;/],
-    publish: ["src/standard-publish.ts", /audit\.provisional \? Promise\.resolve\(localOnly\)/],
+    publish: ["src/standard-publish.ts", /if \(!audit\.provisional\) return share\(root, \(l, s, a\) => publishAudit/],
   },
   {
     what: "an agent's debt acknowledgement",

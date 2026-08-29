@@ -23,8 +23,8 @@ Also built: **a requirement cites nothing** — `Requirement.cites`, `Requiremen
 and `Operation.cites` are gone, `recheckDue` derives from this universe's pointers, and the
 `/diff` rollup travels along pointers.
 
-**Decided, NOT built:** provisional audits as commit-discovered documents. That section
-below is written in the imperative and describes the target, not the tree.
+Also built: **provisional audits travel as commit-discovered documents** (`provisional.ts`)
+— the last piece of this arc.
 
 **Migration is free, and that was not a given.** Law events written before the split sit in
 `standard/<universe>`; the fold reads BOTH scopes and merges, so a pre-split log folds
@@ -136,16 +136,43 @@ next the context that was being thrown away. Two mechanics matter and both are t
 
 ## Provisional audits: a document found by commit, not a folded event
 
-*Not built.* A provisional audit is invisible to everyone but its author, and
-`promotableAudits` reads local rows — so it is promotable only by that author, on that
-machine. A teammate reviewing the branch cannot see that it fails a rule.
+The hole this closed: a provisional audit was invisible to everyone but its author, and
+`promotableAudits` read local rows — so it was promotable only by that author, on that
+machine. A teammate reviewing the branch could not see that it fails a rule.
 
-The shape: a provisional audit **travels** as an artifact discovered by commit, and is
-**never folded into the standard**. Not folding it is what makes it structurally impossible
-for a branch observation to reach `conformance()`, rather than filter-dependent. The
-existing fold guard therefore becomes MORE load-bearing, not less: `foldStandard` must
-still refuse a provisional audit arriving in the standard scope, in case a client publishes
-one there.
+A provisional audit **travels** as a document at
+`provisional/<universe>/<commit>/<auditId>.json` in the sidecar, and is **never folded into
+the standard**. Not folding it is what makes it structurally impossible for a branch
+observation to reach a RECEIVING clone's `conformance()`, rather than filter-dependent:
+there is no row for it there, so there is nothing for a filter to have to remember. The
+existing fold guard is therefore MORE load-bearing, not less: `foldStandard` still refuses a
+provisional audit arriving in the standard scope, in case a client publishes one there, and
+`sharing-boundary.test.ts` registers both ends.
+
+**Note what this does NOT settle.** The author's own machine still writes a local row, and
+`conformance()` does not filter provisional rows out of it — so a branch finding does move
+the author's own verdict, which `requirements-architecture.md` calls being "fully usable
+locally". Whether that is right is an open question and not one this change decided;
+`settleAcknowledgements`, `scrub.ts` and `problems.ts` all filter provisional and
+`conformance()` alone does not, which is at least an asymmetry worth a decision.
+
+Three mechanics carry it, and each is where the design could have gone wrong:
+
+- **One file per audit**, which makes it conflict-free with no merge driver: two people
+  auditing one commit write two names, and nobody rewrites anybody's file.
+- **The READER binds the writer.** A document is written by whatever client its author was
+  running, so `readProvisionalAudits` re-checks everything the path claims — `provisional`,
+  the universe, the commit, and that the filename is the id. Without the first of those a
+  document would be a second route to a `conformant` claim no fold ever agreed to.
+- **A dirty tree does not travel at all.** Its witnesses come off the filesystem while
+  `commit` names an unchanged HEAD, so filing it under that commit would attribute
+  uncommitted work to a commit that does not contain it — COD-3's dirty snapshot with a
+  directory name on it. The finding stays local and the author is TOLD (`notShared`), because
+  believing your team can see a finding it cannot is the failure this path exists to fix.
+
+Promotion is unchanged and still decided on **witnesses**: `promotableAudits` now reads the
+union of local rows and documents, so a teammate can promote a finding they did not take.
+The promotion is an ordinary audit of the codebase and travels in the log like one.
 
 **Partial staleness at promotion is deliberately not handled.** If some of the bodies an
 audit witnessed have changed by merge time, it will not promote. That is correct rather
@@ -171,22 +198,19 @@ clone with no new machinery.
 
 **The hazard, and it fails quietly:** a machine that has synced only the law scope computes
 a WRONG withdrawal verdict rather than an incomplete one — `foldReliance` would see no
-reliance and permit a withdrawal that something already cites. The fold must refuse to
-decide a withdrawal when the evidence scope is absent, not decide it optimistically. Write
-that guard with the split, not after it.
+reliance and permit a withdrawal that something already cites. So the fold refuses to decide
+a withdrawal when the evidence scope is absent, rather than deciding it optimistically.
 
-## Sequencing
+## What the build cost, kept because the next scope change pays it again
 
-**Before seeding.** After ~150 requirements exist, audits, acknowledgements and pointers
-hold their ids, and this stops being a refactor with tests and becomes a migration with
-referential integrity to preserve.
+The whole arc landed before seeding, which is what made it a refactor with tests rather than
+a migration with referential integrity to preserve: after ~150 requirements exist, audits,
+acknowledgements and pointers hold their ids.
 
-Two further notes for whoever builds it:
-
-- `MATERIALIZER_VERSION` must bump. The cache fingerprint is over the sidecar's SHARDS,
-  which do not move when the fold's mind changes, so a store that had already folded the old
-  scope would serve a standard missing everything — and `served()` would call it
-  authoritative.
+- `MATERIALIZER_VERSION` had to bump (15 → 16). The cache fingerprint is over the sidecar's
+  SHARDS, which do not move when the fold's mind changes, so a store that had already folded
+  the old scope would have served a standard missing everything — and `served()` would have
+  called it authoritative.
 - `served()` spanning two scopes is **compiler-enforced**: its return type carries the
   `scope` field, so an unmarked read does not type-check. The `blocked-scope` sweep is a
   second line, not the first — and it had been failing open on `withdrawSpec` for two

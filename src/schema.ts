@@ -1296,6 +1296,8 @@ export interface Acknowledgement {
  */
 export type AuditOutcome = "conformant" | "nonconformant" | "indeterminate";
 
+export const AUDIT_OUTCOMES: AuditOutcome[] = ["conformant", "nonconformant", "indeterminate"];
+
 /**
  * WHY this audit happened. One act, four ways of being asked for it — and the reason it is
  * a field rather than four record kinds is that the lifecycle is identical: an actor, a

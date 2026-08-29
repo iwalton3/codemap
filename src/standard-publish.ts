@@ -25,6 +25,7 @@ import type { ScopeDiagnostic } from "./eventlog.js";
 import { resolveSidecar, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
 import { requireActor } from "./identity.js";
 import { ensureSidecar } from "./sidecar.js";
+import { publishProvisionalAudit } from "./provisional.js";
 import { readCached, readCachedMerged, ensureMaterialized } from "./materialize.js";
 import type { LogEvent } from "./eventlog.js";
 import { standardProjection } from "./shared-projections.js";
@@ -119,7 +120,24 @@ export async function standardScopeWarning(root: string): Promise<StandardScope 
   }
 }
 
-export interface Shared { shared: boolean; configured: boolean; folded?: boolean; error?: string }
+export interface Shared {
+  shared: boolean;
+  configured: boolean;
+  folded?: boolean;
+  error?: string;
+  /**
+   * The act left this machine as a commit-discovered DOCUMENT rather than as an event —
+   * currently only a provisional audit. It is not in the log, so nothing folds it and the
+   * local row is still the caller's to write; see `provisional.ts`.
+   */
+  document?: boolean;
+  /**
+   * Why it stayed here, with a sidecar configured and nothing wrong. Not an error — the
+   * write succeeded — but the author asked for a team and did not get one, so it is said
+   * out loud rather than inferred from the absence of a document.
+   */
+  reason?: string;
+}
 
 /** Not shared, and nothing is wrong with that — there is no sidecar. */
 export const localOnly: Shared = { shared: false, configured: false };
@@ -187,15 +205,33 @@ export const shareAckReleased = (
   share(root, (l, s, a) => publishAckReleased(l, s, a, id, at, reason), basis === "gap" ? lawScope() : undefined);
 
 /**
- * An audit travels only if it is about THE CODEBASE.
+ * An audit of THE CODEBASE enters the log. A provisional one travels as a document.
  *
- * A provisional audit — taken off the default branch — stays local however the sidecar is
- * configured. Broadcasting it would announce a non-conformance on somebody's work in
- * progress as though it were the team's problem, and the branch may be fixed or abandoned
- * before it ever merges.
+ * The old carve-out was total — a provisional audit stayed on the machine that took it —
+ * and it went too far. Broadcasting a branch finding as the team's problem is what had to
+ * be avoided; making it *invisible to the reviewer of that branch* was collateral, and it
+ * left promotion available only to the author. So it travels, as a commit-discovered
+ * document that nothing folds: it reaches the teammate reading that commit and it reaches
+ * no clone's `conformance()`, because there is no fold to write a row with.
+ *
+ * `dirty` decides whether the document may exist at all — see `publishProvisionalAudit`.
+ * Reported as an ERROR when the write fails with a sidecar configured, the same rule the
+ * header states for a failed append: a finding the author believes is shared and is not is
+ * the failure this whole module is arranged against.
  */
-export const shareAudit = (root: string, audit: Audit): Promise<Shared> =>
-  audit.provisional ? Promise.resolve(localOnly) : share(root, (l, s, a) => publishAudit(l, s, a, audit));
+export async function shareAudit(root: string, audit: Audit, opts: { dirty: boolean }): Promise<Shared> {
+  if (!audit.provisional) return share(root, (l, s, a) => publishAudit(l, s, a, audit));
+  // Asked HERE rather than left to the publisher, so that everything below is a store
+  // that has a team — which is what makes `reason` worth reporting instead of noise.
+  if (!resolveSidecar(root)) return localOnly;
+  const p = await publishProvisionalAudit(root, audit, opts);
+  if (p.published) return { shared: false, configured: true, document: true };
+  if ("error" in p) return { shared: false, configured: true, error: p.error };
+  // Nothing that could honestly be published. The local row is the whole story, and the
+  // reason travels back to the caller: a finding the author believes their team can see
+  // and that stayed on this machine is the failure this module is arranged against.
+  return { ...localOnly, reason: p.reason };
+}
 
 /**
  * A vacuity check always travels.
@@ -273,6 +309,10 @@ export const shareAdjudication = (
  * to publish to and the row is the whole story.
  */
 export function disposition(s: Shared): { error: string } | { local: boolean } {
+  // A document is not in the log, so nothing will fold a row for it and the local row is
+  // the caller's to write — the reverse of the `shared: true` case, and the reason
+  // `local` cannot simply be `!s.configured` any more.
+  if (s.document) return { local: true };
   if (s.configured && !s.shared) {
     return {
       error: s.error

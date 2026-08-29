@@ -57,7 +57,7 @@ export {
   standardStatus, requirementSections, listRequirements, getRequirement, conformance, withdrawSpec,
   draftSpec, addOperation, ratifySpec, getSpec, pendingSpecs, reorganizeRequirement,
   acknowledgeGap, acknowledgeDebt, releaseAcknowledgement, listAcknowledgements, dueForRevalidation,
-  recordAudit, auditsFor, promotableAudits, promoteProvisionalAudit,
+  recordAudit, auditsFor, promotableAudits, promoteProvisionalAudit, provisionalAudits,
   criteriaSummary, recordVacuityCheck, weakAssertions,
   declarePointer, restatePointer, retirePointer, pointersFor, auditQueue,
   pinPopulation, declareNotExpressible, populationFor, brokenPins,

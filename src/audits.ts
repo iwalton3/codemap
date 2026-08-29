@@ -29,12 +29,14 @@ import { randomBytes } from "node:crypto";
 import type {
   Actor, Audit, AuditEvidence, AuditOutcome, AuditTrigger, BugWitness, Requirement,
 } from "./schema.js";
-import { AUDIT_TRIGGERS, COVERING_TRIGGERS } from "./schema.js";
+import { AUDIT_OUTCOMES, AUDIT_TRIGGERS, COVERING_TRIGGERS } from "./schema.js";
 import {
   readAcknowledgements, readAudits, readPointers, readRequirement, readRequirements,
   workHas, writeLocalAudit,
 } from "./store.js";
 import { liveHashes, witnessDrift, realDrift } from "./reviews.js";
+import { legacyIndex, type AnchorIndex } from "./anchor-resolve.js";
+import { readProvisionalAudits } from "./provisional.js";
 import { currentBranch, headCommit, isDirty, isGitRepo, onDefaultBranch } from "./git.js";
 import { requireActor } from "./identity.js";
 import { universeKey } from "./sidecar-config.js";
@@ -48,7 +50,7 @@ const now = () => new Date().toISOString();
 export type Err = { error: string };
 const isErr = (x: unknown): x is Err => !!x && typeof x === "object" && "error" in (x as object);
 
-const OUTCOMES: AuditOutcome[] = ["conformant", "nonconformant", "indeterminate"];
+const OUTCOMES = AUDIT_OUTCOMES;
 
 /**
  * Did the auditor touch the code, as opposed to only reading about it?
@@ -84,11 +86,32 @@ export interface ServedAudit extends Audit {
   drifted: string[];
 }
 
-async function serve(root: string, a: Audit): Promise<ServedAudit> {
+function serveWith(a: Audit, live: AnchorIndex): ServedAudit {
   if (!a.witnesses.length) return { ...a, superseded: false, drifted: [] };
-  const live = await liveHashes(root, a.witnesses.map((w: BugWitness) => w.anchorId));
   const changes = realDrift(witnessDrift(a.witnesses, live));
   return { ...a, superseded: changes.length > 0, drifted: changes.map((c) => c.anchorId) };
+}
+
+/**
+ * Live hashes for every anchor a whole BATCH of audits witnesses, fetched once.
+ *
+ * `liveHashes` reads the entire `@work` anchor table and re-parses the files it needs with
+ * tree-sitter, so calling it per audit is that work repeated per audit — and `conformance`
+ * serves every audit of every rule, which made it quadratic in the two numbers that grow.
+ * It takes an iterable, so one call with the union costs what one audit used to.
+ */
+async function indexFor(root: string, audits: Audit[]): Promise<AnchorIndex> {
+  const ids = [...new Set(audits.flatMap((a) => a.witnesses.map((w: BugWitness) => w.anchorId)))];
+  return ids.length ? liveHashes(root, ids) : legacyIndex(new Map());
+}
+
+const serveAll = async (root: string, audits: Audit[]): Promise<ServedAudit[]> => {
+  const live = await indexFor(root, audits);
+  return audits.map((a) => serveWith(a, live));
+};
+
+async function serve(root: string, a: Audit): Promise<ServedAudit> {
+  return serveWith(a, await indexFor(root, [a]));
 }
 
 // --- recording ---------------------------------------------------------------
@@ -113,7 +136,7 @@ export async function recordAudit(
     promotedFrom?: string; trigger?: AuditTrigger;
     observations?: { pointerId: string; firing: boolean }[];
   } & ActorInput,
-): Promise<{ ok: true; id: string; audit: Audit; released: string[] } | Err> {
+): Promise<{ ok: true; id: string; audit: Audit; released: string[]; notShared?: string } | Err> {
   if (!OUTCOMES.includes(input.outcome)) return { error: `outcome must be one of ${OUTCOMES.join(" | ")}` };
   const trigger: AuditTrigger = input.trigger ?? "ad-hoc";
   if (!AUDIT_TRIGGERS.includes(trigger)) return { error: `trigger must be one of ${AUDIT_TRIGGERS.join(" | ")}` };
@@ -231,7 +254,8 @@ export async function recordAudit(
     return { error: "every observation needs `firing: true|false` — that boolean IS the history a rate is derived from" };
   }
 
-  const provisional = !onDefaultBranch(root) || (isGitRepo(root) && isDirty(root));
+  const dirty = isGitRepo(root) && isDirty(root);
+  const provisional = !onDefaultBranch(root) || dirty;
   const audit: Audit = {
     id: mint(), requirementId: r.id, universe: universeKey(root), outcome: input.outcome, evidence, finding,
     witnesses: read.map((id) => ({ anchorId: id, bodyHash: live?.get(id) ?? "sha256:absent" })),
@@ -242,10 +266,14 @@ export async function recordAudit(
     ...(provisional ? { provisional: true } : {}),
     ...(input.promotedFrom ? { promotedFrom: input.promotedFrom } : {}),
   };
-  const d = disposition(await shareAudit(root, audit));
+  const sharing = await shareAudit(root, audit, { dirty });
+  const d = disposition(sharing);
   if ("error" in d) return d;
   if (d.local) await writeLocalAudit(root, audit);
-  return { ok: true, id: audit.id, audit, released: await settleAcknowledgements(root, audit) };
+  return {
+    ok: true, id: audit.id, audit, released: await settleAcknowledgements(root, audit),
+    ...(sharing.reason ? { notShared: sharing.reason } : {}),
+  };
 }
 
 /**
@@ -306,18 +334,61 @@ async function settleAcknowledgements(root: string, audit: Audit): Promise<strin
  */
 export async function promotableAudits(root: string): Promise<ServedAudit[]> {
   if (!onDefaultBranch(root)) return [];
-  const all = await readAudits(root);
-  const alreadyPromoted = new Set(all.map((a) => a.promotedFrom).filter(Boolean) as string[]);
-  const out: ServedAudit[] = [];
-  for (const a of all) {
+  const local = await readAudits(root);
+  // The PROMOTIONS come from local rows, because a promotion is an ordinary audit of the
+  // codebase and travels in the log like one. The provisional findings come from both:
+  // this machine's own, and the documents the team's other clones filed.
+  const alreadyPromoted = new Set(local.map((a) => a.promotedFrom).filter(Boolean) as string[]);
+  const seen = new Set<string>();
+  const candidates: Audit[] = [];
+  for (const a of [...local, ...await readProvisionalAudits(root)]) {
     if (!a.provisional || a.outcome !== "nonconformant" || !a.witnesses.length) continue;
     // A promoted finding stays non-superseded for ever — the code it cited is exactly
     // what is there — so without this it would offer itself again on every read.
-    if (alreadyPromoted.has(a.id)) continue;
-    const served = await serve(root, a);
-    if (!served.superseded) out.push(served);
+    if (alreadyPromoted.has(a.id) || seen.has(a.id)) continue;
+    seen.add(a.id);
+    candidates.push(a);
   }
-  return out;
+  return (await serveAll(root, candidates)).filter((a) => !a.superseded);
+}
+
+/**
+ * Every provisional audit taken here or by a teammate, newest last.
+ *
+ * `commit` is how a REVIEWER asks it: *what does codemap know about the code in front of
+ * me?* Without one it is the whole set, which is the author's own view of what is
+ * outstanding across their branches.
+ *
+ * The union of local rows and documents, because the two are not the same set in either
+ * direction: an audit taken with no sidecar, or on a dirty tree, has no document, and a
+ * teammate's document has no local row. Deduplicated by id, which is minted once.
+ *
+ * A DOCUMENT never reaches `conformance()` and no filter here is doing that work — it is
+ * not folded, so no clone has a row for it to be counted in. The author's own local row is
+ * a separate question, and an open one: `conformance()` does not filter provisional rows,
+ * where `settleAcknowledgements`, `scrub.ts` and `problems.ts` all do. See
+ * `docs/cross-universe-standard.md` § *Provisional audits*.
+ */
+export async function provisionalAudits(
+  root: string, opts: { commit?: string } = {},
+): Promise<ServedAudit[]> {
+  const seen = new Set<string>();
+  const rows: Audit[] = [];
+  const local = (await readAudits(root)).filter((a) => a.provisional);
+  for (const a of [...local, ...await readProvisionalAudits(root, opts)]) {
+    if (opts.commit && a.commit !== opts.commit) continue;
+    if (seen.has(a.id)) continue;
+    seen.add(a.id);
+    rows.push(a);
+  }
+  rows.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.id < b.id ? -1 : 1));
+  return serveAll(root, rows);
+}
+
+/** Local row or teammate's document — the two places a provisional audit can be. */
+async function findProvisional(root: string, id: string): Promise<Audit | undefined> {
+  return (await readAudits(root)).find((a) => a.id === id)
+    ?? (await readProvisionalAudits(root)).find((a) => a.id === id);
 }
 
 /**
@@ -334,7 +405,7 @@ export async function promoteProvisionalAudit(
   if (!onDefaultBranch(root)) {
     return { error: "promotion is a claim about the codebase, so it must be made from the default branch" };
   }
-  const original = (await readAudits(root)).find((a) => a.id === auditId);
+  const original = await findProvisional(root, auditId);
   if (!original) return { error: `no audit "${auditId}"` };
   if (!original.provisional) return { error: `${auditId} is already an audit of the codebase` };
   if (original.outcome !== "nonconformant") {
@@ -357,8 +428,7 @@ export async function promoteProvisionalAudit(
 }
 
 export async function auditsFor(root: string, requirementId: string): Promise<ServedAudit[]> {
-  const rows = await readAudits(root, { requirementId });
-  return Promise.all(rows.map((a) => serve(root, a)));
+  return serveAll(root, await readAudits(root, { requirementId }));
 }
 
 /**
@@ -401,10 +471,17 @@ export async function conformance(
   // `silenced().unknown` jumps by fifty.
   const { requirements } = await readRequirements(root, { status: "ratified" });
   const { listAcknowledgements } = await import("./acknowledgements.js");
+  // One `liveHashes` for the whole standard, not one per rule. `auditsFor` in a loop was
+  // linear in rules TIMES audits over a call that reads the entire anchor table and
+  // re-parses files with tree-sitter — the same N+1 that cost `auditQueue` 547 ms.
+  const byRule = new Map<string, ServedAudit[]>();
+  for (const a of await serveAll(root, await readAudits(root))) {
+    (byRule.get(a.requirementId) ?? byRule.set(a.requirementId, []).get(a.requirementId)!).push(a);
+  }
   const out: RequirementConformance[] = [];
   for (const requirement of requirements) {
     const acks = await listAcknowledgements(root, { requirementId: requirement.id, state: "active", asOf });
-    const audits = await auditsFor(root, requirement.id);
+    const audits = byRule.get(requirement.id) ?? [];
     const last = audits[audits.length - 1];
     const live = audits.filter((a) => !a.superseded);
     const liveConformant = live.some((a) => a.outcome === "conformant");

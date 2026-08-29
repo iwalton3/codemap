@@ -37,6 +37,7 @@ import {
 import {
   recordAudit as recordAuditRec, promotableAudits as promotableRec,
   promoteProvisionalAudit as promoteAuditRec, auditsFor as auditsForRec,
+  provisionalAudits as provisionalRec,
   conformance as conformanceRec, silenced,
 } from "../audits.js";
 import {
@@ -141,6 +142,17 @@ export const requirementSections = async (root: string) =>
 export const pendingSpecs = async (root: string) => served(root, async () => ({ specs: await pendingSpecsRec(root) }));
 
 export const promotableAudits = async (root: string) => served(root, async () => ({ audits: await promotableRec(root) }));
+
+/**
+ * Branch findings — this machine's and the team's — for one commit, or all of them.
+ *
+ * A separate read from `auditsFor` rather than a flag on it, because these are the
+ * observations that must never be mistaken for the state of the codebase. Keeping them in
+ * their own answer is the honest shape; nothing depends on it, since a provisional audit
+ * is never folded and so has no row to be counted in anywhere.
+ */
+export const provisionalAudits = async (root: string, input: { commit?: string } = {}) =>
+  served(root, async () => ({ audits: await provisionalRec(root, input) }));
 
 export const dueForRevalidation = async (root: string, input: { asOf?: string } = {}) =>
   served(root, async () => ({ acknowledgements: await dueRec(root, input) }));

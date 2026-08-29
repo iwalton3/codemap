@@ -1226,6 +1226,12 @@ const tools: Tool[] = [
     handler: (a, c) => ops.auditsFor(c.universe.path, a),
   },
   {
+    name: "provisional_audits",
+    description: "Branch findings — audits taken off the default branch, or on a dirty tree. Pass `commit` to ask the question a REVIEWER asks: what does codemap know about the code in front of me? Without one you get every provisional finding this store can see.\n\nThese are NOT the state of the codebase and can never become it: a provisional audit is not folded, so no clone has a row for it and `conformance` cannot count it. What they are is the branch author's work, made visible to whoever reviews the branch — including a teammate, whose findings travel as documents filed under the commit they were taken at. A finding whose code survives to the default branch is offered by `standard_queue` → `promotable_audits`, on the witnesses rather than on the merge.\n\nAn audit taken on a DIRTY tree never travels: its witnesses came off the filesystem while `commit` names an unchanged HEAD, so filing it under that commit would attribute uncommitted work to a commit that does not contain it. Answers under `audits`, plus `scope` when the answer is not authoritative — see `standard_status`.",
+    inputSchema: obj({ commit: { type: "string", description: "The commit the findings were taken at. Omit for all of them." } }),
+    handler: (a, c) => ops.provisionalAudits(c.universe.path, { commit: a.commit ? String(a.commit) : undefined }),
+  },
+  {
     name: "criteria",
     description: "The acceptance criteria on one rule: what discharges it, what would REFUTE it (`falsifier`), how it gets discharged (`evidenceKind`), and the check that asserts it (`assertedBy`).\n\nThree derived fields carry the warning COD-18 attaches to this relation. `assertionMoved` — the check's own code has changed since ratification, so the DETECTOR moved, which is a different and stronger signal than the rule's subject moving. `vacuity` — whether anybody has established the check CAN fail (`unchecked` by default, and it must never be read as `demonstrated`); it reverts to `unchecked` when the assertion moves, because whatever was established was established about code that is no longer there. `unasserted` — no check at all.\n\nWhy it matters: citing an assertion makes a claim STRONGER — it converts \"nobody edited the cited code\" into \"green as of the last build\". Over a check that cannot fail, that is manufactured confidence with a mechanism attached.",
     inputSchema: obj({ requirementId: { type: "string" } }, ["requirementId"]),
