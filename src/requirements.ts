@@ -1010,7 +1010,13 @@ export async function getRequirement(
     readAcknowledgements(root, { requirementId: id }),
     readProblems(root, { requirementId: id }),
   ]);
-  return { requirement, history, audits, pointers, acknowledgements, problems };
+  // The CODEBASE's record. A provisional audit is an observation of somebody's branch and
+  // is served separately, the same split `conformance({ about })` draws — an audit history
+  // that mixes the two is the confusion the whole provisional mechanism exists to prevent.
+  return {
+    requirement, history, pointers, acknowledgements, problems,
+    audits: audits.filter((a) => !a.provisional),
+  };
 }
 
 /** One operation rendered for review: what it does, to what, and what it would produce. */

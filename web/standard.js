@@ -262,6 +262,29 @@ class SpecPage extends Component {
 defineComponent('spec-page', SpecPage);
 
 /**
+ * One audit, in either section.
+ *
+ * `branch` is passed rather than read off `a.provisional`, because a card in the branch
+ * section is a branch finding whatever the record's own field says — the reader of a
+ * document is the end that decides that (see `provisional.ts`), not the record.
+ *
+ * @param {ReqData['audits'][number] & { superseded?: boolean, branch?: string, commit?: string }} a
+ * @param {boolean} [branch]
+ */
+const auditCard = (a, branch) => html`<div class="op-card ${branch ? 'moved' : ''}">
+  <div class="ft">${confDot(a.outcome === 'conformant' ? 'conformant' : a.outcome === 'nonconformant' ? 'nonconformant' : 'unknown')}
+    <b>${a.outcome}</b>
+    <span class="qbadge">${a.trigger || 'ad-hoc'}</span>
+    ${when(!!branch, () => html`<span class="qbadge drift" title="taken off the default branch, or on a dirty tree — it is about somebody's branch, not about the codebase">${a.branch || 'branch'}</span>`)}
+    ${when(!!(branch && a.superseded), () => html`<span class="qbadge" title="the code it examined has moved, so it says nothing about what is here now">superseded</span>`)}
+    <span class="dim">${(a.at || '').slice(0, 16).replace('T', ' ')} · ${a.auditor && a.auditor.principal ? a.auditor.principal : 'unknown'}${a.auditor && a.auditor.via ? ' via ' + (a.auditor.via.model || 'agent') : ''}</span>
+  </div>
+  <div class="fs">${a.finding}</div>
+  ${when(!!(a.evidence && (a.evidence.read || a.evidence.ran)), () => html`<div class="fs dim">evidence: ${(a.evidence.read || []).length} anchor(s) read${(a.evidence.ran || []).length ? ', ' + a.evidence.ran.length + ' command(s) run' : ''}</div>`)}
+  ${when(!!(branch && a.commit), () => html`<div class="fs dim">at ${(a.commit || '').slice(0, 12)}</div>`)}
+</div>`;
+
+/**
  * One rule, and everything that has been said about it.
  *
  * A requirement has no `stale` and no trust ladder — it is upstream of the code, so
@@ -314,16 +337,13 @@ class RequirementPage extends Component {
 
       <div class="sec">audit history (${d.audits.length})</div>
       ${when(!d.audits.length, () => html`<div class="empty">never audited. A conformance verdict with no audit behind it is <code>unknown</code>, which must never read as conformant.</div>`)}
-      ${each(d.audits, (a) => html`<div class="op-card">
-        <div class="ft">${confDot(a.outcome === 'conformant' ? 'conformant' : a.outcome === 'nonconformant' ? 'nonconformant' : 'unknown')}
-          <b>${a.outcome}</b>
-          <span class="qbadge">${a.trigger || 'ad-hoc'}</span>
-          ${when(!!a.provisional, () => html`<span class="qbadge drift" title="taken off the default branch — it is about somebody's branch, not about the codebase">provisional</span>`)}
-          <span class="dim">${(a.at || '').slice(0, 16).replace('T', ' ')} · ${a.auditor && a.auditor.principal ? a.auditor.principal : 'unknown'}${a.auditor && a.auditor.via ? ' via ' + (a.auditor.via.model || 'agent') : ''}</span>
-        </div>
-        <div class="fs">${a.finding}</div>
-        ${when(!!(a.evidence && (a.evidence.read || a.evidence.ran)), () => html`<div class="fs dim">evidence: ${(a.evidence.read || []).length} anchor(s) read${(a.evidence.ran || []).length ? ', ' + a.evidence.ran.length + ' command(s) run' : ''}</div>`)}
-      </div>`, (a) => a.id)}
+      ${each(d.audits, (a) => auditCard(a), (a) => a.id)}
+
+      ${when(!!d.provisionalAudits.length, () => html`
+        <div class="sec">branch findings (${d.provisionalAudits.length})</div>
+        <div class="empty">Observations of somebody's branch — this machine's and the team's. They are NOT the state of the codebase and never become it: nothing folds them, so no clone has a row to count. A finding whose code survives to the default branch is offered for promotion instead.</div>
+        ${each(d.provisionalAudits, (a) => auditCard(a, true), (a) => a.id)}
+      `)}
 
       <div class="sec">watching this rule (${d.pointers.length})</div>
       ${when(!d.pointers.length, () => html`<div class="empty">nothing points at it — a pointer is a prior on where to look, never a verdict</div>`)}

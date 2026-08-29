@@ -23,7 +23,9 @@ import { resolveSidecar } from "./sidecar-config.js";
 import { readScope } from "./eventlog.js";
 import { standardScope } from "./shared-standard.js";
 import { draftSpec, addOperation, ratifySpec, listRequirements } from "./requirements.js";
-import { recordAudit, provisionalAudits, promotableAudits, promoteProvisionalAudit } from "./audits.js";
+import {
+  recordAudit, provisionalAudits, promotableAudits, promoteProvisionalAudit, conformance, silenced,
+} from "./audits.js";
 import { readProvisionalAudits, PROVISIONAL_DIR } from "./provisional.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
@@ -102,6 +104,13 @@ test("a provisional audit travels as a document under its commit, and enters no 
     assert.equal(back[0]!.id, found.id);
     assert.deepEqual(await readProvisionalAudits(f.root, { commit: "0".repeat(40) }), [],
       "and it is filed under the commit it was taken at, not under all of them");
+
+    // A SHORT sha is what git prints and what a caller will type. An exact match would
+    // answer it with an empty list, and "no findings here" reads as "nothing wrong".
+    assert.deepEqual((await readProvisionalAudits(f.root, { commit: commit.slice(0, 8) })).map((a) => a.id),
+      [found.id], "the reviewer types what git printed");
+    assert.deepEqual((await provisionalAudits(f.root, { commit: commit.slice(0, 8) })).map((a) => a.id),
+      [found.id], "and the served read agrees with the raw one");
   } finally { f.cleanup(); }
 });
 
@@ -222,6 +231,55 @@ test("a teammate's document is promotable, and the promotion is what enters the 
     // The commit-keyed view still holds it: promotion re-records the finding, it does not
     // falsify the branch observation that produced it.
     assert.equal((await provisionalAudits(f.root, { commit })).length, 1);
+  } finally { f.cleanup(); }
+});
+
+/**
+ * Izzie's call, 2026-08-28: a branch finding must not show under the PROJECT's conformance,
+ * and must show when somebody asks for an audit of the branch.
+ *
+ * The default is the team's standard, so `silenced()` means the same number on every
+ * machine — which it did not, on the one machine that took the finding.
+ */
+test("a branch finding moves the branch's conformance and not the codebase's", async () => {
+  const f = await fixture();
+  try {
+    const before = (await conformance(f.root)).map((c) => c.conformance);
+    assert.deepEqual(before, ["unknown"], "never audited, and unknown must never read as conformant");
+
+    git(f.root, "checkout", "-q", "-b", "feature/credit");
+    ok(await recordAudit(f.root, {
+      requirementId: f.rule.id, outcome: "conformant",
+      finding: "creditLine is USD throughout on this branch", evidence: { read: f.anchors },
+    }));
+
+    assert.deepEqual((await conformance(f.root)).map((c) => c.conformance), ["unknown"],
+      "a positive audit of somebody's branch must not certify the codebase");
+    assert.deepEqual((await conformance(f.root, { about: "branch" })).map((c) => c.conformance),
+      ["conformant"], "and the reviewer of that branch has to be able to see it");
+
+    // The distribution follows, which is the number that would otherwise mean two things.
+    assert.equal((await silenced(f.root)).conformant, 0);
+    assert.equal((await silenced(f.root, { about: "branch" })).conformant, 1);
+  } finally { f.cleanup(); }
+});
+
+test("a TEAMMATE's branch finding counts toward the branch's conformance too", async () => {
+  const f = await fixture();
+  try {
+    git(f.root, "checkout", "-q", "-b", "feature/credit");
+    ok(await recordAudit(f.root, {
+      requirementId: f.rule.id, outcome: "nonconformant",
+      finding: "creditLine doubles the amount", evidence: { read: f.anchors },
+    }));
+    // Their finding, our checkout: the local row goes, the document stays.
+    const { db } = await import("./db.js");
+    db(f.root).prepare("DELETE FROM audits").run();
+
+    assert.deepEqual((await conformance(f.root, { about: "branch" })).map((c) => c.lastAudit?.outcome),
+      ["nonconformant"], "the witnesses match this checkout, so it is about the code in front of us");
+    assert.deepEqual((await conformance(f.root)).map((c) => c.lastAudit), [undefined],
+      "and a document reaches the codebase's answer by no route at all");
   } finally { f.cleanup(); }
 });
 

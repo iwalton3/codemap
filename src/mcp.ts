@@ -1197,7 +1197,7 @@ const tools: Tool[] = [
   },
   {
     name: "requirement",
-    description: "One rule, with the whole history of operations that introduced and amended it, and `recheckDue` when the code it cites has moved since it was ratified.",
+    description: "One rule, with the whole history of operations that introduced and amended it, and `recheckDue` when the code it cites has moved since it was ratified. `audits` is the CODEBASE's record; branch work is beside it under `provisionalAudits` — this machine's and the team's — because an audit history that mixes the two is how a branch observation gets taken for the state of the code.",
     inputSchema: obj({ id: { type: "string" } }, ["id"]),
     handler: (a, c) => ops.getRequirement(c.universe.path, a),
   },
@@ -1209,9 +1209,18 @@ const tools: Tool[] = [
   },
   {
     name: "conformance",
-    description: "Per-requirement classification: `conformant` (checked, and it holds) / `gap` (no code that should conform exists yet — roadmap, not a defect) / `debt` (conforming code should exist and does not) / `unknown` (nobody has checked). `conformant` is reachable only through an audit that touched code, so nothing about merging or time passing ever produces it. Answers under `conformance`, plus `scope` when the answer is not authoritative — see `standard_status`.",
-    inputSchema: obj({ asOf: { type: "string", description: "ISO timestamp — classify as of then rather than now." } }),
-    handler: (a, c) => ops.conformance(c.universe.path, a),
+    description: "Per-requirement classification: `conformant` (checked, and it holds) / `gap` (no code that should conform exists yet — roadmap, not a defect) / `debt` (conforming code should exist and does not) / `unknown` (nobody has checked). `conformant` is reachable only through an audit that touched code, so nothing about merging or time passing ever produces it. A PROVISIONAL audit never moves this — it is an observation of somebody's branch — unless you ask for `about: \"branch\"`, which is the reviewer's read and feeds no queue. Answers under `conformance`, plus `scope` when the answer is not authoritative — see `standard_status`.",
+    inputSchema: obj({
+      asOf: { type: "string", description: "ISO timestamp — classify as of then rather than now." },
+      about: {
+        type: "string", enum: ["codebase", "branch"],
+        description: "`codebase` (default) is the team's standard: provisional evidence is excluded, so the answer means the same on every machine. `branch` is the reviewer's question — does the code checked out HERE conform — and is the only read that counts branch findings, this machine's and the team's alike.",
+      },
+    }),
+    handler: (a, c) => ops.conformance(c.universe.path, {
+      ...(a.asOf ? { asOf: String(a.asOf) } : {}),
+      ...(a.about === "branch" ? { about: "branch" as const } : {}),
+    }),
   },
   {
     name: "spec",

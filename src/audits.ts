@@ -36,7 +36,7 @@ import {
 } from "./store.js";
 import { liveHashes, witnessDrift, realDrift } from "./reviews.js";
 import { legacyIndex, type AnchorIndex } from "./anchor-resolve.js";
-import { readProvisionalAudits } from "./provisional.js";
+import { commitMatches, readProvisionalAudits } from "./provisional.js";
 import { currentBranch, headCommit, isDirty, isGitRepo, onDefaultBranch } from "./git.js";
 import { requireActor } from "./identity.js";
 import { universeKey } from "./sidecar-config.js";
@@ -363,20 +363,25 @@ export async function promotableAudits(root: string): Promise<ServedAudit[]> {
  * direction: an audit taken with no sidecar, or on a dirty tree, has no document, and a
  * teammate's document has no local row. Deduplicated by id, which is minted once.
  *
- * A DOCUMENT never reaches `conformance()` and no filter here is doing that work — it is
- * not folded, so no clone has a row for it to be counted in. The author's own local row is
- * a separate question, and an open one: `conformance()` does not filter provisional rows,
- * where `settleAcknowledgements`, `scrub.ts` and `problems.ts` all do. See
- * `docs/cross-universe-standard.md` § *Provisional audits*.
+ * None of this reaches the team's standard: `conformance()` defaults to
+ * `about: "codebase"`, which excludes provisional evidence, and a DOCUMENT could not have
+ * reached it anyway — nothing folds one, so no clone has a row to count. The reviewer's
+ * read is `conformance({ about: "branch" })`; this is the same evidence with the findings
+ * themselves rather than a verdict.
  */
 export async function provisionalAudits(
-  root: string, opts: { commit?: string } = {},
+  root: string, opts: { commit?: string; requirementId?: string } = {},
 ): Promise<ServedAudit[]> {
   const seen = new Set<string>();
   const rows: Audit[] = [];
-  const local = (await readAudits(root)).filter((a) => a.provisional);
-  for (const a of [...local, ...await readProvisionalAudits(root, opts)]) {
-    if (opts.commit && a.commit !== opts.commit) continue;
+  const local = (await readAudits(root, opts.requirementId ? { requirementId: opts.requirementId } : {}))
+    .filter((a) => a.provisional);
+  // `readProvisionalAudits` knows only the commit — it reads documents, which are laid out
+  // by commit and by nothing else. `requirementId` is applied below, on both halves.
+  const docs = await readProvisionalAudits(root, opts.commit ? { commit: opts.commit } : {});
+  for (const a of [...local, ...docs]) {
+    if (opts.commit && !commitMatches(opts.commit, a.commit)) continue;
+    if (opts.requirementId && a.requirementId !== opts.requirementId) continue;
     if (seen.has(a.id)) continue;
     seen.add(a.id);
     rows.push(a);
@@ -452,6 +457,22 @@ export async function auditsFor(root: string, requirementId: string): Promise<Se
  */
 export type Conformance = "conformant" | "gap" | "debt" | "unknown";
 
+/**
+ * WHICH code a conformance answer is about.
+ *
+ * `codebase` is the team's standard and the default: only audits of the codebase count, so
+ * a branch observation moves nobody's verdict, on any machine including the author's. That
+ * is what makes `silenced()` mean the same number everywhere.
+ *
+ * `branch` is what a reviewer asks when they audit the branch in front of them, and it is
+ * the only read where provisional evidence counts. It takes local rows AND the team's
+ * documents, because the discriminator is the one used everywhere else: a finding whose
+ * witnesses still match is about the code checked out here, whoever took it and on
+ * whichever branch. What it must never do is leak back — it feeds no queue, resets no
+ * deadline, and releases nothing.
+ */
+export type ConformanceSubject = "codebase" | "branch";
+
 export interface RequirementConformance {
   requirement: Requirement;
   conformance: Conformance;
@@ -463,9 +484,10 @@ export interface RequirementConformance {
 }
 
 export async function conformance(
-  root: string, opts: { asOf?: string } = {},
+  root: string, opts: { asOf?: string; about?: ConformanceSubject } = {},
 ): Promise<RequirementConformance[]> {
   const asOf = opts.asOf ?? now();
+  const about: ConformanceSubject = opts.about === "branch" ? "branch" : "codebase";
   // A retired rule is not part of the current standard, so counting it as unexamined
   // misstates how much of what is IN FORCE nobody has checked — retire fifty and
   // `silenced().unknown` jumps by fifty.
@@ -475,7 +497,7 @@ export async function conformance(
   // linear in rules TIMES audits over a call that reads the entire anchor table and
   // re-parses files with tree-sitter — the same N+1 that cost `auditQueue` 547 ms.
   const byRule = new Map<string, ServedAudit[]>();
-  for (const a of await serveAll(root, await readAudits(root))) {
+  for (const a of await serveAll(root, await auditsAbout(root, about))) {
     (byRule.get(a.requirementId) ?? byRule.set(a.requirementId, []).get(a.requirementId)!).push(a);
   }
   const out: RequirementConformance[] = [];
@@ -501,8 +523,26 @@ export async function conformance(
   return out;
 }
 
+/**
+ * The audits one conformance subject is entitled to read.
+ *
+ * The `codebase` filter is the load-bearing half and it is a FILTER rather than a
+ * structure, unavoidably: a provisional audit is a real local row, because the author has
+ * to be able to promote it and to raise a problem from it. What keeps that honest is that
+ * this is the only place the filter is needed — no clone that receives a document has a row
+ * at all, so nothing downstream has to remember it.
+ */
+async function auditsAbout(root: string, about: ConformanceSubject): Promise<Audit[]> {
+  const local = await readAudits(root);
+  if (about === "codebase") return local.filter((a) => !a.provisional);
+  const seen = new Set(local.map((a) => a.id));
+  return [...local, ...(await readProvisionalAudits(root)).filter((a) => !seen.has(a.id))];
+}
+
 /** How much of the standard is currently silenced, checked, or simply unexamined. */
-export async function silenced(root: string, opts: { asOf?: string } = {}): Promise<{
+export async function silenced(
+  root: string, opts: { asOf?: string; about?: ConformanceSubject } = {},
+): Promise<{
   total: number; conformant: number; gap: number; debt: number; unknown: number;
   due: number; regressed: number;
 }> {

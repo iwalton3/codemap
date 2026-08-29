@@ -142,19 +142,28 @@ machine. A teammate reviewing the branch could not see that it fails a rule.
 
 A provisional audit **travels** as a document at
 `provisional/<universe>/<commit>/<auditId>.json` in the sidecar, and is **never folded into
-the standard**. Not folding it is what makes it structurally impossible for a branch
-observation to reach a RECEIVING clone's `conformance()`, rather than filter-dependent:
-there is no row for it there, so there is nothing for a filter to have to remember. The
-existing fold guard is therefore MORE load-bearing, not less: `foldStandard` still refuses a
-provisional audit arriving in the standard scope, in case a client publishes one there, and
-`sharing-boundary.test.ts` registers both ends.
+the standard**. Not folding it is what keeps a branch observation out of a receiving clone's
+standard STRUCTURALLY rather than by a filter: there is no row for it there at all, so
+nothing downstream has to remember to exclude it. The existing fold guard is therefore MORE
+load-bearing, not less: `foldStandard` still refuses a provisional audit arriving in the
+standard scope, in case a client publishes one there, and `sharing-boundary.test.ts`
+registers both ends.
 
-**Note what this does NOT settle.** The author's own machine still writes a local row, and
-`conformance()` does not filter provisional rows out of it — so a branch finding does move
-the author's own verdict, which `requirements-architecture.md` calls being "fully usable
-locally". Whether that is right is an open question and not one this change decided;
-`settleAcknowledgements`, `scrub.ts` and `problems.ts` all filter provisional and
-`conformance()` alone does not, which is at least an asymmetry worth a decision.
+**And conformance has a SUBJECT, decided with it.** The author's machine still writes a
+local row — it has to, so the author can promote the finding and raise a problem from it —
+and `conformance()` used to count it, so a branch finding moved the author's own verdict
+and nobody else's. That is now an explicit question rather than an accident:
+
+- `conformance({ about: "codebase" })`, the default, is **the team's standard**. Provisional
+  evidence is excluded, so `silenced()` means the same number on every machine.
+- `conformance({ about: "branch" })` is **the reviewer's question** — does the code checked
+  out here conform — and is the only read where provisional evidence counts. It reads local
+  rows AND the team's documents, on the discriminator used everywhere else: a finding whose
+  witnesses still match is about the code in front of you, whoever took it.
+
+The branch read must never leak back. It feeds no queue, resets no coverage deadline and
+releases no acknowledgement — `settleAcknowledgements`, `scrub.ts` and `problems.ts` already
+filter provisional, and `conformance()` was the one that did not.
 
 Three mechanics carry it, and each is where the design could have gone wrong:
 
@@ -173,6 +182,12 @@ Three mechanics carry it, and each is where the design could have gone wrong:
 Promotion is unchanged and still decided on **witnesses**: `promotableAudits` now reads the
 union of local rows and documents, so a teammate can promote a finding they did not take.
 The promotion is an ordinary audit of the codebase and travels in the log like one.
+
+**On the surfaces:** MCP `provisional_audits` (optional `commit` — the reviewer's question),
+and the rule dossier keeps them in a *branch findings* section of their own. `getRequirement`
+serves `audits` (the codebase's record) and `provisionalAudits` separately for the same
+reason the conformance subject exists: an audit history that mixes the two is how a branch
+observation gets taken for the state of the code.
 
 **Partial staleness at promotion is deliberately not handled.** If some of the bodies an
 audit witnessed have changed by merge time, it will not promote. That is correct rather

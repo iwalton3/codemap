@@ -54,6 +54,16 @@ const docPath = (cfg: SidecarConfig, commit: string, id: string): string =>
 
 const isSha = (s: string): boolean => /^[0-9a-f]{7,64}$/.test(s);
 
+/**
+ * Does this directory name answer a caller's `commit`?
+ *
+ * PREFIX, because documents are filed under the full sha and callers type what git prints.
+ * An exact match would answer a short sha with an empty list, and "no findings here" reads
+ * as "nothing wrong" — the one wrong answer this whole path exists to stop giving.
+ */
+export const commitMatches = (asked: string, filed: string | null | undefined): boolean =>
+  !!filed && (asked.length >= 40 ? filed === asked : filed.startsWith(asked));
+
 export type Published =
   | { published: true; path: string }
   /** Nothing to publish to, or nothing that could honestly be published. */
@@ -150,15 +160,12 @@ export async function readProvisionalAudits(
   if (!cfg) return [];
   const base = universeDir(cfg);
   let commits: string[];
-  if (opts.commit) {
-    if (!isSha(opts.commit)) return [];
-    commits = [opts.commit];
-  } else {
-    try {
-      commits = (await readdir(base, { withFileTypes: true }))
-        .filter((d) => d.isDirectory() && isSha(d.name)).map((d) => d.name);
-    } catch { return []; }
-  }
+  if (opts.commit && !isSha(opts.commit)) return [];
+  try {
+    commits = (await readdir(base, { withFileTypes: true }))
+      .filter((d) => d.isDirectory() && isSha(d.name)).map((d) => d.name);
+  } catch { return []; }
+  if (opts.commit) commits = commits.filter((c) => commitMatches(opts.commit!, c));
   const out: Audit[] = [];
   for (const commit of commits) {
     let files: string[];

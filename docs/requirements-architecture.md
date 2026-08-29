@@ -326,10 +326,17 @@ violation that may not exist on the default branch and may never, because the br
 be fixed or abandoned before it merges.
 
 So an audit records its branch, and one taken off the default branch is **provisional**: it
-is real work, fully usable locally, and it never enters the shared log. A problem raised
-from it inherits that — a problem is exactly as shareable as the evidence it rests on. So
-does an adjudication of one, which would otherwise arrive at a clone with no problem to
-attach it to.
+is real work, and it never enters the shared log. A problem raised from it inherits that — a
+problem is exactly as shareable as the evidence it rests on. So does an adjudication of one,
+which would otherwise arrive at a clone with no problem to attach it to.
+
+**Superseded in part by `docs/cross-universe-standard.md`, which is normative here.** Two
+things this paragraph used to say are no longer true. A provisional audit does now leave the
+machine that took it — as a **commit-discovered document** that nothing folds, so the
+reviewer of a branch can see that it fails a rule. And "fully usable locally" is no longer
+the whole of it: a provisional audit does not move `conformance()`, whose default subject is
+the codebase; it counts only under `conformance({ about: "branch" })`, which is the read a
+reviewer asks for and which feeds no queue.
 
 ### What becomes of it after the merge: evidence, never ancestry
 

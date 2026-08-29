@@ -241,7 +241,7 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
     case "/api/standard/requirement":
       return ops.getRequirement(root, { id: q.get("id") ?? "" });
     case "/api/standard/conformance":
-      return ops.conformance(root);
+      return ops.conformance(root, q.get("about") === "branch" ? { about: "branch" } : {});
     case "/api/changed_since":
       return ops.changedSince(root, {
         targetKind: (q.get("targetKind") as "node" | "anchor") ?? "node",

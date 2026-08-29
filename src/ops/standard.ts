@@ -38,7 +38,7 @@ import {
   recordAudit as recordAuditRec, promotableAudits as promotableRec,
   promoteProvisionalAudit as promoteAuditRec, auditsFor as auditsForRec,
   provisionalAudits as provisionalRec,
-  conformance as conformanceRec, silenced,
+  conformance as conformanceRec, silenced, type ConformanceSubject,
 } from "../audits.js";
 import {
   raiseProblem as raiseProblemRec, adjudicate as adjudicateRec, listProblems as listProblemsRec,
@@ -170,11 +170,25 @@ export const listRequirements = async (
   root: string, input: { status?: Requirement["status"]; section?: string } = {},
 ) => served(root, async () => ({ requirements: await listRequirementsRec(root, input) }));
 
+/**
+ * The rule dossier. `audits` is the codebase's record; `provisionalAudits` is the branch
+ * work beside it — this machine's and the team's — kept in its own key rather than mixed
+ * in, so a reader cannot take a branch observation for the state of the code.
+ */
 export const getRequirement = async (root: string, input: { id: string }) =>
-  served(root, () => getRequirementRec(root, input.id));
+  served(root, async () => {
+    const d = await getRequirementRec(root, input.id);
+    if ("error" in d) return d;
+    return { ...d, provisionalAudits: await provisionalRec(root, { requirementId: input.id }) };
+  });
 
-export const conformance = async (root: string, input: { asOf?: string } = {}) =>
-  served(root, async () => ({ conformance: await conformanceRec(root, input) }));
+/**
+ * `about: "branch"` is the reviewer's question — does the code in front of me conform —
+ * and the only read where provisional evidence counts. The default is the team's standard.
+ */
+export const conformance = async (
+  root: string, input: { asOf?: string; about?: ConformanceSubject } = {},
+) => served(root, async () => ({ conformance: await conformanceRec(root, input) }));
 
 // --- specs and their operations ----------------------------------------------
 

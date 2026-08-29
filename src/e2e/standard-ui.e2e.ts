@@ -73,6 +73,15 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
       requirementId: ruleId, outcome: "nonconformant", finding: "no currency check on entry",
       evidence: { read: [anchor] }, ...AGENT,
     } as any);
+    // And a BRANCH finding, which is a different kind of thing and must render as one:
+    // it is an observation of somebody's work in progress, not of the codebase, so the
+    // dossier keeps it in its own section rather than in the audit history.
+    git("checkout", "-q", "-b", "fix/currency");
+    ok(await ops.recordAudit(root, {
+      requirementId: ruleId, outcome: "nonconformant", finding: "the branch drops the currency field",
+      evidence: { read: [anchor] }, ...AGENT,
+    } as any));
+    git("checkout", "-q", "main");
     await ops.declarePointer(root, {
       requirementId: ruleId, targetKind: "anchor", targetId: anchor,
       rationale: "the conversion happens here", ...AGENT,
@@ -222,6 +231,16 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
     assert.match(text!, /no currency check on entry/, "the finding, not just a verdict");
     assert.match(text!, /the conversion happens here/, "the pointer — where to look");
     assert.match(text!, /fix scheduled for Q4/, "and the debt that is keeping it quiet");
+    // Branch work is on the page, and it is on a different part of it. The reviewer of a
+    // branch could not see this at all before, and it must not read as the codebase's
+    // record — which is the whole reason it has a section of its own.
+    assert.match(text!, /branch findings/i);
+    assert.match(text!, /the branch drops the currency field/);
+    assert.match(text!, /fix\/currency/, "and it says which branch, because that is what makes it provisional");
+    assert.ok(
+      text!.indexOf("no currency check on entry") < text!.indexOf("the branch drops the currency field"),
+      "the codebase's record comes first — a branch observation is not the headline",
+    );
     assert.deepEqual(errors, []);
     await page.close();
   });
