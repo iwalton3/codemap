@@ -14,6 +14,24 @@ import { indexBlob } from "./repo.js";
 import { fixtureHash } from "./fixture-hash.js";
 import { discard } from "./test-tmp.js";
 
+/**
+ * A universe with ONE real anchor, and its id.
+ *
+ * These fixtures used a made-up `a_x` against an empty store. That is now refused — a
+ * mark that could witness nothing is not a mark — and the refusal is right: the tests
+ * below are about mark BOOKKEEPING, and bookkeeping on a symbol that does not exist was
+ * only ever testing the bookkeeping against a state no store can be in.
+ */
+async function oneAnchor(prefix: string): Promise<{ root: string; id: string }> {
+  const root = mkdtempSync(join(tmpdir(), prefix));
+  mkdirSync(join(root, "src"));
+  const src = "export function transfer(cents: number) {\n  return cents;\n}\n";
+  writeFileSync(join(root, "src/pay.ts"), src);
+  const anchors = await indexBlob(src, "src/pay.ts");
+  await writeStore(root, anchors, { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State);
+  return { root, id: anchors[0]!.id };
+}
+
 const rev = (over: Partial<Review>): Review => ({
   id: "r", target: { kind: "anchor", id: "a" }, level: "code", reviewer: "me",
   at: "2026-07-16T00:00:00Z", reviewedCommit: null, witnesses: [], ...over,
@@ -43,19 +61,18 @@ test("witnessDrift reports only the anchors whose live hash moved", () => {
 });
 
 test("viewed and signed are independent rows; each replaces only its own kind", async () => {
-  const root = mkdtempSync(join(tmpdir(), "codemap-rev-"));
+  const { root, id: AX } = await oneAnchor("codemap-rev-");
   try {
-    await writeStore(root, [], { schemaVersion: 1, lastVerifiedCommit: null, grammarVersions: {} }); // init the universe
-    const t = { targetKind: "anchor" as const, targetId: "a_x", level: "code" as const };
+    const t = { targetKind: "anchor" as const, targetId: AX, level: "code" as const };
     // A human viewed, then signed: both marks coexist.
     await markReviewed(root, { ...t, actor: "human", attestation: "viewed" });
     await markReviewed(root, { ...t, actor: "human", attestation: "signed" });
-    let rows = (await readReviews(root)).reviews.filter((r) => r.target.id === "a_x");
+    let rows = (await readReviews(root)).reviews.filter((r) => r.target.id === AX);
     assert.deepEqual(rows.map((r) => effectiveAttestation(r)).sort(), ["signed", "viewed"]);
 
     // Re-signing replaces the vouch but leaves the viewed row untouched.
     await markReviewed(root, { ...t, actor: "human", attestation: "signed" });
-    rows = (await readReviews(root)).reviews.filter((r) => r.target.id === "a_x");
+    rows = (await readReviews(root)).reviews.filter((r) => r.target.id === AX);
     assert.deepEqual(rows.map((r) => effectiveAttestation(r)).sort(), ["signed", "viewed"]);
     assert.equal(rows.filter((r) => effectiveAttestation(r) === "viewed").length, 1);
 
@@ -65,11 +82,11 @@ test("viewed and signed are independent rows; each replaces only its own kind", 
     // not: accountability and evidence are different claims and were sharing a slot.
     // Rows are keyed on the reviewer now (`rowIdentity`), so all three coexist.
     await markReviewed(root, { ...t, actor: "agent" });
-    rows = (await readReviews(root)).reviews.filter((r) => r.target.id === "a_x");
+    rows = (await readReviews(root)).reviews.filter((r) => r.target.id === AX);
     assert.deepEqual(rows.map((r) => effectiveAttestation(r)).sort(), ["checked", "signed", "viewed"]);
 
     // And the collapsed view still leads with the person — human before agent.
-    const pair = await reviewStatus(root, { kind: "anchor", id: "a_x" });
+    const pair = await reviewStatus(root, { kind: "anchor", id: AX });
     assert.equal(pair.code.actor, "human", "the sign-off is what the one-value view reports");
   } finally {
     discard(root);
@@ -77,14 +94,14 @@ test("viewed and signed are independent rows; each replaces only its own kind", 
 });
 
 test("unmark scopes to a single attestation", async () => {
-  const root = mkdtempSync(join(tmpdir(), "codemap-rev-"));
+  const { root, id: ANCHOR } = await oneAnchor("codemap-rev-");
   try {
-    await writeStore(root, [], { schemaVersion: 1, lastVerifiedCommit: null, grammarVersions: {} }); // init the universe
-    const t = { targetKind: "anchor" as const, targetId: "a_y", level: "code" as const };
+
+    const t = { targetKind: "anchor" as const, targetId: ANCHOR, level: "code" as const };
     await markReviewed(root, { ...t, actor: "human", attestation: "viewed" });
     await markReviewed(root, { ...t, actor: "human", attestation: "signed" });
     await unmarkReviewed(root, { ...t, attestation: "signed", actor: "human" }); // drop sign-off only
-    const rows = (await readReviews(root)).reviews.filter((r) => r.target.id === "a_y");
+    const rows = (await readReviews(root)).reviews.filter((r) => r.target.id === ANCHOR);
     assert.deepEqual(rows.map((r) => effectiveAttestation(r)), ["viewed"]);
   } finally {
     discard(root);
@@ -92,35 +109,38 @@ test("unmark scopes to a single attestation", async () => {
 });
 
 test("reviewStatesFor reads the vouch by default, the viewed marks with {viewed:true}", async () => {
-  const root = mkdtempSync(join(tmpdir(), "codemap-rev-"));
+  const { root, id: ANCHOR } = await oneAnchor("codemap-rev-");
   try {
-    await writeStore(root, [], { schemaVersion: 1, lastVerifiedCommit: null, grammarVersions: {} });
-    const t = { targetKind: "anchor" as const, targetId: "a_v", level: "code" as const };
+
+    const t = { targetKind: "anchor" as const, targetId: ANCHOR, level: "code" as const };
     await markReviewed(root, { ...t, actor: "human", attestation: "viewed" });
     await markReviewed(root, { ...t, actor: "human", attestation: "signed" });
-    const tgt = { kind: "anchor" as const, id: "a_v" };
-    const found = (s: string) => s !== "unreviewed"; // absent synthetic anchors read `stale`, not `reviewed`
-    const vouch = (await reviewStatesFor(root, [tgt])).get("anchor:a_v")!;
-    const view = (await reviewStatesFor(root, [tgt], { viewed: true })).get("anchor:a_v")!;
-    assert.ok(found(vouch.code.state), "default read finds the sign-off row");
-    assert.ok(found(view.code.state), "{viewed:true} finds the exposure row");
+    const tgt = { kind: "anchor" as const, id: ANCHOR };
+    const key = `anchor:${ANCHOR}`;
+    // A REAL anchor, so these read `reviewed` outright. The fixture used a synthetic id
+    // against an empty store and had to settle for "not unreviewed", because an absent
+    // anchor reads `stale` — a weaker assertion, forced by a state no store can be in.
+    const vouch = (await reviewStatesFor(root, [tgt])).get(key)!;
+    const view = (await reviewStatesFor(root, [tgt], { viewed: true })).get(key)!;
+    assert.equal(vouch.code.state, "reviewed", "default read finds the sign-off row");
+    assert.equal(view.code.state, "reviewed", "{viewed:true} finds the exposure row");
     // Dropping the sign-off empties the vouch but leaves the viewed mark selectable.
     await unmarkReviewed(root, { ...t, attestation: "signed", actor: "human" });
-    assert.equal((await reviewStatesFor(root, [tgt])).get("anchor:a_v")!.code.state, "unreviewed");
-    assert.ok(found((await reviewStatesFor(root, [tgt], { viewed: true })).get("anchor:a_v")!.code.state));
+    assert.equal((await reviewStatesFor(root, [tgt])).get(key)!.code.state, "unreviewed");
+    assert.equal((await reviewStatesFor(root, [tgt], { viewed: true })).get(key)!.code.state, "reviewed");
   } finally {
     discard(root);
   }
 });
 
 test("changedSince finds the mark and reports no drift when code is unchanged", async () => {
-  const root = mkdtempSync(join(tmpdir(), "codemap-rev-"));
+  const { root, id: ANCHOR } = await oneAnchor("codemap-rev-");
   try {
-    await writeStore(root, [], { schemaVersion: 1, lastVerifiedCommit: null, grammarVersions: {} }); // init the universe
-    const t = { targetKind: "anchor" as const, targetId: "a_z", level: "code" as const };
-    assert.equal((await changedSince(root, { kind: "anchor", id: "a_z" }, { level: "code", attestation: "signed" })).found, false);
+
+    const t = { targetKind: "anchor" as const, targetId: ANCHOR, level: "code" as const };
+    assert.equal((await changedSince(root, { kind: "anchor", id: ANCHOR }, { level: "code", attestation: "signed" })).found, false);
     await markReviewed(root, { ...t, actor: "human", attestation: "signed" });
-    const r = await changedSince(root, { kind: "anchor", id: "a_z" }, { level: "code", attestation: "signed" });
+    const r = await changedSince(root, { kind: "anchor", id: ANCHOR }, { level: "code", attestation: "signed" });
     assert.equal(r.found, true);
     assert.deepEqual(r.changed, []); // witness == live (both "absent"), nothing moved
   } finally {
@@ -485,5 +505,44 @@ test("…but an AGENT may not — adopting a placeholder row is a person's act o
     assert.ok(rows.some((r) => r.reviewer === "me" && r.actor === "human"),
       "the person's sign-off survives — an agent claiming it is what `rowIdentity` exists to prevent");
     assert.equal(rows.length, 2, "the agent's check sits BESIDE it rather than replacing it");
+  } finally { discard(root); }
+});
+
+/**
+ * A sign-off that witnessed nothing is not a sign-off.
+ *
+ * `liveHashes` yields no hash for an anchor the index it consulted does not have —
+ * reviewing a symbol a branch ADDS, from a checkout without it, is the ordinary way to
+ * get there. The row was written anyway, every witness `sha256:absent`, zero acceptance
+ * entries, and it returned `{ok: true}`: a tick standing on no observation, which then
+ * reads `unverifiable` for ever because an absent hash cannot be compared with anything.
+ */
+test("a mark that could witness nothing at all is refused, not recorded green", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-nowitness-"));
+  try {
+    mkdirSync(join(root, "src"));
+    const src = "export function transfer(cents: number) {\n  return cents;\n}\n";
+    writeFileSync(join(root, "src/pay.ts"), src);
+    const anchors = await indexBlob(src, "src/pay.ts");
+    await writeStore(root, anchors, { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State);
+
+    // The control: a symbol this tree HAS signs normally. Without it the refusal below
+    // would pass against a build that refused every mark.
+    const present = await markReviewed(root, {
+      targetKind: "anchor", targetId: anchors[0]!.id, level: "code", actor: "human", attestation: "signed",
+    });
+    assert.ok(!("error" in present), "an ordinary sign-off is untouched");
+
+    // A symbol no index here has — what a branch adds, read from a checkout without it.
+    const nowhere = await markReviewed(root, {
+      targetKind: "anchor", targetId: "a_only_on_the_branch", level: "code", actor: "human", attestation: "signed",
+    });
+    assert.match((nowhere as { error: string }).error, /nothing was witnessed/);
+    assert.match((nowhere as { error: string }).error, /witness it at that ref/,
+      "and it says what to do — the fix is almost always the ref of the code on screen");
+
+    // Nothing was written: a refusal that still left the row would be worse than the bug.
+    const rows = (await readReviews(root)).reviews.filter((r) => r.target.id === "a_only_on_the_branch");
+    assert.deepEqual(rows, []);
   } finally { discard(root); }
 });

@@ -7,7 +7,7 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { type Anchor, type Review, type ReviewLevel, type ReviewState, type BugWitness, type Actor } from "./schema.js";
-import { readReviews, writeReviews, readAnchorStore, loadNodes, readSnapshot, snapshotRefusal, snapshotBranch, derivationLookup } from "./store.js";
+import { readReviews, writeReviews, readAnchorStore, loadNodes, readSnapshot, snapshotRefusal, snapshotBranch, derivationLookup, workHas } from "./store.js";
 import { resolveAcceptance, recordAcceptance, type Ancestry } from "./acceptance.js";
 import { ACCEPTED_CAP, type AcceptedCitation, type AcceptedEntry, type AcceptanceVia } from "./schema.js";
 import { isAncestor, isGitRepo, currentBranch as gitBranch, hasObject } from "./git.js";
@@ -318,6 +318,38 @@ export async function markReviewed(
   const by = resolveActor(root, { agent: actor === "agent" });
   const attestation: Attestation | undefined = input.attestation ?? (actor === "human" ? "signed" : undefined);
   const viewed = attestation === "viewed";
+
+  // A sign-off that witnessed NOTHING is not a sign-off.
+  //
+  // `liveHashes` yields no hash for an anchor the index it consulted does not have —
+  // reviewing a symbol a branch adds, from a checkout without it, is the ordinary way to
+  // get here. The row was still written, with every witness `sha256:absent` and zero
+  // acceptance entries, and it returned `{ok: true}`: a green tick standing on no
+  // observation at all, which then reads `unverifiable` for ever because absent can never
+  // be compared with anything. Refused, and it says which index it looked in — the fix is
+  // usually to pass the ref of the code actually on screen.
+  //
+  // SOME absent is fine and stays fine: a doc citing code a change removed is the
+  // `ack-hole` case, and refusing it would block signing off the very thing that reports
+  // it. Only "nothing at all was observed" is refused.
+  //
+  // And only when this universe has no RECORD of the code either. An id the index knows
+  // whose file now re-indexes to different ids is the legacy-derivation case — an
+  // ordinal-derived overload id, of which the live universes held 1,350 — and those marks
+  // are carried forward by the remap rather than being invalid. Refusing them would break
+  // the migration that exists to keep them. What is refused is being asked to vouch for
+  // code this store has never heard of.
+  const known = anchorIds.length ? workHas(root, anchorIds) : new Set<string>();
+  if (anchorIds.length && !known.size && witnesses.every((w) => w.bodyHash === ABSENT_HASH)) {
+    return {
+      error:
+        `nothing was witnessed: not one of the ${anchorIds.length} anchor(s) exists in `
+        + `${input.ref ? `the cached snapshot for ${input.ref.slice(0, 12)}` : "this working tree"}. `
+        + `A mark recorded here would stand on no observation, and would read as unverifiable `
+        + `for ever because an absent hash cannot be compared. If you are reviewing code at a `
+        + `commit this checkout does not have, witness it at that ref.`,
+    };
+  }
 
   const rs = await readReviews(root);
   const label = input.reviewer || (by ? actorLabel(by) : "me");

@@ -2756,10 +2756,19 @@ class DiffPage extends Component {
       ${when(n.status === 'dangling', () => html`<button class="bad" title="cited code was removed here — ack" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); this.ackDoc(n.id); }}">ack-hole</button>`)}
       <span class="rev">${this.revBtn('node', n.id, 'logical', n.review.logical, () => this.reloadDiff(), n.reviewBy && n.reviewBy.logical, n.reviewVia && n.reviewVia.logical)}</span></span>`;
   }
+  /**
+   * A mark made while reading a diff witnesses the code THAT DIFF SHOWS.
+   *
+   * `head` is the ref on screen; the working tree may be somewhere else entirely, and a
+   * sign-off recorded against it would attest a body this page never displayed. When no
+   * `head` is given the diff runs to the working tree, and the working tree is then the
+   * right witness — so the ref is passed only when there is one.
+   */
   revBtn(kind, id, level, state, after, actor, via) {
     const cls = revCls(state, actor, via);
     const tip = `${level}: ${state}${state === 'reviewed' && actor === 'agent' ? ' (agent-checked)' : ''}${via && VIA_TIP[via] ? VIA_TIP[via] : ''}`;
-    return html`<button class="${cls}" title="${tip}" on-click="${async (e) => { if (e.stopPropagation) e.stopPropagation(); await postReview(this.props.params.universe, kind, id, level, state === 'reviewed' && via !== 'unverifiable'); await after(); }}">${level}${revMark(state, actor, via)}</button>`;
+    const ref = this.props.query.head || undefined;
+    return html`<button class="${cls}" title="${tip}" on-click="${async (e) => { if (e.stopPropagation) e.stopPropagation(); await postReview(this.props.params.universe, kind, id, level, state === 'reviewed' && via !== 'unverifiable', undefined, ref); await after(); }}">${level}${revMark(state, actor, via)}</button>`;
   }
 
   // Group the raw symbol changes by file for the structural view.
