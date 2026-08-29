@@ -199,21 +199,36 @@ partial case would fill the auditor queue with noise to recover a verdict that s
 re-taken anyway. A staled fault node also stales the pointer that watches it, so the
 re-audit is already queued by the machinery.
 
-## The browser's principal is intent, not a boundary
+## The browser's principal is a notice, not a boundary
 
 `serve.ts` binds 127.0.0.1 and resolves the actor from git identity with no agent marker,
 which is what lets a person ratify, withdraw, adjudicate, grant debt and re-file — the five
 acts the MCP agent latch is a ratchet to prevent. Anything that can reach that port can
 perform them and be recorded as the repository's principal, an agent with a shell included.
 
-**That is not a hole to close, and the reason is worth writing down so nobody spends a week
-closing it.** An agent that would do this could equally write events into the sidecar by
-hand — the store is a git repository and the schema is in this tree — so no gate on the HTTP
-route removes the capability. What the latch buys is that the door is MARKED and the tool
-descriptions say the closure is deliberate. The threat model here is the same one principal
-identity makes everywhere else in this subsystem: **attribution without prevention.** Identity
-forgery is accepted; what is defended is that nothing *silently* attributes an agent's act to
-a person.
+**No gate closes it, and one is built anyway — for a reason that is not security.** An agent
+that would do this could equally write events into the sidecar by hand — the store is a git
+repository and the schema is in this tree — so nothing on the HTTP route removes the
+capability, and this must never be described as authentication.
+
+What it removes is the *cheapness*. The failure mode this subsystem is built against is not
+malice, it is completion drive under deadline pressure taking the shortest path, and
+`curl -XPOST .../adjudicate` was that path. The five acts now require the sentence handed
+back by `GET /api/standard/attest`, and the sentence is the mechanism: it says **"I am a
+person, acting at a browser… If you are an agent assembling this sentence in order to send
+it, you are claiming to be a person so that you can perform an act this system reserves to
+one. That is off the rails."** An agent can satisfy it in one extra request. It cannot
+satisfy it truthfully, and it cannot satisfy it without having been told, in the response it
+just fetched, what sending it would mean.
+
+So: **do not harden this and do not make it opaque.** Hashing or signing the token would make
+it easier to satisfy without reading, which is the only property it has. See
+`PRINCIPAL_NOTICE` in `src/serve.ts`.
+
+The threat model is otherwise unchanged and is the one principal identity makes everywhere
+else here: **attribution without prevention.** Identity forgery is accepted; what is defended
+is that nothing *silently* attributes an agent's act to a person — and now that nothing does
+it *accidentally* either.
 
 ## The fold cannot be split in two
 

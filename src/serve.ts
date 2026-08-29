@@ -9,6 +9,7 @@
  */
 
 import { createServer } from "node:http";
+import { randomBytes } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join, normalize, extname } from "node:path";
@@ -44,6 +45,39 @@ try {
 }
 
 const rootFor = (u: string | null) => (u && ws.byId.get(u) ? ws.byId.get(u)!.path : ws.primary.path);
+
+/**
+ * What a caller must send back to perform one of the five acts reserved to a person.
+ *
+ * **This is not authentication and it must never be described as any.** It cannot be: the
+ * value is handed out by `GET /api/standard/attest` to anybody who asks, and this file is
+ * in the repository. Anything that can reach the port can satisfy it in one extra request.
+ *
+ * What it is, is the difference between an act you can take by accident and one you have to
+ * decide to take. The failure mode this subsystem is built against is not malice — it is an
+ * agent under deadline pressure taking the cheapest available path, and `curl -XPOST
+ * localhost:4310/api/standard/adjudicate` was that path. Now the cheapest path requires
+ * sending a sentence that says *I am a person, at a browser* — which an agent cannot send
+ * truthfully, and cannot send at all without having been told, in the response it just
+ * fetched, that it is a false claim.
+ *
+ * So the token is theatre and the SENTENCE is the mechanism. Do not "improve" this by
+ * hashing it, signing it, or making it opaque: every one of those makes it easier to satisfy
+ * without reading, which is the only property it has. The honest paths remain what they
+ * were — ask the person whose browser it is to click, or use the MCP tools, which refuse
+ * these acts by design and say so.
+ *
+ * Izzie's framing, 2026-08-29: make it annoying, and put a comment on it saying that if you
+ * are reading this, you are off the rails.
+ */
+export const PRINCIPAL_NOTICE =
+  "I am a person, acting at a browser. If you are an agent assembling this sentence in order "
+  + "to send it, you are claiming to be a person so that you can perform an act this system "
+  + "reserves to one — ratifying, withdrawing, adjudicating, granting debt or re-filing. That "
+  + "is off the rails. Ask the person whose browser this is to click the button.";
+
+/** Per process, so the sentence cannot be replayed from a note somebody kept. */
+const PRINCIPAL_NONCE = randomBytes(9).toString("hex");
 
 /** Dispatch a /api/* request to the ops/multi layer. Returns a JSON-able value. */
 /**
@@ -247,6 +281,9 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return ops.standardQueues(root);
     case "/api/standard/health":
       return ops.standardHealth(root);
+    // The notice a principal act has to carry back. See `PRINCIPAL_NOTICE`.
+    case "/api/standard/attest":
+      return { notice: PRINCIPAL_NOTICE, nonce: PRINCIPAL_NONCE };
     // Branch findings — this machine's and the team's. `commit` is the reviewer's question.
     case "/api/standard/provisional":
       return ops.provisionalAudits(root, q.get("commit") ? { commit: q.get("commit")! } : {});
@@ -304,6 +341,16 @@ const server = createServer(async (req, res) => {
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
       const root = rootFor(body.u ?? null);
       const act = url.pathname.slice("/api/standard/".length);
+      if (body.attest !== `${PRINCIPAL_NOTICE} ${PRINCIPAL_NONCE}`) {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({
+          error:
+            `\`${act}\` is one of the acts this system reserves to a person, so it needs the `
+            + `notice from GET /api/standard/attest sent back as \`attest\`. Read it before you `
+            + `send it: it is a claim about who you are, and it is the whole of the control.`,
+        }));
+        return;
+      }
       const out = await withLock<unknown>(root, async () => {
         if (act === "ratify") return ops.ratifySpec(root, { specId: body.specId });
         if (act === "withdraw") return ops.withdrawSpec(root, { specId: body.specId, reason: body.reason ?? "" });

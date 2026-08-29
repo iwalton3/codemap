@@ -13,7 +13,7 @@
  */
 
 import { Component, defineComponent, html, when, each } from './vendor/vdx/framework.js';
-import { api, apiPost, pageShell, nav, href, errText, taskError, isErr } from './core.js';
+import { api, attestedPost, pageShell, nav, href, errText, taskError, isErr } from './core.js';
 
 /**
  * The API contract, so a page's state is typed from the ops functions themselves.
@@ -167,7 +167,7 @@ class StandardPage extends Component {
     if (this.state.busy) return;
     this.state.busy = key; this.state.err = null;
     try {
-      const r = await apiPost(path, { u: this.props.params.universe, ...body });
+      const r = await attestedPost(path, { u: this.props.params.universe, ...body });
       if (r && r.error) { this.state.err = r.error; return; }
       this.state.reason = { ...this.state.reason, [key]: '' };
       this.load.run();
@@ -200,6 +200,11 @@ class StandardPage extends Component {
       <div class="crumbs"><b>${u}</b> <span class="sep">·</span> standard</div>
       ${servedNote(s)}
       ${when(!!this.state.err, () => html`<div class="attn-banner"><span class="attn-n">✕</span><span>${this.state.err}</span></div>`)}
+
+      ${when(!!(s.overdue && (s.overdue.scrubs || s.overdue.acknowledgements)), () => html`<div class="attn-banner">
+        <span class="attn-n">⏰</span>
+        <span>Overdue: ${s.overdue.scrubs ? `${s.overdue.scrubs} rule(s) past their coverage deadline` : ''}${s.overdue.scrubs && s.overdue.acknowledgements ? ', ' : ''}${s.overdue.acknowledgements ? `${s.overdue.acknowledgements} silencer(s) past revalidate-by` : ''}. Nothing runs these on a schedule and nothing will — a good moment is a branch landing or a release. <a href="${href(auditUrl(u))}">what to audit ›</a></span>
+      </div>`)}
 
       <div class="sec">conformance</div>
       <div class="dnav">
@@ -319,7 +324,7 @@ class SpecPage extends Component {
     this.state.busy = kind; this.state.err = null;
     try {
       const body = { u: this.props.params.universe, specId: this.props.params.id };
-      const r = await apiPost(`/api/standard/${kind}`, kind === 'withdraw' ? { ...body, reason: this.state.reason } : body);
+      const r = await attestedPost(`/api/standard/${kind}`, kind === 'withdraw' ? { ...body, reason: this.state.reason } : body);
       if (r && r.error) { this.state.err = r.error; return; }
       this.load.run();
     } catch (e) { this.state.err = errText(e); } finally { this.state.busy = null; }
@@ -331,7 +336,7 @@ class SpecPage extends Component {
     if (!body || this.state.busy) return;
     this.state.busy = 'comment:' + targetId; this.state.err = null;
     try {
-      const r = await apiPost('/api/standard/comment', { u: this.props.params.universe, id: targetId, body });
+      const r = await attestedPost('/api/standard/comment', { u: this.props.params.universe, id: targetId, body });
       if (r && r.error) { this.state.err = r.error; return; }
       this.state.draft = { ...this.state.draft, [targetId]: '' };
       this.load.run();
@@ -468,7 +473,7 @@ class RequirementPage extends Component {
     if (this.state.busy) return;
     this.state.busy = key; this.state.err = null;
     try {
-      const r = await apiPost(path, { u: this.props.params.universe, ...body });
+      const r = await attestedPost(path, { u: this.props.params.universe, ...body });
       if (r && r.error) { this.state.err = r.error; return; }
       this.state.form = {};
       this.load.run();
@@ -630,7 +635,7 @@ class BranchFindingsPage extends Component {
     if (this.state.busy) return;
     this.state.busy = id; this.state.err = null;
     try {
-      const r = await apiPost('/api/standard/promote_audit', { u: this.props.params.universe, auditId: id });
+      const r = await attestedPost('/api/standard/promote_audit', { u: this.props.params.universe, auditId: id });
       if (r && r.error) { this.state.err = r.error; return; }
       this.load.run();
     } catch (e) { this.state.err = errText(e); } finally { this.state.busy = null; }

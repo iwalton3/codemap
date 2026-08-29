@@ -121,6 +121,14 @@ export async function standardStatus(root: string) {
     ]);
     return {
       conformance: state,
+      // What is OVERDUE, not just what is outstanding. A queue that only ever grows reads
+      // the same at every length; a deadline that has passed is the thing worth a banner.
+      // Izzie, 2026-08-29: the scrub coincides with branch lifecycles and releases anyway,
+      // so what it needs is a reminder when it is late rather than a scheduler.
+      overdue: {
+        scrubs: (await scrubPlanRec(root, {})).due.length,
+        acknowledgements: state.due,
+      },
       queues: {
         pendingSpecs: specs.length,
         awaitingAdjudication: adjudication.length,

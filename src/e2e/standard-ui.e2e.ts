@@ -399,6 +399,58 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
     await page.close();
   });
 
+  /**
+   * The bare POST — the cheapest path, and the one the design had accepted.
+   *
+   * `docs/cross-universe-standard.md` argued that no gate here removes the capability, which
+   * is true and is not the point. The failure mode this subsystem targets is not malice: it
+   * is an agent under deadline pressure taking the cheapest available path, and
+   * `curl -XPOST .../adjudicate` was dramatically cheaper than forging a log event. It is now
+   * one request more expensive, and that request hands back a sentence saying what sending it
+   * would mean. Nothing here is authentication and the test asserts nothing that resembles it
+   * — only that the act cannot be performed WITHOUT being told.
+   */
+  test("a principal act cannot be performed without being told what it is", async () => {
+    // Its OWN problem: the browser test above adjudicated the fixture's, and a second
+    // adjudication of one is refused — which would have made the last assertion here pass
+    // for the wrong reason.
+    const au = ok(await ops.recordAudit(root, {
+      requirementId: ruleId, outcome: "nonconformant", finding: "no currency on the settlement path",
+      evidence: { read: [anchor] }, ...AGENT,
+    } as any)) as any;
+    const target = (ok(await ops.raiseProblem(root, {
+      auditId: au.id, summary: "settlement float has no currency check", ...AGENT,
+    } as any)) as any).problem;
+    assert.ok(target && !target.disposition, "a fresh, un-adjudicated problem or this proves nothing");
+
+    const bare = await fetch(`${server.url}/api/standard/adjudicate`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ u: universe, problemId: target.id, disposition: "code-wrong", reason: "by curl" }),
+    });
+    assert.equal(bare.status, 400);
+    const said = await bare.json() as { error: string };
+    assert.match(said.error, /reserves to a person/, "and it says what it is, not just no");
+    assert.match(said.error, /attest/);
+
+    // The notice itself is handed to anybody who asks — deliberately. It is a claim about
+    // who you are, not a secret, and an opaque token would be EASIER to satisfy without
+    // reading, which is the only property this has.
+    const a = await (await fetch(`${server.url}/api/standard/attest`)).json() as { notice: string; nonce: string };
+    assert.match(a.notice, /I am a person, acting at a browser/);
+    assert.match(a.notice, /off the rails/);
+
+    const withNotice = await fetch(`${server.url}/api/standard/adjudicate`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        u: universe, problemId: target.id, disposition: "requirement-misstated",
+        reason: "settlement float is held in the tender currency", attest: `${a.notice} ${a.nonce}`,
+      }),
+    });
+    assert.equal(withNotice.status, 200);
+    const after = (await ops.listProblems(root) as any).problems.find((p: any) => p.id === target.id);
+    assert.equal(after.disposition, "requirement-misstated", "and then it is an ordinary act");
+  });
+
   test("ratifying from the browser applies the spec and empties the queue", async () => {
     const { page, errors } = await open(`/u/${universe}/standard/spec/${draft}/`);
     await page.waitForSelector(".op-actions button", { timeout: 10_000 });

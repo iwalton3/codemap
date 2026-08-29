@@ -33,6 +33,19 @@ export const errText = (e) => (e instanceof Error ? e.message : String(e));
 export const hitTarget = (e, sel) => (e.target instanceof Element ? e.target.closest(sel) : null);
 
 /** POST + JSON, for requests whose payload does not belong in a URL. */
+/**
+ * A POST that carries the principal notice.
+ *
+ * The five acts under `/api/standard/` that only a person may perform need the sentence
+ * from `GET /api/standard/attest` sent back. From a browser that is one extra round trip
+ * and invisible; from anything else it is a claim about who you are. `PRINCIPAL_NOTICE` in
+ * `src/serve.ts` says what it is for and why making it opaque would destroy it.
+ */
+export async function attestedPost(path, body) {
+  const a = await api('/api/standard/attest');
+  return apiPost(path, { ...body, attest: `${a.notice} ${a.nonce}` });
+}
+
 export async function apiPost(path, body) {
   const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -114,6 +127,7 @@ export async function apiPost(path, body) {
  *   '/api/standard/requirements': Awaited<ReturnType<Ops['listRequirements']>>,
  *   '/api/standard/requirement': Awaited<ReturnType<Ops['getRequirement']>>,
  *   '/api/standard/conformance': Awaited<ReturnType<Ops['conformance']>>,
+ *   '/api/standard/attest':     { notice: string, nonce: string },
  *   '/api/standard/queues':     Awaited<ReturnType<Ops['standardQueues']>>,
  *   '/api/standard/health':     Awaited<ReturnType<Ops['standardHealth']>>,
  *   '/api/standard/provisional': Awaited<ReturnType<Ops['provisionalAudits']>>,

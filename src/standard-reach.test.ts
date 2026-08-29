@@ -41,13 +41,16 @@ const ops = (() => {
 const mcp = readFileSync("src/mcp.ts", "utf8");
 const serve = readFileSync("src/serve.ts", "utf8");
 /**
- * The PAGES, and not `core.js`.
+ * Every web module, `core.js` included — but only ever searched for the CALL form.
  *
- * `core.js` holds the ApiMap, which names every route by definition — so including it made
- * the orphan check below pass for a route nothing had fetched since the hub was rewritten.
- * A test satisfied by the declaration of the thing it is checking for is not a test.
+ * `core.js` was excluded at first, because it holds the ApiMap and that names every route by
+ * definition: a check for the bare string was satisfied by the declaration of the thing it
+ * was checking for. Tightening the matcher to `api('…'` is what made the exclusion
+ * unnecessary, and then wrong — `attestedPost` is a real fetcher that lives in `core.js`,
+ * and excluding the file reported its route as an orphan. The narrower question is the one
+ * worth asking of every file, rather than the broad question of a chosen few.
  */
-const pages = readdirSync("web").filter((f) => f.endsWith(".js") && f !== "core.js")
+const pages = readdirSync("web").filter((f) => f.endsWith(".js"))
   .map((f) => readFileSync(join("web", f), "utf8")).join("\n");
 
 /** Is the op CALLED here — `ops.x(` or `shared.x(` — rather than merely mentioned? */

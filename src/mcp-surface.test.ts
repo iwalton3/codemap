@@ -11,7 +11,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { join } from "node:path";
 
 const SRC = readFileSync("src/mcp.ts", "utf8");
 const TOOLS = new Set([...SRC.matchAll(/^\s*name: "([a-z_]+)",$/gm)].map((m) => m[1]!));
@@ -26,6 +27,17 @@ const NOT_TOOLS = new Set([
   "disposition", "tier", "category", "line", "offset", "locate", "reversibility", // parameters
   "untriaged", "unverified", "refuted", "settled", "transitions_to", "baseline", // enum values
   "witnesses", "anchors", "citations", "vouch", "cites", "diagnostic", "rank", // record fields
+]);
+
+/**
+ * Backticked words a SKILL uses that are vocabulary rather than tools — trigger names,
+ * outcomes, record fields. Kept apart from `NOT_TOOLS` because that list is about
+ * `mcp.ts`'s own prose and this one grows with the skills.
+ */
+const SKILL_VOCAB = new Set([
+  "scrub", "differential", "baseline", "ad-hoc",           // audit triggers
+  "conformant", "nonconformant", "indeterminate",          // audit outcomes
+  "prior", "evidence", "observations", "assertedby",       // record fields
 ]);
 
 /** `use \`x\``, `see \`x\``, `with \`x\`` … — a reference to something callable. */
@@ -98,6 +110,36 @@ test("the explore agent names only tools that exist", () => {
   for (const m of agent.matchAll(REFS)) if (!TOOLS.has(m[1]!) && !NOT_TOOLS.has(m[1]!)) referenced.add(m[1]!);
   assert.deepEqual([...referenced], [],
     "the agent's instructions tell it to call a tool that is not on the surface");
+});
+
+/**
+ * And the same sweep over the SKILLS, for the same reason one layer further out.
+ *
+ * A skill file is the only thing that makes a queue get worked — nothing in this
+ * subsystem runs a lint or a scrub, by design, so the skill IS the runner. A tool it
+ * names that does not exist removes that step silently: the agent reads an instruction
+ * it cannot follow, does the rest, and reports success. That is exactly how
+ * `report_bug` sat in the explore agent after the verb was renamed.
+ */
+test("the skills name only tools that exist", () => {
+  const dir = ".claude/skills";
+  const files = readdirSync(dir, { withFileTypes: true })
+    .filter((d) => d.isDirectory()).map((d) => join(dir, d.name, "SKILL.md"))
+    .filter((f) => existsSync(f));
+  assert.ok(files.length, "no skills found — if they moved, this sweep is now vacuous");
+
+  // EVERY backticked snake-case word, not just the ones after "use" or "see". `REFS` was
+  // written for `mcp.ts`'s prose and matched exactly ONE name in the first skill — a table
+  // row and a bare mention read nothing like a sentence. Checked: with `REFS` a deliberate
+  // `scrub_plann` typo sailed through, which is the whole failure this is meant to catch.
+  const dangling = new Set<string>();
+  for (const f of files) {
+    for (const m of readFileSync(f, "utf8").matchAll(/`([a-z][a-z_]{2,})`/g)) {
+      const w = m[1]!;
+      if (!TOOLS.has(w) && !NOT_TOOLS.has(w) && !SKILL_VOCAB.has(w)) dangling.add(`${f}: ${w}`);
+    }
+  }
+  assert.deepEqual([...dangling], [], "a skill tells an agent to call something that is not on the surface");
 });
 
 test("confirm records the read it performs", () => {
