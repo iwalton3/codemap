@@ -227,8 +227,6 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
     // happen. These are the reads behind that.
     case "/api/standard":
       return ops.standardStatus(root);
-    case "/api/standard/queue":
-      return ops.pendingSpecs(root);
     case "/api/standard/spec":
       return ops.getSpec(root, { specId: q.get("id") ?? "" });
     case "/api/standard/sections":
@@ -242,6 +240,16 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return ops.getRequirement(root, { id: q.get("id") ?? "" });
     case "/api/standard/conformance":
       return ops.conformance(root, q.get("about") === "branch" ? { about: "branch" } : {});
+    // The rows behind the six counts `standardStatus` reports, and the five reads that say
+    // where to look next. Both were MCP-only, which left the hub showing numbers a person
+    // could not open and no way at all to choose what to audit from a browser.
+    case "/api/standard/queues":
+      return ops.standardQueues(root);
+    case "/api/standard/health":
+      return ops.standardHealth(root);
+    // Branch findings — this machine's and the team's. `commit` is the reviewer's question.
+    case "/api/standard/provisional":
+      return ops.provisionalAudits(root, q.get("commit") ? { commit: q.get("commit")! } : {});
     case "/api/changed_since":
       return ops.changedSince(root, {
         targetKind: (q.get("targetKind") as "node" | "anchor") ?? "node",
@@ -289,6 +297,34 @@ const server = createServer(async (req, res) => {
       const out = await withLock<unknown>(root, async () => {
         if (act === "ratify") return ops.ratifySpec(root, { specId: body.specId });
         if (act === "withdraw") return ops.withdrawSpec(root, { specId: body.specId, reason: body.reason ?? "" });
+        // The other three PRINCIPAL acts. Same argument that put `ratify` here and no
+        // weaker: an agent may establish a disagreement and may not decide it, may propose
+        // a re-filing and may not perform one, and may never grant debt — so without these
+        // the browser is missing the half only a person can do, which is the whole reason
+        // this surface exists. `adjudicate` is the one that matters most: it is counted on
+        // the hub as a queue and it is the human act the loop is built around.
+        if (act === "adjudicate") {
+          return ops.adjudicate(root, {
+            problemId: body.problemId, disposition: body.disposition, reason: body.reason ?? "",
+          });
+        }
+        if (act === "acknowledge_debt") {
+          return ops.acknowledgeDebt(root, {
+            requirementId: body.requirementId, rationale: body.rationale ?? "",
+            priority: body.priority, revalidateBy: body.revalidateBy,
+          });
+        }
+        if (act === "refile") {
+          return ops.reorganizeRequirement(root, { id: body.id, title: body.title, section: body.section });
+        }
+        // Open to any actor, and here because the person reading the queue is the one who
+        // notices. Releasing is the UNSILENCING direction — its failure mode is noise —
+        // which is why it is not gated the way granting is.
+        if (act === "release") {
+          return ops.releaseAcknowledgement(root, { id: body.id, reason: body.reason ?? "" });
+        }
+        // Also open to any actor. It is on the web because the queue it comes off is.
+        if (act === "promote_audit") return ops.promoteProvisionalAudit(root, { auditId: body.auditId });
         // One verb, record-dispatched — the same `comment` an agent calls over MCP, so a
         // person and an agent write into one thread rather than two parallel ones.
         if (act === "comment") return ops.commentOn(root, { id: body.id, body: body.body });

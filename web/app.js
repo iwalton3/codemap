@@ -25,7 +25,7 @@ import { enableRouting } from './vendor/vdx/router.js';
 // with no console output. Both now import `./core.js`, which imports neither.
 // `src/import-cycles.test.ts` walks `web/` and fails if the edge comes back.
 import './shared.js';
-import { standardUrl, rulesUrl } from './standard.js';
+import { standardUrl, rulesUrl, branchUrl, auditUrl, conformanceUrl } from './standard.js';
 
 import {
   errText, hitTarget, apiPost, api, loaded, taskError, isErr, pageShell, nav, go, href, setRouter,
@@ -727,6 +727,8 @@ const VIEW_LINKS = [
  */
 const STANDARD_LINKS = [
   ['ratification queue', u => standardUrl(u)], ['requirements', u => rulesUrl(u)],
+  ['conformance', u => conformanceUrl(u)],
+  ['what to audit next', u => auditUrl(u)], ['branch findings', u => branchUrl(u)],
 ];
 
 const GRAPH_LINKS = [
@@ -4338,4 +4340,7 @@ setRouter(enableRouting(document.querySelector('router-outlet'), {
   '/u/:universe/standard/rules/': { component: 'rules-page' },
   '/u/:universe/standard/spec/:id/': { component: 'spec-page' },
   '/u/:universe/standard/r/:id/': { component: 'requirement-page' },
+  '/u/:universe/standard/branch/': { component: 'branch-findings-page' },
+  '/u/:universe/standard/conformance/': { component: 'conformance-page' },
+  '/u/:universe/standard/audit/': { component: 'audit-plan-page' },
 }));

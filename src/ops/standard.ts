@@ -136,6 +136,51 @@ export async function standardStatus(root: string) {
   });
 }
 
+/**
+ * Every queue's ROWS, in one read.
+ *
+ * `standardStatus` computes exactly these and throws all but the lengths away, so this
+ * costs it nothing extra — and without it the hub reports six numbers a reader cannot
+ * open. A count nobody can act on is not a queue, it is a scoreboard.
+ *
+ * One response rather than six routes for the reason `served` exists: the scope check
+ * folds the log, and asking it once for a page that shows all six is one fold instead of
+ * six, with no window for the six answers to disagree about whether the standard is
+ * authoritative.
+ */
+export async function standardQueues(root: string) {
+  return served(root, async () => {
+    const [specs, adjudication, fixes, settled, promotable, due] = await Promise.all([
+      pendingSpecsRec(root), awaitingRec(root), actionable(root), settledRec(root),
+      promotableRec(root), dueRec(root, {}),
+    ]);
+    return {
+      specs, awaitingAdjudication: adjudication, actionable: fixes,
+      settledWithoutAdjudication: settled, promotableAudits: promotable, acknowledgementsDue: due,
+    };
+  });
+}
+
+/**
+ * What an auditor should look at next, and what is wrong with the apparatus itself.
+ *
+ * Five reads that were MCP-only, and they are the ones that decide where effort goes:
+ * `auditQueue` (a pointer is firing, or a rule has nothing watching it), the scrub's
+ * coverage deadlines, the baseline sweep, pins whose lint has been edited, and criteria
+ * whose check nobody has shown can fail. A browser that cannot see them leaves the person
+ * choosing what to audit with only the conformance distribution, which says what is
+ * unknown and never where to start.
+ */
+export async function standardHealth(root: string) {
+  return served(root, async () => {
+    const [queue, scrub, baseline, pins, weak] = await Promise.all([
+      auditQueueRec(root), scrubPlanRec(root, {}), baselinePlanRec(root),
+      brokenPinsRec(root), weakRec(root),
+    ]);
+    return { auditQueue: queue, scrub, baseline, brokenPins: pins, weakAssertions: weak };
+  });
+}
+
 export const requirementSections = async (root: string) =>
   served(root, async () => ({ sections: await requirementSectionsRec(root) }));
 
@@ -171,15 +216,34 @@ export const listRequirements = async (
 ) => served(root, async () => ({ requirements: await listRequirementsRec(root, input) }));
 
 /**
- * The rule dossier. `audits` is the codebase's record; `provisionalAudits` is the branch
- * work beside it — this machine's and the team's — kept in its own key rather than mixed
- * in, so a reader cannot take a branch observation for the state of the code.
+ * The rule dossier — everything said about one rule, in one read.
+ *
+ * `audits` is the codebase's record; `provisionalAudits` is the branch work beside it —
+ * this machine's and the team's — kept in its own key rather than mixed in, so a reader
+ * cannot take a branch observation for the state of the code.
+ *
+ * Criteria, population and scrubs are folded in here rather than given routes of their own
+ * because they are the same question: what discharges this rule, what it ranges over, and
+ * when it was last swept. A dossier that sends the reader elsewhere for those is the trade
+ * `getSpec`'s own note warns about, one level down.
  */
 export const getRequirement = async (root: string, input: { id: string }) =>
   served(root, async () => {
     const d = await getRequirementRec(root, input.id);
     if ("error" in d) return d;
-    return { ...d, provisionalAudits: await provisionalRec(root, { requirementId: input.id }) };
+    const [provisionalAudits, criteria, population, scrubs] = await Promise.all([
+      provisionalRec(root, { requirementId: input.id }),
+      criteriaSummaryRec(root, input.id),
+      populationForRec(root, input.id),
+      scrubsForRec(root, input.id),
+    ]);
+    return {
+      ...d, provisionalAudits, scrubs,
+      // Both can only fail by naming a rule that does not exist, which `getRequirementRec`
+      // has already ruled out — so an error here would be a bug, not a state to render.
+      criteria: "error" in criteria ? { criteria: [], asserted: 0, sound: 0 } : criteria,
+      population: "error" in population ? { state: "absent" as const, history: [] } : population,
+    };
   });
 
 /**

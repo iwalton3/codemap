@@ -278,6 +278,13 @@ API and the React app is stated once; the **evidence** (audit, pointer, populati
 pointers are never provisional, because provisionality protects conformance and a pointer
 cannot reach it.
 
+**Both front ends carry it, and `src/standard-reach.test.ts` is what keeps that true.** The
+standard was agent-only when it was built, which left ratification — the one act an agent
+structurally cannot perform — with nowhere to happen; the same hole then re-opened for
+`adjudicate`, `acknowledge_debt` and `refile`, and for five of the six queues the hub
+counted. The sweep fails when an op is reachable from neither surface, or when a route no
+page fetches. Its exemptions each carry a reason, and *"MCP has it"* is not one.
+
 `LogicalNodeType` ends `| (string & {})` and is therefore OPEN: adding `"requirement"` to
 it type-checks and silently inherits all of the above. `src/requirements.test.ts` fails if
 a requirement ever reaches the node path.

@@ -184,10 +184,11 @@ union of local rows and documents, so a teammate can promote a finding they did 
 The promotion is an ordinary audit of the codebase and travels in the log like one.
 
 **On the surfaces:** MCP `provisional_audits` (optional `commit` — the reviewer's question),
-and the rule dossier keeps them in a *branch findings* section of their own. `getRequirement`
-serves `audits` (the codebase's record) and `provisionalAudits` separately for the same
-reason the conformance subject exists: an audit history that mixes the two is how a branch
-observation gets taken for the state of the code.
+a *branch findings* page in the browser, and a section of the same name on the rule dossier.
+`getRequirement` serves `audits` (the codebase's record) and `provisionalAudits` separately
+for the same reason the conformance subject exists: an audit history that mixes the two is
+how a branch observation gets taken for the state of the code. The conformance page carries
+the `about` toggle, and says on the page which code the answer is about.
 
 **Partial staleness at promotion is deliberately not handled.** If some of the bodies an
 audit witnessed have changed by merge time, it will not promote. That is correct rather

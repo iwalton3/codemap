@@ -106,6 +106,17 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
       priority: "medium", revalidateBy: "2027-01-01T00:00:00Z", ...AGENT,
     } as any);
 
+    // A problem awaiting adjudication. This is the act an agent structurally CANNOT do —
+    // the same argument that put ratification on the web — and until this suite drove it
+    // the hub counted the queue and offered no way to empty it.
+    const audit = ok(await ops.recordAudit(root, {
+      requirementId: ruleId, outcome: "nonconformant", finding: "transfer() takes no currency at all",
+      evidence: { read: [anchor] }, ...AGENT,
+    } as any)) as any;
+    ok(await ops.raiseProblem(root, {
+      auditId: audit.id, summary: "the rule says USD and nothing enforces a currency", ...AGENT,
+    } as any));
+
     // A section move, so the "what would actually move" panel has something to say.
     const m = await ops.draftSpec(root, { title: "Credit belongs under Risk", ...AGENT }) as any;
     moveSpec = m.id;
@@ -241,6 +252,132 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
       text!.indexOf("no currency check on entry") < text!.indexOf("the branch drops the currency field"),
       "the codebase's record comes first — a branch observation is not the headline",
     );
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+
+  test("the hub opens every queue it counts, not only the one with a page", async () => {
+    const { page, errors } = await open(`/u/${universe}/standard/`);
+    await page.waitForSelector(".spec-card", { timeout: 10_000 });
+    const text = await page.textContent("main");
+    // Six counted queues, and the reason this test exists: five of them had no rows on
+    // any surface, so a person could see a number and not what it was made of.
+    for (const q of [/ratification queue/i, /awaiting adjudication/i, /owed/i,
+                     /settled without adjudication/i, /promotable branch findings/i,
+                     /silencers past their revalidate-by/i]) {
+      assert.match(text!, q);
+    }
+    assert.match(text!, /the rule says USD and nothing enforces a currency/, "the problem itself, not just a count");
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+
+  test("a principal adjudicates from the browser — the act an agent cannot perform", async () => {
+    const { page, errors } = await open(`/u/${universe}/standard/`);
+    await page.waitForSelector(".op-actions button", { timeout: 10_000 });
+    const before = (await ops.awaitingAdjudication(root) as any).problems.length;
+    assert.equal(before, 1, "the fixture must have something to decide or this is vacuous");
+
+    // The reason box first: `adjudicate` refuses an empty one, and that refusal is the
+    // point — a decision with no reason leaves a later reader nothing but the verb.
+    await page.locator('input[placeholder^="why"]').first().fill("the rule stands");
+    await page.locator('.op-actions button:has-text("code-wrong")').first().click();
+    await page.waitForFunction(
+      () => !document.querySelector('main')?.textContent?.includes('un-adjudicated'),
+      { timeout: 10_000 },
+    );
+    const after = await ops.awaitingAdjudication(root) as any;
+    assert.equal(after.problems.length, 0, "the queue emptied because the decision landed");
+    assert.equal((await ops.listProblems(root) as any).problems[0].disposition, "code-wrong");
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+
+  test("branch findings are visible, and say they are not the codebase", async () => {
+    const { page, errors } = await open(`/u/${universe}/standard/branch/`);
+    await page.waitForSelector(".op-card", { timeout: 10_000 });
+    const text = await page.textContent("main");
+    assert.match(text!, /the branch drops the currency field/, "the finding a teammate could not see before");
+    assert.match(text!, /fix\/currency/);
+    assert.match(text!, /reach no clone's conformance/i, "and the page says what it is NOT");
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+
+  test("conformance says where every rule stands, about the codebase or about this branch", async () => {
+    const { page, errors } = await open(`/u/${universe}/standard/conformance/`);
+    await page.waitForSelector(".spec-card", { timeout: 10_000 });
+    assert.match((await page.textContent("main"))!, /Credit line currency/);
+
+    // The toggle is the half worth driving: it is the only read where a branch finding
+    // counts, and it must actually re-fetch rather than re-filter what is already loaded.
+    await page.locator('button:has-text("this branch")').click();
+    await page.waitForFunction(
+      () => document.querySelector('main')?.textContent?.includes('feeds no queue'),
+      { timeout: 10_000 },
+    );
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+
+  test("the audit plan says where to look, which the distribution never does", async () => {
+    const { page, errors } = await open(`/u/${universe}/standard/audit/`);
+    await page.waitForSelector(".sec", { timeout: 10_000 });
+    const text = await page.textContent("main");
+    for (const s of [/pointers firing/i, /nothing is watching/i, /coverage deadlines/i,
+                     /pins whose lint moved/i, /checks nobody has shown can fail/i, /baseline sweep/i]) {
+      assert.match(text!, s);
+    }
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+
+  test("the dossier carries what discharges a rule, what it ranges over, and the acts only a person can do", async () => {
+    const { page, errors } = await open(`/u/${universe}/standard/r/${ruleId}/`);
+    await page.waitForSelector(".op-card", { timeout: 10_000 });
+    const text = await page.textContent("main");
+    assert.match(text!, /what discharges it/i);
+    assert.match(text!, /what it ranges over/i);
+    assert.match(text!, /covering audits/i);
+    assert.match(text!, /accept debt/i, "granting debt is a PRINCIPAL act and had nowhere to happen");
+    assert.match(text!, /re-file/i);
+
+    // DRIVE it, because a form is a set of field names and a typo in one is invisible to
+    // every other kind of test: the POST would arrive with the key missing and the act
+    // would refuse or, worse, record something empty.
+    await page.locator('input[placeholder^="why we are living"]').fill("fix scheduled for Q1");
+    await page.locator('input[placeholder^="revalidate by"]').fill("2028-01-01T00:00:00Z");
+    await page.locator('.op-actions button:has-text("high")').click();
+    await page.waitForFunction(
+      () => document.querySelector('main')?.textContent?.includes('fix scheduled for Q1'),
+      { timeout: 10_000 },
+    );
+    const acks = (await ops.listAcknowledgements(root, { requirementId: ruleId }) as any).acknowledgements;
+    const granted = acks.find((a: any) => a.rationale === "fix scheduled for Q1");
+    assert.ok(granted, "the debt reached the store, not just the page");
+    assert.equal(granted.basis, "debt");
+    assert.equal(granted.priority, "high", "the priority is the button that was clicked, not a default");
+    assert.ok(!granted.grantedBy.via, "a browser is a person — an agent cannot grant debt at all");
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+
+  test("a branch finding is promoted from the hub, and stops being offered", async () => {
+    const { page, errors } = await open(`/u/${universe}/standard/`);
+    await page.waitForSelector(".op-card", { timeout: 10_000 });
+    const before = (await ops.promotableAudits(root) as any).audits;
+    assert.equal(before.length, 1, "the branch finding must be promotable here or this is vacuous");
+
+    await page.locator('.op-actions button:has-text("promote")').click();
+    await page.waitForFunction(
+      () => document.querySelector('main')?.textContent?.includes('nothing to promote'),
+      { timeout: 10_000 },
+    );
+    assert.equal((await ops.promotableAudits(root) as any).audits.length, 0);
+    const promoted = (await ops.auditsFor(root, { requirementId: ruleId }) as any).audits
+      .find((a: any) => a.promotedFrom === before[0].id);
+    assert.ok(promoted, "a NEW audit of the codebase — the original was taken on a branch");
+    assert.equal(promoted.provisional, undefined);
     assert.deepEqual(errors, []);
     await page.close();
   });

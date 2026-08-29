@@ -29,6 +29,9 @@ export const standardUrl = (u) => `/u/${u}/standard/`;
 export const rulesUrl = (u) => `/u/${u}/standard/rules/`;
 export const specUrl = (u, id) => `/u/${u}/standard/spec/${id}/`;
 export const requirementUrl = (u, id) => `/u/${u}/standard/r/${id}/`;
+export const branchUrl = (u) => `/u/${u}/standard/branch/`;
+export const conformanceUrl = (u) => `/u/${u}/standard/conformance/`;
+export const auditUrl = (u) => `/u/${u}/standard/audit/`;
 
 /**
  * How a conformance DISTRIBUTION reads — the counts on the hub.
@@ -83,8 +86,36 @@ const thread = (notes) => when(notes && notes.length > 0, () => html`<div class=
  * @typedef {{ params: { universe: string, id?: string }, query: Record<string, string> }} StdProps
  */
 
+/** One line of who and when, in the shape every record on this surface carries. */
+const byline = (who, at) => html`<span class="dim">${(at || '').slice(0, 16).replace('T', ' ')}${who && who.principal ? ' · ' + who.principal : ''}${who && who.via ? ' via ' + (who.via.model || 'agent') : ''}</span>`;
+
 /**
- * @typedef {{ status: any, queue: any, err: string|null }} StandardState
+ * A problem, with the four dispositions a PRINCIPAL may pick.
+ *
+ * The buttons are the whole reason this page exists. `adjudicate` is principal-gated —
+ * an agent may establish the disagreement and may never decide it — so before this the
+ * hub counted a queue whose only act had nowhere to happen. Same argument as ratification.
+ *
+ * The reason box is not optional garnish: it is what a later reader has instead of the
+ * conversation, and `adjudicate` refuses an empty one.
+ */
+const DISPOSITIONS = [
+  ['code-wrong', 'the rule stands and the code violates it — closed by a conformant audit'],
+  ['requirement-changed', 'the business moved — closed by a ratified spec amending the rule'],
+  ['requirement-misstated', 'the rule did not change; our statement of it was incomplete'],
+  ['accepted', 'non-conformant and we are living with it — closed by a granted debt'],
+];
+
+/**
+ * The hub — the conformance distribution, and every queue over it.
+ *
+ * It used to show six queue COUNTS and open exactly one of them. A count nobody can act
+ * on is a scoreboard, not a queue, and the three that carry an act — adjudicate, promote,
+ * release — had nowhere at all to happen in a browser. `standardQueues` costs the same as
+ * the counts did (`standardStatus` computed these rows and kept only their lengths), so
+ * this is the same read with the answer no longer thrown away.
+ *
+ * @typedef {{ status: ApiMap['/api/standard']|null, q: ApiMap['/api/standard/queues']|null, busy: string|null, err: string|null, reason: Record<string,string> }} StandardState
  * @extends {Component<StdProps, StandardState>}
  */
 class StandardPage extends Component {
@@ -93,21 +124,71 @@ class StandardPage extends Component {
   constructor(props) {
     super(props);
     /** @type {StandardState} */
-    this.state = { status: null, queue: null, err: null };
+    this.state = { status: null, q: null, busy: null, err: null, reason: {} };
   }
   load = this.createTask(async () => {
     const u = this.props.params.universe;
     nav.current = u;
-    const [status, queue] = await Promise.all([api('/api/standard', { u }), api('/api/standard/queue', { u })]);
-    this.state.status = status; this.state.queue = queue;
+    const [status, q] = await Promise.all([api('/api/standard', { u }), api('/api/standard/queues', { u })]);
+    this.state.status = status; this.state.q = q;
   });
   mounted() { this.load.run(); }
   propsChanged() { this.state.status = null; this.load.run(); }
+
+  /**
+   * Any of the queue acts. The reply is rendered VERBATIM on failure for the reason
+   * `SpecPage.act` gives: a refusal here names what is missing, and summarising it away
+   * leaves the one person who can act with nothing to act on.
+   */
+  async act(key, path, body) {
+    if (this.state.busy) return;
+    this.state.busy = key; this.state.err = null;
+    try {
+      const r = await apiPost(path, { u: this.props.params.universe, ...body });
+      if (r && r.error) { this.state.err = r.error; return; }
+      this.state.reason = { ...this.state.reason, [key]: '' };
+      this.load.run();
+    } catch (e) { this.state.err = errText(e); } finally { this.state.busy = null; }
+  }
+
+  /** The free-text half of an act, kept per row so two open forms cannot share a draft. */
+  why(key, placeholder) {
+    return html`<input placeholder="${placeholder}" value="${this.state.reason[key] || ''}"
+      on-change="${(e, v) => { this.state.reason = { ...this.state.reason, [key]: v }; }}">`;
+  }
+
+  problem(p, u, actions) {
+    return html`<div class="op-card">
+      <div class="ft"><span class="qbadge ${p.disposition ? '' : 'drift'}">${p.disposition || 'un-adjudicated'}</span>
+        ${when(!!p.provisional, () => html`<span class="qbadge drift" title="raised from a branch finding — a problem is exactly as shareable as the evidence under it">branch</span>`)}
+        ${byline(p.raisedBy, p.raisedAt)}
+      </div>
+      <div class="fs">${p.summary}</div>
+      ${when(!!p.prior, () => html`<div class="fs dim">the auditor's prior — context, never a resolution: ${p.prior}</div>`)}
+      ${when(!!p.awaiting, () => html`<div class="fs dim">awaiting: ${p.awaiting}</div>`)}
+      <div class="fs"><a href="${href(requirementUrl(u, p.requirementId))}">the rule ›</a></div>
+      ${actions ? actions() : ''}
+    </div>`;
+  }
+
   template() {
-    const u = this.props.params.universe, s = this.state.status, q = this.state.queue;
+    const u = this.props.params.universe, s = this.state.status, q = this.state.q;
     return pageShell(s && q, taskError(this.load), () => html`
       <div class="crumbs"><b>${u}</b> <span class="sep">·</span> standard</div>
       ${servedNote(s)}
+      ${when(!!this.state.err, () => html`<div class="attn-banner"><span class="attn-n">✕</span><span>${this.state.err}</span></div>`)}
+
+      <div class="sec">conformance</div>
+      <div class="dnav">
+        ${each(Object.keys(s.conformance || {}).filter(k => typeof s.conformance[k] === 'number'), (k) => html`<span class="chip">${confDot(k)}${k}: ${s.conformance[k]}</span>`, k => k)}
+      </div>
+      <div class="dnav">
+        <a class="btnlike" href="${href(rulesUrl(u))}">browse the standard ›</a>
+        <a class="btnlike" href="${href(conformanceUrl(u))}">where every rule stands ›</a>
+        <a class="btnlike" href="${href(auditUrl(u))}">what to audit next ›</a>
+        <a class="btnlike" href="${href(branchUrl(u))}">branch findings ›</a>
+      </div>
+
       <div class="sec">ratification queue (${q.specs.length})</div>
       ${when(!q.specs.length, () => html`<div class="empty">no drafts waiting. An agent proposes with <code>draft_spec</code> and <code>add_operation</code>; adopting one is yours.</div>`)}
       ${each(q.specs, (row) => html`<a class="spec-card" href="${href(specUrl(u, row.spec.id))}">
@@ -119,12 +200,50 @@ class StandardPage extends Component {
         <div class="fs">${row.spec.author && row.spec.author.principal ? row.spec.author.principal : 'unknown'} · ${(row.spec.createdAt || '').slice(0, 10)}</div>
       </a>`, (row) => row.spec.id)}
 
-      <div class="sec">conformance</div>
-      <div class="dnav">
-        ${each(Object.keys(s.conformance || {}).filter(k => typeof s.conformance[k] === 'number'), (k) => html`<span class="chip">${confDot(k)}${k}: ${s.conformance[k]}</span>`, k => k)}
-      </div>
+      <div class="sec">awaiting adjudication (${q.awaitingAdjudication.length})</div>
+      <div class="empty">Which side moves is a business question, so an agent may establish the disagreement and may never decide it. This is deliberately NOT a fix queue — naming the disposition does not do the work.</div>
+      ${each(q.awaitingAdjudication, (p) => this.problem(p, u, () => html`<div class="op-actions">
+        ${this.why('adj:' + p.id, 'why — this is what a later reader has instead of the conversation')}
+        ${each(DISPOSITIONS, (d) => html`<button class="pullbtn" title="${d[1]}"
+          disabled="${!!this.state.busy}"
+          on-click="${() => this.act('adj:' + p.id, '/api/standard/adjudicate', { problemId: p.id, disposition: d[0], reason: this.state.reason['adj:' + p.id] || '' })}">${d[0]}</button>`, (d) => d[0])}
+      </div>`), (p) => p.id)}
 
-      <div class="dnav"><a class="btnlike" href="${href(rulesUrl(u))}">browse the standard ›</a></div>
+      <div class="sec">owed — decided, not yet done (${q.actionable.length})</div>
+      ${when(!q.actionable.length, () => html`<div class="empty">nothing adjudicated is outstanding</div>`)}
+      ${each(q.actionable, (p) => this.problem(p, u, null), (p) => p.id)}
+
+      <div class="sec">settled without adjudication (${q.settledWithoutAdjudication.length})</div>
+      ${when(!q.settledWithoutAdjudication.length, () => html`<div class="empty">none — the andon signal is quiet</div>`)}
+      ${when(q.settledWithoutAdjudication.length > 0, () => html`<div class="empty">A business question that got answered by somebody changing code. Read these even when nothing else is wrong: an agent under deadline resolving a business question by guessing produces exactly this, and the guess is almost always "make it agree with the code".</div>`)}
+      ${each(q.settledWithoutAdjudication, (p) => this.problem(p, u, null), (p) => p.id)}
+
+      <div class="sec">promotable branch findings (${q.promotableAudits.length})</div>
+      ${when(!q.promotableAudits.length, () => html`<div class="empty">nothing to promote. A branch finding is offered here only while the exact code it examined is still present — on the witnesses, never on the merge.</div>`)}
+      ${each(q.promotableAudits, (a) => html`<div class="op-card">
+        <div class="ft">${confDot('nonconformant')}<b>${a.outcome}</b>
+          <span class="qbadge drift">${a.branch || 'branch'}</span> ${byline(a.auditor, a.at)}</div>
+        <div class="fs">${a.finding}</div>
+        <div class="fs"><a href="${href(requirementUrl(u, a.requirementId))}">the rule ›</a></div>
+        <div class="op-actions"><button class="pullbtn" disabled="${!!this.state.busy}"
+          title="re-record it as an observation of the codebase. A NEW audit, because the original was taken on a branch and saying otherwise would falsify its own record."
+          on-click="${() => this.act('promote:' + a.id, '/api/standard/promote_audit', { auditId: a.id })}">promote</button></div>
+      </div>`, (a) => a.id)}
+
+      <div class="sec">silencers past their revalidate-by (${q.acknowledgementsDue.length})</div>
+      ${when(!q.acknowledgementsDue.length, () => html`<div class="empty">nothing overdue</div>`)}
+      ${each(q.acknowledgementsDue, (a) => html`<div class="op-card moved">
+        <div class="ft"><span class="qbadge drift">${a.basis}</span><span class="qbadge">${a.priority}</span>
+          <span class="dim">due ${(a.revalidateBy || '').slice(0, 10)}</span> ${byline(a.grantedBy, a.grantedAt)}</div>
+        <div class="fs">${a.rationale}</div>
+        <div class="fs"><a href="${href(requirementUrl(u, a.requirementId))}">the rule ›</a></div>
+        <div class="op-actions">
+          ${this.why('rel:' + a.id, 'why it no longer applies')}
+          <button class="pullbtn" disabled="${!!this.state.busy}"
+            title="releasing is the UNSILENCING direction, so it is open to any actor — granting never is"
+            on-click="${() => this.act('rel:' + a.id, '/api/standard/release', { id: a.id, reason: this.state.reason['rel:' + a.id] || '' })}">release</button>
+        </div>
+      </div>`, (a) => a.id)}
     `);
   }
 }
@@ -301,7 +420,7 @@ const auditCard = (a, branch) => html`<div class="op-card ${branch ? 'moved' : '
  * Narrowing here rather than at every use is what makes the field access checked.
  *
  * @typedef {Extract<ApiMap['/api/standard/requirement'], { requirement: unknown }>} ReqData
- * @typedef {{ d: ReqData | null }} ReqState
+ * @typedef {{ d: ReqData | null, busy: string|null, err: string|null, form: Record<string,string> }} ReqState
  * @extends {Component<StdProps, ReqState>}
  */
 class RequirementPage extends Component {
@@ -310,7 +429,7 @@ class RequirementPage extends Component {
   constructor(props) {
     super(props);
     /** @type {ReqState} */
-    this.state = { d: null };
+    this.state = { d: null, busy: null, err: null, form: {} };
   }
   load = this.createTask(async () => {
     nav.current = this.props.params.universe;
@@ -320,11 +439,29 @@ class RequirementPage extends Component {
   });
   mounted() { this.load.run(); }
   propsChanged() { this.state.d = null; this.load.run(); }
+
+  /** The dossier's write acts. Failure renders verbatim — see `SpecPage.act`. */
+  async act(key, path, body) {
+    if (this.state.busy) return;
+    this.state.busy = key; this.state.err = null;
+    try {
+      const r = await apiPost(path, { u: this.props.params.universe, ...body });
+      if (r && r.error) { this.state.err = r.error; return; }
+      this.state.form = {};
+      this.load.run();
+    } catch (e) { this.state.err = errText(e); } finally { this.state.busy = null; }
+  }
+  fld(k, placeholder) {
+    return html`<input placeholder="${placeholder}" value="${this.state.form[k] || ''}"
+      on-change="${(e, v) => { this.state.form = { ...this.state.form, [k]: v }; }}">`;
+  }
+
   template() {
     const u = this.props.params.universe, d = this.state.d;
     return pageShell(d, taskError(this.load), () => html`
       <div class="crumbs"><a class="back" href="${href(standardUrl(u))}">← standard</a> <span class="sep">·</span> ${d.requirement.section}</div>
       ${servedNote(d)}
+      ${when(!!this.state.err, () => html`<div class="attn-banner"><span class="attn-n">✕</span><span>${this.state.err}</span></div>`)}
       <div class="op-card">
         <div class="ft"><b>${d.requirement.title}</b>
           ${when(d.requirement.recheckDue, () => html`<span class="qbadge drift" title="watched code has moved since it was last looked at — evidence about the CODE, not a downgrade of the rule">recheck due</span>`)}
@@ -370,15 +507,300 @@ class RequirementPage extends Component {
         <div class="fs">${p.summary}</div>
       </div>`, (p) => p.id)}
 
+      <div class="sec">what discharges it (${d.criteria.criteria.length})</div>
+      ${when(!d.criteria.criteria.length, () => html`<div class="empty">no acceptance criteria. Nothing states what would satisfy this rule, or what would refute it.</div>`)}
+      ${each(d.criteria.criteria, (c) => html`<div class="op-card ${c.assertionMoved ? 'moved' : ''}">
+        <div class="ft"><span class="qbadge">${c.evidenceKind}</span>
+          <span class="qbadge ${c.vacuity === 'demonstrated' ? '' : 'drift'}" title="whether anybody has established this check CAN fail — unchecked must never read as demonstrated">${c.vacuity}</span>
+          ${when(!!c.assertionMoved, () => html`<span class="qbadge drift" title="the check's own code changed since ratification — the DETECTOR moved, which is a stronger signal than the rule's subject moving">assertion moved</span>`)}
+        </div>
+        <div class="fs">${c.criterion}</div>
+        <div class="fs dim">refuted by: ${c.falsifier}</div>
+        <div class="fs dim">${(c.assertedBy || []).length ? (c.assertedBy || []).length + ' asserting check(s)' : 'no check asserts it — a criterion nothing runs is a claim nothing can invalidate'}</div>
+      </div>`, (c) => c.id)}
+
+      <div class="sec">what it ranges over</div>
+      <div class="op-card">
+        <div class="ft"><span class="qbadge ${d.population.state === 'pinned' ? '' : 'drift'}">${d.population.state}</span>
+          ${when(!!(d.population.current && d.population.current.pinBroken), () => html`<span class="qbadge drift" title="the lint that enumerates the population was edited since it was pinned — fired, was edited, now quiet">pin broken</span>`)}
+        </div>
+        ${when(d.population.state === 'absent', () => html`<div class="fs dim">nothing enumerates it. "No code should conform to this yet" then means "I looked and did not find any", which is the claim the pin exists to replace.</div>`)}
+        ${when(d.population.state === 'not-expressible', () => html`<div class="fs">${d.population.current ? d.population.current.reason : ''}</div>`)}
+        ${when(!!d.population.current && d.population.state === 'pinned', () => html`<div class="fs">${d.population.current.counts.members} member(s) — ${d.population.current.counts.conforms} conform, ${d.population.current.counts.violates} violate, ${d.population.current.counts.undecidable} undecidable · ${(d.population.current.lint || []).length} pinned anchor(s) in the lint</div>`)}
+      </div>
+
+      <div class="sec">covering audits — the scrub (${d.scrubs.length})</div>
+      ${when(!d.scrubs.length, () => html`<div class="empty">never swept. A scrub selects on a coverage DEADLINE, not on staleness: nobody has looked at this rule as a whole, whether or not anything moved.</div>`)}
+      ${each(d.scrubs, (a) => html`<div class="op-card">
+        <div class="ft"><span class="qbadge">${a.trigger}</span> <b>${a.outcome}</b> ${byline(a.auditor, a.at)}</div>
+        <div class="fs">${a.finding}</div>
+      </div>`, (a) => a.id)}
+
       <div class="sec">how it got here (${d.history.length})</div>
       ${each(d.history, (o) => html`<div class="op-card">
         <div class="ft"><span class="qbadge">${o.kind.replace(/_/g, ' ')}</span> <span class="dim">${o.specId}</span></div>
         <div class="fs">${o.rationale}</div>
       </div>`, (o) => o.id)}
+
+      <div class="sec">yours to do</div>
+      <div class="empty">Two acts a PRINCIPAL performs and an agent structurally cannot: granting debt — saying conforming code should exist, does not, and we accept that — and re-filing the rule under another section. Everything else on this page is the product of reading code, which is an agent's job.</div>
+      <div class="op-card">
+        <div class="ft">accept debt</div>
+        ${this.fld('debt-why', 'why we are living with it')}
+        ${this.fld('debt-by', 'revalidate by — ISO date, e.g. 2027-01-01')}
+        <div class="op-actions">
+          ${each(['high', 'medium', 'low'], (pr) => html`<button class="pullbtn" disabled="${!!this.state.busy}"
+            title="how SOON — about this instance of not conforming. Not the same field as how bad a violation would be."
+            on-click="${() => this.act('debt', '/api/standard/acknowledge_debt', {
+              requirementId: d.requirement.id, rationale: this.state.form['debt-why'] || '',
+              priority: pr, revalidateBy: this.state.form['debt-by'] || '',
+            })}">${pr}</button>`, (pr) => pr)}
+        </div>
+      </div>
+      <div class="op-card">
+        <div class="ft">re-file</div>
+        ${this.fld('refile-section', 'section — e.g. Credit/Limits')}
+        <div class="op-actions"><button class="pullbtn" disabled="${!!this.state.busy}"
+          on-click="${() => this.act('refile', '/api/standard/refile', { id: d.requirement.id, section: this.state.form['refile-section'] || '' })}">move it</button></div>
+      </div>
     `);
   }
 }
 defineComponent('requirement-page', RequirementPage);
+
+/**
+ * Branch findings — audits taken off the default branch, or on a dirty tree.
+ *
+ * These are NOT the state of the codebase and never become it: nothing folds a provisional
+ * audit, so no clone has a row for it and `conformance` cannot count it. What the page is
+ * FOR is the thing that was impossible before it: a reviewer, looking at somebody else's
+ * branch, seeing that it fails a rule. Findings travel as commit-keyed documents, so a
+ * teammate's appear here beside your own.
+ *
+ * `?commit=` narrows it to one commit — the reviewer's question, and a short sha is fine.
+ *
+ * @typedef {{ d: ApiMap['/api/standard/provisional']|null, busy: string|null, err: string|null, commit: string }} BranchState
+ * @extends {Component<StdProps, BranchState>}
+ */
+class BranchFindingsPage extends Component {
+  static props = { params: {}, query: {} };
+  /** @param {StdProps} props */
+  constructor(props) {
+    super(props);
+    /** @type {BranchState} */
+    this.state = { d: null, busy: null, err: null, commit: props.query.commit || '' };
+  }
+  load = this.createTask(async () => {
+    const u = this.props.params.universe;
+    nav.current = u;
+    this.state.d = await api('/api/standard/provisional', { u, commit: this.state.commit || null });
+  });
+  mounted() { this.load.run(); }
+  propsChanged() { this.state.d = null; this.load.run(); }
+
+  async promote(id) {
+    if (this.state.busy) return;
+    this.state.busy = id; this.state.err = null;
+    try {
+      const r = await apiPost('/api/standard/promote_audit', { u: this.props.params.universe, auditId: id });
+      if (r && r.error) { this.state.err = r.error; return; }
+      this.load.run();
+    } catch (e) { this.state.err = errText(e); } finally { this.state.busy = null; }
+  }
+
+  template() {
+    const u = this.props.params.universe, d = this.state.d;
+    return pageShell(d, taskError(this.load), () => html`
+      <div class="crumbs"><a class="back" href="${href(standardUrl(u))}">← standard</a> <span class="sep">·</span> branch findings</div>
+      ${servedNote(d)}
+      ${when(!!this.state.err, () => html`<div class="attn-banner"><span class="attn-n">✕</span><span>${this.state.err}</span></div>`)}
+      <div class="empty">Observations of somebody's branch — yours and the team's. They reach no clone's conformance, because nothing folds them; ask for <code>conformance</code> about the branch if you want the verdict rather than the findings. An audit taken on a DIRTY tree never travels at all: its witnesses came off the filesystem while the commit names an unchanged HEAD.</div>
+      <div class="dnav">
+        <input placeholder="commit — what does codemap know about the code in front of me?" value="${this.state.commit}"
+          on-change="${(e, v) => { this.state.commit = v.trim(); }}">
+        <button class="pullbtn" on-click="${() => this.load.run()}">look</button>
+      </div>
+
+      <div class="sec">findings (${d.audits.length})</div>
+      ${when(!d.audits.length, () => html`<div class="empty">${this.state.commit ? 'nothing recorded against that commit' : 'no branch findings — nobody has audited off the default branch, or the trees were dirty when they did'}</div>`)}
+      ${each(d.audits, (a) => html`<div class="op-card ${a.superseded ? '' : 'moved'}">
+        <div class="ft">${confDot(a.outcome === 'conformant' ? 'conformant' : a.outcome === 'nonconformant' ? 'nonconformant' : 'unknown')}
+          <b>${a.outcome}</b>
+          <span class="qbadge">${a.trigger || 'ad-hoc'}</span>
+          <span class="qbadge drift">${a.branch || 'branch'}</span>
+          ${when(!!a.superseded, () => html`<span class="qbadge" title="the code it examined has moved, so it says nothing about what is here now — re-audit rather than promote">superseded</span>`)}
+          ${byline(a.auditor, a.at)}
+        </div>
+        <div class="fs">${a.finding}</div>
+        <div class="fs dim">at ${(a.commit || '').slice(0, 12)}${a.evidence && a.evidence.read ? ' · ' + a.evidence.read.length + ' anchor(s) read' : ''}${a.evidence && a.evidence.ran ? ', ' + a.evidence.ran.length + ' command(s) run' : ''}</div>
+        <div class="fs"><a href="${href(requirementUrl(u, a.requirementId))}">the rule ›</a></div>
+        ${when(a.outcome === 'nonconformant' && !a.superseded, () => html`<div class="op-actions">
+          <button class="pullbtn" disabled="${!!this.state.busy}"
+            title="only from the default branch, and only while the audited code is verbatim present — promotion is decided on witnesses, never on the merge"
+            on-click="${() => this.promote(a.id)}">promote to the codebase</button>
+        </div>`)}
+      </div>`, (a) => a.id)}
+    `);
+  }
+}
+defineComponent('branch-findings-page', BranchFindingsPage);
+
+/**
+ * Every rule and where it stands — and the toggle that says WHICH CODE that is about.
+ *
+ * The route existed and no page fetched it, which the reach sweep found: the hub showed
+ * the distribution and there was nowhere to see which rules were in which bucket.
+ *
+ * `about` is the half worth explaining on the page itself. `codebase` is the team's
+ * standard, so it reads the same on every machine; `branch` counts branch findings — this
+ * machine's and the team's, on the witness test — and is the reviewer's question about the
+ * code checked out here. It leaks nowhere: no queue, no deadline, no release.
+ *
+ * @typedef {{ d: ApiMap['/api/standard/conformance']|null, about: string, only: string }} ConfState
+ * @extends {Component<StdProps, ConfState>}
+ */
+class ConformancePage extends Component {
+  static props = { params: {}, query: {} };
+  /** @param {StdProps} props */
+  constructor(props) {
+    super(props);
+    /** @type {ConfState} */
+    this.state = { d: null, about: props.query.about === 'branch' ? 'branch' : 'codebase', only: '' };
+  }
+  load = this.createTask(async () => {
+    const u = this.props.params.universe;
+    nav.current = u;
+    this.state.d = await api('/api/standard/conformance', { u, about: this.state.about });
+  });
+  mounted() { this.load.run(); }
+  propsChanged() { this.state.d = null; this.load.run(); }
+
+  look(about) { if (about !== this.state.about) { this.state.about = about; this.load.run(); } }
+
+  template() {
+    const u = this.props.params.universe, d = this.state.d;
+    const rows = d ? d.conformance.filter((c) => !this.state.only || c.conformance === this.state.only) : [];
+    const tally = (k) => d.conformance.filter((c) => c.conformance === k).length;
+    return pageShell(d, taskError(this.load), () => html`
+      <div class="crumbs"><a class="back" href="${href(standardUrl(u))}">← standard</a> <span class="sep">·</span> conformance</div>
+      ${servedNote(d)}
+      <div class="dnav">
+        <button class="pullbtn ${this.state.about === 'codebase' ? 'checked' : ''}"
+          title="the team's standard — provisional evidence excluded, so this number means the same on every machine"
+          on-click="${() => this.look('codebase')}">the codebase</button>
+        <button class="pullbtn ${this.state.about === 'branch' ? 'checked' : ''}"
+          title="does the code checked out HERE conform — the only read that counts branch findings, yours and the team's"
+          on-click="${() => this.look('branch')}">this branch</button>
+      </div>
+      <div class="empty">${this.state.about === 'branch'
+        ? 'Branch findings count here and nowhere else. A verdict on this page is about the code you have checked out, not about the standard — it feeds no queue and releases nothing.'
+        : 'The team\'s standard. `unknown` means nobody has checked, and is never the same as fine — a standard that looks satisfied because it is merely unexamined is confidence manufactured at scale.'}</div>
+      <div class="dnav">
+        ${each(['conformant', 'gap', 'debt', 'unknown'], (k) => html`<button class="chip ${this.state.only === k ? 'checked' : ''}"
+          on-click="${() => { this.state.only = this.state.only === k ? '' : k; }}">${confDot(k)}${k}: ${tally(k)}</button>`, (k) => k)}
+      </div>
+
+      ${when(!rows.length, () => html`<div class="empty">nothing in that bucket</div>`)}
+      ${each(rows, (c) => html`<a class="spec-card" href="${href(requirementUrl(u, c.requirement.id))}">
+        <div class="ft">${confDot(c.conformance)} ${c.requirement.title} <span class="dreqs">${c.requirement.section}</span>
+          ${when(!!c.wasConformant && c.conformance !== 'conformant', () => html`<span class="qbadge drift" title="met once, and no longer known to be — a regression, which a never-audited rule cannot signal">regressed</span>`)}
+          ${when((c.acknowledgements || []).length > 0, () => html`<span class="qbadge">${c.acknowledgements.length} silencer(s)</span>`)}
+        </div>
+        <div class="fs dim">${c.lastAudit
+          ? (c.lastAudit.superseded ? 'last audit is superseded — the code it read has moved' : 'last audit: ' + c.lastAudit.outcome) + ' · ' + (c.lastAudit.at || '').slice(0, 10)
+          : 'never audited'}</div>
+      </a>`, (c) => c.requirement.id)}
+    `);
+  }
+}
+defineComponent('conformance-page', ConformancePage);
+
+/**
+ * What to audit next, and what is wrong with the apparatus that decides it.
+ *
+ * The conformance distribution says what is UNKNOWN and never where to start. These five
+ * reads do, and every one of them was MCP-only: pointers that are firing, rules nothing is
+ * watching, coverage deadlines, pins whose lint has been edited under them, and criteria
+ * nobody has shown can fail.
+ *
+ * @typedef {{ d: ApiMap['/api/standard/health']|null }} HealthState
+ * @extends {Component<StdProps, HealthState>}
+ */
+class AuditPlanPage extends Component {
+  static props = { params: {}, query: {} };
+  /** @param {StdProps} props */
+  constructor(props) {
+    super(props);
+    /** @type {HealthState} */
+    this.state = { d: null };
+  }
+  load = this.createTask(async () => {
+    const u = this.props.params.universe;
+    nav.current = u;
+    this.state.d = await api('/api/standard/health', { u });
+  });
+  mounted() { this.load.run(); }
+  propsChanged() { this.state.d = null; this.load.run(); }
+
+  /**
+   * A list of rules, linked. GENERIC on purpose: a plain helper takes `any` with
+   * `noImplicitAny` off, and that is how `r.lastCovered` — a field `ScrubDue` does not
+   * have — typechecked and rendered "last covered never" for every row.
+   *
+   * @template {{ requirementId: string, title: string, section: string }} R
+   * @param {string} u
+   * @param {R[]} rows
+   * @param {string} empty
+   * @param {(r: R) => string} line
+   */
+  rules(u, rows, empty, line) {
+    return html`${when(!rows.length, () => html`<div class="empty">${empty}</div>`)}
+      ${each(rows, (r) => html`<a class="spec-card" href="${href(requirementUrl(u, r.requirementId))}">
+        <div class="ft">${r.title} <span class="dreqs">${r.section}</span></div>
+        <div class="fs dim">${line(r)}</div>
+      </a>`, (r) => r.requirementId)}`;
+  }
+
+  template() {
+    const u = this.props.params.universe, d = this.state.d;
+    return pageShell(d, taskError(this.load), () => html`
+      <div class="crumbs"><a class="back" href="${href(standardUrl(u))}">← standard</a> <span class="sep">·</span> what to audit next</div>
+      ${servedNote(d)}
+
+      <div class="sec">pointers firing (${d.auditQueue.firing.length})</div>
+      <div class="empty">Watched code has moved. A pointer is a PRIOR on where to look and never a verdict — it changes queue position, nothing else.</div>
+      ${this.rules(u, d.auditQueue.firing, 'nothing watched has moved', (r) => `${r.pointers.length} pointer(s) firing`)}
+
+      <div class="sec">nothing is watching (${d.auditQueue.unwatched.length})</div>
+      ${this.rules(u, d.auditQueue.unwatched, 'every rule in force has something pointing at it', () => 'no pointer — a rule with nothing watching it observes nothing, and that is itself the finding')}
+
+      <div class="sec">coverage deadlines (${d.scrub.due.length})</div>
+      <div class="empty">A scrub selects on a DEADLINE — this has not been looked at in T, whether or not anything moved — which is why it is a separate queue from the one above.</div>
+      ${this.rules(u, d.scrub.due, 'nothing is overdue for a scrub', (r) => `last covered ${r.lastScrubbed ? String(r.lastScrubbed).slice(0, 10) : 'never'}`)}
+
+      <div class="sec">pins whose lint moved (${d.brokenPins.length})</div>
+      <div class="empty">The lint that enumerates what a rule ranges over has been edited since it was pinned. That is the <i>fired → edited → quiet</i> case the hash pin exists to catch.</div>
+      ${each(d.brokenPins, (p) => html`<a class="spec-card" href="${href(requirementUrl(u, p.requirementId))}">
+        <div class="ft">${p.requirementId}</div>
+        <div class="fs dim">${(p.drifted || []).length} of ${(p.lint || []).length} pinned anchor(s) moved</div>
+      </a>`, (p) => p.id)}
+
+      <div class="sec">checks nobody has shown can fail</div>
+      <div class="empty">Citing an assertion makes a claim STRONGER — it turns "nobody edited the cited code" into "green as of the last build". Over a check that cannot fail, that is manufactured confidence with a mechanism attached.</div>
+      <div class="dnav">
+        ${each(['unasserted', 'unchecked', 'vacuous', 'wrongLayer', 'moved'], (k) => html`<span class="chip">${k}: ${(d.weakAssertions[k] || []).length}</span>`, (k) => k)}
+      </div>
+      ${each(['vacuous', 'wrongLayer', 'moved', 'unchecked'], (k) => html`${each(d.weakAssertions[k] || [], (c) => html`<a class="spec-card" href="${href(requirementUrl(u, c.requirementId))}">
+        <div class="ft"><span class="qbadge drift">${k}</span> ${c.criterion}</div>
+        ${when(!!c.falsifier, () => html`<div class="fs dim">refuted by: ${c.falsifier}</div>`)}
+      </a>`, (c) => c.id)}`, (k) => k)}
+
+      <div class="sec">baseline sweep</div>
+      <div class="empty">Not a queue — every rule in force, with what is known about each. Expensive on purpose: it is the read for a large refactor landing or a high-risk ship. ${d.baseline.population} rule(s) in force.</div>
+    `);
+  }
+}
+defineComponent('audit-plan-page', AuditPlanPage);
 
 /**
  * The standard as a reference — sections first, then the rules filed in one.
