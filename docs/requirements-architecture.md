@@ -640,6 +640,28 @@ What stays separate is what each is drawn FROM, because they select on different
 So an agent can be asked for a differential audit, a scrub, both, or a full baseline before
 a high-risk feature ships.
 
+**The deadline belongs to the POINTER, not to the requirement** (Izzie, 2026-08-28). One
+timestamp per rule was starvable, and two independent reviewers found the same
+counterexample: pointer A moves every 29 days and B never; each change produces a
+differential audit of A, which reset the rule's single clock, so B was never examined while
+the schedule reported the rule covered. *Everything is covered every T* failed silently —
+and silently is the whole problem, because a scrub exists to find what looks fine every
+time you look at it. A rule is only as covered as its least-recently-looked-at pointer.
+
+That decides what a trigger owes, since an observation is what resets a pointer:
+
+| trigger | observations | resets |
+| --- | --- | --- |
+| `scrub`, `baseline` | **every** active pointer — no omissions, phantoms or repeats | all of them |
+| `differential` | the **subset** it examined | just those |
+| `ad-hoc` | none, and supplying any is refused | nothing |
+
+A `differential` audit used to be refused for carrying observations at all, while resetting
+the whole rule's clock anyway — so one trigger reset the deadline having recorded nothing
+about what it saw. A rule with NO active pointers keeps a rule-wide timestamp, because there
+is nothing finer to key on; `auditQueue.unwatched` is what reports the missing pointer, and
+dropping such a rule off the schedule as well would hide it twice.
+
 **What resets a coverage deadline** is the subtle part. Branch work resets nothing whatever
 its trigger — a provisional audit may never merge, and a deadline is a claim about the
 codebase. A `differential` audit *does* reset one, but only having got past that test: it

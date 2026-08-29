@@ -136,7 +136,7 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     // reads the pointer state from its own map — the team's view of what was active, not
     // the writer's account of it.
     what: "a covering audit that skipped one of the rule's active pointers",
-    fold: ["src/shared-standard.ts", /if \(watching\.some\(\(p\) => !seen\.has\(p\.id\)\)\) break;/],
+    fold: ["src/shared-standard.ts", /if \(covering && watching\.some\(\(p\) => !seen\.has\(p\.id\)\)\) break;/],
     publish: ["src/audits.ts", /const missed = active\.filter\(\(p\) => !seen\.has\(p\.id\)\);/],
   },
   {

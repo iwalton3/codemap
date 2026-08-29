@@ -243,6 +243,14 @@ projection.** A derived event has no honest actor and no honest causal position,
 deterministic fold means every clone mints its own copy; a claim that never entered the
 log cannot be retrofitted with a position, because `after` is captured at append time.
 
+**To review a fold, RUN it.** Every one of the ~12 guard-in-one-end defects this project
+has produced was found by executing the fold on hand-built events, or by writing its second
+half from different inputs — never by reading it. That is not a coincidence and it is COD-18
+in its purest form: a fold is event-sourced code, the exact shape codemap exists because
+people cannot review by eye. A dozen lines of `foldStandard([...])` in a scratch script has
+found more than any amount of careful reading, on the codebase whose whole thesis is that
+careful reading of this shape does not work.
+
 It defers the mechanisms to two documents: `docs/plan-docs-unification.md` and
 `docs/fork-repair.md`. The second is worth knowing exists before touching
 `eventlog.ts` or `contest.ts` — the causal vector's per-writer ordinal is a **prefix

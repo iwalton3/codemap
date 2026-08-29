@@ -1364,14 +1364,15 @@ export function auditClaimStands(a: Audit): boolean {
  *    these `differential` would put an unprompted audit in a queue's coverage statistics.
  *
  * The two queues stay apart because they SELECT on different things — staleness versus a
- * coverage deadline — not because a differential audit counts for nothing. It does reset
- * the deadline (`covers()` in `scrub.ts`), having first proved the change is present on the
- * default branch. `ad-hoc` resets nothing, because nobody asked what it would look at, and
- * a `baseline` satisfies both queues, having looked at everything.
+ * coverage deadline — not because a differential audit counts for nothing. It resets the
+ * deadline of every POINTER it reports having looked at, having first proved the change is
+ * present on the default branch. A covering trigger owes the whole list; `ad-hoc` owes and
+ * resets nothing, because nobody asked what it would look at.
  *
- * This paragraph said the opposite until 2026-08-28 — a leftover from before `31ce28c`
- * folded the scrub into the audit. `docs/requirements-architecture.md` § *What resets a
- * coverage deadline* is the authority.
+ * The deadline is per pointer for a reason worth knowing before changing it: with one
+ * timestamp per rule, a pointer that moves just inside the coverage period reset the clock
+ * for every pointer beside it, so one that never moves was never examined. See
+ * `docs/requirements-architecture.md` § *The deadline belongs to the POINTER*.
  */
 export type AuditTrigger = "differential" | "scrub" | "baseline" | "ad-hoc";
 

@@ -222,22 +222,47 @@ export async function recordAudit(
   // so it has to say what every active pointer was doing — no omissions and no phantoms,
   // and no pointer twice. Without that, "I looked" buys a fresh period on a self-report,
   // and a repeated observation reaches `minObservations` from a single call.
+  // An observation resets the deadline of the POINTER it names, so what a trigger owes is
+  // exactly what it claims to have looked at.
+  //
+  //  - A COVERING audit (`scrub`, `baseline`) claims to have looked at the whole watching
+  //    apparatus, so it must say what EVERY active pointer was doing — no omissions, no
+  //    phantoms, no repeats. Without that, "I looked" buys a fresh period on a self-report
+  //    and a repeated observation reaches `minObservations` from a single call.
+  //  - A `differential` audit looked at what MOVED. It may report that subset, and only
+  //    those pointers' deadlines move. It used to be refused outright for carrying any —
+  //    while `covers()` reset the whole rule's clock anyway, so one trigger reset the
+  //    deadline having recorded nothing about what it saw. Two reviewers found that
+  //    independently; the fix is Izzie's: the deadline belongs to the pointer.
+  //  - `ad-hoc` still carries none. Nobody asked what it would look at, so nothing it
+  //    reports is evidence of coverage.
   const observations = input.observations ?? [];
-  if (COVERING_TRIGGERS.includes(trigger)) {
+  if (observations.some((o) => typeof o.firing !== "boolean")) {
+    return { error: "every observation needs `firing: true|false` — that boolean IS the history a rate is derived from" };
+  }
+  if (COVERING_TRIGGERS.includes(trigger) || (trigger === "differential" && observations.length)) {
     // A retired rule is not on the schedule, so there is no deadline for a covering audit
     // to reset. An `ad-hoc` or `differential` audit of one is still allowed: that is
     // history, and refusing it would lose an observation somebody actually made.
-    if (r.status === "retired") return { error: `${r.id} is retired — a rule that does not bind is not on the schedule` };
+    if (COVERING_TRIGGERS.includes(trigger) && r.status === "retired") {
+      return { error: `${r.id} is retired — a rule that does not bind is not on the schedule` };
+    }
     const active = await readPointers(root, { requirementId: r.id, state: "active" });
     const seen = new Set(observations.map((o) => o.pointerId));
-    const missed = active.filter((p) => !seen.has(p.id));
-    if (missed.length) {
-      return {
-        error:
-          `a \`${trigger}\` audit resets this rule's coverage deadline, so it must say what all `
-          + `${active.length} of its active pointer(s) were doing — missing ${missed.map((p) => p.id).join(", ")}. `
-          + `A rule with nothing watching it observes nothing, and recording that is the finding.`,
-      };
+    // EXHAUSTIVE only for a covering audit. A differential one is not claiming to have
+    // covered what did not move, so requiring the whole list would be asking it to report
+    // observations it did not make — which is the self-report this gate exists to refuse,
+    // arriving from the other side.
+    if (COVERING_TRIGGERS.includes(trigger)) {
+      const missed = active.filter((p) => !seen.has(p.id));
+      if (missed.length) {
+        return {
+          error:
+            `a \`${trigger}\` audit covers the whole rule, so it must say what all `
+            + `${active.length} of its active pointer(s) were doing — missing ${missed.map((p) => p.id).join(", ")}. `
+            + `A rule with nothing watching it observes nothing, and recording that is the finding.`,
+        };
+      }
     }
     const phantom = observations.filter((o) => !active.some((p) => p.id === o.pointerId));
     if (phantom.length) return { error: `observed pointer(s) that are not active on ${r.id}: ${phantom.map((o) => o.pointerId).join(", ")}` };
@@ -245,19 +270,11 @@ export async function recordAudit(
       return { error: "the same pointer is observed twice — one look counted as several is how a rate stops being a rate" };
     }
   } else if (observations.length) {
-    // A differential or ad-hoc audit looked at what MOVED, not at the whole watching
-    // apparatus, so letting it carry observations would feed the coverage rate from a pass
-    // that never covered anything.
-    //
-    // This used to end "— and reset nothing, which is the honest half", which is FALSE for
-    // `differential`: `covers()` in `scrub.ts` counts it, so it does reset the coverage
-    // deadline. That leaves one trigger resetting the clock without saying what it saw,
-    // which is a real hole in the argument this gate rests on rather than a wording slip.
-    // See `docs/requirements-architecture.md` § *What resets a coverage deadline*.
-    return { error: `\`observations\` belong to a ${COVERING_TRIGGERS.join(" or ")} audit; a \`${trigger}\` one covers what moved, not what did not` };
-  }
-  if (observations.some((o) => typeof o.firing !== "boolean")) {
-    return { error: "every observation needs `firing: true|false` — that boolean IS the history a rate is derived from" };
+    return {
+      error:
+        `\`observations\` belong to a ${COVERING_TRIGGERS.join(", ")} or differential audit; `
+        + `nobody asked what an \`${trigger}\` one would look at, so what it reports is not evidence of coverage`,
+    };
   }
 
   const dirty = isGitRepo(root) && isDirty(root);

@@ -199,6 +199,22 @@ partial case would fill the auditor queue with noise to recover a verdict that s
 re-taken anyway. A staled fault node also stales the pointer that watches it, so the
 re-audit is already queued by the machinery.
 
+## The browser's principal is intent, not a boundary
+
+`serve.ts` binds 127.0.0.1 and resolves the actor from git identity with no agent marker,
+which is what lets a person ratify, withdraw, adjudicate, grant debt and re-file — the five
+acts the MCP agent latch is a ratchet to prevent. Anything that can reach that port can
+perform them and be recorded as the repository's principal, an agent with a shell included.
+
+**That is not a hole to close, and the reason is worth writing down so nobody spends a week
+closing it.** An agent that would do this could equally write events into the sidecar by
+hand — the store is a git repository and the schema is in this tree — so no gate on the HTTP
+route removes the capability. What the latch buys is that the door is MARKED and the tool
+descriptions say the closure is deliberate. The threat model here is the same one principal
+identity makes everywhere else in this subsystem: **attribution without prevention.** Identity
+forgery is accepted; what is defended is that nothing *silently* attributes an agent's act to
+a person.
+
 ## The fold cannot be split in two
 
 Law and evidence are entangled inside `foldStandard` BY DESIGN:

@@ -286,8 +286,18 @@ const server = createServer(async (req, res) => {
     // The one write path from the UI: mark/unmark a review (under the write lock).
     // Ratifying and withdrawing are PRINCIPAL acts, and this is a person at a browser
     // — so no `agent`/`model` is threaded through and `requireActor` resolves the git
-    // identity, exactly as it does for a human MCP session. An agent cannot reach here
-    // to borrow it: the latch lives in the MCP transport, not in ops.
+    // identity, exactly as it does for a human MCP session.
+    //
+    // **This is a statement of intent, not a security boundary, and it must not be mistaken
+    // for one.** Anything that can reach 127.0.0.1 can `curl` these acts and be recorded as
+    // the repository's git principal — including an agent with a shell, which is the actor
+    // the MCP latch exists to stop. The latch is not thereby pointless: an agent that could
+    // do this could equally write events into the sidecar by hand, so no gate here would
+    // close it either. What the latch buys is that the door is MARKED, and the tool
+    // descriptions say the closure is deliberate. Hardening this route would cost real
+    // work and move nothing, because the threat model is an agent that respects a stated
+    // intent — attribution without prevention, which is the same trade principal identity
+    // makes everywhere else in this subsystem.
     if (req.method === "POST" && url.pathname.startsWith("/api/standard/")) {
       const chunks: Buffer[] = [];
       for await (const c of req) chunks.push(c as Buffer);

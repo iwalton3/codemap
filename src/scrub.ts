@@ -95,7 +95,10 @@ export async function setScrubPolicy(
  *  - `scrub` and `baseline` cover by construction: they were asked to look at what did not
  *    move, and they must report every active pointer to be recorded at all.
  *  - `differential` covers too, but only having got past the provisional test above — it
- *    looked at what CHANGED, so it says nothing until that change is proven present.
+ *    looked at what CHANGED, so it says nothing until that change is proven present. It
+ *    covers exactly the POINTERS it reports observing, which is why it may now carry a
+ *    subset: the deadline is the pointer's, and one that moves inside every coverage period
+ *    used to reset the clock for the ones beside it that never move.
  *  - `ad-hoc` covers nothing. Nobody asked what it looked at and nothing records what it
  *    left out, so treating it as coverage is the self-report the deadline exists to
  *    replace. An audit written before triggers existed reads `ad-hoc` for that reason.
@@ -164,8 +167,19 @@ export interface ScrubDue {
   requirementId: string;
   title: string;
   section: string;
+  /**
+   * The OLDEST of this rule's pointer deadlines — the one that makes it due.
+   *
+   * Per pointer, not per rule, and that is the whole repair. A single timestamp on the
+   * requirement meant any covering look reset the clock for everything watching it: with
+   * pointer A moving every 29 days and B never, each differential audit of A reset R, so B
+   * was never examined and *everything is covered every T* quietly failed. The deadline
+   * belongs to the thing being watched.
+   */
   lastScrubbed: string | null;
   daysSince: number | null;
+  /** The pointers actually overdue, oldest first — what a scrub of this rule has to look at. */
+  stale: { pointerId: string; lastScrubbed: string | null; daysSince: number | null }[];
 }
 
 export interface ScrubPlan {
@@ -201,21 +215,48 @@ export async function scrubPlan(root: string, opts: { asOf?: string } = {}): Pro
   const policy = await readScrubPolicy(root);
   const { requirements } = await readRequirements(root, { status: "ratified" });
 
-  // Audits that COVER — the covering triggers, plus `differential`, which resets the
-  // deadline having proved its change is on the default branch. Not `ad-hoc`: nobody asked
-  // what that one would look at.
+  // The deadline is per POINTER, keyed by what each audit actually said it looked at.
   //
-  // This comment used to say a rule "audited yesterday because a diff touched it … is still
-  // due here", which `covers()` two dozen lines up contradicts. Three comments said that
-  // and only the code and the architecture doc said otherwise.
-  const last = new Map<string, string>();
-  for (const a of (await readAudits(root)).filter(covers)) last.set(a.requirementId, a.at);   // ORDER BY at — last wins
+  // It used to be per requirement — one timestamp, set by any covering audit of the rule —
+  // and that is how differential activity could starve the scrub: pointer A moving every 29
+  // days produced a differential audit every 29 days, each of which reset R, so pointer B
+  // was never examined while the schedule reported R as covered. A rule is only as covered
+  // as its least-recently-looked-at pointer.
+  //
+  // Audits that COVER are the covering triggers plus `differential` — the latter having
+  // proved its change is on the default branch. Not `ad-hoc`: nobody asked what that one
+  // would look at, so it names no pointers and resets nothing.
+  const covered = new Map<string, string>();          // pointerId -> when
+  const ruleWide = new Map<string, string>();          // requirementId -> when, for the pointerless case
+  for (const a of (await readAudits(root)).filter(covers)) {   // ORDER BY at — last wins
+    ruleWide.set(a.requirementId, a.at);
+    for (const o of a.observations ?? []) covered.set(o.pointerId, a.at);
+  }
+  const watching = new Map<string, string[]>();
+  for (const p of await readPointers(root, { state: "active" })) {
+    (watching.get(p.requirementId) ?? watching.set(p.requirementId, []).get(p.requirementId)!).push(p.id);
+  }
+  const since = (at: string | null) => (at ? Math.floor((asOf - Date.parse(at)) / DAY) : null);
 
   const rows: ScrubDue[] = requirements.map((r) => {
-    const at = last.get(r.id) ?? null;
+    const ps = watching.get(r.id) ?? [];
+    // A rule with nothing watching it has no finer thing to key on, so it keeps the
+    // rule-wide timestamp. `auditQueue.unwatched` is what reports the missing pointer;
+    // dropping such a rule off the schedule as well would hide it twice.
+    const stale = ps.map((pointerId) => {
+      const at = covered.get(pointerId) ?? null;
+      return { pointerId, lastScrubbed: at, daysSince: since(at) };
+    }).sort((a, b) => (b.daysSince ?? Infinity) - (a.daysSince ?? Infinity));
+    const at = ps.length
+      // The OLDEST pointer decides. `null` — never observed — is older than any date.
+      ? (stale.some((x) => x.lastScrubbed === null) ? null : stale[0]!.lastScrubbed)
+      : ruleWide.get(r.id) ?? null;
     return {
       requirementId: r.id, title: r.title, section: r.section, lastScrubbed: at,
-      daysSince: at ? Math.floor((asOf - Date.parse(at)) / DAY) : null,
+      daysSince: since(at),
+      stale: policy
+        ? stale.filter((x) => x.daysSince === null || x.daysSince >= policy.coverageDays)
+        : stale,
     };
   });
   // Never-scrubbed first, then oldest first. Coverage is the property being guaranteed, so

@@ -450,24 +450,27 @@ export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = 
         // the same predicate to a teammate's file. See `auditClaimStands` for what each
         // clause is and which of them the two ends used to disagree about.
         if (!auditClaimStands(audit)) break;
-        // A COVERING audit resets this rule's coverage deadline, which is the quieting
-        // direction — so it must say what every ACTIVE pointer was doing. `recordAudit`
-        // refuses an omission, a phantom and a repeat; this end binds a clone whose tool
-        // did not. The pointer state is read from the fold's OWN map, so it is the team's
-        // view of what was active rather than the writer's account of it.
-        if (COVERING_TRIGGERS.includes(audit.trigger ?? "ad-hoc")) {
+        // An observation resets the deadline of the POINTER it names, so a trigger owes
+        // exactly what it claims to have looked at: a covering audit every active pointer,
+        // a `differential` one the subset it examined, an `ad-hoc` one none at all.
+        // `recordAudit` refuses an omission, a phantom and a repeat; this end binds a clone
+        // whose tool did not. The pointer state comes from the fold's OWN map, so it is the
+        // team's view of what was active rather than the writer's account of it.
+        {
+          const trigger = audit.trigger ?? "ad-hoc";
           const obs = audit.observations ?? [];
-          if (obs.some((o) => !o?.pointerId || typeof o.firing !== "boolean")) break;
-          const watching = [...pointers.values()]
-            .filter((p) => p.requirementId === audit.requirementId && p.state === "active");
-          const seen = new Set(obs.map((o) => o.pointerId));
-          if (watching.some((p) => !seen.has(p.id))) break;
-          if (obs.some((o) => !watching.some((p) => p.id === o.pointerId))) break;
-          if (seen.size !== obs.length) break;
-        } else if (audit.observations?.length) {
-          // Observations from a pass that never covered anything would feed the rate while
-          // resetting no deadline — the rate detached from the coverage it describes.
-          break;
+          const covering = COVERING_TRIGGERS.includes(trigger);
+          if (!covering && trigger !== "differential" && obs.length) break;
+          if (covering || obs.length) {
+            if (obs.some((o) => !o?.pointerId || typeof o.firing !== "boolean")) break;
+            const watching = [...pointers.values()]
+              .filter((p) => p.requirementId === audit.requirementId && p.state === "active");
+            const seen = new Set(obs.map((o) => o.pointerId));
+            // Exhaustive only where the audit claims to have covered the whole rule.
+            if (covering && watching.some((p) => !seen.has(p.id))) break;
+            if (obs.some((o) => !watching.some((p) => p.id === o.pointerId))) break;
+            if (seen.size !== obs.length) break;
+          }
         }
         audits.set(audit.id, { ...audit, origin: "sync" });
         break;

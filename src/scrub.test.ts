@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { indexBlob } from "./repo.js";
-import { writeStore, writeNode } from "./store.js";
+import { writeStore, writeNode, readAnchorStore } from "./store.js";
 import type { LogicalNode, State } from "./schema.js";
 import { discard } from "./test-tmp.js";
 import { draftSpec, addOperation, ratifySpec } from "./requirements.js";
@@ -308,6 +308,88 @@ test("a pathology is about a live pointer on a rule in force, not about history"
  * a pathology — which is precisely the error the floor exists to prevent, so a duplicate is
  * refused for the reason `checkMembers` refuses a duplicate member.
  */
+/**
+ * The counterexample two reviewers found, and Izzie's repair for it.
+ *
+ * With ONE deadline per requirement, differential activity starved the scrub: pointer A
+ * moving every 29 days produced a differential audit every 29 days, each of which reset the
+ * rule's single timestamp, so pointer B was never examined while the schedule reported the
+ * rule as covered. *Everything is covered every T* failed quietly, and quietly is the whole
+ * problem — a scrub exists to find what looks fine every time you look at it.
+ *
+ * The deadline is now the POINTER's, so A's look resets A and nothing else.
+ */
+test("a pointer that keeps moving cannot cover the one beside it that never does", async () => {
+  const u = await universe();
+  try {
+    ok(await setScrubPolicy(u.root, { coverageDays: 30, minObservations: 2 }));
+    const r = await rule(u.root, "Capped", "Credit");
+    const store = await readAnchorStore(u.root);
+    const a = ok(await declarePointer(u.root, {
+      requirementId: r, targetKind: "anchor", targetId: store.anchors[0]!.id, rationale: "moves often",
+    }));
+    const b = ok(await declarePointer(u.root, {
+      requirementId: r, targetKind: "node", targetId: u.doc, rationale: "never moves",
+    }));
+
+    // A differential audit of A alone — the ordinary shape: something changed, so somebody
+    // looked at what watches it.
+    ok(await recordAudit(u.root, {
+      requirementId: r, outcome: "indeterminate", finding: "checked what the diff touched",
+      trigger: "differential", observations: [{ pointerId: a.id, firing: true }],
+    }));
+
+    const plan = await scrubPlan(u.root);
+    const due = plan.due.find((x) => x.requirementId === r);
+    assert.ok(due, "the rule is still due — B has never been looked at, so the rule is not covered");
+    assert.equal(due.lastScrubbed, null, "the OLDEST pointer decides, and B has no date at all");
+    assert.deepEqual(due.stale.map((x) => x.pointerId), [b.id],
+      "and it names the pointer that actually needs looking at, not the whole rule");
+
+    // A scrub covers both, and only then does the rule leave the queue.
+    ok(await recordAudit(u.root, {
+      requirementId: r, outcome: "indeterminate", finding: "swept", trigger: "scrub",
+      observations: [{ pointerId: a.id, firing: false }, { pointerId: b.id, firing: false }],
+    }));
+    assert.equal((await scrubPlan(u.root)).due.find((x) => x.requirementId === r), undefined,
+      "covered now, because everything watching it has been looked at");
+  } finally { discard(u.root); }
+});
+
+test("a differential audit may name the subset it looked at, and an ad-hoc one may not", async () => {
+  const u = await universe();
+  try {
+    const r = await rule(u.root, "Capped", "Credit");
+    const store = await readAnchorStore(u.root);
+    const a = ok(await declarePointer(u.root, {
+      requirementId: r, targetKind: "anchor", targetId: store.anchors[0]!.id, rationale: "watched",
+    }));
+    ok(await declarePointer(u.root, {
+      requirementId: r, targetKind: "node", targetId: u.doc, rationale: "also watched",
+    }));
+
+    // A SUBSET is fine — it looked at what moved and says so. A covering audit is still
+    // held to the whole list, because it is the one claiming to have covered the rule.
+    ok(await recordAudit(u.root, {
+      requirementId: r, outcome: "indeterminate", finding: "what the diff touched",
+      trigger: "differential", observations: [{ pointerId: a.id, firing: true }],
+    }));
+    const partial = await recordAudit(u.root, {
+      requirementId: r, outcome: "indeterminate", finding: "swept", trigger: "scrub",
+      observations: [{ pointerId: a.id, firing: true }],
+    });
+    assert.match((partial as { error: string }).error, /must say what all 2 of its active pointer\(s\) were doing/);
+
+    // `ad-hoc` still carries none: nobody asked what it would look at, so what it reports
+    // is not evidence of coverage.
+    const adhoc = await recordAudit(u.root, {
+      requirementId: r, outcome: "indeterminate", finding: "had a look",
+      observations: [{ pointerId: a.id, firing: true }],
+    });
+    assert.match((adhoc as { error: string }).error, /nobody asked what an `ad-hoc` one would look at/);
+  } finally { discard(u.root); }
+});
+
 test("the same pointer observed twice in one scrub is refused", async () => {
   const u = await universe();
   try {
