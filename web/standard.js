@@ -576,12 +576,17 @@ class RequirementPage extends Component {
             })}">${pr}</button>`, (pr) => pr)}
         </div>
       </div>
-      <div class="op-card">
+      ${when(!d.requirement.origin, () => html`<div class="op-card">
         <div class="ft">re-file</div>
         ${this.fld('refile-section', 'section — e.g. Credit/Limits')}
         <div class="op-actions"><button class="pullbtn" disabled="${!!this.state.busy}"
           on-click="${() => this.act('refile', '/api/standard/refile', { id: d.requirement.id, section: this.state.form['refile-section'] || '' })}">move it</button></div>
-      </div>
+      </div>`)}
+      ${when(!!d.requirement.origin, () => html`<div class="op-card">
+        <div class="ft">re-file</div>
+        <div class="fs dim">Not from here: this rule is the team's, and re-filing one shared rule has no shared act — a local write would be erased by the next sync. Move the whole heading with a <code>move_section</code> operation in a spec.</div>
+        <div class="fs dim">Which is the open question <code>requirements-architecture.md</code> § <i>Deliberately open</i> names: if the only way to fix filing is to write a spec about filing, nobody will do it. Reorganizing the standard wants to be a principal act independent of any spec, and on a team store it is not one yet.</div>
+      </div>`)}
     `);
   }
 }

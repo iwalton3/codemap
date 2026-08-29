@@ -348,7 +348,16 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
     assert.match(text!, /what it ranges over/i);
     assert.match(text!, /covering audits/i);
     assert.match(text!, /accept debt/i, "granting debt is a PRINCIPAL act and had nowhere to happen");
+    // The fixture has a sidecar, so this rule came from the FOLD and carries an origin —
+    // and `reorganizeRequirement` refuses a shared row. The panel therefore says so instead
+    // of offering a button that errors on every team store, which is the only configuration
+    // this subsystem is for. `requirements-architecture.md` § *Deliberately open* named the
+    // failure ("the only way to fix filing is to write a spec about filing") before it was
+    // built; the affordance shipped anyway and this is what found it.
     assert.match(text!, /re-file/i);
+    assert.match(text!, /move the whole heading with a/i, "and it says what to do instead");
+    assert.equal(await page.locator('input[placeholder^="section"]').count(), 0,
+      "no form that cannot work");
 
     // DRIVE it, because a form is a set of field names and a typo in one is invisible to
     // every other kind of test: the POST would arrive with the key missing and the act
