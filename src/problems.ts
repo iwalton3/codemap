@@ -31,6 +31,7 @@
 
 import { randomBytes } from "node:crypto";
 import type { Actor, Problem, ProblemDisposition } from "./schema.js";
+import { PROBLEM_DISPOSITIONS } from "./schema.js";
 import {
   readAcknowledgements, readAudits, readOperations, readProblem, readProblems,
   readRequirement, readSpec, writeLocalProblem,
@@ -46,9 +47,8 @@ const now = () => new Date().toISOString();
 export type Err = { error: string };
 const isErr = (x: unknown): x is Err => !!x && typeof x === "object" && "error" in (x as object);
 
-const DISPOSITIONS: ProblemDisposition[] = [
-  "code-wrong", "requirement-changed", "requirement-misstated", "accepted",
-];
+/** Shared, so the order is stated once — see the note on `ProblemDisposition`. */
+const DISPOSITIONS = PROBLEM_DISPOSITIONS;
 
 export type ProblemState = "open" | "adjudicated" | "closed";
 

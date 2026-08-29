@@ -117,11 +117,15 @@ const byline = (who, at) => html`<span class="dim">${(at || '').slice(0, 16).rep
  *
  * The reason box is not optional garnish: it is what a later reader has instead of the
  * conversation, and `adjudicate` refuses an empty one.
+ *
+ * **`requirement-misstated` is first and that is not cosmetic** — see the note on
+ * `ProblemDisposition`. Putting `code-wrong` first makes "the code is at fault" the default
+ * reading on the one screen where a person decides which side moves.
  */
 const DISPOSITIONS = [
+  ['requirement-misstated', 'the rule did not change; our statement of it was incomplete — the commonest real outcome, and the one that evaporates if it is not the easy answer'],
   ['code-wrong', 'the rule stands and the code violates it — closed by a conformant audit'],
   ['requirement-changed', 'the business moved — closed by a ratified spec amending the rule'],
-  ['requirement-misstated', 'the rule did not change; our statement of it was incomplete'],
   ['accepted', 'non-conformant and we are living with it — closed by a granted debt'],
 ];
 

@@ -1483,15 +1483,37 @@ export interface Audit {
  * `closeProblem` verb anywhere for the same reason — you cannot close a problem, you can
  * only do the thing that closes it.
  */
+/**
+ * The four dispositions, and the ORDER IS LOAD-BEARING — do not tidy it back.
+ *
+ * `requirement-misstated` is first everywhere it is offered, because COD-29 says the design
+ * fails if it is not: *"if the discrepancy UI makes `code-wrong` the default path and shape
+ * 3 an exception, the system will systematically convert learning into defects."* It is the
+ * commonest real outcome — *"USD-only, except settlement float"* — and the one that
+ * evaporates today, because the exception lives in one person's head and only surfaces
+ * because a discrepancy forced it out.
+ *
+ * The evidence behind that is Hollnagel's work-as-imagined vs work-as-done: the gap between
+ * the rule and the practice is not automatically a defect, and organisations that close it
+ * by forcing conformance become more brittle rather than safer. A list that offers
+ * `code-wrong` first is a list that reads "the code is at fault" as the default reading, on
+ * the one screen where a person decides which side moves.
+ *
+ * `src/standard-surface.test.ts` fails if any surface puts it back.
+ */
 export type ProblemDisposition =
+  /** The rule did not change; our statement of it was incomplete. Closed by a ratified spec. */
+  | "requirement-misstated"
   /** The rule stands and the code violates it. Closed by a conformant audit. */
   | "code-wrong"
   /** The business moved. Closed by a ratified spec amending the rule. */
   | "requirement-changed"
-  /** The rule did not change; our statement of it was incomplete. Closed the same way. */
-  | "requirement-misstated"
   /** Non-conformant and we are living with it. Closed by a granted debt acknowledgement. */
   | "accepted";
+
+export const PROBLEM_DISPOSITIONS: ProblemDisposition[] = [
+  "requirement-misstated", "code-wrong", "requirement-changed", "accepted",
+];
 
 export interface Problem {
   id: string;

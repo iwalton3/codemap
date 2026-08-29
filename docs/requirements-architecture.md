@@ -906,10 +906,21 @@ carries the detail and the reasoning:
   one: *consequence* is about the rule and routes adjudication authority, *priority* is
   about one instance of not-conforming and already exists on `Acknowledgement`.
 
-The web front end has no routes for any of it — `mcp.ts` is wired and `serve.ts` is not, so
-this surface is currently agent-only. The one exception is the diff rollup above, which
-rides the existing `/api/diff` payload and renders on `/#/u/:u/diff/` with no route of its
-own; that is also why its rows do not link anywhere.
+**The web front end now carries the whole surface** (`5b8f399`, `33d6f9c`): nine
+`/api/standard/*` reads plus the POST route for the five acts only a principal may perform,
+and seven pages under `/#/u/:u/standard/`. `src/standard-reach.test.ts` fails when an op
+reaches neither front end, or when a route no page fetches.
+
+*This paragraph said the opposite until 2026-08-29* — "the web front end has no routes for
+any of it … this surface is currently agent-only" — and was three weeks stale inside the
+section that describes what is built. It survived a reconciliation pass on the same day that
+rewrote § *Deliberately open* and did not re-read this one. Worth knowing as a fact about
+this document rather than only as a correction: a build-state claim goes stale silently, and
+nothing here is witness-hashed the way the code claims are.
+
+The diff rollup is still the one thing with no route of its own: it rides the existing
+`/api/diff` payload and renders on `/#/u/:u/diff/`, which is also why its rows do not link
+anywhere.
 
 ## Deliberately open
 

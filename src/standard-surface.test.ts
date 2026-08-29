@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { spawnSync, spawn } from "node:child_process";
 import { indexBlob } from "./repo.js";
 import { writeStore } from "./store.js";
+import { PROBLEM_DISPOSITIONS } from "./schema.js";
 import type { State } from "./schema.js";
 import { discard } from "./test-tmp.js";
 import * as standard from "./ops/standard.js";
@@ -107,6 +108,41 @@ test("every write verb on the surface is reachable as an MCP tool", () => {
   ];
   const missing = writes.filter((w) => !new RegExp(`ops\\.${w}\\b`).test(mcp));
   assert.deepEqual(missing, [], "these writes have no tool, so no agent can be refused by them");
+});
+
+/**
+ * `requirement-misstated` is offered FIRST on every surface, and this is a test rather than
+ * a comment because the failure it prevents is invisible in the code that causes it.
+ *
+ * COD-29: *"if the discrepancy UI makes `code-wrong` the default path and shape 3 an
+ * exception, the system will systematically convert learning into defects."* Shape 3 is the
+ * commonest real outcome — the rule did not change, our statement of it was incomplete —
+ * and it is the one that evaporates today, because the exception lives in one person's head
+ * and only surfaces because a discrepancy forced it out. Hollnagel is the evidence: the gap
+ * between work-as-imagined and work-as-done is not automatically a defect, and closing it by
+ * forcing conformance makes an organisation more brittle rather than safer.
+ *
+ * A list is a default. Whoever reorders these alphabetically, or "logically" with
+ * `code-wrong` first, will be undoing a decision with a body of evidence behind it and no
+ * visible mark in the diff.
+ */
+test("requirement-misstated is the FIRST disposition offered, on every surface", () => {
+  assert.equal(PROBLEM_DISPOSITIONS[0], "requirement-misstated", "the shared vocabulary");
+
+  // The MCP enum: a model reads the first member as the ordinary case. Scoped to the
+  // adjudicate_problem BLOCK — a bare search for `disposition:` finds the findings enum,
+  // which is a different vocabulary and would have made this test pass on the wrong list.
+  const mcp = readFileSync("src/mcp.ts", "utf8");
+  const block = mcp.slice(mcp.indexOf('name: "adjudicate_problem"'));
+  const enumLine = block.slice(0, block.indexOf("},\n  {")).match(/disposition: \{ type: "string", enum: \[([^\]]*)\]/);
+  assert.ok(enumLine, "could not find adjudicate_problem's disposition enum");
+  assert.match(enumLine[1]!.trim(), /^"requirement-misstated"/);
+
+  // The browser: `DISPOSITIONS` is rendered in order as a row of buttons.
+  const web = readFileSync("web/standard.js", "utf8");
+  const list = web.match(/const DISPOSITIONS = \[\s*\n\s*\[([^,]*)/);
+  assert.ok(list, "could not find the web DISPOSITIONS list");
+  assert.match(list[1]!.trim(), /^'requirement-misstated'/);
 });
 
 test("an agent may not decide any question the standard reserves to a principal", async () => {

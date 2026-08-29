@@ -1536,10 +1536,10 @@ const tools: Tool[] = [
   },
   {
     name: "adjudicate_problem",
-    description: "Decide which side moves. `code-wrong` — the rule stands and the code violates it. `requirement-changed` — the business moved. `requirement-misstated` — the rule did not change, our statement of it was incomplete. `accepted` — non-conformant and we are living with it. Adjudication is NOT closure: naming the move does not make it, and the problem stays open until the named move actually happens.",
+    description: "Decide which side moves. `requirement-misstated` — the rule did not change, our statement of it was incomplete; this is FIRST because it is the commonest real outcome and the one that otherwise evaporates (\"USD-only, except settlement float\" — an exception that lives in one person's head until a discrepancy forces it out), and a surface that offers `code-wrong` first systematically converts learning into defects. `code-wrong` — the rule stands and the code violates it. `requirement-changed` — the business moved. `accepted` — non-conformant and we are living with it. Adjudication is NOT closure: naming the move does not make it, and the problem stays open until the named move actually happens.",
     inputSchema: obj({
       problemId: { type: "string" },
-      disposition: { type: "string", enum: ["code-wrong", "requirement-changed", "requirement-misstated", "accepted"] },
+      disposition: { type: "string", enum: ["requirement-misstated", "code-wrong", "requirement-changed", "accepted"] },
       reason: { type: "string" },
       model: { type: "string", description: "YOUR model id. Never guess it." },
       harness: { type: "string" },
