@@ -382,7 +382,7 @@ class SpecPage extends Component {
           <textarea rows="${rows}" value="${this.state.form[k] || ''}"
             on-input="${(e) => this.set(k, e.target.value)}"></textarea></label>`
       : html`<label class="fs"><span class="dim">${label}</span>
-          <input value="${this.state.form[k] || ''}" on-change="${(e, v) => this.set(k, v)}"></label>`;
+          <input value="${this.state.form[k] || ''}" on-input="${(e) => this.set(k, e.target.value)}"></label>`;
   }
 
   /**
@@ -432,18 +432,18 @@ class SpecPage extends Component {
       ${when(this.state.editing === o.operation.id, () => html`<div class="op-move">
         ${each(this.opFields(k), (f) => this.field(f[0], f[1], f[2]), (f) => f[0])}
         ${this.field('rationale', 'why', 2)}
-        <div class="op-actions">
+        <div class="op-edit">
           <button class="pullbtn" disabled="${!!this.state.busy}"
             on-click="${() => this.correct('rev:' + o.operation.id, 'revise_operation', { operationId: o.operation.id, ...this.state.form })}">save</button>
           <button class="pullbtn" on-click="${() => this.edit(o.operation.id, {})}">cancel</button>
         </div>
         <input placeholder="reason, if removing this operation…" value="${this.state.form._why || ''}"
-          on-change="${(e, v) => this.set('_why', v)}">
+          on-input="${(e) => this.set('_why', e.target.value)}">
         <button class="pullbtn" disabled="${!this.state.form._why || !!this.state.busy}"
           title="pull it out of the proposal. It stops applying and stays readable as history, with your reason on it."
           on-click="${() => this.correct('rm:' + o.operation.id, 'remove_operation', { operationId: o.operation.id, reason: this.state.form._why })}">remove operation</button>
       </div>`)}
-      ${when(this.state.d.spec.status === 'draft' && this.state.editing !== o.operation.id, () => html`<div class="op-actions">
+      ${when(this.state.d.spec.status === 'draft' && this.state.editing !== o.operation.id, () => html`<div class="op-edit">
         <button class="pullbtn" on-click="${() => this.edit(o.operation.id, {
           title: o.operation.title, section: o.operation.section, statement: o.operation.statement,
           provenance: o.operation.provenance, criterion: o.operation.criterion, falsifier: o.operation.falsifier,
@@ -464,14 +464,14 @@ class SpecPage extends Component {
       <div class="fs dim">${d.spec.status} · proposed by ${d.spec.author && d.spec.author.principal ? d.spec.author.principal : 'unknown'}${d.spec.author && d.spec.author.via ? ' (via ' + (d.spec.author.via.model || 'agent') + ')' : ''}</div>
       ${when(!!d.spec.narrative, () => html`<div class="op-card"><div class="fs dim">background — NON-OPERATIVE, nothing here changes the standard</div><div class="fs">${d.spec.narrative}</div></div>`)}
       ${when((d.spec.revisions || []).length > 0, () => html`<div class="fs dim">corrected ${d.spec.revisions.length} time${d.spec.revisions.length === 1 ? '' : 's'} while a draft — last by ${d.spec.revisions[d.spec.revisions.length - 1].by.principal} on ${(d.spec.revisions[d.spec.revisions.length - 1].at || '').slice(0, 10)}</div>`)}
-      ${when(d.spec.status === 'draft' && this.state.editing !== 'spec', () => html`<div class="op-actions">
+      ${when(d.spec.status === 'draft' && this.state.editing !== 'spec', () => html`<div class="op-edit">
         <button class="pullbtn" title="fix the proposal's own words. A draft binds nothing, so correcting one is authoring it — and a correction left in a comment is read AFTER the wrong framing."
           on-click="${() => this.edit('spec', { title: d.spec.title, narrative: d.spec.narrative || '' })}">correct title / background</button>
       </div>`)}
       ${when(this.state.editing === 'spec', () => html`<div class="op-card">
         ${this.field('title', 'title')}
         ${this.field('narrative', 'background — NON-OPERATIVE', 4)}
-        <div class="op-actions">
+        <div class="op-edit">
           <button class="pullbtn" disabled="${!!this.state.busy}"
             on-click="${() => this.correct('revspec', 'revise_spec', { specId: d.spec.id, title: this.state.form.title, narrative: this.state.form.narrative })}">save</button>
           <button class="pullbtn" on-click="${() => this.edit('spec', {})}">cancel</button>

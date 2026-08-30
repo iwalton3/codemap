@@ -242,6 +242,105 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
     await page.close();
   });
 
+  /**
+   * Correcting a DRAFT from the browser — deliverable's other half.
+   *
+   * An agent drafts, goes away, and the principal about to adopt the thing is the one who
+   * spots that the narrative names the wrong branch. Their only alternative was refusing
+   * the whole proposal, or a comment the ratifier reads AFTER the wrong framing.
+   *
+   * A fresh spec of its own, because the tests in this file share one fixture and this one
+   * ends by removing an operation — reusing `draft` would change what the ratification
+   * test below adopts.
+   */
+  test("a person corrects a draft in the browser: the title, an operation, and pulling one", async () => {
+    const sp = ok(await ops.draftSpec(root, { title: "Sweep window", narrative: "on branch feat/typo", ...AGENT })) as any;
+    const keep = ok(await ops.addOperation(root, {
+      specId: sp.id, kind: "add_requirement", rationale: "the sweep has a window",
+      reversibility: "reversible", title: "Sweep window", section: "Settlement/Sweep",
+      statement: "The sweep runs at 17:00.", provenance: "treasury practice", ...AGENT,
+    } as any)) as any;
+    const pull = ok(await ops.addOperation(root, {
+      specId: sp.id, kind: "add_requirement", rationale: "second thought",
+      reversibility: "reversible", title: "Sweep rounding", section: "Settlement/Sweep",
+      statement: "The sweep rounds to the cent.", provenance: "treasury practice", ...AGENT,
+    } as any)) as any;
+
+    const { page, errors } = await open(`/u/${universe}/standard/spec/${sp.id}/`);
+    await page.waitForSelector(".op-edit button", { timeout: 10_000 });
+
+    // The narrative, which is the thing that renders and therefore the thing a wrong
+    // framing does its damage through.
+    await page.locator(".op-edit button", { hasText: "correct title / background" }).click();
+    await page.locator("main > .op-card textarea").fill("on branch feat/sweep");
+    await page.locator(".op-edit button", { hasText: "save" }).click();
+    await page.waitForFunction(
+      () => !!document.querySelector("main")?.textContent?.includes("feat/sweep"), null, { timeout: 10_000 },
+    );
+    const afterSpec = await page.textContent("main");
+    assert.doesNotMatch(afterSpec!, /feat\/typo/, "the ratifier reads ONE current text, not a correction chain");
+    assert.match(afterSpec!, /corrected 1 time/, "and that it was corrected, by whom");
+
+    // One operation's statement.
+    await page.locator(`.op-card`).filter({ hasText: "The sweep runs at 17:00." })
+      .locator(".op-edit button", { hasText: "correct this operation" }).click();
+    await page.locator(".op-move textarea").first().fill("The sweep runs at 16:00.");
+    await page.locator(".op-move .op-edit button", { hasText: "save" }).click();
+    await page.waitForFunction(
+      () => !!document.querySelector("main")?.textContent?.includes("16:00"), null, { timeout: 10_000 },
+    );
+
+    // And pulling one out, which is the verb whose absence made the asymmetry backwards.
+    await page.locator(`.op-card`).filter({ hasText: "The sweep rounds to the cent." })
+      .locator(".op-edit button", { hasText: "correct this operation" }).click();
+    await page.locator(".op-move input").last().fill("rounding belongs in its own spec");
+    await page.locator(".op-move button", { hasText: "remove operation" }).click();
+    await page.waitForFunction(
+      () => !!document.querySelector("main")?.textContent?.includes("pulled from this proposal"), null, { timeout: 10_000 },
+    );
+    assert.deepEqual(errors, []);
+    await page.close();
+
+    // Asserted through ops, not through the page that just told us it happened.
+    const served = ok(await ops.getSpec(root, { specId: sp.id })) as any;
+    assert.equal(served.spec.narrative, "on branch feat/sweep");
+    assert.deepEqual(served.operations.map((o: any) => o.operation.id), [keep.id]);
+    assert.equal(served.operations[0].operation.statement, "The sweep runs at 16:00.");
+    assert.deepEqual(served.removed.map((o: any) => o.id), [pull.id]);
+    assert.match(served.removed[0].removed.reason, /own spec/);
+  });
+
+  /**
+   * The UI hides the buttons on a ratified spec; that is not what stops the edit.
+   *
+   * A browser is a client, and a client is not a guard. `curl` is the whole threat model
+   * this route already has (`PRINCIPAL_NOTICE`), so the refusal has to be in the handler —
+   * and it is, in `requirements.ts` and again in `foldStandard`. This drives the ROUTE
+   * with the notice satisfied, which is the strongest form of the attempt.
+   */
+  test("a correction to a RATIFIED spec is refused by the server, not merely hidden by the page", async () => {
+    const a = await (await fetch(`${server.url}/api/standard/attest`)).json();
+    const attest = `${a.notice} ${a.nonce}`;
+    const post = async (act: string, body: Record<string, unknown>) =>
+      (await (await fetch(`${server.url}/api/standard/${act}`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ u: universe, attest, ...body }),
+      })).json()) as { error?: string };
+
+    // The rule that already stands, and the operation that produced it.
+    const history = ok(await ops.getRequirement(root, { id: ruleId })) as any;
+    const producing = history.history.find((o: any) => o.kind === "add_requirement");
+    const specOf = producing.specId;
+
+    assert.match((await post("revise_spec", { specId: specOf, title: "quietly different" })).error ?? "", /ratified/);
+    assert.match((await post("revise_operation", { operationId: producing.id, statement: "All credit lines are in GBP." })).error ?? "", /ratified/);
+    assert.match((await post("remove_operation", { operationId: producing.id, reason: "second thoughts" })).error ?? "", /ratified/);
+
+    // And the standard did not move.
+    const rule = ok(await ops.getRequirement(root, { id: ruleId })) as any;
+    assert.equal(rule.requirement.statement, "All credit lines are in USD or GBP.");
+  });
+
   test("a rule says when it was last looked at, what is watching it, and what has silenced it", async () => {
     const { page, errors } = await open(`/u/${universe}/standard/r/${ruleId}/`);
     await page.waitForSelector(".op-card", { timeout: 10_000 });

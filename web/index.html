@@ -193,6 +193,17 @@
     .op-blocked { font-size: 12px; color: var(--warn); margin-top: 3px; }
     .op-gap { margin-top: 6px; padding: 6px 9px; border-radius: 6px; border: 1px solid var(--warn); color: var(--warn); font-size: 12.5px; }
     .op-actions { display: flex; align-items: center; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+    /* Correcting a draft is AUTHORING it; ratify/withdraw is disposing of it. Two rows,
+       two classes, so a selector aimed at one can never pick up the other. */
+    .op-edit { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+    .op-edit input { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 5px 10px; font-size: 13px; min-width: 220px; }
+    .op-card label.fs, .op-move label.fs { display: block; margin-top: 6px; }
+    .op-card label.fs input, .op-card label.fs textarea,
+    .op-move label.fs input, .op-move label.fs textarea {
+      display: block; width: 100%; box-sizing: border-box; margin-top: 3px;
+      background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+      border-radius: 6px; padding: 5px 10px; font-size: 12.5px; font-family: inherit;
+    }
     .cmts { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
     .cmt { margin-top: 6px; padding: 6px 9px; border-radius: 6px; background: var(--panel2); }
     .cmt-h { font-size: 11.5px; color: var(--dim); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
