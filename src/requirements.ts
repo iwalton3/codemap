@@ -1139,27 +1139,6 @@ export async function relianceOn(root: string, ops: Operation[]): Promise<Relian
 }
 
 /**
- * Withdraw a spec — the BEFORE-reliance half of backout.
- *
- * A draft may always be withdrawn: nothing has applied, so there is nothing to falsify,
- * and it is what ends a pre-approved gap's life along with the proposal it was attached to.
- *
- * A RATIFIED spec may be withdrawn only while its effects are still self-contained, and
- * `relianceOn` decides that rather than the caller. Two things it is not:
- *
- * - **It is not a delete.** The spec keeps its row and its ratification. Removing a ratified
- *   spec from the log would destroy the audit trail of the act most worth auditing; what
- *   comes out of the standard is what the spec PUT there.
- * - **It is not a revert.** A spec that amended, retired or re-filed something that already
- *   existed is refused outright, however little relies on it, because undoing it means
- *   restoring a statement together with the witnesses taken when it was adopted — and the
- *   row no longer holds them, the amendment re-baselined them. A "revert" would therefore
- *   re-baseline the old text against today's code as though the amendment had never
- *   happened, which is a fabricated observation on the most authoritative record here. A
- *   compensating spec restores the text as its own witnessed act, which is honest and is
- *   what `docs/requirements-architecture.md` means by repeal.
- */
-/**
  * Who may withdraw, and the one case where it is not a principal.
  *
  * The refusal `principal()` hands back — *"an agent may author and propose; adopting is
@@ -1213,6 +1192,27 @@ async function withdrawer(root: string, sp: Spec, input: ActorInput): Promise<Ac
   return a;
 }
 
+/**
+ * Withdraw a spec — the BEFORE-reliance half of backout.
+ *
+ * A draft may always be withdrawn: nothing has applied, so there is nothing to falsify,
+ * and it is what ends a pre-approved gap's life along with the proposal it was attached to.
+ *
+ * A RATIFIED spec may be withdrawn only while its effects are still self-contained, and
+ * `relianceOn` decides that rather than the caller. Two things it is not:
+ *
+ * - **It is not a delete.** The spec keeps its row and its ratification. Removing a ratified
+ *   spec from the log would destroy the audit trail of the act most worth auditing; what
+ *   comes out of the standard is what the spec PUT there.
+ * - **It is not a revert.** A spec that amended, retired or re-filed something that already
+ *   existed is refused outright, however little relies on it, because undoing it means
+ *   restoring a statement together with the witnesses taken when it was adopted — and the
+ *   row no longer holds them, the amendment re-baselined them. A "revert" would therefore
+ *   re-baseline the old text against today's code as though the amendment had never
+ *   happened, which is a fabricated observation on the most authoritative record here. A
+ *   compensating spec restores the text as its own witnessed act, which is honest and is
+ *   what `docs/requirements-architecture.md` means by repeal.
+ */
 export async function withdrawSpec(
   root: string, specId: string, input: { reason: string } & ActorInput,
 ): Promise<{ ok: true; spec: Spec; removed: string[] } | (Err & { reliance?: Reliance[] })> {

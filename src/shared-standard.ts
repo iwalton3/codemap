@@ -106,12 +106,6 @@ export const publishOperation = (logRoot: string, scope: string, actor: Actor, o
   put(logRoot, scope, actor, "spec.operation", op.specId, { operation: op });
 
 /**
- * The ratification, carrying the witnesses the ratifier observed.
- *
- * The event is subject-keyed on the SPEC, not on any requirement: adopting a spec is one
- * act, and splitting it per operation would let a clone fold half an argument.
- */
-/**
  * Correcting a DRAFT: the title/narrative, one operation's payload, and pulling one out.
  *
  * Acts, so they enter the log — and each is subject-keyed the way its creating event is
@@ -132,6 +126,12 @@ export const publishOperationRevised = (logRoot: string, scope: string, actor: A
 export const publishOperationRemoved = (logRoot: string, scope: string, actor: Actor, op: Operation) =>
   put(logRoot, scope, actor, "spec.operation.removed", op.specId, { operation: op });
 
+/**
+ * The ratification, carrying the witnesses the ratifier observed.
+ *
+ * The event is subject-keyed on the SPEC, not on any requirement: adopting a spec is one
+ * act, and splitting it per operation would let a clone fold half an argument.
+ */
 export const publishSpecRatified = (
   logRoot: string, scope: string, actor: Actor, specId: string, at: string,
   witnesses: Record<string, BugWitness[]>, operations: string[],
@@ -243,17 +243,6 @@ function sameBaseline(a: unknown, b: unknown): boolean {
 }
 
 /**
- * Fold the standard from a MERGED event stream — law plus evidence.
- *
- * `opts.evidence` says whether the evidence half could be read as settled. It defaults to
- * true so every existing caller and test is unchanged, and it is load-bearing in exactly
- * one place: `spec.withdrawn`. Withdrawal is permitted only when NOTHING relies on what a
- * spec introduced, and reliance is counted from audits, pointers, populations, problems and
- * criteria. A fold that cannot see those does not find *less* reliance — it finds NONE, and
- * permits a withdrawal that something already cites. That is the one failure in this design
- * that answers wrongly rather than incompletely, so it refuses instead.
- */
-/**
  * Is this actor barred from rewriting or pulling this operation, because somebody ELSE's
  * pending approval hangs off it?
  *
@@ -272,6 +261,17 @@ function revisionBlocked(
   return false;
 }
 
+/**
+ * Fold the standard from a MERGED event stream — law plus evidence.
+ *
+ * `opts.evidence` says whether the evidence half could be read as settled. It defaults to
+ * true so every existing caller and test is unchanged, and it is load-bearing in exactly
+ * one place: `spec.withdrawn`. Withdrawal is permitted only when NOTHING relies on what a
+ * spec introduced, and reliance is counted from audits, pointers, populations, problems and
+ * criteria. A fold that cannot see those does not find *less* reliance — it finds NONE, and
+ * permits a withdrawal that something already cites. That is the one failure in this design
+ * that answers wrongly rather than incompletely, so it refuses instead.
+ */
 export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = {}): SharedStandard {
   const evidenceReadable = opts.evidence !== false;
   const specs = new Map<string, Spec>();
