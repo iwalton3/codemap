@@ -243,6 +243,9 @@ test("every read on the standard ops surface goes through the scope marker", () 
   // and mutate; they carry no marker because their answer is an outcome, not a projection.
   const WRITES = new Set([
     "draftSpec", "addOperation", "ratifySpec", "withdrawSpec", "reorganizeRequirement", "acknowledgeGap",
+    // The three correction verbs on a draft. Writes, so they answer with an outcome rather
+    // than a projection, exactly as `addOperation` beside them does.
+    "reviseSpec", "reviseOperation", "removeOperation",
     "acknowledgeDebt", "releaseAcknowledgement", "recordAudit", "recordVacuityCheck",
     "promoteProvisionalAudit", "raiseProblem", "adjudicate", "declarePointer",
     "restatePointer", "retirePointer", "pinPopulation", "declareNotExpressible",

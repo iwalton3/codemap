@@ -111,6 +111,27 @@ export const publishOperation = (logRoot: string, scope: string, actor: Actor, o
  * The event is subject-keyed on the SPEC, not on any requirement: adopting a spec is one
  * act, and splitting it per operation would let a clone fold half an argument.
  */
+/**
+ * Correcting a DRAFT: the title/narrative, one operation's payload, and pulling one out.
+ *
+ * Acts, so they enter the log — and each is subject-keyed the way its creating event is
+ * (`spec.revised` on the spec, both operation events on the SPEC, matching `spec.operation`)
+ * so a clone folding by subject sees the whole proposal's history in one place.
+ *
+ * Each carries the corrected record whole. The fold re-checks the draft status and, for a
+ * removal, that nothing else in the draft targets it — a row reaching a teammate's clone was
+ * never seen by their MCP call, so a guard that lives only in the tool binds one machine.
+ */
+export const publishSpecRevised = (
+  logRoot: string, scope: string, actor: Actor, spec: Spec, at: string,
+) => put(logRoot, scope, actor, "spec.revised", spec.id, { spec, at });
+
+export const publishOperationRevised = (logRoot: string, scope: string, actor: Actor, op: Operation) =>
+  put(logRoot, scope, actor, "spec.operation.revised", op.specId, { operation: op });
+
+export const publishOperationRemoved = (logRoot: string, scope: string, actor: Actor, op: Operation) =>
+  put(logRoot, scope, actor, "spec.operation.removed", op.specId, { operation: op });
+
 export const publishSpecRatified = (
   logRoot: string, scope: string, actor: Actor, specId: string, at: string,
   witnesses: Record<string, BugWitness[]>, operations: string[],
@@ -232,6 +253,25 @@ function sameBaseline(a: unknown, b: unknown): boolean {
  * permits a withdrawal that something already cites. That is the one failure in this design
  * that answers wrongly rather than incompletely, so it refuses instead.
  */
+/**
+ * Is this actor barred from rewriting or pulling this operation, because somebody ELSE's
+ * pending approval hangs off it?
+ *
+ * The tool's `attachedByOthers`, restated where a remote clone can see it. The tool's count
+ * is TOCTOU across clones — a gap granted elsewhere is invisible to it — so without this a
+ * revision races an acknowledgement and silently changes what that grant approved.
+ */
+function revisionBlocked(
+  op: Operation, actor: Actor, acknowledgements: Map<string, Acknowledgement>,
+): boolean {
+  for (const ack of acknowledgements.values()) {
+    if (ack.operationId !== op.id) continue;
+    if (ack.state === "released") continue;
+    if (ack.grantedBy?.principal !== actor.principal) return true;
+  }
+  return false;
+}
+
 export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = {}): SharedStandard {
   const evidenceReadable = opts.evidence !== false;
   const specs = new Map<string, Spec>();
@@ -259,6 +299,64 @@ export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = 
       case "spec.operation": {
         const op = obj(e.data, "operation") as Operation | undefined;
         if (op?.id) operations.set(op.id, { ...op, origin: "sync" });
+        break;
+      }
+      /**
+       * Correcting a DRAFT — the fold half of `reviseSpec` / `reviseOperation` /
+       * `removeOperation`.
+       *
+       * Every refusal the tool makes is restated here, because a row reaching a teammate's
+       * clone was never seen by their MCP call. The one that carries the design is the
+       * DRAFT check: immutability attaches at ratification, so an event that would rewrite
+       * a ratified spec or one of its operations is dropped whoever wrote it. Anything else
+       * would let a client edit the act that produced a binding rule.
+       *
+       * Deliberately NOT restated: the comment count. Notes are a different sidecar scope
+       * and `foldStandard` does not read it — see `commentsByOthers`, which states the
+       * consequence.
+       */
+      case "spec.revised": {
+        const next = obj(e.data, "spec") as Spec | undefined;
+        const sp = next?.id ? specs.get(next.id) : undefined;
+        if (!next || !sp || sp.status !== "draft") break;
+        if (!next.title?.trim()) break;
+        specs.set(sp.id, {
+          ...sp, title: next.title, narrative: next.narrative,
+          revisions: next.revisions, origin: "sync",
+        });
+        break;
+      }
+      case "spec.operation.revised":
+      case "spec.operation.removed": {
+        const next = obj(e.data, "operation") as Operation | undefined;
+        const cur = next?.id ? operations.get(next.id) : undefined;
+        if (!next || !cur) break;
+        const sp = specs.get(cur.specId);
+        if (!sp || sp.status !== "draft") break;
+        // A kind change is a different operation validated against fields this one was
+        // never written with; the tool refuses it and so does this.
+        if (next.kind !== cur.kind) break;
+        if (revisionBlocked(cur, e.actor, acknowledgements)) break;
+        if (e.kind === "spec.operation.removed") {
+          if (cur.removed || !next.removed?.reason?.trim()) break;
+          // A criterion in this same draft naming the operation as its target would be left
+          // with no rule. Restated from the fold's OWN operation map rather than from the
+          // writer's account of it.
+          const dependents = [...operations.values()]
+            .some((o) => o.specId === cur.specId && !o.removed && o.targetOperationId === cur.id);
+          if (dependents) break;
+          operations.set(cur.id, { ...cur, removed: next.removed, origin: "sync" });
+          for (const [id, ack] of acknowledgements) {
+            if (ack.operationId === cur.id && ack.state !== "released") {
+              acknowledgements.set(id, { ...ack, state: "released", releasedAt: next.removed.at });
+            }
+          }
+          break;
+        }
+        if (cur.removed) break;
+        // `ord`, `specId` and `removed` are the fold's, never the writer's: a revision that
+        // moved an operation's position would re-order a proposal a ratifier already read.
+        operations.set(cur.id, { ...next, specId: cur.specId, ord: cur.ord, removed: undefined, origin: "sync" });
         break;
       }
       case "spec.ratified": {
@@ -349,7 +447,19 @@ export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = 
         if (!evidenceReadable) break;
         // Withdrawal takes something OUT of the standard, so it is a principal's act — the
         // same gate `withdrawSpec` applies, restated where a remote clone can see it.
-        if (e.actor.via) break;
+        //
+        // With ONE exception, and it is the same one the tool makes: an agent may take back
+        // its own principal's DRAFT. Nothing applied, so nothing is unbound, and COD-29 puts
+        // authorship on the open side of the asymmetry. The two conditions the tool checks
+        // are both re-checked here from the fold's own rows — the author on the spec, and
+        // any pending acknowledgement somebody else granted against its operations — because
+        // this row was never seen by the receiving clone's MCP call.
+        if (e.actor.via) {
+          if (sp.status !== "draft") break;
+          if (sp.author?.principal !== e.actor.principal) break;
+          const mineSoFar = [...operations.values()].filter((o) => o.specId === sp.id && !o.removed);
+          if (mineSoFar.some((o) => revisionBlocked(o, e.actor, acknowledgements))) break;
+        }
         const at = str(e.data, "at") ?? e.at;
         const mine = [...operations.values()].filter((o) => o.specId === sp.id);
         if (sp.status === "ratified") {

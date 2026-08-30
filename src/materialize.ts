@@ -114,7 +114,15 @@ import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeStatu
 // old single scope holds rows whose input set is now different, and only the shards move a
 // fingerprint — so without this bump it would serve that standard for ever and `served()`
 // would call it authoritative. See `materialize.ts` 12 -> 13 for the same rule stated first.
-export const MATERIALIZER_VERSION = 16;
+//
+// 16 -> 17: a DRAFT spec has a correction path, so `foldStandard` folds three new law
+// events (`spec.revised`, `spec.operation.revised`, `spec.operation.removed`) and the
+// `spec.withdrawn` gate now admits an agent taking back its own draft. Same rule as every
+// entry above: the table set did not change and the shards do not move when the fold's mind
+// does, so without the bump a store that has already folded this scope would serve the
+// pre-correction standard for ever — showing an operation its author pulled as one the
+// principal is being asked to adopt.
+export const MATERIALIZER_VERSION = 17;
 
 /**
  * What the events in a scope are, cheaply.

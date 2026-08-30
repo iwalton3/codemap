@@ -31,6 +31,7 @@ import type { LogEvent } from "./eventlog.js";
 import { standardProjection } from "./shared-projections.js";
 import {
   foldStandard, standardScope, lawScope, isLawEvent, publishSpecDrafted, publishOperation, publishSpecRatified,
+  publishSpecRevised, publishOperationRevised, publishOperationRemoved,
   publishAckGranted, publishAckReleased, publishAudit, publishProblemRaised, publishAdjudication,
   publishSpecWithdrawn,
   publishVacuityCheck, publishPointerDeclared, publishPointerRestated, publishPointerRetired,
@@ -171,6 +172,22 @@ export const shareSpecDrafted = (root: string, spec: Spec): Promise<Shared> =>
 
 export const shareOperation = (root: string, op: Operation): Promise<Shared> =>
   share(root, (l, s, a) => publishOperation(l, s, a, op), lawScope());
+
+/**
+ * The three CORRECTION acts on a draft. Law, like every other `spec.*` event.
+ *
+ * Each carries the whole corrected record rather than a delta, which is what lets the fold
+ * apply it without replaying the revision chain — and the chain is on the record anyway, in
+ * `revisions`, so nothing is lost by the event being idempotent.
+ */
+export const shareSpecRevised = (root: string, spec: Spec, at: string): Promise<Shared> =>
+  share(root, (l, s, a) => publishSpecRevised(l, s, a, spec, at), lawScope());
+
+export const shareOperationRevised = (root: string, op: Operation): Promise<Shared> =>
+  share(root, (l, s, a) => publishOperationRevised(l, s, a, op), lawScope());
+
+export const shareOperationRemoved = (root: string, op: Operation): Promise<Shared> =>
+  share(root, (l, s, a) => publishOperationRemoved(l, s, a, op), lawScope());
 
 export const shareSpecRatified = (
   root: string, specId: string, at: string, witnesses: Record<string, BugWitness[]>,

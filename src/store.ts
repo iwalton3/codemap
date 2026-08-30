@@ -2248,8 +2248,17 @@ export async function readOperation(root: string, id: string): Promise<Operation
   } catch { return null; }
 }
 
+/**
+ * A spec's operations, with removed ones filtered out by DEFAULT.
+ *
+ * Removal is a tombstone (`Operation.removed`) so `ord` stays stable, and the default has
+ * to be the safe one: every operative caller — ratification, reliance, the gap binding, the
+ * rendering, the queue counts — must never see an operation the author pulled. Only a
+ * surface that is showing HISTORY passes `includeRemoved`, and `addOperation` passes it to
+ * pick the next `ord`, because a tombstone still occupies its position.
+ */
 export async function readOperations(
-  root: string, opts: { specId?: string; requirementId?: string } = {},
+  root: string, opts: { specId?: string; requirementId?: string; includeRemoved?: boolean } = {},
 ): Promise<Operation[]> {
   const clauses: string[] = [];
   const args: string[] = [];
@@ -2260,7 +2269,10 @@ export async function readOperations(
     `SELECT body, origin FROM operations${where} ORDER BY spec_id, ord`,
   ).all(...args as []) as unknown as { body: string; origin: string | null }[];
   const out: Operation[] = [];
-  for (const r of rows) { const op = hydrateOperation(r.body, r.origin); if (op) out.push(op); }
+  for (const r of rows) {
+    const op = hydrateOperation(r.body, r.origin);
+    if (op && (opts.includeRemoved || !op.removed)) out.push(op);
+  }
   return out;
 }
 

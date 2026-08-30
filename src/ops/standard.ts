@@ -24,7 +24,9 @@
 
 import {
   draftSpec as draftSpecRec, addOperation as addOperationRec, ratifySpec as ratifySpecRec,
-  withdrawSpec as withdrawSpecRec,
+  withdrawSpec as withdrawSpecRec, reviseSpec as reviseSpecRec,
+  reviseOperation as reviseOperationRec, removeOperation as removeOperationRec,
+  type OperationInput,
   reorganizeRequirement as reorganizeRec, requirementSections as requirementSectionsRec,
   listRequirements as listRequirementsRec, getRequirement as getRequirementRec,
   getSpec as getSpecRec, pendingSpecs as pendingSpecsRec,
@@ -282,6 +284,24 @@ export const addOperation = (
 export const ratifySpec = (root: string, input: { specId: string } & ActorInput) =>
   ratifySpecRec(root, input.specId, input);
 
+/**
+ * The three correction verbs on a DRAFT. Open to any actor, exactly as `draft_spec` and
+ * `add_operation` are — correcting a proposal is authoring it, and the asymmetry is in
+ * adoption. Every refusal lives in `requirements.ts` and in `foldStandard`; nothing is
+ * gated here (see the module header).
+ */
+export const reviseSpec = (
+  root: string, input: { specId: string; title?: string; narrative?: string } & ActorInput,
+) => reviseSpecRec(root, input);
+
+export const reviseOperation = (
+  root: string, input: { operationId: string } & Partial<OperationInput> & ActorInput,
+) => reviseOperationRec(root, input);
+
+export const removeOperation = (
+  root: string, input: { operationId: string; reason: string } & ActorInput,
+) => removeOperationRec(root, input);
+
 export const withdrawSpec = (root: string, input: { specId: string; reason: string } & ActorInput) =>
   withdrawSpecRec(root, input.specId, input);
 
@@ -299,16 +319,25 @@ export const withdrawSpec = (root: string, input: { specId: string; reason: stri
 export const getSpec = async (root: string, input: { specId: string }) => {
   const out = await served(root, () => getSpecRec(root, input.specId));
   if ("error" in out) return out;
+  // Why the thread came back empty, when it did. An empty array reads as "nobody said
+  // anything", and on a store with no sidecar — or one whose note scope will not read —
+  // that is a surface answering a question it never asked, which is the failure
+  // `standardScopeWarning` exists for one layer over. The rows still come back; what this
+  // forbids is presenting silence as agreement.
+  let commentsUnavailable: string | undefined;
   const notesFor = async (id: string) => {
     const r = await sharedNotesRec(root, id);
-    return "error" in r ? [] : r.notes;
+    if (!("error" in r)) return r.notes;
+    commentsUnavailable ??= r.error;
+    return [];
   };
+  const comments = await notesFor(input.specId);
+  const operations = await Promise.all(
+    out.operations.map(async (o) => ({ ...o, comments: await notesFor(o.operation.id) })),
+  );
   return {
-    ...out,
-    comments: await notesFor(input.specId),
-    operations: await Promise.all(
-      out.operations.map(async (o) => ({ ...o, comments: await notesFor(o.operation.id) })),
-    ),
+    ...out, comments, operations,
+    ...(commentsUnavailable ? { commentsUnavailable } : {}),
   };
 };
 

@@ -38,7 +38,7 @@ import { criterionIdFor, EVIDENCE_KINDS, movedSection, normalizeSection, require
 import { universeKey } from "./sidecar-config.js";
 import {
   readAcknowledgements, readAudits, readCriteria, readOperations, readPopulations, readProblems,
-  readRequirement, readRequirements, readSpec, readSpecs, readVacuityChecks,
+  readOperation, readRequirement, readRequirements, readSpec, readSpecs, readVacuityChecks,
   readPointers, requirementSectionCounts, workHas, writeLocalCriterion, writeLocalOperation,
   writeLocalRequirement, writeLocalSpec, deleteLocalCriterion, deleteLocalRequirement,
 } from "./store.js";
@@ -47,7 +47,8 @@ import { ABSENT_HASH } from "./normalize.js";
 import { isAgentActor, requireActor } from "./identity.js";
 import type { ActorInput } from "./identity.js";
 import {
-  disposition, shareOperation, shareSpecDrafted, shareSpecRatified, shareSpecWithdrawn, type Shared,
+  disposition, shareOperation, shareOperationRemoved, shareOperationRevised, shareSpecDrafted,
+  shareSpecRatified, shareSpecRevised, shareSpecWithdrawn, type Shared,
 } from "./standard-publish.js";
 
 const mint = (p: string) => p + randomBytes(6).toString("hex");
@@ -285,29 +286,30 @@ export async function draftSpec(
   return { ok: true, id: sp.id, spec: sp };
 }
 
-/**
- * Add an operation to a draft spec. Any actor.
- *
- * `rationale` and `reversibility` are required per operation, not per spec. That is the
- * structural defence against the drift both legislative drafting and ITIL change records
- * document: with the rationale attached to the operation there is no free-floating prose
- * to disagree with what actually lands.
- */
-export async function addOperation(
-  root: string,
-  input: {
-    specId: string; kind: OperationKind; rationale: string; reversibility: Reversibility;
-    requirementId?: string; title?: string; section?: string; statement?: string;
-    provenance?: string; cites?: string[]; evidence?: string;
-    criterion?: string; falsifier?: string; evidenceKind?: EvidenceKind;
-    assertedBy?: string[]; targetOperationId?: string;
-    fromSection?: string; toSection?: string;
-  } & ActorInput,
-): Promise<{ ok: true; id: string; operation: Operation } | Err> {
-  const sp = await readSpec(root, input.specId);
-  if (!sp) return { error: `no spec "${input.specId}"` };
-  if (sp.status !== "draft") return { error: `${sp.id} is ${sp.status} — operations may only be added to a draft` };
+/** The authored fields of an operation — the set `add_operation` and `revise_operation` share. */
+export interface OperationInput {
+  kind: OperationKind; rationale: string; reversibility: Reversibility;
+  requirementId?: string; title?: string; section?: string; statement?: string;
+  provenance?: string; cites?: string[]; evidence?: string;
+  criterion?: string; falsifier?: string; evidenceKind?: EvidenceKind;
+  assertedBy?: string[]; targetOperationId?: string;
+  fromSection?: string; toSection?: string;
+}
 
+/**
+ * Validate an operation's fields against the standard as it stands and against the rest of
+ * the spec, and produce the payload plus the context it was written against.
+ *
+ * ONE function for authoring and for revising, and that is a rule rather than tidiness: a
+ * revision running a weaker set of checks would be a second, cheaper path to an operation
+ * the first path refuses, which is the exact shape `docs/requirements-architecture.md`
+ * gives for why there is no `updateRequirement`. `excluding` names the operation being
+ * revised, which must not count as its own sibling in the case-clash, move-collision and
+ * one-operation-per-rule checks.
+ */
+async function operationPayload(
+  root: string, sp: Spec, input: OperationInput, excluding?: string,
+): Promise<{ payload: Partial<Operation>; context?: Operation["context"] } | Err> {
   const rationale = input.rationale?.trim();
   if (!rationale) return { error: "an operation needs a rationale — what provoked it" };
   if (!REVERSIBILITY.includes(input.reversibility)) {
@@ -318,9 +320,7 @@ export async function addOperation(
         + "implementation cannot be undone is also a rule that is harder to amend later.",
     };
   }
-  const actor = requireActor(root, input);
-  if (isErr(actor)) return actor;
-
+  const siblings = (await readOperations(root, { specId: sp.id })).filter((o) => o.id !== excluding);
   const statement = input.statement?.trim();
   let payload: Partial<Operation> = {};
   let context: Operation["context"];
@@ -347,7 +347,7 @@ export async function addOperation(
           + "what tells a reader which rules are immovable and which are ours to revisit.",
       };
     }
-    const clash = await checkSection(root, section, sectionsIntroducedBy(await readOperations(root, { specId: sp.id })));
+    const clash = await checkSection(root, section, sectionsIntroducedBy(siblings));
     if (clash) return clash;
     // Refused rather than ignored. An author who passes citations has a model of what a
     // requirement is, and silently dropping them would leave that model intact and the
@@ -399,8 +399,7 @@ export async function addOperation(
     // written WITH the rule, in one reviewed artifact — and the rule has no id yet, so the
     // operation is named instead. `Acknowledgement.operationId` solved this same shape.
     if (input.targetOperationId) {
-      const target = (await readOperations(root, { specId: sp.id }))
-        .find((o) => o.id === input.targetOperationId);
+      const target = siblings.find((o) => o.id === input.targetOperationId);
       if (!target) return { error: `no operation "${input.targetOperationId}" in ${sp.id}` };
       if (target.kind !== "add_requirement") {
         return { error: `${target.id} is a ${target.kind} — a criterion attaches to the rule an \`add_requirement\` creates` };
@@ -427,7 +426,7 @@ export async function addOperation(
       return { error: "`move_section` needs `fromSection` and `toSection` — `/`-delimited paths naming the subtree and where it lands" };
     }
     if (from === to) return { error: "the destination is the source — nothing to move" };
-    const bad = await checkMove(root, from, to, await readOperations(root, { specId: sp.id }));
+    const bad = await checkMove(root, from, to, siblings);
     if (bad) return bad;
     payload = { fromSection: from, toSection: to };
   } else {
@@ -442,8 +441,7 @@ export async function addOperation(
     // principal is shown two contradictory rewrites each claiming to apply to the current
     // statement, and approves an outcome the rendering never displayed — which is the one
     // thing "review N operations instead of 5,000 lines" has to get right.
-    const already = (await readOperations(root, { specId: sp.id }))
-      .find((o) => o.requirementId === r.id && o.kind !== "add_criterion");
+    const already = siblings.find((o) => o.requirementId === r.id && o.kind !== "add_criterion");
     if (already) {
       return {
         error:
@@ -464,18 +462,339 @@ export async function addOperation(
     context = { requirementId: r.id, statement: r.statement };
     payload = { ...payload, requirementId: r.id };
   }
+  return { payload, context };
+}
 
-  const existing = await readOperations(root, { specId: sp.id });
+/**
+ * Add an operation to a draft spec. Any actor.
+ *
+ * `rationale` and `reversibility` are required per operation, not per spec. That is the
+ * structural defence against the drift both legislative drafting and ITIL change records
+ * document: with the rationale attached to the operation there is no free-floating prose
+ * to disagree with what actually lands.
+ */
+export async function addOperation(
+  root: string, input: { specId: string } & OperationInput & ActorInput,
+): Promise<{ ok: true; id: string; operation: Operation } | Err> {
+  const sp = await readSpec(root, input.specId);
+  if (!sp) return { error: `no spec "${input.specId}"` };
+  if (sp.status !== "draft") return { error: `${sp.id} is ${sp.status} — operations may only be added to a draft` };
+
+  const built = await operationPayload(root, sp, input);
+  if (isErr(built)) return built;
+  const actor = requireActor(root, input);
+  if (isErr(actor)) return actor;
+
+  // Next FREE position, not the count. A removed operation keeps its `ord` — the tombstone
+  // is what stops two operations claiming one position, and a count would hand the reused
+  // number straight back, leaving the fold's sort to break the tie differently per clone.
+  const taken = await readOperations(root, { specId: sp.id, includeRemoved: true });
   const op: Operation = {
-    id: mint("op_"), specId: sp.id, kind: input.kind, ...payload,
-    rationale, ...(input.evidence ? { evidence: input.evidence } : {}),
-    ...(context ? { context } : {}),
-    reversibility: input.reversibility, ord: existing.length,
+    id: mint("op_"), specId: sp.id, kind: input.kind, ...built.payload,
+    rationale: input.rationale.trim(), ...(input.evidence ? { evidence: input.evidence } : {}),
+    ...(built.context ? { context: built.context } : {}),
+    reversibility: input.reversibility,
+    ord: taken.reduce((n, o) => Math.max(n, o.ord + 1), 0),
   } as Operation;
   const d = disposition(await shareOperation(root, op));
   if ("error" in d) return d;
   if (d.local) await writeLocalOperation(root, op);
   return { ok: true, id: op.id, operation: op };
+}
+
+// --- correcting a draft ------------------------------------------------------
+
+/**
+ * Why a draft has a correction path at all, and why a ratified spec still does not.
+ *
+ * **Immutability attaches at RATIFICATION, not at drafting.** The argument the design
+ * makes for write-once — *"removing a ratified act destroys the audit trail of the thing
+ * most worth auditing"* — is about a spec that already binds something. A draft binds
+ * nothing: no requirement exists, no acknowledgement is active, no audit can rest on it.
+ * COD-29's principle is that the asymmetry is in ADOPTION, not in authorship, and every
+ * neighbouring record already has this path — `revise_finding` exists precisely because
+ * findings are filed before they are understood, and a proposal is filed under exactly the
+ * same conditions.
+ *
+ * What was actually costing something: an agent that mis-stated its own proposal had to put
+ * the correction in a COMMENT, so the ratifier read the wrong framing first (the narrative
+ * is what renders), then a retraction, then a retraction of the retraction. And the
+ * asymmetry ran backwards — `acknowledge_gap` lets an agent ADD a silencer that constrains
+ * what the ratifier is approving, while nothing let it REMOVE an operation it had come to
+ * believe was wrong.
+ *
+ * Three rules hold this section, and each is a refusal below rather than a line in a tool
+ * description (COD-24):
+ *
+ *  1. **Draft only.** Every verb here refuses once `status !== "draft"`, and the fold
+ *     refuses the same event for the same reason, because a row reaching a teammate's clone
+ *     was never seen by their MCP call.
+ *  2. **Correcting is authoring, so it is open to any actor** — the same gate `draft_spec`
+ *     and `add_operation` carry. Withdrawal is the exception: it destroys a record rather
+ *     than restating one.
+ *  3. **Mutate the current text, keep the old one underneath.** The ratifier's trade is
+ *     reading ONE current text; a correction chain they have to reassemble is that trade
+ *     failing at its last step. The prior wording is not lost — it is in `revisions`, and
+ *     on a shared store the events are the long version.
+ */
+
+/** Fields a revision changed, with what they said before. Empty means nothing moved. */
+const changedFields = <T extends object>(before: T, after: T, keys: (keyof T)[]): Partial<T> => {
+  const was: Partial<T> = {};
+  for (const k of keys) if (JSON.stringify(before[k]) !== JSON.stringify(after[k])) was[k] = before[k];
+  return was;
+};
+
+/** Correct a draft's title or narrative. Any actor; refused once it is ratified. */
+export async function reviseSpec(
+  root: string, input: { specId: string; title?: string; narrative?: string } & ActorInput,
+): Promise<{ ok: true; spec: Spec } | Err> {
+  const sp = await readSpec(root, input.specId);
+  if (!sp) return { error: `no spec "${input.specId}"` };
+  if (sp.status !== "draft") {
+    return {
+      error:
+        `${sp.id} is ${sp.status} — a proposal may be corrected while it is a draft and never `
+        + `after. Immutability attaches when a claim becomes binding: the standard is a `
+        + `projection of the ratified specs, so editing one now would rewrite the record of an `
+        + `act somebody performed. Amend the rule with a new spec instead.`,
+    };
+  }
+  const actor = requireActor(root, input);
+  if (isErr(actor)) return actor;
+
+  const title = input.title === undefined ? sp.title : input.title.trim();
+  if (!title) return { error: "a spec needs a title" };
+  const narrative = input.narrative === undefined ? sp.narrative : input.narrative.trim() || undefined;
+  const was = changedFields(sp, { ...sp, title, narrative }, ["title", "narrative"]);
+  if (!Object.keys(was).length) return { error: "nothing to change" };
+
+  const at = now();
+  const next: Spec = {
+    ...sp, title, ...(narrative ? { narrative } : {}), revisions: [...(sp.revisions ?? []), { at, by: actor, was }],
+  };
+  if (!narrative) delete next.narrative;
+  const d = disposition(await shareSpecRevised(root, next, at));
+  if ("error" in d) return d;
+  if (d.local) await writeLocalSpec(root, next);
+  return { ok: true, spec: next };
+}
+
+/**
+ * Correct one operation on a draft spec. Any actor; refused once the spec is ratified.
+ *
+ * The whole payload is re-validated by `operationPayload`, so a revision can never produce
+ * an operation `add_operation` would have refused. `kind` is deliberately not revisable —
+ * see `Operation.revisions`.
+ */
+export async function reviseOperation(
+  root: string, input: { operationId: string } & Partial<OperationInput> & ActorInput,
+): Promise<{ ok: true; operation: Operation } | Err> {
+  const op = await readOperation(root, input.operationId);
+  if (!op) return { error: `no operation "${input.operationId}"` };
+  if (op.removed) return { error: `${op.id} was removed from ${op.specId} — add the operation you meant instead` };
+  const sp = await readSpec(root, op.specId);
+  if (!sp) return { error: `operation ${op.id} points at missing spec ${op.specId}` };
+  if (sp.status !== "draft") {
+    return {
+      error:
+        `${sp.id} is ${sp.status} — an operation may be corrected while its spec is a draft and `
+        + `never after. Once adopted it is the act that produced a rule, and rewriting it would `
+        + `rewrite the standard's own provenance. Amend the rule with a new spec instead.`,
+    };
+  }
+  if (input.kind !== undefined && input.kind !== op.kind) {
+    return {
+      error:
+        `${op.id} is a \`${op.kind}\` and revision does not change that — a different kind is a `
+        + `different operation, validated against fields this one was never written with. `
+        + `\`remove_operation\` this one and add the one you meant.`,
+    };
+  }
+  const blocked = await attachedByOthers(root, op, input);
+  if (blocked) return blocked;
+  const actor = requireActor(root, input);
+  if (isErr(actor)) return actor;
+
+  // Every field the caller did not name keeps its current value, so a revision that means to
+  // fix a typo in one statement cannot blank a rationale by omission.
+  const merged: OperationInput = {
+    kind: op.kind,
+    rationale: input.rationale ?? op.rationale,
+    reversibility: input.reversibility ?? op.reversibility,
+    requirementId: input.requirementId ?? op.requirementId,
+    title: input.title ?? op.title,
+    section: input.section ?? op.section,
+    statement: input.statement ?? op.statement,
+    provenance: input.provenance ?? op.provenance,
+    cites: input.cites,
+    evidence: input.evidence ?? op.evidence,
+    criterion: input.criterion ?? op.criterion,
+    falsifier: input.falsifier ?? op.falsifier,
+    evidenceKind: input.evidenceKind ?? op.evidenceKind,
+    assertedBy: input.assertedBy ?? op.assertedBy,
+    targetOperationId: input.targetOperationId ?? op.targetOperationId,
+    fromSection: input.fromSection ?? op.fromSection,
+    toSection: input.toSection ?? op.toSection,
+  };
+  const built = await operationPayload(root, sp, merged, op.id);
+  if (isErr(built)) return built;
+
+  const candidate: Operation = {
+    ...op,
+    // The stale halves of the previous payload go with it: a `move_section` revised from an
+    // `amend_statement`'s fields would otherwise keep the old `statement`, and the rendering
+    // would show a field the operation no longer acts on.
+    title: undefined, section: undefined, statement: undefined, provenance: undefined,
+    criterion: undefined, falsifier: undefined, evidenceKind: undefined, assertedBy: undefined,
+    requirementId: undefined, targetOperationId: undefined, fromSection: undefined, toSection: undefined,
+    ...built.payload,
+    rationale: merged.rationale.trim(),
+    evidence: merged.evidence,
+    context: built.context,
+    reversibility: merged.reversibility,
+  };
+  const was = changedFields(op, candidate, [
+    "title", "section", "statement", "provenance", "rationale", "evidence", "reversibility",
+    "criterion", "falsifier", "evidenceKind", "assertedBy", "requirementId", "targetOperationId",
+    "fromSection", "toSection", "context",
+  ]);
+  if (!Object.keys(was).length) return { error: "nothing to change" };
+
+  const at = now();
+  const next = prune({ ...candidate, revisions: [...(op.revisions ?? []), { at, by: actor, was }] });
+  const d = disposition(await shareOperationRevised(root, next));
+  if ("error" in d) return d;
+  if (d.local) await writeLocalOperation(root, next);
+  return { ok: true, operation: next };
+}
+
+/** Drop the keys a revision cleared, so a serialized operation has no `"title": undefined`. */
+const prune = (op: Operation): Operation =>
+  Object.fromEntries(Object.entries(op).filter(([, v]) => v !== undefined)) as Operation;
+
+/**
+ * Refuse to rewrite or pull an operation somebody ELSE has built on.
+ *
+ * Reference-count discipline, at the threshold a draft warrants — the same machinery
+ * `withdrawSpec` uses on a ratified spec, one rung lower. A pending gap is another actor's
+ * approval artifact chained to this exact operation, and a comment is their reading of it;
+ * either one silently losing its subject is the orphan the count exists to prevent. Your
+ * OWN gap and your own comment do not block you: releasing the gap is a verb you already
+ * have, and it is your record to move.
+ */
+async function attachedByOthers(
+  root: string, op: Operation, input: ActorInput,
+): Promise<Err | null> {
+  const actor = requireActor(root, input);
+  if (isErr(actor)) return actor;
+  const gaps = (await readAcknowledgements(root, { operationId: op.id }))
+    .filter((a) => a.state !== "released" && a.grantedBy?.principal !== actor.principal);
+  if (gaps.length) {
+    return {
+      error:
+        `${op.id} carries ${gaps.length} acknowledgement(s) granted by somebody else `
+        + `(${gaps.map((a) => a.id).join(", ")}), which approve THIS operation and bind when the `
+        + `spec is adopted. Changing or pulling it out from under them would leave an approval `
+        + `of something nobody can read. Ask them to release it, or leave the operation and say `
+        + `what you think in a comment.`,
+    };
+  }
+  const said = await commentsByOthers(root, op.id, actor.principal);
+  if (said) return said;
+  return null;
+}
+
+/**
+ * Somebody else's comments on a proposal, which are their record and not yours to erase.
+ *
+ * Read through the notes store, which is a DIFFERENT sidecar scope from the standard — so
+ * this is a check the tool can make and the fold cannot. Two consequences, stated rather
+ * than papered over. It is TOCTOU across clones exactly as the reliance count already is
+ * (`withdrawSpec` says so), and a client that skipped it would land a withdrawal the fold
+ * does not re-refuse. That failure is benign in a way the acknowledgement half is not:
+ * withdrawal is not a delete, so the spec row, its operations and every comment on them
+ * survive it — what a comment loses is a live proposal to be about, never its own record.
+ * Teaching `foldStandard` to read the notes scope would make one entity's fold depend on
+ * another's, which `docs/cross-universe-standard.md` § *The fold cannot be split in two*
+ * is the argument against.
+ *
+ * With no sidecar there is no comment store at all, so there is nothing to protect.
+ */
+async function commentsByOthers(root: string, targetId: string, mine: string): Promise<Err | null> {
+  const { sharedNotes } = await import("./ops-shared.js");
+  const r = await sharedNotes(root, targetId) as
+    { notes?: { id: string; by: string; answers?: { by: string }[] }[]; error?: string };
+  if (r.error || !r.notes?.length) return null;
+  const theirs = r.notes.filter((n) => n.by !== mine || n.answers?.some((a) => a.by !== mine));
+  return theirs.length
+    ? {
+      error:
+        `${targetId} carries ${theirs.length} comment(s) from somebody else `
+        + `(${theirs.slice(0, 3).map((n) => n.id).join(", ")}). Taking it back now leaves their `
+        + `reading of a proposal nobody can open. Answer them first — \`answer_shared_note\` — `
+        + `and let a principal withdraw it if it still has to go.`,
+    }
+    : null;
+}
+
+/**
+ * Pull an operation out of a draft. Any actor; refused once the spec is ratified.
+ *
+ * This is the verb whose absence made the asymmetry run backwards: `acknowledge_gap` is
+ * agent-callable against a draft operation, so an agent could ADD a silencer constraining
+ * what a ratifier was approving, and could not REMOVE an operation it had come to believe
+ * was wrong. The operation is TOMBSTONED rather than deleted — see `Operation.removed`.
+ */
+export async function removeOperation(
+  root: string, input: { operationId: string; reason: string } & ActorInput,
+): Promise<{ ok: true; operation: Operation } | Err> {
+  const op = await readOperation(root, input.operationId);
+  if (!op) return { error: `no operation "${input.operationId}"` };
+  if (op.removed) return { error: `${op.id} is already removed from ${op.specId}` };
+  const reason = input.reason?.trim();
+  if (!reason) return { error: "a removal needs a `reason` — the ratifier is reading a proposal that changed shape" };
+  const sp = await readSpec(root, op.specId);
+  if (!sp) return { error: `operation ${op.id} points at missing spec ${op.specId}` };
+  if (sp.status !== "draft") {
+    return {
+      error:
+        `${sp.id} is ${sp.status} — an operation may be pulled while its spec is a draft and `
+        + `never after. Once adopted it is the act that produced a rule; taking it out of the `
+        + `log would leave a requirement nothing accounts for. Retire the rule with a new spec.`,
+    };
+  }
+  const blocked = await attachedByOthers(root, op, input);
+  if (blocked) return blocked;
+  const actor = requireActor(root, input);
+  if (isErr(actor)) return actor;
+
+  // A criterion in this same spec that named this operation as its target would be left
+  // pointing at nothing, and it renders as adoptable right up to the ratification that
+  // drops it. Same shape as the reliance count, inside one draft.
+  const dependents = (await readOperations(root, { specId: sp.id }))
+    .filter((o) => o.targetOperationId === op.id);
+  if (dependents.length) {
+    return {
+      error:
+        `${op.id} is the target of ${dependents.map((o) => o.id).join(", ")} in this same spec — `
+        + `a criterion attaches to the rule this operation creates, so removing it leaves the `
+        + `criterion with no rule. Remove or re-target ${dependents.length === 1 ? "it" : "them"} first.`,
+    };
+  }
+  // Your OWN pending gap goes with the operation it approved, released rather than deleted,
+  // for the same reason `withdrawSpec` releases one: the grant really happened, and what
+  // stops existing is the rule it was about. Somebody else's already refused above.
+  const { releaseAcknowledgement } = await import("./acknowledgements.js");
+  for (const a of await readAcknowledgements(root, { operationId: op.id })) {
+    if (a.state !== "released") await releaseAcknowledgement(root, a.id, `${op.id} was removed from ${sp.id}`, input);
+  }
+
+  const next: Operation = { ...op, removed: { at: now(), by: actor, reason } };
+  const d = disposition(await shareOperationRemoved(root, next));
+  if ("error" in d) return d;
+  if (d.local) await writeLocalOperation(root, next);
+  return { ok: true, operation: next };
 }
 
 // --- adoption (principal only) -----------------------------------------------
@@ -838,16 +1157,71 @@ export async function relianceOn(root: string, ops: Operation[]): Promise<Relian
  *   compensating spec restores the text as its own witnessed act, which is honest and is
  *   what `docs/requirements-architecture.md` means by repeal.
  */
+/**
+ * Who may withdraw, and the one case where it is not a principal.
+ *
+ * The refusal `principal()` hands back — *"an agent may author and propose; adopting is
+ * what makes a claim binding, and it cannot be delegated"* — is exactly right about a
+ * RATIFIED spec and wrong about a draft. Withdrawing a draft adopts nothing and unbinds
+ * nothing: no requirement exists, no acknowledgement is active, nothing can cite it. It is
+ * the author taking back their own unratified proposal, which is authorship, and COD-29
+ * puts authorship on the open side of the asymmetry.
+ *
+ * Two conditions, and both are here rather than in a description:
+ *
+ *  - **Its own author**, compared on the principal. An agent acting for the person who
+ *    proposed it is that proposal's author; an agent acting for somebody else is not, and
+ *    withdrawing a third party's proposal is not correcting your own mistake.
+ *  - **Nothing of anybody else's is attached.** A pending gap is another actor's approval
+ *    artifact and a comment is their reading; taking the proposal away destroys the
+ *    subject of both. Same reference-count machinery `withdrawSpec` already applies to a
+ *    ratified spec, at the lower threshold a draft warrants.
+ *
+ * A principal is refused none of this and needs no such check: `withdraw_spec` on a draft
+ * has always been theirs.
+ */
+async function withdrawer(root: string, sp: Spec, input: ActorInput): Promise<Actor | Err> {
+  const a = requireActor(root, input);
+  if (isErr(a)) return a;
+  if (!isAgentActor(a)) return a;
+  if (sp.status !== "draft") {
+    return {
+      error:
+        `withdrawing a ${sp.status} spec is a principal's act and this session is an agent acting `
+        + `for ${a.principal}. A DRAFT is yours to take back — nothing applied, so nothing is `
+        + `unbound — but ${sp.id} already ${sp.status === "ratified" ? "binds the standard" : "left draft"}, `
+        + `and removing what it put there cannot be delegated. Ask ${a.principal} to withdraw it.`,
+    };
+  }
+  if (sp.author.principal !== a.principal) {
+    return {
+      error:
+        `${sp.id} was proposed by ${sp.author.principal} and this session is acting for `
+        + `${a.principal}. An agent may take back its own principal's draft; withdrawing somebody `
+        + `else's proposal is disposing of it, which is theirs or a principal's. Say what you `
+        + `think in a comment instead.`,
+    };
+  }
+  for (const op of await readOperations(root, { specId: sp.id })) {
+    const blocked = await attachedByOthers(root, op, input);
+    if (blocked) return blocked;
+  }
+  const said = await commentsByOthers(root, sp.id, a.principal);
+  if (said) return said;
+  return a;
+}
+
 export async function withdrawSpec(
   root: string, specId: string, input: { reason: string } & ActorInput,
 ): Promise<{ ok: true; spec: Spec; removed: string[] } | (Err & { reliance?: Reliance[] })> {
-  const who = principal(root, input, "withdraw a spec");
-  if (isErr(who)) return who;
   const reason = input.reason?.trim();
   if (!reason) return { error: "a withdrawal needs a `reason` — it stays on the record as the act it is" };
   const sp = await readSpec(root, specId);
   if (!sp) return { error: `no spec "${specId}"` };
   if (sp.status === "withdrawn" || sp.status === "repealed") return { error: `${specId} is already ${sp.status}` };
+
+  const who = await withdrawer(root, sp, input);
+  if (isErr(who)) return who;
 
   const ops = await readOperations(root, { specId });
   if (sp.status === "ratified") {
@@ -1091,7 +1465,10 @@ export interface RenderedOperation {
  */
 export async function getSpec(
   root: string, specId: string,
-): Promise<{ spec: Spec; operations: RenderedOperation[]; adoptable: boolean; silenced: number } | Err> {
+): Promise<{
+  spec: Spec; operations: RenderedOperation[]; adoptable: boolean; silenced: number;
+  removed: Operation[];
+} | Err> {
   const sp = await readSpec(root, specId);
   if (!sp) return { error: `no spec "${specId}"` };
   const ops = await readOperations(root, { specId });
@@ -1137,6 +1514,12 @@ export async function getSpec(
   }
   return {
     spec: sp, operations,
+    // Served apart from `operations`, never mixed in. What the ratifier reads is what the
+    // proposal now says; a pulled operation is history, and rendering it beside the live
+    // ones would put back exactly the correction-chain the revision path exists to remove.
+    // It is served at all because a proposal that changed shape under a reader is worth
+    // seeing, and because the removal reason is the author's account of why.
+    removed: await readOperations(root, { specId, includeRemoved: true }).then((all) => all.filter((o) => o.removed)),
     adoptable: sp.status === "draft" && ops.length > 0 && !operations.some((o) => o.contextMoved),
     // Deliberately NOT folded into `adoptable`: a pre-attached gap is a thing to see and
     // decide about, not a defect in the spec. Refusing adoption over one would make the

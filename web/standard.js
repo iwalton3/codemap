@@ -288,7 +288,7 @@ defineComponent('standard-page', StandardPage);
  * process reverts to reading code (`getSpec`'s own doc says this; this is the surface
  * it was describing).
  *
- * @typedef {{ d: any, busy: string|null, err: string|null, reason: string, draft: Record<string,string> }} SpecState
+ * @typedef {{ d: any, busy: string|null, err: string|null, reason: string, draft: Record<string,string>, editing: string|null, form: Record<string,string> }} SpecState
  * @extends {Component<StdProps, SpecState>}
  */
 class SpecPage extends Component {
@@ -297,7 +297,7 @@ class SpecPage extends Component {
   constructor(props) {
     super(props);
     /** @type {SpecState} */
-    this.state = { d: null, busy: null, err: null, reason: '', draft: {} };
+    this.state = { d: null, busy: null, err: null, reason: '', draft: {}, editing: null, form: {} };
   }
   load = this.createTask(async () => {
     nav.current = this.props.params.universe;
@@ -343,6 +343,62 @@ class SpecPage extends Component {
     } catch (e) { this.state.err = errText(e); } finally { this.state.busy = null; }
   }
 
+  /**
+   * Correcting a DRAFT, from the browser.
+   *
+   * The whole of the rule is on the server — `revise_spec`, `revise_operation` and
+   * `remove_operation` refuse a ratified spec, an operation somebody else's pending gap or
+   * comment hangs off, and a kind change, and `foldStandard` refuses the same events again.
+   * So this form invents nothing and hides nothing: it is refused server-side whatever it
+   * sends, and it renders the refusal verbatim like every other act on this page.
+   *
+   * A person needs it for the case the MCP surface cannot serve: an agent drafts, goes
+   * away, and the principal about to adopt the thing is the one who spots the wrong branch
+   * name in the narrative. Their alternative was refusing the whole proposal.
+   */
+  async correct(kind, act, body) {
+    if (this.state.busy) return;
+    this.state.busy = kind; this.state.err = null;
+    try {
+      const r = await attestedPost(`/api/standard/${act}`, { u: this.props.params.universe, ...body });
+      if (r && r.error) { this.state.err = r.error; return; }
+      this.state.editing = null; this.state.form = {};
+      this.load.run();
+    } catch (e) { this.state.err = errText(e); } finally { this.state.busy = null; }
+  }
+
+  /** Open an editor over one target, seeded with what it currently says. */
+  edit(target, seed) {
+    this.state.err = null;
+    this.state.editing = this.state.editing === target ? null : target;
+    this.state.form = this.state.editing ? { ...seed } : {};
+  }
+
+  set(k, v) { this.state.form = { ...this.state.form, [k]: v }; }
+
+  field(k, label, rows) {
+    return rows
+      ? html`<label class="fs"><span class="dim">${label}</span>
+          <textarea rows="${rows}" value="${this.state.form[k] || ''}"
+            on-input="${(e) => this.set(k, e.target.value)}"></textarea></label>`
+      : html`<label class="fs"><span class="dim">${label}</span>
+          <input value="${this.state.form[k] || ''}" on-change="${(e, v) => this.set(k, v)}"></label>`;
+  }
+
+  /**
+   * Which fields an operation of this kind actually has.
+   *
+   * Not one form with every field: `kind` is the one thing revision cannot change, so a
+   * form offering `toSection` on an `amend_statement` would only ever produce a refusal.
+   */
+  opFields(kind) {
+    if (kind === 'add_requirement') return [['title', 'title'], ['section', 'section'], ['statement', 'statement', 3], ['provenance', 'provenance']];
+    if (kind === 'amend_statement') return [['statement', 'new statement', 3]];
+    if (kind === 'add_criterion') return [['criterion', 'criterion', 2], ['falsifier', 'falsifier', 2]];
+    if (kind === 'move_section') return [['fromSection', 'from'], ['toSection', 'to']];
+    return [];
+  }
+
   composer(targetId, placeholder) {
     return html`<div class="cmt-new">
       <input placeholder="${placeholder}" value="${this.state.draft[targetId] || ''}"
@@ -373,6 +429,28 @@ class SpecPage extends Component {
         ${each(o.silencedBy, (a) => html`<div class="op-moverow">${a.basis} · ${a.state} · ${a.rationale}</div>`, (a) => a.id)}
       </div>`)}
       ${when(o.watchedBy.length > 0, () => html`<div class="fs dim">${o.watchedBy.length} pointer${o.watchedBy.length === 1 ? '' : 's'} watching this rule — a ratified amendment means code that was conformant may not be</div>`)}
+      ${when(this.state.editing === o.operation.id, () => html`<div class="op-move">
+        ${each(this.opFields(k), (f) => this.field(f[0], f[1], f[2]), (f) => f[0])}
+        ${this.field('rationale', 'why', 2)}
+        <div class="op-actions">
+          <button class="pullbtn" disabled="${!!this.state.busy}"
+            on-click="${() => this.correct('rev:' + o.operation.id, 'revise_operation', { operationId: o.operation.id, ...this.state.form })}">save</button>
+          <button class="pullbtn" on-click="${() => this.edit(o.operation.id, {})}">cancel</button>
+        </div>
+        <input placeholder="reason, if removing this operation…" value="${this.state.form._why || ''}"
+          on-change="${(e, v) => this.set('_why', v)}">
+        <button class="pullbtn" disabled="${!this.state.form._why || !!this.state.busy}"
+          title="pull it out of the proposal. It stops applying and stays readable as history, with your reason on it."
+          on-click="${() => this.correct('rm:' + o.operation.id, 'remove_operation', { operationId: o.operation.id, reason: this.state.form._why })}">remove operation</button>
+      </div>`)}
+      ${when(this.state.d.spec.status === 'draft' && this.state.editing !== o.operation.id, () => html`<div class="op-actions">
+        <button class="pullbtn" on-click="${() => this.edit(o.operation.id, {
+          title: o.operation.title, section: o.operation.section, statement: o.operation.statement,
+          provenance: o.operation.provenance, criterion: o.operation.criterion, falsifier: o.operation.falsifier,
+          fromSection: o.operation.fromSection, toSection: o.operation.toSection, rationale: o.operation.rationale,
+        })}">correct this operation</button>
+      </div>`)}
+      ${when((o.operation.revisions || []).length > 0, () => html`<div class="fs dim">corrected ${o.operation.revisions.length} time${o.operation.revisions.length === 1 ? '' : 's'} while a draft — last by ${o.operation.revisions[o.operation.revisions.length - 1].by.principal}</div>`)}
       ${thread(o.comments)}
       ${this.composer(o.operation.id, 'comment on this operation…')}
     </div>`;
@@ -385,11 +463,32 @@ class SpecPage extends Component {
       ${servedNote(d)}
       <div class="fs dim">${d.spec.status} · proposed by ${d.spec.author && d.spec.author.principal ? d.spec.author.principal : 'unknown'}${d.spec.author && d.spec.author.via ? ' (via ' + (d.spec.author.via.model || 'agent') + ')' : ''}</div>
       ${when(!!d.spec.narrative, () => html`<div class="op-card"><div class="fs dim">background — NON-OPERATIVE, nothing here changes the standard</div><div class="fs">${d.spec.narrative}</div></div>`)}
+      ${when((d.spec.revisions || []).length > 0, () => html`<div class="fs dim">corrected ${d.spec.revisions.length} time${d.spec.revisions.length === 1 ? '' : 's'} while a draft — last by ${d.spec.revisions[d.spec.revisions.length - 1].by.principal} on ${(d.spec.revisions[d.spec.revisions.length - 1].at || '').slice(0, 10)}</div>`)}
+      ${when(d.spec.status === 'draft' && this.state.editing !== 'spec', () => html`<div class="op-actions">
+        <button class="pullbtn" title="fix the proposal's own words. A draft binds nothing, so correcting one is authoring it — and a correction left in a comment is read AFTER the wrong framing."
+          on-click="${() => this.edit('spec', { title: d.spec.title, narrative: d.spec.narrative || '' })}">correct title / background</button>
+      </div>`)}
+      ${when(this.state.editing === 'spec', () => html`<div class="op-card">
+        ${this.field('title', 'title')}
+        ${this.field('narrative', 'background — NON-OPERATIVE', 4)}
+        <div class="op-actions">
+          <button class="pullbtn" disabled="${!!this.state.busy}"
+            on-click="${() => this.correct('revspec', 'revise_spec', { specId: d.spec.id, title: this.state.form.title, narrative: this.state.form.narrative })}">save</button>
+          <button class="pullbtn" on-click="${() => this.edit('spec', {})}">cancel</button>
+        </div>
+      </div>`)}
 
       <div class="sec">operations (${d.operations.length})</div>
       ${each(d.operations, (o) => this.op(o, u), (o) => o.operation.id)}
 
+      ${when((d.removed || []).length > 0, () => html`<div class="sec">pulled from this proposal (${d.removed.length})</div>`)}
+      ${each(d.removed || [], (o) => html`<div class="op-card"><div class="ft"><span class="qbadge">${o.kind.replace(/_/g, ' ')}</span> <span class="dim">withdrawn from the proposal</span></div>
+        <div class="fs">${o.statement || o.criterion || o.title || (o.fromSection ? o.fromSection + ' → ' + o.toSection : '')}</div>
+        <div class="fs dim">${o.removed.by.principal} · ${(o.removed.at || '').slice(0, 10)} · ${o.removed.reason}</div>
+      </div>`, (o) => o.id)}
+
       <div class="sec">on this proposal</div>
+      ${when(!!d.commentsUnavailable, () => html`<div class="fs dim">comments could not be read: ${d.commentsUnavailable}. An empty thread here is not agreement.</div>`)}
       ${thread(d.comments)}
       ${this.composer(d.spec.id, 'comment on the proposal as a whole…')}
 

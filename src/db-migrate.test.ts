@@ -120,7 +120,9 @@ test("the standard projection's table set is pinned to a materializer version", 
   // shards move a fingerprint. The table set did NOT change, which is exactly why the
   // version has to be recorded here as well: this test's coarse signal would not have
   // caught it.
-  assert.equal(MATERIALIZER_VERSION, 16, "and record the new number here");
+  // 17: a draft spec has a correction path — three new law events fold, and the
+  // withdrawal gate admits an agent's own draft. Table set unchanged again, same reason.
+  assert.equal(MATERIALIZER_VERSION, 17, "and record the new number here");
 });
 
 /**

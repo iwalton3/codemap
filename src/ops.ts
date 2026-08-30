@@ -57,6 +57,7 @@ export {
   standardStatus, standardQueues, standardHealth,
   requirementSections, listRequirements, getRequirement, conformance, withdrawSpec,
   draftSpec, addOperation, ratifySpec, getSpec, pendingSpecs, reorganizeRequirement,
+  reviseSpec, reviseOperation, removeOperation,
   acknowledgeGap, acknowledgeDebt, releaseAcknowledgement, listAcknowledgements, dueForRevalidation,
   recordAudit, auditsFor, promotableAudits, promoteProvisionalAudit, provisionalAudits,
   criteriaSummary, recordVacuityCheck, weakAssertions,
@@ -391,6 +392,21 @@ export async function commentOn(root: string, input: { id: string; body: string;
   if ("error" in w) return w;
   if ("bug" in w) return commentBug(root, input.id, input.body, input.inReplyTo);
   if ("proposal" in w) {
+    // REFUSED, not dropped. A proposal's comments are one thread per call by design — a
+    // proposal draws several unrelated objections at once and one running log makes them
+    // unreadable — so `inReplyTo` has nothing to attach to here, and replying goes through
+    // `answer_shared_note`. It used to be accepted and silently discarded, which opened a
+    // second top-level thread that read as a fresh objection: the caller's model of what
+    // happened stayed intact and was wrong, on the surface a principal decides from.
+    if (input.inReplyTo) {
+      return {
+        error:
+          `a comment on a ${w.proposal} opens its own thread, so \`inReplyTo\` has nothing to `
+          + `attach to — a proposal draws several unrelated objections at once and one running `
+          + `log makes them unreadable. Reply to ${input.inReplyTo} with \`answer_shared_note\` `
+          + `(targetId: ${input.id}), or drop \`inReplyTo\` to raise a new point.`,
+      };
+    }
     const shared = await import("./ops-shared.js");
     return shared.commentOnProposal(root, {
       targetKind: w.proposal, targetId: input.id, body: input.body,

@@ -1002,7 +1002,28 @@ export interface Spec {
    */
   withdrawnBy?: Actor;
   withdrawnAt?: string;
+  /**
+   * Corrections made while it was still a DRAFT — prior values, never destroyed.
+   *
+   * Revision MUTATES the current record and keeps the old one underneath, which is the
+   * opposite of how a finding's thread works and is deliberate: the ratifier's whole trade
+   * is reading ONE current text instead of 5,000 lines, and a correction chain they have to
+   * reassemble is that trade failing at its last step. `Annotation.revisions` is the shape
+   * borrowed — filed before they are understood, corrected visibly AS a correction.
+   *
+   * It stops at ratification. Nothing here may be appended once `status !== "draft"`, in
+   * the tool or in the fold: immutability attaches when a claim becomes binding, and a
+   * draft binds nothing.
+   */
+  revisions?: SpecRevision[];
   origin?: string;
+}
+
+/** One correction to a draft: who, when, and what the changed fields said BEFORE. */
+export interface SpecRevision {
+  at: string;
+  by: Actor;
+  was: Partial<Pick<Spec, "title" | "narrative">>;
 }
 
 export type OperationKind =
@@ -1143,7 +1164,37 @@ export interface Operation {
   reversibility: Reversibility;
   /** Application order within the spec. */
   ord: number;
+  /**
+   * Corrections made while the spec was still a DRAFT. See `Spec.revisions` for why this
+   * mutates rather than appends.
+   *
+   * `kind` is not among the revisable fields, and that is a rule rather than an omission:
+   * changing an operation's kind changes what it IS, so every per-kind check would have to
+   * re-run against a payload written for a different one. Remove it and add the operation
+   * you meant.
+   */
+  revisions?: OperationRevision[];
+  /**
+   * Withdrawn from a draft — a TOMBSTONE, not a delete.
+   *
+   * The row stays so `ord` stays stable (a reused ord is two operations claiming one
+   * position, and the fold's sort would then differ per clone) and so the ratifier can see
+   * that something was pulled rather than never proposed. Every operative read filters it:
+   * `readOperations` drops it unless asked for `includeRemoved`, so a removed operation
+   * cannot apply, cannot count and cannot block.
+   */
+  removed?: { at: string; by: Actor; reason: string };
   origin?: string;
+}
+
+/** One correction to a draft operation: who, when, and what the changed fields said BEFORE. */
+export interface OperationRevision {
+  at: string;
+  by: Actor;
+  was: Partial<Pick<Operation,
+    "title" | "section" | "statement" | "provenance" | "rationale" | "evidence" | "reversibility"
+    | "criterion" | "falsifier" | "evidenceKind" | "assertedBy" | "requirementId"
+    | "targetOperationId" | "fromSection" | "toSection" | "context">>;
 }
 
 export interface Requirement {

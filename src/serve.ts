@@ -374,6 +374,19 @@ const server = createServer(async (req, res) => {
         if (act === "refile") {
           return ops.reorganizeRequirement(root, { id: body.id, title: body.title, section: body.section });
         }
+        // Correcting a DRAFT. Open to any actor over MCP, and open here too — a person
+        // refining a proposal before adopting it is the commonest case, and the agent that
+        // drafted it is frequently not around. Every refusal is in `requirements.ts` and in
+        // `foldStandard`; nothing about the act is decided by this route, which is why the
+        // browser can be handed the same three verbs without a second set of rules. They
+        // still take the attestation the whole POST surface takes.
+        if (act === "revise_spec") {
+          return ops.reviseSpec(root, { specId: body.specId, title: body.title, narrative: body.narrative });
+        }
+        if (act === "revise_operation") return ops.reviseOperation(root, body);
+        if (act === "remove_operation") {
+          return ops.removeOperation(root, { operationId: body.operationId, reason: body.reason ?? "" });
+        }
         // Open to any actor, and here because the person reading the queue is the one who
         // notices. Releasing is the UNSILENCING direction — its failure mode is noise —
         // which is why it is not gated the way granting is.
