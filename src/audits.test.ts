@@ -17,6 +17,7 @@ import { writeStore, readAcknowledgement } from "./store.js";
 import type { State } from "./schema.js";
 import { discard } from "./test-tmp.js";
 import { draftSpec, addOperation, ratifySpec, listRequirements, getSpec, pendingSpecs } from "./requirements.js";
+import { ratifyReviewed } from "./test-approve.js";
 import { acknowledgeGap, acknowledgeDebt } from "./acknowledgements.js";
 import { recordAudit, auditsFor, conformance, silenced } from "./audits.js";
 
@@ -72,7 +73,7 @@ test("a conformant audit must have touched the code — consulting a doc certifi
   const { root, anchors } = await universe();
   try {
     const { specId } = await adoptRule(root);
-    ok(await ratifySpec(root, specId));
+    ok(await ratifyReviewed(root, specId));
     const rule = (await listRequirements(root))[0]!;
 
     const docOnly = await recordAudit(root, {
@@ -101,7 +102,7 @@ test("a nonconformant audit needs evidence too — absence of evidence must neve
   const { root, anchors } = await universe();
   try {
     const { specId } = await adoptRule(root);
-    ok(await ratifySpec(root, specId));
+    ok(await ratifyReviewed(root, specId));
     const rule = (await listRequirements(root))[0]!;
 
     const cannotVerify = await recordAudit(root, {
@@ -128,7 +129,7 @@ test("a positive audit closes a gap, which nothing else can", async () => {
     const gap = ok(await acknowledgeGap(root, {
       operationId, rationale: "no credit path exists yet", priority: "medium", revalidateBy: LATER,
     }));
-    ok(await ratifySpec(root, specId));
+    ok(await ratifyReviewed(root, specId));
     const rule = (await listRequirements(root))[0]!;
     assert.equal((await conformance(root))[0]!.conformance, "gap");
 
@@ -149,7 +150,7 @@ test("a nonconformant audit falsifies a gap, so a stale gap cannot hide code tha
     const gap = ok(await acknowledgeGap(root, {
       operationId, rationale: "no credit path exists yet", priority: "medium", revalidateBy: LATER,
     }));
-    ok(await ratifySpec(root, specId));
+    ok(await ratifyReviewed(root, specId));
     const rule = (await listRequirements(root))[0]!;
 
     // A gap claims there is no code that should conform. Finding some that does not
@@ -170,7 +171,7 @@ test("debt survives a nonconformant audit, because that is exactly what debt say
   const { root, anchors } = await universe();
   try {
     const { specId } = await adoptRule(root);
-    ok(await ratifySpec(root, specId));
+    ok(await ratifyReviewed(root, specId));
     const rule = (await listRequirements(root))[0]!;
     const debt = ok(await acknowledgeDebt(root, {
       requirementId: rule.id, rationale: "one ledger path is EUR and stays that way for now",
@@ -194,7 +195,7 @@ test("a superseded audit returns the rule to unknown, and the regression is stil
   const { root, anchors } = await universe();
   try {
     const { specId } = await adoptRule(root);
-    ok(await ratifySpec(root, specId));
+    ok(await ratifyReviewed(root, specId));
     const rule = (await listRequirements(root))[0]!;
     ok(await recordAudit(root, {
       requirementId: rule.id, outcome: "conformant", finding: "USD only, verified",
@@ -220,7 +221,7 @@ test("silenced separates checked from merely unexamined", async () => {
   const { root, anchors } = await universe();
   try {
     const first = await adoptRule(root);
-    ok(await ratifySpec(root, first.specId));
+    ok(await ratifyReviewed(root, first.specId));
     const a = (await listRequirements(root))[0]!;
     ok(await recordAudit(root, {
       requirementId: a.id, outcome: "conformant", finding: "verified", evidence: { read: anchors },
@@ -232,7 +233,7 @@ test("silenced separates checked from merely unexamined", async () => {
       title: "Settlement idempotency", section: "Settlement/Keys",
       statement: "Every settlement endpoint requires an idempotency key.", provenance: "our own past choice",
     }));
-    ok(await ratifySpec(root, sp.id));
+    ok(await ratifyReviewed(root, sp.id));
 
     const s = await silenced(root);
     assert.deepEqual(
@@ -256,7 +257,7 @@ test("a failed command is evidence of non-conformance, never of conformance", as
       title: "Credit line currency", section: "Credit/Limits",
       statement: "All credit lines are in USD.", provenance: "credit policy §4",
     }));
-    ok(await ratifySpec(root, sp.id));
+    ok(await ratifyReviewed(root, sp.id));
     const rule = (await listRequirements(root))[0]!;
 
     const failed = await recordAudit(root, {
@@ -288,7 +289,7 @@ test("an audit of a dirty tree is provisional, whatever branch it is on", async 
   const { root, anchors } = await universe();
   try {
     const { specId } = await adoptRule(root);
-    ok(await ratifySpec(root, specId));
+    ok(await ratifyReviewed(root, specId));
     const rule = (await listRequirements(root))[0]!;
 
     const clean = ok(await recordAudit(root, {
@@ -329,7 +330,7 @@ test("a rule whose cited symbol was RENAMED can still be audited", async () => {
       title: "Credit line currency", section: "Credit/Cited",
       statement: "All credit lines are in USD.", provenance: "policy",
     }));
-    ok(await ratifySpec(root, sp.id));
+    ok(await ratifyReviewed(root, sp.id));
     const rule = (await listRequirements(root, { section: "Credit/Cited" }))[0]!;
 
     // The symbol is renamed, so the id below no longer exists in the tree.
@@ -383,6 +384,6 @@ test("a spec shows the ratifier the silencers already attached to it", async () 
     // And it does not block adoption: a pre-attached gap is something to see and decide
     // about, not a defect in the proposal.
     assert.equal(rendered.adoptable, true);
-    ok(await ratifySpec(root, specId));
+    ok(await ratifyReviewed(root, specId));
   } finally { discard(root); }
 });

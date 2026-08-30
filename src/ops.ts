@@ -58,6 +58,7 @@ export {
   requirementSections, listRequirements, getRequirement, conformance, withdrawSpec,
   draftSpec, addOperation, ratifySpec, getSpec, pendingSpecs, reorganizeRequirement,
   reviseSpec, reviseOperation, removeOperation,
+  reviewProposal, signOffOperation, signOffFraming, signOffSection,
   acknowledgeGap, acknowledgeDebt, releaseAcknowledgement, listAcknowledgements, dueForRevalidation,
   recordAudit, auditsFor, promotableAudits, promoteProvisionalAudit, provisionalAudits,
   criteriaSummary, recordVacuityCheck, weakAssertions,

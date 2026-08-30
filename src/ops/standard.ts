@@ -25,6 +25,8 @@
 import {
   draftSpec as draftSpecRec, addOperation as addOperationRec, ratifySpec as ratifySpecRec,
   withdrawSpec as withdrawSpecRec, reviseSpec as reviseSpecRec,
+  reviewProposal as reviewProposalRec, signOffOperation as signOffOperationRec,
+  signOffFraming as signOffFramingRec, signOffSection as signOffSectionRec,
   reviseOperation as reviseOperationRec, removeOperation as removeOperationRec,
   type OperationInput,
   reorganizeRequirement as reorganizeRec, requirementSections as requirementSectionsRec,
@@ -71,7 +73,7 @@ import {
 import { standardScopeWarning, type StandardScope } from "../standard-publish.js";
 import type {
   AcknowledgementPriority, AuditEvidence, AuditOutcome, AuditTrigger, EvidenceKind, OperationKind,
-  PopulationMember, ProblemDisposition, Requirement, Reversibility, VacuityCheck,
+  PopulationMember, ProblemDisposition, Requirement, Reversibility, SignOffAxis, VacuityCheck,
 } from "../schema.js";
 
 /**
@@ -290,6 +292,30 @@ export const ratifySpec = (root: string, input: { specId: string } & ActorInput)
  * adoption. Every refusal lives in `requirements.ts` and in `foldStandard`; nothing is
  * gated here (see the module header).
  */
+/**
+ * The review loop: pull, see what moved since you last looked, sign off, ratify.
+ *
+ * Four ops rather than one, and the split is the loop's own shape — `review_proposal` is
+ * the only one that shows a diff, the sign-offs are the only ones that write, and
+ * `ratify_spec` is the only one a principal cannot delegate. Collapsing them would hide
+ * which step writes what, on the one surface where that matters most.
+ */
+export const reviewProposal = async (root: string, input: { specId: string }) =>
+  // Through `served()` like every other read, and it matters more here than most: a review
+  // is a claim about what the TEAM has proposed, so a blocked scope means the diff being
+  // rendered may not be the team's — and this is the read somebody signs off from.
+  served(root, () => reviewProposalRec(root, input.specId));
+
+export const signOffOperation = (root: string, input: { operationId: string } & ActorInput) =>
+  signOffOperationRec(root, input);
+
+export const signOffFraming = (root: string, input: { specId: string } & ActorInput) =>
+  signOffFramingRec(root, input);
+
+export const signOffSection = (
+  root: string, input: { specId: string; axis: SignOffAxis; section?: string; count: number } & ActorInput,
+) => signOffSectionRec(root, input);
+
 export const reviseSpec = (
   root: string, input: { specId: string; title?: string; narrative?: string } & ActorInput,
 ) => reviseSpecRec(root, input);

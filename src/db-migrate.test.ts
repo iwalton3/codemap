@@ -113,7 +113,7 @@ test("the standard projection's table set is pinned to a materializer version", 
   // rows will not re-fold unless the version moves.
   assert.deepEqual(tables, [
     "acknowledgements", "audits", "criteria", "operations", "pointers", "populations",
-    "problems", "requirements", "scrub_policy", "specs", "vacuity_checks",
+    "problems", "proposal_witnesses", "requirements", "scrub_policy", "specs", "vacuity_checks",
   ], "the standard projection's tables changed — bump MATERIALIZER_VERSION with them");
   // 16: the standard folds from TWO scopes now (law + evidence), so a store that cached
   // the single-scope fold holds rows describing a different input set — and only the
@@ -122,7 +122,9 @@ test("the standard projection's table set is pinned to a materializer version", 
   // caught it.
   // 17: a draft spec has a correction path — three new law events fold, and the
   // withdrawal gate admits an agent's own draft. Table set unchanged again, same reason.
-  assert.equal(MATERIALIZER_VERSION, 17, "and record the new number here");
+  // 18: `proposal_witnesses` — this time the table set DID change, which is the case this
+  // assertion was written for, and the fold refuses an unwitnessed ratification with it.
+  assert.equal(MATERIALIZER_VERSION, 18, "and record the new number here");
 });
 
 /**

@@ -22,7 +22,7 @@ import { analyzeMarten } from "./analyzers/marten.js";
 import { enableAnalyzer } from "./analyzers/run.js";
 import { markReviewed, markReviewedBatch, unmarkReviewed } from "./reviews.js";
 import { withLock } from "./lock.js";
-import { EVIDENCE_KINDS } from "./schema.js";
+import { SIGN_OFF_AXES, EVIDENCE_KINDS } from "./schema.js";
 
 /**
  * Tools that write to a universe's `.codemap/` are held under the write lock, so a
@@ -1507,8 +1507,41 @@ const tools: Tool[] = [
     handler: (a, c) => ops.recordVacuityCheck(c.universe.path, a as never),
   },
   {
+    name: "review_proposal",
+    description: "Step one of approving a proposal: take the team's changes, then see exactly what has moved since YOU last signed off on it.\n\nIt pulls first, and that is not convenience — law is workspace-scoped, so ratifying on a stale fold binds the team against a standard state teammates have already moved past. If the pull brings in a revision your sign-off goes stale and `ratify_spec` will refuse; this is where you find out, with the field-by-field diff rather than a mystery at the last step.\n\nAnswers `review` — which operations you have never signed off, which changed after you did and WHAT changed in each — plus `complete`, which is what `ratify_spec` requires. A failed pull is reported rather than fatal.",
+    inputSchema: obj({ specId: { type: "string" } }, ["specId"]),
+    mutates: true,
+    handler: (a, c) => ops.reviewProposal(c.universe.path, a as never),
+  },
+  {
+    name: "sign_off_operation",
+    description: "Record that YOU read one operation, at the text it says now.\n\nA content hash, so revising a draft and revising it back to identical wording does not invalidate anybody's reading — nothing they read changed. It also means a later edit can be rendered field by field, which is what makes re-review cheap enough to actually happen.\n\nA PRINCIPAL's act, and not for symmetry: if an agent could write its principal's sign-off, an agent would approve twelve operations and the principal would ratify having read none. That is the gate voiding itself in one step. It pulls first and REFUSES if the pull moved the text you are signing, because signing then would record that you read something you have not seen.",
+    inputSchema: obj({ operationId: { type: "string" } }, ["operationId"]),
+    mutates: true,
+    handler: (a, c) => ops.signOffOperation(c.universe.path, a as never),
+  },
+  {
+    name: "sign_off_framing",
+    description: "Record that you read the spec's TITLE and NARRATIVE — the frame every operation under it is read in the light of.\n\nWitnessed separately because correcting it has to invalidate your reading of the whole proposal: a spec whose narrative named the wrong git branch is one where the framing you decided under was wrong, and that changes how each operation reads. Non-operative does not mean it does not matter to the decision.",
+    inputSchema: obj({ specId: { type: "string" } }, ["specId"]),
+    mutates: true,
+    handler: (a, c) => ops.signOffFraming(c.universe.path, a as never),
+  },
+  {
+    name: "sign_off_section",
+    description: "Sign off a whole GROUP of operations at once, saying how many.\n\n`count` is required and is CHECKED: this writes one approval per operation, so twelve witnesses each claim an operation was read, and a bulk act has to read as bulk at the moment it is made. A caller that thought it was signing three and is told it would sign twelve has learned something.\n\nTwo axes, because a spec's sections are not the standard's sections — a bill argues in its own order and names the code locations it amends. `standard` groups by where each operation files in the taxonomy (pass `section`), which is what a reviewer who owns an area asks by. `spec` groups by the proposal's own order and has exactly ONE group, the whole spec, because a spec's internal hierarchy is narrative and nothing stores it — an invented heading would be a hierarchy nobody authored.",
+    inputSchema: obj({
+      specId: { type: "string" },
+      axis: { type: "string", enum: [...SIGN_OFF_AXES], description: "`standard` — one heading of the standard. `spec` — the whole proposal, its only group." },
+      section: { type: "string", description: "`axis: \"standard\"`: the heading, e.g. \"Credit/Limits\". Left out for `axis: \"spec\"`." },
+      count: { type: "number", description: "How many operations you are signing off. Refused unless it matches, so the size of the claim cannot go unnoticed." },
+    }, ["specId", "axis", "count"]),
+    mutates: true,
+    handler: (a, c) => ops.signOffSection(c.universe.path, a as never),
+  },
+  {
     name: "ratify_spec",
-    description: "Adopt a draft spec: apply every operation to the standard, all or nothing. Each operation is re-checked against the state it was written against, and the whole spec refuses if any of them has moved — a reviewer who approved a rendering built from the standard as of sign-off did not approve the result of applying it to a standard something else has since changed.",
+    description: "Adopt a draft spec: apply every operation to the standard, all or nothing. Each operation is re-checked against the state it was written against, and the whole spec refuses if any of them has moved — a reviewer who approved a rendering built from the standard as of sign-off did not approve the result of applying it to a standard something else has since changed.\n\nIt also refuses unless YOU have signed off every operation and the framing, at the text they say now: adoption is all-or-nothing, so your signature covers every operation whether you looked at it or not. The refusal carries `review` — which operations are unread, which moved since you read them, and what changed in each — so the answer is `review_proposal`, then sign off, then ratify. It pulls first, so a teammate's revision arriving is what makes the refusal fire rather than something that lands silently.",
     inputSchema: obj({
       specId: { type: "string" },
       model: { type: "string", description: "YOUR model id. Never guess it." },

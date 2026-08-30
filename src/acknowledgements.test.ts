@@ -18,6 +18,7 @@ import { writeStore, readAcknowledgement } from "./store.js";
 import type { State } from "./schema.js";
 import { discard } from "./test-tmp.js";
 import { draftSpec, addOperation, ratifySpec, listRequirements, getSpec } from "./requirements.js";
+import { ratifyReviewed } from "./test-approve.js";
 import {
   acknowledgeGap, acknowledgeDebt, releaseAcknowledgement,
   listAcknowledgements, dueForRevalidation,
@@ -71,7 +72,7 @@ test("a gap is raised before the spec lands, and cannot be raised after", async 
     assert.equal(gap.acknowledgement.basis, "gap");
     assert.equal(gap.acknowledgement.requirementId, undefined, "the rule does not exist yet");
 
-    ok(await ratifySpec(root, specId));
+    ok(await ratifyReviewed(root, specId));
     const rule = (await listRequirements(root))[0]!;
     assert.equal(
       (await readAcknowledgement(root, gap.id))!.requirementId, rule.id,
@@ -86,7 +87,7 @@ test("a gap is raised before the spec lands, and cannot be raised after", async 
       statement: "Every settlement endpoint requires an idempotency key, except refunds.",
       rationale: "refunds are keyed differently",
     }));
-    ok(await ratifySpec(root, late.id));
+    ok(await ratifyReviewed(root, late.id));
     const refused = await acknowledgeGap(root, {
       operationId: lateOp.id, rationale: "not built", priority: "low", revalidateBy: LATER,
     });
@@ -98,7 +99,7 @@ test("debt is a principal's admission, and only against a live rule", async () =
   const root = await universe();
   try {
     const { specId } = await draftRule(root);
-    ok(await ratifySpec(root, specId));
+    ok(await ratifyReviewed(root, specId));
     const rule = (await listRequirements(root))[0]!;
 
     const denied = await acknowledgeDebt(root, {
@@ -166,7 +167,7 @@ test("revalidation is due by date, is derived rather than stored, and never auto
     assert.equal(a.acknowledgement.state, "pending", "it silences nothing until the spec is adopted");
     assert.deepEqual(await dueForRevalidation(root, { asOf: "2026-01-01" }), [],
       "and a proposal nobody has adopted cannot be overdue for revalidation");
-    ok(await ratifySpec(root, specId));
+    ok(await ratifyReviewed(root, specId));
 
     // Not due when asked about a moment before the date — so the flip below is evidence
     // rather than a value that was true all along.
@@ -192,7 +193,7 @@ test("releasing is open to any actor, because gating what unsilences is backward
     const a = ok(await acknowledgeGap(root, {
       operationId, rationale: "not built yet", priority: "medium", revalidateBy: LATER,
     }));
-    ok(await ratifySpec(root, specId));
+    ok(await ratifyReviewed(root, specId));
 
     const noReason = await releaseAcknowledgement(root, a.id, "  ", AGENT);
     assert.ok("error" in noReason, "a release still has to say why");
@@ -209,7 +210,7 @@ test("a standard with no audits reads entirely unknown, and never conformant", a
   const root = await universe();
   try {
     const { specId } = await draftRule(root);
-    ok(await ratifySpec(root, specId));
+    ok(await ratifyReviewed(root, specId));
 
     const rows = await conformance(root);
     assert.equal(rows.length, 1);
@@ -225,7 +226,7 @@ test("an acknowledgement classifies the rule, and releasing it returns unknown �
   const root = await universe();
   try {
     const { specId } = await draftRule(root);
-    ok(await ratifySpec(root, specId));
+    ok(await ratifyReviewed(root, specId));
     const rule = (await listRequirements(root))[0]!;
     assert.equal((await conformance(root))[0]!.conformance, "unknown");
 
@@ -252,13 +253,13 @@ test("silenced counts how much of the standard is muted, and by what", async () 
       operationId: first.operationId, rationale: "no settlement endpoints yet",
       priority: "medium", revalidateBy: PASSED,
     }));
-    ok(await ratifySpec(root, first.specId));
+    ok(await ratifyReviewed(root, first.specId));
 
     const second = await draftRule(root, {
       title: "Credit line currency", section: "Credit/Limits",
       statement: "All credit lines are in USD.", provenance: "credit policy §4",
     });
-    ok(await ratifySpec(root, second.specId));
+    ok(await ratifyReviewed(root, second.specId));
     const currency = (await listRequirements(root)).find((r) => r.section === "Credit/Limits")!;
     ok(await acknowledgeDebt(root, {
       requirementId: currency.id, rationale: "one ledger path is EUR", priority: "high", revalidateBy: LATER,
@@ -276,7 +277,7 @@ test("a gap may not be raised against an operation on a rule already in force", 
   const root = await universe();
   try {
     const { specId } = await draftRule(root);
-    ok(await ratifySpec(root, specId));
+    ok(await ratifyReviewed(root, specId));
     const rule = (await listRequirements(root))[0]!;
 
     // The second route to a post-ratification gap, and it survived the draft-only check:
@@ -295,7 +296,7 @@ test("a gap may not be raised against an operation on a rule already in force", 
     });
     assert.ok("error" in refused);
     assert.match((refused as any).error, /already in force/);
-    ok(await ratifySpec(root, amend.id));
+    ok(await ratifyReviewed(root, amend.id));
     assert.equal((await listAcknowledgements(root)).length, 0, "and nothing bound to the live rule");
   } finally { discard(root); }
 });
@@ -330,7 +331,7 @@ test("a pre-approved gap is pending until ratification, and is visible to the ra
     // But VISIBLE where it has to be — the ratifier is the only person who can refuse it.
     assert.equal(ok(await getSpec(root, specId)).silenced, 1);
 
-    ok(await ratifySpec(root, specId));
+    ok(await ratifyReviewed(root, specId));
     const bound = (await readAcknowledgement(root, a.id))!;
     assert.equal(bound.state, "active", "adopted in the same act that created the rule");
     assert.ok(bound.requirementId, "and bound to it");

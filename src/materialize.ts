@@ -122,7 +122,12 @@ import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeStatu
 // does, so without the bump a store that has already folded this scope would serve the
 // pre-correction standard for ever — showing an operation its author pulled as one the
 // principal is being asked to adopt.
-export const MATERIALIZER_VERSION = 17;
+//
+// 17 -> 18: `proposal_witnesses` is a new projected table, and `spec.ratified` now folds
+// against it — a ratification whose ratifier had not signed the proposal's own text is
+// applied by no clone. A store that has already folded this scope holds rows computed
+// without either, and only the shards move a fingerprint.
+export const MATERIALIZER_VERSION = 18;
 
 /**
  * What the events in a scope are, cheaply.

@@ -43,9 +43,9 @@
 
 import type {
   AcceptanceCriterion, Acknowledgement, Actor, Audit, BugWitness, Operation, Pointer,
-  PopulationPredicate, Problem, Requirement, ScrubPolicy, Spec, VacuityCheck,
+  PopulationPredicate, Problem, ProposalWitness, Requirement, ScrubPolicy, Spec, VacuityCheck,
 } from "./schema.js";
-import { criterionIdFor, movedSection, normalizeSection, requirementIdFor, EVIDENCE_KINDS, AUDIT_TRIGGERS, COVERING_TRIGGERS, auditClaimStands } from "./schema.js";
+import { criterionIdFor, movedSection, normalizeSection, requirementIdFor, EVIDENCE_KINDS, AUDIT_TRIGGERS, COVERING_TRIGGERS, auditClaimStands, contentDiff, framingContent, operationContent, witnessHash } from "./schema.js";
 import type { LogEvent } from "./eventlog.js";
 import { causality, emitEvent } from "./eventlog.js";
 import { applyRevision, newContestState } from "./contest.js";
@@ -76,6 +76,8 @@ export const isLawEvent = (kind: string): boolean =>
 export interface SharedStandard {
   specs: Spec[];
   operations: Operation[];
+  /** Who read which version of what. See `ProposalWitness`. */
+  witnesses: ProposalWitness[];
   requirements: Requirement[];
   criteria: AcceptanceCriterion[];
   vacuityChecks: VacuityCheck[];
@@ -90,7 +92,7 @@ export interface SharedStandard {
 }
 
 export const emptyStandard = (): SharedStandard => ({
-  specs: [], operations: [], requirements: [], criteria: [], vacuityChecks: [], pointers: [],
+  specs: [], operations: [], witnesses: [], requirements: [], criteria: [], vacuityChecks: [], pointers: [],
   populations: [], scrubs: [], scrubPolicy: null, acknowledgements: [], audits: [], problems: [],
 });
 
@@ -132,6 +134,16 @@ export const publishOperationRemoved = (logRoot: string, scope: string, actor: A
  * The event is subject-keyed on the SPEC, not on any requirement: adopting a spec is one
  * act, and splitting it per operation would let a clone fold half an argument.
  */
+/**
+ * One reviewer signing off one subject. An ACT, so it enters the log.
+ *
+ * Subject-keyed on the SPEC rather than on the operation, matching `spec.operation`: a
+ * clone folding by subject then sees a proposal's whole review history in one place, which
+ * is the question anybody asks of it ("who has read this, and how much of it").
+ */
+export const publishSpecReviewed = (logRoot: string, scope: string, actor: Actor, w: ProposalWitness) =>
+  put(logRoot, scope, actor, "spec.reviewed", w.specId, { witness: w });
+
 export const publishSpecRatified = (
   logRoot: string, scope: string, actor: Actor, specId: string, at: string,
   witnesses: Record<string, BugWitness[]>, operations: string[],
@@ -272,10 +284,76 @@ function revisionBlocked(
  * permits a withdrawal that something already cites. That is the one failure in this design
  * that answers wrongly rather than incompletely, so it refuses instead.
  */
+/**
+ * What a named reviewer has NOT approved of a proposal as it now stands.
+ *
+ * The one computation behind both ends. `ratifySpec` refuses on it and renders it for the
+ * caller; `foldStandard` refuses the arriving `spec.ratified` on the same result, because
+ * a ratification reaching a teammate's clone was never seen by their MCP call — and a
+ * signature check that binds only the machine that ran it is not a signature check.
+ *
+ * Keyed on the RATIFIER's own principal. Somebody else having read the proposal is not the
+ * ratifier having read it, and adoption is the act that produces accountability (COD-17 —
+ * accountability, never evidence).
+ */
+export interface ReviewGap {
+  reviewer: string;
+  total: number;
+  /** Never signed off by this reviewer. */
+  unwitnessed: { id: string; kind: string; title: string }[];
+  /** Signed off, and the text moved afterwards. Carries what moved. */
+  moved: {
+    id: string; kind: string; title: string; readAt: string;
+    changed: { field: string; was?: string; now?: string }[];
+  }[];
+  /** The spec's title and narrative — what every operation is read under. */
+  framing?: { state: "unwitnessed" | "moved"; readAt?: string; changed?: { field: string; was?: string; now?: string }[] };
+}
+
+export const reviewComplete = (g: ReviewGap): boolean =>
+  !g.unwitnessed.length && !g.moved.length && !g.framing;
+
+/** A short label for an operation in a refusal — what it does, to what. */
+export const operationLabel = (op: Operation): string =>
+  op.title ?? op.criterion ?? (op.fromSection ? `${op.fromSection} -> ${op.toSection}` : undefined) ?? op.requirementId ?? op.id;
+
+export function reviewGap(
+  spec: Spec, ops: Operation[], witnesses: ProposalWitness[], reviewer: string,
+): ReviewGap {
+  const mine = witnesses.filter((w) => w.specId === spec.id && w.reviewer.principal === reviewer);
+  // LAST one wins, and the rows are in log order: a reviewer who signs off, the text
+  // moves, and they sign off again has read the current text.
+  const latest = new Map<string, ProposalWitness>();
+  for (const w of mine) latest.set(w.operationId ?? "", w);
+
+  const gap: ReviewGap = { reviewer, total: ops.length, unwitnessed: [], moved: [] };
+  const frame = latest.get("");
+  const frameNow = framingContent(spec);
+  if (!frame) gap.framing = { state: "unwitnessed" };
+  else if (witnessHash(frame.content) !== witnessHash(frameNow)) {
+    gap.framing = { state: "moved", readAt: frame.at, changed: contentDiff(frame.content, frameNow) };
+  }
+  for (const op of ops) {
+    const w = latest.get(op.id);
+    const label = operationLabel(op);
+    if (!w) { gap.unwitnessed.push({ id: op.id, kind: op.kind, title: label }); continue; }
+    const now = operationContent(op);
+    if (witnessHash(w.content) !== witnessHash(now)) {
+      gap.moved.push({ id: op.id, kind: op.kind, title: label, readAt: w.at, changed: contentDiff(w.content, now) });
+    }
+  }
+  return gap;
+}
+
 export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = {}): SharedStandard {
   const evidenceReadable = opts.evidence !== false;
   const specs = new Map<string, Spec>();
   const operations = new Map<string, Operation>();
+  // Keyed on subject-and-reviewer, so a later sign-off REPLACES the earlier one: a
+  // ratification asks what you last read, never how many times you looked. Named `reviews`
+  // and not `witnesses` because `spec.ratified` already binds that word to the CODE
+  // hashes it carries, which are a different observation entirely.
+  const reviews = new Map<string, ProposalWitness>();
   const requirements = new Map<string, Requirement>();
   const criteria = new Map<string, AcceptanceCriterion>();
   const vacuityChecks = new Map<string, VacuityCheck>();
@@ -359,6 +437,31 @@ export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = 
         operations.set(cur.id, { ...next, specId: cur.specId, ord: cur.ord, removed: undefined, origin: "sync" });
         break;
       }
+      case "spec.reviewed": {
+        const w = obj(e.data, "witness") as ProposalWitness | undefined;
+        if (!w?.id || !w.content) break;
+        const sp = specs.get(w.specId);
+        // Only a DRAFT is reviewable. A witness of a ratified spec claims a reading of
+        // something that can no longer change, which is nothing, and folding one would let
+        // a witness arrive AFTER the ratification it is supposed to have preceded.
+        if (!sp || sp.status !== "draft") break;
+        // A reviewer's sign-off is a PRINCIPAL's act, restated where a remote clone can see
+        // it. Letting an agent write it would void the whole gate in one step: an agent
+        // signs off twelve operations for its principal and the principal then ratifies
+        // having read none of them — completion drive taking the shortest path, which is
+        // the failure this subsystem is built against.
+        if (e.actor.via) break;
+        // The reviewer is the EVENT's actor, never the payload's. A row that named its own
+        // reviewer would let one clone write another person's approval.
+        if (w.operationId) {
+          const op = operations.get(w.operationId);
+          if (!op || op.specId !== sp.id || op.removed) break;
+        }
+        reviews.set(`${w.specId}|${w.operationId ?? ""}|${e.actor.principal}`, {
+          ...w, reviewer: e.actor, at: str(e.data, "at") ?? w.at ?? e.at, origin: "sync",
+        });
+        break;
+      }
       case "spec.ratified": {
         const sp = specs.get(e.subject);
         // A ratification for a spec this fold never saw drafted is not fatal: the drafting
@@ -396,7 +499,17 @@ export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = 
           const cur = requirements.get(op.context.requirementId);
           return !cur || cur.status === "retired" || cur.statement !== op.context.statement;
         });
-        if (stale || (pinned && mine.length !== pinned.length)) {
+        // The RATIFIER's own signature over the proposal's own text, restated here for the
+        // reason every other gate is: this row reaching a teammate's clone was never seen
+        // by their MCP call. Without it the witness binds one machine, and the machine it
+        // binds is the one whose operator already chose to run the check.
+        //
+        // `conflicted` rather than a skip, exactly as a moved base is: the ratification
+        // really happened and the honest record says so; what did not happen is the
+        // application. A silent skip would leave the spec `draft` on the receiving clone
+        // with nothing saying why.
+        const unread = !reviewComplete(reviewGap(sp, mine, [...reviews.values()], e.actor.principal));
+        if (stale || unread || (pinned && mine.length !== pinned.length)) {
           specs.set(sp.id, { ...sp, status: "ratified", ratifiedBy: e.actor, ratifiedAt: at, conflicted: true });
           break;
         }
@@ -747,6 +860,7 @@ export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = 
 
   return {
     specs: [...specs.values()], operations: [...operations.values()],
+    witnesses: [...reviews.values()],
     requirements: [...requirements.values()], criteria: [...criteria.values()],
     vacuityChecks: [...vacuityChecks.values()], pointers: [...pointers.values()],
     populations: [...populations.values()],

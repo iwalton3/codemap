@@ -39,7 +39,7 @@ import {
   type Graph, type Edge, type Annotation, type AnnotationStore,
   type CoverageRule, type CoverageStore, type AnalyzerConfig, type Review, type ReviewStore, type Triage, type TriageStore,
   type BugWitness, type Importance, type Complexity, type TriageSource,
-  type Requirement, type RequirementStore, type Spec, type Operation, type Acknowledgement, type Audit, type Problem,
+  type Requirement, type RequirementStore, type Spec, type Operation, type Acknowledgement, type Audit, type Problem, type ProposalWitness,
   type AcceptanceCriterion, type VacuityCheck, type EvidenceKind, type Pointer, type PopulationPredicate, type ScrubPolicy,
   SCHEMA_VERSION, ANCHOR_SCHEME, HASH_SCHEME,
 } from "./schema.js";
@@ -2285,6 +2285,62 @@ export async function writeLocalOperation(root: string, op: Operation): Promise<
     "INSERT OR REPLACE INTO operations(id,spec_id,kind,requirement_id,ord,origin,source_scope,body)"
     + " VALUES(?,?,?,?,?,?,?,?)",
   ).run(op.id, op.specId, op.kind, op.requirementId ?? null, op.ord, op.origin ?? null, null, JSON.stringify(op));
+}
+
+const hydrateWitness = (body: string, origin: string | null): ProposalWitness | null => {
+  try {
+    const w = JSON.parse(body) as ProposalWitness;
+    return origin ? { ...w, origin } : w;
+  } catch { return null; }
+};
+
+/**
+ * Sign-offs on a proposal. One row per reviewer per subject — a later sign-off REPLACES
+ * the earlier, because a ratification asks what you last read, not how often you looked.
+ *
+ * `operationId: null` selects the FRAMING witness (title and narrative) and is passed
+ * explicitly rather than by omitting the option, so "the framing" and "everything" cannot
+ * be confused at a call site.
+ */
+export async function readProposalWitnesses(
+  root: string, opts: { specId?: string; operationId?: string | null; reviewer?: string } = {},
+): Promise<ProposalWitness[]> {
+  const clauses: string[] = [];
+  const args: string[] = [];
+  if (opts.specId) { clauses.push("spec_id = ?"); args.push(opts.specId); }
+  if (opts.operationId === null) clauses.push("operation_id IS NULL");
+  else if (opts.operationId) { clauses.push("operation_id = ?"); args.push(opts.operationId); }
+  if (opts.reviewer) { clauses.push("reviewer = ?"); args.push(opts.reviewer); }
+  const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+  const rows = db(root).prepare(
+    `SELECT body, origin FROM proposal_witnesses${where} ORDER BY at, id`,
+  ).all(...args as []) as unknown as { body: string; origin: string | null }[];
+  const out: ProposalWitness[] = [];
+  for (const r of rows) { const w = hydrateWitness(r.body, r.origin); if (w) out.push(w); }
+  return out;
+}
+
+export async function writeLocalProposalWitness(root: string, w: ProposalWitness): Promise<void> {
+  const d = db(root);
+  const owner = d.prepare("SELECT source_scope FROM proposal_witnesses WHERE id = ? AND source_scope IS NOT NULL")
+    .get(w.id) as { source_scope: string } | undefined;
+  if (owner) throw new Error(`${w.id} is owned by the sidecar fold (${owner.source_scope}) — write an event, not a row.`);
+  // Replace this reviewer's PREVIOUS witness of the same subject. Keeping both would make
+  // "have you read the current text" a search rather than a lookup, and the older row can
+  // only ever answer the question wrongly.
+  if (w.operationId) {
+    d.prepare(
+      "DELETE FROM proposal_witnesses WHERE spec_id = ? AND reviewer = ? AND operation_id = ? AND source_scope IS NULL",
+    ).run(w.specId, w.reviewer.principal, w.operationId);
+  } else {
+    d.prepare(
+      "DELETE FROM proposal_witnesses WHERE spec_id = ? AND reviewer = ? AND operation_id IS NULL AND source_scope IS NULL",
+    ).run(w.specId, w.reviewer.principal);
+  }
+  d.prepare(
+    "INSERT INTO proposal_witnesses(id,spec_id,operation_id,reviewer,at,origin,source_scope,body)"
+    + " VALUES(?,?,?,?,?,?,?,?)",
+  ).run(w.id, w.specId, w.operationId ?? null, w.reviewer.principal, w.at, w.origin ?? null, null, JSON.stringify(w));
 }
 
 /** Section -> how many requirements file under it. The index a flat list cannot be. */

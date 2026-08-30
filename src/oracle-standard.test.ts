@@ -40,6 +40,7 @@ import { readAnchorStore, readSpecs, readOperations } from "./store.js";
 import {
   draftSpec, addOperation, ratifySpec, listRequirements, getSpec, pendingSpecs,
 } from "./requirements.js";
+import { ratifyReviewed } from "./test-approve.js";
 import { acknowledgeGap, listAcknowledgements } from "./acknowledgements.js";
 import { recordAudit, conformance, provisionalAudits, promotableAudits } from "./audits.js";
 import { raiseProblem, adjudicate, listProblems, awaitingAdjudication } from "./problems.js";
@@ -121,7 +122,7 @@ test("the standard is one law across machines, and a race for it has one winner"
       // The ratifier can SEE the silencer riding along — the whole point of rendering it.
       const rendered = ok(await getSpec(izzie.repo, specId));
       assert.equal(rendered.silenced, 1);
-      ok(await ratifySpec(izzie.repo, specId));
+      ok(await ratifyReviewed(izzie.repo, specId));
     });
 
     await step("everyone settles", async () => {
@@ -155,7 +156,7 @@ test("the standard is one law across machines, and a race for it has one winner"
             statement: "A refund must never call transfer with a negative amount, and must be logged.",
             rationale: "audit asked for the log line", reversibility: "reversible",
           }));
-          return ratifySpec(m.repo, sp.id);
+          return ratifyReviewed(m.repo, sp.id);
         },
         MATE, async (m) => {
           const sp = ok(await draftSpec(m.repo, { title: "Ben's amendment" }));
@@ -164,7 +165,7 @@ test("the standard is one law across machines, and a race for it has one winner"
             statement: "A refund must be expressed as a positive amount on a credit entry.",
             rationale: "the ledger team's shape", reversibility: "reversible",
           }));
-          return ratifySpec(m.repo, sp.id);
+          return ratifyReviewed(m.repo, sp.id);
         },
       );
     });
@@ -294,7 +295,7 @@ test("co-authoring one spec collides, and the collision is refused rather than r
       title: "Refunds are positive", section: "Payments/Refunds",
       statement: "A refund must be expressed as a positive amount.",
     }]);
-    ok(await ratifySpec(izzie.repo, first.specId));
+    ok(await ratifyReviewed(izzie.repo, first.specId));
     await settle(t);
     const ruleId = (await listRequirements(ben.repo))[0]!.id;
 
@@ -325,7 +326,7 @@ test("co-authoring one spec collides, and the collision is refused rather than r
 
     // Adoption refuses, on both machines, rather than picking one and applying it.
     for (const m of [izzie, ben]) {
-      const res = await ratifySpec(m.repo, sp.id);
+      const res = await ratifyReviewed(m.repo, sp.id);
       assert.match((res as { error: string }).error ?? "", /carries two operations against/,
         `${m.actor.principal} adopted a spec whose two operations were written against the same base`);
     }
@@ -374,7 +375,7 @@ test("every fold refusal binds a writer whose tool never checked, on every clone
       title: "Refunds are positive", section: "Payments/Refunds",
       statement: "A refund must be expressed as a positive amount.",
     }]);
-    ok(await ratifySpec(izzie.repo, adopted.specId));
+    ok(await ratifyReviewed(izzie.repo, adopted.specId));
     const pending = await adopt(izzie, "A proposal nobody has adopted", [{
       title: "Batches balance", section: "Settlement/Batches",
       statement: "A settlement batch must sum to zero.",

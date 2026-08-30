@@ -54,6 +54,24 @@ const ok = <T>(r: T): Exclude<T, { error: string }> => {
   return r as Exclude<T, { error: string }>;
 };
 
+/**
+ * Sign off a proposal as the PERSON, through the same ops surface everything else here
+ * uses — `ratifySpec` refuses an adoption its ratifier has not witnessed.
+ *
+ * Not `test-approve.ts`: this file's subject is the OPS layer, so a fixture that reached
+ * past it into `requirements.ts` would stop exercising the thing under test.
+ */
+async function approve(root: string, specId: string) {
+  const framing = await standard.signOffFraming(root, { specId, ...PERSON });
+  if ("error" in framing) return framing;
+  const d = ok(await standard.getSpec(root, { specId }));
+  for (const o of d.operations) {
+    const r = await standard.signOffOperation(root, { operationId: o.operation.id, ...PERSON });
+    if ("error" in r) return r;
+  }
+  return { ok: true as const };
+}
+
 /** A ratified rule, plus a non-conformant audit and the problem raised from it. */
 async function seeded(root: string, anchor: string) {
   const spec = ok(await standard.draftSpec(root, { title: "Credit limits", ...AGENT }));
@@ -63,6 +81,7 @@ async function seeded(root: string, anchor: string) {
     section: "Credit/Limits", statement: "A credit line must never be negative.",
     provenance: "master services agreement §4", ...AGENT,
   }));
+  ok(await approve(root, spec.id));
   const adopted = ok(await standard.ratifySpec(root, { specId: spec.id, ...PERSON }));
   // No sidecar here, so this machine applies the operations and can report what it did.
   // On the shared path the fold decides and `applied` is null until it has been folded.
@@ -171,6 +190,17 @@ test("an agent may not decide any question the standard reserves to a principal"
       ["refile_requirement", await standard.reorganizeRequirement(root, {
         id: requirementId, section: "Credit/Something-Else", ...AGENT,
       })],
+      // Sign-off, and it belongs on this list for a reason that is not symmetry: it is the
+      // RATIFIER's record that they read the text, so an agent able to write it would
+      // approve twelve operations and the principal would then ratify having read none.
+      // The gate would void itself in one step.
+      ["sign_off_framing", await standard.signOffFraming(root, { specId: second.id, ...AGENT })],
+      ["sign_off_operation", await standard.signOffOperation(root, {
+        operationId: (ok(await standard.getSpec(root, { specId: second.id })) as any).operations[0].operation.id, ...AGENT,
+      })],
+      ["sign_off_section", await standard.signOffSection(root, {
+        specId: second.id, axis: "spec", count: 1, ...AGENT,
+      })],
     ];
 
     for (const [verb, r] of refusals) {
@@ -183,6 +213,7 @@ test("an agent may not decide any question the standard reserves to a principal"
 
     // And the same four succeed for the person, so the refusal is about WHO rather than
     // about a malformed call. Without this half, deleting the operations would also pass.
+    ok(await approve(root, second.id));
     ok(await standard.ratifySpec(root, { specId: second.id, ...PERSON }));
     ok(await standard.adjudicate(root, {
       problemId, disposition: "requirement-changed", reason: "the business moved", ...PERSON,

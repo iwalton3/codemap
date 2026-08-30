@@ -23,6 +23,7 @@ import {
   publishVacuityCheck, publishPointerDeclared, publishPointerRestated, publishPointerRetired,
   publishPopulationPinned, publishScrubPolicy, publishSpecWithdrawn, emptyStandard,
 } from "./shared-standard.js";
+import { ratifyWithReview } from "./test-approve.js";
 import { criterionIdFor, requirementIdFor, type Acknowledgement, type Actor, type Audit, type Operation, type Problem, type Spec } from "./schema.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
@@ -65,7 +66,7 @@ test("a requirement appears only when the spec is ratified, under an id every cl
     assert.equal(draft.specs[0]!.status, "draft");
     assert.equal(draft.requirements.length, 0, "a draft spec writes nothing to the standard");
 
-    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {
+    await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {
       op_1: [{ anchorId: "a_credit", bodyHash: "h1:sha256:abc" }],
     }, ["op_1"]);
 
@@ -88,7 +89,7 @@ test("the same events fold to the same standard, which is what lets two clones a
   try {
     await publishSpecDrafted(root, SCOPE, opus, SPEC);
     await publishOperation(root, SCOPE, opus, ADD);
-    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
+    await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
     const events = await readScope(root, SCOPE);
     assert.deepEqual(foldStandard(events), foldStandard(events));
     // And it could have failed: an empty log folds to something different.
@@ -190,7 +191,7 @@ test("the projection round-trips what the fold produced", async () => {
       priority: "medium", revalidateBy: "2027-01-01", state: "active",
       grantedBy: opus, grantedAt: "2026-08-01T00:00:00.000Z",
     });
-    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
+    await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
     const value = await fold(root);
     assert.ok(value.requirements.length && value.acknowledgements.length, "the fixture must be non-empty or the round trip is vacuous");
 
@@ -212,13 +213,13 @@ test("a spec ratifies once, so a replayed or duplicated event cannot apply it tw
   try {
     await publishSpecDrafted(root, SCOPE, opus, SPEC);
     await publishOperation(root, SCOPE, opus, ADD);
-    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
+    await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
     const once = await fold(root);
 
     // A second ratification of the same spec. A fold that applied it again would amend
     // the rule a second time, and `amendedBy` would grow on every sync — the shape of bug
     // that only appears after a clone has synced more than once.
-    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-09T00:00:00.000Z", {}, ["op_1"]);
+    await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-09T00:00:00.000Z", {}, ["op_1"]);
     const twice = await fold(root);
     assert.deepEqual(twice.requirements, once.requirements, "applying a spec is idempotent");
     assert.equal(twice.specs[0]!.ratifiedAt, "2026-08-02T00:00:00.000Z", "and the first adoption is the one that counts");
@@ -290,7 +291,7 @@ test("THE FOLD REFUSES A GAP MINTED AFTER RATIFICATION, which is the third laund
     await publishAckGranted(root, SCOPE, opus, { ...base, id: "ack_before", operationId: ADD.id });
     assert.equal((await fold(root)).acknowledgements.length, 1);
 
-    await publishSpecRatified(root, SCOPE, izzie, SPEC.id, "2026-08-02T00:00:00.000Z", {}, [ADD.id]);
+    await ratifyWithReview(root, SCOPE, izzie, SPEC.id, "2026-08-02T00:00:00.000Z", {}, [ADD.id]);
     assert.equal((await fold(root)).requirements.length, 1, "the rule is now binding");
 
     // After ratification, naming the very same operation: refused.
@@ -418,12 +419,15 @@ test("the fold refuses an agent's ratification", async () => {
   try {
     await publishSpecDrafted(root, SCOPE, opus, SPEC);
     await publishOperation(root, SCOPE, opus, ADD);
-    await publishSpecRatified(root, SCOPE, opus, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
+    // Reviewed by the PERSON, ratified by the agent — so the only thing left to refuse
+    // this is the agent gate under test. Letting the agent sign off too would make the
+    // test pass for two reasons and pin neither.
+    await ratifyWithReview(root, SCOPE, opus, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"], izzie);
     const f = await fold(root);
     assert.equal(f.requirements.length, 0, "adoption is a principal's act on every clone, not only on the one that ran the tool");
     assert.equal(f.specs[0]!.status, "draft");
 
-    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", {}, ["op_1"]);
+    await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", {}, ["op_1"]);
     assert.equal((await fold(root)).requirements.length, 1, "and a principal's does bind");
   } finally { discard(root); }
 });
@@ -433,7 +437,7 @@ test("the fold refuses a spec adopted against a base that had already moved", as
   try {
     await publishSpecDrafted(root, SCOPE, opus, SPEC);
     await publishOperation(root, SCOPE, opus, ADD);
-    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
+    await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
     const rid = requirementIdFor("op_1");
 
     // Two principals, each drafting against "All credit lines are in USD." on their own
@@ -448,10 +452,10 @@ test("the fold refuses a spec adopted against a base that had already moved", as
       await publishSpecDrafted(root, SCOPE, izzie, { ...SPEC, id: sid, title: sid });
       await publishOperation(root, SCOPE, izzie, amend(oid, text));
     }
-    await publishSpecRatified(root, SCOPE, izzie, "sp_a", "2026-08-03T00:00:00.000Z", {}, ["op_a"]);
+    await ratifyWithReview(root, SCOPE, izzie, "sp_a", "2026-08-03T00:00:00.000Z", {}, ["op_a"]);
     assert.match((await fold(root)).requirements[0]!.statement, /settlement float/);
 
-    await publishSpecRatified(root, SCOPE, izzie, "sp_b", "2026-08-04T00:00:00.000Z", {}, ["op_b"]);
+    await ratifyWithReview(root, SCOPE, izzie, "sp_b", "2026-08-04T00:00:00.000Z", {}, ["op_b"]);
     const after = await fold(root);
     assert.match(
       after.requirements[0]!.statement, /settlement float/,
@@ -473,7 +477,7 @@ test("a ratification adopts exactly the operations it pinned", async () => {
       ...ADD, id: "op_sneak", ord: 1, title: "Unapproved", section: "Credit/Other",
       statement: "Something nobody reviewed.",
     });
-    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
+    await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
 
     const f = await fold(root);
     assert.equal(f.requirements.length, 1, "only what was pinned");
@@ -504,7 +508,7 @@ test("a ratified add_criterion folds to a criterion, under an id every clone der
 
     assert.equal((await fold(root)).criteria.length, 0, "a draft spec writes no criteria either");
 
-    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {
+    await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {
       // The criterion witnesses its ASSERTION; the requirement witnesses the rule's code.
       op_1: [{ anchorId: "a_credit", bodyHash: "h1:sha256:abc" }],
       op_2: [{ anchorId: "a_lint", bodyHash: "h1:sha256:def" }],
@@ -535,7 +539,7 @@ async function withCriterion(root: string): Promise<string> {
   await publishSpecDrafted(root, SCOPE, opus, SPEC);
   await publishOperation(root, SCOPE, opus, ADD);
   await publishOperation(root, SCOPE, opus, ADD_CRITERION);
-  await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {
+  await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {
     op_2: [{ anchorId: "a_lint", bodyHash: "h1:sha256:def" }],
   }, ["op_1", "op_2"]);
   return criterionIdFor("op_2");
@@ -899,7 +903,7 @@ test("the fold refuses a criterion whose falsifier restates it, or whose kind it
       await publishSpecDrafted(root2, SCOPE, opus, SPEC);
       await publishOperation(root2, SCOPE, opus, ADD);
       await publishOperation(root2, SCOPE, opus, { ...ADD_CRITERION, ...bad });
-      await publishSpecRatified(root2, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1", "op_2"]);
+      await ratifyWithReview(root2, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1", "op_2"]);
       assert.deepEqual((await fold(root2)).criteria.map((c) => c.id), [], `${id} should not fold`);
       // The REQUIREMENT still lands — refusing the criterion must not refuse the spec.
       assert.equal((await fold(root2)).requirements.length, 1, `${id} must not take the rule with it`);
@@ -931,7 +935,7 @@ test("the fold activates a pre-approved gap in the same act that adopts its rule
     assert.equal(a.state, "pending");
     assert.equal(a.requirementId, undefined);
 
-    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
+    await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
     a = (await fold(root)).acknowledgements[0]!;
     assert.equal(a.state, "active", "adopted in the same act that created the rule");
     assert.equal(a.requirementId, requirementIdFor("op_1"), "and bound to it");
@@ -943,7 +947,7 @@ async function ratified(root: string, extra: Operation[] = []) {
   await publishSpecDrafted(root, SCOPE, opus, SPEC);
   await publishOperation(root, SCOPE, opus, ADD);
   for (const o of extra) await publishOperation(root, SCOPE, opus, o);
-  await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {},
+  await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {},
     ["op_1", ...extra.map((o) => o.id)]);
 }
 
@@ -1004,7 +1008,7 @@ test("THE FOLD REFUSES WITHDRAWING A SPEC THAT AMENDED SOMETHING — that case i
     };
     await publishSpecDrafted(root, SCOPE, opus, amender);
     await publishOperation(root, SCOPE, opus, amend);
-    await publishSpecRatified(root, SCOPE, izzie, "sp_2", "2026-08-03T00:00:00.000Z", {}, ["op_2"]);
+    await ratifyWithReview(root, SCOPE, izzie, "sp_2", "2026-08-03T00:00:00.000Z", {}, ["op_2"]);
     assert.equal((await fold(root)).requirements[0]!.statement, "All credit lines are in USD or EUR.");
 
     // Nothing cites the amending spec at all, so this refusal is about the operation KIND.

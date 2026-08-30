@@ -24,6 +24,7 @@ import { writeStore } from "./store.js";
 import type { State } from "./schema.js";
 import * as ops from "./ops/standard.js";
 import { draftSpec, addOperation, ratifySpec } from "./requirements.js";
+import { ratifyReviewed, signOffEverything, ratifyWithReview } from "./test-approve.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 const SRC = "export function creditLine(cents) { return cents; }\n";
@@ -53,7 +54,7 @@ async function universeWithRule() {
     title: "Credit line is capped", section: "Credit/Limits",
     statement: "A credit line never exceeds the approved limit.", provenance: "credit policy",
   }));
-  ok(await ratifySpec(root, sp.id));
+  ok(await ratifyReviewed(root, sp.id));
   return { root, side, cleanup: () => [root, side].forEach((r) => discard(r)) };
 }
 
@@ -173,7 +174,7 @@ test("no sidecar is not a warning — local rows with no log behind them are the
       specId: sp.id, kind: "add_requirement", rationale: "r", reversibility: "reversible",
       title: "t", section: "Credit", statement: "st", provenance: "p",
     }));
-    ok(await ratifySpec(root, sp.id));
+    ok(await ratifyReviewed(root, sp.id));
 
     const r = await ops.listRequirements(root);
     assert.equal(r.requirements.length, 1);
@@ -217,7 +218,7 @@ test("a teammate's ratification is visible to the very next read, not the one af
       statement: "Float must be settled daily.", provenance: "treasury",
       rationale: "policy", reversibility: "reversible",
     });
-    await publishSpecRatified(cfg.path, scope, mate, "sp_mate", "2026-08-10T01:00:00.000Z", {}, ["op_mate"]);
+    await ratifyWithReview(cfg.path, scope, mate, "sp_mate", "2026-08-10T01:00:00.000Z", {}, ["op_mate"]);
 
     // THE VERY NEXT READ. With the rows read before the scope check folded, this is 1.
     const r = await ops.listRequirements(u.root);
@@ -246,6 +247,10 @@ test("every read on the standard ops surface goes through the scope marker", () 
     // The three correction verbs on a draft. Writes, so they answer with an outcome rather
     // than a projection, exactly as `addOperation` beside them does.
     "reviseSpec", "reviseOperation", "removeOperation",
+    // The review loop's three WRITES. `reviewProposal` is deliberately absent: it is a
+    // read that happens to pull first, so it carries the marker like every other read —
+    // and it matters more there than most, since it is the read somebody signs off from.
+    "signOffOperation", "signOffFraming", "signOffSection",
     "acknowledgeDebt", "releaseAcknowledgement", "recordAudit", "recordVacuityCheck",
     "promoteProvisionalAudit", "raiseProblem", "adjudicate", "declarePointer",
     "restatePointer", "retirePointer", "pinPopulation", "declareNotExpressible",

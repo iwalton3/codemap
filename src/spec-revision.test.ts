@@ -29,6 +29,7 @@ import {
   draftSpec, addOperation, ratifySpec, withdrawSpec, reviseSpec, reviseOperation,
   removeOperation, getSpec, listRequirements,
 } from "./requirements.js";
+import { ratifyReviewed, signOffEverything, ratifyWithReview } from "./test-approve.js";
 import { acknowledgeGap, listAcknowledgements } from "./acknowledgements.js";
 import {
   foldStandard, standardScope, publishSpecDrafted, publishOperation, publishSpecRatified,
@@ -125,7 +126,7 @@ test("the SAME correction is refused once the spec is ratified", async () => {
     const { specId, opId } = await drafted(u.root);
     // The positive half first, so the refusal below cannot pass because the fixture is broken.
     ok(await reviseSpec(u.root, { specId, title: "Credit currency policy v2", ...AGENT }));
-    ok(await ratifySpec(u.root, specId));
+    ok(await ratifyReviewed(u.root, specId));
 
     assert.match(err(await reviseSpec(u.root, { specId, title: "quietly different", ...AGENT })),
       /ratified/, "a ratified spec is the act that produced a rule");
@@ -214,7 +215,7 @@ test("a removed operation stops applying, keeps its position, and stays readable
     assert.equal(third.operation.ord, 2, "a count would have handed back the removed operation's position");
 
     // And ratification applies exactly what is left.
-    ok(await ratifySpec(u.root, specId));
+    ok(await ratifyReviewed(u.root, specId));
     const rules = await listRequirements(u.root);
     assert.deepEqual(rules.map((r) => r.title).sort(), ["Credit line currency", "Credit line review"]);
   } finally { u.cleanup(); }
@@ -258,7 +259,7 @@ test("an agent still cannot withdraw a RATIFIED spec — the ratchet is unchange
   const u = await universe();
   try {
     const { specId } = await drafted(u.root);
-    ok(await ratifySpec(u.root, specId));
+    ok(await ratifyReviewed(u.root, specId));
     const e = err(await withdrawSpec(u.root, specId, { reason: "second thoughts", ...AGENT }));
     assert.match(e, /principal's act/);
     assert.equal((await readSpec(u.root, specId))!.status, "ratified");
@@ -356,7 +357,7 @@ test("the fold applies a draft's corrections, and refuses them once it is ratifi
     assert.equal(s.specs[0]!.title, "Credit currency policy v2", "a draft's correction folds");
     assert.equal(s.operations[0]!.statement, "All credit lines are in USD or EUR.");
 
-    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", {}, ["op_1"]);
+    await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", {}, ["op_1"]);
     // The identical events, after adoption. Dropped — a ratified spec is the act that
     // produced a rule, and rewriting it would rewrite the standard's own provenance.
     await publishSpecRevised(root, SCOPE, opus, { ...SPEC, title: "quietly different" }, "2026-08-04T00:00:00.000Z");
@@ -445,7 +446,7 @@ test("the fold refuses an agent's withdrawal of a RATIFIED spec, and one somebod
     // And the ratified case stays exactly as it was: an agent may never unbind.
     const other = await log("gated-ratified");
     try {
-      await publishSpecRatified(other, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
+      await ratifyWithReview(other, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
       await publishSpecWithdrawn(other, SCOPE, opus, "sp_1", "2026-08-03T00:00:00.000Z", "second thoughts");
       assert.equal((await fold(other)).specs[0]!.status, "ratified");
       assert.equal((await fold(other)).requirements.length, 1);

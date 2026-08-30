@@ -629,7 +629,7 @@ export const graphProjection: Projection<Map<string, SharedWiring>> = {
  */
 export const standardProjection: Projection<SharedStandard> = {
   write(d: DatabaseSync, scope: string, value: SharedStandard): void {
-    for (const t of ["specs", "operations", "requirements", "criteria", "vacuity_checks", "pointers", "populations", "scrub_policy", "acknowledgements", "audits", "problems"]) {
+    for (const t of ["specs", "operations", "proposal_witnesses", "requirements", "criteria", "vacuity_checks", "pointers", "populations", "scrub_policy", "acknowledgements", "audits", "problems"]) {
       d.prepare(`DELETE FROM ${t} WHERE source_scope = ?`).run(scope);
     }
     const spec = d.prepare("INSERT INTO specs(id,status,title,created_at,ratified_at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?)");
@@ -639,6 +639,10 @@ export const standardProjection: Projection<SharedStandard> = {
     const op = d.prepare("INSERT INTO operations(id,spec_id,kind,requirement_id,ord,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?)");
     for (const o of value.operations) {
       op.run(o.id, o.specId, o.kind, o.requirementId ?? null, o.ord, "sync", scope, JSON.stringify(o));
+    }
+    const wit = d.prepare("INSERT INTO proposal_witnesses(id,spec_id,operation_id,reviewer,at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?)");
+    for (const w of value.witnesses) {
+      wit.run(w.id, w.specId, w.operationId ?? null, w.reviewer.principal, w.at, "sync", scope, JSON.stringify(w));
     }
     const req = d.prepare("INSERT INTO requirements(id,status,title,section,provenance,created_at,ratified_at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?,?,?)");
     for (const r of value.requirements) {
@@ -700,7 +704,8 @@ export const standardProjection: Projection<SharedStandard> = {
           try { return JSON.parse(r.body) as T; } catch { throw new CorruptProjection(`${table} ${scope} holds an unreadable row`); }
         });
     return {
-      specs: all("specs"), operations: all("operations"), requirements: all("requirements"),
+      specs: all("specs"), operations: all("operations"), witnesses: all("proposal_witnesses"),
+      requirements: all("requirements"),
       criteria: all("criteria"), vacuityChecks: all("vacuity_checks"), pointers: all("pointers"), populations: all("populations"),
       // Not projected: a scrub is an AUDIT with a covering trigger, so it is already in
       // `audits` and a second table would be the same row twice.

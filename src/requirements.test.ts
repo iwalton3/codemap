@@ -22,6 +22,7 @@ import {
   draftSpec, addOperation, ratifySpec, getSpec, pendingSpecs, withdrawSpec, relianceOn,
   listRequirements, getRequirement, requirementSections, reorganizeRequirement,
 } from "./requirements.js";
+import { ratifyReviewed, signOffEverything } from "./test-approve.js";
 import { acknowledgeGap, listAcknowledgements } from "./acknowledgements.js";
 import { declarePointer } from "./pointers.js";
 import { recordAudit } from "./audits.js";
@@ -79,7 +80,7 @@ async function adoptRule(root: string, over: Record<string, unknown> = {}, actor
     statement: "All credit lines are in USD.", provenance: "credit policy §4",
     ...over, ...actor,
   } as any));
-  ok(await ratifySpec(root, sp.id));
+  ok(await ratifyReviewed(root, sp.id));
   const rules = await listRequirements(root);
   return { specId: sp.id, rule: rules[rules.length - 1]! };
 }
@@ -103,7 +104,7 @@ test("an agent may draft and propose; only a principal adopts", async () => {
     assert.equal((await readSpec(root, sp.id))!.status, "draft", "a refused ratify changes nothing");
     assert.equal((await listRequirements(root)).length, 0, "and writes no requirement");
 
-    const done = ok(await ratifySpec(root, sp.id));
+    const done = ok(await ratifyReviewed(root, sp.id));
     assert.equal(done.spec.status, "ratified");
     assert.ok(done.spec.ratifiedBy && !done.spec.ratifiedBy.via, "ratification names a person, not an agent");
     assert.equal((await listRequirements(root)).length, 1, "the standard is the projection of the ratified spec");
@@ -121,7 +122,7 @@ test("a requirement enters the standard only through a ratified spec", async () 
     }));
     assert.equal((await listRequirements(root)).length, 0, "a draft spec writes nothing to the standard");
 
-    ok(await ratifySpec(root, sp.id));
+    ok(await ratifyReviewed(root, sp.id));
     const rules = await listRequirements(root);
     assert.equal(rules.length, 1);
     assert.equal(rules[0]!.introducedBy, sp.id, "the rule records the spec that introduced it");
@@ -153,7 +154,7 @@ test("an operation written against a moved base is refused, not applied", async 
       statement: "All credit lines are in USD and EUR.", rationale: "new market",
     }));
 
-    ok(await ratifySpec(root, a.id));
+    ok(await ratifyReviewed(root, a.id));
     assert.match((await readRequirement(root, rule.id))!.statement, /settlement float/);
 
     const stale = await ratifySpec(root, b.id);
@@ -191,7 +192,7 @@ test("adoption is all or nothing", async () => {
       specId: other.id, kind: "amend_statement", requirementId: rule.id, reversibility: "reversible",
       statement: "All credit lines are in USD, except settlement float.", rationale: "float exception",
     }));
-    ok(await ratifySpec(root, other.id));
+    ok(await ratifyReviewed(root, other.id));
 
     const refused = await ratifySpec(root, sp.id);
     assert.ok("error" in refused);
@@ -302,7 +303,7 @@ test("sections normalize, and a case-variant of an existing one is refused", asy
       title: "Float currency", section: "Settlement/Float",
       statement: "Settlement float is held in the tender currency.", provenance: "credit policy §9",
     }));
-    ok(await ratifySpec(root, sp.id));
+    ok(await ratifyReviewed(root, sp.id));
     assert.deepEqual(
       (await requirementSections(root)).map((x) => x.section),
       ["Credit/Limits", "Settlement/Float"],
@@ -324,7 +325,7 @@ test("retirement goes through a spec too, so retire-and-recreate is not a way ar
     assert.ok("error" in denied);
     assert.equal((await readRequirement(root, rule.id))!.status, "ratified");
 
-    ok(await ratifySpec(root, sp.id));
+    ok(await ratifyReviewed(root, sp.id));
     assert.equal((await readRequirement(root, rule.id))!.status, "retired");
 
     // A retired rule is not an amendment target — otherwise "retire, then amend the
@@ -413,7 +414,7 @@ test("the review surface carries what a principal needs to dispose of a spec", a
     assert.equal(queue[0]!.operations, 1);
     assert.equal(queue[0]!.irreversible, true, "the queue shows irreversibility before it is adopted");
 
-    ok(await ratifySpec(root, sp.id));
+    ok(await ratifyReviewed(root, sp.id));
     assert.equal((await pendingSpecs(root)).length, 0, "an adopted spec leaves the queue");
   } finally { discard(root); }
 });
@@ -437,7 +438,7 @@ test("a requirement's id is derived from its operation, so every clone agrees", 
       title: "Credit line currency", section: "Credit/Limits",
       statement: "All credit lines are in USD.", provenance: "credit policy §4",
     }));
-    ok(await ratifySpec(root, sp.id));
+    ok(await ratifyReviewed(root, sp.id));
     const rule = (await listRequirements(root))[0]!;
 
     // The standard is a projection of the ratified specs, so replaying the same operation
@@ -469,7 +470,7 @@ test("one spec cannot open two sections that differ only by case", async () => {
 
     // A genuinely different section in the same spec is still fine.
     ok(await addOperation(root, { ...base, title: "Three", section: "Settlement/Float", statement: "C." }));
-    ok(await ratifySpec(root, sp.id));
+    ok(await ratifyReviewed(root, sp.id));
     assert.deepEqual(
       (await requirementSections(root)).map((x) => x.section),
       ["Credit/Limits", "Settlement/Float"],
@@ -502,7 +503,7 @@ test("a spec may not carry two operations against the same rule", async () => {
 
     // The refusal must be about the DUPLICATE and not about amendments in general: one
     // operation against the rule still ratifies, or this passes by forbidding the feature.
-    const adopted = ok(await ratifySpec(root, sp.id));
+    const adopted = ok(await ratifyReviewed(root, sp.id));
     assert.ok(adopted.applied, "no sidecar, so this machine applied them and knows which");
     assert.equal(adopted.applied.length, 1);
     assert.equal(adopted.applied[0]!.id, first.id);
@@ -559,7 +560,7 @@ test("a section move re-files the whole subtree, and nothing outside it", async 
       specId: sp.id, kind: "move_section", rationale: "the standard files it under the wrong owner",
       reversibility: "reversible", fromSection: "Credit", toSection: "Risk",
     } as any));
-    ok(await ratifySpec(root, sp.id));
+    ok(await ratifyReviewed(root, sp.id));
 
     assert.deepEqual(
       (await requirementSections(root)).map((s) => s.section).sort(),
@@ -604,7 +605,7 @@ test("repairing a case split is a legal move, though a plain section guard would
       specId: sp.id, kind: "move_section", rationale: "two spellings of one place",
       reversibility: "reversible", fromSection: "credit", toSection: "Credit",
     } as any));
-    ok(await ratifySpec(root, sp.id));
+    ok(await ratifyReviewed(root, sp.id));
     assert.ok((await requirementSections(root)).some((s) => s.section === "Credit"));
 
     // …and the guard still bites on a heading that STAYS put.
@@ -637,7 +638,7 @@ test("a move drafted against a section another spec has since emptied is refused
       specId: theirs.id, kind: "move_section", rationale: "ownership", reversibility: "reversible",
       fromSection: "Credit", toSection: "Exposure",
     } as any));
-    ok(await ratifySpec(root, theirs.id));
+    ok(await ratifyReviewed(root, theirs.id));
 
     const late = await ratifySpec(root, mine.id);
     assert.match((late as { error: string }).error, /no section "Credit"/);
@@ -704,7 +705,7 @@ test("a spec renders which rules a move would actually take, read live", async (
       specId: other.id, kind: "move_section", rationale: "ownership", reversibility: "reversible",
       fromSection: "Credit", toSection: "Exposure",
     } as any));
-    ok(await ratifySpec(root, other.id));
+    ok(await ratifyReviewed(root, other.id));
 
     const after = ok(await getSpec(root, sp.id));
     assert.equal(after.adoptable, false);
@@ -779,7 +780,7 @@ test("a spec that amended something is refused outright, however little relies o
       specId: sp.id, kind: "amend_statement", requirementId: rule.id,
       statement: "All credit lines are in USD or EUR.", rationale: "EU launch", reversibility: "reversible",
     } as any));
-    ok(await ratifySpec(root, sp.id));
+    ok(await ratifyReviewed(root, sp.id));
 
     // Nothing cites the rule at all — so this refusal is about the OPERATION KIND, which is
     // the whole point: undoing it would need the witnesses the amendment re-baselined away.

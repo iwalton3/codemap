@@ -18,6 +18,7 @@ import { writeStore } from "./store.js";
 import type { State } from "./schema.js";
 import { discard } from "./test-tmp.js";
 import { draftSpec, addOperation, ratifySpec, listRequirements } from "./requirements.js";
+import { ratifyReviewed } from "./test-approve.js";
 import { acknowledgeDebt } from "./acknowledgements.js";
 import { recordAudit } from "./audits.js";
 import {
@@ -71,7 +72,7 @@ async function disagreement(root: string, anchors: string[]) {
     reversibility: "reversible", title: "Credit line currency", section: "Credit/Limits",
     statement: "All credit lines are in USD.", provenance: "credit policy §4",
   }));
-  ok(await ratifySpec(root, sp.id));
+  ok(await ratifyReviewed(root, sp.id));
   const rule = (await listRequirements(root))[0]!;
   const audit = ok(await recordAudit(root, {
     requirementId: rule.id, outcome: "nonconformant",
@@ -194,7 +195,7 @@ test("`requirement-changed` closes on a ratified spec, not on the text happening
     }));
     assert.equal((await listProblems(root))[0]!.state, "adjudicated", "a DRAFT spec closes nothing");
 
-    ok(await ratifySpec(root, sp.id));
+    ok(await ratifyReviewed(root, sp.id));
     assert.equal((await listProblems(root))[0]!.state, "closed");
   } finally { discard(root); }
 });
@@ -231,7 +232,7 @@ test("retiring the rule does not close the problem either", async () => {
       specId: sp.id, kind: "retire_requirement", requirementId: rule.id,
       reversibility: "reversible", rationale: "superseded by the new credit model",
     }));
-    ok(await ratifySpec(root, sp.id));
+    ok(await ratifyReviewed(root, sp.id));
 
     const row = (await listProblems(root))[0]!;
     assert.equal(row.state, "open", "retire-the-rule is not an adjudication");
@@ -248,7 +249,7 @@ test("a problem cannot be raised from evidence that has already moved", async ()
       title: "Credit line currency", section: "Credit/Limits",
       statement: "All credit lines are in USD.", provenance: "credit policy §4",
     }));
-    ok(await ratifySpec(root, sp.id));
+    ok(await ratifyReviewed(root, sp.id));
     const rule = (await listRequirements(root))[0]!;
     const audit = ok(await recordAudit(root, {
       requirementId: rule.id, outcome: "nonconformant", finding: "doubles the amount",

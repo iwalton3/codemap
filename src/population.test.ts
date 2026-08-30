@@ -20,6 +20,7 @@ import { writeStore, readPopulations } from "./store.js";
 import type { State, PopulationMember } from "./schema.js";
 import { discard } from "./test-tmp.js";
 import { draftSpec, addOperation, ratifySpec } from "./requirements.js";
+import { ratifyReviewed } from "./test-approve.js";
 import { acknowledgeGap, listAcknowledgements } from "./acknowledgements.js";
 import {
   pinPopulation, declareNotExpressible, populationFor, brokenPins, populationDelta, counts,
@@ -83,7 +84,7 @@ async function rule(root: string, opts: { gap?: boolean } = {}) {
       revalidateBy: "2027-01-01", ...AGENT,
     }));
   }
-  const rat = ok(await ratifySpec(root, sp.id));
+  const rat = ok(await ratifyReviewed(root, sp.id));
   return rat.applied!.find((o) => o.kind === "add_requirement")!.requirementId!;
 }
 
@@ -144,7 +145,7 @@ test("the pin hashes the LINT, so editing the detector breaks it", async () => {
       specId: sp.id, kind: "retire_requirement", rationale: "superseded",
       reversibility: "reversible", requirementId: rid,
     }));
-    ok(await ratifySpec(u.root, sp.id));
+    ok(await ratifyReviewed(u.root, sp.id));
     assert.deepEqual(await brokenPins(u.root), []);
   } finally { discard(u.root); }
 });
@@ -341,7 +342,7 @@ test("a retired rule takes no population, by either basis", async () => {
       specId: sp.id, kind: "retire_requirement", rationale: "superseded",
       reversibility: "reversible", requirementId: rid,
     }));
-    ok(await ratifySpec(u.root, sp.id));
+    ok(await ratifyReviewed(u.root, sp.id));
     // Both doors, because the gates on this surface are deliberately symmetric and this
     // one was open on only one of them.
     assert.match(err(await pinPopulation(u.root, { requirementId: rid, lint: u.lint, members: [M("x", "conforms")] })), /retired/);

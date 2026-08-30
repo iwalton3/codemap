@@ -20,6 +20,7 @@ import { writeStore, writeNode, readAnchorStore } from "./store.js";
 import type { LogicalNode, State } from "./schema.js";
 import { discard } from "./test-tmp.js";
 import { draftSpec, addOperation, ratifySpec } from "./requirements.js";
+import { ratifyReviewed } from "./test-approve.js";
 import { declarePointer } from "./pointers.js";
 import { setScrubPolicy, scrubPlan, pointerRates, scrubsFor, baselinePlan } from "./scrub.js";
 import { recordAudit } from "./audits.js";
@@ -79,7 +80,7 @@ async function rule(root: string, title: string, section: string) {
     specId: sp.id, kind: "add_requirement", rationale: "policy", reversibility: "reversible",
     title, section, statement: `${title} holds.`, provenance: "policy",
   }));
-  const rat = ok(await ratifySpec(root, sp.id));
+  const rat = ok(await ratifyReviewed(root, sp.id));
   return rat.applied!.find((o) => o.kind === "add_requirement")!.requirementId!;
 }
 
@@ -267,7 +268,7 @@ test("a retired rule leaves the schedule entirely", async () => {
       specId: sp.id, kind: "retire_requirement", rationale: "superseded",
       reversibility: "reversible", requirementId: rid,
     }));
-    ok(await ratifySpec(u.root, sp.id));
+    ok(await ratifyReviewed(u.root, sp.id));
 
     const plan = await scrubPlan(u.root);
     assert.equal(plan.population, 0, "a rule that does not bind is not on the schedule");

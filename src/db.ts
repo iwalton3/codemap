@@ -697,6 +697,20 @@ function migrate(d: DatabaseSync): void {
       origin TEXT, source_scope TEXT,
       body TEXT NOT NULL
     );
+    -- A reviewer's record that they read a specific version of one operation, or of the
+    -- spec's framing (a NULL operation_id). One row per reviewer per subject: a later
+    -- sign-off REPLACES the earlier one, because what a ratification asks is what you last
+    -- read, never how many times you looked.
+    CREATE TABLE IF NOT EXISTS proposal_witnesses (
+      id TEXT PRIMARY KEY,
+      spec_id TEXT NOT NULL,
+      operation_id TEXT,
+      reviewer TEXT NOT NULL,
+      at TEXT NOT NULL,
+      origin TEXT, source_scope TEXT,
+      body TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS ix_witness_spec ON proposal_witnesses(spec_id, reviewer);
     CREATE UNIQUE INDEX IF NOT EXISTS ix_op_identity ON operations(id);
     CREATE INDEX IF NOT EXISTS ix_op_spec ON operations(spec_id, ord);
     CREATE INDEX IF NOT EXISTS ix_op_req ON operations(requirement_id);

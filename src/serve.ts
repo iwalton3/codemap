@@ -384,6 +384,19 @@ const server = createServer(async (req, res) => {
           return ops.reviseSpec(root, { specId: body.specId, title: body.title, narrative: body.narrative });
         }
         if (act === "revise_operation") return ops.reviseOperation(root, body);
+        // The review loop. `review` pulls and shows what moved since this person last
+        // looked; the three sign-offs write their witness; `ratify` refuses without them.
+        // On the web the actor is the repository's git principal with no agent marker,
+        // which is what makes a browser sign-off a person's — the same property that lets
+        // this surface ratify at all, and it carries the same notice.
+        if (act === "review") return ops.reviewProposal(root, { specId: body.specId });
+        if (act === "sign_off_operation") return ops.signOffOperation(root, { operationId: body.operationId });
+        if (act === "sign_off_framing") return ops.signOffFraming(root, { specId: body.specId });
+        if (act === "sign_off_section") {
+          return ops.signOffSection(root, {
+            specId: body.specId, axis: body.axis, section: body.section, count: body.count,
+          });
+        }
         if (act === "remove_operation") {
           return ops.removeOperation(root, { operationId: body.operationId, reason: body.reason ?? "" });
         }

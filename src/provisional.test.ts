@@ -23,6 +23,7 @@ import { resolveSidecar } from "./sidecar-config.js";
 import { readScope } from "./eventlog.js";
 import { standardScope } from "./shared-standard.js";
 import { draftSpec, addOperation, ratifySpec, listRequirements } from "./requirements.js";
+import { ratifyReviewed } from "./test-approve.js";
 import {
   recordAudit, provisionalAudits, promotableAudits, promoteProvisionalAudit, conformance, silenced,
 } from "./audits.js";
@@ -61,7 +62,7 @@ async function fixture(opts: { sidecar?: boolean } = {}) {
     title: "Credit line currency", section: "Credit/Limits",
     statement: "All credit lines are in USD.", provenance: "credit policy §4",
   }));
-  ok(await ratifySpec(root, sp.id));
+  ok(await ratifyReviewed(root, sp.id));
   return {
     root, side, anchors: indexed.map((a) => a.id), specId: sp.id,
     rule: (await listRequirements(root))[0]!,

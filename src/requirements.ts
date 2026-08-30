@@ -34,24 +34,29 @@
 import { randomBytes } from "node:crypto";
 import type {
   AcceptanceCriterion, Acknowledgement, Actor, Audit, BugWitness, EvidenceKind, Operation,
-  OperationKind, Pointer, Problem, Requirement, Reversibility, Spec,
+  OperationKind, Pointer, Problem, ProposalWitness, Requirement, Reversibility, SignOffAxis, Spec,
 } from "./schema.js";
-import { criterionIdFor, EVIDENCE_KINDS, movedSection, normalizeSection, requirementIdFor } from "./schema.js";
+import {
+  contentDiff, criterionIdFor, EVIDENCE_KINDS, framingContent, movedSection, normalizeSection,
+  operationContent, requirementIdFor, SIGN_OFF_AXES, witnessHash,
+} from "./schema.js";
 import { universeKey } from "./sidecar-config.js";
 import {
   readAcknowledgements, readAudits, readCriteria, readOperations, readPopulations, readProblems,
-  readOperation, readRequirement, readRequirements, readSpec, readSpecs, readVacuityChecks,
+  readOperation, readProposalWitnesses, readRequirement, readRequirements, readSpec, readSpecs,
+  readVacuityChecks, writeLocalProposalWitness,
   readPointers, requirementSectionCounts, workHas, writeLocalCriterion, writeLocalOperation,
   writeLocalRequirement, writeLocalSpec, deleteLocalCriterion, deleteLocalRequirement,
 } from "./store.js";
 import { liveHashes, witnessDrift, realDrift } from "./reviews.js";
 import { ABSENT_HASH } from "./normalize.js";
-import { isAgentActor, requireActor } from "./identity.js";
+import { isAgentActor, requireActor, resolvePrincipal } from "./identity.js";
 import type { ActorInput } from "./identity.js";
 import {
   disposition, shareOperation, shareOperationRemoved, shareOperationRevised, shareSpecDrafted,
-  shareSpecRatified, shareSpecRevised, shareSpecWithdrawn, type Shared,
+  shareSpecRatified, shareSpecReviewed, shareSpecRevised, shareSpecWithdrawn, type Shared,
 } from "./standard-publish.js";
+import { reviewComplete, reviewGap, type ReviewGap } from "./shared-standard.js";
 
 const mint = (p: string) => p + randomBytes(6).toString("hex");
 
@@ -799,6 +804,289 @@ export async function removeOperation(
   return { ok: true, operation: next };
 }
 
+// --- the reviewer's witness --------------------------------------------------
+
+/**
+ * Why ratification needs a signature over the PROPOSAL, not only over the standard.
+ *
+ * `ratifySpec` checks every operation against the standard as it now stands — retired
+ * rules, moved bases, vanished assertions, merged sections. Every one of those asks
+ * whether the WORLD moved under the proposal. Nothing asked whether the proposal moved
+ * under the reviewer, and with `revise_operation` open to any actor (which is the right
+ * call — the asymmetry is in adoption, not authorship) an operation can change between the
+ * reading and the click.
+ *
+ * Three properties do the work, and each is a choice that could have gone otherwise:
+ *
+ *  1. **A CONTENT hash, never a counter or a timestamp.** Revising a draft and revising it
+ *     back to identical text must not invalidate anybody's review, because nothing they
+ *     read changed. It is also what lets the refusal render WHICH field moved and from
+ *     what — and cheap re-review is the only thing that actually prevents the
+ *     rubber-stamping COD-29 names as the risk. A version counter would give you neither.
+ *  2. **REFUSED at ratify, warned during review.** Adoption is all-or-nothing, so one
+ *     signature covers every operation whether the reviewer looked or not; a warning at
+ *     that boundary is precisely the "paragraph asking you to be careful" COD-24 says does
+ *     not survive deadline pressure. `getSpec` carries the same gap as a warning, which is
+ *     where being told is useful because there is still something to do about it.
+ *  3. **Sign-off is a PRINCIPAL's act.** Not symmetry with ratification — necessity. If an
+ *     agent could write its principal's witness, an agent would sign off twelve operations
+ *     and the principal would then ratify having read none, which is the gate voiding
+ *     itself in one step.
+ *
+ * The witness is keyed on the RATIFIER's principal. Somebody else having read the proposal
+ * is not the ratifier having read it: adoption is the act that produces accountability.
+ */
+
+/** Everything one reviewer has left to approve on a proposal as it now stands. */
+async function gapFor(root: string, sp: Spec, reviewer: string): Promise<ReviewGap> {
+  const ops = await readOperations(root, { specId: sp.id });
+  return reviewGap(sp, ops, await readProposalWitnesses(root, { specId: sp.id }), reviewer);
+}
+
+/**
+ * Take the team's changes before deciding anything. Step one of the review loop.
+ *
+ * Not a precondition bolted onto ratification — a step, and the difference is what the
+ * reviewer sees. Law is workspace-scoped (`docs/cross-universe-standard.md`), so ratifying
+ * on a stale fold binds the team against a standard state teammates have already moved
+ * past. If the pull brings a revision in, the witness goes stale and the refusal fires
+ * immediately afterwards; that is CORRECT, and it reads as the tool breaking unless the
+ * pull, the diff and the re-signing are one flow. So they are.
+ *
+ * A pull that fails is REPORTED and does not stop the read. A network failure must not
+ * make the standard unreviewable, and a caller told the pull failed can decide what that
+ * is worth; a caller told nothing would be reviewing a stale proposal believing otherwise.
+ */
+async function pullFirst(root: string): Promise<{ pulled: boolean; note?: string }> {
+  const { sharedPull } = await import("./ops-shared.js");
+  try {
+    const r = await sharedPull(root) as { error?: string };
+    if (r.error) return { pulled: false, note: r.error };
+    return { pulled: true };
+  } catch (e: any) {
+    return { pulled: false, note: `pull failed: ${e?.message ?? e}` };
+  }
+}
+
+/**
+ * The review loop, steps one and two: take what the team has, then show what has changed
+ * since you last looked.
+ */
+export async function reviewProposal(
+  root: string, specId: string,
+): Promise<{ spec: Spec; review: ReviewGap; complete: boolean; pull: { pulled: boolean; note?: string } } | Err> {
+  const pull = await pullFirst(root);
+  const sp = await readSpec(root, specId);
+  if (!sp) return { error: `no spec "${specId}"` };
+  // A READ, so it resolves the principal rather than requiring one: a map you cannot look
+  // at without configuring git would be a worse tool for no gain (`requireActor`'s rule).
+  // The review state is about a person, so with no principal there is nobody to report on.
+  const who = resolvePrincipal(root);
+  if (!who) {
+    return { error: "no principal — set `git config user.email`, since a review is a record of who read what" };
+  }
+  const review = await gapFor(root, sp, who);
+  return { spec: sp, review, complete: reviewComplete(review), pull };
+}
+
+/** Write one witness, having re-read the subject after a pull. */
+async function witnessOne(
+  root: string, sp: Spec, reviewer: Actor, op: Operation | null,
+  bulk?: ProposalWitness["bulk"],
+): Promise<{ ok: true; witness: ProposalWitness } | Err> {
+  const content = op ? operationContent(op) : framingContent(sp);
+  const w: ProposalWitness = {
+    id: mint("rw_"), specId: sp.id, ...(op ? { operationId: op.id } : {}),
+    reviewer, at: now(), content, ...(bulk ? { bulk } : {}),
+  };
+  const d = disposition(await shareSpecReviewed(root, w));
+  if ("error" in d) return d;
+  if (d.local) await writeLocalProposalWitness(root, w);
+  return { ok: true, witness: w };
+}
+
+/**
+ * Pull, then refuse if the pull moved what is about to be signed.
+ *
+ * Without this the sign-off would witness text the reviewer never read: they pull as part
+ * of signing, a teammate's revision arrives in the same breath, and the witness records
+ * the NEW content under their name. The refusal carries the diff, so the answer is to read
+ * the change rather than to guess what moved.
+ */
+async function reReadAfterPull(
+  root: string, specId: string, before: Map<string, Record<string, string>>,
+): Promise<Err | { spec: Spec }> {
+  const sp = await readSpec(root, specId);
+  if (!sp) return { error: `no spec "${specId}"` };
+  const ops = await readOperations(root, { specId });
+  const after = new Map<string, Record<string, string>>([
+    ["", framingContent(sp)], ...ops.map((o) => [o.id, operationContent(o)] as const),
+  ]);
+  for (const [id, was] of before) {
+    const nowContent = after.get(id);
+    if (!nowContent) {
+      return { error: `${id} was removed from ${specId} while you were signing it off — re-read the proposal (\`review_proposal\`) before approving what is left` };
+    }
+    if (witnessHash(was) !== witnessHash(nowContent)) {
+      const changed = contentDiff(was, nowContent).map((c) => c.field).join(", ");
+      return {
+        error:
+          `${id === "" ? `${specId}'s framing` : id} changed while you were signing it off — the pull `
+          + `brought in an edit to ${changed}. Signing now would record that you read text you have `
+          + `not seen. Re-read it with \`review_proposal\`, then sign off.`,
+      };
+    }
+  }
+  return { spec: sp };
+}
+
+/** The state a sign-off saw BEFORE its pull, so a change during the pull is detectable. */
+async function contentBefore(
+  root: string, specId: string, ids: (string | null)[],
+): Promise<Map<string, Record<string, string>>> {
+  const sp = await readSpec(root, specId);
+  const ops = await readOperations(root, { specId });
+  const out = new Map<string, Record<string, string>>();
+  for (const id of ids) {
+    if (id === null) { if (sp) out.set("", framingContent(sp)); continue; }
+    const op = ops.find((o) => o.id === id);
+    if (op) out.set(op.id, operationContent(op));
+  }
+  return out;
+}
+
+/** Sign off ONE operation: you read this text, at this version. */
+export async function signOffOperation(
+  root: string, input: { operationId: string } & ActorInput,
+): Promise<{ ok: true; witness: ProposalWitness } | Err> {
+  const op0 = await readOperation(root, input.operationId);
+  if (!op0) return { error: `no operation "${input.operationId}"` };
+  const who = principal(root, input, "sign off on a proposal");
+  if (isErr(who)) return who;
+  const before = await contentBefore(root, op0.specId, [op0.id]);
+  await pullFirst(root);
+  const re = await reReadAfterPull(root, op0.specId, before);
+  if (isErr(re)) return re;
+  if (re.spec.status !== "draft") return { error: `${re.spec.id} is ${re.spec.status} — there is nothing left to review` };
+  const op = (await readOperations(root, { specId: op0.specId })).find((o) => o.id === op0.id);
+  if (!op) return { error: `${input.operationId} is no longer in ${op0.specId}` };
+  return witnessOne(root, re.spec, who, op);
+}
+
+/** Sign off the spec's FRAMING — its title and the narrative every operation is read under. */
+export async function signOffFraming(
+  root: string, input: { specId: string } & ActorInput,
+): Promise<{ ok: true; witness: ProposalWitness } | Err> {
+  const who = principal(root, input, "sign off on a proposal");
+  if (isErr(who)) return who;
+  const before = await contentBefore(root, input.specId, [null]);
+  if (!before.size) return { error: `no spec "${input.specId}"` };
+  await pullFirst(root);
+  const re = await reReadAfterPull(root, input.specId, before);
+  if (isErr(re)) return re;
+  if (re.spec.status !== "draft") return { error: `${re.spec.id} is ${re.spec.status} — there is nothing left to review` };
+  return witnessOne(root, re.spec, who, null);
+}
+
+/**
+ * Where an operation files in the STANDARD — the axis a reviewer who owns an area asks by.
+ *
+ * Derived rather than stored: an `add_requirement` says where it files, and every other
+ * kind operates on a rule that already has a section. A `move_section` files under the
+ * subtree it moves, which is the heading somebody watching that area would look under.
+ */
+async function standardSectionOf(root: string, op: Operation): Promise<string> {
+  if (op.kind === "add_requirement") return op.section ?? "";
+  if (op.kind === "move_section") return op.fromSection ?? "";
+  const rid = op.requirementId ?? op.context?.requirementId;
+  if (!rid) return "";
+  return (await readRequirement(root, rid))?.section ?? "";
+}
+
+/**
+ * Sign off a whole GROUP at once — and say how many, so the bulk act reads as bulk.
+ *
+ * `count` is required and must match, which is the only part of this that is a guard
+ * rather than a convenience. Twelve witnesses written by one call claim twelve operations
+ * were read; that claim is true or it is not, and the one thing the system can do about it
+ * is make the size of the claim impossible to not notice at the moment it is made. A
+ * caller that thought it was signing three and is told it would sign twelve has learned
+ * something; one that passes twelve has said twelve out loud.
+ *
+ * Two axes, because a spec's sections are NOT the standard's sections (COD-29, bill versus
+ * code). `standard` groups by where each operation lands in the taxonomy. `spec` groups by
+ * the proposal's own order — and today that is ONE group, the whole spec, because a spec's
+ * internal hierarchy is narrative and nothing stores it. Deriving a finer spec-side
+ * grouping would be inventing a hierarchy nobody authored, so the axis exists, answers
+ * honestly, and has one group until a spec's own sections become a thing that is written
+ * down.
+ */
+export async function signOffSection(
+  root: string, input: { specId: string; axis: SignOffAxis; section?: string; count: number } & ActorInput,
+): Promise<{ ok: true; signed: number; group: string; witnesses: ProposalWitness[] } | Err> {
+  if (!SIGN_OFF_AXES.includes(input.axis)) {
+    return { error: `\`axis\` must be one of ${SIGN_OFF_AXES.join(" | ")} — a spec's sections are not the standard's sections, so a group has to say which it means` };
+  }
+  const who = principal(root, input, "sign off on a proposal");
+  if (isErr(who)) return who;
+  const sp0 = await readSpec(root, input.specId);
+  if (!sp0) return { error: `no spec "${input.specId}"` };
+
+  const pick = async (): Promise<{ ops: Operation[]; group: string } | Err> => {
+    const ops = await readOperations(root, { specId: input.specId });
+    if (input.axis === "spec") {
+      if (input.section && input.section !== input.specId) {
+        return {
+          error:
+            `\`axis: "spec"\` has one group — the proposal itself — because a spec's internal `
+            + `hierarchy is narrative and nothing stores it. Leave \`section\` out, or use `
+            + `\`axis: "standard"\` to sign off one heading of the standard at a time.`,
+        };
+      }
+      return { ops, group: input.specId };
+    }
+    const section = normalizeSection(input.section ?? "");
+    if (!section) return { error: "`axis: \"standard\"` needs a `section` — the heading you are signing off, e.g. \"Credit/Limits\"" };
+    const members: Operation[] = [];
+    for (const op of ops) if (await standardSectionOf(root, op) === section) members.push(op);
+    if (!members.length) {
+      return { error: `no operation in ${input.specId} files under "${section}" — check the spelling against the operations the spec actually carries` };
+    }
+    return { ops: members, group: section };
+  };
+
+  const chosen = await pick();
+  if (isErr(chosen)) return chosen;
+  if (input.count !== chosen.ops.length) {
+    return {
+      error:
+        `sign off ${chosen.ops.length} operation(s) in "${chosen.group}" — you said ${input.count}. `
+        + `The count is required and checked because this writes one approval per operation: `
+        + `${chosen.ops.length} witnesses each say an operation was read, and a bulk act has to `
+        + `read as one at the moment it is made. Pass \`count: ${chosen.ops.length}\`, or sign them `
+        + `off one at a time with \`sign_off_operation\`.`,
+    };
+  }
+
+  const before = await contentBefore(root, input.specId, chosen.ops.map((o) => o.id));
+  await pullFirst(root);
+  const re = await reReadAfterPull(root, input.specId, before);
+  if (isErr(re)) return re;
+  if (re.spec.status !== "draft") return { error: `${re.spec.id} is ${re.spec.status} — there is nothing left to review` };
+
+  const bulk = { axis: input.axis, group: chosen.group, count: chosen.ops.length };
+  const live = await readOperations(root, { specId: input.specId });
+  const witnesses: ProposalWitness[] = [];
+  for (const op of chosen.ops) {
+    const fresh = live.find((o) => o.id === op.id);
+    if (!fresh) continue;
+    const r = await witnessOne(root, re.spec, who, fresh, bulk);
+    if (isErr(r)) return r;
+    witnesses.push(r.witness);
+  }
+  return { ok: true, signed: witnesses.length, group: chosen.group, witnesses };
+}
+
 // --- adoption (principal only) -----------------------------------------------
 
 /** One operation's disposition when the fold checked it. */
@@ -830,9 +1118,17 @@ export type Ratification =
 
 export async function ratifySpec(
   root: string, specId: string, input: ActorInput = {},
-): Promise<Ratification | (Err & { checks?: OperationCheck[] })> {
+): Promise<Ratification | (Err & { checks?: OperationCheck[]; review?: ReviewGap })> {
   const who = principal(root, input, "ratify");
   if (isErr(who)) return who;
+  // No pull HERE, and that is deliberate. Taking the team's changes is step one of the
+  // review LOOP — `review_proposal` does it, and so does every sign-off, which is where a
+  // fresh arrival can still be read before it is approved. A pull bolted onto adoption
+  // would be the precondition the loop exists instead of, and it would change what a
+  // ratification means: two clones racing for one rule would resolve by whoever fetched
+  // last rather than by the fold, which is the arbiter that every clone agrees with.
+  // The residual window (a teammate revises between your sign-off and your click) is
+  // closed by `foldStandard`, which re-checks this same witness against the merged log.
   const sp = await readSpec(root, specId);
   if (!sp) return { error: `no spec "${specId}"` };
   if (sp.status !== "draft") return { error: `${specId} is already ${sp.status}` };
@@ -916,6 +1212,37 @@ export async function ratifySpec(
       checks,
     };
   }
+
+  // The RATIFIER's own signature over the proposal's own text. Every check ABOVE this asks
+  // whether the WORLD moved under the proposal; this is the one that asks whether the
+  // proposal moved under the reviewer. REFUSED rather than warned, because adoption is
+  // all-or-nothing: one signature covers every operation whether they looked at it or not,
+  // and a warning at that boundary is the paragraph COD-24 says nobody reads.
+  //
+  // LAST, and that ordering is a decision. A spec that cannot be adopted at all — a moved
+  // base, a merged section, two operations on one rule — should say so, rather than asking
+  // somebody to go and read text that is about to be refused for a reason they cannot fix
+  // by reading it.
+  const review = await gapFor(root, sp, who.principal);
+  if (!reviewComplete(review)) {
+    const bits: string[] = [];
+    if (review.framing) {
+      bits.push(review.framing.state === "unwitnessed"
+        ? "its title and narrative are unread"
+        : `its title or narrative changed after you read them (${review.framing.changed?.map((c) => c.field).join(", ")})`);
+    }
+    if (review.unwitnessed.length) bits.push(`${review.unwitnessed.length} operation(s) you have never signed off`);
+    if (review.moved.length) bits.push(`${review.moved.length} that changed since you did`);
+    return {
+      error:
+        `${specId} cannot be adopted: ${bits.join(", ")}. Adoption is all-or-nothing, so your `
+        + `signature would cover every operation in it. Run \`review_proposal\` to take the team's `
+        + `changes and see exactly what moved, then sign off and ratify. `
+        + `(${[...review.unwitnessed.map((u) => `${u.id}: unread`), ...review.moved.map((m) => `${m.id}: ${m.changed.map((c) => c.field).join("/")} changed`)].join("; ")})`,
+      review,
+    };
+  }
+
 
   const at = now();
 
@@ -1469,7 +1796,8 @@ export async function getSpec(
   root: string, specId: string,
 ): Promise<{
   spec: Spec; operations: RenderedOperation[]; adoptable: boolean; silenced: number;
-  removed: Operation[];
+  removed: Operation[]; review?: ReviewGap; signedOff: boolean;
+  reviewers: { principal: string; signed: number }[];
 } | Err> {
   const sp = await readSpec(root, specId);
   if (!sp) return { error: `no spec "${specId}"` };
@@ -1514,15 +1842,40 @@ export async function getSpec(
       watchedBy: target ? await readPointers(root, { requirementId: target.id, state: "active" }) : [],
     });
   }
+  // The reader's OWN review gap, which is the WARNING half of the mechanism whose refusing
+  // half is in `ratifySpec`. Here is where being told is useful, because there is still
+  // something to do about it; at the ratify boundary there is only a click to block.
+  const me = resolvePrincipal(root);
+  const allWitnesses = await readProposalWitnesses(root, { specId });
+  const review = me ? reviewGap(sp, ops, allWitnesses, me) : undefined;
+  // And who else has read it, because "am I the only one who has looked at this" is the
+  // question a ratifier asks next and could not answer from anywhere.
+  const byReviewer = new Map<string, Set<string>>();
+  for (const w of allWitnesses) {
+    if (!byReviewer.has(w.reviewer.principal)) byReviewer.set(w.reviewer.principal, new Set());
+    byReviewer.get(w.reviewer.principal)!.add(w.operationId ?? "");
+  }
+
   return {
     spec: sp, operations,
+    ...(review ? { review } : {}),
+    reviewers: [...byReviewer].map(([p, subjects]) => ({ principal: p, signed: subjects.size })),
     // Served apart from `operations`, never mixed in. What the ratifier reads is what the
     // proposal now says; a pulled operation is history, and rendering it beside the live
     // ones would put back exactly the correction-chain the revision path exists to remove.
     // It is served at all because a proposal that changed shape under a reader is worth
     // seeing, and because the removal reason is the author's account of why.
     removed: await readOperations(root, { specId, includeRemoved: true }).then((all) => all.filter((o) => o.removed)),
+    // A property of the PROPOSAL — do its operations still apply to the standard as it
+    // stands — and deliberately not of the reader. Whether YOU have signed it off is a
+    // different question with a different subject, and folding it in here would make one
+    // spec adoptable for one person and not another under a name that reads like a fact
+    // about the spec. `signedOff` is that second question, kept beside it.
     adoptable: sp.status === "draft" && ops.length > 0 && !operations.some((o) => o.contextMoved),
+    // Both are required to ratify, and the browser disables its button on both. The
+    // REFUSAL still lives in `ratifySpec` — a disabled button is a nicer way to be told,
+    // never the thing that stops it.
+    signedOff: !!review && reviewComplete(review),
     // Deliberately NOT folded into `adoptable`: a pre-attached gap is a thing to see and
     // decide about, not a defect in the spec. Refusing adoption over one would make the
     // silencer harder to raise than to ratify, which is backwards.

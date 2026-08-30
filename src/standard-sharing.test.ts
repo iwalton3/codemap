@@ -20,6 +20,7 @@ import { materializeStandard } from "./standard-publish.js";
 import { readScope } from "./eventlog.js";
 import { standardScope, lawScope } from "./shared-standard.js";
 import { draftSpec, addOperation, ratifySpec, listRequirements, withdrawSpec } from "./requirements.js";
+import { ratifyReviewed, signOffEverything } from "./test-approve.js";
 import { readSpec } from "./store.js";
 import { recordAudit, promotableAudits, promoteProvisionalAudit } from "./audits.js";
 import { raiseProblem, listProblems } from "./problems.js";
@@ -70,11 +71,15 @@ test("a spec travels, and the standard a teammate reads is folded from the log",
       reversibility: "reversible", title: "Credit line currency", section: "Credit/Limits",
       statement: "All credit lines are in USD.", provenance: "credit policy §4",
     }));
-    ok(await ratifySpec(root, sp.id));
+    ok(await ratifyReviewed(root, sp.id));
 
     // Law, not evidence: a spec governs the workspace, so it does not live in one
     // universe's scope. The evidence half stays empty here — nothing was audited.
-    assert.deepEqual((await lawEvents(side)).map((e) => e.kind), ["spec.drafted", "spec.operation", "spec.ratified"]);
+    // The reviewer's sign-offs are acts and enter the log with the rest: one for the
+    // framing, one per operation, then the adoption they are what permits.
+    assert.deepEqual((await lawEvents(side)).map((e) => e.kind), [
+      "spec.drafted", "spec.operation", "spec.reviewed", "spec.reviewed", "spec.ratified",
+    ]);
     assert.deepEqual(await events(root, side), [], "a spec is not an observation of this universe's code");
 
     // The rows exist because the FOLD wrote them, not because a local write did: they
@@ -99,7 +104,7 @@ test("an audit and its problem travel from the default branch", async () => {
       title: "Credit line currency", section: "Credit/Limits",
       statement: "All credit lines are in USD.", provenance: "credit policy §4",
     }));
-    ok(await ratifySpec(root, sp.id));
+    ok(await ratifyReviewed(root, sp.id));
     const rule = (await listRequirements(root))[0]!;
 
     const audit = ok(await recordAudit(root, {
@@ -127,7 +132,7 @@ test("a PROVISIONAL audit stays put, however the sidecar is configured", async (
       title: "Credit line currency", section: "Credit/Limits",
       statement: "All credit lines are in USD.", provenance: "credit policy §4",
     }));
-    ok(await ratifySpec(root, sp.id));
+    ok(await ratifyReviewed(root, sp.id));
     const rule = (await listRequirements(root))[0]!;
     const before = (await events(root, side)).length;
 
@@ -200,7 +205,7 @@ async function ruleAndCode() {
     title: "Credit line currency", section: "Credit/Limits",
     statement: "All credit lines are in USD.", provenance: "credit policy §4",
   }));
-  ok(await ratifySpec(f.root, sp.id));
+  ok(await ratifyReviewed(f.root, sp.id));
   return { ...f, rule: (await listRequirements(f.root))[0]! };
 }
 
@@ -304,7 +309,7 @@ test("a shared ratification reports what the FOLD did, not what it was asked to 
       title: "Credit line currency", section: "Credit/Limits",
       statement: "All credit lines are in USD.", provenance: "policy",
     }));
-    const adopted = ok(await ratifySpec(a, base.id));
+    const adopted = ok(await ratifyReviewed(a, base.id));
     assert.ok(adopted.applied, "folded here, so this clone can say what landed");
     // Read back from the FOLD, so the operation carries the rule it created — the shared
     // path used to return the unbound original and this was `undefined`.
@@ -321,6 +326,10 @@ test("a shared ratification reports what the FOLD did, not what it was asked to 
       specId: mine.id, kind: "amend_statement", requirementId: rule.id,
       statement: "All credit lines are in GBP.", rationale: "b", reversibility: "reversible",
     }));
+    // B signs off its own proposal BEFORE A's lands, which is the story this test tells:
+    // B reviewed what it drafted, and the race happened underneath it. Signing off after
+    // A had landed would pull A's ratification in and refuse for a different reason.
+    ok(await signOffEverything(b, mine.id));
 
     // ...and A ratifies a different one first. The log is pull/push and never read on an
     // ordinary read, so B's local check cannot see this.
@@ -329,7 +338,7 @@ test("a shared ratification reports what the FOLD did, not what it was asked to 
       specId: theirs.id, kind: "amend_statement", requirementId: rule.id,
       statement: "All credit lines are in USD or EUR.", rationale: "a", reversibility: "reversible",
     }));
-    ok(await ratifySpec(a, theirs.id));
+    ok(await ratifyReviewed(a, theirs.id));
 
     const race = await ratifySpec(b, mine.id);
     assert.ok("error" in race, `B's ratification applied nothing and must not report ok — got ${JSON.stringify(race)}`);
@@ -353,7 +362,7 @@ async function adoptInto(root: string, section: string, title: string, statement
     specId: sp.id, kind: "add_requirement", rationale: "seed", reversibility: "reversible",
     title, section, statement, provenance: "policy",
   }));
-  ok(await ratifySpec(root, sp.id));
+  ok(await ratifyReviewed(root, sp.id));
 }
 
 test("a section move is applied by the FOLD, subtree and all", async () => {
@@ -368,7 +377,7 @@ test("a section move is applied by the FOLD, subtree and all", async () => {
       specId: sp.id, kind: "move_section", rationale: "ownership", reversibility: "reversible",
       fromSection: "Credit", toSection: "Risk",
     }));
-    ok(await ratifySpec(root, sp.id));
+    ok(await ratifyReviewed(root, sp.id));
 
     const rules = (await readRequirements(root)).requirements;
     assert.deepEqual(
@@ -399,6 +408,10 @@ test("the fold refuses a move whose source another clone has already emptied", a
       specId: mine.id, kind: "move_section", rationale: "ownership", reversibility: "reversible",
       fromSection: "Credit", toSection: "Exposure",
     }));
+    // B signs off its own proposal BEFORE A's lands, which is the story this test tells:
+    // B reviewed what it drafted, and the race happened underneath it. Signing off after
+    // A had landed would pull A's ratification in and refuse for a different reason.
+    ok(await signOffEverything(b, mine.id));
 
     // ...and A moves it somewhere else first.
     const theirs = ok(await draftSpec(a, { title: "credit becomes risk" }));
@@ -406,7 +419,7 @@ test("the fold refuses a move whose source another clone has already emptied", a
       specId: theirs.id, kind: "move_section", rationale: "ownership", reversibility: "reversible",
       fromSection: "Credit", toSection: "Risk",
     }));
-    ok(await ratifySpec(a, theirs.id));
+    ok(await ratifyReviewed(a, theirs.id));
 
     const race = await ratifySpec(b, mine.id);
     assert.ok("error" in race, "the fold applied nothing, so this is not an ok ratification");
@@ -428,7 +441,7 @@ test("a withdrawal is applied by the FOLD, and takes its criteria with it", asyn
       reversibility: "reversible", criterion: "Settlement runs on T+1.",
       falsifier: "A settlement dated T+2 is accepted.", evidenceKind: "automated-test",
     }));
-    ok(await ratifySpec(root, sp.id));
+    ok(await ratifyReviewed(root, sp.id));
     assert.equal((await readRequirements(root)).requirements.length, 1);
 
     ok(await withdrawSpec(root, sp.id, { reason: "the cluster was never adopted" }));

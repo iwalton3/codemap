@@ -21,6 +21,7 @@ import { writeStore, readCriteria } from "./store.js";
 import type { State } from "./schema.js";
 import { discard } from "./test-tmp.js";
 import { draftSpec, addOperation, ratifySpec } from "./requirements.js";
+import { ratifyReviewed } from "./test-approve.js";
 import { criteriaFor, recordVacuityCheck, weakAssertions, assertionStrength } from "./criteria.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
@@ -79,7 +80,7 @@ async function ruleWithCriterion(root: string, cites: string[], assertedBy: stri
     falsifier: "A line above the limit is accepted and persisted.",
     evidenceKind: "lint-test", assertedBy,
   }));
-  const rat = ok(await ratifySpec(root, sp.id));
+  const rat = ok(await ratifyReviewed(root, sp.id));
   const rid = rat.applied!.find((o) => o.kind === "add_requirement")!.requirementId!;
   return { requirementId: rid, criterion: (await criteriaFor(root, rid))[0]! };
 }
@@ -177,7 +178,7 @@ test("a rule may carry several criteria in one spec — they do not overwrite ea
     // other had not happened and then silently overwrite. Criteria accumulate, so
     // applying that refusal here would make the playbook's ordinary AC-1…AC-n shape
     // un-ratifiable. Both halves are pinned: it ratifies, and all three survive.
-    const rat = ok(await ratifySpec(u.root, sp.id));
+    const rat = ok(await ratifyReviewed(u.root, sp.id));
     const rid = rat.applied!.find((o) => o.kind === "add_requirement")!.requirementId!;
     const cs = await criteriaFor(u.root, rid);
     assert.equal(cs.length, 3);
@@ -217,7 +218,7 @@ test("two criteria on a standing rule ratify, and do not block an amendment besi
       requirementId, statement: "A credit line never exceeds the approved limit, ever.",
     }));
 
-    ok(await ratifySpec(u.root, sp.id));
+    ok(await ratifyReviewed(u.root, sp.id));
     const cs = await criteriaFor(u.root, requirementId);
     assert.equal(cs.length, 3, "the original plus both new ones");
     assert.deepEqual(cs.map((c) => c.criterion).sort(),
@@ -294,7 +295,7 @@ test("a criterion with no assertion cannot be demonstrated, and is not counted a
       specId: sp.id, kind: "retire_requirement", rationale: "superseded",
       reversibility: "reversible", requirementId,
     }));
-    ok(await ratifySpec(u.root, sp.id));
+    ok(await ratifyReviewed(u.root, sp.id));
     const after = await weakAssertions(u.root);
     assert.deepEqual(after.unasserted, [], "a retired rule's criteria leave the queue");
   } finally { discard(u.root); }
@@ -327,7 +328,7 @@ test("a criterion is created ONLY by ratification — a draft spec makes none", 
     // Declaring what discharges a rule can NARROW it, which is the silencing direction,
     // so there is no authoring path that is not a ratification.
     assert.deepEqual(await readCriteria(u.root), [], "nothing exists while the spec is a draft");
-    ok(await ratifySpec(u.root, sp.id));
+    ok(await ratifyReviewed(u.root, sp.id));
     assert.equal((await readCriteria(u.root)).length, 1);
   } finally { discard(u.root); }
 });

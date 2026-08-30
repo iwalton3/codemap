@@ -19,7 +19,7 @@
 
 import type {
   Acknowledgement, Actor, Audit, BugWitness, Operation, Pointer, PopulationPredicate, Problem,
-  ScrubPolicy, Spec, VacuityCheck,
+  ProposalWitness, ScrubPolicy, Spec, VacuityCheck,
 } from "./schema.js";
 import type { ScopeDiagnostic } from "./eventlog.js";
 import { resolveSidecar, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
@@ -31,7 +31,7 @@ import type { LogEvent } from "./eventlog.js";
 import { standardProjection } from "./shared-projections.js";
 import {
   foldStandard, standardScope, lawScope, isLawEvent, publishSpecDrafted, publishOperation, publishSpecRatified,
-  publishSpecRevised, publishOperationRevised, publishOperationRemoved,
+  publishSpecRevised, publishOperationRevised, publishOperationRemoved, publishSpecReviewed,
   publishAckGranted, publishAckReleased, publishAudit, publishProblemRaised, publishAdjudication,
   publishSpecWithdrawn,
   publishVacuityCheck, publishPointerDeclared, publishPointerRestated, publishPointerRetired,
@@ -188,6 +188,13 @@ export const shareOperationRevised = (root: string, op: Operation): Promise<Shar
 
 export const shareOperationRemoved = (root: string, op: Operation): Promise<Shared> =>
   share(root, (l, s, a) => publishOperationRemoved(l, s, a, op), lawScope());
+
+/**
+ * A reviewer's sign-off. LAW, like every other `spec.*`: a reading of a proposal is not an
+ * observation of any repository's code, and the proposal it is about is workspace-scoped.
+ */
+export const shareSpecReviewed = (root: string, w: ProposalWitness): Promise<Shared> =>
+  share(root, (l, s, a) => publishSpecReviewed(l, s, a, w), lawScope());
 
 export const shareSpecRatified = (
   root: string, specId: string, at: string, witnesses: Record<string, BugWitness[]>,

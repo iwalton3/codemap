@@ -1608,6 +1608,142 @@ export function requirementIdFor(operationId: string): string {
   return "r_" + createHash("sha256").update(operationId).digest("hex").slice(0, 12);
 }
 
+/**
+ * A reviewer's record that they READ a specific version of a proposal.
+ *
+ * `ratifySpec` checks every operation's context against the standard, and nothing checked
+ * the proposal's OWN text against what the ratifier had read. Adoption is all-or-nothing,
+ * so one signature covers every operation whether the reviewer looked at it or not — and
+ * with `revise_operation` open to any actor, an operation could change between the reading
+ * and the click. The witness is what makes that detectable, and it is refused at the
+ * ratify boundary rather than warned about, because COD-24's standing evidence is that a
+ * paragraph asking somebody to be careful does not survive deadline pressure.
+ *
+ * Storage is per OPERATION, always. A section sign-off is a bulk act that writes one of
+ * these per member; there is no section-shaped row, because the thing a ratification has
+ * to check is an operation.
+ */
+export interface ProposalWitness {
+  id: string;
+  specId: string;
+  /**
+   * The operation reviewed. ABSENT for the spec's FRAMING — its title and narrative.
+   *
+   * The framing is witnessed because it is what every operation is read UNDER. The case
+   * that provoked this: a spec whose narrative named the wrong git branch. Correcting that
+   * has to invalidate the reading, because the frame the reviewer had was wrong.
+   */
+  operationId?: string;
+  reviewer: Actor;
+  at: string;
+  /**
+   * Exactly what was rendered, field by field — and the hash is DERIVED from it, never
+   * stored beside it, so the two cannot disagree (the rule `PopulationPredicate` counts
+   * follow, for the same reason).
+   *
+   * The content and not just a digest, because the digest alone can only say THAT
+   * something moved. What makes re-review cheap — and cheap re-review is the only thing
+   * that prevents the rubber-stamping COD-29 names as the risk — is being able to render
+   * exactly WHICH field moved and from what.
+   */
+  content: Record<string, string>;
+  /**
+   * Set when this witness was one of N written by a single bulk sign-off.
+   *
+   * Recorded so a bulk act reads as one: twelve witnesses that each claim an operation was
+   * read individually are a different claim from twelve written by one call, and only the
+   * second is what happened.
+   */
+  bulk?: { axis: SignOffAxis; group: string; count: number };
+  origin?: string;
+}
+
+/**
+ * Which hierarchy a bulk sign-off selects along.
+ *
+ * A spec's sections are NOT the standard's sections — a bill argues in its own order and
+ * names the code locations it amends (COD-29) — so grouping has two axes and they answer
+ * different questions. `standard` groups by where each operation lands in the taxonomy,
+ * which is what a reviewer who owns an area asks for. `spec` groups by the proposal's own
+ * order, and today that is ONE group per spec: a spec's internal hierarchy is narrative,
+ * and nothing stores it, so there is no finer spec-side grouping to offer. Said out loud
+ * rather than faked with a derived heading, which would be a hierarchy nobody authored.
+ */
+export const SIGN_OFF_AXES = ["standard", "spec"] as const;
+export type SignOffAxis = typeof SIGN_OFF_AXES[number];
+
+/**
+ * Everything about an operation that a ratifier is SHOWN, normalized for hashing.
+ *
+ * Rationale, evidence and provenance are in here with the statement, and deliberately: the
+ * decision a principal makes is over the whole rendered operation, and splitting "operative"
+ * from "explanatory" would let the half that persuades change under a signature that only
+ * covered the half that applies. That split is exactly the drift both legislative drafting
+ * and ITIL change records document.
+ *
+ * Excluded, each for a reason: `id` and `specId` are identity rather than content;
+ * `revisions` is the history OF changes and would make every witness stale the moment a
+ * later one is recorded; `removed` means the operation is not being ratified at all;
+ * `origin` is local bookkeeping. `ord` is excluded because nothing can change it — `add`
+ * appends and `revise` preserves it — and if reordering ever becomes expressible it has to
+ * come back in, since `move_section` operations apply in `ord` order.
+ */
+export function operationContent(op: Operation): Record<string, string> {
+  const out: Record<string, string> = { kind: op.kind };
+  const put = (k: string, v: string | undefined) => { if (v !== undefined && v !== "") out[k] = v; };
+  put("title", op.title);
+  put("section", op.section);
+  put("statement", op.statement);
+  put("provenance", op.provenance);
+  put("rationale", op.rationale);
+  put("evidence", op.evidence);
+  put("reversibility", op.reversibility);
+  put("requirementId", op.requirementId);
+  put("criterion", op.criterion);
+  put("falsifier", op.falsifier);
+  put("evidenceKind", op.evidenceKind);
+  put("targetOperationId", op.targetOperationId);
+  put("fromSection", op.fromSection);
+  put("toSection", op.toSection);
+  if (op.assertedBy?.length) out.assertedBy = op.assertedBy.join(", ");
+  // The base it was written against, which the rendering shows as "now". A moved base is
+  // already refused by the context check at ratification; carrying it here as well costs
+  // nothing and keeps the witness over the whole rendering rather than most of it.
+  if (op.context) out.against = op.context.statement;
+  return out;
+}
+
+/** The spec's framing: what every operation under it is read in the light of. */
+export function framingContent(spec: Spec): Record<string, string> {
+  return { title: spec.title, ...(spec.narrative ? { narrative: spec.narrative } : {}) };
+}
+
+/**
+ * The digest of a rendered content map.
+ *
+ * A CONTENT hash, never a counter or a timestamp, and that is the load-bearing choice:
+ * revising a draft and revising it back to identical text must NOT invalidate anybody's
+ * review, because nothing they read has changed. A version counter would invalidate it;
+ * so would a timestamp. The key is length-prefixed so `{a: "x", b: "y"}` cannot collide
+ * with `{a: "xb", b: "y"}` — which a naive join makes possible and which would be a
+ * silent hole in exactly the guard this exists to be.
+ */
+export function witnessHash(content: Record<string, string>): string {
+  const h = createHash("sha256");
+  for (const k of Object.keys(content).sort()) h.update(`${k.length}:${k}${content[k]!.length}:${content[k]}`);
+  return "w:sha256:" + h.digest("hex").slice(0, 24);
+}
+
+/** Field-by-field, what moved between what a reviewer read and what stands now. */
+export function contentDiff(
+  was: Record<string, string>, now: Record<string, string>,
+): { field: string; was?: string; now?: string }[] {
+  const fields = [...new Set([...Object.keys(was), ...Object.keys(now)])].sort();
+  return fields
+    .filter((f) => was[f] !== now[f])
+    .map((f) => ({ field: f, ...(was[f] !== undefined ? { was: was[f] } : {}), ...(now[f] !== undefined ? { now: now[f] } : {}) }));
+}
+
 export interface RequirementStore {
   schemaVersion: number;
   requirements: Requirement[];

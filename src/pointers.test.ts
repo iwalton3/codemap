@@ -22,6 +22,7 @@ import { writeStore, writeNode, readPointers } from "./store.js";
 import type { LogicalNode, State } from "./schema.js";
 import { discard } from "./test-tmp.js";
 import { draftSpec, addOperation, ratifySpec, getSpec } from "./requirements.js";
+import { ratifyReviewed } from "./test-approve.js";
 import { declarePointer, restatePointer, retirePointer, pointersFor, auditQueue } from "./pointers.js";
 import { universeKey } from "./sidecar-config.js";
 
@@ -83,7 +84,7 @@ async function rule(root: string, cites: string[] = []) {
     title: "Credit line is capped", section: "Credit/Limits",
     statement: "A credit line never exceeds the approved limit.", provenance: "credit policy",
   }));
-  const rat = ok(await ratifySpec(root, sp.id));
+  const rat = ok(await ratifyReviewed(root, sp.id));
   return rat.applied!.find((o) => o.kind === "add_requirement")!.requirementId!;
 }
 
@@ -174,7 +175,7 @@ test("an unwatched rule is reported in its own right — silence must not read a
       title: "Float settles daily", section: "Settlement/Float",
       statement: "Float must be settled daily.", provenance: "treasury",
     }));
-    const rat = ok(await ratifySpec(u.root, sp.id));
+    const rat = ok(await ratifyReviewed(u.root, sp.id));
     const orphan = rat.applied!.find((o) => o.kind === "add_requirement")!.requirementId!;
 
     const q = await auditQueue(u.root);
