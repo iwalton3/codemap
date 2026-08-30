@@ -26,6 +26,13 @@ and `Operation.cites` are gone, `recheckDue` derives from this universe's pointe
 Also built: **provisional audits travel as commit-discovered documents** (`provisional.ts`)
 — the last piece of this arc.
 
+Also built: the three DRAFT correction events (`spec.revised`, `spec.operation.revised`,
+`spec.operation.removed`) are LAW, like every other `spec.*` — a proposal is not about a
+repository. `isLawEvent`'s prefix test already covered them. See
+`docs/requirements-architecture.md` § *Immutability attaches at ratification*; the one
+guard that could not be restated in the fold is the comment count, for the reason § *The
+fold cannot be split in two* gives.
+
 **Migration is free, and that was not a given.** Law events written before the split sit in
 `standard/<universe>`; the fold reads BOTH scopes and merges, so a pre-split log folds
 exactly as it did and only new law lands in the shared scope. Nothing rewrites history.

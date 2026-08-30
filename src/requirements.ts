@@ -23,10 +23,12 @@
  *  4. **Nothing here computes a status from code.** `recheckDue` is derived at read time
  *     and is a signal ABOUT THE CODE. A requirement has no `stale`, and no state a reader
  *     could clear by editing the statement.
- *
- * Not built, and named so their absence is legible: section move/rename operations,
- * withdrawal and repeal, the acknowledgement record, audits, the problem record, and the
- * sidecar scope that makes any of this shared. Until the last one, these are local rows.
+ *  5. **Immutability attaches at RATIFICATION, not at drafting.** Rule 1 is about the
+ *     STANDARD, and reading it as covering a proposal is what left a draft with no
+ *     correction path at all. A draft binds nothing, so `reviseSpec`, `reviseOperation`,
+ *     `removeOperation` and author-withdrawal exist and are open to any actor — and every
+ *     one of them is refused the moment `status != draft`, here and in `foldStandard`.
+ *     See § *Correcting a draft* below and `docs/requirements-architecture.md`.
  */
 
 import { randomBytes } from "node:crypto";

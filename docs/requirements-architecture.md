@@ -121,6 +121,64 @@ disappears. **We are not, in the long run, reviewing commits the way we review b
 rules**, so the coherence of a commit's review record is the wrong thing to spend a rule's
 integrity on.
 
+## Immutability attaches at RATIFICATION, not at drafting — BUILT
+
+Stated here because the design implied it everywhere and said it nowhere, and the code read
+the implication the other way round for as long as the subsystem existed. A spec was
+write-once from the moment it was drafted: `draft_spec`, `add_operation`, `acknowledge_gap`,
+`comment`, `ratify_spec`, `withdraw_spec` was the whole surface, so there was no way to fix
+a title, a narrative or an operation, and `withdraw_spec` refused an agent its own draft
+with the ratification argument — *"an agent may author and propose; adopting is what makes
+a claim binding"* — which is right about adoption and beside the point about a proposal.
+
+**A draft binds nothing.** No requirement exists, no acknowledgement is active, no audit or
+pointer can name it. The immutability argument this document does make — *"removing a
+ratified act destroys the audit trail of the thing most worth auditing"* — is explicitly
+about a spec that already binds something. And COD-29's principle is that **the asymmetry
+is in adoption, not authorship**: correcting a proposal is authoring it, so it sits on the
+open side. Every neighbouring record already had the path (`revise_finding`, which exists
+precisely because findings are filed before they are understood; `update_bug`;
+`update_node`) and the draft spec was the only one without.
+
+The asymmetry even ran BACKWARDS. `acknowledge_gap` is agent-callable against a draft
+operation, so an agent could ADD a silencer constraining what the ratifier was approving,
+and could not REMOVE an operation it had come to believe was wrong. What that cost, in a
+live session: an agent left two empty probe specs it could not clean up, and authored a
+spec whose narrative named the wrong branch — the correction had to go into a comment,
+which is strictly worse for the ratifier, who then reads the wrong framing first (the
+narrative is what renders), then a retraction.
+
+So: `revise_spec`, `revise_operation`, `remove_operation`, and author-withdrawal of an own
+draft. Four decisions inside it, each of which is a way to get this wrong:
+
+- **Revision MUTATES and keeps the prior values underneath.** The opposite of
+  `revise_finding`'s thread, and deliberate: the whole trade this surface makes is that a
+  principal reads ONE current text instead of 5,000 lines, and a correction chain they have
+  to reassemble is that trade failing at its last step. Nothing is lost — `Spec.revisions`
+  and `Operation.revisions` hold what each field said before, and on a shared store the
+  events are the long version.
+- **Removal is a TOMBSTONE.** `Operation.removed`, not a delete, because `ord` has to stay
+  stable: a reused position is two operations claiming one slot, and the fold's sort would
+  break the tie differently on every clone. `readOperations` filters it by default, so a
+  pulled operation cannot apply, count or block; `getSpec` serves it apart, as history, with
+  the author's reason on it.
+- **Reference-count discipline, at the threshold a draft warrants.** The same mechanism
+  `withdrawSpec` applies to a ratified spec, one rung lower: somebody ELSE's pending gap or
+  comment refuses a revision, a removal and an author-withdrawal, because taking the
+  proposal away leaves their record about something nobody can read. Your own does not —
+  releasing a gap is a verb you already have.
+- **`kind` is not revisable.** A different kind is a different operation, validated against
+  fields this one was never written with. Remove it and add the one you meant.
+
+**Both ends, as always.** `foldStandard` re-checks the draft status, the kind, the removal's
+reason, the criterion that would be orphaned, and — for a withdrawal — the author and any
+gap somebody else granted. The one check that does NOT bind the fold is the comment count:
+notes are a different sidecar scope and teaching the standard's fold to read it would make
+one entity's fold depend on another's, which § *The fold cannot be split in two* in
+`docs/cross-universe-standard.md` is the argument against. `commentsByOthers` states that
+and why the residue is benign — withdrawal is not a delete, so the spec row, its operations
+and every comment on them survive it.
+
 ## Two queues, because they are two practices
 
 | | Change enablement | Problem management |
@@ -808,7 +866,10 @@ So there is a window, and which side of it you are on decides the mechanism:
   operations ends with it** — released rather than deleted, because the grant really
   happened. That is the job withdrawal gives a `pending` gap.
 
-  **A draft may always be withdrawn**: nothing applied, so nothing can be falsified.
+  **A draft may always be withdrawn**: nothing applied, so nothing can be falsified. Its
+  AUTHOR may, agent included — see § *Immutability attaches at ratification* — and only its
+  author: withdrawing somebody else's proposal is disposing of it, which is theirs or a
+  principal's. It is refused while another actor's pending gap or comment hangs off it.
 
   **Withdrawal is not a revert.** A spec that amended, retired or re-filed something that
   already existed is refused however little relies on it. Undoing it would mean restoring a
@@ -872,6 +933,13 @@ MCP surface via `ops/standard.ts`:
 - `requirements.ts` — the record (no `stale`, no trust, `recheckDue` derived), the
   **spec** and its **operations**, and the fold. Context is verified per operation and
   adoption is all-or-nothing.
+- `reviseSpec` / `reviseOperation` / `removeOperation` — the DRAFT correction path, refused
+  once the spec is ratified at both ends. `operationPayload` is shared with `addOperation`
+  so a revision can never produce an operation the authoring path refuses; a second, weaker
+  set of checks would be the cheap path this document forbids one level down.
+  `src/spec-revision.test.ts` pairs every correction with the identical one after
+  ratification, and 24 of 25 mutants over the new guards are caught by a named test (the
+  25th by the build).
 - `acknowledgements.ts` — one record, `basis: gap | debt`, with the mint-time asymmetry.
 - `audits.ts` — the audit record with non-vacuity as a refusal, plus the conformance
   classification (`conformant` is reachable only through a code-backed audit).
@@ -910,6 +978,13 @@ carries the detail and the reasoning:
 `/api/standard/*` reads plus the POST route for the five acts only a principal may perform,
 and seven pages under `/#/u/:u/standard/`. `src/standard-reach.test.ts` fails when an op
 reaches neither front end, or when a route no page fetches.
+
+It also carries the three DRAFT correction verbs, which are open to any actor and are on
+the web for a case MCP cannot serve: an agent drafts, goes away, and the principal about to
+adopt the thing is the one who spots that the narrative names the wrong branch. The page
+hides the controls on a ratified spec and that is not what stops the edit — the e2e drives
+the route with the attestation satisfied and gets the handler's refusal, because a browser
+is a client and a client is not a guard.
 
 *This paragraph said the opposite until 2026-08-29* — "the web front end has no routes for
 any of it … this surface is currently agent-only" — and was three weeks stale inside the

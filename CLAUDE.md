@@ -269,6 +269,14 @@ of that union is code-shaped, so a business rule stored as a node goes `stale` w
 drifts, and the standing instruction for stale is `update_node`, i.e. rewrite the rule to
 match the drifted code.
 
+A fourth, added because the code read the design's silence the wrong way for as long as the
+subsystem existed: **immutability attaches at RATIFICATION, not at drafting.** A draft binds
+nothing, so it has a correction path — `revise_spec`, `revise_operation`, `remove_operation`,
+and author-withdrawal of an own draft, all open to any actor and all refused the moment
+`status != draft`. Revision mutates and keeps the prior values underneath, because the
+ratifier's trade is reading one current text; removal is a tombstone, because `ord` has to
+stay stable across clones.
+
 Three things worth knowing before deciding whether you need the document: the **standard
 is the authority** and a folded spec is repealed as authority (retained as history); a
 spec is a set of **operations** carrying their own context, never a stored diff or
