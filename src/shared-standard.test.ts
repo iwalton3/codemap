@@ -22,10 +22,10 @@ import {
   publishAckGranted, publishAckReleased, publishAudit, publishProblemRaised, publishAdjudication,
   publishVacuityCheck, publishPointerDeclared, publishPointerRestated, publishPointerRetired,
   publishPopulationPinned, publishScrubPolicy, publishSpecWithdrawn, publishOperationRevised,
-  publishSpecReviewed, emptyStandard,
+  publishSpecReviewed, publishOperationRemoved, emptyStandard,
 } from "./shared-standard.js";
 import { ratifyWithReview } from "./test-approve.js";
-import { criterionIdFor, requirementIdFor, framingContent, operationContent, type Acknowledgement, type Actor, type Audit, type Operation, type Problem, type Spec } from "./schema.js";
+import { criterionIdFor, requirementIdFor, framingContent, operationContent, type Acknowledgement, type Actor, type Audit, type Operation, type Pointer, type Problem, type Spec } from "./schema.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
 const opus: Actor = { principal: "izzie@x.com", via: { kind: "agent", model: "claude-opus-5" } };
@@ -1359,6 +1359,54 @@ test("the fold refuses an acknowledgement with no release condition", async () =
     await publishAckGranted(good, SCOPE, izzie, base as Acknowledgement);
     assert.equal((await fold(good)).acknowledgements.length, 1);
   } finally { discard(good); }
+});
+
+/**
+ * Ratification binds a PENDING detector at the end that binds every clone.
+ *
+ * `bindPointersForSpec` does it locally. Without the same step here a teammate's clone
+ * folds the adoption and leaves the detector `pending` for ever — a check nobody is
+ * running, invisible to `criteriaFor` because every query that means "what is watching
+ * this" asks for `active`. Exactly the shape the gap-binding hole had, which is why it
+ * sits beside it in the same block.
+ *
+ * The pulled arm is the other half: a pointer whose operation was REMOVED from the draft
+ * has no criterion coming, and leaving it pending would be an orphan nothing can bind.
+ */
+test("the fold binds a pending detector when the spec is adopted, and retires an orphaned one", async () => {
+  const pending = (id: string, operationId: string): Pointer => ({
+    id, requirementId: requirementIdFor("op_1"), criterionId: criterionIdFor(operationId),
+    operationId, universe: U, target: { kind: "anchor", id: "a_lint" },
+    rationale: "the lint", witnesses: [{ anchorId: "a_lint", bodyHash: "h1:sha256:def" }],
+    state: "pending", declaredBy: opus, declaredAt: "2026-08-01T00:00:00.000Z",
+  });
+  const root = await log("bind-detector");
+  try {
+    await publishSpecDrafted(root, SCOPE, opus, SPEC);
+    await publishOperation(root, SCOPE, opus, ADD);
+    await publishOperation(root, SCOPE, opus, ADD_CRITERION);
+    // A second criterion, proposed against while it was LIVE and pulled afterwards — the
+    // only order this can really happen in, since `proposePointer` refuses a removed one.
+    const doomed: Operation = {
+      ...ADD_CRITERION, id: "op_3", ord: 2, criterion: "Something else.", falsifier: "It is not so.",
+    };
+    await publishOperation(root, SCOPE, opus, doomed);
+    await publishPointerDeclared(root, SCOPE, opus, pending("pt_live", "op_2"));
+    await publishPointerDeclared(root, SCOPE, opus, pending("pt_orphan", "op_3"));
+    await publishOperationRemoved(root, SCOPE, opus, {
+      ...doomed, removed: { at: "2026-08-01T12:00:00.000Z", by: opus, reason: "wrong check" },
+    });
+
+    let s = await fold(root);
+    assert.deepEqual(s.pointers.map((p) => p.state).sort(), ["pending", "pending"], "nothing binds before adoption");
+
+    await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1", "op_2"]);
+    s = await fold(root);
+    const byId = new Map(s.pointers.map((p) => [p.id, p]));
+    assert.equal(byId.get("pt_live")!.state, "active", "adopted with its criterion");
+    assert.equal(byId.get("pt_orphan")!.state, "retired", "and one whose operation was pulled is not left pending");
+    assert.match(byId.get("pt_orphan")!.retiredReason!, /pulled from sp_1/);
+  } finally { discard(root); }
 });
 
 test("the fold drops a revision that changed nothing, and keeps one that did", async () => {

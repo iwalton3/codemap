@@ -1343,6 +1343,10 @@ export async function ratifySpec(
   if (shared.local) {
     const { bindGapsForSpec } = await import("./acknowledgements.js");
     await bindGapsForSpec(root, sp.id);
+    // And the detectors proposed with it. Same moment, same reason: a check becomes live
+    // when the rule it discharges does, and never before.
+    const { bindPointersForSpec } = await import("./pointers.js");
+    await bindPointersForSpec(root, sp.id);
   }
   return { ok: true, spec: next, applied };
 }
@@ -1766,6 +1770,14 @@ export interface RenderedOperation {
    */
   watchedBy: Pointer[];
   /**
+   * Detectors PROPOSED with this operation, binding if the spec is ratified.
+   *
+   * Served so the ratifier can SEE which check is meant to discharge a criterion. They
+   * cannot sign it — the address is on a pointer and pointers are evidence, so it is not in
+   * `operationContent` — and being on the page while they decide is what it gets instead.
+   */
+  proposedDetectors: Pointer[];
+  /**
    * For `move_section`: the rules that would actually move, and where each lands.
    *
    * Rendered rather than left to the operation's two path fields because the trade this
@@ -1838,6 +1850,11 @@ export async function getSpec(
       silencedBy: (await readAcknowledgements(root, { operationId: op.id }))
         .filter((a) => a.state !== "released"),
       watchedBy: target ? await readPointers(root, { requirementId: target.id, state: "active" }) : [],
+      // The detectors PROPOSED with this operation. On the page while the ratifier decides,
+      // which is the whole reason the verb exists: the check is not in `operationContent`,
+      // so it is not signed — being seen is what it gets instead, and it cannot be that
+      // without being served here.
+      proposedDetectors: (await readPointers(root, { state: "pending" })).filter((p) => p.operationId === op.id),
     });
   }
   // The reader's OWN review gap, which is the WARNING half of the mechanism whose refusing

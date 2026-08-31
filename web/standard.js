@@ -664,6 +664,13 @@ class SpecPage extends Component {
         <div class="fs prose">${op.falsifier}</div>
         <div class="fs dim">checked by <b>${op.evidenceKind || 'unstated'}</b></div>
         ${when(!!o.before, () => html`<div class="fs dim">attaches to <b>${o.before.title}</b></div>`)}
+        ${when((o.proposedDetectors || []).length > 0, () => html`<div class="op-detector">
+          <div class="fs dim">the check proposed to discharge it — <b>not part of what you sign</b>, because a
+            detector is evidence and names one repo. It binds when you adopt this.</div>
+          ${each(o.proposedDetectors, (d) => html`<div class="fs">▸ ${d.target.kind} <b>${d.target.id}</b>
+            <span class="dim">· ${d.rationale}</span></div>`, (d) => d.id)}
+        </div>`)}
+        ${when((o.proposedDetectors || []).length === 0, () => html`<div class="fs dim">no check proposed — nothing would tell you if this stopped holding</div>`)}
       </div>`;
     }
     if (op.kind === 'add_requirement') {

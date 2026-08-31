@@ -2093,7 +2093,33 @@ export interface Pointer {
    * stale IS its cited anchors moving, observed from the other side.
    */
   witnesses: BugWitness[];
-  state: "active" | "retired";
+  /**
+   * `pending` is a pointer PROPOSED alongside a draft spec's `add_criterion`, binding when
+   * that spec is ratified. It is not `provisional`, and the distinction is load-bearing:
+   * `provisional` means "an observation about somebody's branch", and
+   * `docs/cross-universe-standard.md` § "Pointers are never provisional" is right that a
+   * pointer must never carry it — pointer staleness is the antidote to an unnoticed
+   * provisional audit, so suppressing it would disable the treatment. `pending` means
+   * something else entirely: there is no rule to attach to yet.
+   *
+   * It exists because a criterion's check stopped being part of what a ratifier signs when
+   * the address moved onto pointers (see `criterionId`). A detector declared afterwards is
+   * a check the person who adopted the rule never saw. Proposed with the operation, it is
+   * on the page while they decide — visible without being signed, which is the honest
+   * position for evidence.
+   *
+   * Every query that means "what is watching this" asks for `active`, so a pending pointer
+   * fires nothing, drifts nothing and reaches no conformance state until it binds.
+   */
+  state: "pending" | "active" | "retired";
+  /**
+   * The `add_criterion` operation this was proposed with — set only while `pending`.
+   *
+   * The same relation `Acknowledgement.operationId` carries, and it needs no late binding:
+   * `criterionId` and `requirementId` are pure functions of operation ids, so a pending
+   * pointer knows both from the moment it is minted and ratification is a state flip.
+   */
+  operationId?: string;
   declaredBy: Actor;
   declaredAt: string;
   /** Re-baselined by `restatePointer` — somebody looked, so this is the new quiet. */

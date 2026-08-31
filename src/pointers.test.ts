@@ -23,7 +23,8 @@ import type { LogicalNode, State } from "./schema.js";
 import { discard } from "./test-tmp.js";
 import { draftSpec, addOperation, ratifySpec, getSpec } from "./requirements.js";
 import { ratifyReviewed } from "./test-approve.js";
-import { declarePointer, restatePointer, retirePointer, pointersFor, auditQueue } from "./pointers.js";
+import { declarePointer, proposePointer, restatePointer, retirePointer, pointersFor, auditQueue } from "./pointers.js";
+import { criterionIdFor, requirementIdFor } from "./schema.js";
 import { universeKey } from "./sidecar-config.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
@@ -333,5 +334,92 @@ test("a pointer records which universe's code it watches", async () => {
     assert.ok(p.pointer.universe, "a real key, not an empty string");
     // And it survives the round trip, which is what a reader actually sees.
     assert.equal((await readPointers(u.root, { requirementId: rid }))[0]!.universe, universeKey(u.root));
+  } finally { discard(u.root); }
+});
+
+/**
+ * A detector PROPOSED with a draft's criterion, and what ratification does to it.
+ *
+ * The hole this closes: moving a criterion's check onto pointers took it out of
+ * `operationContent`, so it stopped being part of what a ratifier signs — a detector
+ * declared afterwards is a check the person who adopted the rule never saw. Proposed with
+ * the operation it is on the page while they decide.
+ *
+ * `pending`, deliberately not `provisional`: that word means "about somebody's branch", and
+ * `docs/cross-universe-standard.md` is right that a pointer must never carry it. This is a
+ * different thing — there is no rule to attach to yet.
+ *
+ * Both ids are derived at PROPOSE time, before either record exists, so the assertions
+ * below compare against `criterionIdFor`/`requirementIdFor` rather than against whatever
+ * ratification happened to mint.
+ */
+test("a detector proposed with a criterion is pending, then binds when the spec is adopted", async () => {
+  const u = await universe();
+  try {
+    const sp = ok(await draftSpec(u.root, { title: "Credit limits" }));
+    const add = ok(await addOperation(u.root, {
+      specId: sp.id, kind: "add_requirement", rationale: "policy", reversibility: "reversible",
+      title: "Credit line is capped", section: "Credit/Limits",
+      statement: "A credit line never exceeds the approved limit.", provenance: "credit policy",
+    }));
+    const crit = ok(await addOperation(u.root, {
+      specId: sp.id, kind: "add_criterion", rationale: "how it is discharged",
+      reversibility: "reversible", targetOperationId: add.id,
+      criterion: "A line above the limit is rejected.",
+      falsifier: "A line above the limit is accepted and persisted.", evidenceKind: "lint-test",
+    }));
+
+    const proposed = ok(await proposePointer(u.root, {
+      operationId: crit.id, targetKind: "anchor", targetId: u.lint[0]!,
+      rationale: "the lint that would fail if the cap stopped holding",
+    }));
+    assert.equal(proposed.pointer.state, "pending");
+    assert.equal(proposed.pointer.criterionId, criterionIdFor(crit.id), "the criterion id is derived, not awaited");
+    assert.equal(proposed.pointer.requirementId, requirementIdFor(add.id), "and so is the rule it will watch");
+
+    // Pending fires nothing. Every query that means "what is watching this" asks `active`.
+    assert.deepEqual(await readPointers(u.root, { state: "active" }), []);
+
+    // And the RATIFIER sees it — the whole reason the verb exists.
+    const served = ok(await getSpec(u.root, sp.id)) as any;
+    const row = served.operations.find((o: any) => o.operation.id === crit.id);
+    assert.equal(row.proposedDetectors.length, 1, "on the page while they decide");
+    assert.equal(row.proposedDetectors[0].target.id, u.lint[0]);
+
+    ok(await ratifyReviewed(u.root, sp.id));
+    const bound = (await readPointers(u.root, { state: "active" }));
+    assert.equal(bound.length, 1, "adoption binds it, in the act that creates the criterion");
+    assert.equal(bound[0]!.criterionId, criterionIdFor(crit.id));
+    assert.equal(bound[0]!.state, "active");
+  } finally { discard(u.root); }
+});
+
+/** Proposing is a DRAFT act, and the two refusals that make it one. */
+test("a detector cannot be proposed against a ratified spec, or against a rule operation", async () => {
+  const u = await universe();
+  try {
+    const sp = ok(await draftSpec(u.root, { title: "Credit limits" }));
+    const add = ok(await addOperation(u.root, {
+      specId: sp.id, kind: "add_requirement", rationale: "policy", reversibility: "reversible",
+      title: "Credit line is capped", section: "Credit/Limits",
+      statement: "A credit line never exceeds the approved limit.", provenance: "credit policy",
+    }));
+    // A rule's subject is watched by an ordinary pointer; only a CHECK is proposed.
+    assert.match(err(await proposePointer(u.root, {
+      operationId: add.id, targetKind: "anchor", targetId: u.lint[0]!, rationale: "x",
+    })), /add_criterion/);
+
+    const crit = ok(await addOperation(u.root, {
+      specId: sp.id, kind: "add_criterion", rationale: "how it is discharged",
+      reversibility: "reversible", targetOperationId: add.id,
+      criterion: "A line above the limit is rejected.",
+      falsifier: "A line above the limit is accepted and persisted.", evidenceKind: "lint-test",
+    }));
+    ok(await ratifyReviewed(u.root, sp.id));
+
+    // Once adopted there is a real criterion, so the ordinary verb is the one that applies.
+    assert.match(err(await proposePointer(u.root, {
+      operationId: crit.id, targetKind: "anchor", targetId: u.lint[0]!, rationale: "x",
+    })), /declarePointer/);
   } finally { discard(u.root); }
 });

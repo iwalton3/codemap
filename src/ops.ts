@@ -62,7 +62,7 @@ export {
   acknowledgeGap, acknowledgeDebt, releaseAcknowledgement, listAcknowledgements, dueForRevalidation,
   recordAudit, auditsFor, promotableAudits, promoteProvisionalAudit, provisionalAudits,
   criteriaSummary, recordVacuityCheck, weakAssertions,
-  declarePointer, restatePointer, retirePointer, pointersFor, auditQueue,
+  declarePointer, proposePointer, restatePointer, retirePointer, pointersFor, auditQueue,
   pinPopulation, declareNotExpressible, populationFor, brokenPins,
   setScrubPolicy, scrubPlan, scrubsFor, baselinePlan,
   raiseProblem, adjudicate, listProblems, awaitingAdjudication, actionableProblems,

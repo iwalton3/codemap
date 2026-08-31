@@ -1457,10 +1457,25 @@ const tools: Tool[] = [
     handler: (a, c) => ops.declareNotExpressible(c.universe.path, a as never),
   },
   {
+    name: "propose_pointer",
+    description: "Propose a detector alongside a draft spec's `add_criterion` — the check that would fail if the rule stopped holding. It is `pending` until that spec is ratified, then binds in the same act that creates the criterion.\n\nUse it whenever you add a criterion and the check already exists. A criterion's check is NOT part of what a ratifier signs — the address lives on a pointer, which names one universe, and a rule is workspace-scoped — so a detector declared after adoption is a check the person who adopted the rule never saw. Proposed here, it is on the page while they decide.\n\nOpen to any actor: proposing a check is not adopting one. Refused once the spec is no longer a draft — the criterion exists by then, so use `declare_pointer` with its `criterionId` instead.",
+    inputSchema: obj({
+      operationId: { type: "string", description: "The `add_criterion` operation this check discharges." },
+      targetKind: { type: "string", enum: ["node", "anchor"], description: "`node` is a doc (prefer it); `anchor` is one symbol, the last resort." },
+      targetId: { type: "string" },
+      rationale: { type: "string", description: "Why this address is the check for that criterion." },
+      model: { type: "string", description: "YOUR model id. Never guess it." },
+      harness: { type: "string" },
+    }, ["operationId", "targetKind", "targetId", "rationale"]),
+    mutates: true,
+    handler: (a, c) => ops.proposePointer(c.universe.path, a as never),
+  },
+  {
     name: "declare_pointer",
     description: "Declare where an auditor should look for a rule. Open to any actor — a pointer cannot reach the conformance state, so there is nothing here to silence; what it changes is queue position.\n\nAIM AS HIGH UP THE ABSTRACTION LADDER AS YOU CAN REACH, which cuts against the instinct because this map's own primitive is a citation to an anchor. A lint covers a population; a doc describing a pattern covers everything the pattern governs and already has drift detection attached; an anchor covers one symbol and survives almost nothing. An anchor target is accepted and FLAGGED, never refused — and where a doc already cites it, the reply names that doc, because it is the better pointer.\n\nTwo target kinds only. A check is not a third: it is an anchor in a `[tests]` path, and `rank` derives that.",
     inputSchema: obj({
       requirementId: { type: "string" },
+      criterionId: { type: "string", description: "Makes this a DETECTOR for that criterion — the check that would fail if the rule stopped holding — rather than an address of the rule's subject. Must be a criterion of `requirementId`." },
       targetKind: { type: "string", enum: ["node", "anchor"], description: "`node` is a doc (prefer it); `anchor` is one symbol, the last resort." },
       targetId: { type: "string" },
       rationale: { type: "string", description: "Why this address is the one to watch. A pointer nobody can evaluate is the vacuity problem arriving at the record that exists to make auditing cheaper." },

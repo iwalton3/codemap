@@ -95,6 +95,12 @@ const WEB_EXEMPT: Record<string, string> = {
   recordAudit: "an agent act — it is the product of reading code, not of a form",
   raiseProblem: "an agent act — the finding comes with the audit that found it",
   declarePointer: "an agent act",
+  // Same reason as `acknowledgeGap` above, and the same shape: minted against a DRAFT
+  // operation, so the principal's power over it is REFUSAL — and the spec page already
+  // gives them that, because `getSpec` serves it as `proposedDetectors` on the operation
+  // it was proposed with. A browser form would be a second way to author a check, not a
+  // missing act.
+  proposePointer: "an agent act, refusable on the spec page — it renders as `proposedDetectors`",
   restatePointer: "an agent act",
   retirePointer: "an agent act",
   pinPopulation: "an agent act — a pin is a lint's output",

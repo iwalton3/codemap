@@ -610,6 +610,25 @@ export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = 
             }
           }
         }
+        // And the DETECTORS proposed with this spec — `bindPointersForSpec` at the end that
+        // binds every clone. Outside the loop above because a detector hangs off an
+        // `add_criterion`, which that loop `continue`s past, and because a pointer whose
+        // operation was PULLED has to be retired rather than left `pending` for ever: its
+        // criterion is never going to exist.
+        const mineIds = new Map(mine.map((o) => [o.id, o]));
+        const pulled = new Map(
+          [...operations.values()].filter((o) => o.specId === sp.id && o.removed).map((o) => [o.id, o]),
+        );
+        for (const [id, p] of pointers) {
+          if (p.state !== "pending" || !p.operationId) continue;
+          if (mineIds.has(p.operationId)) pointers.set(id, { ...p, state: "active", origin: "sync" });
+          else if (pulled.has(p.operationId)) {
+            pointers.set(id, {
+              ...p, state: "retired", retiredBy: e.actor, retiredAt: at, origin: "sync",
+              retiredReason: `the operation it was proposed with was pulled from ${sp.id}`,
+            });
+          }
+        }
         break;
       }
       case "spec.withdrawn": {
@@ -815,11 +834,29 @@ export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = 
         // an address that does not resolve, which is what guarantees witnesses locally; a
         // doc citing nothing is the one legitimate empty case and it is a `node` target.
         if (p.target.kind === "anchor" && !p.witnesses?.length) break;
-        // ACTIVE, whatever the payload said. A `declared` event carrying `state:
-        // "retired"` would fold to a pointer that was never watching anything and cannot
-        // be retired again — the same partial-strip shape that let `problem.raised` name a
-        // decider who never decided.
+        // ACTIVE, whatever the payload said — with ONE exception. A `declared` event
+        // carrying `state: "retired"` would fold to a pointer that was never watching
+        // anything and cannot be retired again, the same partial-strip shape that let
+        // `problem.raised` name a decider who never decided.
+        //
+        // The exception is `pending`, and it is earned rather than trusted: the payload
+        // must name an `add_criterion` in a spec that is still a DRAFT here, which is
+        // `proposePointer`'s guard restated at the end that binds every clone. Without the
+        // check a client could mint a permanently pending pointer against nothing; without
+        // the exception a proposed detector would fold ACTIVE on every clone the moment it
+        // was proposed, watching a criterion nobody has adopted — the mechanism inverted.
         const { retiredBy, retiredAt, retiredReason, restatedBy, restatedAt, ...declared } = p;
+        if (p.state === "pending") {
+          // DROPPED rather than promoted when it does not qualify. `proposePointer` refuses
+          // a payload like this, and folding it `active` would turn a refusal at one end
+          // into a live detector at the other — laxer than the tool, in the direction that
+          // manufactures coverage.
+          const against = p.operationId ? operations.get(p.operationId) : undefined;
+          if (!against || against.kind !== "add_criterion" || against.removed) break;
+          if (specs.get(against.specId)?.status !== "draft") break;
+          pointers.set(p.id, { ...declared, state: "pending", origin: "sync" });
+          break;
+        }
         pointers.set(p.id, { ...declared, state: "active", origin: "sync" });
         break;
       }

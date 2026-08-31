@@ -252,7 +252,7 @@ test("every read on the standard ops surface goes through the scope marker", () 
     // and it matters more there than most, since it is the read somebody signs off from.
     "signOffOperation", "signOffFraming", "signOffSection",
     "acknowledgeDebt", "releaseAcknowledgement", "recordAudit", "recordVacuityCheck",
-    "promoteProvisionalAudit", "raiseProblem", "adjudicate", "declarePointer",
+    "promoteProvisionalAudit", "raiseProblem", "adjudicate", "declarePointer", "proposePointer",
     "restatePointer", "retirePointer", "pinPopulation", "declareNotExpressible",
     "setScrubPolicy",
   ]);

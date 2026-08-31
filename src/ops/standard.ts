@@ -59,7 +59,7 @@ import {
   criteriaSummary as criteriaSummaryRec,
 } from "../criteria.js";
 import {
-  declarePointer as declarePointerRec, restatePointer as restatePointerRec,
+  declarePointer as declarePointerRec, proposePointer as proposePointerRec, restatePointer as restatePointerRec,
   retirePointer as retirePointerRec, pointersFor as pointersForRec, auditQueue as auditQueueRec,
 } from "../pointers.js";
 import {
@@ -456,8 +456,17 @@ export const brokenPins = async (root: string) =>
 
 export const declarePointer = (
   root: string,
-  input: { requirementId: string; targetKind: "node" | "anchor"; targetId: string; rationale: string } & ActorInput,
+  input: {
+    requirementId: string; targetKind: "node" | "anchor"; targetId: string; rationale: string;
+    criterionId?: string;
+  } & ActorInput,
 ) => declarePointerRec(root, input);
+
+/** A detector proposed with a draft's `add_criterion`, binding when the spec is ratified. */
+export const proposePointer = (
+  root: string,
+  input: { operationId: string; targetKind: "node" | "anchor"; targetId: string; rationale: string } & ActorInput,
+) => proposePointerRec(root, input);
 
 export const restatePointer = (root: string, input: { id: string } & ActorInput) =>
   restatePointerRec(root, input);

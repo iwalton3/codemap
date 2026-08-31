@@ -24,8 +24,10 @@
 
 import { randomBytes } from "node:crypto";
 import type { LogicalNode, NodeStatus, Pointer } from "./schema.js";
+import { criterionIdFor, requirementIdFor } from "./schema.js";
 import {
-  loadNodes, readCriterion, readPointer, readPointers, readRequirement, readRequirements, workFiles, workHas,
+  loadNodes, readCriterion, readOperation, readOperations, readPointer, readPointers, readRequirement, readRequirements,
+  readSpec, workFiles, workHas,
   writeLocalPointer,
 } from "./store.js";
 import { liveHashes, witnessDrift, realDrift } from "./reviews.js";
@@ -155,6 +157,109 @@ export interface Declared { ok: true; id: string; pointer: ServedPointer; advice
  * higher rung was available — but where the anchor is already cited by a doc, that doc is
  * named, because it is the better pointer and the caller is one call from it.
  */
+/**
+ * Propose a detector alongside a draft spec's `add_criterion`. Binds when it is ratified.
+ *
+ * The reason this verb exists: moving a criterion's check onto pointers took it out of
+ * `operationContent`, so it stopped being part of what a ratifier signs — and a detector
+ * declared after adoption is a check the person who adopted the rule never saw. Proposed
+ * here, it renders on the spec page while they decide. Visible, not signed, which is the
+ * honest position for evidence.
+ *
+ * No late binding, unlike `Acknowledgement.operationId`, and that is not a shortcut: both
+ * ids are pure functions of operation ids (`criterionIdFor`, `requirementIdFor`), so this
+ * knows the criterion and the rule it will attach to before either exists, and ratification
+ * only flips the state. A late-bound field would be a second place for the derivation to
+ * disagree with itself.
+ *
+ * Open to any actor, like every other authoring act on a draft: proposing a check is not
+ * adopting one, and it is refused the moment the spec stops being a draft.
+ */
+export async function proposePointer(
+  root: string,
+  input: { operationId: string; targetKind: Pointer["target"]["kind"]; targetId: string; rationale: string } & ActorInput,
+): Promise<Declared | Err> {
+  const rationale = input.rationale?.trim();
+  if (!rationale) return { error: "a pointer needs a `rationale` — why this address is the one to watch" };
+
+  const op = await readOperation(root, input.operationId);
+  if (!op) return { error: `no operation "${input.operationId}"` };
+  if (op.kind !== "add_criterion") {
+    return {
+      error:
+        `${op.id} is a ${op.kind} — a detector is proposed against an \`add_criterion\`. The code a `
+        + `RULE governs is watched by an ordinary pointer, declared once the rule exists.`,
+    };
+  }
+  if (op.removed) return { error: `${op.id} was pulled from ${op.specId}` };
+  const sp = await readSpec(root, op.specId);
+  if (!sp) return { error: `operation ${op.id} points at missing spec ${op.specId}` };
+  if (sp.status !== "draft") {
+    return {
+      error:
+        `${sp.id} is ${sp.status} — a pointer is only PROPOSED while the spec is a draft. The `
+        + `criterion exists now, so declare a detector against it directly with \`declarePointer\`.`,
+    };
+  }
+  // Both ids, derived. `requirementId` comes from the rule this same spec creates when the
+  // criterion names an operation, and off the criterion's own target when it names a rule
+  // that already stands — the identical resolution `applyOperation` does at ratification.
+  const requirementId = op.targetOperationId ? requirementIdFor(op.targetOperationId) : op.requirementId;
+  if (!requirementId) return { error: `${op.id} names neither a target operation nor a requirement` };
+  const criterionId = criterionIdFor(op.id);
+
+  const target = { kind: input.targetKind, id: input.targetId };
+  const ctx = await context(root);
+  const anchors = watched(root, ctx, target);
+  if (anchors === null) {
+    return {
+      error: input.targetKind === "node"
+        ? `no doc "${input.targetId}"`
+        : `anchor "${input.targetId}" is not in the live index — a pointer at an address that does not resolve fires never, which reads as coverage`,
+    };
+  }
+  const actor = requireActor(root, input);
+  if (isErr(actor)) return actor;
+
+  const live = anchors.length ? await liveHashes(root, anchors) : legacyIndex(new Map());
+  const pointer: Pointer = {
+    id: mint(), requirementId, criterionId, operationId: op.id,
+    universe: universeKey(root), target, rationale,
+    witnesses: anchors.map((id) => ({ anchorId: id, bodyHash: live.get(id) ?? "sha256:absent" })),
+    state: "pending", declaredBy: actor, declaredAt: now(),
+  };
+  const d = disposition(await sharePointerDeclared(root, pointer));
+  if ("error" in d) return d;
+  if (d.local) await writeLocalPointer(root, pointer);
+  return { ok: true, id: pointer.id, pointer: await serveWith(root, { ...ctx, live }, pointer) };
+}
+
+/**
+ * Ratification binds every pointer proposed with this spec. Mirrors `bindGapsForSpec`.
+ *
+ * A state flip and nothing else — `criterionId` and `requirementId` were derived when the
+ * pointer was minted, so there is no second place for the derivation to disagree.
+ *
+ * A pointer whose operation was PULLED from the draft is retired rather than left pending:
+ * its criterion is never going to exist, and a `pending` row nothing can ever bind is the
+ * orphan `remove_operation`'s dependency check exists to prevent one layer up.
+ */
+export async function bindPointersForSpec(root: string, specId: string): Promise<number> {
+  const ops = await readOperations(root, { specId, includeRemoved: true });
+  const byId = new Map(ops.map((o) => [o.id, o]));
+  let bound = 0;
+  for (const p of await readPointers(root, { state: "pending" })) {
+    const op = p.operationId ? byId.get(p.operationId) : undefined;
+    if (!op) continue;
+    const next: Pointer = op.removed
+      ? { ...p, state: "retired", retiredBy: p.declaredBy, retiredAt: now(), retiredReason: `the operation it was proposed with was pulled from ${specId}` }
+      : { ...p, state: "active" };
+    await writeLocalPointer(root, next);
+    bound++;
+  }
+  return bound;
+}
+
 export async function declarePointer(
   root: string,
   input: {
