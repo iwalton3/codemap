@@ -266,11 +266,37 @@ a withdrawal when the evidence half is BLOCKED, rather than deciding it optimist
 make it.** An absent scope reads `complete` with zero events, because a scope that nobody
 has written and a scope this clone did not receive are the same thing on disk. Ordinarily
 that is right: the sidecar is one git repository, `pull` takes all of it, and a scope with no
-events genuinely has no reliance in it. The case it does not cover is a **universe-key
-mismatch** — one clone resolving `owner/repo` from its origin while another falls back to the
-directory basename — where a withdrawal decided on the first clone would see none of the
-second's evidence. That is the same misconfiguration `CLAUDE.md` warns about for the oracle's
-fixtures, and it is not separately defended here.
+events genuinely has no reliance in it.
+
+### A ratified spec is withdrawn everywhere or nowhere
+
+The paragraph above defends the case where THIS clone cannot read its own evidence. The
+larger one it did not: universe A's fold is fed A's evidence and B's is fed B's, so each
+answered a question about its own repository and called the result a verdict about the
+standard. A refuses on its audit, B has none and drops the rule, and the two standards
+diverge permanently with nothing anywhere saying so. This was live, and the version of this
+section before it was fixed named only the narrower universe-key misconfiguration.
+
+**Nothing inside `foldStandard` reaches it**: the fold for A cannot see B. So the claim is
+made where every scope is one directory away, and pinned:
+
+- `relianceEverywhere` (`standard-publish.ts`) reads **every** `standard/*` scope on the
+  sidecar. A scope that is not settled means *cannot determine*, and cannot-determine is a
+  refusal. A scope with reliance is a refusal that names the repository and the row.
+- `withdrawSpec` pins the list it read onto the `spec.withdrawn` event.
+- The fold applies a RATIFIED withdrawal only where that list names this clone's own scope
+  (`foldStandard`'s `myScope`). A clone the withdrawer could not see — its shard not pulled,
+  or it did not exist yet — is not covered by the claim, and goes `conflicted` rather than
+  silently keeping the rule. An event with no pin at all, which is every withdrawal written
+  before this existed, reads the same way: not permission.
+
+A **draft** is untouched by all of it. It applied nothing, so nothing anywhere can rely on it
+and there is nothing to be clean about; the author's own take-back stays open.
+
+The residual is a race, and it is now noisy instead of silent: a citation appended after the
+check leaves one clone withdrawn and another `conflicted`. The fold's own `foldReliance` and
+its look-ahead over later events are the backstop for that, and the repair is to pull and
+withdraw again from a clone that can see everyone.
 
 ## What the build cost, kept because the next scope change pays it again
 

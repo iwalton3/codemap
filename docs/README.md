@@ -15,7 +15,7 @@ How codemap works today. If one of these is wrong, that is a bug — fix the doc
 
 | doc | lines | |
 |---|---:|---|
-| [`README.md`](../README.md) | 513 | the project front door: what codemap is, the CLI, the MCP tools, and the agent setup. |
+| [`README.md`](../README.md) | 514 | the project front door: what codemap is, the CLI, the MCP tools, and the agent setup. |
 | [`docs/shared-triage.md`](shared-triage.md) | 423 | triage on the sidecar, built. |
 | [`docs/findings-publishing-spec.md`](findings-publishing-spec.md) | 407 | built, with deviations in §0. §5 is quoted verbatim by `src/mcp.ts`. |
 | [`docs/sidecar-architecture.md`](sidecar-architecture.md) | 383 | NORMATIVE for shared state — it outranks the proposal docs where they disagree. |
@@ -25,6 +25,18 @@ How codemap works today. If one of these is wrong, that is a bug — fix the doc
 | [`docs/doc-versioning.md`](doc-versioning.md) | 149 | hash-versioned docs, BUILT. The schema section is aspirational — see the note there. |
 | [`docs/state-map.md`](state-map.md) | 119 | implemented in the Marten analyzer. |
 | [`docs/SESSION-STATE.md`](SESSION-STATE.md) | 106 | the live handoff. Replace it, do not append to it. |
+
+## Current Design — NORMATIVE
+
+Settled design that the code implements and that outranks everything else where they
+disagree, `CLAUDE.md` included. Both were missing from this index entirely, which is the
+failure it exists to prevent: the two documents a reader most needs before touching the
+standard were the two hardest to find from here.
+
+| doc | lines | |
+|---|---:|---|
+| [`docs/requirements-architecture.md`](requirements-architecture.md) | 1120 | NORMATIVE for requirements, specs, operations, audits and acknowledgements. Outranks COD-29 and the *Requirement Kernel* draft. |
+| [`docs/cross-universe-standard.md`](cross-universe-standard.md) | 315 | NORMATIVE for the standard across more than one repository, and it EXTENDS the above — it wins wherever that document assumes one universe, which it does implicitly throughout. |
 
 ## Active Plan
 
@@ -50,6 +62,8 @@ Why the code looks the way it does. Finished; kept for the argument, not as a to
 | [`docs/plan-docs-unification.md`](plan-docs-unification.md) | 251 | done 2026-08-23. |
 | [`docs/finding-event-shape-audit.md`](finding-event-shape-audit.md) | 181 | the measurement the finding-lifecycle work was built from. |
 | [`docs/review-target-identity.md`](review-target-identity.md) | 134 | branch-canonical keying was REFUTED. Nothing built; kept for the counterexample. |
+| [`docs/population-predicate.md`](population-predicate.md) | 254 | design brief, mechanism BUILT (`population.ts`). Its last section is still open: nothing runs the lint. |
+| [`docs/trust-split.md`](trust-split.md) | 278 | BUILT, steps 1–3. Step 4 (removing `trust`) is deliberately not done. |
 
 ## Archive
 

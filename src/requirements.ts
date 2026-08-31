@@ -54,6 +54,7 @@ import { isAgentActor, requireActor, resolvePrincipal } from "./identity.js";
 import type { ActorInput } from "./identity.js";
 import {
   disposition, shareOperation, shareOperationRemoved, shareOperationRevised, shareSpecDrafted,
+  relianceEverywhere,
   shareSpecRatified, shareSpecReviewed, shareSpecRevised, shareSpecWithdrawn, type Shared,
 } from "./standard-publish.js";
 import { reviewComplete, reviewGap, type ReviewGap } from "./shared-standard.js";
@@ -1596,16 +1597,31 @@ export async function withdrawSpec(
     }
   }
 
-  const at = now();
-  const outcome = await shareSpecWithdrawn(root, sp.id, at, reason);
-  const d = disposition(outcome);
-  if ("error" in d) return d;
-  const removed = sp.status === "ratified"
+  const doomedIds = sp.status === "ratified"
     ? [
       ...ops.filter((o) => o.kind === "add_requirement").map((o) => requirementIdFor(o.id)),
       ...ops.filter((o) => o.kind === "add_criterion").map((o) => criterionIdFor(o.id)),
     ]
     : [];
+  // EVERY repository, not just this one. `relianceOn` above counted what this universe can
+  // see, and that is a verdict about one repo dressed as a verdict about the standard — the
+  // rule leaves here and stays there, permanently, with nothing saying so. This reads every
+  // standard scope on the sidecar and refuses if any is unsettled, because *cannot
+  // determine* is a refusal. The scopes it read are pinned on the event; the fold checks
+  // itself against that list. Only for a ratified spec: a draft applied nothing, so there is
+  // nothing anywhere to rely on it.
+  let checkedScopes: string[] = [];
+  if (sp.status === "ratified") {
+    const everywhere = await relianceEverywhere(root, doomedIds);
+    if ("error" in everywhere) return everywhere;
+    checkedScopes = everywhere.scopes;
+  }
+
+  const at = now();
+  const outcome = await shareSpecWithdrawn(root, sp.id, at, reason, checkedScopes);
+  const d = disposition(outcome);
+  if ("error" in d) return d;
+  const removed = doomedIds;
   if (!d.local) {
     // Three outcomes, and collapsing the middle two is the mistake `sharedRatification`
     // documents: the FOLD decides on this path and it can REFUSE, because the local

@@ -1,5 +1,8 @@
 # Splitting `trust`
 
+> **Kind: decision record** — why the code looks the way it does. Finished; kept for the
+> argument, not as a to-do.
+
 **Status: BUILT.** Steps 1–3 shipped (`a5f091a`, `e95899d`, `d5020cc`), plus
 `Mark.profiles`. Step 4 (removing `trust`) is deliberately not done — `trustOf`
 computes something real, 25 call sites read it, and it is unchanged. Written

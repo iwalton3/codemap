@@ -149,9 +149,15 @@ export const publishSpecRatified = (
   witnesses: Record<string, BugWitness[]>, operations: string[],
 ) => put(logRoot, scope, actor, "spec.ratified", specId, { at, witnesses, operations });
 
+/**
+ * @param scopes the standard scopes the withdrawer READ and found clean, pinned on the
+ * event. Only meaningful for a ratified spec, and there it is the whole mechanism — see
+ * the `spec.withdrawn` arm of `foldStandard`.
+ */
 export const publishSpecWithdrawn = (
   logRoot: string, scope: string, actor: Actor, specId: string, at: string, reason: string,
-) => put(logRoot, scope, actor, "spec.withdrawn", specId, { at, reason });
+  scopes?: string[],
+) => put(logRoot, scope, actor, "spec.withdrawn", specId, { at, reason, ...(scopes ? { scopes } : {}) });
 
 export const publishAckGranted = (logRoot: string, scope: string, actor: Actor, ack: Acknowledgement) =>
   put(logRoot, scope, actor, "ack.granted", ack.id, { ack });
@@ -345,7 +351,16 @@ export function reviewGap(
   return gap;
 }
 
-export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = {}): SharedStandard {
+export function foldStandard(
+  events: LogEvent[],
+  /**
+   * @param myScope this clone's own standard scope. Only the `spec.withdrawn` arm uses it,
+   * and there it answers the one question a clone cannot answer any other way: *was I
+   * among the repositories the withdrawer checked?* Omitted, the answer is "cannot tell",
+   * which is refused — see that arm.
+   */
+  opts: { evidence?: boolean; myScope?: string } = {},
+): SharedStandard {
   const evidenceReadable = opts.evidence !== false;
   const specs = new Map<string, Spec>();
   const operations = new Map<string, Operation>();
@@ -681,6 +696,35 @@ export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = 
           // to it — so without this a withdrawal races a citation and orphans it on every
           // machine but the one that asked.
           if (mine.some((o) => o.kind !== "add_requirement" && o.kind !== "add_criterion")) break;
+          // WAS THIS REPOSITORY ONE OF THE ONES CHECKED?
+          //
+          // A withdrawal is LAW: it lands in the workspace scope and every clone replays it.
+          // The reliance test under it is EVIDENCE: audits, pointers, problems, populations
+          // and vacuity checks are per-universe by design, and this fold is fed exactly one
+          // universe's. So each clone answered a question about its own repo and called the
+          // result a verdict about the standard — universe A refused on its audit, universe
+          // B saw nothing and dropped the rule, and the two standards diverged permanently
+          // with nothing anywhere saying so.
+          //
+          // No amount of care inside this function fixes that: the fold for A cannot see B.
+          // What it can do is refuse to act on a claim that was not made about it.
+          // `withdrawSpec` reads EVERY standard scope on the sidecar, requires each to be
+          // settled and clean, and pins the list it read; this asks whether that list
+          // includes us. A clone the withdrawer could not see — because its shard had not
+          // been pulled, or because it did not exist yet — is not covered by the claim and
+          // refuses, which is the fail-closed direction Izzie asked for: clean everywhere or
+          // not at all, and undeterminable counts as not.
+          //
+          // `conflicted` rather than a silent `break`, because the divergence this replaces
+          // was silent and that was the whole defect. A refusing clone keeps the rule and
+          // says why; the repair is to pull and withdraw again from somewhere that can see
+          // everyone.
+          const checked = (e.data as { scopes?: unknown })?.scopes;
+          const covers = Array.isArray(checked) && !!opts.myScope && checked.includes(opts.myScope);
+          if (!covers) {
+            specs.set(sp.id, { ...sp, conflicted: true });
+            break;
+          }
           if (foldReliance(sp, mine, { operations, acknowledgements, audits, problems, criteria, pointers, populations, vacuityChecks }).length) break;
           // Reliance that arrives LATER in the log. The fold is one forward pass, so a
           // citation appended concurrently on another clone may sort after this event —

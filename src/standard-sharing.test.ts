@@ -451,11 +451,14 @@ test("a withdrawal is applied by the FOLD, and takes its criteria with it", asyn
   } finally { discard(root); discard(side); }
 });
 
-test("the fold refuses a withdrawal that another clone's citation raced, in either order", async () => {
-  // The tool counts reliance against ITS store, and the log is pull/push — so a clone can
-  // withdraw a rule that somebody else has just audited and neither machine can see the
-  // other. The fold sees both, whichever way they sort, and the withdrawal is the act that
-  // loses: removing a rule is the quieting direction.
+test("a withdrawal another clone's citation raced is refused, and never reaches the log", async () => {
+  // The log is pull/push, so a clone can try to withdraw a rule somebody else has just
+  // audited with neither machine's ROWS showing the other's work. Two things stop it, and
+  // this drives the earlier one: `relianceEverywhere` reads the scope off the shared
+  // sidecar, so A sees B's audit without folding it into A's standard. The fold's own
+  // refusal is the backstop for a citation that arrives after the check — it sees both
+  // whichever way they sort, and the withdrawal is the act that loses, because removing a
+  // rule is the quieting direction. That half is driven in `shared-standard.test.ts`.
   const { a, b, side } = await twoClones();
   try {
     await adoptInto(a, "Settlement/Float", "Float", "Float settles T+1.");
@@ -469,12 +472,18 @@ test("the fold refuses a withdrawal that another clone's citation raced, in eith
 
     const spec = (await readSpecs(a))[0]!;
     const asked = await withdrawSpec(a, spec.id, { reason: "never adopted" });
-    // A's own store has no audit, so its reference count is zero and it appends. The fold
-    // then refuses — and A must be told THAT, not "this machine has not folded it yet",
-    // which would send the caller back to wait for a removal that will never happen.
-    assert.ok("error" in asked, "the fold refused, so this is not an ok withdrawal");
-    assert.match(asked.error, /already relies on what the spec introduced/);
+    // A's own STORE has no audit — its local reference count is zero. What stops it now is
+    // `relianceEverywhere`, which reads the scope off the shared sidecar rather than out of
+    // A's rows, so B's audit is visible to A before anything is appended. That is a better
+    // outcome than the one this test was written for (append, then have the fold refuse),
+    // and the important half is that NOTHING went into the log.
+    assert.ok("error" in asked, "B's audit must stop it, from A");
+    assert.match(asked.error, /relies on what this spec introduced/);
+    assert.match(asked.error, /audit /, "and it names the row, so A can go and read it");
     assert.equal((await listRequirements(a)).length, 1, "and A's own rule is still there");
+
+    const withdrawals = (await readScope(side, lawScope())).filter((e) => e.kind === "spec.withdrawn");
+    assert.deepEqual(withdrawals, [], "refused BEFORE the log, not appended and then refused");
 
     assert.equal(await materializeStandard(b, resolveSidecar(b)!), true);
     assert.equal((await listRequirements(b)).length, 1, "the audited rule is still there");

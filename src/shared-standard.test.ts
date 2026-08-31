@@ -33,7 +33,22 @@ const U = "acme/api";
 const SCOPE = standardScope(U);
 
 const tmp = (t: string) => mkdtempSync(join(tmpdir(), `codemap-ss-${t}-`));
-const fold = async (root: string) => foldStandard(await readScope(root, SCOPE));
+/**
+ * The fold, answering as THIS universe.
+ *
+ * `myScope` is not decoration: a ratified spec's withdrawal now applies only where the
+ * withdrawer said it had checked, and a fold that does not know which repository it is
+ * cannot tell — so it refuses. See `withdraw` below and `relianceEverywhere`.
+ */
+const fold = async (root: string) => foldStandard(await readScope(root, SCOPE), { myScope: SCOPE });
+
+/**
+ * Withdraw, pinning THIS scope as checked — what `withdrawSpec` does after reading every
+ * standard scope on the sidecar and finding each settled and clean. A test that publishes
+ * without the pin is testing the un-checked case, which has its own test below.
+ */
+const withdraw = (root: string, actor: typeof izzie, specId: string, at: string, reason: string) =>
+  publishSpecWithdrawn(root, SCOPE, actor, specId, at, reason, [SCOPE]);
 
 async function log(t: string) {
   const root = tmp(t);
@@ -1017,7 +1032,7 @@ test("THE FOLD REFUSES A WITHDRAWAL A LATER EVENT CITES, however the log happens
   const root = await log("withdraw-race");
   try {
     await ratified(root);
-    await publishSpecWithdrawn(root, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", "never adopted");
+    await withdraw(root, izzie, "sp_1", "2026-08-03T00:00:00.000Z", "never adopted");
     // Ordered after the withdrawal, and about the rule it was about to remove.
     const audit: Audit = {
       id: "au_1", requirementId: requirementIdFor("op_1"), outcome: "indeterminate",
@@ -1040,11 +1055,11 @@ test("the same withdrawal with nothing citing it DOES apply — so the refusal a
     // With no reason first. `withdrawSpec` refuses one — "it stays on the record as the act
     // it is" — and the fold did not, so a client that skipped the field removed rules from
     // every clone's standard with nothing saying why.
-    await publishSpecWithdrawn(root, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", "   ");
+    await withdraw(root, izzie, "sp_1", "2026-08-03T00:00:00.000Z", "   ");
     assert.equal((await fold(root)).specs[0]!.status, "ratified",
       "a withdrawal with no reason on the record is not a withdrawal");
 
-    await publishSpecWithdrawn(root, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", "never adopted");
+    await withdraw(root, izzie, "sp_1", "2026-08-03T00:00:00.000Z", "never adopted");
     const after = await fold(root);
     assert.equal(after.requirements.length, 0);
     assert.equal(after.specs[0]!.status, "withdrawn");
@@ -1070,7 +1085,7 @@ test("THE FOLD REFUSES WITHDRAWING A SPEC THAT AMENDED SOMETHING — that case i
     assert.equal((await fold(root)).requirements[0]!.statement, "All credit lines are in USD or EUR.");
 
     // Nothing cites the amending spec at all, so this refusal is about the operation KIND.
-    await publishSpecWithdrawn(root, SCOPE, izzie, "sp_2", "2026-08-04T00:00:00.000Z", "EU launch slipped");
+    await withdraw(root, izzie, "sp_2", "2026-08-04T00:00:00.000Z", "EU launch slipped");
     const after = await fold(root);
     assert.equal(after.specs.find((s) => s.id === "sp_2")!.status, "ratified", "refused");
     assert.equal(after.requirements[0]!.statement, "All credit lines are in USD or EUR.",
@@ -1090,7 +1105,7 @@ test("a vacuity check on the spec's own criterion blocks its withdrawal", async 
       id: "vc_1", criterionId, witnesses: [{ anchorId: "a_lint", bodyHash: "h1:sha256:def" }],
       checkedBy: opus, at: "2026-08-03T00:00:00.000Z", verdict: "vacuous", method: "",
     });
-    await publishSpecWithdrawn(root, SCOPE, izzie, "sp_1", "2026-08-04T00:00:00.000Z", "never adopted");
+    await withdraw(root, izzie, "sp_1", "2026-08-04T00:00:00.000Z", "never adopted");
 
     const after = await fold(root);
     assert.equal(after.specs[0]!.status, "ratified", "refused");
@@ -1107,16 +1122,16 @@ test("THE FOLD REFUSES A WITHDRAWAL IT CANNOT SEE THE EVIDENCE FOR", async () =>
   const root = await log("withdraw-no-evidence");
   try {
     await ratified(root);
-    await publishSpecWithdrawn(root, SCOPE, izzie, "sp_1", "2026-08-04T00:00:00.000Z", "never adopted");
+    await withdraw(root, izzie, "sp_1", "2026-08-04T00:00:00.000Z", "never adopted");
     const events = await readScope(root, SCOPE);
 
     // With the evidence half readable — nothing relies on it, so it applies. This is the
     // control: without it the assertion below would pass against a fold that refuses
     // every withdrawal.
-    assert.equal(foldStandard(events).specs[0]!.status, "withdrawn");
+    assert.equal(foldStandard(events, { myScope: SCOPE }).specs[0]!.status, "withdrawn");
 
     // And with the evidence half unreadable, the same log must NOT decide it.
-    const blind = foldStandard(events, { evidence: false });
+    const blind = foldStandard(events, { evidence: false, myScope: SCOPE });
     assert.equal(blind.specs[0]!.status, "ratified", "refused rather than permitted");
     assert.equal(blind.requirements.length, 1, "and nothing it introduced was removed");
   } finally { discard(root); }
@@ -1433,12 +1448,86 @@ test("the fold binds a pending detector when the spec is adopted, and retires an
     await publishOperation(gone, SCOPE, opus, ADD);
     await publishOperation(gone, SCOPE, opus, ADD_CRITERION);
     await publishPointerDeclared(gone, SCOPE, opus, pending("pt_x", "op_2"));
-    await publishSpecWithdrawn(gone, SCOPE, opus, "sp_1", "2026-08-02T00:00:00.000Z", "not ours to make");
+    await withdraw(gone, opus, "sp_1", "2026-08-02T00:00:00.000Z", "not ours to make");
     const s = await fold(gone);
     assert.equal(s.specs[0]!.status, "withdrawn");
     assert.equal(s.pointers[0]!.state, "retired", "the detector goes with the proposal");
     assert.match(s.pointers[0]!.retiredReason!, /withdrawn/);
   } finally { discard(gone); }
+});
+
+/**
+ * A ratified spec leaves the standard on the clones the withdrawer CHECKED, and nowhere else.
+ *
+ * The withdrawal is LAW — one event in the workspace scope, replayed by every clone. The
+ * reliance test under it is EVIDENCE, and evidence is per-universe by design, so this fold
+ * sees one repository's audits and pointers and called the result a verdict about the
+ * standard. Universe A refused on its audit; universe B had none, dropped the rule, and the
+ * two standards diverged permanently with nothing anywhere saying so. No care inside this
+ * function reaches it: the fold for A cannot see B.
+ *
+ * `withdrawSpec` therefore reads EVERY standard scope on the sidecar, refuses if any is
+ * unsettled or unclean, and PINS what it read. This is the other half — a clone that was
+ * not on that list refuses, and says so by going `conflicted` rather than silently keeping
+ * the rule. Izzie's rule: clean everywhere, and undeterminable counts as not clean.
+ */
+test("a ratified withdrawal applies only where the withdrawer said it had checked", async () => {
+  // NAMED, and it applies — the control, or the refusal below is a fold that refuses every
+  // ratified withdrawal and the assertion proves nothing.
+  const named = await log("withdraw-named");
+  try {
+    await ratified(named);
+    await withdraw(named, izzie, "sp_1", "2026-08-04T00:00:00.000Z", "adopted in error");
+    const s = await fold(named);
+    assert.equal(s.specs[0]!.status, "withdrawn");
+    assert.equal(s.requirements.length, 0);
+    assert.equal(s.specs[0]!.conflicted, undefined);
+  } finally { discard(named); }
+
+  // NOT named — the withdrawer checked some other repository and never looked here. The
+  // rule stays, and the spec says the log and this clone disagree.
+  const other = await log("withdraw-elsewhere");
+  try {
+    await ratified(other);
+    await publishSpecWithdrawn(other, SCOPE, izzie, "sp_1", "2026-08-04T00:00:00.000Z",
+      "adopted in error", ["standard/acme.settlement"]);
+    const s = await fold(other);
+    assert.equal(s.specs[0]!.status, "ratified", "a claim made about another repository is not about this one");
+    assert.equal(s.specs[0]!.conflicted, true, "and it is VISIBLE — the divergence this replaces was silent");
+    assert.equal(s.requirements.length, 1, "the rule is still in this standard");
+  } finally { discard(other); }
+
+  // NO pin at all — a client that never checked anything, and the shape every withdrawal
+  // written before this guard has. Same answer: cannot determine is not permission.
+  const bare = await log("withdraw-unpinned");
+  try {
+    await ratified(bare);
+    await publishSpecWithdrawn(bare, SCOPE, izzie, "sp_1", "2026-08-04T00:00:00.000Z", "adopted in error");
+    const s = await fold(bare);
+    assert.equal(s.specs[0]!.status, "ratified");
+    assert.equal(s.specs[0]!.conflicted, true);
+    assert.equal(s.requirements.length, 1);
+  } finally { discard(bare); }
+
+  // A fold that does not know WHICH repository it is cannot answer the question either.
+  const blind = await log("withdraw-anonymous");
+  try {
+    await ratified(blind);
+    await withdraw(blind, izzie, "sp_1", "2026-08-04T00:00:00.000Z", "adopted in error");
+    const s = foldStandard(await readScope(blind, SCOPE));
+    assert.equal(s.specs[0]!.status, "ratified", "no `myScope` is no answer, and no answer is a refusal");
+  } finally { discard(blind); }
+
+  // A DRAFT is untouched by any of this: it applied nothing, so nothing anywhere relies on
+  // it and there is nothing to be clean about. Without this the guard would quietly take
+  // the author's own take-back with it.
+  const draft = await log("withdraw-draft-unpinned");
+  try {
+    await publishSpecDrafted(draft, SCOPE, opus, SPEC);
+    await publishOperation(draft, SCOPE, opus, ADD);
+    await publishSpecWithdrawn(draft, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", "second thoughts");
+    assert.equal((await fold(draft)).specs[0]!.status, "withdrawn");
+  } finally { discard(draft); }
 });
 
 /**
@@ -1457,7 +1546,7 @@ test("the fold refuses to ratify a spec that was withdrawn", async () => {
   try {
     await publishSpecDrafted(root, SCOPE, opus, SPEC);
     await publishOperation(root, SCOPE, opus, ADD);
-    await publishSpecWithdrawn(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", "not ours to make");
+    await withdraw(root, izzie, "sp_1", "2026-08-02T00:00:00.000Z", "not ours to make");
     await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", {}, ["op_1"]);
     const s = await fold(root);
     assert.equal(s.specs[0]!.status, "withdrawn", "the latch does not go backwards");
