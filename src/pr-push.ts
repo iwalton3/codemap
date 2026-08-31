@@ -586,6 +586,57 @@ export function buildComments(
   return { comments, deferred, blocked, unverified, skipped: { alreadyPushed: already, resolved, notElected, belowSeverity, withdrawn, noComment, notPublishable, evidenceMoved, evidenceUnverifiable } };
 }
 
+/**
+ * The review body a verdict posts — the one artefact of this whole surface that a
+ * SUBMITTER reads, which is why it is a pure function with a test rather than a string
+ * join buried in `planPrPush`.
+ *
+ * It was buried, and the defect that produced this shape is the reason: markdown reads a
+ * line of text with `---` directly beneath it as a SETEXT HEADING, so the reviewer's own
+ * summary rendered as an H2. Their words arrived at the author in 24pt — it reads as
+ * shouting, from the one person the process is trying to keep civil. Nothing could have
+ * caught it: `executePrPush`'s test hands in a hand-written body with the blank line
+ * already in it, so the fixture was right and the producer was wrong, and the two never
+ * met.
+ */
+export function verdictBody(v: {
+  summary?: string;
+  signed: number; queue: number; queueLines: number; changedLines: number;
+  laneLines: string;
+  blocked: number;
+  deferred: { path: string; line?: number; body: string }[];
+}): string {
+  return [
+    // The human's words first, and above the machine's. The stats are context for
+    // the feedback, not the other way round.
+    v.summary ?? "",
+    // A BLANK LINE before the rule, and it rides on THIS element because the
+    // `filter(x => x !== "")` below strips a bare "".
+    v.summary ? `\n---` : "",
+    `### codemap review`,
+    ``,
+    `**${v.signed}/${v.queue}** changed symbols signed · **${v.queueLines}** of **${v.changedLines}** changed lines in the review queue.`,
+    ``,
+    `| lane | lines | files | attention |`,
+    `|---|---:|---:|---|`,
+    v.laneLines,
+    ``,
+    v.blocked
+      ? `<sub>${v.blocked} elected finding(s) could not be placed on this diff and were held back — they are still on the reviewer's map.</sub>`
+      : "",
+    ``,
+    v.deferred.length
+      ? [`<details><summary>${v.deferred.length} finding(s) with no diff line to sit on</summary>`, ``,
+         // Each keeps its own location line, because in here they have lost the one
+         // thing an inline comment gives them: a position that says what they are about.
+         ...v.deferred.map((d) => [`**\`${d.path}${d.line ? ":" + d.line : ""}\`**`, ``, d.body, ``, `---`].join("\n")),
+         `</details>`].join("\n")
+      : "",
+    ``,
+    `<sub>Posted from [codemap](https://github.com/) — findings are anchored to symbols, so they survive a rebase.</sub>`,
+  ].filter((x) => x !== "").join("\n");
+}
+
 export async function planPrPush(root: string, input: string, filter: PushFilterExt = {}): Promise<PushPlan | { error: string }> {
   // A misspelt tier used to yield indexOf() === -1, which the filter below read as
   // "no severity filter" — so `--min-severity High` published every `low` finding
@@ -702,33 +753,12 @@ export async function planPrPush(root: string, input: string, filter: PushFilter
   const event = filter.event && EVENTS.includes(filter.event) ? filter.event : "COMMENT";
   const summary = filter.summary?.trim() || undefined;
 
-  const body = [
-    // The human's words first, and above the machine's. The stats are context for
-    // the feedback, not the other way round.
-    summary ?? "",
-    summary ? `---` : "",
-    `### codemap review`,
-    ``,
-    `**${signed}/${queue}** changed symbols signed · **${t.totals.queueLines}** of **${t.totals.changedLines}** changed lines in the review queue.`,
-    ``,
-    `| lane | lines | files | attention |`,
-    `|---|---:|---:|---|`,
-    laneLines,
-    ``,
-    blocked.length
-      ? `<sub>${blocked.length} elected finding(s) could not be placed on this diff and were held back — they are still on the reviewer's map.</sub>`
-      : "",
-    ``,
-    deferred.length
-      ? [`<details><summary>${deferred.length} finding(s) with no diff line to sit on</summary>`, ``,
-         // Each keeps its own location line, because in here they have lost the one
-         // thing an inline comment gives them: a position that says what they are about.
-         ...deferred.map((d) => [`**\`${d.path}${d.line ? ":" + d.line : ""}\`**`, ``, d.body, ``, `---`].join("\n")),
-         `</details>`].join("\n")
-      : "",
-    ``,
-    `<sub>Posted from [codemap](https://github.com/) — findings are anchored to symbols, so they survive a rebase.</sub>`,
-  ].filter((x) => x !== "").join("\n");
+  const body = verdictBody({
+    summary, signed, queue,
+    queueLines: t.totals.queueLines, changedLines: t.totals.changedLines,
+    laneLines, blocked: blocked.length,
+    deferred: deferred.map((d) => ({ path: d.path, line: d.line, body: d.body })),
+  });
 
   const fingerprint = createHash("sha256").update(JSON.stringify([
     t.refs.head,

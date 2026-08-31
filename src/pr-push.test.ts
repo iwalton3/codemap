@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { diffLineRanges, diffHunks } from "./git.js";
-import { planPrPush, isAgentAuthored, isElected, pushVerdict, executePrPush, placeAnnotation, publishStateOf, buildComments, citedLine, planResolveSync, pushResolvedToGitHub, pullResolvedFromGitHub, fetchReviewThreads, type ReviewThread } from "./pr-push.js";
+import { planPrPush, verdictBody, isAgentAuthored, isElected, pushVerdict, executePrPush, placeAnnotation, publishStateOf, buildComments, citedLine, planResolveSync, pushResolvedToGitHub, pullResolvedFromGitHub, fetchReviewThreads, type ReviewThread } from "./pr-push.js";
 import { readPushes, writePush } from "./store.js";
 import type { Annotation } from "./schema.js";
 import { fixtureHash } from "./fixture-hash.js";
@@ -1014,4 +1014,48 @@ test("a comment the sidecar suppressed is not recorded as posted", async () => {
     const a = (await readAnnotations(root)).annotations.find((x) => x.id === "n1")!;
     assert.equal(a.postedRef, undefined, "it never went out, so it carries no receipt saying it did");
   } finally { dirs.forEach((d) => discard(d)); }
+});
+
+
+/**
+ * The reviewer's summary must not arrive as a HEADING.
+ *
+ * `text` with `---` directly beneath it is a SETEXT HEADING in every markdown renderer
+ * GitHub uses, so a one-line summary rendered as an H2 — the reviewer's own words at the
+ * submitter in 24pt, which reads as shouting from the one person this process is trying
+ * to keep civil. The `executePrPush` test above hands in a hand-written body that already
+ * had the blank line, so the fixture was right and the producer was wrong and the two
+ * never met; this drives the producer.
+ */
+test("a verdict summary is separated from the rule, or markdown shouts it at the submitter", () => {
+  const base = {
+    signed: 3, queue: 7, queueLines: 120, changedLines: 400,
+    laneLines: "| code | 120 | 4 | queue |", blocked: 0, deferred: [],
+  };
+  const body = verdictBody({ ...base, summary: "Two things to fix before this lands." });
+
+  assert.match(body, /^Two things to fix before this lands\.\n\n---\n/,
+    "a blank line between the words and the rule — without it this whole line is an <h2>");
+  // The property, not the spelling: no line of prose may sit DIRECTLY above a `---`.
+  const lines = body.split("\n");
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i] !== "---") continue;
+    assert.equal(lines[i - 1], "", `line ${i - 1} ("${lines[i - 1]}") sits directly above a rule and becomes a heading`);
+  }
+
+  // And with no summary there is no rule at all — the machine's block leads, and an
+  // empty first line would be its own kind of wrong.
+  const bare = verdictBody(base);
+  assert.equal(bare.startsWith("### codemap review"), true);
+  assert.equal(bare.includes("\n---\n"), false);
+
+  // The deferred block puts findings above rules too, and had it right already — which
+  // is what makes this a check on the FILE rather than on one string.
+  const withDeferred = verdictBody({
+    ...base, summary: "s",
+    deferred: [{ path: "a.ts", line: 4, body: "the second read is unbounded" }],
+  });
+  for (const [i, l] of withDeferred.split("\n").entries()) {
+    if (i > 0 && l === "---") assert.equal(withDeferred.split("\n")[i - 1], "");
+  }
 });
