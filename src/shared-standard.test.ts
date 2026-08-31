@@ -1549,7 +1549,7 @@ test("withdrawal retires a detector proposed against an operation that was pulle
  * not on that list refuses, and says so by going `conflicted` rather than silently keeping
  * the rule. Izzie's rule: clean everywhere, and undeterminable counts as not clean.
  */
-test("a ratified withdrawal applies only where the withdrawer said it had checked", async () => {
+test("a ratified withdrawal refuses where the withdrawer missed something real, and nowhere else", async () => {
   // NAMED, and it applies — the control, or the refusal below is a fold that refuses every
   // ratified withdrawal and the assertion proves nothing.
   const named = await log("withdraw-named");
@@ -1562,18 +1562,42 @@ test("a ratified withdrawal applies only where the withdrawer said it had checke
     assert.equal(s.specs[0]!.conflicted, undefined);
   } finally { discard(named); }
 
-  // NOT named — the withdrawer checked some other repository and never looked here. The
-  // rule stays, and the spec says the log and this clone disagree.
-  const other = await log("withdraw-elsewhere");
+  // NOT named, and NOTHING here relies on the rule — this repository is knowably clean, so
+  // it applies. The first version of this gate refused it, and that was wrong in a way
+  // that only shows up later: a repository ADDED TO THE WORKSPACE after a withdrawal has
+  // no audits, no pointers and no populations, was never in any historical pin, and so
+  // resurrected every previously-withdrawn rule as `ratified` + `conflicted`. A standard
+  // carrying law the business repealed is the same divergence pointing the other way.
+  // "Cannot determine" is a refusal; "determined, and clean" is not.
+  const newcomer = await log("withdraw-newcomer");
   try {
-    await ratified(other);
-    await publishSpecWithdrawn(other, SCOPE, izzie, "sp_1", "2026-08-04T00:00:00.000Z",
+    await ratified(newcomer);
+    await publishSpecWithdrawn(newcomer, SCOPE, izzie, "sp_1", "2026-08-04T00:00:00.000Z",
       "adopted in error", ["standard/acme.settlement"]);
-    const s = await fold(other);
+    const s = await foldStandard(await readScope(newcomer, SCOPE), { myScope: standardScope("acme.react") });
+    assert.equal(s.specs[0]!.status, "withdrawn", "a repo with no evidence cannot be relying on anything");
+    assert.equal(s.specs[0]!.conflicted, undefined);
+    assert.equal(s.requirements.length, 0);
+  } finally { discard(newcomer); }
+
+  // NOT named, and this clone DOES hold something that relies on it — the case the gate is
+  // for. The withdrawer could not see this repository, and what they missed is real.
+  const missed = await log("withdraw-missed-me");
+  try {
+    await ratified(missed);
+    await publishAudit(missed, SCOPE, opus, {
+      id: "au_1", requirementId: requirementIdFor("op_1"), universe: U,
+      outcome: "nonconformant", trigger: "ad-hoc", finding: "does not hold",
+      evidence: { ran: [{ command: "npm test", passed: false }] },
+      witnesses: [], auditor: opus, at: "2026-08-03T12:00:00.000Z",
+    });
+    await publishSpecWithdrawn(missed, SCOPE, izzie, "sp_1", "2026-08-04T00:00:00.000Z",
+      "adopted in error", ["standard/acme.settlement"]);
+    const s = await fold(missed);
     assert.equal(s.specs[0]!.status, "ratified", "a claim made about another repository is not about this one");
     assert.equal(s.specs[0]!.conflicted, true, "and it is VISIBLE — the divergence this replaces was silent");
     assert.equal(s.requirements.length, 1, "the rule is still in this standard");
-  } finally { discard(other); }
+  } finally { discard(missed); }
 
   // NO pin at all — a client that never checked anything, and the shape every withdrawal
   // written before this guard has. Same answer: cannot determine is not permission.
@@ -1587,13 +1611,24 @@ test("a ratified withdrawal applies only where the withdrawer said it had checke
     assert.equal(s.requirements.length, 1);
   } finally { discard(bare); }
 
-  // A fold that does not know WHICH repository it is cannot answer the question either.
+  // A fold that does not know WHICH repository it is cannot establish that a claim covered
+  // it — so where it holds reliance, it refuses. Where it holds none it is clean like any
+  // other clone, and `myScope` decides nothing. Only `standard-publish.ts` folds in
+  // production and it always passes one; this pins the degenerate path rather than
+  // pretending it is load-bearing.
   const blind = await log("withdraw-anonymous");
   try {
     await ratified(blind);
+    await publishAudit(blind, SCOPE, opus, {
+      id: "au_1", requirementId: requirementIdFor("op_1"), universe: U,
+      outcome: "nonconformant", trigger: "ad-hoc", finding: "does not hold",
+      evidence: { ran: [{ command: "npm test", passed: false }] },
+      witnesses: [], auditor: opus, at: "2026-08-03T12:00:00.000Z",
+    });
     await withdraw(blind, izzie, "sp_1", "2026-08-04T00:00:00.000Z", "adopted in error");
     const s = foldStandard(await readScope(blind, SCOPE));
-    assert.equal(s.specs[0]!.status, "ratified", "no `myScope` is no answer, and no answer is a refusal");
+    assert.equal(s.specs[0]!.status, "ratified", "it holds an audit and cannot show it was covered");
+    assert.equal(s.specs[0]!.conflicted, true);
   } finally { discard(blind); }
 
   // THE RETRY, and the mark must not outlive it. `conflicted` is what makes a refusal
@@ -1604,8 +1639,9 @@ test("a ratified withdrawal applies only where the withdrawer said it had checke
   const retry = await log("withdraw-retry");
   try {
     await ratified(retry);
-    await publishSpecWithdrawn(retry, SCOPE, izzie, "sp_1", "2026-08-04T00:00:00.000Z",
-      "adopted in error", ["standard/acme.settlement"]);
+    // An UNPINNED withdrawal — a client that checked nothing. Refused on every clone,
+    // whatever it holds, which is what makes it the clean way to reach `conflicted` here.
+    await publishSpecWithdrawn(retry, SCOPE, izzie, "sp_1", "2026-08-04T00:00:00.000Z", "adopted in error");
     const missed = await fold(retry);
     assert.equal(missed.specs[0]!.conflicted, true, "the control — without this the clear below is free");
     assert.equal(missed.specs[0]!.status, "ratified");

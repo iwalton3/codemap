@@ -720,12 +720,32 @@ export function foldStandard(
           // says why; the repair is to pull and withdraw again from somewhere that can see
           // everyone.
           const checked = (e.data as { scopes?: unknown })?.scopes;
-          const covers = Array.isArray(checked) && !!opts.myScope && checked.includes(opts.myScope);
-          if (!covers) {
+          const claimed = Array.isArray(checked);
+          const named = claimed && !!opts.myScope && checked.includes(opts.myScope);
+          const relies = foldReliance(sp, mine,
+            { operations, acknowledgements, audits, problems, criteria, pointers, populations, vacuityChecks }).length > 0;
+
+          // NO CLAIM AT ALL — a client that checked nothing, and every withdrawal written
+          // before this existed. Refused on every clone, which is the point: uniform
+          // refusal is not a divergence, and one clone silently dropping a rule another
+          // keeps is.
+          //
+          // A CLAIM THAT DID NOT NAME ME, and I hold something that relies on the rule. The
+          // withdrawer could not see this repository — its shard unpulled, or it did not
+          // exist when they looked — and what they missed is real. Refuse, visibly.
+          if (!claimed || (relies && !named)) {
             specs.set(sp.id, { ...sp, conflicted: true });
             break;
           }
-          if (foldReliance(sp, mine, { operations, acknowledgements, audits, problems, criteria, pointers, populations, vacuityChecks }).length) break;
+          // NOT NAMED, and nothing here relies on it: APPLY. This is the case that made the
+          // first version of this gate wrong, and it is not the fail-closed case — a
+          // repository added to the workspace after the withdrawal has no audits, no
+          // pointers, no populations, so there is nothing to determine and the answer is
+          // knowably clean. Refusing it resurrected every previously-withdrawn rule on
+          // every new repo, as `ratified` + `conflicted`: a standard carrying law the
+          // business had repealed, which is the same divergence pointing the other way.
+          // "Cannot determine" is a refusal; "determined, and clean" is not.
+          if (relies) break;
           // Reliance that arrives LATER in the log. The fold is one forward pass, so a
           // citation appended concurrently on another clone may sort after this event —
           // and then the rule is deleted here and the audit or pointer that cites it lands

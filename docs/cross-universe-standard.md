@@ -284,11 +284,20 @@ made where every scope is one directory away, and pinned:
   sidecar. A scope that is not settled means *cannot determine*, and cannot-determine is a
   refusal. A scope with reliance is a refusal that names the repository and the row.
 - `withdrawSpec` pins the list it read onto the `spec.withdrawn` event.
-- The fold applies a RATIFIED withdrawal only where that list names this clone's own scope
-  (`foldStandard`'s `myScope`). A clone the withdrawer could not see — its shard not pulled,
-  or it did not exist yet — is not covered by the claim, and goes `conflicted` rather than
-  silently keeping the rule. An event with no pin at all, which is every withdrawal written
-  before this existed, reads the same way: not permission.
+- The fold refuses a RATIFIED withdrawal in exactly two cases. **No claim was made at all**
+  — no pinned list, which is every withdrawal written before this existed — refuses on every
+  clone, because uniform refusal is not a divergence and one clone silently dropping what
+  another keeps is. **A claim was made, it did not name this clone (`foldStandard`'s
+  `myScope`), and this clone holds something that relies on the rule** — the withdrawer
+  could not see this repository and what they missed is real. Both go `conflicted`, which is
+  visible and clears on a successful retry.
+- **Not named and clean APPLIES**, and getting that wrong was the first version's real
+  defect. A repository added to the workspace *after* a withdrawal has no audits, no
+  pointers and no populations, and was never in any historical pin — so refusing resurrected
+  every previously-withdrawn rule on every new repo as `ratified` + `conflicted`, leaving it
+  carrying law the business had repealed. That is the same divergence pointing the other
+  way. Fail-closed governs *cannot determine*; a repository with no evidence has nothing to
+  determine, and the answer is knowably clean.
 
 A **draft** is untouched by all of it. It applied nothing, so nothing anywhere can rely on it
 and there is nothing to be clean about; the author's own take-back stays open.

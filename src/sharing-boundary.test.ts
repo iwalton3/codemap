@@ -325,7 +325,12 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     // pointer appended elsewhere is invisible to the machine asking to withdraw. One end
     // alone lets a withdrawal race a citation and orphan it everywhere but there.
     what: "a withdrawal that would orphan something already citing the rule",
-    fold: ["src/shared-standard.ts", /if \(foldReliance\(sp, mine, \{/],
+    // The CALL and the branch that acts on it, in one pattern. Pinning `if (foldReliance(`
+    // pinned a spelling: computing the count into `relies` and branching on it a few lines
+    // later is the same rule and broke the grep, which is the failure mode this file's own
+    // header warns about. A pattern that spans both ends cannot be satisfied by either
+    // alone.
+    fold: ["src/shared-standard.ts", /relies = foldReliance\(sp, mine,[\s\S]{0,2000}?if \(relies\) break;/],
     publish: ["src/requirements.ts", /const reliance = await relianceOn\(root, ops\);/],
   },
   {
