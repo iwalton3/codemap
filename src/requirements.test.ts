@@ -715,6 +715,44 @@ test("a spec renders which rules a move would actually take, read live", async (
 });
 
 /**
+ * `ratifySpec` re-checks each `add_requirement`'s section against the standard as it now
+ * stands; the RENDERING did not, so the browser enabled ratify on a section another spec
+ * had since claimed under a different case, and the refusal arrived only after the click.
+ * That is the trade this surface exists to make failing at its last step — a principal told
+ * they can dispose of a spec and then told they cannot goes back to reading code.
+ */
+test("a section another spec has since claimed by case blocks the card, not just the ratify", async () => {
+  const { root } = await universe();
+  try {
+    // Drafted while nothing occupies the section, so drafting cannot object.
+    const sp = ok(await draftSpec(root, { title: "Credit limits" } as any));
+    ok(await addOperation(root, {
+      specId: sp.id, kind: "add_requirement", rationale: "policy", reversibility: "reversible",
+      title: "Line is capped", section: "credit/limits",
+      statement: "A credit line never exceeds the approved limit.", provenance: "policy",
+    } as any));
+
+    // POSITIVE FIRST: with the ground clear it is adoptable and carries no reason.
+    const before = ok(await getSpec(root, sp.id));
+    assert.equal(before.adoptable, true);
+    assert.equal(before.operations[0]!.contextMoved, false);
+    assert.equal(before.operations[0]!.blockedBy, undefined);
+
+    // Somebody else gets there first, under a different case.
+    await adoptRule(root, { title: "Exposure cap", section: "Credit/Limits", statement: "Exposure is capped." });
+
+    const after = ok(await getSpec(root, sp.id));
+    assert.equal(after.adoptable, false, "the button must be disabled before the click, not after");
+    assert.equal(after.operations[0]!.contextMoved, true);
+    assert.match(after.operations[0]!.blockedBy!, /only by case/);
+
+    // And the refusal it is predicting is real, so the two ends agree.
+    const refused = await ratifySpec(root, sp.id);
+    assert.ok("error" in refused, "the rendering must be predicting a refusal that happens");
+  } finally { discard(root); }
+});
+
+/**
  * Spec withdrawal — the before-reliance half of backout.
  *
  * The refusals are the substance, so each test establishes that the withdrawal WORKS on the

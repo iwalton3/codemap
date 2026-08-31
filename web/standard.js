@@ -715,6 +715,7 @@ class SpecPage extends Component {
             fromSection: o.operation.fromSection, toSection: o.operation.toSection, rationale: o.operation.rationale,
           })}">correct</button>`)}
       </div>
+      ${when(!!o.blockedBy, () => html`<div class="op-blocked">${o.blockedBy}</div>`)}
       ${this.opBody(o)}
       ${when(!!o.operation.requirementId, () => html`<div class="fs dim mono">rule ${o.operation.requirementId}</div>`)}
       <div class="fs dim prose"><b>why:</b> ${o.operation.rationale}</div>
@@ -722,7 +723,6 @@ class SpecPage extends Component {
       ${when(o.operation.reversibility !== 'irreversible', () => html`<div class="fs dim">reversibility: ${o.operation.reversibility}</div>`)}
       ${when(!!o.moves, () => html`<div class="op-move">
         <div class="fs"><b>${o.moves.from}</b> → <b>${o.moves.to}</b> · ${o.moves.members.length} rule${o.moves.members.length === 1 ? '' : 's'} move</div>
-        ${when(!!o.moves.blocked, () => html`<div class="op-blocked">${o.moves.blocked}</div>`)}
         ${each(o.moves.members, (m) => html`<div class="op-moverow"><span class="dim">${m.from}</span> → ${m.to} · ${m.title}</div>`, (m) => m.id)}
       </div>`)}
       ${when(o.silencedBy.length > 0, () => html`<div class="op-gap">

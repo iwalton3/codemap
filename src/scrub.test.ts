@@ -23,7 +23,8 @@ import { draftSpec, addOperation, ratifySpec } from "./requirements.js";
 import { ratifyReviewed } from "./test-approve.js";
 import { declarePointer } from "./pointers.js";
 import { setScrubPolicy, scrubPlan, pointerRates, scrubsFor, baselinePlan } from "./scrub.js";
-import { recordAudit } from "./audits.js";
+import { recordAudit, promoteProvisionalAudit } from "./audits.js";
+import { listAcknowledgements } from "./acknowledgements.js";
 
 /**
  * A scrub is an AUDIT with a covering trigger — one record, one lifecycle. What stays
@@ -102,6 +103,73 @@ test("no stated policy is a FINDING, not a default", async () => {
     // The AVERAGE, not a ceiling: `Math.ceil` would report one rule every 30 days as "1 a
     // day", thirty times the real workload. What must I do today is `due.length`.
     assert.equal(after.perDay, 0.03);
+  } finally { discard(u.root); }
+});
+
+/**
+ * One malformed `asOf`, two confident and OPPOSITE wrong answers, neither of them said out
+ * loud. `scrubPlan` runs it through `Date.parse`, so `"today"` is `NaN` and no age
+ * comparison is ever true — nothing is due. `listAcknowledgements` compares it as a STRING,
+ * so `"today"` sorts after every digit and everything is due. It arrives over MCP, where
+ * `"today"` is exactly what an agent reaches for.
+ */
+test("a malformed `asOf` is refused, not silently answered in two opposite directions", async () => {
+  const u = await universe();
+  try {
+    const rid = await rule(u.root, "Capped", "Credit");
+    ok(await setScrubPolicy(u.root, { coverageDays: 30 }));
+
+    // POSITIVE FIRST: a well-formed one still works, and it does something — an `asOf` far
+    // in the future must make the never-scrubbed rule due, or the refusal below is a wall.
+    const good = await scrubPlan(u.root, { asOf: "2030-01-01T00:00:00.000Z" });
+    assert.equal(good.due.length, 1);
+    assert.equal((await scrubPlan(u.root, { asOf: "2030-01-01" })).due.length, 1, "a date alone is a legal asOf");
+
+    for (const bad of ["today", "2026-08-31 15:00", "next week", ""]) {
+      await assert.rejects(() => scrubPlan(u.root, { asOf: bad }), /asOf must be an ISO date/,
+        `scrubPlan silently reported nothing due for asOf ${JSON.stringify(bad)}`);
+      await assert.rejects(() => listAcknowledgements(u.root, { asOf: bad }), /asOf must be an ISO date/,
+        `listAcknowledgements silently reported everything due for asOf ${JSON.stringify(bad)}`);
+    }
+    assert.equal(rid.startsWith("r"), true);
+  } finally { discard(u.root); }
+});
+
+/**
+ * Promotion is the ONLY route by which branch work reaches the coverage clock — a
+ * provisional audit never covers — and it was dropping the trigger, so the promoted copy
+ * landed as `ad-hoc`, which covers nothing. The coverage a differential audit earned on a
+ * branch could not land on any branch, ever, and nothing said so.
+ */
+test("promoting a provisional audit carries its trigger, so the coverage it earned lands", async () => {
+  const u = await universe();
+  try {
+    const rid = await rule(u.root, "Capped", "Credit");
+    ok(await setScrubPolicy(u.root, { coverageDays: 30 }));
+    const p = ok(await declarePointer(u.root, {
+      requirementId: rid, targetKind: "node", targetId: u.doc, rationale: "the doc",
+    }));
+
+    // The branch audit. Off the default branch it is provisional, which covers nothing —
+    // that is correct, and it is what makes promotion the only way through.
+    spawnSync("git", ["checkout", "-qb", "feature"], { cwd: u.root });
+    const prov = ok(await recordAudit(u.root, {
+      requirementId: rid, outcome: "nonconformant", trigger: "differential",
+      finding: "creditLine ignores the cap", evidence: { read: (await readAnchorStore(u.root)).anchors.map((a) => a.id) },
+      observations: [{ pointerId: p.id, firing: true }],
+    }));
+    assert.equal(prov.audit.provisional, true);
+    assert.equal((await scrubPlan(u.root, { asOf: "2030-01-01" })).due.length, 1, "branch work covers nothing");
+
+    spawnSync("git", ["checkout", "-q", "main"], { cwd: u.root });
+    const promoted = ok(await promoteProvisionalAudit(u.root, prov.id));
+    assert.equal(promoted.audit.trigger, "differential", "an omitted trigger defaults to ad-hoc, which covers nothing");
+    assert.deepEqual(promoted.audit.observations, [{ pointerId: p.id, firing: true }],
+      "and the observations are what name the pointer whose deadline moves");
+
+    // The CONSEQUENCE, not just the field: the pointer's deadline has moved.
+    const after = await scrubPlan(u.root);
+    assert.equal(after.due.length, 0, "the promoted audit covers what the branch audit looked at");
   } finally { discard(u.root); }
 });
 

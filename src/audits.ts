@@ -29,7 +29,7 @@ import { randomBytes } from "node:crypto";
 import type {
   Actor, Audit, AuditEvidence, AuditOutcome, AuditTrigger, BugWitness, Requirement,
 } from "./schema.js";
-import { AUDIT_OUTCOMES, AUDIT_TRIGGERS, COVERING_TRIGGERS } from "./schema.js";
+import { AUDIT_OUTCOMES, AUDIT_TRIGGERS, COVERING_TRIGGERS, parseAsOf } from "./schema.js";
 import {
   readAcknowledgements, readAudits, readPointers, readRequirement, readRequirements,
   writeLocalAudit,
@@ -472,9 +472,21 @@ export async function promoteProvisionalAudit(
         + `Re-audit rather than promote: concluding from the merge alone is how a finding survives its own fix.`,
     };
   }
+  // The TRIGGER and the OBSERVATIONS travel with it, and dropping them was not cosmetic.
+  // A provisional audit never covers (`covers()` returns false for one), so promotion is
+  // the ONLY route by which work done on a branch reaches the scrub's coverage clock — and
+  // an omitted trigger defaults to `ad-hoc`, which covers nothing. The coverage a
+  // differential audit earned could therefore never land, on any branch, ever.
+  //
+  // Re-asserting the observations is what promotion already claims: `promotableAudits` has
+  // established from the hashes that the cited code is unchanged, and an observation is
+  // part of what the auditor saw. Where a pointer has appeared or gone since, a COVERING
+  // trigger's exhaustiveness check in `recordAudit` refuses this and says which — a visible
+  // refusal in place of a silent downgrade.
   return recordAudit(root, {
     ...input, promotedFrom: original.id,
     requirementId: original.requirementId, outcome: "nonconformant",
+    trigger: original.trigger, observations: original.observations,
     finding: `${original.finding} (promoted from provisional audit ${original.id} on ${original.branch ?? "a branch"}; the cited code is unchanged)`,
     evidence: original.evidence,
   });
@@ -534,7 +546,7 @@ export interface RequirementConformance {
 export async function conformance(
   root: string, opts: { asOf?: string; about?: ConformanceSubject } = {},
 ): Promise<RequirementConformance[]> {
-  const asOf = opts.asOf ?? now();
+  const asOf = parseAsOf(opts.asOf).at;
   const about: ConformanceSubject = opts.about === "branch" ? "branch" : "codebase";
   // A retired rule is not part of the current standard, so counting it as unexamined
   // misstates how much of what is IN FORCE nobody has checked — retire fifty and

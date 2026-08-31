@@ -31,7 +31,7 @@ import { randomBytes } from "node:crypto";
 import type {
   Acknowledgement, AcknowledgementPriority, Actor,
 } from "./schema.js";
-import { ACK_PRIORITIES, ISO_DATE } from "./schema.js";
+import { ACK_PRIORITIES, ISO_DATE, parseAsOf } from "./schema.js";
 import {
   readAcknowledgement, readAcknowledgements, readOperations, readRequirement,
   readSpec, writeLocalAcknowledgement,
@@ -266,7 +266,7 @@ export async function listAcknowledgements(
   root: string,
   opts: { requirementId?: string; state?: Acknowledgement["state"]; asOf?: string } = {},
 ): Promise<ServedAcknowledgement[]> {
-  const asOf = opts.asOf ?? now();
+  const asOf = parseAsOf(opts.asOf).at;
   const rows = await readAcknowledgements(root, { requirementId: opts.requirementId, state: opts.state });
   return rows.map((a) => serve(a, asOf));
 }
@@ -275,7 +275,7 @@ export async function listAcknowledgements(
 export async function dueForRevalidation(
   root: string, opts: { asOf?: string } = {},
 ): Promise<ServedAcknowledgement[]> {
-  const asOf = opts.asOf ?? now();
+  const asOf = parseAsOf(opts.asOf).at;
   const rank: Record<AcknowledgementPriority, number> = { high: 0, medium: 1, low: 2 };
   return (await readAcknowledgements(root, { state: "active" }))
     .map((a) => serve(a, asOf))

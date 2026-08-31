@@ -1329,6 +1329,40 @@ export type AcknowledgementPriority = "high" | "medium" | "low";
 export const ACK_PRIORITIES: AcknowledgementPriority[] = ["high", "medium", "low"];
 export const ISO_DATE = /^\d{4}-\d{2}-\d{2}(T|$)/;
 
+/**
+ * A caller-supplied `asOf`, parsed once — because its two consumers fail CONFIDENTLY on a
+ * malformed one, in OPPOSITE directions, and neither says a word.
+ *
+ * `listAcknowledgements` compares it as a STRING (`revalidateBy <= asOf`), so `"today"`
+ * sorts after every digit and EVERY acknowledgement reads as due for revalidation.
+ * `scrubPlan` runs it through `Date.parse`, so `"today"` is `NaN`, every age comparison is
+ * false, and NOTHING is due. One input, an answer of "all of it" from one surface and
+ * "none of it" from the other, both delivered as fact.
+ *
+ * It is caller-supplied over MCP, where `"today"` and `"2026-08-31 15:00"` are what an
+ * agent reaches for. THROWS rather than returning an `Err`, because the reads that take it
+ * have no error channel in their return types and a silently-substituted `now()` would put
+ * the wrong answer back exactly where this started.
+ *
+ * `at` is the caller's own string, not a normalized one: the comparison downstream is
+ * lexicographic over ISO, and re-spelling a date-only bound as a timestamp would move the
+ * boundary rather than validate it.
+ */
+export function parseAsOf(raw: string | undefined): { at: string; ms: number } {
+  if (raw === undefined) {
+    const d = new Date();
+    return { at: d.toISOString(), ms: d.getTime() };
+  }
+  const ms = Date.parse(raw);
+  if (!ISO_DATE.test(raw) || Number.isNaN(ms)) {
+    throw new Error(
+      `asOf must be an ISO date or timestamp — "YYYY-MM-DD" or "2026-08-31T12:00:00Z". Got ${JSON.stringify(raw)}, `
+      + "which one surface would read as every deadline having passed and the other as none of them having.",
+    );
+  }
+  return { at: raw, ms };
+}
+
 export interface Acknowledgement {
   id: string;
   basis: AcknowledgementBasis;

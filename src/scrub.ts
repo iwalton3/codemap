@@ -32,7 +32,7 @@
 
 import { randomBytes } from "node:crypto";
 import type { Audit, ScrubPolicy } from "./schema.js";
-import { COVERING_TRIGGERS } from "./schema.js";
+import { COVERING_TRIGGERS, parseAsOf } from "./schema.js";
 import { readAudits, readPointers, readRequirements, readScrubPolicy, writeLocalScrubPolicy } from "./store.js";
 import { requireActor } from "./identity.js";
 import type { ActorInput } from "./identity.js";
@@ -211,7 +211,7 @@ export interface ScrubPlan {
 }
 
 export async function scrubPlan(root: string, opts: { asOf?: string } = {}): Promise<ScrubPlan> {
-  const asOf = opts.asOf ? Date.parse(opts.asOf) : Date.now();
+  const asOf = parseAsOf(opts.asOf).ms;
   const policy = await readScrubPolicy(root);
   const { requirements } = await readRequirements(root, { status: "ratified" });
 

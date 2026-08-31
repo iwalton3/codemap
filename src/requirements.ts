@@ -1769,6 +1769,18 @@ export interface RenderedOperation {
    */
   contextMoved: boolean;
   /**
+   * Why, in the ratifier's words rather than a boolean — present whenever `contextMoved`
+   * is set by something they cannot see from `before` and `after`.
+   *
+   * For a `move_section` it is `moves.blocked`, surfaced here too so one field answers the
+   * question for every kind. For an `add_requirement` it is a section that now clashes by
+   * case with one another spec has since introduced: `ratifySpec` re-checks that per
+   * operation and refuses, and this rendering did not, so the button was enabled right up
+   * to the refusal. That is the failure this surface exists to prevent — a principal told
+   * they can dispose of a spec and then told they cannot goes back to reading code.
+   */
+  blockedBy?: string;
+  /**
    * Gap acknowledgements already raised against this operation — a SILENCER that binds the
    * moment the spec is ratified.
    *
@@ -1838,7 +1850,15 @@ export async function getSpec(
     const target = op.requirementId ? await readRequirement(root, op.requirementId) : null;
     const before = target ? await serve(root, target) : undefined;
     let contextMoved = !!op.context && (!target || target.statement !== op.context.statement);
+    let blockedBy: string | undefined;
     let moves: RenderedOperation["moves"];
+    // The same re-check ratification does, on the same subject. Only while it is a draft:
+    // on a spec already disposed of this would report the standard as it is now against an
+    // act that is history.
+    if (op.kind === "add_requirement" && sp.status === "draft") {
+      const clash = await checkSection(root, op.section!, sectionsIntroducedBy(ops.filter((o) => o.id !== op.id)));
+      if (clash) { contextMoved = true; blockedBy = clash.error; }
+    }
     if (op.kind === "move_section") {
       // A move carries no `context` — its subject is a path — so the check above cannot
       // see that its ends have shifted, and the spec would render `adoptable` right up to
@@ -1846,7 +1866,7 @@ export async function getSpec(
       // prevent: a principal who is told they can dispose of a spec and then cannot goes
       // back to reading code, which is the trade lost at its last step.
       const bad = await checkMove(root, op.fromSection!, op.toSection!, ops.filter((o) => o.id !== op.id));
-      if (bad) contextMoved = true;
+      if (bad) { contextMoved = true; blockedBy = bad.error; }
       const { requirements: members } = await readRequirements(root, { section: op.fromSection! });
       moves = {
         from: op.fromSection!, to: op.toSection!,
@@ -1863,6 +1883,7 @@ export async function getSpec(
       ...(op.kind === "retire_requirement" || op.kind === "move_section" ? {} : { after: op.statement }),
       ...(moves ? { moves } : {}),
       contextMoved,
+      ...(blockedBy ? { blockedBy } : {}),
       // PENDING, not active — and this is the surface that makes the distinction worth
       // having. A pre-approved gap silences nothing until this spec is adopted, so it is
       // pending right up to the moment the ratifier decides; reading only `active` here
