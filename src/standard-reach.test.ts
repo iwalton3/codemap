@@ -232,3 +232,26 @@ test("no exemption names an op that no longer exists", () => {
     assert.ok(known.has(name), `"${name}" (${why}) is exempted and is not an op any more — drop the entry`);
   }
 });
+
+
+/**
+ * The standard's authority MARKER, wherever a response carries one.
+ *
+ * Not an op, so the sweeps above cannot see it — and that is exactly how it was lost.
+ * `served()` attaches `scope` to every read in `ops/standard.ts`, and `ops.diff` attaches
+ * `standardScope` for the same reason: its requirement rollup reads the standard's rows,
+ * and a forked team's projection presented as the team's standard on the one screen a
+ * reviewer actually reads is the failure `standardScopeWarning` exists to prevent. Both
+ * human surfaces dropped it on the floor.
+ *
+ * A text scan, for the reason this whole file is one: the drift is a name nobody typed.
+ */
+test("the diff's authority marker is read by both human surfaces, not just attached", () => {
+  const diffs = readFileSync("src/ops/diffs.ts", "utf8");
+  assert.match(diffs, /standardScope/, "the op must still attach it, or this test is about nothing");
+  const cli = readFileSync("src/cli.ts", "utf8");
+  assert.match(cli, /standardScope/,
+    "`codemap diff` prints a requirement rollup and never says the standard behind it may not be the team's");
+  assert.match(pages, /standardScope/,
+    "the diff page renders a requirement rollup and never says the standard behind it may not be the team's");
+});

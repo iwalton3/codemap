@@ -75,17 +75,20 @@ export interface ServedCriterion extends AcceptanceCriterion {
   assertionMoved: boolean;
   drifted: string[];
   /**
-   * The DETECTOR pointers watching this criterion, and the anchors they resolve to.
+   * The DETECTOR pointers watching this criterion — ACTIVE ones only, since a retired
+   * detector is a check somebody withdrew.
    *
    * Derived, not stored. `assertedBy` was a column on the criterion until it turned out a
-   * workspace-scoped record cannot hold a code address (see `AcceptanceCriterion`); it
-   * survives here as a read-model convenience so a caller that only wants "which anchors"
-   * does not have to flatten pointers itself. `detectors` is the thing with provenance —
-   * who declared it, in which universe, and whether it has been retired.
+   * workspace-scoped record cannot hold a code address (see `AcceptanceCriterion`), and a
+   * flattened `assertedBy: string[]` briefly survived here as a convenience beside it.
+   * That is gone: it recreated exactly the anchor-shaped view the pointer refactor
+   * removed, discarded the universe and the provenance in doing so, and put the "a
+   * criterion owns anchors" assumption back within reach of anyone reading the type. Flatten
+   * `detectors` where you need the ids; the flattening is one line and it is honest about
+   * what it threw away.
    */
   detectors: Pointer[];
-  assertedBy: string[];
-  /** No `assertedBy` at all — a criterion still waiting for its check. */
+  /** No detector at all — a criterion still waiting for its check. */
   unasserted: boolean;
 }
 
@@ -109,18 +112,6 @@ function serveCheck(v: VacuityCheck, live: AnchorIndex): ServedVacuityCheck {
   return { ...v, superseded: changes.length > 0, drifted: changes.map((c) => c.anchorId) };
 }
 
-/**
- * The anchors a criterion's DETECTOR pointers currently watch.
- *
- * This replaced `AcceptanceCriterion.assertedBy`. The relation is the same one it always
- * was — the check, not the rule's subject — and the storage is now the one that can say
- * WHICH REPO it is in. Reading the pointers' witnesses rather than their targets is
- * deliberate: a `node` target expands to many anchors and the pointer already resolved
- * them, so this works for both target kinds without re-expanding anything.
- */
-export const detectorAnchors = (ds: Pointer[]): string[] =>
-  ds.flatMap((d) => d.witnesses.map((w) => w.anchorId));
-
 async function serveWith(
   root: string, c: AcceptanceCriterion, checksFor: VacuityCheck[], live: AnchorIndex,
   detectors: Pointer[],
@@ -137,12 +128,27 @@ async function serveWith(
   // literal it widens to `string` and stops matching `Vacuity`.
   const base: Omit<ServedCriterion, "assertionMoved" | "drifted"> = {
     ...c, vacuity: last?.verdict ?? "unchecked", ...(last ? { lastCheck: last } : {}),
-    unasserted: live_.length === 0, detectors: live_, assertedBy: detectorAnchors(live_),
+    unasserted: live_.length === 0, detectors: live_,
   };
   if (!anchors.length) return { ...base, assertionMoved: false, drifted: [] };
   const changes = realDrift(witnessDrift(anchors, live));
   return { ...base, assertionMoved: changes.length > 0, drifted: changes.map((x) => x.anchorId) };
 }
+
+/**
+ * The anchors a set of DETECTOR pointers currently watch.
+ *
+ * Module-internal, and it stays that way: the relation it flattens is the check rather
+ * than the rule's subject, and the flattening drops the universe and the provenance that
+ * make a pointer answerable. `ServedCriterion` used to expose the result as `assertedBy`,
+ * which put the anchor-shaped view the pointer refactor removed back within reach.
+ *
+ * Reading the pointers' witnesses rather than their targets is deliberate: a `node` target
+ * expands to many anchors and the pointer already resolved them, so this works for both
+ * target kinds without re-expanding anything.
+ */
+const detectorAnchors = (ds: Pointer[]): string[] =>
+  ds.flatMap((d) => d.witnesses.map((w) => w.anchorId));
 
 /** All the anchors one batch of criteria, their detectors and their checks witness. */
 const witnessedBy = (ds: Pointer[], vs: VacuityCheck[]): string[] =>

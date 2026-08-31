@@ -103,11 +103,14 @@ test("a criterion attaches to the rule its own spec creates, and witnesses the C
 
     assert.equal(criterion.requirementId, requirementId, "bound to the rule the same spec created");
     assert.equal(criterion.evidenceKind, "lint-test");
-    assert.deepEqual(criterion.assertedBy, u.check);
     // The witnesses are of the ASSERTION, not of the rule's subject. If they were the
     // subject's, editing the check below would not move them and the whole relation
     // would collapse into a second copy of `cites`.
     assert.deepEqual(criterion.detectors.flatMap((d) => d.witnesses.map((w) => w.anchorId)), u.check);
+    // Through the pointer, and only through the pointer: a criterion is workspace-scoped
+    // law, so the universe on the detector is part of the answer rather than noise to
+    // flatten away. That is what a derived `assertedBy: string[]` used to discard.
+    assert.deepEqual(criterion.detectors.map((d) => d.universe).filter((x, i, a) => a.indexOf(x) === i).length, 1);
     assert.equal(criterion.assertionMoved, false);
     assert.equal(criterion.vacuity, "unchecked", "nobody has tried to break it yet");
     assert.equal(assertionStrength(criterion), "weak");

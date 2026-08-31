@@ -1091,6 +1091,62 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
   });
 
   /**
+   * `unasserted` had a CHIP and no rows, and it is the default state of every criterion.
+   *
+   * So on any standard young enough to still be seeded — which is all of them — the biggest
+   * number in that panel named a group the page would not render. It is kept out of the
+   * four beside it deliberately: those are checks somebody has shown cannot fail, and this
+   * one is a rule waiting for a check, which is a different remedy and not a defect.
+   *
+   * The tally chips are the other half. `silenced()` returns four conformance STATES and
+   * three tallies in one object and the row rendered every numeric key through `confDot`,
+   * which falls back to the `unknown` grey — so `total: 40` wore the same dot as
+   * `unknown: 12` and read as forty unexamined rules.
+   */
+  test("a criterion with no check is listed, not just counted — and a tally is not a state", async () => {
+    const sp = ok(await ops.draftSpec(root, { title: "Reconciliation", ...AGENT })) as any;
+    const rule = ok(await ops.addOperation(root, {
+      specId: sp.id, kind: "add_requirement", rationale: "nobody wrote the netting rule down",
+      reversibility: "reversible", title: "Netting is symmetric", section: "Settlement/Netting",
+      statement: "A netted pair sums to zero.", provenance: "treasury practice", ...AGENT,
+    } as any)) as any;
+    // NO detector is declared against it, which is the state every criterion starts in.
+    ok(await ops.addOperation(root, {
+      specId: sp.id, kind: "add_criterion", rationale: "what would show netting drifted",
+      reversibility: "reversible", targetOperationId: rule.id,
+      criterion: "A netted pair whose legs differ is rejected.",
+      falsifier: "a netted pair with unequal legs that settles",
+      evidenceKind: "automated-test", ...AGENT,
+    } as any));
+    await approve(root, sp.id);
+    ok(await ops.ratifySpec(root, { specId: sp.id }));
+
+    // The fixture must actually produce the bucket, or the page assertion is about nothing.
+    const weak = ok(await ops.weakAssertions(root)) as any;
+    assert.ok(weak.unasserted.some((c: any) => /netted pair whose legs differ/.test(c.criterion)),
+      "the fixture must land an unasserted criterion");
+
+    const { page, errors } = await open(`/u/${universe}/standard/audit/`);
+    await page.waitForSelector(".sec", { timeout: 10_000 });
+    const text = await page.textContent("main");
+    assert.match(text!, /criteria with no check at all/i);
+    assert.match(text!, /A netted pair whose legs differ is rejected/,
+      "counted in a chip and rendered in no group is the defect this replaces");
+    assert.deepEqual(errors, []);
+    await page.close();
+
+    const hub = await open(`/u/${universe}/standard/`);
+    await hub.page.waitForSelector(".chip", { timeout: 10_000 });
+    // A tally carries the hint that says it is not a state; a state carries a dot.
+    assert.equal(await hub.page.locator('.chip[title^="rules in force"]').count(), 1,
+      "`total` is the denominator and was wearing the `unknown` colour");
+    assert.ok(await hub.page.locator('.chip:has(.rev-dot):has-text("unknown")').count() >= 1,
+      "and the states must still carry their dots, or this passes by removing all of them");
+    assert.deepEqual(hub.errors, []);
+    await hub.page.close();
+  });
+
+  /**
    * The banner that says *this is not the team's standard*.
    *
    * It rendered on NOTHING for as long as these pages existed: `servedNote` read

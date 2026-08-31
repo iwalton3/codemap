@@ -607,6 +607,20 @@ async function cmdDiff(root: string, base: string, head?: string): Promise<void>
     console.error(r.error);
     process.exit(1);
   }
+  // The requirement rollup below reads the standard's rows, and `ops.diff` marks the answer
+  // when the shared scope is blocked or behind. Both human surfaces dropped that marker on
+  // the floor — a forked team's projection presented as the standard, on the one screen a
+  // reviewer actually reads. `ops/standard.ts`'s reachability sweep cannot see this call
+  // site, because the diff does not live there.
+  if (r.standardScope) {
+    const sc = r.standardScope;
+    const why = sc.status === "blocked" ? sc.diagnostic?.detail : sc.detail;
+    console.log(
+      `⚠ the requirement rollup below is not the team's: `
+      + (sc.status === "blocked" ? "the shared log is refusing to be read as settled" : "these rows are behind the log")
+      + (why ? ` — ${why}` : "") + ". Run `codemap sync`, then re-read.",
+    );
+  }
   console.log(`base ${r.base.label} (${(r.base.sha ?? "").slice(0, 12)}, ${r.base.anchors} anchors)  →  head ${r.head.label} (${r.head.anchors} anchors)`);
   console.log(`symbols: +${r.added.length} added  -${r.removed.length} removed  ~${r.changed.length} changed`
     + (r.unverifiable?.length ? `  ?${r.unverifiable.length} not comparable` : ""));

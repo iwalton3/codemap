@@ -25,7 +25,7 @@ import { enableRouting } from './vendor/vdx/router.js';
 // with no console output. Both now import `./core.js`, which imports neither.
 // `src/import-cycles.test.ts` walks `web/` and fails if the edge comes back.
 import './shared.js';
-import { standardUrl, rulesUrl, branchUrl, auditUrl, conformanceUrl } from './standard.js';
+import { standardUrl, rulesUrl, branchUrl, auditUrl, conformanceUrl, servedNote } from './standard.js';
 
 import {
   errText, hitTarget, apiPost, api, loaded, taskError, isErr, pageShell, nav, go, href, setRouter, postSeen,
@@ -2916,6 +2916,7 @@ class DiffPage extends Component {
               ${each(d.impact.bugs, bug => this.bugRow(bug), bug => bug.id)}`)}
 
             ${when(d.impact.requirements && d.impact.requirements.length, () => html`<div class="sec">requirements to re-audit (${d.impact.requirements.length})</div>
+              ${servedNote({ scope: d.standardScope })}
               ${each(d.impact.requirements, rq => this.reqRow(rq), rq => rq.id)}`)}
 
             <div class="dtoggle"><span class="dim">changes</span>

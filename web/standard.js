@@ -51,6 +51,21 @@ const CONF_COLOR = {
 const confDot = (state) => html`<span class="rev-dot" style="background:${CONF_COLOR[state] ?? CONF_COLOR.unknown}"></span>`;
 
 /**
+ * `silenced()` returns four CONFORMANCE STATES and three TALLIES in one object, and this
+ * row rendered every numeric key through `confDot`. That falls back to the `unknown` grey
+ * for anything it does not know, so `total: 40` wore the same dot as `unknown: 12` and read
+ * as forty unexamined rules. The states are named rather than filtered for, so a new tally
+ * lands in neither list and is visibly missing instead of quietly mis-coloured.
+ */
+const CONF_STATES = ['conformant', 'gap', 'debt', 'unknown'];
+const CONF_TALLIES = ['total', 'due', 'regressed'];
+const CONF_TALLY_HINT = {
+  total: 'rules in force — the denominator, not a state',
+  due: 'silencers past their revalidate-by date',
+  regressed: 'was conformant once, and the code has moved since',
+};
+
+/**
  * The banner a non-authoritative read carries.
  *
  * `served()` marks every standard response when the shared scope is blocked or behind,
@@ -70,7 +85,7 @@ const confDot = (state) => html`<span class="rev-dot" style="background:${CONF_C
  *
  * @param {{ scope?: { status: string, detail?: string, diagnostic?: { detail?: string } } }} d
  */
-const servedNote = (d) => when(!!(d && d.scope), () => html`<div class="attn-banner">
+export const servedNote = (d) => when(!!(d && d.scope), () => html`<div class="attn-banner">
   <span class="attn-n">⚠</span>
   <span>this is not the team's standard: ${d.scope.status === 'blocked' ? 'the shared log is refusing to be read as settled' : 'these rows are behind the log'}${d.scope.detail || (d.scope.diagnostic && d.scope.diagnostic.detail) ? ' — ' + (d.scope.detail || d.scope.diagnostic.detail) : ''}. Sync, then re-read.</span>
 </div>`);
@@ -208,7 +223,8 @@ class StandardPage extends Component {
 
       <div class="sec">conformance</div>
       <div class="dnav">
-        ${each(Object.keys(s.conformance || {}).filter(k => typeof s.conformance[k] === 'number'), (k) => html`<span class="chip">${confDot(k)}${k}: ${s.conformance[k]}</span>`, k => k)}
+        ${each(CONF_STATES.filter(k => typeof (s.conformance || {})[k] === 'number'), (k) => html`<span class="chip">${confDot(k)}${k}: ${s.conformance[k]}</span>`, k => k)}
+        ${each(CONF_TALLIES.filter(k => typeof (s.conformance || {})[k] === 'number'), (k) => html`<span class="chip mute" title="${CONF_TALLY_HINT[k]}">${k}: ${s.conformance[k]}</span>`, k => k)}
       </div>
       <div class="dnav">
         <a class="btnlike" href="${href(rulesUrl(u))}">browse the standard ›</a>
@@ -1243,6 +1259,13 @@ class AuditPlanPage extends Component {
         <div class="ft"><span class="qbadge drift">${k}</span> ${c.criterion}</div>
         ${when(!!c.falsifier, () => html`<div class="fs dim">refuted by: ${c.falsifier}</div>`)}
       </a>`, (c) => c.id)}`, (k) => k)}
+
+      <div class="sec">criteria with no check at all (${(d.weakAssertions.unasserted || []).length})</div>
+      <div class="empty">A rule waiting for a detector, not a defect — and the default state of every criterion, which is why it is the biggest number on a young standard and why it is kept out of the four above. The remedy is different too: <code>declare_pointer</code> with a <code>criterionId</code>, or <code>propose_pointer</code> while the spec is still a draft so the ratifier can see the check.</div>
+      ${each(d.weakAssertions.unasserted || [], (c) => html`<a class="spec-card" href="${href(requirementUrl(u, c.requirementId))}">
+        <div class="ft"><span class="qbadge mute">unasserted</span> ${c.criterion}</div>
+        ${when(!!c.falsifier, () => html`<div class="fs dim">refuted by: ${c.falsifier}</div>`)}
+      </a>`, (c) => c.id)}
 
       <div class="sec">baseline sweep</div>
       <div class="empty">Not a queue — every rule in force, with what is known about each. Expensive on purpose: it is the read for a large refactor landing or a high-risk ship. ${d.baseline.population} rule(s) in force.</div>
