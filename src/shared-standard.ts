@@ -371,7 +371,11 @@ export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = 
     switch (e.kind) {
       case "spec.drafted": {
         const spec = obj(e.data, "spec") as Spec | undefined;
-        if (spec?.id) specs.set(spec.id, { ...spec, status: "draft", origin: "sync" });
+        // `title` and `createdAt` too, not just an id: both are NOT NULL in the projection,
+        // and `draftSpec` refuses a spec without a title. See `bindable` in
+        // `shared-projections.ts` for what an unbindable row used to cost.
+        if (!spec?.id || !spec.title?.trim() || !spec.createdAt) break;
+        specs.set(spec.id, { ...spec, status: "draft", origin: "sync" });
         break;
       }
       case "spec.operation": {
@@ -982,7 +986,10 @@ export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = 
       }
       case "problem.raised": {
         const p = obj(e.data, "problem") as Problem | undefined;
-        if (!p?.id) break;
+        // `requirementId`, `auditId` and `raisedAt` are NOT NULL in the projection, and
+        // `raiseProblem` supplies all three — a problem is BY DEFINITION about a rule and
+        // provoked by an audit. See `bindable` in `shared-projections.ts`.
+        if (!p?.id || !p.requirementId || !p.auditId || !p.raisedAt) break;
         // Raised state only, and EVERY adjudication field is stripped rather than just
         // the verdict: a payload carrying `adjudicatedBy` with no `disposition` would
         // otherwise fold to a problem that names a decider who never decided. Dropping
@@ -1061,7 +1068,15 @@ function foldReliance(
   const own = new Set(mine.map((o) => o.id));
   const hit: string[] = [];
   const cites = (rid: string | undefined) => !!rid && introduced.has(rid);
-  for (const o of m.operations.values()) if (!own.has(o.id) && (cites(o.requirementId) || cites(o.context?.requirementId))) hit.push(o.id);
+  // `!o.removed`, which `relianceOn` gets for free because `readOperations` drops a tombstone
+  // by default. Without it this end counted an operation somebody PULLED from a draft, so a
+  // withdrawal the tool approved was refused here for ever — and with the wrong diagnosis,
+  // naming a row the caller had already withdrawn. A spent spec cannot be re-withdrawn, so
+  // the rule could never leave the standard on any clone.
+  for (const o of m.operations.values()) {
+    if (o.removed || own.has(o.id)) continue;
+    if (cites(o.requirementId) || cites(o.context?.requirementId)) hit.push(o.id);
+  }
   for (const a of m.acknowledgements.values()) {
     if (a.state === "released") continue;
     if (a.operationId && own.has(a.operationId)) continue;

@@ -235,6 +235,47 @@ test("blanking an already-absent field is nothing to change; blanking a set one 
   } finally { u.cleanup(); }
 });
 
+/**
+ * A PULLED operation is not reliance, at the end that decides for every clone.
+ *
+ * `relianceOn` gets this free — `readOperations` drops a tombstone by default — and
+ * `foldReliance` iterated the map, where tombstones live for ever. So an operation somebody
+ * had already withdrawn from a draft refused a withdrawal the tool approved, with the wrong
+ * diagnosis, permanently: a spent spec cannot be re-withdrawn, so the rule could never
+ * leave the standard on any clone.
+ *
+ * The live arm is the control: a LIVE operation citing the rule must still block, or this
+ * passes on a reliance check that counts nothing.
+ */
+test("a tombstoned operation is not reliance, and a live one still is", async () => {
+  const scenario = async (removed: boolean) => {
+    const root = await log(removed ? "reliance-dead" : "reliance-live");
+    await publishSpecDrafted(root, SCOPE, opus, SPEC);
+    await publishOperation(root, SCOPE, opus, ADD);
+    await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
+    // A SECOND draft whose operation cites the rule the first one created.
+    const sp2: Spec = { ...SPEC, id: "sp_2", title: "Amend it" };
+    const cite: Operation = {
+      ...ADD, id: "op_cite", specId: "sp_2", ord: 0, kind: "amend_statement",
+      requirementId: requirementIdFor("op_1"), statement: "All credit lines are in EUR.",
+    };
+    await publishSpecDrafted(root, SCOPE, opus, sp2);
+    await publishOperation(root, SCOPE, opus, cite);
+    if (removed) {
+      await publishOperationRemoved(root, SCOPE, opus, {
+        ...cite, removed: { at: "2026-08-02T12:00:00.000Z", by: opus, reason: "wrong spec" },
+      });
+    }
+    await publishSpecWithdrawn(root, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", "adopted in error");
+    const status = (await fold(root)).specs.find((x) => x.id === "sp_1")!.status;
+    discard(root);
+    return status;
+  };
+
+  assert.equal(await scenario(true), "withdrawn", "a pulled operation relies on nothing");
+  assert.equal(await scenario(false), "ratified", "and a live one still blocks it");
+});
+
 test("revision cannot change an operation's KIND", async () => {
   const u = await universe();
   try {

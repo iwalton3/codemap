@@ -349,3 +349,44 @@ test("a retired rule takes no population, by either basis", async () => {
     assert.match(err(await declareNotExpressible(u.root, { requirementId: rid, reason: "spans repos" })), /retired/);
   } finally { discard(u.root); }
 });
+
+/**
+ * A PROVISIONAL re-pin over the team's cannot supersede it, and used to THROW trying.
+ *
+ * `sharePopulationPinned` short-circuits a provisional pin to `localOnly`, so it takes the
+ * local branch and supersedes `current` with a local write — and when `current` arrived
+ * from the fold, `writeLocalPopulation` refuses to touch a fold-owned row and throws. So
+ * re-pinning from a feature branch or a dirty tree REJECTED THE PROMISE instead of
+ * returning an `Err`: an internal error to the caller, and the new pin lost.
+ *
+ * It fails closed now — the team's pin stays in force. Superseding it needs an event, and a
+ * provisional observation is exactly the kind that may not become one.
+ */
+test("a provisional pin refuses to supersede the team's, instead of throwing", async () => {
+  const u = await universe();
+  try {
+    const rid = await rule(u.root);
+    // The team's pin, as a sync leaves it: fold-owned, with a `source_scope`.
+    const { db } = await import("./db.js");
+    db(u.root).prepare(
+      "INSERT INTO populations(id,requirement_id,basis,state,pinned_at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?)",
+    ).run("pop_team", rid, "lint", "active", "2026-01-01", "sync", "standard/acme/api", JSON.stringify({
+      id: "pop_team", requirementId: rid, basis: "lint", state: "active", pinnedAt: "2026-01-01",
+      origin: "sync", lint: u.lint, witnesses: [], members: [M("GET /orders", "conforms")],
+    }));
+
+    const git = (...a: string[]) => spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...a], { cwd: u.root });
+    git("checkout", "-q", "-b", "feature/x");
+
+    // A rejected promise would fail this test by throwing out of it, which is the point.
+    const out = await pinPopulation(u.root, {
+      requirementId: rid, lint: u.lint, members: [M("GET /orders", "conforms")],
+    });
+    assert.match(err(out), /provisional/, "an Err, not an internal error");
+    assert.match(err(out), /pop_team/, "naming the pin that stays in force");
+
+    // And the team's pin is untouched — the fail-closed half.
+    const rows = await readPopulations(u.root, { requirementId: rid });
+    assert.deepEqual(rows.filter((p) => p.state === "active").map((p) => p.id), ["pop_team"]);
+  } finally { discard(u.root); }
+});

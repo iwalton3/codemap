@@ -248,6 +248,22 @@ export async function pinPopulation(
     ...(current ? { supersedes: current.id } : {}),
   };
 
+  // A PROVISIONAL pin never reaches the log — `sharePopulationPinned` short-circuits it to
+  // `localOnly` — so it takes the local branch below and tries to supersede `current` with
+  // a local write. When `current` arrived from the fold, `writeLocalPopulation` refuses to
+  // touch it and THROWS, so re-pinning from a branch or a dirty tree rejected the promise
+  // instead of returning an `Err`: an internal error to the caller, and the new pin lost.
+  //
+  // Refused, and it fails closed: the team's pin stays the one in force. Superseding it
+  // needs an event, and a provisional observation is exactly what may not become one.
+  if (current?.origin === "sync" && pin.provisional) {
+    return {
+      error:
+        `${r.id} already has a population pinned by the team (${current.id}), and this pin is `
+        + `provisional — taken off the default branch or on a dirty tree, so it is about `
+        + `nobody's code and cannot supersede theirs. Pin again from a clean default branch.`,
+    };
+  }
   const d = disposition(await sharePopulationPinned(root, pin, current?.id));
   if ("error" in d) return d;
   if (d.local) {
@@ -304,6 +320,22 @@ export async function declareNotExpressible(
     ...provenance(root),
     ...(current ? { supersedes: current.id } : {}),
   };
+  // A PROVISIONAL pin never reaches the log — `sharePopulationPinned` short-circuits it to
+  // `localOnly` — so it takes the local branch below and tries to supersede `current` with
+  // a local write. When `current` arrived from the fold, `writeLocalPopulation` refuses to
+  // touch it and THROWS, so re-pinning from a branch or a dirty tree rejected the promise
+  // instead of returning an `Err`: an internal error to the caller, and the new pin lost.
+  //
+  // Refused, and it fails closed: the team's pin stays the one in force. Superseding it
+  // needs an event, and a provisional observation is exactly what may not become one.
+  if (current?.origin === "sync" && pin.provisional) {
+    return {
+      error:
+        `${r.id} already has a population pinned by the team (${current.id}), and this pin is `
+        + `provisional — taken off the default branch or on a dirty tree, so it is about `
+        + `nobody's code and cannot supersede theirs. Pin again from a clean default branch.`,
+    };
+  }
   const d = disposition(await sharePopulationPinned(root, pin, current?.id));
   if ("error" in d) return d;
   if (d.local) {

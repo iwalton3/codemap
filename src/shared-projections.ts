@@ -627,6 +627,24 @@ export const graphProjection: Projection<Map<string, SharedWiring>> = {
  * never a bare delete. This clone's local rows are the one thing here the log cannot put
  * back.
  */
+/**
+ * Every value a NOT NULL column takes is present. Returns false for a row to SKIP.
+ *
+ * The fold's arms validate what they know to require, and `add_requirement`'s does it
+ * thoroughly because the hazard was found there. The others did not, and one malformed
+ * event — version skew, a third-party writer, a hand-crafted row — reaching a NOT NULL bind
+ * throws INSIDE `readCachedMerged`'s transaction. That rolls back, the fingerprint never
+ * moves, and the standard never folds again on any clone that pulls it: an unrecoverable
+ * state produced from an append-only log nobody can edit.
+ *
+ * So the projection refuses to be the place that happens. A row it cannot bind is dropped,
+ * which loses that row and nothing else — the difference between one missing record and a
+ * subsystem that has stopped. The per-arm checks are still the real guard; this is the one
+ * that keeps the failure recoverable when a future arm is missing one.
+ */
+const bindable = (...vals: unknown[]): boolean =>
+  vals.every((v) => v !== undefined && v !== null && !(typeof v === "string" && !v));
+
 export const standardProjection: Projection<SharedStandard> = {
   write(d: DatabaseSync, scope: string, value: SharedStandard): void {
     for (const t of ["specs", "operations", "proposal_witnesses", "requirements", "criteria", "vacuity_checks", "pointers", "populations", "scrub_policy", "acknowledgements", "audits", "problems"]) {
@@ -634,34 +652,42 @@ export const standardProjection: Projection<SharedStandard> = {
     }
     const spec = d.prepare("INSERT INTO specs(id,status,title,created_at,ratified_at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?)");
     for (const sp of value.specs) {
+      if (!bindable(sp.id, sp.status, sp.title, sp.createdAt)) continue;
       spec.run(sp.id, sp.status, sp.title, sp.createdAt, sp.ratifiedAt ?? null, "sync", scope, JSON.stringify(sp));
     }
     const op = d.prepare("INSERT INTO operations(id,spec_id,kind,requirement_id,ord,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?)");
     for (const o of value.operations) {
+      if (!bindable(o.id, o.specId, o.kind, o.ord)) continue;
       op.run(o.id, o.specId, o.kind, o.requirementId ?? null, o.ord, "sync", scope, JSON.stringify(o));
     }
     const wit = d.prepare("INSERT INTO proposal_witnesses(id,spec_id,operation_id,reviewer,at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?)");
     for (const w of value.witnesses) {
+      if (!bindable(w.id, w.specId, w.reviewer?.principal, w.at)) continue;
       wit.run(w.id, w.specId, w.operationId ?? null, w.reviewer.principal, w.at, "sync", scope, JSON.stringify(w));
     }
     const req = d.prepare("INSERT INTO requirements(id,status,title,section,provenance,created_at,ratified_at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?,?,?)");
     for (const r of value.requirements) {
+      if (!bindable(r.id, r.status, r.title, r.section, r.provenance, r.createdAt)) continue;
       req.run(r.id, r.status, r.title, r.section, r.provenance, r.createdAt, r.ratifiedAt ?? null, "sync", scope, JSON.stringify(r));
     }
     const crit = d.prepare("INSERT INTO criteria(id,requirement_id,evidence_kind,created_at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?)");
     for (const c of value.criteria) {
+      if (!bindable(c.id, c.requirementId, c.evidenceKind, c.createdAt)) continue;
       crit.run(c.id, c.requirementId, c.evidenceKind, c.createdAt, "sync", scope, JSON.stringify(c));
     }
     const vac = d.prepare("INSERT INTO vacuity_checks(id,criterion_id,verdict,at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?)");
     for (const v of value.vacuityChecks) {
+      if (!bindable(v.id, v.criterionId, v.verdict, v.at)) continue;
       vac.run(v.id, v.criterionId, v.verdict, v.at, "sync", scope, JSON.stringify(v));
     }
     const ptr = d.prepare("INSERT INTO pointers(id,requirement_id,target_kind,target_id,state,declared_at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?,?)");
     for (const p of value.pointers) {
+      if (!bindable(p.id, p.requirementId, p.target?.kind, p.target?.id, p.state, p.declaredAt)) continue;
       ptr.run(p.id, p.requirementId, p.target.kind, p.target.id, p.state, p.declaredAt, "sync", scope, JSON.stringify(p));
     }
     const pop = d.prepare("INSERT INTO populations(id,requirement_id,basis,state,pinned_at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?)");
     for (const p of value.populations) {
+      if (!bindable(p.id, p.requirementId, p.basis, p.state, p.pinnedAt)) continue;
       pop.run(p.id, p.requirementId, p.basis, p.state, p.pinnedAt, "sync", scope, JSON.stringify(p));
     }
     // The policy is a SINGLETON — one decision, one row — so it is the only thing here
@@ -683,14 +709,17 @@ export const standardProjection: Projection<SharedStandard> = {
     }
     const ack = d.prepare("INSERT INTO acknowledgements(id,basis,state,operation_id,requirement_id,priority,revalidate_by,granted_at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?,?,?,?)");
     for (const a of value.acknowledgements) {
+      if (!bindable(a.id, a.basis, a.state, a.priority, a.revalidateBy, a.grantedAt)) continue;
       ack.run(a.id, a.basis, a.state, a.operationId ?? null, a.requirementId ?? null, a.priority, a.revalidateBy, a.grantedAt, "sync", scope, JSON.stringify(a));
     }
     const aud = d.prepare("INSERT INTO audits(id,requirement_id,outcome,at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?)");
     for (const a of value.audits) {
+      if (!bindable(a.id, a.requirementId, a.outcome, a.at)) continue;
       aud.run(a.id, a.requirementId, a.outcome, a.at, "sync", scope, JSON.stringify(a));
     }
     const prob = d.prepare("INSERT INTO problems(id,requirement_id,audit_id,disposition,raised_at,adjudicated_at,origin,source_scope,body) VALUES(?,?,?,?,?,?,?,?,?)");
     for (const p of value.problems) {
+      if (!bindable(p.id, p.requirementId, p.auditId, p.raisedAt)) continue;
       prob.run(p.id, p.requirementId, p.auditId, p.disposition ?? null, p.raisedAt, p.adjudicatedAt ?? null, "sync", scope, JSON.stringify(p));
     }
   },

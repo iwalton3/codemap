@@ -801,15 +801,26 @@ export async function removeOperation(
   // Your OWN pending gap goes with the operation it approved, released rather than deleted,
   // for the same reason `withdrawSpec` releases one: the grant really happened, and what
   // stops existing is the rule it was about. Somebody else's already refused above.
-  const { releaseAcknowledgement } = await import("./acknowledgements.js");
-  for (const a of await readAcknowledgements(root, { operationId: op.id })) {
-    if (a.state !== "released") await releaseAcknowledgement(root, a.id, `${op.id} was removed from ${sp.id}`, input);
-  }
-
   const next: Operation = { ...op, removed: { at: now(), by: actor, reason } };
   const d = disposition(await shareOperationRemoved(root, next));
   if ("error" in d) return d;
   if (d.local) await writeLocalOperation(root, next);
+
+  // AFTER the removal is durable, and that order is the fix. Releasing first meant a share
+  // that failed — or a fold that refused the removal, which it can, because the merged log
+  // sees dependents this machine cannot — left the release durable EVERYWHERE while the
+  // operation stayed live: a ratifier looking at an unsilenced operation whose approval
+  // artifact had been destroyed, with a reason naming a removal that never happened.
+  // `withdrawSpec` already had it this way round.
+  const { releaseAcknowledgement } = await import("./acknowledgements.js");
+  for (const a of await readAcknowledgements(root, { operationId: op.id })) {
+    if (a.state === "released") continue;
+    const r = await releaseAcknowledgement(root, a.id, `${op.id} was removed from ${sp.id}`, input);
+    // Reported rather than discarded: a silencer that outlives the operation it approved is
+    // the orphan the reference count exists to prevent, and swallowing the refusal is how
+    // nobody would learn of it.
+    if (isErr(r)) return { error: `${op.id} was removed, but its acknowledgement ${a.id} could not be released: ${r.error}` };
+  }
   return { ok: true, operation: next };
 }
 

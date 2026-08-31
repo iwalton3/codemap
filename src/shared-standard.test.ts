@@ -1476,6 +1476,39 @@ test("the fold refuses to ratify a spec that was withdrawn", async () => {
   } finally { discard(fine); }
 });
 
+/**
+ * One malformed event must not stop the standard folding — for ever, on every clone.
+ *
+ * `add_requirement`'s arm validated its fields because the hazard was found there; the
+ * others did not. A `spec.drafted` with no title, or a `problem.raised` with no rule, binds
+ * `undefined` into a NOT NULL column, and `node:sqlite` throws INSIDE `readCachedMerged`'s
+ * transaction: rollback, the fingerprint never moves, and the standard never folds again on
+ * any clone that pulls it — an unrecoverable state produced from an append-only log nobody
+ * can edit.
+ *
+ * Two layers, and the second is the one that matters. The arms refuse what they know to
+ * require; `bindable` in `shared-projections.ts` drops a row it cannot bind, so the NEXT
+ * arm missing a check costs one record instead of the subsystem.
+ *
+ * The well-formed pair beside them is what stops this passing on a fold that refuses
+ * everything — and the assertion that a LATER good event still folds is the actual claim:
+ * the bad one did not poison the run.
+ */
+test("a malformed event is dropped, and the events after it still fold", async () => {
+  const root = await log("unbindable");
+  try {
+    await publishSpecDrafted(root, SCOPE, opus, { id: "sp_bad", status: "draft", author: opus } as never);
+    await publishProblemRaised(root, SCOPE, opus, { id: "pr_bad", state: "awaitingAdjudication" } as never);
+    // A good spec AFTER the bad ones: if either had thrown, this would never be reached.
+    await publishSpecDrafted(root, SCOPE, opus, SPEC);
+    await publishOperation(root, SCOPE, opus, ADD);
+    const s = await fold(root);
+    assert.deepEqual(s.specs.map((x) => x.id), ["sp_1"], "the malformed spec is gone and the good one folded");
+    assert.deepEqual(s.problems, [], "and a problem about no rule is not a problem");
+    assert.equal(s.operations.length, 1);
+  } finally { discard(root); }
+});
+
 test("the fold drops a revision that changed nothing, and keeps one that did", async () => {
   const root = await log("phantom");
   try {
