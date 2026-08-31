@@ -504,7 +504,15 @@ export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = 
         const sp = specs.get(e.subject);
         // A ratification for a spec this fold never saw drafted is not fatal: the drafting
         // shard may simply not have arrived yet, and the next sync completes it.
-        if (!sp || sp.status === "ratified") break;
+        // `!== "draft"`, not `=== "ratified"`. Every other spec arm in this fold tests for a
+        // draft; this one tested only for a double-ratify, so a WITHDRAWN or REPEALED spec
+        // could still be adopted. `ratifySpec` refuses anything but a draft and deliberately
+        // does not pull, so it needs no bad actor: Alice withdraws the draft, Bob ratifies
+        // from a read taken before the pull, and the row lands `status: "ratified"` while
+        // still carrying `withdrawnBy`/`withdrawnAt` — a spec that is both, which no verb
+        // can undo, since a second ratification breaks here and a fresh withdrawal must
+        // clear `foldReliance`.
+        if (!sp || sp.status !== "draft") break;
         // Adoption is a principal's act, and a remote clone sees only this row. Without
         // this the tool's gate binds nobody but the machine that ran it.
         if (e.actor.via) break;
@@ -699,6 +707,19 @@ export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = 
           }
         }
         for (const o of mine) {
+          // A detector PROPOSED with this spec, retired for the same reason and by the same
+          // argument. Withdrawal was the one exit from `pending` nothing covered: ratification
+          // binds, and a pulled operation retires at ratification — but a spec that is never
+          // adopted at all left the pointer pending for ever, watching a criterion that will
+          // never exist, reachable by nothing. Retired, not deleted: it was really proposed.
+          for (const [id, p] of pointers) {
+            if (p.state === "pending" && p.operationId === o.id) {
+              pointers.set(id, {
+                ...p, state: "retired", retiredBy: e.actor, retiredAt: at,
+                retiredReason: `the spec it was proposed with was withdrawn`, origin: "sync",
+              });
+            }
+          }
           for (const [id, ack] of acknowledgements) {
             // Released, not deleted: the grant really happened, and the rule it approved is
             // the thing that stops existing.
@@ -847,14 +868,34 @@ export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = 
         // was proposed, watching a criterion nobody has adopted — the mechanism inverted.
         const { retiredBy, retiredAt, retiredReason, restatedBy, restatedAt, ...declared } = p;
         if (p.state === "pending") {
-          // DROPPED rather than promoted when it does not qualify. `proposePointer` refuses
+          const against = p.operationId ? operations.get(p.operationId) : undefined;
+          // DROPPED when it names nothing that could ever bind it. `proposePointer` refuses
           // a payload like this, and folding it `active` would turn a refusal at one end
           // into a live detector at the other — laxer than the tool, in the direction that
           // manufactures coverage.
-          const against = p.operationId ? operations.get(p.operationId) : undefined;
           if (!against || against.kind !== "add_criterion" || against.removed) break;
-          if (specs.get(against.specId)?.status !== "draft") break;
-          pointers.set(p.id, { ...declared, state: "pending", origin: "sync" });
+          const sp = specs.get(against.specId);
+          if (!sp) break;
+          // The spec's state decides, NOT the payload's — and this is where two orderings of
+          // the same two events used to disagree. A proposal folded before its ratification
+          // bound; one folded after was silently dropped, so the author's own store kept a
+          // detector every clone had thrown away, decided by nothing but the merge tiebreak.
+          //
+          // Both orderings now converge. Late is not invalid: the criterion exists by then,
+          // which is exactly when `declarePointer` would have been the verb, so it folds
+          // ACTIVE — an ordinary detector declared after adoption, which is the normal path.
+          // What it loses is only that the ratifier did not see it, and a detector declared
+          // after ratification never was seen.
+          if (sp.status === "draft") pointers.set(p.id, { ...declared, state: "pending", origin: "sync" });
+          else if (sp.status === "ratified") pointers.set(p.id, { ...declared, state: "active", origin: "sync" });
+          // Withdrawn or repealed: the criterion is never going to exist. Retired rather than
+          // dropped, so it reads as a proposal that went nowhere and not as one never made.
+          else {
+            pointers.set(p.id, {
+              ...declared, state: "retired", retiredBy: e.actor, retiredAt: e.at, origin: "sync",
+              retiredReason: `the spec it was proposed with was ${sp.status}`,
+            });
+          }
           break;
         }
         pointers.set(p.id, { ...declared, state: "active", origin: "sync" });

@@ -1407,6 +1407,73 @@ test("the fold binds a pending detector when the spec is adopted, and retires an
     assert.equal(byId.get("pt_orphan")!.state, "retired", "and one whose operation was pulled is not left pending");
     assert.match(byId.get("pt_orphan")!.retiredReason!, /pulled from sp_1/);
   } finally { discard(root); }
+
+  // A proposal folded AFTER its own ratification. Two orderings of the same two events used
+  // to disagree — bound one way, silently dropped the other — so the author's store kept a
+  // detector every clone had thrown away, decided by nothing but the merge tiebreak. Late is
+  // not invalid: the criterion exists by then, which is when `declarePointer` would have been
+  // the verb anyway.
+  const late = await log("bind-late");
+  try {
+    await publishSpecDrafted(late, SCOPE, opus, SPEC);
+    await publishOperation(late, SCOPE, opus, ADD);
+    await publishOperation(late, SCOPE, opus, ADD_CRITERION);
+    await ratifyWithReview(late, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1", "op_2"]);
+    await publishPointerDeclared(late, SCOPE, opus, pending("pt_late", "op_2"));
+    const s = await fold(late);
+    assert.equal(s.pointers.length, 1, "not dropped — the two orderings must agree");
+    assert.equal(s.pointers[0]!.state, "active", "and it is an ordinary detector by then");
+  } finally { discard(late); }
+
+  // WITHDRAWAL is the other exit, and it was the one nothing covered: a spec never adopted
+  // at all left its detectors pending for ever, against a criterion that will never exist.
+  const gone = await log("bind-withdrawn");
+  try {
+    await publishSpecDrafted(gone, SCOPE, opus, SPEC);
+    await publishOperation(gone, SCOPE, opus, ADD);
+    await publishOperation(gone, SCOPE, opus, ADD_CRITERION);
+    await publishPointerDeclared(gone, SCOPE, opus, pending("pt_x", "op_2"));
+    await publishSpecWithdrawn(gone, SCOPE, opus, "sp_1", "2026-08-02T00:00:00.000Z", "not ours to make");
+    const s = await fold(gone);
+    assert.equal(s.specs[0]!.status, "withdrawn");
+    assert.equal(s.pointers[0]!.state, "retired", "the detector goes with the proposal");
+    assert.match(s.pointers[0]!.retiredReason!, /withdrawn/);
+  } finally { discard(gone); }
+});
+
+/**
+ * A WITHDRAWN spec cannot be ratified, and this arm tested the wrong thing.
+ *
+ * Every other spec arm in the fold gates on `status !== "draft"`; `spec.ratified` gated on
+ * `=== "ratified"`, which catches a double-adopt and nothing else. `ratifySpec` refuses
+ * anything but a draft and deliberately does NOT pull, so no bad actor is needed: Alice
+ * withdraws the draft, Bob ratifies from a read taken before his pull, and the row lands
+ * `ratified` while still carrying `withdrawnBy` — a spec that is both, and no verb undoes
+ * it, because a second ratification breaks here and a fresh withdrawal must clear
+ * `foldReliance`.
+ */
+test("the fold refuses to ratify a spec that was withdrawn", async () => {
+  const root = await log("ratify-withdrawn");
+  try {
+    await publishSpecDrafted(root, SCOPE, opus, SPEC);
+    await publishOperation(root, SCOPE, opus, ADD);
+    await publishSpecWithdrawn(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", "not ours to make");
+    await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", {}, ["op_1"]);
+    const s = await fold(root);
+    assert.equal(s.specs[0]!.status, "withdrawn", "the latch does not go backwards");
+    assert.equal(s.specs[0]!.ratifiedAt, undefined, "and it is not both at once");
+    assert.equal(s.requirements.length, 0);
+  } finally { discard(root); }
+
+  // The ordinary adoption still works, so this is about the STATUS and not about the arm
+  // having been disabled.
+  const fine = await log("ratify-draft");
+  try {
+    await publishSpecDrafted(fine, SCOPE, opus, SPEC);
+    await publishOperation(fine, SCOPE, opus, ADD);
+    await ratifyWithReview(fine, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", {}, ["op_1"]);
+    assert.equal((await fold(fine)).requirements.length, 1);
+  } finally { discard(fine); }
 });
 
 test("the fold drops a revision that changed nothing, and keeps one that did", async () => {

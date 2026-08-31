@@ -248,14 +248,25 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
   // another repo's assertion as moved, because an anchor id is `file \0 symbolPath` and two
   // universes share `src/index.ts#main`. A pointer names its universe, so the read is
   // simply this universe's rows and the collision has nowhere to happen.
+  // Grouped BY CRITERION, not one row per detector. A criterion may have several detectors —
+  // that is the point of the record, since a rule can be checked in more than one place —
+  // and a row apiece meant two moved detectors emitted the criterion twice. It is a
+  // behaviour change from the old stored `assertedBy`, which evaluated once per criterion,
+  // and the web rollup keys these rows by criterion id alone, so it was also two children
+  // under one key.
+  const movedAnchors = new Map<string, Set<string>>();
   for (const d of await readPointers(root, { state: "active" })) {
-    if (!d.criterionId) continue;
-    const c = criterionById.get(d.criterionId);
-    if (!c) continue;
+    if (!d.criterionId || !criterionById.has(d.criterionId)) continue;
     const hit = d.witnesses.filter(witnessMoved).map((w) => w.anchorId);
     if (!hit.length) continue;
+    const set = movedAnchors.get(d.criterionId) ?? new Set<string>();
+    for (const a of hit) set.add(a);
+    movedAnchors.set(d.criterionId, set);
+  }
+  for (const [criterionId, anchors] of movedAnchors) {
+    const c = criterionById.get(criterionId)!;
     const arr = assertionsByRequirement.get(c.requirementId) ?? [];
-    arr.push({ id: c.id, criterion: c.criterion, evidenceKind: c.evidenceKind, anchors: hit });
+    arr.push({ id: c.id, criterion: c.criterion, evidenceKind: c.evidenceKind, anchors: [...anchors] });
     assertionsByRequirement.set(c.requirementId, arr);
   }
 

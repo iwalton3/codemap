@@ -20,6 +20,7 @@ import { draftSpec, addOperation, ratifySpec, listRequirements, getSpec, pending
 import { ratifyReviewed } from "./test-approve.js";
 import { acknowledgeGap, acknowledgeDebt } from "./acknowledgements.js";
 import { recordAudit, auditsFor, conformance, silenced } from "./audits.js";
+import { auditClaimStands } from "./schema.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 const SRC = "export function creditLine(cents) { return cents; }\n";
@@ -163,6 +164,35 @@ test("a RED detector files a nonconformant audit; a nameless one still does not"
     assert.ok("error" in nothing);
     assert.match((nothing as any).error, /indeterminate/);
   } finally { discard(root); }
+});
+
+/**
+ * The FOLD's copy of the evidence rule, which diverged from the tool's the day the tool's
+ * was fixed.
+ *
+ * `hasEvidence` was changed so a RED detector files a nonconformant audit;
+ * `auditClaimStands` — the end every clone applies — still demanded `r.passed`. The tool
+ * answered `{ok: true}`, the fold dropped the event, and on a sidecar store `disposition`
+ * skips the local write too, so the audit existed on NO machine. `sharing-boundary.test.ts`
+ * pins the pair as text; this pins the BEHAVIOUR, because a grep passes on a line that is
+ * still present and no longer used.
+ *
+ * The conformant row is what keeps the fix honest: a failed check is evidence of a
+ * violation and must never certify one.
+ */
+test("the fold's evidence rule admits a red detector, and still refuses it as certification", () => {
+  const audit = (outcome: string, evidence: unknown) => ({
+    id: "au_1", requirementId: "req_1", outcome, finding: "the cap lint fails on the credit path",
+    evidence, witnesses: [], auditor: { principal: "izzie@x.com" }, at: "2026-08-01T00:00:00.000Z",
+    trigger: "ad-hoc",
+  }) as never;
+  const RED = { ran: [{ command: "npm run lint:credit-cap", passed: false }] };
+
+  assert.equal(auditClaimStands(audit("nonconformant", RED)), true, "a red detector IS the violation");
+  assert.equal(auditClaimStands(audit("conformant", RED)), false, "and certifies nothing");
+  assert.equal(auditClaimStands(audit("nonconformant", { ran: [{ command: "   ", passed: false }] })), false,
+    "a nameless command records nothing that ran");
+  assert.equal(auditClaimStands(audit("nonconformant", {})), false, "and absence of evidence never files");
 });
 
 test("a positive audit closes a gap, which nothing else can", async () => {

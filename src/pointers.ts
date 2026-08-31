@@ -260,6 +260,23 @@ export async function bindPointersForSpec(root: string, specId: string): Promise
   return bound;
 }
 
+/**
+ * Retire every pointer still PENDING against a spec's operations. The withdrawal half of
+ * `bindPointersForSpec` — see the note there on why a pending pointer needs both exits.
+ */
+export async function retirePendingForSpec(
+  root: string, specId: string, reason: string, by: Pointer["declaredBy"],
+): Promise<number> {
+  const ops = new Set((await readOperations(root, { specId, includeRemoved: true })).map((o) => o.id));
+  let n = 0;
+  for (const p of await readPointers(root, { state: "pending" })) {
+    if (!p.operationId || !ops.has(p.operationId)) continue;
+    await writeLocalPointer(root, { ...p, state: "retired", retiredBy: by, retiredAt: now(), retiredReason: reason });
+    n++;
+  }
+  return n;
+}
+
 export async function declarePointer(
   root: string,
   input: {
@@ -360,7 +377,16 @@ export async function restatePointer(
 ): Promise<{ ok: true; pointer: ServedPointer } | Err> {
   const p = await readPointer(root, input.id);
   if (!p) return { error: `no pointer "${input.id}"` };
-  if (p.state !== "active") return { error: `${p.id} is retired` };
+  // Says which state, because there are now three and "retired" was wrong for one of them.
+  // A PENDING pointer cannot be re-baselined and should not be: it has no criterion yet, so
+  // there is no "new quiet" to establish — ratification is what gives it something to watch.
+  if (p.state !== "active") {
+    return {
+      error: p.state === "pending"
+        ? `${p.id} is still pending — it binds when ${p.operationId ? `the spec carrying ${p.operationId}` : "its spec"} is ratified, and there is nothing to re-baseline before that`
+        : `${p.id} is retired`,
+    };
+  }
   const ctx = await context(root);
   const anchors = watched(root, ctx, p.target);
   if (anchors === null) {

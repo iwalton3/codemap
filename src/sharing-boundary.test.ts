@@ -302,7 +302,9 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
   // somebody had deleted.
   {
     what: "an agent's ratification of a spec",
-    fold: ["src/shared-standard.ts", /sp\.status === "ratified"\) break;[\s\S]{0,240}?if \(e\.actor\.via\) break;/],
+    // `!== "draft"` since 2026-08-31: the old `=== "ratified"` caught a double-adopt and let
+    // a WITHDRAWN spec through. The anchor here is the principal gate two lines below it.
+    fold: ["src/shared-standard.ts", /sp\.status !== "draft"\) break;[\s\S]{0,600}?if \(e\.actor\.via\) break;/],
     publish: ["src/requirements.ts", /principal\(root, input, "ratify"\)/],
   },
   {
@@ -333,6 +335,21 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     what: "withdrawing a spec that amended, retired or re-filed pre-existing state",
     fold: ["src/shared-standard.ts", /if \(mine\.some\(\(o\) => o\.kind !== "add_requirement" && o\.kind !== "add_criterion"\)\) break;/],
     publish: ["src/requirements.ts", /const changed = ops\.find\(\(o\) => o\.kind !== "add_requirement"/],
+  },
+  {
+    // The one that got away, and the reason this list exists. `hasEvidence` was fixed so a
+    // RED detector files a nonconformant audit; `auditClaimStands` still required
+    // `r.passed`, so the tool accepted the audit and the fold dropped it — and on a sidecar
+    // store `disposition` skips the local write too, so it existed on NO machine while
+    // `recordAudit` answered `{ok: true}`. Pinned at both ends now, in the direction that
+    // matters: this rule ADMITS evidence, so a divergence here destroys a finding rather
+    // than laundering one.
+    what: "a named command that FAILED, as evidence of non-conformance",
+    // The USE, not the declaration. Pinning `const ran = …` passed with the guard reverted,
+    // because the binding survived and only the condition changed — a text grep pins what it
+    // literally names, and `auditClaimStands` is behaviour-tested beside this for that reason.
+    fold: ["src/schema.ts", /nonconformant" && !\(touched \|\| ran \|\| ev\.consulted\?\.length\)/],
+    publish: ["src/audits.ts", /touchedCode\(e\) \|\| !!e\.consulted\?\.length \|\| !!e\.ran\?\.some\(\(r\) => !!r\.command\?\.trim\(\)\)/],
   },
 ];
 

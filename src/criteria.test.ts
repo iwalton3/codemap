@@ -377,3 +377,41 @@ test("a diff that rewrites only the CHECK still raises the rule", async () => {
     assert.deepEqual(row.assertionsMoved[0]!.anchors, u.check);
   } finally { discard(u.root); }
 });
+
+/**
+ * Two detectors on one criterion are ONE row in the rollup, not two.
+ *
+ * A criterion may legitimately have several — that is why the address moved onto pointers,
+ * so a rule checked in more than one place can say so. A row per detector was a behaviour
+ * change from the stored `assertedBy`, which evaluated once per criterion, and the web
+ * rollup keys these rows by criterion id alone, so it was also two children under one key.
+ */
+test("a criterion with two moved detectors is reported once, with both anchors", async () => {
+  const u = await universe();
+  try {
+    const { requirementId, criterion } = await ruleWithCriterion(u.root, u.rule, u.check);
+    // A second detector that watches the SAME anchor the edit below moves. Pointing it at
+    // the rule's own code instead made this test vacuous: only one detector moved, so one
+    // row came back whether or not the rollup grouped anything.
+    const { declarePointer: dp } = await import("./pointers.js");
+    ok(await dp(u.root, {
+      requirementId, criterionId: criterion.id, targetKind: "anchor", targetId: u.check[0]!,
+      rationale: "a second team watching the same check",
+    }));
+
+    const { readAnchorStore, writeSnapshot } = await import("./store.js");
+    const { computeDiff } = await import("./diff.js");
+    await writeSnapshot(u.root, "base_sha", "main", (await readAnchorStore(u.root)).anchors, "2026-08-01T00:00:00Z");
+    await editCheck(u.root, "export function assertCreditLineCapped() { return false; }\n");
+    await writeSnapshot(u.root, "head_sha", "feature", (await readAnchorStore(u.root)).anchors, "2026-08-01T01:00:00Z");
+
+    const r = await computeDiff(u.root, "base_sha", "head_sha");
+    assert.ok(!("error" in r));
+    if ("error" in r) return;
+    const row = r.impact.requirements.find((x) => x.id === requirementId);
+    assert.ok(row);
+    assert.deepEqual(row.assertionsMoved.map((x) => x.id), [criterion.id],
+      "one row for the criterion, however many detectors watch it");
+    assert.deepEqual(row.assertionsMoved[0]!.anchors, u.check, "with the anchors unioned, not repeated");
+  } finally { discard(u.root); }
+});

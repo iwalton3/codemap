@@ -21,7 +21,7 @@ import { indexBlob } from "./repo.js";
 import { writeStore, writeNode, readPointers } from "./store.js";
 import type { LogicalNode, State } from "./schema.js";
 import { discard } from "./test-tmp.js";
-import { draftSpec, addOperation, ratifySpec, getSpec } from "./requirements.js";
+import { draftSpec, addOperation, ratifySpec, getSpec, withdrawSpec } from "./requirements.js";
 import { ratifyReviewed } from "./test-approve.js";
 import { declarePointer, proposePointer, restatePointer, retirePointer, pointersFor, auditQueue } from "./pointers.js";
 import { criterionIdFor, requirementIdFor } from "./schema.js";
@@ -421,5 +421,44 @@ test("a detector cannot be proposed against a ratified spec, or against a rule o
     assert.match(err(await proposePointer(u.root, {
       operationId: crit.id, targetKind: "anchor", targetId: u.lint[0]!, rationale: "x",
     })), /declarePointer/);
+  } finally { discard(u.root); }
+});
+
+/**
+ * WITHDRAWAL is the other exit from `pending`, and nothing covered it.
+ *
+ * Ratification binds, and an operation pulled from the draft retires at ratification — but
+ * a spec that is never adopted at all left its proposed detectors pending FOR EVER,
+ * watching a criterion that will never exist and reachable by nothing: no query asks for
+ * `pending`, so it could not be listed, restated or retired by hand either.
+ *
+ * Retired rather than deleted, for the reason withdrawal releases a gap rather than
+ * deleting it: the proposal really happened.
+ */
+test("withdrawing a spec retires the detectors proposed with it", async () => {
+  const u = await universe();
+  try {
+    const sp = ok(await draftSpec(u.root, { title: "Credit limits" }));
+    const add = ok(await addOperation(u.root, {
+      specId: sp.id, kind: "add_requirement", rationale: "policy", reversibility: "reversible",
+      title: "Credit line is capped", section: "Credit/Limits",
+      statement: "A credit line never exceeds the approved limit.", provenance: "credit policy",
+    }));
+    const crit = ok(await addOperation(u.root, {
+      specId: sp.id, kind: "add_criterion", rationale: "how it is discharged",
+      reversibility: "reversible", targetOperationId: add.id,
+      criterion: "A line above the limit is rejected.",
+      falsifier: "A line above the limit is accepted and persisted.", evidenceKind: "lint-test",
+    }));
+    ok(await proposePointer(u.root, {
+      operationId: crit.id, targetKind: "anchor", targetId: u.lint[0]!, rationale: "the lint",
+    }));
+    assert.equal((await readPointers(u.root, { state: "pending" })).length, 1);
+
+    ok(await withdrawSpec(u.root, sp.id, { reason: "the rule is not ours to make" }));
+    assert.deepEqual(await readPointers(u.root, { state: "pending" }), [], "nothing is left pending");
+    const retired = await readPointers(u.root, { state: "retired" });
+    assert.equal(retired.length, 1, "and it is kept, because it really was proposed");
+    assert.match(retired[0]!.retiredReason!, /withdrawn/);
   } finally { discard(u.root); }
 });

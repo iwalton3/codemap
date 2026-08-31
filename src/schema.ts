@@ -1408,6 +1408,14 @@ export function auditClaimStands(a: Audit): boolean {
   // A command that FAILED is evidence of non-conformance, never of conformance — and it
   // must NAME the command, because `{passed: true}` alone records nothing that ran.
   const touched = !!(ev.read?.length || ev.ran?.some((r) => r.passed && !!r.command?.trim()));
+  // A NAMED command, whatever its verdict — the nonconformant direction only. `touched`
+  // requires `passed`, which is right for certifying and inverted for reporting a
+  // violation, and `hasEvidence` in `audits.ts` was fixed for exactly that. This end was
+  // not, so a red-detector audit passed the tool, returned `{ok: true}`, and was DROPPED
+  // here — and on a sidecar store `disposition` skips the local write too, so the audit
+  // existed on no machine at all. The strongest evidence class in the system, evaporating
+  // silently, and only for the teams the sidecar exists for.
+  const ran = !!ev.ran?.some((r) => !!r.command?.trim());
 
   // The witnesses ARE the cited anchors, in order: `recordAudit` derives one from the
   // other. Requiring the correspondence is what keeps promotion honest — it re-records the
@@ -1423,7 +1431,7 @@ export function auditClaimStands(a: Audit): boolean {
   if (a.outcome === "conformant" && (!touched || !witnessed.length)) return false;
   // Absence of evidence must never FILE. "I could not verify this" is an unverified
   // requirement, not a violation; `indeterminate` is the quiet bucket it belongs in.
-  if (a.outcome === "nonconformant" && !(touched || ev.consulted?.length)) return false;
+  if (a.outcome === "nonconformant" && !(touched || ran || ev.consulted?.length)) return false;
   return true;
 }
 

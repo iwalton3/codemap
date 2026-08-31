@@ -208,6 +208,33 @@ test("a correction records WHY it was made, apart from the rule's own rationale"
   } finally { u.cleanup(); }
 });
 
+/**
+ * Setting an optional field to "" is setting it to NOTHING, and the tool used to disagree
+ * with the fold about that.
+ *
+ * `operationContent` omits both `undefined` and `""`, so the two are the same text to every
+ * reader and to every witness. `changedFields` compared raw values, saw `undefined -> ""` as
+ * a change, appended a revision, published it and answered `{ok: true}` — and the fold then
+ * computed `moved=false, grew=true` and refused the event. A false success, and the exact
+ * divergence the biconditional was added to close, arriving from the other side.
+ *
+ * The real clear beside it is the control: blanking a field that HAD a value is a genuine
+ * change and must still work.
+ */
+test("blanking an already-absent field is nothing to change; blanking a set one is not", async () => {
+  const u = await universe();
+  try {
+    const { opId } = await drafted(u.root);
+    assert.match(err(await reviseOperation(u.root, { operationId: opId, evidence: "", ...AGENT })),
+      /nothing to change/, "the fold would have refused this, so the tool must not accept it");
+
+    ok(await reviseOperation(u.root, { operationId: opId, evidence: "COD-31", ...AGENT }));
+    const cleared = ok(await reviseOperation(u.root, { operationId: opId, evidence: "  ", ...AGENT }));
+    assert.equal(cleared.operation.evidence, undefined, "and clearing a value that existed really clears it");
+    assert.equal(cleared.operation.revisions!.at(-1)!.was.evidence, "COD-31");
+  } finally { u.cleanup(); }
+});
+
 test("revision cannot change an operation's KIND", async () => {
   const u = await universe();
   try {

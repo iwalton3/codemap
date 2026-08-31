@@ -624,23 +624,30 @@ export async function reviseOperation(
 
   // Every field the caller did not name keeps its current value, so a revision that means to
   // fix a typo in one statement cannot blank a rationale by omission.
+  // An optional field set to "" is set to NOTHING. `operationContent` omits both `undefined`
+  // and `""`, so the two are the same text to every reader and to every witness — but
+  // `changedFields` compares raw values and saw `undefined -> ""` as a change. The tool then
+  // appended a revision, published, and answered `{ok: true}`; the fold computed
+  // `moved=false, grew=true` and refused the event. A false success, and the exact
+  // divergence the biconditional exists to close, arriving from the other side.
+  const blank = (v: string | undefined) => (v?.trim() ? v : undefined);
   const merged: OperationInput = {
     kind: op.kind,
     rationale: input.rationale ?? op.rationale,
     reversibility: input.reversibility ?? op.reversibility,
     requirementId: input.requirementId ?? op.requirementId,
-    title: input.title ?? op.title,
-    section: input.section ?? op.section,
-    statement: input.statement ?? op.statement,
-    provenance: input.provenance ?? op.provenance,
+    title: blank(input.title ?? op.title),
+    section: blank(input.section ?? op.section),
+    statement: blank(input.statement ?? op.statement),
+    provenance: blank(input.provenance ?? op.provenance),
     cites: input.cites,
-    evidence: input.evidence ?? op.evidence,
-    criterion: input.criterion ?? op.criterion,
-    falsifier: input.falsifier ?? op.falsifier,
+    evidence: blank(input.evidence ?? op.evidence),
+    criterion: blank(input.criterion ?? op.criterion),
+    falsifier: blank(input.falsifier ?? op.falsifier),
     evidenceKind: input.evidenceKind ?? op.evidenceKind,
     targetOperationId: input.targetOperationId ?? op.targetOperationId,
-    fromSection: input.fromSection ?? op.fromSection,
-    toSection: input.toSection ?? op.toSection,
+    fromSection: blank(input.fromSection ?? op.fromSection),
+    toSection: blank(input.toSection ?? op.toSection),
   };
   const built = await operationPayload(root, sp, merged, op.id);
   if (isErr(built)) return built;
@@ -1635,6 +1642,13 @@ export async function withdrawSpec(
       if (a.state !== "released") await releaseAcknowledgement(root, a.id, `${sp.id} was withdrawn`, input);
     }
   }
+  // A detector PROPOSED with one of these operations, by the same argument. Withdrawal was
+  // the exit from `pending` that nothing covered — ratification binds, and an operation
+  // pulled from the draft retires AT ratification, but a spec that is never adopted at all
+  // left the pointer pending for ever, watching a criterion that will never exist and
+  // reachable by nothing. Retired rather than deleted: it really was proposed.
+  const { retirePendingForSpec } = await import("./pointers.js");
+  await retirePendingForSpec(root, sp.id, `${sp.id} was withdrawn`, who);
   const next: Spec = { ...sp, status: "withdrawn", withdrawnBy: who, withdrawnAt: at };
   await writeLocalSpec(root, next);
   return { ok: true, spec: next, removed };
