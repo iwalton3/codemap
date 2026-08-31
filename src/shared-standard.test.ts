@@ -1592,6 +1592,48 @@ test("every combination of claim and local reliance decides the same way, and th
   // assertions would pass against a fold that refuses everything.
   assert.equal(new Set(CASES.map((c) => c.status)).size, 2, "the table must not be one answer six times");
   assert.equal(CASES.filter((c) => c.status === "withdrawn").length, 2);
+
+  // TWO MORE INPUTS, and they are asserted as VETOES rather than folded into the table
+  // above — which is a claim about them, and the reason to write it down. Each dominates
+  // the claim/reliance decision outright, so crossing them in would be twenty-four cells
+  // where eighteen differ by a flag that always wins. If either ever stops dominating,
+  // these break and the table needs the axis.
+
+  // A LATER citation vetoes, whatever the claim said. This matters most on the cell that
+  // changed most recently: not-named-and-clean now APPLIES, so the look-ahead is the only
+  // thing standing between it and a rule deleted out from under a pointer appended
+  // concurrently on another clone.
+  for (const [i, scopes] of [[SCOPE], ["standard/acme.settlement"]].entries()) {
+    const raced = await log(`wd-later-${i}`);
+    try {
+      await ratified(raced);
+      await publishSpecWithdrawn(raced, SCOPE, izzie, "sp_1", "2026-08-04T00:00:00.000Z", "adopted in error", scopes);
+      await publishPointerDeclared(raced, SCOPE, opus, {
+        id: "pt_1", requirementId: requirementIdFor("op_1"), universe: U,
+        target: { kind: "anchor", id: "a_x" }, rationale: "watch it",
+        witnesses: [{ anchorId: "a_x", bodyHash: "h1:sha256:abc" }],
+        state: "active", declaredBy: opus, declaredAt: "2026-08-05T00:00:00.000Z",
+      });
+      const s = await fold(raced);
+      assert.equal(s.specs[0]!.status, "ratified",
+        `a citation appended after the withdrawal must veto it, pin ${scopes[0]} or not — removing a rule is the quieting act, so the withdrawal loses the race`);
+      assert.equal(s.requirements.length, 1);
+    } finally { discard(raced); }
+  }
+
+  // A DRAFT ignores every bit of it. Nothing was applied, so nothing anywhere can rely on
+  // it and there is nothing to be clean about — an unpinned draft withdrawal is the
+  // author's own take-back and must not be caught by a gate aimed at adopted law.
+  for (const scopes of [undefined, ["standard/acme.settlement"]]) {
+    const draft = await log(`wd-draft-${scopes ? "pinned-elsewhere" : "unpinned"}`);
+    try {
+      await publishSpecDrafted(draft, SCOPE, opus, SPEC);
+      await publishOperation(draft, SCOPE, opus, ADD);
+      await publishSpecWithdrawn(draft, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", "second thoughts", scopes);
+      assert.equal((await fold(draft)).specs[0]!.status, "withdrawn",
+        "the ratified gate must not reach a draft");
+    } finally { discard(draft); }
+  }
 });
 
 /**
