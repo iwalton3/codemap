@@ -46,7 +46,7 @@ import {
   readOperation, readProposalWitnesses, readRequirement, readRequirements, readSpec, readSpecs,
   readVacuityChecks, writeLocalProposalWitness,
   readPointers, requirementSectionCounts, writeLocalCriterion, writeLocalOperation,
-  writeLocalRequirement, writeLocalSpec, deleteLocalCriterion, deleteLocalRequirement,
+  writeLocalRequirement, writeLocalSpec,
 } from "./store.js";
 import { liveHashes, liveIndex, witnessDrift, realDrift } from "./reviews.js";
 import { ABSENT_HASH } from "./normalize.js";
@@ -54,7 +54,6 @@ import { isAgentActor, requireActor, resolvePrincipal } from "./identity.js";
 import type { ActorInput } from "./identity.js";
 import {
   disposition, shareOperation, shareOperationRemoved, shareOperationRevised, shareSpecDrafted,
-  relianceEverywhere,
   shareSpecRatified, shareSpecReviewed, shareSpecRevised, shareSpecWithdrawn, type Shared,
 } from "./standard-publish.js";
 import { reviewComplete, reviewGap, type ReviewGap } from "./shared-standard.js";
@@ -1425,83 +1424,7 @@ async function sharedRatification(
   return { ok: true, spec: folded, applied: await readOperations(root, { specId: sp.id }) };
 }
 
-/** One thing that has come to depend on a rule, and would be falsified by removing it. */
-export interface Reliance {
-  kind: "operation" | "acknowledgement" | "audit" | "problem" | "criterion" | "pointer" | "population" | "vacuity";
-  id: string;
-  /** The rule relied on. */
-  requirementId: string;
-  detail: string;
-}
 
-/**
- * What relies on the rules a spec introduced.
- *
- * Reliance is a REFERENCE COUNT, which is why which backout applies is decided by the
- * store rather than by the person asking. Two exclusions, and both are the point rather
- * than convenience: this spec's own operations and its own criteria are not reliance on
- * itself, and a gap chained to one of its operations is an approval of a rule that is
- * about to stop existing — it ends with the spec, which is the job withdrawal gives it.
- *
- * The list is longer than `docs/requirements-architecture.md` enumerates, and deliberately:
- * that passage was written when audits, acknowledgements and problems were the only things
- * that could cite a rule. Criteria, pointers and population pins all can now, and a
- * withdrawal that left one of them pointing at a rule nobody can read is the orphan the
- * reference count exists to prevent.
- */
-export async function relianceOn(root: string, ops: Operation[]): Promise<Reliance[]> {
-  const introduced = ops.filter((o) => o.kind === "add_requirement").map((o) => requirementIdFor(o.id));
-  const own = new Set(ops.map((o) => o.id));
-  const out: Reliance[] = [];
-  for (const requirementId of introduced) {
-    for (const o of await readOperations(root, { requirementId })) {
-      if (own.has(o.id)) continue;
-      out.push({ kind: "operation", id: o.id, requirementId, detail: `${o.kind} in ${o.specId}` });
-    }
-    for (const a of await readAcknowledgements(root, { requirementId })) {
-      if (a.operationId && own.has(a.operationId)) continue;
-      if (a.state === "released") continue;
-      out.push({ kind: "acknowledgement", id: a.id, requirementId, detail: `${a.basis} (${a.state})` });
-    }
-    // PROVISIONAL rows do not count, in either. Reliance is the one place the tool and the
-    // fold have to agree, and the fold cannot see them at all — `foldStandard` refuses a
-    // provisional audit, problem or pin — so counting them here refuses a withdrawal on
-    // evidence that exists on no other clone, naming an id no teammate can resolve. The
-    // failure is safe (it refuses before appending) and it is still a divergence, which is
-    // exactly what `sharing-boundary.test.ts` §BOTH_ENDS exists to keep out.
-    for (const a of await readAudits(root, { requirementId })) {
-      if (a.provisional) continue;
-      out.push({ kind: "audit", id: a.id, requirementId, detail: a.outcome });
-    }
-    for (const pr of await readProblems(root, { requirementId })) {
-      if (pr.provisional) continue;
-      out.push({ kind: "problem", id: pr.id, requirementId, detail: "raised against this rule" });
-    }
-    for (const c of await readCriteria(root, { requirementId })) {
-      if (own.has(c.introducedBy)) continue;
-      out.push({ kind: "criterion", id: c.id, requirementId, detail: c.evidenceKind });
-    }
-    for (const p of await readPointers(root, { requirementId })) {
-      out.push({ kind: "pointer", id: p.id, requirementId, detail: p.state });
-    }
-    for (const p of await readPopulations(root, { requirementId })) {
-      if (p.provisional) continue;
-      out.push({ kind: "population", id: p.id, requirementId, detail: p.state });
-    }
-  }
-  // A vacuity check hangs off a CRITERION, not off a rule, so it is invisible to the loop
-  // above — and the criteria a spec introduced are deleted along with its rules. Somebody
-  // established whether that criterion's assertion can fail; withdrawing over it discards
-  // the answer and leaves the check pointing at nothing.
-  for (const o of ops) {
-    if (o.kind !== "add_criterion") continue;
-    const criterionId = criterionIdFor(o.id);
-    for (const v of await readVacuityChecks(root, { criterionId })) {
-      out.push({ kind: "vacuity", id: v.id, requirementId: o.requirementId ?? criterionId, detail: v.verdict });
-    }
-  }
-  return out;
-}
 
 /**
  * Who may withdraw, and the one case where it is not a principal.
@@ -1580,7 +1503,7 @@ async function withdrawer(root: string, sp: Spec, input: ActorInput): Promise<Ac
  */
 export async function withdrawSpec(
   root: string, specId: string, input: { reason: string } & ActorInput,
-): Promise<{ ok: true; spec: Spec; removed: string[] } | (Err & { reliance?: Reliance[] })> {
+): Promise<{ ok: true; spec: Spec; retired: string[] } | Err> {
   const reason = input.reason?.trim();
   if (!reason) return { error: "a withdrawal needs a `reason` — it stays on the record as the act it is" };
   const sp = await readSpec(root, specId);
@@ -1604,105 +1527,55 @@ export async function withdrawSpec(
           + `the old text back as its own witnessed act.`,
       };
     }
-    const reliance = await relianceOn(root, ops);
-    if (reliance.length) {
-      return {
-        error:
-          `${specId} cannot be withdrawn: ${reliance.length} thing(s) already rely on what it `
-          + `introduced (${reliance.slice(0, 5).map((r) => `${r.kind} ${r.id}`).join(", ")}`
-          + `${reliance.length > 5 ? ", …" : ""}). Withdrawal is mistake correction and is honest only `
-          + `while nothing downstream is falsified. Repeal it instead: a new spec whose operations `
-          + `reverse this one's.`,
-        reliance,
-      };
-    }
   }
 
-  const doomedIds = sp.status === "ratified"
-    ? [
-      ...ops.filter((o) => o.kind === "add_requirement").map((o) => requirementIdFor(o.id)),
-      ...ops.filter((o) => o.kind === "add_criterion").map((o) => criterionIdFor(o.id)),
-    ]
+  const retiring = sp.status === "ratified"
+    ? ops.filter((o) => o.kind === "add_requirement").map((o) => requirementIdFor(o.id))
     : [];
-  // EVERY repository, not just this one. `relianceOn` above counted what this universe can
-  // see, and that is a verdict about one repo dressed as a verdict about the standard — the
-  // rule leaves here and stays there, permanently, with nothing saying so. This reads every
-  // standard scope on the sidecar and refuses if any is unsettled, because *cannot
-  // determine* is a refusal. The scopes it read are pinned on the event; the fold checks
-  // itself against that list. Only for a ratified spec: a draft applied nothing, so there is
-  // nothing anywhere to rely on it.
-  let checkedScopes: string[] = [];
-  if (sp.status === "ratified") {
-    // PULL FIRST, where there is something to pull. Neither `share` nor `ensureSidecar`
-    // does, so the scopes `relianceEverywhere` reads are whatever this clone last
-    // received: universe B records an audit and syncs, A never pulls, A reads B's scope as
-    // complete-and-clean, pins it, and drops a rule B then keeps — the exact divergence
-    // this mechanism exists to prevent, reintroduced by the gate itself. A stale scope IS
-    // `complete`, so no status check catches it; only a pull does. Same step
-    // `review_proposal` and the sign-offs take.
-    //
-    // Gated on a sidecar EXISTING: a store with none has nothing to pull and one universe
-    // to be clean in, and requiring it there would refuse every withdrawal on the
-    // configuration codemap has always supported.
-    if (resolveSidecar(root)) {
-      const pulled = await pullFirst(root);
-      if (!pulled.pulled) {
-        return {
-          error:
-            `could not pull the sidecar, so whether this withdrawal is clean in the other repositories `
-            + `cannot be established from here${pulled.note ? ` — ${pulled.note}` : ""}. A ratified spec leaves `
-            + `the standard everywhere or nowhere, and a stale mirror reads as clean, so this refuses rather `
-            + `than guessing. Fix the sync and try again.`,
-        };
-      }
-    }
-    const everywhere = await relianceEverywhere(root, doomedIds);
-    if ("error" in everywhere) return everywhere;
-    checkedScopes = everywhere.scopes;
-  }
 
   const at = now();
-  const outcome = await shareSpecWithdrawn(root, sp.id, at, reason, checkedScopes);
+  const outcome = await shareSpecWithdrawn(root, sp.id, at, reason);
   const d = disposition(outcome);
   if ("error" in d) return d;
-  const removed = doomedIds;
   if (!d.local) {
-    // Three outcomes, and collapsing the middle two is the mistake `sharedRatification`
-    // documents: the FOLD decides on this path and it can REFUSE, because the local
-    // reference count cannot see a citation another clone appended concurrently. Reporting
-    // a refusal as "not folded yet" would tell the caller to wait for a removal that is
-    // never going to happen.
+    // The fold still decides, and it can still refuse — the operation-KIND gate above is
+    // restated there. What it can no longer refuse over is reliance, because a tombstone
+    // orphans nothing.
     const folded = await readSpec(root, sp.id);
-    if (folded?.status === "withdrawn") return { ok: true, spec: folded, removed };
-    if (outcome.shared && outcome.folded) {
-      return {
-        error:
-          `${sp.id} was NOT withdrawn: this machine folded the log and something appended `
-          + `elsewhere already relies on what the spec introduced — the local reference count `
-          + `could not see it, because the log is pull/push and never read on an ordinary read. `
-          + `The standard is unchanged and the spec stays ratified. Sync, then repeal it with a `
-          + `compensating spec if it still needs to go.`,
-      };
-    }
+    if (folded?.status === "withdrawn") return { ok: true, spec: folded, retired: retiring };
     return {
-      error:
-        `${sp.id} is appended to the shared log and durable, but this machine has not folded it `
-        + `yet, so what it removed is not knowable here. Re-read the spec after the next sync.`,
+      error: outcome.folded
+        ? `${sp.id} was NOT withdrawn: this machine folded the log and the fold refused it. The `
+          + `standard is unchanged and the spec stays ${sp.status}.`
+        : `${sp.id} is appended to the shared log and durable, but this machine has not folded it `
+          + `yet, so what it retired is not knowable here. Re-read the spec after the next sync.`,
     };
   }
 
-  // Guarded on status, the way the fold guards it: a DRAFT applied nothing, so there is
-  // nothing of its to remove. The deletes would be harmless no-ops — `requirementIdFor` on
-  // an operation that was never adopted names a row that does not exist — but two ends that
-  // read differently is how one of them later stops meaning what the other does.
+  // RETIRED, not deleted. A ratified spec's rules were adopted and read and possibly
+  // audited; taking the rows out would orphan every one of those citations, and proving
+  // that nothing anywhere holds one is a distributed negative across asynchronously
+  // replicated evidence — which is what the pin, the cross-scope scan, the pull and the
+  // look-ahead existed to attempt, and what produced six defects in a day trying.
+  //
+  // A tombstone is the same end state a compensating `retire_requirement` reaches, and it
+  // needs no proof of anything: the record survives, so every audit and pointer still
+  // resolves, and `status: "retired"` is what takes the rule out of force everywhere that
+  // reads it (`scrubPlan`, `conformance`, `weakAssertions` all filter to ratified). It is
+  // also the better record — somebody adopted this and repealed it, and that happened.
+  //
+  // Criteria are untouched, exactly as `retire_requirement` leaves them: `weakAssertions`
+  // filters by the RULE's status, so they leave the queue with it and there is no
+  // `retire_criterion` to need.
   if (sp.status === "ratified") {
     for (const op of ops) {
-      if (op.kind === "add_requirement") await deleteLocalRequirement(root, requirementIdFor(op.id));
-      if (op.kind === "add_criterion") await deleteLocalCriterion(root, criterionIdFor(op.id));
+      if (op.kind !== "add_requirement") continue;
+      const r = await readRequirement(root, requirementIdFor(op.id));
+      if (r) await writeLocalRequirement(root, { ...r, status: "retired", retiredBy: who, retiredAt: at });
     }
   }
-  // A gap chained to one of these operations approved a rule that will now never exist. It
-  // is RELEASED rather than deleted, for the reason the spec is: the grant really happened.
+  // A gap chained to one of these operations silenced a rule that no longer binds. It is
+  // RELEASED rather than deleted, for the reason the rule is tombstoned: it really happened.
   const { releaseAcknowledgement } = await import("./acknowledgements.js");
   for (const op of ops) {
     for (const a of await readAcknowledgements(root, { operationId: op.id })) {
@@ -1718,7 +1591,7 @@ export async function withdrawSpec(
   await retirePendingForSpec(root, sp.id, `${sp.id} was withdrawn`, who);
   const next: Spec = { ...sp, status: "withdrawn", withdrawnBy: who, withdrawnAt: at };
   await writeLocalSpec(root, next);
-  return { ok: true, spec: next, removed };
+  return { ok: true, spec: next, retired: retiring };
 }
 
 /**

@@ -2180,30 +2180,7 @@ export async function writeLocalRequirement(root: string, r: Requirement): Promi
   ).run(...requirementRow(r) as any);
 }
 
-/**
- * Remove a requirement, and a criterion, from the LOCAL rows.
- *
- * Only reachable from `withdrawSpec`, and only for what the withdrawn spec introduced —
- * there is no general delete, because the standard is a projection of ratified specs and a
- * row nothing un-ratified is a row that should still be there. The fold-ownership guard is
- * the same one the writers carry: a shared row is removed by the fold dropping it from the
- * projection, never by a local statement the next sync overwrites.
- */
-export async function deleteLocalRequirement(root: string, id: string): Promise<void> {
-  const d = db(root);
-  const owner = d.prepare("SELECT source_scope FROM requirements WHERE id = ? AND source_scope IS NOT NULL")
-    .get(id) as { source_scope: string } | undefined;
-  if (owner) throw new Error(`${id} is owned by the sidecar fold (${owner.source_scope}) — write an event, not a row.`);
-  d.prepare("DELETE FROM requirements WHERE id = ? AND source_scope IS NULL").run(id);
-}
 
-export async function deleteLocalCriterion(root: string, id: string): Promise<void> {
-  const d = db(root);
-  const owner = d.prepare("SELECT source_scope FROM criteria WHERE id = ? AND source_scope IS NOT NULL")
-    .get(id) as { source_scope: string } | undefined;
-  if (owner) throw new Error(`${id} is owned by the sidecar fold (${owner.source_scope}) — write an event, not a row.`);
-  d.prepare("DELETE FROM criteria WHERE id = ? AND source_scope IS NULL").run(id);
-}
 
 const hydrateSpec = (body: string, origin: string | null): Spec | null => {
   try {

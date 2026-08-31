@@ -36,7 +36,7 @@ standard were the two hardest to find from here.
 | doc | lines | |
 |---|---:|---|
 | [`docs/requirements-architecture.md`](requirements-architecture.md) | 1120 | NORMATIVE for requirements, specs, operations, audits and acknowledgements. Outranks COD-29 and the *Requirement Kernel* draft. |
-| [`docs/cross-universe-standard.md`](cross-universe-standard.md) | 315 | NORMATIVE for the standard across more than one repository, and it EXTENDS the above — it wins wherever that document assumes one universe, which it does implicitly throughout. |
+| [`docs/cross-universe-standard.md`](cross-universe-standard.md) | 320 | NORMATIVE for the standard across more than one repository, and it EXTENDS the above — it wins wherever that document assumes one universe, which it does implicitly throughout. |
 
 ## Active Plan
 

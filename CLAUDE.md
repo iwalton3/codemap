@@ -270,6 +270,17 @@ of that union is code-shaped, so a business rule stored as a node goes `stale` w
 drifts, and the standing instruction for stale is `update_node`, i.e. rewrite the rule to
 match the drifted code.
 
+A sixth, learned the expensive way: **removing adopted law TOMBSTONES, it never deletes.**
+`withdraw_spec` on a ratified spec retires its rules — the same end state a compensating
+`retire_requirement` reaches. Deleting them orphaned every audit and pointer citing them,
+so withdrawal had to prove that nothing in ANY universe relied on the rule; evidence is
+per-universe, so no fold could answer it, and the attempt cost a cross-scope scan, a pull, a
+pinned scope list, a look-ahead and six defects in one day. A tombstone proves nothing: the
+row survives so citations resolve, `status: "retired"` takes the rule out of force, and the
+arm reads law only. The one refusal left is the operation KIND — a spec that amended
+something can only be repealed, because restoring text would need the witnesses the
+amendment re-baselined away.
+
 A fifth, and it is the gate the fourth made necessary: **a ratifier signs what they read.**
 `ratify_spec` refuses unless that principal has signed off every operation AND the spec's
 framing, at the text they say now — a content hash, so revise-and-revise-back invalidates

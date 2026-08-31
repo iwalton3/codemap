@@ -19,7 +19,7 @@ import { writeStore, loadNodes, readRequirement, readSpec, writeLocalOperation }
 import type { State } from "./schema.js";
 import { discard } from "./test-tmp.js";
 import {
-  draftSpec, addOperation, ratifySpec, getSpec, pendingSpecs, withdrawSpec, relianceOn,
+  draftSpec, addOperation, ratifySpec, getSpec, pendingSpecs, withdrawSpec,
   listRequirements, getRequirement, requirementSections, reorganizeRequirement,
 } from "./requirements.js";
 import { ratifyReviewed, signOffEverything } from "./test-approve.js";
@@ -81,7 +81,10 @@ async function adoptRule(root: string, over: Record<string, unknown> = {}, actor
     ...over, ...actor,
   } as any));
   ok(await ratifyReviewed(root, sp.id));
-  const rules = await listRequirements(root);
+  // IN FORCE only. A withdrawn spec now retires its rules rather than deleting them, so
+  // the unfiltered listing keeps tombstones and "the last one" stopped meaning "the one
+  // this call just adopted".
+  const rules = await listRequirements(root, { status: "ratified" });
   return { specId: sp.id, rule: rules[rules.length - 1]! };
 }
 
@@ -752,6 +755,7 @@ test("a section another spec has since claimed by case blocks the card, not just
   } finally { discard(root); }
 });
 
+
 /**
  * Spec withdrawal — the before-reliance half of backout.
  *
@@ -777,35 +781,41 @@ test("a draft may always be withdrawn, and the gap attached to it is released wi
 
     const done = ok(await withdrawSpec(root, sp.id, { reason: "drafted against the wrong cluster" }));
     assert.equal(done.spec.status, "withdrawn");
-    assert.deepEqual(done.removed, [], "a draft applied nothing, so it removes nothing");
+    assert.deepEqual(done.retired, [], "a draft applied nothing, so it retires nothing");
     // The approval outlives nothing: the rule it pre-approved will never exist.
     assert.equal((await listAcknowledgements(root)).filter((a) => a.state !== "released").length, 0);
     assert.equal((await pendingSpecs(root)).length, 0, "and it leaves the ratification queue");
   } finally { discard(root); }
 });
 
-test("a ratified spec nothing relies on is withdrawn; one something cites is not", async () => {
+test("a ratified spec's rules are RETIRED, not removed — and what cites them survives", async () => {
   const { root } = await universe();
   try {
-    // The positive half, on its own fixture: an add-only spec with nothing downstream.
+    // Nothing downstream: the rule is tombstoned and leaves the in-force standard.
     const clean = await adoptRule(root, { title: "Float", section: "Settlement/Float", statement: "Float settles T+1." });
     const done = ok(await withdrawSpec(root, clean.specId, { reason: "the cluster was never adopted" }));
     assert.equal(done.spec.status, "withdrawn");
-    assert.deepEqual(await listRequirements(root), [], "what it put into the standard is gone");
+    assert.deepEqual(done.retired, [clean.rule.id]);
+    assert.deepEqual(await listRequirements(root, { status: "ratified" }), [],
+      "what it put into force is out of force — `ratified` is what every queue filters on");
+    assert.equal((await getRequirement(root, clean.rule.id) as any).requirement.status, "retired",
+      "and the ROW is still there — a tombstone, not a hole");
     assert.ok(ok(await readSpec(root, clean.specId)), "the spec itself stays — the act happened");
 
-    // …and the same shape, with one audit against the rule.
+    // …and the same shape with an audit against the rule. This used to be REFUSED, because
+    // deleting the row would have orphaned the audit. Retiring orphans nothing, so the
+    // whole distributed-negative apparatus that refusal needed is gone.
     const cited = await adoptRule(root, { title: "Currency", section: "Credit/Limits", statement: "All credit lines are in USD." });
-    // `indeterminate` needs no evidence, and reliance does not care about the verdict —
-    // an audit against the rule is a reader who has already been told something about it.
     ok(await recordAudit(root, {
       requirementId: cited.rule.id, outcome: "indeterminate", finding: "could not reach the handler",
       ...AGENT,
     } as any));
-    const refused = await withdrawSpec(root, cited.specId, { reason: "same reason" });
-    assert.match((refused as { error: string }).error, /already rely on what it introduced/);
-    assert.equal((await listRequirements(root)).length, 1, "and the rule is still there");
-    assert.equal((await relianceOn(root, await readOperations(root, { specId: cited.specId })))[0]!.kind, "audit");
+    const second = ok(await withdrawSpec(root, cited.specId, { reason: "same reason" }));
+    assert.deepEqual(second.retired, [cited.rule.id], "a citation no longer blocks it");
+    assert.equal((await getRequirement(root, cited.rule.id) as any).requirement.status, "retired");
+    assert.equal((await getRequirement(root, cited.rule.id) as any).audits.length, 1,
+      "and the audit still resolves against the rule it was about");
+    assert.deepEqual(await listRequirements(root, { status: "ratified" }), [], "neither is in force");
   } finally { discard(root); }
 });
 
@@ -820,9 +830,8 @@ test("a spec that amended something is refused outright, however little relies o
     } as any));
     ok(await ratifyReviewed(root, sp.id));
 
-    // Nothing cites the rule at all — so this refusal is about the OPERATION KIND, which is
-    // the whole point: undoing it would need the witnesses the amendment re-baselined away.
-    assert.deepEqual(await relianceOn(root, await readOperations(root, { specId: sp.id })), []);
+    // The OPERATION KIND is the whole refusal now, and the only one left: undoing an
+    // amendment would need the witnesses it re-baselined away, so no tombstone helps.
     const refused = await withdrawSpec(root, sp.id, { reason: "EU launch slipped" });
     assert.match((refused as { error: string }).error, /Repeal it instead/);
     assert.equal((await listRequirements(root))[0]!.statement, "All credit lines are in USD or EUR.");

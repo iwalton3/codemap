@@ -40,7 +40,7 @@ const tmp = (t: string) => mkdtempSync(join(tmpdir(), `codemap-ss-${t}-`));
  * withdrawer said it had checked, and a fold that does not know which repository it is
  * cannot tell — so it refuses. See `withdraw` below and `relianceEverywhere`.
  */
-const fold = async (root: string) => foldStandard(await readScope(root, SCOPE), { myScope: SCOPE });
+const fold = async (root: string) => foldStandard(await readScope(root, SCOPE));
 
 /**
  * Withdraw, pinning THIS scope as checked — what `withdrawSpec` does after reading every
@@ -48,7 +48,7 @@ const fold = async (root: string) => foldStandard(await readScope(root, SCOPE), 
  * without the pin is testing the un-checked case, which has its own test below.
  */
 const withdraw = (root: string, actor: typeof izzie, specId: string, at: string, reason: string) =>
-  publishSpecWithdrawn(root, SCOPE, actor, specId, at, reason, [SCOPE]);
+  publishSpecWithdrawn(root, SCOPE, actor, specId, at, reason);
 
 async function log(t: string) {
   const root = tmp(t);
@@ -1025,14 +1025,82 @@ async function ratified(root: string, extra: Operation[] = []) {
 }
 
 /**
+ * A ratified spec's rules are TOMBSTONED, not deleted — and that is what deleted the rest.
+ *
+ * Withdrawal used to remove the rows, which orphaned every audit, pointer, population and
+ * problem that cited them. Proving nothing anywhere held one is a distributed negative over
+ * per-universe evidence, and no fold can answer it: it produced a cross-scope scan, a pull,
+ * a pinned scope list, a look-ahead, a retry state and six defects in a day.
+ *
+ * A tombstone needs none of it. The record survives so citations still resolve, and
+ * `status: "retired"` is what takes the rule out of force. Every clone reaches the same
+ * state from LAW alone, which is the property all that machinery was trying to buy.
+ */
+test("withdrawing a ratified spec retires its rules and leaves what cites them intact", async () => {
+  const root = await log("withdraw-tombstone");
+  try {
+    await ratified(root);
+    // A citation from a clone this one never saw — the case that used to need a cross-scope
+    // scan to answer, and now needs nothing.
+    await publishAudit(root, SCOPE, opus, {
+      id: "au_1", requirementId: requirementIdFor("op_1"), universe: U,
+      outcome: "nonconformant", trigger: "ad-hoc", finding: "does not hold",
+      evidence: { ran: [{ command: "npm test", passed: false }] },
+      witnesses: [], auditor: opus, at: "2026-08-03T12:00:00.000Z",
+    });
+    await withdraw(root, izzie, "sp_1", "2026-08-04T00:00:00.000Z", "adopted in error");
+
+    const s = await fold(root);
+    assert.equal(s.specs[0]!.status, "withdrawn");
+    const rule = s.requirements.find((r) => r.id === requirementIdFor("op_1"));
+    assert.equal(rule?.status, "retired", "the rule stops binding");
+    assert.equal(rule?.retiredBy?.principal, izzie.principal, "and the record says who");
+    assert.equal(s.audits.length, 1, "the audit survives");
+    assert.equal(s.audits[0]!.requirementId, rule!.id, "and still resolves — nothing is orphaned");
+  } finally { discard(root); }
+});
+
+/**
+ * The same withdrawal, folded by a clone that holds NONE of that evidence.
+ *
+ * This is the divergence the whole apparatus existed to prevent, and it is now prevented by
+ * construction: the arm reads law only, so there is nothing for two clones to disagree
+ * about. No pin, no scope list, no `conflicted`.
+ */
+test("a clone with different evidence folds the same withdrawal to the same standard", async () => {
+  const withEvidence = await log("tombstone-evidence");
+  const without = await log("tombstone-bare");
+  try {
+    for (const root of [withEvidence, without]) {
+      await ratified(root);
+      if (root === withEvidence) {
+        await publishAudit(root, SCOPE, opus, {
+          id: "au_1", requirementId: requirementIdFor("op_1"), universe: U,
+          outcome: "nonconformant", trigger: "ad-hoc", finding: "does not hold",
+          evidence: { ran: [{ command: "npm test", passed: false }] },
+          witnesses: [], auditor: opus, at: "2026-08-03T12:00:00.000Z",
+        });
+      }
+      await withdraw(root, izzie, "sp_1", "2026-08-04T00:00:00.000Z", "adopted in error");
+    }
+    const a = await fold(withEvidence), b = await fold(without);
+    assert.deepEqual(
+      [a.specs[0]!.status, a.requirements[0]!.status, a.specs[0]!.conflicted],
+      [b.specs[0]!.status, b.requirements[0]!.status, b.specs[0]!.conflicted],
+      "one clone's audits must not decide what the other's standard says",
+    );
+    assert.equal(a.requirements[0]!.status, "retired");
+    assert.equal(a.specs[0]!.conflicted, undefined, "nothing left to be in conflict about");
+  } finally { discard(withEvidence); discard(without); }
+});
+
+/**
  * An event from a SECOND writer whose chain forks at `forkAt` — so it genuinely never saw
  * anything appended after that point.
  *
- * The distinction is load-bearing and these fixtures could not express it: they write
- * through one writer chain, so an event published "after" the withdrawal is a causal
- * DESCENDANT of it, and a descendant cannot veto — its author knew the rule was going.
- * Two tests here modelled the concurrent race with a same-chain append and passed for the
- * wrong reason, which only showed up when descendants stopped vetoing.
+ * These fixtures write through one writer chain, so an event published "after" another is a
+ * causal DESCENDANT of it. Two tests modelled a concurrent race with a same-chain append
+ * and passed for the wrong reason.
  */
 function concurrentWith(
   events: readonly LogEvent[], forkAt: string,
@@ -1045,55 +1113,40 @@ function concurrentWith(
   } as unknown as LogEvent;
 }
 
-test("THE FOLD REFUSES A WITHDRAWAL A LATER EVENT CITES, however the log happens to sort", async () => {
-  // A citation appended on another clone can sort AFTER the withdrawal — the two are
-  // concurrent and neither writer saw the other. `foldReliance` reads state built from
-  // events already folded, so it cannot see this one; only the look-ahead can. Without it
-  // the rule is deleted here and the audit that cites it lands on nothing, on every clone.
+/**
+ * A citation that RACED the withdrawal no longer needs to win, because the withdrawal no
+ * longer destroys anything.
+ *
+ * This used to be a look-ahead over later events: a withdrawal deleted rows, so an audit
+ * appended concurrently on another clone had to veto it or land on nothing. The veto was
+ * itself the last defect found here — it substring-matched serialized payloads, so an
+ * unrelated draft mentioning the id in prose silently reversed a withdrawal that had
+ * already applied. Tombstoning removes the reason for the race: both acts land, and the
+ * audit resolves against a rule that is retired rather than gone.
+ */
+test("an audit that raced the withdrawal survives it, and still resolves", async () => {
   const root = await log("withdraw-race");
   try {
     await ratified(root);
     const forkAt = (await readScope(root, SCOPE)).at(-1)!.id;
     await withdraw(root, izzie, "sp_1", "2026-08-03T00:00:00.000Z", "never adopted");
-    // From a writer that forked BEFORE the withdrawal, which is what "neither saw the
-    // other" means. Published through this chain it would be a descendant, and a
-    // descendant does not veto — this test asserted the race with a same-chain append and
-    // so passed without ever modelling one.
+    // From a writer that forked BEFORE the withdrawal: neither saw the other.
     const events = await readScope(root, SCOPE);
     const audit: Audit = {
       id: "au_1", requirementId: requirementIdFor("op_1"), outcome: "indeterminate",
       evidence: {}, witnesses: [], finding: "could not reach the handler",
       auditor: opus, at: "2026-08-03T00:00:01.000Z",
     };
-    const after = foldStandard(
-      [...events, concurrentWith(events, forkAt, "audit.recorded", audit.requirementId, opus, { audit })],
-      { myScope: SCOPE },
-    );
-    assert.equal(after.requirements.length, 1, "the withdrawal lost the race — removing is the quieting act");
-    assert.equal(after.specs[0]!.status, "ratified", "and it did not take effect");
-    assert.equal(after.specs[0]!.conflicted, true, "and it is visible, because this can reverse a settled decision");
-    assert.equal(after.audits.length, 1, "while the citation stands");
+    const after = foldStandard([
+      ...events, concurrentWith(events, forkAt, "audit.recorded", audit.requirementId, opus, { audit }),
+    ]);
+    assert.equal(after.specs[0]!.status, "withdrawn", "the withdrawal applies — it destroys nothing to race over");
+    assert.equal(after.requirements[0]!.status, "retired");
+    assert.equal(after.audits.length, 1, "and the citation stands");
+    assert.equal(after.audits[0]!.requirementId, after.requirements[0]!.id, "resolving against a real row");
   } finally { discard(root); }
 });
 
-test("the same withdrawal with nothing citing it DOES apply — so the refusal above is not blanket", async () => {
-  const root = await log("withdraw-clean");
-  try {
-    await ratified(root);
-    // With no reason first. `withdrawSpec` refuses one — "it stays on the record as the act
-    // it is" — and the fold did not, so a client that skipped the field removed rules from
-    // every clone's standard with nothing saying why.
-    await withdraw(root, izzie, "sp_1", "2026-08-03T00:00:00.000Z", "   ");
-    assert.equal((await fold(root)).specs[0]!.status, "ratified",
-      "a withdrawal with no reason on the record is not a withdrawal");
-
-    await withdraw(root, izzie, "sp_1", "2026-08-03T00:00:00.000Z", "never adopted");
-    const after = await fold(root);
-    assert.equal(after.requirements.length, 0);
-    assert.equal(after.specs[0]!.status, "withdrawn");
-    assert.equal(after.specs[0]!.withdrawnBy!.principal, izzie.principal);
-  } finally { discard(root); }
-});
 
 test("THE FOLD REFUSES WITHDRAWING A SPEC THAT AMENDED SOMETHING — that case is repeal", async () => {
   const root = await log("withdraw-amend");
@@ -1121,49 +1174,7 @@ test("THE FOLD REFUSES WITHDRAWING A SPEC THAT AMENDED SOMETHING — that case i
   } finally { discard(root); }
 });
 
-test("a vacuity check on the spec's own criterion blocks its withdrawal", async () => {
-  // The criteria a spec introduced are deleted with it, and a vacuity check hangs off a
-  // CRITERION rather than a rule — so it is invisible to a reliance scan that walks
-  // requirement ids, which is what both halves originally did. Somebody established
-  // whether that assertion can fail; withdrawing over it discards the answer.
-  const root = await log("withdraw-vacuity");
-  try {
-    const criterionId = await withCriterion(root);
-    await publishVacuityCheck(root, SCOPE, opus, {
-      id: "vc_1", criterionId, witnesses: [{ anchorId: "a_lint", bodyHash: "h1:sha256:def" }],
-      checkedBy: opus, at: "2026-08-03T00:00:00.000Z", verdict: "vacuous", method: "",
-    });
-    await withdraw(root, izzie, "sp_1", "2026-08-04T00:00:00.000Z", "never adopted");
 
-    const after = await fold(root);
-    assert.equal(after.specs[0]!.status, "ratified", "refused");
-    assert.equal(after.criteria.length, 1, "and the criterion the check is about is still there");
-  } finally { discard(root); }
-});
-
-test("THE FOLD REFUSES A WITHDRAWAL IT CANNOT SEE THE EVIDENCE FOR", async () => {
-  // The one failure in the two-scope split that answers WRONGLY rather than incompletely.
-  // Withdrawal is permitted only when nothing relies on what a spec introduced, and
-  // reliance is counted from audits, pointers, populations, problems and criteria — all
-  // of which live in the EVIDENCE scope. A fold that cannot read that half does not find
-  // less reliance; it finds NONE, and lets the withdrawal through.
-  const root = await log("withdraw-no-evidence");
-  try {
-    await ratified(root);
-    await withdraw(root, izzie, "sp_1", "2026-08-04T00:00:00.000Z", "never adopted");
-    const events = await readScope(root, SCOPE);
-
-    // With the evidence half readable — nothing relies on it, so it applies. This is the
-    // control: without it the assertion below would pass against a fold that refuses
-    // every withdrawal.
-    assert.equal(foldStandard(events, { myScope: SCOPE }).specs[0]!.status, "withdrawn");
-
-    // And with the evidence half unreadable, the same log must NOT decide it.
-    const blind = foldStandard(events, { evidence: false, myScope: SCOPE });
-    assert.equal(blind.specs[0]!.status, "ratified", "refused rather than permitted");
-    assert.equal(blind.requirements.length, 1, "and nothing it introduced was removed");
-  } finally { discard(root); }
-});
 
 /**
  * Adoption is ALL-OR-NOTHING at this end too, and it was not.
@@ -1560,271 +1571,6 @@ test("withdrawal retires a detector proposed against an operation that was pulle
       "a tombstoned operation's detector has no other exit — ratification is what would have bound it");
     assert.match(s.pointers[0]!.retiredReason!, /withdrawn/);
   } finally { discard(root); }
-});
-
-/**
- * EVERY CELL of the ratified withdrawal decision, enumerated rather than sampled.
- *
- * This arm has been revised four times in a day, and all four defects were the same kind:
- * a case nobody had written down. `conflicted` never clearing was the retry cell. Detectors
- * orphaned for ever was the removed-operation cell. A new repository resurrecting repealed
- * rules was the (not-named × clean) cell — found by somebody ASKING, which is not a
- * process. Each was caught by a different method and none by reading the code.
- *
- * So the inputs are enumerated. Two axes decide it — what the withdrawer CLAIMED, and what
- * this clone HOLDS — and a table makes "did we think of all of them" a count instead of a
- * judgement. A new axis added here without a row is a compile error, not an oversight.
- */
-test("every combination of claim and local reliance decides the same way, and they are all here", async () => {
-  type Claim = "none" | "names-me" | "names-other";
-  const CASES: { claim: Claim; reliance: boolean; status: string; conflicted: true | undefined; rules: number; why: string }[] = [
-    { claim: "none", reliance: false, status: "ratified", conflicted: true, rules: 1,
-      why: "nobody checked anything — refused EVERYWHERE, because uniform refusal is not a divergence" },
-    { claim: "none", reliance: true, status: "ratified", conflicted: true, rules: 1,
-      why: "same, and this clone can see why" },
-    { claim: "names-me", reliance: false, status: "withdrawn", conflicted: undefined, rules: 0,
-      why: "checked, clean, named — the ordinary path" },
-    { claim: "names-me", reliance: true, status: "ratified", conflicted: undefined, rules: 1,
-      why: "they read this scope and called it clean, and it is not: a citation raced the check. Refused quietly, because the tool's gate and the look-ahead both cover it" },
-    { claim: "names-other", reliance: false, status: "withdrawn", conflicted: undefined, rules: 0,
-      why: "NOT NAMED AND CLEAN — a repository added after the withdrawal has nothing that could rely on it, so there is nothing to determine. Refusing here resurrected every repealed rule on every new repo" },
-    { claim: "names-other", reliance: true, status: "ratified", conflicted: true, rules: 1,
-      why: "the withdrawer could not see this repository and what they missed is real" },
-  ];
-
-  for (const c of CASES) {
-    const root = await log(`wd-${c.claim}-${c.reliance ? "relies" : "clean"}`);
-    try {
-      await ratified(root);
-      if (c.reliance) {
-        await publishAudit(root, SCOPE, opus, {
-          id: "au_1", requirementId: requirementIdFor("op_1"), universe: U,
-          outcome: "nonconformant", trigger: "ad-hoc", finding: "does not hold",
-          evidence: { ran: [{ command: "npm test", passed: false }] },
-          witnesses: [], auditor: opus, at: "2026-08-03T12:00:00.000Z",
-        });
-      }
-      const scopes = c.claim === "none" ? undefined
-        : c.claim === "names-me" ? [SCOPE] : ["standard/acme.settlement"];
-      await publishSpecWithdrawn(root, SCOPE, izzie, "sp_1", "2026-08-04T00:00:00.000Z", "adopted in error", scopes);
-
-      const s = await fold(root);
-      const label = `${c.claim} / ${c.reliance ? "relies" : "clean"} — ${c.why}`;
-      assert.equal(s.specs[0]!.status, c.status, label);
-      assert.equal(s.specs[0]!.conflicted, c.conflicted, label);
-      assert.equal(s.requirements.length, c.rules, label);
-    } finally { discard(root); }
-  }
-
-  // The fixture must be able to produce BOTH outcomes, or a table of six identical
-  // assertions would pass against a fold that refuses everything.
-  assert.equal(new Set(CASES.map((c) => c.status)).size, 2, "the table must not be one answer six times");
-  assert.equal(CASES.filter((c) => c.status === "withdrawn").length, 2);
-
-  // TWO MORE INPUTS, and they are asserted as VETOES rather than folded into the table
-  // above — which is a claim about them, and the reason to write it down. Each dominates
-  // the claim/reliance decision outright, so crossing them in would be twenty-four cells
-  // where eighteen differ by a flag that always wins. If either ever stops dominating,
-  // these break and the table needs the axis.
-
-  // A CONCURRENT citation vetoes, whatever the claim said — and says so. This matters most
-  // on the cell that changed most recently: not-named-and-clean now APPLIES, so the
-  // look-ahead is the only thing between it and a rule deleted out from under a pointer
-  // appended on another clone that never saw the withdrawal.
-  //
-  // These fixtures write through one writer chain, so `publishPointerDeclared` after the
-  // withdrawal is a causal DESCENDANT and correctly does not veto. The genuine race needs a
-  // second writer forked before it, which `raced()` builds by hand.
-  for (const [i, scopes] of [[SCOPE], ["standard/acme.settlement"]].entries()) {
-    const root = await log(`wd-later-${i}`);
-    try {
-      await ratified(root);
-      const before = (await readScope(root, SCOPE)).at(-1)!.id;
-      await publishSpecWithdrawn(root, SCOPE, izzie, "sp_1", "2026-08-04T00:00:00.000Z", "adopted in error", scopes);
-      const events = await readScope(root, SCOPE);
-      const s = foldStandard([...events, concurrentWith(events, before, "pointer.declared", "pt_1", opus, {
-        pointer: {
-          id: "pt_1", requirementId: requirementIdFor("op_1"), universe: U,
-          target: { kind: "anchor", id: "a_x" }, rationale: "watch it",
-          witnesses: [{ anchorId: "a_x", bodyHash: "h1:sha256:abc" }],
-          state: "active", declaredBy: opus, declaredAt: "2026-08-04T00:00:01.000Z",
-        },
-      })], { myScope: SCOPE });
-      assert.equal(s.specs[0]!.status, "ratified",
-        `a citation from a writer that never saw the withdrawal vetoes it, pin ${scopes[0]} or not — removing a rule is the quieting act, so the withdrawal loses the race`);
-      assert.equal(s.specs[0]!.conflicted, true,
-        "and it SAYS so: this is the one refusal that can reverse a decision another clone already acted on");
-      assert.equal(s.requirements.length, 1);
-    } finally { discard(root); }
-  }
-
-  // A causal DESCENDANT does not veto, and that is what makes the fold monotonic. The
-  // author of a later event knew the rule was going, so nothing they write can be a reason
-  // to keep it — and the match is a substring over the serialized payload, so without this
-  // an unrelated draft whose NARRATIVE mentions the requirement id silently resurrected a
-  // withdrawal that had already applied. "A false positive only refuses" is true at the
-  // first fold and false at every one after it. Found by codex.
-  const settled = await log("wd-descendant");
-  try {
-    await ratified(settled);
-    await withdraw(settled, izzie, "sp_1", "2026-08-04T00:00:00.000Z", "adopted in error");
-    assert.equal((await fold(settled)).specs[0]!.status, "withdrawn", "the control: it really did apply");
-
-    await publishSpecDrafted(settled, SCOPE, opus, {
-      id: "sp_2", title: "Unrelated follow-up", status: "draft", author: opus,
-      createdAt: "2026-08-05T00:00:00.000Z",
-      narrative: `Historical note: ${requirementIdFor("op_1")} was withdrawn last week.`,
-    } as never);
-    const s = await fold(settled);
-    assert.equal(s.specs.find((x) => x.id === "sp_1")!.status, "withdrawn",
-      "a decision the log has already settled must not come undone because a later payload mentions the id");
-    assert.equal(s.requirements.length, 0);
-  } finally { discard(settled); }
-
-  // A DRAFT ignores every bit of it. Nothing was applied, so nothing anywhere can rely on
-  // it and there is nothing to be clean about — an unpinned draft withdrawal is the
-  // author's own take-back and must not be caught by a gate aimed at adopted law.
-  for (const scopes of [undefined, ["standard/acme.settlement"]]) {
-    const draft = await log(`wd-draft-${scopes ? "pinned-elsewhere" : "unpinned"}`);
-    try {
-      await publishSpecDrafted(draft, SCOPE, opus, SPEC);
-      await publishOperation(draft, SCOPE, opus, ADD);
-      await publishSpecWithdrawn(draft, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", "second thoughts", scopes);
-      assert.equal((await fold(draft)).specs[0]!.status, "withdrawn",
-        "the ratified gate must not reach a draft");
-    } finally { discard(draft); }
-  }
-});
-
-/**
- * A ratified spec leaves the standard on the clones the withdrawer CHECKED, and nowhere else.
- *
- * The withdrawal is LAW — one event in the workspace scope, replayed by every clone. The
- * reliance test under it is EVIDENCE, and evidence is per-universe by design, so this fold
- * sees one repository's audits and pointers and called the result a verdict about the
- * standard. Universe A refused on its audit; universe B had none, dropped the rule, and the
- * two standards diverged permanently with nothing anywhere saying so. No care inside this
- * function reaches it: the fold for A cannot see B.
- *
- * `withdrawSpec` therefore reads EVERY standard scope on the sidecar, refuses if any is
- * unsettled or unclean, and PINS what it read. This is the other half — a clone that was
- * not on that list refuses, and says so by going `conflicted` rather than silently keeping
- * the rule. Izzie's rule: clean everywhere, and undeterminable counts as not clean.
- */
-test("a ratified withdrawal refuses where the withdrawer missed something real, and nowhere else", async () => {
-  // NAMED, and it applies — the control, or the refusal below is a fold that refuses every
-  // ratified withdrawal and the assertion proves nothing.
-  const named = await log("withdraw-named");
-  try {
-    await ratified(named);
-    await withdraw(named, izzie, "sp_1", "2026-08-04T00:00:00.000Z", "adopted in error");
-    const s = await fold(named);
-    assert.equal(s.specs[0]!.status, "withdrawn");
-    assert.equal(s.requirements.length, 0);
-    assert.equal(s.specs[0]!.conflicted, undefined);
-  } finally { discard(named); }
-
-  // NOT named, and NOTHING here relies on the rule — this repository is knowably clean, so
-  // it applies. The first version of this gate refused it, and that was wrong in a way
-  // that only shows up later: a repository ADDED TO THE WORKSPACE after a withdrawal has
-  // no audits, no pointers and no populations, was never in any historical pin, and so
-  // resurrected every previously-withdrawn rule as `ratified` + `conflicted`. A standard
-  // carrying law the business repealed is the same divergence pointing the other way.
-  // "Cannot determine" is a refusal; "determined, and clean" is not.
-  const newcomer = await log("withdraw-newcomer");
-  try {
-    await ratified(newcomer);
-    await publishSpecWithdrawn(newcomer, SCOPE, izzie, "sp_1", "2026-08-04T00:00:00.000Z",
-      "adopted in error", ["standard/acme.settlement"]);
-    const s = await foldStandard(await readScope(newcomer, SCOPE), { myScope: standardScope("acme.react") });
-    assert.equal(s.specs[0]!.status, "withdrawn", "a repo with no evidence cannot be relying on anything");
-    assert.equal(s.specs[0]!.conflicted, undefined);
-    assert.equal(s.requirements.length, 0);
-  } finally { discard(newcomer); }
-
-  // NOT named, and this clone DOES hold something that relies on it — the case the gate is
-  // for. The withdrawer could not see this repository, and what they missed is real.
-  const missed = await log("withdraw-missed-me");
-  try {
-    await ratified(missed);
-    await publishAudit(missed, SCOPE, opus, {
-      id: "au_1", requirementId: requirementIdFor("op_1"), universe: U,
-      outcome: "nonconformant", trigger: "ad-hoc", finding: "does not hold",
-      evidence: { ran: [{ command: "npm test", passed: false }] },
-      witnesses: [], auditor: opus, at: "2026-08-03T12:00:00.000Z",
-    });
-    await publishSpecWithdrawn(missed, SCOPE, izzie, "sp_1", "2026-08-04T00:00:00.000Z",
-      "adopted in error", ["standard/acme.settlement"]);
-    const s = await fold(missed);
-    assert.equal(s.specs[0]!.status, "ratified", "a claim made about another repository is not about this one");
-    assert.equal(s.specs[0]!.conflicted, true, "and it is VISIBLE — the divergence this replaces was silent");
-    assert.equal(s.requirements.length, 1, "the rule is still in this standard");
-  } finally { discard(missed); }
-
-  // NO pin at all — a client that never checked anything, and the shape every withdrawal
-  // written before this guard has. Same answer: cannot determine is not permission.
-  const bare = await log("withdraw-unpinned");
-  try {
-    await ratified(bare);
-    await publishSpecWithdrawn(bare, SCOPE, izzie, "sp_1", "2026-08-04T00:00:00.000Z", "adopted in error");
-    const s = await fold(bare);
-    assert.equal(s.specs[0]!.status, "ratified");
-    assert.equal(s.specs[0]!.conflicted, true);
-    assert.equal(s.requirements.length, 1);
-  } finally { discard(bare); }
-
-  // A fold that does not know WHICH repository it is cannot establish that a claim covered
-  // it — so where it holds reliance, it refuses. Where it holds none it is clean like any
-  // other clone, and `myScope` decides nothing. Only `standard-publish.ts` folds in
-  // production and it always passes one; this pins the degenerate path rather than
-  // pretending it is load-bearing.
-  const blind = await log("withdraw-anonymous");
-  try {
-    await ratified(blind);
-    await publishAudit(blind, SCOPE, opus, {
-      id: "au_1", requirementId: requirementIdFor("op_1"), universe: U,
-      outcome: "nonconformant", trigger: "ad-hoc", finding: "does not hold",
-      evidence: { ran: [{ command: "npm test", passed: false }] },
-      witnesses: [], auditor: opus, at: "2026-08-03T12:00:00.000Z",
-    });
-    await withdraw(blind, izzie, "sp_1", "2026-08-04T00:00:00.000Z", "adopted in error");
-    const s = foldStandard(await readScope(blind, SCOPE));
-    assert.equal(s.specs[0]!.status, "ratified", "it holds an audit and cannot show it was covered");
-    assert.equal(s.specs[0]!.conflicted, true);
-  } finally { discard(blind); }
-
-  // THE RETRY, and the mark must not outlive it. `conflicted` is what makes a refusal
-  // actionable — "somebody withdrew this without checking you, pull and do it again" — and
-  // the successful retry spread `{ ...sp }`, carrying the stale mark onto a spec that had
-  // just been correctly withdrawn. A warning that never clears is noise on the most
-  // authoritative record here, which is the opposite of what it is for.
-  const retry = await log("withdraw-retry");
-  try {
-    await ratified(retry);
-    // An UNPINNED withdrawal — a client that checked nothing. Refused on every clone,
-    // whatever it holds, which is what makes it the clean way to reach `conflicted` here.
-    await publishSpecWithdrawn(retry, SCOPE, izzie, "sp_1", "2026-08-04T00:00:00.000Z", "adopted in error");
-    const missed = await fold(retry);
-    assert.equal(missed.specs[0]!.conflicted, true, "the control — without this the clear below is free");
-    assert.equal(missed.specs[0]!.status, "ratified");
-
-    await withdraw(retry, izzie, "sp_1", "2026-08-05T00:00:00.000Z", "adopted in error");
-    const done = await fold(retry);
-    assert.equal(done.specs[0]!.status, "withdrawn");
-    assert.equal(done.specs[0]!.conflicted, undefined, "the disagreement is over, and the record must say so");
-    assert.equal(done.requirements.length, 0);
-  } finally { discard(retry); }
-
-  // A DRAFT is untouched by any of this: it applied nothing, so nothing anywhere relies on
-  // it and there is nothing to be clean about. Without this the guard would quietly take
-  // the author's own take-back with it.
-  const draft = await log("withdraw-draft-unpinned");
-  try {
-    await publishSpecDrafted(draft, SCOPE, opus, SPEC);
-    await publishOperation(draft, SCOPE, opus, ADD);
-    await publishSpecWithdrawn(draft, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", "second thoughts");
-    assert.equal((await fold(draft)).specs[0]!.status, "withdrawn");
-  } finally { discard(draft); }
 });
 
 /**

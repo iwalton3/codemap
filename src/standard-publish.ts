@@ -50,13 +50,7 @@ export const cachedStandard = (root: string, cfg: { path: string; universe: stri
   readCachedMerged(
     root, cfg.path, [lawScope(), standardScope(cfg.universe)], standardScope(cfg.universe),
     sidecarIdentity(cfg),
-    (events: LogEvent[], { readable }: { readable: Set<string> }) =>
-      foldStandard(events, {
-        evidence: readable.has(standardScope(cfg.universe)),
-        // WHICH universe this fold is, so the `spec.withdrawn` arm can ask whether the
-        // withdrawer checked it. Without it that arm cannot tell, and refuses.
-        myScope: standardScope(cfg.universe),
-      }),
+    (events: LogEvent[]) => foldStandard(events),
     standardProjection,
   );
 
@@ -207,101 +201,9 @@ export const shareSpecRatified = (
 ): Promise<Shared> => share(root, (l, s, a) => publishSpecRatified(l, s, a, specId, at, witnesses, operations), lawScope());
 
 export const shareSpecWithdrawn = (
-  root: string, specId: string, at: string, reason: string, scopes?: string[],
+  root: string, specId: string, at: string, reason: string,
 ): Promise<Shared> =>
-  share(root, (l, s, a) => publishSpecWithdrawn(l, s, a, specId, at, reason, scopes), lawScope());
-
-/**
- * Is withdrawing this ratified spec clean in EVERY repository on the sidecar — and can that
- * even be established from here?
- *
- * A withdrawal is law and the reliance test under it is evidence, so the fold that decides
- * it sees one universe's audits, pointers, problems, populations and vacuity checks and
- * calls the answer a verdict about the standard. Universe A refuses on its audit, universe
- * B has none and drops the rule, and the two standards diverge for good. Nothing inside
- * `foldStandard` can close that: the fold for A cannot see B.
- *
- * So the CLAIM is made here, where every scope is one directory away, and pinned on the
- * event. Fail-closed in both directions Izzie asked for: a scope that is not settled means
- * *cannot determine*, and cannot-determine is a refusal, not a pass. The returned list is
- * what the fold checks itself against.
- *
- * PULLED FIRST BY THE CALLER, and that is a precondition rather than a detail: neither
- * `share` nor `ensureSidecar` pulls, so read against a stale mirror this answers "clean"
- * about scopes it simply has not received — reintroducing, from inside the gate, exactly
- * the divergence the gate exists to prevent. A stale scope is `complete`, so the status
- * check below cannot see it. `withdrawSpec` does the pull; it lives there because
- * `ops-shared` sits ABOVE this module and reaching up for it is an import cycle.
- *
- * `undefined` universes are not a case: `scopesOnDisk` reports what the sidecar HOLDS, and a
- * repository whose shard has never been pulled is exactly the one this cannot speak for —
- * which is why the fold asks whether it was named rather than trusting the count.
- */
-export async function relianceEverywhere(
-  root: string, doomed: string[],
-): Promise<{ ok: true; scopes: string[] } | { error: string }> {
-  const cfg = resolveSidecar(root);
-  // No sidecar is not "cannot determine": there is exactly one universe, and nothing is
-  // published at all — `share` takes the local branch, so the list returned here is never
-  // pinned on anything. It is empty rather than invented for that reason.
-  if (!cfg) return { ok: true, scopes: [] };
-  const { scopesOnDisk, readScopeChecked, sortEvents } = await import("./eventlog.js");
-  const { foldStandard: fold, lawScope: law } = await import("./shared-standard.js");
-  const all = (await scopesOnDisk(cfg.path)).filter((sc) => sc.startsWith("standard/"));
-  // Ours may hold no events yet — a universe that has published nothing has no directory —
-  // so it is added rather than discovered, or the pin would omit the one clone we know for
-  // certain is in play.
-  const mine = standardScope(cfg.universe);
-  const scopes = [...new Set([mine, ...all])].sort();
-
-  const lawRead = await readScopeChecked(cfg.path, law());
-  if (lawRead.status !== "complete") {
-    return { error: `the shared law log is ${lawRead.status}, so what a withdrawal would remove cannot be established. Repair it (\`codemap sidecar heal\`), then try again.` };
-  }
-  for (const sc of scopes) {
-    const read = await readScopeChecked(cfg.path, sc);
-    if (read.status !== "complete") {
-      return {
-        error:
-          `${sc} is ${read.status}${read.diagnostic?.detail ? ` — ${read.diagnostic.detail}` : ""}, so whether this `
-          + `withdrawal is clean THERE cannot be determined. A rule leaving one repository's standard and `
-          + `staying in another's is the divergence this refuses to risk: repair that scope, or repeal the `
-          + `spec with a compensating one, which needs nobody's evidence.`,
-      };
-    }
-    // That universe's law + evidence, folded on its own — through `sortEvents`, like every
-    // other merged fold. `readCachedMerged` sorts the union because the deterministic
-    // topological sort is what makes merging two scopes safe; concatenating two
-    // independently-sorted lists is not one sorted list, and this verdict decides whether a
-    // rule leaves the standard everywhere. Reaching the right answer from an ordering no
-    // clone ever folds is luck, not a property.
-    const st = fold(sortEvents([...lawRead.events, ...read.events]), { evidence: true, myScope: sc });
-    const cites = [
-      ...[...st.audits.values()].filter((a) => doomed.includes(a.requirementId)).map((a) => `audit ${a.id}`),
-      ...[...st.problems.values()].filter((p) => doomed.includes(p.requirementId)).map((p) => `problem ${p.id}`),
-      ...[...st.pointers.values()].filter((p) => doomed.includes(p.requirementId)).map((p) => `pointer ${p.id}`),
-      ...[...st.populations.values()].filter((p) => doomed.includes(p.requirementId)).map((p) => `population ${p.id}`),
-      ...[...st.vacuityChecks.values()].filter((v) => doomed.includes(v.criterionId)).map((v) => `vacuity check ${v.id}`),
-      // `requirementId` is optional on an acknowledgement — a gap minted against an
-      // OPERATION has none until ratification binds it — so the undefined case is dropped
-      // rather than coerced.
-      ...[...st.acknowledgements.values()]
-        .filter((a) => a.state !== "released" && !!a.requirementId && doomed.includes(a.requirementId))
-        .map((a) => `${a.basis} ${a.id}`),
-    ];
-    if (cites.length) {
-      return {
-        error:
-          `${sc} relies on what this spec introduced: ${cites.slice(0, 6).join(", ")}`
-          + (cites.length > 6 ? ` and ${cites.length - 6} more` : "")
-          + `. A ratified spec comes out of the standard only when it is clean in EVERY repository — `
-          + `otherwise one repo's standard keeps the rule and another's drops it. Repeal it with a `
-          + `compensating spec instead.`,
-      };
-    }
-  }
-  return { ok: true, scopes };
-}
+  share(root, (l, s, a) => publishSpecWithdrawn(l, s, a, specId, at, reason), lawScope());
 
 /**
  * A GAP is law; DEBT is evidence.

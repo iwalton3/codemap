@@ -428,7 +428,7 @@ test("the fold refuses a move whose source another clone has already emptied", a
   } finally { discard(a); discard(b); discard(side); }
 });
 
-test("a withdrawal is applied by the FOLD, and takes its criteria with it", async () => {
+test("a withdrawal is applied by the FOLD, and RETIRES what it introduced", async () => {
   const { root, side } = await shared();
   try {
     const sp = ok(await draftSpec(root, { title: "float policy" }));
@@ -445,49 +445,45 @@ test("a withdrawal is applied by the FOLD, and takes its criteria with it", asyn
     assert.equal((await readRequirements(root)).requirements.length, 1);
 
     ok(await withdrawSpec(root, sp.id, { reason: "the cluster was never adopted" }));
-    assert.deepEqual((await readRequirements(root)).requirements, [], "the fold dropped it from the projection");
+    // TOMBSTONED by the fold, not dropped. Deleting the row orphaned every citation, which
+    // is what forced withdrawal to prove a distributed negative; retiring proves nothing
+    // and every clone reaches it from law alone.
+    const rules = (await readRequirements(root)).requirements;
+    assert.equal(rules.length, 1, "the row survives — a tombstone, not a hole");
+    assert.equal(rules[0]!.status, "retired", "and it no longer binds");
     assert.equal((await readSpecs(root))[0]!.status, "withdrawn", "the spec itself survives, as the act it was");
     assert.ok((await lawEvents(side)).some((e) => e.kind === "spec.withdrawn"));
   } finally { discard(root); discard(side); }
 });
 
-test("a withdrawal another clone's citation raced is refused, and never reaches the log", async () => {
-  // The log is pull/push, so a clone can try to withdraw a rule somebody else has just
-  // audited with neither machine's ROWS showing the other's work. Two things stop it, and
-  // this drives the earlier one: `relianceEverywhere` reads the scope off the shared
-  // sidecar, so A sees B's audit without folding it into A's standard. The fold's own
-  // refusal is the backstop for a citation that arrives after the check — it sees both
-  // whichever way they sort, and the withdrawal is the act that loses, because removing a
-  // rule is the quieting direction. That half is driven in `shared-standard.test.ts`.
+/**
+ * A citation on another clone no longer decides anything, because withdrawal no longer
+ * destroys what the citation points at.
+ *
+ * This drove `relianceEverywhere` — the cross-scope scan that read every universe's
+ * evidence to prove nothing anywhere relied on the rule. That machinery is gone with the
+ * deletion it protected. Both acts land, and B's audit resolves against a retired rule.
+ */
+test("a citation on another clone survives the withdrawal, on both clones", async () => {
   const { a, b, side } = await twoClones();
   try {
     await adoptInto(a, "Settlement/Float", "Float", "Float settles T+1.");
     assert.equal(await materializeStandard(b, resolveSidecar(b)!), true);
     const rule = (await listRequirements(b))[0]!;
-
-    // B cites it. A cannot see this.
     ok(await recordAudit(b, {
       requirementId: rule.id, outcome: "indeterminate", finding: "could not reach the handler",
     }));
 
     const spec = (await readSpecs(a))[0]!;
-    const asked = await withdrawSpec(a, spec.id, { reason: "never adopted" });
-    // A's own STORE has no audit — its local reference count is zero. What stops it now is
-    // `relianceEverywhere`, which reads the scope off the shared sidecar rather than out of
-    // A's rows, so B's audit is visible to A before anything is appended. That is a better
-    // outcome than the one this test was written for (append, then have the fold refuse),
-    // and the important half is that NOTHING went into the log.
-    assert.ok("error" in asked, "B's audit must stop it, from A");
-    assert.match(asked.error, /relies on what this spec introduced/);
-    assert.match(asked.error, /audit /, "and it names the row, so A can go and read it");
-    assert.equal((await listRequirements(a)).length, 1, "and A's own rule is still there");
+    ok(await withdrawSpec(a, spec.id, { reason: "never adopted" }));
 
-    const withdrawals = (await readScope(side, lawScope())).filter((e) => e.kind === "spec.withdrawn");
-    assert.deepEqual(withdrawals, [], "refused BEFORE the log, not appended and then refused");
-
-    assert.equal(await materializeStandard(b, resolveSidecar(b)!), true);
-    assert.equal((await listRequirements(b)).length, 1, "the audited rule is still there");
-    assert.equal((await readSpecs(b)).find((s) => s.id === spec.id)!.status, "ratified",
-      "and the withdrawal did not take effect");
+    for (const [who, root] of [["A", a], ["B", b]] as const) {
+      if (root === b) assert.equal(await materializeStandard(b, resolveSidecar(b)!), true);
+      const rules = (await readRequirements(root)).requirements;
+      assert.equal(rules.length, 1, `${who}: the row survives`);
+      assert.equal(rules[0]!.status, "retired", `${who}: and it is out of force`);
+      assert.equal((await readSpecs(root)).find((x) => x.id === spec.id)!.status, "withdrawn", `${who}: the act happened`);
+    }
+    assert.equal((await readAudits(b)).length, 1, "and B's audit still resolves against a rule that is there");
   } finally { discard(a); discard(b); discard(side); }
 });

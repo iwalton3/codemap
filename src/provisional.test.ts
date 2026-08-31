@@ -377,15 +377,15 @@ test("the branch view's last audit is the latest one, not the last list it came 
 });
 
 /**
- * Reliance is one rule with two implementations, and the fold cannot see branch work.
+ * A branch finding must not decide a shared act, and this used to be the sharpest case:
+ * `relianceOn` counted provisional audits the fold refuses outright, so a withdrawal was
+ * blocked on this machine citing an id that exists on no other clone.
  *
- * `foldStandard` refuses every provisional audit, problem and pin, so `foldReliance` — the
- * fold's half — counts none of them. `relianceOn` read the raw rows and counted all of
- * them, so a withdrawal was refused on this machine citing an audit id that exists on no
- * other clone. The failure is safe (it refuses before appending, so nothing diverges in the
- * log) and it is still the divergence §BOTH_ENDS exists to keep out.
+ * The gate is gone — withdrawal tombstones, so nothing needs counting — and with it the
+ * whole divergence. Kept as the property rather than the mechanism: branch work does not
+ * change what a shared act does.
  */
-test("a branch finding is not reliance — the fold cannot see one, so neither may the tool", async () => {
+test("a branch finding does not change what withdrawal does", async () => {
   const f = await fixture();
   try {
     git(f.root, "checkout", "-q", "-b", "feature/credit");
@@ -396,16 +396,22 @@ test("a branch finding is not reliance — the fold cannot see one, so neither m
     assert.equal(branchFinding.audit.provisional, true, "the fixture must be provisional or this is vacuous");
     git(f.root, "checkout", "-q", "main");
 
-    const { relianceOn, withdrawSpec } = await import("./requirements.js");
-    const { readOperations } = await import("./store.js");
-    assert.deepEqual(
-      await relianceOn(f.root, await readOperations(f.root, { specId: f.specId })), [],
-      "nothing the team can see relies on this rule",
-    );
+    const { withdrawSpec } = await import("./requirements.js");
     const done = await withdrawSpec(f.root, f.specId, { reason: "never adopted" });
     assert.ok(!("error" in done), `withdrawal refused on invisible evidence: ${(done as any).error}`);
+    assert.deepEqual((done as any).retired, [f.rule.id], "and it retired the rule, on the team's terms");
   } finally { f.cleanup(); }
 });
+
+/**
+ * Reliance is one rule with two implementations, and the fold cannot see branch work.
+ *
+ * `foldStandard` refuses every provisional audit, problem and pin, so `foldReliance` — the
+ * fold's half — counts none of them. `relianceOn` read the raw rows and counted all of
+ * them, so a withdrawal was refused on this machine citing an audit id that exists on no
+ * other clone. The failure is safe (it refuses before appending, so nothing diverges in the
+ * log) and it is still the divergence §BOTH_ENDS exists to keep out.
+ */
 
 test("provisionalAudits unions the local row with the document, without doubling it", async () => {
   const f = await fixture();

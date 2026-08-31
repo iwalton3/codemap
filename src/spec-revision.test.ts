@@ -237,46 +237,6 @@ test("blanking an already-absent field is nothing to change; blanking a set one 
   } finally { u.cleanup(); }
 });
 
-/**
- * A PULLED operation is not reliance, at the end that decides for every clone.
- *
- * `relianceOn` gets this free — `readOperations` drops a tombstone by default — and
- * `foldReliance` iterated the map, where tombstones live for ever. So an operation somebody
- * had already withdrawn from a draft refused a withdrawal the tool approved, with the wrong
- * diagnosis, permanently: a spent spec cannot be re-withdrawn, so the rule could never
- * leave the standard on any clone.
- *
- * The live arm is the control: a LIVE operation citing the rule must still block, or this
- * passes on a reliance check that counts nothing.
- */
-test("a tombstoned operation is not reliance, and a live one still is", async () => {
-  const scenario = async (removed: boolean) => {
-    const root = await log(removed ? "reliance-dead" : "reliance-live");
-    await publishSpecDrafted(root, SCOPE, opus, SPEC);
-    await publishOperation(root, SCOPE, opus, ADD);
-    await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
-    // A SECOND draft whose operation cites the rule the first one created.
-    const sp2: Spec = { ...SPEC, id: "sp_2", title: "Amend it" };
-    const cite: Operation = {
-      ...ADD, id: "op_cite", specId: "sp_2", ord: 0, kind: "amend_statement",
-      requirementId: requirementIdFor("op_1"), statement: "All credit lines are in EUR.",
-    };
-    await publishSpecDrafted(root, SCOPE, opus, sp2);
-    await publishOperation(root, SCOPE, opus, cite);
-    if (removed) {
-      await publishOperationRemoved(root, SCOPE, opus, {
-        ...cite, removed: { at: "2026-08-02T12:00:00.000Z", by: opus, reason: "wrong spec" },
-      });
-    }
-    await publishSpecWithdrawn(root, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", "adopted in error", [SCOPE]);
-    const status = (await fold(root)).specs.find((x) => x.id === "sp_1")!.status;
-    discard(root);
-    return status;
-  };
-
-  assert.equal(await scenario(true), "withdrawn", "a pulled operation relies on nothing");
-  assert.equal(await scenario(false), "ratified", "and a live one still blocks it");
-});
 
 test("revision cannot change an operation's KIND", async () => {
   const u = await universe();
@@ -462,7 +422,7 @@ async function log(t: string) {
  * load-bearing: a ratified spec's withdrawal applies only where the withdrawer said it had
  * checked, and a fold that does not know which repository it is refuses.
  */
-const fold = async (root: string) => foldStandard(await readScope(root, SCOPE), { myScope: SCOPE });
+const fold = async (root: string) => foldStandard(await readScope(root, SCOPE));
 
 // Every `*Revised` fixture below carries a `revisions` entry, because every real writer
 // does: `reviseSpec` and `reviseOperation` append one before publishing. The fold requires
@@ -536,12 +496,12 @@ test("the fold refuses a kind change, a reasonless removal, and a removal someth
 /**
  * The withdrawal count must see the same LIVE set the tool sees.
  *
- * `withdrawSpec` counts live operations only — `readOperations` drops a tombstone by
- * default — and the fold counted every row, so it saw an operation the tool never did.
+ * The OPERATION-KIND gate counts live operations only — `readOperations` drops a tombstone
+ * by default — and the fold counted every row, so it saw an operation the tool never did.
  * A ratified spec whose only non-`add_requirement` operation had been REMOVED from the
  * draft was refusable at this end for ever, with the wrong diagnosis ("it amended, retired
  * or re-filed pre-existing state"). A spent spec cannot be re-withdrawn, so the rule could
- * never leave the standard on any clone.
+ * never leave force on any clone.
  *
  * Four lines above the bug, `mineSoFar` already had `!o.removed`. This is the same filter
  * on the other branch.
@@ -559,10 +519,10 @@ test("a removed operation does not block a withdrawal the tool would allow", asy
     await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
     assert.equal((await fold(root)).requirements.length, 1, "the live operation applied");
 
-    await publishSpecWithdrawn(root, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", "adopted in error", [SCOPE]);
+    await publishSpecWithdrawn(root, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", "adopted in error");
     const s = await fold(root);
     assert.equal(s.specs[0]!.status, "withdrawn", "a tombstone is not something the spec introduced");
-    assert.equal(s.requirements.length, 0, "and the rule it created goes with it");
+    assert.equal(s.requirements[0]!.status, "retired", "and the rule it created goes out of force with it");
   } finally { discard(root); }
 
   // A LIVE amendment still blocks it, so the filter is about `removed` and not about the
@@ -574,7 +534,7 @@ test("a removed operation does not block a withdrawal the tool would allow", asy
       requirementId: requirementIdFor("op_1"), statement: "Amended in the same spec.",
     });
     await ratifyWithReview(live, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1", "op_live"]);
-    await publishSpecWithdrawn(live, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", "second thoughts", [SCOPE]);
+    await publishSpecWithdrawn(live, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", "second thoughts");
     assert.equal((await fold(live)).specs[0]!.status, "ratified", "an amendment can only be REPEALED");
   } finally { discard(live); }
 });
@@ -583,11 +543,11 @@ test("the fold lets an agent withdraw its own draft, and only that", async () =>
   const root = await log("withdraw");
   try {
     // Somebody else's agent: refused, exactly as the tool refuses it.
-    await publishSpecWithdrawn(root, SCOPE, mate, "sp_1", "2026-08-02T00:00:00.000Z", "I disagree", [SCOPE]);
+    await publishSpecWithdrawn(root, SCOPE, mate, "sp_1", "2026-08-02T00:00:00.000Z", "I disagree");
     assert.equal((await fold(root)).specs[0]!.status, "draft");
 
     // Its own principal's draft: allowed. Nothing applied, so nothing is unbound.
-    await publishSpecWithdrawn(root, SCOPE, opus, "sp_1", "2026-08-03T00:00:00.000Z", "an empty probe", [SCOPE]);
+    await publishSpecWithdrawn(root, SCOPE, opus, "sp_1", "2026-08-03T00:00:00.000Z", "an empty probe");
     const s = await fold(root);
     assert.equal(s.specs[0]!.status, "withdrawn");
     assert.equal(s.specs[0]!.withdrawnBy!.via!.model, "claude-opus-5", "and it is recorded as the agent's act");
@@ -603,7 +563,7 @@ test("the fold refuses an agent's withdrawal of a RATIFIED spec, and one somebod
       grantedBy: mate, grantedAt: "2026-08-02T00:00:00.000Z",
     });
     // A pending gap somebody else granted: the agent's own draft, and still refused.
-    await publishSpecWithdrawn(root, SCOPE, opus, "sp_1", "2026-08-03T00:00:00.000Z", "second thoughts", [SCOPE]);
+    await publishSpecWithdrawn(root, SCOPE, opus, "sp_1", "2026-08-03T00:00:00.000Z", "second thoughts");
     await publishOperationRevised(root, SCOPE, opus, { ...ADD, statement: "All credit lines are in EUR.", revisions: [{ at: "2026-08-02T00:00:00.000Z", by: opus, was: { statement: ADD.statement } }] });
     let s = await fold(root);
     assert.equal(s.specs[0]!.status, "draft", "somebody else's approval is chained to this proposal");
@@ -613,7 +573,7 @@ test("the fold refuses an agent's withdrawal of a RATIFIED spec, and one somebod
     const { publishAckReleased } = await import("./shared-standard.js");
     await publishAckReleased(root, SCOPE, mate, "ack_1", "2026-08-04T00:00:00.000Z", "withdrawn by its author");
     await publishOperationRevised(root, SCOPE, opus, { ...ADD, statement: "All credit lines are in EUR.", revisions: [{ at: "2026-08-02T00:00:00.000Z", by: opus, was: { statement: ADD.statement } }] });
-    await publishSpecWithdrawn(root, SCOPE, opus, "sp_1", "2026-08-05T00:00:00.000Z", "second thoughts", [SCOPE]);
+    await publishSpecWithdrawn(root, SCOPE, opus, "sp_1", "2026-08-05T00:00:00.000Z", "second thoughts");
     s = await fold(root);
     assert.equal(s.operations[0]!.statement, "All credit lines are in EUR.");
     assert.equal(s.specs[0]!.status, "withdrawn");
@@ -622,7 +582,7 @@ test("the fold refuses an agent's withdrawal of a RATIFIED spec, and one somebod
     const other = await log("gated-ratified");
     try {
       await ratifyWithReview(other, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
-      await publishSpecWithdrawn(other, SCOPE, opus, "sp_1", "2026-08-03T00:00:00.000Z", "second thoughts", [SCOPE]);
+      await publishSpecWithdrawn(other, SCOPE, opus, "sp_1", "2026-08-03T00:00:00.000Z", "second thoughts");
       assert.equal((await fold(other)).specs[0]!.status, "ratified");
       assert.equal((await fold(other)).requirements.length, 1);
     } finally { discard(other); }
@@ -685,137 +645,8 @@ test("a removal the fold refuses leaves the acknowledgement alone, and says so",
   } finally { u.cleanup(); }
 });
 
-/**
- * A ratified spec comes out of the standard everywhere or nowhere.
- *
- * The withdrawal is LAW: one event in the workspace scope, replayed by every clone. The
- * reliance test under it is EVIDENCE, and evidence is per-universe on purpose — so
- * `relianceOn` counted what THIS repository can see and the answer was presented as a
- * verdict about the standard. Universe A refuses on its audit, universe B has none and
- * drops the rule, and the two standards diverge for good with nothing anywhere saying so.
- *
- * Izzie's rule, and the one built: clean in every repository, and *cannot determine* counts
- * as not clean. `relianceEverywhere` reads every standard scope on the sidecar; the fold's
- * half is in `shared-standard.test.ts`.
- */
-test("a ratified spec is not withdrawn while ANOTHER repository's evidence relies on it", async () => {
-  const u = await universe({ sidecar: true });
-  try {
-    const { specId } = await drafted(u.root);
-    ok(await ratifyReviewed(u.root, specId));
-    const rid = (await listRequirements(u.root))[0]!.id;
-    const mine = standardScope(universeKey(u.root));
 
-    // CONTROL, and it has to come first: nothing anywhere relies on it, so it withdraws.
-    // Without this the refusal below is satisfied by a build that refuses every withdrawal.
-    const clean = await withdrawSpec(u.root, specId, { reason: "adopted in error" });
-    assert.ok(!("error" in clean), `a clean withdrawal must work: ${(clean as any).error}`);
-    assert.equal((await listRequirements(u.root)).length, 0);
 
-    // The same thing again, with a SECOND repository's audit on the sidecar. It is a real
-    // event in a real scope — the only difference from universe A's own audits is which
-    // directory it is in, which is exactly the difference the fold could not see.
-    const v = await universe({ sidecar: true });
-    try {
-      const second = await drafted(v.root);
-      ok(await ratifyReviewed(v.root, second.specId));
-      const vid = (await listRequirements(v.root))[0]!.id;
-      const theirs = "standard/acme.settlement";
-      await publishAudit(v.side!, theirs, { principal: "mate@x.com" }, {
-        id: "au_elsewhere", requirementId: vid, universe: "acme.settlement",
-        outcome: "nonconformant", trigger: "ad-hoc", finding: "the React app does not do this either",
-        // Real evidence: `auditClaimStands` DROPS a nonconformant audit that records none,
-        // so a lazier fixture is refused by the fold and this test would then be asserting
-        // that an audit which exists nowhere blocks nothing.
-        evidence: { ran: [{ command: "npm test -w web", passed: false }] },
-        witnesses: [], recordedBy: { principal: "mate@x.com" }, at: "2026-08-30T00:00:00.000Z",
-      } as never);
-
-      const refused = await withdrawSpec(v.root, second.specId, { reason: "adopted in error" });
-      assert.ok("error" in refused, "an audit in another repository must block it, or the standards diverge");
-      assert.match((refused as any).error, /acme\.settlement/, "and it says WHICH repository");
-      assert.match((refused as any).error, /every repository/i);
-      assert.equal((await listRequirements(v.root)).length, 1, "the rule is still in force here too");
-      assert.equal((await readSpec(v.root, second.specId))!.status, "ratified");
-      assert.ok(mine !== theirs && vid !== rid);
-    } finally { v.cleanup(); }
-  } finally { u.cleanup(); }
-});
-
-/**
- * The gate must PULL, or "clean in every repository" is a claim about a mirror.
- *
- * Neither `share` nor `ensureSidecar` pulls, so `relianceEverywhere` read whatever shards
- * this clone last received. Universe B records an audit and syncs; A never pulls; A reads
- * B's scope as complete-and-clean, pins it, and drops a rule B then keeps — the exact
- * divergence the gate exists to prevent, reintroduced by the gate itself. A stale scope IS
- * `complete`, so no status check can see it. Found by the /code-review pass.
- *
- * Driven through a FAILING pull, because that is the half a test can reach: the fixtures
- * share one sidecar directory with no remote, so a successful pull is a no-op there and
- * asserting on it would prove nothing.
- */
-test("a withdrawal refuses when the sidecar cannot be pulled, rather than trusting the mirror", async () => {
-  const u = await universe({ sidecar: true });
-  try {
-    const { specId } = await drafted(u.root);
-    ok(await ratifyReviewed(u.root, specId));
-
-    // CONTROL: with a working (remote-less) sidecar the withdrawal goes through, so the
-    // refusal below is about the PULL and not about withdrawal being broken.
-    const fine = await withdrawSpec(u.root, specId, { reason: "adopted in error" });
-    assert.ok(!("error" in fine), `a clean withdrawal must still work: ${(fine as any).error}`);
-
-    // A second spec, and a sidecar pointed at a remote that is not there.
-    const v = await universe({ sidecar: true });
-    try {
-      const second = await drafted(v.root);
-      ok(await ratifyReviewed(v.root, second.specId));
-      spawnSync("git", ["remote", "add", "origin", join(v.side!, "..", "does-not-exist.git")], { cwd: v.side! });
-
-      const refused = await withdrawSpec(v.root, second.specId, { reason: "adopted in error" });
-      assert.ok("error" in refused, "an unpullable sidecar cannot answer 'clean everywhere'");
-      assert.match((refused as any).error, /could not pull/i);
-      assert.equal((await listRequirements(v.root)).length, 1, "and the rule stays until it can");
-    } finally { v.cleanup(); }
-  } finally { u.cleanup(); }
-});
-
-/**
- * *Cannot determine* is a refusal, not a pass — the half that is easy to leave out.
- *
- * A scope the sidecar cannot read as settled is the case where "is this clean over there"
- * has no answer. Answering it as `clean` is what the two-scope split was already doing by
- * accident, so the guard has to fail in the other direction explicitly.
- */
-test("a repository whose log will not settle blocks the withdrawal rather than being skipped", async () => {
-  const u = await universe({ sidecar: true });
-  try {
-    const { specId } = await drafted(u.root);
-    ok(await ratifyReviewed(u.root, specId));
-
-    // A forked shard in another repository's scope: the same events replayed under a second
-    // writer id, which is the shape `scopeStatus` refuses to read as settled.
-    const theirs = "standard/acme.settlement";
-    await publishAudit(u.side!, theirs, { principal: "mate@x.com" }, {
-      id: "au_theirs", requirementId: "r_unrelated", universe: "acme.settlement",
-      outcome: "indeterminate", trigger: "ad-hoc", finding: "looked, could not tell",
-      evidence: {}, witnesses: [], recordedBy: { principal: "mate@x.com" }, at: "2026-08-30T00:00:00.000Z",
-    } as never);
-    const { readdirSync, readFileSync: rf, writeFileSync: wf } = await import("node:fs");
-    const dir = join(u.side!, theirs);
-    const shard = readdirSync(dir).find((f) => f.endsWith(".ndjson"))!;
-    const forked = rf(join(dir, shard), "utf8").split("\n").filter(Boolean)
-      .map((l) => JSON.stringify({ ...JSON.parse(l), subject: "tampered" })).join("\n") + "\n";
-    wf(join(dir, "w_impostor.ndjson"), forked, "utf8");
-
-    const refused = await withdrawSpec(u.root, specId, { reason: "adopted in error" });
-    assert.ok("error" in refused, "an unreadable repository is not a clean one");
-    assert.match((refused as any).error, /cannot be determined/i);
-    assert.match((refused as any).error, /acme\.settlement/);
-    assert.equal((await listRequirements(u.root)).length, 1);
-  } finally { u.cleanup(); }
-});
 
 test("a correction travels: a teammate's clone folds the corrected text, not the original", async () => {
   const u = await universe({ sidecar: true });

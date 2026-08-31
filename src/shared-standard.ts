@@ -149,15 +149,9 @@ export const publishSpecRatified = (
   witnesses: Record<string, BugWitness[]>, operations: string[],
 ) => put(logRoot, scope, actor, "spec.ratified", specId, { at, witnesses, operations });
 
-/**
- * @param scopes the standard scopes the withdrawer READ and found clean, pinned on the
- * event. Only meaningful for a ratified spec, and there it is the whole mechanism — see
- * the `spec.withdrawn` arm of `foldStandard`.
- */
 export const publishSpecWithdrawn = (
   logRoot: string, scope: string, actor: Actor, specId: string, at: string, reason: string,
-  scopes?: string[],
-) => put(logRoot, scope, actor, "spec.withdrawn", specId, { at, reason, ...(scopes ? { scopes } : {}) });
+) => put(logRoot, scope, actor, "spec.withdrawn", specId, { at, reason });
 
 export const publishAckGranted = (logRoot: string, scope: string, actor: Actor, ack: Acknowledgement) =>
   put(logRoot, scope, actor, "ack.granted", ack.id, { ack });
@@ -282,13 +276,13 @@ function revisionBlocked(
 /**
  * Fold the standard from a MERGED event stream — law plus evidence.
  *
- * `opts.evidence` says whether the evidence half could be read as settled. It defaults to
- * true so every existing caller and test is unchanged, and it is load-bearing in exactly
- * one place: `spec.withdrawn`. Withdrawal is permitted only when NOTHING relies on what a
- * spec introduced, and reliance is counted from audits, pointers, populations, problems and
- * criteria. A fold that cannot see those does not find *less* reliance — it finds NONE, and
- * permits a withdrawal that something already cites. That is the one failure in this design
- * that answers wrongly rather than incompletely, so it refuses instead.
+ * NO DECISION HERE DEPENDS ON THE EVIDENCE HALF, and that is worth stating because it was
+ * not always true and the exception was expensive. `spec.withdrawn` used to permit a
+ * withdrawal only when nothing relied on the rule, counted from audits, pointers,
+ * populations and problems — all per-universe. A fold that could not see them found not
+ * *less* reliance but NONE, so the option existed to make it refuse instead. Withdrawal
+ * tombstones now, which orphans nothing and needs no such count. What remains folds law
+ * into law and evidence into evidence, and every clone reaches the same standard.
  */
 /**
  * What a named reviewer has NOT approved of a proposal as it now stands.
@@ -353,15 +347,7 @@ export function reviewGap(
 
 export function foldStandard(
   events: LogEvent[],
-  /**
-   * @param myScope this clone's own standard scope. Only the `spec.withdrawn` arm uses it,
-   * and there it answers the one question a clone cannot answer any other way: *was I
-   * among the repositories the withdrawer checked?* Omitted, the answer is "cannot tell",
-   * which is refused — see that arm.
-   */
-  opts: { evidence?: boolean; myScope?: string } = {},
 ): SharedStandard {
-  const evidenceReadable = opts.evidence !== false;
   const specs = new Map<string, Spec>();
   const operations = new Map<string, Operation>();
   // Keyed on subject-and-reviewer, so a later sign-off REPLACES the earlier one: a
@@ -666,8 +652,6 @@ export function foldStandard(
         // removed rules from every clone's standard with nothing on the record saying why.
         // Same shape as the retired-pointer gate below it.
         if (!str(e.data, "reason")?.trim()) break;
-        // See the header. Absent evidence makes `foldReliance` answer zero, not unknown.
-        if (!evidenceReadable) break;
         // Withdrawal takes something OUT of the standard, so it is a principal's act — the
         // same gate `withdrawSpec` applies, restated where a remote clone can see it.
         //
@@ -691,109 +675,35 @@ export function foldStandard(
         // cannot be re-withdrawn, so the rule could never leave the standard on any clone.
         const mine = [...operations.values()].filter((o) => o.specId === sp.id && !o.removed);
         if (sp.status === "ratified") {
-          // Both refusals, in the fold and not only in the tool. The tool's reliance count
-          // is TOCTOU across clones — an audit or a pointer appended elsewhere is invisible
-          // to it — so without this a withdrawal races a citation and orphans it on every
-          // machine but the one that asked.
+          // The operation-KIND gate, in the fold and not only in the tool. Withdrawal is
+          // not a revert: undoing an `amend_statement` means restoring a statement AND the
+          // witnesses taken when it was adopted, which the row no longer holds, so the
+          // restored text would be witnessed against today's code as though the amendment
+          // had never happened. Only a compensating spec can put text back honestly.
           if (mine.some((o) => o.kind !== "add_requirement" && o.kind !== "add_criterion")) break;
-          // WAS THIS REPOSITORY ONE OF THE ONES CHECKED?
+          // RETIRED, not deleted — and that one word is what removed the rest of this arm.
           //
-          // A withdrawal is LAW: it lands in the workspace scope and every clone replays it.
-          // The reliance test under it is EVIDENCE: audits, pointers, problems, populations
-          // and vacuity checks are per-universe by design, and this fold is fed exactly one
-          // universe's. So each clone answered a question about its own repo and called the
-          // result a verdict about the standard — universe A refused on its audit, universe
-          // B saw nothing and dropped the rule, and the two standards diverged permanently
-          // with nothing anywhere saying so.
+          // Deleting the rows orphaned every audit, pointer, population and problem that
+          // cited them, so withdrawal had to prove a distributed negative: that nothing in
+          // ANY universe relies on the rule. Evidence is per-universe by design, so no
+          // fold could answer it — which produced a cross-scope scan, a pull, a pinned
+          // scope list, a look-ahead over later events, a retry state, and six defects in
+          // a day, the last of which reversed a decision that had already applied.
           //
-          // No amount of care inside this function fixes that: the fold for A cannot see B.
-          // What it can do is refuse to act on a claim that was not made about it.
-          // `withdrawSpec` reads EVERY standard scope on the sidecar, requires each to be
-          // settled and clean, and pins the list it read; this asks whether that list
-          // includes us. A clone the withdrawer could not see — because its shard had not
-          // been pulled, or because it did not exist yet — is not covered by the claim and
-          // refuses, which is the fail-closed direction Izzie asked for: clean everywhere or
-          // not at all, and undeterminable counts as not.
+          // A tombstone needs none of it. The record survives, so every citation still
+          // resolves; `status: "retired"` is what takes the rule out of force, and
+          // `scrubPlan`, `conformance` and `weakAssertions` all filter to ratified. Every
+          // clone reaches the same state from law alone, which is the property the whole
+          // apparatus was trying to buy. Izzie's call, and it is the same end state a
+          // compensating `retire_requirement` reaches — this stays as the shortcut.
           //
-          // `conflicted` rather than a silent `break`, because the divergence this replaces
-          // was silent and that was the whole defect. A refusing clone keeps the rule and
-          // says why; the repair is to pull and withdraw again from somewhere that can see
-          // everyone.
-          const checked = (e.data as { scopes?: unknown })?.scopes;
-          const claimed = Array.isArray(checked);
-          const named = claimed && !!opts.myScope && checked.includes(opts.myScope);
-          const relies = foldReliance(sp, mine,
-            { operations, acknowledgements, audits, problems, criteria, pointers, populations, vacuityChecks }).length > 0;
-
-          // NO CLAIM AT ALL — a client that checked nothing, and every withdrawal written
-          // before this existed. Refused on every clone, which is the point: uniform
-          // refusal is not a divergence, and one clone silently dropping a rule another
-          // keeps is.
-          //
-          // A CLAIM THAT DID NOT NAME ME, and I hold something that relies on the rule. The
-          // withdrawer could not see this repository — its shard unpulled, or it did not
-          // exist when they looked — and what they missed is real. Refuse, visibly.
-          if (!claimed || (relies && !named)) {
-            specs.set(sp.id, { ...sp, conflicted: true });
-            break;
-          }
-          // NOT NAMED, and nothing here relies on it: APPLY. This is the case that made the
-          // first version of this gate wrong, and it is not the fail-closed case — a
-          // repository added to the workspace after the withdrawal has no audits, no
-          // pointers, no populations, so there is nothing to determine and the answer is
-          // knowably clean. Refusing it resurrected every previously-withdrawn rule on
-          // every new repo, as `ratified` + `conflicted`: a standard carrying law the
-          // business had repealed, which is the same divergence pointing the other way.
-          // "Cannot determine" is a refusal; "determined, and clean" is not.
-          if (relies) break;
-          // Reliance that arrives LATER in the log. The fold is one forward pass, so a
-          // citation appended concurrently on another clone may sort after this event —
-          // and then the rule is deleted here and the audit or pointer that cites it lands
-          // on nothing. Looking ahead is deterministic (every clone folds the same ordered
-          // log) and it makes the WITHDRAWAL lose the race, which is the direction this
-          // subsystem gates in: removing a rule is the quieting act.
-          //
-          // Deliberately crude — a substring match on the serialized event rather than a
-          // per-kind reader, which would have to be extended in lockstep with every record
-          // kind that learns to cite a rule.
-          //
-          // The argument that used to sit here — "every false positive refuses the
-          // withdrawal rather than allowing it" — was WRONG, and wrong in a way that made
-          // the fold non-monotonic. Refusal is only conservative at the FIRST fold. Once a
-          // withdrawal has applied, the rule is gone from the projection and teammates
-          // have read a standard without it; a later refusal is not caution, it is
-          // RETROACTIVE RESURRECTION — silently, because this path never set `conflicted`.
-          // codex demonstrated it with an unrelated `spec.drafted` whose narrative
-          // mentioned the requirement id in prose.
-          //
-          // CAUSAL DESCENDANTS ARE EXCLUDED, which is what restores monotonicity. An event
-          // that SAW the withdrawal is not the race this exists for: its author knew the
-          // rule was going, and nothing they write afterwards can be a reason to keep it.
-          // Once the withdrawal is in the past of every new event — which is what happens
-          // as the log grows — nothing new can reverse the decision. What remains is the
-          // genuinely CONCURRENT event, a fixed set once it has all arrived, and there
-          // refusing is right because neither writer saw the other.
-          const doomed = [
-            ...mine.filter((o) => o.kind === "add_requirement").map((o) => requirementIdFor(o.id)),
-            // The criteria go too, and a `vacuity.checked` names one of these and no rule.
-            ...mine.filter((o) => o.kind === "add_criterion").map((o) => criterionIdFor(o.id)),
-          ];
-          const later = events.slice(i + 1).some((n) => {
-            if (n.kind === "spec.withdrawn") return false;
-            if (causal.saw(n.id, e.id)) return false;
-            const blob = JSON.stringify(n.data ?? {});
-            return doomed.some((rid) => blob.includes(rid));
-          });
-          // `conflicted`, not a silent break. This is the one refusal that can reverse a
-          // decision another clone has already acted on, so it is the last one that should
-          // be quiet about it.
-          if (later) {
-            specs.set(sp.id, { ...sp, conflicted: true });
-            break;
-          }
+          // Criteria are left alone, exactly as `retire_requirement` leaves them: they are
+          // filtered by their RULE's status, so they go out of force with it.
           for (const o of mine) {
-            if (o.kind === "add_requirement") requirements.delete(requirementIdFor(o.id));
-            if (o.kind === "add_criterion") criteria.delete(criterionIdFor(o.id));
+            if (o.kind !== "add_requirement") continue;
+            const rid = requirementIdFor(o.id);
+            const r = requirements.get(rid);
+            if (r) requirements.set(rid, { ...r, status: "retired", retiredBy: e.actor, retiredAt: at });
           }
         }
         // EVERY operation of this spec, tombstones INCLUDED — `mine` drops them, and a
@@ -1160,53 +1070,6 @@ const VACUITY_VERDICTS: VacuityCheck["verdict"][] = ["demonstrated", "vacuous", 
 const MEMBER_STATES = ["conforms", "violates", "undecidable"];
 
 /** The same application `ratifySpec` performs locally, over folded state. */
-/**
- * The fold's half of `relianceOn` — what already depends on the rules a spec introduced.
- *
- * Written from the fold's maps rather than from store queries, so the two halves are
- * genuinely independent implementations of one rule; the correspondence is registered in
- * `sharing-boundary.test.ts`. Only the COUNT is used here — the tool reports which things
- * relied, because it is the end with a person reading the answer.
- */
-function foldReliance(
-  sp: Spec, mine: Operation[],
-  m: {
-    operations: Map<string, Operation>; acknowledgements: Map<string, Acknowledgement>;
-    audits: Map<string, Audit>; problems: Map<string, Problem>;
-    criteria: Map<string, AcceptanceCriterion>; pointers: Map<string, Pointer>;
-    populations: Map<string, PopulationPredicate>; vacuityChecks: Map<string, VacuityCheck>;
-  },
-): string[] {
-  const introduced = new Set(mine.filter((o) => o.kind === "add_requirement").map((o) => requirementIdFor(o.id)));
-  const own = new Set(mine.map((o) => o.id));
-  const hit: string[] = [];
-  const cites = (rid: string | undefined) => !!rid && introduced.has(rid);
-  // `!o.removed`, which `relianceOn` gets for free because `readOperations` drops a tombstone
-  // by default. Without it this end counted an operation somebody PULLED from a draft, so a
-  // withdrawal the tool approved was refused here for ever — and with the wrong diagnosis,
-  // naming a row the caller had already withdrawn. A spent spec cannot be re-withdrawn, so
-  // the rule could never leave the standard on any clone.
-  for (const o of m.operations.values()) {
-    if (o.removed || own.has(o.id)) continue;
-    if (cites(o.requirementId) || cites(o.context?.requirementId)) hit.push(o.id);
-  }
-  for (const a of m.acknowledgements.values()) {
-    if (a.state === "released") continue;
-    if (a.operationId && own.has(a.operationId)) continue;
-    if (cites(a.requirementId)) hit.push(a.id);
-  }
-  for (const a of m.audits.values()) if (cites(a.requirementId)) hit.push(a.id);
-  for (const p of m.problems.values()) if (cites(p.requirementId)) hit.push(p.id);
-  for (const c of m.criteria.values()) if (!own.has(c.introducedBy) && cites(c.requirementId)) hit.push(c.id);
-  for (const p of m.pointers.values()) if (cites(p.requirementId)) hit.push(p.id);
-  for (const p of m.populations.values()) if (cites(p.requirementId)) hit.push(p.id);
-  // Hangs off a CRITERION, so `cites` cannot see it — and this spec's criteria go too.
-  const doomedCriteria = new Set(mine.filter((o) => o.kind === "add_criterion").map((o) => criterionIdFor(o.id)));
-  for (const v of m.vacuityChecks.values()) if (doomedCriteria.has(v.criterionId)) hit.push(v.id);
-  void sp;
-  return hit;
-}
-
 /**
  * Whether a `move_section` still means what it said — the fold's half of `checkMove`.
  *

@@ -268,55 +268,40 @@ has written and a scope this clone did not receive are the same thing on disk. O
 that is right: the sidecar is one git repository, `pull` takes all of it, and a scope with no
 events genuinely has no reliance in it.
 
-### A ratified spec is withdrawn everywhere or nowhere
+### A ratified spec's rules are TOMBSTONED, and that is what removed the problem
 
-The paragraph above defends the case where THIS clone cannot read its own evidence. The
-larger one it did not: universe A's fold is fed A's evidence and B's is fed B's, so each
-answered a question about its own repository and called the result a verdict about the
-standard. A refuses on its audit, B has none and drops the rule, and the two standards
-diverge permanently with nothing anywhere saying so. This was live, and the version of this
-section before it was fixed named only the narrower universe-key misconfiguration.
+The paragraph above defends the case where THIS clone cannot read its own evidence. There
+was a larger one: withdrawal DELETED the rules a spec introduced, which orphaned every
+audit, pointer, population and problem citing them — so it had to prove that nothing in
+**any** universe relied on the rule. Evidence is per-universe by design, so no fold can
+answer that: universe A refused on its audit, universe B had none and dropped the rule, and
+the two standards diverged permanently with nothing anywhere saying so.
 
-**Nothing inside `foldStandard` reaches it**: the fold for A cannot see B. So the claim is
-made where every scope is one directory away, and pinned:
+The attempt to answer it produced a cross-scope scan of every `standard/*` shard, a pull, a
+pinned scope list on the event, a look-ahead over later events, a retry state, and **six
+defects in a day** — the last of which reversed a withdrawal that had already applied,
+because the look-ahead substring-matched serialized payloads and an unrelated draft
+mentioned the requirement id in prose.
 
-- `relianceEverywhere` (`standard-publish.ts`) reads **every** `standard/*` scope on the
-  sidecar. A scope that is not settled means *cannot determine*, and cannot-determine is a
-  refusal. A scope with reliance is a refusal that names the repository and the row.
-- `withdrawSpec` pins the list it read onto the `spec.withdrawn` event.
-- The fold refuses a RATIFIED withdrawal in exactly two cases. **No claim was made at all**
-  — no pinned list, which is every withdrawal written before this existed — refuses on every
-  clone, because uniform refusal is not a divergence and one clone silently dropping what
-  another keeps is. **A claim was made, it did not name this clone (`foldStandard`'s
-  `myScope`), and this clone holds something that relies on the rule** — the withdrawer
-  could not see this repository and what they missed is real. Both go `conflicted`, which is
-  visible and clears on a successful retry.
-- **Not named and clean APPLIES**, and getting that wrong was the first version's real
-  defect. A repository added to the workspace *after* a withdrawal has no audits, no
-  pointers and no populations, and was never in any historical pin — so refusing resurrected
-  every previously-withdrawn rule on every new repo as `ratified` + `conflicted`, leaving it
-  carrying law the business had repealed. That is the same divergence pointing the other
-  way. Fail-closed governs *cannot determine*; a repository with no evidence has nothing to
-  determine, and the answer is knowably clean.
+**Withdrawing a ratified spec now RETIRES its rules instead**, which is the same end state a
+compensating `retire_requirement` reaches. That needs no proof of anything:
 
-A **draft** is untouched by all of it. It applied nothing, so nothing anywhere can rely on it
-and there is nothing to be clean about; the author's own take-back stays open.
+- the record survives, so every citation still resolves — nothing is orphaned, so there is
+  no negative to establish;
+- `status: "retired"` is what takes a rule out of force, and `scrubPlan`, `conformance` and
+  `weakAssertions` all filter to `ratified`;
+- the arm reads LAW only, so every clone reaches the same standard by construction. There is
+  nothing left for two universes to disagree about.
 
-The residual is a race, and it is now noisy instead of silent: a citation appended after the
-check leaves one clone withdrawn and another `conflicted`. The fold's own `foldReliance` and
-its look-ahead over later events are the backstop for that, and the repair is to pull and
-withdraw again from a clone that can see everyone.
+Criteria are untouched, exactly as `retire_requirement` leaves them: they are filtered by
+their rule's status, which is why there is no `retire_criterion` and no need for one.
 
-**The look-ahead excludes CAUSAL DESCENDANTS, and that is what makes the decision durable.**
-It is a substring match over each later event's serialized payload, and the argument that
-used to justify the crudeness — *a false positive only refuses* — is true at the first fold
-and false at every one after it. Once a withdrawal has applied, the rule is gone from the
-projection and teammates have read a standard without it; a later refusal is not caution,
-it is retroactive resurrection. An unrelated draft whose NARRATIVE mentioned the requirement
-id was enough to bring a repealed rule back, silently. An event that SAW the withdrawal
-cannot be a reason to keep the rule — its author knew — so only genuinely CONCURRENT events
-veto, which is a fixed set once they have arrived, and the veto marks `conflicted` because
-it is the one refusal that can reverse a decision another clone already acted on.
+**One refusal survives, and it is not about reliance.** A spec that AMENDED, retired or
+re-filed pre-existing state still cannot be withdrawn: undoing an amendment means restoring
+a statement *and* the witnesses taken when it was adopted, which the row no longer holds —
+the amendment re-baselined them — so the restored text would be witnessed against today's
+code as though the amendment had never happened. Only a compensating spec can put text back
+honestly. Draft withdrawal is unchanged throughout: a draft applied nothing.
 
 ## What the build cost, kept because the next scope change pays it again
 
