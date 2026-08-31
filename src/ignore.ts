@@ -211,13 +211,37 @@ export const sidecarIgnorePath = (sidecarRoot: string, universe: string): string
 export async function loadIgnore(root: string): Promise<Ignore> {
   try {
     return compileIgnore(await readFile(join(root, ".codemapignore"), "utf8"), "repo");
-  } catch { /* no repo declaration — the team's may still stand */ }
+  } catch (e: unknown) {
+    // ONLY a missing file falls through. Catching everything meant a `.codemapignore` that
+    // is present but unreadable — a directory, a permission problem, a broken symlink —
+    // silently swapped the repo's policy for the team's, which is the one transition this
+    // layer must never make on its own. `ENOENT` is "nobody declared one here"; anything
+    // else is "there is a declaration and I could not read it", and guessing at that is how
+    // a branch quietly starts obeying somebody else's rules.
+    if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      throw new Error(
+        `.codemapignore exists at ${root} but could not be read (${(e as NodeJS.ErrnoException)?.code ?? e}). `
+        + `Refusing to fall back to the team's declaration on the sidecar: that would silently change which `
+        + `paths are excluded and which count as tests. Fix or remove the file.`,
+      );
+    }
+  }
 
   const cfg = resolveSidecar(root);
   if (cfg) {
     try {
       return compileIgnore(await readFile(sidecarIgnorePath(cfg.path, cfg.universe), "utf8"), "sidecar");
-    } catch { /* none there either */ }
+    } catch (e: unknown) {
+      // Same rule one layer down: absent is an answer, unreadable is not.
+      if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") {
+        throw new Error(
+          `the team's declaration at ${sidecarIgnorePath(cfg.path, cfg.universe)} could not be read `
+          + `(${(e as NodeJS.ErrnoException)?.code ?? e}). Reading it as absent would index generated code as `
+          + `documentation gaps and demote every check pointer to a last resort. Fix the sidecar, or declare `
+          + `\`.codemapignore\` in this repo.`,
+        );
+      }
+    }
   }
   return matchNothing("none");
 }

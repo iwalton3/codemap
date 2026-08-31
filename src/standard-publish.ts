@@ -226,6 +226,13 @@ export const shareSpecWithdrawn = (
  * *cannot determine*, and cannot-determine is a refusal, not a pass. The returned list is
  * what the fold checks itself against.
  *
+ * PULLED FIRST BY THE CALLER, and that is a precondition rather than a detail: neither
+ * `share` nor `ensureSidecar` pulls, so read against a stale mirror this answers "clean"
+ * about scopes it simply has not received — reintroducing, from inside the gate, exactly
+ * the divergence the gate exists to prevent. A stale scope is `complete`, so the status
+ * check below cannot see it. `withdrawSpec` does the pull; it lives there because
+ * `ops-shared` sits ABOVE this module and reaching up for it is an import cycle.
+ *
  * `undefined` universes are not a case: `scopesOnDisk` reports what the sidecar HOLDS, and a
  * repository whose shard has never been pulled is exactly the one this cannot speak for —
  * which is why the fold asks whether it was named rather than trusting the count.
@@ -238,7 +245,7 @@ export async function relianceEverywhere(
   // published at all — `share` takes the local branch, so the list returned here is never
   // pinned on anything. It is empty rather than invented for that reason.
   if (!cfg) return { ok: true, scopes: [] };
-  const { scopesOnDisk, readScopeChecked } = await import("./eventlog.js");
+  const { scopesOnDisk, readScopeChecked, sortEvents } = await import("./eventlog.js");
   const { foldStandard: fold, lawScope: law } = await import("./shared-standard.js");
   const all = (await scopesOnDisk(cfg.path)).filter((sc) => sc.startsWith("standard/"));
   // Ours may hold no events yet — a universe that has published nothing has no directory —
@@ -262,9 +269,13 @@ export async function relianceEverywhere(
           + `spec with a compensating one, which needs nobody's evidence.`,
       };
     }
-    // That universe's law + evidence, folded on its own. `evidence: true` because the read
-    // above established the scope is settled — the flag exists for the case where it is not.
-    const st = fold([...lawRead.events, ...read.events], { evidence: true, myScope: sc });
+    // That universe's law + evidence, folded on its own — through `sortEvents`, like every
+    // other merged fold. `readCachedMerged` sorts the union because the deterministic
+    // topological sort is what makes merging two scopes safe; concatenating two
+    // independently-sorted lists is not one sorted list, and this verdict decides whether a
+    // rule leaves the standard everywhere. Reaching the right answer from an ordering no
+    // clone ever folds is luck, not a property.
+    const st = fold(sortEvents([...lawRead.events, ...read.events]), { evidence: true, myScope: sc });
     const cites = [
       ...[...st.audits.values()].filter((a) => doomed.includes(a.requirementId)).map((a) => `audit ${a.id}`),
       ...[...st.problems.values()].filter((p) => doomed.includes(p.requirementId)).map((p) => `problem ${p.id}`),

@@ -124,11 +124,17 @@ test("a malformed `asOf` is refused, not silently answered in two opposite direc
     const good = await scrubPlan(u.root, { asOf: "2030-01-01T00:00:00.000Z" });
     assert.equal(good.due.length, 1);
     assert.equal((await scrubPlan(u.root, { asOf: "2030-01-01" })).due.length, 1, "a date alone is a legal asOf");
+    assert.equal((await scrubPlan(u.root, { asOf: "2028-02-29" })).due.length, 1, "and a real leap day is not a typo");
 
-    for (const bad of ["today", "2026-08-31 15:00", "next week", ""]) {
-      await assert.rejects(() => scrubPlan(u.root, { asOf: bad }), /asOf must be an ISO date/,
+    // A date that is WELL-FORMED and does not exist. `Date.parse` is a normalizer, not a
+    // validator: `2026-02-30` parses and silently becomes March 2, so the acknowledgement
+    // side (lexicographic, on the raw string) and the scrub (on the rolled milliseconds)
+    // disagreed again — the very divergence `parseAsOf` was added to close, walking
+    // straight through it. Found by codex.
+    for (const bad of ["today", "2026-08-31 15:00", "next week", "", "2026-02-30", "2027-02-29"]) {
+      await assert.rejects(() => scrubPlan(u.root, { asOf: bad }), /asOf must be a REAL ISO date/,
         `scrubPlan silently reported nothing due for asOf ${JSON.stringify(bad)}`);
-      await assert.rejects(() => listAcknowledgements(u.root, { asOf: bad }), /asOf must be an ISO date/,
+      await assert.rejects(() => listAcknowledgements(u.root, { asOf: bad }), /asOf must be a REAL ISO date/,
         `listAcknowledgements silently reported everything due for asOf ${JSON.stringify(bad)}`);
     }
     assert.equal(rid.startsWith("r"), true);

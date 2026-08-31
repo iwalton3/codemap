@@ -485,3 +485,77 @@ test("search finds a bug by its id and by its title, open ones first", async () 
     assert.deepEqual((await ops.search(r.root, "nothing matches this") as any).bugs, []);
   } finally { r.cleanup(); }
 });
+
+
+/**
+ * Search has to MATERIALIZE first, like every other bug read.
+ *
+ * `listBugs` and `bugDetail` open with `refreshBugRows`; the new search arm read the table
+ * directly. So a teammate's bug that is in the shared log but not yet folded into this
+ * machine's rows was unfindable until some unrelated list or detail read happened to fold
+ * it — which is exactly the failure the search was added for, on the bugs most worth
+ * finding. Found by codex and by the /code-review pass independently.
+ */
+test("search finds a teammate's bug straight from the log, with no list read first", async () => {
+  const r = await repo(true);
+  try {
+    const { fileBug } = await import("./shared-bugs.js");
+    const cfg = resolveSidecar(r.root)!;
+    await fileBug(cfg.path, cfg.universe, { principal: "mate@x.com" }, {
+      id: "bug_needle", title: "Needle", text: "exact search target", anchors: [],
+    } as never);
+
+    // No `listBugs` first. That call is what used to be doing the materializing.
+    assert.deepEqual((await ops.search(r.root, "bug_needle") as any).bugs.map((b: any) => b.id), ["bug_needle"],
+      "a bug in the log and not yet in the rows is the one a person is most likely to paste an id for");
+  } finally { r.cleanup(); }
+});
+
+/**
+ * The "asked to close" queue, and its count, must describe the same bugs.
+ *
+ * Two defects in one row. `bug.stateChanged` clears `pending` but keeps the outcome as
+ * history, so a bug reported fixed and then resolved by a person carried
+ * `reported.result === "fixed"` for ever and sat in the queue for ever with it, asking for
+ * a decision already made. And the counts were derived from a list already narrowed by
+ * `state`/`open` while the chip they feed navigates to a differently-filtered view — so
+ * the number and the list it opens disagreed. Codex found the first, /code-review the
+ * second.
+ *
+ * Built with `testBug` on a LOCAL store, because a bug's `outcome` has no op of its own:
+ * it arrives from the fold or with a finding, and the thing under test is `listBugs`.
+ */
+test("the asked-to-close queue drops what is already closed, and its count matches its list", async () => {
+  const r = await repo();
+  try {
+    const at = "2026-08-30T00:00:00Z";
+    const who = { principal: "mate@x.com" };
+    await writeLocalBug(r.root, testBug({
+      id: "bug_live", title: "still open", state: "created",
+      pending: { ask: "resolve", by: who, at, rationale: "the guard is in place now" },
+    }));
+    await writeLocalBug(r.root, testBug({
+      id: "bug_fixed", title: "reported fixed, still open", state: "created",
+      outcome: { result: "fixed", detail: "done", by: who, at },
+    }));
+    await writeLocalBug(r.root, testBug({
+      id: "bug_done", title: "already dealt with", state: "resolved",
+      outcome: { result: "fixed", detail: "done", by: who, at },
+      closed: { reason: "verified", by: who, at: "2026-08-31T00:00:00Z" },
+    }));
+
+    const asked = await ops.listBugs(r.root, { asked: true }) as any;
+    assert.deepEqual(asked.bugs.map((b: any) => b.id).sort(), ["bug_fixed", "bug_live"],
+      "an open ask and an open report are asks; a decision already made is not");
+    assert.equal(asked.bugs.some((b: any) => b.id === "bug_done"), false);
+
+    // The COUNT is over everything, so the chip agrees with the view it opens — that view
+    // sends `asked=1` and NO `open` filter, and the count used to be derived from a list
+    // the caller had already narrowed.
+    const fromOpenView = await ops.listBugs(r.root, { open: true }) as any;
+    assert.equal(fromOpenView.asked, asked.bugs.length,
+      "a count that disagrees with the list it links to is worse than no count");
+    const fromStateView = await ops.listBugs(r.root, { state: "resolved" }) as any;
+    assert.equal(fromStateView.asked, asked.bugs.length, "and it does not move with the filter on screen");
+  } finally { r.cleanup(); }
+});

@@ -94,11 +94,16 @@ interface Ctx {
  */
 async function context(root: string, needed: Iterable<string> = []): Promise<Ctx> {
   const nodes = new Map((await loadNodes(root)).map((n) => [n.id, n]));
-  let ig: Awaited<ReturnType<typeof loadIgnore>> | null = null;
-  try { ig = await loadIgnore(root); } catch { /* no ignore file: nothing is a test */ }
+  // NOT wrapped in a catch any more. `loadIgnore` no longer throws for an absent
+  // declaration — that returns `source: "none"` — so the only thing left to catch is one
+  // that EXISTS and could not be read, and swallowing that answered "nothing is a test",
+  // which demotes every pointer at a lint from `check` to `symbol`/`lastResort`. The
+  // ladder inverting silently is the failure the whole layered declaration exists to
+  // prevent; a broken file has to be loud.
+  const ig = await loadIgnore(root);
   const ids = [...needed];
   return {
-    nodes, isTest: (f: string) => ig?.isTest(f, false) ?? false,
+    nodes, isTest: (f: string) => ig.isTest(f, false),
     live: ids.length ? await liveHashes(root, ids) : legacyIndex(new Map()),
   };
 }
@@ -161,6 +166,22 @@ export async function serve(root: string, p: Pointer): Promise<ServedPointer> {
 }
 
 // --- declaring ---------------------------------------------------------------
+
+/**
+ * Anchors this pointer would baseline as `sha256:absent` — witnesses that can never fire.
+ *
+ * A DOC target expands to the node's citations, and one of those may name code that has
+ * been renamed away; `watched` does not resolve them, because refusing the whole pointer
+ * over one dead citation would block the very case `ack-hole` exists to report. But absent
+ * is comparable to absent, so `witnessDrift` short-circuits and that anchor is silently
+ * outside the pointer's reach for ever — the pointer reads as covering it and is
+ * permanently quiet about it.
+ *
+ * Reported, never refused: same trade `lastResort` makes. What is not acceptable is that
+ * it was invisible.
+ */
+const unwatchable = (anchors: string[], live: AnchorIndex): string[] =>
+  anchors.filter((id) => live.get(id) === undefined);
 
 export interface Declared { ok: true; id: string; pointer: ServedPointer; advice?: string }
 
@@ -358,6 +379,8 @@ export async function declarePointer(
     state: "active", declaredBy: actor, declaredAt: now(),
   };
 
+  const blind = unwatchable(anchors, live);
+
   const d = disposition(await sharePointerDeclared(root, pointer));
   if ("error" in d) return d;
   if (d.local) await writeLocalPointer(root, pointer);
@@ -369,7 +392,14 @@ export async function declarePointer(
   // with every anchor drifted. `restatePointer`'s entire contract is "this is the new
   // quiet", so it was answering the opposite of its purpose.
   const served = await serveWith(root, { ...ctx, live }, pointer);
-  const advice = served.lastResort ? betterThanAnAnchor(ctx, target.id) : undefined;
+  const ladder = served.lastResort ? betterThanAnAnchor(ctx, target.id) : undefined;
+  const dead = blind.length
+    ? `${blind.length} of the ${anchors.length} anchor(s) this watches do not resolve in the live index `
+      + `(${blind.slice(0, 3).join(", ")}${blind.length > 3 ? ", …" : ""}), so they are baselined absent — and `
+      + `absent never drifts, which means this pointer is permanently quiet about them. `
+      + `${target.kind === "node" ? `Confirm or ack-hole ${target.id} to bring its citations back into reach` : "Re-declare it once the code is indexed"}.`
+    : undefined;
+  const advice = [ladder, dead].filter(Boolean).join(" ") || undefined;
   return { ok: true, id: pointer.id, pointer: served, ...(advice ? { advice } : {}) };
 }
 

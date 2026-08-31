@@ -5,6 +5,7 @@ import { emptyBreakdown } from "../coverage.js";
 import { indexFile, indexBlob } from "../repo.js";
 import { headCommit, readBlobs } from "../git.js";
 import { citedAnchors, isClosed } from "../shared-bugs.js";
+import { refreshBugRows } from "./bugs.js";
 import { readAnchorStore, loadNodes, readGraph, readBugs, readAnnotations, readFindings, readReviews, findAnchorsOutsideWork, snapshotBranch, readOrphans } from "../store.js";
 import { teamNotesByAnchor, type PinnedNote } from "../notes-lookup.js";
 import { resolveAnchorRefs } from "../refs.js";
@@ -138,6 +139,11 @@ export async function search(root: string, query: string, limit = 30) {
   // to reach one was to know it was a bug and go to that page and scroll. Matched on the
   // id as well as the prose, because pasting `bg_3f2a…` and getting nothing is the
   // specific failure.
+  // MATERIALIZED first, like every other bug read. `listBugs` and `bugDetail` open with
+  // `refreshShared`; this did not, so a teammate's bug that is in the log but not yet
+  // folded into this machine's rows was unfindable — which is the exact failure the search
+  // was added for. Pasting an id and getting nothing, for the bugs most worth finding.
+  await refreshBugRows(root);
   const bugs = (await readBugs(root)).bugs
     .filter((b) =>
       b.id.toLowerCase().includes(q) ||

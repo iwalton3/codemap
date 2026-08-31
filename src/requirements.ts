@@ -40,7 +40,7 @@ import {
   contentDiff, criterionIdFor, EVIDENCE_KINDS, framingContent, movedSection, normalizeSection,
   operationContent, requirementIdFor, SIGN_OFF_AXES, witnessHash,
 } from "./schema.js";
-import { universeKey } from "./sidecar-config.js";
+import { resolveSidecar, universeKey } from "./sidecar-config.js";
 import {
   readAcknowledgements, readAudits, readCriteria, readOperations, readPopulations, readProblems,
   readOperation, readProposalWitnesses, readRequirement, readRequirements, readSpec, readSpecs,
@@ -232,10 +232,11 @@ async function checkMove(
 async function witness(root: string, cites: string[]): Promise<BugWitness[]> {
   if (!cites.length) return [];
   const { live, absent } = await liveIndex(root, cites);
-  // `checkCitations` gates every path here, so an absent id means the tree moved between
-  // the two calls. Recorded rather than thrown — but `sha256:absent` is the hash that
-  // cannot drift, so it must not pass silently.
-  if (absent.length) throw new Error(`anchor(s) left the tree between validation and witnessing: ${absent.join(", ")}`);
+  // `sha256:absent` is the hash that cannot drift, so an id that does not resolve must not
+  // pass silently into a witness. It THROWS rather than returning an `Err` because every
+  // caller passes `[]` today and there is no error channel on this path — if `cites` is
+  // ever repopulated, give this one before the first real call.
+  if (absent.length) throw new Error(`anchor(s) left the tree and cannot be witnessed: ${absent.join(", ")}`);
   return cites.map((id) => ({ anchorId: id, bodyHash: live.get(id)! }));
 }
 
@@ -799,16 +800,36 @@ export async function removeOperation(
   // for the same reason `withdrawSpec` releases one: the grant really happened, and what
   // stops existing is the rule it was about. Somebody else's already refused above.
   const next: Operation = { ...op, removed: { at: now(), by: actor, reason } };
-  const d = disposition(await shareOperationRemoved(root, next));
+  const outcome = await shareOperationRemoved(root, next);
+  const d = disposition(outcome);
   if ("error" in d) return d;
   if (d.local) await writeLocalOperation(root, next);
+  else {
+    // APPENDED is not APPLIED, and ordering alone cannot tell them apart. Sharing succeeds
+    // the moment the event is durable; the fold then decides, and it can REFUSE — the
+    // merged log sees dependents this machine cannot. So the release below ran against a
+    // removal that never happened, leaving the approval artifact destroyed everywhere
+    // while the operation stayed live: exactly the state the comment here used to claim
+    // the reorder had fixed. It fixed the failed-share half and could not have fixed this
+    // one. `withdrawSpec` reads its own outcome back for the same reason.
+    const folded = await readOperation(root, op.id);
+    if (!folded?.removed) {
+      return {
+        error: outcome.folded
+          ? `${op.id} was NOT removed: this machine folded the log and something in it refuses the removal — `
+            + `most likely an operation appended elsewhere that targets ${op.id}. The draft is unchanged and any `
+            + `acknowledgement on it is untouched. Sync, then look at the spec again.`
+          : `${op.id}'s removal is appended to the shared log and durable, but this machine has not folded it yet, `
+            + `so it is not known to have applied. Its acknowledgement is deliberately NOT released — re-read the `
+            + `spec after the next sync.`,
+      };
+    }
+  }
 
-  // AFTER the removal is durable, and that order is the fix. Releasing first meant a share
-  // that failed — or a fold that refused the removal, which it can, because the merged log
-  // sees dependents this machine cannot — left the release durable EVERYWHERE while the
-  // operation stayed live: a ratifier looking at an unsilenced operation whose approval
-  // artifact had been destroyed, with a reason naming a removal that never happened.
-  // `withdrawSpec` already had it this way round.
+  // AFTER the removal is durable AND applied. Releasing first meant a share that failed
+  // left the release durable everywhere while the operation stayed live: a ratifier
+  // looking at an unsilenced operation whose approval artifact had been destroyed, with a
+  // reason naming a removal that never happened.
   const { releaseAcknowledgement } = await import("./acknowledgements.js");
   for (const a of await readAcknowledgements(root, { operationId: op.id })) {
     if (a.state === "released") continue;
@@ -1612,6 +1633,29 @@ export async function withdrawSpec(
   // nothing anywhere to rely on it.
   let checkedScopes: string[] = [];
   if (sp.status === "ratified") {
+    // PULL FIRST, where there is something to pull. Neither `share` nor `ensureSidecar`
+    // does, so the scopes `relianceEverywhere` reads are whatever this clone last
+    // received: universe B records an audit and syncs, A never pulls, A reads B's scope as
+    // complete-and-clean, pins it, and drops a rule B then keeps — the exact divergence
+    // this mechanism exists to prevent, reintroduced by the gate itself. A stale scope IS
+    // `complete`, so no status check catches it; only a pull does. Same step
+    // `review_proposal` and the sign-offs take.
+    //
+    // Gated on a sidecar EXISTING: a store with none has nothing to pull and one universe
+    // to be clean in, and requiring it there would refuse every withdrawal on the
+    // configuration codemap has always supported.
+    if (resolveSidecar(root)) {
+      const pulled = await pullFirst(root);
+      if (!pulled.pulled) {
+        return {
+          error:
+            `could not pull the sidecar, so whether this withdrawal is clean in the other repositories `
+            + `cannot be established from here${pulled.note ? ` — ${pulled.note}` : ""}. A ratified spec leaves `
+            + `the standard everywhere or nowhere, and a stale mirror reads as clean, so this refuses rather `
+            + `than guessing. Fix the sync and try again.`,
+        };
+      }
+    }
     const everywhere = await relianceEverywhere(root, doomedIds);
     if ("error" in everywhere) return everywhere;
     checkedScopes = everywhere.scopes;

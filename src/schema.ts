@@ -1354,10 +1354,18 @@ export function parseAsOf(raw: string | undefined): { at: string; ms: number } {
     return { at: d.toISOString(), ms: d.getTime() };
   }
   const ms = Date.parse(raw);
-  if (!ISO_DATE.test(raw) || Number.isNaN(ms)) {
+  // ROUND-TRIP, because `Date.parse` is a normalizer and not a validator: `2026-02-30` is
+  // well-formed, parses, and silently becomes March 2. The two consumers then disagree
+  // exactly as they did before this function existed — the acknowledgement side compares
+  // the caller's raw string lexicographically while the scrub uses the rolled-forward
+  // milliseconds — so an impossible date reads "not due" on one surface and "due" on the
+  // other. Comparing the date part back against what was asked for is what catches it.
+  const rolled = !Number.isNaN(ms) && raw.slice(0, 10) !== new Date(ms).toISOString().slice(0, 10);
+  if (!ISO_DATE.test(raw) || Number.isNaN(ms) || rolled) {
     throw new Error(
-      `asOf must be an ISO date or timestamp — "YYYY-MM-DD" or "2026-08-31T12:00:00Z". Got ${JSON.stringify(raw)}, `
-      + "which one surface would read as every deadline having passed and the other as none of them having.",
+      `asOf must be a REAL ISO date or timestamp — "YYYY-MM-DD" or "2026-08-31T12:00:00Z". Got ${JSON.stringify(raw)}`
+      + (rolled ? `, which is not a date that exists (it would roll to ${new Date(ms).toISOString().slice(0, 10)})` : "")
+      + ". One surface would read it as every deadline having passed and the other as none of them having.",
     );
   }
   return { at: raw, ms };

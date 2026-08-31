@@ -754,7 +754,14 @@ export function foldStandard(
             if (o.kind === "add_criterion") criteria.delete(criterionIdFor(o.id));
           }
         }
-        for (const o of mine) {
+        // EVERY operation of this spec, tombstones INCLUDED — `mine` drops them, and a
+        // detector proposed against an operation that was then pulled from the draft is
+        // precisely the orphan with no other exit: `spec.operation.removed` touches no
+        // pointers, and ratification never happens. It stayed `pending` for ever on every
+        // clone, watching a criterion that will never exist. `retirePendingForSpec` reads
+        // `includeRemoved: true` for this reason, and the two ends have to agree.
+        const everyOp = [...operations.values()].filter((o) => o.specId === sp.id);
+        for (const o of everyOp) {
           // A detector PROPOSED with this spec, retired for the same reason and by the same
           // argument. Withdrawal was the one exit from `pending` nothing covered: ratification
           // binds, and a pulled operation retires at ratification — but a spec that is never
@@ -941,7 +948,21 @@ export function foldStandard(
           // What it loses is only that the ratifier did not see it, and a detector declared
           // after ratification never was seen.
           if (sp.status === "draft") pointers.set(p.id, { ...declared, state: "pending", origin: "sync" });
-          else if (sp.status === "ratified") pointers.set(p.id, { ...declared, state: "active", origin: "sync" });
+          // RATIFIED AND APPLIED. A conflicted ratification carries `status: "ratified"` and
+          // applied NOTHING — no requirement, no criterion — so activating here mints a
+          // live detector watching a criterion that does not exist and a rule that was
+          // never created. `declarePointer` could not produce that state: it reads both
+          // records first. Checking the criterion rather than the flag, because the flag
+          // says why and this needs to know whether the thing being watched is there.
+          else if (sp.status === "ratified" && criteria.has(criterionIdFor(against.id))) {
+            pointers.set(p.id, { ...declared, state: "active", origin: "sync" });
+          }
+          // Ratified but the criterion never landed — a conflicted adoption. Left PENDING,
+          // not activated and not dropped: the proposal really was made, and a later
+          // withdrawal or a clean re-ratification is what decides it.
+          else if (sp.status === "ratified") {
+            pointers.set(p.id, { ...declared, state: "pending", origin: "sync" });
+          }
           // Withdrawn or repealed: the criterion is never going to exist. Retired rather than
           // dropped, so it reads as a proposal that went nowhere and not as one never made.
           else {

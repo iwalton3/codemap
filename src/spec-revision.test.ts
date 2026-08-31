@@ -32,10 +32,11 @@ import {
 } from "./requirements.js";
 import { ratifyReviewed, signOffEverything, ratifyWithReview } from "./test-approve.js";
 import { acknowledgeGap, listAcknowledgements } from "./acknowledgements.js";
+import { readAcknowledgements } from "./store.js";
 import {
   foldStandard, standardScope, publishSpecDrafted, publishOperation, publishSpecRatified,
   publishSpecRevised, publishOperationRevised, publishOperationRemoved, publishSpecWithdrawn,
-  publishAckGranted, publishAudit,
+  publishAckGranted, publishAudit, lawScope,
 } from "./shared-standard.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
@@ -629,6 +630,62 @@ test("the fold refuses an agent's withdrawal of a RATIFIED spec, and one somebod
 });
 
 /**
+ * A removal the FOLD refuses must not release the acknowledgement anyway.
+ *
+ * Sharing succeeds the moment the event is durable; the fold then decides, and it can
+ * REFUSE — the merged log sees dependents this machine cannot. The release ran regardless,
+ * so the approval artifact was destroyed on every clone while the operation stayed live: a
+ * ratifier reading an unsilenced operation whose gap had been released, with a reason
+ * naming a removal that never happened.
+ *
+ * The comment at that call site described this failure exactly and claimed the reordering
+ * had fixed it. Reordering fixed the failed-SHARE half and could not have touched this one,
+ * because appending succeeds either way. Found by codex.
+ */
+test("a removal the fold refuses leaves the acknowledgement alone, and says so", async () => {
+  const u = await universe({ sidecar: true });
+  try {
+    const { specId, opId } = await drafted(u.root);
+    ok(await acknowledgeGap(u.root, {
+      operationId: opId, rationale: "no code exists to conform yet",
+      priority: "medium", revalidateBy: "2027-01-01", ...AGENT,
+    }));
+
+    // CONTROL: with nothing depending on it the removal applies and the gap is released,
+    // or the refusal below is satisfied by a build that never releases anything.
+    const clean = ok(await removeOperation(u.root, { operationId: opId, reason: "wrong spec", ...AGENT }));
+    assert.ok(clean.operation.removed);
+    assert.equal((await readAcknowledgements(u.root, { operationId: opId }))[0]!.state, "released");
+
+    // Now a second operation, with a dependent appended DIRECTLY TO THE LOG — the shape a
+    // clone that has not pulled cannot see, and the reason the fold gets the last word.
+    const second = ok(await addOperation(u.root, {
+      specId, kind: "add_requirement", rationale: "second rule", reversibility: "reversible",
+      title: "Credit line rounding", section: "Credit/Rounding",
+      statement: "Credit lines round to the cent.", provenance: "policy §5", ...AGENT,
+    }));
+    ok(await acknowledgeGap(u.root, {
+      operationId: second.id, rationale: "nothing rounds yet",
+      priority: "medium", revalidateBy: "2027-01-01", ...AGENT,
+    }));
+    await publishOperation(u.side!, lawScope(), mate, {
+      id: "op_dependent", specId, kind: "add_criterion", ord: 9,
+      targetOperationId: second.id, criterion: "A rounded line is exact.",
+      falsifier: "a line that is not", evidenceKind: "automated-test",
+      rationale: "written by a clone this machine has not pulled", reversibility: "reversible",
+    });
+
+    const refused = await removeOperation(u.root, { operationId: second.id, reason: "second thoughts", ...AGENT });
+    assert.ok("error" in refused, "the fold refuses it, so the tool must not report success");
+    assert.match((refused as any).error, /NOT removed/);
+    assert.equal((await readAcknowledgements(u.root, { operationId: second.id }))[0]!.state, "pending",
+      "the approval artifact must survive a removal that did not happen");
+    assert.equal((await readOperations(u.root, { specId })).some((o) => o.id === second.id), true,
+      "and the operation is still there, which is what makes the released gap an orphan");
+  } finally { u.cleanup(); }
+});
+
+/**
  * A ratified spec comes out of the standard everywhere or nowhere.
  *
  * The withdrawal is LAW: one event in the workspace scope, replayed by every clone. The
@@ -681,6 +738,45 @@ test("a ratified spec is not withdrawn while ANOTHER repository's evidence relie
       assert.equal((await listRequirements(v.root)).length, 1, "the rule is still in force here too");
       assert.equal((await readSpec(v.root, second.specId))!.status, "ratified");
       assert.ok(mine !== theirs && vid !== rid);
+    } finally { v.cleanup(); }
+  } finally { u.cleanup(); }
+});
+
+/**
+ * The gate must PULL, or "clean in every repository" is a claim about a mirror.
+ *
+ * Neither `share` nor `ensureSidecar` pulls, so `relianceEverywhere` read whatever shards
+ * this clone last received. Universe B records an audit and syncs; A never pulls; A reads
+ * B's scope as complete-and-clean, pins it, and drops a rule B then keeps — the exact
+ * divergence the gate exists to prevent, reintroduced by the gate itself. A stale scope IS
+ * `complete`, so no status check can see it. Found by the /code-review pass.
+ *
+ * Driven through a FAILING pull, because that is the half a test can reach: the fixtures
+ * share one sidecar directory with no remote, so a successful pull is a no-op there and
+ * asserting on it would prove nothing.
+ */
+test("a withdrawal refuses when the sidecar cannot be pulled, rather than trusting the mirror", async () => {
+  const u = await universe({ sidecar: true });
+  try {
+    const { specId } = await drafted(u.root);
+    ok(await ratifyReviewed(u.root, specId));
+
+    // CONTROL: with a working (remote-less) sidecar the withdrawal goes through, so the
+    // refusal below is about the PULL and not about withdrawal being broken.
+    const fine = await withdrawSpec(u.root, specId, { reason: "adopted in error" });
+    assert.ok(!("error" in fine), `a clean withdrawal must still work: ${(fine as any).error}`);
+
+    // A second spec, and a sidecar pointed at a remote that is not there.
+    const v = await universe({ sidecar: true });
+    try {
+      const second = await drafted(v.root);
+      ok(await ratifyReviewed(v.root, second.specId));
+      spawnSync("git", ["remote", "add", "origin", join(v.side!, "..", "does-not-exist.git")], { cwd: v.side! });
+
+      const refused = await withdrawSpec(v.root, second.specId, { reason: "adopted in error" });
+      assert.ok("error" in refused, "an unpullable sidecar cannot answer 'clean everywhere'");
+      assert.match((refused as any).error, /could not pull/i);
+      assert.equal((await listRequirements(v.root)).length, 1, "and the rule stays until it can");
     } finally { v.cleanup(); }
   } finally { u.cleanup(); }
 });

@@ -188,7 +188,7 @@ export async function listBugs(
   root: string,
   opts: { state?: BugState; open?: boolean; queue?: boolean; asked?: boolean; sort?: BugSort } = {},
 ) {
-  await refreshShared(root);
+  await refreshBugRows(root);
   const all = (await readBugs(root)).bugs;
   const { idx } = await drift(root, all);
   const changedFor = (b: SharedBug) => realDrift(witnessDrift(witnessesOf(b), idx)).map((c) => c.anchorId);
@@ -200,12 +200,24 @@ export async function listBugs(
   let rows = bugs.map((b) => publicView(b, changedFor(b)));
   // The queue is the whole point of sharing them: what needs a PERSON here. Drift is in
   // it and is not in the log's own `bugAckQueue`, which cannot see this machine's index.
-  const queue = rows.filter((r) => r.waitingOnYou || r.possiblyFixed);
   // Narrower than the queue, and the difference is the point: "somebody is asking you to
   // close this" is a different job from "somebody contested the severity".
-  const asked = rows.filter((r) => !!r.pending || r.reported?.result === "fixed");
-  if (opts.queue) rows = queue;
-  else if (opts.asked) rows = asked;
+  //
+  // NOT CLOSED, and that is not a detail. `bug.stateChanged` clears `pending` but keeps the
+  // outcome as history, so a bug reported fixed and then resolved by a person carried
+  // `reported.result === "fixed"` for ever — and sat in the "asked to close" queue for
+  // ever with it, asking for a decision that had already been made.
+  const isAsk = (r: typeof rows[number]) =>
+    !isClosed(r.state) && (!!r.pending || r.reported?.result === "fixed");
+  // Over `all`, not over `rows`. The counts beside them describe the whole store, and
+  // these were derived from a list already narrowed by `state`/`open` — so the chip said N
+  // while the view it opens (which sends its own filter) showed something else. A count
+  // that disagrees with the thing it links to is worse than no count.
+  const everyRow = bugs === all ? rows : all.map((b) => publicView(b, changedFor(b)));
+  const queueAll = everyRow.filter((r) => r.waitingOnYou || r.possiblyFixed);
+  const askedAll = everyRow.filter(isAsk);
+  if (opts.queue) rows = rows.filter((r) => r.waitingOnYou || r.possiblyFixed);
+  else if (opts.asked) rows = rows.filter(isAsk);
 
   const sort: BugSort = BUG_SORTS.includes(opts.sort as BugSort) ? opts.sort as BugSort : "severity";
   const cmp: Record<BugSort, (a: typeof rows[number], b: typeof rows[number]) => number> = {
@@ -214,17 +226,15 @@ export async function listBugs(
     oldest: (a, b) => when_(a).localeCompare(when_(b)),
     title: (a, b) => (a.title ?? "").localeCompare(b.title ?? ""),
   };
-  // A COPY: `rows` may still be `queue` or `asked`, which are the same array objects the
-  // counts below are derived from, and sorting in place would reorder them too.
   rows = [...rows].sort(cmp[sort]);
 
   return {
     counts: all.reduce((m, b) => ((m[b.state] = (m[b.state] ?? 0) + 1), m), {} as Record<string, number>),
     open: all.filter((b) => !isClosed(b.state)).length,
     shared: all.filter((b) => b.origin).length,
-    waitingOnYou: queue.length,
-    /** How many are somebody asking you to close, or reported fixed. */
-    asked: asked.length,
+    waitingOnYou: queueAll.length,
+    /** How many are somebody asking you to close, or reported fixed. Of ALL of them. */
+    asked: askedAll.length,
     sort,
     bugs: rows,
   };
@@ -236,7 +246,7 @@ export async function listBugs(
  * taken — the same mechanism as doc and review staleness).
  */
 export async function bugDetail(root: string, id: string) {
-  await refreshShared(root);
+  await refreshBugRows(root);
   const bug = await readBug(root, id);
   if (!bug) return { error: `no bug "${id}"` };
   const { store, live, idx } = await drift(root, [bug]);
@@ -291,7 +301,7 @@ export async function bugDetail(root: string, id: string) {
  * Fail-closed, never fail-crashed: an unreadable sidecar must not break a local bug
  * list. The rows this machine already has are still there, and the next sync retries.
  */
-async function refreshShared(root: string): Promise<void> {
+export async function refreshBugRows(root: string): Promise<void> {
   const log = bugLog(root);
   if (!log || "error" in log) return;
   await materializeBugs(root, log.cfg).catch(() => false);
@@ -315,7 +325,7 @@ async function routeWrite(root: string, id: string): Promise<
   // Fold first. A bug a teammate filed is in the log the moment their push lands, and a
   // machine that has pulled but not read would otherwise answer "no bug" for one it
   // holds. Cheap — an unchanged scope costs a fingerprint of its shard directory.
-  await refreshShared(root);
+  await refreshBugRows(root);
   const bug = await readBug(root, id);
   if (!bug) return { error: `no bug "${id}"` };
   const log = bugLog(root);

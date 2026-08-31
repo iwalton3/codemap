@@ -159,3 +159,47 @@ test("with no sidecar configured, a missing repo file is still `none` rather tha
     discard(root);
   }
 });
+
+
+/**
+ * A declaration that EXISTS and cannot be read is not a declaration that is absent.
+ *
+ * `loadIgnore` caught every filesystem error as "no repo declaration" and fell through to
+ * the team's — so a `.codemapignore` that is a directory, or unreadable, or a broken
+ * symlink silently swapped this repo's policy for somebody else's. That is the one
+ * transition the layer must never make on its own, and it is invisible: the answer looks
+ * like a working configuration. Found by codex.
+ */
+test("an unreadable declaration refuses rather than inheriting the team's", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-ignbad-"));
+  const side = mkdtempSync(join(tmpdir(), "codemap-ignbadside-"));
+  try {
+    mkdirSync(join(root, ".codemap"), { recursive: true });
+    writeFileSync(join(root, ".codemap", "sidecar"), side, "utf8");
+    const teamFile = sidecarIgnorePath(side, universeKey(root));
+    mkdirSync(dirname(teamFile), { recursive: true });
+    writeFileSync(teamFile, "[tests]\n*.Tests/\n", "utf8");
+
+    // CONTROL: with no repo file at all, inheriting is correct and must still happen.
+    assert.equal((await loadIgnore(root)).source, "sidecar");
+
+    // And now one that is present and unreadable — a directory gets EISDIR from readFile.
+    mkdirSync(join(root, ".codemapignore"));
+    await assert.rejects(() => loadIgnore(root), /could not be read/,
+      "silently obeying the team's rules because this repo's file is broken is the worst answer available");
+  } finally { discard(root); discard(side); }
+});
+
+/** The same rule one layer down: the team's file being unreadable is not the team having none. */
+test("an unreadable team declaration refuses rather than reading as absent", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-ignbad2-"));
+  const side = mkdtempSync(join(tmpdir(), "codemap-ignbad2side-"));
+  try {
+    mkdirSync(join(root, ".codemap"), { recursive: true });
+    writeFileSync(join(root, ".codemap", "sidecar"), side, "utf8");
+    assert.equal((await loadIgnore(root)).source, "none", "the control: genuinely absent is `none`");
+
+    mkdirSync(sidecarIgnorePath(side, universeKey(root)), { recursive: true });
+    await assert.rejects(() => loadIgnore(root), /could not be read/);
+  } finally { discard(root); discard(side); }
+});

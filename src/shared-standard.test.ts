@@ -1388,13 +1388,15 @@ test("the fold refuses an acknowledgement with no release condition", async () =
  * The pulled arm is the other half: a pointer whose operation was REMOVED from the draft
  * has no criterion coming, and leaving it pending would be an orphan nothing can bind.
  */
+/** A detector PROPOSED with a draft's `add_criterion` — the shape `proposePointer` mints. */
+const pending = (id: string, operationId: string): Pointer => ({
+  id, requirementId: requirementIdFor("op_1"), criterionId: criterionIdFor(operationId),
+  operationId, universe: U, target: { kind: "anchor", id: "a_lint" },
+  rationale: "the lint", witnesses: [{ anchorId: "a_lint", bodyHash: "h1:sha256:def" }],
+  state: "pending", declaredBy: opus, declaredAt: "2026-08-01T00:00:00.000Z",
+});
+
 test("the fold binds a pending detector when the spec is adopted, and retires an orphaned one", async () => {
-  const pending = (id: string, operationId: string): Pointer => ({
-    id, requirementId: requirementIdFor("op_1"), criterionId: criterionIdFor(operationId),
-    operationId, universe: U, target: { kind: "anchor", id: "a_lint" },
-    rationale: "the lint", witnesses: [{ anchorId: "a_lint", bodyHash: "h1:sha256:def" }],
-    state: "pending", declaredBy: opus, declaredAt: "2026-08-01T00:00:00.000Z",
-  });
   const root = await log("bind-detector");
   try {
     await publishSpecDrafted(root, SCOPE, opus, SPEC);
@@ -1454,6 +1456,82 @@ test("the fold binds a pending detector when the spec is adopted, and retires an
     assert.equal(s.pointers[0]!.state, "retired", "the detector goes with the proposal");
     assert.match(s.pointers[0]!.retiredReason!, /withdrawn/);
   } finally { discard(gone); }
+});
+
+/**
+ * A CONFLICTED ratification is `ratified` and applied nothing — so it must not bind a detector.
+ *
+ * The pending→active promotion keyed off `sp.status === "ratified"`, which a conflicted
+ * adoption also carries while having created no requirement and no criterion. The fold
+ * therefore minted a LIVE detector watching a criterion that does not exist — a state
+ * `declarePointer` cannot produce, because it reads both records first. Found by codex.
+ */
+test("a detector proposed with a spec whose ratification CONFLICTED does not go active", async () => {
+  // THE POINTER LANDS AFTER THE RATIFICATION, and that ordering is the whole test. A
+  // pointer folded BEFORE is decided by the `spec.ratified` arm, which `break`s on a
+  // conflict long before it binds anything — so ordering it that way asserts `pending`
+  // against a fold that could not have said otherwise. The first version of this test did
+  // exactly that and survived the mutation.
+  const good = await log("bind-clean");
+  try {
+    await publishSpecDrafted(good, SCOPE, opus, SPEC);
+    await publishOperation(good, SCOPE, opus, ADD);
+    await publishOperation(good, SCOPE, opus, ADD_CRITERION);
+    await ratifyWithReview(good, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", {}, ["op_1", "op_2"]);
+    await publishPointerDeclared(good, SCOPE, opus, pending("pt_x", "op_2"));
+    const s = await fold(good);
+    assert.equal(s.specs[0]!.conflicted, undefined);
+    assert.equal(s.criteria.length, 1);
+    assert.equal(s.pointers[0]!.state, "active",
+      "the control — a detector arriving after a CLEAN adoption is an ordinary one");
+  } finally { discard(good); }
+
+  // The same log, ratified with NO review witnesses, which conflicts and applies nothing.
+  const bad = await log("bind-conflicted");
+  try {
+    await publishSpecDrafted(bad, SCOPE, opus, SPEC);
+    await publishOperation(bad, SCOPE, opus, ADD);
+    await publishOperation(bad, SCOPE, opus, ADD_CRITERION);
+    await publishSpecRatified(bad, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", {}, ["op_1", "op_2"]);
+    await publishPointerDeclared(bad, SCOPE, opus, pending("pt_x", "op_2"));
+    const s = await fold(bad);
+    assert.equal(s.specs[0]!.conflicted, true, "the fixture must actually conflict, or this proves nothing");
+    assert.equal(s.criteria.length, 0, "and it applied nothing");
+    assert.equal(s.pointers[0]!.state, "pending",
+      "an active detector on a criterion that does not exist is coverage manufactured by the fold");
+  } finally { discard(bad); }
+});
+
+/**
+ * A detector proposed against an operation that was then PULLED from the draft.
+ *
+ * The withdrawal arm retired pending pointers over `mine`, which drops tombstones — and
+ * `spec.operation.removed` touches no pointers at all, and ratification never happens. So
+ * that pointer stayed `pending` for ever on every clone, watching a criterion that will
+ * never exist: the exact orphan the withdrawal arm was written to close, half-closed.
+ * `retirePendingForSpec` reads `includeRemoved: true`, so the two ends disagreed. Found by
+ * the /code-review pass.
+ */
+test("withdrawal retires a detector proposed against an operation that was pulled", async () => {
+  const root = await log("withdraw-pulled-detector");
+  try {
+    await publishSpecDrafted(root, SCOPE, opus, SPEC);
+    await publishOperation(root, SCOPE, opus, ADD);
+    await publishOperation(root, SCOPE, opus, ADD_CRITERION);
+    await publishPointerDeclared(root, SCOPE, opus, pending("pt_x", "op_2"));
+    assert.equal((await fold(root)).pointers[0]!.state, "pending", "the control: it really is pending");
+
+    await publishOperationRemoved(root, SCOPE, opus, {
+      ...ADD_CRITERION, removed: { at: "2026-08-02T00:00:00.000Z", by: opus, reason: "belongs in another spec" },
+    });
+    await withdraw(root, izzie, "sp_1", "2026-08-03T00:00:00.000Z", "never adopted");
+
+    const s = await fold(root);
+    assert.equal(s.specs[0]!.status, "withdrawn");
+    assert.equal(s.pointers[0]!.state, "retired",
+      "a tombstoned operation's detector has no other exit — ratification is what would have bound it");
+    assert.match(s.pointers[0]!.retiredReason!, /withdrawn/);
+  } finally { discard(root); }
 });
 
 /**
