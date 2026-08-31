@@ -159,6 +159,67 @@ test("every /api/standard route is fetched by a page", () => {
   assert.deepEqual(orphans, [], "no page fetches these — wire them into a page or drop the route");
 });
 
+/**
+ * A POST act is a STRING on both sides, and nothing typed has ever compared the two.
+ *
+ * The GET sweep above reads `case "/api/standard/…":`; the write surface is not a `case`
+ * at all but a chain of `if (act === "…")` inside one handler, so it was outside every
+ * check in this file. A rename or a typo on either side is silent in both directions: the
+ * server answers `no such action "…"` — a 200 with an error body, which the page renders as
+ * a refusal indistinguishable from a real one — and a dispatch nobody posts to is a verb
+ * that exists and cannot be performed, which is the hole this whole file was written for.
+ *
+ * Scoped to `web/standard.js` because that is this surface's page module; the two GET
+ * scans above already cover the rest of `web/`.
+ */
+const SERVER_ACTS = [...serve.matchAll(/act === "([a-z_]+)"/g)].map((m) => m[1]!);
+const PAGE = readFileSync("web/standard.js", "utf8");
+/** Routes the page GETs, so a shared path literal is not mistaken for a write. */
+const PAGE_GETS = new Set([...PAGE.matchAll(/\bapi\(\s*'\/api\/standard\/?([a-z_]*)'/g)].map((m) => m[1]!));
+/**
+ * The act names the page actually POSTs. Three call shapes, because the surface has three:
+ * a literal path (the hub's queue acts), the act name as an argument to `loop`/`correct`
+ * (the review loop and the correction verbs, which build the path from it), and
+ * `this.act('ratify')` on the spec page.
+ */
+const PAGE_ACTS = new Set([
+  ...[...PAGE.matchAll(/'\/api\/standard\/([a-z_]+)'/g)].map((m) => m[1]!).filter((a) => !PAGE_GETS.has(a)),
+  ...[...PAGE.matchAll(/\bthis\.(?:loop|correct)\(\s*[^,]+,\s*'([a-z_]+)',/g)].map((m) => m[1]!),
+  ...[...PAGE.matchAll(/\bthis\.act\(\s*'([a-z_]+)'\s*\)/g)].map((m) => m[1]!),
+]);
+
+/**
+ * Acts the server dispatches that no page posts, and why that is not a dead route.
+ *
+ * `answer` has no reason, and that is the finding rather than an omission: it is recorded
+ * here so the next reader sees a decision nobody has made instead of a route nobody has
+ * noticed. `no exemption is stale` below stops the entry outliving the route.
+ */
+const POST_EXEMPT: Record<string, string> = {
+  answer: "NO PAGE POSTS IT. The standard's threads RENDER answers and offer no composer — "
+    + "answering a note happens on the shared-findings surface — so this route is currently "
+    + "unreachable from a browser. Wire a composer into `thread()` or drop the route.",
+};
+
+test("every act the server dispatches is one a page can actually post", () => {
+  assert.ok(SERVER_ACTS.length > 10, `expected the standard's write surface, found ${SERVER_ACTS.length}`);
+  const unreachable = SERVER_ACTS.filter((a) => !POST_EXEMPT[a] && !PAGE_ACTS.has(a));
+  assert.deepEqual(unreachable, [], "no page posts these — wire them into a page, or exempt them with a reason");
+});
+
+test("every act a page posts is one the server dispatches", () => {
+  assert.ok(PAGE_ACTS.size > 10, `expected the page's write calls, found ${PAGE_ACTS.size}`);
+  const dead = [...PAGE_ACTS].filter((a) => !SERVER_ACTS.includes(a));
+  assert.deepEqual(dead, [], "these buttons POST an action the server does not dispatch — it answers "
+    + "`no such action`, which the page renders as an ordinary refusal");
+});
+
+test("no POST exemption names an act that no longer exists", () => {
+  for (const [name, why] of Object.entries(POST_EXEMPT)) {
+    assert.ok(SERVER_ACTS.includes(name), `"${name}" (${why}) is exempted and is not an act any more — drop the entry`);
+  }
+});
+
 test("no exemption names an op that no longer exists", () => {
   const known = new Set(ops);
   for (const [name, why] of [...Object.entries(WEB_EXEMPT), ...Object.entries(MCP_EXEMPT)]) {

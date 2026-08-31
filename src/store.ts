@@ -459,13 +459,23 @@ function workDerivations(d: DatabaseSync): { tags: DerivationTag[]; anyUntagged:
 }
 
 /** Which of these ids `@work` actually holds — membership without materializing it. */
-export function workHas(root: string, ids: string[]): Set<string> {
+/**
+ * Which of these ids this store has a record of, at `ref` (the live index by default).
+ *
+ * The `ref` parameter is not a convenience. Its caller in `reviews.ts` witnesses code at
+ * `input.ref` and asked this at `@work`, so the two halves of one check spoke about
+ * different trees: reviewing at a base ref a symbol the BRANCH adds left `known` non-empty
+ * — the working tree has it — and the "nothing was witnessed" guard never fired, which is
+ * exactly the `/diff` case it was written for. The error message even named the snapshot
+ * it had not consulted.
+ */
+export function workHas(root: string, ids: string[], ref: string = WORK_REF): Set<string> {
   const d = requireIndex(root);
   const out = new Set<string>();
   for (let i = 0; i < ids.length; i += 400) {
     const chunk = ids.slice(i, i + 400);
     const q = `SELECT id FROM anchors WHERE ref = ? AND id IN (${chunk.map(() => "?").join(",")})`;
-    for (const r of d.prepare(q).all(WORK_REF, ...chunk) as unknown as { id: string }[]) out.add(r.id);
+    for (const r of d.prepare(q).all(ref, ...chunk) as unknown as { id: string }[]) out.add(r.id);
   }
   return out;
 }

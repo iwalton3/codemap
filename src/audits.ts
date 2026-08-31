@@ -74,8 +74,20 @@ const touchedCode = (e: AuditEvidence): boolean =>
   // declining to count it, so the caller learns what the field is for.
   !!(e.read?.length || e.ran?.some((r) => r.passed && !!r.command?.trim()));
 
-/** Any evidence at all — enough to file a finding, not enough to certify one. */
-const hasEvidence = (e: AuditEvidence): boolean => touchedCode(e) || !!e.consulted?.length;
+/**
+ * Any evidence at all — enough to file a finding, not enough to certify one.
+ *
+ * `passed` is deliberately not required, and `touchedCode` alone was the bug. That helper
+ * demands `ran.some(r => r.passed)`, which is right for the CONFORMANT direction — a green
+ * detector is what certifies — and exactly inverted for this one. An auditor who ran
+ * `npm run lint:credit-cap`, watched it go RED and recorded
+ * `ran: [{ command: …, passed: false }]` holds the strongest evidence of non-conformance
+ * there is, and was told to downgrade it to `indeterminate`: a demonstrated violation
+ * filed as "I could not verify this". A named command is the evidence; its verdict is
+ * what the audit is reporting.
+ */
+const hasEvidence = (e: AuditEvidence): boolean =>
+  touchedCode(e) || !!e.consulted?.length || !!e.ran?.some((r) => !!r.command?.trim());
 
 export interface ServedAudit extends Audit {
   /**
@@ -430,8 +442,18 @@ async function findProvisional(root: string, id: string): Promise<Audit | undefi
 export async function promoteProvisionalAudit(
   root: string, auditId: string, input: ActorInput = {},
 ): Promise<{ ok: true; id: string; audit: Audit } | Err> {
-  if (!onDefaultBranch(root)) {
-    return { error: "promotion is a claim about the codebase, so it must be made from the default branch" };
+  // Branch AND tree. `recordAudit` computes `provisional = !onDefaultBranch || dirty`, so a
+  // promotion from a dirty default branch stamped the NEW audit `provisional: true`,
+  // returned ok — and `alreadyPromoted` keys off `promotedFrom` without asking whether the
+  // promoter is itself provisional, so the original left `promotableAudits` for good. The
+  // finding was neither promoted nor promotable, and nothing said so. Everywhere else in
+  // this subsystem dirty and off-branch are the same condition.
+  if (!onDefaultBranch(root) || (isGitRepo(root) && isDirty(root))) {
+    return {
+      error:
+        "promotion is a claim about the codebase, so it must be made from the default branch "
+        + "with a clean tree — a witness taken against uncommitted edits is about nobody's code.",
+    };
   }
   const original = await findProvisional(root, auditId);
   if (!original) return { error: `no audit "${auditId}"` };

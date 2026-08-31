@@ -22,10 +22,16 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { resolvePlaywright, launchPlaywright, startServer, type Server } from "./harness.js";
 import * as ops from "../ops.js";
+import { lawScope, publishOperation } from "../shared-standard.js";
+import { readScope } from "../eventlog.js";
 import { discard } from "../test-tmp.js";
+import { operationContent } from "../schema.js";
+import type { Operation } from "../schema.js";
 
 const pw = resolvePlaywright();
 const AGENT = { agent: true, model: "claude-opus-5" } as const;
+/** The same actor `AGENT` resolves to, for the raw events a nonconforming client writes. */
+const MATE = { principal: "izzie@x.com", via: { kind: "agent" as const, model: "claude-opus-5" } };
 
 /** Assert an ops call succeeded. A silent `{error}` in `before` cancels the whole suite. */
 const ok = <T,>(r: T): T => {
@@ -114,13 +120,27 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
     const o = await ops.addOperation(root, {
       specId: draft, kind: "add_requirement", rationale: "the sweep has always been T+1",
       reversibility: "irreversible", title: "Float settlement window", section: "Settlement/Float",
-      statement: "Captured float settles on the next business day.", provenance: "treasury practice", ...AGENT,
+      statement: "Captured float settles on the next business day.", provenance: "treasury practice",
+      // `evidence` and, on the criterion below, `assertedBy`: both are hashed into a
+      // sign-off, and a fixture without them lets "every signed field renders" pass on
+      // absence — which is the vacuity this subsystem names as the standing risk.
+      evidence: "treasury minute 2026-04-11", ...AGENT,
     } as any) as any;
     opId = o.id;
     await ops.acknowledgeGap(root, {
       operationId: opId, rationale: "no settlement code exists to conform yet",
       priority: "medium", revalidateBy: "2027-01-01T00:00:00Z", ...AGENT,
     } as any);
+    // And an acceptance criterion on that same rule. No fixture in this file carried one,
+    // so the card kind with its OWN body arm, its own correction fields and the only
+    // operation `grouped()` nests was the one nothing here rendered, signed off or adopted.
+    ok(await ops.addOperation(root, {
+      specId: draft, kind: "add_criterion", rationale: "what would show the window slipped",
+      reversibility: "reversible", targetOperationId: opId,
+      criterion: "A capture on a Friday settles on the following Monday.",
+      falsifier: "a capture on Friday that settles the same day",
+      evidenceKind: "automated-test", assertedBy: [anchor], ...AGENT,
+    } as any));
 
     // A problem awaiting adjudication. This is the act an agent structurally CANNOT do —
     // the same argument that put ratification on the web — and until this suite drove it
@@ -203,6 +223,126 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
     await page.close();
   });
 
+  /**
+   * Every operation the server serves renders exactly one card.
+   *
+   * `grouped()` files an `add_criterion` under the `add_requirement` it tests, and nesting
+   * is how a card gets CONSUMED: a criterion naming ITSELF is marked nested and is its own
+   * parent, so neither the parent pass nor the child pass reaches it, and one naming
+   * another criterion is filed under a parent that is itself nested and gets no children
+   * pass. Both render nothing whatever.
+   *
+   * Neither shape is authorable — `addOperation` refuses a target that is not an
+   * `add_requirement` and the ratification fold refuses it again — but `case
+   * "spec.operation"` in `shared-standard.ts` stores an operation VERBATIM, so a teammate's
+   * clone holds whatever a nonconforming client wrote. Which is why the fixture below
+   * arrives as a raw event: that is the honest reproduction, not a shortcut past the tool.
+   *
+   * It is asserted as a COUNT against what the server served rather than by looking for the
+   * two bad cards, because the property is that nesting can never swallow an operation.
+   * This is the ratification screen and adoption is all-or-nothing: an operation that does
+   * not render is one the reader adopts without ever having seen it.
+   */
+  test("every operation a proposal contains renders, however its criteria are aimed", async () => {
+    const sp = ok(await ops.draftSpec(root, { title: "Sweep criteria", ...AGENT })) as any;
+    const rule = ok(await ops.addOperation(root, {
+      specId: sp.id, kind: "add_requirement", rationale: "the cutoff has never been written down",
+      reversibility: "reversible", title: "Sweep cutoff time", section: "Settlement/Cutoff",
+      statement: "The sweep cuts off at 17:00.", provenance: "treasury practice", ...AGENT,
+    } as any)) as any;
+    // The well-formed one, so the count below also proves nesting still RENDERS its child
+    // rather than passing because nesting was disabled.
+    ok(await ops.addOperation(root, {
+      specId: sp.id, kind: "add_criterion", rationale: "what would show the cutoff moved",
+      reversibility: "reversible", targetOperationId: rule.id,
+      criterion: "A capture at 17:01 lands in the next sweep.",
+      falsifier: "a capture at 17:01 that lands in the same sweep",
+      evidenceKind: "automated-test", assertedBy: [anchor], ...AGENT,
+    } as any));
+
+    const crit = (id: string, targetOperationId: string, criterion: string): Operation => ({
+      id, specId: sp.id, kind: "add_criterion", ord: 9, targetOperationId, criterion,
+      falsifier: `an observation that ${criterion} does not hold`,
+      evidenceKind: "automated-test", assertedBy: [],
+      rationale: "written by a client that never checked", reversibility: "reversible",
+    });
+    // Self-targeting, and criterion-on-criterion. `ord` collides on purpose — two rows a
+    // conforming writer could never mint, arriving the only way they can.
+    await publishOperation(side, lawScope(), MATE, crit("op_self", "op_self", "the sweep is idempotent"));
+    await publishOperation(side, lawScope(), MATE, crit("op_chain", "op_self", "and it is logged"));
+
+    const served = ok(await ops.getSpec(root, { specId: sp.id } as any)) as any;
+    assert.equal(served.operations.length, 4, "the raw events must have reached the rows or this is vacuous");
+
+    const { page, errors } = await open(`/u/${universe}/standard/spec/${sp.id}/`);
+    await page.waitForSelector(".op-group .op-card", { timeout: 10_000 });
+    assert.equal(
+      await page.locator(".op-group .op-card").count(), served.operations.length,
+      "the page must render one card per operation the server served — nesting may file a "
+      + "criterion under its rule and may never consume it",
+    );
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+
+  /**
+   * A ratifier signs what they READ, and `operationContent` decides what "what" means.
+   *
+   * That function (`schema.ts`) is the exact field set a sign-off hashes, so a field it
+   * includes and the card omits is a field the reader signs without ever seeing — the gate
+   * this whole surface exists to be, failing silently. Four were missing: `requirementId`,
+   * the `assertedBy` anchors (shown as a COUNT, so two criteria differing only in what they
+   * pin rendered identically and signed to different hashes), `evidence`, and
+   * `reversibility` whenever it was not `irreversible`.
+   *
+   * Asserted against `operationContent` itself rather than a list written here, so a field
+   * ADDED to the witness is covered by this the day it lands. `evidenceKind` is checked
+   * verbatim, which is why the page stopped prettifying `automated-test` — do not
+   * reintroduce that transform.
+   */
+  test("every field a sign-off hashes is on the card the reviewer signs", async () => {
+    /** Shown structurally rather than verbatim. Each entry says how, and is checked nowhere else. */
+    const STRUCTURAL: Record<string, string> = {
+      kind: "the badge, with underscores as spaces",
+      section: "the Area / Topic headings the card sits under, split on `/`",
+      targetOperationId: "shown by nesting the criterion under the rule it tests",
+      against: "the `now` block, which is what a base statement is",
+    };
+    let checked = 0;
+    const seen = new Set<string>();
+    for (const specId of [draft, moveSpec, staleSpec]) {
+      const served = ok(await ops.getSpec(root, { specId } as any)) as any;
+      const { page, errors } = await open(`/u/${universe}/standard/spec/${specId}/`);
+      await page.waitForSelector(".op-group .op-card", { timeout: 10_000 });
+      const cards: string[] = await page.evaluate(
+        () => [...document.querySelectorAll(".op-group .op-card")].map((e) => (e as HTMLElement).innerText),
+      );
+      for (const o of served.operations) {
+        // The card is found by its own rationale, which every operation carries and which
+        // is rendered on every kind — there is no id in the markup to key on.
+        const mine = cards.filter((c) => c.includes(o.operation.rationale));
+        assert.equal(mine.length, 1, `no single card for ${o.operation.id} (${o.operation.kind})`);
+        for (const [field, value] of Object.entries(operationContent(o.operation) as Record<string, string>)) {
+          if (STRUCTURAL[field]) continue;
+          seen.add(field);
+          checked++;
+          assert.ok(
+            mine[0]!.includes(value),
+            `\`${field}\` is signed and not rendered on the ${o.operation.kind} card: ${JSON.stringify(value)}`,
+          );
+        }
+      }
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+    // Could this pass on absence? Only with a fixture carrying none of the fields the
+    // defect was about — which is what made the original rendering look correct.
+    assert.ok(checked >= 15, `only ${checked} signed fields reached the assertion`);
+    for (const f of ["assertedBy", "evidence", "reversibility", "requirementId"]) {
+      assert.ok(seen.has(f), `no fixture operation carries \`${f}\`, so this says nothing about it`);
+    }
+  });
+
   test("a proposal whose base moved cannot be adopted, and says so before the click", async () => {
     const { page, errors } = await open(`/u/${universe}/standard/spec/${staleSpec}/`);
     await page.waitForSelector(".op-card", { timeout: 10_000 });
@@ -217,6 +357,9 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
   test("a comment lands on the OPERATION it was written against, and is there on reload", async () => {
     const { page, errors } = await open(`/u/${universe}/standard/spec/${draft}/`);
     await page.waitForSelector(".cmt-new", { timeout: 10_000 });
+    // The composer is behind a click — an empty box on every card cost a row apiece. An
+    // existing THREAD is not, which the reload half below asserts without opening anything.
+    await page.locator(".op-card .op-head").first().click();
     // The operation's composer, not the spec's — an objection to one amendment has to
     // render against that amendment or the ratifier reads it in the wrong place.
     await page.locator(".op-card .cmt-new input").first().fill("Is T+1 calendar or business days?");
@@ -287,9 +430,11 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
     await page.waitForSelector(".op-edit button", { timeout: 10_000 });
 
     // The narrative, which is the thing that renders and therefore the thing a wrong
-    // framing does its damage through.
+    // framing does its damage through. Fields are addressed by their LABEL, not by being
+    // the only textarea in the form — they were not, the moment `reason` was added.
     await page.locator(".op-edit button", { hasText: "correct title / background" }).click();
-    await page.locator("main > .op-card textarea").fill("on branch feat/sweep");
+    await page.locator("label.fs", { hasText: "background" }).locator("textarea").fill("on branch feat/sweep");
+    await page.locator("label.fs", { hasText: "CORRECTING" }).locator("textarea").fill("the draft named the wrong branch");
     await page.locator(".op-edit button", { hasText: "save" }).click();
     await page.waitForFunction(
       () => !!document.querySelector("main")?.textContent?.includes("feat/sweep"), null, { timeout: 10_000 },
@@ -297,10 +442,13 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
     const afterSpec = await page.textContent("main");
     assert.doesNotMatch(afterSpec!, /feat\/typo/, "the ratifier reads ONE current text, not a correction chain");
     assert.match(afterSpec!, /corrected 1 time/, "and that it was corrected, by whom");
+    // Why it was corrected, beside the fact of it. Without this the reader is told a text
+    // they may already have read has moved, and not told what moved it.
+    assert.match(afterSpec!, /the draft named the wrong branch/, "and why — the field `rationale` used to absorb");
 
     // One operation's statement.
     await page.locator(`.op-card`).filter({ hasText: "The sweep runs at 17:00." })
-      .locator(".op-edit button", { hasText: "correct this operation" }).click();
+      .locator(".ft button", { hasText: "correct" }).click();
     await page.locator(".op-move textarea").first().fill("The sweep runs at 16:00.");
     await page.locator(".op-move .op-edit button", { hasText: "save" }).click();
     await page.waitForFunction(
@@ -309,7 +457,7 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
 
     // And pulling one out, which is the verb whose absence made the asymmetry backwards.
     await page.locator(`.op-card`).filter({ hasText: "The sweep rounds to the cent." })
-      .locator(".op-edit button", { hasText: "correct this operation" }).click();
+      .locator(".ft button", { hasText: "correct" }).click();
     await page.locator(".op-move input").last().fill("rounding belongs in its own spec");
     await page.locator(".op-move button", { hasText: "remove operation" }).click();
     await page.waitForFunction(
@@ -325,6 +473,111 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
     assert.equal(served.operations[0].operation.statement, "The sweep runs at 16:00.");
     assert.deepEqual(served.removed.map((o: any) => o.id), [pull.id]);
     assert.match(served.removed[0].removed.reason, /own spec/);
+  });
+
+  /**
+   * Taking a proposal back, and what goes with it.
+   *
+   * The other disposal, and the one nothing here drove: the page sends `withdraw` with the
+   * reason from a field no other act uses, and `withdrawSpec` refuses a blank one — "it
+   * stays on the record as the act it is" — so a button that forgot to attach it would fail
+   * on every proposal and pass every test in this file.
+   *
+   * The gap is the half worth asserting through ops. A pre-approved gap is chained to an
+   * operation and ends with the proposal it was an argument for — RELEASED rather than
+   * deleted, because the grant really happened. A withdrawal that left it pending would
+   * leave a silencer behind for a rule nobody adopted.
+   */
+  test("a proposal is withdrawn from the browser, and the gap it carried ends with it", async () => {
+    const sp = ok(await ops.draftSpec(root, { title: "Retire the paper mandate", ...AGENT })) as any;
+    const op = ok(await ops.addOperation(root, {
+      specId: sp.id, kind: "add_requirement", rationale: "nothing has issued one since 2019",
+      reversibility: "reversible", title: "Paper mandates", section: "Settlement/Mandates",
+      statement: "Paper mandates are not accepted.", provenance: "operations", ...AGENT,
+    } as any)) as any;
+    const gap = ok(await ops.acknowledgeGap(root, {
+      operationId: op.id, rationale: "no mandate code exists to conform yet",
+      priority: "low", revalidateBy: "2027-06-01T00:00:00Z", ...AGENT,
+    } as any)) as any;
+
+    const { page, errors } = await open(`/u/${universe}/standard/spec/${sp.id}/`);
+    await page.waitForSelector('.op-actions input[placeholder^="reason, if withdrawing"]', { timeout: 10_000 });
+    await page.locator('.op-actions input[placeholder^="reason, if withdrawing"]')
+      .fill("the mandate rule belongs in the onboarding spec");
+    // The button is dead until there is a reason, and it must come alive from the TYPING
+    // alone. It was bound `on-change`, which fires on blur — and a disabled button takes no
+    // mouse event, so it never blurred the box and clicking withdraw did nothing, for ever.
+    // The sibling removal-reason input was already `on-input` for this exact reason.
+    await page.waitForFunction(
+      () => [...document.querySelectorAll(".op-actions button")]
+        .some((b) => b.textContent!.includes("withdraw") && !(b as HTMLButtonElement).disabled),
+      null, { timeout: 10_000 },
+    );
+    await page.locator(".op-actions button", { hasText: "withdraw" }).click();
+    await page.waitForFunction(
+      () => !!document.querySelector("main")?.textContent?.includes("withdrawn"), null, { timeout: 10_000 },
+    );
+    assert.deepEqual(errors, []);
+    await page.close();
+
+    const served = ok(await ops.getSpec(root, { specId: sp.id } as any)) as any;
+    assert.equal(served.spec.status, "withdrawn");
+    // The reason is on the EVENT and nowhere else — no `Spec` field holds it — so this is
+    // the only place that can say the field reached the act rather than being dropped.
+    const said = (await readScope(side, lawScope()))
+      .find((e) => e.kind === "spec.withdrawn" && e.subject === sp.id);
+    assert.match(String((said?.data as any)?.reason ?? ""), /onboarding spec/);
+    const acks = (await ops.listAcknowledgements(root) as any).acknowledgements;
+    const ended = acks.find((a: any) => a.id === gap.id);
+    assert.equal(ended.state, "released", "a silencer for a rule nobody adopted must not outlive the proposal");
+  });
+
+  /**
+   * Signing off ONE operation, which is not the same button as signing off all of them.
+   *
+   * The loop test below takes the bulk path, and a bulk sign-off is one call whatever the
+   * count. The per-card button is the other axis — it is what a reviewer who read one
+   * amendment and not the rest presses — and it writes one witness per press, so a body key
+   * that stopped matching `signOffOperation` would leave the page reporting progress it had
+   * not made. That the ratify button stays dead afterwards is the assertion that says the
+   * signature covered one operation and not the proposal.
+   */
+  test("one operation is signed off on its own, and that is not the whole proposal", async () => {
+    const sp = ok(await ops.draftSpec(root, { title: "Two things at once", ...AGENT })) as any;
+    ok(await ops.addOperation(root, {
+      specId: sp.id, kind: "add_requirement", rationale: "the first",
+      reversibility: "reversible", title: "Statement cadence", section: "Settlement/Statements",
+      statement: "Statements are issued monthly.", provenance: "operations", ...AGENT,
+    } as any));
+    ok(await ops.addOperation(root, {
+      specId: sp.id, kind: "add_requirement", rationale: "the second",
+      reversibility: "reversible", title: "Statement retention", section: "Settlement/Statements",
+      statement: "Statements are retained for seven years.", provenance: "operations", ...AGENT,
+    } as any));
+
+    const { page, errors } = await open(`/u/${universe}/standard/spec/${sp.id}/`);
+    await page.waitForSelector(".op-edit button", { timeout: 10_000 });
+    // Pull first: the per-card badges are drawn from the review gap, so without it there is
+    // nothing on the page that could tell a signed card from an unsigned one.
+    await page.locator(".op-edit button", { hasText: "pull & show what moved" }).click();
+    await page.waitForFunction(
+      () => !!document.querySelector("main")?.textContent?.includes("3 left to read"), null, { timeout: 10_000 },
+    );
+    await page.locator(".op-group .op-card", { hasText: "Statements are issued monthly." })
+      .locator("button", { hasText: "sign off" }).click();
+    // Two operations and the framing were outstanding; one press moves it to two.
+    await page.waitForFunction(
+      () => !!document.querySelector("main")?.textContent?.includes("2 left to read"), null, { timeout: 10_000 },
+    );
+    assert.equal(await page.locator(".op-group .op-card .qbadge.ok").count(), 1, "exactly the one that was pressed");
+    assert.equal(await page.locator(".op-actions button", { hasText: "ratify" }).isDisabled(), true,
+      "adoption is all-or-nothing, so one signature is not consent to the proposal");
+    assert.deepEqual(errors, []);
+    await page.close();
+
+    const gap = ok(await ops.reviewProposal(root, { specId: sp.id } as any)) as any;
+    assert.equal(gap.review.unwitnessed.length, 1, "one witness written, not two and not none");
+    assert.equal(gap.review.unwitnessed[0].title, "Statement retention");
   });
 
   /**
@@ -453,6 +706,83 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
     assert.equal((await ops.listProblems(root) as any).problems[0].disposition, "code-wrong");
     assert.deepEqual(errors, []);
     await page.close();
+  });
+
+  /**
+   * Releasing a silencer from the queue that reports it as overdue.
+   *
+   * The unsilencing direction, so it is open to any actor and is on the hub rather than on
+   * the rule — the person reading the overdue queue is the one who notices. Nothing drove
+   * it: the fixture's own debt is not due until 2027, so the section rendered empty and the
+   * whole row — the per-row reason box, the id it posts, and the reason `releaseAcknowledgement`
+   * refuses without — had never been exercised at all.
+   *
+   * The reason box is keyed PER ROW on purpose, so two overdue silencers cannot share a
+   * draft; the second acknowledgement below is what makes that assertable rather than
+   * incidental.
+   */
+  test("an overdue silencer is released from the hub, with the reason it needs", async () => {
+    const stale = ok(await ops.acknowledgeDebt(root, {
+      requirementId: ruleId, rationale: "waiting on the FX service", priority: "high",
+      revalidateBy: "2020-01-01T00:00:00Z",
+    } as any)) as any;
+    const other = ok(await ops.acknowledgeDebt(root, {
+      requirementId: ruleId, rationale: "waiting on the ledger rewrite", priority: "low",
+      revalidateBy: "2020-06-01T00:00:00Z",
+    } as any)) as any;
+    assert.equal((await ops.dueForRevalidation(root) as any).acknowledgements.length, 2,
+      "two overdue silencers, or the per-row keying below proves nothing");
+
+    const { page, errors } = await open(`/u/${universe}/standard/`);
+    await page.waitForSelector(".op-card", { timeout: 10_000 });
+    const row = page.locator(".op-card", { hasText: "waiting on the FX service" });
+    await row.locator('input[placeholder^="why it no longer applies"]').fill("the FX service shipped");
+    await row.locator("button", { hasText: "release" }).click();
+    await page.waitForFunction(
+      () => !document.querySelector("main")?.textContent?.includes("waiting on the FX service"),
+      null, { timeout: 10_000 },
+    );
+    assert.deepEqual(errors, []);
+    await page.close();
+
+    const acks = (await ops.listAcknowledgements(root) as any).acknowledgements;
+    const gone = acks.find((a: any) => a.id === stale.acknowledgement.id);
+    assert.equal(gone.state, "released");
+    assert.equal(gone.releasedReason, "the FX service shipped",
+      "the reason came off THIS row's box — `releaseAcknowledgement` refuses an empty one");
+    assert.equal(acks.find((a: any) => a.id === other.acknowledgement.id).state, "active",
+      "the other row's box was not the one that was filled in");
+
+    // Left as it was found: the tests after this one read the same overdue queue.
+    ok(await ops.releaseAcknowledgement(root, { id: other.acknowledgement.id, reason: "fixture cleanup" } as any));
+  });
+
+  /**
+   * The `refile` route reaches the op, and says the one thing worth saying on a team store.
+   *
+   * `reorganizeRequirement` refuses a requirement carrying an `origin`, and on a store with
+   * a sidecar the fold wrote one onto every rule — which is every configuration this
+   * subsystem is for. So the dossier hides the form, and this drives the ROUTE, because the
+   * hidden form is what left the handler with no caller at all: its body keys
+   * (`id`, `section`) had never once been mapped onto the op's arguments.
+   *
+   * The refusal it gets back is what proves the mapping. `reorganizeRequirement` validates
+   * the section and looks the rule up BEFORE it looks at the origin, so a dropped `id` says
+   * `no requirement` and a dropped `section` says `a requirement needs a section` — only a
+   * request whose keys both arrived reaches the sentence asserted here.
+   */
+  test("re-filing a shared rule is refused by the handler, and names the act that would work", async () => {
+    const a = await (await fetch(`${server.url}/api/standard/attest`)).json() as { notice: string; nonce: string };
+    const said = await (await fetch(`${server.url}/api/standard/refile`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        u: universe, id: ruleId, section: "Risk/Currency", attest: `${a.notice} ${a.nonce}`,
+      }),
+    })).json() as { error?: string };
+    assert.match(said.error ?? "", /is the team's/, "the route reached the op with both keys intact");
+    assert.match(said.error ?? "", /move_section/, "and it says what to do instead of nothing");
+    const rule = ok(await ops.getRequirement(root, { id: ruleId } as any)) as any;
+    assert.equal(rule.requirement.section, "Credit/Limits", "and the standard did not move");
   });
 
   test("branch findings are visible, and say they are not the codebase", async () => {
@@ -605,9 +935,111 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
     assert.equal(after.disposition, "requirement-misstated", "and then it is an ordinary act");
   });
 
+  /**
+   * No form control renders as a white box in a dark app.
+   *
+   * TWO shipped that way — the branch-findings commit box and the removal-reason input —
+   * with one cause: `index.html` gives `button` a global base rule and gave `input` none,
+   * so every box was dressed by an enclosing class (`.op-edit input`, `.cmt-new input`, …)
+   * and the first box in a container with no rule fell through to the UA default.
+   *
+   * It probes the COMPUTED style because nothing else can see it: the markup of a broken
+   * box and a styled one is identical, and `tsc -p web` and the template lint both read
+   * markup. A clipped placeholder is checked in the same pass — that was the other half of
+   * the same report, and it is the same kind of invisible-to-source defect.
+   *
+   * The removal-reason input exists only while an operation's editor is open, which is why
+   * every `correct` is clicked first — that box is exactly the one a static read misses.
+   */
+  test("every form control is dressed, on every page that has one", async () => {
+    const paths = [
+      `/u/${universe}/standard/`,
+      `/u/${universe}/standard/rules/`,
+      `/u/${universe}/standard/branch/`,
+      `/u/${universe}/standard/conformance/`,
+      `/u/${universe}/standard/audit/`,
+      `/u/${universe}/standard/spec/${draft}/`,
+      `/u/${universe}/standard/r/${ruleId}/`,
+    ];
+    const bad: string[] = [];
+    let probed = 0;
+    for (const path of paths) {
+      const { page } = await open(path);
+      // Always the FIRST one, never a snapshot of them all: opening an editor HIDES that
+      // card's own `correct` button, so the set shrinks under an `nth(i)` walk and the
+      // second click waits for a locator that can no longer resolve.
+      for (let guard = 0; guard < 20; guard++) {
+        const b = page.locator(".ft button", { hasText: "correct" }).first();
+        if (!(await b.count())) break;
+        await b.click();
+      }
+      const rows: { tag: string; bg: string; lum: number; ph: string; clipped: boolean }[] =
+        await page.evaluate(() => [...document.querySelectorAll("input, textarea, select")].map((e) => {
+          const c = getComputedStyle(e);
+          const rgb = (c.backgroundColor.match(/\d+/g) ?? ["0", "0", "0"]).map(Number);
+          return {
+            tag: e.tagName.toLowerCase(), bg: c.backgroundColor,
+            lum: (rgb[0]! + rgb[1]! + rgb[2]!) / 3,
+            ph: (e as HTMLInputElement).placeholder ?? "",
+            clipped: e.scrollWidth > e.clientWidth + 1,
+          };
+        }));
+      probed += rows.length;
+      for (const r of rows) {
+        if (r.lum > 100) bad.push(`${path} <${r.tag}> background ${r.bg} — "${r.ph}"`);
+        if (r.clipped) bad.push(`${path} <${r.tag}> placeholder is cut off — "${r.ph}"`);
+      }
+      await page.close();
+    }
+    // Without this the whole test passes on zero controls, which is what it would find if
+    // the selector or a route ever broke — a green run asserting nothing.
+    assert.ok(probed >= 6, `probed only ${probed} controls — this is not reaching the forms`);
+    assert.deepEqual(bad, []);
+  });
+
+  /**
+   * The POST surface does not let a caller name themselves.
+   *
+   * `revise_operation` was the one act in `serve.ts` that forwarded the request body whole,
+   * and `reviseOperation` reaches `resolveActor`, whose first line is
+   * `input.principal?.trim() || resolvePrincipal(root)`. So `{"principal":"boss@corp"}`
+   * both RECORDED and PUBLISHED a `spec.operation.revised` event under an invented
+   * principal with no `via` — forged provenance in an append-only log, on the surface whose
+   * entire premise is that a named person signed something. `curl` is the whole threat
+   * model this route already has; `mcp.ts` closes the same hole by refusing unknown
+   * parameters outright.
+   *
+   * Driven over the ROUTE with the notice satisfied, because a disabled form is not a guard.
+   */
+  test("a forged principal on the POST surface is ignored, not recorded", async () => {
+    const sp = ok(await ops.draftSpec(root, { title: "Spoof target", ...AGENT })) as any;
+    const op = ok(await ops.addOperation(root, {
+      specId: sp.id, kind: "add_requirement", rationale: "the sweep has a window",
+      reversibility: "reversible", title: "Spoof rule", section: "Settlement/Spoof",
+      statement: "The sweep runs at 17:00.", provenance: "treasury", ...AGENT,
+    } as any)) as any;
+
+    const a = await (await fetch(`${server.url}/api/standard/attest`)).json();
+    const r = await (await fetch(`${server.url}/api/standard/revise_operation`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        u: universe, attest: `${a.notice} ${a.nonce}`, operationId: op.id,
+        statement: "The sweep runs at 16:00.", reason: "moved earlier",
+        principal: "boss@corp", model: "some-model", harness: "some-harness",
+      }),
+    })).json();
+    assert.ok(!r.error, `the revision itself should succeed: ${r.error}`);
+
+    const served = ok(await ops.getSpec(root, { specId: sp.id })) as any;
+    const rev = served.operations[0].operation.revisions.at(-1);
+    assert.notEqual(rev.by.principal, "boss@corp", "the body must not be able to name the actor");
+    assert.equal(rev.by.principal, "izzie@x.com", "it is the repository's git principal, as every other act on this route is");
+    assert.equal(rev.by.via, undefined, "and a browser act is a person's — no agent marker either");
+  });
+
   test("the ratify button is dead until the reviewer has signed what they are adopting", async () => {
     const { page, errors } = await open(`/u/${universe}/standard/spec/${draft}/`);
-    await page.waitForSelector(".op-sign button", { timeout: 10_000 });
+    await page.waitForSelector(".op-card .ft button", { timeout: 10_000 });
     // The page says what is outstanding, and the button that would adopt it is disabled.
     // A disabled button is the courtesy; the refusal is server-side, which the test below
     // this one drives directly.

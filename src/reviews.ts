@@ -339,7 +339,9 @@ export async function markReviewed(
   // are carried forward by the remap rather than being invalid. Refusing them would break
   // the migration that exists to keep them. What is refused is being asked to vouch for
   // code this store has never heard of.
-  const known = anchorIds.length ? workHas(root, anchorIds) : new Set<string>();
+  // At the SAME ref the witnesses were taken at — see `workHas`. Asking `@work` while
+  // witnessing a base ref made this guard silently inert on the one case it exists for.
+  const known = anchorIds.length ? workHas(root, anchorIds, input.ref) : new Set<string>();
   if (anchorIds.length && !known.size && witnesses.every((w) => w.bodyHash === ABSENT_HASH)) {
     return {
       error:

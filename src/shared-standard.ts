@@ -45,7 +45,7 @@ import type {
   AcceptanceCriterion, Acknowledgement, Actor, Audit, BugWitness, Operation, Pointer,
   PopulationPredicate, Problem, ProposalWitness, Requirement, ScrubPolicy, Spec, VacuityCheck,
 } from "./schema.js";
-import { criterionIdFor, movedSection, normalizeSection, requirementIdFor, EVIDENCE_KINDS, AUDIT_TRIGGERS, COVERING_TRIGGERS, auditClaimStands, contentDiff, framingContent, operationContent, witnessHash } from "./schema.js";
+import { criterionIdFor, movedSection, normalizeSection, requirementIdFor, EVIDENCE_KINDS, AUDIT_TRIGGERS, COVERING_TRIGGERS, PROBLEM_DISPOSITIONS, ACK_PRIORITIES, ISO_DATE, auditClaimStands, contentDiff, framingContent, operationContent, witnessHash } from "./schema.js";
 import type { LogEvent } from "./eventlog.js";
 import { causality, emitEvent } from "./eventlog.js";
 import { applyRevision, newContestState } from "./contest.js";
@@ -376,7 +376,20 @@ export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = 
       }
       case "spec.operation": {
         const op = obj(e.data, "operation") as Operation | undefined;
-        if (op?.id) operations.set(op.id, { ...op, origin: "sync" });
+        if (!op?.id) break;
+        // A DRAFT check, which this arm had none of. `addOperation` refuses a spec that is
+        // not a draft; the fold took the row verbatim, so Bob — who has not pulled — could
+        // add an `amend_statement` to a spec Alice already ratified. It never applies, and
+        // that is not the end of it: nothing distinguishes it from an adopted operation in
+        // `readOperations({requirementId})`, and `moveMade` in `problems.ts` tests only the
+        // kind, `spec.status === "ratified"` and `ratifiedAt >= since` — so a problem CLOSES
+        // on an amendment that never changed anything.
+        //
+        // An operation for a spec this fold has not seen drafted is kept: the drafting shard
+        // may simply not have arrived, the same allowance `spec.ratified` makes above.
+        const sp = specs.get(op.specId);
+        if (sp && sp.status !== "draft") break;
+        operations.set(op.id, { ...op, origin: "sync" });
         break;
       }
       /**
@@ -398,6 +411,10 @@ export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = 
         const sp = next?.id ? specs.get(next.id) : undefined;
         if (!next || !sp || sp.status !== "draft") break;
         if (!next.title?.trim()) break;
+        // See `spec.operation.revised` for the argument. Same biconditional, over the
+        // framing rather than the operation.
+        if ((JSON.stringify(framingContent(sp)) !== JSON.stringify(framingContent({ ...sp, title: next.title, narrative: next.narrative })))
+          !== ((next.revisions ?? []).length > (sp.revisions ?? []).length)) break;
         specs.set(sp.id, {
           ...sp, title: next.title, narrative: next.narrative,
           revisions: next.revisions, origin: "sync",
@@ -432,6 +449,27 @@ export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = 
           break;
         }
         if (cur.removed) break;
+        // A rewrite and a revision entry must arrive TOGETHER. Either alone misdescribes
+        // what happened, in opposite directions:
+        //
+        //  - entry, no rewrite: `reviseOperation` refuses it ("nothing to change") and this
+        //    end did not, so every clone renders "corrected 1× — <reason>" over text that
+        //    never moved. With `reason` on the entry that is a paragraph of prose accounting
+        //    for an act nobody performed.
+        //  - rewrite, no entry: the text a ratifier already signed changes with nothing
+        //    saying it did. `reviewGap` re-hashes the content so the SIGNATURE still
+        //    invalidates — but the correction history, which is the reader's account of
+        //    why, silently omits it.
+        //
+        // Compared over `operationContent` rather than over the writer's own `was`, and
+        // that is the whole subtlety. `changedFields` records `was[k] = before[k]`, which
+        // for a field being SET for the first time is `undefined` — a key JSON drops. So a
+        // revision adding an absent `evidence` arrives with `was: {}` and a `was`-based
+        // check discards it: the tool answers `{ok: true}`, the fold writes nothing, and on
+        // a sidecar store the correction exists nowhere at all. This asks the operation
+        // what it says instead of asking the writer what they claim to have changed.
+        const moved = JSON.stringify(operationContent(cur)) !== JSON.stringify(operationContent(next));
+        if (moved !== ((next.revisions ?? []).length > (cur.revisions ?? []).length)) break;
         // `ord`, `specId` and `removed` are the fold's, never the writer's: a revision that
         // moved an operation's position would re-order a proposal a ratifier already read.
         operations.set(cur.id, { ...next, specId: cur.specId, ord: cur.ord, removed: undefined, origin: "sync" });
@@ -477,9 +515,16 @@ export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = 
         // BEFORE the ratification and be adopted though nobody ever saw it in the diff —
         // or sort after and be dropped for ever while `addOperation` had returned ok.
         const pinned = obj(e.data, "operations") as string[] | undefined;
+        // `!o.removed` on BOTH arms. `readOperations` drops a tombstone by default, so
+        // `ratifySpec` can never adopt one and this end could: Bob calls `remove_operation`,
+        // Alice ratifies from a clone that has not pulled — `ratifySpec` deliberately does
+        // not pull — and pins it, and the withdrawn rule is created on every clone. It even
+        // reads as reviewed, because `operationContent` omits `removed` so the witness still
+        // matches. Filtering here also makes the count differ from `pinned`, which the
+        // existing length check below turns into `conflicted` rather than a silent drop.
         const mine = (pinned
-          ? pinned.map((id) => operations.get(id)).filter(Boolean) as Operation[]
-          : [...operations.values()].filter((o) => o.specId === sp.id))
+          ? pinned.map((id) => operations.get(id)).filter((o): o is Operation => !!o && !o.removed)
+          : [...operations.values()].filter((o) => o.specId === sp.id && !o.removed))
           .sort((a, b) => a.ord - b.ord);
 
         // Context, verified here and not only in the tool. The local check is TOCTOU
@@ -509,14 +554,33 @@ export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = 
         // application. A silent skip would leave the spec `draft` on the receiving clone
         // with nothing saying why.
         const unread = !reviewComplete(reviewGap(sp, mine, [...reviews.values()], e.actor.principal));
-        if (stale || unread || (pinned && mine.length !== pinned.length)) {
+        // The `add_requirement` operations this ratification carries, so a criterion naming
+        // one can be checked against what actually landed rather than against a derived id.
+        const creating = new Set(mine.filter((o) => o.kind === "add_requirement").map((o) => o.id));
+        // DRY RUN, and it is the difference between all-or-nothing and nearly-all.
+        //
+        // `applyOperation` skips an operation it cannot apply — a criterion aimed at a
+        // non-`add_requirement`, a move with an empty end, an amend whose rule is gone. In
+        // a bare loop each skip is silent, so a spec with one malformed operation folded
+        // `ratified` and NOT `conflicted`, carrying every OTHER operation: a partial
+        // application, on the one surface that promises adoption is all-or-nothing, and
+        // invisible because the spec looks adopted and the missing rule looks unproposed.
+        //
+        // Throwaway copies rather than a second predicate: a hand-written "would this
+        // apply" check is a second copy of six guards that drift apart. The maps are
+        // replace-not-mutate, so a shallow clone is a real sandbox. `siblings`/`creating`
+        // are read-only here.
+        const dryR = new Map(requirements), dryC = new Map(criteria);
+        const allApply = mine.every((op) =>
+          applyOperation(dryR, dryC, op, sp, e.actor, at, witnesses[op.id] ?? [], creating));
+        // `conflicted` rather than a skip, for the reason the moved-base case is: the
+        // ratification really happened and the honest record says so; what did not happen
+        // is the application.
+        if (stale || unread || !allApply || (pinned && mine.length !== pinned.length)) {
           specs.set(sp.id, { ...sp, status: "ratified", ratifiedBy: e.actor, ratifiedAt: at, conflicted: true });
           break;
         }
         specs.set(sp.id, { ...sp, status: "ratified", ratifiedBy: e.actor, ratifiedAt: at });
-        // The `add_requirement` operations this ratification carries, so a criterion naming
-        // one can be checked against what actually landed rather than against a derived id.
-        const creating = new Set(mine.filter((o) => o.kind === "add_requirement").map((o) => o.id));
         for (const op of mine) applyOperation(requirements, criteria, op, sp, e.actor, at, witnesses[op.id] ?? [], creating);
 
         // Bind what the operations produced. The LOCAL path does this at ratification
@@ -574,7 +638,12 @@ export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = 
           if (mineSoFar.some((o) => revisionBlocked(o, e.actor, acknowledgements))) break;
         }
         const at = str(e.data, "at") ?? e.at;
-        const mine = [...operations.values()].filter((o) => o.specId === sp.id);
+        // `!o.removed`, exactly as `mineSoFar` four lines above already had it. `withdrawSpec`
+        // counts live operations only, so without this the fold saw a tombstone the tool never
+        // did and refused a withdrawal the tool had approved — permanently, with the wrong
+        // diagnosis ("something already relies on what the spec introduced"). A spent spec
+        // cannot be re-withdrawn, so the rule could never leave the standard on any clone.
+        const mine = [...operations.values()].filter((o) => o.specId === sp.id && !o.removed);
         if (sp.status === "ratified") {
           // Both refusals, in the fold and not only in the tool. The tool's reliance count
           // is TOCTOU across clones — an audit or a pointer appended elsewhere is invisible
@@ -630,6 +699,11 @@ export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = 
         // GAP from an agent is legitimate: an auditor classifying ahead of adoption is
         // the intended caller, and a gap admits nothing.
         if (ack.basis === "debt" && e.actor.via) break;
+        // `checkCommon`'s three field checks, restated — see `ACK_PRIORITIES` in `schema.ts`
+        // for why their absence here made a PERMANENT silencer rather than an untidy row.
+        if (!ack.rationale?.trim()) break;
+        if (!ACK_PRIORITIES.includes(ack.priority)) break;
+        if (!ack.revalidateBy || !ISO_DATE.test(ack.revalidateBy)) break;
         // A GAP must still be MINTED BEFORE RATIFICATION, and only this end binds a writer
         // whose tool did not check. `Acknowledgement.operationId` calls that asymmetry
         // "structural rather than advisory" because the local path takes an operation in a
@@ -655,6 +729,10 @@ export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = 
       case "ack.released": {
         const a = acknowledgements.get(e.subject);
         if (!a || a.state === "released") break;
+        // No reason check here, unlike `spec.withdrawn` and `pointer.retired` above, and
+        // that asymmetry is deliberate. `releaseAcknowledgement` does refuse an empty
+        // reason — but refusing one HERE would leave the silencer active on every clone
+        // but the author's, which is the quieting direction. Gate what silences.
         acknowledgements.set(a.id, {
           ...a, state: "released", releasedBy: e.actor,
           releasedAt: str(e.data, "at") ?? e.at, releasedReason: str(e.data, "reason") ?? "",
@@ -846,7 +924,15 @@ export function foldStandard(events: LogEvent[], opts: { evidence?: boolean } = 
         // principal's act, and a remote clone sees only this row.
         if (e.actor.via) break;
         const disposition = str(e.data, "disposition");
-        if (!disposition) break;
+        // Both of the tool's remaining checks, restated. Neither bound this end, and the
+        // effect of the first is not cosmetic: an unrecognised verdict still counts as
+        // adjudicated, so the problem leaves `awaitingAdjudication` on every clone while
+        // `moveMade`'s switch falls through to `false` and `AWAITING[...]` is undefined —
+        // a business question silently off the principal's queue and in the fix queue for
+        // ever, with nothing saying what would close it.
+        if (!PROBLEM_DISPOSITIONS.includes(disposition as NonNullable<Problem["disposition"]>)) break;
+        // And a decision with no reason leaves a later reader only the verb.
+        if (!str(e.data, "reason")?.trim()) break;
         problems.set(p.id, {
           ...p, disposition: disposition as Problem["disposition"],
           adjudicatedBy: e.actor, adjudicatedAt: str(e.data, "at") ?? e.at,
@@ -955,7 +1041,16 @@ function applyOperation(
   op: Operation, sp: Spec, who: Actor, at: string, witnesses: BugWitness[],
   /** The other operations this same ratification carries — see `targetOperationId` below. */
   siblings: Set<string>,
-): void {
+  /**
+   * True when the operation applied; FALSE when it could not and was skipped.
+   *
+   * It used to return `void`, and a skip inside the caller's loop is a PARTIAL
+   * ratification: the spec lands `ratified` and NOT `conflicted` with one of its
+   * operations silently absent, on a surface whose whole promise is that adoption is
+   * all-or-nothing. The caller now dry-runs this over throwaway maps first — with this
+   * function, so the check cannot drift from the thing it checks.
+   */
+): boolean {
   if (op.kind === "add_criterion") {
     // The rule it attaches to: named outright, or derived from the `add_requirement` in
     // this same spec — which is only possible because the id is a function of the
@@ -968,25 +1063,34 @@ function applyOperation(
     // function of an operation id, so a `targetOperationId` naming something the spec does
     // not carry derives a perfectly well-formed id for a rule nobody ever creates — a
     // criterion attached to a phantom, which no surface can show and nothing can retire.
-    if (op.targetOperationId && !siblings.has(op.targetOperationId)) return;
+    if (op.targetOperationId && !siblings.has(op.targetOperationId)) return false;
     const rid = op.targetOperationId ? requirementIdFor(op.targetOperationId) : op.requirementId;
-    if (!rid || !op.criterion?.trim() || !op.falsifier?.trim() || !op.evidenceKind) return;
+    if (!rid || !op.criterion?.trim() || !op.falsifier?.trim() || !op.evidenceKind) return false;
     // The closed list, and the falsifier that restates its criterion — both refused by
     // `addOperation` and neither by this end, which binds every clone. A criterion whose
     // "falsifier" repeats it asserts nothing about what failure looks like, and an
     // evidence kind this build does not model is a vocabulary nobody can read.
-    if (!EVIDENCE_KINDS.includes(op.evidenceKind)) return;
+    if (!EVIDENCE_KINDS.includes(op.evidenceKind)) return false;
     const flat = (x: string) => x.replace(/\W+/g, "").toLowerCase();
-    if (flat(op.falsifier) === flat(op.criterion)) return;
+    if (flat(op.falsifier) === flat(op.criterion)) return false;
     const id = criterionIdFor(op.id);
     criteria.set(id, {
       id, requirementId: rid, criterion: op.criterion, falsifier: op.falsifier,
       evidenceKind: op.evidenceKind, assertedBy: op.assertedBy ?? [], witnesses,
       author: sp.author, createdAt: at, introducedBy: op.id, specId: sp.id, origin: "sync",
     });
-    return;
+    return true;
   }
   if (op.kind === "add_requirement") {
+    // The four fields `addOperation` requires, restated — this arm validated NOTHING and
+    // `case "spec.operation"` stores an operation verbatim, so an empty one folded to a
+    // ratified requirement with `title`/`section`/`statement`/`provenance` all undefined.
+    //
+    // That is not merely an ugly row. `shared-projections.ts` binds `r.section` against
+    // `section TEXT NOT NULL` and `node:sqlite` throws on an undefined bind, so the merged
+    // fold then fails on every subsequent read — permanently, from an append-only log
+    // nobody can edit. Refusing here makes the whole ratification `conflicted` instead.
+    if (!op.title?.trim() || !op.section?.trim() || !op.statement?.trim() || !op.provenance?.trim()) return false;
     // The operation event was published when the operation was ADDED, before anything
     // bound a requirement to it — so the id is derived here rather than read off a field
     // that is legitimately absent. This is the whole reason it is a function of `op.id`.
@@ -997,7 +1101,7 @@ function applyOperation(
       author: sp.author, createdAt: at, introducedBy: sp.id,
       ratifiedBy: who, ratifiedAt: at, origin: "sync",
     });
-    return;
+    return true;
   }
   if (op.kind === "move_section") {
     // Ahead of the `requirementId` lookup below on purpose: a move names no rule, so
@@ -1005,23 +1109,27 @@ function applyOperation(
     // whatever rule the operation happened not to name.
     const from = normalizeSection(op.fromSection ?? "");
     const to = normalizeSection(op.toSection ?? "");
-    if (!from || !to || from === to) return;
+    if (!from || !to || from === to) return false;
     // One pass over a snapshot of the entries: rewriting in place while iterating could
     // re-enter a row whose new path is still under `from` (`A` → `A/B`) and move it twice.
     for (const [id, r] of [...requirements]) {
       const next = movedSection(r.section, from, to);
       if (next !== r.section) requirements.set(id, { ...r, section: next });
     }
-    return;
+    return true;
   }
   const r = op.requirementId ? requirements.get(op.requirementId) : undefined;
-  if (!r) return;
+  if (!r) return false;
   if (op.kind === "retire_requirement") {
     requirements.set(r.id, { ...r, status: "retired", retiredBy: who, retiredAt: at });
-    return;
+    return true;
   }
+  // Same gap on the amend arm, and it BLANKS a standing rule rather than creating a junk
+  // one: `statement: ""` on every clone, for a rule that already says something.
+  if (!op.statement?.trim()) return false;
   requirements.set(r.id, {
-    ...r, statement: op.statement!, ratifiedBy: who, ratifiedAt: at,
+    ...r, statement: op.statement, ratifiedBy: who, ratifiedAt: at,
     amendedBy: [...(r.amendedBy ?? []), sp.id],
   });
+  return true;
 }

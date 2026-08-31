@@ -191,7 +191,9 @@ export async function declarePointer(
   const actor = requireActor(root, input);
   if (isErr(actor)) return actor;
 
-  const live = anchors.length ? await liveHashes(root, anchors) : new Map<string, string>();
+  // `legacyIndex(new Map())` and not a bare Map, so this is the same `AnchorIndex` shape
+  // `context()` builds and can be handed straight to `serveWith` below.
+  const live = anchors.length ? await liveHashes(root, anchors) : legacyIndex(new Map());
   const pointer: Pointer = {
     id: mint(), requirementId: r.id, universe: universeKey(root), target, rationale,
     witnesses: anchors.map((id) => ({ anchorId: id, bodyHash: live.get(id) ?? "sha256:absent" })),
@@ -202,7 +204,12 @@ export async function declarePointer(
   if ("error" in d) return d;
   if (d.local) await writeLocalPointer(root, pointer);
 
-  const served = await serveWith(root, ctx, pointer);
+  // Served against the hashes this call just computed, not against `ctx.live`. `context(root)`
+  // was built with NO witnessed set, so its live index is EMPTY — every witness then resolves
+  // `absent`, `comparableHashes` treats absent as comparable, and a pointer baselined one line
+  // above comes back `moved: true` with every anchor drifted. `restatePointer`'s entire
+  // contract is "this is the new quiet", so it was answering the opposite of its purpose.
+  const served = await serveWith(root, { ...ctx, live }, pointer);
   const advice = served.lastResort ? betterThanAnAnchor(ctx, target.id) : undefined;
   return { ok: true, id: pointer.id, pointer: served, ...(advice ? { advice } : {}) };
 }
@@ -241,7 +248,9 @@ export async function restatePointer(
   const actor = requireActor(root, input);
   if (isErr(actor)) return actor;
 
-  const live = anchors.length ? await liveHashes(root, anchors) : new Map<string, string>();
+  // `legacyIndex(new Map())` and not a bare Map, so this is the same `AnchorIndex` shape
+  // `context()` builds and can be handed straight to `serveWith` below.
+  const live = anchors.length ? await liveHashes(root, anchors) : legacyIndex(new Map());
   const next: Pointer = {
     ...p,
     witnesses: anchors.map((id) => ({ anchorId: id, bodyHash: live.get(id) ?? "sha256:absent" })),
@@ -250,7 +259,8 @@ export async function restatePointer(
   const d = disposition(await sharePointerRestated(root, next));
   if ("error" in d) return d;
   if (d.local) await writeLocalPointer(root, next);
-  return { ok: true, pointer: await serveWith(root, ctx, next) };
+  // See `declarePointer`: the freshly computed hashes, not the empty index on `ctx`.
+  return { ok: true, pointer: await serveWith(root, { ...ctx, live }, next) };
 }
 
 /**

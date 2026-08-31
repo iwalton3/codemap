@@ -554,7 +554,7 @@ const changedFields = <T extends object>(before: T, after: T, keys: (keyof T)[])
 
 /** Correct a draft's title or narrative. Any actor; refused once it is ratified. */
 export async function reviseSpec(
-  root: string, input: { specId: string; title?: string; narrative?: string } & ActorInput,
+  root: string, input: { specId: string; title?: string; narrative?: string; reason?: string } & ActorInput,
 ): Promise<{ ok: true; spec: Spec } | Err> {
   const sp = await readSpec(root, input.specId);
   if (!sp) return { error: `no spec "${input.specId}"` };
@@ -577,8 +577,10 @@ export async function reviseSpec(
   if (!Object.keys(was).length) return { error: "nothing to change" };
 
   const at = now();
+  const reason = input.reason?.trim();
   const next: Spec = {
-    ...sp, title, ...(narrative ? { narrative } : {}), revisions: [...(sp.revisions ?? []), { at, by: actor, was }],
+    ...sp, title, ...(narrative ? { narrative } : {}),
+    revisions: [...(sp.revisions ?? []), { at, by: actor, was, ...(reason ? { reason } : {}) }],
   };
   if (!narrative) delete next.narrative;
   const d = disposition(await shareSpecRevised(root, next, at));
@@ -595,7 +597,7 @@ export async function reviseSpec(
  * see `Operation.revisions`.
  */
 export async function reviseOperation(
-  root: string, input: { operationId: string } & Partial<OperationInput> & ActorInput,
+  root: string, input: { operationId: string; reason?: string } & Partial<OperationInput> & ActorInput,
 ): Promise<{ ok: true; operation: Operation } | Err> {
   const op = await readOperation(root, input.operationId);
   if (!op) return { error: `no operation "${input.operationId}"` };
@@ -669,7 +671,11 @@ export async function reviseOperation(
   if (!Object.keys(was).length) return { error: "nothing to change" };
 
   const at = now();
-  const next = prune({ ...candidate, revisions: [...(op.revisions ?? []), { at, by: actor, was }] });
+  const why = input.reason?.trim();
+  const next = prune({
+    ...candidate,
+    revisions: [...(op.revisions ?? []), { at, by: actor, was, ...(why ? { reason: why } : {}) }],
+  });
   const d = disposition(await shareOperationRevised(root, next));
   if ("error" in d) return d;
   if (d.local) await writeLocalOperation(root, next);

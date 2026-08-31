@@ -31,6 +31,7 @@ import { randomBytes } from "node:crypto";
 import type {
   Acknowledgement, AcknowledgementPriority, Actor,
 } from "./schema.js";
+import { ACK_PRIORITIES, ISO_DATE } from "./schema.js";
 import {
   readAcknowledgement, readAcknowledgements, readOperations, readRequirement,
   readSpec, writeLocalAcknowledgement,
@@ -45,8 +46,8 @@ const now = () => new Date().toISOString();
 export type Err = { error: string };
 const isErr = (x: unknown): x is Err => !!x && typeof x === "object" && "error" in (x as object);
 
-const PRIORITIES: AcknowledgementPriority[] = ["high", "medium", "low"];
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}(T|$)/;
+// From `schema.ts`, so the fold checks the same two things — see `ACK_PRIORITIES`.
+const PRIORITIES = ACK_PRIORITIES;
 
 /** An acknowledgement as served: the record plus what is DERIVED about it. */
 export interface ServedAcknowledgement extends Acknowledgement {

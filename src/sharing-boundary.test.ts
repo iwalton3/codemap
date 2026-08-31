@@ -145,7 +145,10 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     // authoring path. Same for an evidence kind outside the closed list: a vocabulary this
     // build cannot read is one no reader can either.
     what: "a criterion whose falsifier restates it",
-    fold: ["src/shared-standard.ts", /if \(flat\(op\.falsifier\) === flat\(op\.criterion\)\) return;/],
+    // `return false` rather than `return`: `applyOperation` reports whether it APPLIED, so
+    // the caller can dry-run the whole ratification and refuse it as one. The guard is the
+    // same; only what it hands back changed.
+    fold: ["src/shared-standard.ts", /if \(flat\(op\.falsifier\) === flat\(op\.criterion\)\) return false;/],
     publish: ["src/requirements.ts", /the falsifier restates the criterion/],
   },
   {

@@ -317,11 +317,11 @@ export const signOffSection = (
 ) => signOffSectionRec(root, input);
 
 export const reviseSpec = (
-  root: string, input: { specId: string; title?: string; narrative?: string } & ActorInput,
+  root: string, input: { specId: string; title?: string; narrative?: string; reason?: string } & ActorInput,
 ) => reviseSpecRec(root, input);
 
 export const reviseOperation = (
-  root: string, input: { operationId: string } & Partial<OperationInput> & ActorInput,
+  root: string, input: { operationId: string; reason?: string } & Partial<OperationInput> & ActorInput,
 ) => reviseOperationRec(root, input);
 
 export const removeOperation = (

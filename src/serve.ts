@@ -381,9 +381,28 @@ const server = createServer(async (req, res) => {
         // browser can be handed the same three verbs without a second set of rules. They
         // still take the attestation the whole POST surface takes.
         if (act === "revise_spec") {
-          return ops.reviseSpec(root, { specId: body.specId, title: body.title, narrative: body.narrative });
+          return ops.reviseSpec(root, {
+            specId: body.specId, title: body.title, narrative: body.narrative, reason: body.reason,
+          });
         }
-        if (act === "revise_operation") return ops.reviseOperation(root, body);
+        // An EXPLICIT field list, like every sibling act above — and here it is load-bearing
+        // rather than tidy. `reviseOperation` reaches `resolveActor`, whose first line is
+        // `input.principal?.trim() || resolvePrincipal(root)`, so forwarding `body` whole let
+        // any caller post `{"principal":"someone.else@corp"}` and both RECORD and PUBLISH a
+        // `spec.operation.revised` event under an invented principal with no `via`. `curl` is
+        // the whole threat model this route already has (`PRINCIPAL_NOTICE`), and `mcp.ts`
+        // closes the same hole on its side by refusing unknown parameters outright.
+        if (act === "revise_operation") {
+          return ops.reviseOperation(root, {
+            operationId: body.operationId, reason: body.reason,
+            rationale: body.rationale, reversibility: body.reversibility,
+            requirementId: body.requirementId, title: body.title, section: body.section,
+            statement: body.statement, provenance: body.provenance, evidence: body.evidence,
+            criterion: body.criterion, falsifier: body.falsifier, evidenceKind: body.evidenceKind,
+            assertedBy: body.assertedBy, targetOperationId: body.targetOperationId,
+            fromSection: body.fromSection, toSection: body.toSection,
+          });
+        }
         // The review loop. `review` pulls and shows what moved since this person last
         // looked; the three sign-offs write their witness; `ratify` refuses without them.
         // On the web the actor is the repository's git principal with no agent marker,

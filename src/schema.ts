@@ -1024,6 +1024,8 @@ export interface SpecRevision {
   at: string;
   by: Actor;
   was: Partial<Pick<Spec, "title" | "narrative">>;
+  /** Why it was corrected. See `OperationRevision.reason`. */
+  reason?: string;
 }
 
 export type OperationKind =
@@ -1195,6 +1197,21 @@ export interface OperationRevision {
     "title" | "section" | "statement" | "provenance" | "rationale" | "evidence" | "reversibility"
     | "criterion" | "falsifier" | "evidenceKind" | "assertedBy" | "requirementId"
     | "targetOperationId" | "fromSection" | "toSection" | "context">>;
+  /**
+   * Why the correction was made, in the corrector's words. NOT part of the rule.
+   *
+   * It exists because its absence had a measured cost. On the first real baseline
+   * (`sp_dd762a87f7ab`, 24 rules) every one of the SIX revised operations narrated its own
+   * revision inside `rationale` — "REVISED to be rule-shaped rather than convention-shaped.
+   * The original described the wire format…" — and none of the twenty-six unrevised ones
+   * did. A perfect correlation, because there was nowhere else for it to go.
+   *
+   * That is worse than untidy. `rationale` is the standing justification a reader gets
+   * years after the draft is gone, so a revision story written there is a durable field
+   * about a text nobody can see any more. Put it here; leave `rationale` a statement that
+   * reads on its own.
+   */
+  reason?: string;
 }
 
 export interface Requirement {
@@ -1297,6 +1314,21 @@ export type AcknowledgementState = "pending" | "active" | "released";
 
 /** Orders the revalidation queue among records falling due together. */
 export type AcknowledgementPriority = "high" | "medium" | "low";
+
+/**
+ * The two vocabularies an acknowledgement's release condition is checked against — HERE
+ * rather than private to `acknowledgements.ts`, because `foldStandard` has to apply the
+ * same checks and importing them back would close a cycle.
+ *
+ * The fold's copy is not belt-and-braces. A `debt` with no `revalidateBy` folded `active`
+ * on every clone and could never surface again: `serve()` asks `a.revalidateBy <= asOf`,
+ * and `undefined <= "2026-…"` is `false`, so `dueForRevalidation` never returns it. A
+ * permanent silencer over a rule the code does not satisfy — the exact thing the record is
+ * supposed to make temporary. A missing `priority` additionally makes `rank[x.priority]`
+ * `NaN` and scrambles that queue's sort.
+ */
+export const ACK_PRIORITIES: AcknowledgementPriority[] = ["high", "medium", "low"];
+export const ISO_DATE = /^\d{4}-\d{2}-\d{2}(T|$)/;
 
 export interface Acknowledgement {
   id: string;

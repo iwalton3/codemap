@@ -167,6 +167,47 @@ test("a revised operation is re-validated exactly as the authoring path validate
   } finally { u.cleanup(); }
 });
 
+/**
+ * The revision's reason is a field of its own, and `rationale` is not it.
+ *
+ * Its absence had a measured cost. On the first real baseline every one of the SIX revised
+ * operations narrated its own revision inside `rationale` — "REVISED to be rule-shaped
+ * rather than convention-shaped…" — and none of the twenty-six unrevised ones did. The
+ * rationale outlives the draft, so the story went into the durable field describing a text
+ * nobody can read any more.
+ *
+ * The negative half is what makes the positive one mean something: a reason on its own is
+ * NOT a revision, so this cannot pass by the field merely being accepted and dropped.
+ */
+test("a correction records WHY it was made, apart from the rule's own rationale", async () => {
+  const u = await universe();
+  try {
+    const { specId, opId } = await drafted(u.root);
+
+    const revised = ok(await reviseOperation(u.root, {
+      operationId: opId, statement: "All credit lines are in USD or EUR.",
+      reason: "the original named a wire format, which is a convention and not a rule",
+      ...AGENT,
+    }));
+    const last = revised.operation.revisions!.at(-1)!;
+    assert.match(last.reason!, /wire format/);
+    assert.equal(last.was.statement, "All credit lines are in USD.", "and what it said before");
+    assert.equal(revised.operation.rationale, "policy §4 was never written down",
+      "the rule's standing justification is untouched — the story does not leak into it");
+
+    const spec = ok(await reviseSpec(u.root, {
+      specId, narrative: "written on branch feat/credit", reason: "the branch name was wrong", ...AGENT,
+    }));
+    assert.match(spec.spec.revisions!.at(-1)!.reason!, /branch name/);
+
+    // A reason with nothing changed is not a revision, so nothing is appended to explain a
+    // correction that never happened.
+    assert.match(err(await reviseOperation(u.root, { operationId: opId, reason: "on reflection", ...AGENT })),
+      /nothing to change/);
+    assert.equal((await readOperations(u.root, { specId }))[0]!.revisions!.length, 1);
+  } finally { u.cleanup(); }
+});
+
 test("revision cannot change an operation's KIND", async () => {
   const u = await universe();
   try {
@@ -348,20 +389,33 @@ async function log(t: string) {
 }
 const fold = async (root: string) => foldStandard(await readScope(root, SCOPE));
 
+// Every `*Revised` fixture below carries a `revisions` entry, because every real writer
+// does: `reviseSpec` and `reviseOperation` append one before publishing. The fold requires
+// the rewrite and the entry to arrive together — a rewrite with no entry moves text a
+// ratifier already signed with nothing recording that it moved — so a fixture without one
+// is testing a shape nothing emits.
+
 test("the fold applies a draft's corrections, and refuses them once it is ratified", async () => {
   const root = await log("ratified");
   try {
-    await publishSpecRevised(root, SCOPE, opus, { ...SPEC, title: "Credit currency policy v2", narrative: "corrected" }, "2026-08-02T00:00:00.000Z");
-    await publishOperationRevised(root, SCOPE, opus, { ...ADD, statement: "All credit lines are in USD or EUR." });
+    await publishSpecRevised(root, SCOPE, opus, { ...SPEC, title: "Credit currency policy v2", narrative: "corrected", revisions: [{ at: "2026-08-02T00:00:00.000Z", by: opus, was: { title: SPEC.title } }] }, "2026-08-02T00:00:00.000Z");
+    await publishOperationRevised(root, SCOPE, opus, {
+      ...ADD, statement: "All credit lines are in USD or EUR.",
+      revisions: [{ at: "2026-08-02T00:00:00.000Z", by: opus, was: { statement: ADD.statement }, reason: "EUR lines went live in July" }],
+    });
     let s = await fold(root);
     assert.equal(s.specs[0]!.title, "Credit currency policy v2", "a draft's correction folds");
     assert.equal(s.operations[0]!.statement, "All credit lines are in USD or EUR.");
+    // The reason reaches the clone. It is not derivable there — a teammate folding this
+    // event never saw the call — so if the fold dropped it, only the author would ever know
+    // why the text they are being asked to sign off moved.
+    assert.equal(s.operations[0]!.revisions?.at(-1)?.reason, "EUR lines went live in July");
 
     await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", {}, ["op_1"]);
     // The identical events, after adoption. Dropped — a ratified spec is the act that
     // produced a rule, and rewriting it would rewrite the standard's own provenance.
-    await publishSpecRevised(root, SCOPE, opus, { ...SPEC, title: "quietly different" }, "2026-08-04T00:00:00.000Z");
-    await publishOperationRevised(root, SCOPE, opus, { ...ADD, statement: "All credit lines are in GBP." });
+    await publishSpecRevised(root, SCOPE, opus, { ...SPEC, title: "quietly different", revisions: [{ at: "2026-08-02T00:00:00.000Z", by: opus, was: { title: SPEC.title } }] }, "2026-08-04T00:00:00.000Z");
+    await publishOperationRevised(root, SCOPE, opus, { ...ADD, statement: "All credit lines are in GBP.", revisions: [{ at: "2026-08-02T00:00:00.000Z", by: opus, was: { statement: ADD.statement } }] });
     await publishOperationRemoved(root, SCOPE, opus, { ...ADD, removed: { at: "2026-08-04T00:00:00.000Z", by: opus, reason: "second thoughts" } });
     s = await fold(root);
     assert.equal(s.specs[0]!.title, "Credit currency policy v2");
@@ -381,7 +435,7 @@ test("the fold refuses a kind change, a reasonless removal, and a removal someth
       reversibility: "reversible",
     };
     await publishOperation(root, SCOPE, opus, CRIT);
-    await publishOperationRevised(root, SCOPE, opus, { ...ADD, kind: "amend_statement", statement: "x" });
+    await publishOperationRevised(root, SCOPE, opus, { ...ADD, kind: "amend_statement", statement: "x", revisions: [{ at: "2026-08-02T00:00:00.000Z", by: opus, was: { statement: ADD.statement } }] });
     // The criterion still targets op_1, so this removal has TWO reasons to be refused.
     await publishOperationRemoved(root, SCOPE, opus, { ...ADD, removed: { at: "2026-08-02T00:00:00.000Z", by: opus, reason: "wrong rule" } });
     // And this one has exactly one — nothing targets the criterion, so only the blank
@@ -429,7 +483,7 @@ test("the fold refuses an agent's withdrawal of a RATIFIED spec, and one somebod
     });
     // A pending gap somebody else granted: the agent's own draft, and still refused.
     await publishSpecWithdrawn(root, SCOPE, opus, "sp_1", "2026-08-03T00:00:00.000Z", "second thoughts");
-    await publishOperationRevised(root, SCOPE, opus, { ...ADD, statement: "All credit lines are in EUR." });
+    await publishOperationRevised(root, SCOPE, opus, { ...ADD, statement: "All credit lines are in EUR.", revisions: [{ at: "2026-08-02T00:00:00.000Z", by: opus, was: { statement: ADD.statement } }] });
     let s = await fold(root);
     assert.equal(s.specs[0]!.status, "draft", "somebody else's approval is chained to this proposal");
     assert.equal(s.operations[0]!.statement, "All credit lines are in USD.", "and it cannot be rewritten under them");
@@ -437,7 +491,7 @@ test("the fold refuses an agent's withdrawal of a RATIFIED spec, and one somebod
     // Released, and the same two events land — so both refusals were about the gap.
     const { publishAckReleased } = await import("./shared-standard.js");
     await publishAckReleased(root, SCOPE, mate, "ack_1", "2026-08-04T00:00:00.000Z", "withdrawn by its author");
-    await publishOperationRevised(root, SCOPE, opus, { ...ADD, statement: "All credit lines are in EUR." });
+    await publishOperationRevised(root, SCOPE, opus, { ...ADD, statement: "All credit lines are in EUR.", revisions: [{ at: "2026-08-02T00:00:00.000Z", by: opus, was: { statement: ADD.statement } }] });
     await publishSpecWithdrawn(root, SCOPE, opus, "sp_1", "2026-08-05T00:00:00.000Z", "second thoughts");
     s = await fold(root);
     assert.equal(s.operations[0]!.statement, "All credit lines are in EUR.");

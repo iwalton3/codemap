@@ -21,10 +21,11 @@ import {
   foldStandard, standardScope, publishSpecDrafted, publishOperation, publishSpecRatified,
   publishAckGranted, publishAckReleased, publishAudit, publishProblemRaised, publishAdjudication,
   publishVacuityCheck, publishPointerDeclared, publishPointerRestated, publishPointerRetired,
-  publishPopulationPinned, publishScrubPolicy, publishSpecWithdrawn, emptyStandard,
+  publishPopulationPinned, publishScrubPolicy, publishSpecWithdrawn, publishOperationRevised,
+  publishSpecReviewed, emptyStandard,
 } from "./shared-standard.js";
 import { ratifyWithReview } from "./test-approve.js";
-import { criterionIdFor, requirementIdFor, type Acknowledgement, type Actor, type Audit, type Operation, type Problem, type Spec } from "./schema.js";
+import { criterionIdFor, requirementIdFor, framingContent, operationContent, type Acknowledgement, type Actor, type Audit, type Operation, type Problem, type Spec } from "./schema.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
 const opus: Actor = { principal: "izzie@x.com", via: { kind: "agent", model: "claude-opus-5" } };
@@ -127,6 +128,46 @@ test("THE FOLD REFUSES AN AGENT'S ADJUDICATION, because a remote clone sees only
     const p = (await fold(root)).problems[0]!;
     assert.equal(p.disposition, "code-wrong");
     assert.equal(p.adjudicatedBy!.principal, "izzie@x.com");
+  } finally { discard(root); }
+});
+
+/**
+ * A verdict nobody defined takes a business question off the queue, on every clone.
+ *
+ * `adjudicate` checks the disposition against `PROBLEM_DISPOSITIONS` and refuses an empty
+ * reason; the fold checked neither, so a client that skipped them bound everybody else.
+ * The damage is not cosmetic and it is silent: any non-empty string counts as adjudicated,
+ * so the problem leaves `awaitingAdjudication`, `moveMade`'s switch falls through to
+ * `false`, and `AWAITING[…]` is undefined — the question is off the principal's queue and
+ * in the fix queue for ever with nothing saying what would close it.
+ */
+test("THE FOLD REFUSES A VERDICT THAT IS NOT ONE, and a decision with no reason", async () => {
+  const root = await log("verdict");
+  try {
+    await publishAudit(root, SCOPE, opus, {
+      id: "au_1", requirementId: "r_x", outcome: "nonconformant", evidence: { read: ["a_1"] },
+      witnesses: [], finding: "no currency check", auditor: opus, at: "2026-08-03T00:00:00.000Z",
+    });
+    await publishProblemRaised(root, SCOPE, opus, {
+      id: "pr_1", requirementId: "r_x", auditId: "au_1",
+      summary: "the rule says USD and nothing enforces one",
+      raisedBy: opus, raisedAt: "2026-08-03T00:00:01.000Z",
+    });
+
+    await publishAdjudication(root, SCOPE, izzie, "pr_1", "fine, ignore it", "we discussed it", "2026-08-04T00:00:00.000Z");
+    assert.equal((await fold(root)).problems[0]!.disposition, undefined,
+      "an unrecognised verdict still reads as adjudicated everywhere downstream");
+
+    await publishAdjudication(root, SCOPE, izzie, "pr_1", "code-wrong", "   ", "2026-08-05T00:00:00.000Z");
+    assert.equal((await fold(root)).problems[0]!.disposition, undefined,
+      "a decision with no reason leaves a later reader only the verb");
+
+    // And the well-formed act from the same actor lands, so neither refusal above is the
+    // fold simply declining to read the event.
+    await publishAdjudication(root, SCOPE, izzie, "pr_1", "requirement-misstated", "the rule was always about settled float", "2026-08-06T00:00:00.000Z");
+    const p = (await fold(root)).problems[0]!;
+    assert.equal(p.disposition, "requirement-misstated");
+    assert.equal(p.adjudicationReason, "the rule was always about settled float");
   } finally { discard(root); }
 });
 
@@ -891,7 +932,21 @@ test("the fold refuses a vacuity check about a criterion nothing created, or one
   } finally { discard(root); }
 });
 
-test("the fold refuses a criterion whose falsifier restates it, or whose kind it cannot read", async () => {
+/**
+ * A criterion this end cannot read takes the WHOLE ratification with it, and used not to.
+ *
+ * This test asserted the opposite until 2026-08-30 — "refusing the criterion must not
+ * refuse the spec" — and that was the divergence, not the rule. `ratifySpec` collects an
+ * `OperationCheck` per operation and returns an ERROR if any one fails
+ * (`requirements.ts:1212`), so locally one unusable operation refuses the entire adoption;
+ * only the fold applied the survivors. The end that binds every clone was the permissive
+ * one, which is the shape CLAUDE.md records a dozen times.
+ *
+ * `conflicted` rather than an error because the fold cannot return one: the ratification
+ * really happened and the honest record says so — the same treatment a moved base and an
+ * unsigned adoption already get, three lines above in the same branch.
+ */
+test("a criterion the fold cannot read refuses the whole ratification, not just itself", async () => {
   const root = await log("criterion-weak");
   try {
     for (const [id, bad] of [
@@ -904,9 +959,10 @@ test("the fold refuses a criterion whose falsifier restates it, or whose kind it
       await publishOperation(root2, SCOPE, opus, ADD);
       await publishOperation(root2, SCOPE, opus, { ...ADD_CRITERION, ...bad });
       await ratifyWithReview(root2, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1", "op_2"]);
-      assert.deepEqual((await fold(root2)).criteria.map((c) => c.id), [], `${id} should not fold`);
-      // The REQUIREMENT still lands — refusing the criterion must not refuse the spec.
-      assert.equal((await fold(root2)).requirements.length, 1, `${id} must not take the rule with it`);
+      const s = await fold(root2);
+      assert.deepEqual(s.criteria.map((c) => c.id), [], `${id} should not fold`);
+      assert.equal(s.specs[0]!.conflicted, true, `${id} must MARK the adoption, not pass it off as clean`);
+      assert.equal(s.requirements.length, 0, `${id} takes the rule with it — adoption is all-or-nothing`);
       discard(root2);
     }
   } finally { discard(root); }
@@ -1061,5 +1117,265 @@ test("THE FOLD REFUSES A WITHDRAWAL IT CANNOT SEE THE EVIDENCE FOR", async () =>
     const blind = foldStandard(events, { evidence: false });
     assert.equal(blind.specs[0]!.status, "ratified", "refused rather than permitted");
     assert.equal(blind.requirements.length, 1, "and nothing it introduced was removed");
+  } finally { discard(root); }
+});
+
+/**
+ * Adoption is ALL-OR-NOTHING at this end too, and it was not.
+ *
+ * `applyOperation` skips an operation it cannot apply. In a bare loop each skip is silent,
+ * so a spec carrying one malformed operation folded `ratified` and NOT `conflicted` with
+ * every OTHER operation applied — a partial application on the one surface whose promise
+ * is that adoption is all-or-nothing, and invisible from either side: the spec looks
+ * adopted and the missing rule looks like it was never proposed.
+ *
+ * The criterion here aims at ITSELF. `addOperation` refuses that, and `case "spec.operation"`
+ * stores an operation verbatim, so it is exactly what a teammate's clone can hold and this
+ * end never saw refused.
+ *
+ * The second half is the one that makes the first mean anything: the SAME ratification
+ * without the malformed operation still applies in full. Without it this passes with the
+ * fold refusing every ratification there is.
+ */
+test("the fold refuses a ratification it cannot apply WHOLE, rather than adopting the rest", async () => {
+  const SELF: Operation = {
+    id: "op_self", specId: "sp_1", kind: "add_criterion", ord: 1,
+    targetOperationId: "op_self", criterion: "it holds", falsifier: "it does not hold",
+    evidenceKind: "attestation", assertedBy: [],
+    rationale: "aimed at itself", reversibility: "reversible",
+  };
+  const root = await log("whole");
+  try {
+    await publishSpecDrafted(root, SCOPE, opus, SPEC);
+    await publishOperation(root, SCOPE, opus, ADD);
+    await publishOperation(root, SCOPE, opus, SELF);
+    await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1", "op_self"]);
+    const s = await fold(root);
+    assert.equal(s.specs[0]!.status, "ratified", "the ratification happened and the record says so");
+    assert.equal(s.specs[0]!.conflicted, true, "but it is marked, the way a moved base is");
+    assert.equal(s.requirements.length, 0, "and NOTHING applied — not the operations that were fine");
+    assert.equal(s.criteria.length, 0);
+  } finally { discard(root); }
+
+  const clean = await log("whole-ok");
+  try {
+    await publishSpecDrafted(clean, SCOPE, opus, SPEC);
+    await publishOperation(clean, SCOPE, opus, ADD);
+    await ratifyWithReview(clean, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
+    const s = await fold(clean);
+    assert.equal(s.specs[0]!.conflicted, undefined, "an ordinary ratification is untouched by the check");
+    assert.equal(s.requirements.length, 1, "and still applies");
+  } finally { discard(clean); }
+});
+
+/**
+ * A revision that moved nothing is not a revision.
+ *
+ * `reviseOperation` refuses one — `changedFields` comes back empty and it answers "nothing
+ * to change" — and this end did not, so a client could append an entry whose `was` is empty
+ * and every clone would render "corrected 1× — <reason>" over text that never moved. With
+ * `reason` on the entry that is a sentence of prose describing an act nobody performed.
+ *
+ * The real correction beside it is the mutation guard: refusing everything would pass the
+ * first assertion just as well.
+ */
+/**
+ * A rewrite and its revision entry arrive TOGETHER, or not at all.
+ *
+ * Three cases, and the middle one is a regression this guard itself caused on 2026-08-31.
+ * `changedFields` records `was[k] = before[k]`, which for a field being SET for the first
+ * time is `undefined` — a key JSON drops. A guard reading the writer's `was` therefore
+ * discarded a real correction that added an absent `evidence`: the tool answered
+ * `{ok: true}`, the fold wrote nothing, and on a sidecar store the correction existed
+ * nowhere. Comparing `operationContent` asks the operation what it SAYS instead of asking
+ * the writer what they claim to have changed.
+ */
+test("a rewrite without its revision entry is refused, and a first-time field still folds", async () => {
+  const root = await log("biconditional");
+  try {
+    await publishSpecDrafted(root, SCOPE, opus, SPEC);
+    await publishOperation(root, SCOPE, opus, ADD);
+
+    // Rewrite, no entry: the text a ratifier signed would move with nothing recording it.
+    await publishOperationRevised(root, SCOPE, opus, { ...ADD, statement: "Silently different." });
+    assert.equal((await fold(root)).operations[0]!.statement, ADD.statement, "a silent rewrite is not a correction");
+
+    // Setting a field that was ABSENT. `was` is `{ evidence: undefined }` in memory and
+    // `{}` once it has been through the log — the shape that broke this.
+    await publishOperationRevised(root, SCOPE, opus, {
+      ...ADD, evidence: "COD-31",
+      revisions: [{ at: "2026-08-02T00:00:00.000Z", by: opus, was: { evidence: undefined }, reason: "links the ticket" }],
+    });
+    const s = await fold(root);
+    assert.equal(s.operations[0]!.evidence, "COD-31", "a first-time value is a real change and must land");
+    assert.equal((s.operations[0]!.revisions ?? []).length, 1);
+  } finally { discard(root); }
+});
+
+/**
+ * The two arms that validated nothing, and the one whose failure is unrecoverable.
+ *
+ * `case "spec.operation"` stores an operation verbatim, so an empty `add_requirement` folded
+ * to a ratified rule with every field undefined. `shared-projections.ts` binds `r.section`
+ * against `section TEXT NOT NULL` and `node:sqlite` throws on an undefined bind — so the
+ * merged fold then failed on every later read, permanently, from a log nobody can edit.
+ */
+test("the fold refuses an operation with nothing in it, rather than ratifying a blank rule", async () => {
+  for (const [what, bad] of [
+    ["an empty add_requirement", { id: "op_empty", kind: "add_requirement", ord: 1 }],
+    ["an amend that would blank a rule", { id: "op_blank", kind: "amend_statement", ord: 1, requirementId: requirementIdFor("op_1"), statement: "  " }],
+  ] as const) {
+    const root = await log("blank");
+    try {
+      await publishSpecDrafted(root, SCOPE, opus, SPEC);
+      await publishOperation(root, SCOPE, opus, ADD);
+      await publishOperation(root, SCOPE, opus, { ...bad, specId: "sp_1", rationale: "x", reversibility: "reversible" } as Operation);
+      await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1", bad.id]);
+      const s = await fold(root);
+      assert.equal(s.specs[0]!.conflicted, true, `${what} must mark the adoption`);
+      assert.equal(s.requirements.length, 0, `${what} must not land a rule with undefined columns`);
+    } finally { discard(root); }
+  }
+});
+
+/**
+ * A ratification does not adopt an operation somebody WITHDREW.
+ *
+ * `readOperations` drops a tombstone by default, so `ratifySpec` can never adopt one and
+ * this end could. `ratifySpec` deliberately does not pull, so the sequence needs no bad
+ * actor: Bob removes an operation, Alice ratifies from a clone that has not synced and pins
+ * it, and the withdrawn rule is created on every clone. It even reads as reviewed —
+ * `operationContent` omits `removed`, so the witness still matches.
+ */
+test("a ratification refuses an operation that was withdrawn from the proposal", async () => {
+  const DEAD: Operation = {
+    ...ADD, id: "op_dead", ord: 1, title: "Withdrawn rule", statement: "Nobody adopted this.",
+    removed: { at: "2026-08-01T12:00:00.000Z", by: opus, reason: "second thoughts" },
+  };
+  // BOTH arms of `mine`, because they fail differently and the pinned one is separately
+  // protected: filtering there makes the count differ from `pinned`, which the existing
+  // length check already turns into `conflicted`. The UNPINNED arm — an older ratification
+  // event, or any writer that omits the list — has no such backstop, and is where a
+  // withdrawn operation is adopted outright.
+  const pinned = await log("tombstone-pinned");
+  try {
+    await publishSpecDrafted(pinned, SCOPE, opus, SPEC);
+    await publishOperation(pinned, SCOPE, opus, ADD);
+    await publishOperation(pinned, SCOPE, opus, DEAD);
+    await ratifyWithReview(pinned, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1", "op_dead"]);
+    const s = await fold(pinned);
+    assert.ok(!s.requirements.some((r) => r.title === "Withdrawn rule"), "a withdrawn operation must not become a rule");
+    assert.equal(s.specs[0]!.conflicted, true, "and pinning one is a proposal that cannot be adopted as pinned");
+  } finally { discard(pinned); }
+
+  const loose = await log("tombstone-loose");
+  try {
+    await publishSpecDrafted(loose, SCOPE, opus, SPEC);
+    await publishOperation(loose, SCOPE, opus, ADD);
+    await publishOperation(loose, SCOPE, opus, DEAD);
+    // Signed and ratified with NO pinned list, so `mine` comes from the fallback.
+    await publishSpecReviewed(loose, SCOPE, izzie, {
+      id: "w_f", specId: "sp_1", reviewer: izzie, at: "2026-08-02T00:00:00.000Z", content: framingContent(SPEC),
+    });
+    for (const op of [ADD, DEAD]) {
+      await publishSpecReviewed(loose, SCOPE, izzie, {
+        id: `w_${op.id}`, specId: "sp_1", operationId: op.id, reviewer: izzie,
+        at: "2026-08-02T00:00:00.000Z", content: operationContent(op),
+      });
+    }
+    await publishSpecRatified(loose, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, undefined as never);
+    const s = await fold(loose);
+    assert.deepEqual(s.requirements.map((r) => r.title), [ADD.title], "the live rule lands and the withdrawn one does not");
+    assert.equal(s.specs[0]!.conflicted, undefined, "nothing is wrong with the proposal — the tombstone was simply never part of it");
+  } finally { discard(loose); }
+});
+
+/**
+ * An operation cannot be added to a spec that is no longer a draft.
+ *
+ * `addOperation` refuses it; this arm took the row verbatim. Bob, who has not pulled, adds
+ * an `amend_statement` to a spec Alice already ratified. It never applies — and it is still
+ * indistinguishable from an adopted operation in `readOperations({requirementId})`, which is
+ * what `moveMade` in `problems.ts` reads: a problem CLOSES on an amendment that changed
+ * nothing.
+ */
+test("the fold refuses an operation added to a spec that is already ratified", async () => {
+  const root = await log("late-op");
+  try {
+    await publishSpecDrafted(root, SCOPE, opus, SPEC);
+    await publishOperation(root, SCOPE, opus, ADD);
+    await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
+    await publishOperation(root, SCOPE, opus, {
+      ...ADD, id: "op_late", ord: 1, kind: "amend_statement",
+      requirementId: requirementIdFor("op_1"), statement: "Slipped in afterwards.",
+    });
+    assert.ok(!(await fold(root)).operations.some((o) => o.id === "op_late"), "the spec is spent; nothing more attaches to it");
+  } finally { discard(root); }
+
+  // And an operation on a spec still OPEN is stored, so the check is about status and not
+  // about refusing late rows generally.
+  const ok2 = await log("late-ok");
+  try {
+    await publishSpecDrafted(ok2, SCOPE, opus, SPEC);
+    await publishOperation(ok2, SCOPE, opus, ADD);
+    await publishOperation(ok2, SCOPE, opus, { ...ADD, id: "op_2", ord: 1, title: "Second", statement: "Also true." });
+    assert.equal((await fold(ok2)).operations.length, 2);
+  } finally { discard(ok2); }
+});
+
+/**
+ * An acknowledgement with no release condition is a PERMANENT silencer.
+ *
+ * `checkCommon` refuses a missing rationale, priority or `revalidateBy`; the fold checked
+ * none of them. A `debt` with no `revalidateBy` folds `active` on every clone and can never
+ * surface again: `serve()` asks `a.revalidateBy <= asOf`, and `undefined <= "2026-…"` is
+ * `false`, so `dueForRevalidation` never returns it. The rule stays quiet for ever — the
+ * exact outcome the record exists to prevent.
+ */
+test("the fold refuses an acknowledgement with no release condition", async () => {
+  const base = {
+    id: "ack_1", basis: "debt" as const, requirementId: "req_1", rationale: "scheduled for Q4",
+    priority: "high" as const, revalidateBy: "2027-01-01",
+    grantedBy: izzie, grantedAt: "2026-08-01T00:00:00.000Z", state: "active" as const,
+  };
+  for (const [what, bad] of [
+    ["no revalidateBy", { revalidateBy: undefined }],
+    ["a revalidateBy that is not a date", { revalidateBy: "when we get to it" }],
+    ["no priority", { priority: undefined }],
+    ["no rationale", { rationale: "  " }],
+  ] as const) {
+    const root = await log("ack-bad");
+    try {
+      await publishAckGranted(root, SCOPE, izzie, { ...base, ...bad } as Acknowledgement);
+      assert.equal((await fold(root)).acknowledgements.length, 0, `${what} must not fold`);
+    } finally { discard(root); }
+  }
+  // The well-formed one folds, so the four above are refused for their field and not
+  // because this path refuses everything.
+  const good = await log("ack-good");
+  try {
+    await publishAckGranted(good, SCOPE, izzie, base as Acknowledgement);
+    assert.equal((await fold(good)).acknowledgements.length, 1);
+  } finally { discard(good); }
+});
+
+test("the fold drops a revision that changed nothing, and keeps one that did", async () => {
+  const root = await log("phantom");
+  try {
+    await publishSpecDrafted(root, SCOPE, opus, SPEC);
+    await publishOperation(root, SCOPE, opus, ADD);
+    await publishOperationRevised(root, SCOPE, opus, {
+      ...ADD, revisions: [{ at: "2026-08-02T00:00:00.000Z", by: opus, was: {}, reason: "because" }],
+    });
+    let s = await fold(root);
+    assert.equal((s.operations[0]!.revisions ?? []).length, 0, "no correction happened, so none is recorded");
+
+    await publishOperationRevised(root, SCOPE, opus, {
+      ...ADD, statement: "All credit lines are in USD or EUR.",
+      revisions: [{ at: "2026-08-03T00:00:00.000Z", by: opus, was: { statement: ADD.statement }, reason: "EUR went live" }],
+    });
+    s = await fold(root);
+    assert.equal(s.operations[0]!.statement, "All credit lines are in USD or EUR.");
+    assert.equal(s.operations[0]!.revisions?.at(-1)?.reason, "EUR went live", "and a real one still carries its why");
   } finally { discard(root); }
 });

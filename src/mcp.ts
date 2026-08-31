@@ -1356,6 +1356,7 @@ const tools: Tool[] = [
       specId: { type: "string" },
       title: { type: "string", description: "Leave out to keep the current one." },
       narrative: { type: "string", description: "Background and argument. Explicitly NON-OPERATIVE. Pass an empty string to remove it." },
+      reason: { type: "string", description: "Why you are correcting it. Goes on the revision, NOT into the text — write the corrected title and narrative as if they had always said this." },
       model: { type: "string", description: "YOUR model id. Never guess it." },
       harness: { type: "string" },
     }, ["specId"]),
@@ -1364,7 +1365,7 @@ const tools: Tool[] = [
   },
   {
     name: "revise_operation",
-    description: "Correct one operation on a DRAFT spec. Every field you leave out keeps its current value, and the whole payload is re-validated exactly as `add_operation` validates it — so a revision can never produce an operation the authoring path would have refused.\n\n`kind` cannot be revised: a different kind is a different operation, checked against fields this one was never written with. Use `remove_operation` and add the one you meant.\n\nRefused once the spec is ratified, and refused while somebody ELSE's pending acknowledgement or comment hangs off the operation — they approved or argued about THIS text, and changing it under them leaves a record about something nobody can read.",
+    description: "Correct one operation on a DRAFT spec. Every field you leave out keeps its current value, and the whole payload is re-validated exactly as `add_operation` validates it — so a revision can never produce an operation the authoring path would have refused.\n\n`kind` cannot be revised: a different kind is a different operation, checked against fields this one was never written with. Use `remove_operation` and add the one you meant.\n\nRefused once the spec is ratified, and refused while somebody ELSE's pending acknowledgement or comment hangs off the operation — they approved or argued about THIS text, and changing it under them leaves a record about something nobody can read.\n\nPut WHY you are correcting it in `reason`, never in `rationale`. Revision mutates, so the fields you send are what the ratifier reads and what survives adoption: `rationale` has to stand years later as the justification for the rule, and it cannot do that if it opens by discussing a draft nobody can see any more. Write every field as if it had always said this.",
     inputSchema: obj({
       operationId: { type: "string" },
       rationale: { type: "string" },
@@ -1382,6 +1383,7 @@ const tools: Tool[] = [
       targetOperationId: { type: "string" },
       fromSection: { type: "string" },
       toSection: { type: "string" },
+      reason: { type: "string", description: "Why you are correcting it. Goes on the revision, where a reader looking for the draft's history will find it — NOT into `rationale`." },
       model: { type: "string", description: "YOUR model id. Never guess it." },
       harness: { type: "string" },
     }, ["operationId"]),
