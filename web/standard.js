@@ -278,6 +278,79 @@ class StandardPage extends Component {
 defineComponent('standard-page', StandardPage);
 
 /**
+ * Where an operation files in the standard.
+ *
+ * A criterion is absent on purpose — it has no section of its own, it files with the rule
+ * it tests, and `grouped` resolves that before it gets here.
+ */
+const sectionOf = (o) => o.operation.section
+  || (o.before && o.before.section)
+  || o.operation.fromSection
+  || '';
+
+/**
+ * Operations as the standard they describe: Area → Topic → rule, each rule carrying the
+ * criteria that test it.
+ *
+ * This page rendered `ord` order, flat, with the section printed as trailing text AFTER
+ * the statement. For an amendment against a standing standard that is honest — a spec IS a
+ * set of operations, never a stored diff. For a BASELINE it is 32 undifferentiated cards
+ * with no prior standard to diff against, which is what the first real one looked like.
+ *
+ * Both halves of the hierarchy were already in the data: `section` is a `/`-delimited path
+ * (`docs/requirements-architecture.md`), and a criterion names its rule in
+ * `targetOperationId`.
+ *
+ * A criterion whose target is NOT in this proposal — it tests a rule ratified earlier —
+ * stays a top-level card rather than disappearing, which is why the parent lookup is a
+ * membership test and not an assumption.
+ */
+function grouped(operations) {
+  const byId = new Map(operations.map((o) => [o.operation.id, o]));
+  const crits = new Map();
+  const nested = new Set();
+  for (const o of operations) {
+    const t = o.operation.kind === 'add_criterion' ? o.operation.targetOperationId : null;
+    const parent = t ? byId.get(t) : undefined;
+    // Nest ONLY under a rule that is itself rendered at top level, so nesting can never
+    // consume a card. Without the kind check a criterion naming another criterion is
+    // filed under a parent that is itself nested and gets no children pass — and one
+    // naming ITSELF is marked nested and is its own parent, so neither renders at all.
+    //
+    // `addOperation` refuses both, and `case "spec.operation"` in `shared-standard.ts`
+    // stores an operation verbatim — so a teammate's clone can hold one its own MCP call
+    // never saw. At ratification the fold does not APPLY such a criterion (it now marks
+    // the whole spec `conflicted` rather than adopting the rest without it), but the draft
+    // still renders here first, and this is the screen a reader signs off from: an
+    // operation that does not render is one they adopt without ever having seen it.
+    if (!parent || parent.operation.kind !== 'add_requirement') continue;
+    if (!crits.has(t)) crits.set(t, []);
+    // The parent's title travels with it so a COLLAPSED criterion still names the rule it
+    // tests. Without it the header reads "criterion" and the nesting is the only clue —
+    // which is no clue at all once the card above it is collapsed too.
+    crits.get(t).push({ ...o, parentTitle: parent.operation.title });
+    nested.add(o.operation.id);
+  }
+  const areas = new Map();
+  for (const o of operations) {
+    if (nested.has(o.operation.id)) continue;
+    const path = sectionOf(o);
+    const cut = path.indexOf('/');
+    const area = (cut < 0 ? path : path.slice(0, cut)) || 'unfiled';
+    const topic = cut < 0 ? '' : path.slice(cut + 1);
+    if (!areas.has(area)) areas.set(area, new Map());
+    const topics = areas.get(area);
+    if (!topics.has(topic)) topics.set(topic, []);
+    topics.get(topic).push({ ...o, criteria: crits.get(o.operation.id) || [] });
+  }
+  return [...areas].map(([area, topics]) => ({
+    area,
+    n: [...topics.values()].reduce((t, x) => t + x.length, 0),
+    topics: [...topics].map(([topic, ops]) => ({ topic, ops })),
+  }));
+}
+
+/**
  * One spec, rendered for a principal to dispose of.
  *
  * The trade this page makes is the whole design: a principal reads N operations
@@ -288,7 +361,12 @@ defineComponent('standard-page', StandardPage);
  * process reverts to reading code (`getSpec`'s own doc says this; this is the surface
  * it was describing).
  *
- * @typedef {{ d: any, busy: string|null, err: string|null, reason: string, draft: Record<string,string>, editing: string|null, form: Record<string,string>, review: any }} SpecState
+ * Two views over the same operations, and the default is the spec's STATUS. A draft is
+ * here to be signed off, so it opens with the review machinery on each rule; a ratified
+ * spec has no act left to perform, so it opens as the document it became. The toggle is
+ * additive either way — reading view hides chrome, never an operation.
+ *
+ * @typedef {{ d: any, busy: string|null, err: string|null, reason: string, draft: Record<string,string>, editing: string|null, form: Record<string,string>, review: any, reading: boolean|null, selected: string|null }} SpecState
  * @extends {Component<StdProps, SpecState>}
  */
 class SpecPage extends Component {
@@ -297,7 +375,7 @@ class SpecPage extends Component {
   constructor(props) {
     super(props);
     /** @type {SpecState} */
-    this.state = { d: null, busy: null, err: null, reason: '', draft: {}, editing: null, form: {}, review: null };
+    this.state = { d: null, busy: null, err: null, reason: '', draft: {}, editing: null, form: {}, review: null, reading: null, selected: null };
   }
   load = this.createTask(async () => {
     nav.current = this.props.params.universe;
@@ -421,21 +499,53 @@ class SpecPage extends Component {
     return [];
   }
 
-  /** This reader's standing on one operation: unread, moved (with what moved), or signed. */
-  signRow(o) {
+  /**
+   * This reader's standing on one operation, as a badge for the card's HEADER row.
+   *
+   * Split from the detail below it because the state is one word and the detail is a table:
+   * on its own row the word cost a full line per card, and there are thirty-two of them.
+   */
+  signState(o) {
+    const r = this.state.d.review;
+    const moved = !!r && (r.moved || []).some((m) => m.id === o.operation.id);
+    const unread = !!r && (r.unwitnessed || []).some((u) => u.id === o.operation.id);
+    return html`<span class="signstate">
+      ${when(!!r && moved, () => html`<span class="qbadge drift">changed since you read it</span>`)}
+      ${when(!!r && unread, () => html`<span class="qbadge drift">not read</span>`)}
+      ${when(!!r && !moved && !unread, () => html`<span class="qbadge ok">✓ signed off</span>`)}
+    </span>`;
+  }
+
+  /**
+   * WHAT moved since this reader signed.
+   *
+   * Never collapsed behind the click, unlike the thread and the history: it is the one
+   * thing on the card saying a signature they already gave no longer covers what is there.
+   */
+  movedNote(o) {
     const r = this.state.d.review;
     const moved = r && (r.moved || []).find((m) => m.id === o.operation.id);
-    const unread = r && (r.unwitnessed || []).some((u) => u.id === o.operation.id);
-    return html`<div class="op-sign">
-      ${when(!!moved, () => html`<div class="op-blocked">changed since you read it on ${(moved.readAt || '').slice(0, 10)} —
-        ${each(moved.changed, (c) => html`<div class="op-moverow"><b>${c.field}</b> <span class="dim">was</span> ${c.was || '—'} <span class="dim">now</span> ${c.now || '—'}</div>`, (c) => c.field)}</div>`)}
-      ${when(!moved && !unread && !!r, () => html`<span class="qbadge">✓ you signed this off</span>`)}
-      ${when(!!unread, () => html`<span class="qbadge drift">you have not read this</span>`)}
-      <button class="pullbtn" disabled="${!!this.state.busy}"
-        title="record that you read THIS text. A later edit invalidates it and says which field moved."
-        on-click="${() => this.loop('sign:' + o.operation.id, 'sign_off_operation', { operationId: o.operation.id })}">sign off</button>
-    </div>`;
+    return when(!!moved, () => html`<div class="op-blocked">changed since you read it on ${(moved.readAt || '').slice(0, 10)} —
+      ${each(moved.changed, (c) => html`<div class="op-moverow"><b>${c.field}</b> <span class="dim">was</span> ${c.was || '—'} <span class="dim">now</span> ${c.now || '—'}</div>`, (c) => c.field)}</div>`);
   }
+
+  /**
+   * Open a card's correction history and its composer.
+   *
+   * An existing comment THREAD is never collapsed — only the empty composer under it, and
+   * the correction history, which the header advertises as `corrected N×`. A thread that
+   * left no trace when closed would be an objection the ratifier never learns exists, and
+   * the empty box asking for one is what was actually costing a row on all thirty-two
+   * cards. Same line the reading-view toggle draws: hide the act, never the fact.
+   *
+   * The target is the heading SPAN, not the card. A card-wide handler has to guess which
+   * clicks were not meant for it — `closest('button, input, textarea, a, label, .op-move')`
+   * — and that list is only correct for the controls that exist on the day it is written;
+   * the next `<select>` inside a card starts toggling it. A span with no interactive
+   * children cannot have the problem, and the chevron makes it visible, which the whole
+   * card never was.
+   */
+  pick(id) { this.state.selected = this.state.selected === id ? null : id; }
 
   /** The loop's own row: pull-and-diff, the framing, the bulk act, and how much is left. */
   reviewBar(d) {
@@ -471,17 +581,139 @@ class SpecPage extends Component {
     </div>`;
   }
 
-  op(o, u) {
-    const k = o.operation.kind;
-    return html`<div class="op-card ${o.contextMoved ? 'moved' : ''}">
-      <div class="ft"><span class="qbadge">${k.replace(/_/g, ' ')}</span>
-        ${when(o.operation.reversibility === 'irreversible', () => html`<span class="qbadge drift" title="satisfying this cannot be undone — declared before ratification because it changes the decision, and because it makes the rule harder to amend later">irreversible</span>`)}
-        ${when(o.contextMoved, () => html`<span class="qbadge drift">cannot be adopted as drafted</span>`)}
-      </div>
-      <div class="fs"><b>why:</b> ${o.operation.rationale}</div>
+  /** The form minus its own scratch fields: `_reason` is the revision's, `_why` the removal's. */
+  opForm() {
+    const out = {};
+    for (const k of Object.keys(this.state.form)) if (!k.startsWith('_')) out[k] = this.state.form[k];
+    return out;
+  }
+
+  /** Review view for a draft, document view for a ratified spec, until the reader says otherwise. */
+  isReading(d) { return this.state.reading === null ? d.spec.status !== 'draft' : this.state.reading; }
+
+  /**
+   * Reading view hides ACTS, never CONTENT.
+   *
+   * The sign-off row, the correction form and the composer are things to DO, and reading a
+   * baseline end to end is not the moment to do them. A teammate's comment and a correction
+   * that already happened stay in both views — putting either behind a toggle would hide an
+   * objection from the person deciding, which is the failure this whole surface exists
+   * against.
+   *
+   * The page-level ratify/withdraw bar stays in both too: it is the disposition of the
+   * proposal rather than chrome on a rule, and it is what the reader came to do.
+   */
+  viewToggle(d) {
+    const reading = this.isReading(d);
+    return html`<div class="dtoggle">
+      <button class="${reading ? '' : 'on'}" title="every operation with the machinery to sign it off"
+        on-click="${() => { this.state.reading = false; }}">review</button>
+      <button class="${reading ? 'on' : ''}" title="the standard this proposes, without the acts"
+        on-click="${() => { this.state.reading = true; }}">read as a document</button>
+    </div>`;
+  }
+
+  /**
+   * What the operation SAYS — the half that differs by kind.
+   *
+   * `add_criterion` had no arm here at all, and that was not a gap in polish. `getSpec`
+   * fills `after` only for the kinds that carry a statement, so a criterion rendered as a
+   * kind badge and a rationale with its criterion, its falsifier, its evidence kind and the
+   * rule it tests ALL invisible — the only way to read one was to open the correction form,
+   * which does have the fields. Ten of the thirty-two cards on the first real baseline were
+   * that empty card.
+   *
+   * `add_requirement` leads with the rule and not with `why:`. What a reader has to weigh
+   * is the statement; the rationale is the argument for it and reads second.
+   *
+   * **Every field `operationContent` signs has to render here.** That function
+   * (`schema.ts`) is what a sign-off hashes, so a field it includes and this omits is a
+   * field the reader signs without seeing — and the gate this subsystem is built on is
+   * that a ratifier signs what they READ. It had four: `requirementId` (the rule an amend
+   * or a standing-rule criterion is about — rendered by `op` rather than here, since every
+   * kind that carries one shows it the same way), the exact `assertedBy` anchors rather
+   * than a count of them, `evidence`, and `reversibility` whenever it was not
+   * `irreversible`. Two criteria differing only in their pinned anchors rendered
+   * identically and signed differently.
+   */
+  /**
+   * One line naming the operation, for the header row that opens the card.
+   *
+   * Per kind, because only `add_requirement` has a `title` — and a disclosure control with
+   * nothing to disclose ABOUT is how you get a page of identical chevrons.
+   */
+  heading(o) {
+    const op = o.operation;
+    if (op.kind === 'add_requirement') return op.title;
+    if (op.kind === 'add_criterion') {
+      const rule = o.parentTitle || (o.before && o.before.title);
+      return rule ? `criterion of ${rule}` : 'criterion';
+    }
+    if (op.kind === 'move_section') return `${op.fromSection} → ${op.toSection}`;
+    const rule = o.before ? o.before.title : 'the rule';
+    return op.kind === 'retire_requirement' ? `retire: ${rule}` : `amend: ${rule}`;
+  }
+
+  opBody(o) {
+    const op = o.operation;
+    if (op.kind === 'add_criterion') {
+      return html`<div class="op-body">
+        <div class="fs dim">holds when</div>
+        <div class="fs prose">${op.criterion}</div>
+        <div class="fs dim">falsified by</div>
+        <div class="fs prose">${op.falsifier}</div>
+        <div class="fs dim">checked by <b>${op.evidenceKind || 'unstated'}</b></div>
+        ${when(!!o.before, () => html`<div class="fs dim">attaches to <b>${o.before.title}</b></div>`)}
+        ${when((op.assertedBy || []).length > 0, () => html`<div class="fs dim mono">pins ${op.assertedBy.join(', ')}</div>`)}
+      </div>`;
+    }
+    if (op.kind === 'add_requirement') {
+      return html`<div class="op-body">
+        <div class="op-after prose">${op.statement}</div>
+        <div class="fs dim prose">${op.provenance}</div>
+      </div>`;
+    }
+    return html`<div class="op-body">
       ${when(!!o.before, () => html`<div class="op-before"><span class="dim">now</span> ${o.before.statement}</div>`)}
       ${when(!!o.after, () => html`<div class="op-after"><span class="dim">becomes</span> ${o.after}</div>`)}
-      ${when(k === 'add_requirement', () => html`<div class="fs"><b>${o.operation.title}</b> → ${o.operation.section} · <span class="dim">${o.operation.provenance}</span></div>`)}
+    </div>`;
+  }
+
+  op(o, u) {
+    const k = o.operation.kind;
+    const d = this.state.d;
+    const reading = this.isReading(d);
+    const draft = d.spec.status === 'draft';
+    const editing = this.state.editing === o.operation.id;
+    const open = this.state.selected === o.operation.id;
+    const revs = o.operation.revisions || [];
+    const cmts = o.comments || [];
+    return html`<div class="op-card ${k === 'add_criterion' ? 'crit' : ''} ${o.contextMoved ? 'moved' : ''} ${open ? 'sel' : ''}"
+      >
+      <div class="ft">
+        <span class="op-head" title="${open ? 'collapse' : 'open its history and comments'}"
+          on-click="${() => this.pick(o.operation.id)}"><span class="chev">${open ? '▾' : '▸'}</span> ${this.heading(o)}</span>
+        ${when(!reading, () => html`<span class="qbadge">${k.replace(/_/g, ' ')}</span>`)}
+        ${when(o.operation.reversibility === 'irreversible', () => html`<span class="qbadge drift" title="satisfying this cannot be undone — declared before ratification because it changes the decision, and because it makes the rule harder to amend later">irreversible</span>`)}
+        ${when(o.contextMoved, () => html`<span class="qbadge drift">cannot be adopted as drafted</span>`)}
+        <span class="ftgap"></span>
+        ${when(!open && revs.length > 0, () => html`<span class="qbadge mute" title="click the card to read what changed and why">corrected ${revs.length}×</span>`)}
+        ${when(!reading && draft, () => this.signState(o))}
+        ${when(!reading && draft, () => html`<button class="pullbtn" disabled="${!!this.state.busy}"
+          title="record that you read THIS text. A later edit invalidates it and says which field moved."
+          on-click="${() => this.loop('sign:' + o.operation.id, 'sign_off_operation', { operationId: o.operation.id })}">sign off</button>`)}
+        ${when(!reading && draft && !editing, () => html`<button class="pullbtn" title="correct this operation"
+          on-click="${() => this.edit(o.operation.id, {
+            title: o.operation.title, section: o.operation.section, statement: o.operation.statement,
+            provenance: o.operation.provenance, criterion: o.operation.criterion, falsifier: o.operation.falsifier,
+            fromSection: o.operation.fromSection, toSection: o.operation.toSection, rationale: o.operation.rationale,
+          })}">correct</button>`)}
+      </div>
+      ${this.opBody(o)}
+      ${when(!!o.operation.requirementId, () => html`<div class="fs dim mono">rule ${o.operation.requirementId}</div>`)}
+      <div class="fs dim prose"><b>why:</b> ${o.operation.rationale}</div>
+      ${when(!!o.operation.evidence, () => html`<div class="fs dim prose">provoked by ${o.operation.evidence}</div>`)}
+      ${when(o.operation.reversibility !== 'irreversible', () => html`<div class="fs dim">reversibility: ${o.operation.reversibility}</div>`)}
       ${when(!!o.moves, () => html`<div class="op-move">
         <div class="fs"><b>${o.moves.from}</b> → <b>${o.moves.to}</b> · ${o.moves.members.length} rule${o.moves.members.length === 1 ? '' : 's'} move</div>
         ${when(!!o.moves.blocked, () => html`<div class="op-blocked">${o.moves.blocked}</div>`)}
@@ -493,12 +725,14 @@ class SpecPage extends Component {
         ${each(o.silencedBy, (a) => html`<div class="op-moverow">${a.basis} · ${a.state} · ${a.rationale}</div>`, (a) => a.id)}
       </div>`)}
       ${when(o.watchedBy.length > 0, () => html`<div class="fs dim">${o.watchedBy.length} pointer${o.watchedBy.length === 1 ? '' : 's'} watching this rule — a ratified amendment means code that was conformant may not be</div>`)}
-      ${when(this.state.editing === o.operation.id, () => html`<div class="op-move">
+      ${when(!reading && draft, () => this.movedNote(o))}
+      ${when(editing, () => html`<div class="op-move">
         ${each(this.opFields(k), (f) => this.field(f[0], f[1], f[2]), (f) => f[0])}
-        ${this.field('rationale', 'why', 2)}
+        ${this.field('rationale', 'why the rule exists — this survives adoption and is read years from now', 2)}
+        ${this.field('_reason', 'why you are CORRECTING it — kept on the revision, never on the rule', 2)}
         <div class="op-edit">
           <button class="pullbtn" disabled="${!!this.state.busy}"
-            on-click="${() => this.correct('rev:' + o.operation.id, 'revise_operation', { operationId: o.operation.id, ...this.state.form })}">save</button>
+            on-click="${() => this.correct('rev:' + o.operation.id, 'revise_operation', { operationId: o.operation.id, ...this.opForm(), reason: this.state.form._reason })}">save</button>
           <button class="pullbtn" on-click="${() => this.edit(o.operation.id, {})}">cancel</button>
         </div>
         <input placeholder="reason, if removing this operation…" value="${this.state.form._why || ''}"
@@ -507,28 +741,24 @@ class SpecPage extends Component {
           title="pull it out of the proposal. It stops applying and stays readable as history, with your reason on it."
           on-click="${() => this.correct('rm:' + o.operation.id, 'remove_operation', { operationId: o.operation.id, reason: this.state.form._why })}">remove operation</button>
       </div>`)}
-      ${when(this.state.d.spec.status === 'draft' && this.state.editing !== o.operation.id, () => html`<div class="op-edit">
-        <button class="pullbtn" on-click="${() => this.edit(o.operation.id, {
-          title: o.operation.title, section: o.operation.section, statement: o.operation.statement,
-          provenance: o.operation.provenance, criterion: o.operation.criterion, falsifier: o.operation.falsifier,
-          fromSection: o.operation.fromSection, toSection: o.operation.toSection, rationale: o.operation.rationale,
-        })}">correct this operation</button>
+      ${thread(cmts)}
+      ${when(open, () => html`<div class="op-detail">
+        ${each(revs, (r) => html`<div class="fs dim prose">corrected ${(r.at || '').slice(0, 10)} by ${r.by.principal}${r.reason ? ' — ' + r.reason : ''}</div>`, (r) => r.at)}
+        ${when(!reading, () => this.composer(o.operation.id, 'comment on this operation…'))}
       </div>`)}
-      ${when(this.state.d.spec.status === 'draft', () => this.signRow(o))}
-      ${when((o.operation.revisions || []).length > 0, () => html`<div class="fs dim">corrected ${o.operation.revisions.length} time${o.operation.revisions.length === 1 ? '' : 's'} while a draft — last by ${o.operation.revisions[o.operation.revisions.length - 1].by.principal}</div>`)}
-      ${thread(o.comments)}
-      ${this.composer(o.operation.id, 'comment on this operation…')}
     </div>`;
   }
 
   template() {
     const u = this.props.params.universe, d = this.state.d;
-    return pageShell(d, taskError(this.load), () => html`
+    return pageShell(d, taskError(this.load), () => {
+      const groups = grouped(d.operations);
+      return html`
       <div class="crumbs"><a class="back" href="${href(standardUrl(u))}">← standard</a> <span class="sep">·</span> ${d.spec.title}</div>
       ${servedNote(d)}
       <div class="fs dim">${d.spec.status} · proposed by ${d.spec.author && d.spec.author.principal ? d.spec.author.principal : 'unknown'}${d.spec.author && d.spec.author.via ? ' (via ' + (d.spec.author.via.model || 'agent') + ')' : ''}</div>
-      ${when(!!d.spec.narrative, () => html`<div class="op-card"><div class="fs dim">background — NON-OPERATIVE, nothing here changes the standard</div><div class="fs">${d.spec.narrative}</div></div>`)}
-      ${when((d.spec.revisions || []).length > 0, () => html`<div class="fs dim">corrected ${d.spec.revisions.length} time${d.spec.revisions.length === 1 ? '' : 's'} while a draft — last by ${d.spec.revisions[d.spec.revisions.length - 1].by.principal} on ${(d.spec.revisions[d.spec.revisions.length - 1].at || '').slice(0, 10)}</div>`)}
+      ${when(!!d.spec.narrative, () => html`<div class="op-card"><div class="fs dim">background — NON-OPERATIVE, nothing here changes the standard</div><div class="fs prose">${d.spec.narrative}</div></div>`)}
+      ${when((d.spec.revisions || []).length > 0, () => html`<div class="fs dim prose">corrected ${d.spec.revisions.length} time${d.spec.revisions.length === 1 ? '' : 's'} while a draft — last by ${d.spec.revisions[d.spec.revisions.length - 1].by.principal} on ${(d.spec.revisions[d.spec.revisions.length - 1].at || '').slice(0, 10)}${d.spec.revisions[d.spec.revisions.length - 1].reason ? ' — ' + d.spec.revisions[d.spec.revisions.length - 1].reason : ''}</div>`)}
       ${when(d.spec.status === 'draft' && this.state.editing !== 'spec', () => html`<div class="op-edit">
         <button class="pullbtn" title="fix the proposal's own words. A draft binds nothing, so correcting one is authoring it — and a correction left in a comment is read AFTER the wrong framing."
           on-click="${() => this.edit('spec', { title: d.spec.title, narrative: d.spec.narrative || '' })}">correct title / background</button>
@@ -536,18 +766,29 @@ class SpecPage extends Component {
       ${when(this.state.editing === 'spec', () => html`<div class="op-card">
         ${this.field('title', 'title')}
         ${this.field('narrative', 'background — NON-OPERATIVE', 4)}
+        ${this.field('_reason', 'why you are CORRECTING it — kept on the revision, never in the text', 2)}
         <div class="op-edit">
           <button class="pullbtn" disabled="${!!this.state.busy}"
-            on-click="${() => this.correct('revspec', 'revise_spec', { specId: d.spec.id, title: this.state.form.title, narrative: this.state.form.narrative })}">save</button>
+            on-click="${() => this.correct('revspec', 'revise_spec', { specId: d.spec.id, title: this.state.form.title, narrative: this.state.form.narrative, reason: this.state.form._reason })}">save</button>
           <button class="pullbtn" on-click="${() => this.edit('spec', {})}">cancel</button>
         </div>
       </div>`)}
 
-      ${when(d.spec.status === 'draft', () => html`<div class="sec">your review</div>`)}
-      ${when(d.spec.status === 'draft', () => this.reviewBar(d))}
+      ${when(d.spec.status === 'draft' && !this.isReading(d), () => html`<div class="sec">your review</div>`)}
+      ${when(d.spec.status === 'draft' && !this.isReading(d), () => this.reviewBar(d))}
 
-      <div class="sec">operations (${d.operations.length})</div>
-      ${each(d.operations, (o) => this.op(o, u), (o) => o.operation.id)}
+      <div class="sec">what this proposes — ${d.operations.length} operation${d.operations.length === 1 ? '' : 's'} over ${groups.length} area${groups.length === 1 ? '' : 's'}</div>
+      ${this.viewToggle(d)}
+      ${each(groups, (g) => html`<div class="op-areagroup">
+        <div class="op-area">${g.area} <span class="n">${g.n} rule${g.n === 1 ? '' : 's'}</span></div>
+        ${each(g.topics, (t) => html`<div class="op-topicgroup">
+          ${when(!!t.topic, () => html`<div class="op-topic">${t.topic}</div>`)}
+          ${each(t.ops, (o) => html`<div class="op-group">
+            ${this.op(o, u)}
+            ${each(o.criteria, (c) => this.op(c, u), (c) => c.operation.id)}
+          </div>`, (o) => o.operation.id)}
+        </div>`, (t) => t.topic)}
+      </div>`, (g) => g.area)}
 
       ${when((d.removed || []).length > 0, () => html`<div class="sec">pulled from this proposal (${d.removed.length})</div>`)}
       ${each(d.removed || [], (o) => html`<div class="op-card"><div class="ft"><span class="qbadge">${o.kind.replace(/_/g, ' ')}</span> <span class="dim">withdrawn from the proposal</span></div>
@@ -565,12 +806,14 @@ class SpecPage extends Component {
         <button class="pullbtn" disabled="${!d.adoptable || !d.signedOff || !!this.state.busy}"
           title="${!d.adoptable ? 'at least one operation was written against a standard that has since moved' : !d.signedOff ? 'adoption is all-or-nothing, so your signature covers every operation — sign off what you have read first' : 'apply every operation, all or nothing'}"
           on-click="${() => this.act('ratify')}">${this.state.busy === 'ratify' ? 'adopting…' : '✓ ratify'}</button>
-        <input placeholder="reason, if withdrawing…" on-change="${(e, v) => { this.state.reason = v; }}">
+        <input placeholder="reason, if withdrawing…"
+          on-input="${(e) => { this.state.reason = e.target.value; }}">
         <button class="pullbtn" disabled="${!this.state.reason || !!this.state.busy}"
           title="take the proposal back. A draft may always be withdrawn — it also releases any gap attached to it."
           on-click="${() => this.act('withdraw')}">${this.state.busy === 'withdraw' ? 'withdrawing…' : '✕ withdraw'}</button>
       </div>`)}
-    `);
+    `;
+    });
   }
 }
 defineComponent('spec-page', SpecPage);
@@ -816,8 +1059,8 @@ class BranchFindingsPage extends Component {
       ${when(!!this.state.err, () => html`<div class="attn-banner"><span class="attn-n">✕</span><span>${this.state.err}</span></div>`)}
       <div class="empty">Observations of somebody's branch — yours and the team's. They reach no clone's conformance, because nothing folds them; ask for <code>conformance</code> about the branch if you want the verdict rather than the findings. An audit taken on a DIRTY tree never travels at all: its witnesses came off the filesystem while the commit names an unchanged HEAD.</div>
       <div class="dnav">
-        <input placeholder="commit — what does codemap know about the code in front of me?" value="${this.state.commit}"
-          on-change="${(e, v) => { this.state.commit = v.trim(); }}">
+        <input placeholder="commit sha…" title="what does codemap already know about the code in front of me?"
+          value="${this.state.commit}" on-change="${(e, v) => { this.state.commit = v.trim(); }}">
         <button class="pullbtn" on-click="${() => this.load.run()}">look</button>
       </div>
 

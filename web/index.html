@@ -26,6 +26,16 @@
     .btnlike { display: inline-block; }
     button, .btnlike { background: var(--panel2); color: var(--dim); border: 1px solid var(--border); border-radius: 6px; padding: 3px 10px; cursor: pointer; font-size: 12px; font-family: inherit; }
     button:hover { border-color: var(--dim); }
+    /* Form controls get a BASE, the way `button` above always has.
+       Every other input in this file is dressed by an enclosing class (`.op-edit input`,
+       `.cmt-new input`, …), which works right up to the first input whose container has no
+       rule — and that one renders as a white box in a dark app with nothing to say so. Two
+       shipped that way. A bare `input` selector is specificity 0,0,1, so every existing
+       rule still wins; this only catches what nothing else claims. */
+    input, textarea, select { background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+      border-radius: 6px; padding: 5px 10px; font-size: 13px; font-family: inherit; }
+    input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
+    input::placeholder, textarea::placeholder { color: var(--dim); }
 
     header { display: flex; align-items: center; gap: 16px; padding: 10px 18px; background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 5; }
     /* `nowrap` + `flex-shrink: 0` on the brand: without it the wordmark wraps to three
@@ -185,6 +195,32 @@
     .op-card .ft { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .op-card .fs { font-size: 12.5px; margin-top: 4px; }
     .op-card .fs.dim, .op-card .dim { color: var(--dim); }
+    /* Author-written prose keeps its paragraphs. Scoped to `.prose` rather than put on
+       `.fs`, which also dresses the `label.fs` wrappers — pre-wrap there would render the
+       template's own indentation. `.cmt-b` beside this has always had it. */
+    .op-card .fs.prose, .op-card .op-after.prose { white-space: pre-wrap; }
+    /* The standard's own shape: Area, then Topic, then the rules filed under it. The
+       hierarchy is in `section` (a `/`-delimited path) and was never rendered. */
+    .op-area { margin-top: 22px; font-size: 15px; font-weight: 600; border-bottom: 1px solid var(--border); padding-bottom: 5px; }
+    .op-area .n { color: var(--dim); font-size: 12px; font-weight: 400; margin-left: 8px; }
+    .op-topic { margin-top: 12px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--dim); }
+    /* The disclosure control: chevron + the operation's name. It is the ONLY click target
+       on the card, so it must contain nothing interactive — see `pick`. */
+    .op-head { font-size: 13.5px; font-weight: 600; cursor: pointer; display: inline-flex;
+      align-items: baseline; gap: 6px; border-radius: 4px; padding: 1px 4px; margin-left: -4px; }
+    .op-head:hover { background: var(--panel2); color: var(--accent); }
+    .op-head .chev { color: var(--dim); font-size: 11px; }
+    /* A criterion files under the rule it tests — `targetOperationId`. The indent says so. */
+    .op-card.crit { margin-left: 26px; background: var(--panel); border-left: 2px solid var(--accent); }
+    /* A rule's own acts live on its header row — two full rows per card, reclaimed. */
+    .ftgap { flex: 1 1 auto; }
+    .qbadge.ok { border-color: var(--accent2); color: var(--accent2); }
+    .qbadge.mute { border-color: var(--border); color: var(--dim); }
+    .op-group .op-card.sel { border-color: var(--accent); }
+    .op-group .op-card .ft button { padding: 2px 8px; font-size: 11.5px; }
+    .op-detail { margin-top: 4px; }
+    .op-card .fs.mono { font-family: var(--mono); font-size: 11.5px; word-break: break-all; }
+    .op-card.crit .op-head { font-weight: 400; }
     .op-before, .op-after { font-size: 12.5px; margin-top: 5px; padding: 5px 9px; border-radius: 6px; background: var(--panel2); }
     .op-before { text-decoration: line-through; color: var(--dim); }
     .op-after { border-left: 2px solid var(--accent); }
@@ -196,8 +232,6 @@
     /* Correcting a draft is AUTHORING it; ratify/withdraw is disposing of it. Two rows,
        two classes, so a selector aimed at one can never pick up the other. */
     .op-edit { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
-    .op-sign { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
-    .op-sign .op-blocked { flex-basis: 100%; }
     .op-edit input { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 5px 10px; font-size: 13px; min-width: 220px; }
     .op-card label.fs, .op-move label.fs { display: block; margin-top: 6px; }
     .op-card label.fs input, .op-card label.fs textarea,
@@ -541,6 +575,11 @@
     .dnav { display: flex; flex-wrap: wrap; gap: 8px; }
     .dnav button, .dnav a { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
     .dnav button:hover { border-color: var(--accent); }
+    /* An input in a `.dnav` row got the browser's default chrome — a white box in a dark
+       app — because only `button` and `a` were dressed here. */
+    .dnav input { flex: 1 1 260px; min-width: 0; background: var(--panel2); border: 1px solid var(--border);
+      color: var(--text); border-radius: 6px; padding: 6px 14px; font-size: 13px; font-family: inherit; }
+    .dnav input:focus { outline: none; border-color: var(--accent); }
     .attn-pill.q { border-color: var(--accent); color: var(--accent); cursor: default; }
     .dq { border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
     .dq.resolved { border-left-color: var(--border); opacity: 0.6; }
