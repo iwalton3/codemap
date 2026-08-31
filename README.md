@@ -123,6 +123,16 @@ uncovered piece of code is a gap and an uncovered test is not. Tests are indexed
 at all so that a requirement can pin a lint by hash — see
 `docs/population-predicate.md`.
 
+**Where the declaration lives, for a team.** `.codemapignore` resolves from the
+working tree, so it moves with the branch — and a branch cut before it was
+committed arrives with no exclusions at all. Put the team's copy on the sidecar
+instead, at `<sidecar>/config/<universe-key>/codemapignore`, where the universe
+key is the same `owner/repo` (or directory basename) that prefixes every other
+scope. It rides along with the next `sync`. Precedence is **repo, then sidecar,
+then nothing**, and it overrides rather than merges — a branch that restructures
+its test directory should be able to say so, and to drop an inherited pattern
+without a negation. `coverage_rules` reports which one is in force.
+
 ## Reading the map
 
 | Surface | Web | MCP |

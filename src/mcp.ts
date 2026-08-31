@@ -256,6 +256,19 @@ const tools: Tool[] = [
     handler: (a, c) => ops.cover(c.universe.path, a),
   },
   {
+    name: "coverage_rules",
+    description: "The coverage rules in force on THIS machine, with what each currently selects and whether it SHADOWS the `[tests]` bin. Two marks outrank that bin — `deferred`, `owned` — so a rule of either kind over a test path makes the bin appear to do nothing, which is silent and has cost real time. Also reports `ignoreSource`, saying where the `.codemapignore` declaration came from: the code repo, the sidecar (the team-wide default, which does not move when you check out an old branch), or nowhere at all. Nowhere is NOT the same as a declaration that matches nothing.",
+    inputSchema: obj({}),
+    handler: (a, c) => ops.coverageRules(c.universe.path),
+  },
+  {
+    name: "uncover",
+    description: "Take a coverage rule back, by id from `coverage_rules`. `cover` only ever appended, so a rule was permanent short of editing the store by hand — which is a ratchet, not a policy mechanism.",
+    inputSchema: obj({ id: { type: "string", description: "The rule id, from `coverage_rules`." } }, ["id"]),
+    mutates: true,
+    handler: (a, c) => ops.uncover(c.universe.path, { id: String(a.id) }),
+  },
+  {
     name: "check_stale",
     description: "Staleness pass for a universe: which anchors changed/vanished since baseline and which docs they flag. Also auto re-inits the anchor index if the checked-out branch changed since it was baselined (a branch switch = different code) — the result then includes `rebaselined`.",
     inputSchema: obj({}),

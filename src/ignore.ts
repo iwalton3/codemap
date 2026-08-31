@@ -32,27 +32,74 @@
  * and is not in `SHARED_KINDS`, so the rule is one machine's local state. A
  * repo-wide policy declared in a committed file cannot have its other half in an
  * uncommitted one — every fresh clone would report thousands of phantom gaps until
- * somebody remembered. This file is already the committed declaration of what
- * codemap does with paths, so the bin belongs here and there is nothing to keep in
- * sync. Same reason `mutates` sits on the tool rather than in a list of names.
+ * somebody remembered. Same reason `mutates` sits on the tool rather than in a list
+ * of names.
+ *
+ * ## WHERE the declaration lives: the repo, then the sidecar
+ *
+ * The paragraph above wants a COMMITTED home and assumed the code repo was the only
+ * one. It is not, and the code repo has a defect the sidecar does not: `.codemapignore`
+ * is resolved from the working tree, so it is coupled to the branch you have checked
+ * out. A branch cut before the file was committed does not have it, and checking that
+ * branch out deletes it — after which this module used to return "no declaration" as
+ * silently as it returns "declared, and nothing matched".
+ *
+ * Two harms, and the second is the one that matters. Generated code floods back in as
+ * documentation gaps, which is loud. And `ServedPointer.rank` derives `check` from
+ * `isTest` (`pointers.ts`), so every pointer at a test anchor silently demotes from the
+ * TOP rung — a check that runs, covering a whole population — to `symbol` /
+ * `lastResort: true`, the rung that "goes quiet exactly when the code it governs is
+ * edited". The ladder inverts, and nothing says so.
+ *
+ * So the declaration is LAYERED, in the precedence `sidecar-config.ts` already uses for
+ * finding the sidecar itself:
+ *
+ *   1. `<repo>/.codemapignore` — authoritative if PRESENT. A branch that renames its
+ *      test directory genuinely wants its own patterns, and there branch coupling is
+ *      correct behaviour rather than a bug.
+ *   2. `<sidecar>/config/<universeKey>/codemapignore` — the team default, on the
+ *      sidecar's own branch, so it does not move when somebody checks out a six-week-old
+ *      feature branch. Keyed exactly like every other scope, which matters: `universeKey`
+ *      falls back to the directory basename with no GitHub origin, and an address spelled
+ *      `owner/repo` would be unreachable from any local clone.
+ *   3. Neither — `source: "none"`.
+ *
+ * OVERRIDE, not merge. Merging would give "team default plus this branch's extras" but
+ * makes removing an inherited pattern impossible without a negation, and negation
+ * interacts with the ancestor-pruning rule above in ways that are genuinely hard to
+ * reason about. Repo-wins is also the backward-compatible order.
+ *
+ * **`source` is why this is three states and not two**, and it is load-bearing rather
+ * than diagnostic: an intentionally EMPTY repo file is a real declaration and must not
+ * inherit the team default, while an absent one must. Collapsing both to "matches
+ * nothing" is what made the layer inexpressible.
  */
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { resolveSidecar } from "./sidecar-config.js";
 
 interface Pattern {
   re: RegExp;
   negate: boolean;
 }
 
+/**
+ * Which declaration this came from. `"none"` means nobody has declared one ANYWHERE —
+ * distinct from a declaration that happens to match nothing, which is a decision.
+ */
+export type IgnoreSource = "repo" | "sidecar" | "none";
+
 export interface Ignore {
   /** `relPath` is repo-relative POSIX; set `isDir` for directories. */
   ignores(relPath: string, isDir: boolean): boolean;
   /** In the `[tests]` bin: indexed, citable, never a documentation gap. */
   isTest(relPath: string, isDir: boolean): boolean;
+  source: IgnoreSource;
 }
 
-const MATCH_NOTHING: Ignore = { ignores: () => false, isTest: () => false };
+const matchNothing = (source: IgnoreSource): Ignore =>
+  ({ ignores: () => false, isTest: () => false, source });
 
 function globToRegexBody(glob: string): string {
   // Single pass so glob operators never collide with metachar escaping.
@@ -111,8 +158,14 @@ function compile(raw: string): Pattern | null {
 /** `[section]` on its own line switches which bin the following patterns fill. */
 const SECTION = /^\[([a-z-]+)\]$/;
 
-/** Build an Ignore from raw `.codemapignore` text (pure — no filesystem). */
-export function compileIgnore(text: string): Ignore {
+/**
+ * Build an Ignore from raw `.codemapignore` text (pure — no filesystem).
+ *
+ * `source` defaults to `"repo"` because that is what every direct caller is compiling:
+ * text it read out of a working tree or a git object. Only `loadIgnore` passes anything
+ * else, and only `loadIgnore` may produce `"none"`.
+ */
+export function compileIgnore(text: string, source: IgnoreSource = "repo"): Ignore {
   const excluded: Pattern[] = [];
   const tests: Pattern[] = [];
   let bin = excluded;
@@ -125,7 +178,9 @@ export function compileIgnore(text: string): Ignore {
     const p = compile(line);
     if (p) bin.push(p);
   }
-  if (!excluded.length && !tests.length) return MATCH_NOTHING;
+  // DECLARED, and matching nothing — which is not the same as undeclared, and the
+  // difference is what lets `loadIgnore` decide whether to fall through to the team's.
+  if (!excluded.length && !tests.length) return matchNothing(source);
   const matches = (patterns: Pattern[], relPath: string, isDir: boolean): boolean => {
     if (!patterns.length) return false;
     const path = isDir ? relPath + "/" : relPath;
@@ -138,13 +193,31 @@ export function compileIgnore(text: string): Ignore {
   return {
     ignores: (relPath, isDir) => matches(excluded, relPath, isDir),
     isTest: (relPath, isDir) => matches(tests, relPath, isDir),
+    source,
   };
 }
 
+/** Where a universe's team-wide declaration lives inside the sidecar. */
+export const sidecarIgnorePath = (sidecarRoot: string, universe: string): string =>
+  join(sidecarRoot, "config", ...universe.split("/"), "codemapignore");
+
+/**
+ * The declaration in force here: the repo's if it has one, else the team's, else none.
+ *
+ * See the header for why it is layered and why override beats merge. The sidecar half
+ * needs no new transport — `sync` commits the sidecar with `git add -A`, so a file
+ * dropped at `sidecarIgnorePath` travels with the next one.
+ */
 export async function loadIgnore(root: string): Promise<Ignore> {
   try {
-    return compileIgnore(await readFile(join(root, ".codemapignore"), "utf8"));
-  } catch {
-    return MATCH_NOTHING;
+    return compileIgnore(await readFile(join(root, ".codemapignore"), "utf8"), "repo");
+  } catch { /* no repo declaration — the team's may still stand */ }
+
+  const cfg = resolveSidecar(root);
+  if (cfg) {
+    try {
+      return compileIgnore(await readFile(sidecarIgnorePath(cfg.path, cfg.universe), "utf8"), "sidecar");
+    } catch { /* none there either */ }
   }
+  return matchNothing("none");
 }

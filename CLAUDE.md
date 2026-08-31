@@ -326,12 +326,27 @@ what `find_gaps` ranks. **A test is already a claim in executable form**, so an 
 piece of code is a gap and an uncovered test is not — indexed as ordinary anchors they enter
 the model with the wrong sign.
 
+**The declaration is LAYERED, and the repo half is branch-coupled on purpose.**
+`<repo>/.codemapignore` wins if present; else `<sidecar>/config/<universeKey>/codemapignore`,
+the team default on the sidecar's own branch; else nothing. Override, never merge. The
+sidecar layer exists because the repo file resolves from the WORKING TREE: a branch cut
+before it was committed deletes it on checkout, and the old `loadIgnore` reported that
+exactly as it reported "declared, and nothing matched". The loud harm is generated code
+flooding back as gaps; the quiet one is `ServedPointer.rank` demoting every test-anchor
+pointer from `check` to `symbol`/`lastResort`, which INVERTS the ladder. `Ignore.source`
+is three-valued (`repo` / `sidecar` / `none`) for that reason — an intentionally empty repo
+file is a declaration and must not inherit the team's.
+
 Two things not to "fix":
 
 - **`tests` is a `CoverageState` and not a `CoverageMark`.** Every other state is reachable
-  by a `cover` rule; this one is reachable only from the committed file. That is deliberate:
+  by a `cover` rule; this one is reachable only from the declaration. That is deliberate:
   coverage rules live in the gitignored DB and are not in `SHARED_KINDS`, so a `cover` rule
   binds ONE machine, and "tests are not documentation subjects" is a repo-wide fact.
+  **But `deferred` and `owned` OUTRANK the bin** (`coverage.ts`, "scope wins"), so such a
+  rule over a test path silently suppresses it. `cover` now warns when it does, `coverage_rules`
+  lists what is in force, and `uncover` takes one back — it only ever appended before, which
+  made a mis-aimed rule permanent short of editing the store by hand.
 - **`tests` outranks `cited`.** The reason tests are indexed at all is so a requirement can
   pin a lint by hash, so something will point at them; letting a citation promote one back
   into the denominator would do it through exactly the mechanism the bin exists to serve.

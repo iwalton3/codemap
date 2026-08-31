@@ -6,11 +6,18 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { resolveCoverage, DENOMINATOR, docPct } from "./coverage.js";
 import { coverageFor } from "./ops/shared.js";
-import { init, findGaps } from "./ops.js";
+import { init, findGaps, cover, coverageRules, uncover } from "./ops.js";
+import { sidecarIgnorePath } from "./ignore.js";
+import { universeKey } from "./sidecar-config.js";
 import { discard } from "./test-tmp.js";
+
+const ok = <T>(r: T): Exclude<T, { error: string }> => {
+  assert.ok(!(r && typeof r === "object" && "error" in (r as object)), `unexpected error: ${(r as any)?.error}`);
+  return r as Exclude<T, { error: string }>;
+};
 import type { Anchor } from "./schema.js";
 
 const anchor = (id: string, file: string): Anchor => ({
@@ -98,5 +105,82 @@ test("a real repo's [tests] bin keeps its tests out of the work queue", async ()
     assert.equal(gaps.openCount, 1);
     assert.deepEqual([...new Set(gaps.open.map((g) => g.file))], ["src/pay.ts"],
       "a test offered as a documentation gap is the work queue filling with nothing");
+  } finally { discard(root); }
+});
+
+
+/**
+ * The team's declaration, on the sidecar, doing the same job — and the trap beside it.
+ *
+ * `.codemapignore` resolves from the working tree and therefore moves with the branch.
+ * The sidecar's copy does not, which is the whole point: a branch cut before the file was
+ * committed used to arrive with no exclusions at all, silently.
+ */
+test("the [tests] bin works from the sidecar too, and a repo file overrides it", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-covside-"));
+  const side = mkdtempSync(join(tmpdir(), "codemap-covsidecar-"));
+  try {
+    mkdirSync(join(root, "src"), { recursive: true });
+    mkdirSync(join(root, "Acme.Api.Tests"), { recursive: true });
+    mkdirSync(join(root, ".codemap"), { recursive: true });
+    writeFileSync(join(root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+    writeFileSync(join(root, "Acme.Api.Tests", "pay.test.ts"),
+      "export function refuses_negative() { return 1; }\nexport function refuses_zero() { return 2; }\n", "utf8");
+    writeFileSync(join(root, ".codemap", "sidecar"), side, "utf8");
+    const teamFile = sidecarIgnorePath(side, universeKey(root));
+    mkdirSync(dirname(teamFile), { recursive: true });
+    writeFileSync(teamFile, "[tests]\nAcme.Api.Tests/\n", "utf8");
+    await init(root);
+
+    const team = (await coverageFor(root)).result;
+    assert.equal(team.breakdown.tests, 2, "the team's declaration reaches a repo that has none of its own");
+    assert.equal(team.breakdown.open, 1);
+
+    // A repo file OVERRIDES — and one that classifies nothing puts the tests back in the
+    // work queue, which is the branch saying so rather than the branch losing a file.
+    writeFileSync(join(root, ".codemapignore"), "# this branch classifies nothing\n", "utf8");
+    const overridden = (await coverageFor(root)).result;
+    assert.equal(overridden.breakdown.tests, 0, "override, not merge");
+    assert.equal(overridden.breakdown.open, 3);
+  } finally { discard(root); discard(side); }
+});
+
+/**
+ * `deferred` and `owned` outrank the `[tests]` bin (`resolveCoverage`, "scope wins"), so a
+ * rule of either kind over a test path makes the bin appear to do nothing. That happened on
+ * a live universe and cost an afternoon — because nothing said so, and `cover` only ever
+ * appended, so there was no way to take the rule back short of editing the store by hand.
+ */
+test("a cover rule that shadows the [tests] bin says so, and can be taken back", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-shadow-"));
+  try {
+    mkdirSync(join(root, "src"), { recursive: true });
+    mkdirSync(join(root, "Acme.Api.Tests"), { recursive: true });
+    writeFileSync(join(root, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
+    writeFileSync(join(root, "Acme.Api.Tests", "pay.test.ts"),
+      "export function refuses_negative() { return 1; }\n", "utf8");
+    writeFileSync(join(root, ".codemapignore"), "[tests]\nAcme.Api.Tests/\n", "utf8");
+    await init(root);
+    assert.equal((await coverageFor(root)).result.breakdown.tests, 1);
+
+    const rule = ok(await cover(root, { as: "deferred", select: { pathPrefix: "Acme.Api.Tests" } }));
+    assert.match(rule.warning ?? "", /OUTRANKS/, "silently shadowing the bin is what cost the afternoon");
+    assert.match(rule.warning ?? "", new RegExp(rule.id), "and it names the rule so it can be dropped");
+    assert.equal((await coverageFor(root)).result.breakdown.tests, 0, "the shadowing is real");
+
+    const listed = await coverageRules(root);
+    assert.equal(listed.ignoreSource, "repo");
+    assert.equal(listed.rules.length, 1);
+    assert.equal(listed.rules[0]!.shadowsTests, true, "visible without having to infer it from a percentage");
+
+    assert.match((await uncover(root, { id: "rule_nope" }) as { error: string }).error, /no coverage rule/);
+    ok(await uncover(root, { id: rule.id }));
+    assert.deepEqual((await coverageRules(root)).rules, []);
+    assert.equal((await coverageFor(root)).result.breakdown.tests, 1, "and the bin is doing its job again");
+
+    // A mark that does NOT outrank the bin gets no warning — or the warning is noise on
+    // every call and stops being read.
+    const trivial = ok(await cover(root, { as: "trivial", select: { pathPrefix: "Acme.Api.Tests" } }));
+    assert.equal(trivial.warning, undefined);
   } finally { discard(root); }
 });

@@ -5,6 +5,7 @@ import { citedAnchors, isClosed, witnessesOf } from "../shared-bugs.js";
 import { readAnchorStore, readState, loadNodes, readGraph, readBugs, readAnnotations, readCoverage, writeCoverage } from "../store.js";
 import { selectAnchors, docPct as computeDocPct, citedPct as computeCitedPct } from "../coverage.js";
 import { revertedMarks, witnessDrift, realDrift } from "../reviews.js";
+import { loadIgnore } from "../ignore.js";
 import { tripwires as triageTripwires } from "../triage.js";
 import { genId, liveIndex, liveAnchors, anchorBrief, coverageFor, loadNodesShared} from "./shared.js";
 
@@ -239,8 +240,73 @@ export async function cover(
   const matched = selectAnchors(store.anchors, input.select);
   if (!matched.length) return { error: "selector matched 0 anchors — check pathPrefix/file/kind/symbol" };
   const cov = await readCoverage(root);
-  cov.rules.push({ id: genId("rule"), as: input.as, node: input.node, owner: input.owner, select: input.select });
+  const id = genId("rule");
+  cov.rules.push({ id, as: input.as, node: input.node, owner: input.owner, select: input.select });
   await writeCoverage(root, cov.rules);
-  return { ok: true, as: input.as, matched: matched.length, sample: matched.slice(0, 5).map((a) => a.symbolPath.join(".")) };
+  // `deferred` and `owned` OUTRANK the `[tests]` bin — `resolveCoverage` resolves a rule
+  // before consulting `isTest` (`coverage.ts`, "scope wins"). So a rule of those two kinds
+  // over a test path silently suppresses the bin for exactly those anchors, and the bin
+  // then appears to do nothing. That happened for real on a live universe and cost an
+  // afternoon, because nothing said so and there was no way to take the rule back.
+  const ignore = await loadIgnore(root);
+  const shadowed = (input.as === "deferred" || input.as === "owned")
+    ? matched.filter((a) => ignore.isTest(a.file, false))
+    : [];
+  return {
+    ok: true, id, as: input.as, matched: matched.length,
+    sample: matched.slice(0, 5).map((a) => a.symbolPath.join(".")),
+    ...(shadowed.length ? {
+      warning:
+        `${shadowed.length} of these anchors are in the \`[tests]\` bin, and \`${input.as}\` OUTRANKS it — `
+        + `they will read \`${input.as}\` rather than \`tests\`. That is usually not what you want: the bin `
+        + `already keeps tests out of the documentation denominator, and this rule is one machine's local `
+        + `state while the bin is a repo-wide fact. Drop it with \`uncover ${id}\` if it was a mistake.`,
+    } : {}),
+  };
+}
+
+/**
+ * The coverage rules in force on THIS machine, with what each currently selects.
+ *
+ * There was no way to see them at all, which is half of why the interaction above went
+ * undiagnosed: the only evidence a rule existed was the coverage number it moved.
+ */
+export async function coverageRules(root: string) {
+  const [cov, store, ignore] = await Promise.all([readCoverage(root), readAnchorStore(root), loadIgnore(root)]);
+  return {
+    /** Which declaration the `[tests]` bin came from — `none` means nobody has made one. */
+    ignoreSource: ignore.source,
+    rules: cov.rules.map((r) => {
+      const matched = selectAnchors(store.anchors, r.select);
+      return {
+        ...r, matched: matched.length,
+        sample: matched.slice(0, 5).map((a) => a.symbolPath.join(".")),
+        shadowsTests: (r.as === "deferred" || r.as === "owned")
+          && matched.some((a) => ignore.isTest(a.file, false)),
+      };
+    }),
+  };
+}
+
+/**
+ * Take a coverage rule back.
+ *
+ * `cover` only ever pushed, so a rule was permanent short of editing the `coverage` meta
+ * key by hand — which is what somebody had to do after a `deferred` rule turned out to be
+ * shadowing the `[tests]` bin. An affordance that can only be applied is not a policy
+ * mechanism, it is a ratchet.
+ */
+export async function uncover(root: string, input: { id: string }) {
+  const cov = await readCoverage(root);
+  const rule = cov.rules.find((r) => r.id === input.id);
+  if (!rule) {
+    return {
+      error: cov.rules.length
+        ? `no coverage rule "${input.id}" — \`coverage_rules\` lists the ${cov.rules.length} in force`
+        : `no coverage rule "${input.id}": this universe has none`,
+    };
+  }
+  await writeCoverage(root, cov.rules.filter((r) => r.id !== input.id));
+  return { ok: true, removed: rule, remaining: cov.rules.length - 1 };
 }
 

@@ -23,7 +23,7 @@
 
 export { type Trust } from "./ops/shared.js";
 
-export { availableViews, status, dashboard, lintSummaries, findGaps, cover } from "./ops/overview.js";
+export { availableViews, status, dashboard, lintSummaries, findGaps, cover, coverageRules, uncover } from "./ops/overview.js";
 
 export { reindex, init, checkStale, indexFreshness, snapshot, snapshotAt, snapshots } from "./ops/indexing.js";
 

@@ -13,9 +13,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { indexBlob } from "./repo.js";
 import { writeStore, writeNode, readPointers } from "./store.js";
@@ -26,6 +26,7 @@ import { ratifyReviewed } from "./test-approve.js";
 import { declarePointer, proposePointer, restatePointer, retirePointer, pointersFor, auditQueue } from "./pointers.js";
 import { criterionIdFor, requirementIdFor } from "./schema.js";
 import { universeKey } from "./sidecar-config.js";
+import { sidecarIgnorePath } from "./ignore.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 const RULE = "export function creditLine(cents) { return cents; }\n";
@@ -88,6 +89,58 @@ async function rule(root: string, cites: string[] = []) {
   const rat = ok(await ratifyReviewed(root, sp.id));
   return rat.applied!.find((o) => o.kind === "add_requirement")!.requirementId!;
 }
+
+/**
+ * The rung the ladder is FOR, surviving a branch that never had `.codemapignore`.
+ *
+ * `rank` derives `check` from `ctx.isTest`, and `isTest` came only from the code repo's
+ * working tree — so a branch cut before the file was committed silently demoted every
+ * pointer at a test anchor to `symbol` / `lastResort: true`: the rung that "covers one
+ * symbol and goes quiet exactly when the code it governs is edited". Not a missing
+ * feature — an INVERTED signal, arriving with no warning, on the one property the ladder
+ * exists to report. That is the strongest argument for the sidecar layer, stronger than
+ * the phantom-gap count.
+ */
+test("a pointer at a lint still ranks `check` when the declaration is the team's, not the branch's", async () => {
+  const u = await universe();
+  const side = mkdtempSync(join(tmpdir(), "codemap-ptrside-"));
+  try {
+    const rid = await rule(u.root);
+
+    // CONTROL: with the repo's own file, the top rung is reachable. Without this the
+    // assertion below could pass against a build where nothing ever ranks `check`.
+    const withRepo = ok(await declarePointer(u.root, {
+      requirementId: rid, targetKind: "anchor", targetId: u.lint[0]!, rationale: "the lint enforcing the cap",
+    }));
+    assert.equal(withRepo.pointer.rank, "check");
+
+    // The branch loses the file — checking out a branch cut before it was committed does
+    // exactly this — and the team's declaration is on the sidecar instead.
+    rmSync(join(u.root, ".codemapignore"));
+    writeFileSync(join(u.root, ".codemap", "sidecar"), side, "utf8");
+    const teamFile = sidecarIgnorePath(side, universeKey(u.root));
+    mkdirSync(dirname(teamFile), { recursive: true });
+    writeFileSync(teamFile, "[tests]\ntests/\n", "utf8");
+
+    const served = (await pointersFor(u.root, rid)).find((p) => p.id === withRepo.id)!;
+    assert.equal(served.rank, "check", "the ladder must not invert because a branch is old");
+    assert.equal(served.lastResort, false);
+  } finally { discard(u.root); discard(side); }
+});
+
+/** And it really does demote when nobody has declared the bin anywhere — the control. */
+test("with no declaration anywhere, the same lint ranks `symbol` — so the check above is not free", async () => {
+  const u = await universe();
+  try {
+    const rid = await rule(u.root);
+    rmSync(join(u.root, ".codemapignore"));
+    const p = ok(await declarePointer(u.root, {
+      requirementId: rid, targetKind: "anchor", targetId: u.lint[0]!, rationale: "the lint enforcing the cap",
+    }));
+    assert.equal(p.pointer.rank, "symbol");
+    assert.equal(p.pointer.lastResort, true);
+  } finally { discard(u.root); }
+});
 
 test("the ladder is derived: a lint ranks above a doc, and an anchor is the last resort", async () => {
   const u = await universe();

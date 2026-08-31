@@ -15,7 +15,7 @@ How codemap works today. If one of these is wrong, that is a bug — fix the doc
 
 | doc | lines | |
 |---|---:|---|
-| [`README.md`](../README.md) | 514 | the project front door: what codemap is, the CLI, the MCP tools, and the agent setup. |
+| [`README.md`](../README.md) | 524 | the project front door: what codemap is, the CLI, the MCP tools, and the agent setup. |
 | [`docs/shared-triage.md`](shared-triage.md) | 423 | triage on the sidecar, built. |
 | [`docs/findings-publishing-spec.md`](findings-publishing-spec.md) | 407 | built, with deviations in §0. §5 is quoted verbatim by `src/mcp.ts`. |
 | [`docs/sidecar-architecture.md`](sidecar-architecture.md) | 383 | NORMATIVE for shared state — it outranks the proposal docs where they disagree. |
