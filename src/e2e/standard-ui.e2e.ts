@@ -18,7 +18,7 @@ import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { resolvePlaywright, launchPlaywright, startServer, type Server } from "./harness.js";
 import * as ops from "../ops.js";
@@ -1169,7 +1169,7 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
     assert.ok(shard, "the fixture must have written events, or blocking it proves nothing");
     const lines = rf(shard!, "utf8").split("\n").filter(Boolean)
       .map((l: string) => JSON.stringify({ ...JSON.parse(l), subject: "tampered" }));
-    wf(shard!.replace(/[^/]+\.ndjson$/, "w_impostor.ndjson"), lines.join("\n") + "\n", "utf8");
+    wf(join(dirname(shard!), "w_impostor.ndjson"), lines.join("\n") + "\n", "utf8");
     assert.equal((await ops.listRequirements(root) as any).scope?.status, "blocked",
       "the fixture must actually be blocked or the assertions below are vacuous");
 

@@ -301,10 +301,19 @@ test("standard_status counts the queues it claims to", async () => {
 function rpc(root: string, calls: { name: string; arguments: Record<string, unknown> }[]) {
   return new Promise<string[]>((resolve, reject) => {
     const p = spawn("node", ["dist/mcp.js", root], { stdio: ["pipe", "pipe", "ignore"] });
-    const out: string[] = []; let buf = ""; let i = 0;
+    const out: string[] = []; let buf = ""; let i = 0; let asked = false;
     const timer = setTimeout(() => { p.kill(); reject(new Error("mcp did not answer")); }, 20000);
+    // Resolve on the child's EXIT, not on `kill()` returning. The server holds
+    // `.codemap/codemap.db` open for its whole life, and the caller's next statement is a
+    // `discard(root)`: on POSIX that unlinks an open file happily, on Windows it is EPERM
+    // and the test fails in teardown after every assertion has passed.
+    p.on("close", (code) => {
+      clearTimeout(timer);
+      if (asked) resolve(out);
+      else reject(new Error(`mcp exited early (code ${code}) after ${out.length}/${calls.length} calls`));
+    });
     const next = () => {
-      if (i >= calls.length) { clearTimeout(timer); p.kill(); resolve(out); return; }
+      if (i >= calls.length) { asked = true; p.kill(); return; }
       p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: i + 2, method: "tools/call", params: calls[i++] }) + "\n");
     };
     p.stdout.on("data", (d) => {
