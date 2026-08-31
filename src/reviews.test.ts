@@ -517,6 +517,51 @@ test("…but an AGENT may not — adopting a placeholder row is a person's act o
  * entries, and it returned `{ok: true}`: a tick standing on no observation, which then
  * reads `unverifiable` for ever because an absent hash cannot be compared with anything.
  */
+/**
+ * The guard consults the SAME ref it witnessed, and used to consult `@work` regardless.
+ *
+ * `markReviewed` witnesses at `input.ref` and asked `workHas(root, ids)` — hardcoded to the
+ * live index — so the two halves of one check spoke about different trees. Reviewing a base
+ * ref a symbol the BRANCH adds left `known` non-empty, because the working tree has it, and
+ * the "nothing was witnessed" guard never fired: precisely the `/diff` case it was written
+ * for. The error message even named the snapshot it had not consulted.
+ *
+ * Same store, same anchor, two refs, opposite answers — which is only possible if the guard
+ * is reading the ref rather than the checkout.
+ */
+test("the nothing-witnessed guard reads the ref it witnessed, not the working tree", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-refguard-"));
+  try {
+    mkdirSync(join(root, "src"));
+    const src = "export function transfer(cents: number) {\n  return cents;\n}\n";
+    writeFileSync(join(root, "src/pay.ts"), src);
+    const anchors = await indexBlob(src, "src/pay.ts");
+    await writeStore(root, anchors, { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State);
+    const id = anchors[0]!.id;
+
+    // A cached snapshot that PREDATES the symbol — the base of a branch that adds it.
+    const { writeSnapshot } = await import("./store.js");
+    await writeSnapshot(root, "base_sha", "main", [], "2026-08-01T00:00:00Z");
+
+    // At `@work` the symbol exists, so signing it is an ordinary observation.
+    const atWork = await markReviewed(root, {
+      targetKind: "anchor", targetId: id, level: "code", actor: "human", attestation: "signed",
+    });
+    assert.ok(!("error" in atWork), "the working tree has it");
+
+    // At the base it does not exist, so there is nothing to witness — and the old guard
+    // said otherwise, because it asked the working tree.
+    const atBase = await markReviewed(root, {
+      targetKind: "anchor", targetId: id, level: "code", actor: "human", attestation: "signed",
+      ref: "base_sha",
+    });
+    assert.ok("error" in atBase, "a symbol absent at the ref being witnessed cannot be signed there");
+    assert.match((atBase as { error: string }).error, /nothing was witnessed/);
+    assert.match((atBase as { error: string }).error, /base_sha/,
+      "and it names the snapshot it actually consulted");
+  } finally { discard(root); }
+});
+
 test("a mark that could witness nothing at all is refused, not recorded green", async () => {
   const root = mkdtempSync(join(tmpdir(), "codemap-nowitness-"));
   try {

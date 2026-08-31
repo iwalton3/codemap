@@ -122,6 +122,49 @@ test("a nonconformant audit needs evidence too — absence of evidence must neve
   } finally { discard(root); }
 });
 
+/**
+ * A detector that went RED is the strongest evidence of non-conformance there is.
+ *
+ * `hasEvidence` reused `touchedCode`, which requires `ran.some(r => r.passed)`. That is
+ * right for the CONFORMANT direction — a green detector is what certifies — and exactly
+ * inverted for this one. An auditor who ran the lint, watched it FAIL and recorded
+ * `{ command, passed: false }` was told their demonstrated violation was "I could not
+ * verify this" and to file it `indeterminate`: the quiet bucket, for the loudest evidence.
+ *
+ * The `{ passed: true }` case below is what keeps `passed` from being ignored altogether —
+ * a command NAME is still required, because a bare verdict records nothing that was run.
+ */
+test("a RED detector files a nonconformant audit; a nameless one still does not", async () => {
+  const { root } = await universe();
+  try {
+    const { specId } = await adoptRule(root);
+    ok(await ratifyReviewed(root, specId));
+    const rule = (await listRequirements(root))[0]!;
+
+    ok(await recordAudit(root, {
+      requirementId: rule.id, outcome: "nonconformant", finding: "the cap lint fails on the credit path",
+      evidence: { ran: [{ command: "npm run lint:credit-cap", passed: false }] },
+    }));
+
+    // Still refused, and by the guard one layer earlier: a `ran` entry with no command
+    // records nothing that was run, whatever its verdict says. So the arm above accepts a
+    // FAILING check, not any `ran` entry at all.
+    const nameless = await recordAudit(root, {
+      requirementId: rule.id, outcome: "nonconformant", finding: "trust me",
+      evidence: { ran: [{ command: "   ", passed: false }] },
+    });
+    assert.ok("error" in nameless, "a nameless command is not evidence");
+    assert.match((nameless as any).error, /needs the `command` you actually ran/);
+
+    // And absence of evidence is still not evidence — the case that must keep working.
+    const nothing = await recordAudit(root, {
+      requirementId: rule.id, outcome: "nonconformant", finding: "I could not verify this",
+    });
+    assert.ok("error" in nothing);
+    assert.match((nothing as any).error, /indeterminate/);
+  } finally { discard(root); }
+});
+
 test("a positive audit closes a gap, which nothing else can", async () => {
   const { root, anchors } = await universe();
   try {

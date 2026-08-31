@@ -252,6 +252,46 @@ test("a teammate's document is promotable, and the promotion is what enters the 
     // The commit-keyed view still holds it: promotion re-records the finding, it does not
     // falsify the branch observation that produced it.
     assert.equal((await provisionalAudits(f.root, { commit })).length, 1);
+  } finally { discard(f.root); discard(f.side); }
+});
+
+/**
+ * A DIRTY tree is not the codebase, and promotion from one used to consume the finding.
+ *
+ * `recordAudit` computes `provisional = !onDefaultBranch || dirty`, and the promotion gate
+ * checked only the branch. So a promotion from a dirty `main` stamped the NEW audit
+ * `provisional: true` and returned ok — while `alreadyPromoted` keys off `promotedFrom`
+ * without asking whether the promoter is itself provisional, so the original left
+ * `promotableAudits` for good. The finding ended up neither promoted nor promotable, and
+ * nothing said so. Everywhere else in this subsystem dirty and off-branch are one condition.
+ *
+ * The clean promotion afterwards is the half that stops this passing on a gate that refuses
+ * everything.
+ */
+test("promotion refuses a dirty tree, and the finding survives to be promoted clean", async () => {
+  const f = await fixture();
+  try {
+    git(f.root, "checkout", "-q", "-b", "feature/credit");
+    const found = ok(await recordAudit(f.root, {
+      requirementId: f.rule.id, outcome: "nonconformant",
+      finding: "creditLine doubles the amount", evidence: { read: f.anchors },
+    }));
+    git(f.root, "checkout", "-q", "main");
+    git(f.root, "merge", "-q", "--no-edit", "feature/credit");
+    assert.equal((await promotableAudits(f.root)).length, 1);
+
+    // An uncommitted edit anywhere makes every witness taken here about nobody's code.
+    writeFileSync(join(f.root, "src", "scratch.js"), "// work in progress\n", "utf8");
+    const refused = await promoteProvisionalAudit(f.root, found.id);
+    assert.ok("error" in refused, "a dirty tree must refuse");
+    assert.match((refused as { error: string }).error, /clean tree/);
+
+    // Not consumed: the whole cost of the bug was that this list came back empty.
+    assert.equal((await promotableAudits(f.root)).length, 1, "the finding is still promotable");
+
+    rmSync(join(f.root, "src", "scratch.js"));
+    const promoted = ok(await promoteProvisionalAudit(f.root, found.id));
+    assert.equal(promoted.audit.provisional, undefined, "and a clean promotion is a real one");
   } finally { f.cleanup(); }
 });
 

@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { indexBlob } from "./repo.js";
 import { writeStore, readOperations, readSpec } from "./store.js";
-import type { Actor, Operation, Spec, State } from "./schema.js";
+import { requirementIdFor, type Actor, type Operation, type Spec, type State } from "./schema.js";
 import { discard } from "./test-tmp.js";
 import { ensureSidecar } from "./sidecar.js";
 import { readScope } from "./eventlog.js";
@@ -456,6 +456,52 @@ test("the fold refuses a kind change, a reasonless removal, and a removal someth
     assert.match(s.operations.find((o) => o.id === "op_1")!.removed!.reason, /wrong rule/);
     assert.match(s.operations.find((o) => o.id === "op_2")!.removed!.reason, /criterion first/);
   } finally { discard(root); }
+});
+
+/**
+ * The withdrawal count must see the same LIVE set the tool sees.
+ *
+ * `withdrawSpec` counts live operations only — `readOperations` drops a tombstone by
+ * default — and the fold counted every row, so it saw an operation the tool never did.
+ * A ratified spec whose only non-`add_requirement` operation had been REMOVED from the
+ * draft was refusable at this end for ever, with the wrong diagnosis ("it amended, retired
+ * or re-filed pre-existing state"). A spent spec cannot be re-withdrawn, so the rule could
+ * never leave the standard on any clone.
+ *
+ * Four lines above the bug, `mineSoFar` already had `!o.removed`. This is the same filter
+ * on the other branch.
+ */
+test("a removed operation does not block a withdrawal the tool would allow", async () => {
+  const root = await log("withdraw-tombstone");
+  try {
+    // An `amend_statement` — the kind that makes a ratified spec unwithdrawable — pulled
+    // out of the draft before it was ever adopted.
+    await publishOperation(root, SCOPE, opus, {
+      ...ADD, id: "op_gone", ord: 1, kind: "amend_statement",
+      requirementId: "req_elsewhere", statement: "Something else entirely.",
+      removed: { at: "2026-08-01T12:00:00.000Z", by: opus, reason: "wrong spec" },
+    });
+    await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
+    assert.equal((await fold(root)).requirements.length, 1, "the live operation applied");
+
+    await publishSpecWithdrawn(root, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", "adopted in error");
+    const s = await fold(root);
+    assert.equal(s.specs[0]!.status, "withdrawn", "a tombstone is not something the spec introduced");
+    assert.equal(s.requirements.length, 0, "and the rule it created goes with it");
+  } finally { discard(root); }
+
+  // A LIVE amendment still blocks it, so the filter is about `removed` and not about the
+  // guard having been weakened.
+  const live = await log("withdraw-live");
+  try {
+    await publishOperation(live, SCOPE, opus, {
+      ...ADD, id: "op_live", ord: 1, kind: "amend_statement",
+      requirementId: requirementIdFor("op_1"), statement: "Amended in the same spec.",
+    });
+    await ratifyWithReview(live, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1", "op_live"]);
+    await publishSpecWithdrawn(live, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", "second thoughts");
+    assert.equal((await fold(live)).specs[0]!.status, "ratified", "an amendment can only be REPEALED");
+  } finally { discard(live); }
 });
 
 test("the fold lets an agent withdraw its own draft, and only that", async () => {
