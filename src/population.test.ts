@@ -285,6 +285,38 @@ test("a pin needs its lint, and the lint must be in the live index", async () =>
 });
 
 /**
+ * The pin's own reason for existing, defeated by the `@work` / re-parse split.
+ *
+ * `pinBroken` is "the one pathology a scrub cannot reach" — the lint fired, somebody
+ * edited it, and now it is quiet. The gate asked the `@work` TABLE while the witness came
+ * from a live RE-PARSE, so a lint that had been RENAMED could still be pinned: every
+ * witness `sha256:absent`, and absent never drifts, so the pin could never break and
+ * `missing` read false. A pin that cannot break is not a pin.
+ */
+test("a lint the file no longer mints cannot be pinned, and an existing pin over one reads missing", async () => {
+  const u = await universe();
+  try {
+    const rid = await rule(u.root);
+
+    // POSITIVE FIRST, with a real baseline — an absent one makes everything below vacuous.
+    const pin = ok(await pinPopulation(u.root, { requirementId: rid, lint: u.lint, members: [M("x", "conforms")] }));
+    assert.deepEqual(pin.population.witnesses.filter((w) => w.bodyHash === "sha256:absent"), []);
+    assert.equal(pin.population.missing, false);
+
+    // The lint is renamed, with NO reindex: `@work` keeps the old id, the file no longer
+    // mints it. This is the shape a pinned check actually rots in.
+    writeFileSync(join(u.root, "tests/endpoints.lint.js"), "export function everyRouteKeys() { return true; }\n", "utf8");
+
+    assert.match(err(await pinPopulation(u.root, {
+      requirementId: rid, lint: u.lint, members: [M("x", "conforms"), M("y", "conforms")],
+    })), /not in the live index/);
+
+    const served = ok(await populationFor(u.root, rid)).current!;
+    assert.equal(served.missing, true, "the detector is gone, and that has to be visible");
+  } finally { discard(u.root); }
+});
+
+/**
  * A pin from a branch is that BRANCH's population, not the team's.
  *
  * A lint enumerates whatever is checked out, so the branch is not incidental to a member

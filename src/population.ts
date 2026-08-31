@@ -40,10 +40,10 @@
 import { randomBytes } from "node:crypto";
 import type { PopulationMember, PopulationPredicate } from "./schema.js";
 import {
-  readAcknowledgements, readPopulations, readRequirement, workHas, writeLocalPopulation,
+  readAcknowledgements, readPopulations, readRequirement, writeLocalPopulation,
 } from "./store.js";
-import { liveHashes, witnessDrift, realDrift } from "./reviews.js";
-import { legacyIndex, type AnchorIndex } from "./anchor-resolve.js";
+import { liveHashes, liveIndex, witnessDrift, realDrift } from "./reviews.js";
+import { legacyIndex, resolveAnchor, type AnchorIndex } from "./anchor-resolve.js";
 import { requireActor, isAgentActor } from "./identity.js";
 import { currentBranch, headCommit, isDirty, isGitRepo, onDefaultBranch } from "./git.js";
 import type { ActorInput } from "./identity.js";
@@ -85,9 +85,15 @@ export interface ServedPopulation extends PopulationPredicate {
 }
 
 function serveWith(root: string, p: PopulationPredicate, live: AnchorIndex): ServedPopulation {
+  // From `live`, not from `@work` — the two disagree about a renamed symbol and the
+  // disagreement is silent in the worst direction. See `liveIndex`. The pin's own hashes
+  // are the evidence, so a lint minted by a build this one cannot compare with reads as
+  // undecidable rather than gone.
+  const byId = new Map(p.witnesses.map((w) => [w.anchorId, w.bodyHash]));
   const base = {
     ...p, counts: counts(p.members),
-    missing: p.basis === "lint" && p.lint.length > 0 && workHas(root, p.lint).size < p.lint.length,
+    missing: p.basis === "lint" && p.lint.length > 0
+      && p.lint.some((id) => resolveAnchor(id, byId.has(id) ? [byId.get(id)!] : [], live).at === "absent"),
   };
   if (!p.witnesses.length) return { ...base, pinBroken: false, drifted: [] };
   const changes = realDrift(witnessDrift(p.witnesses, live));
@@ -99,7 +105,9 @@ function serveWith(root: string, p: PopulationPredicate, live: AnchorIndex): Ser
  * batch read must ask ONCE for the union rather than once per pin.
  */
 const liveFor = (root: string, pins: PopulationPredicate[]): Promise<AnchorIndex> => {
-  const ids = [...new Set(pins.flatMap((p) => p.witnesses.map((w) => w.anchorId)))];
+  // The pinned LINT as well as the witnesses: `serveWith` decides `missing` from it, and a
+  // pin whose lint is not in this index would read as present for want of an answer.
+  const ids = [...new Set(pins.flatMap((p) => [...p.witnesses.map((w) => w.anchorId), ...p.lint]))];
   return ids.length ? liveHashes(root, ids) : Promise.resolve(legacyIndex(new Map()));
 };
 
@@ -213,8 +221,10 @@ export async function pinPopulation(
   if (!lint.length) {
     return { error: "a pin needs the `lint` anchors it is pinning — without them nothing witnesses the detector, and an edit to it is invisible" };
   }
-  const have = workHas(root, lint);
-  const gone = lint.filter((id) => !have.has(id));
+  // The LIVE index, which is what this error has always said. Asking `@work` let a pin be
+  // taken over a renamed lint: every witness `sha256:absent`, and absent never drifts, so
+  // `pinBroken` — the one pathology a scrub cannot reach — could never fire. See `liveIndex`.
+  const { live: pinned, absent: gone } = await liveIndex(root, lint);
   if (gone.length) return { error: `not in the live index: ${gone.join(", ")}` };
 
   const bad = checkMembers(input.members);
@@ -239,10 +249,9 @@ export async function pinPopulation(
     }
   }
 
-  const live = await liveHashes(root, lint);
   const pin: PopulationPredicate = {
     id: mint(), requirementId: r.id, basis: "lint", lint,
-    witnesses: lint.map((id) => ({ anchorId: id, bodyHash: live.get(id) ?? "sha256:absent" })),
+    witnesses: lint.map((id) => ({ anchorId: id, bodyHash: pinned.get(id)! })),
     members: input.members, state: "active", pinnedBy: actor, pinnedAt: now(),
     ...provenance(root),
     ...(current ? { supersedes: current.id } : {}),

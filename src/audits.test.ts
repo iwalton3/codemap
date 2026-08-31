@@ -99,6 +99,44 @@ test("a conformant audit must have touched the code — consulting a doc certifi
   } finally { discard(root); }
 });
 
+/**
+ * `conformant` over code that is not there, and nothing could ever supersede it.
+ *
+ * The gate asked the `@work` TABLE while the witnesses came from a live RE-PARSE. A
+ * renamed symbol keeps its `@work` row, so the audit was admitted with every witness
+ * `sha256:absent` — and absent never drifts, so no later edit could ever make the claim
+ * stale. A permanent pass, standing on a symbol that no longer exists.
+ */
+test("evidence.read is resolved against the live tree, not against a `@work` row that outlived it", async () => {
+  const { root, anchors } = await universe();
+  try {
+    const { specId } = await adoptRule(root);
+    ok(await ratifyReviewed(root, specId));
+    const rule = (await listRequirements(root))[0]!;
+
+    // POSITIVE FIRST, and it must witness a REAL hash — an absent one here would make the
+    // refusal below unfalsifiable.
+    const good = ok(await recordAudit(root, {
+      requirementId: rule.id, outcome: "conformant", finding: "creditLine returns cents unchanged",
+      evidence: { read: anchors },
+    }));
+    assert.deepEqual(good.audit.witnesses.filter((w) => w.bodyHash === "sha256:absent"), [],
+      "a conformant audit must freeze a hash something can later contradict");
+
+    // The rename, with NO reindex: `@work` keeps the old id, the file no longer mints it.
+    writeFileSync(join(root, "src/credit.js"), "export function creditCeiling(cents) { return cents; }\n", "utf8");
+    spawnSync("git", ["commit", "-qam", "rename"], { cwd: root });
+
+    const stale = await recordAudit(root, {
+      requirementId: rule.id, outcome: "conformant", finding: "still fine",
+      evidence: { read: anchors },
+    });
+    assert.ok("error" in stale, "an audit whose every witness would be absent is not an audit");
+    assert.match((stale as any).error, /unknown anchor/);
+    assert.equal((await auditsFor(root, rule.id)).length, 1, "and the refusal wrote nothing");
+  } finally { discard(root); }
+});
+
 test("a nonconformant audit needs evidence too — absence of evidence must never file", async () => {
   const { root, anchors } = await universe();
   try {

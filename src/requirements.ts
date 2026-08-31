@@ -45,10 +45,10 @@ import {
   readAcknowledgements, readAudits, readCriteria, readOperations, readPopulations, readProblems,
   readOperation, readProposalWitnesses, readRequirement, readRequirements, readSpec, readSpecs,
   readVacuityChecks, writeLocalProposalWitness,
-  readPointers, requirementSectionCounts, workHas, writeLocalCriterion, writeLocalOperation,
+  readPointers, requirementSectionCounts, writeLocalCriterion, writeLocalOperation,
   writeLocalRequirement, writeLocalSpec, deleteLocalCriterion, deleteLocalRequirement,
 } from "./store.js";
-import { liveHashes, witnessDrift, realDrift } from "./reviews.js";
+import { liveHashes, liveIndex, witnessDrift, realDrift } from "./reviews.js";
 import { ABSENT_HASH } from "./normalize.js";
 import { isAgentActor, requireActor, resolvePrincipal } from "./identity.js";
 import type { ActorInput } from "./identity.js";
@@ -220,26 +220,22 @@ async function checkMove(
   return null;
 }
 
-/** Cited anchors must exist WHEN CITED — an empty citation list is fine, a wrong one is not. */
-function checkCitations(root: string, cites: string[]): Err | null {
-  if (!cites.length) return null;
-  let have: Set<string>;
-  try {
-    have = workHas(root, cites);
-  } catch {
-    return { error: "this universe is not indexed yet — run `init` before citing anchors" };
-  }
-  const missing = cites.filter((c) => !have.has(c));
-  return missing.length
-    ? { error: `unknown anchor(s): ${missing.join(", ")} — a requirement may cite nothing, but not something that does not exist` }
-    : null;
-}
-
-/** Hashes of the cited code, snapshotted at the moment of adoption. */
+/**
+ * Hashes of the cited code, snapshotted at the moment of adoption.
+ *
+ * Every caller passes `[]` today — a rule is upstream of code and a criterion's detector is
+ * a pointer, so neither has a body to baseline. Kept as the seam rather than inlined,
+ * because the witness payload rides on the ratification EVENT and changing its shape is a
+ * fold change. `checkCitations`, the gate that stood beside this, went with the citations.
+ */
 async function witness(root: string, cites: string[]): Promise<BugWitness[]> {
   if (!cites.length) return [];
-  const live = await liveHashes(root, cites);
-  return cites.map((id) => ({ anchorId: id, bodyHash: live.get(id) ?? "sha256:absent" }));
+  const { live, absent } = await liveIndex(root, cites);
+  // `checkCitations` gates every path here, so an absent id means the tree moved between
+  // the two calls. Recorded rather than thrown — but `sha256:absent` is the hash that
+  // cannot drift, so it must not pass silently.
+  if (absent.length) throw new Error(`anchor(s) left the tree between validation and witnessing: ${absent.join(", ")}`);
+  return cites.map((id) => ({ anchorId: id, bodyHash: live.get(id)! }));
 }
 
 async function serve(root: string, r: Requirement): Promise<ServedRequirement> {

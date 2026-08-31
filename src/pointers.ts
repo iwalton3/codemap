@@ -27,11 +27,11 @@ import type { LogicalNode, NodeStatus, Pointer } from "./schema.js";
 import { criterionIdFor, requirementIdFor } from "./schema.js";
 import {
   loadNodes, readCriterion, readOperation, readOperations, readPointer, readPointers, readRequirement, readRequirements,
-  readSpec, workFiles, workHas,
+  readSpec, workFiles,
   writeLocalPointer,
 } from "./store.js";
 import { liveHashes, witnessDrift, realDrift } from "./reviews.js";
-import { legacyIndex, type AnchorIndex } from "./anchor-resolve.js";
+import { legacyIndex, resolveAnchor, type AnchorIndex } from "./anchor-resolve.js";
 import { loadIgnore } from "./ignore.js";
 import { requireActor } from "./identity.js";
 import { universeKey } from "./sidecar-config.js";
@@ -86,30 +86,50 @@ interface Ctx {
 }
 
 /**
- * @param witnessed every anchor id the pointers being served witness. `liveHashes` reads
- * the WHOLE `@work` anchor table and re-parses the files it needs with tree-sitter, so
- * calling it per pointer is that work repeated per pointer — measured at 2,400 anchors and
- * 150 rules, `auditQueue` spent 547 ms doing it once per pointer and is linear in the
+ * @param needed every anchor id the pointers being served have to resolve. `liveHashes`
+ * reads the WHOLE `@work` anchor table and re-parses the files it needs with tree-sitter,
+ * so calling it per pointer is that work repeated per pointer — measured at 2,400 anchors
+ * and 150 rules, `auditQueue` spent 547 ms doing it once per pointer and is linear in the
  * product. It takes an iterable, so one call with the union costs the same as one pointer.
  */
-async function context(root: string, witnessed: Iterable<string> = []): Promise<Ctx> {
+async function context(root: string, needed: Iterable<string> = []): Promise<Ctx> {
   const nodes = new Map((await loadNodes(root)).map((n) => [n.id, n]));
   let ig: Awaited<ReturnType<typeof loadIgnore>> | null = null;
   try { ig = await loadIgnore(root); } catch { /* no ignore file: nothing is a test */ }
-  const ids = [...witnessed];
+  const ids = [...needed];
   return {
     nodes, isTest: (f: string) => ig?.isTest(f, false) ?? false,
     live: ids.length ? await liveHashes(root, ids) : legacyIndex(new Map()),
   };
 }
 
-const witnessedBy = (ps: Pointer[]): Set<string> =>
-  new Set(ps.flatMap((p) => p.witnesses.map((w) => w.anchorId)));
+/**
+ * What the live index must be able to answer for: what a pointer WITNESSES, and what it
+ * AIMS AT. The target is not redundant with the witnesses — `watched` decides `missing`
+ * from it, and it was reading the `@work` table while the hashes came from a re-parse.
+ */
+const resolvedBy = (ps: Pointer[]): Set<string> =>
+  new Set(ps.flatMap((p) => [
+    ...p.witnesses.map((w) => w.anchorId),
+    ...(p.target.kind === "anchor" ? [p.target.id] : []),
+  ]));
 
-/** The anchors a pointer's baseline is taken over: the anchor itself, or a doc's citations. */
-function watched(root: string, ctx: Ctx, target: Pointer["target"]): string[] | null {
-  if (target.kind === "anchor") return workHas(root, [target.id]).has(target.id) ? [target.id] : null;
-  return ctx.nodes.get(target.id)?.anchors ?? null;
+/**
+ * The anchors a pointer's baseline is taken over: the anchor itself, or a doc's citations.
+ *
+ * `null` means the address does not resolve, which is what `missing` reports and what
+ * declaring refuses on. Answered by the LIVE index — the one the witnesses come from —
+ * because a renamed symbol keeps its old `@work` row: asking there admitted a pointer
+ * whose single witness was `sha256:absent`, and absent never drifts, so it fired never
+ * and read as covered. See `liveIndex`.
+ *
+ * `evidence` is the pointer's own witness hashes where it has any. An id THIS build could
+ * not have minted resolves `incomparable`, not `absent`, and is not called missing —
+ * "the code is gone" is not a claim this index is entitled to make about it.
+ */
+function watched(ctx: Ctx, target: Pointer["target"], evidence: readonly string[] = []): string[] | null {
+  if (target.kind === "node") return ctx.nodes.get(target.id)?.anchors ?? null;
+  return resolveAnchor(target.id, evidence, ctx.live).at === "absent" ? null : [target.id];
 }
 
 function rankOf(root: string, ctx: Ctx, target: Pointer["target"]): PointerRank {
@@ -125,7 +145,7 @@ function rankOf(root: string, ctx: Ctx, target: Pointer["target"]): PointerRank 
 
 async function serveWith(root: string, ctx: Ctx, p: Pointer): Promise<ServedPointer> {
   const rank = rankOf(root, ctx, p.target);
-  const anchors = watched(root, ctx, p.target);
+  const anchors = watched(ctx, p.target, p.witnesses.map((w) => w.bodyHash));
   const node = p.target.kind === "node" ? ctx.nodes.get(p.target.id) : undefined;
   const base = {
     ...p, rank, lastResort: rank === "symbol", missing: anchors === null,
@@ -137,7 +157,7 @@ async function serveWith(root: string, ctx: Ctx, p: Pointer): Promise<ServedPoin
 }
 
 export async function serve(root: string, p: Pointer): Promise<ServedPointer> {
-  return serveWith(root, await context(root, witnessedBy([p])), p);
+  return serveWith(root, await context(root, resolvedBy([p])), p);
 }
 
 // --- declaring ---------------------------------------------------------------
@@ -209,8 +229,8 @@ export async function proposePointer(
   const criterionId = criterionIdFor(op.id);
 
   const target = { kind: input.targetKind, id: input.targetId };
-  const ctx = await context(root);
-  const anchors = watched(root, ctx, target);
+  const ctx = await context(root, input.targetKind === "anchor" ? [input.targetId] : []);
+  const anchors = watched(ctx, target);
   if (anchors === null) {
     return {
       error: input.targetKind === "node"
@@ -313,8 +333,8 @@ export async function declarePointer(
     }
   }
   const target = { kind: input.targetKind, id: input.targetId };
-  const ctx = await context(root);
-  const anchors = watched(root, ctx, target);
+  const ctx = await context(root, input.targetKind === "anchor" ? [input.targetId] : []);
+  const anchors = watched(ctx, target);
   if (anchors === null) {
     return {
       error: input.targetKind === "node"
@@ -342,11 +362,12 @@ export async function declarePointer(
   if ("error" in d) return d;
   if (d.local) await writeLocalPointer(root, pointer);
 
-  // Served against the hashes this call just computed, not against `ctx.live`. `context(root)`
-  // was built with NO witnessed set, so its live index is EMPTY — every witness then resolves
-  // `absent`, `comparableHashes` treats absent as comparable, and a pointer baselined one line
-  // above comes back `moved: true` with every anchor drifted. `restatePointer`'s entire
-  // contract is "this is the new quiet", so it was answering the opposite of its purpose.
+  // Served against the hashes this call just computed, not against `ctx.live`. That index is
+  // built before `anchors` is known and covers only an anchor TARGET, never a doc's
+  // citations — so for a doc every witness resolved `absent`, `comparableHashes` treats
+  // absent as comparable, and a pointer baselined one line above came back `moved: true`
+  // with every anchor drifted. `restatePointer`'s entire contract is "this is the new
+  // quiet", so it was answering the opposite of its purpose.
   const served = await serveWith(root, { ...ctx, live }, pointer);
   const advice = served.lastResort ? betterThanAnAnchor(ctx, target.id) : undefined;
   return { ok: true, id: pointer.id, pointer: served, ...(advice ? { advice } : {}) };
@@ -387,8 +408,8 @@ export async function restatePointer(
         : `${p.id} is retired`,
     };
   }
-  const ctx = await context(root);
-  const anchors = watched(root, ctx, p.target);
+  const ctx = await context(root, resolvedBy([p]));
+  const anchors = watched(ctx, p.target, p.witnesses.map((w) => w.bodyHash));
   if (anchors === null) {
     return { error: `${p.id} points at ${p.target.kind} "${p.target.id}", which no longer resolves — retire it rather than baselining an address that is gone` };
   }
@@ -436,7 +457,7 @@ export async function retirePointer(
 
 export async function pointersFor(root: string, requirementId: string): Promise<ServedPointer[]> {
   const ps = await readPointers(root, { requirementId });
-  const ctx = await context(root, witnessedBy(ps));
+  const ctx = await context(root, resolvedBy(ps));
   return Promise.all(ps.map((p) => serveWith(root, ctx, p)));
 }
 
@@ -468,7 +489,7 @@ export async function auditQueue(root: string): Promise<{
   // pointer in the queue rather than one each. The queue is the read this record exists to
   // serve, so it is the one that must not be O(rules) round trips.
   const all = await readPointers(root, { state: "active" });
-  const ctx = await context(root, witnessedBy(all));
+  const ctx = await context(root, resolvedBy(all));
   const byRule = new Map<string, Pointer[]>();
   for (const p of all) {
     byRule.set(p.requirementId, [...(byRule.get(p.requirementId) ?? []), p]);

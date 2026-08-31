@@ -32,9 +32,9 @@ import type {
 import { AUDIT_OUTCOMES, AUDIT_TRIGGERS, COVERING_TRIGGERS } from "./schema.js";
 import {
   readAcknowledgements, readAudits, readPointers, readRequirement, readRequirements,
-  workHas, writeLocalAudit,
+  writeLocalAudit,
 } from "./store.js";
-import { liveHashes, witnessDrift, realDrift } from "./reviews.js";
+import { liveHashes, liveIndex, witnessDrift, realDrift } from "./reviews.js";
 import { legacyIndex, type AnchorIndex } from "./anchor-resolve.js";
 import { commitMatches, readProvisionalAudits } from "./provisional.js";
 import { currentBranch, headCommit, isDirty, isGitRepo, onDefaultBranch } from "./git.js";
@@ -212,17 +212,20 @@ export async function recordAudit(
   // rule was then pinned at `unknown` for good, and the error named ids the caller had not
   // passed. A citation that left the tree is what `ServedRequirement.missing` reports and
   // what a `sha256:absent` witness records; it is not a malformed audit.
-  const supplied = evidence.read ?? [];
-  if (supplied.length) {
-    let have: Set<string>;
-    try { have = workHas(root, supplied); } catch { have = new Set(); }
-    const unknown = supplied.filter((id) => !have.has(id));
-    if (unknown.length) return { error: `unknown anchor(s) in evidence.read: ${unknown.join(", ")}` };
+  //
+  // Resolved against the LIVE tree, by the same index that writes the witnesses below —
+  // see `liveIndex`. Asking `@work` while witnessing a re-parse admitted an audit whose
+  // every witness was `sha256:absent`, and absent never drifts, so `conformant` over a
+  // symbol that had been renamed away stood for ever with nothing able to supersede it.
+  let resolved: { live: AnchorIndex; absent: string[] };
+  try { resolved = await liveIndex(root, read); } catch { resolved = { live: legacyIndex(new Map()), absent: read }; }
+  if (resolved.absent.length) {
+    return { error: `unknown anchor(s) in evidence.read: ${resolved.absent.join(", ")}` };
   }
 
   const actor = requireActor(root, input);
   if (isErr(actor)) return actor;
-  const live = read.length ? await liveHashes(root, read) : null;
+  const live = read.length ? resolved.live : null;
   // Off the default branch this is about somebody's work in progress, not about the
   // codebase — so it is recorded and never broadcast. See `standard-publish.ts`.
   //

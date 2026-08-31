@@ -232,6 +232,48 @@ test("an address that does not resolve is refused — a pointer that fires never
 });
 
 /**
+ * The `@work` TABLE and a live RE-PARSE disagree about a renamed symbol, and until this
+ * was fixed the two halves of one check asked different ones. Membership came from the
+ * table, the witness from the re-parse: the pointer was admitted, its single witness
+ * written `sha256:absent`, and `witnessDrift` short-circuits on absent == absent — so it
+ * fired never and reported `missing: false`, which reads as coverage.
+ *
+ * The rename below is the ordinary way to get here, not a contrivance: an anchor id is
+ * derived from the symbol PATH, so renaming mints a new one, and the old row survives in
+ * `@work` until something reindexes.
+ */
+test("an anchor the file no longer mints is refused, though `@work` still holds the row", async () => {
+  const u = await universe();
+  try {
+    const rid = await rule(u.root);
+
+    // POSITIVE FIRST — the same call, the same anchor, before the tree moves. Without it
+    // the refusal below could be a wall that refuses everything.
+    const before = ok(await declarePointer(u.root, {
+      requirementId: rid, targetKind: "anchor", targetId: u.rule[0]!, rationale: "the one function",
+    }));
+    assert.equal(before.pointer.missing, false);
+    assert.notEqual(before.pointer.witnesses[0]!.bodyHash, "sha256:absent",
+      "a real baseline — an absent one would make the negative below prove nothing");
+
+    // The rename, with NO reindex. `@work` still holds `u.rule[0]`; the file no longer
+    // mints it. `workHas` says present here and a re-parse says gone.
+    writeFileSync(join(u.root, "src/credit.js"), "export function creditCeiling(cents) { return cents; }\n", "utf8");
+
+    assert.match(err(await declarePointer(u.root, {
+      requirementId: rid, targetKind: "anchor", targetId: u.rule[0]!, rationale: "watch the cap",
+    })), /not in the live index/);
+
+    // And the pointer already standing reads MISSING rather than quietly covering.
+    const served = (await pointersFor(u.root, rid)).find((p) => p.id === before.id)!;
+    assert.equal(served.missing, true, "the address stopped resolving, and that must be visible");
+
+    // Re-baselining it is refused too — there is nothing there to make the new quiet.
+    assert.match(err(await restatePointer(u.root, { id: before.id })), /no longer resolves/);
+  } finally { discard(u.root); }
+});
+
+/**
  * The DOWNWARD half: a ratifier is the one person who cannot otherwise see how much is
  * pointed at the rule they are about to move.
  */

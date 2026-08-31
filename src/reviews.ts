@@ -15,7 +15,7 @@ import { ABSENT_HASH, comparableHashes, sameBody } from "./normalize.js";
 import { resolveActor, actorLabel, reviewerKey, errorProfiles } from "./identity.js";
 import { indexFile } from "./repo.js";
 import { currentDerivations } from "./grammars.js";
-import { anchorIndex, derivationsOf, resolveAnchor, type AnchorIndex } from "./anchor-resolve.js";
+import { anchorIndex, derivationsOf, legacyIndex, resolveAnchor, type AnchorIndex } from "./anchor-resolve.js";
 import { headCommit } from "./git.js";
 
 /** The human review acts: exposure (`viewed`) vs liability-bearing sign-off (`signed`). */
@@ -241,6 +241,43 @@ export async function liveHashes(root: string, anchorIds: Iterable<string>, ref?
   // and taking it from whatever survived the loop would call a genuinely deleted
   // file's symbols undecidable, since nothing would have been indexed at all.
   return anchorIndex(live, currentDerivations(), knownTags);
+}
+
+/**
+ * Hashes AND membership, from ONE index. Ask for both here so they cannot disagree.
+ *
+ * The two questions have separate answers in this store and they do not match. `workHas`
+ * reads the `@work` anchor TABLE; `liveHashes` looks the id's file up in that table and
+ * then re-parses it, so an id survives in `@work` that the file no longer mints. A
+ * renamed symbol is exactly that — a rename changes the anchor id, and in an
+ * event-sourced codebase renaming an `Apply(SomeEvent)` overload is routine.
+ *
+ * Split across a guard and a witness it is silent in the worst direction. The guard sees
+ * the `@work` row and admits the record; every witness is then written `sha256:absent`;
+ * and `witnessDrift` short-circuits on absent == absent, so the record can never drift.
+ * The claim it froze reads verified for ever over code that is not there — a `conformant`
+ * audit nothing can supersede, a pointer that fires never, a pin that cannot break.
+ *
+ * FOUR call sites had the split, two of them already telling the caller "not in the live
+ * index" while asking `@work`. `markReviewed` had it as well and is fixed differently: its
+ * guard means "has this universe any RECORD of the code", deliberately, so that a mark
+ * carried by the overload-id migration is not refused — which is why `workHas` keeps its
+ * other callers rather than being redefined underneath them.
+ *
+ * This is the GATE, where there is no prior hash to reason from, so `absent` is simply "not
+ * in the index" and every id that survives has one. Reading an existing record is the other
+ * question — there the record's own hashes are evidence, an id this build could not have
+ * minted resolves `incomparable` rather than `absent`, and `resolveAnchor` is called
+ * directly (`pointers.ts` `watched`, `population.ts` `serveWith`).
+ */
+export async function liveIndex(
+  root: string,
+  ids: string[],
+  ref?: string,
+): Promise<{ live: AnchorIndex; absent: string[] }> {
+  if (!ids.length) return { live: legacyIndex(new Map()), absent: [] };
+  const live = await liveHashes(root, ids, ref);
+  return { live, absent: [...new Set(ids)].filter((id) => live.get(id) === undefined) };
 }
 
 /** Witnesses (anchor id + current live hash) covering a target — the staleness snapshot. */
