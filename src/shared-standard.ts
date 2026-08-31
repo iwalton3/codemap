@@ -776,7 +776,13 @@ export function foldStandard(
             }
           }
         }
-        specs.set(sp.id, { ...sp, status: "withdrawn", withdrawnBy: e.actor, withdrawnAt: at });
+        // `conflicted` CLEARED, not carried. A withdrawal this clone refused above marks
+        // the spec, and `{ ...sp }` would spread that mark onto the retry that succeeds —
+        // so a correctly withdrawn spec would read "the log and this clone disagree" for
+        // ever. The mark exists to be actionable, and one that never clears is noise on
+        // the most authoritative record here.
+        const { conflicted: _resolved, ...cleared } = sp;
+        specs.set(sp.id, { ...cleared, status: "withdrawn", withdrawnBy: e.actor, withdrawnAt: at });
         break;
       }
       case "ack.granted": {

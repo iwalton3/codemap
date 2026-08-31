@@ -1518,6 +1518,27 @@ test("a ratified withdrawal applies only where the withdrawer said it had checke
     assert.equal(s.specs[0]!.status, "ratified", "no `myScope` is no answer, and no answer is a refusal");
   } finally { discard(blind); }
 
+  // THE RETRY, and the mark must not outlive it. `conflicted` is what makes a refusal
+  // actionable — "somebody withdrew this without checking you, pull and do it again" — and
+  // the successful retry spread `{ ...sp }`, carrying the stale mark onto a spec that had
+  // just been correctly withdrawn. A warning that never clears is noise on the most
+  // authoritative record here, which is the opposite of what it is for.
+  const retry = await log("withdraw-retry");
+  try {
+    await ratified(retry);
+    await publishSpecWithdrawn(retry, SCOPE, izzie, "sp_1", "2026-08-04T00:00:00.000Z",
+      "adopted in error", ["standard/acme.settlement"]);
+    const missed = await fold(retry);
+    assert.equal(missed.specs[0]!.conflicted, true, "the control — without this the clear below is free");
+    assert.equal(missed.specs[0]!.status, "ratified");
+
+    await withdraw(retry, izzie, "sp_1", "2026-08-05T00:00:00.000Z", "adopted in error");
+    const done = await fold(retry);
+    assert.equal(done.specs[0]!.status, "withdrawn");
+    assert.equal(done.specs[0]!.conflicted, undefined, "the disagreement is over, and the record must say so");
+    assert.equal(done.requirements.length, 0);
+  } finally { discard(retry); }
+
   // A DRAFT is untouched by any of this: it applied nothing, so nothing anywhere relies on
   // it and there is nothing to be clean about. Without this the guard would quietly take
   // the author's own take-back with it.
