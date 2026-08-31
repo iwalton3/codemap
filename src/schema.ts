@@ -1151,7 +1151,6 @@ export interface Operation {
   criterion?: string;
   falsifier?: string;
   evidenceKind?: EvidenceKind;
-  assertedBy?: string[];
   /**
    * For an `add_criterion` attaching to a rule THIS SPEC creates: the `add_requirement`
    * operation, because the rule has no id until the spec is ratified. The same shape
@@ -1195,7 +1194,7 @@ export interface OperationRevision {
   by: Actor;
   was: Partial<Pick<Operation,
     "title" | "section" | "statement" | "provenance" | "rationale" | "evidence" | "reversibility"
-    | "criterion" | "falsifier" | "evidenceKind" | "assertedBy" | "requirementId"
+    | "criterion" | "falsifier" | "evidenceKind" | "requirementId"
     | "targetOperationId" | "fromSection" | "toSection" | "context">>;
   /**
    * Why the correction was made, in the corrector's words. NOT part of the rule.
@@ -1737,7 +1736,6 @@ export function operationContent(op: Operation): Record<string, string> {
   put("targetOperationId", op.targetOperationId);
   put("fromSection", op.fromSection);
   put("toSection", op.toSection);
-  if (op.assertedBy?.length) out.assertedBy = op.assertedBy.join(", ");
   // The base it was written against, which the rendering shows as "now". A moved base is
   // already refused by the context check at ratification; carrying it here as well costs
   // nothing and keeps the witness over the whole rendering rather than most of it.
@@ -1816,14 +1814,22 @@ export interface AcceptanceCriterion {
   falsifier: string;
   evidenceKind: EvidenceKind;
   /**
-   * The check itself, as anchors. **MAY be empty**: a criterion is written before the code
-   * exists, so an unasserted criterion is a rule waiting for its check, not a malformed
-   * record — the same shape as an uncited requirement being *unsatisfied* rather than
-   * floating.
+   * WHERE the check is does not live here. It is a `Pointer` with this criterion's id — see
+   * `Pointer.criterionId`.
+   *
+   * It used to: `assertedBy: string[]` plus witness hashes, on this record. The relation was
+   * described correctly — a detector, not the rule's subject, so its drift means *the check
+   * moved* — and stored in the wrong place. A criterion is LAW and law is workspace-scoped
+   * (`docs/cross-universe-standard.md`), but an anchor id is `file \0 symbolPath \0
+   * disambiguator` and names exactly one repo. So a workspace record held an address that
+   * could not say which universe it meant: `src/index.ts#main` in an API and in a React app
+   * are one id, and `/diff` reported one repo's assertion as moved in the other's.
+   *
+   * A per-universe field on a law record would not have fixed it either, because a rule can
+   * be checked in TWO repos at once — one lint in the API, one guard in the front end — and
+   * that is exactly the argument that made pointers per-universe to begin with. Two pointers
+   * express it; one `universe` column cannot.
    */
-  assertedBy: string[];
-  /** Hashes of `assertedBy` at ratification. A later mismatch means the DETECTOR moved. */
-  witnesses: BugWitness[];
   author: Actor;
   createdAt: string;
   /** The operation that introduced it — its whole provenance. */
@@ -2026,6 +2032,20 @@ export interface ContestSide {
 export interface Pointer {
   id: string;
   requirementId: string;
+  /**
+   * Set when this pointer is a DETECTOR — the check that would fail if the rule stopped
+   * holding — rather than an address of the rule's subject.
+   *
+   * The distinction is the one `criteria.ts` has always drawn and is worth keeping: a
+   * subject pointer going stale means the code the rule governs moved; a detector pointer
+   * going stale means *the thing that would have told you* was rewritten by the change it
+   * exists to detect. That is `fired -> was edited -> now quiet`, the one pathology a scrub
+   * cannot reach.
+   *
+   * `requirementId` is set on both, so every existing query by rule keeps working and a
+   * detector is reachable from the rule it defends without a second index.
+   */
+  criterionId?: string;
   /**
    * Which universe's code this address is in.
    *

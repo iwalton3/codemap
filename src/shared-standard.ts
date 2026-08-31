@@ -1076,7 +1076,7 @@ function applyOperation(
     const id = criterionIdFor(op.id);
     criteria.set(id, {
       id, requirementId: rid, criterion: op.criterion, falsifier: op.falsifier,
-      evidenceKind: op.evidenceKind, assertedBy: op.assertedBy ?? [], witnesses,
+      evidenceKind: op.evidenceKind,
       author: sp.author, createdAt: at, introducedBy: op.id, specId: sp.id, origin: "sync",
     });
     return true;

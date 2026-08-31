@@ -22,11 +22,11 @@
 
 import { randomBytes } from "node:crypto";
 import type {
-  AcceptanceCriterion, EvidenceKind, Vacuity, VacuityCheck,
+  AcceptanceCriterion, EvidenceKind, Pointer, Vacuity, VacuityCheck,
 } from "./schema.js";
 import {
-  readCriteria, readCriterion, readRequirement, readRequirements, readVacuityChecks,
-  writeLocalVacuityCheck,
+  readCriteria, readCriterion, readPointers, readRequirement, readRequirements,
+  readVacuityChecks, writeLocalVacuityCheck,
 } from "./store.js";
 import { liveHashes, witnessDrift, realDrift } from "./reviews.js";
 import { legacyIndex, type AnchorIndex } from "./anchor-resolve.js";
@@ -74,6 +74,17 @@ export interface ServedCriterion extends AcceptanceCriterion {
    */
   assertionMoved: boolean;
   drifted: string[];
+  /**
+   * The DETECTOR pointers watching this criterion, and the anchors they resolve to.
+   *
+   * Derived, not stored. `assertedBy` was a column on the criterion until it turned out a
+   * workspace-scoped record cannot hold a code address (see `AcceptanceCriterion`); it
+   * survives here as a read-model convenience so a caller that only wants "which anchors"
+   * does not have to flatten pointers itself. `detectors` is the thing with provenance —
+   * who declared it, in which universe, and whether it has been retired.
+   */
+  detectors: Pointer[];
+  assertedBy: string[];
   /** No `assertedBy` at all — a criterion still waiting for its check. */
   unasserted: boolean;
 }
@@ -98,35 +109,49 @@ function serveCheck(v: VacuityCheck, live: AnchorIndex): ServedVacuityCheck {
   return { ...v, superseded: changes.length > 0, drifted: changes.map((c) => c.anchorId) };
 }
 
+/**
+ * The anchors a criterion's DETECTOR pointers currently watch.
+ *
+ * This replaced `AcceptanceCriterion.assertedBy`. The relation is the same one it always
+ * was — the check, not the rule's subject — and the storage is now the one that can say
+ * WHICH REPO it is in. Reading the pointers' witnesses rather than their targets is
+ * deliberate: a `node` target expands to many anchors and the pointer already resolved
+ * them, so this works for both target kinds without re-expanding anything.
+ */
+export const detectorAnchors = (ds: Pointer[]): string[] =>
+  ds.flatMap((d) => d.witnesses.map((w) => w.anchorId));
+
 async function serveWith(
   root: string, c: AcceptanceCriterion, checksFor: VacuityCheck[], live: AnchorIndex,
+  detectors: Pointer[],
 ): Promise<ServedCriterion> {
   const checks = checksFor.map((v) => serveCheck(v, live));
   const standing = checks.filter((v) => !v.superseded);
   const last = standing[standing.length - 1];
 
-  const unasserted = c.assertedBy.length === 0;
-  if (!c.witnesses.length) {
-    return {
-      ...c, vacuity: last?.verdict ?? "unchecked", ...(last ? { lastCheck: last } : {}),
-      assertionMoved: false, drifted: [], unasserted,
-    };
-  }
-  const changes = realDrift(witnessDrift(c.witnesses, live));
-  return {
+  // An ACTIVE detector. A retired one is a check somebody withdrew, and counting it would
+  // leave the criterion looking asserted by something nobody is running.
+  const live_ = detectors.filter((d) => d.state === "active");
+  const anchors = live_.flatMap((d) => d.witnesses);
+  // Annotated, so `vacuity` keeps its literal type: pulled out into an untyped object
+  // literal it widens to `string` and stops matching `Vacuity`.
+  const base: Omit<ServedCriterion, "assertionMoved" | "drifted"> = {
     ...c, vacuity: last?.verdict ?? "unchecked", ...(last ? { lastCheck: last } : {}),
-    assertionMoved: changes.length > 0, drifted: changes.map((x) => x.anchorId), unasserted,
+    unasserted: live_.length === 0, detectors: live_, assertedBy: detectorAnchors(live_),
   };
+  if (!anchors.length) return { ...base, assertionMoved: false, drifted: [] };
+  const changes = realDrift(witnessDrift(anchors, live));
+  return { ...base, assertionMoved: changes.length > 0, drifted: changes.map((x) => x.anchorId) };
 }
 
-/** All the anchors one batch of criteria and their checks witness. */
-const witnessedBy = (cs: AcceptanceCriterion[], vs: VacuityCheck[]): string[] =>
-  [...cs.flatMap((c) => c.witnesses.map((w) => w.anchorId)),
-    ...vs.flatMap((v) => v.witnesses.map((w) => w.anchorId))];
+/** All the anchors one batch of criteria, their detectors and their checks witness. */
+const witnessedBy = (ds: Pointer[], vs: VacuityCheck[]): string[] =>
+  [...detectorAnchors(ds), ...vs.flatMap((v) => v.witnesses.map((w) => w.anchorId))];
 
 export async function serve(root: string, c: AcceptanceCriterion): Promise<ServedCriterion> {
   const checks = await readVacuityChecks(root, { criterionId: c.id });
-  return serveWith(root, c, checks, await liveFor(root, witnessedBy([c], checks)));
+  const detectors = await readPointers(root, { criterionId: c.id });
+  return serveWith(root, c, checks, await liveFor(root, witnessedBy(detectors, checks)), detectors);
 }
 
 /** Serve a batch with ONE live-hash pass and ONE vacuity-check query. */
@@ -135,8 +160,16 @@ async function serveAll(root: string, cs: AcceptanceCriterion[]): Promise<Served
   const checks = (await readVacuityChecks(root)).filter((v) => ids.has(v.criterionId));
   const byCriterion = new Map<string, VacuityCheck[]>();
   for (const v of checks) byCriterion.set(v.criterionId, [...(byCriterion.get(v.criterionId) ?? []), v]);
-  const live = await liveFor(root, witnessedBy(cs, checks));
-  return Promise.all(cs.map((c) => serveWith(root, c, byCriterion.get(c.id) ?? [], live)));
+  // ONE pointer query for the batch, keyed by criterion — the same shape as the checks above.
+  const byCriterionPtr = new Map<string, Pointer[]>();
+  for (const d of await readPointers(root)) {
+    if (!d.criterionId || !ids.has(d.criterionId)) continue;
+    byCriterionPtr.set(d.criterionId, [...(byCriterionPtr.get(d.criterionId) ?? []), d]);
+  }
+  const allDetectors = [...byCriterionPtr.values()].flat();
+  const live = await liveFor(root, witnessedBy(allDetectors, checks));
+  return Promise.all(cs.map((c) =>
+    serveWith(root, c, byCriterion.get(c.id) ?? [], live, byCriterionPtr.get(c.id) ?? [])));
 }
 
 // --- reading -----------------------------------------------------------------
@@ -226,24 +259,30 @@ export async function recordVacuityCheck(
         + "exactly the confidence the record exists to supply.",
     };
   }
-  if (input.verdict === "demonstrated" && !c.assertedBy.length) {
+  // The detector, in THIS universe. A criterion is workspace-scoped law and its check is
+  // not, so "is there a check to demonstrate" is a question with a different answer per
+  // repo — which is the whole reason the address moved onto pointers.
+  const detectors = (await readPointers(root, { criterionId: c.id })).filter((d) => d.state === "active");
+  const asserted = detectorAnchors(detectors);
+  if (input.verdict === "demonstrated" && !asserted.length) {
     return {
       error:
-        `${c.id} has no \`assertedBy\` — there is no check to demonstrate. A criterion with no `
-        + `assertion is one waiting for its check, and calling that non-vacuous is the empty `
-        + `population reading as green.`,
+        `${c.id} has no active detector pointer in this universe — there is no check to `
+        + `demonstrate. A criterion with no assertion is one waiting for its check, and calling `
+        + `that non-vacuous is the empty population reading as green. Declare a pointer at the `
+        + `check with \`criterionId: "${c.id}"\`.`,
     };
   }
   const actor = requireActor(root, input);
   if (isErr(actor)) return actor;
 
   // Witness what was EXAMINED, which is the criterion's assertion as it stands now — not
-  // the hashes frozen at ratification. If the assertion has already moved, this check is
-  // about the current code and the ratification witnesses are the stale pair.
-  const live = c.assertedBy.length ? await liveHashes(root, c.assertedBy) : new Map<string, string>();
+  // the hashes frozen when the pointer was baselined. If the assertion has already moved,
+  // this check is about the current code and the pointer's witnesses are the stale pair.
+  const live = asserted.length ? await liveHashes(root, asserted) : new Map<string, string>();
   const check: VacuityCheck = {
     id: mint(), criterionId: c.id, verdict: input.verdict, method: method ?? "",
-    witnesses: c.assertedBy.map((id) => ({ anchorId: id, bodyHash: live.get(id) ?? "sha256:absent" })),
+    witnesses: asserted.map((id) => ({ anchorId: id, bodyHash: live.get(id) ?? "sha256:absent" })),
     checkedBy: actor, at: now(),
   };
 

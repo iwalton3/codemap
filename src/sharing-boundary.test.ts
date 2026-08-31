@@ -157,7 +157,7 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     // reintroduced through the record meant to detect it.
     what: "a vacuity demonstration that can never be superseded",
     fold: ["src/shared-standard.ts", /check\.verdict === "demonstrated" && !check\.witnesses\?\.length/],
-    publish: ["src/criteria.ts", /no \\`assertedBy\\` — there is no check to demonstrate/],
+    publish: ["src/criteria.ts", /no active detector pointer in this universe/],
   },
   {
     // A PHANTOM observation names a pointer that is not on the rule, and fabricates history

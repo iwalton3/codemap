@@ -2577,7 +2577,17 @@ const hydratePointer = (body: string, origin: string | null): Pointer | null => 
 
 export async function readPointers(
   root: string,
-  opts: { requirementId?: string; state?: Pointer["state"]; target?: { kind: string; id: string } } = {},
+  opts: {
+    requirementId?: string; state?: Pointer["state"]; target?: { kind: string; id: string };
+    /**
+     * DETECTOR pointers for one criterion, or — with `null` — only SUBJECT pointers.
+     *
+     * Filtered after the query rather than in SQL: `criterion_id` is not a column, it rides
+     * in `body`, and a rule's pointers are a handful. A column would need a migration for
+     * an index nothing is hot on.
+     */
+    criterionId?: string | null;
+  } = {},
 ): Promise<Pointer[]> {
   const clauses: string[] = [];
   const args: string[] = [];
@@ -2589,7 +2599,13 @@ export async function readPointers(
     `SELECT body, origin FROM pointers${where} ORDER BY declared_at, id`,
   ).all(...args as []) as unknown as { body: string; origin: string | null }[];
   const out: Pointer[] = [];
-  for (const r of rows) { const p = hydratePointer(r.body, r.origin); if (p) out.push(p); }
+  for (const r of rows) {
+    const p = hydratePointer(r.body, r.origin);
+    if (!p) continue;
+    if (opts.criterionId === null && p.criterionId) continue;
+    if (typeof opts.criterionId === "string" && p.criterionId !== opts.criterionId) continue;
+    out.push(p);
+  }
   return out;
 }
 

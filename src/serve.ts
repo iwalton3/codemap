@@ -399,7 +399,7 @@ const server = createServer(async (req, res) => {
             requirementId: body.requirementId, title: body.title, section: body.section,
             statement: body.statement, provenance: body.provenance, evidence: body.evidence,
             criterion: body.criterion, falsifier: body.falsifier, evidenceKind: body.evidenceKind,
-            assertedBy: body.assertedBy, targetOperationId: body.targetOperationId,
+            targetOperationId: body.targetOperationId,
             fromSection: body.fromSection, toSection: body.toSection,
           });
         }

@@ -299,7 +299,7 @@ export interface OperationInput {
   requirementId?: string; title?: string; section?: string; statement?: string;
   provenance?: string; cites?: string[]; evidence?: string;
   criterion?: string; falsifier?: string; evidenceKind?: EvidenceKind;
-  assertedBy?: string[]; targetOperationId?: string;
+  targetOperationId?: string;
   fromSection?: string; toSection?: string;
 }
 
@@ -398,9 +398,6 @@ async function operationPayload(
           + "than choosing a type.",
       };
     }
-    const bad = checkCitations(root, input.assertedBy ?? []);
-    if (bad) return bad;
-
     // Target: a rule that already stands, or one this same draft is about to create. The
     // second case is the authoring flow the playbook actually describes — criteria are
     // written WITH the rule, in one reviewed artifact — and the rule has no id yet, so the
@@ -411,7 +408,7 @@ async function operationPayload(
       if (target.kind !== "add_requirement") {
         return { error: `${target.id} is a ${target.kind} — a criterion attaches to the rule an \`add_requirement\` creates` };
       }
-      payload = { criterion, falsifier, evidenceKind: input.evidenceKind, assertedBy: input.assertedBy ?? [], targetOperationId: target.id };
+      payload = { criterion, falsifier, evidenceKind: input.evidenceKind, targetOperationId: target.id };
     } else {
       if (!input.requirementId) {
         return { error: "`add_criterion` needs a `requirementId`, or a `targetOperationId` naming an `add_requirement` in this spec" };
@@ -424,7 +421,7 @@ async function operationPayload(
       // one-operation-per-rule refusal below — a rule legitimately gets several criteria,
       // and they do not overwrite one another the way two amendments would.
       context = { requirementId: r.id, statement: r.statement };
-      payload = { criterion, falsifier, evidenceKind: input.evidenceKind, assertedBy: input.assertedBy ?? [], requirementId: r.id };
+      payload = { criterion, falsifier, evidenceKind: input.evidenceKind, requirementId: r.id };
     }
   } else if (input.kind === "move_section") {
     const from = normalizeSection(input.fromSection ?? "");
@@ -641,7 +638,6 @@ export async function reviseOperation(
     criterion: input.criterion ?? op.criterion,
     falsifier: input.falsifier ?? op.falsifier,
     evidenceKind: input.evidenceKind ?? op.evidenceKind,
-    assertedBy: input.assertedBy ?? op.assertedBy,
     targetOperationId: input.targetOperationId ?? op.targetOperationId,
     fromSection: input.fromSection ?? op.fromSection,
     toSection: input.toSection ?? op.toSection,
@@ -655,7 +651,7 @@ export async function reviseOperation(
     // `amend_statement`'s fields would otherwise keep the old `statement`, and the rendering
     // would show a field the operation no longer acts on.
     title: undefined, section: undefined, statement: undefined, provenance: undefined,
-    criterion: undefined, falsifier: undefined, evidenceKind: undefined, assertedBy: undefined,
+    criterion: undefined, falsifier: undefined, evidenceKind: undefined,
     requirementId: undefined, targetOperationId: undefined, fromSection: undefined, toSection: undefined,
     ...built.payload,
     rationale: merged.rationale.trim(),
@@ -665,7 +661,7 @@ export async function reviseOperation(
   };
   const was = changedFields(op, candidate, [
     "title", "section", "statement", "provenance", "rationale", "evidence", "reversibility",
-    "criterion", "falsifier", "evidenceKind", "assertedBy", "requirementId", "targetOperationId",
+    "criterion", "falsifier", "evidenceKind", "requirementId", "targetOperationId",
     "fromSection", "toSection", "context",
   ]);
   if (!Object.keys(was).length) return { error: "nothing to change" };
@@ -1185,12 +1181,10 @@ export async function ratifySpec(
       if (clash) { checks.push({ operation: op, ok: false, reason: clash.error }); continue; }
     }
     if (op.kind === "add_criterion") {
-      // Same reason, on the assertion rather than the subject — and it bites harder here.
-      // A criterion whose check has vanished baselines every witness `sha256:absent`, so
-      // the detector reads as never having moved, for ever: the assertion is gone and the
-      // rule looks exactly as asserted as it did the day it was ratified.
-      const gone = checkCitations(root, op.assertedBy ?? []);
-      if (gone) { checks.push({ operation: op, ok: false, reason: gone.error }); continue; }
+      // No citation check here any more: a criterion names no code. Where the check IS
+      // lives in a detector `Pointer`, minted per universe against the criterion — and
+      // `declarePointer` refuses an address that does not resolve, which is the same
+      // guard one layer out and the only layer that can know which repo it is about.
       // A criterion attaching to a rule this same spec creates is only coherent if that
       // operation is still here — the reviewer approved them as one argument.
       if (op.targetOperationId && !ops.some((o) => o.id === op.targetOperationId)) {
@@ -1260,11 +1254,10 @@ export async function ratifySpec(
       // A rule has no body to baseline: it is upstream of code, and what watches the code
       // is a pointer, which carries its own witnesses and names its own universe.
       ? []
-      // A criterion witnesses its ASSERTION, not the rule's subject. Different sets and
-      // different questions: `cites` going stale means the code moved, `assertedBy` going
-      // stale means the DETECTOR moved — which is the pathology nothing else catches.
+      // A criterion witnesses nothing either, now that its detector is a pointer: the
+      // pointer carries the witnesses, in the universe the check actually lives in.
       : op.kind === "add_criterion"
-        ? op.assertedBy ?? []
+        ? []
         // A move's subject is a PATH, not code, so it witnesses nothing. It also names no
         // rule, and every branch below this one assumes one — which is the trap this
         // operation kind sets in each place that switches on the others by elimination.
@@ -1314,7 +1307,6 @@ export async function ratifySpec(
       const c: AcceptanceCriterion = {
         id: criterionIdFor(op.id), requirementId: rid,
         criterion: op.criterion!, falsifier: op.falsifier!, evidenceKind: op.evidenceKind!,
-        assertedBy: op.assertedBy ?? [], witnesses: await witness(root, op.assertedBy ?? []),
         author: sp.author, createdAt: at, introducedBy: op.id, specId: sp.id,
       };
       // Bind, for the reason `add_requirement` binds: without it `readOperations({requirementId})`

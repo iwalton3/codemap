@@ -139,7 +139,7 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
       reversibility: "reversible", targetOperationId: opId,
       criterion: "A capture on a Friday settles on the following Monday.",
       falsifier: "a capture on Friday that settles the same day",
-      evidenceKind: "automated-test", assertedBy: [anchor], ...AGENT,
+      evidenceKind: "automated-test", ...AGENT,
     } as any));
 
     // A problem awaiting adjudication. This is the act an agent structurally CANNOT do —
@@ -257,13 +257,13 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
       reversibility: "reversible", targetOperationId: rule.id,
       criterion: "A capture at 17:01 lands in the next sweep.",
       falsifier: "a capture at 17:01 that lands in the same sweep",
-      evidenceKind: "automated-test", assertedBy: [anchor], ...AGENT,
+      evidenceKind: "automated-test", ...AGENT,
     } as any));
 
     const crit = (id: string, targetOperationId: string, criterion: string): Operation => ({
       id, specId: sp.id, kind: "add_criterion", ord: 9, targetOperationId, criterion,
       falsifier: `an observation that ${criterion} does not hold`,
-      evidenceKind: "automated-test", assertedBy: [],
+      evidenceKind: "automated-test",
       rationale: "written by a client that never checked", reversibility: "reversible",
     });
     // Self-targeting, and criterion-on-criterion. `ord` collides on purpose — two rows a
@@ -291,9 +291,13 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
    * That function (`schema.ts`) is the exact field set a sign-off hashes, so a field it
    * includes and the card omits is a field the reader signs without ever seeing — the gate
    * this whole surface exists to be, failing silently. Four were missing: `requirementId`,
-   * the `assertedBy` anchors (shown as a COUNT, so two criteria differing only in what they
-   * pin rendered identically and signed to different hashes), `evidence`, and
+   * the criterion's anchors (shown as a COUNT, so two criteria differing only in what they
+   * pinned rendered identically and signed to different hashes), `evidence`, and
    * `reversibility` whenever it was not `irreversible`.
+   *
+   * The anchors are no longer among them — a criterion's check is a detector `Pointer` now,
+   * so it is not in `operationContent` and there is nothing here to render. The other three
+   * are still required below, because the guard is what stops this passing on absence.
    *
    * Asserted against `operationContent` itself rather than a list written here, so a field
    * ADDED to the witness is covered by this the day it lands. `evidenceKind` is checked
@@ -338,7 +342,7 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
     // Could this pass on absence? Only with a fixture carrying none of the fields the
     // defect was about — which is what made the original rendering look correct.
     assert.ok(checked >= 15, `only ${checked} signed fields reached the assertion`);
-    for (const f of ["assertedBy", "evidence", "reversibility", "requirementId"]) {
+    for (const f of ["evidence", "reversibility", "requirementId"]) {
       assert.ok(seen.has(f), `no fixture operation carries \`${f}\`, so this says nothing about it`);
     }
   });

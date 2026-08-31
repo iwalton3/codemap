@@ -278,7 +278,7 @@ export const addOperation = (
     requirementId?: string; title?: string; section?: string; statement?: string;
     provenance?: string; cites?: string[]; evidence?: string;
     criterion?: string; falsifier?: string; evidenceKind?: EvidenceKind;
-    assertedBy?: string[]; targetOperationId?: string;
+    targetOperationId?: string;
     fromSection?: string; toSection?: string;
   } & ActorInput,
 ) => addOperationRec(root, input);

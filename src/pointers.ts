@@ -25,7 +25,7 @@
 import { randomBytes } from "node:crypto";
 import type { LogicalNode, NodeStatus, Pointer } from "./schema.js";
 import {
-  loadNodes, readPointer, readPointers, readRequirement, readRequirements, workFiles, workHas,
+  loadNodes, readCriterion, readPointer, readPointers, readRequirement, readRequirements, workFiles, workHas,
   writeLocalPointer,
 } from "./store.js";
 import { liveHashes, witnessDrift, realDrift } from "./reviews.js";
@@ -157,7 +157,11 @@ export interface Declared { ok: true; id: string; pointer: ServedPointer; advice
  */
 export async function declarePointer(
   root: string,
-  input: { requirementId: string; targetKind: Pointer["target"]["kind"]; targetId: string; rationale: string } & ActorInput,
+  input: {
+    requirementId: string; targetKind: Pointer["target"]["kind"]; targetId: string; rationale: string;
+    /** Set to make this a DETECTOR for that criterion — see `Pointer.criterionId`. */
+    criterionId?: string;
+  } & ActorInput,
 ): Promise<Declared | Err> {
   const rationale = input.rationale?.trim();
   if (!rationale) {
@@ -175,6 +179,17 @@ export async function declarePointer(
   if (!r) return { error: `no requirement "${input.requirementId}"` };
   if (r.status === "retired") return { error: `${r.id} is retired — a rule that does not bind needs nobody watching it` };
 
+  // A detector names a criterion OF THIS RULE. Checked rather than trusted, because a
+  // pointer whose criterion belongs to another requirement would render under a rule it
+  // says nothing about, and `criteriaFor` would never surface it.
+  const criterionId = input.criterionId?.trim();
+  if (criterionId) {
+    const c = await readCriterion(root, criterionId);
+    if (!c) return { error: `no criterion "${criterionId}"` };
+    if (c.requirementId !== r.id) {
+      return { error: `${criterionId} is a criterion of ${c.requirementId}, not of ${r.id} — a detector watches a check of the rule it is filed under` };
+    }
+  }
   const target = { kind: input.targetKind, id: input.targetId };
   const ctx = await context(root);
   const anchors = watched(root, ctx, target);
@@ -195,7 +210,8 @@ export async function declarePointer(
   // `context()` builds and can be handed straight to `serveWith` below.
   const live = anchors.length ? await liveHashes(root, anchors) : legacyIndex(new Map());
   const pointer: Pointer = {
-    id: mint(), requirementId: r.id, universe: universeKey(root), target, rationale,
+    id: mint(), requirementId: r.id, ...(criterionId ? { criterionId } : {}),
+    universe: universeKey(root), target, rationale,
     witnesses: anchors.map((id) => ({ anchorId: id, bodyHash: live.get(id) ?? "sha256:absent" })),
     state: "active", declaredBy: actor, declaredAt: now(),
   };

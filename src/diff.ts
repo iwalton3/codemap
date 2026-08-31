@@ -241,10 +241,18 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
   // means the thing that would have told you has itself been rewritten by this diff. That
   // is *fired → was edited → now quiet*, which is the one pathology a scrub cannot reach.
   const assertionsByRequirement = new Map<string, DiffResult["impact"]["requirements"][number]["assertionsMoved"]>();
-  for (const c of await readCriteria(root)) {
-    // The witnesses, not the citation list: `assertedBy` says WHICH anchors, and the
-    // witness says what they looked like when the criterion was ratified.
-    const hit = c.witnesses.filter(witnessMoved).map((w) => w.anchorId);
+  const criterionById = new Map((await readCriteria(root)).map((c) => [c.id, c]));
+  // Over the criterion's DETECTOR POINTERS, not over the criterion. A criterion is
+  // workspace-scoped law, so `standardProjection` writes every workspace criterion into
+  // every universe's table — and when it carried the anchors itself, a diff here reported
+  // another repo's assertion as moved, because an anchor id is `file \0 symbolPath` and two
+  // universes share `src/index.ts#main`. A pointer names its universe, so the read is
+  // simply this universe's rows and the collision has nowhere to happen.
+  for (const d of await readPointers(root, { state: "active" })) {
+    if (!d.criterionId) continue;
+    const c = criterionById.get(d.criterionId);
+    if (!c) continue;
+    const hit = d.witnesses.filter(witnessMoved).map((w) => w.anchorId);
     if (!hit.length) continue;
     const arr = assertionsByRequirement.get(c.requirementId) ?? [];
     arr.push({ id: c.id, criterion: c.criterion, evidenceKind: c.evidenceKind, anchors: hit });
@@ -261,7 +269,11 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
   // whole point of aiming high is that the reader starts from the compression.
   const nodeTitle = new Map(nodes.map((n) => [n.id, n.title]));
   const pointersByRequirement = new Map<string, DiffResult["impact"]["requirements"][number]["pointersFired"]>();
-  for (const pt of await readPointers(root, { state: "active" })) {
+  // SUBJECT pointers only — `criterionId: null`. A detector is reported above as
+  // `assertionsMoved`, and counting it here as well would put the CHECK's anchors into the
+  // rule's own `anchors`, so a diff that rewrote only a lint would read as having touched
+  // the code the rule governs. Two relations, two rollups, reported once each.
+  for (const pt of await readPointers(root, { state: "active", criterionId: null })) {
     const hit = pt.witnesses.filter(witnessMoved).map((w) => w.anchorId);
     if (!hit.length) continue;
     const arr = pointersByRequirement.get(pt.requirementId) ?? [];

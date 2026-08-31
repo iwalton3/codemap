@@ -489,7 +489,7 @@ Two properties fall out, and both are load-bearing:
 ## Acceptance criteria and `asserted_by` — BUILT
 
 The second citation relation. `Requirement.cites` is the code a rule is ABOUT and its
-staleness means *that code moved*; `AcceptanceCriterion.assertedBy` is the check that would
+staleness means *that code moved*; a criterion's DETECTOR pointer is the check that would
 FAIL if the rule stopped holding, and its staleness means *the build is red*. Snapshot
 versus live — and codemap observes only the first half, because it never runs anything.
 What it watches is the assertion's own normalized hash, which is not a limitation being
@@ -517,7 +517,7 @@ pointers. It carries three things adopted rather than re-derived:
 COD-18 asks for a "vacuity field". A stored field is something a writer can satisfy — and
 worse, **a derived value with nothing to invalidate it is permanent**, so a `demonstrated`
 flag would survive a rewrite of the very lint it certifies. That is the exact pathology
-`assertedBy` exists to catch, reintroduced one level up. So a `VacuityCheck` is witnessed
+a detector pointer exists to catch, reintroduced one level up. So a `VacuityCheck` is witnessed
 like an audit and goes superseded when the assertion it examined moves, and the served
 `vacuity` is derived from the latest LIVE check.
 
@@ -599,7 +599,7 @@ conformance depends on some observable: a set of anchors, a test, a lint, a quer
 runnable check. When a pointer moves, the requirement rises in the audit queue.
 
 This generalises what now exists in pieces — `cites` (staleness means the code moved) and
-`AcceptanceCriterion.assertedBy` (staleness means the DETECTOR moved) — into one relation
+a criterion's detector pointer (staleness means the DETECTOR moved) — into one relation
 whose question is *what would make this claim need re-checking*. Both halves are built, so
 what a pointer adds is the ADDRESS: aiming higher up the abstraction ladder than an anchor,
 and being shareable between rules.
@@ -1012,7 +1012,7 @@ MCP surface via `ops/standard.ts`:
 - `audits.ts` — the audit record with non-vacuity as a refusal, plus the conformance
   classification (`conformant` is reachable only through a code-backed audit).
 - `problems.ts` — the un-adjudicated record, `adjudicate`, and **no close verb at all**.
-- `criteria.ts` — the acceptance criterion (falsifier, evidence kind, `assertedBy`) and the
+- `criteria.ts` — the acceptance criterion (falsifier, evidence kind, its detector pointers) and the
   `VacuityCheck` that keeps it honest.
 - `ops/standard.ts`'s `served()` — the non-authoritative marker on every read.
 - `pointers.ts` — where to look, the derived ladder, and the audit queue.

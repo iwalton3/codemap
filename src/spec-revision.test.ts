@@ -431,7 +431,7 @@ test("the fold refuses a kind change, a reasonless removal, and a removal someth
     const CRIT: Operation = {
       id: "op_2", specId: "sp_1", kind: "add_criterion", ord: 1, targetOperationId: "op_1",
       criterion: "every row carries a USD currency id", falsifier: "a row carries another",
-      evidenceKind: "lint-test", assertedBy: [], rationale: "how it is discharged",
+      evidenceKind: "lint-test", rationale: "how it is discharged",
       reversibility: "reversible",
     };
     await publishOperation(root, SCOPE, opus, CRIT);

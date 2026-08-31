@@ -22,6 +22,7 @@ import type { State } from "./schema.js";
 import { discard } from "./test-tmp.js";
 import { draftSpec, addOperation, ratifySpec } from "./requirements.js";
 import { ratifyReviewed } from "./test-approve.js";
+import { declarePointer } from "./pointers.js";
 import { criteriaFor, recordVacuityCheck, weakAssertions, assertionStrength } from "./criteria.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
@@ -78,10 +79,20 @@ async function ruleWithCriterion(root: string, cites: string[], assertedBy: stri
     specId: sp.id, kind: "add_criterion", rationale: "policy", reversibility: "reversible",
     targetOperationId: add.id, criterion: "A line above the limit is rejected.",
     falsifier: "A line above the limit is accepted and persisted.",
-    evidenceKind: "lint-test", assertedBy,
+    evidenceKind: "lint-test",
   }));
   const rat = ok(await ratifyReviewed(root, sp.id));
   const rid = rat.applied!.find((o) => o.kind === "add_requirement")!.requirementId!;
+  // The check is a DETECTOR POINTER, declared after ratification. It used to be
+  // `assertedBy` on the criterion itself; a criterion is workspace-scoped law and an anchor
+  // id names one repo, so the address had to move to the record that carries a universe.
+  const cid = (await criteriaFor(root, rid))[0]!.id;
+  for (const a of assertedBy) {
+    ok(await declarePointer(root, {
+      requirementId: rid, criterionId: cid, targetKind: "anchor", targetId: a,
+      rationale: "the lint that would fail if the rule stopped holding",
+    }));
+  }
   return { requirementId: rid, criterion: (await criteriaFor(root, rid))[0]! };
 }
 
@@ -96,7 +107,7 @@ test("a criterion attaches to the rule its own spec creates, and witnesses the C
     // The witnesses are of the ASSERTION, not of the rule's subject. If they were the
     // subject's, editing the check below would not move them and the whole relation
     // would collapse into a second copy of `cites`.
-    assert.deepEqual(criterion.witnesses.map((w) => w.anchorId), u.check);
+    assert.deepEqual(criterion.detectors.flatMap((d) => d.witnesses.map((w) => w.anchorId)), u.check);
     assert.equal(criterion.assertionMoved, false);
     assert.equal(criterion.vacuity, "unchecked", "nobody has tried to break it yet");
     assert.equal(assertionStrength(criterion), "weak");
@@ -121,7 +132,7 @@ test("a falsifier is required, and one that restates the criterion is refused", 
     const base = {
       specId: sp.id, kind: "add_criterion" as const, rationale: "r",
       reversibility: "reversible" as const, targetOperationId: add.id,
-      evidenceKind: "lint-test" as const, assertedBy: u.check,
+      evidenceKind: "lint-test" as const,
     };
 
     assert.match(err(await addOperation(u.root, { ...base, criterion: "A line above the limit is rejected." })),
@@ -150,7 +161,7 @@ test("the evidence kind is a closed list", async () => {
     }));
     const base = {
       specId: sp.id, kind: "add_criterion" as const, rationale: "r", reversibility: "reversible" as const,
-      targetOperationId: add.id, criterion: "c", falsifier: "f", assertedBy: u.check,
+      targetOperationId: add.id, criterion: "c", falsifier: "f",
     };
     assert.match(err(await addOperation(u.root, { ...base })), /evidenceKind/, "absent is refused");
     assert.match(err(await addOperation(u.root, { ...base, evidenceKind: "unit-test" as never })),
@@ -171,7 +182,7 @@ test("a rule may carry several criteria in one spec — they do not overwrite ea
       ok(await addOperation(u.root, {
         specId: sp.id, kind: "add_criterion", rationale: "r", reversibility: "reversible",
         targetOperationId: add.id, criterion: `criterion ${n}`, falsifier: `refuted ${n}`,
-        evidenceKind: "automated-test", assertedBy: u.check,
+        evidenceKind: "automated-test",
       }));
     }
     // The one-operation-per-rule refusal exists because two AMENDMENTS render as if the
@@ -207,7 +218,7 @@ test("two criteria on a standing rule ratify, and do not block an amendment besi
       ok(await addOperation(u.root, {
         specId: sp.id, kind: "add_criterion", rationale: "r", reversibility: "reversible",
         requirementId, criterion: `criterion ${n}`, falsifier: `refuted ${n}`,
-        evidenceKind: "automated-test", assertedBy: u.check,
+        evidenceKind: "automated-test",
       }));
     }
     // And an amendment to the SAME rule in the same spec is still allowed — a criterion
@@ -323,7 +334,7 @@ test("a criterion is created ONLY by ratification — a draft spec makes none", 
     ok(await addOperation(u.root, {
       specId: sp.id, kind: "add_criterion", rationale: "r", reversibility: "reversible",
       targetOperationId: add.id, criterion: "c", falsifier: "f",
-      evidenceKind: "lint-test", assertedBy: u.check,
+      evidenceKind: "lint-test",
     }));
     // Declaring what discharges a rule can NARROW it, which is the silencing direction,
     // so there is no authoring path that is not a ratification.

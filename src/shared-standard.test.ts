@@ -529,7 +529,7 @@ test("a ratification adopts exactly the operations it pinned", async () => {
 const ADD_CRITERION: Operation = {
   id: "op_2", specId: "sp_1", kind: "add_criterion", ord: 1, targetOperationId: "op_1",
   criterion: "Every credit line row stores USD.", falsifier: "A row exists in another currency.",
-  evidenceKind: "lint-test", assertedBy: ["a_lint"],
+  evidenceKind: "lint-test",
   rationale: "so the rule has a detector", reversibility: "reversible",
 };
 
@@ -561,7 +561,9 @@ test("a ratified add_criterion folds to a criterion, under an id every clone der
     assert.equal(c.id, criterionIdFor("op_2"));
     assert.equal(c.requirementId, requirementIdFor("op_1"), "bound to the rule its own spec created");
     assert.equal(c.falsifier, "A row exists in another currency.");
-    assert.deepEqual(c.witnesses, [{ anchorId: "a_lint", bodyHash: "h1:sha256:def" }]);
+    // No witnesses ON the criterion any more: the check's address is a detector `Pointer`,
+    // which carries them in the universe the check actually lives in.
+    assert.equal((c as { witnesses?: unknown }).witnesses, undefined);
     // And the operation row is bound too, or `readOperations({requirementId})` is not the
     // rule's whole history on any clone that folded it.
     assert.equal(after.operations.find((o) => o.id === "op_2")!.requirementId, requirementIdFor("op_1"));
@@ -1141,7 +1143,7 @@ test("the fold refuses a ratification it cannot apply WHOLE, rather than adoptin
   const SELF: Operation = {
     id: "op_self", specId: "sp_1", kind: "add_criterion", ord: 1,
     targetOperationId: "op_self", criterion: "it holds", falsifier: "it does not hold",
-    evidenceKind: "attestation", assertedBy: [],
+    evidenceKind: "attestation",
     rationale: "aimed at itself", reversibility: "reversible",
   };
   const root = await log("whole");

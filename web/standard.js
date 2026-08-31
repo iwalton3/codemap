@@ -631,7 +631,7 @@ class SpecPage extends Component {
    * field the reader signs without seeing — and the gate this subsystem is built on is
    * that a ratifier signs what they READ. It had four: `requirementId` (the rule an amend
    * or a standing-rule criterion is about — rendered by `op` rather than here, since every
-   * kind that carries one shows it the same way), the exact `assertedBy` anchors rather
+   * kind that carries one shows it the same way), the exact anchors rather
    * than a count of them, `evidence`, and `reversibility` whenever it was not
    * `irreversible`. Two criteria differing only in their pinned anchors rendered
    * identically and signed differently.
@@ -664,7 +664,6 @@ class SpecPage extends Component {
         <div class="fs prose">${op.falsifier}</div>
         <div class="fs dim">checked by <b>${op.evidenceKind || 'unstated'}</b></div>
         ${when(!!o.before, () => html`<div class="fs dim">attaches to <b>${o.before.title}</b></div>`)}
-        ${when((op.assertedBy || []).length > 0, () => html`<div class="fs dim mono">pins ${op.assertedBy.join(', ')}</div>`)}
       </div>`;
     }
     if (op.kind === 'add_requirement') {
@@ -954,7 +953,7 @@ class RequirementPage extends Component {
         </div>
         <div class="fs">${c.criterion}</div>
         <div class="fs dim">refuted by: ${c.falsifier}</div>
-        <div class="fs dim">${(c.assertedBy || []).length ? (c.assertedBy || []).length + ' asserting check(s)' : 'no check asserts it — a criterion nothing runs is a claim nothing can invalidate'}</div>
+        <div class="fs dim">${(c.detectors || []).length ? (c.detectors || []).length + ' detector pointer(s) in this universe' : 'no check asserts it here — a criterion nothing runs is a claim nothing can invalidate'}</div>
       </div>`, (c) => c.id)}
 
       <div class="sec">what it ranges over</div>

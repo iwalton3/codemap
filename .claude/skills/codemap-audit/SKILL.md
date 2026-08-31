@@ -56,7 +56,7 @@ pointer can never rise and its silence is not calm.
 1. `requirement <id>` — the statement, what watches it, what has silenced it, what
    discharges it (`criteria`), and what it ranges over (`population`).
 2. **Read the code.** The pointers say where; `get_anchor` gives you the body. If a
-   criterion names an `assertedBy` check, run it — a green check that is asserted is a
+   criterion has a detector pointer, run the check it names — a green check that is asserted is a
    stronger claim than an unedited anchor, which is exactly why a vacuous one is worse
    than no check at all.
 3. Decide. `conformant` only if you touched code and it holds. `nonconformant` only if
