@@ -28,7 +28,7 @@ import './shared.js';
 import { standardUrl, rulesUrl, branchUrl, auditUrl, conformanceUrl } from './standard.js';
 
 import {
-  errText, hitTarget, apiPost, api, loaded, taskError, isErr, pageShell, nav, go, href, setRouter,
+  errText, hitTarget, apiPost, api, loaded, taskError, isErr, pageShell, nav, go, href, setRouter, postSeen,
 } from './core.js';
 
 /**
@@ -148,16 +148,16 @@ const vouchChip = (v, onClick, status) => {
   const tip = `${VOUCH_TIP[tier]}${moved ? ' — but the code has moved since, so this is about the old body' : ''}${can ? ' · click to ' + act : ''}`;
   return html`<span class="tchip ${tier} ${moved ? 'moved' : ''} ${can ? 'clickable' : ''}" title="${tip}" on-click="${can ? (e) => { if (e.stopPropagation) e.stopPropagation(); onClick(act); } : null}">${tier}</span>`;
 };
-const postConfirm = (u, id) => fetch('/api/confirm', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id }) });
-const postAckHole = (u, id) => fetch('/api/ack_hole', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, id }) });
+const postConfirm = (u, id) => postSeen('/api/confirm', { u, id });
+const postAckHole = (u, id) => postSeen('/api/ack_hole', { u, id });
 // attestation: 'viewed' (exposure) | 'signed' (sign-off) | undefined (server → signed).
 // `ref` (a PR head sha) witnesses the mark against the code actually on screen —
 // without it a PR sign-off records the working tree's hash, i.e. code never read.
 const postReview = (u, targetKind, targetId, level, unmark, attestation, ref) =>
-  fetch('/api/review', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, targetKind, targetId, level, unmark, attestation, ref }) });
+  postSeen('/api/review', { u, targetKind, targetId, level, unmark, attestation, ref });
 // Stakes triage (human source → confirmed tier). `body` = { importance } or { clear:true }.
 const postTriage = (u, targetKind, targetId, body) =>
-  fetch('/api/triage', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ u, targetKind, targetId, ...body }) });
+  postSeen('/api/triage', { u, targetKind, targetId, ...body });
 // Severity = stakes × complexity × review-gap (docs/triage.md). Chip = worst outstanding gap.
 // Your unpublished mark and the team's answer disagree. The value beside this chip is
 // the PESSIMISTIC reading of the two — safe, and nobody's actual assertion — so showing

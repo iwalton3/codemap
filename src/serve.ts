@@ -458,6 +458,13 @@ const server = createServer(async (req, res) => {
         // a large pull request is seconds of work to answer a question about one
         // anchor — and the answer has real nuance (replayed, sitting on a revert),
         // so the client must not guess it.
+        //
+        // Never alongside an ERROR, though, and that spread used to be unconditional: a
+        // refusal came back as `{ error, mark }`, so a caller that branched on `mark` — the
+        // field this arm exists to provide — read a refusal as a success and rendered the
+        // unchanged mark as the new one. An error reply carries the error and nothing that
+        // looks like it worked.
+        if (r && typeof r === "object" && "error" in r) return r;
         if (body.targetKind === "anchor" && typeof body.targetId === "string") {
           return { ...(r as object), mark: await ops.anchorMark(root, body.targetId, { ref: body.ref }) };
         }

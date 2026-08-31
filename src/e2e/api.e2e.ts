@@ -215,4 +215,29 @@ describe("HTTP write routes", () => {
     const back = await post("/api/review", { targetKind: "anchor", targetId: anchorId, level: "code", attestation: "signed", unmark: true });
     assert.equal(back.mark?.reviewed, false);
   });
+
+  /**
+   * A refused review answers `{error}` at HTTP **200**, and something has to read it.
+   *
+   * The status code is not the bug — the whole POST surface answers this way, and changing
+   * it now would be a protocol change for one route. The bug was that nine `postReview`
+   * call sites in `app.js` awaited the promise and reloaded without looking, so a refusal
+   * was a click that did nothing with no explanation anywhere. `postSeen` in `core.js` now
+   * reads every one of these replies and flashes `error`.
+   *
+   * This pins the SHAPE that arrangement depends on: 200 with an `error` field and no
+   * `mark`. A route that started answering 4xx, or omitting `error`, would leave the banner
+   * silent again in a different way.
+   */
+  test("a refused review is an ERROR BODY at 200, which is what the page has to read", async () => {
+    const r = await fetch(`${server.url}/api/review`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ u, targetKind: "anchor", targetId: "a_no_such_symbol", level: "code", attestation: "signed" }),
+    });
+    assert.equal(r.status, 200, "not a 4xx — the page reads the body, and this is the contract it reads");
+    const out = await r.json() as any;
+    assert.ok(out.error, "and the body carries the reason");
+    assert.match(out.error, /nothing was witnessed/);
+    assert.equal(out.mark, undefined, "with no mark to make it look like it worked");
+  });
 });

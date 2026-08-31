@@ -258,3 +258,55 @@ export const href = (path, query) => {
  * being called before assignment, and does.
  */
 export const setRouter = (r) => { router = r; };
+
+/**
+ * Show a refusal the user would otherwise never see.
+ *
+ * The POST helpers in `app.js` fire and reload — nine call sites for `postReview` alone,
+ * none of which read the reply. `/api/review` answers `{error}` at HTTP **200**, so the
+ * page reloaded to exactly the state it was already in and nothing anywhere said why. That
+ * became likelier, not less, once `markReviewed`'s "nothing was witnessed" guard was fixed
+ * to consult the ref it witnessed: the refusal is now correct AND invisible.
+ *
+ * Deliberately not a component. It has no state a page owns, it must work from a plain
+ * `fetch` helper defined outside any component, and a refusal has to survive the reload
+ * that follows it — an element outside the render tree is the only thing here that does.
+ */
+export function flashError(message) {
+  if (!message) return;
+  let el = document.getElementById('flash');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'flash';
+    el.addEventListener('click', () => el.remove());
+    document.body.appendChild(el);
+  }
+  el.textContent = message;
+  // The timer rides on the element rather than a module-level variable, so a second
+  // refusal cannot leave the first one's timeout to dismiss it early.
+  const box = /** @type {HTMLElement & { _t?: number }} */ (el);
+  clearTimeout(box._t);
+  // Long, because these are paragraphs: the refusals on this surface explain what to do
+  // instead, and a toast that outruns the reading is the same silence with extra steps.
+  box._t = setTimeout(() => el.remove(), 20000);
+}
+
+/**
+ * `fetch` for the fire-and-reload POSTs, with the reply actually read.
+ *
+ * Returns the parsed body so a caller MAY branch on it, and flashes `{error}` so a caller
+ * that does not still cannot swallow a refusal. That default is the point — the bug was
+ * nine callers all forgetting the same thing.
+ */
+export async function postSeen(path, body) {
+  try {
+    const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const out = await r.json().catch(() => ({}));
+    if (out && out.error) flashError(out.error);
+    else if (!r.ok) flashError('HTTP ' + r.status);
+    return out;
+  } catch (e) {
+    flashError(errText(e));
+    return { error: errText(e) };
+  }
+}

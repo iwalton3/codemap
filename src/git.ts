@@ -82,26 +82,35 @@ export function defaultBranch(root: string, remote = "origin"): string {
   const sym = spawnSync(gitBin(), ["symbolic-ref", "--short", `refs/remotes/${remote}/HEAD`], { cwd: root, encoding: "utf8" });
   const name = sym.status === 0 ? (sym.stdout ?? "").trim() : "";
   if (name.startsWith(`${remote}/`)) return name.slice(remote.length + 1);
-  for (const candidate of ["main", "master"]) {
+  // The same four names the local scan uses, not just `main`/`master`: a fetched remote
+  // whose trunk is `develop` has `origin/develop` and no `origin/HEAD`.
+  for (const candidate of TRUNKS) {
     if (revParse(root, `${remote}/${candidate}`)) return candidate;
   }
-  // No remote by that name at all. Guessing "main" is a trap — `onDefaultBranch` now gates
-  // whether an audit may be shared, so a local-only repo on `master` would mark EVERY
-  // audit provisional with no way for the user to satisfy it.
+  // A LOCAL trunk — and this ran only when there was NO remote, which was the bug. The
+  // condition that matters is "no remote TRUNK was found", not "no remote exists": a repo
+  // made with `git init` + `remote add` + `fetch`, or `clone --single-branch`, or
+  // `actions/checkout`, has a remote and no `origin/HEAD`, so a `develop` trunk fell
+  // through to the hardcoded "main" below. `onDefaultBranch` was then permanently false
+  // with nothing the user could do about it: every audit and population pin `provisional`,
+  // `settleAcknowledgements` returning early, `promotableAudits` permanently empty, and
+  // promotion refused.
   //
-  // Fall back to a LOCAL trunk, never to the current branch: answering "whatever you have
-  // checked out" makes every branch the default and the provisional distinction vanishes
-  // silently — which is worse than the problem, because it fails open.
-  if (!hasRemote(root, remote)) {
-    for (const candidate of ["main", "master", "develop", "trunk"]) {
-      if (revParse(root, `refs/heads/${candidate}`)) return candidate;
-    }
-    // Nothing recognisable, and no remote: there is one line of development, so whatever
-    // is checked out is it.
-    return currentBranch(root) ?? "main";
+  // Guessing "main" is a trap for the same reason — `onDefaultBranch` gates whether an
+  // audit may be shared, so a repo on `master` would mark EVERY audit provisional.
+  for (const candidate of TRUNKS) {
+    if (revParse(root, `refs/heads/${candidate}`)) return candidate;
   }
+  // Nothing recognisable. With no remote there is one line of development, so whatever is
+  // checked out is it. With one, answering "whatever you have checked out" would make every
+  // branch the default and the provisional distinction would vanish silently — that fails
+  // OPEN, which is worse than the problem.
+  if (!hasRemote(root, remote)) return currentBranch(root) ?? "main";
   return "main";
 }
+
+/** Trunk names, most conventional first. Used for both the remote and the local scan. */
+const TRUNKS = ["main", "master", "develop", "trunk"];
 
 /** Does this repo have a remote by that name at all? */
 function hasRemote(root: string, remote: string): boolean {

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseSubmoduleStatus, submoduleDrift } from "./git.js";
+import { parseSubmoduleStatus, submoduleDrift, defaultBranch, onDefaultBranch } from "./git.js";
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -98,4 +98,71 @@ test("a broken submodule gitdir is REPORTED, not silently read as nothing", () =
     // do is return a clean empty answer, which reads as "everything is in sync".
     assert.ok(r.drift.length > 0 || !!r.error, `expected drift or an error, got ${JSON.stringify(r)}`);
   } finally { discard(root); }
+});
+
+/**
+ * A repo with a REMOTE and no `origin/HEAD` still finds its trunk.
+ *
+ * The local-trunk scan was gated behind `!hasRemote`, so the condition it tested was "does
+ * a remote exist" when the one that matters is "was a remote TRUNK found". A repo made with
+ * `git init` + `remote add` + `fetch` — also `clone --single-branch` and `actions/checkout`
+ * — has a remote, no `origin/HEAD`, no `origin/main` and no `origin/master`, so a `develop`
+ * trunk fell through to a hardcoded "main". `onDefaultBranch` was then permanently false
+ * with nothing the user could do: every audit and population pin `provisional`,
+ * `promotableAudits` permanently empty, and promotion refused.
+ *
+ * The no-remote arm beside it is what says the fix is about the gate rather than about
+ * deleting a check.
+ */
+test("a repo whose trunk is `develop` is found with a remote present, and without one", () => {
+  const make = (withRemote: boolean) => {
+    const root = mkdtempSync(join(tmpdir(), "codemap-trunk-"));
+    const git = (...a: string[]) => spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...a], { cwd: root });
+    git("init", "-q", "-b", "develop");
+    writeFileSync(join(root, "f.txt"), "x\n");
+    git("add", "-A"); git("commit", "-q", "-m", "first");
+    // A remote that was ADDED rather than cloned from: no `refs/remotes/origin/HEAD`, and
+    // nothing under `refs/remotes` at all until something is fetched.
+    if (withRemote) git("remote", "add", "origin", "https://example.invalid/x.git");
+    return { root, git };
+  };
+
+  for (const withRemote of [true, false]) {
+    const { root } = make(withRemote);
+    try {
+      assert.equal(defaultBranch(root), "develop",
+        `trunk must be found ${withRemote ? "with" : "without"} a remote`);
+      assert.equal(onDefaultBranch(root), true, "and the checkout is on it, so audits are about the codebase");
+    } finally { discard(root); }
+  }
+});
+
+/**
+ * With a remote and nothing recognisable, the answer is NOT the current branch.
+ *
+ * That would make every branch the default and the provisional distinction would vanish
+ * silently — it fails OPEN, which is worse than the problem the fallback exists for. With
+ * no remote there is one line of development, so it is the honest answer there.
+ */
+test("an unrecognisable trunk falls back to the checkout only when there is no remote", () => {
+  const make = (withRemote: boolean) => {
+    const root = mkdtempSync(join(tmpdir(), "codemap-trunk2-"));
+    const git = (...a: string[]) => spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...a], { cwd: root });
+    git("init", "-q", "-b", "release/2026");
+    writeFileSync(join(root, "f.txt"), "x\n");
+    git("add", "-A"); git("commit", "-q", "-m", "first");
+    if (withRemote) git("remote", "add", "origin", "https://example.invalid/x.git");
+    return root;
+  };
+
+  const local = make(false);
+  try {
+    assert.equal(defaultBranch(local), "release/2026", "one line of development, so it is the default");
+  } finally { discard(local); }
+
+  const remote = make(true);
+  try {
+    assert.equal(defaultBranch(remote), "main", "a remote means branches are not all the trunk");
+    assert.equal(onDefaultBranch(remote), false, "so this checkout is somebody's work in progress");
+  } finally { discard(remote); }
 });
