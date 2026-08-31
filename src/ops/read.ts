@@ -133,7 +133,24 @@ export async function search(root: string, query: string, limit = 30) {
     const review = { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" };
     return { id: n.id, type: n.type, title: n.title, summary: n.summary, status: n.status ?? "fresh", review, trust: trustOf(n.status, rp), vouch: vouchOf(n.status, rp) };
   });
-  return { anchors, nodes: nodeHits };
+  // BUGS too. A bug id is the one thing in this store a person actually holds in their
+  // head — it comes off a PR comment, a ticket, a teammate's message — and the only way
+  // to reach one was to know it was a bug and go to that page and scroll. Matched on the
+  // id as well as the prose, because pasting `bg_3f2a…` and getting nothing is the
+  // specific failure.
+  const bugs = (await readBugs(root)).bugs
+    .filter((b) =>
+      b.id.toLowerCase().includes(q) ||
+      b.title.toLowerCase().includes(q) ||
+      b.text.toLowerCase().includes(q))
+    // Open first — a resolved bug matching the same word is history, not the answer —
+    // then newest, so the order is not the store's accident.
+    .sort((a, b) =>
+      Number(isClosed(a.state)) - Number(isClosed(b.state))
+      || (b.filedAt ?? b.createdAt ?? "").localeCompare(a.filedAt ?? a.createdAt ?? ""))
+    .slice(0, limit)
+    .map((b) => ({ id: b.id, title: b.title, state: b.state, severity: b.severity, closed: isClosed(b.state) }));
+  return { anchors, nodes: nodeHits, bugs };
 }
 
 /**

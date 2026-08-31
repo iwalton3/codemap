@@ -660,6 +660,12 @@
     .bchip.open { color: var(--warn); border-color: var(--warn); }
     .bchip.fixed { color: var(--accent2); border-color: var(--accent2); }
     .bchip.poss, .bchip.changed { color: var(--warn); border-color: var(--warn); background: rgba(240,163,94,0.08); }
+    /* An outstanding ASK is louder than "needs you": somebody is waiting on a decision
+       from a person, and the whole point of surfacing it is that it stops being missed. */
+    .bchip.ask { color: var(--accent); border-color: var(--accent); background: rgba(88,166,255,0.10); font-weight: 600; }
+    /* A closed bug in the search results is history — findable, visibly not live. */
+    .sym.shut { opacity: 0.55; }
+    .sym.shut > span:nth-child(2) { text-decoration: line-through; }
     .drev .bwit { background: var(--panel2); border: 1px solid var(--border); color: var(--dim); border-radius: 6px; padding: 3px 9px; cursor: pointer; font-size: 12px; margin-left: 8px; }
     .drev .bwit:hover { border-color: var(--dim); color: var(--text); }
     .banchor { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; margin: 5px 0; cursor: pointer; font-family: var(--mono); font-size: 12px; }

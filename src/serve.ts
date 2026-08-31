@@ -148,6 +148,8 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
         state: (q.get("state") as any) ?? undefined,
         open: q.get("open") === "1",
         queue: q.get("queue") === "1",
+        asked: q.get("asked") === "1",
+        sort: (q.get("sort") as any) ?? undefined,
       });
     case "/api/bug":
       return ops.bugDetail(root, q.get("id") ?? "");

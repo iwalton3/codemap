@@ -28,6 +28,12 @@ import { resolveSidecar } from "./sidecar-config.js";
 import { bugScope, readBugsShared } from "./shared-bugs.js";
 import { readScope } from "./eventlog.js";
 import * as ops from "./ops.js";
+import { markAgentSession, clearAgentSession } from "./identity.js";
+
+const ok = <T>(r: T): Exclude<T, { error: string }> => {
+  assert.ok(!(r && typeof r === "object" && "error" in (r as object)), `unexpected error: ${(r as any)?.error}`);
+  return r as Exclude<T, { error: string }>;
+};
 import { discard } from "./test-tmp.js";
 
 const git = (root: string, ...args: string[]) =>
@@ -393,5 +399,89 @@ test("accepting with no sidecar says so — a bug nobody else can see is not acc
     await noSidecar(async () => {
       assert.match((await ops.acceptFinding(r.root, 264, "f_1") as any).error, /no sidecar configured/);
     });
+  } finally { r.cleanup(); }
+});
+
+
+/**
+ * Reading a bug list: what is ON it by default, in what ORDER, and what is being ASKED.
+ *
+ * All three were absent. The list came back in whatever order the store held it, with
+ * every resolved and withdrawn bug in it — so on a map with any history the first thing a
+ * person read was an accident about work nobody has to do. And an agent asking to close a
+ * bug folded into `waitingOnYou` beside four unrelated reasons, so the one queue worth
+ * working after a fixing pass was indistinguishable from a severity argument.
+ */
+test("the list is open-first, ordered, and says what is being asked", async () => {
+  const r = await repo(true);
+  try {
+    const mk = async (title: string, severity: "low" | "medium" | "high" | "critical") =>
+      (await ops.reportBug(r.root, { title, description: "d", severity, anchors: [r.anchorId] }) as any).id;
+    const low = await mk("a low one", "low");
+    const crit = await mk("a critical one", "critical");
+    const med = await mk("a medium one", "medium");
+
+    // SEVERITY by default. Filing order is low, critical, medium — so store order and
+    // severity order disagree, which is what makes this assertion mean something.
+    const bySev = await ops.listBugs(r.root) as any;
+    assert.equal(bySev.sort, "severity");
+    assert.deepEqual(bySev.bugs.map((b: any) => b.severity), ["critical", "medium", "low"]);
+    assert.deepEqual((await ops.listBugs(r.root, { sort: "title" }) as any).bugs.map((b: any) => b.title),
+      ["a critical one", "a low one", "a medium one"]);
+    assert.deepEqual((await ops.listBugs(r.root, { sort: "oldest" }) as any).bugs.map((b: any) => b.id),
+      [low, crit, med], "filing order, which is exactly what severity order is not");
+
+    // An AGENT asks to close one. It may not close it itself — that is the ratchet — so
+    // the attempt becomes an ask, and the ask is what a person needs to see.
+    markAgentSession();
+    try {
+      ok(await ops.requestOnBugOp(r.root, crit, "resolve", "the guard is in place now"));
+    } finally { clearAgentSession(); }
+
+    const rows = (await ops.listBugs(r.root) as any).bugs;
+    const asked = rows.find((b: any) => b.id === crit);
+    assert.equal(asked.pending.ask, "resolve", "the ask itself, not just `waitingOnYou`");
+    assert.equal(asked.pending.rationale, "the guard is in place now",
+      "and WHY — a person deciding needs the reason, not a badge");
+    assert.equal(rows.find((b: any) => b.id === low).pending, undefined);
+
+    // …and it is its own queue, narrower than "needs you".
+    const askedOnly = await ops.listBugs(r.root, { asked: true }) as any;
+    assert.deepEqual(askedOnly.bugs.map((b: any) => b.id), [crit]);
+    assert.equal(askedOnly.asked, 1);
+
+    // OPEN excludes what is closed, and `counts` still describes everything — the filter
+    // is a view, not a deletion.
+    ok(await ops.updateBug(r.root, { id: low, state: "resolved" }));
+    const openOnly = await ops.listBugs(r.root, { open: true }) as any;
+    assert.equal(openOnly.bugs.some((b: any) => b.id === low), false, "a closed bug is history, not work");
+    assert.equal(openOnly.open, 2);
+    assert.equal(openOnly.counts.resolved, 1, "the count is of everything, whatever the filter shows");
+    assert.equal((await ops.listBugs(r.root) as any).bugs.length, 3, "unfiltered still means unfiltered");
+  } finally { r.cleanup(); }
+});
+
+/**
+ * A bug id is the one thing in this store a person actually holds in their head — it comes
+ * off a PR comment, a ticket, a teammate's message — and the only way to reach one was to
+ * know it was a bug, go to that page, and scroll.
+ */
+test("search finds a bug by its id and by its title, open ones first", async () => {
+  const r = await repo(true);
+  try {
+    const shut = (await ops.reportBug(r.root, { title: "ledger rounding drifts", description: "old", anchors: [r.anchorId] }) as any).id;
+    const live = (await ops.reportBug(r.root, { title: "ledger totals disagree", description: "new", anchors: [r.anchorId] }) as any).id;
+    ok(await ops.updateBug(r.root, { id: shut, state: "resolved" }));
+
+    const byId = await ops.search(r.root, live) as any;
+    assert.deepEqual(byId.bugs.map((b: any) => b.id), [live], "pasting an id and getting nothing is the specific failure");
+
+    const byWord = await ops.search(r.root, "ledger") as any;
+    assert.deepEqual(byWord.bugs.map((b: any) => b.id), [live, shut], "open first — a closed match is history");
+    assert.equal(byWord.bugs[1]!.closed, true, "and it says so, rather than looking live");
+
+    // The prose too, not just the title.
+    assert.deepEqual((await ops.search(r.root, "old") as any).bugs.map((b: any) => b.id), [shut]);
+    assert.deepEqual((await ops.search(r.root, "nothing matches this") as any).bugs, []);
   } finally { r.cleanup(); }
 });

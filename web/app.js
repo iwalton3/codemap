@@ -1387,11 +1387,12 @@ class SearchPage extends Component {
   propsChanged() { this.load.run(); }
   setScope(s) { go(`/u/${this.props.params.universe}/search/`, { q: this.props.query.q || '', scope: s }); }
   group(g) {
-    const u = g.universe, hits = (g.nodes?.length || 0) + (g.anchors?.length || 0);
+    const u = g.universe, hits = (g.nodes?.length || 0) + (g.anchors?.length || 0) + (g.bugs?.length || 0);
     return html`<div class="detail" style="margin-bottom:12px">
       <div class="dch"><a class="uref" href="${href(dashUrl(u))}">${u}</a> <span class="dim">· ${hits} hit${hits === 1 ? '' : 's'}</span></div>
       ${when(g.nodes && g.nodes.length, () => html`<div class="sec">nodes</div><div class="chips">${each(g.nodes, n => html`<a class="chip" href="${href(nodeUrl(u, n.id))}">${n.title || n.id}</a>`, n => n.id)}</div>`)}
       ${when(g.anchors && g.anchors.length, () => html`<div class="sec">anchors</div><div class="rows">${each(g.anchors, a => html`<a class="sym" href="${href(anchorUrl(u, a.id))}"><span class="k">${a.kind}</span><span>${a.symbol}</span><span class="muted">${a.file}</span></a>`, a => a.id)}</div>`)}
+      ${when(g.bugs && g.bugs.length, () => html`<div class="sec">bugs</div><div class="rows">${each(g.bugs, b => html`<a class="sym ${b.closed ? 'shut' : ''}" href="${href(bugsUrl(u), { bug: b.id, state: 'all' })}"><span class="k">${b.state}</span><span>${b.title}</span><span class="muted">${b.id}</span></a>`, b => b.id)}</div>`)}
       ${when(!hits, () => html`<div class="dim" style="padding:4px 0">no matches</div>`)}
     </div>`;
   }
@@ -2193,6 +2194,10 @@ defineComponent('statemap-page', StatemapPage);
 // verdict — `possiblyFixed` is a join against THIS checkout's index, computed on every
 // read, and a bug whose code vanished is queued rather than closed.
 const BUG_STATES = ['issued', 'created', 'resolved', 'withdrawn', 'refuted', 'invalid'];
+/** Mirrors `BUG_SORTS` in `ops/bugs.ts`; the server validates and echoes back `sort`. */
+const BUG_SORTS = ['severity', 'newest', 'oldest', 'title'];
+/** What an agent is asking a person to do — the verb, in a person's words. */
+const ASK_LABEL = { resolve: 'asked to resolve', invalidate: 'asked to invalidate', refute: 'asked to refute', withdraw: 'asked to withdraw', reopen: 'asked to reopen' };
 // `migrateBugsBlob` records an unknown author as the empty principal and an unknown time
 // as the epoch, deliberately: a legacy bug carries neither, and inventing them is the
 // false provenance the witness fields exist to prevent. Rendering those sentinels as a
@@ -2218,7 +2223,20 @@ class BugsPage extends Component {
   // triage and any bug is deep-linkable.
   load = this.createTask(async () => {
     const u = this.props.params.universe; nav.current = u;
-    this.state.data = await api('/api/bugs', { u, state: this.props.query.state || '', queue: this.props.query.queue || '' });
+    const q = this.props.query;
+    // OPEN by DEFAULT. The unfiltered list included every resolved, refuted, withdrawn
+    // and invalid bug, so on any map with history the first screen was mostly things
+    // nobody has to do anything about. `state=all` is the way back to everything, and it
+    // is in the URL like every other filter here.
+    const scope = this.bugScope();
+    this.state.data = await api('/api/bugs', {
+      u,
+      state: BUG_STATES.includes(scope) ? scope : '',
+      open: scope === 'open' ? '1' : '',
+      queue: scope === 'queue' ? '1' : '',
+      asked: scope === 'asked' ? '1' : '',
+      sort: this.bugSort(),
+    });
     await this.applySel();
   });
   mounted() { this._q = { ...this.props.query }; this._u = this.props.params.universe; this.load.run(); }
@@ -2226,9 +2244,15 @@ class BugsPage extends Component {
     if (name !== 'query' && name !== 'params') return;
     const q = this.props.query, prev = this._q || {}, u = this.props.params.universe;
     this._q = { ...q };
-    if (u !== this._u || q.state !== prev.state || q.queue !== prev.queue) { this._u = u; this.load.run(); }
+    if (u !== this._u || q.state !== prev.state || q.queue !== prev.queue || q.sort !== prev.sort) { this._u = u; this.load.run(); }
     else if (q.bug !== prev.bug) this.applySel();
   }
+  /**
+   * Which slice is on screen. `open` is the DEFAULT rather than `all`, and `queue` keeps
+   * its own query param for the links that already point at it from the dashboard.
+   */
+  bugScope() { return this.props.query.queue ? 'queue' : (this.props.query.state || 'open'); }
+  bugSort() { return BUG_SORTS.includes(this.props.query.sort) ? this.props.query.sort : 'severity'; }
   async applySel() {
     const id = this.props.query.bug;
     if (!id) { this.state.detail = null; return; }
@@ -2236,8 +2260,12 @@ class BugsPage extends Component {
     try { this.state.detail = await api('/api/bug', { u: this.props.params.universe, id }); }
     finally { this.state.detailPending = false; }
   }
-  pickState(s) { go(bugsUrl(this.props.params.universe), s === 'queue' ? { queue: '1' } : (s ? { state: s } : {})); }
-  pickBug(id) { go(bugsUrl(this.props.params.universe), { state: this.props.query.state, queue: this.props.query.queue, bug: id }); }
+  pickState(s) {
+    const sort = this.props.query.sort;
+    go(bugsUrl(this.props.params.universe), s === 'queue' ? { queue: '1', sort } : { state: s === 'open' ? '' : s, sort });
+  }
+  pickSort(s) { go(bugsUrl(this.props.params.universe), { ...this.props.query, sort: s }); }
+  pickBug(id) { go(bugsUrl(this.props.params.universe), { ...this.props.query, bug: id }); }
 
   /**
    * Every write goes through here, and every one of them can be REFUSED — the ratchet
@@ -2287,7 +2315,9 @@ class BugsPage extends Component {
         <div class="btitle">${b.title}</div>
         <div class="bsub">
           <span class="bchip ${b.state}">${b.state}</span>
-          ${when(b.waitingOnYou, () => html`<span class="bchip poss" title="promoted, corroborated, contested or asked about — this one needs a person">needs you</span>`)}
+          ${when(!!b.pending, () => html`<span class="bchip ask" title="${b.pending.by} · ${String(b.pending.at).slice(0, 10)} — ${b.pending.rationale || 'no rationale given'}">${ASK_LABEL[b.pending.ask] || 'asked: ' + b.pending.ask}</span>`)}
+          ${when(!b.pending && b.reported && b.reported.result === 'fixed', () => html`<span class="bchip ask" title="${b.reported.by} reported this fixed on ${String(b.reported.at).slice(0, 10)} — being reported fixed is not being closed">reported fixed</span>`)}
+          ${when(b.waitingOnYou && !b.pending, () => html`<span class="bchip poss" title="promoted, corroborated or contested — this one needs a person">needs you</span>`)}
           ${when(b.possiblyFixed, () => html`<span class="bchip poss" title="cited code changed since filing — possibly fixed">possibly fixed</span>`,
             () => when(b.codeChanged, () => html`<span class="bchip changed" title="cited code changed since filing">code changed</span>`))}
           ${when(b.tracked, () => html`<span class="bchip" title="${b.tracking.map(t => t.system + ' ' + (t.key || t.url)).join(', ')}">tracked</span>`)}
@@ -2391,13 +2421,23 @@ class BugsPage extends Component {
     if (err || !d) return html`<main>${when(!!err, () => html`<div class="empty">${err}</div>`,
       () => html`<div class="loading">loading…</div>`)}</main>`;
     const counts = d.counts || {};
-    const cur = this.props.query.queue ? 'queue' : (this.props.query.state || '');
-    const chip = (val, label, n) => html`<button class="${cur === val ? 'on' : ''}" on-click="${() => this.pickState(val)}">${label}${when(n != null, () => html` <span class="n">${n}</span>`)}</button>`;
+    const cur = this.bugScope(), sort = this.bugSort();
+    const chip = (val, label, n, tip) => html`<button class="${cur === val ? 'on' : ''}" title="${tip || ''}"
+      on-click="${() => this.pickState(val)}">${label}${when(n != null, () => html` <span class="n">${n}</span>`)}</button>`;
+    const sortChip = (val, label) => html`<button class="${sort === val ? 'on' : ''}"
+      on-click="${() => this.pickSort(val)}">${label}</button>`;
     const unshared = d.bugs.filter(b => !b.shared).length;
     return html`<main class="wide">
-      <div class="crumbs">${u} <span class="sep">·</span> bugs (${d.bugs.length}${cur ? ' shown' : ''})${when(d.shared > 0, () => html` <span class="sep">·</span> ${d.shared} shared`)}</div>
-      <div class="dtoggle bugfilter"><span class="dim">state</span>
-        ${chip('', 'all')}${chip('queue', 'needs you', d.waitingOnYou)}${each(BUG_STATES, s => chip(s, s, counts[s]), s => s)}
+      <div class="crumbs">${u} <span class="sep">·</span> bugs (${d.bugs.length} ${cur})${when(d.shared > 0, () => html` <span class="sep">·</span> ${d.shared} shared`)}</div>
+      <div class="dtoggle bugfilter"><span class="dim">show</span>
+        ${chip('open', 'open', d.open, 'the default — a closed bug is history, not work')}
+        ${chip('queue', 'needs you', d.waitingOnYou, 'promoted, corroborated, contested, asked about, or the code moved')}
+        ${chip('asked', 'asked to close', d.asked, 'an agent is asking you to close it, or has reported it fixed — narrower than “needs you”, and the queue to work after a fixing pass')}
+        ${chip('all', 'all', (d.counts ? Object.values(d.counts).reduce((a, b) => a + b, 0) : null))}
+        ${each(BUG_STATES, s => chip(s, s, counts[s]), s => s)}
+      </div>
+      <div class="dtoggle bugfilter"><span class="dim">sort</span>
+        ${sortChip('severity', 'severity')}${sortChip('newest', 'newest')}${sortChip('oldest', 'oldest')}${sortChip('title', 'title')}
       </div>
       ${when(!!unshared, () => html`<div class="attn-banner">
         <span>${unshared} bug${unshared === 1 ? '' : 's'} ${unshared === 1 ? 'is' : 'are'} only on this machine — filed before the sidecar was configured.</span>

@@ -20,8 +20,14 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { resolvePlaywright, launchPlaywright, startServer, type Server } from "./harness.js";
 import * as ops from "../ops.js";
+import { markAgentSession, clearAgentSession } from "../identity.js";
 import { shareFinding } from "../ops-shared.js";
 import { discard } from "../test-tmp.js";
+
+const ok = <T>(r: T): Exclude<T, { error: string }> => {
+  assert.ok(!(r && typeof r === "object" && "error" in (r as object)), `unexpected error: ${(r as any)?.error}`);
+  return r as Exclude<T, { error: string }>;
+};
 
 const pw = resolvePlaywright();
 
@@ -160,6 +166,88 @@ describe("bugs UI", { skip: pw ? false : "playwright not resolvable (set CODEMAP
     // Not closed, ever: a symbol that vanished may have been renamed, or deleted
     // without the defect being addressed. Only a person can tell those apart.
     assert.match(text, /created/);
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+
+  /**
+   * The three things the list could not do: exclude what is done, order itself, and say
+   * what is being ASKED of you.
+   *
+   * The unfiltered list included every resolved and withdrawn bug, in the store's own
+   * order — so the first screen on any map with history was mostly finished work,
+   * arranged by accident. And an agent asking to close a bug folded into `waitingOnYou`
+   * beside four unrelated reasons, so the queue worth working after a fixing pass looked
+   * exactly like a severity argument.
+   */
+  test("the list defaults to open, can be re-sorted, and shows an outstanding ask", async () => {
+    // A closed bug and an ask, added here so the defaults have something to hide and to say.
+    const done = ((await ops.reportBug(root, {
+      title: "an old rounding bug", description: "long since dealt with",
+      anchors: ["src/pay.ts#transfer"], severity: "low",
+    })) as any).id;
+    ok(await ops.updateBug(root, { id: done, state: "resolved" }));
+    markAgentSession();
+    try {
+      ok(await ops.requestOnBugOp(root, filed, "resolve", "the guard is in place now"));
+    } finally { clearAgentSession(); }
+
+    const list = await open(`/u/${universe}/bugs/`);
+    await list.page.waitForSelector(".brow", { timeout: 10_000 });
+    const shown = await list.page.textContent("main");
+    assert.doesNotMatch(shown, /an old rounding bug/, "a closed bug is history, and history is not the default view");
+    assert.match(shown, /asked to resolve/, "the ASK itself — `needs you` did not say who wanted what");
+    // The rationale rides on the badge, because a person deciding needs the reason.
+    assert.match(await list.page.locator(".bchip.ask").first().getAttribute("title"), /guard is in place/);
+    assert.deepEqual(list.errors, []);
+    await list.page.close();
+
+    // `all` is the way back, and it must actually widen the list.
+    const all = await open(`/u/${universe}/bugs/?state=all`);
+    await all.page.waitForSelector(".brow", { timeout: 10_000 });
+    assert.match(await all.page.textContent("main"), /an old rounding bug/);
+    await all.page.close();
+
+    // The narrow queue: only what somebody is asking a person to close.
+    const asked = await open(`/u/${universe}/bugs/?state=asked`);
+    await asked.page.waitForSelector(".brow", { timeout: 10_000 });
+    assert.equal(await asked.page.locator(".brow").count(), 1, "narrower than `needs you`, which is the point of it");
+    await asked.page.close();
+
+    // SORTING, driven through the control rather than the URL — a chip wired to the wrong
+    // param is invisible to every other kind of test.
+    const sorted = await open(`/u/${universe}/bugs/?state=all`);
+    await sorted.page.waitForSelector(".brow", { timeout: 10_000 });
+    const titles = () => sorted.page.locator(".btitle").allTextContents();
+    const bySeverity = await titles();
+    await sorted.page.getByRole("button", { name: "title", exact: true }).click();
+    await sorted.page.waitForFunction(
+      (first: string) => document.querySelector(".btitle")?.textContent !== first,
+      bySeverity[0], { timeout: 10_000 },
+    );
+    const byTitle = await titles();
+    assert.deepEqual(byTitle, [...byTitle].sort((a, b) => a.localeCompare(b)), "sorted by title");
+    assert.notDeepEqual(byTitle, bySeverity, "and it actually moved — the default is severity");
+    assert.deepEqual(sorted.errors, []);
+    await sorted.page.close();
+  });
+
+  /**
+   * A bug id is the one thing here a person holds in their head — off a PR comment, a
+   * ticket, a teammate's message — and the only way to reach one was to know it was a bug,
+   * go to that page and scroll.
+   */
+  test("the global search finds a bug by id, and links straight to it", async () => {
+    const { page, errors } = await open(`/u/${universe}/search/?q=${filed}`);
+    await page.waitForSelector(".sym", { timeout: 10_000 });
+    const text = await page.textContent("main");
+    assert.match(text, /bugs/);
+    assert.match(text, /transfer accepts a negative amount/, "pasting an id and getting nothing is the failure");
+
+    // The link has to LAND on the bug, not merely exist.
+    await page.locator(`.sym[href*="${filed}"]`).first().click();
+    await page.waitForSelector(".ddetail", { timeout: 10_000 });
+    assert.match(await page.textContent(".ddetail"), /transfer accepts a negative amount/);
     assert.deepEqual(errors, []);
     await page.close();
   });

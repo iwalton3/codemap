@@ -148,6 +148,18 @@ const publicView = (b: SharedBug, changed: string[]) => ({
   tracking: b.tracking.map((t) => ({ system: t.system, key: t.key, url: t.url })),
   from: b.from,
   waitingOnYou: !isClosed(b.state) && (needsHumanAck(b) || !!b.pending || !!b.contested?.length),
+  /**
+   * The outstanding ASK, in the list and not only in the detail.
+   *
+   * An agent may not bury a finding somebody stood behind, so `setState` turns the
+   * attempt into a pending ask rather than refusing it. The list folded that into
+   * `waitingOnYou` alongside four other reasons — so "an agent believes this is fixed
+   * and is asking you to close it" was indistinguishable from "somebody contested the
+   * severity", and the one queue a person most wants was unreadable.
+   */
+  pending: b.pending ? { ask: b.pending.ask, by: b.pending.by.principal, at: b.pending.at, rationale: b.pending.rationale } : undefined,
+  /** The latest report — `fixed` is the one a reader is scanning for. `outcomes` is the record. */
+  reported: b.outcome ? { result: b.outcome.result, by: b.outcome.by.principal, at: b.outcome.at } : undefined,
   contested: b.contested?.map((c) => c.field) ?? [],
   // Judged against LIVE hashes, never the stored ones — an open bug whose code moved
   // may have been fixed by that change, and is the one to re-validate.
@@ -158,8 +170,24 @@ const publicView = (b: SharedBug, changed: string[]) => ({
   changedAnchors: changed,
 });
 
-/** List bugs, flagging those whose anchored code changed since filing ("possibly fixed"). */
-export async function listBugs(root: string, opts: { state?: BugState; open?: boolean; queue?: boolean } = {}) {
+export const BUG_SORTS = ["severity", "newest", "oldest", "title"] as const;
+export type BugSort = (typeof BUG_SORTS)[number];
+
+const SEV_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+/** `filedAt` is when the team saw it; `createdAt` is when this machine minted it. */
+const when_ = (b: { filedAt?: string; createdAt?: string }) => b.filedAt ?? b.createdAt ?? "";
+
+/**
+ * List bugs, flagging those whose anchored code changed since filing ("possibly fixed").
+ *
+ * `sort` defaults to `severity`, because the list had no order at all — it came back in
+ * whatever order the store held, which for a triage surface means the first thing you read
+ * is an accident. Severity descending, then newest, so the tie-break is also not one.
+ */
+export async function listBugs(
+  root: string,
+  opts: { state?: BugState; open?: boolean; queue?: boolean; asked?: boolean; sort?: BugSort } = {},
+) {
   await refreshShared(root);
   const all = (await readBugs(root)).bugs;
   const { idx } = await drift(root, all);
@@ -169,15 +197,36 @@ export async function listBugs(root: string, opts: { state?: BugState; open?: bo
   if (opts.state) bugs = bugs.filter((b) => b.state === opts.state);
   if (opts.open) bugs = bugs.filter((b) => !isClosed(b.state));
 
-  const rows = bugs.map((b) => publicView(b, changedFor(b)));
+  let rows = bugs.map((b) => publicView(b, changedFor(b)));
   // The queue is the whole point of sharing them: what needs a PERSON here. Drift is in
   // it and is not in the log's own `bugAckQueue`, which cannot see this machine's index.
   const queue = rows.filter((r) => r.waitingOnYou || r.possiblyFixed);
+  // Narrower than the queue, and the difference is the point: "somebody is asking you to
+  // close this" is a different job from "somebody contested the severity".
+  const asked = rows.filter((r) => !!r.pending || r.reported?.result === "fixed");
+  if (opts.queue) rows = queue;
+  else if (opts.asked) rows = asked;
+
+  const sort: BugSort = BUG_SORTS.includes(opts.sort as BugSort) ? opts.sort as BugSort : "severity";
+  const cmp: Record<BugSort, (a: typeof rows[number], b: typeof rows[number]) => number> = {
+    severity: (a, b) => (SEV_RANK[b.severity] ?? 0) - (SEV_RANK[a.severity] ?? 0) || when_(b).localeCompare(when_(a)),
+    newest: (a, b) => when_(b).localeCompare(when_(a)),
+    oldest: (a, b) => when_(a).localeCompare(when_(b)),
+    title: (a, b) => (a.title ?? "").localeCompare(b.title ?? ""),
+  };
+  // A COPY: `rows` may still be `queue` or `asked`, which are the same array objects the
+  // counts below are derived from, and sorting in place would reorder them too.
+  rows = [...rows].sort(cmp[sort]);
+
   return {
     counts: all.reduce((m, b) => ((m[b.state] = (m[b.state] ?? 0) + 1), m), {} as Record<string, number>),
+    open: all.filter((b) => !isClosed(b.state)).length,
     shared: all.filter((b) => b.origin).length,
     waitingOnYou: queue.length,
-    bugs: opts.queue ? queue : rows,
+    /** How many are somebody asking you to close, or reported fixed. */
+    asked: asked.length,
+    sort,
+    bugs: rows,
   };
 }
 
