@@ -269,6 +269,14 @@ of that union is code-shaped, so a business rule stored as a node goes `stale` w
 drifts, and the standing instruction for stale is `update_node`, i.e. rewrite the rule to
 match the drifted code.
 
+A fifth, and it is the gate the fourth made necessary: **a ratifier signs what they read.**
+`ratify_spec` refuses unless that principal has signed off every operation AND the spec's
+framing, at the text they say now — a content hash, so revise-and-revise-back invalidates
+nothing and the refusal can say which field moved. Sign-off is principal-only (an agent
+signing for its principal would void the gate in one step) and bulk sign-off states and
+checks its size. Pull is step one of the loop, not a precondition: `review_proposal` pulls
+and shows the diff, sign-offs pull and refuse if the pull moved what is being signed.
+
 A fourth, added because the code read the design's silence the wrong way for as long as the
 subsystem existed: **immutability attaches at RATIFICATION, not at drafting.** A draft binds
 nothing, so it has a correction path — `revise_spec`, `revise_operation`, `remove_operation`,

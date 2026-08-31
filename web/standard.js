@@ -288,7 +288,7 @@ defineComponent('standard-page', StandardPage);
  * process reverts to reading code (`getSpec`'s own doc says this; this is the surface
  * it was describing).
  *
- * @typedef {{ d: any, busy: string|null, err: string|null, reason: string, draft: Record<string,string>, editing: string|null, form: Record<string,string> }} SpecState
+ * @typedef {{ d: any, busy: string|null, err: string|null, reason: string, draft: Record<string,string>, editing: string|null, form: Record<string,string>, review: any }} SpecState
  * @extends {Component<StdProps, SpecState>}
  */
 class SpecPage extends Component {
@@ -297,7 +297,7 @@ class SpecPage extends Component {
   constructor(props) {
     super(props);
     /** @type {SpecState} */
-    this.state = { d: null, busy: null, err: null, reason: '', draft: {}, editing: null, form: {} };
+    this.state = { d: null, busy: null, err: null, reason: '', draft: {}, editing: null, form: {}, review: null };
   }
   load = this.createTask(async () => {
     nav.current = this.props.params.universe;
@@ -326,6 +326,28 @@ class SpecPage extends Component {
       const body = { u: this.props.params.universe, specId: this.props.params.id };
       const r = await attestedPost(`/api/standard/${kind}`, kind === 'withdraw' ? { ...body, reason: this.state.reason } : body);
       if (r && r.error) { this.state.err = r.error; return; }
+      this.load.run();
+    } catch (e) { this.state.err = errText(e); } finally { this.state.busy = null; }
+  }
+
+  /**
+   * The review loop, in the browser: pull, see what moved, sign off, ratify.
+   *
+   * Four buttons rather than one "approve", because they are four different acts and the
+   * one that matters is the second — the diff. A single button would collapse the loop
+   * back into the click this whole mechanism exists to make impossible to do blind.
+   *
+   * The ratify button is disabled while anything is unsigned, and that is a courtesy
+   * rather than the control: `ratifySpec` refuses server-side whatever this page sends,
+   * and `foldStandard` refuses the event again on every clone that receives it.
+   */
+  async loop(kind, act, body) {
+    if (this.state.busy) return;
+    this.state.busy = kind; this.state.err = null;
+    try {
+      const r = await attestedPost(`/api/standard/${act}`, { u: this.props.params.universe, ...body });
+      if (r && r.error) { this.state.err = r.error; return; }
+      if (act === 'review') this.state.review = r.review;
       this.load.run();
     } catch (e) { this.state.err = errText(e); } finally { this.state.busy = null; }
   }
@@ -399,6 +421,48 @@ class SpecPage extends Component {
     return [];
   }
 
+  /** This reader's standing on one operation: unread, moved (with what moved), or signed. */
+  signRow(o) {
+    const r = this.state.d.review;
+    const moved = r && (r.moved || []).find((m) => m.id === o.operation.id);
+    const unread = r && (r.unwitnessed || []).some((u) => u.id === o.operation.id);
+    return html`<div class="op-sign">
+      ${when(!!moved, () => html`<div class="op-blocked">changed since you read it on ${(moved.readAt || '').slice(0, 10)} —
+        ${each(moved.changed, (c) => html`<div class="op-moverow"><b>${c.field}</b> <span class="dim">was</span> ${c.was || '—'} <span class="dim">now</span> ${c.now || '—'}</div>`, (c) => c.field)}</div>`)}
+      ${when(!moved && !unread && !!r, () => html`<span class="qbadge">✓ you signed this off</span>`)}
+      ${when(!!unread, () => html`<span class="qbadge drift">you have not read this</span>`)}
+      <button class="pullbtn" disabled="${!!this.state.busy}"
+        title="record that you read THIS text. A later edit invalidates it and says which field moved."
+        on-click="${() => this.loop('sign:' + o.operation.id, 'sign_off_operation', { operationId: o.operation.id })}">sign off</button>
+    </div>`;
+  }
+
+  /** The loop's own row: pull-and-diff, the framing, the bulk act, and how much is left. */
+  reviewBar(d) {
+    const r = d.review;
+    const outstanding = r ? (r.unwitnessed || []).length + (r.moved || []).length + (r.framing ? 1 : 0) : 0;
+    return html`<div class="op-card">
+      <div class="ft"><span class="qbadge ${outstanding ? 'drift' : ''}">${outstanding ? outstanding + ' left to read' : 'you have read all of it'}</span>
+        ${when((d.reviewers || []).length > 0, () => html`<span class="fs dim">also read by ${each(d.reviewers, (x) => html`<span>${x.principal} (${x.signed}) </span>`, (x) => x.principal)}</span>`)}
+      </div>
+      ${when(!!r && !!r.framing, () => html`<div class="op-blocked">
+        ${r.framing.state === 'unwitnessed' ? 'you have not read the title and background' : 'the title or background changed after you read it'}
+        ${each(r.framing.changed || [], (c) => html`<div class="op-moverow"><b>${c.field}</b> <span class="dim">was</span> ${c.was || '—'} <span class="dim">now</span> ${c.now || '—'}</div>`, (c) => c.field)}
+      </div>`)}
+      ${when(!!this.state.review, () => html`<div class="fs dim">pulled — ${((this.state.review.unwitnessed || []).length + (this.state.review.moved || []).length + (this.state.review.framing ? 1 : 0))} outstanding as of that read</div>`)}
+      <div class="op-edit">
+        <button class="pullbtn" disabled="${!!this.state.busy}"
+          title="take the team's changes first — law is shared, so adopting on a stale fold binds everyone against a standard they have already moved past"
+          on-click="${() => this.loop('review', 'review', { specId: d.spec.id })}">${this.state.busy === 'review' ? 'pulling…' : '↻ pull & show what moved'}</button>
+        <button class="pullbtn" disabled="${!!this.state.busy}"
+          on-click="${() => this.loop('framing', 'sign_off_framing', { specId: d.spec.id })}">sign off title &amp; background</button>
+        <button class="pullbtn" disabled="${!!this.state.busy}"
+          title="one approval per operation is written — the count is checked, so a bulk act reads as bulk"
+          on-click="${() => this.loop('bulk', 'sign_off_section', { specId: d.spec.id, axis: 'spec', count: d.operations.length })}">sign off all ${d.operations.length} operation${d.operations.length === 1 ? '' : 's'}</button>
+      </div>
+    </div>`;
+  }
+
   composer(targetId, placeholder) {
     return html`<div class="cmt-new">
       <input placeholder="${placeholder}" value="${this.state.draft[targetId] || ''}"
@@ -450,6 +514,7 @@ class SpecPage extends Component {
           fromSection: o.operation.fromSection, toSection: o.operation.toSection, rationale: o.operation.rationale,
         })}">correct this operation</button>
       </div>`)}
+      ${when(this.state.d.spec.status === 'draft', () => this.signRow(o))}
       ${when((o.operation.revisions || []).length > 0, () => html`<div class="fs dim">corrected ${o.operation.revisions.length} time${o.operation.revisions.length === 1 ? '' : 's'} while a draft — last by ${o.operation.revisions[o.operation.revisions.length - 1].by.principal}</div>`)}
       ${thread(o.comments)}
       ${this.composer(o.operation.id, 'comment on this operation…')}
@@ -478,6 +543,9 @@ class SpecPage extends Component {
         </div>
       </div>`)}
 
+      ${when(d.spec.status === 'draft', () => html`<div class="sec">your review</div>`)}
+      ${when(d.spec.status === 'draft', () => this.reviewBar(d))}
+
       <div class="sec">operations (${d.operations.length})</div>
       ${each(d.operations, (o) => this.op(o, u), (o) => o.operation.id)}
 
@@ -494,8 +562,8 @@ class SpecPage extends Component {
 
       ${when(!!this.state.err, () => html`<div class="attn-banner"><span class="attn-n">✕</span> <span>${this.state.err}</span></div>`)}
       ${when(d.spec.status === 'draft', () => html`<div class="op-actions">
-        <button class="pullbtn" disabled="${!d.adoptable || !!this.state.busy}"
-          title="${d.adoptable ? 'apply every operation, all or nothing' : 'at least one operation was written against a standard that has since moved'}"
+        <button class="pullbtn" disabled="${!d.adoptable || !d.signedOff || !!this.state.busy}"
+          title="${!d.adoptable ? 'at least one operation was written against a standard that has since moved' : !d.signedOff ? 'adoption is all-or-nothing, so your signature covers every operation — sign off what you have read first' : 'apply every operation, all or nothing'}"
           on-click="${() => this.act('ratify')}">${this.state.busy === 'ratify' ? 'adopting…' : '✓ ratify'}</button>
         <input placeholder="reason, if withdrawing…" on-change="${(e, v) => { this.state.reason = v; }}">
         <button class="pullbtn" disabled="${!this.state.reason || !!this.state.busy}"

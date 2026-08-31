@@ -26,8 +26,9 @@ and `Operation.cites` are gone, `recheckDue` derives from this universe's pointe
 Also built: **provisional audits travel as commit-discovered documents** (`provisional.ts`)
 — the last piece of this arc.
 
-Also built: the three DRAFT correction events (`spec.revised`, `spec.operation.revised`,
-`spec.operation.removed`) are LAW, like every other `spec.*` — a proposal is not about a
+Also built: `spec.reviewed` — a reviewer's sign-off — and the three DRAFT correction events
+(`spec.revised`, `spec.operation.revised`, `spec.operation.removed`) are LAW, like every
+other `spec.*` — a proposal is not about a
 repository. `isLawEvent`'s prefix test already covered them. See
 `docs/requirements-architecture.md` § *Immutability attaches at ratification*; the one
 guard that could not be restated in the fold is the comment count, for the reason § *The
@@ -205,6 +206,12 @@ the honest answer, and the scrub is the mechanism built to schedule re-looks. Ch
 partial case would fill the auditor queue with noise to recover a verdict that should be
 re-taken anyway. A staled fault node also stales the pointer that watches it, so the
 re-audit is already queued by the machinery.
+
+A sign-off is law for the same reason: a reading of a proposal is not an observation of any
+repository's code, and the proposal it is about is workspace-scoped. It is also why the pull
+matters before an approval rather than after — law is shared, so adopting on a stale fold
+binds the team against a standard state teammates have already moved past. See
+`docs/requirements-architecture.md` § *The ratifier signs what they read*.
 
 ## The browser's principal is a notice, not a boundary
 

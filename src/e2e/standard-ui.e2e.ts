@@ -33,6 +33,21 @@ const ok = <T,>(r: T): T => {
   return r;
 };
 
+/**
+ * Sign off a proposal as the person, through the ops surface — `ratifySpec` refuses an
+ * adoption its ratifier has not witnessed, so a fixture that wants a ratified rule has to
+ * go round the loop like anybody else.
+ */
+async function approve(root: string, specId: string) {
+  const f = await ops.signOffFraming(root, { specId } as any);
+  assert.ok(!("error" in (f as object)), `sign-off failed: ${(f as any).error}`);
+  const d = ok(await ops.getSpec(root, { specId } as any)) as any;
+  for (const o of d.operations) {
+    const r = await ops.signOffOperation(root, { operationId: o.operation.id } as any);
+    assert.ok(!("error" in (r as object)), `sign-off failed: ${(r as any).error}`);
+  }
+}
+
 describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set CODEMAP_E2E_PLAYWRIGHT)" }, () => {
   let root: string, side: string, server: Server, browser: any, universe: string;
   let anchor = "", draft = "", moveSpec = "", staleSpec = "", ruleId = "", opId = "";
@@ -65,6 +80,7 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
     // Fail LOUDLY if the fixture stops building. A `before` hook that throws reports
     // `fail 0` with every test CANCELLED, which reads like a pass at a glance — this
     // suite did exactly that when `cites` became a refusal.
+    await approve(root, base.id);
     ok(await ops.ratifySpec(root, { specId: base.id }));
     const seeded = (await ops.listRequirements(root) as any).requirements;
     assert.equal(seeded.length, 1, "the fixture must have a ratified rule or every test below is vacuous");
@@ -139,6 +155,7 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
       statement: "All credit lines are in USD or GBP.", rationale: "UK first",
       reversibility: "reversible", ...AGENT,
     } as any);
+    await approve(root, other.id);
     await ops.ratifySpec(root, { specId: other.id });
 
     server = await startServer(root);
@@ -308,6 +325,44 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
     assert.equal(served.operations[0].operation.statement, "The sweep runs at 16:00.");
     assert.deepEqual(served.removed.map((o: any) => o.id), [pull.id]);
     assert.match(served.removed[0].removed.reason, /own spec/);
+  });
+
+  /**
+   * The disabled button is a courtesy. The refusal is in the handler.
+   *
+   * A browser is a client and a client is not a guard — `curl` is the whole threat model
+   * this route already has. So this drives the ROUTE with the notice satisfied, on a spec
+   * this person has not signed, and gets the structured payload back rather than prose:
+   * the web app can send the reviewer straight to what they have not approved, which is the
+   * same thing the MCP refusal carries.
+   */
+  test("an unsigned ratification is refused by the SERVER, with the routing payload", async () => {
+    const sp = ok(await ops.draftSpec(root, { title: "Unsigned", ...AGENT })) as any;
+    ok(await ops.addOperation(root, {
+      specId: sp.id, kind: "add_requirement", rationale: "nobody read this",
+      reversibility: "reversible", title: "Sweep cutoff", section: "Settlement/Cutoff",
+      statement: "The sweep cuts off at 16:00.", provenance: "treasury", ...AGENT,
+    } as any));
+
+    const a = await (await fetch(`${server.url}/api/standard/attest`)).json();
+    const post = async (act: string, body: Record<string, unknown>) =>
+      (await (await fetch(`${server.url}/api/standard/${act}`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ u: universe, attest: `${a.notice} ${a.nonce}`, ...body }),
+      })).json()) as { error?: string; review?: any };
+
+    const refused = await post("ratify", { specId: sp.id });
+    assert.match(refused.error ?? "", /never signed off/);
+    assert.equal(refused.review.unwitnessed.length, 1, "which operations, not just that there are some");
+    assert.equal(refused.review.framing.state, "unwitnessed");
+    assert.ok(refused.review.unwitnessed[0].title, "and what each one is, so a page can link to it");
+
+    // The loop, over the same route, and then it adopts — so the refusal was about the
+    // signature rather than about anything else being wrong with the proposal.
+    ok(await post("sign_off_framing", { specId: sp.id }) as any);
+    ok(await post("sign_off_section", { specId: sp.id, axis: "spec", count: 1 }) as any);
+    assert.ok(!(await post("ratify", { specId: sp.id })).error);
+    assert.ok(((await ops.listRequirements(root)) as any).requirements.some((r: any) => r.title === "Sweep cutoff"));
   });
 
   /**
@@ -550,10 +605,40 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
     assert.equal(after.disposition, "requirement-misstated", "and then it is an ordinary act");
   });
 
-  test("ratifying from the browser applies the spec and empties the queue", async () => {
+  test("the ratify button is dead until the reviewer has signed what they are adopting", async () => {
     const { page, errors } = await open(`/u/${universe}/standard/spec/${draft}/`);
-    await page.waitForSelector(".op-actions button", { timeout: 10_000 });
-    await page.locator(".op-actions button").first().click();
+    await page.waitForSelector(".op-sign button", { timeout: 10_000 });
+    // The page says what is outstanding, and the button that would adopt it is disabled.
+    // A disabled button is the courtesy; the refusal is server-side, which the test below
+    // this one drives directly.
+    assert.match((await page.textContent("main"))!, /left to read/);
+    assert.equal(await page.locator(".op-actions button", { hasText: "ratify" }).isDisabled(), true);
+    await page.close();
+  });
+
+  test("the whole loop from a browser: pull, read what moved, sign off, ratify", async () => {
+    const { page, errors } = await open(`/u/${universe}/standard/spec/${draft}/`);
+    await page.waitForSelector(".op-edit button", { timeout: 10_000 });
+    await page.locator(".op-edit button", { hasText: "pull & show what moved" }).click();
+    await page.waitForFunction(
+      () => !!document.querySelector("main")?.textContent?.includes("left to read"), null, { timeout: 10_000 },
+    );
+    // Waits for what only a SUCCESSFUL pull produces. Without this the click is unobserved:
+    // the outstanding count comes from the spec read, so it renders whether or not the pull
+    // did anything — and the test passed with the route deleted.
+    await page.waitForFunction(
+      () => !!document.querySelector("main")?.textContent?.includes("outstanding as of that read"),
+      null, { timeout: 10_000 },
+    );
+    await page.locator(".op-edit button", { hasText: "sign off title" }).click();
+    await page.waitForFunction(
+      () => !document.querySelector("main")?.textContent?.includes("not read the title"), null, { timeout: 10_000 },
+    );
+    await page.locator(".op-edit button", { hasText: "sign off all" }).click();
+    await page.waitForFunction(
+      () => !!document.querySelector("main")?.textContent?.includes("read all of it"), null, { timeout: 10_000 },
+    );
+    await page.locator(".op-actions button", { hasText: "ratify" }).click();
     await page.waitForFunction(
       () => !!document.querySelector("main")?.textContent?.includes("ratified"), null, { timeout: 10_000 },
     );

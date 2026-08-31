@@ -196,6 +196,8 @@
     /* Correcting a draft is AUTHORING it; ratify/withdraw is disposing of it. Two rows,
        two classes, so a selector aimed at one can never pick up the other. */
     .op-edit { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+    .op-sign { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+    .op-sign .op-blocked { flex-basis: 100%; }
     .op-edit input { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 5px 10px; font-size: 13px; min-width: 220px; }
     .op-card label.fs, .op-move label.fs { display: block; margin-top: 6px; }
     .op-card label.fs input, .op-card label.fs textarea,

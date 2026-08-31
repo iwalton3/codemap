@@ -179,6 +179,74 @@ one entity's fold depend on another's, which § *The fold cannot be split in two
 and why the residue is benign — withdrawal is not a delete, so the spec row, its operations
 and every comment on them survive it.
 
+## The ratifier signs what they read — BUILT
+
+`ratifySpec` checked every operation against the STANDARD: retired rules, moved bases,
+vanished assertions, merged sections. Every one of those asks whether the **world moved
+under the proposal**. Nothing asked whether the **proposal moved under the reviewer** — and
+once correcting a draft is open to any actor (which is right; the asymmetry is in adoption),
+an operation can change between the reading and the click. The hole predates that surface;
+those verbs widened it.
+
+Three properties carry the fix, and each is a choice that could have gone otherwise:
+
+- **A CONTENT hash, per operation.** Revising a draft and revising it back to identical text
+  must not invalidate anybody's review — nothing they read changed — which a version counter
+  or a timestamp would get wrong. It is also what lets the refusal render WHICH field moved
+  and from what, and cheap re-review is the only thing that actually prevents the
+  rubber-stamping COD-29 names as the risk to design against. The hash covers everything the
+  ratifier is SHOWN, rationale and provenance included: the decision is over the whole
+  rendered operation, and splitting operative from explanatory would let the half that
+  persuades change under a signature covering only the half that applies — which is the
+  drift § *Business context is not binding* already refuses one level down.
+- **The FRAMING is witnessed too.** A spec's title and narrative are non-operative and they
+  are still what every operation is read under. The case that provoked this was a narrative
+  naming the wrong git branch; correcting it has to invalidate the reading, because the
+  frame the reviewer decided in was wrong.
+- **REFUSED at ratify, warned during review.** Adoption is all-or-nothing, so one signature
+  covers every operation whether the reviewer looked at it or not, and a warning at that
+  boundary is exactly the paragraph COD-24 says will not survive deadline pressure.
+  `getSpec` carries the same gap as a warning, which is where being told is useful because
+  there is still something to do about it.
+
+**Sign-off is a principal's act**, and not for symmetry with ratification. If an agent could
+write its principal's signature it would approve twelve operations and the principal would
+ratify having read none — the gate voiding itself in one step, by the shortest path.
+
+**Bulk sign-off states its size and the size is checked.** Signing off a group writes one
+witness per member, so twelve witnesses each claim an operation was read; the one thing the
+system can do about a skim is make the size of the claim impossible not to notice at the
+moment it is made. Two axes, because a spec's sections are **not** the standard's sections:
+`standard` groups by where each operation files, and `spec` has exactly ONE group — the
+proposal — because a spec's internal hierarchy is narrative and nothing stores it. The axis
+answers honestly rather than deriving a heading nobody authored.
+
+**Pull is step one of a LOOP, not a precondition.** `review_proposal` pulls and renders the
+diff; every sign-off pulls and REFUSES if the pull moved the thing being signed, because
+signing then would record a reading of text that landed during the call. `ratifySpec`
+deliberately does **not** pull: that would make two clones racing for one rule resolve by
+whoever fetched last rather than by the fold, which is the arbiter every clone agrees with,
+and the fold re-checks this same witness anyway. Law is workspace-scoped
+(`docs/cross-universe-standard.md`), so this is not convenience — adopting on a stale fold
+binds the team against a standard state teammates have already moved past.
+
+The refusal carries **structured** data — which operations are unread, which moved, and the
+per-field diff of each — over MCP and over HTTP alike, so a surface can route the reviewer
+to what they have not approved instead of parsing prose. `adoptable` keeps meaning *the
+operations still apply*; `signedOff` is the reader-shaped question beside it, because
+folding the two would make one spec adoptable for one person and not another under a name
+that reads like a fact about the spec.
+
+`foldStandard` refuses the same ratification, taking the reviewer from the EVENT and never
+from the row's own claim — a row that named its own reviewer would be one clone writing
+another person's approval.
+
+**Still no partial ratification** (§ *Deliberately open* below). The sanctioned alternative
+is to strike what you do not want with `remove_operation` and re-propose it; the removal's
+reason conventionally names the destination, which nothing enforces and nothing should — a
+`move_operation` verb would be a second authoring path, and the tombstone is already what
+makes it a move rather than a loss.
+
 ## Two queues, because they are two practices
 
 | | Change enablement | Problem management |
@@ -956,6 +1024,11 @@ MCP surface via `ops/standard.ts`:
   refuses two overlapping moves in one spec (they apply in `ord` order and the second reads
   the first's output, so the rendering a principal approved is not what lands). Repairing a
   case split *is* a legal move, which is why the guard excludes the subtree being moved.
+- `ProposalWitness` and `reviewGap` — the reviewer's signature over the proposal's own
+  text, refused at `ratifySpec` and again in `foldStandard`. Sign-off is principal-only;
+  bulk sign-off states and checks its size. `src/proposal-review.test.ts` pairs every
+  refusal with the loop working, and 20 mutants over the new guards are each caught by a
+  named test.
 - `withdrawSpec` — withdrawal, below. `relianceOn` is the reference count; the fold carries
   its own independent copy plus a look-ahead, since a citation appended on another clone can
   sort AFTER the withdrawal and would otherwise be orphaned by it.
@@ -1010,10 +1083,12 @@ open*, COD-29 and COD-18 read back against what exists. Each entry now says whic
   entry names as the failure. A `move_section` operation does the job and is the documented
   workaround; what does not exist is the light act. Legal codes have an Office of the Law
   Revision Counsel for exactly this.
-- **Partial ratification — STILL OPEN.** Adoption is all-or-nothing (`ratifySpec` applies
-  every operation or none). Approving 18 of 20 is tempting and the two held back may be what
-  makes the other 18 coherent. If allowed at all it is an explicit reviewer choice, and the
-  remainder becomes a new spec rather than a lingering half-ratified one.
+- **Partial ratification — CLOSED, deliberately not built** (Izzie, 2026-08-30). Adoption
+  stays all-or-nothing. The alternative is to strike what you do not want and move it to
+  another proposal, which `remove_operation` makes possible and which
+  `proposal-review.test.ts` drives end to end. That keeps the remainder a proposal somebody
+  has to argue for rather than a lingering half-ratified one — which is what this entry
+  asked for anyway — without a second adoption path whose cheap form becomes the real one.
 - **Renumbering — DISSOLVED, not solved.** The concern was that moving a section breaks
   every citation to it. It cannot: `requirementIdFor` derives a rule's id from the OPERATION
   that created it, so the id is independent of where the rule is filed and a `move_section`
