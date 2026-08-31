@@ -754,10 +754,25 @@ export function foldStandard(
           // subsystem gates in: removing a rule is the quieting act.
           //
           // Deliberately crude — a substring match on the serialized event rather than a
-          // per-kind reader. It cannot miss a reference, every false positive refuses the
-          // withdrawal rather than allowing it, and a per-kind version would have to be
-          // extended in lockstep with every record kind that learns to cite a rule, which
-          // is the maintenance shape `foldReliance` already has to carry once.
+          // per-kind reader, which would have to be extended in lockstep with every record
+          // kind that learns to cite a rule.
+          //
+          // The argument that used to sit here — "every false positive refuses the
+          // withdrawal rather than allowing it" — was WRONG, and wrong in a way that made
+          // the fold non-monotonic. Refusal is only conservative at the FIRST fold. Once a
+          // withdrawal has applied, the rule is gone from the projection and teammates
+          // have read a standard without it; a later refusal is not caution, it is
+          // RETROACTIVE RESURRECTION — silently, because this path never set `conflicted`.
+          // codex demonstrated it with an unrelated `spec.drafted` whose narrative
+          // mentioned the requirement id in prose.
+          //
+          // CAUSAL DESCENDANTS ARE EXCLUDED, which is what restores monotonicity. An event
+          // that SAW the withdrawal is not the race this exists for: its author knew the
+          // rule was going, and nothing they write afterwards can be a reason to keep it.
+          // Once the withdrawal is in the past of every new event — which is what happens
+          // as the log grows — nothing new can reverse the decision. What remains is the
+          // genuinely CONCURRENT event, a fixed set once it has all arrived, and there
+          // refusing is right because neither writer saw the other.
           const doomed = [
             ...mine.filter((o) => o.kind === "add_requirement").map((o) => requirementIdFor(o.id)),
             // The criteria go too, and a `vacuity.checked` names one of these and no rule.
@@ -765,10 +780,17 @@ export function foldStandard(
           ];
           const later = events.slice(i + 1).some((n) => {
             if (n.kind === "spec.withdrawn") return false;
+            if (causal.saw(n.id, e.id)) return false;
             const blob = JSON.stringify(n.data ?? {});
             return doomed.some((rid) => blob.includes(rid));
           });
-          if (later) break;
+          // `conflicted`, not a silent break. This is the one refusal that can reverse a
+          // decision another clone has already acted on, so it is the last one that should
+          // be quiet about it.
+          if (later) {
+            specs.set(sp.id, { ...sp, conflicted: true });
+            break;
+          }
           for (const o of mine) {
             if (o.kind === "add_requirement") requirements.delete(requirementIdFor(o.id));
             if (o.kind === "add_criterion") criteria.delete(criterionIdFor(o.id));

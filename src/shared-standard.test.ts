@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readScope } from "./eventlog.js";
+import { readScope, type LogEvent } from "./eventlog.js";
 import { ensureSidecar } from "./sidecar.js";
 import { db } from "./db.js";
 import { discard } from "./test-tmp.js";
@@ -1024,6 +1024,27 @@ async function ratified(root: string, extra: Operation[] = []) {
     ["op_1", ...extra.map((o) => o.id)]);
 }
 
+/**
+ * An event from a SECOND writer whose chain forks at `forkAt` — so it genuinely never saw
+ * anything appended after that point.
+ *
+ * The distinction is load-bearing and these fixtures could not express it: they write
+ * through one writer chain, so an event published "after" the withdrawal is a causal
+ * DESCENDANT of it, and a descendant cannot veto — its author knew the rule was going.
+ * Two tests here modelled the concurrent race with a same-chain append and passed for the
+ * wrong reason, which only showed up when descendants stopped vetoing.
+ */
+function concurrentWith(
+  events: readonly LogEvent[], forkAt: string,
+  kind: string, subject: string, actor: Actor, data: Record<string, unknown>,
+): LogEvent {
+  return {
+    ...events[events.length - 1]!,
+    id: `ev_concurrent_${subject}`, kind, subject, actor, data,
+    writer: "w_other", writerPrev: forkAt, after: [forkAt],
+  } as unknown as LogEvent;
+}
+
 test("THE FOLD REFUSES A WITHDRAWAL A LATER EVENT CITES, however the log happens to sort", async () => {
   // A citation appended on another clone can sort AFTER the withdrawal — the two are
   // concurrent and neither writer saw the other. `foldReliance` reads state built from
@@ -1032,18 +1053,25 @@ test("THE FOLD REFUSES A WITHDRAWAL A LATER EVENT CITES, however the log happens
   const root = await log("withdraw-race");
   try {
     await ratified(root);
+    const forkAt = (await readScope(root, SCOPE)).at(-1)!.id;
     await withdraw(root, izzie, "sp_1", "2026-08-03T00:00:00.000Z", "never adopted");
-    // Ordered after the withdrawal, and about the rule it was about to remove.
+    // From a writer that forked BEFORE the withdrawal, which is what "neither saw the
+    // other" means. Published through this chain it would be a descendant, and a
+    // descendant does not veto — this test asserted the race with a same-chain append and
+    // so passed without ever modelling one.
+    const events = await readScope(root, SCOPE);
     const audit: Audit = {
       id: "au_1", requirementId: requirementIdFor("op_1"), outcome: "indeterminate",
       evidence: {}, witnesses: [], finding: "could not reach the handler",
       auditor: opus, at: "2026-08-03T00:00:01.000Z",
     };
-    await publishAudit(root, SCOPE, opus, audit);
-
-    const after = await fold(root);
+    const after = foldStandard(
+      [...events, concurrentWith(events, forkAt, "audit.recorded", audit.requirementId, opus, { audit })],
+      { myScope: SCOPE },
+    );
     assert.equal(after.requirements.length, 1, "the withdrawal lost the race — removing is the quieting act");
     assert.equal(after.specs[0]!.status, "ratified", "and it did not take effect");
+    assert.equal(after.specs[0]!.conflicted, true, "and it is visible, because this can reverse a settled decision");
     assert.equal(after.audits.length, 1, "while the citation stands");
   } finally { discard(root); }
 });
@@ -1599,27 +1627,59 @@ test("every combination of claim and local reliance decides the same way, and th
   // where eighteen differ by a flag that always wins. If either ever stops dominating,
   // these break and the table needs the axis.
 
-  // A LATER citation vetoes, whatever the claim said. This matters most on the cell that
-  // changed most recently: not-named-and-clean now APPLIES, so the look-ahead is the only
-  // thing standing between it and a rule deleted out from under a pointer appended
-  // concurrently on another clone.
+  // A CONCURRENT citation vetoes, whatever the claim said — and says so. This matters most
+  // on the cell that changed most recently: not-named-and-clean now APPLIES, so the
+  // look-ahead is the only thing between it and a rule deleted out from under a pointer
+  // appended on another clone that never saw the withdrawal.
+  //
+  // These fixtures write through one writer chain, so `publishPointerDeclared` after the
+  // withdrawal is a causal DESCENDANT and correctly does not veto. The genuine race needs a
+  // second writer forked before it, which `raced()` builds by hand.
   for (const [i, scopes] of [[SCOPE], ["standard/acme.settlement"]].entries()) {
-    const raced = await log(`wd-later-${i}`);
+    const root = await log(`wd-later-${i}`);
     try {
-      await ratified(raced);
-      await publishSpecWithdrawn(raced, SCOPE, izzie, "sp_1", "2026-08-04T00:00:00.000Z", "adopted in error", scopes);
-      await publishPointerDeclared(raced, SCOPE, opus, {
-        id: "pt_1", requirementId: requirementIdFor("op_1"), universe: U,
-        target: { kind: "anchor", id: "a_x" }, rationale: "watch it",
-        witnesses: [{ anchorId: "a_x", bodyHash: "h1:sha256:abc" }],
-        state: "active", declaredBy: opus, declaredAt: "2026-08-05T00:00:00.000Z",
-      });
-      const s = await fold(raced);
+      await ratified(root);
+      const before = (await readScope(root, SCOPE)).at(-1)!.id;
+      await publishSpecWithdrawn(root, SCOPE, izzie, "sp_1", "2026-08-04T00:00:00.000Z", "adopted in error", scopes);
+      const events = await readScope(root, SCOPE);
+      const s = foldStandard([...events, concurrentWith(events, before, "pointer.declared", "pt_1", opus, {
+        pointer: {
+          id: "pt_1", requirementId: requirementIdFor("op_1"), universe: U,
+          target: { kind: "anchor", id: "a_x" }, rationale: "watch it",
+          witnesses: [{ anchorId: "a_x", bodyHash: "h1:sha256:abc" }],
+          state: "active", declaredBy: opus, declaredAt: "2026-08-04T00:00:01.000Z",
+        },
+      })], { myScope: SCOPE });
       assert.equal(s.specs[0]!.status, "ratified",
-        `a citation appended after the withdrawal must veto it, pin ${scopes[0]} or not — removing a rule is the quieting act, so the withdrawal loses the race`);
+        `a citation from a writer that never saw the withdrawal vetoes it, pin ${scopes[0]} or not — removing a rule is the quieting act, so the withdrawal loses the race`);
+      assert.equal(s.specs[0]!.conflicted, true,
+        "and it SAYS so: this is the one refusal that can reverse a decision another clone already acted on");
       assert.equal(s.requirements.length, 1);
-    } finally { discard(raced); }
+    } finally { discard(root); }
   }
+
+  // A causal DESCENDANT does not veto, and that is what makes the fold monotonic. The
+  // author of a later event knew the rule was going, so nothing they write can be a reason
+  // to keep it — and the match is a substring over the serialized payload, so without this
+  // an unrelated draft whose NARRATIVE mentions the requirement id silently resurrected a
+  // withdrawal that had already applied. "A false positive only refuses" is true at the
+  // first fold and false at every one after it. Found by codex.
+  const settled = await log("wd-descendant");
+  try {
+    await ratified(settled);
+    await withdraw(settled, izzie, "sp_1", "2026-08-04T00:00:00.000Z", "adopted in error");
+    assert.equal((await fold(settled)).specs[0]!.status, "withdrawn", "the control: it really did apply");
+
+    await publishSpecDrafted(settled, SCOPE, opus, {
+      id: "sp_2", title: "Unrelated follow-up", status: "draft", author: opus,
+      createdAt: "2026-08-05T00:00:00.000Z",
+      narrative: `Historical note: ${requirementIdFor("op_1")} was withdrawn last week.`,
+    } as never);
+    const s = await fold(settled);
+    assert.equal(s.specs.find((x) => x.id === "sp_1")!.status, "withdrawn",
+      "a decision the log has already settled must not come undone because a later payload mentions the id");
+    assert.equal(s.requirements.length, 0);
+  } finally { discard(settled); }
 
   // A DRAFT ignores every bit of it. Nothing was applied, so nothing anywhere can rely on
   // it and there is nothing to be clean about — an unpinned draft withdrawal is the

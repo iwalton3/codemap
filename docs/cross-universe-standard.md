@@ -307,6 +307,17 @@ check leaves one clone withdrawn and another `conflicted`. The fold's own `foldR
 its look-ahead over later events are the backstop for that, and the repair is to pull and
 withdraw again from a clone that can see everyone.
 
+**The look-ahead excludes CAUSAL DESCENDANTS, and that is what makes the decision durable.**
+It is a substring match over each later event's serialized payload, and the argument that
+used to justify the crudeness — *a false positive only refuses* — is true at the first fold
+and false at every one after it. Once a withdrawal has applied, the rule is gone from the
+projection and teammates have read a standard without it; a later refusal is not caution,
+it is retroactive resurrection. An unrelated draft whose NARRATIVE mentioned the requirement
+id was enough to bring a repealed rule back, silently. An event that SAW the withdrawal
+cannot be a reason to keep the rule — its author knew — so only genuinely CONCURRENT events
+veto, which is a fixed set once they have arrived, and the veto marks `conflicted` because
+it is the one refusal that can reverse a decision another clone already acted on.
+
 ## What the build cost, kept because the next scope change pays it again
 
 The whole arc landed before seeding, which is what made it a refactor with tests rather than
