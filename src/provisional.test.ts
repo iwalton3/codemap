@@ -404,13 +404,12 @@ test("a branch finding does not change what withdrawal does", async () => {
 });
 
 /**
- * Reliance is one rule with two implementations, and the fold cannot see branch work.
+ * Branch work must not decide a shared act, and reliance used to be where that went wrong:
+ * the tool counted provisional audits the fold refuses outright, so a withdrawal was
+ * blocked on this machine citing an id that existed on no other clone.
  *
- * `foldStandard` refuses every provisional audit, problem and pin, so `foldReliance` — the
- * fold's half — counts none of them. `relianceOn` read the raw rows and counted all of
- * them, so a withdrawal was refused on this machine citing an audit id that exists on no
- * other clone. The failure is safe (it refuses before appending, so nothing diverges in the
- * log) and it is still the divergence §BOTH_ENDS exists to keep out.
+ * That count is gone — withdrawal tombstones, so nothing is orphaned and nothing needs
+ * counting. Kept as the property rather than the mechanism.
  */
 
 test("provisionalAudits unions the local row with the document, without doubling it", async () => {

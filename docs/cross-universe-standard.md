@@ -246,24 +246,23 @@ it *accidentally* either.
 
 ## The fold cannot be split in two
 
-Law and evidence are entangled inside `foldStandard` BY DESIGN:
-
-- `spec.ratified` binds and activates the acknowledgements chained to its operations.
-- `spec.withdrawn` calls `foldReliance`, which reads **audits, pointers, populations,
-  problems and criteria** — evidence — to decide whether a LAW act is permitted.
-
-So the two scopes are folded together, over a merged event stream. This is safe:
+Law and evidence are folded together, over a merged event stream, because `spec.ratified`
+binds and activates the acknowledgements chained to its operations. That is safe:
 `sortEvents` is a deterministic topological sort that treats a parent outside the input set
 as already satisfied, so folding the union of two scopes yields the same order on every
 clone with no new machinery.
 
-**The hazard, and it fails quietly:** a machine that cannot read the evidence scope computes
-a WRONG withdrawal verdict rather than an incomplete one — `foldReliance` would see no
-reliance and permit a withdrawal that something already cites. So the fold refuses to decide
-a withdrawal when the evidence half is BLOCKED, rather than deciding it optimistically.
+**NO LAW ACT IS DECIDED BY EVIDENCE ANY MORE, and that was the hard-won part.**
+`spec.withdrawn` used to call `foldReliance` over audits, pointers, populations, problems
+and criteria — evidence — to decide whether a law act was permitted, and a machine that
+could not read the evidence scope then computed a WRONG verdict rather than an incomplete
+one: it saw no reliance and permitted a withdrawal that something already cited. The fold
+carried an `evidence` flag to refuse in that case. Withdrawal tombstones now (below), so it
+reads law only, the flag is gone, and the hazard with it.
 
-**Blocked, and not merely absent — the distinction is worth stating because the guard cannot
-make it.** An absent scope reads `complete` with zero events, because a scope that nobody
+**Blocked and merely absent are still worth distinguishing for the reads that DO consult
+evidence** — the served conformance answer, the audit queue — and the guard cannot make the
+distinction. An absent scope reads `complete` with zero events, because a scope that nobody
 has written and a scope this clone did not receive are the same thing on disk. Ordinarily
 that is right: the sidecar is one git repository, `pull` takes all of it, and a scope with no
 events genuinely has no reliance in it.

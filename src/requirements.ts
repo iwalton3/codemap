@@ -833,9 +833,9 @@ export async function removeOperation(
   for (const a of await readAcknowledgements(root, { operationId: op.id })) {
     if (a.state === "released") continue;
     const r = await releaseAcknowledgement(root, a.id, `${op.id} was removed from ${sp.id}`, input);
-    // Reported rather than discarded: a silencer that outlives the operation it approved is
-    // the orphan the reference count exists to prevent, and swallowing the refusal is how
-    // nobody would learn of it.
+    // Reported rather than discarded: a silencer that outlives the operation it approved
+    // silences a rule nobody proposed any more, and swallowing the refusal is how nobody
+    // would learn of it.
     if (isErr(r)) return { error: `${op.id} was removed, but its acknowledgement ${a.id} could not be released: ${r.error}` };
   }
   return { ok: true, operation: next };
@@ -1486,12 +1486,16 @@ async function withdrawer(root: string, sp: Spec, input: ActorInput): Promise<Ac
  * A draft may always be withdrawn: nothing has applied, so there is nothing to falsify,
  * and it is what ends a pre-approved gap's life along with the proposal it was attached to.
  *
- * A RATIFIED spec may be withdrawn only while its effects are still self-contained, and
- * `relianceOn` decides that rather than the caller. Two things it is not:
+ * A RATIFIED spec is TOMBSTONED: the rules it introduced go to `retired`, which is the
+ * same end state a compensating `retire_requirement` reaches. Nothing is deleted, so
+ * nothing has to be counted first — a retired row still resolves, so an audit or pointer on
+ * it is not orphaned, and every queue filters on `ratified`. Two things it is not:
  *
- * - **It is not a delete.** The spec keeps its row and its ratification. Removing a ratified
- *   spec from the log would destroy the audit trail of the act most worth auditing; what
- *   comes out of the standard is what the spec PUT there.
+ * - **It is not a delete**, of the spec or of what it introduced. The spec keeps its row
+ *   and its ratification, because removing a ratified act would destroy the audit trail of
+ *   the thing most worth auditing; and the rules keep theirs, which is what made the
+ *   reliance count — and the machinery that tried to compute it across universes —
+ *   unnecessary. See `docs/cross-universe-standard.md` for what it cost to learn.
  * - **It is not a revert.** A spec that amended, retired or re-filed something that already
  *   existed is refused outright, however little relies on it, because undoing it means
  *   restoring a statement together with the witnesses taken when it was adopted — and the

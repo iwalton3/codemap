@@ -515,8 +515,8 @@ export function foldStandard(
         // does not pull, so it needs no bad actor: Alice withdraws the draft, Bob ratifies
         // from a read taken before the pull, and the row lands `status: "ratified"` while
         // still carrying `withdrawnBy`/`withdrawnAt` — a spec that is both, which no verb
-        // can undo, since a second ratification breaks here and a fresh withdrawal must
-        // clear `foldReliance`.
+        // can undo, since a second ratification breaks here and a withdrawal refuses a spec
+        // that is already withdrawn.
         if (!sp || sp.status !== "draft") break;
         // Adoption is a principal's act, and a remote clone sees only this row. Without
         // this the tool's gate binds nobody but the machine that ran it.

@@ -33,20 +33,10 @@ const U = "acme/api";
 const SCOPE = standardScope(U);
 
 const tmp = (t: string) => mkdtempSync(join(tmpdir(), `codemap-ss-${t}-`));
-/**
- * The fold, answering as THIS universe.
- *
- * `myScope` is not decoration: a ratified spec's withdrawal now applies only where the
- * withdrawer said it had checked, and a fold that does not know which repository it is
- * cannot tell — so it refuses. See `withdraw` below and `relianceEverywhere`.
- */
+/** The fold, over this scope's events. It takes no options: no decision here reads evidence. */
 const fold = async (root: string) => foldStandard(await readScope(root, SCOPE));
 
-/**
- * Withdraw, pinning THIS scope as checked — what `withdrawSpec` does after reading every
- * standard scope on the sidecar and finding each settled and clean. A test that publishes
- * without the pin is testing the un-checked case, which has its own test below.
- */
+/** Withdraw — which tombstones what a ratified spec introduced rather than deleting it. */
 const withdraw = (root: string, actor: typeof izzie, specId: string, at: string, reason: string) =>
   publishSpecWithdrawn(root, SCOPE, actor, specId, at, reason);
 
@@ -1581,8 +1571,8 @@ test("withdrawal retires a detector proposed against an operation that was pulle
  * anything but a draft and deliberately does NOT pull, so no bad actor is needed: Alice
  * withdraws the draft, Bob ratifies from a read taken before his pull, and the row lands
  * `ratified` while still carrying `withdrawnBy` — a spec that is both, and no verb undoes
- * it, because a second ratification breaks here and a fresh withdrawal must clear
- * `foldReliance`.
+ * it, because a second ratification breaks here and a withdrawal refuses a spec that is
+ * already withdrawn.
  */
 test("the fold refuses to ratify a spec that was withdrawn", async () => {
   const root = await log("ratify-withdrawn");

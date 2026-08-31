@@ -993,12 +993,17 @@ export interface Spec {
    */
   conflicted?: boolean;
   /**
-   * Withdrawal — the BEFORE-reliance half of backout. See `withdrawSpec`.
+   * Withdrawal — taking a spec back. See `withdrawSpec`.
    *
    * The spec stays in the log and keeps its ratification: deleting a ratified spec would
-   * destroy the audit trail of the act most worth auditing. What withdrawal removes is
-   * what the spec PUT into the standard, and only while nothing downstream has relied on
-   * it. After that the mechanism is a compensating spec, which is an ordinary spec.
+   * destroy the audit trail of the act most worth auditing. What withdrawal does to what
+   * the spec PUT into the standard is TOMBSTONE it — the rules go to `retired`, the same
+   * end state a compensating `retire_requirement` reaches.
+   *
+   * It used to delete them, and only while nothing downstream had relied on the rule. That
+   * condition is gone with the deletion that made it necessary: a retired row still
+   * resolves, so nothing is orphaned and there is no reliance to count. See
+   * `docs/cross-universe-standard.md` for what counting it cost.
    */
   withdrawnBy?: Actor;
   withdrawnAt?: string;

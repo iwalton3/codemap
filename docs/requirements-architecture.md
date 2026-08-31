@@ -922,12 +922,13 @@ So there is a window, and which side of it you are on decides the mechanism:
   nothing cites them — a spec may be **withdrawn**. This is mistake correction, and it is
   honest because nothing downstream is falsified.
 
-  *"Nothing cites them"* is wider than the three records this passage originally named.
-  Audits, acknowledgements and problems were all that could cite a rule when it was
-  written; criteria, pointers and population pins can now, and a withdrawal that left one
-  of those pointing at a rule nobody can read is the orphan the count exists to prevent.
-  `relianceOn` is the list, and it is what to extend when a new record learns to name a
-  requirement.
+  **SUPERSEDED, and by a deletion rather than a rule.** This passage described a reference
+  count over everything that can cite a rule — audits, acknowledgements, problems,
+  criteria, pointers, population pins — because withdrawal DELETED the rule and left every
+  one of them pointing at nothing. Withdrawal tombstones now: the rule goes to `retired`,
+  the row survives, the citations resolve, and there is nothing to count. See
+  `docs/cross-universe-standard.md` § *A ratified spec's rules are TOMBSTONED*, which is
+  normative here and records what counting it cost. What remains below still holds.
 
   Two exclusions are deliberate rather than convenient: a spec's own operations and
   criteria are not reliance on itself, and a **pre-approved gap chained to one of its
@@ -945,14 +946,16 @@ So there is a window, and which side of it you are on decides the mechanism:
   holds them, because adopting the new text re-baselined them. The restored statement would
   therefore be witnessed against today's code as though the amendment had never happened,
   which is a fabricated observation on the most authoritative record here. That case is
-  repeal, below, whatever the reference count says.
+  repeal, below, and it is the one refusal that survived the tombstone change — because it
+  was never about what relies on the rule.
 - **After** — repeal by **compensating spec**: a new spec whose operations reverse the
   old one's. Legal practice does not remove acts from history; it passes an act that
   repeals another and re-derives the code from the whole history.
 
 Deleting a ratified spec from the log destroys the audit trail of the act most worth
-auditing. Reliance is mechanically checkable — it is a reference count — so which of the
-two applies is decided by the store, not by the person asking.
+auditing. Which of the two applies is decided by the store rather than by the person
+asking — on the OPERATION KIND, since a spec that only added rules can be tombstoned and
+one that amended anything can only be repealed.
 
 ### Implementation backout is not codemap's job
 
@@ -1029,8 +1032,8 @@ MCP surface via `ops/standard.ts`:
   bulk sign-off states and checks its size. `src/proposal-review.test.ts` pairs every
   refusal with the loop working, and 20 mutants over the new guards are each caught by a
   named test.
-- `withdrawSpec` — withdrawal, below. `relianceOn` is the reference count; the fold carries
-  its own independent copy plus a look-ahead, since a citation appended on another clone can
+- `withdrawSpec` — withdrawal, below. It tombstones what a ratified spec introduced; the
+  fold restates the operation-kind refusal, since a spec arriving from another clone can
   sort AFTER the withdrawal and would otherwise be orphaned by it.
 
 **Adjudication and closure are separate events**, which was not obvious until it was
@@ -1112,7 +1115,8 @@ open*, COD-29 and COD-18 read back against what exists. Each entry now says whic
 - **Blast radius is pointer-shaped only.** COD-29's kernel asks the ratification surface for
   *"which ACs, tests and discrepancies hang off this requirement"*. `RenderedOperation`
   carries `watchedBy` (pointers) and `moves.members`; criteria, problems and acknowledgements
-  are not rendered, though `relianceOn` already computes exactly that set for withdrawal.
+  are not rendered. Nothing computes that set any more either — `relianceOn` did, for a
+  withdrawal gate that no longer exists — so this is a build rather than a wiring job.
 - **Requirement-vs-requirement contradiction detection — NOT BUILT.** §*Requirement-vs-
   requirement audits* budgets for its false positives; nothing raises them. It is an
   auditor-agent behaviour rather than a record, and the auditor layer does not exist by

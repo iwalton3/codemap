@@ -417,11 +417,7 @@ async function log(t: string) {
   await publishOperation(root, SCOPE, opus, ADD);
   return root;
 }
-/**
- * The fold, answering as THIS universe — see `shared-standard.test.ts` for why `myScope` is
- * load-bearing: a ratified spec's withdrawal applies only where the withdrawer said it had
- * checked, and a fold that does not know which repository it is refuses.
- */
+/** The fold, over this scope's events. */
 const fold = async (root: string) => foldStandard(await readScope(root, SCOPE));
 
 // Every `*Revised` fixture below carries a `revisions` entry, because every real writer
