@@ -1535,6 +1535,66 @@ test("withdrawal retires a detector proposed against an operation that was pulle
 });
 
 /**
+ * EVERY CELL of the ratified withdrawal decision, enumerated rather than sampled.
+ *
+ * This arm has been revised four times in a day, and all four defects were the same kind:
+ * a case nobody had written down. `conflicted` never clearing was the retry cell. Detectors
+ * orphaned for ever was the removed-operation cell. A new repository resurrecting repealed
+ * rules was the (not-named × clean) cell — found by somebody ASKING, which is not a
+ * process. Each was caught by a different method and none by reading the code.
+ *
+ * So the inputs are enumerated. Two axes decide it — what the withdrawer CLAIMED, and what
+ * this clone HOLDS — and a table makes "did we think of all of them" a count instead of a
+ * judgement. A new axis added here without a row is a compile error, not an oversight.
+ */
+test("every combination of claim and local reliance decides the same way, and they are all here", async () => {
+  type Claim = "none" | "names-me" | "names-other";
+  const CASES: { claim: Claim; reliance: boolean; status: string; conflicted: true | undefined; rules: number; why: string }[] = [
+    { claim: "none", reliance: false, status: "ratified", conflicted: true, rules: 1,
+      why: "nobody checked anything — refused EVERYWHERE, because uniform refusal is not a divergence" },
+    { claim: "none", reliance: true, status: "ratified", conflicted: true, rules: 1,
+      why: "same, and this clone can see why" },
+    { claim: "names-me", reliance: false, status: "withdrawn", conflicted: undefined, rules: 0,
+      why: "checked, clean, named — the ordinary path" },
+    { claim: "names-me", reliance: true, status: "ratified", conflicted: undefined, rules: 1,
+      why: "they read this scope and called it clean, and it is not: a citation raced the check. Refused quietly, because the tool's gate and the look-ahead both cover it" },
+    { claim: "names-other", reliance: false, status: "withdrawn", conflicted: undefined, rules: 0,
+      why: "NOT NAMED AND CLEAN — a repository added after the withdrawal has nothing that could rely on it, so there is nothing to determine. Refusing here resurrected every repealed rule on every new repo" },
+    { claim: "names-other", reliance: true, status: "ratified", conflicted: true, rules: 1,
+      why: "the withdrawer could not see this repository and what they missed is real" },
+  ];
+
+  for (const c of CASES) {
+    const root = await log(`wd-${c.claim}-${c.reliance ? "relies" : "clean"}`);
+    try {
+      await ratified(root);
+      if (c.reliance) {
+        await publishAudit(root, SCOPE, opus, {
+          id: "au_1", requirementId: requirementIdFor("op_1"), universe: U,
+          outcome: "nonconformant", trigger: "ad-hoc", finding: "does not hold",
+          evidence: { ran: [{ command: "npm test", passed: false }] },
+          witnesses: [], auditor: opus, at: "2026-08-03T12:00:00.000Z",
+        });
+      }
+      const scopes = c.claim === "none" ? undefined
+        : c.claim === "names-me" ? [SCOPE] : ["standard/acme.settlement"];
+      await publishSpecWithdrawn(root, SCOPE, izzie, "sp_1", "2026-08-04T00:00:00.000Z", "adopted in error", scopes);
+
+      const s = await fold(root);
+      const label = `${c.claim} / ${c.reliance ? "relies" : "clean"} — ${c.why}`;
+      assert.equal(s.specs[0]!.status, c.status, label);
+      assert.equal(s.specs[0]!.conflicted, c.conflicted, label);
+      assert.equal(s.requirements.length, c.rules, label);
+    } finally { discard(root); }
+  }
+
+  // The fixture must be able to produce BOTH outcomes, or a table of six identical
+  // assertions would pass against a fold that refuses everything.
+  assert.equal(new Set(CASES.map((c) => c.status)).size, 2, "the table must not be one answer six times");
+  assert.equal(CASES.filter((c) => c.status === "withdrawn").length, 2);
+});
+
+/**
  * A ratified spec leaves the standard on the clones the withdrawer CHECKED, and nowhere else.
  *
  * The withdrawal is LAW — one event in the workspace scope, replayed by every clone. The
