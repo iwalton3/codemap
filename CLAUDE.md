@@ -31,7 +31,8 @@ surfacing the context a raw diff hides** — that is the product, not incidental
 Supply-chain rot is the primary risk this project is designed against. The
 runtime footprint is deliberately tiny:
 
-- **`web-tree-sitter`** + four **vendored** `.wasm` grammar blobs (`grammars/`).
+- **`web-tree-sitter`** + five **vendored** `.wasm` grammar blobs (`grammars/`) —
+  four languages; TypeScript ships `typescript` and `tsx` separately.
 - Everything else is Node stdlib: `node:crypto`, `node:sqlite`, `node:http`,
   `node:child_process` (→ `git`), `node:test`, `node:util`.
 - The MCP server is **hand-rolled** (newline-delimited JSON-RPC 2.0 over stdio),
