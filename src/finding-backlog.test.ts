@@ -274,3 +274,41 @@ test("a shallow clone never caches `not landed` — deepening can make it true",
     } finally { discard(clone); }
   } finally { discard(src); }
 });
+
+test("a squashed or rebased merge falls back to GitHub, and a failure keeps ancestry's answer", async () => {
+  // Ancestry cannot see a squash or a rebase: both rewrite the commit, so the head a
+  // finding was witnessed at is never an ancestor of the trunk however completely its
+  // code landed. Left there, a team that squashes has every such finding reading "still
+  // in review" for ever and an empty debt filter.
+  const { landingOf } = await import("./pr.js");
+  let asked = 0;
+  const merged = (nums: number[]) => (n: number) => { asked++; return nums.includes(n); };
+
+  // 1. Ancestry says yes. GitHub is not asked at all — the common case must cost nothing.
+  asked = 0;
+  assert.equal(landingOf(true, "310", merged([])), "landed");
+  assert.equal(asked, 0, "a positive ancestry never costs a network call");
+
+  // 2. Ancestry cannot say. Still unknown — a lookup must not manufacture a verdict from
+  //    a ref this clone does not have.
+  asked = 0;
+  assert.equal(landingOf(null, "310", merged([310])), "unknown");
+  assert.equal(asked, 0);
+
+  // 3. THE CASE THIS EXISTS FOR. Ancestry says no; the PR is merged, so it was squashed
+  //    or rebased and the code is on the trunk.
+  assert.equal(landingOf(false, "310", merged([310])), "landed");
+
+  // 4. Ancestry says no and the PR is genuinely open. Still open — the fallback must not
+  //    turn every unmerged finding into debt.
+  assert.equal(landingOf(false, "292", merged([310])), "open");
+
+  // 5. The lookup FAILED — no gh, no auth, no network, a timeout. Ancestry's answer
+  //    stands; "I could not ask" is never a verdict.
+  assert.equal(landingOf(false, "310", () => null), "open");
+
+  // 6. A finding with no usable pull request number cannot be looked up either way.
+  for (const pr of [undefined, "", "not-a-number", "0", "-3"]) {
+    assert.equal(landingOf(false, pr, merged([310])), "open", `pr ${JSON.stringify(pr)}`);
+  }
+});

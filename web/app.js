@@ -4539,7 +4539,7 @@ const BACKLOG_TIP = "Defer it with a deadline: real, but not now — and it come
 
 const LANDING = {
   landed: ['debt', 'the code is on the trunk — an unactioned finding here is what rots'],
-  open: ['in review', 'the trunk does not contain this commit, so it reads as still-in-review — note that a SQUASHED or REBASED merge also reads this way, because it rewrites the commit'],
+  open: ['in review', 'the trunk does not contain this commit and its pull request has not merged — so the code has not reached the trunk yet'],
   unknown: ['unknown', 'witnessed at @work or with no ref, so nothing can say whether it landed'],
 };
 

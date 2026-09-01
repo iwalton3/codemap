@@ -40,9 +40,97 @@ export function parsePrRef(input: string, fallback?: { owner: string; repo: stri
   return null;
 }
 
-function gh(args: string[], cwd?: string): { ok: boolean; out: string; err: string } {
-  const r = spawnSync("gh", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 120_000 });
+function gh(args: string[], cwd?: string, timeout = 120_000): { ok: boolean; out: string; err: string } {
+  const r = spawnSync("gh", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout });
   return { ok: r.status === 0, out: r.stdout ?? "", err: (r.stderr ?? "").trim() };
+}
+
+/**
+ * Which pull requests are MERGED, as a set of numbers — the fallback for a merge style
+ * ancestry cannot see.
+ *
+ * `landed` is decided by ancestry, which is right, local, free, and never wrong when it
+ * says yes. What it cannot see is a SQUASH or a REBASE: both rewrite the commit, so the
+ * head a finding was witnessed at is never an ancestor of the trunk however completely
+ * its code landed. On a team that squashes, every such finding reads "still in review"
+ * for ever and the debt/review split is empty.
+ *
+ * ONE call for the whole repo rather than one per finding — `gh pr view` per pull request
+ * would be dozens of round trips on a page that has to answer quickly. This is the only
+ * network read on the backlog path and it is:
+ *
+ * - **Consulted only when ancestry has already said no.** A `landed` answer never costs
+ *   a call, which is the common case on a merge-commit repo.
+ * - **Failure-transparent.** No `gh`, no auth, no remote, no network, or a timeout, and
+ *   this returns null — the caller keeps ancestry's answer and behaves exactly as it did
+ *   before this existed. It must never turn "I could not ask" into a verdict.
+ * - **Short-timeouted**, because it sits on a page load. The 120s default is for a
+ *   person waiting on a command, not for a dashboard.
+ *
+ * Cached with a TTL rather than for ever: merged-ness is monotonic per PR, so a cached
+ * YES can never go stale — but new merges happen while a server runs, and a permanent
+ * memo would keep answering "not merged" for them all day.
+ */
+const mergedCache = new Map<string, { at: number; nums: Set<number>; capped: boolean }>();
+const MERGED_TTL_MS = 10 * 60_000;
+const MERGED_LIMIT = 200;
+
+function mergedList(repoSlug: string): { nums: Set<number>; capped: boolean } | null {
+  const hit = mergedCache.get(repoSlug);
+  if (hit && Date.now() - hit.at < MERGED_TTL_MS) return hit;
+  const r = gh(["pr", "list", "--repo", repoSlug, "--state", "merged", "--limit", String(MERGED_LIMIT), "--json", "number"], undefined, 8_000);
+  if (!r.ok) return null;
+  try {
+    const parsed = JSON.parse(r.out) as { number: number }[];
+    // CAPPED matters, and measuring it is what caught this: `Acme.React` returned exactly
+    // 200, which is the limit — so the window is the 200 most recent merges and an older
+    // squashed pull request is absent for a reason that has nothing to do with whether it
+    // merged. Absence is only authoritative when the list came back short.
+    const entry = { at: Date.now(), nums: new Set(parsed.map((j) => j.number)), capped: parsed.length >= MERGED_LIMIT };
+    mergedCache.set(repoSlug, entry);
+    return entry;
+  } catch { return null; }
+}
+
+/**
+ * One pull request's merge state, when the bulk window cannot settle it.
+ *
+ * Both answers are cached, asymmetrically, and the asymmetry is the point. Merged is
+ * MONOTONIC, so a yes holds for ever. A no cannot — the pull request may merge while the
+ * server runs — but it still has to be cached, or every OPEN pull request costs a round
+ * trip on every dashboard load: the window is capped on any busy repo, so an open PR
+ * never appears in the list and falls through to here each time. The TTL is the same one
+ * the list uses, which bounds how stale a "not merged yet" can be.
+ */
+const oneCache = new Map<string, { at: number; merged: boolean }>();
+function mergedOne(repoSlug: string, n: number): boolean | null {
+  const key = `${repoSlug}#${n}`;
+  const hit = oneCache.get(key);
+  if (hit && (hit.merged || Date.now() - hit.at < MERGED_TTL_MS)) return hit.merged;
+  const r = gh(["pr", "view", String(n), "--repo", repoSlug, "--json", "state"], undefined, 8_000);
+  if (!r.ok) return null;
+  try {
+    const merged = (JSON.parse(r.out) as { state: string }).state === "MERGED";
+    oneCache.set(key, { at: Date.now(), merged });
+    return merged;
+  } catch { return null; }
+}
+
+/**
+ * Is this pull request merged? Null when nothing here can say.
+ *
+ * The bulk list answers in one call for anything inside its window, and a single lookup
+ * settles the rest — so the ordinary page costs one round trip, and only a finding on a
+ * pull request older than the window costs a second.
+ */
+export function prIsMerged(repoSlug: string, n: number): boolean | null {
+  const list = mergedList(repoSlug);
+  if (list?.nums.has(n)) return true;
+  // Absence is an answer only when the window was not full. Otherwise the pull request
+  // may simply be older than the 200 most recent merges, and treating that as "not
+  // merged" is the silent-truncation bug this exists to avoid.
+  if (list && !list.capped) return false;
+  return mergedOne(repoSlug, n);
 }
 
 export function ghAvailable(): boolean {
@@ -1002,4 +1090,37 @@ export function offStoryReason(a: Annotation, ctx: OffStoryContext): OffStoryRea
   if (ctx.file && ctx.changed.has(ctx.file)) return "in-diff";
   if (a.sourceRef && a.sourceRef === ctx.head) return "at-head";
   return null;
+}
+
+/**
+ * The landing verdict, as a pure function of the three things that can answer it.
+ *
+ * Pure so it can be tested without a GitHub repo — the two impure halves (ancestry, and
+ * the merged-PR set) are a `git` call and a `gh` call, and neither is the interesting
+ * part. What is interesting is the ORDER, and it is the whole design:
+ *
+ * 1. **Ancestry, when it can speak.** Local, free, and never wrong when it says yes. It
+ *    also gets the stacked case right, where a pull request's status field does not: a PR
+ *    merged into another feature branch has not reached the trunk, whatever GitHub says.
+ * 2. **`null` is "this clone cannot say"** — no `sourceRef`, `@work`, or a commit this
+ *    checkout does not have — and it stays `unknown`. Absence of evidence is not evidence,
+ *    and guessing either way puts real debt in the wrong pile silently.
+ * 3. **Only a NEGATIVE ancestry consults GitHub**, because that is the one ambiguous
+ *    answer: genuinely open, or a squash/rebase that rewrote the commit so the head can
+ *    never be an ancestor however completely its code landed. A merged pull request's
+ *    code is on the trunk however it got there.
+ * 4. **A failed lookup keeps ancestry's answer.** No `gh`, no auth, no network, a
+ *    timeout: `null` from the thunk, and the verdict is exactly what it was before this
+ *    fallback existed. It must never turn "I could not ask" into a verdict.
+ */
+export function landingOf(
+  ancestry: boolean | null,
+  pr: string | undefined,
+  isMerged: (n: number) => boolean | null,
+): "landed" | "open" | "unknown" {
+  if (ancestry === null) return "unknown";
+  if (ancestry) return "landed";
+  const n = Number(pr);
+  if (Number.isInteger(n) && n > 0 && isMerged(n) === true) return "landed";
+  return "open";
 }

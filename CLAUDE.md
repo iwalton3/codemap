@@ -296,8 +296,11 @@ for ever. Teaching a fold a new EVENT is the same hazard as giving it a new tabl
 `db-migrate.test.ts` now pins the findings vocabulary the way it already pinned the
 standard's tables.
 
-**`landed` is decided by ANCESTRY, not by a pull request's status field** — local, and
-more correct: a stacked PR reads MERGED while its code is nowhere near the trunk.
+**`landed` is decided by ANCESTRY first, not by a pull request's status field** — local,
+and more correct: a stacked PR reads MERGED while its code is nowhere near the trunk. A
+squash or rebase rewrites the commit so ancestry cannot see it, and ONLY that negative
+falls back to asking GitHub; a failed lookup keeps ancestry's answer, because "I could not
+ask" is never a verdict.
 Nothing runs at merge and nothing should, because it is derived on every read. But
 `isAncestor` is **not** memoised (a comment once said it was), so it must be cached on
 the trunk's resolved SHA — one `git merge-base` per FINDING was 211ms against 21ms for

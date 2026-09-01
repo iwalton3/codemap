@@ -24,6 +24,7 @@ import { join } from "node:path";
 import { ISO_DATE, parseAsOf, type BugWitness } from "./schema.js";
 import { witnessDrift, realDrift } from "./reviews.js";
 import { originSlug, headCommit, currentBranch, isAncestor, defaultBranch, revParse } from "./git.js";
+import { prIsMerged, landingOf } from "./pr.js";
 import { fetchReviewThreads, type GhRunner } from "./pr-push.js";
 import { ensureSidecar, sync as sidecarSync, receive as sidecarReceive, healMerge, readManifests, checkPeers, currentManifest } from "./sidecar.js";
 import {
@@ -521,17 +522,20 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
   // reads MERGED on GitHub while its code is not on the trunk and its findings are still
   // ordinary review.
   const trunk = trunkRef(root);
-  const landedAt = (ref?: string) => {
-    // `@work` names no commit, and a third of the measured findings carry it. Unknown is
-    // recorded rather than guessed: absence of evidence is not evidence, and the honest
-    // answer keeps them out of a debt count they may not belong in.
-    if (!ref || ref === "@work" || !trunk) return "unknown" as const;
-    const yes = landedIn(root, ref, trunk.sha);
-    // Three answers, not two. `null` is "this clone cannot say" — the commit is not here
-    // — and it joins `@work` in `unknown` rather than being reported as still in review.
-    if (yes === null) return "unknown" as const;
-    return yes ? "landed" as const : "open" as const;
-  };
+  // Consulted LAZILY and at most once: only if some finding's ancestry says `open`, and
+  // only then. A repo that merges with merge commits never pays for it, and a machine
+  // with no `gh`, no auth or no network gets `null` and keeps ancestry's answer.
+  const slug = originSlug(root);
+  const isMerged = (n: number): boolean | null =>
+    slug ? prIsMerged(`${slug.owner}/${slug.repo}`, n) : null;
+
+  const landedAt = (ref?: string, pr?: string) =>
+    landingOf(
+      !ref || ref === "@work" || !trunk ? null : landedIn(root, ref, trunk.sha),
+      pr,
+      // A thunk, so the network read happens only for a finding ancestry could not place.
+      isMerged,
+    );
 
   const row = (f: SharedFinding) => ({
     id: f.id, pr: f.pr, target: f.target, severity: f.severity,
@@ -552,23 +556,11 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
      * nothing will raise again — the historic default being that it is never marked
      * won't-fix, never promoted, and simply rots until somebody rediscovers the defect.
      *
-     * **KNOWN LIMITATION, and it is a real one: this is ANCESTRY, so a squashed or
-     * rebased merge reads `open` for ever.** Those rewrite the commit, so the head this
-     * finding was witnessed at is never an ancestor of the trunk however thoroughly its
-     * code landed. On a team that squashes, `byLanding.landed` is permanently 0 and the
-     * debt filter is permanently empty.
-     *
-     * Shipped anyway, and deliberately: `open` costs a finding nothing — it stays in
-     * every bucket, in `attention`, and on the page. The only thing lost is the
-     * debt/review SPLIT, which is a lens over the queue rather than the queue. Ancestry
-     * is also the half that is always right when it says `landed`, and it gets the
-     * stacked case right where a pull request's status field does not.
-     *
-     * The fix needs patch-identity (`git cherry` finds a rebased commit; a squash of N
-     * commits into one defeats it) or the merge commit from the pull request's metadata,
-     * which is a network read this deliberately avoids. See `docs/finding-backlog.md`.
+     * Ancestry decides it, and a squash or rebase — which rewrites the commit, so the
+     * head is never an ancestor — falls back to asking GitHub whether the pull request
+     * merged. See `landingOf` for the order and why each step is where it is.
      */
-    landed: landedAt(f.sourceRef),
+    landed: landedAt(f.sourceRef, f.pr),
     ...(f.backlogged ? { backlogged: f.backlogged } : {}),
     // So a re-evaluate is VISIBLE on the row it was pressed on. Without it the act
     // changed nothing a reader could see, and the natural response is to press again.

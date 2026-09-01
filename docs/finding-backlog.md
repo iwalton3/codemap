@@ -130,21 +130,35 @@ ordinary review. `unknown` is recorded rather than guessed; it was a third of th
 measured findings, and guessing either way puts real debt in the wrong pile
 silently.
 
-**Known limitation: a squashed or rebased merge reads `open` for ever.** Both
-rewrite the commit, so the head a finding was witnessed at is never an ancestor of
-the trunk however completely its code landed. On a team that squashes,
-`byLanding.landed` is permanently 0 and the debt filter is permanently empty.
+**A squashed or rebased merge falls back to GitHub, because ancestry cannot see
+one.** Both rewrite the commit, so the head a finding was witnessed at is never an
+ancestor of the trunk however completely its code landed — left there, a team that
+squashes has every such finding reading "still in review" for ever and an empty
+debt filter.
 
-Shipped with it, deliberately. `open` costs a finding nothing — it stays in every
-bucket, in `attention`, and on the page; what is lost is the debt/review SPLIT,
-which is a lens over the queue rather than the queue itself. Ancestry is also the
-half that is never wrong when it says `landed`, and it gets the stacked case right
-where a pull request's status field does not.
+The order is the design, and `landingOf` is a pure function of it so it can be
+tested without a GitHub repo:
 
-Fixing it needs one of: patch-identity (`git cherry` recognises a rebased commit;
-a squash of N commits into one defeats it), or the merge commit from the pull
-request's metadata — a network read this deliberately avoids. Raised by both
-reviews of the branch that built this; recorded rather than quietly dropped.
+1. **Ancestry when it can speak.** Local, free, never wrong when it says yes, and
+   right about the stacked case where a PR's status field is not — a PR merged
+   into another feature branch has not reached the trunk.
+2. **`null` stays `unknown`.** No `sourceRef`, `@work`, or a commit this clone
+   does not have. Guessing puts real debt in the wrong pile silently.
+3. **Only a NEGATIVE consults GitHub**, because that is the one ambiguous answer.
+   A merged pull request's code is on the trunk however it got there.
+4. **A failed lookup keeps ancestry's answer.** No `gh`, no auth, no network, a
+   timeout: the verdict is what it was before this existed. "I could not ask" is
+   never a verdict.
+
+The lookup is `gh pr list --state merged` for the bulk of it and a single
+`gh pr view` for anything outside that window — and **the window being capped is
+load-bearing**: `Acme.React` returned exactly 200, the limit, so absence there means
+"older than the 200 most recent merges" and not "not merged". Measured: PR #1 is
+outside the window and answers `true` through the single lookup, where treating
+absence as authoritative would have called it open. Both answers are cached, a
+`yes` for ever (merged is monotonic) and a `no` on the list's TTL — without the
+second, every open pull request costs a round trip on every page load, since an
+open PR never appears in the merged list at all.
 
 **Nothing runs at merge, and nothing should.** `landed` is derived on every read,
 so there is no state to keep in sync and no event whose absence could strand a
