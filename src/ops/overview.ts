@@ -149,17 +149,21 @@ async function reviewRollup(root: string) {
     unshared: perPr.reduce((n, r) => n + r.unshared, 0),
     prs: perPr.length,
   };
+  // The BACKLOG's own buckets, not a second count of them. Two rollups of one pile
+  // disagree the moment either changes, and this page had already shipped that failure
+  // once at the level above: `attention` summed docs and bugs while the standard and the
+  // sidecar were in trouble. Building a second attention number here that could not see
+  // an overdue carry would be the identical defect, one subsystem over.
+  const { findingBacklog } = await import("../ops-shared.js");
+  const b = await findingBacklog(root).catch(() => null);
   const cfg = resolveSidecar(root);
-  if (!cfg) return { findings, sidecar: null };
-  const blocked = (await readBlockedScopes(root)).filter((b) => inUniverse(b.scope, cfg.universe));
-  return {
-    findings,
-    sidecar: {
-      universe: cfg.universe,
-      blocked: blocked.length,
-      forked: blocked.some((b) => /fork/i.test(b.reason)),
-    },
-  };
+  const sidecar = cfg
+    ? await readBlockedScopes(root).then((rows) => {
+      const blocked = rows.filter((x) => inUniverse(x.scope, cfg.universe));
+      return { universe: cfg.universe, blocked: blocked.length, forked: blocked.some((x) => /fork/i.test(x.reason)) };
+    })
+    : null;
+  return { findings, sidecar, backlog: b ? { ...b.counts, attention: b.attention, landed: b.byLanding.landed } : null };
 }
 
 /**
@@ -290,7 +294,12 @@ function attentionFromStandard(s: Awaited<ReturnType<typeof standardRollup>>): n
  * different scope that answers non-authoritatively until somebody looks at it.
  */
 function attentionFromReview(r: Awaited<ReturnType<typeof reviewRollup>>): number {
-  return r.findings.waiting + (r.sidecar ? r.sidecar.blocked + (r.sidecar.forked ? 1 : 0) : 0);
+  // The backlog's number, not `findings.waiting` beside it. `needsAck` is a PROPERTY of
+  // some open findings, not a queue of its own — every one of them is already in a
+  // backlog bucket, so summing both counts the same records twice. Falling back to
+  // `waiting` only where the backlog could not be computed at all.
+  return (r.backlog ? r.backlog.attention : r.findings.waiting)
+    + (r.sidecar ? r.sidecar.blocked + (r.sidecar.forked ? 1 : 0) : 0);
 }
 
 // Absolutes in a summary are universal claims (highest blast radius, least re-read);

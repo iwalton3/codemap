@@ -28,6 +28,7 @@ import { recordAudit } from "./audits.js";
 import { acknowledgeDebt } from "./acknowledgements.js";
 import { raiseProblem } from "./problems.js";
 import { dashboard } from "./ops.js";
+import { findingBacklog } from "./ops-shared.js";
 import type { SharedFinding } from "./shared-findings.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
@@ -159,14 +160,15 @@ test("a branch with no base to diff against is ONE attention item; the trunk is 
 });
 
 /** A local finding, hand-built. `promoted` is what makes `needsHumanAck` true. */
-const finding = (id: string, promoted: boolean): SharedFinding => ({
+const finding = (id: string, promoted: boolean, over: Partial<SharedFinding> = {}): SharedFinding => ({
   id, target: { kind: "anchor", id: "a_1" }, text: "creditLine doubles the amount",
   author: { principal: "izzie@x.com" }, createdAt: "2026-08-01T00:00:00Z",
   state: "created", corroboration: [], thread: [], revisions: [],
   ...(promoted ? { promotion: { at: "2026-08-02T00:00:00Z", by: { principal: "izzie@x.com" } } } : {}),
-});
+  ...over,
+} as SharedFinding);
 
-test("a finding waiting on a person reaches `attention`; an open one is a workload, not a queue", async () => {
+test("an open finding IS the queue now; only a carried one is set aside", async () => {
   const { root } = await universe();
   try {
     const empty = await dashboard(root);
@@ -177,17 +179,62 @@ test("a finding waiting on a person reaches `attention`; an open one is a worklo
     // Written straight to the local table, which is where a finding filed with no sidecar
     // lives — so this exercises the count on the store shape the rollup actually reads,
     // rather than on a sidecar fixture that would test the fold instead.
+    //
+    // This test used to assert an open finding counted for NOTHING, and the backlog
+    // deliberately changes that: an undisposed finding whose witnessed code still stands
+    // is precisely the debt, and treating it as free is the habit that let 97 of them
+    // accumulate. What is set aside is a CARRY, because somebody decided it.
     await writeLocalFinding(root, finding("f_open", false), 7);
     const open = await dashboard(root);
     assert.equal(open.review.findings.total, 1, "counted as workload");
-    assert.equal(open.review.findings.waiting, 0, "but nobody is blocked on it");
-    assert.equal(open.review.findings.prs, 1);
-    assert.equal(open.attention, 0, "an open finding on a repo anyone reviews would never reach zero");
+    assert.equal(open.review.findings.waiting, 0, "nobody is blocked on it…");
+    assert.equal(open.attention, 1, "…and it is still somebody's to dispose of");
 
     await writeLocalFinding(root, finding("f_promoted", true), 7);
     const waiting = await dashboard(root);
     assert.equal(waiting.review.findings.total, 2);
     assert.equal(waiting.review.findings.waiting, 1, "promoted — a person has to look at it");
-    assert.equal(waiting.attention, 1, "and that is the half that belongs in the queue");
+    // TWO, not three: `needsAck` is a property of a finding the backlog already counts,
+    // so summing it beside the buckets would make one record two items.
+    assert.equal(waiting.attention, 2, "one item per finding, however many things are true of it");
+  } finally { discard(root); }
+});
+
+test("the dashboard's attention and the backlog's are ONE number, not two", async () => {
+  // This is the defect this whole file exists for, reappearing one subsystem over. The
+  // landing page summed docs and bugs while the standard and the sidecar were in trouble;
+  // it then grew a `review` card whose count could not see an overdue carry, so it read
+  // `attention: 0` on a store whose backlog said 5. Two rollups of one pile disagree the
+  // moment either changes, so the dashboard reads the backlog's own number.
+  const { root, anchors } = await universe();
+  try {
+    const { readAnchorStore } = await import("./store.js");
+    const a = (await readAnchorStore(root)).anchors[0]!;
+    const id = anchors[0]!, hash = a.bodyHash;
+    const clean = await dashboard(root);
+    assert.equal(clean.attention, 0, "the baseline the writes below are measured against");
+
+    const w = { anchorId: id, bodyHash: hash };
+    const by = { principal: "izzie@x.com" };
+    // One of each kind the backlog counts, and one it deliberately does not.
+    await writeLocalFinding(root, finding("f_live", false, { target: { kind: "anchor", id }, witness: w }), 1);
+    await writeLocalFinding(root, finding("f_due", false, {
+      target: { kind: "anchor", id }, witness: w,
+      carry: { until: "2020-01-01", reason: "slated for replacement", by, at: "2019-01-01T00:00:00Z" },
+    }), 1);
+    await writeLocalFinding(root, finding("f_sleep", false, {
+      target: { kind: "anchor", id }, witness: w,
+      carry: { until: "2099-01-01", reason: "not now", by, at: "2026-01-01T00:00:00Z", witness: w },
+    }), 1);
+
+    const d = await dashboard(root);
+    const b = await findingBacklog(root);
+    assert.equal(b.attention, 2, "the live one and the overdue carry — never the sleeping one");
+    assert.equal(d.review.backlog?.attention, b.attention, "the dashboard reports the backlog's own count");
+    assert.equal(d.attention, b.attention, "and drives the banner with it, so the two can never disagree");
+    // The trap the old shape fell into: `needsAck` findings are already inside those
+    // buckets, so counting them again would make one record two items.
+    assert.equal(d.review.findings.total, 3, "all three are findings");
+    assert.ok(d.attention < d.review.findings.total, "an open finding is a workload; only some of it is a queue");
   } finally { discard(root); }
 });

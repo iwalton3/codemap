@@ -979,6 +979,8 @@ class DashboardPage extends Component {
   pills(u, d) {
     const out = [];
     const add = (n, key, label, url, cls, title) => { if (n) out.push({ key, label, url, cls, title }); };
+    // NOTE: `fwait` below is NOT part of `attention` — `needsAck` is a property of
+    // findings the backlog buckets already count, so it is shown, never summed.
     const s = d.standard, r = d.review, b = d.branch;
     const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
@@ -997,6 +999,17 @@ class DashboardPage extends Component {
     }
     add(r && r.sidecar && r.sidecar.blocked, 'blocked', plural(r.sidecar && r.sidecar.blocked, 'blocked scope', 'blocked scopes'),
       sharedHubUrl(u), 'bad', 'these scopes still answer, but not as the team’s settled state');
+    const bl = r && r.backlog;
+    add(bl && bl.due, 'bldue', plural(bl && bl.due, 'carry past its date', 'carries past their date'),
+      backlogUrl(u), 'bad', 'you said you would come back to these');
+    add(bl && bl.woken, 'blwoke', plural(bl && bl.woken, 'carry woken by an edit', 'carries woken by an edit'),
+      backlogUrl(u), 'bad', 'somebody is editing the exact code the deferral was about');
+    add(bl && bl.live, 'bllive', plural(bl && bl.live, 'finding still true, undisposed', 'findings still true, undisposed'),
+      backlogUrl(u), null, 'the witnessed code has not changed, and nobody has said anything about it');
+    add(bl && bl.moved, 'blmoved', plural(bl && bl.moved, 'finding whose code moved', 'findings whose code moved'),
+      backlogUrl(u), null, 're-read before believing it either way — a moved body is not evidence of a fix');
+    add(bl && bl.unjudgeable, 'blblind', plural(bl && bl.unjudgeable, 'finding nothing can judge', 'findings nothing can judge'),
+      backlogUrl(u), null, 'no witness, so no drift question can be asked — an agent repairs these');
     add(r && r.findings.waiting, 'fwait', plural(r.findings.waiting, 'finding awaits you', 'findings await you'),
       sharedHubUrl(u), 'q', 'promoted, or somebody stands behind it — a person has to look');
     add(s && s.overdue.scrubs, 'scrubs', plural(s && s.overdue.scrubs, 'overdue scrub', 'overdue scrubs'),
@@ -1050,6 +1063,7 @@ class DashboardPage extends Component {
       <div class="dch">review &amp; findings</div>
       <div class="dstats">
         ${this.stat('findings', f.total, f.prs ? `across ${f.prs} PR${f.prs === 1 ? '' : 's'}` : '')}
+        ${this.stat('backlog', r.backlog ? r.backlog.attention : '—', r.backlog && r.backlog.landed ? `${r.backlog.landed} past the merge` : '')}
         ${this.stat('awaiting you', f.waiting, f.waiting ? 'a person must look' : '')}
         ${this.stat('unshared', f.unshared, f.unshared ? 'filed here, not sent' : '')}
       </div>
