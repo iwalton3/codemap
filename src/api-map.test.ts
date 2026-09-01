@@ -45,3 +45,51 @@ test("the ApiMap names no route the server does not serve", () => {
   const served = new Set(servedRoutes());
   assert.deepEqual(mappedRoutes().filter((r) => !served.has(r)), [], "these routes are gone from serve.ts");
 });
+
+/**
+ * The POST half, which had no guard at all — and shipped a dead button because of it.
+ *
+ * `/api/shared/<action>` takes the action from the PATH. `setFindingState` posted to
+ * `/api/shared/act` with `action: "close"` in the BODY, which is a shape the server has
+ * never accepted: it answered `unknown shared action "act"`, so resolve and reopen on the
+ * diff page did nothing for as long as they existed. The GET routes have been guarded
+ * since `ApiMap` (above); this is the same drift one verb over, and it is worse, because
+ * a GET typo shows an empty page while a POST typo shows a button that looks fine.
+ */
+function sharedActions(): string[] {
+  const src = readFileSync("src/serve.ts", "utf8");
+  const start = src.indexOf('url.pathname.startsWith("/api/shared/")');
+  assert.ok(start > 0, "could not find the shared POST dispatcher in serve.ts");
+  const body = src.slice(start, src.indexOf('default: out = { error: `unknown shared action', start));
+  return [...body.matchAll(/\n        case "([a-z_]+)":/g)].map((m) => m[1]!);
+}
+
+/**
+ * Every `/api/shared/<x>` the web app names literally, GET or POST.
+ *
+ * Both together, because the prefix is shared: `/api/shared/hub` is a GET route and
+ * `/api/shared/sync` is a POST action, and a scan that knew about only one half would
+ * report every use of the other as dead. What is being caught is a string matching
+ * NEITHER — which is exactly what `act` was.
+ */
+function sharedUses(): { action: string; where: string }[] {
+  const out: { action: string; where: string }[] = [];
+  for (const f of ["web/app.js", "web/shared.js", "web/standard.js", "web/core.js"]) {
+    const src = readFileSync(f, "utf8");
+    // A bare `${...}` segment is a dispatcher variable, not a literal, and is covered by
+    // the call sites that supply it — this scan is for the ones spelled out in place.
+    for (const m of src.matchAll(/['"`]\/api\/shared\/([a-z_]+)['"`]/g)) out.push({ action: m[1]!, where: f });
+  }
+  return out;
+}
+
+test("every shared action the web app posts to is one the server handles", () => {
+  const known = new Set(sharedActions());
+  assert.ok(known.size > 10, `only found ${known.size} actions — the parse is wrong, not the code`);
+  for (const r of servedRoutes()) {
+    if (r.startsWith("/api/shared/")) known.add(r.slice("/api/shared/".length));
+  }
+  const dead = sharedUses().filter((p) => !known.has(p.action));
+  assert.deepEqual(dead, [],
+    "these POST to an action serve.ts has no case for — the button will look fine and do nothing");
+});

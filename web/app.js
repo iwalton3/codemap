@@ -519,11 +519,18 @@ const REMEDIATION_LABEL_APP = {
 };
 const PENDING_LABEL_APP = { refute: 'refuted', resolve: 'fixed', invalidate: 'invalid', withdraw: 'withdrawn', promote: 'promotion' };
 
-/** Move a finding's state, and refresh whatever is showing it. */
+/**
+ * Move a finding's state, and refresh whatever is showing it.
+ *
+ * The action is the PATH — `serve.ts` reads it off the URL and has no `act` case, so
+ * this posted to a route that answered `unknown shared action "act"` for as long as it
+ * existed. Resolve and reopen on the diff page have therefore never worked. Guarded now
+ * by `api-map.test.ts`, which scans these strings against the server's own switch.
+ */
 async function setFindingState(c, u, id, state) {
-  const res = await asJson(fetch('/api/shared/act', {
+  const res = await asJson(fetch('/api/shared/close', {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ u, action: 'close', id, state, reason: state === 'created' ? 'reopened from the diff' : 'resolved from the diff' }),
+    body: JSON.stringify({ u, id, state, reason: state === 'created' ? 'reopened from the diff' : 'resolved from the diff' }),
   }));
   if (res && res.error) { c.state.raiseErr = { key: id, error: res.error }; return; }
   await c.load.run();
