@@ -4521,6 +4521,20 @@ const BACKLOG_BUCKETS = [
   ['sleeping', 'carried, still asleep', 'A decision somebody made, with a live release condition. Not debt — shown so it is visible, not so it is worked.'],
 ];
 
+/**
+ * What the `carry…` button does, before you press it.
+ *
+ * The act has no obvious shape from its name and the consequence is the point of the
+ * record: it is not "hide this", it is "decide it, and be shown it again". Saying so on
+ * hover is the difference between a button people use and one they avoid — and the
+ * alternative to using it is the thing this page exists to stop, a finding left open on a
+ * merged pull request until somebody rediscovers the defect.
+ */
+const CARRY_TIP = "Real, but not now — and it comes back. Records a decision with a "
+  + "release date and a reason, both required, so it cannot quietly sleep for ever. It "
+  + "also wakes early if somebody edits the code the decision was about. Does NOT create "
+  + "a bug, and does not close the finding. A person's decision, not an agent's.";
+
 const LANDING = {
   landed: ['debt', 'the code is on the trunk — an unactioned finding here is what rots'],
   open: ['in review', 'the code has not reached the trunk yet, so this is still pull-request review'],
@@ -4605,10 +4619,10 @@ class BacklogPage extends Component {
       ${when(r.carry, () => html`<div class="blcarry">
         carried until <b>${r.carry.until}</b> by ${r.carry.by && r.carry.by.principal} — ${r.carry.reason}
         ${when(r.carry.ref && r.carry.ref.key, () => html` <span class="dim">(${r.carry.ref.key} — evidence, not the release condition)</span>`)}
-        <button disabled="${st.busy === r.id}" on-click="${() => this.act('carry_release', r.id, { reason: 'released from the backlog' })}">end the carry</button>
+        <button title="Take it out of the carry now, before its release condition fires — it goes back into the ordinary queue. A person's, exactly as granting one is." disabled="${st.busy === r.id}" on-click="${() => this.act('carry_release', r.id, { reason: 'released from the backlog' })}">end the carry</button>
       </div>`)}
       ${when(!r.carry, () => html`<div class="blacts">
-        <button disabled="${st.busy === r.id}" on-click="${() => this.toggle(r.id)}">${open ? 'cancel' : 'carry…'}</button>
+        <button title="${CARRY_TIP}" disabled="${st.busy === r.id}" on-click="${() => this.toggle(r.id)}">${open ? 'cancel' : 'carry…'}</button>
         ${when(bucket === 'unjudgeable', () => html`<span class="dim blhint">no witness — an agent repairs this with <code>rewitness_finding</code>, then it can be judged</span>`)}
       </div>`)}
       ${when(open, () => html`<div class="blform">
