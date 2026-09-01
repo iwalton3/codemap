@@ -88,6 +88,7 @@ import {
   reviseLocalFinding, reviseAnnotation, remediateLocalFinding, checkComment, checkLifecycle, REVISABLE,
   setLocalFindingState, corroborateLocalFinding, promoteLocalFinding, requestOnLocalFinding,
   setLocalFindingPosted, relocateLocalFinding,
+  carryLocalFinding, releaseLocalFindingCarry, rewitnessLocalFinding,
 } from "./ops/annotations.js";
 import { commentBug, corroborateBugOp, requestOnBugOp, acceptFinding } from "./ops/bugs.js";
 import { readFinding, readBug, idsStartingWith, readSpec, readOperation } from "./store.js";
@@ -442,6 +443,63 @@ export async function corroborateOn(root: string, input: { id: string; verdict: 
   if (!w.finding.shared) return corroborateLocalFinding(root, input.id, input.verdict as Verdict, input.rationale);
   const shared = await import("./ops-shared.js");
   return shared.corroborateFinding(root, w.finding.pr, input.id, input.verdict, input.rationale, { model: input.model, harness: input.harness, anyway: input.anyway });
+}
+
+/**
+ * Carry a finding, whichever store owns it.
+ *
+ * Dispatched on the RECORD, like `corroborateOn` and for the same reason: one canonical
+ * table holds this store's own findings beside the team's, and a verb that went straight
+ * to the log answered `no finding … on pr <scope>` on every local row. The backlog these
+ * verbs exist for is full of exactly those.
+ *
+ * A BUG is refused rather than carried. A bug is already the tracked thing — that is what
+ * promotion is for — so carrying one would be a second, quieter deferral queue over the
+ * queue people actually read.
+ */
+export async function carryOn(root: string, input: { id: string; until: string; reason: string; ref?: { system: string; key?: string; url?: string } }) {
+  const w = await whichRecord(root, input.id);
+  if ("error" in w) return w;
+  if ("bug" in w) {
+    return {
+      error:
+        `${input.id} is a bug, not a finding. A bug is already the tracked record — carrying is `
+        + `for findings that are real and are NOT worth one. Close it, or leave it in the queue.`,
+    };
+  }
+  if ("proposal" in w) return { error: `${input.id} is a ${w.proposal}, which is disposed of by ratification or withdrawal, not carried` };
+  const shared = await import("./ops-shared.js");
+  const guard = shared.checkCarryInput(input);
+  if (guard) return guard;
+  if (!w.finding.shared) {
+    return carryLocalFinding(root, input.id, { until: input.until, reason: input.reason, ref: input.ref, witness: await shared.witnessNowFor(root, input.id) });
+  }
+  return shared.carryFinding(root, w.finding.pr, input.id, { until: input.until, reason: input.reason, ref: input.ref });
+}
+
+/** End a carry, whichever store owns it. A person's, exactly as granting is. */
+export async function releaseCarryOn(root: string, id: string, reason: string) {
+  const w = await whichRecord(root, id);
+  if ("error" in w) return w;
+  if (!("finding" in w)) return { error: `${id} is not a finding` };
+  if (!reason?.trim()) return { error: "say why the carry is ending — it is the other half of the record" };
+  if (!w.finding.shared) return releaseLocalFindingCarry(root, id);
+  const shared = await import("./ops-shared.js");
+  return shared.releaseFindingCarry(root, w.finding.pr, id, reason);
+}
+
+/** Attach a missing witness, whichever store owns it. Evidence, so an agent may. */
+export async function rewitnessOn(root: string, id: string, opts: { anchorId?: string } = {}) {
+  const w = await whichRecord(root, id);
+  if ("error" in w) return w;
+  if (!("finding" in w)) return { error: `${id} is not a finding` };
+  const shared = await import("./ops-shared.js");
+  if (!w.finding.shared) {
+    const witness = await shared.witnessNowFor(root, id, opts.anchorId);
+    if (!witness) return { error: `no anchor to witness ${id} with — name one with \`anchorId\`, or reindex` };
+    return rewitnessLocalFinding(root, id, witness);
+  }
+  return shared.rewitnessFinding(root, w.finding.pr, id, opts);
 }
 
 /** Ask a PERSON to do what you may not: promote, invalidate, refute or resolve. */

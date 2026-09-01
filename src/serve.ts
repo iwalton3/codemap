@@ -563,11 +563,14 @@ const server = createServer(async (req, res) => {
         // over: with a backlog this size deferral is the cheapest way to empty a queue,
         // so there is deliberately no MCP tool for it (`ops-reach.test.ts` enforces
         // that). The web is where a principal is actually a principal.
-        case "carry": out = await shared.carryFinding(root, pr, body.id, { until: String(body.until ?? ""), reason: String(body.reason ?? ""), ref: body.ref }); break;
-        case "carry_release": out = await shared.releaseFindingCarry(root, pr, body.id, String(body.reason ?? "")); break;
+        // Dispatched on the RECORD, like `corroborate` above: the backlog is full of local
+        // rows, and a write that went straight to the log answers "no finding … on pr
+        // <scope>" for every one of them.
+        case "carry": out = await ops.carryOn(root, { id: body.id, until: String(body.until ?? ""), reason: String(body.reason ?? ""), ref: body.ref }); break;
+        case "carry_release": out = await ops.releaseCarryOn(root, body.id, String(body.reason ?? "")); break;
         // …and this one an agent MAY do, which is the whole point of it: the witness-less
         // bucket is the one nothing can judge, and left to people it is never repaired.
-        case "rewitness": out = await shared.rewitnessFinding(root, pr, body.id, { anchorId: body.anchorId }); break;
+        case "rewitness": out = await ops.rewitnessOn(root, body.id, { anchorId: body.anchorId }); break;
         default: out = { error: `unknown shared action "${action}"` };
       }
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });

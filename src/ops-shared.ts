@@ -21,7 +21,7 @@ import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./an
 import { resolveSidecar, scopeFor, sidecarIdentity, inUniverse, type SidecarConfig } from "./sidecar-config.js";
 import { ISO_DATE, type BugWitness } from "./schema.js";
 import { witnessDrift, realDrift } from "./reviews.js";
-import { originSlug, headCommit, currentBranch, isAncestor } from "./git.js";
+import { originSlug, headCommit, currentBranch, isAncestor, defaultBranch, revParse } from "./git.js";
 import { fetchReviewThreads, type GhRunner } from "./pr-push.js";
 import { ensureSidecar, sync as sidecarSync, receive as sidecarReceive, healMerge, readManifests, checkPeers, currentManifest } from "./sidecar.js";
 import {
@@ -463,9 +463,31 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
   }
   const idx = liveIndex(root, await liveAnchors(root, files));
 
+  // Has this finding's code reached the trunk? LOCAL — `isAncestor` shells out once per
+  // ref and memoises — because the question is about code, not about a pull request's
+  // status field. That also gets the stacked case right, which the GitHub answer does
+  // not: PR #280 in the measured data merged into `feat/deferred-charge-pricing`, so it
+  // reads MERGED on GitHub while its code is not on the trunk and its findings are still
+  // ordinary review.
+  const trunk = trunkRef(root);
+  const landedAt = (ref?: string) => {
+    // `@work` names no commit, and a third of the measured findings carry it. Unknown is
+    // recorded rather than guessed: absence of evidence is not evidence, and the honest
+    // answer keeps them out of a debt count they may not belong in.
+    if (!ref || ref === "@work" || !trunk) return "unknown" as const;
+    return isAncestor(root, ref, trunk) ? "landed" as const : "open" as const;
+  };
+
   const row = (f: SharedFinding) => ({
     id: f.id, pr: f.pr, target: f.target, severity: f.severity, text: f.text,
-    state: f.state, needsAck: needsHumanAck(f), author: f.author,
+    state: f.state, needsAck: needsHumanAck(f), author: f.author, createdAt: f.createdAt,
+    /**
+     * `landed` is the moment a finding changes KIND. Until then it is pull-request
+     * review; after it, the code is on the trunk and an unactioned finding is debt that
+     * nothing will raise again — the historic default being that it is never marked
+     * won't-fix, never promoted, and simply rots until somebody rediscovers the defect.
+     */
+    landed: landedAt(f.sourceRef),
     ...(f.carry ? { carry: f.carry } : {}),
     ...(f.witnessAttached ? { witnessAttached: f.witnessAttached } : {}),
   });
@@ -507,9 +529,17 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
     else b.unjudgeable.push(row(f));
   }
 
+  const rows = Object.values(b).flat();
   return {
     asOf,
+    trunk,
     counts: Object.fromEntries(Object.entries(b).map(([k, v]) => [k, v.length])),
+    /** Split by KIND, not by bucket: what is debt, what is still review, what cannot say. */
+    byLanding: {
+      landed: rows.filter((r) => r.landed === "landed").length,
+      open: rows.filter((r) => r.landed === "open").length,
+      unknown: rows.filter((r) => r.landed === "unknown").length,
+    },
     ...b,
     /**
      * What a person actually owes. `sleeping` is excluded ON PURPOSE — a carry with a
@@ -518,6 +548,20 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
      */
     attention: b.due.length + b.woken.length + b.live.length + b.moved.length + b.unjudgeable.length,
   };
+}
+
+/**
+ * The ref that means "on the trunk", preferring the remote's.
+ *
+ * `origin/<trunk>` first: a stale local trunk answers "not landed" for everything merged
+ * since the last checkout of it, which would silently classify real debt as ongoing review.
+ */
+function trunkRef(root: string): string | null {
+  try {
+    const name = defaultBranch(root);
+    for (const ref of [`origin/${name}`, name]) if (revParse(root, ref)) return ref;
+  } catch { /* gitless */ }
+  return null;
 }
 
 /**
@@ -532,6 +576,36 @@ async function witnessNow(root: string, anchorId: string): Promise<BugWitness | 
   if (!known) return undefined;
   const live = (await liveAnchors(root, [known.file])).get(anchorId);
   return live ? { anchorId, bodyHash: live.bodyHash } : undefined;
+}
+
+/**
+ * The two things a carry cannot do without, checked once so both stores refuse alike.
+ *
+ * Exported because `carryOn` dispatches on the record and the LOCAL path has no fold
+ * behind it to catch a bad input later — a second copy of these sentences is how the two
+ * ends drift into refusing different things.
+ */
+export function checkCarryInput(input: { until?: string; reason?: string }): { error: string } | null {
+  const until = input.until?.trim();
+  if (!until || !ISO_DATE.test(until)) {
+    return {
+      error:
+        "a carry needs `until` (an ISO date). It is the release condition and the only one: "
+        + "a linked issue may be evidence but never the condition, because a ticket closed as "
+        + "won't-do, moved or deleted leaves the finding asleep permanently and silently. Every "
+        + "deferral on record here is in exactly that state.",
+    };
+  }
+  if (!input.reason?.trim()) return { error: "a carry needs a reason — it is a record of a decision, not a mute button" };
+  return null;
+}
+
+/** The anchor a finding is about, hashed as it stands now. Shared with the local path. */
+export async function witnessNowFor(root: string, id: string, anchorId?: string): Promise<BugWitness | undefined> {
+  const f = (await readFindings(root, {})).findings.find((x) => x.id === id);
+  if (!f) return undefined;
+  const a = anchorId ?? f.witness?.anchorId ?? (f.target.kind === "anchor" ? f.target.id : undefined);
+  return a ? witnessNow(root, a) : undefined;
 }
 
 /**
@@ -567,17 +641,9 @@ export async function carryFinding(
         + "and say what the release condition should be.",
     };
   }
-  const until = input.until?.trim();
-  if (!until || !ISO_DATE.test(until)) {
-    return {
-      error:
-        "a carry needs `until` (an ISO date). It is the release condition and the only one: "
-        + "a linked issue may be evidence but never the condition, because a ticket closed as "
-        + "won't-do, moved or deleted leaves the finding asleep permanently and silently. Every "
-        + "deferral on record here is in exactly that state.",
-    };
-  }
-  if (!input.reason?.trim()) return { error: "a carry needs a reason — it is a record of a decision, not a mute button" };
+  const guard = checkCarryInput(input);
+  if (guard) return guard;
+  const until = input.until.trim();
 
   // The code as it stands NOW. Best-effort: a finding whose anchor has already left the
   // tree still carries fine, it just has the date as its only release condition — which

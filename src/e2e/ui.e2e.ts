@@ -29,6 +29,27 @@ describe("web UI", { skip: puppeteer ? false : "puppeteer not resolvable (set CO
   ];
 
   /**
+   * The backlog page renders, and says what it is for when it is empty.
+   *
+   * Two things only a browser can check. The rows come from `each` over sections
+   * resolved BEFORE the loop, because a `when()` returned from an `each` item renders
+   * nothing at all — silently, and this page's first draft did exactly that. And an
+   * empty backlog must still explain itself: a page that renders nothing and a page
+   * with nothing to render look identical, and one of them is a bug.
+   */
+  test("the backlog page renders and explains itself", async () => {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 1000 });
+    const seen = watchErrors(page);
+    await page.goto(`${server.url}/#/u/${fixture.universe}/backlog/`, { waitUntil: "networkidle0", timeout: 20_000 });
+    await page.waitForSelector(".blintro", { timeout: 10_000 });
+    const text = await page.evaluate(() => document.body.innerText);
+    assert.match(text, /outlived the pull request/, "the page explains what it is for");
+    assert.deepEqual(seen.errors, [], "a blank page here logs nothing — that is the failure mode");
+    await page.close();
+  });
+
+  /**
    * A header menu closes when the click lands somewhere else.
    *
    * The menus are `<details>` so their open state stays out of component reactivity, and

@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { type Actor, type Anchor, type LogicalNode, type BugSeverity, type Annotation, type Disposition, DISPOSITIONS, COMMENT_MAX } from "../schema.js";
+import { type Actor, type Anchor, type LogicalNode, type BugSeverity, type BugWitness, type Annotation, type Disposition, DISPOSITIONS, COMMENT_MAX } from "../schema.js";
 import type { NoteTargetKind } from "../shared-notes.js";
 import { indexFile, indexBlob } from "../repo.js";
 import { headCommit, readBlobs } from "../git.js";
@@ -1165,6 +1165,64 @@ export async function remediateLocalFinding(
   };
   await writeLocalFinding(root, f, f.pr!);
   return { ok: true, id: f.id, pr: f.pr, shared: false, remediation: state };
+}
+
+/**
+ * Carry / release / re-witness on a LOCAL canonical finding.
+ *
+ * The same reason `remediateLocalFinding` and the lifecycle acts below exist: one
+ * canonical table holds this store's own rows beside the team's, so a write that went
+ * straight to the log answered `no finding … on pr <scope>` on every local row — a real
+ * id, a real row, and an error naming the one place it could not be. The measured stores
+ * carry local findings in the ordinary course, so a backlog verb that only worked on
+ * shared ones would be dead on exactly the rows nobody else can see.
+ *
+ * The PRINCIPAL GATE is here as well as on the shared path. It is not the fold — a local
+ * row has no fold — so this is the only end there is, which makes leaving it out the
+ * whole-guard-missing version of the mistake rather than the half-guard one.
+ */
+export async function carryLocalFinding(
+  root: string, id: string, input: { until: string; reason: string; witness?: BugWitness; ref?: { system: string; key?: string; url?: string } },
+) {
+  const f = await readFinding(root, id).catch(() => null);
+  if (!f) return { error: `no finding "${id}"` };
+  const actor = requireActor(root);
+  if ("error" in actor) return actor;
+  if (isAgentActor(actor)) {
+    return { error: "carrying a finding is a person's decision, not an agent's — ask for it instead" };
+  }
+  const at = new Date().toISOString();
+  f.carry = {
+    until: input.until, reason: input.reason, by: actor, at,
+    ...(input.witness ? { witness: input.witness } : {}),
+    ...(input.ref ? { ref: { ...input.ref, at, by: actor } } : {}),
+  };
+  await writeLocalFinding(root, f, f.pr!);
+  return { ok: true, id: f.id, pr: f.pr, shared: false, until: input.until };
+}
+
+export async function releaseLocalFindingCarry(root: string, id: string) {
+  const f = await readFinding(root, id).catch(() => null);
+  if (!f) return { error: `no finding "${id}"` };
+  const actor = requireActor(root);
+  if ("error" in actor) return actor;
+  if (isAgentActor(actor)) return { error: "ending a carry is a person's, exactly as granting one is" };
+  delete f.carry;
+  await writeLocalFinding(root, f, f.pr!);
+  return { ok: true, id: f.id, pr: f.pr, shared: false };
+}
+
+/** An agent MAY do this — evidence, not a disposition. Never over an existing witness. */
+export async function rewitnessLocalFinding(root: string, id: string, witness: BugWitness) {
+  const f = await readFinding(root, id).catch(() => null);
+  if (!f) return { error: `no finding "${id}"` };
+  const actor = requireActor(root);
+  if ("error" in actor) return actor;
+  if (f.witness) return { error: `${id} already has a witness — replacing one re-baselines every drift answer that depends on it` };
+  f.witness = witness;
+  f.witnessAttached = { by: actor, at: new Date().toISOString() };
+  await writeLocalFinding(root, f, f.pr!);
+  return { ok: true, id: f.id, pr: f.pr, shared: false, anchorId: witness.anchorId };
 }
 
 /**

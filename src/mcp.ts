@@ -1120,12 +1120,11 @@ const tools: Tool[] = [
     name: "rewitness_finding",
     description: "Attach a witness to a finding that was filed without one — the one repair here an agent may make on its own.\n\nA finding with no witness cannot be judged against code by anything: it cannot be re-checked when a branch lands, it cannot be shown as live or fixed, and it can never leave `finding_backlog`'s `unjudgeable` bucket. That was 19% of the measured backlog. It is evidence-gathering rather than a disposition, which is why it is not gated on a person.\n\nIt hashes the anchor AS IT IS NOW, so the witness testifies from now on and NOT about the code when the finding was filed — the record says so, and you should read the finding against the code before attaching one, because a witness on a finding whose subject has since moved silently makes a stale claim look current.\n\nRefused when the finding already has a witness: replacing one would re-baseline every drift answer that depends on it.",
     inputSchema: obj({
-      pr: { type: ["string", "number"], description: "The pull request the finding is filed against." },
-      id: { type: "string", description: "The finding id." },
+      id: { type: "string", description: "The finding id — it carries its own pull request." },
       anchorId: { type: "string", description: "Which anchor witnesses it. Defaults to the finding's own anchor target." },
-    }, ["pr", "id"]),
+    }, ["id"]),
     mutates: true,
-    handler: (a, c) => shared.rewitnessFinding(c.universe.path, a.pr, a.id, { anchorId: a.anchorId }),
+    handler: (a, c) => ops.rewitnessOn(c.universe.path, a.id, { anchorId: a.anchorId }),
   },
   {
     name: "shared_triage",

@@ -77,6 +77,7 @@ const matrixUrl = (u) => `/u/${u}/matrix/`;
 const orphansUrl = (u) => `/u/${u}/orphans/`;
 const diffUrl = (u) => `/u/${u}/diff/`;
 const sharedHubUrl = (u) => `/u/${u}/shared/`;
+const backlogUrl = (u) => `/u/${u}/backlog/`;
 /**
  * How many rows of a list the dashboard shows before it says "and N more".
  *
@@ -715,7 +716,7 @@ defineComponent('md-content', MdContent);
  */
 const VIEW_LINKS = [
   ['nodes', u => nodesUrl(u)], ['bugs', u => bugsUrl(u)], ['orphans', u => orphansUrl(u)],
-  ['diff', u => diffUrl(u)], ['shared', u => sharedHubUrl(u)], ['PRs', u => prsUrl(u), 'prs'],
+  ['diff', u => diffUrl(u)], ['shared', u => sharedHubUrl(u)], ['backlog', u => backlogUrl(u)], ['PRs', u => prsUrl(u), 'prs'],
 ];
 
 /**
@@ -1047,7 +1048,7 @@ class DashboardPage extends Component {
       </div>
       ${when(!r.sidecar, () => html`<div class="dim dbnote">no sidecar — findings stay on this machine. <code>CODEMAP_SIDECAR=…</code></div>`)}
       ${when(!!r.sidecar && !!r.sidecar.forked, () => html`<div class="dbnote bad">writer id forked — <a href="${href(sharedHubUrl(u))}">heal it</a> before publishing more</div>`)}
-      <a class="dclink" href="${href(sharedHubUrl(u))}">shared review state ›</a>
+      <a class="dclink" href="${href(backlogUrl(u))}">backlog ›</a>
     </div>`;
   }
 
@@ -1097,7 +1098,7 @@ class DashboardPage extends Component {
     // renderers are real links and neither builds a function per render.
     /** @type {[label: string, url: string, gate?: string][]} */
     const navAll = [
-      ['nodes', nodesUrl(u)], ['diff', diffUrl(u)], ['shared', sharedHubUrl(u)],
+      ['nodes', nodesUrl(u)], ['diff', diffUrl(u)], ['shared', sharedHubUrl(u)], ['backlog', backlogUrl(u)],
       ['requirements', rulesUrl(u)], ['conformance', conformanceUrl(u)], ['branch findings', branchUrl(u)],
       ['event matrix', matrixUrl(u), 'matrix'], ['pipeline', pipelineUrl(u), 'pipeline'],
       ['state map', stateMapUrl(u), 'states'], ['flows', flowsUrl(u)], ['bugs', bugsUrl(u)], ['orphans', orphansUrl(u)],
@@ -4481,6 +4482,179 @@ class PrInboxPage extends Component {
 defineComponent('pr-inbox-page', PrInboxPage);
 
 
+// --- the finding backlog: debt that outlived its pull request ----------------
+/**
+ * The six buckets, in the order somebody should work them.
+ *
+ * Order is the design. `live` sits third rather than first on purpose: `due` and `woken`
+ * are promises somebody already made and a date that has passed, which outranks work
+ * nobody has looked at. `sleeping` is last and folded shut — it is not debt, and putting
+ * it beside the debt would make an honest deferral read like a neglected finding.
+ */
+const BACKLOG_BUCKETS = [
+  ['due', 'past its date', 'You said you would come back to these. The date has passed.'],
+  ['woken', 'code moved under a carry', 'Somebody is editing the exact code the deferral was about — the case worth interrupting for.'],
+  ['live', 'still true, never disposed of', 'The witnessed code has not changed, so the claim still holds. Nobody has said anything about these.'],
+  ['moved', 'code changed', 'The code moved after the finding was written. Re-read before believing it either way — it is not evidence of a fix.'],
+  ['unjudgeable', 'nothing can judge these', 'No witness, or one this build cannot compare against, so no drift question can be asked at all. An agent can repair them with `rewitness_finding`.'],
+  ['sleeping', 'carried, still asleep', 'A decision somebody made, with a live release condition. Not debt — shown so it is visible, not so it is worked.'],
+];
+
+const LANDING = {
+  landed: ['debt', 'the code is on the trunk — an unactioned finding here is what rots'],
+  open: ['in review', 'the code has not reached the trunk yet, so this is still pull-request review'],
+  unknown: ['unknown', 'witnessed at @work or with no ref, so nothing can say whether it landed'],
+};
+
+/**
+ * The backlog — findings that outlived the pull request they were filed on.
+ *
+ * The historic default this exists against: a finding never actioned at review time and
+ * never promoted to a bug is not marked won't-fix, not closed, and not raised again. It
+ * simply dies on a merged pull request while the code rots under it, until somebody
+ * rediscovers the defect from scratch. Measured here at 97 findings, 46 of them still
+ * exactly true of the trunk and 41 of those with no disposition of any kind.
+ *
+ * The page's job is to make the pile actionable rather than large: six buckets that each
+ * name a different next move, and the two acts a person can only perform here.
+ *
+ * @typedef {{ d: ApiMap['/api/findings/backlog']|null, busy: string|null, err: string|null,
+ *             form: Record<string, {until: string, reason: string}>, open: string|null,
+ *             landing: string }} BacklogState
+ * @extends {Component<PageProps, BacklogState>}
+ */
+class BacklogPage extends Component {
+  static props = { params: {}, query: {} };
+  /** @param {PageProps} props */
+  constructor(props) {
+    super(props);
+    /** @type {BacklogState} */
+    this.state = { d: null, busy: null, err: null, form: {}, open: null, landing: 'all' };
+  }
+  load = this.createTask(async () => {
+    const u = this.props.params.universe; nav.current = u;
+    this.state.d = await api('/api/findings/backlog', { u });
+  });
+  mounted() { this.load.run(); }
+  propsChanged() { this.state.d = null; this.state.err = null; this.load.run(); }
+
+  /** Every principal act on this page goes through one poster, so one place reports refusals. */
+  async act(action, id, body) {
+    this.state.busy = id; this.state.err = null;
+    try {
+      // The action is the PATH, not a body field — `serve.ts` reads it off the URL.
+      const r = await apiPost(`/api/shared/${action}`, { u: this.props.params.universe, id, pr: this.prOf(id), ...body });
+      // ops-shared refusals come back 200 with an `error` — a reason, not a failure, and
+      // the reasons here are the whole gate ("a carry needs `until`…"). Showing them is
+      // the point: a silent no-op on a principal act is indistinguishable from a bug.
+      if (r && r.error) { this.state.err = r.error; return; }
+      this.state.open = null;
+      await this.load.run();
+    } catch (e) { this.state.err = errText(e); } finally { this.state.busy = null; }
+  }
+  prOf(id) {
+    const d = this.state.d;
+    if (!d) return undefined;
+    for (const [k] of BACKLOG_BUCKETS) for (const r of d[k] || []) if (r.id === id) return r.pr;
+    return undefined;
+  }
+  formOf(id) { return this.state.form[id] || { until: '', reason: '' }; }
+  setForm(id, patch) { this.state.form = { ...this.state.form, [id]: { ...this.formOf(id), ...patch } }; }
+  toggle(id) { this.state.open = this.state.open === id ? null : id; this.state.err = null; }
+
+  carry(id) {
+    const f = this.formOf(id);
+    this.act('carry', id, { until: f.until, reason: f.reason });
+  }
+
+  /** One finding. The carry form is inline and only under the row it belongs to. */
+  row(u, r, bucket) {
+    const st = this.state, open = st.open === r.id, land = LANDING[r.landed] || LANDING.unknown;
+    return html`<div class="blrow">
+      <div class="blhead">
+        ${when(r.severity, () => html`<span class="rvfsev" style="background:${SEV_COLOR[r.severity] || '#3a4250'}" title="severity: ${r.severity}"></span>`)}
+        <a class="blpr" href="${href(`/u/${u}/shared/${r.pr}/`)}" title="the pull request this was filed on">#${r.pr}</a>
+        <span class="bltarget"><a href="${href(r.target.kind === 'node' ? nodeUrl(u, r.target.id) : anchorUrl(u, r.target.id))}">${r.target.id}</a></span>
+        <span class="bland l-${r.landed}" title="${land[1]}">${land[0]}</span>
+        ${when(r.needsAck, () => html`<span class="prbadge">awaits you</span>`)}
+        ${when(r.witnessAttached, () => html`<span class="prbadge" title="this witness was attached after the fact, so it says nothing about the code when the finding was filed">witness re-attached</span>`)}
+        <span class="dim blwho">${r.author && r.author.principal}${r.author && r.author.via ? ' via ' + (r.author.via.model || 'agent') : ''}</span>
+      </div>
+      <div class="bltext">${r.text}</div>
+      ${when(r.carry, () => html`<div class="blcarry">
+        carried until <b>${r.carry.until}</b> by ${r.carry.by && r.carry.by.principal} — ${r.carry.reason}
+        ${when(r.carry.ref && r.carry.ref.key, () => html` <span class="dim">(${r.carry.ref.key} — evidence, not the release condition)</span>`)}
+        <button disabled="${st.busy === r.id}" on-click="${() => this.act('carry_release', r.id, { reason: 'released from the backlog' })}">end the carry</button>
+      </div>`)}
+      ${when(!r.carry, () => html`<div class="blacts">
+        <button disabled="${st.busy === r.id}" on-click="${() => this.toggle(r.id)}">${open ? 'cancel' : 'carry…'}</button>
+        ${when(bucket === 'unjudgeable', () => html`<span class="dim blhint">no witness — an agent repairs this with <code>rewitness_finding</code>, then it can be judged</span>`)}
+      </div>`)}
+      ${when(open, () => html`<div class="blform">
+        <div class="dim blhint">Carrying records a decision: real, not now, and it comes back. Both fields are required — a carry with no release condition is the one that sleeps forever.</div>
+        <label>comes back on <input type="date" value="${this.formOf(r.id).until}" on-change="${(e, v) => this.setForm(r.id, { until: v })}"></label>
+        <input class="blreason" placeholder="why it is not being fixed now…" value="${this.formOf(r.id).reason}" on-change="${(e, v) => this.setForm(r.id, { reason: v })}">
+        <button disabled="${st.busy === r.id}" on-click="${() => this.carry(r.id)}">${st.busy === r.id ? 'carrying…' : 'carry it'}</button>
+      </div>`)}
+    </div>`;
+  }
+
+  visible(rows) {
+    const l = this.state.landing;
+    return l === 'all' ? rows : rows.filter(r => r.landed === l);
+  }
+
+  /**
+   * The buckets that have anything in them, resolved BEFORE the template loop.
+   *
+   * Not a `when()` inside `each()` — that renders nothing at all, silently, which is a
+   * trap this app has now paid for twice in one page's worth of work (the dashboard's
+   * attention pills were the first). `each` wants a template per item; a directive is
+   * not one.
+   */
+  sections(d) {
+    const out = [];
+    for (const [key, label, blurb] of BACKLOG_BUCKETS) {
+      const rows = this.visible(d[key] || []);
+      if (rows.length) out.push({ key, label, blurb, rows, fold: key === 'sleeping' });
+    }
+    return out;
+  }
+
+  template() {
+    const u = this.props.params.universe, d = this.state.d, st = this.state;
+    return pageShell(d, taskError(this.load), () => html`
+      <div class="crumbs"><b>${u}</b> <span class="sep">·</span> backlog</div>
+      <div class="blintro">
+        Findings that outlived the pull request they were filed on. A finding nobody actions
+        at review time and nobody promotes to a bug is not marked won't-fix and not closed —
+        it dies on a merged PR while the code rots under it, until somebody rediscovers the
+        defect. <b>${d.byLanding.landed}</b> of these are past that line already.
+      </div>
+      ${when(!!st.err, () => html`<div class="attn-banner"><span class="attn-n">✕</span> <span>${st.err}</span></div>`)}
+
+      <div class="dnav blfilter">
+        ${each([['all', 'everything'], ['landed', 'debt — on the trunk'], ['open', 'still in review'], ['unknown', 'cannot say']],
+          x => html`<button class="${st.landing === x[0] ? 'on' : ''}" on-click="${() => { this.state.landing = x[0]; }}">${x[1]}${x[0] === 'all' ? '' : ' (' + d.byLanding[x[0]] + ')'}</button>`, x => x[0])}
+        <span class="dim blhint">judged against <code>${d.trunk || 'no trunk'}</code></span>
+      </div>
+
+      ${each(this.sections(d), sec => sec.fold
+        // Folded shut, and last: a carry with a live release condition is a decision
+        // somebody made, so listing it open beside the debt would read as neglect.
+        ? html`<details class="dfold blfold">
+            <summary>${sec.rows.length} ${sec.label} <span class="dim">— ${sec.blurb}</span></summary>
+            ${each(sec.rows, r => this.row(u, r, sec.key), r => r.id)}
+          </details>`
+        : html`<div class="sec blsec">${sec.rows.length} ${sec.label} <span class="dim">— ${sec.blurb}</span></div>
+            ${each(sec.rows, r => this.row(u, r, sec.key), r => r.id)}`, sec => sec.key)}
+
+      ${when(d.attention === 0, () => html`<div class="attn-banner ok"><span class="attn-n">✓</span> <span>nothing outstanding — every open finding is either carried with a live release condition or has been disposed of</span></div>`)}
+    `);
+  }
+}
+defineComponent('backlog-page', BacklogPage);
+
 
 setRouter(enableRouting(document.querySelector('router-outlet'), {
   '/': { component: 'home-page' },
@@ -4501,6 +4675,7 @@ setRouter(enableRouting(document.querySelector('router-outlet'), {
   '/u/:universe/orphans/': { component: 'orphans-page' },
   '/u/:universe/diff/': { component: 'diff-page' },
   '/u/:universe/prs/': { component: 'pr-inbox-page' },
+  '/u/:universe/backlog/': { component: 'backlog-page' },
   '/u/:universe/pr/:pr/': { component: 'pr-story-page' },
   '/u/:universe/search/': { component: 'search-page' },
   '/u/:universe/shared/:pr/': { component: 'shared-page' },

@@ -192,3 +192,40 @@ test("converting findings to bugs in BULK says so, and one at a time does not", 
     assert.match(String(notes[6]), /carried instead/, "and names the alternative");
   } finally { discard(root); discard(side); }
 });
+
+test("`landed` is decided by the CODE reaching the trunk, not by a pull request's status", async () => {
+  // The moment a finding changes kind. Answered locally and from ancestry, which also
+  // gets the stacked case right: a pull request merged into another branch reads MERGED
+  // on GitHub while its code is nowhere near the trunk, and its findings are still
+  // ordinary review rather than debt.
+  const { root, id, hash } = await universe();
+  const git = (...a: string[]) => spawnSync("git", ["-c", "user.email=izzie@x.com", "-c", "user.name=t", ...a], { cwd: root, encoding: "utf8" });
+  try {
+    git("init", "-q", "-b", "main");
+    git("add", "-A");
+    git("commit", "-qm", "on the trunk");
+    const onTrunk = git("rev-parse", "HEAD").stdout.trim();
+    git("checkout", "-qb", "feat/stacked");
+    writeFileSync(join(root, "src/other.js"), "export const x = 1;\n", "utf8");
+    git("add", "-A");
+    git("commit", "-qm", "not on the trunk");
+    const offTrunk = git("rev-parse", "HEAD").stdout.trim();
+    git("checkout", "-q", "main");
+
+    const w = { anchorId: id, bodyHash: hash };
+    await writeLocalFinding(root, finding("f_debt", { target: { kind: "anchor", id }, witness: w, sourceRef: onTrunk }), 1);
+    await writeLocalFinding(root, finding("f_review", { target: { kind: "anchor", id }, witness: w, sourceRef: offTrunk }), 2);
+    await writeLocalFinding(root, finding("f_work", { target: { kind: "anchor", id }, witness: w, sourceRef: "@work" }), 3);
+    await writeLocalFinding(root, finding("f_none", { target: { kind: "anchor", id }, witness: w }), 4);
+
+    const b = await findingBacklog(root, { asOf: "2026-09-01" });
+    const landing = Object.fromEntries(b.live.map((r) => [r.id, r.landed]));
+    assert.equal(landing.f_debt, "landed", "its code is on the trunk — this is debt now");
+    assert.equal(landing.f_review, "open", "a stacked branch's code has not landed, whatever GitHub says");
+    // `@work` names no commit, and it was a third of the measured findings. Guessing
+    // either way would put real debt in the wrong pile silently.
+    assert.equal(landing.f_work, "unknown", "absence of evidence is not evidence");
+    assert.equal(landing.f_none, "unknown");
+    assert.deepEqual(b.byLanding, { landed: 1, open: 1, unknown: 2 });
+  } finally { discard(root); }
+});

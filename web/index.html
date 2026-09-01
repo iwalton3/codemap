@@ -602,6 +602,38 @@
       color: var(--text); border-radius: 6px; padding: 6px 14px; font-size: 13px; font-family: inherit; }
     .dnav input:focus { outline: none; border-color: var(--accent); }
     .attn-pill.q { border-color: var(--accent); color: var(--accent); cursor: default; }
+    /* --- finding backlog --- */
+    .blintro { color: var(--dim); font-size: 13px; line-height: 1.6; max-width: 78ch; margin-bottom: 14px; }
+    .blintro b { color: var(--warn); }
+    .blfilter { margin-bottom: 4px; align-items: center; }
+    .blfilter button.on { border-color: var(--accent); color: var(--accent); }
+    /* `.sec` uppercases, which is right for a two-word label and unreadable for the
+       sentence that follows it. The label keeps the treatment; the blurb does not. */
+    .blsec { margin-top: 18px; }
+    .blsec .dim, .blfold summary .dim { text-transform: none; letter-spacing: 0; }
+    .blfold { margin-top: 18px; }
+    .blrow { border: 1px solid var(--border); border-left: 3px solid var(--warn); border-radius: 8px; padding: 8px 12px; margin: 6px 0; background: var(--panel); }
+    .blhead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .blpr { font-family: var(--mono); font-size: 12px; color: var(--accent); text-decoration: none; }
+    .bltarget { font-family: var(--mono); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; }
+    .bltarget a { color: var(--dim); text-decoration: none; }
+    .bltarget a:hover { color: var(--accent); }
+    .bland { font-size: 10.5px; padding: 0 7px; border-radius: 10px; border: 1px solid var(--border); color: var(--dim); white-space: nowrap; }
+    .bland.l-landed { border-color: var(--bad); color: var(--bad); }
+    .bland.l-open { border-color: var(--accent); color: var(--accent); }
+    .blwho { margin-left: auto; font-size: 11.5px; white-space: nowrap; }
+    .bltext { font-size: 12.5px; line-height: 1.5; margin-top: 5px; max-height: 4.5em; overflow: hidden; }
+    .blcarry { margin-top: 6px; font-size: 12px; color: var(--accent2); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .blacts { margin-top: 6px; display: flex; align-items: center; gap: 10px; }
+    .blhint { font-size: 11.5px; }
+    .blform { margin-top: 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px; border: 1px dashed var(--border); border-radius: 6px; }
+    .blform .blhint { flex: 1 1 100%; }
+    .blform label { font-size: 12px; color: var(--dim); display: inline-flex; align-items: center; gap: 6px; }
+    .blform input { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 5px 10px; font-size: 12.5px; font-family: inherit; }
+    .blform .blreason { flex: 1 1 320px; min-width: 0; }
+    .blrow button { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 4px 12px; cursor: pointer; font-size: 12px; font-family: inherit; }
+    .blrow button:hover:not(:disabled) { border-color: var(--accent); }
+    .blrow button:disabled { opacity: 0.5; cursor: default; }
     .dmore { font-size: 12px; padding: 4px 2px; }
     .dfold { margin-top: 16px; border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; background: var(--panel); }
     .dfold > summary { cursor: pointer; font-size: 13px; }
