@@ -260,6 +260,40 @@ chain instead of fold order. A design that looked like a soundness argument was 
 here for two reviews; both documents open with the counterexample rather than quietly
 dropping it.
 
+## Findings that outlive their PR — read `docs/finding-backlog.md`
+
+Short, normative, and the reason it exists is a measurement: **97 findings still open
+on 13 merged pull requests across two universes, 46 of them still exactly true of the
+trunk, and 41 of those with no disposition of any kind.** A finding has two exits —
+fixed, or promoted to a bug — and one that is real but worth neither has no third, so
+it dies on a merged PR while the code rots under it. The workaround is in the records:
+a bug minted with the rationale *"so it survives the PR closing"*.
+
+The **carry** is the third exit: real, not now, and it comes back. Four things to know
+before touching it, each of which was a defect when absent:
+
+- **`until` is required and the FOLD enforces it** — the `acknowledgements` rule
+  verbatim, because a linked ticket that is closed, moved or deleted leaves the record
+  asleep permanently and silently. Every deferral on record was in that state.
+- **The witness is snapshotted at GRANT time**, not read off the finding: carrying
+  follows an investigation, so a condition keyed on the filing witness fires the moment
+  it is granted. Drift against the carry's own witness means somebody is editing the
+  exact code the decision was about.
+- **Principal-granted, like `debt`**, at BOTH ends — deferral is the cheapest way to
+  empty a queue, and `ops-reach.test.ts` forbids an MCP tool for carry or release.
+  `rewitness` is the deliberate exception: it is evidence, not a disposition, and the
+  bucket it repairs (19%) is never fixed if only people can do it.
+- **Nothing here promotes anything to a bug.** `defer_finding` stays right for a real
+  defect; what breaks a bug queue is MASS conversion, so it warns on the run rather than
+  the act (the `cover` precedent) and never refuses.
+
+**`landed` is decided by ANCESTRY, not by a pull request's status field** — local, and
+more correct: a stacked PR reads MERGED while its code is nowhere near the trunk.
+Nothing runs at merge and nothing should, because it is derived on every read. But
+`isAncestor` is **not** memoised (a comment once said it was), so it must be cached on
+the trunk's resolved SHA — one `git merge-base` per FINDING was 211ms against 21ms for
+the distinct commits behind them.
+
 ## Requirements — read `docs/requirements-architecture.md` before touching them
 
 Also short, also normative, and it outranks COD-29 and the *Requirement Kernel* draft

@@ -354,7 +354,9 @@ export async function shareFinding(root: string, pr: number | string, f: NewFind
  *
  * The test is local and needs no network: the finding was witnessed at `sourceRef`, so
  * if this checkout does not CONTAIN that commit, it is missing the code the finding is
- * about. `isAncestor` is memoised inside `git.ts` and shells out once per ref.
+ * about. `isAncestor` shells out per call — it is NOT memoised, whatever this note used
+ * to say; `landedIn` below is where the caching lives, and only because it can key on two
+ * resolved commits.
  *
  * Three answers, and the middle one is the point:
  *
@@ -475,7 +477,7 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
     // recorded rather than guessed: absence of evidence is not evidence, and the honest
     // answer keeps them out of a debt count they may not belong in.
     if (!ref || ref === "@work" || !trunk) return "unknown" as const;
-    return isAncestor(root, ref, trunk) ? "landed" as const : "open" as const;
+    return landedIn(root, ref, trunk.sha) ? "landed" as const : "open" as const;
   };
 
   const row = (f: SharedFinding) => ({
@@ -532,7 +534,7 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
   const rows = Object.values(b).flat();
   return {
     asOf,
-    trunk,
+    trunk: trunk?.name ?? null,
     counts: Object.fromEntries(Object.entries(b).map(([k, v]) => [k, v.length])),
     /** Split by KIND, not by bucket: what is debt, what is still review, what cannot say. */
     byLanding: {
@@ -556,12 +558,40 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
  * `origin/<trunk>` first: a stale local trunk answers "not landed" for everything merged
  * since the last checkout of it, which would silently classify real debt as ongoing review.
  */
-function trunkRef(root: string): string | null {
+function trunkRef(root: string): { name: string; sha: string } | null {
   try {
     const name = defaultBranch(root);
-    for (const ref of [`origin/${name}`, name]) if (revParse(root, ref)) return ref;
+    for (const ref of [`origin/${name}`, name]) {
+      const sha = revParse(root, ref);
+      if (sha) return { name: ref, sha };
+    }
   } catch { /* gitless */ }
   return null;
+}
+
+/**
+ * Ancestry answers, memoised on the two RESOLVED commits.
+ *
+ * `isAncestor` shells out on every call and is not memoised — a comment here used to say
+ * it was, which is the kind of confident wrong note that stops the next reader looking.
+ * Unmemoised it cost one `git merge-base` PER FINDING: measured at 211ms for 91 calls on
+ * `Acme.API`, against 21ms for the 11 distinct commits behind them, and it grows with the
+ * finding count rather than with the history. The landing page reads this now, so that is
+ * the difference between a page and a wait.
+ *
+ * Keyed on the trunk's SHA rather than its name, which is what makes a process-lifetime
+ * cache sound rather than merely fast: ancestry between two fixed commits is immutable,
+ * so there is nothing to invalidate — and a fetch that advances the trunk simply produces
+ * a different key instead of a stale answer. Keying on `origin/main` would have been the
+ * bug, and it is the reason this does not live inside `isAncestor` itself, where the
+ * caller may legitimately pass a moving name.
+ */
+const ancestry = new Map<string, boolean>();
+function landedIn(root: string, commit: string, trunkSha: string): boolean {
+  const key = `${root}\0${commit}\0${trunkSha}`;
+  let hit = ancestry.get(key);
+  if (hit === undefined) ancestry.set(key, hit = isAncestor(root, commit, trunkSha));
+  return hit;
 }
 
 /**
