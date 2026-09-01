@@ -4636,7 +4636,7 @@ class BacklogPage extends Component {
     const f = this.fullOf(r), st = this.state;
     if (!f) return html`<div class="blfull"><span class="dim">loading the full finding…</span></div>`;
     return html`<div class="blfull">
-      ${when(!!f.comment, () => html`<div class="blsub">${f.comment}</div>`)}
+      ${when(!!f.comment && !!f.text, () => html`<div class="bltriage"><span class="dim bltlabel">latest triage</span>${f.text}</div>`)}
       <div class="dim blmeta">${f.author}${f.authorModel ? ` (${f.authorModel})` : ''} · ${(f.createdAt || '').slice(0, 10)}${f.category ? ' · ' + f.category : ''} · ${f.confirms} confirm${f.confirms === 1 ? '' : 's'}, ${f.refutes} refute${f.refutes === 1 ? '' : 's'} · remediation ${f.remediation}</div>
       ${each(f.corroboration || [], c => html`<div class="blverdict"><b>${c.verdict}</b> — ${c.by}${c.model ? ` (${c.model})` : ''}: ${c.rationale}</div>`, (c, i) => 'c' + i)}
       ${each(f.outcomes || [], o => html`<div class="bloutcome"><b>${o.result}</b> — ${o.by} ${(o.at || '').slice(0, 10)}: ${o.detail}</div>`, (o, i) => 'o' + i)}
@@ -4684,7 +4684,7 @@ class BacklogPage extends Component {
         ${when(r.witnessAttached, () => html`<span class="prbadge" title="this witness was attached after the fact, so it says nothing about the code when the finding was filed">witness re-attached</span>`)}
         <span class="dim blwho">${r.author && r.author.principal}${r.author && r.author.via ? ' via ' + (r.author.via.model || 'agent') : ''}</span>
       </div>
-      <div class="bltext" on-click="${() => this.select(r)}">${r.text}</div>
+      <div class="bltext" on-click="${() => this.select(r)}">${r.comment ?? r.text}</div>
       ${when(sel, () => this.fullEl(r))}
       ${when(r.backlogged, () => html`<div class="blbacklogged">
         backlogged until <b>${r.backlogged.until}</b> by ${r.backlogged.by && r.backlogged.by.principal} — ${r.backlogged.reason}

@@ -631,6 +631,10 @@
     .blrow.blopen { border-left-color: var(--accent); }
     .blfull { margin-top: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel2); }
     .blsub { font-size: 12.5px; line-height: 1.5; margin-bottom: 6px; }
+    /* The running triage narrative, which is NOT the finding — see the note on the
+       backlog projection's `row`. Set apart so it cannot be misread as the defect. */
+    .bltriage { font-size: 12px; line-height: 1.55; margin-bottom: 8px; padding-left: 8px; border-left: 2px solid var(--warn); }
+    .bltlabel { display: block; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
     .blmeta { font-size: 11.5px; margin-bottom: 6px; }
     .blverdict, .bloutcome, .blthread, .blassigned { font-size: 12px; line-height: 1.5; margin: 3px 0; padding-left: 8px; border-left: 2px solid var(--border); }
     .blverdict { border-left-color: var(--accent2); }

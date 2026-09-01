@@ -481,7 +481,17 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
   };
 
   const row = (f: SharedFinding) => ({
-    id: f.id, pr: f.pr, target: f.target, severity: f.severity, text: f.text,
+    id: f.id, pr: f.pr, target: f.target, severity: f.severity,
+    /**
+     * BOTH, because the names are inverted from what they suggest and a reader picking
+     * one gets the wrong half. `comment` is the DESCRIPTION — what the defect is — and
+     * `text` is the running triage narrative, revised as people re-check it ("RE-TRIAGE
+     * 2026-08-21 — FIXED UPSTREAM, verified at head b24dc21e…"). A backlog row that led
+     * with `text` showed the audit trail where the finding should be, which is unreadable
+     * as a queue: every row opens with what somebody did about it and never says what it
+     * was. `sharedFindings` has always summarised with `comment ?? text` for this reason.
+     */
+    text: f.text, comment: f.comment,
     state: f.state, needsAck: needsHumanAck(f), author: f.author, createdAt: f.createdAt,
     /**
      * `landed` is the moment a finding changes KIND. Until then it is pull-request
