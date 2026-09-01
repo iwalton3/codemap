@@ -37,7 +37,7 @@ import {
   type NewNote, type NoteKind,
 } from "./shared-notes.js";
 import { assertTriageBatch, triageScope, triageOf, isTombstone, type SharedTriage } from "./shared-triage.js";
-import { backlogFindingEvent, releaseBacklog, rewitness, isClosed } from "./shared-findings.js";
+import { backlogFindingEvent, releaseBacklog, rewitness, assign, isClosed } from "./shared-findings.js";
 import { cachedTriage, materializeTriage } from "./triage-publish.js";
 export { mirrorNote } from "./notes-publish.js";
 export { sharedKnowsNode, docsVerdict, type DocsVerdict } from "./docs-lookup.js";
@@ -702,6 +702,30 @@ export async function releaseFindingBacklog(root: string, pr: number | string, i
 }
 
 /**
+ * Hand a finding back to an agent to look at again.
+ *
+ * The button is "re-evaluate", and what it asks for is a fresh judgement: read the code
+ * as it is now, say whether the finding still holds, re-witness it if it has none, and
+ * report. It is the answer to "I think this was fixed, but somebody should check" — which
+ * had no verb, so the only ways to express it were closing the finding (asserting
+ * something nobody had verified) or leaving it, which is how the backlog filled up.
+ *
+ * Ungated on purpose. It asks a question rather than answering one: nothing is closed,
+ * nothing is asserted about the code, and the finding stays exactly where it was. A
+ * person still disposes of it once the answer comes back.
+ */
+export async function reassignFinding(
+  root: string, pr: number | string, id: string,
+  opts: { kind?: "investigate" | "fix" | "answer"; note?: string } = {},
+) {
+  const b = bind(root, {});
+  if ("error" in b) return b;
+  await assign(b.cfg.path, prKey(b.cfg, pr), b.actor, id, opts.kind ?? "investigate", opts.note);
+  const mz = await materializeFindings(root, b.cfg, pr);
+  return { ...mz, ok: true, id, assigned: opts.kind ?? "investigate" };
+}
+
+/**
  * Attach a witness to a finding filed without one — the one repair an AGENT may make.
  *
  * 19% of the measured backlog has no witness, so no drift question can be asked about it
@@ -907,6 +931,13 @@ function view(f: SharedFinding) {
     // could — and on PR 264 every row was local. Not a filter: the page lists both on
     // purpose (one canonical table), it just has to say which is which.
     published: !!f.origin,
+    // Deferred with a deadline, and shown on the REVIEW surface as well as the backlog:
+    // a finding somebody already decided about must not read as one nobody has touched,
+    // or the next reviewer disposes of it again from scratch.
+    backlogged: f.backlogged
+      ? { until: f.backlogged.until, reason: f.backlogged.reason, by: f.backlogged.by.principal, ref: f.backlogged.ref?.key }
+      : undefined,
+    assignment: f.assignment ? { kind: f.assignment.kind, by: f.assignment.by.principal, at: f.assignment.at, note: f.assignment.note } : undefined,
     remediation: f.remediation?.state ?? "outstanding",
     // "real, but not at the severity it was filed at" — the old store's `rerated`
     // disposition, derived rather than stored so it cannot disagree with `revisions`.

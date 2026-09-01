@@ -979,6 +979,22 @@ export const backlogFindingEvent = (
 export const releaseBacklog = (logRoot: string, pr: number | string, actor: Actor, id: string, reason: string) =>
   emit(logRoot, pr, actor, id, "finding.backlogReleased", { reason });
 
+/**
+ * Ask for the finding to be looked at again — the reviewer's half of the loop.
+ *
+ * `finding.assigned` has been folded since the record existed and had no emitter, no op
+ * and no tool, so the whole verb was a dead half: `findingAsQueueEntry` maps an
+ * assignment into `review_queue`, and nothing could ever put one there. This is the
+ * missing end.
+ *
+ * NOT a disposition — it asks a question rather than answering one, which is why it is
+ * open to anybody. What comes back is an outcome, and a person still closes.
+ */
+export const assign = (
+  logRoot: string, pr: number | string, actor: Actor, id: string,
+  kind: "investigate" | "fix" | "answer", note?: string,
+) => emit(logRoot, pr, actor, id, "finding.assigned", { kind, ...(note ? { note } : {}) });
+
 /** Attach a witness to a finding filed without one. Evidence, so an agent may do it. */
 export const rewitness = (logRoot: string, pr: number | string, actor: Actor, id: string, witness: BugWitness) =>
   emit(logRoot, pr, actor, id, "finding.rewitnessed", { witness: { ...witness } } as Data);

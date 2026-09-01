@@ -1212,6 +1212,23 @@ export async function releaseLocalFindingBacklog(root: string, id: string) {
   return { ok: true, id: f.id, pr: f.pr, shared: false };
 }
 
+/** Ask for a fresh look, on a LOCAL canonical finding. Ungated — it asks, it does not answer. */
+export async function assignLocalFinding(
+  root: string, id: string, kind: "investigate" | "fix" | "answer", note?: string,
+) {
+  const f = await readFinding(root, id).catch(() => null);
+  if (!f) return { error: `no finding "${id}"` };
+  const actor = requireActor(root);
+  if ("error" in actor) return actor;
+  f.assignment = { kind, by: actor, at: new Date().toISOString(), ...(note ? { note } : {}) };
+  // A re-assignment asks again, so the previous answer no longer stands — the rule
+  // `assignAnnotation` already follows, and the reason the button is worth pressing on a
+  // finding somebody once reported on.
+  f.outcome = undefined;
+  await writeLocalFinding(root, f, f.pr!);
+  return { ok: true, id: f.id, pr: f.pr, shared: false, assigned: kind };
+}
+
 /** An agent MAY do this — evidence, not a disposition. Never over an existing witness. */
 export async function rewitnessLocalFinding(root: string, id: string, witness: BugWitness) {
   const f = await readFinding(root, id).catch(() => null);

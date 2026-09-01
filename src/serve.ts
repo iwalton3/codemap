@@ -571,6 +571,9 @@ const server = createServer(async (req, res) => {
         // …and this one an agent MAY do, which is the whole point of it: the witness-less
         // bucket is the one nothing can judge, and left to people it is never repaired.
         case "rewitness": out = await ops.rewitnessOn(root, body.id, { anchorId: body.anchorId }); break;
+        // Ungated: it asks for a fresh look rather than asserting anything, and it lands
+        // in the queue an agent already reads.
+        case "reevaluate": out = await ops.reevaluateOn(root, body.id, { note: body.note }); break;
         default: out = { error: `unknown shared action "${action}"` };
       }
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });

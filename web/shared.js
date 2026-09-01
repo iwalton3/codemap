@@ -81,7 +81,7 @@ const blockedBanner = (scope) => when(!!scope, () => html`
 
 /**
  * @typedef {{ params: { universe: string, pr: string }, query: Record<string, string> }} SharedProps
- * @typedef {{ d: FindingsView | null, queue: boolean, busy: string | null, note: string | null, open: Set<string>, draft: string, replyTo: string | null, showSettled: boolean }} SharedState
+ * @typedef {{ d: FindingsView | null, queue: boolean, busy: string | null, note: string | null, open: Set<string>, draft: string, replyTo: string | null, showSettled: boolean, backlogFor: string | null, blUntil: string, blReason: string }} SharedState
  */
 
 const sevClass = (s) => (s === 'critical' || s === 'high' ? 'bad' : s === 'medium' ? 'warn' : 'dim');
@@ -102,7 +102,8 @@ class SharedPage extends Component {
     // `queue` defaults on: the page exists to answer "what needs me", and showing
     // everything first buries that under findings somebody else already settled.
     /** @type {SharedState} */
-    this.state = { d: null, queue: true, busy: null, note: null, open: new Set(), draft: '', replyTo: null, showSettled: false };
+    this.state = { d: null, queue: true, busy: null, note: null, open: new Set(), draft: '', replyTo: null, showSettled: false,
+      backlogFor: null, blUntil: '', blReason: '' };
   }
 
   load = this.createTask(async () => {
@@ -127,6 +128,21 @@ class SharedPage extends Component {
       this.state.note = r.error ?? r.note ?? null;
       await this.load.run();
     } catch (e) { this.state.note = errText(e); } finally { this.state.busy = null; }
+  }
+
+  /**
+   * Backlog a finding from the review surface — defer it, with a deadline.
+   *
+   * Its own method rather than an inline `act`, because the form has to be cleared and
+   * closed on success and LEFT ALONE on a refusal: both fields are required, so the
+   * commonest outcome of pressing this with an empty date is a refusal the person needs
+   * to read while their typing is still there.
+   */
+  async backlogFinding(id) {
+    const r = await this.act('backlog', { id, until: this.state.blUntil, reason: this.state.blReason });
+    if (this.state.note) return;
+    this.state.backlogFor = null; this.state.blUntil = ''; this.state.blReason = '';
+    return r;
   }
 
   async act(action, body) {
@@ -177,7 +193,7 @@ class SharedPage extends Component {
         >not published</span>`)}
       ${when(f.needsAck, () => html`<span class="prbadge needsack">needs ack</span>`)}
       ${when(!!f.contested?.length, () => html`<span class="prbadge contested">contested: ${f.contested.map(c => c.field).join(', ')}</span>`)}
-      ${when(f.promoted, () => html`<span class="prbadge">promoted</span>`)}
+      ${when(f.promoted, () => html`<span class="prbadge">escalated</span>`)}
       ${when(f.independentConfirms > 0, () => html`<span class="prbadge ok">${f.independentConfirms} independent</span>`)}
       ${when(f.confirms > f.independentConfirms, () => html`<span class="prbadge ok" title="confirmed, but by the same principal as the author — not a second opinion">+${f.confirms - f.independentConfirms} confirmed</span>`)}
       ${when(f.refutes > 0, () => html`<span class="prbadge warnb">${f.refutes} refuted</span>`)}
@@ -234,7 +250,7 @@ class SharedPage extends Component {
         <div><b>${p.by}</b> asked to <b>${p.ask}</b>: ${p.rationale}</div>
         <div class="row">
           ${when(!!state, () => html`<button on-click="${() => this.act('close', { id: f.id, state, reason: `agreed: ${p.rationale}` })}">agree — ${p.ask}</button>`)}
-          ${when(p.ask === 'promote', () => html`<button on-click="${() => this.act('promote', { id: f.id })}">agree — promote</button>`)}
+          ${when(p.ask === 'promote', () => html`<button on-click="${() => this.act('promote', { id: f.id })}">agree — escalate</button>`)}
           <button title="say no, with a reason — this clears the badge and the queue entry, which replying does not"
             on-click="${() => this.declineAsk(f.id, p)}">decline</button>
           <button on-click="${() => this.reply(f.id, `declining: `)}">answer instead</button>
@@ -283,14 +299,24 @@ class SharedPage extends Component {
     return html`
       <div class="fdetail">
         <div class="row factions">
-          <button on-click="${() => this.act('promote', { id: f.id })}">promote</button>
+          <button title="Surface this to the whole team — it is worth their attention. Does not close it and does not file anything." on-click="${() => this.act('promote', { id: f.id })}">escalate</button>
+          <button title="It is a real defect somebody intends to fix, so track it as one. Creates a bug and cross-links; the finding survives." disabled="${this.state.busy === 'accept'}" on-click="${() => this.acceptAsBug(f.id)}">file bug</button>
+          <button title="Real, but not now — defer it with a deadline. It comes back when the date passes, or early if somebody edits the code. Does not file a bug and does not close it." on-click="${() => { this.state.backlogFor = this.state.backlogFor === f.id ? null : f.id; }}">backlog…</button>
+          <button title="Hand it back for a fresh look: is it still true of the code as it stands? Lands in the agent's review queue; nothing is closed." on-click="${() => this.act('reevaluate', { id: f.id })}">re-evaluate</button>
           <button on-click="${() => this.act('close', { id: f.id, state: 'resolved', reason: 'closed from the shared view' })}">resolve</button>
           <button on-click="${() => this.act('close', { id: f.id, state: 'refuted', reason: 'closed from the shared view' })}">refute</button>
-          ${when(!!f.bug, () => html`<a class="btnlike" href="${href(`/u/${this.props.params.universe}/bugs/`, { bug: f.bug })}">open bug</a>`,
-            () => html`<button title="keep this as a bug once the pull request closes"
-              disabled="${this.state.busy === 'accept'}"
-              on-click="${() => this.acceptAsBug(f.id)}">accept as bug</button>`)}
+          ${when(!!f.bug, () => html`<a class="btnlike" href="${href(`/u/${this.props.params.universe}/bugs/`, { bug: f.bug })}">open bug</a>`)}
         </div>
+        ${when(this.state.backlogFor === f.id, () => html`<div class="blform">
+          <div class="dim blhint">Backlogging records a decision: real, not now, and it comes back. A date and a reason are both required — one with no deadline is the one that sleeps for ever.</div>
+          <label>comes back on <input type="date" value="${this.state.blUntil ?? ''}" on-change="${(e, v) => { this.state.blUntil = v; }}"></label>
+          <input class="blreason" placeholder="why it is not being fixed now…" value="${this.state.blReason ?? ''}" on-change="${(e, v) => { this.state.blReason = v; }}">
+          <button on-click="${() => this.backlogFinding(f.id)}">backlog it</button>
+        </div>`)}
+        ${when(!!f.backlogged, () => html`<div class="blbacklogged">
+          backlogged until <b>${f.backlogged && f.backlogged.until}</b> — ${f.backlogged && f.backlogged.reason}
+          <button on-click="${() => this.act('backlog_release', { id: f.id, reason: 'brought back from the shared view' })}">bring it back</button>
+        </div>`)}
         <div class="ftext">${f.text}</div>
         ${this.contestEl(f)}
         ${when(!!f.pending, () => this.askEl(f))}

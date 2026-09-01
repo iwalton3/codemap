@@ -88,7 +88,7 @@ import {
   reviseLocalFinding, reviseAnnotation, remediateLocalFinding, checkComment, checkLifecycle, REVISABLE,
   setLocalFindingState, corroborateLocalFinding, promoteLocalFinding, requestOnLocalFinding,
   setLocalFindingPosted, relocateLocalFinding,
-  backlogLocalFinding, releaseLocalFindingBacklog, rewitnessLocalFinding,
+  backlogLocalFinding, releaseLocalFindingBacklog, rewitnessLocalFinding, assignLocalFinding,
 } from "./ops/annotations.js";
 import { commentBug, corroborateBugOp, requestOnBugOp, acceptFinding } from "./ops/bugs.js";
 import { readFinding, readBug, idsStartingWith, readSpec, readOperation } from "./store.js";
@@ -486,6 +486,25 @@ export async function releaseBacklogOn(root: string, id: string, reason: string)
   if (!w.finding.shared) return releaseLocalFindingBacklog(root, id);
   const shared = await import("./ops-shared.js");
   return shared.releaseFindingBacklog(root, w.finding.pr, id, reason);
+}
+
+/**
+ * Re-evaluate: hand the finding back for a fresh look, whichever store owns it.
+ *
+ * Ungated, because it asks rather than answers — nothing closes and nothing is asserted
+ * about the code. It lands in `review_queue`, which an agent already reads: the read half
+ * has mapped a finding's assignment into that queue since the record existed, and there
+ * was simply no way to put one there.
+ */
+export async function reevaluateOn(root: string, id: string, opts: { note?: string } = {}) {
+  const w = await whichRecord(root, id);
+  if ("error" in w) return w;
+  if (!("finding" in w)) return { error: `${id} is not a finding` };
+  const note = opts.note?.trim()
+    || "re-evaluate: read the code as it is now, say whether this still holds, re-witness it if it has none, and report what you found.";
+  if (!w.finding.shared) return assignLocalFinding(root, id, "investigate", note);
+  const shared = await import("./ops-shared.js");
+  return shared.reassignFinding(root, w.finding.pr, id, { kind: "investigate", note });
 }
 
 /** Attach a missing witness, whichever store owns it. Evidence, so an agent may. */

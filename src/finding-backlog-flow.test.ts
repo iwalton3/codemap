@@ -177,3 +177,39 @@ test("the release condition is required at the OP, not only at the fold", async 
     assert.equal((await readFinding(u.root, "f_1"))?.backlogged, undefined, "none of those wrote anything");
   } finally { u.cleanup(); }
 });
+
+test("re-evaluate puts the finding in the queue an agent already reads", async () => {
+  // `finding.assigned` was folded from the day the record existed and had NO emitter, no
+  // op and no tool — `findingAsQueueEntry` mapped an assignment into `review_queue` and
+  // nothing could ever put one there. This is that dead half, and the test drives it end
+  // to end rather than checking the event: the point is that an agent finds the work.
+  const u = await universe();
+  try {
+    const { reevaluateOn } = await import("./ops.js");
+    const { reviewQueue } = await import("./ops.js");
+    await writeLocalFinding(u.root, local("f_1", { target: { kind: "anchor", id: u.id } }), 7);
+
+    const before = await reviewQueue(u.root, { brief: true });
+    assert.equal(before.queue.filter((i: { id: string }) => i.id === "f_1").length, 0, "nothing has been asked for yet");
+
+    await asPerson(async () => {
+      assert.equal(err(await reevaluateOn(u.root, "f_1")), undefined);
+    });
+
+    const after = await reviewQueue(u.root, { brief: true });
+    const item = after.queue.find((i: { id: string }) => i.id === "f_1") as { assignment?: { kind: string; note?: string } } | undefined;
+    assert.ok(item, "the finding is now work an agent has been handed");
+    assert.equal(item!.assignment?.kind, "investigate");
+    assert.match(String(item!.assignment?.note), /re-witness it if it has none/,
+      "and the ask says what a fresh look means, so it is not just 'look again'");
+
+    // Ungated: it asks a question rather than answering one, so an agent may ask too.
+    await asAgent(async () => {
+      assert.equal(err(await reevaluateOn(u.root, "f_1")), undefined, "not a disposition, so not gated");
+    });
+    // And it does not dispose of anything.
+    const rec = await readFinding(u.root, "f_1");
+    assert.equal(rec?.state, "created", "still open");
+    assert.equal(rec?.backlogged, undefined, "still not backlogged");
+  } finally { u.cleanup(); }
+});

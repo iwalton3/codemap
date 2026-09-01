@@ -124,7 +124,7 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
     // The page exists to answer "what needs me"; showing everything first buries it.
     const { page } = await open(`/u/${universe}/shared/264/`);
     await page.waitForSelector(".frow");
-    assert.equal(await page.locator(".frow").count(), 1, "only the promoted+confirmed one");
+    assert.equal(await page.locator(".frow").count(), 1, "only the escalated+confirmed one");
 
     await page.getByRole("button", { name: /showing: needs a person/ }).click();
     await page.waitForFunction(() => document.querySelectorAll(".frow").length === 2, null, { timeout: 10_000 });
@@ -137,7 +137,9 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
     await page.waitForSelector(".prbadge.needsack");
     const badges = await page.locator(".frow").first().textContent();
     assert.match(badges, /needs ack/);
-    assert.match(badges, /promoted/);
+    // "escalated", not "promoted": the review surface now names the three dispositions
+    // Escalate / File Bug / Backlog, so the badge says what the act was called.
+    assert.match(badges, /escalated/);
     // izzie confirming izzie's own finding is NOT independent, and the page must
     // not claim otherwise — that number is what the queue would be ranked by.
     assert.doesNotMatch(badges, /\d+ independent/, "same principal is not a second opinion");

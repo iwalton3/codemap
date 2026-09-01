@@ -4517,7 +4517,7 @@ const BACKLOG_BUCKETS = [
   ['woken', 'code moved under a backlogged finding', 'Somebody is editing the exact code the deferral was about — the case worth interrupting for.'],
   ['live', 'still true, never disposed of', 'The witnessed code has not changed, so the claim still holds. Nobody has said anything about these.'],
   ['moved', 'code changed', 'The code moved after the finding was written. Re-read before believing it either way — it is not evidence of a fix.'],
-  ['unjudgeable', 'nothing can judge these', 'No witness, or one this build cannot compare against, so no drift question can be asked at all. An agent can repair them with `rewitness_finding`.'],
+  ['unjudgeable', 'nothing can judge these', 'No witness, or one this build cannot compare against, so no drift question can be asked at all. Re-evaluate asks an agent to attach one.'],
   ['sleeping', 'backlogged, still asleep', 'A decision somebody made, with a deadline still ahead. Not debt — shown so it is visible, not so it is worked.'],
 ];
 
@@ -4555,7 +4555,7 @@ const LANDING = {
  *
  * @typedef {{ d: ApiMap['/api/findings/backlog']|null, busy: string|null, err: string|null,
  *             form: Record<string, {until: string, reason: string}>, open: string|null,
- *             landing: string }} BacklogState
+ *             landing: string, sel: string|null, full: Record<string, any> }} BacklogState
  * @extends {Component<PageProps, BacklogState>}
  */
 class BacklogPage extends Component {
@@ -4564,7 +4564,7 @@ class BacklogPage extends Component {
   constructor(props) {
     super(props);
     /** @type {BacklogState} */
-    this.state = { d: null, busy: null, err: null, form: {}, open: null, landing: 'all' };
+    this.state = { d: null, busy: null, err: null, form: {}, open: null, landing: 'all', sel: null, full: {} };
   }
   load = this.createTask(async () => {
     const u = this.props.params.universe; nav.current = u;
@@ -4597,6 +4597,73 @@ class BacklogPage extends Component {
   setForm(id, patch) { this.state.form = { ...this.state.form, [id]: { ...this.formOf(id), ...patch } }; }
   toggle(id) { this.state.open = this.state.open === id ? null : id; this.state.err = null; }
 
+  /**
+   * Open one finding in full — the record as the pull request would have shown it.
+   *
+   * The backlog row is a summary by necessity: it lists six buckets and cannot carry a
+   * finding's thread, its corroboration or the rounds of investigation somebody already
+   * did. Deciding without those is how a finding gets disposed of twice, differently.
+   *
+   * Fetched from `/api/shared` PER PULL REQUEST and cached, not per finding: that is the
+   * read the review page already uses, so what opens here is exactly what a reviewer saw
+   * there, and one fetch covers every row from the same PR.
+   */
+  async select(r) {
+    if (this.state.sel === r.id) { this.state.sel = null; return; }
+    this.state.sel = r.id;
+    if (this.state.full[r.pr]) return;
+    try {
+      const d = await api('/api/shared', { u: this.props.params.universe, pr: r.pr });
+      this.state.full = { ...this.state.full, [r.pr]: d };
+    } catch (e) { this.state.err = errText(e); }
+  }
+
+  /** The finding as the review surface holds it, or null while it is still arriving. */
+  fullOf(r) {
+    const d = this.state.full[r.pr];
+    return d && d.findings ? d.findings.find(f => f.id === r.id) : null;
+  }
+
+  /**
+   * The two acts that DISPOSE of a finding live here and only here.
+   *
+   * Deliberate friction, and the one place on this page where friction is the feature:
+   * resolving or refuting asserts something about the code, and a list is exactly the
+   * shape that invites clearing a queue without reading it. Backlogging, filing a bug and
+   * re-evaluating stay on the row because none of them ends anything — they are triage.
+   */
+  fullEl(r) {
+    const f = this.fullOf(r), st = this.state;
+    if (!f) return html`<div class="blfull"><span class="dim">loading the full finding…</span></div>`;
+    return html`<div class="blfull">
+      ${when(!!f.comment, () => html`<div class="blsub">${f.comment}</div>`)}
+      <div class="dim blmeta">${f.author}${f.authorModel ? ` (${f.authorModel})` : ''} · ${(f.createdAt || '').slice(0, 10)}${f.category ? ' · ' + f.category : ''} · ${f.confirms} confirm${f.confirms === 1 ? '' : 's'}, ${f.refutes} refute${f.refutes === 1 ? '' : 's'} · remediation ${f.remediation}</div>
+      ${each(f.corroboration || [], c => html`<div class="blverdict"><b>${c.verdict}</b> — ${c.by}${c.model ? ` (${c.model})` : ''}: ${c.rationale}</div>`, (c, i) => 'c' + i)}
+      ${each(f.outcomes || [], o => html`<div class="bloutcome"><b>${o.result}</b> — ${o.by} ${(o.at || '').slice(0, 10)}: ${o.detail}</div>`, (o, i) => 'o' + i)}
+      ${each(f.thread || [], c => html`<div class="blthread"><b>${c.by}</b>${c.model ? ` (${c.model})` : ''}: ${c.body}</div>`, c => c.id)}
+      ${when(!!f.assignment, () => html`<div class="blassigned">handed back for a fresh look by ${f.assignment.by} — ${f.assignment.note || f.assignment.kind}</div>`)}
+      <div class="blacts">
+        <a class="btnlike" href="${href(`/u/${this.props.params.universe}/shared/${r.pr}/`)}">open on the pull request ›</a>
+        <span class="dim blhint">these two end it, which is why they are here and not on the row:</span>
+        <button disabled="${st.busy === r.id}" title="It is done — the code no longer has this problem. Asserts something about the code, so read it first." on-click="${() => this.act('close', r.id, { state: 'resolved', reason: 'resolved from the backlog' })}">resolve</button>
+        <button disabled="${st.busy === r.id}" title="It was not a real defect. Asserts the finding was wrong, which is the claim its author's record carries." on-click="${() => this.act('close', r.id, { state: 'refuted', reason: 'refuted from the backlog' })}">refute</button>
+      </div>
+    </div>`;
+  }
+
+  /** File a bug from a finding. Its own route — it writes the bugs scope, not the log. */
+  async fileBug(r) {
+    this.state.busy = r.id; this.state.err = null;
+    try {
+      const res = await apiPost('/api/bug/accept', { u: this.props.params.universe, pr: r.pr, finding: r.id });
+      if (res && res.error) { this.state.err = res.error; return; }
+      // The bulk-conversion warning is the whole point of showing this: it names the
+      // backlog as the alternative at exactly the moment somebody is sweeping.
+      if (res && res.warning) this.state.err = res.warning;
+      await this.load.run();
+    } catch (e) { this.state.err = errText(e); } finally { this.state.busy = null; }
+  }
+
   backlog(id) {
     const f = this.formOf(id);
     this.act('backlog', id, { until: f.until, reason: f.reason });
@@ -4604,9 +4671,11 @@ class BacklogPage extends Component {
 
   /** One finding. The backlog form is inline and only under the row it belongs to. */
   row(u, r, bucket) {
-    const st = this.state, open = st.open === r.id, land = LANDING[r.landed] || LANDING.unknown;
-    return html`<div class="blrow">
-      <div class="blhead">
+    const st = this.state, open = st.open === r.id, sel = st.sel === r.id;
+    const land = LANDING[r.landed] || LANDING.unknown;
+    return html`<div class="blrow ${sel ? 'blopen' : ''}">
+      <div class="blhead" on-click="${(e) => { if (e.target && e.target.closest && e.target.closest('a,button,input')) return; this.select(r); }}">
+        <span class="blcaret">${sel ? '▾' : '▸'}</span>
         ${when(r.severity, () => html`<span class="rvfsev" style="background:${SEV_COLOR[r.severity] || '#3a4250'}" title="severity: ${r.severity}"></span>`)}
         <a class="blpr" href="${href(`/u/${u}/shared/${r.pr}/`)}" title="the pull request this was filed on">#${r.pr}</a>
         <span class="bltarget"><a href="${href(r.target.kind === 'node' ? nodeUrl(u, r.target.id) : anchorUrl(u, r.target.id))}">${r.target.id}</a></span>
@@ -4615,7 +4684,8 @@ class BacklogPage extends Component {
         ${when(r.witnessAttached, () => html`<span class="prbadge" title="this witness was attached after the fact, so it says nothing about the code when the finding was filed">witness re-attached</span>`)}
         <span class="dim blwho">${r.author && r.author.principal}${r.author && r.author.via ? ' via ' + (r.author.via.model || 'agent') : ''}</span>
       </div>
-      <div class="bltext">${r.text}</div>
+      <div class="bltext" on-click="${() => this.select(r)}">${r.text}</div>
+      ${when(sel, () => this.fullEl(r))}
       ${when(r.backlogged, () => html`<div class="blbacklogged">
         backlogged until <b>${r.backlogged.until}</b> by ${r.backlogged.by && r.backlogged.by.principal} — ${r.backlogged.reason}
         ${when(r.backlogged.ref && r.backlogged.ref.key, () => html` <span class="dim">(${r.backlogged.ref.key} — evidence, not the release condition)</span>`)}
@@ -4623,7 +4693,9 @@ class BacklogPage extends Component {
       </div>`)}
       ${when(!r.backlogged, () => html`<div class="blacts">
         <button title="${BACKLOG_TIP}" disabled="${st.busy === r.id}" on-click="${() => this.toggle(r.id)}">${open ? 'cancel' : 'backlog…'}</button>
-        ${when(bucket === 'unjudgeable', () => html`<span class="dim blhint">no witness — an agent repairs this with <code>rewitness_finding</code>, then it can be judged</span>`)}
+        <button title="It is a real defect somebody intends to fix, so track it as one. Creates a bug and cross-links; the finding survives. One at a time, on the merits — sweeping a queue in here is what turns a bug list into noise." disabled="${st.busy === r.id}" on-click="${() => this.fileBug(r)}">file bug</button>
+        <button title="Hand it back for a fresh look: is it still true of the code as it stands? Lands in the agent's review queue, asks for a re-witness if it has none, and closes nothing." disabled="${st.busy === r.id}" on-click="${() => this.act('reevaluate', r.id, {})}">re-evaluate</button>
+        ${when(bucket === 'unjudgeable', () => html`<span class="dim blhint">no witness — <b>re-evaluate</b> asks an agent to attach one, and then it can be judged</span>`)}
       </div>`)}
       ${when(open, () => html`<div class="blform">
         <div class="dim blhint">Backlogging records a decision: real, not now, and it comes back. Both fields are required — one with no deadline is the one that sleeps for ever.</div>
