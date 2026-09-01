@@ -1791,7 +1791,7 @@ class NodeCatalogPage extends Component {
   nodeRow(n, u) {
     return html`<div class="nrow" on-click="${() => go(nodeUrl(u, n.id))}">
       <span class="nt" style="border-color:${nodeColor(n.type)}">${n.type}</span>
-      <a class="ntitle" href="${href(nodeUrl(u, n.id))}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">${n.title || n.id}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions (forked)">⑂${n.versionCount}</a>`)}</span>
+      <a class="ntitle" href="${href(nodeUrl(u, n.id))}" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">${n.title || n.id}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions (forked)">⑂${n.versionCount}</span>`)}</a>
       ${statusChip(n.status)}${vouchChip(n.vouch, (act) => this.verify(n.id, act), n.status)}${sevChip(n.triage)}${divergeChip(n.triage)}
       <span class="ndom">${n.domain}</span>
       <span class="nmeta">${n.anchors}a · ${n.edgesIn}↓${n.edgesOut}↑</span>

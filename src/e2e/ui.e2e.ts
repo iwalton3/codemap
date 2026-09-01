@@ -29,6 +29,41 @@ describe("web UI", { skip: puppeteer ? false : "puppeteer not resolvable (set CO
   ];
 
   /**
+   * A node row's cells are SIBLINGS, and the browser is the only thing that can say so.
+   *
+   * `<span class="vfork">…</a>` inside `<a class="ntitle">` closed the anchor early and
+   * left it open, so the parser adopted `.ndom`, `.nmeta`, `.gen` and `.nrev` as its
+   * CHILDREN — `.ntitle`'s `flex: 1` then stretched to the full row and every cell after
+   * the title packed left instead of aligning right. It shipped and survived, because
+   * `tsc -p web` reads a template's markup as opaque text and the vdx template lint does
+   * not check tag balance. Counting the row's children is what sees it.
+   */
+  test("a node row's cells are siblings, not swallowed by the title anchor", async () => {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1200, height: 800 });
+    await page.goto(`${server.url}/#/u/${fixture.universe}/nodes/`, { waitUntil: "networkidle0", timeout: 20_000 });
+    await page.waitForSelector(".nrow", { timeout: 10_000 });
+    const row = await page.evaluate(() => {
+      const r = document.querySelector(".nrow") as HTMLElement;
+      const kid = (sel: string) => !!r.querySelector(`:scope > ${sel}`);
+      const title = r.querySelector(".ntitle") as HTMLElement;
+      return {
+        titleIsChild: kid(".ntitle"), revIsChild: kid(".nrev"),
+        // The symptom, measured rather than inferred: a title that has eaten the row is
+        // as wide as the row, and the trailing cell no longer sits at its right edge.
+        titleW: title.getBoundingClientRect().width,
+        rowW: r.getBoundingClientRect().width,
+        nestedInTitle: !!title.querySelector(".nrev, .ndom, .nmeta"),
+      };
+    });
+    assert.equal(row.titleIsChild, true, "the title is a direct child of the row");
+    assert.equal(row.revIsChild, true, "and so is the review cell — not a descendant of the title");
+    assert.equal(row.nestedInTitle, false, "an unclosed .ntitle adopts every cell after it");
+    assert.ok(row.titleW < row.rowW * 0.9, `.ntitle stretched to ${Math.round(row.titleW)} of ${Math.round(row.rowW)}px — it has eaten the row`);
+    await page.close();
+  });
+
+  /**
    * Switching to a pull-request branch changes what every number on every page
    * MEANS — docs, review marks and findings all resolve against `@work`. The
    * machinery to notice a branch switch has existed inside `checkStale` for a long
