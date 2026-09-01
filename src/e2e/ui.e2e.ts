@@ -418,7 +418,11 @@ describe("web UI", { skip: puppeteer ? false : "puppeteer not resolvable (set CO
     await page.goto(`${server.url}/#/u/${fixture.universe}/`, { waitUntil: "networkidle0" });
     const m = await page.evaluate(() => {
       const host = document.createElement("div");
-      host.innerHTML = `<div class="prcbody">
+      // A full viewport of lead, so "park one screen above the fixture" is always a real
+      // scroll position rather than one that clamps to 0 and lands wherever the page
+      // above happens to end.
+      host.innerHTML = `<div id="lead" style="height:1000px"></div>
+      <div class="prcbody">
         <div id="spacer"></div>
         <div class="wkprose" id="prose"></div>
         <div class="prstep" id="step-x"></div>
@@ -427,12 +431,25 @@ describe("web UI", { skip: puppeteer ? false : "puppeteer not resolvable (set CO
       document.body.appendChild(host);
       const el = (id: string) => document.getElementById(id) as HTMLElement;
 
-      /** Set the layout, park the scroll, and report where revealStep wants to go. */
-      const ask = (spacer: number, prose: number, step: number, scroll: number) => {
+      /**
+       * Set the layout, park the scroll, and report where revealStep wants to go.
+       *
+       * `scroll` is relative to the FIXTURE, not the document, and that is the whole point
+       * of it. The host is appended in flow, below whatever the page above it rendered, so
+       * every case here silently depended on the height of the dashboard this test happens
+       * to load — `at` put the fixture on screen and `above` put it under the fold purely
+       * by how tall that page was. Redesigning the dashboard moved `fits` 101.5px past the
+       * fold and failed an assertion about `revealStep`'s arithmetic, which has nothing to
+       * do with it. Stated against the fixture, the four layouts below mean what they say.
+       */
+      const ask = (spacer: number, prose: number, step: number, scroll: "at" | "above") => {
         el("spacer").style.height = `${spacer}px`;
         el("prose").style.height = `${prose}px`;
         el("step-x").style.height = `${step}px`;
-        window.scrollTo(0, scroll);
+        // Read the offset AFTER the heights are set — they are what it depends on.
+        const body = host.querySelector(".prcbody") as HTMLElement;
+        const at = window.scrollY + body.getBoundingClientRect().top;
+        window.scrollTo(0, scroll === "at" ? at : at - window.innerHeight);
         const real = window.scrollTo;
         let target: number | null = null;
         (window as any).scrollTo = (o: any) => { target = o && typeof o === "object" ? o.top : null; };
@@ -447,11 +464,13 @@ describe("web UI", { skip: puppeteer ? false : "puppeteer not resolvable (set CO
       const r = {
         hdr, innerHeight: window.innerHeight, exposed: typeof (window as any).__revealStep === "function",
         // whole thing already on screen · hanging off the bottom · taller than the
-        // viewport with a short intro · taller, with an intro too long to keep
-        fits: ask(hdr + 40, 0, 200, 0),
-        hangs: ask(600, 0, 300, 0),
-        tallShortProse: ask(400, 80, viewH + 400, 0),
-        tallLongProse: ask(400, viewH - 60, viewH + 400, 0),
+        // viewport with a short intro · taller, with an intro too long to keep.
+        // The tall pair parks a screen ABOVE: the rule under test is where revealStep
+        // ALIGNS a too-tall symbol, and one already in view is correctly left alone.
+        fits: ask(hdr + 40, 0, 200, "at"),
+        hangs: ask(600, 0, 300, "at"),
+        tallShortProse: ask(400, 80, viewH + 400, "above"),
+        tallLongProse: ask(400, viewH - 60, viewH + 400, "above"),
       };
       host.remove();
       window.scrollTo(0, 0);

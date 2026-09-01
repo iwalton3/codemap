@@ -166,3 +166,15 @@ export const sidecarIdentity = (cfg: { path: string }): string => {
 /** Scope keys, universe-prefixed. The one place that layout is decided. */
 export const scopeFor = (cfg: SidecarConfig, kind: string, key: string | number): string =>
   `${cfg.universe}/${kind}-${key}`;
+
+/**
+ * Is this scope part of the given universe? One sidecar can carry several.
+ *
+ * The inverse of `scopeFor`, and it lives beside it so the two cannot drift: a scope is
+ * `<kind>/<universe>/<key>`, so the first segment is the kind and everything after it is
+ * what `scopeFor` produced.
+ */
+export function inUniverse(scope: string, universe: string): boolean {
+  const rest = scope.slice(scope.indexOf("/") + 1);
+  return rest === universe || rest.startsWith(universe + "/");
+}

@@ -76,6 +76,15 @@ const matrixUrl = (u) => `/u/${u}/matrix/`;
 // error at header render — which is exactly what it was.
 const orphansUrl = (u) => `/u/${u}/orphans/`;
 const diffUrl = (u) => `/u/${u}/diff/`;
+const sharedHubUrl = (u) => `/u/${u}/shared/`;
+/**
+ * How many rows of a list the dashboard shows before it says "and N more".
+ *
+ * Both lists below it are UNBOUNDED server-side, and the summary-drift one measured at
+ * roughly four fifths of the landing page on a real repo — a lint's candidate list, which
+ * is explicitly not a queue, outweighing every queue on the page put together.
+ */
+const DASH_LIST_MAX = 5;
 const pipelineUrl = (u) => `/u/${u}/pipeline/`;
 const stateMapUrl = (u) => `/u/${u}/statemap/`;
 const REV_COLOR = { reviewed: '#7ee787', stale: '#f0a35e', unreviewed: '#3a4250' };
@@ -706,7 +715,7 @@ defineComponent('md-content', MdContent);
  */
 const VIEW_LINKS = [
   ['nodes', u => nodesUrl(u)], ['bugs', u => bugsUrl(u)], ['orphans', u => orphansUrl(u)],
-  ['diff', u => diffUrl(u)], ['shared', u => `/u/${u}/shared/`], ['PRs', u => prsUrl(u), 'prs'],
+  ['diff', u => diffUrl(u)], ['shared', u => sharedHubUrl(u)], ['PRs', u => prsUrl(u), 'prs'],
 ];
 
 /**
@@ -927,6 +936,138 @@ class DashboardPage extends Component {
   async resolveQ(id) { await postResolveAnnotation(this.props.params.universe, id, true); this.load.run(); }
   qTarget(t) { const u = this.props.params.universe; return t.kind === 'node' ? nodeUrl(u, t.id) : anchorUrl(u, t.id); }
   stat(label, value, extra) { return html`<div class="dstat"><div class="dsv">${value}</div><div class="dsl">${label}</div>${when(extra, () => html`<div class="dsx">${extra}</div>`)}</div>`; }
+
+  /**
+   * Every attention item, as one list — the banner's pills AND, by construction, what
+   * `attention` counted.
+   *
+   * Derived rather than hand-written per subsystem, which is the shape the old banner
+   * got wrong in the small: it listed docs and bugs with a `when()` each, so a queue
+   * that entered `attention` in ops without someone remembering to add a `when()` here
+   * would raise the count and show nothing to click. A reader who cannot see what the
+   * number is made of cannot clear it.
+   */
+  pills(u, d) {
+    const out = [];
+    const add = (n, key, label, url, cls, title) => { if (n) out.push({ key, label, url, cls, title }); };
+    const s = d.standard, r = d.review, b = d.branch;
+    const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+    if (b && b.noBase) {
+      out.push({
+        key: 'nobase', cls: 'bad', url: diffUrl(u),
+        label: 'branch diff has no base',
+        title: b.staleSnapshots
+          ? `every cached snapshot was built by a different anchor/hash derivation, so none can be compared with today's — re-cache with \`codemap snapshot\``
+          : 'no cached snapshot for this branch’s fork point — run `codemap snapshot`',
+      });
+    }
+    if (r && r.sidecar && r.sidecar.forked) {
+      out.push({ key: 'forked', cls: 'bad', url: sharedHubUrl(u), label: 'writer id forked',
+        title: 'two clones wrote under one writer id; `heal` is a person’s act and there is no agent tool for it' });
+    }
+    add(r && r.sidecar && r.sidecar.blocked, 'blocked', plural(r.sidecar && r.sidecar.blocked, 'blocked scope', 'blocked scopes'),
+      sharedHubUrl(u), 'bad', 'these scopes still answer, but not as the team’s settled state');
+    add(r && r.findings.waiting, 'fwait', plural(r.findings.waiting, 'finding awaits you', 'findings await you'),
+      sharedHubUrl(u), 'q', 'promoted, or somebody stands behind it — a person has to look');
+    add(s && s.overdue.scrubs, 'scrubs', plural(s && s.overdue.scrubs, 'overdue scrub', 'overdue scrubs'),
+      auditUrl(u), 'bad', 'rules past their coverage deadline; nothing runs these on a schedule');
+    add(s && s.overdue.acknowledgements, 'acks', plural(s && s.overdue.acknowledgements, 'silencer past revalidate-by', 'silencers past revalidate-by'),
+      conformanceUrl(u), 'bad', 'a gap or debt whose revalidate-by date has passed');
+    add(s && s.queues.awaitingAdjudication, 'adj', plural(s && s.queues.awaitingAdjudication, 'problem to adjudicate', 'problems to adjudicate'),
+      conformanceUrl(u), null, 'a business question nobody has answered');
+    add(s && s.queues.settledWithoutAdjudication, 'settled', plural(s && s.queues.settledWithoutAdjudication, 'settled without adjudication', 'settled without adjudication'),
+      conformanceUrl(u), 'bad', 'the andon signal: a business question answered by changing code');
+    add(s && s.queues.actionableProblems, 'fix', plural(s && s.queues.actionableProblems, 'problem to fix', 'problems to fix'),
+      conformanceUrl(u), null, 'decided, and waiting on the change');
+    add(s && s.queues.pendingSpecs, 'specs', plural(s && s.queues.pendingSpecs, 'spec awaiting ratification', 'specs awaiting ratification'),
+      standardUrl(u), null, 'a person must read and sign these; an agent structurally cannot');
+    add(s && s.queues.promotableAudits, 'promote', plural(s && s.queues.promotableAudits, 'audit to promote', 'audits to promote'),
+      auditUrl(u), null, 'provisional audits whose branch has landed');
+    add(d.docs.stale, 'stale', plural(d.docs.stale, 'stale doc', 'stale docs'), nodesUrl(u), null, 'the code the doc cites has changed');
+    add(d.docs.dangling, 'dangling', plural(d.docs.dangling, 'dangling doc', 'dangling docs'), nodesUrl(u), 'bad', 'the code the doc cites is gone');
+    add(d.bugs.possiblyFixed, 'pfixed', plural(d.bugs.possiblyFixed, 'bug possibly fixed', 'bugs possibly fixed'),
+      bugsUrl(u), null, 're-validate against the code');
+    add(d.reverted, 'revert', plural(d.reverted, 'approval on reverted code', 'approvals on reverted code'), nodesUrl(u), 'bad',
+      'code moved BACK to a body signed before it was superseded here — the tick still reads green, and probably should not');
+    add(d.tripwires && d.tripwires.fired.length, 'trip', `🔔 ${plural(d.tripwires && d.tripwires.fired.length, 'tripwire fired', 'tripwires fired')}`,
+      nodesUrl(u), 'bad', 'business-critical code you’re watching changed');
+    add(d.openQuestions, 'q', plural(d.openQuestions, 'open question', 'open questions'), null, 'q', 'left during review; answer by improving the doc');
+    return out;
+  }
+
+  /** The branch card — what you would review, and whether the diff surface can answer. */
+  branchCard(u, d) {
+    const b = d.branch;
+    if (!b) return html``;
+    const base = b.base;
+    return html`<div class="dcard">
+      <div class="dch">this branch</div>
+      <div class="dbranch"><code>${b.branch || 'detached'}</code>${when(!!b.trunk && !b.onTrunk, () => html` <span class="dim">→</span> <code>${b.trunk}</code>`)}</div>
+      ${when(b.onTrunk, () => html`<div class="dim dbnote">on the trunk — there is no branch to review. Cut one, or open <a href="${href(diffUrl(u))}">diff</a> and pick two commits.</div>`)}
+      ${when(!b.onTrunk && !!base, () => html`<div class="dim dbnote">base snapshot <code>${base && base.ref.slice(0, 8)}</code>${when(!!(base && base.at), () => html` · cached ${base && base.at.slice(0, 10)}`)}</div>`)}
+      ${when(!b.onTrunk && !base, () => html`<div class="dbnote bad">no cached snapshot to diff against${when(!!b.staleSnapshots, () => html` — ${b.staleSnapshots} were built by a different anchor/hash derivation and cannot be compared with today's`)}. Run <code>codemap snapshot</code>.</div>`)}
+      ${when(!!b.staleSnapshots && !!base, () => html`<div class="dim dbnote">${b.staleSnapshots} other cached snapshot(s) predate this derivation</div>`)}
+      <a class="dclink" href="${href(diffUrl(u), base ? { base: base.ref } : {})}">${base ? 'review this branch ›' : 'open diff ›'}</a>
+    </div>`;
+  }
+
+  /** The review card — findings, and whether the team can see them. */
+  reviewCard(u, d) {
+    const r = d.review;
+    if (!r) return html``;
+    const f = r.findings;
+    return html`<div class="dcard">
+      <div class="dch">review &amp; findings</div>
+      <div class="dstats">
+        ${this.stat('findings', f.total, f.prs ? `across ${f.prs} PR${f.prs === 1 ? '' : 's'}` : '')}
+        ${this.stat('awaiting you', f.waiting, f.waiting ? 'a person must look' : '')}
+        ${this.stat('unshared', f.unshared, f.unshared ? 'filed here, not sent' : '')}
+      </div>
+      ${when(!r.sidecar, () => html`<div class="dim dbnote">no sidecar — findings stay on this machine. <code>CODEMAP_SIDECAR=…</code></div>`)}
+      ${when(!!r.sidecar && !!r.sidecar.forked, () => html`<div class="dbnote bad">writer id forked — <a href="${href(sharedHubUrl(u))}">heal it</a> before publishing more</div>`)}
+      <a class="dclink" href="${href(sharedHubUrl(u))}">shared review state ›</a>
+    </div>`;
+  }
+
+  /** The standard card — the law's queues, or the invitation to have one. */
+  standardCard(u, d) {
+    const s = d.standard;
+    if (!s) return html`<div class="dcard">
+      <div class="dch">the standard</div>
+      <div class="dim dbnote">no requirements here yet. The standard is the other kind of claim — a rule the code exists to satisfy, upstream of it rather than describing it.</div>
+      <a class="dclink" href="${href(rulesUrl(u))}">requirements ›</a>
+    </div>`;
+    const q = s.queues, overdue = s.overdue.scrubs + s.overdue.acknowledgements;
+    return html`<div class="dcard">
+      <div class="dch">the standard</div>
+      <div class="dstats">
+        ${this.stat('overdue', overdue, overdue ? 'scrubs & silencers' : '')}
+        ${this.stat('to adjudicate', q.awaitingAdjudication, q.settledWithoutAdjudication ? `${q.settledWithoutAdjudication} settled without` : '')}
+        ${this.stat('to ratify', q.pendingSpecs, q.pendingSpecs ? 'a person, not an agent' : '')}
+        ${this.stat('conformant', s.conformance.total ? Math.round(100 * s.conformance.conformant / s.conformance.total) + '%' : '—',
+          s.conformance.unknown ? `${s.conformance.unknown} unknown` : '')}
+      </div>
+      <a class="dclink" href="${href(auditUrl(u))}">what to audit next ›</a>
+    </div>`;
+  }
+
+  /** The docs card — coverage and doc health, which used to be the whole page. */
+  docsCard(u, d) {
+    return html`<div class="dcard">
+      <div class="dch">docs &amp; map</div>
+      <div class="dstats">
+        ${this.stat('documented', d.coverage.docPct + '%', d.coverage.citedPct === undefined ? null
+          : d.coverage.citedPct === d.coverage.docPct ? 'all of it cited'
+          : d.coverage.citedPct + '% cited · rest swept by `cover`')}
+        ${this.stat('open anchors', d.coverage.open, 'the work queue')}
+        ${this.stat('stale', d.docs.stale, d.docs.stale ? 'code changed' : '')}
+        ${this.stat('anchors', d.coverage.anchors, `${d.coverage.nodes} docs · ${d.coverage.edges} edges`)}
+      </div>
+      <a class="dclink" href="${href(nodesUrl(u))}">browse nodes ›</a>
+    </div>`;
+  }
+
   template() {
     const u = this.props.params.universe, d = this.state.d;
     // Same gating as the header's view bar (`viewEnabled`): the event-graph views
@@ -935,80 +1076,48 @@ class DashboardPage extends Component {
     // renderers are real links and neither builds a function per render.
     /** @type {[label: string, url: string, gate?: string][]} */
     const navAll = [
-      ['nodes', nodesUrl(u)], ['event matrix', matrixUrl(u), 'matrix'], ['pipeline', pipelineUrl(u), 'pipeline'],
+      ['nodes', nodesUrl(u)], ['diff', diffUrl(u)], ['shared', sharedHubUrl(u)],
+      ['requirements', rulesUrl(u)], ['conformance', conformanceUrl(u)], ['branch findings', branchUrl(u)],
+      ['event matrix', matrixUrl(u), 'matrix'], ['pipeline', pipelineUrl(u), 'pipeline'],
       ['state map', stateMapUrl(u), 'states'], ['flows', flowsUrl(u)], ['bugs', bugsUrl(u)], ['orphans', orphansUrl(u)],
       ['PRs', prsUrl(u), 'prs'], ['browse files', treeUrl(u, '')],
     ];
     const nav2 = navAll.filter(x => viewEnabled(d, x[2]));
     return pageShell(d, taskError(this.load), () => html`
       <div class="crumbs"><b>${u}</b> <span class="sep">·</span> overview${when(d.tripwires && d.tripwires.armed && this.canEnableAlerts(), () => html` <span class="sep">·</span> <button title="get a browser notification when a watched tripwire fires" on-click="${() => this.enableAlerts()}">🔔 enable alerts</button>`)}</div>
+      ${servedNote(d.standard)}
       ${when(d.attention > 0, () => html`<div class="attn-banner">
         <span class="attn-n">⚠ ${d.attention}</span>
         <span>item${d.attention === 1 ? '' : 's'} need attention:</span>
-        ${when(d.docs.stale, () => html`<a class="attn-pill" href="${href(nodesUrl(u))}">${d.docs.stale} stale doc${d.docs.stale === 1 ? '' : 's'}</a>`)}
-        ${when(d.docs.dangling, () => html`<a class="attn-pill bad" href="${href(nodesUrl(u))}">${d.docs.dangling} dangling</a>`)}
-        ${when(d.bugs.possiblyFixed, () => html`<a class="attn-pill" href="${href(bugsUrl(u), { status: 'open' })}">${d.bugs.possiblyFixed} bug${d.bugs.possiblyFixed === 1 ? '' : 's'} possibly fixed</a>`)}
-        ${when(d.reverted, () => html`<span class="attn-pill bad" title="code moved BACK to a body signed before it was superseded here — the tick still reads green, and probably should not">${d.reverted} approval${d.reverted === 1 ? '' : 's'} on reverted code</span>`)}
-        ${when(d.tripwires && d.tripwires.fired.length, () => html`<a class="attn-pill bad" title="business-critical code you're watching changed" href="${href(nodesUrl(u))}">🔔 ${d.tripwires.fired.length} tripwire${d.tripwires.fired.length === 1 ? '' : 's'} fired</a>`)}
-        ${when(d.openQuestions, () => html`<span class="attn-pill q">${d.openQuestions} open question${d.openQuestions === 1 ? '' : 's'}</span>`)}
-        <span class="attn-hint">re-validate via <code>check_stale</code> / the bugs tab</span>
+        ${each(this.pills(u, d).filter(p => p.url), p => html`<a class="attn-pill ${p.cls || ''}" title="${p.title}" href="${href(p.url)}">${p.label}</a>`, p => p.key)}
+        ${each(this.pills(u, d).filter(p => !p.url), p => html`<span class="attn-pill ${p.cls || ''}" title="${p.title}">${p.label}</span>`, p => p.key)}
       </div>`, () => html`<div class="attn-banner ok"><span class="attn-n">✓</span> <span>${d.bugs.unverifiable
-        ? `nothing stale — but ${d.bugs.unverifiable} bug${d.bugs.unverifiable === 1 ? '' : 's'} cannot be checked against this index`
-        : 'nothing stale — docs and bugs are current with the code'}</span></div>`)}
+        ? `nothing queued — but ${d.bugs.unverifiable} bug${d.bugs.unverifiable === 1 ? '' : 's'} cannot be checked against this index`
+        : 'nothing queued — docs, findings and the standard are all current'}</span></div>`)}
 
       <div class="dcards">
-        <div class="dcard">
-          <div class="dch">documentation</div>
-          <div class="dstats">
-            ${this.stat('documented', d.coverage.docPct + '%', d.coverage.citedPct === undefined ? null
-              : d.coverage.citedPct === d.coverage.docPct ? 'all of it cited'
-              : d.coverage.citedPct + '% cited · rest swept by `cover`')}
-            ${this.stat('open anchors', d.coverage.open, 'the work queue')}
-            ${this.stat('doc nodes', d.coverage.nodes)}
-          </div>
-          <a class="dclink" href="${href(nodesUrl(u))}">browse nodes ›</a>
-        </div>
-        <div class="dcard">
-          <div class="dch">docs health</div>
-          <div class="dstats">
-            ${this.stat('fresh', d.docs.fresh)}
-            ${this.stat('stale', d.docs.stale, d.docs.stale ? 'code changed' : '')}
-            ${this.stat('dangling', d.docs.dangling, d.docs.dangling ? 'code removed' : '')}
-          </div>
-        </div>
-        <div class="dcard">
-          <div class="dch">bugs</div>
-          <div class="dstats">
-            ${this.stat('open', d.bugs.open)}
-            ${this.stat('possibly fixed', d.bugs.possiblyFixed, d.bugs.possiblyFixed ? 're-validate' : '')}
-            ${when(d.bugs.unverifiable, () => this.stat("can't check", d.bugs.unverifiable, 'ids from another build'))}
-            ${this.stat('total', d.bugs.total)}
-          </div>
-          <a class="dclink" href="${href(bugsUrl(u))}">triage bugs ›</a>
-        </div>
-        <div class="dcard">
-          <div class="dch">map</div>
-          <div class="dstats">
-            ${this.stat('anchors', d.coverage.anchors)}
-            ${this.stat('edges', d.coverage.edges)}
-            ${this.stat('notes', d.annotations)}
-          </div>
-          <div class="dclink dim">baseline ${d.baselineCommit ? d.baselineCommit.slice(0, 8) : '—'}</div>
-        </div>
+        ${this.branchCard(u, d)}
+        ${this.reviewCard(u, d)}
+        ${this.standardCard(u, d)}
+        ${this.docsCard(u, d)}
       </div>
 
       ${when(this.state.q && this.state.q.questions && this.state.q.questions.length, () => html`<div class="sec">open questions (${this.state.q.open}) <span class="dim">— left during review; answer by improving the doc, then resolve</span></div>
-        ${each(this.state.q.questions, qn => html`<div class="dq ${qn.resolved ? 'resolved' : ''}">
+        ${each(this.state.q.questions.slice(0, DASH_LIST_MAX), qn => html`<div class="dq ${qn.resolved ? 'resolved' : ''}">
           <div class="dqh"><span class="qbadge">${qn.target.kind}</span> <a class="dqt" href="${href(this.qTarget(qn.target))}">${qn.targetLabel}</a> <span class="dim">${qn.author}</span>
             <button class="annores" on-click="${() => this.resolveQ(qn.id)}">${qn.resolved ? 'reopen' : 'resolve'}</button></div>
           <md-content text="${qn.text}"></md-content>
-        </div>`, qn => qn.id)}`)}
+        </div>`, qn => qn.id)}
+        ${when(this.state.q.questions.length > DASH_LIST_MAX, () => html`<div class="dim dmore">and ${this.state.q.questions.length - DASH_LIST_MAX} more — resolve these to see the rest</div>`)}`)}
 
-      ${when(this.state.lint && this.state.lint.count, () => html`<div class="sec">summary-drift candidates (${this.state.lint.count}) <span class="dim">— summary asserts an absolute the body qualifies; re-read the body, bound the summary if it over-reaches</span></div>
-        ${each(this.state.lint.candidates, ln => html`<div class="dq drift">
+      ${when(this.state.lint && this.state.lint.count, () => html`<details class="dfold">
+        <summary>${this.state.lint.count} summary-drift candidate${this.state.lint.count === 1 ? '' : 's'} <span class="dim">— a summary asserts an absolute its body qualifies. Candidates to re-read, not a queue.</span></summary>
+        ${each(this.state.lint.candidates.slice(0, DASH_LIST_MAX), ln => html`<div class="dq drift">
           <div class="dqh"><span class="qbadge drift" title="summary says “${ln.absolute}”, body says “${ln.qualifier}”">“${ln.absolute}” vs “${ln.qualifier}”</span> <a class="dqt" href="${href(nodeUrl(u, ln.id))}">${ln.title}</a></div>
           <div class="dim" style="font-size:12.5px">${ln.summary}</div>
-        </div>`, ln => ln.id)}`)}
+        </div>`, ln => ln.id)}
+        ${when(this.state.lint.count > DASH_LIST_MAX, () => html`<div class="dim dmore">and ${this.state.lint.count - DASH_LIST_MAX} more</div>`)}
+      </details>`)}
 
       <div class="sec">explore</div>
       <div class="dnav">${each(nav2, x => html`<a class="btnlike" href="${href(x[1])}">${x[0]}</a>`, x => x[0])}</div>

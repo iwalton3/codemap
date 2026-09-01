@@ -1,12 +1,17 @@
 import { type Anchor, type LogicalNode, type AnchorSelector, type CoverageMark } from "../schema.js";
-import { originSlug } from "../git.js";
+import { originSlug, currentBranch, defaultBranch, mergeBase, onDefaultBranch } from "../git.js";
 import { computeStaleness } from "../stale.js";
 import { citedAnchors, isClosed, witnessesOf } from "../shared-bugs.js";
-import { readAnchorStore, readState, loadNodes, readGraph, readBugs, readAnnotations, readCoverage, writeCoverage } from "../store.js";
+import {
+  readAnchorStore, readState, loadNodes, readGraph, readBugs, readAnnotations, readCoverage, writeCoverage,
+  listSnapshots, staleSchemeSnapshots, readBlockedScopes, findingCountsByPr,
+} from "../store.js";
 import { selectAnchors, docPct as computeDocPct, citedPct as computeCitedPct } from "../coverage.js";
 import { revertedMarks, witnessDrift, realDrift } from "../reviews.js";
 import { loadIgnore } from "../ignore.js";
 import { tripwires as triageTripwires } from "../triage.js";
+import { resolveSidecar, inUniverse } from "../sidecar-config.js";
+import { standardStatus } from "./standard.js";
 import { genId, liveIndex, liveAnchors, anchorBrief, coverageFor, loadNodesShared} from "./shared.js";
 
 // ---------------------------------------------------------------------------
@@ -70,15 +75,129 @@ export async function status(root: string) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// The landing page's rollups
+//
+// Three reads the dashboard needs and did NOT have, and every one of them is picked
+// for being cheap enough to sit on the page people land on. The expensive shapes are
+// deliberately not here: `sharedHub` runs three publish dry runs (the notes one walks
+// all 256 buckets) and a branch diff re-indexes the working tree, so both stay on
+// their own pages and the cards below deep-link to them. What a rollup owes the
+// reader is a number worth opening, not the rows.
+// ---------------------------------------------------------------------------
+
+/**
+ * The branch you are on — and whether the diff surface can actually answer for it.
+ *
+ * The second half is the part that is easy to leave out and is the reason this exists.
+ * `diff` needs a CACHED snapshot on the base side, and a snapshot written under another
+ * `ANCHOR_SCHEME`/`HASH_SCHEME` reads as not cached (see CLAUDE.md § Core invariants) —
+ * so a store whose snapshots all predate the current derivation has a `/diff` page that
+ * can only ever error, and nothing anywhere said so. `staleSchemeSnapshots` is the same
+ * SQL the diff's own resolver consults, asked one step earlier.
+ *
+ * `base` is the FORK POINT, not the tip of the trunk: a diff against the trunk's current
+ * head reports everything that landed on it since you branched as your change.
+ */
+async function branchRollup(root: string) {
+  const branch = currentBranch(root);
+  const snaps = await listSnapshots(root);
+  const stale = new Set(staleSchemeSnapshots(root));
+  const usable = snaps.filter((s) => !stale.has(s.ref));
+
+  let trunk: string | null = null, onTrunk = true, base: { ref: string; branch: string | null; at: string } | null = null;
+  try {
+    onTrunk = onDefaultBranch(root);
+    trunk = defaultBranch(root);
+    if (!onTrunk) {
+      // `origin/<trunk>` first: a stale local trunk forks earlier than the branch really
+      // did, which silently widens the diff by everything that landed on it meanwhile.
+      const fork = mergeBase(root, "HEAD", `origin/${trunk}`) ?? mergeBase(root, "HEAD", trunk);
+      base = usable.find((s) => s.ref === fork)
+        ?? usable.find((s) => s.branch === trunk || s.branch === `origin/${trunk}`)
+        ?? null;
+    }
+  } catch { /* gitless, or a detached head — the card degrades to "no base" */ }
+
+  return {
+    branch, trunk, onTrunk, base,
+    /** Cached under a derivation this build cannot compare against. Re-cache with `codemap snapshot`. */
+    staleSnapshots: snaps.length - usable.length,
+    /** No base to diff against — the review surface is unavailable, not merely empty. */
+    noBase: !onTrunk && !base,
+  };
+}
+
+/**
+ * Findings and the team, without the publish dry runs.
+ *
+ * `findingCountsByPr` is one grouped query over the canonical table, so it counts the
+ * team's rows and this machine's alike and works on a store with no sidecar at all —
+ * which matters, because a finding filed locally is still somebody's queue. `waiting`
+ * is `needs_ack`: a person has to look at it.
+ *
+ * The sidecar half reads the STORED fold verdict (`shared_scope`), never the shards, for
+ * the reason `readBlockedScopes` gives. A fork is the one item here a person must act on
+ * and `heal` is theirs alone, so it is reported as its own flag rather than buried in a
+ * count of blocked scopes.
+ */
+async function reviewRollup(root: string) {
+  const perPr = await findingCountsByPr(root);
+  const findings = {
+    total: perPr.reduce((n, r) => n + r.total, 0),
+    waiting: perPr.reduce((n, r) => n + r.waiting, 0),
+    unshared: perPr.reduce((n, r) => n + r.unshared, 0),
+    prs: perPr.length,
+  };
+  const cfg = resolveSidecar(root);
+  if (!cfg) return { findings, sidecar: null };
+  const blocked = (await readBlockedScopes(root)).filter((b) => inUniverse(b.scope, cfg.universe));
+  return {
+    findings,
+    sidecar: {
+      universe: cfg.universe,
+      blocked: blocked.length,
+      forked: blocked.some((b) => /fork/i.test(b.reason)),
+    },
+  };
+}
+
+/**
+ * The standard's queues, or null where there is no standard.
+ *
+ * `standardStatus` and not a second implementation of its six counts: it computes exactly
+ * these already, and a landing page that recomputed them would drift from the hub the
+ * pills link to. Its cost is the six projection reads plus `served()`'s scope check, which
+ * folds only when the shards have moved — the same read the standard hub does on every
+ * visit, so this is not new work per page, it is the same work one page earlier.
+ *
+ * Null, not zeros, when the read fails: a universe with no standard and a standard that
+ * could not be read must not render as a clean one.
+ */
+async function standardRollup(root: string) {
+  try { return await standardStatus(root); } catch { return null; }
+}
+
 /**
  * "Needs attention" rollup for the universe landing page. Composes the cheap,
  * side-effect-free signals the whole system computes — coverage, doc-version
- * status (stored on the node, so no check_stale run here), and bug re-validation
- * — into one work-queue summary. `attention` is the count a human should clear.
+ * status (stored on the node, so no check_stale run here), bug re-validation, the
+ * standard's queues, findings waiting on a person, and the branch's review
+ * readiness — into one work-queue summary. `attention` is the count a human should
+ * clear.
+ *
+ * **`attention` has to reach every subsystem, and for a while it did not.** It summed
+ * docs and bugs only, so the page rendered its green "nothing stale — docs and bugs are
+ * current with the code" while the standard had overdue scrubs and acknowledgements past
+ * revalidation, findings sat waiting on a human, and the sidecar's writer id was FORKED.
+ * A landing page that says a universe is clean is making a claim about the universe, not
+ * about the two subsystems it happens to read. `dashboard-attention.test.ts` fails if a
+ * new queue is added above and left out of the sum.
  */
 export async function dashboard(root: string) {
-  const [{ store, nodes, result }, graph, bugStore, annStore] = await Promise.all([
+  const [{ store, nodes, result }, graph, bugStore, annStore, branch, review, standard] = await Promise.all([
     coverageFor(root), readGraph(root), readBugs(root), readAnnotations(root),
+    branchRollup(root), reviewRollup(root), standardRollup(root),
   ]);
   let commit: string | null = null;
   try { commit = (await readState(root)).lastVerifiedCommit; } catch { /* not initialized */ }
@@ -136,10 +255,42 @@ export async function dashboard(root: string) {
     openQuestions,
     tripwires: { fired: tw.fired.map((f) => ({ kind: f.target.kind, id: f.target.id, importance: f.importance, reason: f.reason })), armed: tw.armedCount },
     baselineCommit: commit,
+    branch, review, standard,
     // The single number a reviewer/agent should drive to zero.
     reverted: reverted.length,
-    attention: staleDocs + danglingDocs + possiblyFixed + openQuestions + tw.fired.length + reverted.length,
+    attention: staleDocs + danglingDocs + possiblyFixed + openQuestions + tw.fired.length + reverted.length
+      + attentionFromStandard(standard) + attentionFromReview(review)
+      // ONE item, not one per stale snapshot: the reader's job here is "re-cache the
+      // base", which is a single act however many rows are behind it.
+      + (branch.noBase ? 1 : 0),
   };
+}
+
+/**
+ * The standard's contribution to `attention`.
+ *
+ * `overdue.acknowledgements` and NOT `queues.acknowledgementsDue`: `standardStatus`
+ * computes both from one `silenced()` call precisely so they cannot disagree, which
+ * makes summing both a double count of the same rows.
+ */
+function attentionFromStandard(s: Awaited<ReturnType<typeof standardRollup>>): number {
+  if (!s) return 0;
+  const q = s.queues;
+  return s.overdue.scrubs + s.overdue.acknowledgements
+    + q.pendingSpecs + q.awaitingAdjudication + q.actionableProblems
+    + q.promotableAudits + q.settledWithoutAdjudication;
+}
+
+/**
+ * Findings and the team's contribution to `attention`.
+ *
+ * `waiting` only — the total is a workload, not a queue, and a page that counted every
+ * open finding would never reach zero on a repo anyone reviews. A fork is one item
+ * because `heal` is one act; blocked scopes are counted individually because each is a
+ * different scope that answers non-authoritatively until somebody looks at it.
+ */
+function attentionFromReview(r: Awaited<ReturnType<typeof reviewRollup>>): number {
+  return r.findings.waiting + (r.sidecar ? r.sidecar.blocked + (r.sidecar.forked ? 1 : 0) : 0);
 }
 
 // Absolutes in a summary are universal claims (highest blast radius, least re-read);

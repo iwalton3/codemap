@@ -18,7 +18,7 @@ import type { ScopeStatus, ScopeDiagnostic, LogEvent } from "./eventlog.js";
 import { scopesOnDisk, readScopeChecked, writerFor, rotateWriter, acknowledgeScope } from "./eventlog.js";
 import { findingsProjection, docsProjection, notesProjection, walkthroughsProjection, triageProjection, docsByNode, projectionFor } from "./shared-projections.js";
 import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
-import { resolveSidecar, scopeFor, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
+import { resolveSidecar, scopeFor, sidecarIdentity, inUniverse, type SidecarConfig } from "./sidecar-config.js";
 import { originSlug, headCommit, currentBranch, isAncestor } from "./git.js";
 import { fetchReviewThreads, type GhRunner } from "./pr-push.js";
 import { ensureSidecar, sync as sidecarSync, receive as sidecarReceive, healMerge, readManifests, checkPeers, currentManifest } from "./sidecar.js";
@@ -103,12 +103,6 @@ const prKey = (cfg: SidecarConfig, pr: number | string) => {
   return scopeFor(cfg, "pr", key);
 };
 
-
-/** Is this scope part of the universe we are syncing? One sidecar can carry several. */
-function inUniverse(scope: string, universe: string): boolean {
-  const rest = scope.slice(scope.indexOf("/") + 1);
-  return rest === universe || rest.startsWith(universe + "/");
-}
 
 export interface Materialized {
   /** Scopes considered — the whole universe, not just the ones that moved. */
