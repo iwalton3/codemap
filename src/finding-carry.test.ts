@@ -1,0 +1,101 @@
+/**
+ * The carry — a finding that is real, is not being fixed now, and comes back.
+ *
+ * The state between "blocks the merge" and "confirmed bug", which had no record. Measured
+ * across two live universes: 97 findings still open on pull requests that had merged, 46
+ * of them still exactly true of the trunk, and 41 of those 46 with no disposition of any
+ * kind. The seven deferrals anybody HAD recorded carried no release condition at all —
+ * the escape hatch was prose, including one reading "deferred to bug_7a5b29e71285 so it
+ * survives the PR closing", which is the bug queue being used as a holding pen.
+ *
+ * Every test drives `foldFindings` on hand-built events, because that is the only way
+ * this project has ever found a guard-in-one-end defect (CLAUDE.md § the sidecar). The
+ * fold is the authority: a write-time check protects the honest writer and nobody else.
+ */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { foldFindings } from "./shared-findings.js";
+import type { LogEvent } from "./eventlog.js";
+import type { Actor, BugWitness } from "./schema.js";
+
+const PERSON: Actor = { principal: "izzie@x.com" };
+const AGENT: Actor = { principal: "izzie@x.com", via: { kind: "agent", model: "claude-opus-5" } };
+const W: BugWitness = { anchorId: "a_1", bodyHash: "h2:aaaa:sha256:bbbb" };
+
+let seq = 0;
+const ev = (kind: string, actor: Actor, data: Record<string, unknown>): LogEvent =>
+  ({ id: `e${++seq}`, kind, subject: "f_1", actor, at: "2026-09-01T00:00:00Z", data } as unknown as LogEvent);
+
+const created = (over: Record<string, unknown> = {}) =>
+  ev("finding.created", AGENT, { targetKind: "anchor", targetId: "a_1", text: "real thing", ...over });
+
+const fold = (...events: LogEvent[]) => foldFindings(events).get("f_1")!;
+
+test("a carry needs a release condition, and the fold is what enforces it", () => {
+  const ok = fold(created(), ev("finding.carried", PERSON, {
+    until: "2026-11-01", reason: "CreditLineDomain is slated for replacement", witness: W,
+  }));
+  assert.equal(ok.carry?.until, "2026-11-01");
+  assert.equal(ok.carry?.reason, "CreditLineDomain is slated for replacement");
+  assert.deepEqual(ok.carry?.witness, W, "the code as it stood when somebody said 'not now'");
+
+  // Each of these is a carry that would never wake. `acknowledgements` refuses the same
+  // shape for the same reason: a record that silences something permanently and silently
+  // is worse than no record, and every deferral in the measured data was in this state.
+  assert.equal(fold(created(), ev("finding.carried", PERSON, { reason: "not now", witness: W })).carry,
+    undefined, "no date at all");
+  assert.equal(fold(created(), ev("finding.carried", PERSON, { until: "soon", reason: "not now" })).carry,
+    undefined, "a date that is not a date");
+  assert.equal(fold(created(), ev("finding.carried", PERSON, { until: "2026-11-01" })).carry,
+    undefined, "no reason — it is a record of a decision, not a mute button");
+});
+
+test("an agent may not carry a finding, and may not release one either", () => {
+  // The queue-clearing move, from both sides. With a backlog this size, deferral is the
+  // cheapest way to empty a queue — which is exactly why `debt` is principal-granted one
+  // subsystem over, and the argument transfers unchanged.
+  assert.equal(fold(created(), ev("finding.carried", AGENT, { until: "2026-11-01", reason: "not now", witness: W })).carry,
+    undefined, "an agent's carry is dropped by the fold, not merely refused by the tool");
+
+  const granted = ev("finding.carried", PERSON, { until: "2026-11-01", reason: "r" });
+  const after = fold(created(), granted, ev("finding.carryReleased", AGENT, { reason: "clearing the queue" }));
+  assert.equal(after.carry?.until, "2026-11-01", "and an agent cannot end one a person granted");
+
+  const byPerson = fold(created(), granted, ev("finding.carryReleased", PERSON, { reason: "doing it now" }));
+  assert.equal(byPerson.carry, undefined, "…while the person who granted it can");
+});
+
+test("a later carry supersedes an earlier one; the ref is evidence, never the condition", () => {
+  const pushed = fold(created(),
+    ev("finding.carried", PERSON, { until: "2026-11-01", reason: "first" }),
+    ev("finding.carried", PERSON, { until: "2027-01-01", reason: "pushed out" }));
+  assert.equal(pushed.carry?.until, "2027-01-01");
+  assert.equal(pushed.carry?.reason, "pushed out");
+
+  // A Jira issue rides along as evidence. It is NOT what releases the carry — a ticket
+  // closed as won't-do, moved or deleted must not be able to silence this forever.
+  const withRef = fold(created(), ev("finding.carried", PERSON, {
+    until: "2026-11-01", reason: "r", system: "jira", key: "Acme-742",
+  }));
+  assert.equal(withRef.carry?.ref?.key, "Acme-742");
+  assert.equal(withRef.carry?.until, "2026-11-01", "the date is still the condition");
+});
+
+test("an AGENT may attach a missing witness, but never over one that exists", () => {
+  // The bucket nothing else can touch: 19% of the measured backlog has no witness, so no
+  // drift question can be asked about it at all. Repair is evidence, not a disposition,
+  // which is why this is the one act here an agent may perform.
+  const repaired = fold(created(), ev("finding.rewitnessed", AGENT, { witness: W }));
+  assert.deepEqual(repaired.witness, W);
+  assert.equal(repaired.witnessAttached?.by.via?.kind, "agent",
+    "and it is marked, because it cannot testify about the code at filing time");
+
+  const original: BugWitness = { anchorId: "a_orig", bodyHash: "h2:orig:sha256:orig" };
+  const untouched = fold(created({ witness: original }), ev("finding.rewitnessed", AGENT, { witness: W }));
+  assert.deepEqual(untouched.witness, original,
+    "replacing a witness re-baselines every drift answer that depends on it");
+  assert.equal(untouched.witnessAttached, undefined, "and the marker must not appear either");
+
+  assert.equal(fold(created(), ev("finding.rewitnessed", AGENT, { witness: { anchorId: "a_1" } })).witness,
+    undefined, "half a witness is not a witness");
+});

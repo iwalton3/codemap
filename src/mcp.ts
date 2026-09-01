@@ -667,7 +667,7 @@ const tools: Tool[] = [
   },
   {
     name: "defer_finding",
-    description: "Defer a pull-request finding into a bug, so it is not lost when the PR closes. The ONLY route from a finding to a bug — filing a second copy with `report_defect` loses the cross-link and the history.\n\nThe bug is witnessed at the ref the FINDING was witnessed at, so a finding about code the pull request INTRODUCES defers like any other — that code is in this store under the branch's snapshot, which `codemap pr <N>` wrote.\n\nThe finding SURVIVES and cross-links — the PR's history should still show it was raised there — and what transfers is the obligation: the finding stops asking for a decision because the bug is asking now. The bug's id is derived from the finding's, so two people accepting the same finding independently land on ONE bug rather than two.\n\nThe bug is filed against the anchors the finding names, witnessed here. A finding on a node takes that node's citations in THIS checkout, which is a judgement about what the defect covers — check it is the right code first.",
+    description: "Defer a pull-request finding into a bug, so it is not lost when the PR closes. The ONLY route from a finding to a bug — filing a second copy with `report_defect` loses the cross-link and the history.\n\nONE AT A TIME, on the merits. A finding that is a real defect somebody intends to fix belongs here, and that is the ordinary case — what breaks the bug queue is MASS conversion, sweeping a pull request's leftovers into it to get them out of the way. Do that and the queue stops meaning \"defects we said we would fix\" and starts meaning \"things reported on a PR six months ago\", which is a queue people stop reading. The record already shows the shape: a bug minted with the rationale \"so it survives the PR closing\".\n\nSo defer the ones that warrant a defect record. For the rest — real, not worth a bug, and needing to come back — a PERSON carries the finding instead; it stays a finding, keeps its witness, and wakes on its date or when its code is touched. `finding_backlog` shows both.\n\nThe bug is witnessed at the ref the FINDING was witnessed at, so a finding about code the pull request INTRODUCES defers like any other — that code is in this store under the branch's snapshot, which `codemap pr <N>` wrote.\n\nThe finding SURVIVES and cross-links — the PR's history should still show it was raised there — and what transfers is the obligation: the finding stops asking for a decision because the bug is asking now. The bug's id is derived from the finding's, so two people accepting the same finding independently land on ONE bug rather than two.\n\nThe bug is filed against the anchors the finding names, witnessed here. A finding on a node takes that node's citations in THIS checkout, which is a judgement about what the defect covers — check it is the right code first.",
     inputSchema: obj({
       id: { type: "string", description: "A finding id, from `findings` or `shared_findings`. It carries its own pull request." },
       finding: { type: "string", description: "Deprecated alias for `id` — every sibling tool in this workflow spells it `id`." },
@@ -1109,6 +1109,23 @@ const tools: Tool[] = [
     inputSchema: obj({ nodeId: { type: "string" }, versionId: { type: "string", description: "Defaults to the version that resolves here." } }, ["nodeId"]),
     mutates: true,
     handler: (a, c) => shared.confirmSharedDoc(c.universe.path, a.nodeId, a.versionId),
+  },
+  {
+    name: "finding_backlog",
+    description: "Every open finding, sorted by what the CODE says about it — the queue for findings that were real but never disposed of.\n\nThe pile this answers: a finding neither severe enough to hold a pull request nor worth promoting to a bug had nowhere to go, so it stayed open on a pull request that merged and nothing looked at it again. Measured across two universes: 97 of them, 46 still exactly true of the trunk.\n\nSix buckets, each with a different next action:\n\n- `live` — the witnessed code is UNCHANGED, so the claim is still true of the code and nobody has disposed of it. The real backlog.\n- `moved` — the code changed; re-validate before believing either way.\n- `unjudgeable` — no witness, or one this build cannot compare, so nothing can say. Repair with `rewitness_finding`; this is the bucket that is never fixed if you leave it.\n- `due` — carried, and the release date has passed.\n- `woken` — carried, and somebody is editing the exact code the deferral was about.\n- `sleeping` — carried, still asleep. NOT debt, and deliberately not in `attention`.\n\nCarrying a finding is a person's act and there is deliberately no tool for it here. What you can do: investigate the live and unjudgeable buckets, then report what you found through the ordinary finding verbs.",
+    inputSchema: obj({ asOf: { type: "string", description: "ISO date to judge carries against. Defaults to today." } }, []),
+    handler: (a, c) => shared.findingBacklog(c.universe.path, { asOf: a.asOf }),
+  },
+  {
+    name: "rewitness_finding",
+    description: "Attach a witness to a finding that was filed without one — the one repair here an agent may make on its own.\n\nA finding with no witness cannot be judged against code by anything: it cannot be re-checked when a branch lands, it cannot be shown as live or fixed, and it can never leave `finding_backlog`'s `unjudgeable` bucket. That was 19% of the measured backlog. It is evidence-gathering rather than a disposition, which is why it is not gated on a person.\n\nIt hashes the anchor AS IT IS NOW, so the witness testifies from now on and NOT about the code when the finding was filed — the record says so, and you should read the finding against the code before attaching one, because a witness on a finding whose subject has since moved silently makes a stale claim look current.\n\nRefused when the finding already has a witness: replacing one would re-baseline every drift answer that depends on it.",
+    inputSchema: obj({
+      pr: { type: ["string", "number"], description: "The pull request the finding is filed against." },
+      id: { type: "string", description: "The finding id." },
+      anchorId: { type: "string", description: "Which anchor witnesses it. Defaults to the finding's own anchor target." },
+    }, ["pr", "id"]),
+    mutates: true,
+    handler: (a, c) => shared.rewitnessFinding(c.universe.path, a.pr, a.id, { anchorId: a.anchorId }),
   },
   {
     name: "shared_triage",

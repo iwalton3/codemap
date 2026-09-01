@@ -751,9 +751,30 @@ const GRAPH_LINKS = [
  * `<details>` rather than component state, and that is a deliberate trade: the open
  * flag lives in the DOM, so there is no store field for read-tracking to miss and no
  * lifecycle hook to get one-shot wrong — both of which this app has already paid for
- * (see CLAUDE.md § Reactivity). The cost is that it does not close on an outside
- * click; clicking a link inside it does, which is the case that matters.
+ * (see CLAUDE.md § Reactivity). Outside-click dismissal is `closeMenusOnOutsideClick`
+ * below, which keeps that trade rather than undoing it: it also works on the DOM.
  */
+/**
+ * Dismiss an open header menu when the click lands anywhere else.
+ *
+ * ONE listener at module scope, not per component, and deliberately so. The menus are
+ * `<details>` precisely to keep their open flag out of component state (see `viewMenu`),
+ * so reaching for a store field or a lifecycle hook to close them would reintroduce
+ * exactly what that choice avoids — and a per-instance listener would need an unmount
+ * hook to remove, which is the same trap one step along. The header is app chrome and
+ * lives as long as the document, so a document listener has nothing to clean up.
+ *
+ * `capture`, because a link inside the panel closes it by its own handler and navigates;
+ * in the bubble phase that handler can re-render the header first and leave this looking
+ * at a node that is no longer in the tree.
+ */
+function closeMenusOnOutsideClick(e) {
+  for (const d of /** @type {NodeListOf<HTMLDetailsElement>} */ (document.querySelectorAll('details.vmenu[open]'))) {
+    if (!d.contains(/** @type {Node} */ (e.target))) d.open = false;
+  }
+}
+if (typeof document !== 'undefined') document.addEventListener('click', closeMenusOnOutsideClick, true);
+
 const viewMenu = (label, links, uni, u) => {
   const shown = links.filter(l => viewEnabled(uni, l[2]));
   return when(shown.length > 0, () => html`<details class="vmenu">

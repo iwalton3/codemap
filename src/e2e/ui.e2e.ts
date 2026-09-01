@@ -29,6 +29,37 @@ describe("web UI", { skip: puppeteer ? false : "puppeteer not resolvable (set CO
   ];
 
   /**
+   * A header menu closes when the click lands somewhere else.
+   *
+   * The menus are `<details>` so their open state stays out of component reactivity, and
+   * the cost of that used to be no outside-click dismissal. The fix is also on the DOM —
+   * one capturing document listener — so the only thing that can verify it is a real
+   * browser with a real click somewhere else on the page.
+   */
+  test("a header popup menu dismisses on an outside click", async () => {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 900 });
+    await page.goto(`${server.url}/#/u/${fixture.universe}/`, { waitUntil: "networkidle0", timeout: 20_000 });
+    await page.waitForSelector("details.vmenu summary", { timeout: 10_000 });
+    const open = () => page.evaluate(() => document.querySelectorAll("details.vmenu[open]").length);
+
+    await page.click("details.vmenu summary");
+    assert.equal(await open(), 1, "the menu opens");
+
+    // Far from the header, on empty page. Before the listener this stayed open.
+    await page.mouse.click(640, 780);
+    assert.equal(await open(), 0, "and an outside click dismisses it");
+
+    // The other half, and the one an over-broad guard would break: the summary must
+    // still toggle its own menu rather than have the outside handler fight it.
+    await page.click("details.vmenu summary");
+    assert.equal(await open(), 1, "reopening still works");
+    await page.click("details.vmenu summary");
+    assert.equal(await open(), 0, "and the summary still closes it");
+    await page.close();
+  });
+
+  /**
    * A node row's cells are SIBLINGS, and the browser is the only thing that can say so.
    *
    * `<span class="vfork">…</a>` inside `<a class="ntitle">` closed the anchor early and

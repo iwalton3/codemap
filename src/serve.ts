@@ -232,6 +232,8 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return shared.sharedStatus(root);
     case "/api/shared/hub":
       return shared.sharedHub(root);
+    case "/api/findings/backlog":
+      return shared.findingBacklog(root, { asOf: q.get("asOf") || undefined });
     case "/api/shared/triage":
       return shared.sharedTriage(root, (q.get("kind") as "node" | "anchor") || undefined, q.get("target") || undefined);
     case "/api/shared/contested":
@@ -557,6 +559,15 @@ const server = createServer(async (req, res) => {
         case "doc_retire": out = await shared.retireSharedDoc(root, body.nodeId, body.rationale ?? ""); break;
         case "walkthrough_share": out = await shared.shareWalkthrough(root, body.walkthrough); break;
         case "relocate": out = await shared.relocateFinding(root, pr, body.id, body.kind, body.rationale ?? "", { to: body.to, apply: body.apply === true }); break;
+        // Carrying is a PERSON's, like `heal` above, and for the same reason one step
+        // over: with a backlog this size deferral is the cheapest way to empty a queue,
+        // so there is deliberately no MCP tool for it (`ops-reach.test.ts` enforces
+        // that). The web is where a principal is actually a principal.
+        case "carry": out = await shared.carryFinding(root, pr, body.id, { until: String(body.until ?? ""), reason: String(body.reason ?? ""), ref: body.ref }); break;
+        case "carry_release": out = await shared.releaseFindingCarry(root, pr, body.id, String(body.reason ?? "")); break;
+        // …and this one an agent MAY do, which is the whole point of it: the witness-less
+        // bucket is the one nothing can judge, and left to people it is never repaired.
+        case "rewitness": out = await shared.rewitnessFinding(root, pr, body.id, { anchorId: body.anchorId }); break;
         default: out = { error: `unknown shared action "${action}"` };
       }
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });

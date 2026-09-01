@@ -29,7 +29,7 @@
  * only to produce a good error instead of a silently dropped event.
  */
 
-import type { Actor, BugSeverity, BugWitness } from "./schema.js";
+import { ISO_DATE, type Actor, type BugSeverity, type BugWitness } from "./schema.js";
 import { isAgentActor, isIndependent, isErrorIndependent, reviewerKey } from "./identity.js";
 import { emitEvent, mintId, readScope, causality, type LogEvent } from "./eventlog.js";
 import { applyRevision, newContestState, type Contested } from "./contest.js";
@@ -251,6 +251,62 @@ export interface SharedFinding {
    * the gate that protects somebody's confirmed wording has nothing to protect here.
    */
   remediation?: { state: Remediation; by: Actor; at: string; detail?: string; ref?: string };
+
+  /**
+   * The finding is real, it is not being fixed now, and it WILL come back.
+   *
+   * The state between "blocks the merge" and "confirmed bug", which had no record. A
+   * finding that was neither severe enough to hold a pull request nor worth promoting
+   * simply stayed open on a pull request that merged, and nothing ever looked at it
+   * again: measured at 97 such findings across two universes, 46 of them still exactly
+   * true of the trunk. The workaround people reached for is in the data — a bug minted
+   * with the detail "deferred to bug_7a5b29e71285 so it survives the PR closing" — which
+   * is what dilutes the bug queue into noise. A carry is the place to put those instead,
+   * and NOTHING here promotes anything to a bug.
+   *
+   * `until` is a release condition and it is REQUIRED, for the reason `acknowledgements`
+   * gives about `revalidateBy`: a linked ticket may be evidence but never the condition,
+   * because a ticket closed as won't-do, moved or deleted leaves the record asleep
+   * permanently and silently. Every one of the seven deferrals in the measured data had
+   * an empty `ref` and no date at all — the release condition lived in prose, so there
+   * was none.
+   *
+   * `witness` is the SECOND half of the condition and is snapshotted here rather than
+   * read off the finding: `SharedFinding.witness` is from filing time, so a carry keyed
+   * on it would wake instantly whenever the code moved between filing and the decision
+   * to carry — which is the common case, since carrying usually follows an investigation.
+   * This one is the code as it stood when somebody said "not now", so drift against it
+   * means somebody is editing the exact code that decision was about.
+   *
+   * Principal-granted, like `debt`. An agent may ask (`ASKS`), never grant: with a
+   * backlog this size, deferral is the cheapest way to clear a queue, and the fold drops
+   * an agent's attempt as well as the tool refusing it.
+   */
+  carry?: {
+    /** ISO date. The release condition, and a required one. */
+    until: string;
+    /** The code when the carry was granted — drift against THIS wakes it early. */
+    witness?: BugWitness;
+    /** Why it is being carried. A record of a decision, not a mute button. */
+    reason: string;
+    by: Actor;
+    at: string;
+    /** Evidence — a Jira issue, a bug. Never the release condition. */
+    ref?: ExternalRef;
+  };
+
+  /**
+   * This finding's `witness` was attached AFTER the fact, so it cannot testify about the
+   * code at filing time — only from `at` onward.
+   *
+   * Findings with no witness at all cannot be judged against the code by anything, and
+   * they were 19% of the measured backlog (a bounded episode: one writer path, three
+   * pull requests, two days in 2026-08, no model and no `sourceRef` recorded). Re-attaching
+   * is evidence work rather than a disposition, so an agent may do it — but a retro
+   * witness must never be mistaken for one captured when the claim was made, which is
+   * what this marks.
+   */
+  witnessAttached?: { by: Actor; at: string };
 
   assignment?: { kind: "investigate" | "fix" | "answer"; by: Actor; at: string; note?: string };
   /**
@@ -547,6 +603,12 @@ const str = (d: Data | undefined, k: string): string | undefined => {
   return typeof v === "string" && v.trim() ? v : undefined;
 };
 
+/** A nested object in an event payload — `str`'s counterpart, for `witness`. */
+const obj = (d: Data | undefined, k: string): Data | undefined => {
+  const v = d?.[k];
+  return v && typeof v === "object" && !Array.isArray(v) ? v as Data : undefined;
+};
+
 /** Fields whose value is a single scalar somebody owns — the only contestable ones. */
 const CONTESTABLE = ["text", "comment", "severity", "category", "line"] as const;
 
@@ -659,6 +721,55 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
           ...(str(d, "detail") ? { detail: str(d, "detail") } : {}),
           ...(str(d, "ref") ? { ref: str(d, "ref") } : {}),
         };
+        break;
+      }
+
+      case "finding.carried": {
+        // BOTH ENDS. `carryFinding` refuses an agent with a sentence; this drops the
+        // event, because a teammate's clone applies the log without ever seeing that
+        // check and a guard in one end binds one machine. Twelve defects of this exact
+        // shape are on record in this subsystem.
+        if (isAgentActor(e.actor)) break;
+        const until = str(d, "until"), reason = str(d, "reason");
+        // No release condition, no carry. The whole point of the record is that it comes
+        // back; one without a date is the permanent silent silencing that
+        // `acknowledgements` refuses for the same reason, and every deferral in the
+        // measured data was in exactly that state.
+        if (!until || !ISO_DATE.test(until) || !reason) break;
+        const w = obj(d, "witness");
+        f.carry = {
+          until, reason, by: e.actor, at: e.at,
+          ...(w && str(w, "anchorId") && str(w, "bodyHash")
+            ? { witness: { anchorId: str(w, "anchorId")!, bodyHash: str(w, "bodyHash")! } } : {}),
+          ...(str(d, "system") ? { ref: { system: str(d, "system")!, key: str(d, "key"), url: str(d, "url"), at: e.at, by: e.actor } } : {}),
+        };
+        break;
+      }
+
+      case "finding.carryReleased":
+        // Also principal-only, and for the symmetrical reason: an agent that could end a
+        // carry could end every carry, which is the same queue-clearing move from the
+        // other side. Deleting the field rather than dating it — the carry is over, and
+        // the events remain the history.
+        if (isAgentActor(e.actor)) break;
+        delete f.carry;
+        break;
+
+      case "finding.rewitnessed": {
+        // An AGENT may do this, deliberately: it is evidence-gathering, not a disposition,
+        // and the bucket it repairs (19% of the measured backlog) is precisely the one
+        // nothing else can touch. What it must never do is look like a witness captured
+        // when the claim was made — `witnessAttached` is what keeps those distinguishable.
+        const w = obj(d, "witness");
+        const anchorId = w && str(w, "anchorId"), bodyHash = w && str(w, "bodyHash");
+        if (!anchorId || !bodyHash) break;
+        // Never over an existing witness. A witness is the evidence a finding was filed
+        // against; replacing it would silently re-baseline every drift answer that
+        // depends on it, which is the "amendment re-baselines the witnesses away" problem
+        // one subsystem over. Repair is for findings that have none.
+        if (f.witness) break;
+        f.witness = { anchorId, bodyHash };
+        f.witnessAttached = { by: e.actor, at: e.at };
         break;
       }
 
@@ -847,6 +958,30 @@ export const remediate = (logRoot: string, pr: number | string, actor: Actor, id
   state: Remediation, detail?: string, ref?: string) =>
   emit(logRoot, pr, actor, id, "finding.remediated",
     { state, ...(detail ? { detail } : {}), ...(ref ? { ref } : {}) });
+
+/**
+ * Carry a finding: real, not now, and it comes back.
+ *
+ * `until` and `reason` are both required and the FOLD checks them too — an event missing
+ * either is a carry that never wakes, which is the failure this record exists to prevent.
+ * `witness` is the code as it stands NOW, not the finding's filing witness; see
+ * `SharedFinding.carry`.
+ */
+export const carry = (
+  logRoot: string, pr: number | string, actor: Actor, id: string,
+  input: { until: string; reason: string; witness?: BugWitness; ref?: { system: string; key?: string; url?: string } },
+) => emit(logRoot, pr, actor, id, "finding.carried", {
+  until: input.until, reason: input.reason,
+  ...(input.witness ? { witness: { ...input.witness } } : {}),
+  ...(input.ref ? { system: input.ref.system, ...(input.ref.key ? { key: input.ref.key } : {}), ...(input.ref.url ? { url: input.ref.url } : {}) } : {}),
+} as Data);
+
+export const releaseCarry = (logRoot: string, pr: number | string, actor: Actor, id: string, reason: string) =>
+  emit(logRoot, pr, actor, id, "finding.carryReleased", { reason });
+
+/** Attach a witness to a finding filed without one. Evidence, so an agent may do it. */
+export const rewitness = (logRoot: string, pr: number | string, actor: Actor, id: string, witness: BugWitness) =>
+  emit(logRoot, pr, actor, id, "finding.rewitnessed", { witness: { ...witness } } as Data);
 
 export const promote = (logRoot: string, pr: number | string, actor: Actor, id: string) =>
   emit(logRoot, pr, actor, id, "finding.promoted");

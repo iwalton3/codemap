@@ -19,6 +19,8 @@ import { scopesOnDisk, readScopeChecked, writerFor, rotateWriter, acknowledgeSco
 import { findingsProjection, docsProjection, notesProjection, walkthroughsProjection, triageProjection, docsByNode, projectionFor } from "./shared-projections.js";
 import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
 import { resolveSidecar, scopeFor, sidecarIdentity, inUniverse, type SidecarConfig } from "./sidecar-config.js";
+import { ISO_DATE, type BugWitness } from "./schema.js";
+import { witnessDrift, realDrift } from "./reviews.js";
 import { originSlug, headCommit, currentBranch, isAncestor } from "./git.js";
 import { fetchReviewThreads, type GhRunner } from "./pr-push.js";
 import { ensureSidecar, sync as sidecarSync, receive as sidecarReceive, healMerge, readManifests, checkPeers, currentManifest } from "./sidecar.js";
@@ -35,11 +37,13 @@ import {
   type NewNote, type NoteKind,
 } from "./shared-notes.js";
 import { assertTriageBatch, triageScope, triageOf, isTombstone, type SharedTriage } from "./shared-triage.js";
+import { carry, releaseCarry, rewitness, isClosed } from "./shared-findings.js";
 import { cachedTriage, materializeTriage } from "./triage-publish.js";
 export { mirrorNote } from "./notes-publish.js";
 export { sharedKnowsNode, docsVerdict, type DocsVerdict } from "./docs-lookup.js";
 import { docsVerdict } from "./docs-lookup.js";
 import { queueContestedTriage } from "./ops/triage.js";
+import { liveAnchors, liveIndex } from "./ops/shared.js";
 export { mirrorTriage, mirrorTriageBatch, mirrorTriageClear } from "./triage-publish.js";
 import { readSharedNotes, readAnnotations, readAnchorStore, readFindings, loadNodes, loadNodeVersions, nodeIdsWithPublishableVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets, attributeLocalWalkthrough, readBlockedScopes, findingCountsByPr, readUnpublishedWalkthroughs } from "./store.js";
 import {
@@ -423,6 +427,206 @@ export async function remediateFinding(
   await remediate(b.cfg.path, prKey(b.cfg, pr), b.actor, id, state, opts.detail, opts.ref);
   const mz = await materializeFindings(root, b.cfg, pr);
   return { ...mz, ok: true, id, remediation: state };
+}
+
+/**
+ * The finding backlog — every open finding, sorted by what the CODE says about it.
+ *
+ * The queue that did not exist, and it is a projection rather than a record because
+ * every bucket is derivable: nothing here is stored, so no fold can disagree with it and
+ * there is nothing to keep in sync. Six buckets, and the split is the whole design —
+ * "97 open findings" is one number nobody can act on, and these are six that name a
+ * different next action each.
+ *
+ * **Nothing here promotes anything to a bug.** A bug queue that everything drains into
+ * is a bug queue people learn to ignore, which is the failure this was built to avoid
+ * rather than cause; `carried` exists precisely so that promotion can stay a deliberate,
+ * one-at-a-time act.
+ *
+ * Judged against the WORKING TREE, which is what `liveAnchors` reads. That is the honest
+ * "now" for a local read — and it is why `woken` says somebody is editing the code
+ * rather than claiming the trunk moved.
+ */
+export async function findingBacklog(root: string, opts: { asOf?: string } = {}) {
+  const asOf = opts.asOf ?? new Date().toISOString().slice(0, 10);
+  const all = (await readFindings(root, {})).findings.filter((f) => !isClosed(f.state));
+
+  // One re-index of every witnessed file, not one per finding.
+  const store = await readAnchorStore(root).catch(() => null);
+  const fileOf = new Map((store?.anchors ?? []).map((a) => [a.id, a.file]));
+  const files = new Set<string>();
+  for (const f of all) {
+    for (const id of [f.witness?.anchorId, f.carry?.witness?.anchorId]) {
+      const file = id && fileOf.get(id);
+      if (file) files.add(file);
+    }
+  }
+  const idx = liveIndex(root, await liveAnchors(root, files));
+
+  const row = (f: SharedFinding) => ({
+    id: f.id, pr: f.pr, target: f.target, severity: f.severity, text: f.text,
+    state: f.state, needsAck: needsHumanAck(f), author: f.author,
+    ...(f.carry ? { carry: f.carry } : {}),
+    ...(f.witnessAttached ? { witnessAttached: f.witnessAttached } : {}),
+  });
+  const drifted = (w?: BugWitness) => {
+    if (!w) return null;
+    const changes = witnessDrift([w], idx);
+    if (!changes.length) return "same" as const;
+    return realDrift(changes).length ? "moved" as const : "undecidable" as const;
+  };
+
+  const b = {
+    /** Carried, the date has passed. The release condition fired. */
+    due: [] as ReturnType<typeof row>[],
+    /** Carried, and somebody is editing the exact code the decision was about. */
+    woken: [] as ReturnType<typeof row>[],
+    /** Carried and still asleep — not debt, and deliberately not in `attention`. */
+    sleeping: [] as ReturnType<typeof row>[],
+    /** Not carried, code unchanged: a live claim about the code, with no disposition. */
+    live: [] as ReturnType<typeof row>[],
+    /** Not carried, code moved: re-validate. The existing `possiblyFixed` question. */
+    moved: [] as ReturnType<typeof row>[],
+    /** No witness, or one this build cannot compare. Nothing can judge these — `rewitness_finding` repairs them. */
+    unjudgeable: [] as ReturnType<typeof row>[],
+  };
+
+  for (const f of all) {
+    if (f.carry) {
+      // Date first, because it is the condition that is guaranteed to fire. Drift is the
+      // early wake, and a carry with no witness simply never takes that path — which is
+      // exactly what an acknowledgement has always done.
+      if (f.carry.until <= asOf) b.due.push(row(f));
+      else if (drifted(f.carry.witness) === "moved") b.woken.push(row(f));
+      else b.sleeping.push(row(f));
+      continue;
+    }
+    const d = drifted(f.witness);
+    if (d === "same") b.live.push(row(f));
+    else if (d === "moved") b.moved.push(row(f));
+    else b.unjudgeable.push(row(f));
+  }
+
+  return {
+    asOf,
+    counts: Object.fromEntries(Object.entries(b).map(([k, v]) => [k, v.length])),
+    ...b,
+    /**
+     * What a person actually owes. `sleeping` is excluded ON PURPOSE — a carry with a
+     * live release condition is a decision that has been made, and counting it as debt
+     * would make the one honest way to defer look identical to ignoring the thing.
+     */
+    attention: b.due.length + b.woken.length + b.live.length + b.moved.length + b.unjudgeable.length,
+  };
+}
+
+/**
+ * The anchor's hash AS IT STANDS NOW — the code, not the store's cached row.
+ *
+ * `liveAnchors` re-reads the file, which is the point: a carry's release condition and a
+ * repaired witness must both describe the working tree at the moment of the act, not
+ * whatever the last index happened to record.
+ */
+async function witnessNow(root: string, anchorId: string): Promise<BugWitness | undefined> {
+  const known = (await readAnchorStore(root).catch(() => null))?.anchors.find((a) => a.id === anchorId);
+  if (!known) return undefined;
+  const live = (await liveAnchors(root, [known.file])).get(anchorId);
+  return live ? { anchorId, bodyHash: live.bodyHash } : undefined;
+}
+
+/**
+ * Carry a finding: real, not now, and it comes back.
+ *
+ * The verb that did not exist. A finding neither severe enough to hold a pull request
+ * nor worth promoting had nowhere to go, so it stayed open on a merged pull request and
+ * nothing looked at it again — 97 of them across two universes, 46 still exactly true of
+ * the trunk. The workaround was minting a bug as a survival vehicle, which is how a bug
+ * queue turns into noise; this is the place to put those instead, and nothing here
+ * promotes anything to a bug.
+ *
+ * **The witness is snapshotted HERE, at grant time, and that is the whole subtlety.**
+ * `f.witness` is from filing time, and carrying normally follows an investigation — so a
+ * release condition keyed on the filing witness fires the moment it is granted, on code
+ * that moved days ago. This one re-reads the anchor now, so drift against it means
+ * somebody is editing the exact code the decision was about.
+ *
+ * Principal-only, and the FOLD enforces that as well (see `finding.carried`). The refusal
+ * here exists to produce a sentence rather than a silently dropped event.
+ */
+export async function carryFinding(
+  root: string, pr: number | string, id: string,
+  input: { until: string; reason: string; ref?: { system: string; key?: string; url?: string } },
+) {
+  const b = bind(root, {});
+  if ("error" in b) return b;
+  if (isAgentActor(b.actor)) {
+    return {
+      error:
+        "carrying a finding is a person's decision, not an agent's — it is the cheapest way "
+        + "to empty a review queue, so it is granted the way `debt` is. Ask for it instead, "
+        + "and say what the release condition should be.",
+    };
+  }
+  const until = input.until?.trim();
+  if (!until || !ISO_DATE.test(until)) {
+    return {
+      error:
+        "a carry needs `until` (an ISO date). It is the release condition and the only one: "
+        + "a linked issue may be evidence but never the condition, because a ticket closed as "
+        + "won't-do, moved or deleted leaves the finding asleep permanently and silently. Every "
+        + "deferral on record here is in exactly that state.",
+    };
+  }
+  if (!input.reason?.trim()) return { error: "a carry needs a reason — it is a record of a decision, not a mute button" };
+
+  // The code as it stands NOW. Best-effort: a finding whose anchor has already left the
+  // tree still carries fine, it just has the date as its only release condition — which
+  // is strictly what an acknowledgement has, so nothing is lost by comparison.
+  const found = (await readFindings(root, { pr })).findings.find((x) => x.id === id);
+  if (!found) return { error: `no finding "${id}" on ${pr}` };
+  const anchorId = found.witness?.anchorId ?? (found.target.kind === "anchor" ? found.target.id : undefined);
+  const witness = anchorId ? await witnessNow(root, anchorId) : undefined;
+
+  await carry(b.cfg.path, prKey(b.cfg, pr), b.actor, id, { until, reason: input.reason.trim(), witness, ref: input.ref });
+  const mz = await materializeFindings(root, b.cfg, pr);
+  return { ...mz, ok: true, id, until, witnessed: !!witness };
+}
+
+/** End a carry early — the finding returns to the ordinary queue. Principal-only, as granting is. */
+export async function releaseFindingCarry(root: string, pr: number | string, id: string, reason: string) {
+  const b = bind(root, {});
+  if ("error" in b) return b;
+  if (isAgentActor(b.actor)) return { error: "ending a carry is a person's, exactly as granting one is" };
+  if (!reason?.trim()) return { error: "say why the carry is ending — it is the other half of the record" };
+  await releaseCarry(b.cfg.path, prKey(b.cfg, pr), b.actor, id, reason.trim());
+  const mz = await materializeFindings(root, b.cfg, pr);
+  return { ...mz, ok: true, id };
+}
+
+/**
+ * Attach a witness to a finding filed without one — the one repair an AGENT may make.
+ *
+ * 19% of the measured backlog has no witness, so no drift question can be asked about it
+ * by anything: it cannot be re-judged at merge, it cannot wake a carry, and it cannot be
+ * shown as live or fixed. Leaving that to people means it is never done. It is evidence
+ * rather than a disposition, which is why the gate is off — and the fold records
+ * `witnessAttached` so a retro witness is never mistaken for one taken at filing time.
+ */
+export async function rewitnessFinding(root: string, pr: number | string, id: string, opts: { anchorId?: string } = {}) {
+  const b = bind(root, {});
+  if ("error" in b) return b;
+  const found = (await readFindings(root, { pr })).findings.find((x) => x.id === id);
+  if (!found) return { error: `no finding "${id}" on ${pr}` };
+  if (found.witness) {
+    return { error: `${id} already has a witness — re-baselining one would silently move every drift answer that depends on it` };
+  }
+  const anchorId = opts.anchorId ?? (found.target.kind === "anchor" ? found.target.id : undefined);
+  if (!anchorId) return { error: `${id} targets a node, so say which anchor witnesses it (\`anchorId\`)` };
+  const w = await witnessNow(root, anchorId);
+  if (!w) return { error: `"${anchorId}" is not in this index — reindex, or name an anchor that is here` };
+  await rewitness(b.cfg.path, prKey(b.cfg, pr), b.actor, id, w);
+  const mz = await materializeFindings(root, b.cfg, pr);
+  return { ...mz, ok: true, id, anchorId, note: "attached now, so it testifies from now on — not about the code when the finding was filed" };
 }
 
 /**
