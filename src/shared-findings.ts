@@ -437,6 +437,8 @@ export interface Ratcheted {
   state: FindingState;
   promotion?: { at: string; by: Actor };
   corroboration: Corroboration[];
+  /** The bug it became. Once it has one, the bug is what asks — see `needsHumanAck`. */
+  bug?: string;
 }
 
 /**
@@ -496,6 +498,12 @@ export function byReadingOrder(
 
 /** Derived, never stored — an OR over a latch and a grow-only set, so it cannot race. */
 export function needsHumanAck(f: Ratcheted): boolean {
+  // A finding that became a BUG is not asking any more. `finding.promotedToBug` already
+  // says so in words — "the finding stops asking for a decision; its successor is asking"
+  // — and this did not implement it, so a promoted finding kept its ack badge, kept
+  // counting in the PR page's open count and in the dashboard's `findings.waiting`, and
+  // was unclearable except by asserting something about the code nobody had checked.
+  if (f.bug) return false;
   return !!f.promotion || f.corroboration.some((c) => isStandingBehind(c.verdict));
 }
 
@@ -737,9 +745,13 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         // measured data was in exactly that state.
         if (!until || !ISO_DATE.test(until) || !reason) break;
         const w = obj(d, "witness");
+        // Same binding rule, and it drops only the WITNESS: the deadline is the guaranteed
+        // release condition and a decision somebody made should not be lost over a bad
+        // optional field. Date-only is a state this already supports.
+        const wOk = w && (f.target.kind !== "anchor" || str(w, "anchorId") === f.target.id);
         f.backlogged = {
           until, reason, by: e.actor, at: e.at,
-          ...(w && str(w, "anchorId") && str(w, "bodyHash")
+          ...(wOk && str(w, "anchorId") && str(w, "bodyHash")
             ? { witness: { anchorId: str(w, "anchorId")!, bodyHash: str(w, "bodyHash")! } } : {}),
           ...(str(d, "system") ? { ref: { system: str(d, "system")!, key: str(d, "key"), url: str(d, "url"), at: e.at, by: e.actor } } : {}),
         };
@@ -773,6 +785,18 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         // depends on it, which is the "amendment re-baselines the witnesses away" problem
         // one subsystem over. Repair is for findings that have none.
         if (f.witness) break;
+        // Both ends FOR AN ANCHOR TARGET. `checkWitnessTarget` refuses this at the tool
+        // with a sentence; the fold refuses it too, or a hostile or buggy client can point
+        // any replaying clone's drift answers at code the finding was never about. A wrong
+        // witness is worse than none: none is visibly `unjudgeable`, this looks settled.
+        //
+        // A NODE target is tool-only, and that is a limit rather than an oversight: the
+        // rule is "the anchor must be one the node cites", and a node's citations are
+        // store state the fold cannot read — it is a pure function of events, which is
+        // what makes every clone agree. So the tool refuses it and the fold cannot. Said
+        // out loud because "both ends" is the contract here and a comment claiming it
+        // where it does not hold is worse than the gap.
+        if (f.target.kind === "anchor" && anchorId !== f.target.id) break;
         f.witness = { anchorId, bodyHash };
         f.witnessAttached = { by: e.actor, at: e.at };
         // Arm a backlog that had NO witness to wake early on. One is allowed — the
@@ -925,6 +949,11 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         if (f.bug) break;
         f.bug = bug;
         f.pending = undefined;
+        // …and the outstanding ASK goes with it, for the same reason `pending` does: the
+        // obligation transferred. An assignment left standing kept the finding in
+        // `review_queue` after a bug had taken ownership, so an agent was still being
+        // asked to investigate something whose successor was already tracking it.
+        f.assignment = undefined;
         break;
       }
     }

@@ -489,7 +489,7 @@ export async function releaseBacklogOn(root: string, id: string, reason: string)
   if ("error" in w) return w;
   if (!("finding" in w)) return { error: `${id} is not a finding` };
   if (!reason?.trim()) return { error: "say why it is coming back — it is the other half of the record" };
-  if (!w.finding.shared) return releaseLocalFindingBacklog(root, id);
+  if (!w.finding.shared) return releaseLocalFindingBacklog(root, id, reason.trim());
   const shared = await import("./ops-shared.js");
   return shared.releaseFindingBacklog(root, w.finding.pr, id, reason);
 }
@@ -648,36 +648,10 @@ export async function deferFinding(
 ): Promise<Record<string, unknown>> {
   const f = await readFinding(root, id).catch(() => null);
   if (!f) return { error: `no finding "${id}" — ids come from \`findings\` or \`shared_findings\`${didYouMean(root, id)}` };
-  const out = await acceptFinding(root, f.pr!, id, opts) as Record<string, unknown>;
-  // WARNS, never refuses — the `cover` precedent. Converting a finding that is a real
-  // defect is the ordinary, correct use; what devalues a bug queue is doing it in bulk
-  // to clear a pull request, until "defects we said we would fix" quietly becomes
-  // "things reported on a PR six months ago". Nothing can tell those apart from one
-  // call, but a running count makes the second visible while it is happening, in the
-  // response of every call that continues it.
-  if (!out.error) {
-    const sofar = await bugsFromFindingsOn(root, f.pr!).catch(() => 0);
-    // `warning`, NOT `note`: `acceptFinding` already returns a note of its own, and
-    // overwriting it would trade one message for another rather than adding one.
-    if (sofar >= MASS_CONVERSION) {
-      out.warning = `${sofar} findings on ${f.pr} are now bugs. A queue swept in bulk stops reading as `
-        + `"defects we said we would fix". If the rest are real but not worth a bug record, they can be `
-        + `backlogged instead — a person's act, and they keep their witness and come back.`;
-    }
-  }
-  return out;
+  // The bulk warning lives in `acceptFinding`, which is where every route converges —
+  // this one, the MCP tool over it, and the web button, which posts straight there. It
+  // used to be here, on one caller, so the surface a person actually sweeps a queue from
+  // was the one surface it could not reach.
+  return acceptFinding(root, f.pr!, id, opts) as Promise<Record<string, unknown>>;
 }
 
-/**
- * How many findings on one pull request have already become bugs.
- *
- * Counted from the canonical table rather than tracked, so it cannot drift and costs one
- * query. `bug` is set only by `finding.promotedToBug`, which is the act being counted.
- */
-async function bugsFromFindingsOn(root: string, pr: string | number): Promise<number> {
-  const { readFindings } = await import("./store.js");
-  return (await readFindings(root, { pr })).findings.filter((x) => x.bug).length;
-}
-
-/** Where a run of conversions stops looking like triage and starts looking like a sweep. */
-const MASS_CONVERSION = 5;

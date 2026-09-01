@@ -1201,12 +1201,20 @@ export async function backlogLocalFinding(
   return { ok: true, id: f.id, pr: f.pr, shared: false, until: input.until };
 }
 
-export async function releaseLocalFindingBacklog(root: string, id: string) {
+export async function releaseLocalFindingBacklog(root: string, id: string, reason: string) {
   const f = await readFinding(root, id).catch(() => null);
   if (!f) return { error: `no finding "${id}"` };
   const actor = requireActor(root);
   if ("error" in actor) return actor;
   if (isAgentActor(actor)) return { error: "bringing a finding back is a person's, exactly as backlogging it is" };
+  // The reason is RECORDED, not merely demanded. `releaseBacklogOn` refuses an empty one
+  // ("it is the other half of the record") and then discarded it here — required-field
+  // theatre on the store that holds most of the backlog. The shared path keeps it in the
+  // log event; this is the local equivalent, on the thread everything else reads.
+  f.thread.push({
+    id: `c_${Date.now().toString(36)}`, actor, at: new Date().toISOString(),
+    body: `brought back from the backlog: ${reason}`,
+  });
   delete f.backlogged;
   await writeLocalFinding(root, f, f.pr!);
   return { ok: true, id: f.id, pr: f.pr, shared: false };

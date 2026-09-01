@@ -1000,6 +1000,8 @@ class DashboardPage extends Component {
     add(r && r.sidecar && r.sidecar.blocked, 'blocked', plural(r.sidecar && r.sidecar.blocked, 'blocked scope', 'blocked scopes'),
       sharedHubUrl(u), 'bad', 'these scopes still answer, but not as the team’s settled state');
     const bl = r && r.backlog;
+    add(bl && bl.blocked, 'blblocked', plural(bl && bl.blocked, 'findings scope unreadable', 'findings scopes unreadable'),
+      backlogUrl(u), 'bad', 'the backlog is INCOMPLETE — these scopes could not be folded. Sync, then re-read.');
     add(bl && bl.due, 'bldue', plural(bl && bl.due, 'backlog deadline passed', 'backlog deadlines passed'),
       backlogUrl(u), 'bad', 'you said you would come back to these, and the date has passed');
     add(bl && bl.woken, 'blwoke', plural(bl && bl.woken, 'backlogged finding woken by an edit', 'backlogged findings woken by an edit'),
@@ -4537,7 +4539,7 @@ const BACKLOG_TIP = "Defer it with a deadline: real, but not now — and it come
 
 const LANDING = {
   landed: ['debt', 'the code is on the trunk — an unactioned finding here is what rots'],
-  open: ['in review', 'the code has not reached the trunk yet, so this is still pull-request review'],
+  open: ['in review', 'the trunk does not contain this commit, so it reads as still-in-review — note that a SQUASHED or REBASED merge also reads this way, because it rewrites the commit'],
   unknown: ['unknown', 'witnessed at @work or with no ref, so nothing can say whether it landed'],
 };
 
@@ -4584,6 +4586,11 @@ class BacklogPage extends Component {
       // the point: a silent no-op on a principal act is indistinguishable from a bug.
       if (r && r.error) { this.state.err = r.error; return; }
       this.state.open = null;
+      // The per-PR detail cache is now stale for this row — `select()` fills it once and
+      // an act does not refill it, so an open panel kept rendering the pre-act record and
+      // the button looked like it had done nothing. Clicking again is then the obvious
+      // response, which files the act twice.
+      this.state.full = {};
       await this.load.run();
     } catch (e) { this.state.err = errText(e); } finally { this.state.busy = null; }
   }
@@ -4681,6 +4688,7 @@ class BacklogPage extends Component {
         <span class="bltarget"><a href="${href(r.target.kind === 'node' ? nodeUrl(u, r.target.id) : anchorUrl(u, r.target.id))}">${r.target.id}</a></span>
         <span class="bland l-${r.landed}" title="${land[1]}">${land[0]}</span>
         ${when(r.needsAck, () => html`<span class="prbadge">awaits you</span>`)}
+        ${when(!!r.assignment, () => html`<span class="prbadge" title="handed back for a fresh look — it is in the agent's review queue">being re-evaluated</span>`)}
         ${when(r.witnessAttached, () => html`<span class="prbadge" title="this witness was attached after the fact, so it says nothing about the code when the finding was filed">witness re-attached</span>`)}
         <span class="dim blwho">${r.author && r.author.principal}${r.author && r.author.via ? ' via ' + (r.author.via.model || 'agent') : ''}</span>
       </div>
@@ -4739,6 +4747,11 @@ class BacklogPage extends Component {
         defect. <b>${d.byLanding.landed}</b> of these are past that line already.
       </div>
       ${when(!!st.err, () => html`<div class="attn-banner"><span class="attn-n">✕</span> <span>${st.err}</span></div>`)}
+      ${when(d.blocked && d.blocked.length, () => html`<div class="attn-banner">
+        <span class="attn-n">⚠</span>
+        <span>this backlog is INCOMPLETE — ${d.blocked.length} scope${d.blocked.length === 1 ? '' : 's'} could not be read
+        (${d.blocked[0].reason}${d.blocked.length > 1 ? `, and ${d.blocked.length - 1} more` : ''}). Sync, then re-read.</span>
+      </div>`)}
 
       <div class="dnav blfilter">
         ${each([['all', 'everything'], ['landed', 'debt — on the trunk'], ['open', 'still in review'], ['unknown', 'cannot say']],

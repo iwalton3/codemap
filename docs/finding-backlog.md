@@ -130,6 +130,22 @@ ordinary review. `unknown` is recorded rather than guessed; it was a third of th
 measured findings, and guessing either way puts real debt in the wrong pile
 silently.
 
+**Known limitation: a squashed or rebased merge reads `open` for ever.** Both
+rewrite the commit, so the head a finding was witnessed at is never an ancestor of
+the trunk however completely its code landed. On a team that squashes,
+`byLanding.landed` is permanently 0 and the debt filter is permanently empty.
+
+Shipped with it, deliberately. `open` costs a finding nothing — it stays in every
+bucket, in `attention`, and on the page; what is lost is the debt/review SPLIT,
+which is a lens over the queue rather than the queue itself. Ancestry is also the
+half that is never wrong when it says `landed`, and it gets the stacked case right
+where a pull request's status field does not.
+
+Fixing it needs one of: patch-identity (`git cherry` recognises a rebased commit;
+a squash of N commits into one defeats it), or the merge commit from the pull
+request's metadata — a network read this deliberately avoids. Raised by both
+reviews of the branch that built this; recorded rather than quietly dropped.
+
 **Nothing runs at merge, and nothing should.** `landed` is derived on every read,
 so there is no state to keep in sync and no event whose absence could strand a
 record — which is the same reason the sidecar architecture gives for deriving

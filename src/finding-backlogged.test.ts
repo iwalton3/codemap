@@ -14,7 +14,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { foldFindings } from "./shared-findings.js";
+import { foldFindings, needsHumanAck } from "./shared-findings.js";
 import type { LogEvent } from "./eventlog.js";
 import type { Actor, BugWitness } from "./schema.js";
 
@@ -128,4 +128,43 @@ test("a witness attached later arms a backlog that had none to wake on", () => {
     ev("finding.backlogged", PERSON, { until: "2027-01-01", reason: "later", witness: original }),
     ev("finding.rewitnessed", AGENT, { witness: W }));
   assert.deepEqual(kept.backlogged?.witness, original, "the decision's own witness stands");
+});
+
+test("the FOLD refuses a witness that is not the finding's own target", () => {
+  // The tool refused this and the fold did not, which is the guard-at-one-end shape the
+  // contract forbids: a hostile or buggy client could point every replaying clone's drift
+  // answers at code the finding was never about, and a wrong witness is worse than none —
+  // none is visibly `unjudgeable`, this looks settled.
+  const wrong: BugWitness = { anchorId: "a_unrelated", bodyHash: "h2:w:sha256:w" };
+  const f = fold(created(), ev("finding.rewitnessed", AGENT, { witness: wrong }));
+  assert.equal(f.witness, undefined, "the mismatched repair is dropped");
+  assert.equal(f.witnessAttached, undefined, "and it leaves no marker claiming one happened");
+
+  // On a backlog it drops only the WITNESS: the deadline is the guaranteed release
+  // condition and a decision somebody made must not be lost over a bad optional field.
+  const b = fold(created(), ev("finding.backlogged", PERSON, { until: "2027-01-01", reason: "later", witness: wrong }));
+  assert.equal(b.backlogged?.until, "2027-01-01", "the decision stands");
+  assert.equal(b.backlogged?.witness, undefined, "with no early wake it cannot honestly offer");
+});
+
+test("a finding that becomes a bug stops asking — ack and assignment go with it", () => {
+  // `finding.promotedToBug` says in words that "the finding stops asking for a decision;
+  // its successor is asking", and neither `needsHumanAck` nor the fold implemented it. So
+  // a promoted finding kept its ack badge, kept counting in the PR page's open count and
+  // the dashboard's `findings.waiting`, and stayed in `review_queue` on an assignment
+  // whose owner had already changed.
+  const f = fold(created(),
+    ev("finding.corroborated", PERSON, { verdict: "confirm", rationale: "real" }),
+    ev("finding.assigned", PERSON, { kind: "investigate", note: "look again" }),
+    ev("finding.promotedToBug", PERSON, { bug: "bug_1" }));
+  assert.equal(f.bug, "bug_1");
+  assert.equal(f.assignment, undefined, "the outstanding ask transferred with the obligation");
+  assert.equal(needsHumanAck(f), false, "and it is not asking any more");
+
+  // Without the bug, both stand — or the assertions above pass for the wrong reason.
+  const still = fold(created(),
+    ev("finding.corroborated", PERSON, { verdict: "confirm", rationale: "real" }),
+    ev("finding.assigned", PERSON, { kind: "investigate", note: "look again" }));
+  assert.equal(still.assignment?.kind, "investigate");
+  assert.equal(needsHumanAck(still), true);
 });

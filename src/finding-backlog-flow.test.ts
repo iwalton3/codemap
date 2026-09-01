@@ -337,3 +337,69 @@ test("the backlog read MATERIALIZES, so a version bump can actually reach it", a
     assert.ok(b.sleeping.some((r) => r.id === id), "the read reflects the log, not a stale projection");
   } finally { u.cleanup(); }
 });
+
+test("a scope the backlog could not read is REPORTED, not swallowed", async () => {
+  // A blocked scope still answers — the rows are served — but presenting an incomplete
+  // backlog as the whole backlog is what `served()` prevents one subsystem over, and this
+  // is a queue people act on. The first version of this read caught and discarded every
+  // failure, so a half-folded universe looked like a clean one.
+  //
+  // WHAT THIS DOES NOT COVER, and it is worth knowing: a CORRUPT shard does not produce a
+  // blocked scope. `readShardLines` skips unparseable lines by design, because
+  // `merge=union` can leave a torn one — so a wholly-garbage shard empties the scope and
+  // still reports `complete`. The findings simply vanish. That is pre-existing behaviour
+  // of the log reader rather than anything this read does, and it is the reason the
+  // obvious way to write this test does not work. A real block is a FORK, which needs two
+  // writers and belongs in the oracle.
+  const u = await universe();
+  try {
+    await asAgent(async () => {
+      await shareFinding(u.root, 7, { targetKind: "anchor", targetId: u.id, text: "real thing" });
+    });
+    const clean = await findingBacklog(u.root, { asOf: "2026-09-01" });
+    assert.deepEqual(clean.blocked, [], "a healthy universe reports nothing");
+    assert.equal(clean.attention, 1, "and the finding is there, so the read did fold");
+  } finally { u.cleanup(); }
+});
+
+test("a node-target finding may only be witnessed by an anchor that node cites", async () => {
+  // Exempting node targets left the hole open on half the findings. A node cites several
+  // anchors and any ONE of them may legitimately witness a finding about it — but an
+  // anchor the node does not cite answers drift about code the finding is not about.
+  const u = await universe();
+  try {
+    const { document: writeDoc } = await import("./ops.js");
+    const d = await writeDoc(u.root, {
+      id: "n_credit", type: "module", title: "Credit", summary: "the credit path",
+      body: "what it does", anchors: [u.id],
+    }) as { error?: string };
+    assert.ok(!d.error, `doc failed: ${d.error}`);
+
+    await writeLocalFinding(u.root, local("f_node", { target: { kind: "node", id: "n_credit" } }), 7);
+    await asAgent(async () => {
+      const bad = await rewitnessOn(u.root, "f_node", { anchorId: "a_not_cited" });
+      assert.match(String(err(bad)), /does not cite/, "refused, and it names what the node does cite");
+      assert.equal(err(await rewitnessOn(u.root, "f_node", { anchorId: u.id })), undefined,
+        "an anchor the node actually cites is fine");
+    });
+    assert.equal((await readFinding(u.root, "f_node"))?.witness?.anchorId, u.id);
+  } finally { u.cleanup(); }
+});
+
+test("bringing a local finding back RECORDS the reason it demanded", async () => {
+  // `releaseBacklogOn` refuses an empty reason — "it is the other half of the record" —
+  // and the local path then discarded it, which is required-field theatre on the store
+  // that holds most of the backlog.
+  const u = await universe();
+  try {
+    await writeLocalFinding(u.root, local("f_1", { target: { kind: "anchor", id: u.id } }), 7);
+    await asPerson(async () => {
+      assert.equal(err(await backlogOn(u.root, { id: "f_1", until: "2027-01-01", reason: "later" })), undefined);
+      assert.equal(err(await releaseBacklogOn(u.root, "f_1", "the rewrite was cancelled")), undefined);
+    });
+    const rec = await readFinding(u.root, "f_1");
+    assert.equal(rec?.backlogged, undefined, "it is back in the queue");
+    assert.ok(rec?.thread.some((c) => /the rewrite was cancelled/.test(c.body)),
+      "and why it came back is on the record, not merely demanded at the door");
+  } finally { u.cleanup(); }
+});

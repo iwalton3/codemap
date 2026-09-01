@@ -19,6 +19,8 @@ import { scopesOnDisk, readScopeChecked, writerFor, rotateWriter, acknowledgeSco
 import { findingsProjection, docsProjection, notesProjection, walkthroughsProjection, triageProjection, docsByNode, projectionFor } from "./shared-projections.js";
 import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
 import { resolveSidecar, scopeFor, sidecarIdentity, inUniverse, type SidecarConfig } from "./sidecar-config.js";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { ISO_DATE, parseAsOf, type BugWitness } from "./schema.js";
 import { witnessDrift, realDrift } from "./reviews.js";
 import { originSlug, headCommit, currentBranch, isAncestor, defaultBranch, revParse } from "./git.js";
@@ -468,13 +470,26 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
   // always called `ensureMaterialized`; this read did not, so the bump was necessary and
   // not sufficient. Cheap when nothing moved: one `stat` per shard per scope.
   const cfgM = resolveSidecar(root);
+  // Scopes this answer could NOT be formed from. Reported, never swallowed: a blocked
+  // scope still answers — the rows are served — but presenting an incomplete backlog as
+  // the whole backlog is the failure `served()` exists to prevent one subsystem over, and
+  // this is a queue people act on. A bare `.catch(() => null)` here would have made a
+  // half-folded universe look like a clean one.
+  const blockedScopes: { scope: string; reason: string }[] = [];
   if (cfgM) {
     const identity = sidecarIdentity(cfgM);
     for (const scope of await scopesOnDisk(cfgM.path).catch(() => [] as string[])) {
-      if (!inUniverse(scope, cfgM.universe)) continue;
-      const which = projectionFor(scope);
-      if (!which || !scope.startsWith("findings/")) continue;
-      await ensureMaterialized(root, cfgM.path, scope, identity, which.fold, which.proj).catch(() => null);
+      if (!inUniverse(scope, cfgM.universe) || !scope.startsWith("findings/")) continue;
+      // `projectionFor` classifies every `findings/` scope, which the filter above has
+      // already required — so there is no "unclassified" case to handle here.
+      const which = projectionFor(scope)!;
+      try {
+        const { fresh, status, diagnostic } = await ensureMaterialized(root, cfgM.path, scope, identity, which.fold, which.proj);
+        if (!fresh) blockedScopes.push({ scope, reason: "rows are behind the log; the next sync will retry" });
+        else if (status !== "complete") blockedScopes.push({ scope, reason: diagnostic?.detail ?? status });
+      } catch (e: any) {
+        blockedScopes.push({ scope, reason: `could not fold: ${e?.message ?? e}` });
+      }
     }
   }
 
@@ -536,9 +551,28 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
      * review; after it, the code is on the trunk and an unactioned finding is debt that
      * nothing will raise again — the historic default being that it is never marked
      * won't-fix, never promoted, and simply rots until somebody rediscovers the defect.
+     *
+     * **KNOWN LIMITATION, and it is a real one: this is ANCESTRY, so a squashed or
+     * rebased merge reads `open` for ever.** Those rewrite the commit, so the head this
+     * finding was witnessed at is never an ancestor of the trunk however thoroughly its
+     * code landed. On a team that squashes, `byLanding.landed` is permanently 0 and the
+     * debt filter is permanently empty.
+     *
+     * Shipped anyway, and deliberately: `open` costs a finding nothing — it stays in
+     * every bucket, in `attention`, and on the page. The only thing lost is the
+     * debt/review SPLIT, which is a lens over the queue rather than the queue. Ancestry
+     * is also the half that is always right when it says `landed`, and it gets the
+     * stacked case right where a pull request's status field does not.
+     *
+     * The fix needs patch-identity (`git cherry` finds a rebased commit; a squash of N
+     * commits into one defeats it) or the merge commit from the pull request's metadata,
+     * which is a network read this deliberately avoids. See `docs/finding-backlog.md`.
      */
     landed: landedAt(f.sourceRef),
     ...(f.backlogged ? { backlogged: f.backlogged } : {}),
+    // So a re-evaluate is VISIBLE on the row it was pressed on. Without it the act
+    // changed nothing a reader could see, and the natural response is to press again.
+    ...(f.assignment ? { assignment: { kind: f.assignment.kind, by: f.assignment.by.principal, at: f.assignment.at } } : {}),
     ...(f.witnessAttached ? { witnessAttached: f.witnessAttached } : {}),
   });
   const drifted = (w?: BugWitness) => {
@@ -583,6 +617,8 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
   return {
     asOf,
     trunk: trunk?.name ?? null,
+    /** Scopes this answer could not be formed from — the backlog below is INCOMPLETE. */
+    blocked: blockedScopes,
     counts: Object.fromEntries(Object.entries(b).map(([k, v]) => [k, v.length])),
     /** Split by KIND, not by bucket: what is debt, what is still review, what cannot say. */
     byLanding: {
@@ -650,9 +686,28 @@ function landedIn(root: string, commit: string, trunkSha: string): boolean | nul
   const sha = revParse(root, commit);
   if (!sha) return null;
   const key = `${root}\0${sha}\0${trunkSha}`;
-  let hit = ancestry.get(key);
-  if (hit === undefined) ancestry.set(key, hit = isAncestor(root, sha, trunkSha));
-  return hit;
+  const hit = ancestry.get(key);
+  if (hit !== undefined) return hit;
+  const yes = isAncestor(root, sha, trunkSha);
+  // A NEGATIVE is only stable in a complete clone. `rev-parse --verify` proves the two
+  // commits are present; it does not prove the graph BETWEEN them is, and a shallow
+  // boundary hides exactly that — `merge-base --is-ancestor` then exits non-zero for
+  // ancestry that a later deepen would demonstrate. Caching that made it permanent for
+  // the process. A positive is safe either way: ancestry once shown never stops holding.
+  if (yes || !isShallow(root)) ancestry.set(key, yes);
+  return yes;
+}
+
+/** Does this clone have a shallow boundary? One `stat`, cached — it changes on deepen. */
+const shallowSeen = new Map<string, { at: number; yes: boolean }>();
+function isShallow(root: string): boolean {
+  const hit = shallowSeen.get(root);
+  // Short TTL rather than process lifetime, because `fetch --unshallow` is precisely the
+  // event this needs to notice, and it happens while a server is running.
+  if (hit && Date.now() - hit.at < 30_000) return hit.yes;
+  const yes = existsSync(join(root, ".git", "shallow"));
+  shallowSeen.set(root, { at: Date.now(), yes });
+  return yes;
 }
 
 /**
@@ -706,12 +761,26 @@ export function checkBacklogInput(input: { until?: string; reason?: string }): {
 export async function checkWitnessTarget(root: string, id: string, anchorId?: string): Promise<{ error: string } | null> {
   if (!anchorId) return null;
   const f = (await readFindings(root, {})).findings.find((x) => x.id === id);
-  if (!f || f.target.kind !== "anchor" || anchorId === f.target.id) return null;
-  return {
+  if (!f) return null;
+  if (f.target.kind === "anchor") {
+    return anchorId === f.target.id ? null : {
+      error:
+        `${id} is filed on ${f.target.id}, so that is what witnesses it — a witness on `
+        + `${anchorId} would answer drift about different code while the record still named `
+        + `this one. Relocate the finding if the target moved.`,
+    };
+  }
+  // A NODE target cites several anchors and a finding about it may legitimately be
+  // witnessed by any ONE of them — but not by an anchor the node does not cite. Exempting
+  // node targets entirely, which the first version did, left the whole hole open on the
+  // half of findings that carry the fuzzier target.
+  const node = (await loadNodes(root)).find((n: { id: string }) => n.id === f.target.id);
+  if (!node) return null;   // a target this store cannot resolve is not ours to judge
+  return node.anchors.includes(anchorId) ? null : {
     error:
-      `${id} is filed on ${f.target.id}, so that is what witnesses it — a witness on `
-      + `${anchorId} would answer drift about different code while the record still named `
-      + `this one. Relocate the finding if the target moved.`,
+      `${id} is filed on node ${f.target.id}, which does not cite ${anchorId} — a witness `
+      + `outside the node's own anchors answers drift about code the finding is not about. `
+      + `Its anchors here are: ${node.anchors.slice(0, 5).join(", ")}${node.anchors.length > 5 ? ", …" : ""}.`,
   };
 }
 

@@ -164,7 +164,11 @@ test("converting findings to bugs in BULK says so, and one at a time does not", 
   mkdirSync(join(root, ".codemap"), { recursive: true });
   writeFileSync(join(root, ".codemap", "sidecar"), side, "utf8");
   try {
+    // BOTH routes, because the warning used to live on `deferFinding` and the web button
+    // posts straight to `acceptFinding` — so the guard written for the surface a person
+    // sweeps a queue from was the one surface it could not reach.
     const { deferFinding } = await import("./ops.js");
+    const { acceptFinding } = await import("./ops/bugs.js");
     const { shareFinding } = await import("./ops-shared.js");
     // Through the real verb, not `writeLocalFinding`: a finding is accepted into a bug
     // from the LOG, so a hand-written projection row is a finding `deferFinding`
@@ -190,6 +194,12 @@ test("converting findings to bugs in BULK says so, and one at a time does not", 
     assert.equal(notes[3], undefined, "…and so is the fourth");
     assert.match(String(notes[6]), /stops reading as/, "but a run of them is visible while it happens");
     assert.match(String(notes[6]), /backlogged instead/, "and names the alternative");
+
+    // The web route, which is the one that matters: it calls `acceptFinding` directly.
+    const r = await shareFinding(root, 9, { targetKind: "anchor", targetId: id, text: "one more" }) as { id: string };
+    const web = await acceptFinding(root, 9, r.id) as { warning?: string; error?: string };
+    assert.ok(!web.error, `web accept failed: ${web.error}`);
+    assert.match(String(web.warning), /stops reading as/, "the browser sees it too, or the guard is theatre");
   } finally { discard(root); discard(side); }
 });
 
@@ -228,4 +238,39 @@ test("`landed` is decided by the CODE reaching the trunk, not by a pull request'
     assert.equal(landing.f_none, "unknown");
     assert.deepEqual(b.byLanding, { landed: 1, open: 1, unknown: 2 });
   } finally { discard(root); }
+});
+
+test("a shallow clone never caches `not landed` — deepening can make it true", async () => {
+  // `rev-parse --verify` proves the two commits are PRESENT; it does not prove the graph
+  // between them is, and a shallow boundary hides exactly that. `merge-base --is-ancestor`
+  // then exits non-zero for ancestry a later deepen demonstrates — measured here, both
+  // ends. Caching that negative made it permanent for the process, which is the one way
+  // this memo could be unsound: a positive never stops holding, a negative can.
+  const src = mkdtempSync(join(tmpdir(), "codemap-shallow-src-"));
+  const g = (root: string, ...a: string[]) => spawnSync("git", ["-c", "user.email=i@x.com", "-c", "user.name=i", ...a], { cwd: root, encoding: "utf8" });
+  try {
+    g(src, "init", "-q", "-b", "main");
+    for (let i = 0; i < 5; i++) { writeFileSync(join(src, "f.txt"), `line ${i}\n`, "utf8"); g(src, "add", "-A"); g(src, "commit", "-qm", `c${i}`); }
+    const oldest = g(src, "rev-parse", "HEAD~4").stdout.trim();
+    const tip = g(src, "rev-parse", "HEAD").stdout.trim();
+
+    const clone = mkdtempSync(join(tmpdir(), "codemap-shallow-"));
+    try {
+      const r = spawnSync("git", ["clone", "-q", "--depth", "1", `file://${src}`, clone], { encoding: "utf8" });
+      assert.equal(r.status, 0, `clone failed: ${r.stderr}`);
+      g(clone, "fetch", "-q", "origin", oldest);
+
+      const { revParse, isAncestor } = await import("./git.js");
+      const { existsSync } = await import("node:fs");
+      // The premise, asserted rather than assumed — otherwise this test proves nothing.
+      assert.ok(existsSync(join(clone, ".git", "shallow")), "the clone is shallow");
+      assert.ok(revParse(clone, oldest) && revParse(clone, tip), "both commits resolve");
+      assert.equal(isAncestor(clone, oldest, tip), false, "yet ancestry cannot be shown");
+
+      g(clone, "fetch", "-q", "--unshallow");
+      assert.equal(existsSync(join(clone, ".git", "shallow")), false);
+      assert.equal(isAncestor(clone, oldest, tip), true,
+        "…and the same two commits now demonstrably are ancestor and descendant");
+    } finally { discard(clone); }
+  } finally { discard(src); }
 });

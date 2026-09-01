@@ -168,7 +168,7 @@ async function reviewRollup(root: string) {
       return { universe: cfg.universe, blocked: blocked.length, forked: blocked.some((x) => /fork/i.test(x.reason)) };
     })
     : null;
-  return { findings, sidecar, backlog: b ? { ...b.counts, attention: b.attention, landed: b.byLanding.landed } : null };
+  return { findings, sidecar, backlog: b ? { ...b.counts, attention: b.attention, landed: b.byLanding.landed, blocked: b.blocked.length } : null };
 }
 
 /**
@@ -303,7 +303,19 @@ function attentionFromReview(r: Awaited<ReturnType<typeof reviewRollup>>): numbe
   // some open findings, not a queue of its own — every one of them is already in a
   // backlog bucket, so summing both counts the same records twice. Falling back to
   // `waiting` only where the backlog could not be computed at all.
-  return (r.backlog ? r.backlog.attention : r.findings.waiting)
+  //
+  // **This makes `attention` LARGE on a real repo, and that is the point rather than a
+  // regression.** An earlier version of this note claimed the opposite — that counting
+  // every open finding "would never reach zero" — which was the argument for the shape
+  // that hid 97 undisposed findings behind a green tick. Every one of them is somebody's
+  // to dispose of; a number that reads 97 is the honest one, and the four verbs that
+  // clear it (backlog, file bug, re-evaluate, resolve) are what make it fall. What is
+  // NOT counted is a backlogged finding with a live deadline, because somebody decided
+  // it.
+  //
+  // A scope that could not be folded counts too: an incomplete backlog presented as a
+  // whole one is the failure the rest of this rollup exists to prevent.
+  return (r.backlog ? r.backlog.attention + r.backlog.blocked : r.findings.waiting)
     + (r.sidecar ? r.sidecar.blocked + (r.sidecar.forked ? 1 : 0) : 0);
 }
 

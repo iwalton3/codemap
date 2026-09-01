@@ -633,6 +633,41 @@ export async function acceptFinding(
   return {
     ok: true, id, finding: findingId, pr,
     note: "accepted — the finding stays on the pull request and the bug now carries the obligation",
+    ...(await massConversionWarning(root, pr)),
     ...rejected(errors),
   };
 }
+
+/**
+ * WARNS on the run, never on the act, and never refuses — the `cover` precedent.
+ *
+ * Converting a finding that is a real defect is the ordinary, correct use and should stay
+ * easy. What devalues a bug queue is doing it in BULK to clear a pull request, until
+ * "defects we said we would fix" quietly becomes "things reported on a PR six months
+ * ago". Nothing can tell those apart from one call; a running count makes the second
+ * visible while it is happening.
+ *
+ * **Here rather than on `deferFinding`, because this is where every route converges** —
+ * the MCP tool, the CLI, and the web button, which posts straight to this function. It
+ * was on the caller, so the one surface a person actually sweeps a queue from was the one
+ * surface the guard could not reach.
+ *
+ * `warning`, not `note`: the caller already returns a note, and overwriting it would
+ * trade one message for another rather than adding one.
+ */
+async function massConversionWarning(root: string, pr: number | string): Promise<{ warning?: string }> {
+  // Counted from the canonical table rather than tracked, so it cannot drift and costs
+  // one query. `bug` is set only by `finding.promotedToBug`, the act being counted.
+  const { readFindings } = await import("../store.js");
+  const sofar = await readFindings(root, { pr }).then((r) => r.findings.filter((x) => x.bug).length).catch(() => 0);
+  if (sofar < MASS_CONVERSION) return {};
+  return {
+    warning:
+      `${sofar} findings on ${pr} are now bugs. A queue swept in bulk stops reading as `
+      + `"defects we said we would fix". If the rest are real but not worth a bug record, they can be `
+      + `backlogged instead — a person's act, and they keep their witness and come back.`,
+  };
+}
+
+/** Where a run of conversions stops looking like triage and starts looking like a sweep. */
+const MASS_CONVERSION = 5;
