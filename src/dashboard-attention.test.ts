@@ -168,7 +168,7 @@ const finding = (id: string, promoted: boolean, over: Partial<SharedFinding> = {
   ...over,
 } as SharedFinding);
 
-test("an open finding IS the queue now; only a carried one is set aside", async () => {
+test("an open finding IS the queue now; only a backlogged one is set aside", async () => {
   const { root } = await universe();
   try {
     const empty = await dashboard(root);
@@ -203,7 +203,7 @@ test("an open finding IS the queue now; only a carried one is set aside", async 
 test("the dashboard's attention and the backlog's are ONE number, not two", async () => {
   // This is the defect this whole file exists for, reappearing one subsystem over. The
   // landing page summed docs and bugs while the standard and the sidecar were in trouble;
-  // it then grew a `review` card whose count could not see an overdue carry, so it read
+  // it then grew a `review` card whose count could not see an expired backlog deadline, so
   // `attention: 0` on a store whose backlog said 5. Two rollups of one pile disagree the
   // moment either changes, so the dashboard reads the backlog's own number.
   const { root, anchors } = await universe();
@@ -220,16 +220,16 @@ test("the dashboard's attention and the backlog's are ONE number, not two", asyn
     await writeLocalFinding(root, finding("f_live", false, { target: { kind: "anchor", id }, witness: w }), 1);
     await writeLocalFinding(root, finding("f_due", false, {
       target: { kind: "anchor", id }, witness: w,
-      carry: { until: "2020-01-01", reason: "slated for replacement", by, at: "2019-01-01T00:00:00Z" },
+      backlogged: { until: "2020-01-01", reason: "slated for replacement", by, at: "2019-01-01T00:00:00Z" },
     }), 1);
     await writeLocalFinding(root, finding("f_sleep", false, {
       target: { kind: "anchor", id }, witness: w,
-      carry: { until: "2099-01-01", reason: "not now", by, at: "2026-01-01T00:00:00Z", witness: w },
+      backlogged: { until: "2099-01-01", reason: "not now", by, at: "2026-01-01T00:00:00Z", witness: w },
     }), 1);
 
     const d = await dashboard(root);
     const b = await findingBacklog(root);
-    assert.equal(b.attention, 2, "the live one and the overdue carry — never the sleeping one");
+    assert.equal(b.attention, 2, "the live one and the expired deadline — never the sleeping one");
     assert.equal(d.review.backlog?.attention, b.attention, "the dashboard reports the backlog's own count");
     assert.equal(d.attention, b.attention, "and drives the banner with it, so the two can never disagree");
     // The trap the old shape fell into: `needsAck` findings are already inside those

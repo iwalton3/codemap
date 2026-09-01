@@ -58,7 +58,7 @@ const WEB_REQUIRED = [
   // and the browser is the only surface where a principal is actually a principal.
   // Named as the DISPATCHERS, which is what `serve.ts` calls: one canonical table holds
   // local rows beside the team's, so the shared-only op reaches half the backlog.
-  "carryOn", "releaseCarryOn",
+  "backlogOn", "releaseBacklogOn",
   "publishLocalDocs", "publishLocalNotes", "publishLocalTriage", "publishLocalGraph",
   "sharedTriage", "contestedTriage", "sharedGraph",
 ];
@@ -78,7 +78,7 @@ const MCP_FORBIDDEN = [
   // could clear the whole backlog by declaring it all not-now. The FOLD drops an
   // agent's attempt too; this keeps the tool from existing to be attempted. Both the
   // shared op and the record dispatcher over it, or the gate moves with a refactor.
-  "carryFinding", "releaseFindingCarry", "carryOn", "releaseCarryOn",
+  "backlogFinding", "releaseFindingBacklog", "backlogOn", "releaseBacklogOn",
 ];
 
 test("the join and recover flows are reachable from the web, not just a terminal", () => {

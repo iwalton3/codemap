@@ -124,8 +124,8 @@ test("the standard projection's table set is pinned to a materializer version", 
   // withdrawal gate admits an agent's own draft. Table set unchanged again, same reason.
   // 18: `proposal_witnesses` — this time the table set DID change, which is the case this
   // assertion was written for, and the fold refuses an unwitnessed ratification with it.
-  // 19: nothing to do with the standard at all — `foldFindings` learned `finding.carried`,
-  // `finding.carryReleased` and `finding.rewitnessed`. Recorded here because this is where
+  // 19: nothing to do with the standard at all — `foldFindings` learned `finding.backlogged`,
+  // `finding.backlogReleased` and `finding.rewitnessed`. Recorded here because this is where
   // the number lives, and pinned in its own right by the test below.
   assert.equal(MATERIALIZER_VERSION, 19, "and record the new number here");
 });
@@ -156,7 +156,7 @@ test("the findings fold's event vocabulary is pinned to a materializer version",
   // an ALREADY-FOLDED scope should say, and only the shards move a fingerprint. Bump
   // `MATERIALIZER_VERSION` so every clone re-folds, then update both lists here.
   assert.deepEqual(kinds, [
-    "finding.askDeclined", "finding.assigned", "finding.carried", "finding.carryReleased",
+    "finding.askDeclined", "finding.assigned", "finding.backlogReleased", "finding.backlogged",
     "finding.commented", "finding.corroborated", "finding.created", "finding.outcome",
     "finding.posted", "finding.promoted", "finding.promotedToBug", "finding.relocation",
     "finding.remediated", "finding.requested", "finding.revised", "finding.rewitnessed",

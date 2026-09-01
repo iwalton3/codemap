@@ -269,18 +269,19 @@ fixed, or promoted to a bug — and one that is real but worth neither has no th
 it dies on a merged PR while the code rots under it. The workaround is in the records:
 a bug minted with the rationale *"so it survives the PR closing"*.
 
-The **carry** is the third exit: real, not now, and it comes back. Four things to know
-before touching it, each of which was a defect when absent:
+The **backlog** is the third exit: real, not now, and it comes back — *defer with a
+deadline*. On the review surfaces the three dispositions read **Escalate**, **File Bug**
+and **Backlog**. Four things to know before touching it, each a defect when absent:
 
 - **`until` is required and the FOLD enforces it** — the `acknowledgements` rule
   verbatim, because a linked ticket that is closed, moved or deleted leaves the record
   asleep permanently and silently. Every deferral on record was in that state.
-- **The witness is snapshotted at GRANT time**, not read off the finding: carrying
-  follows an investigation, so a condition keyed on the filing witness fires the moment
-  it is granted. Drift against the carry's own witness means somebody is editing the
+- **The witness is snapshotted when it is BACKLOGGED**, not read off the finding:
+  backlogging follows an investigation, so a condition keyed on the filing witness fires
+  the moment it is set. Drift against its own witness means somebody is editing the
   exact code the decision was about.
 - **Principal-granted, like `debt`**, at BOTH ends — deferral is the cheapest way to
-  empty a queue, and `ops-reach.test.ts` forbids an MCP tool for carry or release.
+  empty a queue, and `ops-reach.test.ts` forbids an MCP tool for backlogging or bringing back.
   `rewitness` is the deliberate exception: it is evidence, not a disposition, and the
   bucket it repairs (19%) is never fixed if only people can do it.
 - **Nothing here promotes anything to a bug.** `defer_finding` stays right for a real
@@ -288,7 +289,7 @@ before touching it, each of which was a defect when absent:
   the act (the `cover` precedent) and never refuses.
 
 **It cost a `MATERIALIZER_VERSION` bump (18 → 19), and the reason generalises.** A
-teammate a day behind cannot be harmed by a carry — an old fold drops an unknown kind and
+teammate a day behind cannot be harmed by it — an old fold drops an unknown kind and
 keeps going — but the reverse bites: they fold it into nothing, upgrade, and their shards
 have not moved, so the fingerprint is unchanged and the new build serves the cached rows
 for ever. Teaching a fold a new EVENT is the same hazard as giving it a new table, and

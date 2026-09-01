@@ -8,7 +8,7 @@
  *
  * Every case here is driven through the real projection against a real store, because a
  * bucket that could never be reached is worse than a missing one. `sleeping` in
- * particular must NOT be in `attention`: a carry with a live release condition is a
+ * particular must NOT be in `attention`: a backlogged finding with a live deadline is a
  * decision somebody made, and counting it as debt makes deferring honestly look
  * identical to ignoring the thing.
  */
@@ -45,7 +45,7 @@ const finding = (id: string, over: Partial<SharedFinding> = {}): SharedFinding =
   state: "created", corroboration: [], thread: [], revisions: [], ...over,
 } as SharedFinding);
 
-const carry = (until: string, witness?: BugWitness) =>
+const backlogged = (until: string, witness?: BugWitness) =>
   ({ until, reason: "slated for replacement", by: PERSON, at: "2026-09-01T00:00:00Z", ...(witness ? { witness } : {}) });
 
 /**
@@ -77,17 +77,17 @@ test("an uncarried finding lands by what the code says, and only `live` means un
   } finally { discard(root); }
 });
 
-test("a carry sleeps until its date — and is NOT counted as debt while it does", async () => {
+test("a backlogged finding sleeps until its deadline — and is NOT debt while it does", async () => {
   const { root, id, hash } = await universe();
   try {
     await writeLocalFinding(root, finding("f_sleep", {
       target: { kind: "anchor", id }, witness: { anchorId: id, bodyHash: hash },
-      carry: carry("2027-01-01", { anchorId: id, bodyHash: hash }),
+      backlogged: backlogged("2027-01-01", { anchorId: id, bodyHash: hash }),
     }), 1);
 
     const asleep = await findingBacklog(root, { asOf: "2026-09-01" });
     assert.deepEqual(asleep.sleeping.map((r) => r.id), ["f_sleep"]);
-    assert.deepEqual(asleep.live, [], "a carried finding is not undisposed — somebody disposed of it");
+    assert.deepEqual(asleep.live, [], "a backlogged finding is not undisposed — somebody disposed of it");
     assert.equal(asleep.attention, 0, "counting a live deferral as debt makes deferring look like ignoring");
 
     // Same store, same finding, later. The date is the condition that always fires.
@@ -98,18 +98,18 @@ test("a carry sleeps until its date — and is NOT counted as debt while it does
   } finally { discard(root); }
 });
 
-test("a carry wakes EARLY when somebody edits the code the decision was about", async () => {
+test("it wakes EARLY when somebody edits the code the decision was about", async () => {
   const { root, id, hash } = await universe();
   try {
-    // The carry's own witness, taken when it was granted. Drift against THIS — not
+    // Its own witness, taken when it was backlogged. Drift against THIS — not
     // against the filing witness — is what means "somebody is touching that code now".
     await writeLocalFinding(root, finding("f_touched", {
       target: { kind: "anchor", id }, witness: { anchorId: id, bodyHash: hash },
-      carry: carry("2027-01-01", { anchorId: id, bodyHash: otherBody(hash) }),
+      backlogged: backlogged("2027-01-01", { anchorId: id, bodyHash: otherBody(hash) }),
     }), 1);
     await writeLocalFinding(root, finding("f_untouched", {
       target: { kind: "anchor", id }, witness: { anchorId: id, bodyHash: hash },
-      carry: carry("2027-01-01", { anchorId: id, bodyHash: hash }),
+      backlogged: backlogged("2027-01-01", { anchorId: id, bodyHash: hash }),
     }), 1);
 
     const b = await findingBacklog(root, { asOf: "2026-09-01" });
@@ -119,14 +119,14 @@ test("a carry wakes EARLY when somebody edits the code the decision was about", 
   } finally { discard(root); }
 });
 
-test("a carry with no witness still wakes on its date — the date is never optional", async () => {
+test("one with no witness still wakes on its deadline — the deadline is never optional", async () => {
   // What an acknowledgement has always had, and the floor this guarantees: a finding
-  // whose anchor had already left the tree when it was carried has the date and nothing
+  // whose anchor had already left the tree when it was backlogged has the date and nothing
   // else, and must still come back rather than sleeping forever.
   const { root, id, hash } = await universe();
   try {
     await writeLocalFinding(root, finding("f_dateonly", {
-      target: { kind: "anchor", id }, witness: { anchorId: id, bodyHash: hash }, carry: carry("2026-10-01"),
+      target: { kind: "anchor", id }, witness: { anchorId: id, bodyHash: hash }, backlogged: backlogged("2026-10-01"),
     }), 1);
     assert.deepEqual((await findingBacklog(root, { asOf: "2026-09-01" })).sleeping.map((r) => r.id), ["f_dateonly"]);
     assert.deepEqual((await findingBacklog(root, { asOf: "2026-10-01" })).due.map((r) => r.id), ["f_dateonly"],
@@ -189,7 +189,7 @@ test("converting findings to bugs in BULK says so, and one at a time does not", 
     assert.equal(notes[0], undefined, "the first conversion is ordinary triage and must warn about nothing");
     assert.equal(notes[3], undefined, "…and so is the fourth");
     assert.match(String(notes[6]), /stops reading as/, "but a run of them is visible while it happens");
-    assert.match(String(notes[6]), /carried instead/, "and names the alternative");
+    assert.match(String(notes[6]), /backlogged instead/, "and names the alternative");
   } finally { discard(root); discard(side); }
 });
 

@@ -566,8 +566,8 @@ const server = createServer(async (req, res) => {
         // Dispatched on the RECORD, like `corroborate` above: the backlog is full of local
         // rows, and a write that went straight to the log answers "no finding … on pr
         // <scope>" for every one of them.
-        case "carry": out = await ops.carryOn(root, { id: body.id, until: String(body.until ?? ""), reason: String(body.reason ?? ""), ref: body.ref }); break;
-        case "carry_release": out = await ops.releaseCarryOn(root, body.id, String(body.reason ?? "")); break;
+        case "backlog": out = await ops.backlogOn(root, { id: body.id, until: String(body.until ?? ""), reason: String(body.reason ?? ""), ref: body.ref }); break;
+        case "backlog_release": out = await ops.releaseBacklogOn(root, body.id, String(body.reason ?? "")); break;
         // …and this one an agent MAY do, which is the whole point of it: the witness-less
         // bucket is the one nothing can judge, and left to people it is never repaired.
         case "rewitness": out = await ops.rewitnessOn(root, body.id, { anchorId: body.anchorId }); break;

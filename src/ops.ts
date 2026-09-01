@@ -88,7 +88,7 @@ import {
   reviseLocalFinding, reviseAnnotation, remediateLocalFinding, checkComment, checkLifecycle, REVISABLE,
   setLocalFindingState, corroborateLocalFinding, promoteLocalFinding, requestOnLocalFinding,
   setLocalFindingPosted, relocateLocalFinding,
-  carryLocalFinding, releaseLocalFindingCarry, rewitnessLocalFinding,
+  backlogLocalFinding, releaseLocalFindingBacklog, rewitnessLocalFinding,
 } from "./ops/annotations.js";
 import { commentBug, corroborateBugOp, requestOnBugOp, acceptFinding } from "./ops/bugs.js";
 import { readFinding, readBug, idsStartingWith, readSpec, readOperation } from "./store.js";
@@ -446,46 +446,46 @@ export async function corroborateOn(root: string, input: { id: string; verdict: 
 }
 
 /**
- * Carry a finding, whichever store owns it.
+ * Backlog a finding, whichever store owns it.
  *
  * Dispatched on the RECORD, like `corroborateOn` and for the same reason: one canonical
  * table holds this store's own findings beside the team's, and a verb that went straight
  * to the log answered `no finding … on pr <scope>` on every local row. The backlog these
  * verbs exist for is full of exactly those.
  *
- * A BUG is refused rather than carried. A bug is already the tracked thing — that is what
- * promotion is for — so carrying one would be a second, quieter deferral queue over the
- * queue people actually read.
+ * A BUG is refused rather than backlogged. A bug is already the tracked thing — that is
+ * what filing one is for — so backlogging it would be a second, quieter deferral queue
+ * over the queue people actually read.
  */
-export async function carryOn(root: string, input: { id: string; until: string; reason: string; ref?: { system: string; key?: string; url?: string } }) {
+export async function backlogOn(root: string, input: { id: string; until: string; reason: string; ref?: { system: string; key?: string; url?: string } }) {
   const w = await whichRecord(root, input.id);
   if ("error" in w) return w;
   if ("bug" in w) {
     return {
       error:
-        `${input.id} is a bug, not a finding. A bug is already the tracked record — carrying is `
+        `${input.id} is a bug, not a finding. A bug is already the tracked record — the backlog is `
         + `for findings that are real and are NOT worth one. Close it, or leave it in the queue.`,
     };
   }
-  if ("proposal" in w) return { error: `${input.id} is a ${w.proposal}, which is disposed of by ratification or withdrawal, not carried` };
+  if ("proposal" in w) return { error: `${input.id} is a ${w.proposal}, which is disposed of by ratification or withdrawal, not backlogged` };
   const shared = await import("./ops-shared.js");
-  const guard = shared.checkCarryInput(input);
+  const guard = shared.checkBacklogInput(input);
   if (guard) return guard;
   if (!w.finding.shared) {
-    return carryLocalFinding(root, input.id, { until: input.until, reason: input.reason, ref: input.ref, witness: await shared.witnessNowFor(root, input.id) });
+    return backlogLocalFinding(root, input.id, { until: input.until, reason: input.reason, ref: input.ref, witness: await shared.witnessNowFor(root, input.id) });
   }
-  return shared.carryFinding(root, w.finding.pr, input.id, { until: input.until, reason: input.reason, ref: input.ref });
+  return shared.backlogFinding(root, w.finding.pr, input.id, { until: input.until, reason: input.reason, ref: input.ref });
 }
 
-/** End a carry, whichever store owns it. A person's, exactly as granting is. */
-export async function releaseCarryOn(root: string, id: string, reason: string) {
+/** Bring one back, whichever store owns it. A person's, exactly as backlogging is. */
+export async function releaseBacklogOn(root: string, id: string, reason: string) {
   const w = await whichRecord(root, id);
   if ("error" in w) return w;
   if (!("finding" in w)) return { error: `${id} is not a finding` };
-  if (!reason?.trim()) return { error: "say why the carry is ending — it is the other half of the record" };
-  if (!w.finding.shared) return releaseLocalFindingCarry(root, id);
+  if (!reason?.trim()) return { error: "say why it is coming back — it is the other half of the record" };
+  if (!w.finding.shared) return releaseLocalFindingBacklog(root, id);
   const shared = await import("./ops-shared.js");
-  return shared.releaseFindingCarry(root, w.finding.pr, id, reason);
+  return shared.releaseFindingBacklog(root, w.finding.pr, id, reason);
 }
 
 /** Attach a missing witness, whichever store owns it. Evidence, so an agent may. */
@@ -630,7 +630,7 @@ export async function deferFinding(
     if (sofar >= MASS_CONVERSION) {
       out.warning = `${sofar} findings on ${f.pr} are now bugs. A queue swept in bulk stops reading as `
         + `"defects we said we would fix". If the rest are real but not worth a bug record, they can be `
-        + `carried instead — a person's act, and they keep their witness and come back.`;
+        + `backlogged instead — a person's act, and they keep their witness and come back.`;
     }
   }
   return out;

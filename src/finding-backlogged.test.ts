@@ -1,10 +1,10 @@
 /**
- * The carry — a finding that is real, is not being fixed now, and comes back.
+ * The backlog — a finding that is real, is not being fixed now, and comes back.
  *
  * The state between "blocks the merge" and "confirmed bug", which had no record. Measured
  * across two live universes: 97 findings still open on pull requests that had merged, 46
  * of them still exactly true of the trunk, and 41 of those 46 with no disposition of any
- * kind. The seven deferrals anybody HAD recorded carried no release condition at all —
+ * kind. The seven deferrals anybody HAD recorded had no deadline at all —
  * the escape hatch was prose, including one reading "deferred to bug_7a5b29e71285 so it
  * survives the PR closing", which is the bug queue being used as a holding pen.
  *
@@ -31,54 +31,54 @@ const created = (over: Record<string, unknown> = {}) =>
 
 const fold = (...events: LogEvent[]) => foldFindings(events).get("f_1")!;
 
-test("a carry needs a release condition, and the fold is what enforces it", () => {
-  const ok = fold(created(), ev("finding.carried", PERSON, {
+test("backlogging needs a deadline, and the fold is what enforces it", () => {
+  const ok = fold(created(), ev("finding.backlogged", PERSON, {
     until: "2026-11-01", reason: "CreditLineDomain is slated for replacement", witness: W,
   }));
-  assert.equal(ok.carry?.until, "2026-11-01");
-  assert.equal(ok.carry?.reason, "CreditLineDomain is slated for replacement");
-  assert.deepEqual(ok.carry?.witness, W, "the code as it stood when somebody said 'not now'");
+  assert.equal(ok.backlogged?.until, "2026-11-01");
+  assert.equal(ok.backlogged?.reason, "CreditLineDomain is slated for replacement");
+  assert.deepEqual(ok.backlogged?.witness, W, "the code as it stood when somebody said 'not now'");
 
-  // Each of these is a carry that would never wake. `acknowledgements` refuses the same
+  // Each of these would never wake. `acknowledgements` refuses the same
   // shape for the same reason: a record that silences something permanently and silently
   // is worse than no record, and every deferral in the measured data was in this state.
-  assert.equal(fold(created(), ev("finding.carried", PERSON, { reason: "not now", witness: W })).carry,
+  assert.equal(fold(created(), ev("finding.backlogged", PERSON, { reason: "not now", witness: W })).backlogged,
     undefined, "no date at all");
-  assert.equal(fold(created(), ev("finding.carried", PERSON, { until: "soon", reason: "not now" })).carry,
+  assert.equal(fold(created(), ev("finding.backlogged", PERSON, { until: "soon", reason: "not now" })).backlogged,
     undefined, "a date that is not a date");
-  assert.equal(fold(created(), ev("finding.carried", PERSON, { until: "2026-11-01" })).carry,
+  assert.equal(fold(created(), ev("finding.backlogged", PERSON, { until: "2026-11-01" })).backlogged,
     undefined, "no reason — it is a record of a decision, not a mute button");
 });
 
-test("an agent may not carry a finding, and may not release one either", () => {
+test("an agent may not backlog a finding, and may not bring one back either", () => {
   // The queue-clearing move, from both sides. With a backlog this size, deferral is the
   // cheapest way to empty a queue — which is exactly why `debt` is principal-granted one
   // subsystem over, and the argument transfers unchanged.
-  assert.equal(fold(created(), ev("finding.carried", AGENT, { until: "2026-11-01", reason: "not now", witness: W })).carry,
-    undefined, "an agent's carry is dropped by the fold, not merely refused by the tool");
+  assert.equal(fold(created(), ev("finding.backlogged", AGENT, { until: "2026-11-01", reason: "not now", witness: W })).backlogged,
+    undefined, "an agent's attempt is dropped by the fold, not merely refused by the tool");
 
-  const granted = ev("finding.carried", PERSON, { until: "2026-11-01", reason: "r" });
-  const after = fold(created(), granted, ev("finding.carryReleased", AGENT, { reason: "clearing the queue" }));
-  assert.equal(after.carry?.until, "2026-11-01", "and an agent cannot end one a person granted");
+  const granted = ev("finding.backlogged", PERSON, { until: "2026-11-01", reason: "r" });
+  const after = fold(created(), granted, ev("finding.backlogReleased", AGENT, { reason: "clearing the queue" }));
+  assert.equal(after.backlogged?.until, "2026-11-01", "and an agent cannot end one a person granted");
 
-  const byPerson = fold(created(), granted, ev("finding.carryReleased", PERSON, { reason: "doing it now" }));
-  assert.equal(byPerson.carry, undefined, "…while the person who granted it can");
+  const byPerson = fold(created(), granted, ev("finding.backlogReleased", PERSON, { reason: "doing it now" }));
+  assert.equal(byPerson.backlogged, undefined, "…while the person who granted it can");
 });
 
-test("a later carry supersedes an earlier one; the ref is evidence, never the condition", () => {
+test("a later deadline supersedes an earlier one; the ref is evidence, never the condition", () => {
   const pushed = fold(created(),
-    ev("finding.carried", PERSON, { until: "2026-11-01", reason: "first" }),
-    ev("finding.carried", PERSON, { until: "2027-01-01", reason: "pushed out" }));
-  assert.equal(pushed.carry?.until, "2027-01-01");
-  assert.equal(pushed.carry?.reason, "pushed out");
+    ev("finding.backlogged", PERSON, { until: "2026-11-01", reason: "first" }),
+    ev("finding.backlogged", PERSON, { until: "2027-01-01", reason: "pushed out" }));
+  assert.equal(pushed.backlogged?.until, "2027-01-01");
+  assert.equal(pushed.backlogged?.reason, "pushed out");
 
-  // A Jira issue rides along as evidence. It is NOT what releases the carry — a ticket
+  // A Jira issue rides along as evidence. It is NOT what brings it back — a ticket
   // closed as won't-do, moved or deleted must not be able to silence this forever.
-  const withRef = fold(created(), ev("finding.carried", PERSON, {
+  const withRef = fold(created(), ev("finding.backlogged", PERSON, {
     until: "2026-11-01", reason: "r", system: "jira", key: "Acme-742",
   }));
-  assert.equal(withRef.carry?.ref?.key, "Acme-742");
-  assert.equal(withRef.carry?.until, "2026-11-01", "the date is still the condition");
+  assert.equal(withRef.backlogged?.ref?.key, "Acme-742");
+  assert.equal(withRef.backlogged?.until, "2026-11-01", "the date is still the condition");
 });
 
 test("an AGENT may attach a missing witness, but never over one that exists", () => {

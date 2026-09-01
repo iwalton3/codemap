@@ -37,7 +37,7 @@ import {
   type NewNote, type NoteKind,
 } from "./shared-notes.js";
 import { assertTriageBatch, triageScope, triageOf, isTombstone, type SharedTriage } from "./shared-triage.js";
-import { carry, releaseCarry, rewitness, isClosed } from "./shared-findings.js";
+import { backlogFindingEvent, releaseBacklog, rewitness, isClosed } from "./shared-findings.js";
 import { cachedTriage, materializeTriage } from "./triage-publish.js";
 export { mirrorNote } from "./notes-publish.js";
 export { sharedKnowsNode, docsVerdict, type DocsVerdict } from "./docs-lookup.js";
@@ -442,7 +442,7 @@ export async function remediateFinding(
  *
  * **Nothing here promotes anything to a bug.** A bug queue that everything drains into
  * is a bug queue people learn to ignore, which is the failure this was built to avoid
- * rather than cause; `carried` exists precisely so that promotion can stay a deliberate,
+ * rather than cause; the backlog exists precisely so that promotion can stay a deliberate,
  * one-at-a-time act.
  *
  * Judged against the WORKING TREE, which is what `liveAnchors` reads. That is the honest
@@ -458,7 +458,7 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
   const fileOf = new Map((store?.anchors ?? []).map((a) => [a.id, a.file]));
   const files = new Set<string>();
   for (const f of all) {
-    for (const id of [f.witness?.anchorId, f.carry?.witness?.anchorId]) {
+    for (const id of [f.witness?.anchorId, f.backlogged?.witness?.anchorId]) {
       const file = id && fileOf.get(id);
       if (file) files.add(file);
     }
@@ -490,7 +490,7 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
      * won't-fix, never promoted, and simply rots until somebody rediscovers the defect.
      */
     landed: landedAt(f.sourceRef),
-    ...(f.carry ? { carry: f.carry } : {}),
+    ...(f.backlogged ? { backlogged: f.backlogged } : {}),
     ...(f.witnessAttached ? { witnessAttached: f.witnessAttached } : {}),
   });
   const drifted = (w?: BugWitness) => {
@@ -507,21 +507,21 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
     woken: [] as ReturnType<typeof row>[],
     /** Carried and still asleep — not debt, and deliberately not in `attention`. */
     sleeping: [] as ReturnType<typeof row>[],
-    /** Not carried, code unchanged: a live claim about the code, with no disposition. */
+    /** Not backlogged, code unchanged: a live claim about the code, with no disposition. */
     live: [] as ReturnType<typeof row>[],
-    /** Not carried, code moved: re-validate. The existing `possiblyFixed` question. */
+    /** Not backlogged, code moved: re-validate. The existing `possiblyFixed` question. */
     moved: [] as ReturnType<typeof row>[],
     /** No witness, or one this build cannot compare. Nothing can judge these — `rewitness_finding` repairs them. */
     unjudgeable: [] as ReturnType<typeof row>[],
   };
 
   for (const f of all) {
-    if (f.carry) {
+    if (f.backlogged) {
       // Date first, because it is the condition that is guaranteed to fire. Drift is the
-      // early wake, and a carry with no witness simply never takes that path — which is
+      // early wake, and one with no witness simply never takes that path — which is
       // exactly what an acknowledgement has always done.
-      if (f.carry.until <= asOf) b.due.push(row(f));
-      else if (drifted(f.carry.witness) === "moved") b.woken.push(row(f));
+      if (f.backlogged.until <= asOf) b.due.push(row(f));
+      else if (drifted(f.backlogged.witness) === "moved") b.woken.push(row(f));
       else b.sleeping.push(row(f));
       continue;
     }
@@ -544,7 +544,8 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
     },
     ...b,
     /**
-     * What a person actually owes. `sleeping` is excluded ON PURPOSE — a carry with a
+     * What a person actually owes. `sleeping` is excluded ON PURPOSE — a backlogged
+     * finding with a
      * live release condition is a decision that has been made, and counting it as debt
      * would make the one honest way to defer look identical to ignoring the thing.
      */
@@ -597,7 +598,7 @@ function landedIn(root: string, commit: string, trunkSha: string): boolean {
 /**
  * The anchor's hash AS IT STANDS NOW — the code, not the store's cached row.
  *
- * `liveAnchors` re-reads the file, which is the point: a carry's release condition and a
+ * `liveAnchors` re-reads the file, which is the point: a backlog deadline's witness and a
  * repaired witness must both describe the working tree at the moment of the act, not
  * whatever the last index happened to record.
  */
@@ -609,24 +610,25 @@ async function witnessNow(root: string, anchorId: string): Promise<BugWitness | 
 }
 
 /**
- * The two things a carry cannot do without, checked once so both stores refuse alike.
+ * The two things backlogging cannot do without, checked once so both stores refuse alike.
  *
- * Exported because `carryOn` dispatches on the record and the LOCAL path has no fold
+ * Exported because `backlogOn` dispatches on the record and the LOCAL path has no fold
  * behind it to catch a bad input later — a second copy of these sentences is how the two
  * ends drift into refusing different things.
  */
-export function checkCarryInput(input: { until?: string; reason?: string }): { error: string } | null {
+export function checkBacklogInput(input: { until?: string; reason?: string }): { error: string } | null {
   const until = input.until?.trim();
   if (!until || !ISO_DATE.test(until)) {
     return {
       error:
-        "a carry needs `until` (an ISO date). It is the release condition and the only one: "
+        "backlogging a finding needs `until` (an ISO date). It is the deadline that brings it "
+        + "back, and the only one: "
         + "a linked issue may be evidence but never the condition, because a ticket closed as "
         + "won't-do, moved or deleted leaves the finding asleep permanently and silently. Every "
         + "deferral on record here is in exactly that state.",
     };
   }
-  if (!input.reason?.trim()) return { error: "a carry needs a reason — it is a record of a decision, not a mute button" };
+  if (!input.reason?.trim()) return { error: "backlogging a finding needs a reason — it is a record of a decision, not a mute button" };
   return null;
 }
 
@@ -639,7 +641,7 @@ export async function witnessNowFor(root: string, id: string, anchorId?: string)
 }
 
 /**
- * Carry a finding: real, not now, and it comes back.
+ * Backlog a finding: real, not now, and it comes back.
  *
  * The verb that did not exist. A finding neither severe enough to hold a pull request
  * nor worth promoting had nowhere to go, so it stayed open on a merged pull request and
@@ -654,10 +656,10 @@ export async function witnessNowFor(root: string, id: string, anchorId?: string)
  * that moved days ago. This one re-reads the anchor now, so drift against it means
  * somebody is editing the exact code the decision was about.
  *
- * Principal-only, and the FOLD enforces that as well (see `finding.carried`). The refusal
+ * Principal-only, and the FOLD enforces that as well (see `finding.backlogged`). The refusal
  * here exists to produce a sentence rather than a silently dropped event.
  */
-export async function carryFinding(
+export async function backlogFinding(
   root: string, pr: number | string, id: string,
   input: { until: string; reason: string; ref?: { system: string; key?: string; url?: string } },
 ) {
@@ -671,7 +673,7 @@ export async function carryFinding(
         + "and say what the release condition should be.",
     };
   }
-  const guard = checkCarryInput(input);
+  const guard = checkBacklogInput(input);
   if (guard) return guard;
   const until = input.until.trim();
 
@@ -683,18 +685,18 @@ export async function carryFinding(
   const anchorId = found.witness?.anchorId ?? (found.target.kind === "anchor" ? found.target.id : undefined);
   const witness = anchorId ? await witnessNow(root, anchorId) : undefined;
 
-  await carry(b.cfg.path, prKey(b.cfg, pr), b.actor, id, { until, reason: input.reason.trim(), witness, ref: input.ref });
+  await backlogFindingEvent(b.cfg.path, prKey(b.cfg, pr), b.actor, id, { until, reason: input.reason.trim(), witness, ref: input.ref });
   const mz = await materializeFindings(root, b.cfg, pr);
   return { ...mz, ok: true, id, until, witnessed: !!witness };
 }
 
-/** End a carry early — the finding returns to the ordinary queue. Principal-only, as granting is. */
-export async function releaseFindingCarry(root: string, pr: number | string, id: string, reason: string) {
+/** Bring one back early — it returns to the ordinary queue. Principal-only, as backlogging is. */
+export async function releaseFindingBacklog(root: string, pr: number | string, id: string, reason: string) {
   const b = bind(root, {});
   if ("error" in b) return b;
   if (isAgentActor(b.actor)) return { error: "ending a carry is a person's, exactly as granting one is" };
   if (!reason?.trim()) return { error: "say why the carry is ending — it is the other half of the record" };
-  await releaseCarry(b.cfg.path, prKey(b.cfg, pr), b.actor, id, reason.trim());
+  await releaseBacklog(b.cfg.path, prKey(b.cfg, pr), b.actor, id, reason.trim());
   const mz = await materializeFindings(root, b.cfg, pr);
   return { ...mz, ok: true, id };
 }

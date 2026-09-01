@@ -1,9 +1,9 @@
 /**
- * The carry, end to end, through the verbs a caller actually reaches.
+ * Backlogging, end to end, through the verbs a caller actually reaches.
  *
- * The fold tests (`finding-carry.test.ts`) drive hand-built events, which is the only way
+ * The fold tests (`finding-backlogged.test.ts`) drive hand-built events, the only way
  * to check a guard binds every reader. What they cannot see is the path in front of it:
- * whether the op refuses an agent BEFORE emitting, whether a carry on a log-owned finding
+ * whether the op refuses an agent BEFORE emitting, whether backlogging a log-owned finding
  * survives materialization, and whether the backlog moves the record into the right
  * bucket afterwards. Every one of those was unexercised — the shared path had never been
  * run at all, only folded.
@@ -23,7 +23,7 @@ import { indexBlob } from "./repo.js";
 import { writeStore, writeLocalFinding, readFinding } from "./store.js";
 import type { State } from "./schema.js";
 import type { SharedFinding } from "./shared-findings.js";
-import { carryOn, releaseCarryOn, rewitnessOn } from "./ops.js";
+import { backlogOn, releaseBacklogOn, rewitnessOn } from "./ops.js";
 import { shareFinding, findingBacklog } from "./ops-shared.js";
 import { discard } from "./test-tmp.js";
 
@@ -64,25 +64,25 @@ const local = (id: string, over: Partial<SharedFinding> = {}): SharedFinding => 
   state: "created", corroboration: [], thread: [], revisions: [], ...over,
 } as SharedFinding);
 
-test("an agent is refused a carry on a SHARED finding, and on a local one", async () => {
+test("an agent may not backlog a SHARED finding, nor a local one", async () => {
   const u = await universe();
   try {
     let sharedId = "";
     await asAgent(async () => {
       const f = await shareFinding(u.root, 7, { targetKind: "anchor", targetId: u.id, text: "real thing" }) as { id?: string };
       sharedId = f.id!;
-      const r = await carryOn(u.root, { id: sharedId, until: "2027-01-01", reason: "not now" });
+      const r = await backlogOn(u.root, { id: sharedId, until: "2027-01-01", reason: "not now" });
       assert.match(String(err(r)), /person's decision/, "refused in words, before anything is emitted");
     });
     // And the refusal is not merely a message: nothing was written.
-    assert.equal((await readFinding(u.root, sharedId))?.carry, undefined, "no carry reached the record");
+    assert.equal((await readFinding(u.root, sharedId))?.backlogged, undefined, "nothing reached the record");
 
     await writeLocalFinding(u.root, local("f_local", { target: { kind: "anchor", id: u.id } }), 7);
     await asAgent(async () => {
-      const r = await carryOn(u.root, { id: "f_local", until: "2027-01-01", reason: "not now" });
+      const r = await backlogOn(u.root, { id: "f_local", until: "2027-01-01", reason: "not now" });
       assert.match(String(err(r)), /person's decision/, "the local path gates too — it has no fold behind it");
     });
-    assert.equal((await readFinding(u.root, "f_local"))?.carry, undefined);
+    assert.equal((await readFinding(u.root, "f_local"))?.backlogged, undefined);
   } finally { u.cleanup(); }
 });
 
@@ -97,15 +97,15 @@ test("a person carries a SHARED finding, it survives the fold, and the backlog m
     assert.ok(before.live.some((r) => r.id === id) || before.unjudgeable.some((r) => r.id === id), "it starts as ordinary debt");
 
     await asPerson(async () => {
-      const r = await carryOn(u.root, { id, until: "2027-01-01", reason: "CreditLineDomain is slated for replacement" });
-      assert.equal(err(r), undefined, `carry refused: ${err(r)}`);
+      const r = await backlogOn(u.root, { id, until: "2027-01-01", reason: "CreditLineDomain is slated for replacement" });
+      assert.equal(err(r), undefined, `backlogging refused: ${err(r)}`);
     });
 
     // Read back through the STORE, which is the projection the fold wrote — not the
     // op's return value, which would pass even if nothing materialized.
     const rec = await readFinding(u.root, id);
-    assert.equal(rec?.carry?.until, "2027-01-01", "the carry survived the round trip through the log");
-    assert.equal(rec?.carry?.by.via, undefined, "and is recorded as a person's, with no agent in it");
+    assert.equal(rec?.backlogged?.until, "2027-01-01", "it survived the round trip through the log");
+    assert.equal(rec?.backlogged?.by.via, undefined, "and is recorded as a person's, with no agent in it");
 
     const after = await findingBacklog(u.root, { asOf: "2026-09-01" });
     assert.ok(after.sleeping.some((r) => r.id === id), "the backlog now holds it as a decision, not as debt");
@@ -114,22 +114,22 @@ test("a person carries a SHARED finding, it survives the fold, and the backlog m
   } finally { u.cleanup(); }
 });
 
-test("only a person ends a carry, and the finding returns to the queue", async () => {
+test("only a person brings one back, and the finding returns to the queue", async () => {
   const u = await universe();
   try {
     await writeLocalFinding(u.root, local("f_1", { target: { kind: "anchor", id: u.id }, witness: { anchorId: u.id, bodyHash: u.hash } }), 7);
     await asPerson(async () => {
-      assert.equal(err(await carryOn(u.root, { id: "f_1", until: "2027-01-01", reason: "not now" })), undefined);
+      assert.equal(err(await backlogOn(u.root, { id: "f_1", until: "2027-01-01", reason: "not now" })), undefined);
     });
     await asAgent(async () => {
-      assert.match(String(err(await releaseCarryOn(u.root, "f_1", "clearing the queue"))), /person's/);
+      assert.match(String(err(await releaseBacklogOn(u.root, "f_1", "clearing the queue"))), /person's/);
     });
-    assert.ok((await readFinding(u.root, "f_1"))?.carry, "an agent's release changed nothing");
+    assert.ok((await readFinding(u.root, "f_1"))?.backlogged, "an agent's release changed nothing");
 
     await asPerson(async () => {
-      assert.equal(err(await releaseCarryOn(u.root, "f_1", "doing it now")), undefined);
+      assert.equal(err(await releaseBacklogOn(u.root, "f_1", "doing it now")), undefined);
     });
-    assert.equal((await readFinding(u.root, "f_1"))?.carry, undefined);
+    assert.equal((await readFinding(u.root, "f_1"))?.backlogged, undefined);
     const b = await findingBacklog(u.root, { asOf: "2026-09-01" });
     assert.ok(b.live.some((r) => r.id === "f_1"), "and it is back in the queue it left");
   } finally { u.cleanup(); }
@@ -170,10 +170,10 @@ test("the release condition is required at the OP, not only at the fold", async 
   try {
     await writeLocalFinding(u.root, local("f_1", { target: { kind: "anchor", id: u.id } }), 7);
     await asPerson(async () => {
-      assert.match(String(err(await carryOn(u.root, { id: "f_1", until: "", reason: "not now" }))), /needs `until`/);
-      assert.match(String(err(await carryOn(u.root, { id: "f_1", until: "soon", reason: "not now" }))), /needs `until`/);
-      assert.match(String(err(await carryOn(u.root, { id: "f_1", until: "2027-01-01", reason: "  " }))), /needs a reason/);
+      assert.match(String(err(await backlogOn(u.root, { id: "f_1", until: "", reason: "not now" }))), /needs `until`/);
+      assert.match(String(err(await backlogOn(u.root, { id: "f_1", until: "soon", reason: "not now" }))), /needs `until`/);
+      assert.match(String(err(await backlogOn(u.root, { id: "f_1", until: "2027-01-01", reason: "  " }))), /needs a reason/);
     });
-    assert.equal((await readFinding(u.root, "f_1"))?.carry, undefined, "none of those wrote anything");
+    assert.equal((await readFinding(u.root, "f_1"))?.backlogged, undefined, "none of those wrote anything");
   } finally { u.cleanup(); }
 });

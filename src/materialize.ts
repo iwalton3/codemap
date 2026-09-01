@@ -128,18 +128,18 @@ import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeStatu
 // applied by no clone. A store that has already folded this scope holds rows computed
 // without either, and only the shards move a fingerprint.
 //
-// 18 -> 19: `foldFindings` folds three new events — `finding.carried`,
-// `finding.carryReleased`, `finding.rewitnessed` — so a `SharedFinding` now carries
-// `carry` and `witnessAttached`. Same rule as every entry above, and this time the
+// 18 -> 19: `foldFindings` folds three new events — `finding.backlogged`,
+// `finding.backlogReleased`, `finding.rewitnessed` — so a `SharedFinding` now carries
+// `backlogged` and `witnessAttached`. Same rule as every entry above, and this time the
 // upgrade SKEW is the case it protects rather than a hypothetical: a teammate on the old
-// build pulls a carry, folds it into nothing (unknown kinds are dropped, which is the
+// build pulls a backlogged finding, folds it into nothing (unknown kinds are dropped, the
 // correct degradation — verified), and then upgrades. Their shards have not moved since
 // that fold, so without this bump the new build reads the cached rows and shows the
 // finding as undisposed FOR EVER, while the log has said otherwise the whole time. The
 // finding then reads as debt on one machine and as a decision on another, which is the
 // disagreement the log exists to prevent.
 //
-// The table set did not change — `carry` lives inside the `findings.body` JSON, not in a
+// The table set did not change — `backlogged` lives inside the `findings.body` JSON, not a
 // column — so this is a refold and not a migration. Nothing in anyone's LOG is touched;
 // only derived rows are discarded and rebuilt from events that were always there.
 export const MATERIALIZER_VERSION = 19;

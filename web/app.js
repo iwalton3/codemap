@@ -1000,9 +1000,9 @@ class DashboardPage extends Component {
     add(r && r.sidecar && r.sidecar.blocked, 'blocked', plural(r.sidecar && r.sidecar.blocked, 'blocked scope', 'blocked scopes'),
       sharedHubUrl(u), 'bad', 'these scopes still answer, but not as the team’s settled state');
     const bl = r && r.backlog;
-    add(bl && bl.due, 'bldue', plural(bl && bl.due, 'carry past its date', 'carries past their date'),
-      backlogUrl(u), 'bad', 'you said you would come back to these');
-    add(bl && bl.woken, 'blwoke', plural(bl && bl.woken, 'carry woken by an edit', 'carries woken by an edit'),
+    add(bl && bl.due, 'bldue', plural(bl && bl.due, 'backlog deadline passed', 'backlog deadlines passed'),
+      backlogUrl(u), 'bad', 'you said you would come back to these, and the date has passed');
+    add(bl && bl.woken, 'blwoke', plural(bl && bl.woken, 'backlogged finding woken by an edit', 'backlogged findings woken by an edit'),
       backlogUrl(u), 'bad', 'somebody is editing the exact code the deferral was about');
     add(bl && bl.live, 'bllive', plural(bl && bl.live, 'finding still true, undisposed', 'findings still true, undisposed'),
       backlogUrl(u), null, 'the witnessed code has not changed, and nobody has said anything about it');
@@ -4513,16 +4513,16 @@ defineComponent('pr-inbox-page', PrInboxPage);
  * it beside the debt would make an honest deferral read like a neglected finding.
  */
 const BACKLOG_BUCKETS = [
-  ['due', 'past its date', 'You said you would come back to these. The date has passed.'],
-  ['woken', 'code moved under a carry', 'Somebody is editing the exact code the deferral was about — the case worth interrupting for.'],
+  ['due', 'past their deadline', 'You said you would come back to these. The deadline has passed.'],
+  ['woken', 'code moved under a backlogged finding', 'Somebody is editing the exact code the deferral was about — the case worth interrupting for.'],
   ['live', 'still true, never disposed of', 'The witnessed code has not changed, so the claim still holds. Nobody has said anything about these.'],
   ['moved', 'code changed', 'The code moved after the finding was written. Re-read before believing it either way — it is not evidence of a fix.'],
   ['unjudgeable', 'nothing can judge these', 'No witness, or one this build cannot compare against, so no drift question can be asked at all. An agent can repair them with `rewitness_finding`.'],
-  ['sleeping', 'carried, still asleep', 'A decision somebody made, with a live release condition. Not debt — shown so it is visible, not so it is worked.'],
+  ['sleeping', 'backlogged, still asleep', 'A decision somebody made, with a deadline still ahead. Not debt — shown so it is visible, not so it is worked.'],
 ];
 
 /**
- * What the `carry…` button does, before you press it.
+ * What the `backlog…` button does, before you press it.
  *
  * The act has no obvious shape from its name and the consequence is the point of the
  * record: it is not "hide this", it is "decide it, and be shown it again". Saying so on
@@ -4530,10 +4530,10 @@ const BACKLOG_BUCKETS = [
  * alternative to using it is the thing this page exists to stop, a finding left open on a
  * merged pull request until somebody rediscovers the defect.
  */
-const CARRY_TIP = "Real, but not now — and it comes back. Records a decision with a "
-  + "release date and a reason, both required, so it cannot quietly sleep for ever. It "
-  + "also wakes early if somebody edits the code the decision was about. Does NOT create "
-  + "a bug, and does not close the finding. A person's decision, not an agent's.";
+const BACKLOG_TIP = "Defer it with a deadline: real, but not now — and it comes back. "
+  + "Records a decision with a date and a reason, both required, so it cannot quietly "
+  + "sleep for ever. It also wakes early if somebody edits the code the decision was "
+  + "about. Does NOT file a bug, and does not close the finding. A person's decision.";
 
 const LANDING = {
   landed: ['debt', 'the code is on the trunk — an unactioned finding here is what rots'],
@@ -4580,7 +4580,7 @@ class BacklogPage extends Component {
       // The action is the PATH, not a body field — `serve.ts` reads it off the URL.
       const r = await apiPost(`/api/shared/${action}`, { u: this.props.params.universe, id, pr: this.prOf(id), ...body });
       // ops-shared refusals come back 200 with an `error` — a reason, not a failure, and
-      // the reasons here are the whole gate ("a carry needs `until`…"). Showing them is
+      // the reasons here are the whole gate ("backlogging needs `until`…"). Showing them is
       // the point: a silent no-op on a principal act is indistinguishable from a bug.
       if (r && r.error) { this.state.err = r.error; return; }
       this.state.open = null;
@@ -4597,12 +4597,12 @@ class BacklogPage extends Component {
   setForm(id, patch) { this.state.form = { ...this.state.form, [id]: { ...this.formOf(id), ...patch } }; }
   toggle(id) { this.state.open = this.state.open === id ? null : id; this.state.err = null; }
 
-  carry(id) {
+  backlog(id) {
     const f = this.formOf(id);
-    this.act('carry', id, { until: f.until, reason: f.reason });
+    this.act('backlog', id, { until: f.until, reason: f.reason });
   }
 
-  /** One finding. The carry form is inline and only under the row it belongs to. */
+  /** One finding. The backlog form is inline and only under the row it belongs to. */
   row(u, r, bucket) {
     const st = this.state, open = st.open === r.id, land = LANDING[r.landed] || LANDING.unknown;
     return html`<div class="blrow">
@@ -4616,20 +4616,20 @@ class BacklogPage extends Component {
         <span class="dim blwho">${r.author && r.author.principal}${r.author && r.author.via ? ' via ' + (r.author.via.model || 'agent') : ''}</span>
       </div>
       <div class="bltext">${r.text}</div>
-      ${when(r.carry, () => html`<div class="blcarry">
-        carried until <b>${r.carry.until}</b> by ${r.carry.by && r.carry.by.principal} — ${r.carry.reason}
-        ${when(r.carry.ref && r.carry.ref.key, () => html` <span class="dim">(${r.carry.ref.key} — evidence, not the release condition)</span>`)}
-        <button title="Take it out of the carry now, before its release condition fires — it goes back into the ordinary queue. A person's, exactly as granting one is." disabled="${st.busy === r.id}" on-click="${() => this.act('carry_release', r.id, { reason: 'released from the backlog' })}">end the carry</button>
+      ${when(r.backlogged, () => html`<div class="blbacklogged">
+        backlogged until <b>${r.backlogged.until}</b> by ${r.backlogged.by && r.backlogged.by.principal} — ${r.backlogged.reason}
+        ${when(r.backlogged.ref && r.backlogged.ref.key, () => html` <span class="dim">(${r.backlogged.ref.key} — evidence, not the release condition)</span>`)}
+        <button title="Bring it back into the queue now, before its deadline expires. A person's, exactly as backlogging is." disabled="${st.busy === r.id}" on-click="${() => this.act('backlog_release', r.id, { reason: 'brought back from the backlog' })}">bring it back</button>
       </div>`)}
-      ${when(!r.carry, () => html`<div class="blacts">
-        <button title="${CARRY_TIP}" disabled="${st.busy === r.id}" on-click="${() => this.toggle(r.id)}">${open ? 'cancel' : 'carry…'}</button>
+      ${when(!r.backlogged, () => html`<div class="blacts">
+        <button title="${BACKLOG_TIP}" disabled="${st.busy === r.id}" on-click="${() => this.toggle(r.id)}">${open ? 'cancel' : 'backlog…'}</button>
         ${when(bucket === 'unjudgeable', () => html`<span class="dim blhint">no witness — an agent repairs this with <code>rewitness_finding</code>, then it can be judged</span>`)}
       </div>`)}
       ${when(open, () => html`<div class="blform">
-        <div class="dim blhint">Carrying records a decision: real, not now, and it comes back. Both fields are required — a carry with no release condition is the one that sleeps forever.</div>
+        <div class="dim blhint">Backlogging records a decision: real, not now, and it comes back. Both fields are required — one with no deadline is the one that sleeps for ever.</div>
         <label>comes back on <input type="date" value="${this.formOf(r.id).until}" on-change="${(e, v) => this.setForm(r.id, { until: v })}"></label>
         <input class="blreason" placeholder="why it is not being fixed now…" value="${this.formOf(r.id).reason}" on-change="${(e, v) => this.setForm(r.id, { reason: v })}">
-        <button disabled="${st.busy === r.id}" on-click="${() => this.carry(r.id)}">${st.busy === r.id ? 'carrying…' : 'carry it'}</button>
+        <button disabled="${st.busy === r.id}" on-click="${() => this.backlog(r.id)}">${st.busy === r.id ? 'backlogging…' : 'backlog it'}</button>
       </div>`)}
     </div>`;
   }

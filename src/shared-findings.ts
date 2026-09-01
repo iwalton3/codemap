@@ -261,7 +261,7 @@ export interface SharedFinding {
    * again: measured at 97 such findings across two universes, 46 of them still exactly
    * true of the trunk. The workaround people reached for is in the data — a bug minted
    * with the detail "deferred to bug_7a5b29e71285 so it survives the PR closing" — which
-   * is what dilutes the bug queue into noise. A carry is the place to put those instead,
+   * is what dilutes the bug queue into noise. The backlog is where those go instead,
    * and NOTHING here promotes anything to a bug.
    *
    * `until` is a release condition and it is REQUIRED, for the reason `acknowledgements`
@@ -272,9 +272,9 @@ export interface SharedFinding {
    * was none.
    *
    * `witness` is the SECOND half of the condition and is snapshotted here rather than
-   * read off the finding: `SharedFinding.witness` is from filing time, so a carry keyed
+   * read off the finding: `SharedFinding.witness` is from filing time, so a deadline keyed
    * on it would wake instantly whenever the code moved between filing and the decision
-   * to carry — which is the common case, since carrying usually follows an investigation.
+   * to backlog it — the common case, since backlogging usually follows an investigation.
    * This one is the code as it stood when somebody said "not now", so drift against it
    * means somebody is editing the exact code that decision was about.
    *
@@ -282,12 +282,12 @@ export interface SharedFinding {
    * backlog this size, deferral is the cheapest way to clear a queue, and the fold drops
    * an agent's attempt as well as the tool refusing it.
    */
-  carry?: {
+  backlogged?: {
     /** ISO date. The release condition, and a required one. */
     until: string;
-    /** The code when the carry was granted — drift against THIS wakes it early. */
+    /** The code when it was backlogged — drift against THIS wakes it early. */
     witness?: BugWitness;
-    /** Why it is being carried. A record of a decision, not a mute button. */
+    /** Why it is not being fixed now. A record of a decision, not a mute button. */
     reason: string;
     by: Actor;
     at: string;
@@ -724,20 +724,20 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         break;
       }
 
-      case "finding.carried": {
-        // BOTH ENDS. `carryFinding` refuses an agent with a sentence; this drops the
+      case "finding.backlogged": {
+        // BOTH ENDS. `backlogFinding` refuses an agent with a sentence; this drops the
         // event, because a teammate's clone applies the log without ever seeing that
         // check and a guard in one end binds one machine. Twelve defects of this exact
         // shape are on record in this subsystem.
         if (isAgentActor(e.actor)) break;
         const until = str(d, "until"), reason = str(d, "reason");
-        // No release condition, no carry. The whole point of the record is that it comes
+        // No deadline, no backlogging. The whole point of the record is that it comes
         // back; one without a date is the permanent silent silencing that
         // `acknowledgements` refuses for the same reason, and every deferral in the
         // measured data was in exactly that state.
         if (!until || !ISO_DATE.test(until) || !reason) break;
         const w = obj(d, "witness");
-        f.carry = {
+        f.backlogged = {
           until, reason, by: e.actor, at: e.at,
           ...(w && str(w, "anchorId") && str(w, "bodyHash")
             ? { witness: { anchorId: str(w, "anchorId")!, bodyHash: str(w, "bodyHash")! } } : {}),
@@ -746,13 +746,13 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         break;
       }
 
-      case "finding.carryReleased":
+      case "finding.backlogReleased":
         // Also principal-only, and for the symmetrical reason: an agent that could end a
-        // carry could end every carry, which is the same queue-clearing move from the
-        // other side. Deleting the field rather than dating it — the carry is over, and
+        // one could bring back every one, which is the same queue-clearing move from the
+        // other side. Deleting the field rather than dating it — it is back, and
         // the events remain the history.
         if (isAgentActor(e.actor)) break;
-        delete f.carry;
+        delete f.backlogged;
         break;
 
       case "finding.rewitnessed": {
@@ -960,24 +960,24 @@ export const remediate = (logRoot: string, pr: number | string, actor: Actor, id
     { state, ...(detail ? { detail } : {}), ...(ref ? { ref } : {}) });
 
 /**
- * Carry a finding: real, not now, and it comes back.
+ * Backlog a finding: real, not now, and it comes back.
  *
  * `until` and `reason` are both required and the FOLD checks them too — an event missing
  * either is a carry that never wakes, which is the failure this record exists to prevent.
  * `witness` is the code as it stands NOW, not the finding's filing witness; see
- * `SharedFinding.carry`.
+ * `SharedFinding.backlogged`.
  */
-export const carry = (
+export const backlogFindingEvent = (
   logRoot: string, pr: number | string, actor: Actor, id: string,
   input: { until: string; reason: string; witness?: BugWitness; ref?: { system: string; key?: string; url?: string } },
-) => emit(logRoot, pr, actor, id, "finding.carried", {
+) => emit(logRoot, pr, actor, id, "finding.backlogged", {
   until: input.until, reason: input.reason,
   ...(input.witness ? { witness: { ...input.witness } } : {}),
   ...(input.ref ? { system: input.ref.system, ...(input.ref.key ? { key: input.ref.key } : {}), ...(input.ref.url ? { url: input.ref.url } : {}) } : {}),
 } as Data);
 
-export const releaseCarry = (logRoot: string, pr: number | string, actor: Actor, id: string, reason: string) =>
-  emit(logRoot, pr, actor, id, "finding.carryReleased", { reason });
+export const releaseBacklog = (logRoot: string, pr: number | string, actor: Actor, id: string, reason: string) =>
+  emit(logRoot, pr, actor, id, "finding.backlogReleased", { reason });
 
 /** Attach a witness to a finding filed without one. Evidence, so an agent may do it. */
 export const rewitness = (logRoot: string, pr: number | string, actor: Actor, id: string, witness: BugWitness) =>

@@ -1,6 +1,6 @@
 # The finding backlog — what happens to a finding nobody actioned
 
-Normative for `carry`, `rewitness` and `findingBacklog`. Read it before changing
+Normative for `backlog`, `rewitness` and `findingBacklog`. Read it before changing
 any of them.
 
 ## The problem, measured
@@ -17,7 +17,7 @@ trunk (`origin/develop`, `origin/main`):
 
 - **227** findings filed on 13 merged pull requests; **97 (43%)** still open.
 - Of those 97: **46 (47%)** with the witnessed code **unchanged** — the claim is
-  still exactly true of the trunk. **24 (25%)** moved. **18 (19%)** carry no
+  still exactly true of the trunk. **24 (25%)** moved. **18 (19%)** have no
   witness at all, so nothing can judge them.
 - Of the 46 live ones, **41 have no disposition of any kind**. Nobody said
   anything about them, ever.
@@ -27,14 +27,17 @@ deferrals anybody *had* made has an empty `ref`, no date, and its escape hatch
 written in prose — including one reading *"deferred to bug_7a5b29e71285 so it
 survives the PR closing"*. That is the bug queue being used as a holding pen.
 
-## The carry
+## The backlog
 
-`SharedFinding.carry` is the third exit: **real, not now, and it comes back.**
+`SharedFinding.backlogged` is the third exit: **real, not now, and it comes back.**
+
+On the review surfaces the three dispositions read **Escalate** (surface it to the team),
+**File Bug** (it is a defect somebody will fix) and **Backlog** (defer it, with a deadline).
 
 ```ts
-carry?: {
+backlogged?: {
   until: string;            // ISO date. REQUIRED. The release condition.
-  witness?: BugWitness;     // the code when the carry was GRANTED
+  witness?: BugWitness;     // the code when it was BACKLOGGED
   reason: string;           // REQUIRED
   by: Actor; at: string;
   ref?: ExternalRef;        // a Jira issue — evidence, NEVER the condition
@@ -50,20 +53,20 @@ record asleep permanently and silently. Every deferral on record was in exactly
 that state.
 
 **The witness is snapshotted at GRANT time, not read off the finding.**
-`SharedFinding.witness` is from filing time, and carrying normally follows an
+`SharedFinding.witness` is from filing time, and backlogging normally follows an
 investigation — so a condition keyed on the filing witness fires the moment it is
-granted, on code that moved days ago. Drift against the carry's own witness means
+set, on code that moved days ago. Drift against its own witness means
 somebody is editing the exact code the decision was about. That is the early
 wake, and it is the half only codemap can offer.
 
 **Principal-granted, like `debt`.** With a backlog this size, deferral is the
 cheapest way to empty a queue. The tool refuses an agent AND the fold drops an
-agent's `finding.carried`, because a teammate's clone applies the log without
-ever seeing the tool. Releasing is gated identically — an agent that could end
-every carry is the same move from the other side. `ops-reach.test.ts` forbids an
+agent's `finding.backlogged`, because a teammate's clone applies the log without
+ever seeing the tool. Bringing one back is gated identically — an agent that
+could do it to every finding is the same move from the other side. `ops-reach.test.ts` forbids an
 MCP tool for either.
 
-**A bug is refused rather than carried.** A bug is already the tracked record; a
+**A bug is refused rather than backlogged.** A bug is already the tracked record; a
 second deferral queue over the queue people read is the thing this avoids.
 
 ## Re-witnessing, and why an agent may
@@ -122,12 +125,12 @@ so no fold can disagree with it. Ordered by what somebody should do:
 
 | bucket | means | next move |
 |---|---|---|
-| `due` | carried, the date passed | you said you would come back |
-| `woken` | carried, its code moved | somebody is editing that code now |
-| `live` | not carried, code unchanged | still true, and undisposed — the debt |
-| `moved` | not carried, code changed | re-read; a moved body is not a fix |
+| `due` | backlogged, deadline passed | you said you would come back |
+| `woken` | backlogged, its code moved | somebody is editing that code now |
+| `live` | not backlogged, code unchanged | still true, and undisposed — the debt |
+| `moved` | not backlogged, code changed | re-read; a moved body is not a fix |
 | `unjudgeable` | no comparable witness | `rewitness_finding` repairs it |
-| `sleeping` | carried, still asleep | nothing — a decision somebody made |
+| `sleeping` | backlogged, still asleep | nothing — a decision somebody made |
 
 **`sleeping` is excluded from `attention`.** Counting a live deferral as debt
 makes deferring honestly look identical to ignoring the thing, which would train
@@ -146,23 +149,23 @@ conversion, sweeping a pull request's leftovers into it until the queue stops
 meaning "defects we said we would fix" and starts meaning "things reported on a
 PR six months ago". `deferFinding` therefore **warns on the run rather than the
 act** (the `cover` precedent): past five conversions on one pull request it says
-so and names the carry as the alternative. It never refuses.
+so and names the backlog as the alternative. It never refuses.
 
 ## Upgrade skew — why this needed `MATERIALIZER_VERSION` 18 → 19
 
 The question a mixed-version team makes urgent: can a teammate a day behind be
-harmed by a carry that arrives before they upgrade?
+harmed by a backlogged finding that arrives before they upgrade?
 
 **Their log cannot be corrupted.** The log is append-only and the new events are
 just records in it. `foldFindings` has no `default:` case, so an old build drops
-`finding.carried` silently and keeps folding everything after it — verified by
-feeding the fold an event kind no build has. They simply do not see carries, which
+`finding.backlogged` silently and keeps folding everything after it — verified by
+feeding the fold an event kind no build has. They simply do not see the deferral, which
 is the correct degradation. Nothing rewrites a fold-owned row either:
 `writeLocalFinding` refuses one outright.
 
 **The danger is the other direction, and it is real.** The scope fingerprint is
 `MATERIALIZER_VERSION` + identity + scope + each shard's name, size and mtime. It
-does not know what the fold knows. So: the teammate pulls a carry on the old
+does not know what the fold knows. So: the teammate pulls a backlogged finding on the old
 build, folds it into nothing, and upgrades. Their shards have not moved since that
 fold, the fingerprint is unchanged, and the new build reads the CACHED rows —
 showing the finding as undisposed for ever while the log has said otherwise the
@@ -174,7 +177,7 @@ no fold (`foldCount` unchanged), and bumping the version moves the fingerprint
 (`d12b587d…` → `bf544b78…`) and forces the refold.
 
 So the bump is required, and it is a **refold, not a migration**: no column moved,
-because `carry` lives inside the `findings.body` JSON. Only derived rows are
+because `backlogged` lives inside the `findings.body` JSON. Only derived rows are
 discarded and rebuilt from events that were always there. Nobody's log is touched.
 
 `db-migrate.test.ts` pins the findings fold's event VOCABULARY to the version —
@@ -183,9 +186,9 @@ because no column changed here, so the coarse signal would not have caught it.
 
 ## Tests that hold this up
 
-- `finding-carry.test.ts` — the fold, on hand-built events. Every guard
+- `finding-backlogged.test.ts` — the fold, on hand-built events. Every guard
   mutation-checked. This is the only thing that can see a guard binding one end.
-- `finding-carry-flow.test.ts` — the verbs, on real stores, both the local table
+- `finding-backlog-flow.test.ts` — the verbs, on real stores, both the local table
   and the sidecar log, under an agent actor and a principal.
 - `finding-backlog.test.ts` — the six buckets, `landed`, and the bulk-conversion
   warning.
