@@ -124,7 +124,45 @@ test("the standard projection's table set is pinned to a materializer version", 
   // withdrawal gate admits an agent's own draft. Table set unchanged again, same reason.
   // 18: `proposal_witnesses` — this time the table set DID change, which is the case this
   // assertion was written for, and the fold refuses an unwitnessed ratification with it.
-  assert.equal(MATERIALIZER_VERSION, 18, "and record the new number here");
+  // 19: nothing to do with the standard at all — `foldFindings` learned `finding.carried`,
+  // `finding.carryReleased` and `finding.rewitnessed`. Recorded here because this is where
+  // the number lives, and pinned in its own right by the test below.
+  assert.equal(MATERIALIZER_VERSION, 19, "and record the new number here");
+});
+
+/**
+ * The FINDINGS fold's event vocabulary, pinned to the same version.
+ *
+ * The sibling of the assertion above, for the fold that carries the other half of the
+ * shared state — and the case it was written for is real rather than hypothetical. A
+ * teammate on the old build pulls a carry, folds it into nothing (unknown kinds are
+ * dropped, which is the correct degradation), and then upgrades. Their shards have not
+ * moved since that fold, so without a bump the new build reads its cached rows and shows
+ * the finding as undisposed for ever, while the log has said otherwise the whole time.
+ * The finding then reads as debt on one machine and as a decision on another.
+ *
+ * Vocabulary rather than table set, because a finding's new state lives inside the
+ * `findings.body` JSON: no column moved when `carry` was added, so the coarse signal the
+ * standard test uses would not have caught this one.
+ */
+test("the findings fold's event vocabulary is pinned to a materializer version", async () => {
+  const { MATERIALIZER_VERSION } = await import("./materialize.js");
+  const src = readFileSync("src/shared-findings.ts", "utf8");
+  const fold = src.slice(src.indexOf("export function foldFindings"));
+  const kinds = [...new Set([...fold.matchAll(/case "(finding\.[a-zA-Z]+)"|kind === "(finding\.[a-zA-Z]+)"/g)]
+    .map((m) => m[1] ?? m[2]!))].sort();
+
+  // If you are reading this because it failed: teaching the fold a new event changes what
+  // an ALREADY-FOLDED scope should say, and only the shards move a fingerprint. Bump
+  // `MATERIALIZER_VERSION` so every clone re-folds, then update both lists here.
+  assert.deepEqual(kinds, [
+    "finding.askDeclined", "finding.assigned", "finding.carried", "finding.carryReleased",
+    "finding.commented", "finding.corroborated", "finding.created", "finding.outcome",
+    "finding.posted", "finding.promoted", "finding.promotedToBug", "finding.relocation",
+    "finding.remediated", "finding.requested", "finding.revised", "finding.rewitnessed",
+    "finding.stateChanged", "finding.upstreamed",
+  ], "the findings fold learned or forgot an event — bump MATERIALIZER_VERSION with it");
+  assert.equal(MATERIALIZER_VERSION, 19, "and record the new number here");
 });
 
 /**

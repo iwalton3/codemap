@@ -287,6 +287,14 @@ before touching it, each of which was a defect when absent:
   defect; what breaks a bug queue is MASS conversion, so it warns on the run rather than
   the act (the `cover` precedent) and never refuses.
 
+**It cost a `MATERIALIZER_VERSION` bump (18 → 19), and the reason generalises.** A
+teammate a day behind cannot be harmed by a carry — an old fold drops an unknown kind and
+keeps going — but the reverse bites: they fold it into nothing, upgrade, and their shards
+have not moved, so the fingerprint is unchanged and the new build serves the cached rows
+for ever. Teaching a fold a new EVENT is the same hazard as giving it a new table, and
+`db-migrate.test.ts` now pins the findings vocabulary the way it already pinned the
+standard's tables.
+
 **`landed` is decided by ANCESTRY, not by a pull request's status field** — local, and
 more correct: a stacked PR reads MERGED while its code is nowhere near the trunk.
 Nothing runs at merge and nothing should, because it is derived on every read. But

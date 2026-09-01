@@ -148,6 +148,39 @@ PR six months ago". `deferFinding` therefore **warns on the run rather than the
 act** (the `cover` precedent): past five conversions on one pull request it says
 so and names the carry as the alternative. It never refuses.
 
+## Upgrade skew — why this needed `MATERIALIZER_VERSION` 18 → 19
+
+The question a mixed-version team makes urgent: can a teammate a day behind be
+harmed by a carry that arrives before they upgrade?
+
+**Their log cannot be corrupted.** The log is append-only and the new events are
+just records in it. `foldFindings` has no `default:` case, so an old build drops
+`finding.carried` silently and keeps folding everything after it — verified by
+feeding the fold an event kind no build has. They simply do not see carries, which
+is the correct degradation. Nothing rewrites a fold-owned row either:
+`writeLocalFinding` refuses one outright.
+
+**The danger is the other direction, and it is real.** The scope fingerprint is
+`MATERIALIZER_VERSION` + identity + scope + each shard's name, size and mtime. It
+does not know what the fold knows. So: the teammate pulls a carry on the old
+build, folds it into nothing, and upgrades. Their shards have not moved since that
+fold, the fingerprint is unchanged, and the new build reads the CACHED rows —
+showing the finding as undisposed for ever while the log has said otherwise the
+whole time. The finding reads as debt on one machine and as a decision on another,
+which is precisely the disagreement the log exists to prevent.
+
+Confirmed rather than assumed: re-reading a scope whose shards have not moved runs
+no fold (`foldCount` unchanged), and bumping the version moves the fingerprint
+(`d12b587d…` → `bf544b78…`) and forces the refold.
+
+So the bump is required, and it is a **refold, not a migration**: no column moved,
+because `carry` lives inside the `findings.body` JSON. Only derived rows are
+discarded and rebuilt from events that were always there. Nobody's log is touched.
+
+`db-migrate.test.ts` pins the findings fold's event VOCABULARY to the version —
+the sibling of the standard test's table-set pin, and vocabulary rather than tables
+because no column changed here, so the coarse signal would not have caught it.
+
 ## Tests that hold this up
 
 - `finding-carry.test.ts` — the fold, on hand-built events. Every guard
