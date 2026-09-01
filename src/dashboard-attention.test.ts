@@ -238,3 +238,29 @@ test("the dashboard's attention and the backlog's are ONE number, not two", asyn
     assert.ok(d.attention < d.review.findings.total, "an open finding is a workload; only some of it is a queue");
   } finally { discard(root); }
 });
+
+test("the branch card offers the fork point or nothing — never the trunk's head", async () => {
+  // A snapshot of the trunk's CURRENT head is not a base for your branch: diffing against
+  // it reports everything that landed on the trunk since you branched as your change. The
+  // fallback that picked one was silent about it — `noBase` false, no warning — where an
+  // honest "no base" is already an attention item with `codemap snapshot` as the remedy.
+  const { root } = await universe();
+  const { snapshot } = await import("./ops.js");
+  try {
+    git(root, "add", "-A");
+    git(root, "commit", "-qm", "trunk");
+    git(root, "checkout", "-qb", "feat/x");
+    // A snapshot taken on the trunk AFTER the branch was cut — newest, and wrong.
+    git(root, "checkout", "-q", "main");
+    writeFileSync(join(root, "src/later.js"), "export const later = 1;\n", "utf8");
+    git(root, "add", "-A");
+    git(root, "commit", "-qm", "landed on the trunk since you branched");
+    await snapshot(root);
+    git(root, "checkout", "-q", "feat/x");
+
+    const d = await dashboard(root);
+    assert.equal(d.branch.onTrunk, false);
+    assert.equal(d.branch.base, null, "the trunk's head is not this branch's base");
+    assert.equal(d.branch.noBase, true, "and it says so, which is the actionable answer");
+  } finally { discard(root); }
+});

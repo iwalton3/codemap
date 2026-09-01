@@ -113,9 +113,14 @@ async function branchRollup(root: string) {
       // `origin/<trunk>` first: a stale local trunk forks earlier than the branch really
       // did, which silently widens the diff by everything that landed on it meanwhile.
       const fork = mergeBase(root, "HEAD", `origin/${trunk}`) ?? mergeBase(root, "HEAD", trunk);
-      base = usable.find((s) => s.ref === fork)
-        ?? usable.find((s) => s.branch === trunk || s.branch === `origin/${trunk}`)
-        ?? null;
+      // The FORK POINT or nothing. There used to be a fallback to "any snapshot on the
+      // trunk", which `listSnapshots` orders newest-first — so it picked the trunk's HEAD,
+      // the exact thing the paragraph above warns against, and did it silently: `noBase`
+      // was false, nothing warned, and the diff attributed everybody else's landed commits
+      // to your branch. `noBase` is already an attention item with the right remedy
+      // (`codemap snapshot`), and saying "I have no base" is honest where a wrong base is
+      // not visibly wrong at all.
+      base = usable.find((s) => s.ref === fork) ?? null;
     }
   } catch { /* gitless, or a detached head — the card degrades to "no base" */ }
 

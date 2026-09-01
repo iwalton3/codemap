@@ -84,6 +84,33 @@ It is **evidence, not a disposition**, which is why the gate is off. Two rules:
 - It records `witnessAttached`, because a retro witness testifies from that
   moment on and **not** about the code when the finding was filed.
 
+## Re-evaluate — handing it back for a fresh look
+
+`finding.assigned` had been folded since the record existed, and
+`findingAsQueueEntry` had been mapping an assignment into `review_queue` just as
+long — with no emitter, no op and no tool, so nothing could ever put one there.
+The whole verb was missing at one end.
+
+It answers *"I think this was fixed, but somebody should check"*, which had no way
+to be said: the alternatives were closing the finding (asserting something nobody
+verified) or leaving it, which is how the backlog filled up. The ask names what a
+fresh look means — is it still true, re-witness it if it has none, report — so it
+is not merely "look again".
+
+**Ungated, and that is the line the surfaces are drawn on.** Re-evaluate, File Bug
+and Backlog all ask or defer; none of them ends anything, so they sit on the row.
+Resolve and refute assert something about the code, and a list is exactly the
+shape that invites clearing a queue without reading it — so those two live only
+inside the opened finding.
+
+**A fresh ask CLEARS the standing `outcome`, and the fold is where that happens.**
+`reviewQueue` keeps an item only while `includeAnswered || !outcome`, so without
+it a finding somebody had already reported on was handed back and appeared in no
+queue at all — silently, and for exactly the case the button exists for. The local
+path cleared it and the fold did not, so the two stores disagreed; the fold is the
+authority and now does. `outcomes` is untouched: it is append-only history, and a
+re-ask does not unsay what earlier rounds found.
+
 ## `landed` — when a finding changes kind
 
 A pull request merging to the default branch is the moment a finding stops being
@@ -184,6 +211,23 @@ discarded and rebuilt from events that were always there. Nobody's log is touche
 the sibling of the standard test's table-set pin, and vocabulary rather than tables
 because no column changed here, so the coarse signal would not have caught it.
 
+## What it costs, measured
+
+`findingBacklog` re-indexes every file a live witness names — one tree-sitter parse
+per file — because the six buckets are drift answers and drift needs today's
+hashes. On `Acme.API` (125 open findings, 55 distinct witnessed files, ~900 KB)
+that is **343ms**, and the dashboard reads it, so the landing page pays it.
+
+Kept rather than optimised, for three reasons: the file set is computed AFTER the
+closed and bug-linked findings are dropped, so it already indexes only what it
+needs; the dashboard has always re-indexed bug-cited files for the same reason, so
+this is the accepted shape and not a new one; and a cache here would need an
+invalidation story against a working tree that changes constantly. If it becomes a
+problem the answer is probably to let the dashboard ask for counts without the
+rows, not to cache parses.
+
+The ancestry half is separately cached — see `landedIn`, 211ms → 21ms.
+
 ## Tests that hold this up
 
 - `finding-backlogged.test.ts` — the fold, on hand-built events. Every guard
@@ -193,7 +237,16 @@ because no column changed here, so the coarse signal would not have caught it.
 - `finding-backlog.test.ts` — the six buckets, `landed`, and the bulk-conversion
   warning.
 - `dashboard-attention.test.ts` — that the dashboard's number and the backlog's
-  are one number.
+  are one number, and that the branch card offers a fork point or nothing.
+
+## Read-path invariant
+
+**`findingBacklog` MUST materialize before it reads.** The canonical table is a
+projection; reading it raw is how a `MATERIALIZER_VERSION` bump gets bypassed. An
+upgraded store whose shards have not moved would serve rows its OLD build folded —
+with no `backlogged` on them — for ever, which is the exact skew the bump exists to
+prevent. `sharedFindings` has always called `ensureMaterialized`; this read did not,
+so the bump was necessary and NOT sufficient. Both reviews of this branch found it.
 
 A fabricated hash will not produce drift, and should not: a witness from another
 derivation is not evidence the code moved, so it reads `undecidable`. Build a

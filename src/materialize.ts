@@ -139,6 +139,12 @@ import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeStatu
 // finding then reads as debt on one machine and as a decision on another, which is the
 // disagreement the log exists to prevent.
 //
+// 19 also changes what an EXISTING event does: `finding.assigned` now clears the stale
+// `outcome`, because a fresh ask means the previous answer no longer stands. That is a
+// fold-mind change on an already-folded scope, which is its own reason for a bump (see
+// 16 and 17, where the table set did not move either) — it does not need a SECOND number
+// only because nothing outside this branch has ever folded at 19.
+//
 // The table set did not change — `backlogged` lives inside the `findings.body` JSON, not a
 // column — so this is a refold and not a migration. Nothing in anyone's LOG is touched;
 // only derived rows are discarded and rebuilt from events that were always there.

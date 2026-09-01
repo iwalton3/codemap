@@ -1236,8 +1236,14 @@ export async function rewitnessLocalFinding(root: string, id: string, witness: B
   const actor = requireActor(root);
   if ("error" in actor) return actor;
   if (f.witness) return { error: `${id} already has a witness — replacing one re-baselines every drift answer that depends on it` };
+  // Same binding rule as the shared path, and this is the only end the local store has.
+  if (f.target.kind === "anchor" && witness.anchorId !== f.target.id) {
+    return { error: `${id} is filed on ${f.target.id}, so that is what witnesses it — not ${witness.anchorId}` };
+  }
   f.witness = witness;
   f.witnessAttached = { by: actor, at: new Date().toISOString() };
+  // Arm a backlog that had no witness to wake early on — the fold does the same.
+  if (f.backlogged && !f.backlogged.witness) f.backlogged.witness = witness;
   await writeLocalFinding(root, f, f.pr!);
   return { ok: true, id: f.id, pr: f.pr, shared: false, anchorId: witness.anchorId };
 }

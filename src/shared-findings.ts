@@ -752,6 +752,11 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         // other side. Deleting the field rather than dating it — it is back, and
         // the events remain the history.
         if (isAgentActor(e.actor)) break;
+        // The writer refuses an empty reason and the fold did not, which is the
+        // guard-at-one-end shape this contract exists to forbid: a buggy or older
+        // client could un-backlog a finding with no record of why, and every clone
+        // would apply it.
+        if (!str(d, "reason")) break;
         delete f.backlogged;
         break;
 
@@ -770,6 +775,12 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         if (f.witness) break;
         f.witness = { anchorId, bodyHash };
         f.witnessAttached = { by: e.actor, at: e.at };
+        // Arm a backlog that had NO witness to wake early on. One is allowed — the
+        // deadline is the guaranteed condition and an anchor may already have left the
+        // tree — but a finding repaired after being backlogged could then never wake on
+        // drift at all, which is the half of the release condition only this tool can
+        // restore. Never over an existing one, for the same reason as above.
+        if (f.backlogged && !f.backlogged.witness) f.backlogged.witness = { anchorId, bodyHash };
         break;
       }
 
@@ -802,6 +813,17 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         const kind = str(d, "kind");
         if (kind !== "investigate" && kind !== "fix" && kind !== "answer") break;
         f.assignment = { kind, by: e.actor, at: e.at, note: str(d, "note") };
+        // A fresh ask means the previous ANSWER no longer stands — the rule
+        // `assignAnnotation` has always followed, and the fold did not. Without it
+        // re-evaluating is invisible: `reviewQueue` keeps an item only while
+        // `includeAnswered || !outcome`, so a finding somebody had already reported on
+        // was handed back and appeared in no queue at all. That is the exact case the
+        // button exists for — "I think this was fixed, but somebody should check".
+        //
+        // `outcomes` is untouched: it is the append-only history, and a re-ask does not
+        // unsay what the earlier rounds found. Only the "where did this get to" pointer
+        // is cleared, because the honest answer is now "somebody is looking again".
+        f.outcome = undefined;
         break;
       }
 

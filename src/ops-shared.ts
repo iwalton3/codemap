@@ -19,7 +19,7 @@ import { scopesOnDisk, readScopeChecked, writerFor, rotateWriter, acknowledgeSco
 import { findingsProjection, docsProjection, notesProjection, walkthroughsProjection, triageProjection, docsByNode, projectionFor } from "./shared-projections.js";
 import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
 import { resolveSidecar, scopeFor, sidecarIdentity, inUniverse, type SidecarConfig } from "./sidecar-config.js";
-import { ISO_DATE, type BugWitness } from "./schema.js";
+import { ISO_DATE, parseAsOf, type BugWitness } from "./schema.js";
 import { witnessDrift, realDrift } from "./reviews.js";
 import { originSlug, headCommit, currentBranch, isAncestor, defaultBranch, revParse } from "./git.js";
 import { fetchReviewThreads, type GhRunner } from "./pr-push.js";
@@ -450,8 +450,42 @@ export async function remediateFinding(
  * rather than claiming the trunk moved.
  */
 export async function findingBacklog(root: string, opts: { asOf?: string } = {}) {
-  const asOf = opts.asOf ?? new Date().toISOString().slice(0, 10);
-  const all = (await readFindings(root, {})).findings.filter((f) => !isClosed(f.state));
+  // Through `parseAsOf`, like every other `asOf` in the tree. The comparison below is
+  // LEXICOGRAPHIC, so a caller-supplied `"today"` — which is what an agent reaches for
+  // over MCP — makes every deadline read as passed and empties the sleeping bucket into
+  // `due`. `ISO_DATE` is shape-only and would admit `2026-02-30`; this round-trips it.
+  // THROWS on a value it cannot round-trip, exactly as every other `asOf` consumer does.
+  // A silent fallback would be the bug: the comparison below is lexicographic, so a
+  // caller-supplied `"today"` — what an agent reaches for over MCP — makes every deadline
+  // read as passed and empties the sleeping bucket into `due`. `.at` is the date part,
+  // so a date is compared against a date.
+  const asOf = opts.asOf ? parseAsOf(opts.asOf).at.slice(0, 10) : new Date().toISOString().slice(0, 10);
+
+  // MATERIALIZE FIRST. The canonical table is a projection, and reading it raw is how a
+  // version bump gets bypassed: an upgraded store whose shards have not moved would have
+  // served rows its OLD build folded — with no `backlogged` on them — for ever, which is
+  // the exact skew `MATERIALIZER_VERSION` 19 exists to prevent. `sharedFindings` has
+  // always called `ensureMaterialized`; this read did not, so the bump was necessary and
+  // not sufficient. Cheap when nothing moved: one `stat` per shard per scope.
+  const cfgM = resolveSidecar(root);
+  if (cfgM) {
+    const identity = sidecarIdentity(cfgM);
+    for (const scope of await scopesOnDisk(cfgM.path).catch(() => [] as string[])) {
+      if (!inUniverse(scope, cfgM.universe)) continue;
+      const which = projectionFor(scope);
+      if (!which || !scope.startsWith("findings/")) continue;
+      await ensureMaterialized(root, cfgM.path, scope, identity, which.fold, which.proj).catch(() => null);
+    }
+  }
+
+  const all = (await readFindings(root, {})).findings.filter((f) =>
+    // A finding that BECAME A BUG has taken one of the two exits, and the obligation
+    // moved with it — `promotedToBug` leaves the state open on purpose so the pull
+    // request's history still shows it was raised there. Counting it as undisposed made
+    // "file bug" look like it did nothing: the row reloaded unchanged and `attention`
+    // did not move, and the only way to clear it was `resolve`, which asserts something
+    // nobody checked. The bug queue is where it is tracked now.
+    !isClosed(f.state) && !f.bug);
 
   // One re-index of every witnessed file, not one per finding.
   const store = await readAnchorStore(root).catch(() => null);
@@ -477,7 +511,11 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
     // recorded rather than guessed: absence of evidence is not evidence, and the honest
     // answer keeps them out of a debt count they may not belong in.
     if (!ref || ref === "@work" || !trunk) return "unknown" as const;
-    return landedIn(root, ref, trunk.sha) ? "landed" as const : "open" as const;
+    const yes = landedIn(root, ref, trunk.sha);
+    // Three answers, not two. `null` is "this clone cannot say" — the commit is not here
+    // — and it joins `@work` in `unknown` rather than being reported as still in review.
+    if (yes === null) return "unknown" as const;
+    return yes ? "landed" as const : "open" as const;
   };
 
   const row = (f: SharedFinding) => ({
@@ -598,10 +636,22 @@ function trunkRef(root: string): { name: string; sha: string } | null {
  * caller may legitimately pass a moving name.
  */
 const ancestry = new Map<string, boolean>();
-function landedIn(root: string, commit: string, trunkSha: string): boolean {
-  const key = `${root}\0${commit}\0${trunkSha}`;
+function landedIn(root: string, commit: string, trunkSha: string): boolean | null {
+  // RESOLVE FIRST, and return null when it does not. `isAncestor` shells out to
+  // `merge-base --is-ancestor`, which exits non-zero both for "not an ancestor" and for
+  // "this clone does not have that object" — so a ref that was never fetched, or a
+  // shallow clone, answered a confident `open` ("still in review") for code that may well
+  // be on the trunk. Caching that made it permanent for the process, which is the one way
+  // this memo could be unsound: ancestry between two RESOLVED commits is immutable, but
+  // "I could not look" is not an answer and must never be memoised as one.
+  //
+  // Resolving also keys the cache on a SHA rather than whatever string the record holds:
+  // a `sourceRef` naming a branch would otherwise cache an answer that moves.
+  const sha = revParse(root, commit);
+  if (!sha) return null;
+  const key = `${root}\0${sha}\0${trunkSha}`;
   let hit = ancestry.get(key);
-  if (hit === undefined) ancestry.set(key, hit = isAncestor(root, commit, trunkSha));
+  if (hit === undefined) ancestry.set(key, hit = isAncestor(root, sha, trunkSha));
   return hit;
 }
 
@@ -640,6 +690,29 @@ export function checkBacklogInput(input: { until?: string; reason?: string }): {
   }
   if (!input.reason?.trim()) return { error: "backlogging a finding needs a reason — it is a record of a decision, not a mute button" };
   return null;
+}
+
+/**
+ * An ANCHOR-target finding witnesses its own target and nothing else.
+ *
+ * Without this a caller could point the witness at unrelated code — the record would keep
+ * saying it is about `a_real` while every drift answer was computed from `a_unrelated`,
+ * so edits to the actual defect would never wake it and edits elsewhere would. A wrong
+ * witness is worse than none: none is visibly `unjudgeable`, this looks settled.
+ *
+ * Exported because `rewitnessOn` checks it before either store resolves anything — one
+ * rule, one message, whichever half owns the row.
+ */
+export async function checkWitnessTarget(root: string, id: string, anchorId?: string): Promise<{ error: string } | null> {
+  if (!anchorId) return null;
+  const f = (await readFindings(root, {})).findings.find((x) => x.id === id);
+  if (!f || f.target.kind !== "anchor" || anchorId === f.target.id) return null;
+  return {
+    error:
+      `${id} is filed on ${f.target.id}, so that is what witnesses it — a witness on `
+      + `${anchorId} would answer drift about different code while the record still named `
+      + `this one. Relocate the finding if the target moved.`,
+  };
 }
 
 /** The anchor a finding is about, hashed as it stands now. Shared with the local path. */
@@ -752,6 +825,9 @@ export async function rewitnessFinding(root: string, pr: number | string, id: st
   if (found.witness) {
     return { error: `${id} already has a witness — re-baselining one would silently move every drift answer that depends on it` };
   }
+  // Named apart from `bind()` above, which is this module's sidecar binder.
+  const bound = await checkWitnessTarget(root, id, opts.anchorId);
+  if (bound) return bound;
   const anchorId = opts.anchorId ?? (found.target.kind === "anchor" ? found.target.id : undefined);
   if (!anchorId) return { error: `${id} targets a node, so say which anchor witnesses it (\`anchorId\`)` };
   const w = await witnessNow(root, anchorId);

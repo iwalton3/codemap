@@ -471,10 +471,16 @@ export async function backlogOn(root: string, input: { id: string; until: string
   const shared = await import("./ops-shared.js");
   const guard = shared.checkBacklogInput(input);
   if (guard) return guard;
+  // NORMALIZED HERE, once, and both paths get the same strings. The guard trimmed before
+  // validating and the two stores then wrote different things: the shared path trimmed
+  // again, the local one wrote the raw value — and `" 2027-01-01"` sorts BELOW every
+  // digit, so an identical request produced a finding due for ever locally and asleep
+  // until 2027 on the team's copy.
+  const until = input.until.trim(), reason = input.reason.trim();
   if (!w.finding.shared) {
-    return backlogLocalFinding(root, input.id, { until: input.until, reason: input.reason, ref: input.ref, witness: await shared.witnessNowFor(root, input.id) });
+    return backlogLocalFinding(root, input.id, { until, reason, ref: input.ref, witness: await shared.witnessNowFor(root, input.id) });
   }
-  return shared.backlogFinding(root, w.finding.pr, input.id, { until: input.until, reason: input.reason, ref: input.ref });
+  return shared.backlogFinding(root, w.finding.pr, input.id, { until, reason, ref: input.ref });
 }
 
 /** Bring one back, whichever store owns it. A person's, exactly as backlogging is. */
@@ -513,6 +519,13 @@ export async function rewitnessOn(root: string, id: string, opts: { anchorId?: s
   if ("error" in w) return w;
   if (!("finding" in w)) return { error: `${id} is not a finding` };
   const shared = await import("./ops-shared.js");
+  // The binding rule is checked HERE, before either path resolves anything, so the
+  // refusal names the real problem on both. Resolution-first gave the local store
+  // "no anchor to witness … with" for a perfectly resolvable but WRONG anchor, which
+  // sends the caller to reindex instead of telling them the witness does not belong to
+  // this finding.
+  const bind = await shared.checkWitnessTarget(root, id, opts.anchorId);
+  if (bind) return bind;
   if (!w.finding.shared) {
     const witness = await shared.witnessNowFor(root, id, opts.anchorId);
     if (!witness) return { error: `no anchor to witness ${id} with — name one with \`anchorId\`, or reindex` };

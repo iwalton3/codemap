@@ -203,6 +203,31 @@ test("re-evaluate puts the finding in the queue an agent already reads", async (
     assert.match(String(item!.assignment?.note), /re-witness it if it has none/,
       "and the ask says what a fresh look means, so it is not just 'look again'");
 
+    // THE HALF THAT WAS BROKEN. `reviewQueue` keeps an item only while
+    // `includeAnswered || !outcome`, so a finding somebody had already reported on was
+    // handed back and landed in NO queue — silently, and for exactly the case the button
+    // exists for ("I think this was fixed, but somebody should check"). The local path
+    // cleared the stale answer and the fold did not, so the two stores disagreed.
+    const answered = await universe();
+    try {
+      const { closeFinding } = await import("./ops.js");
+      let sid = "";
+      await asAgent(async () => {
+        sid = ((await shareFinding(answered.root, 9, { targetKind: "anchor", targetId: answered.id, text: "real thing" })) as { id: string }).id;
+        // Through the ordinary verb an agent reports with, so the outcome is recorded the
+        // way one actually gets there.
+        const r = await closeFinding(answered.root, { id: sid, result: "fixed", detail: "fixed it last week", files: ["src/credit.js"] });
+        assert.ok(!r.error, `reporting an outcome failed: ${r.error}`);
+      });
+      assert.ok((await readFinding(answered.root, sid))?.outcome, "it has an answer standing");
+      await asPerson(async () => { await reevaluateOn(answered.root, sid); });
+      const rec = await readFinding(answered.root, sid);
+      assert.equal(rec?.outcome, undefined, "a fresh ask clears the answer that no longer stands");
+      assert.equal((rec?.outcomes ?? []).length, 1, "…and keeps the history, which is not unsaid");
+      const q = await reviewQueue(answered.root, { brief: true });
+      assert.ok(q.queue.some((i: { id: string }) => i.id === sid), "so the agent can actually see it");
+    } finally { answered.cleanup(); }
+
     // Ungated: it asks a question rather than answering one, so an agent may ask too.
     await asAgent(async () => {
       assert.equal(err(await reevaluateOn(u.root, "f_1")), undefined, "not a disposition, so not gated");
@@ -211,5 +236,104 @@ test("re-evaluate puts the finding in the queue an agent already reads", async (
     const rec = await readFinding(u.root, "f_1");
     assert.equal(rec?.state, "created", "still open");
     assert.equal(rec?.backlogged, undefined, "still not backlogged");
+  } finally { u.cleanup(); }
+});
+
+test("the same request produces the same deadline on both stores", async () => {
+  // `checkBacklogInput` trimmed to VALIDATE and the two paths then wrote different
+  // things: the shared one trimmed again, the local one wrote the raw value — and
+  // " 2027-01-01" sorts below every digit, so an identical request made a finding due
+  // for ever locally and asleep until 2027 on the team's copy.
+  const u = await universe();
+  try {
+    let sharedId = "";
+    await asAgent(async () => {
+      sharedId = ((await shareFinding(u.root, 7, { targetKind: "anchor", targetId: u.id, text: "shared one" })) as { id: string }).id;
+    });
+    await writeLocalFinding(u.root, local("f_local", { target: { kind: "anchor", id: u.id } }), 7);
+
+    await asPerson(async () => {
+      for (const id of [sharedId, "f_local"]) {
+        assert.equal(err(await backlogOn(u.root, { id, until: " 2027-01-01 ", reason: "  later  " })), undefined);
+      }
+    });
+    for (const id of [sharedId, "f_local"]) {
+      const rec = await readFinding(u.root, id);
+      assert.equal(rec?.backlogged?.until, "2027-01-01", `${id} stored an untrimmed deadline`);
+      assert.equal(rec?.backlogged?.reason, "later");
+    }
+    const b = await findingBacklog(u.root, { asOf: "2026-09-01" });
+    assert.equal(b.due.length, 0, "neither is due — the leading space would have made one due for ever");
+    assert.equal(b.sleeping.length, 2, "both asleep until 2027");
+  } finally { u.cleanup(); }
+});
+
+test("re-witnessing may not point a finding's drift at unrelated code", async () => {
+  // A wrong witness is worse than none: none is visibly `unjudgeable`, this looks
+  // settled while answering drift about code the finding was never about.
+  const u = await universe();
+  try {
+    await writeLocalFinding(u.root, local("f_1", { target: { kind: "anchor", id: u.id } }), 7);
+    await asAgent(async () => {
+      const r = await rewitnessOn(u.root, "f_1", { anchorId: "a_somewhere_else" });
+      assert.match(String(err(r)), /is filed on/, "refused, and the message names the right anchor");
+    });
+    assert.equal((await readFinding(u.root, "f_1"))?.witness, undefined, "nothing was attached");
+    await asAgent(async () => {
+      assert.equal(err(await rewitnessOn(u.root, "f_1", { anchorId: u.id })), undefined, "its own target is fine");
+    });
+    assert.equal((await readFinding(u.root, "f_1"))?.witness?.anchorId, u.id);
+  } finally { u.cleanup(); }
+});
+
+test("a finding that became a bug leaves the backlog", async () => {
+  // `promotedToBug` leaves the state open on purpose, so filtering on state alone kept a
+  // finding that had taken one of the two exits in `live` — labelled "never disposed of",
+  // counted in `attention`, and unclearable except by asserting something nobody checked.
+  const u = await universe();
+  try {
+    let id = "";
+    await asAgent(async () => {
+      id = ((await shareFinding(u.root, 7, { targetKind: "anchor", targetId: u.id, text: "a real defect" })) as { id: string }).id;
+    });
+    assert.equal((await findingBacklog(u.root, { asOf: "2026-09-01" })).attention, 1, "it starts as debt");
+
+    const { deferFinding } = await import("./ops.js");
+    await asPerson(async () => {
+      const r = await deferFinding(u.root, id);
+      assert.ok(!r.error, `filing the bug failed: ${r.error}`);
+    });
+    assert.ok((await readFinding(u.root, id))?.bug, "the finding still exists and names its bug");
+    const b = await findingBacklog(u.root, { asOf: "2026-09-01" });
+    assert.equal(b.attention, 0, "and it is out of the backlog — the bug queue tracks it now");
+    assert.deepEqual(b.live, []);
+  } finally { u.cleanup(); }
+});
+
+test("the backlog read MATERIALIZES, so a version bump can actually reach it", async () => {
+  // `MATERIALIZER_VERSION` 19 is enforced by `scopeFingerprint`, which only anything
+  // going through `ensureMaterialized` consults. `findingBacklog` read the canonical
+  // table RAW — so an upgraded store whose shards had not moved would have served rows
+  // its old build folded, with no `backlogged` on them, for ever. The bump was necessary
+  // and not sufficient, and nothing would have said so.
+  const u = await universe();
+  try {
+    const { foldCount } = await import("./materialize.js");
+    let id = "";
+    await asAgent(async () => {
+      id = ((await shareFinding(u.root, 7, { targetKind: "anchor", targetId: u.id, text: "real thing" })) as { id: string }).id;
+    });
+    await findingBacklog(u.root, { asOf: "2026-09-01" });   // fold once, cache it
+    const settled = foldCount();
+    await findingBacklog(u.root, { asOf: "2026-09-01" });
+    assert.equal(foldCount(), settled, "an unchanged scope is answered from rows, not refolded");
+
+    // Now the log moves under it — which is the shape a pull, or an upgrade's changed
+    // fingerprint, produces. The read must notice.
+    await asPerson(async () => {
+      assert.equal(err(await backlogOn(u.root, { id, until: "2027-01-01", reason: "later" })), undefined);
+    });
+    const b = await findingBacklog(u.root, { asOf: "2026-09-01" });
+    assert.ok(b.sleeping.some((r) => r.id === id), "the read reflects the log, not a stale projection");
   } finally { u.cleanup(); }
 });

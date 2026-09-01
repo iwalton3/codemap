@@ -99,3 +99,33 @@ test("an AGENT may attach a missing witness, but never over one that exists", ()
   assert.equal(fold(created(), ev("finding.rewitnessed", AGENT, { witness: { anchorId: "a_1" } })).witness,
     undefined, "half a witness is not a witness");
 });
+
+test("bringing a finding back needs a reason at BOTH ends", () => {
+  // The writer refused an empty one and the fold did not — so a buggy or older client
+  // could un-backlog a finding with no record of why, and every clone would apply it.
+  const granted = ev("finding.backlogged", PERSON, { until: "2027-01-01", reason: "r" });
+  const bare = fold(created(), granted, ev("finding.backlogReleased", PERSON, {}));
+  assert.equal(bare.backlogged?.until, "2027-01-01", "a reasonless release is dropped, not applied");
+
+  const proper = fold(created(), granted, ev("finding.backlogReleased", PERSON, { reason: "doing it now" }));
+  assert.equal(proper.backlogged, undefined);
+});
+
+test("a witness attached later arms a backlog that had none to wake on", () => {
+  // A backlog may be granted with no witness — the deadline is the guaranteed condition
+  // and the anchor may already have gone. But a finding repaired afterwards could then
+  // never wake on drift AT ALL, losing the half of the release condition that is the
+  // reason to prefer this over an acknowledgement.
+  const f = fold(created(),
+    ev("finding.backlogged", PERSON, { until: "2027-01-01", reason: "later" }),
+    ev("finding.rewitnessed", AGENT, { witness: W }));
+  assert.deepEqual(f.backlogged?.witness, W, "the deferral can now be woken by an edit");
+  assert.deepEqual(f.witness, W);
+
+  // Never over one that was taken when the decision was made — that IS the baseline.
+  const original: BugWitness = { anchorId: "a_1", bodyHash: "h2:orig:sha256:orig" };
+  const kept = fold(created(),
+    ev("finding.backlogged", PERSON, { until: "2027-01-01", reason: "later", witness: original }),
+    ev("finding.rewitnessed", AGENT, { witness: W }));
+  assert.deepEqual(kept.backlogged?.witness, original, "the decision's own witness stands");
+});
