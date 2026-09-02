@@ -3,6 +3,11 @@
 Normative for `backlog`, `rewitness` and `findingBacklog`. Read it before changing
 any of them.
 
+**As-built.** It supersedes the two proposals this work was picked up from and carries
+everything they held; they are recoverable at `git show f22f36c^:PROPOSAL-bug-backlog.md`
+and `…:PROPOSAL-findings-in-search.md`. Where a proposal left a call open, the decision
+taken is recorded below rather than the option list.
+
 ## The problem, measured
 
 A pull-request finding has two exits: somebody fixes it, or somebody promotes it
@@ -258,11 +263,17 @@ Four things it gets right, each of which is a defect when absent:
   they suggest: `comment` is the description of the defect and `text` is the running triage
   narrative. A hit that led with `text` answers "what is the defect" with the audit trail
   of what people did about it. The backlog page shipped that once and had to swap it.
+- **It also matches the id, the target's id and the THREAD bodies.** `target.id` is what
+  makes an anchor id find the findings filed on it. The thread was the one call left open
+  on cost, being the only unbounded field, and it is matched: a thread is the half of a
+  finding that says what people concluded, so a search that skipped it would miss the
+  answer while matching the question.
 - **Closed findings match, and sort last.** "Was this ever reported?" is the question
   search is for, and a refuted finding is often the best possible answer — somebody
   already looked, and their reasoning is in the record. The hit carries `state` and any
   `backlogged` deadline, because a refuted one, a live one and a sleeping one are three
-  different answers to the same query.
+  different answers to the same query. It carries `shared` too — one canonical table holds
+  the team's rows beside this machine's, and which one answered is part of the answer.
 - **It materializes first.** The canonical table is a projection; a read straight off it
   would not see a teammate's finding until some unrelated list happened to fold the scope,
   which is precisely the finding somebody is most likely to search for. `search` and

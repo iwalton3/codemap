@@ -37,6 +37,7 @@ standard were the two hardest to find from here.
 |---|---:|---|
 | [`docs/requirements-architecture.md`](requirements-architecture.md) | 1124 | NORMATIVE for requirements, specs, operations, audits and acknowledgements. Outranks COD-29 and the *Requirement Kernel* draft. |
 | [`docs/cross-universe-standard.md`](cross-universe-standard.md) | 319 | NORMATIVE for the standard across more than one repository, and it EXTENDS the above — it wins wherever that document assumes one universe, which it does implicitly throughout. |
+| [`docs/finding-backlog.md`](finding-backlog.md) | 374 | NORMATIVE for `backlog`, `rewitness` and `findingBacklog`, and AS-BUILT for the bug backlog and findings-in-search — it carries the two root `PROPOSAL-*` notes those were built from, which are gone from the tree and recoverable at `f22f36c^`. |
 
 ## Active Plan
 
