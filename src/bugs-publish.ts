@@ -18,7 +18,7 @@ import { readCached } from "./materialize.js";
 import { bugsProjection } from "./shared-projections.js";
 import type { Actor } from "./schema.js";
 import {
-  bugScope, commentOnBug, fileBug, foldBugs, type SharedBug,
+  backlogBugEvent, bugScope, commentOnBug, fileBug, foldBugs, type SharedBug,
 } from "./shared-bugs.js";
 
 /** One universe's bugs, through the cache. */
@@ -99,6 +99,22 @@ export async function publishBug(b: BugLog, root: string, bug: SharedBug): Promi
       from: bug.from,
     });
     for (const c of bug.thread) await commentOnBug(logRoot, universe, actor, id, c.body);
+    // Carried, because publishing must not silently undo a decision. A local bug that
+    // was backlogged and lost the record on the way to the team would come straight back
+    // into everybody's working queue with no trace of why it had left this one.
+    //
+    // The fold is still what decides: it drops an agent's, which is correct here too — an
+    // agent publishing a person's deferral would be minting one on their behalf. The
+    // publisher is who is accountable for the publication, and this is the one act in it
+    // that a person has to be behind.
+    if (bug.backlogged) {
+      await backlogBugEvent(logRoot, universe, actor, id, {
+        until: bug.backlogged.until,
+        reason: bug.backlogged.reason,
+        witnesses: bug.backlogged.witnesses,
+        ...(bug.backlogged.ref?.system ? { ref: { system: bug.backlogged.ref.system, key: bug.backlogged.ref.key, url: bug.backlogged.ref.url } } : {}),
+      });
+    }
     return id;
   });
 }

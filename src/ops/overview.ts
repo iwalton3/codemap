@@ -2,6 +2,7 @@ import { type Anchor, type LogicalNode, type AnchorSelector, type CoverageMark }
 import { originSlug, currentBranch, defaultBranch, mergeBase, onDefaultBranch } from "../git.js";
 import { computeStaleness } from "../stale.js";
 import { citedAnchors, isClosed, witnessesOf } from "../shared-bugs.js";
+import { bugBacklogState } from "./bugs.js";
 import {
   readAnchorStore, readState, loadNodes, readGraph, readBugs, readAnnotations, readCoverage, writeCoverage,
   listSnapshots, staleSchemeSnapshots, readBlockedScopes, findingCountsByPr,
@@ -230,8 +231,17 @@ export async function dashboard(root: string) {
   const live = await liveAnchors(root, bugFiles);
   const bugIndex = liveIndex(root, live);
   const bugCounts: Record<string, number> = {};
-  let openBugs = 0, possiblyFixed = 0, unverifiableBugs = 0;
+  let openBugs = 0, possiblyFixed = 0, unverifiableBugs = 0, backloggedBugs = 0, sleepingBugs = 0;
+  const today = new Date().toISOString().slice(0, 10);
   for (const b of bugStore.bugs) {
+    // A live deferral is a decision somebody made, so it is out of every number this
+    // page drives to zero — the rule `sleeping` follows on the finding backlog, and for
+    // the same reason: counting one as debt makes deferring honestly look identical to
+    // ignoring the thing. It is also what keeps this rollup agreeing with the bugs page,
+    // whose queues exclude the same bugs; a dashboard that says N over a list of N-1 is
+    // worse than no number. Reported beside them, never dropped.
+    if (b.backlogged) backloggedBugs++;
+    if (bugBacklogState(b, bugIndex, today) === "sleeping") { sleepingBugs++; continue; }
     bugCounts[b.state] = (bugCounts[b.state] ?? 0) + 1;
     // Through `witnessDrift` rather than an inline `sameBody`, which also fixes a
     // second conflation this line had: a witness from another HASH_SCHEME counted as
@@ -259,7 +269,7 @@ export async function dashboard(root: string) {
     coverage: { docPct: computeDocPct(result.breakdown), citedPct: computeCitedPct(result.breakdown), open: result.breakdown.open, anchors: store.anchors.length, nodes: nodes.length, edges: graph.edges.length, breakdown: result.breakdown },
     views: availableViews(tallyTypes(nodes), { prs: !!originSlug(root) }), // which extra views this map can offer
     docs: { total: nodes.length, stale: staleDocs, dangling: danglingDocs, fresh: nodes.length - staleDocs - danglingDocs },
-    bugs: { total: bugStore.bugs.length, open: openBugs, possiblyFixed, unverifiable: unverifiableBugs, byStatus: bugCounts },
+    bugs: { total: bugStore.bugs.length, open: openBugs, possiblyFixed, unverifiable: unverifiableBugs, byStatus: bugCounts, backlogged: backloggedBugs, sleeping: sleepingBugs },
     annotations: annStore.annotations.length,
     openQuestions,
     tripwires: { fired: tw.fired.map((f) => ({ kind: f.target.kind, id: f.target.id, importance: f.importance, reason: f.reason })), armed: tw.armedCount },

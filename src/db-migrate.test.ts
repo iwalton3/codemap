@@ -127,7 +127,9 @@ test("the standard projection's table set is pinned to a materializer version", 
   // 19: nothing to do with the standard at all — `foldFindings` learned `finding.backlogged`,
   // `finding.backlogReleased` and `finding.rewitnessed`. Recorded here because this is where
   // the number lives, and pinned in its own right by the test below.
-  assert.equal(MATERIALIZER_VERSION, 19, "and record the new number here");
+  // 20: nor this one — `foldBugs` learned `bug.backlogged` and `bug.backlogReleased`, the
+  // same third exit one record kind over. Pinned by the bugs test below.
+  assert.equal(MATERIALIZER_VERSION, 20, "and record the new number here");
 });
 
 /**
@@ -162,7 +164,34 @@ test("the findings fold's event vocabulary is pinned to a materializer version",
     "finding.remediated", "finding.requested", "finding.revised", "finding.rewitnessed",
     "finding.stateChanged", "finding.upstreamed",
   ], "the findings fold learned or forgot an event — bump MATERIALIZER_VERSION with it");
-  assert.equal(MATERIALIZER_VERSION, 19, "and record the new number here");
+  assert.equal(MATERIALIZER_VERSION, 20, "and record the new number here");
+});
+
+/**
+ * The BUGS fold's event vocabulary, pinned the same way.
+ *
+ * Written when the backlog reached bugs, and the skew it protects against is the one the
+ * findings entry measured rather than a hypothetical: a teammate on the old build pulls a
+ * backlogged bug, folds it into nothing, and upgrades. Their shards have not moved since
+ * that fold, so without a bump the new build serves its cached rows and keeps the bug in
+ * the working queue for ever — the queue the deferral was supposed to take it out of.
+ *
+ * Vocabulary rather than table set, again: `backlogged` lives inside the `bugs.body`
+ * JSON, so no column moved and the coarse signal would not have caught it.
+ */
+test("the bugs fold's event vocabulary is pinned to a materializer version", async () => {
+  const { MATERIALIZER_VERSION } = await import("./materialize.js");
+  const src = readFileSync("src/shared-bugs.ts", "utf8");
+  const fold = src.slice(src.indexOf("export function foldBugs"));
+  const kinds = [...new Set([...fold.matchAll(/case "(bug\.[a-zA-Z]+)"|kind === "(bug\.[a-zA-Z]+)"/g)]
+    .map((m) => m[1] ?? m[2]!))].sort();
+
+  assert.deepEqual(kinds, [
+    "bug.anchored", "bug.assigned", "bug.backlogReleased", "bug.backlogged", "bug.commented",
+    "bug.corroborated", "bug.filed", "bug.outcome", "bug.promoted", "bug.requested", "bug.revised",
+    "bug.stateChanged", "bug.tracked", "bug.unanchored",
+  ], "the bugs fold learned or forgot an event — bump MATERIALIZER_VERSION with it");
+  assert.equal(MATERIALIZER_VERSION, 20, "and record the new number here");
 });
 
 /**

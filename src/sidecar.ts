@@ -27,7 +27,7 @@ import { ANCHOR_SCHEME, HASH_SCHEME } from "./schema.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { gitBin } from "./git.js";
 import { withSidecarLock, touchHeldLocks } from "./lock.js";
-import { SHARD_EXT, principalKey } from "./eventlog.js";
+import { SHARD_EXT, principalKey, splitShard, damageRef, type ShardDamage } from "./eventlog.js";
 import type { Actor } from "./schema.js";
 
 /**
@@ -62,10 +62,23 @@ export const GIT_CALL_TIMEOUT_MS = 180_000;
  * followed by an unrefreshed gap.
  */
 const g = (root: string, args: string[]) => {
+  const r = gRaw(root, args);
+  return { ok: r.ok, out: r.out.trim(), err: r.err.trim() };
+};
+
+/**
+ * The same call with stdout UNTRIMMED.
+ *
+ * Only shard validation wants this, and it is not a preference: whether a shard's
+ * last line is a torn append or ordinary damage is decided by whether the file ends
+ * in a newline, so trimming the blob makes every inbound shard's final line look
+ * torn and exempts exactly the byte range a check is for.
+ */
+const gRaw = (root: string, args: string[]) => {
   touchHeldLocks();
   const r = spawnSync(gitBin(), args, { cwd: root, encoding: "utf8", maxBuffer: 1 << 28, timeout: GIT_CALL_TIMEOUT_MS });
   touchHeldLocks();
-  return { ok: r.status === 0, out: (r.stdout ?? "").trim(), err: (r.stderr ?? "").trim() };
+  return { ok: r.status === 0, out: r.stdout ?? "", err: (r.stderr ?? "").trim() };
 };
 
 /**
@@ -78,6 +91,107 @@ const g = (root: string, args: string[]) => {
  * which is exactly the case that matters here.
  */
 const branchOf = (root: string): string => g(root, ["symbolic-ref", "--short", "HEAD"]).out || "main";
+
+/**
+ * Shards that do not parse, and the two places they are refused.
+ *
+ * The hole this closes: `readShardLines` drops an unparseable line by design, so a
+ * shard that is wholly garbage yields no events and its scope reads `complete`. The
+ * team's findings for that scope simply vanish, and every surface agrees the queue is
+ * clear. `scopeStatus` now blocks on it — but a blocked scope is a diagnosis whenever
+ * somebody next happens to read, and these two are what speak at the moment it matters.
+ *
+ * **Both REFUSE, and the reason is the same one twice.** A genuinely broken sidecar
+ * should stop and say so rather than be made worse — outbound, committing damage makes
+ * it everybody's; inbound, merging it puts the bytes in one more clone's history and
+ * destroys the scope on one more machine. The collateral on the inbound side is real and
+ * accepted: the good events in that pull do not arrive either. That is the trade a broken
+ * shared log deserves, and stopping is what gets it repaired.
+ *
+ * This is NOT a defence against a hostile shard, and it should not be tuned as one. The
+ * case it is built for is a sidecar that is genuinely damaged — a bad merge, a disk, an
+ * interrupted write — where continuing quietly is how the damage spreads.
+ *
+ * The outbound half hangs off `commitLocal` rather than off `push`, because that is the
+ * one function that commits: `syncHeld` commits before it pulls, and a check only on the
+ * push would leave the damage in the local history with a clean `git status` over it —
+ * which the next push would then publish without ever looking.
+ *
+ * Neither repairs, and the asymmetry with `healTail` is deliberate. A torn tail is a
+ * partial write nothing ever read, so removing it is not a decision; a fully-written
+ * line that is not JSON means something unknown happened to the file, and quietly
+ * dropping it would destroy the evidence of whatever did.
+ */
+
+/** Damage only — the events are `readShard`'s business, not a gate's. */
+function shardDamage(text: string, as: string): ShardDamage[] {
+  return splitShard(text, as).damage;
+}
+
+/** The one sentence both gates end with, so a person is never left without the repair. */
+const damageDetail = (damage: ShardDamage[]): string =>
+  damage.slice(0, 3).map((d) => `  ${damageRef(d)}: ${JSON.stringify(d.sample)}`).join("\n")
+  + (damage.length > 3 ? `\n  … and ${damage.length - 3} more` : "");
+
+/**
+ * Every shard this commit would introduce, checked before it is made.
+ *
+ * Scoped to what `git status` reports rather than to the whole tree — the same listing
+ * `commitLocal` uses to decide there is anything to do at all. A shard nobody touched is
+ * somebody else's problem, and blocking on it would wedge this clone over a file it did
+ * not write.
+ */
+function damagedWorkingShards(root: string): ShardDamage[] {
+  const out: ShardDamage[] = [];
+  for (const entry of g(root, ["status", "--porcelain", "-z", "--untracked-files=all"]).out.split("\0")) {
+    if (!entry) continue;
+    // `XY <path>`; a rename also emits its source as a bare following entry, which has
+    // no status prefix. Shards are never renamed, so taking the whole string when the
+    // prefix is absent only ever validates one extra file, which is harmless.
+    const path = /^.. (.*)$/.exec(entry)?.[1] ?? entry;
+    if (!path.endsWith(SHARD_EXT)) continue;
+    try { out.push(...shardDamage(readFileSync(join(root, path), "utf8"), path)); } catch { /* deleted, or raced */ }
+  }
+  return out;
+}
+
+/**
+ * Every shard an inbound branch would ADD, read off the fetched COMMIT.
+ *
+ * **From the MERGE BASE, not from our own tip, and that distinction is load-bearing
+ * rather than an optimisation.** `diff HEAD remoteSha` answers "how do these two differ",
+ * which includes everything WE have that they do not — so the moment somebody repaired a
+ * damaged shard and tried to publish the repair, this read the remote's still-damaged
+ * copy of it and refused the pull that the push has to go through first. The repairer
+ * was locked out of repairing. `base..remoteSha` asks what is new on their side, which
+ * is the only thing a merge can bring, and a remote already contained in our history
+ * yields nothing at all.
+ *
+ * The content at `remoteSha` is what lands, so a shard damaged and then fixed within the
+ * incoming range is fine and reads as fine — we validate what arrives, not every state it
+ * passed through.
+ *
+ * No merge base means unrelated histories, which is a first pull: everything is inbound.
+ *
+ * One `git show` per changed shard. That is the shape `erasedByMerge` already has, and an
+ * ordinary pull changes a handful; a first pull reads every shard once, which is the one
+ * time it is genuinely worth doing.
+ */
+function damagedInboundShards(root: string, beforeSha: string, remoteSha: string): ShardDamage[] {
+  const base = beforeSha ? g(root, ["merge-base", beforeSha, remoteSha]).out : "";
+  const listing = base
+    ? g(root, ["diff", "--name-only", "-z", base, remoteSha])
+    : g(root, ["ls-tree", "-r", "--name-only", "-z", remoteSha]);
+  if (!listing.ok) return [];
+  const out: ShardDamage[] = [];
+  for (const path of listing.out.split("\0")) {
+    if (!path.endsWith(SHARD_EXT)) continue;
+    const blob = gRaw(root, ["show", `${remoteSha}:${path}`]);
+    if (!blob.ok) continue; // deleted on their side — `erasedByMerge` is what judges that
+    out.push(...shardDamage(blob.out, path));
+  }
+  return out;
+}
 
 /**
  * Commit whatever is in the tree.
@@ -99,6 +213,18 @@ type CommitOutcome = "nothing" | "committed" | { error: string };
 
 function commitLocal(root: string, message: string): CommitOutcome {
   if (!g(root, ["status", "--porcelain"]).out) return "nothing";
+  // THE gate, and it is here rather than in `pushHeld` because this is the only place
+  // anything is committed. `syncHeld` commits before it pulls — the scaffold-vs-merge
+  // fix — so a check on the push side alone would let damage into the local history
+  // there, and `git status` is clean afterwards, so the next push would sail through
+  // and publish it.
+  const damaged = damagedWorkingShards(root);
+  if (damaged.length) {
+    return { error: `refusing to commit ${damaged.length} unreadable line(s) — no build can parse these, `
+      + `so the events they should hold are already lost, and committing them would lose them for the `
+      + `whole team:\n${damageDetail(damaged)}\n`
+      + `A shard is append-only and never rewritten, so deleting the damaged line(s) is the repair.` };
+  }
   g(root, ["add", "-A"]);
   const c = g(root, ["commit", "-q", "-m", message]);
   if (!c.ok) return { error: `the sidecar commit failed, so nothing can be pushed: ${(c.err || c.out).slice(0, 300)}` };
@@ -117,6 +243,66 @@ function commitLocal(root: string, message: string): CommitOutcome {
  */
 /** Re-exported: the lock lives below this module so the event log can take it too. */
 export { withSidecarLock } from "./lock.js";
+
+/**
+ * WHICH sidecar this is — an identity that survives a move and a re-clone, and differs
+ * between two teams' repos.
+ *
+ * The oldest root commit. Nothing else in reach has all three properties:
+ *
+ * - **The PATH does not**, and that is the whole reason this exists: a sidecar that moves
+ *   or is re-cloned to a new directory is the same sidecar, and refusing it would break an
+ *   ordinary recovery.
+ * - **A remote URL does not**, because a sidecar with no remote is a perfectly good local
+ *   one and the whole design works offline.
+ * - **A tip commit does not**, because it moves on every append.
+ *
+ * A root commit is created once, by `ensureSidecar`, and pushed on the first sync — so a
+ * clone of the same repo has it, and `merge-base --is-ancestor` still finds it after an
+ * `--allow-unrelated-histories` merge has added a second root beside it. That last case
+ * is not hypothetical: it is the ordinary way this team joins up, everybody running
+ * `ensureSidecar` locally and then pointing at one remote.
+ *
+ * Null means the sidecar has no commits yet — a brand-new one, which is not yet anything.
+ */
+const lineageCache = new Map<string, string>();
+
+export function sidecarLineage(root: string): string | null {
+  const hit = lineageCache.get(root);
+  if (hit) return hit;
+  const r = g(root, ["rev-list", "--max-parents=0", "HEAD"]);
+  if (!r.ok || !r.out) return null;
+  // Sorted so the choice among several roots is deterministic; any of them identifies the
+  // history, and `isSameSidecar` asks about ancestry rather than equality.
+  const roots = r.out.split("\n").map((l) => l.trim()).filter(Boolean).sort();
+  const id = roots[0];
+  if (!id) return null;
+  // Only a POSITIVE answer is cached: a sidecar with no commits gains one on its first
+  // sync, and a cached null would outlive that for the process.
+  lineageCache.set(root, id);
+  return id;
+}
+
+/**
+ * Is the sidecar at `root` the one `lineage` came from — moved, re-cloned or merged?
+ *
+ * **Memoised on a POSITIVE answer, and that is load-bearing rather than an
+ * optimisation.** `wrongSidecar` calls this on every cached read, which is the hot path
+ * the whole materializer exists to keep free of work — one process spawn per read would
+ * undo it. A `yes` cannot go stale the way this is used: HEAD only advances, so a commit
+ * that is an ancestor stays one. A `no` is NOT cached, because a sidecar that has not yet
+ * pulled the team's history becomes the right one when it does; and a wrong sidecar is an
+ * error state, where paying a spawn per read costs nothing worth saving.
+ */
+const sameCache = new Set<string>();
+
+export function isSameSidecar(root: string, lineage: string): boolean {
+  const key = `${root}\0${lineage}`;
+  if (sameCache.has(key)) return true;
+  const ok = g(root, ["merge-base", "--is-ancestor", lineage, "HEAD"]).ok;
+  if (ok) sameCache.add(key);
+  return ok;
+}
 
 export const MANIFEST_DIR = "manifests";
 
@@ -366,7 +552,25 @@ function deletingCommits(root: string, range: string): { commit: string; path: s
 function linesAt(root: string, rev: string, path: string): string[] | null {
   const blob = g(root, ["show", `${rev}:${path}`]);
   if (!blob.ok) return null;
-  return blob.out.split("\n").filter((l) => l.trim());
+  return blob.out.split("\n").filter((l) => l.trim() && isEventLine(l));
+}
+
+/**
+ * Does this line carry an event at all?
+ *
+ * The append-only restore is about EVENTS, and a line no build can parse is not one — so
+ * it was never erased in the sense this protects, and putting it back is actively wrong.
+ * Deleting the damaged line is the ONLY repair a corrupt shard has, and without this the
+ * repair is undone on every teammate's next pull: their merge sees the removal, restores
+ * it, and pushes it back at the person who fixed it. Found by running the oracle, not by
+ * reading either mechanism — each is right on its own.
+ *
+ * Parse only, deliberately NOT `wellFormed`: an event from a newer client parses and
+ * fails the envelope check, and that IS a real record whose loss must still be caught.
+ * Same line the damage check draws.
+ */
+function isEventLine(line: string): boolean {
+  try { JSON.parse(line); return true; } catch { return false; }
 }
 
 /**
@@ -537,17 +741,36 @@ async function pullHeld(root: string, actor?: Actor, fetched: FetchState = false
   const incompatEarly = checkPeers(remoteManifests(root, remoteSha), mine);
   if (incompatEarly?.fatal) return { error: incompatEarly.message };
 
+  // Our tip BEFORE the merge, so the append-only audit further down has something to
+  // compare against and the inbound shard check knows what this pull would ADD. `HEAD`
+  // on an unborn branch has no sha — nothing to erase, and everything is inbound.
+  const beforeSha = g(root, ["rev-parse", "--verify", "--quiet", "HEAD"]).out;
+
+  // Checked while the sidecar is still untouched, exactly as the manifest gate above is,
+  // and REFUSED rather than reported. A merge that takes damaged bytes makes a broken
+  // sidecar worse: this clone's history then carries them too, and the scope it destroys
+  // reads as an empty one on one more machine.
+  //
+  // The collateral is real and accepted — the good events in the same pull do not arrive
+  // either, and every scope waits on a repair to one of them. That is the trade a broken
+  // shared log deserves: it is not a hostile act being defended against, it is a genuinely
+  // damaged sidecar, and whoever wrote that shard still holds the only history that can
+  // repair it. Stopping is what gets it repaired; merging is what spreads it.
+  const damaged = damagedInboundShards(root, beforeSha, remoteSha);
+  if (damaged.length) {
+    return { error: `refusing to merge: ${damaged.length} line(s) in the incoming shards are not JSON, `
+      + `so the events they held are gone rather than merely unread. The sidecar is untouched.\n`
+      + `${damageDetail(damaged)}\n`
+      + `A shard is append-only, so deleting the damaged line(s) where they were written and `
+      + `pushing is the repair — whoever wrote that shard still has the history to do it with.` };
+  }
+
   // `--allow-unrelated-histories` because the ordinary way a team arrives here is
   // that everybody ran `ensureSidecar` locally and then pointed it at the same
   // remote, so the second person's history is genuinely unrelated to the first's.
   // Safe for this content specifically: per-writer shards are disjoint between
   // clones, and the only other files are the manifest and .gitattributes, which are
   // generated identically by the same code. Compatibility is checked below.
-  // Our tip BEFORE the merge, so the append-only audit below has something to
-  // compare against. `HEAD` on an unborn branch has no sha, and there is nothing to
-  // erase in that case either.
-  const beforeSha = g(root, ["rev-parse", "--verify", "--quiet", "HEAD"]).out;
-
   const merge = g(root, ["merge", "--no-edit", "--allow-unrelated-histories", remoteSha]);
   if (!merge.ok) {
     // A conflicted SHARD is the interesting case and it has exactly one cause: two
@@ -671,6 +894,7 @@ export async function push(root: string, message: string, opts: { attempts?: num
 
 async function pushHeld(root: string, message: string, opts: { attempts?: number; actor?: Actor } = {}): Promise<PushResult | { error: string }> {
   const attempts = opts.attempts ?? 3;
+  // The push-side check lives in `commitLocal`, which is the only thing that commits.
   const commit = commitLocal(root, message);
   if (typeof commit === "object") return commit;
   const committed = commit === "committed";

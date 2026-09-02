@@ -15,10 +15,13 @@
 
 import { createHash } from "node:crypto";
 import { readdir, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { db } from "./db.js";
-import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeStatus } from "./eventlog.js";
+import { SIDECAR_LINEAGE, type SidecarMark } from "./store.js";
+import { isSameSidecar } from "./sidecar.js";
+import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagnostic, type ScopeStatus } from "./eventlog.js";
 
 /**
  * Bumped whenever the FOLD or the PROJECTION changes shape.
@@ -148,7 +151,19 @@ import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeStatu
 // The table set did not change — `backlogged` lives inside the `findings.body` JSON, not a
 // column — so this is a refold and not a migration. Nothing in anyone's LOG is touched;
 // only derived rows are discarded and rebuilt from events that were always there.
-export const MATERIALIZER_VERSION = 19;
+//
+// 19 -> 20: `foldBugs` folds two new events — `bug.backlogged` and `bug.backlogReleased`
+// — so a `SharedBug` now carries `backlogged`. Same rule and the same skew as 18 -> 19
+// one record kind over: a teammate on the old build pulls a backlogged bug, folds it into
+// nothing (unknown kinds are dropped, which is the correct degradation), and upgrades.
+// Their shards have not moved since that fold, so without this bump the new build serves
+// the cached rows and shows the bug as ordinary open work for ever, in the queue the
+// deferral was supposed to take it out of — while the log has said otherwise the whole
+// time. Teaching a fold a new EVENT is the same hazard as giving it a new table.
+//
+// The table set did not change again — `backlogged` lives inside the `bugs.body` JSON —
+// so this is a refold, not a migration. Nobody's log is touched.
+export const MATERIALIZER_VERSION = 20;
 
 /**
  * What the events in a scope are, cheaply.
@@ -195,6 +210,11 @@ export async function readCachedMerged<T>(
   proj: Projection<T>,
 ): Promise<Cached<T> & { fresh: boolean; folded: boolean }> {
   const d = db(root);
+  const gone = logRootMissing(logRoot) ?? wrongSidecar(root, logRoot);
+  if (gone) {
+    try { return { value: proj.read(d, key), fresh: false, folded: false, status: "blocked", diagnostic: gone }; }
+    catch { return { value: fold([], { readable: new Set() }), fresh: false, folded: false, status: "blocked", diagnostic: gone }; }
+  }
   const fingerprint = async () =>
     (await Promise.all(scopes.map((sc) => scopeFingerprint(logRoot, sc, identity)))).join("|");
 
@@ -322,6 +342,69 @@ export class CorruptProjection extends Error {}
 export interface Cached<T> extends ScopeStatus { value: T }
 
 /**
+ * Is the configured sidecar actually there?
+ *
+ * **An absent log root is NOT an empty log, and folding it as one destroys rows.** The
+ * fold is total — it computes the whole projection from the whole scope — so folding
+ * zero events over a scope that has rows writes the empty result and every surface then
+ * agrees the team has nothing. Reproduced: point `.codemap/sidecar` at a path that is
+ * not there (a typo, an unmounted drive, a sidecar this machine has not cloned yet), read
+ * once, and the bugs are gone from the table. It is recoverable — the log is authoritative
+ * and restoring the path restores them — but it is silently wrong meanwhile, which is the
+ * same failure a corrupt shard used to produce one layer down.
+ *
+ * The directory EXISTING is the whole test, deliberately. A `.git` check would also be
+ * true of a broken sidecar, but it is false of a legitimate one that has been configured
+ * and not yet initialised — a state the write path creates on purpose — so it would refuse
+ * reads that are fine today.
+ */
+/**
+ * Is this the sidecar this store has been folding from?
+ *
+ * The other half of `logRootMissing`, and it destroys in exactly the same way. A fold is
+ * TOTAL, so folding a different sidecar's (empty) copy of `bugs/acme/api` over the rows
+ * this store folded from the old one replaces them with nothing — the repoint wipes the
+ * table on the next read, without the path ever being absent.
+ *
+ * `isSameSidecar` is ancestry, so a sidecar that moved, was re-cloned, or has since merged
+ * the team's unrelated history all pass. Only a genuinely different repository fails, and
+ * `ops-shared`'s `checkSidecarIdentity` refuses the transport for the same reason with a
+ * sentence about what to do; this half just declines to fold.
+ *
+ * Nothing recorded means nothing to disagree with — every store predating this is in that
+ * state, and refusing them all on upgrade would be the migration equivalent of the bug.
+ */
+function wrongSidecar(root: string, logRoot: string): ScopeDiagnostic | null {
+  let mark: SidecarMark | undefined;
+  try {
+    const row = db(root).prepare("SELECT v FROM meta WHERE k = ?").get(SIDECAR_LINEAGE) as { v: string } | undefined;
+    mark = row ? JSON.parse(row.v) as SidecarMark : undefined;
+  } catch { return null; }
+  if (!mark?.lineage || isSameSidecar(logRoot, mark.lineage)) return null;
+  return {
+    reason: "sidecar-mismatch",
+    detail: `${logRoot} is a different sidecar from the one this store folded its rows from `
+      + `(${mark.lineage.slice(0, 12)}, last seen at ${mark.path}). Nothing was folded and nothing was `
+      + `discarded — folding this one over those rows would replace them with its own, which is empty `
+      + `of them. Fix the path, or run \`codemap sidecar adopt\` if the move is deliberate.`,
+    evidence: [logRoot, mark.lineage],
+  };
+}
+
+function logRootMissing(logRoot: string): ScopeDiagnostic | null {
+  if (existsSync(logRoot)) return null;
+  return {
+    reason: "sidecar-missing",
+    detail: `the configured sidecar is not at ${logRoot} — a typo in .codemap/sidecar, a drive `
+      + `that is not mounted, or a sidecar this machine has not cloned yet. Nothing was folded `
+      + `and nothing was discarded: the rows this store already holds are still here and are `
+      + `served as non-authoritative until the path resolves again.`,
+    evidence: [logRoot],
+  };
+}
+
+
+/**
  * Read a scope through the cache, re-folding on a miss.
  *
  * Fingerprint, fold, fingerprint AGAIN, and retry if it moved — that closes the
@@ -343,6 +426,15 @@ export async function readCached<T>(
   proj: Projection<T>,
 ): Promise<Cached<T>> {
   const d = db(root);
+  // Before anything reads or writes: an absent sidecar must not be folded as an empty
+  // one. See `logRootMissing`. Serve whatever rows are stored, marked non-authoritative.
+  const gone = logRootMissing(logRoot) ?? wrongSidecar(root, logRoot);
+  if (gone) {
+    try { return { value: proj.read(d, scope), status: "blocked", diagnostic: gone }; }
+    // No rows to serve either. `fold([])` is the empty value, and the point is that it
+    // is NOT written — nothing is discarded and nothing claims to describe the log.
+    catch { return { value: fold([]), status: "blocked", diagnostic: gone }; }
+  }
   for (let attempt = 0; attempt < 3; attempt++) {
     const before = await scopeFingerprint(logRoot, scope, identity);
     const row = d.prepare("SELECT fingerprint, status, diagnostic FROM shared_scope WHERE scope = ?").get(scope) as
@@ -422,6 +514,10 @@ export async function ensureMaterialized<T>(
   fold: (events: LogEvent[]) => T,
   proj: Projection<T>,
 ): Promise<{ fresh: boolean; folded: boolean } & ScopeStatus> {
+  const gone = logRootMissing(logRoot) ?? wrongSidecar(root, logRoot);
+  // `fresh: false` is the honest answer and callers already handle it as "the rows are
+  // behind the log". Nothing is folded, so nothing is discarded.
+  if (gone) return { fresh: false, folded: false, status: "blocked", diagnostic: gone };
   /** The stored verdict, or null if the row does not describe the shards on disk. */
   const current = async (): Promise<ScopeStatus | null> => {
     const before = await scopeFingerprint(logRoot, scope, identity);

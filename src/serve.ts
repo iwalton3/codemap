@@ -149,6 +149,7 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
         open: q.get("open") === "1",
         queue: q.get("queue") === "1",
         asked: q.get("asked") === "1",
+        backlog: q.get("backlog") === "1",
         sort: (q.get("sort") as any) ?? undefined,
       });
     case "/api/bug":
@@ -852,7 +853,7 @@ const server = createServer(async (req, res) => {
       // Which of these write `.codemap/` directly. Everything else appends to the log
       // and folds; naming them explicitly is what stops a new action racing the rest of
       // the server silently.
-      const TOUCHES_LOCAL = new Set(["update", "publish", "accept", "unanchor"]);
+      const TOUCHES_LOCAL = new Set(["update", "publish", "accept", "unanchor", "backlog", "backlog_release"]);
       const run = <T>(fn: () => Promise<T>): Promise<T> =>
         TOUCHES_LOCAL.has(action) ? withLock(root, fn) : fn();
       let out: unknown;
@@ -871,6 +872,13 @@ const server = createServer(async (req, res) => {
         case "unanchor": out = await run(() => ops.unanchorBugOp(root, body.id, body.anchorId, body.reason ?? "")); break;
         case "publish": out = await run(() => ops.publishBugs(root, { dryRun: body.dryRun === true, ids: body.ids })); break;
         case "accept": out = await run(() => ops.acceptFinding(root, String(body.pr ?? ""), body.finding, { title: body.title, severity: body.severity })); break;
+        // Deferral is a PERSON's, like carrying a finding and for the same reason: it is
+        // the cheapest way to empty a queue, so there is deliberately no MCP tool for it
+        // (`ops-reach.test.ts` enforces that) and the browser is where a principal is
+        // actually a principal. Through the record dispatcher, so a local bug and a
+        // teammate's are backlogged by one call.
+        case "backlog": out = await run(() => ops.backlogOn(root, { id: body.id, until: String(body.until ?? ""), reason: String(body.reason ?? ""), ref: body.ref })); break;
+        case "backlog_release": out = await run(() => ops.releaseBacklogOn(root, body.id, String(body.reason ?? ""))); break;
         default: out = { error: `unknown bug action "${action}"` };
       }
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });

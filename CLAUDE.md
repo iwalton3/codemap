@@ -252,6 +252,38 @@ people cannot review by eye. A dozen lines of `foldStandard([...])` in a scratch
 found more than any amount of careful reading, on the codebase whose whole thesis is that
 careful reading of this shape does not work.
 
+**A shard that does not PARSE is a destroyed event, not a dropped one.** `readShard` skips
+an unparseable line by design — a torn append leaves one — but the rule had no upper bound,
+so a wholly-garbage shard yielded no events and its scope read `complete`: every finding in
+it gone, every surface agreeing the queue was clear. **A genuinely broken sidecar stops and
+says so rather than being made worse**, at three ends: the reader BLOCKS (`corrupt-shard`,
+ahead of every other diagnostic, and the one that is not acknowledgeable), and the commit
+and the pull both REFUSE — the commit in `commitLocal`, not `push`, because `sync` commits
+before it pulls. Two things make the refusal survivable and both came from RUNNING the
+oracle: the inbound check asks what the merge would add from the `merge-base` (against our
+own tip it read the remote's still-damaged copy and locked the repairer out of publishing
+the repair), and `linesAt` skips unparseable lines (`erasedByMerge` otherwise restored the
+damaged line on every teammate's pull and pushed it back at whoever fixed it). Not a defence
+against hostile shards — that is not a threat this spends anything on. `appendEvents` repairs
+a torn tail instead of sealing it mid-file, where it is no longer distinguishable from
+corruption.
+
+**Repointing `.codemap/sidecar` from one team's repo to another is REFUSED**, and the
+identity is the sidecar's oldest ROOT COMMIT — so a MOVE, a RE-CLONE and a sidecar that has
+taken an `--allow-unrelated-histories` merge all still pass (`merge-base --is-ancestor`, not
+equality; each has a test, because a path check breaks all three). Reads decline to fold, the
+transport refuses, and `codemap sidecar adopt` is the way through: it migrates nothing and
+the old sidecar's rows GO, which is survivable only because they are a PROJECTION — point
+back and sync and they fold again, which a test performs rather than asserts.
+
+**An absent sidecar is not an empty one.** The fold is total, so folding zero events over a
+scope that has rows WRITES the empty result: a typo in `.codemap/sidecar` silently emptied
+the canonical table on the next read. `logRootMissing` guards every fold entry point — reads
+degrade and serve the stored rows, the transport REFUSES, because `ensureSidecar` would
+otherwise mkdir a new empty sidecar at the wrong path and put somebody on a team of one.
+Absence is only an error when `shared_scope` shows this store has folded from a sidecar
+before, or a first sync could never create one.
+
 It defers the mechanisms to two documents: `docs/plan-docs-unification.md` and
 `docs/fork-repair.md`. The second is worth knowing exists before touching
 `eventlog.ts` or `contest.ts` — the causal vector's per-writer ordinal is a **prefix
@@ -295,6 +327,16 @@ have not moved, so the fingerprint is unchanged and the new build serves the cac
 for ever. Teaching a fold a new EVENT is the same hazard as giving it a new table, and
 `db-migrate.test.ts` now pins the findings vocabulary the way it already pinned the
 standard's tables.
+
+**Bugs have the same third exit now, and `search` reaches findings.** A backlogged BUG is
+never silenced — it leaves the working lists and stays in `search` and in the backlog list
+carrying its deadline, because a finding is a claim about one pull request and a bug is a
+standing defect record. Its witnesses bind to the bug's own live citations and the FOLD
+checks it, which the finding fold could not do for a node target. Cost `MATERIALIZER_VERSION`
+19 → 20 for the reason 18 → 19 gives verbatim. `search` gained findings for the reason the
+backlog made urgent: a finding can now be live on the trunk for months, and search is how
+you find out something was already known — so closed findings match too, and the hit
+carries `state` and any deadline.
 
 **`landed` is decided by ANCESTRY first, not by a pull request's status field** — local,
 and more correct: a stacked PR reads MERGED while its code is nowhere near the trunk. A

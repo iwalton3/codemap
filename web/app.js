@@ -1541,14 +1541,34 @@ class SearchPage extends Component {
   propsChanged() { this.load.run(); }
   setScope(s) { go(`/u/${this.props.params.universe}/search/`, { q: this.props.query.q || '', scope: s }); }
   group(g) {
-    const u = g.universe, hits = (g.nodes?.length || 0) + (g.anchors?.length || 0) + (g.bugs?.length || 0);
+    const u = g.universe;
+    const hits = (g.nodes?.length || 0) + (g.anchors?.length || 0) + (g.bugs?.length || 0) + (g.findings?.length || 0);
     return html`<div class="detail" style="margin-bottom:12px">
       <div class="dch"><a class="uref" href="${href(dashUrl(u))}">${u}</a> <span class="dim">· ${hits} hit${hits === 1 ? '' : 's'}</span></div>
       ${when(g.nodes && g.nodes.length, () => html`<div class="sec">nodes</div><div class="chips">${each(g.nodes, n => html`<a class="chip" href="${href(nodeUrl(u, n.id))}">${n.title || n.id}</a>`, n => n.id)}</div>`)}
       ${when(g.anchors && g.anchors.length, () => html`<div class="sec">anchors</div><div class="rows">${each(g.anchors, a => html`<a class="sym" href="${href(anchorUrl(u, a.id))}"><span class="k">${a.kind}</span><span>${a.symbol}</span><span class="muted">${a.file}</span></a>`, a => a.id)}</div>`)}
-      ${when(g.bugs && g.bugs.length, () => html`<div class="sec">bugs</div><div class="rows">${each(g.bugs, b => html`<a class="sym ${b.closed ? 'shut' : ''}" href="${href(bugsUrl(u), { bug: b.id, state: 'all' })}"><span class="k">${b.state}</span><span>${b.title}</span><span class="muted">${b.id}</span></a>`, b => b.id)}</div>`)}
+      ${when(g.bugs && g.bugs.length, () => html`<div class="sec">bugs</div><div class="rows">${each(g.bugs, b => html`<a class="sym ${b.closed ? 'shut' : ''}" href="${href(bugsUrl(u), { bug: b.id, state: 'all' })}"><span class="k">${b.state}</span><span>${b.title}${when(b.backlogged, () => html` <span class="pill" title="${b.backlogged.reason}">backlogged until ${b.backlogged.until}</span>`)}</span><span class="muted">${b.id}</span></a>`, b => b.id)}</div>`)}
+      ${when(g.findings && g.findings.length, () => html`<div class="sec">findings</div><div class="rows">${each(g.findings, f => this.findingHit(u, f), f => f.id)}</div>`)}
       ${when(!hits, () => html`<div class="dim" style="padding:4px 0">no matches</div>`)}
     </div>`;
+  }
+  /**
+   * One finding hit.
+   *
+   * The state is on the row because a refuted finding and a live one are different
+   * answers to the same query, and `backlogged until …` is on it for the same reason —
+   * without it a deferral reads as an open finding nobody is working on, which is
+   * exactly what the backlog exists to stop it looking like.
+   */
+  findingHit(u, f) {
+    // Three children, because `.sym` is a three-column grid — a fourth wraps onto an
+    // implicit row, which is a layout defect only a browser can see. The marker goes
+    // INSIDE the middle cell.
+    return html`<a class="sym ${f.closed ? 'shut' : ''}" href="${href(`/u/${u}/shared/${f.pr}/`)}">
+      <span class="k">${f.state}</span>
+      <span>${f.summary}${when(f.backlogged, () => html` <span class="pill" title="${f.backlogged.reason}">backlogged until ${f.backlogged.until}</span>`)}</span>
+      <span class="muted">#${f.pr}</span>
+    </a>`;
   }
   template() {
     const u = this.props.params.universe, groups = this.state.groups, multi = (this.stores.nav.universes || []).length > 1;
@@ -2362,7 +2382,7 @@ const byline = (by, via, at) => (by ? by + (via ? ' · ' + via : '') : 'author n
 /**
  * @typedef {{ data: ApiMap['/api/bugs'] | null, detail: ApiMap['/api/bug'] | null,
  *   detailPending: boolean, note: string | null, busy: string | null, draft: string,
- *   tracking: boolean }} BugsState
+ *   tracking: boolean, backlogOpen: boolean, backlogUntil: string, backlogReason: string }} BugsState
  * @extends {Component<PageProps, BugsState>}
  */
 class BugsPage extends Component {
@@ -2371,7 +2391,10 @@ class BugsPage extends Component {
   constructor(props) {
     super(props);
     /** @type {BugsState} */
-    this.state = { data: null, detail: null, detailPending: false, note: null, busy: null, draft: '', tracking: false };
+    this.state = {
+      data: null, detail: null, detailPending: false, note: null, busy: null, draft: '', tracking: false,
+      backlogOpen: false, backlogUntil: '', backlogReason: '',
+    };
   }
   // Filter (state) and selection (bug) both live in the URL, so back/forward walk the
   // triage and any bug is deep-linkable.
@@ -2389,6 +2412,7 @@ class BugsPage extends Component {
       open: scope === 'open' ? '1' : '',
       queue: scope === 'queue' ? '1' : '',
       asked: scope === 'asked' ? '1' : '',
+      backlog: scope === 'backlog' ? '1' : '',
       sort: this.bugSort(),
     });
     await this.applySel();
@@ -2409,6 +2433,12 @@ class BugsPage extends Component {
   bugSort() { return BUG_SORTS.includes(this.props.query.sort) ? this.props.query.sort : 'severity'; }
   async applySel() {
     const id = this.props.query.bug;
+    // The backlog form belongs to the bug it was opened on. Left standing, selecting
+    // another bug shows the previous one's draft over it, which is one careless click
+    // from deferring the wrong record with somebody else's reason.
+    this.state.backlogOpen = false;
+    this.state.backlogUntil = '';
+    this.state.backlogReason = '';
     if (!id) { this.state.detail = null; return; }
     this.state.detailPending = true;
     try { this.state.detail = await api('/api/bug', { u: this.props.params.universe, id }); }
@@ -2475,6 +2505,8 @@ class BugsPage extends Component {
           ${when(b.possiblyFixed, () => html`<span class="bchip poss" title="cited code changed since filing — possibly fixed">possibly fixed</span>`,
             () => when(b.codeChanged, () => html`<span class="bchip changed" title="cited code changed since filing">code changed</span>`))}
           ${when(b.tracked, () => html`<span class="bchip" title="${b.tracking.map(t => t.system + ' ' + (t.key || t.url)).join(', ')}">tracked</span>`)}
+          ${when(!!b.backlogged, () => html`<span class="bchip ${b.backlogged.state === 'sleeping' ? '' : 'poss'}"
+            title="${b.backlogged.by} deferred this on ${String(b.backlogged.at).slice(0, 10)} — ${b.backlogged.reason}${b.backlogged.state === 'due' ? ' · the deadline has passed' : b.backlogged.state === 'woken' ? ' · somebody is editing the exact code the decision was about' : ''}">backlogged until ${b.backlogged.until}${b.backlogged.state === 'due' ? ' · due' : b.backlogged.state === 'woken' ? ' · woken' : ''}</span>`)}
           <span class="bmeta">${b.anchors.length}a${b.comments ? ' · ' + b.comments + '💬' : ''}${b.shared ? '' : ' · local'}</span>
         </div>
       </div>
@@ -2516,6 +2548,45 @@ class BugsPage extends Component {
       </form>`, () => html`<div class="bactions"><button on-click="${() => { this.state.tracking = true; }}">link a ticket</button></div>`)}`;
   }
 
+  /**
+   * The deferral, and the form that grants one.
+   *
+   * A person's decision, so it lives in the browser and there is deliberately no MCP tool
+   * for it: with a queue this size, deferring is the cheapest way to empty one. Both
+   * fields are required — a deferral with no deadline is the one that sleeps for ever,
+   * which is the whole failure the record was built to replace.
+   *
+   * `due` and `woken` are shown as warnings rather than as a quiet marker: the release
+   * condition has fired, so this bug is back in the working queue and is not a decision
+   * anybody is still standing behind.
+   */
+  backlogEl(b) {
+    const bl = b.backlogged, open = this.state.backlogOpen, busy = this.state.busy;
+    if (bl) {
+      return html`<div class="attn-banner ${bl.state === 'sleeping' ? 'quiet' : ''}">
+        <span>backlogged until <b>${bl.until}</b> by ${bl.by} — ${bl.reason}${
+          bl.state === 'due' ? ' · the deadline has passed, so it is back in the queue'
+          : bl.state === 'woken' ? ' · somebody is editing the exact code this decision was about'
+          : ''}</span>
+        <button title="Bring it back into the working queue now, before its deadline. A person's, exactly as backlogging is." disabled="${busy === 'backlog_release'}"
+          on-click="${() => this.act('backlog_release', { reason: 'brought back from the backlog' }, 'backlog_release')}">bring it back</button>
+      </div>`;
+    }
+    return html`<div class="drev">
+      <button title="Real, not now, and it comes back. Takes it out of the working queue and out of nothing else — it stays in search and in the full list, carrying its deadline, because a defect you cannot find is worse than one nobody has prioritised."
+        on-click="${() => { this.state.backlogOpen = !open; }}">${open ? 'cancel' : 'backlog…'}</button>
+      ${when(open, () => html`<span class="bbacklogform">
+        <label>comes back on <input type="date" value="${this.state.backlogUntil}" on-change="${(e, v) => { this.state.backlogUntil = v; }}"></label>
+        <input class="blreason" placeholder="why it is not being fixed now…" value="${this.state.backlogReason}" on-change="${(e, v) => { this.state.backlogReason = v; }}">
+        <button disabled="${busy === 'backlog'}" on-click="${() => this.backlog()}">${busy === 'backlog' ? 'backlogging…' : 'backlog it'}</button>
+      </span>`)}
+    </div>`;
+  }
+  async backlog() {
+    await this.act('backlog', { until: this.state.backlogUntil, reason: this.state.backlogReason }, 'backlog');
+    if (!this.state.note) { this.state.backlogOpen = false; this.state.backlogUntil = ''; this.state.backlogReason = ''; }
+  }
+
   detail() {
     const u = this.props.params.universe, b = this.state.detail;
     if (this.state.detailPending && !b) return html`<div class="loading">loading…</div>`;
@@ -2533,6 +2604,7 @@ class BugsPage extends Component {
         ${when(!b.promotion, () => html`<button title="surface this for the whole team" on-click="${() => this.act('promote', {}, 'promote')}">promote</button>`,
           () => html`<span class="bchip">promoted by ${b.promotion.by}</span>`)}
       </div>
+      ${this.backlogEl(b)}
       ${when(!!this.state.note, () => html`<div class="note">${this.state.note}</div>`)}
       <md-content text="${b.text}"></md-content>
 
@@ -2587,6 +2659,7 @@ class BugsPage extends Component {
         ${chip('open', 'open', d.open, 'the default — a closed bug is history, not work')}
         ${chip('queue', 'needs you', d.waitingOnYou, 'promoted, corroborated, contested, asked about, or the code moved')}
         ${chip('asked', 'asked to close', d.asked, 'an agent is asking you to close it, or has reported it fixed — narrower than “needs you”, and the queue to work after a fixing pass')}
+        ${chip('backlog', 'backlogged', d.backlogged, 'real, not now, and it comes back — deferred with a deadline. Its own list, so the queues above mean “what we are doing”; a bug here is never hidden from search')}
         ${chip('all', 'all', (d.counts ? Object.values(d.counts).reduce((a, b) => a + b, 0) : null))}
         ${each(BUG_STATES, s => chip(s, s, counts[s]), s => s)}
       </div>

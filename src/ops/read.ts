@@ -5,6 +5,7 @@ import { emptyBreakdown } from "../coverage.js";
 import { indexFile, indexBlob } from "../repo.js";
 import { headCommit, readBlobs } from "../git.js";
 import { citedAnchors, isClosed } from "../shared-bugs.js";
+import { isClosed as isFindingClosed, type SharedFinding } from "../shared-findings.js";
 import { refreshBugRows } from "./bugs.js";
 import { readAnchorStore, loadNodes, readGraph, readBugs, readAnnotations, readFindings, readReviews, findAnchorsOutsideWork, snapshotBranch, readOrphans } from "../store.js";
 import { teamNotesByAnchor, type PinnedNote } from "../notes-lookup.js";
@@ -155,8 +156,84 @@ export async function search(root: string, query: string, limit = 30) {
       Number(isClosed(a.state)) - Number(isClosed(b.state))
       || (b.filedAt ?? b.createdAt ?? "").localeCompare(a.filedAt ?? a.createdAt ?? ""))
     .slice(0, limit)
-    .map((b) => ({ id: b.id, title: b.title, state: b.state, severity: b.severity, closed: isClosed(b.state) }));
-  return { anchors, nodes: nodeHits, bugs };
+    .map((b) => ({
+      id: b.id, title: b.title, state: b.state, severity: b.severity, closed: isClosed(b.state),
+      /**
+       * NOT filtered, and marked instead. This is the hard constraint on the bug
+       * backlog: a backlogged bug leaves the working queue and is silenced from
+       * nothing — a finding is a claim about one pull request and can afford to go
+       * quiet, but a standing defect record cannot, and a defect you cannot find is
+       * worse than one nobody has prioritised. The marker is what stops it reading as
+       * an ordinary open bug that everybody is ignoring.
+       */
+      ...(b.backlogged ? { backlogged: { until: b.backlogged.until, reason: b.backlogged.reason } } : {}),
+    }));
+  return { anchors, nodes: nodeHits, bugs, findings: await searchFindings(root, q, limit) };
+}
+
+/**
+ * Findings, the one canonical record kind search could not reach.
+ *
+ * The only ways to find one were to already know its pull request or to page a list, so
+ * a defect somebody reported eight months ago was unfindable by what it says. That
+ * mattered more once the backlog existed: a finding can now be live on the trunk for
+ * months, which is exactly the kind of thing somebody rediscovers from scratch — and
+ * search is how you find out it was already known.
+ *
+ * **Closed findings match too.** "Was this ever reported?" is the question this is for,
+ * and a closed one is often the best possible answer: somebody already looked, and their
+ * reasoning is in the record. They sort last rather than being filtered out.
+ *
+ * **`comment` is the description and `text` is the triage narrative** — inverted from
+ * what the names suggest, and the reason the row leads with `comment ?? text`. A hit
+ * that led with `text` would answer a query about a defect with "RE-TRIAGE 2026-08-21 —
+ * FIXED UPSTREAM, verified at head b24dc21e…", which is the audit trail and not the
+ * claim. The backlog page shipped that mistake once. Both are MATCHED, because the
+ * narrative is where the round that already answered somebody's question lives.
+ */
+async function searchFindings(root: string, q: string, limit: number) {
+  const shared = await import("../ops-shared.js");
+  // Same rule as `findingBacklog`: this reads across every pull request, so it must fold
+  // first or an upgraded store serves rows its old build wrote. Best-effort — a search
+  // that fails because a sidecar is unreadable is worse than one answering from the rows
+  // this machine already has.
+  await shared.materializeFindingScopes(root).catch(() => []);
+  const hit = (f: SharedFinding): boolean =>
+    f.id.toLowerCase().includes(q)
+    || f.target.id.toLowerCase().includes(q)
+    || (f.comment ?? "").toLowerCase().includes(q)
+    || f.text.toLowerCase().includes(q)
+    // The only unbounded field, and worth it: discussion is where the reasoning ends up,
+    // and a thread is the half of a finding that says what people concluded about it.
+    || f.thread.some((c) => c.body.toLowerCase().includes(q));
+
+  return (await readFindings(root, {})).findings
+    .filter(hit)
+    // Open first — a refuted finding matching the same word is history, not the answer —
+    // then newest. The same order `bugs` uses, for the same reason.
+    .sort((a, b) =>
+      Number(isFindingClosed(a.state)) - Number(isFindingClosed(b.state))
+      || (b.createdAt ?? "").localeCompare(a.createdAt ?? ""))
+    .slice(0, limit)
+    .map((f) => ({
+      id: f.id,
+      pr: f.pr,
+      /** What the defect IS. See the note above about which field that is. */
+      summary: f.comment ?? f.text,
+      target: f.target,
+      state: f.state,
+      severity: f.severity,
+      closed: isFindingClosed(f.state),
+      /**
+       * A refuted finding and a live one are different answers to the same query, and a
+       * sleeping one is a third: it is real, somebody decided not to do it now, and it
+       * comes back. A hit that did not say so would read as an open finding nobody is
+       * working on, which is the thing the backlog exists to stop it looking like.
+       */
+      ...(f.backlogged ? { backlogged: { until: f.backlogged.until, reason: f.backlogged.reason } } : {}),
+      /** Whose it is. One canonical table holds this machine's rows beside the team's. */
+      shared: !!f.origin,
+    }));
 }
 
 /**

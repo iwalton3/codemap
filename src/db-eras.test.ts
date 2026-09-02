@@ -180,9 +180,15 @@ test("a pre-freeze shared_scope is NOT migrated, and that is a decision", async 
     );
     // And it really is fatal, not cosmetic. Every ordinary shared read goes through
     // `readCached`, which selects the column.
+    //
+    // The log root must EXIST, and that is not incidental: `readCached` now returns early
+    // when the configured sidecar is not there, rather than folding its absence into an
+    // empty projection and wiping the rows. A nonexistent path short-circuits before the
+    // query this is about ever runs, and the test passes for the wrong reason. `root` is
+    // a real directory holding no scopes, which is what this needs.
     const { readCached } = await import("./materialize.js");
     await assert.rejects(
-      () => readCached(root, join(root, "no-sidecar"), "findings/acme-api/pr-1", "identity",
+      () => readCached(root, root, "findings/acme-api/pr-1", "identity",
         () => new Map<string, unknown>(), { write() {}, read: () => new Map<string, unknown>() }),
       /no such column: status/,
       "a pre-freeze store fails the read outright",

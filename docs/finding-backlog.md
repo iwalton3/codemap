@@ -66,8 +66,10 @@ ever seeing the tool. Bringing one back is gated identically — an agent that
 could do it to every finding is the same move from the other side. `ops-reach.test.ts` forbids an
 MCP tool for either.
 
-**A bug is refused rather than backlogged.** A bug is already the tracked record; a
-second deferral queue over the queue people read is the thing this avoids.
+**A bug backlogs too**, and this once refused — on the argument that a bug is already the
+tracked record, so a second deferral queue over the queue people read would be quieter than
+the queue itself. What answers that is the constraint below: a backlogged BUG is never
+silenced. See *The bug backlog*.
 
 ## Re-witnessing, and why an agent may
 
@@ -197,6 +199,77 @@ people out of the one honest exit.
 count, so summing it beside them makes one record two items — a mistake the
 dashboard shipped once and `dashboard-attention.test.ts` now fails on.
 
+## The bug backlog — the same third exit, one record kind over
+
+A bug nobody will reach this quarter has the same two bad options a finding had: stay in
+the open queue and dilute it, or close as won't-fix, which asserts a decision nobody made.
+The first is what actually happens, and it is how a bug queue stops being read.
+
+`SharedBug.backlogged` is the same record — `until` required and fold-enforced, witnesses
+snapshotted at grant time, principal-granted at both ends, no MCP tool
+(`ops-reach.test.ts`). Three things differ, and each is forced by what a bug IS.
+
+**It is never deleted and never silenced from search.** That is the one hard constraint.
+A finding can afford `sleeping` to be quiet because it is a claim about one pull request;
+a bug is a standing defect record, and a defect you cannot find is worse than one nobody
+has prioritised. So a backlogged bug leaves the WORKING lists and nothing else: it stays in
+`search`, in the backlog list, and on the detail page, and every surface that shows it
+carries a visible `backlogged until <date>` so it never reads as an ordinary open bug that
+everybody is ignoring.
+
+**Its own list, not a bucket.** Findings got six buckets on one page because they had one
+undifferentiated pile. Bugs already have a queue people read, so this is a sibling filter
+(`bugs?state=backlog`) — and the point is that the main queue means "what we are doing"
+again. The queue counts beside it exclude the sleeping ones for the same reason `sleeping`
+is out of `attention`: counting a live deferral as work makes deferring honestly look
+identical to ignoring the thing. `backlogged` and `sleeping` are reported next to them, so
+nothing is uncounted.
+
+**The release condition fires without anybody visiting the list.** `due` and `woken` are
+back in the working queue on the next read — a deadline that needed somebody to open a
+separate page would be a note rather than a mechanism. They are derived, so no fold can
+disagree with them.
+
+**The witnesses bind to the bug's own live citations, and the FOLD checks it.** A witness
+on unrelated code would answer drift about code the bug is not about: edits to the actual
+defect would never wake it and edits elsewhere would. The finding fold could not hold that
+line for a node target — a node's citations are store state — but a bug's are fold state,
+so here it does.
+
+It cost `MATERIALIZER_VERSION` 19 → 20, for the reason 18 → 19 gives verbatim: a teammate
+folds a backlogged bug into nothing on the old build, upgrades, and their unmoved shards
+serve cached rows that keep it in the working queue for ever. `db-migrate.test.ts` pins
+the bugs fold's vocabulary the way it pins the findings fold's.
+
+## Findings in search
+
+`search` reached anchors, nodes and bugs. A finding was the one canonical record kind it
+did not, so the only ways to find one were to already know its pull request or to page a
+list — a defect somebody reported eight months ago was unfindable by what it says.
+
+The backlog is what made that urgent rather than untidy. A finding used to be scoped to a
+live pull request and read in that context; it can now be live on the trunk for months,
+which is exactly the kind of thing somebody rediscovers from scratch. Search is how you
+find out it was already known.
+
+Four things it gets right, each of which is a defect when absent:
+
+- **It leads with `comment`, and matches `text` as well.** The names are inverted from what
+  they suggest: `comment` is the description of the defect and `text` is the running triage
+  narrative. A hit that led with `text` answers "what is the defect" with the audit trail
+  of what people did about it. The backlog page shipped that once and had to swap it.
+- **Closed findings match, and sort last.** "Was this ever reported?" is the question
+  search is for, and a refuted finding is often the best possible answer — somebody
+  already looked, and their reasoning is in the record. The hit carries `state` and any
+  `backlogged` deadline, because a refuted one, a live one and a sleeping one are three
+  different answers to the same query.
+- **It materializes first.** The canonical table is a projection; a read straight off it
+  would not see a teammate's finding until some unrelated list happened to fold the scope,
+  which is precisely the finding somebody is most likely to search for. `search` and
+  `findingBacklog` share `materializeFindingScopes` for this.
+- **Findings sit beside the code results, never in front.** Search is primarily how an
+  agent locates a symbol; findings are context.
+
 ## What must not happen
 
 **Nothing here promotes anything to a bug.** `defer_finding` remains the right
@@ -268,6 +341,13 @@ The ancestry half is separately cached — see `landedIn`, 211ms → 21ms.
   warning.
 - `dashboard-attention.test.ts` — that the dashboard's number and the backlog's
   are one number, and that the branch card offers a fork point or nothing.
+- `bug-backlogged.test.ts` — the BUGS fold, on hand-built events, every guard
+  mutation-checked. Same reason as the first entry, and it is the only thing that can see
+  a guard binding one end.
+- `bug-backlog-flow.test.ts` — which lists a deferred bug leaves, which it must not, and
+  that the witnesses are taken at grant time rather than read off the record.
+- `findings-search.test.ts` — including that a teammate's finding is found straight from
+  the log with no list read first.
 
 ## Read-path invariant
 

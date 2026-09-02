@@ -50,6 +50,53 @@ describe("web UI", { skip: puppeteer ? false : "puppeteer not resolvable (set CO
   });
 
   /**
+   * A backlogged bug is out of the working queue and out of NOTHING else.
+   *
+   * The hard constraint, checked where a reader would actually meet it. Three things a
+   * unit test cannot see: that the chip and the list it opens agree, that the marker
+   * renders on the row rather than only existing in the payload, and that the search
+   * page draws its new finding and bug hits at all — a template binding this app gets
+   * wrong renders a blank page and logs nothing, which is the failure mode.
+   */
+  test("a backlogged bug leaves the queue, keeps its marker, and is still searchable", async () => {
+    const ops = await import("../ops.js");
+    const { readAnchorStore } = await import("../store.js");
+    const anchorId = (await readAnchorStore(fixture.root)).anchors[0]!.id;
+    const deferred = (await ops.reportBug(fixture.root, {
+      title: "settlement double posts", description: "repro on develop", anchors: [anchorId],
+    }) as any).id;
+    await ops.reportBug(fixture.root, { title: "ledger totals disagree", description: "other", anchors: [anchorId] });
+    const r = await ops.backlogOn(fixture.root, { id: deferred, until: "2099-01-31", reason: "the rewrite lands next quarter" });
+    assert.ok(!("error" in (r as object)), `backlogging failed: ${(r as any).error}`);
+
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1400, height: 1000 });
+    const seen = watchErrors(page);
+    await page.goto(`${server.url}/#/u/${fixture.universe}/bugs/`, { waitUntil: "networkidle0", timeout: 20_000 });
+    await page.waitForSelector(".brow", { timeout: 10_000 });
+    const working = await page.evaluate(() => document.body.innerText);
+    assert.match(working, /ledger totals disagree/);
+    assert.doesNotMatch(working, /settlement double posts/, "the deferred one is out of the queue people read");
+
+    // Its own list, and the marker travels on the row.
+    await page.goto(`${server.url}/#/u/${fixture.universe}/bugs/?state=backlog`, { waitUntil: "networkidle0", timeout: 20_000 });
+    await page.waitForSelector(".brow", { timeout: 10_000 });
+    const register = await page.evaluate(() => document.body.innerText);
+    assert.match(register, /settlement double posts/);
+    assert.match(register, /backlogged until 2099-01-31/, "so it never reads as an ordinary open bug");
+
+    // And search — the constraint. A defect you cannot find is worse than one nobody
+    // has prioritised.
+    await page.goto(`${server.url}/#/u/${fixture.universe}/search/?q=settlement`, { waitUntil: "networkidle0", timeout: 20_000 });
+    await page.waitForSelector(".detail", { timeout: 10_000 });
+    const found = await page.evaluate(() => document.body.innerText);
+    assert.match(found, /settlement double posts/, "never silenced from search");
+    assert.match(found, /backlogged until 2099-01-31/);
+    assert.deepEqual(seen.errors, [], "a blank page here logs nothing — that is the failure mode");
+    await page.close();
+  });
+
+  /**
    * A header menu closes when the click lands somewhere else.
    *
    * The menus are `<details>` so their open state stays out of component reactivity, and

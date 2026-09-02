@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
 import {
   team, who, syncOne, settle, rewriteHistory, appendRaw, shardsIn, type Team, type Member,
 } from "./oracle.js";
@@ -254,32 +255,91 @@ test("hostile history: each shape is refused in its own scope, and nowhere else"
       assert.ok(f.findings.some((x: any) => x.text === "honest finding on 22"), "and the honest one is still served");
     });
 
-    // 4 — the shape that must NOT block: a line this build cannot even parse as an
-    //     event. Anything else and one corrupt byte from anybody wedges a scope for
-    //     the whole team, which is a denial of service built out of a safety check.
-    await step("a malformed line is dropped, and does not wedge the scope", async () => {
+    // 4 — an event this build cannot INTERPRET is dropped and must not block. That is
+    //     what keeps a version skew from wedging a scope for the whole team, which
+    //     would be a denial of service built out of a safety check.
+    await step("a malformed event is dropped, and does not wedge the scope", async () => {
       const scope = await scopeFor(ana, "pr-23");
       const before = (await readScope(ana.sidecar, scope)).length;
       appendRaw(ana, join(scope, "w_junk.ndjson"), envelope({
         id: "7777777777-junk", writer: "w_junk", sidecarProtocol: undefined, eventSchema: undefined,
       }) as any);
-      // …and something that is not JSON at all, which is what a half-written append or
-      // a botched merge actually leaves behind.
       appendRaw(ana, join(scope, "w_junk.ndjson"), {} as any);
-      rewriteHistory(ana, "a malformed line and a meaningless one", (_p, sidecar) => {
-        const path = join(sidecar, scope, "w_junk.ndjson");
-        spawnSync("sh", ["-c", `printf '{"id":"nope"\\n' >> ${JSON.stringify(path)}`]);
-      });
+      rewriteHistory(ana, "a malformed line and a meaningless one", () => {});
 
       const r = await syncOne(ana) as any;
       assert.equal(r.error, undefined, `a junk line must not fail a sync: ${r.error}`);
       assert.equal((await radius(ana))[scope], "complete", "nor block the scope");
       assert.equal((await readScope(ana.sidecar, scope)).length, before,
         "the unreadable lines are skipped rather than folded — an envelope missing its "
-        + "protocol numbers is not an event, and neither is a truncated line");
+        + "protocol numbers is not an event, and neither is a meaningless object");
     });
 
-    await settled("the junk");
+    // 4b — a line that is not JSON at all is a DIFFERENT thing, and the distinction is
+    //      the one this file used to get wrong. The two above PARSE: they are records
+    //      this build declines to interpret, and dropping them loses nothing that was
+    //      not already unreadable everywhere. Bytes that are not JSON are events that
+    //      have been DESTROYED, and skipping those quietly is how a wholly-corrupt shard
+    //      read as an empty scope with `status: "complete"` — the team's findings gone,
+    //      and every surface agreeing the queue was clear.
+    await step("a line that is not JSON blocks its own scope, and only its own", async () => {
+      const scope = await scopeFor(ana, "pr-23");
+      const before = (await readScope(ana.sidecar, scope)).length;
+      rewriteHistory(ana, "a truncated line", (_p, sidecar) => {
+        const path = join(sidecar, scope, "w_junk.ndjson");
+        spawnSync("sh", ["-c", `printf '{"id":"nope"\\n' >> ${JSON.stringify(path)}`]);
+      });
+
+      const seen = await radius(ana);
+      assert.equal(seen[scope], "blocked:corrupt-shard");
+      const future = await scopeFor(ana, "pr-21"), cycled = await scopeFor(ana, "pr-22");
+      for (const [other, verdict] of Object.entries(seen)) {
+        if (other !== scope && other !== future && other !== cycled) {
+          assert.equal(verdict, "complete", `${other} is collateral damage`);
+        }
+      }
+      // Still readable, like every other blocked scope: what `blocked` forbids is
+      // presenting it as settled.
+      assert.equal((await readScope(ana.sidecar, scope)).length, before);
+    });
+
+    // 4c — and it STOPS rather than spreading. This is the half a per-scope verdict
+    //      cannot deliver: a blocked scope is a diagnosis on the clone that already has
+    //      the bytes, and the point of the transport gate is that one more clone never
+    //      gets them.
+    await step("a damaged sidecar stops the pull instead of being merged into one more clone", async () => {
+      // Ana's own sync PUBLISHES it, and saying so is honest rather than a gap:
+      // `rewriteHistory` is a person with `git`, so the damage was committed without
+      // `commitLocal` ever seeing it and her tree is clean by the time she syncs. No gate
+      // inside codemap can reach a hand-edited history; what they cover is what codemap
+      // itself writes.
+      const pushed = await syncOne(ana) as { error?: string };
+      assert.equal(pushed.error, undefined, `ana's own sync should still work: ${pushed.error}`);
+
+      const blocked = await syncOne(ben) as { error?: string };
+      assert.match(blocked.error ?? "", /refusing to merge/, "ben's pull refuses the damaged bytes");
+      assert.match(blocked.error ?? "", /w_junk\.ndjson:/, "and names the line, so it can be repaired where it was written");
+
+      // The promise the refusal makes, and the reason it is worth the collateral: ben's
+      // clone never took the bytes, so the scope is healthy on his machine and his own
+      // work is untouched.
+      assert.equal((await radius(ben))[await scopeFor(ben, "pr-23")], "complete");
+      assert.equal((await sharedFindings(ben.repo, 23) as any).findings.length, 1);
+    });
+
+    await step("and the repair, made where the shard was written, lets the team continue", async () => {
+      const scope = await scopeFor(ana, "pr-23");
+      rewriteHistory(ana, "delete the damaged line", (_p, sidecar) => {
+        const path = join(sidecar, scope, "w_junk.ndjson");
+        const kept = readFileSync(path, "utf8").split("\n").filter((l) => l.trim() && l !== '{"id":"nope"');
+        writeFileSync(path, kept.join("\n") + "\n");
+      });
+      assert.equal((await radius(ana))[scope], "complete",
+        "a shard is append-only, so deleting the line is the whole repair");
+
+    });
+
+    await settled("the repair");
 
     // 5 — the point of all of it.
     await step("with two scopes blocked the team still works", async () => {

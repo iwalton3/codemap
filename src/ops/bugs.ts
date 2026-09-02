@@ -14,16 +14,17 @@
  * tell a fix from a rename from a deletion that ignored the defect.
  */
 
-import { type BugSeverity, type BugWitness } from "../schema.js";
+import { parseAsOf, type BugSeverity, type BugWitness } from "../schema.js";
 import { headCommit } from "../git.js";
 import { readAnchorStore, readBugs, readBug, writeLocalBug, findAnchorsOutsideWork, readOrphans } from "../store.js";
 import { witnessDrift, realDrift } from "../reviews.js";
-import { requireActor } from "../identity.js";
+import { requireActor, isAgentActor } from "../identity.js";
 import {
   bugLog, materializeBugs, onBugLog, publishBug, type BugLog,
 } from "../bugs-publish.js";
 import {
-  anchorBug, bugIdFor, citedAnchors, commentOnBug, corroborateBug, fileBug, isClosed,
+  anchorBug, backlogBugEvent, bugIdFor, citedAnchors, commentOnBug, corroborateBug, fileBug, isClosed,
+  releaseBugBacklogEvent,
   isTracked, needsHumanAck, promoteBug, requestOnBug, resolveBugContest, reviseBug,
   setBugState, trackBug, unanchorBug, witnessesOf,
   type Ask, type BugState, type SharedBug, type Verdict,
@@ -170,6 +171,49 @@ const publicView = (b: SharedBug, changed: string[]) => ({
   changedAnchors: changed,
 });
 
+/**
+ * Which of the three a backlogged bug is in — derived, never stored, so no fold can
+ * disagree with it.
+ *
+ * The same shape the finding backlog's buckets have and for the same reason: the date is
+ * the guaranteed release condition, and drift against the witnesses TAKEN AT GRANT TIME
+ * is the early wake, meaning somebody is editing the exact code the decision was about.
+ *
+ * At module scope so the list and the detail cannot answer differently about one bug.
+ */
+export function bugBacklogState(
+  b: SharedBug, idx: ReturnType<typeof liveIndex>, asOf: string,
+): "sleeping" | "due" | "woken" | undefined {
+  if (!b.backlogged) return undefined;
+  if (b.backlogged.until <= asOf) return "due";
+  const w = b.backlogged.witnesses ?? [];
+  return w.length && realDrift(witnessDrift(w, idx)).length ? "woken" : "sleeping";
+}
+
+/**
+ * The backlog marker as a row carries it: the record plus its derived state.
+ *
+ * On EVERY row that lists the bug, never only on the backlog view. The hard constraint
+ * is that a deferred bug is out of the working queue and out of nothing else — and
+ * without the marker travelling with it, it reads as an ordinary open bug nobody is
+ * doing, which is the exact appearance the backlog exists to replace.
+ *
+ * Not in `publicView`, because the derived state needs today's index and `publicView`
+ * is a pure projection of the record.
+ */
+const backloggedRow = (b: SharedBug, state: "sleeping" | "due" | "woken" | undefined) =>
+  b.backlogged && state
+    ? { until: b.backlogged.until, reason: b.backlogged.reason, by: b.backlogged.by.principal, at: b.backlogged.at, state }
+    : undefined;
+
+/**
+ * Through `parseAsOf` like every other `asOf` in the tree, because the comparison is
+ * LEXICOGRAPHIC: a caller-supplied `"today"` — which is what an agent reaches for — would
+ * make every deadline read as passed and empty the sleeping list into the working one.
+ * Throws on a value it cannot round-trip, exactly as every other consumer does.
+ */
+const dayOf = (asOf?: string) => (asOf ? parseAsOf(asOf).at.slice(0, 10) : new Date().toISOString().slice(0, 10));
+
 export const BUG_SORTS = ["severity", "newest", "oldest", "title"] as const;
 export type BugSort = (typeof BUG_SORTS)[number];
 
@@ -186,18 +230,34 @@ const when_ = (b: { filedAt?: string; createdAt?: string }) => b.filedAt ?? b.cr
  */
 export async function listBugs(
   root: string,
-  opts: { state?: BugState; open?: boolean; queue?: boolean; asked?: boolean; sort?: BugSort } = {},
+  opts: { state?: BugState; open?: boolean; queue?: boolean; asked?: boolean; backlog?: boolean; sort?: BugSort; asOf?: string } = {},
 ) {
   await refreshBugRows(root);
   const all = (await readBugs(root)).bugs;
   const { idx } = await drift(root, all);
   const changedFor = (b: SharedBug) => realDrift(witnessDrift(witnessesOf(b), idx)).map((c) => c.anchorId);
+  const asOf = dayOf(opts.asOf);
+  const backlogState = (b: SharedBug) => bugBacklogState(b, idx, asOf);
+  /**
+   * Asleep, and therefore out of the WORKING list — the only thing backlogging does.
+   *
+   * A `due` or `woken` bug comes back on its own: the release condition has fired, and
+   * needing somebody to visit a separate page for that would make the deadline a note
+   * rather than a mechanism. It is filtered from this list and from nothing else — see
+   * `SharedBug.backlogged` for why a bug's backlog cannot be quiet the way a finding's
+   * `sleeping` can.
+   */
+  const asleep = (b: SharedBug) => backlogState(b) === "sleeping";
 
   let bugs = all;
   if (opts.state) bugs = bugs.filter((b) => b.state === opts.state);
   if (opts.open) bugs = bugs.filter((b) => !isClosed(b.state));
+  // The deferral register — its own list, not a bucket, because bugs already have a
+  // queue people read and the point is that the main one means "what we are doing".
+  if (opts.backlog) bugs = bugs.filter((b) => !!b.backlogged);
+  else bugs = bugs.filter((b) => !asleep(b));
 
-  let rows = bugs.map((b) => publicView(b, changedFor(b)));
+  let rows = bugs.map((b) => ({ ...publicView(b, changedFor(b)), backlogged: backloggedRow(b, backlogState(b)) }));
   // The queue is the whole point of sharing them: what needs a PERSON here. Drift is in
   // it and is not in the log's own `bugAckQueue`, which cannot see this machine's index.
   // Narrower than the queue, and the difference is the point: "somebody is asking you to
@@ -209,11 +269,18 @@ export async function listBugs(
   // ever with it, asking for a decision that had already been made.
   const isAsk = (r: typeof rows[number]) =>
     !isClosed(r.state) && (!!r.pending || r.reported?.result === "fixed");
-  // Over `all`, not over `rows`. The counts beside them describe the whole store, and
-  // these were derived from a list already narrowed by `state`/`open` — so the chip said N
-  // while the view it opens (which sends its own filter) showed something else. A count
-  // that disagrees with the thing it links to is worse than no count.
-  const everyRow = bugs === all ? rows : all.map((b) => publicView(b, changedFor(b)));
+  // Over every bug the WORKING lists can show, not over `rows`. These were derived from
+  // a list already narrowed by `state`/`open` — so the chip said N while the view it
+  // opens (which sends its own filter) showed something else. A count that disagrees
+  // with the thing it links to is worse than no count.
+  //
+  // Which is also why the deferred ones are out of it: they are out of every list these
+  // chips open, and counting a live deferral as work makes deferring honestly look
+  // identical to ignoring the thing — the reason `sleeping` is excluded from the
+  // finding backlog's `attention`. `backlogged` and `sleeping` below are the other half,
+  // so nothing is uncounted.
+  const working = all.filter((b) => !asleep(b));
+  const everyRow = working.map((b) => ({ ...publicView(b, changedFor(b)), backlogged: backloggedRow(b, backlogState(b)) }));
   const queueAll = everyRow.filter((r) => r.waitingOnYou || r.possiblyFixed);
   const askedAll = everyRow.filter(isAsk);
   if (opts.queue) rows = rows.filter((r) => r.waitingOnYou || r.possiblyFixed);
@@ -229,12 +296,21 @@ export async function listBugs(
   rows = [...rows].sort(cmp[sort]);
 
   return {
-    counts: all.reduce((m, b) => ((m[b.state] = (m[b.state] ?? 0) + 1), m), {} as Record<string, number>),
-    open: all.filter((b) => !isClosed(b.state)).length,
+    counts: working.reduce((m, b) => ((m[b.state] = (m[b.state] ?? 0) + 1), m), {} as Record<string, number>),
+    open: working.filter((b) => !isClosed(b.state)).length,
     shared: all.filter((b) => b.origin).length,
     waitingOnYou: queueAll.length,
     /** How many are somebody asking you to close, or reported fixed. Of ALL of them. */
     asked: askedAll.length,
+    /**
+     * The deferral register's size, and how much of it is actually asleep.
+     *
+     * Of ALL of them, like the counts above: a chip that disagrees with the list it
+     * links to is worse than no chip. `sleeping` is what the working list is missing;
+     * `backlogged - sleeping` has already woken and is in it.
+     */
+    backlogged: all.filter((b) => !!b.backlogged).length,
+    sleeping: all.filter(asleep).length,
     sort,
     bugs: rows,
   };
@@ -279,6 +355,7 @@ export async function bugDetail(root: string, id: string) {
 
   return {
     ...publicView(bug, changed),
+    backlogged: backloggedRow(bug, bugBacklogState(bug, idx, dayOf())),
     text: bug.text,
     createdCommit: bug.createdCommit,
     anchors,
@@ -424,6 +501,103 @@ export async function updateBug(
   });
   if (out && "error" in out) return out;
   return { ok: true, id: bug.id, state, shared: true, applied: done, ...rejected(rejects) };
+}
+
+/**
+ * Backlog a bug — real, not now, and it comes back.
+ *
+ * The third exit, one record kind over from the finding backlog, and the argument is
+ * `docs/finding-backlog.md`'s: a bug nobody will reach this quarter currently either
+ * dilutes the open queue or is closed as won't-fix, which asserts a decision nobody
+ * made. The first is what happens, and it is how a bug queue stops being read.
+ *
+ * **It leaves the WORKING queue and nothing else.** `listBugs` filters it out of the
+ * default list and `search` does not filter it at all — see `SharedBug.backlogged` for
+ * why that asymmetry is the whole constraint here.
+ *
+ * **The witnesses are snapshotted NOW**, from the working tree, not read off the bug's
+ * citations. Backlogging follows an investigation, so a condition keyed on the filing
+ * hashes fires the instant it is set, on code that moved days ago. This is the subtlety
+ * the finding side had to fix and the one an implementation drifts from first.
+ *
+ * Principal-only, and the fold enforces it too. The refusal here exists to produce a
+ * sentence rather than a silently dropped event.
+ */
+export async function backlogBugOp(
+  root: string, id: string,
+  input: { until: string; reason: string; ref?: { system: string; key?: string; url?: string } },
+) {
+  const r = await routeWrite(root, id);
+  if ("error" in r) return r;
+  const actor = requireActor(root);
+  if ("error" in actor) return actor;
+  if (isAgentActor(actor)) {
+    return {
+      error:
+        "backlogging a bug is a person's decision, not an agent's — it is the cheapest way to "
+        + "empty a queue, so it is granted the way `debt` is. Ask for it instead, and say what "
+        + "the release condition should be.",
+    };
+  }
+  const shared = await import("../ops-shared.js");
+  const guard = shared.checkBacklogInput(input, "bug");
+  if (guard) return guard;
+  // Normalized ONCE, here, so both stores write the same strings. The finding path
+  // shipped the other way round: the guard trimmed before validating and the two stores
+  // then wrote different things, and `" 2027-01-01"` sorts below every digit — so an
+  // identical request produced a bug due for ever locally and asleep until 2027 on the
+  // team's copy.
+  const until = input.until.trim(), reason = input.reason.trim();
+
+  const bug = "bug" in r ? r.bug : r.local;
+  // Best-effort, like the finding path: a bug whose code has already left the tree still
+  // backlogs, with the date as its only release condition — which is exactly what an
+  // acknowledgement has, so nothing is lost by comparison.
+  const witnesses = (await witnessRefs(root, citedAnchors(bug))).witnesses;
+
+  if ("local" in r) {
+    const at = new Date().toISOString();
+    r.local.backlogged = {
+      until, reason, by: actor, at,
+      ...(witnesses.length ? { witnesses } : {}),
+      ...(input.ref ? { ref: { ...input.ref, at, by: actor } } : {}),
+    };
+    await writeLocalBug(root, r.local);
+    return { ok: true, id, shared: false, until, witnessed: witnesses.length };
+  }
+  const out = await onBugLog(r.log, root, (logRoot, universe, who) =>
+    backlogBugEvent(logRoot, universe, who, id, { until, reason, witnesses, ref: input.ref }));
+  if (out && "error" in out) return out;
+  return { ok: true, id, shared: true, until, witnessed: witnesses.length };
+}
+
+/** Bring one back into the working queue. A person's, exactly as backlogging is. */
+export async function releaseBugBacklogOp(root: string, id: string, reason: string) {
+  const r = await routeWrite(root, id);
+  if ("error" in r) return r;
+  const actor = requireActor(root);
+  if ("error" in actor) return actor;
+  if (isAgentActor(actor)) return { error: "bringing a bug back is a person's, exactly as backlogging it is" };
+  if (!reason?.trim()) return { error: "say why it is coming back — it is the other half of the record" };
+  const bug = "bug" in r ? r.bug : r.local;
+  if (!bug.backlogged) return { error: `${id} is not backlogged` };
+
+  if ("local" in r) {
+    // The reason is RECORDED, not merely demanded. The finding path shipped
+    // required-field theatre here — refusing an empty reason and then discarding it —
+    // on the store that holds most of the backlog.
+    r.local.thread.push({
+      id: genId("c"), actor, at: new Date().toISOString(),
+      body: `brought back from the backlog: ${reason.trim()}`,
+    });
+    delete r.local.backlogged;
+    await writeLocalBug(root, r.local);
+    return { ok: true, id, shared: false };
+  }
+  const out = await onBugLog(r.log, root, (logRoot, universe, who) =>
+    releaseBugBacklogEvent(logRoot, universe, who, id, reason.trim()));
+  if (out && "error" in out) return out;
+  return { ok: true, id, shared: true };
 }
 
 /** Say something on a bug. The team surface the old free-text `history` was standing in for. */

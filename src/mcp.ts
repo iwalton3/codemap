@@ -327,7 +327,7 @@ const tools: Tool[] = [
   },
   {
     name: "search",
-    description: "Search anchors, logical nodes and BUGS for a substring. Node hits carry a trust level (trusted / unverified / stale) from freshness × review — prefer a `trusted` doc over re-reading code. Bugs match on their id as well as their prose, because an id is the thing a person actually holds in their head — off a PR comment or a teammate's message; open ones sort ahead of closed. Set allUniverses:true to search every universe.",
+    description: "Search anchors, logical nodes, BUGS and FINDINGS for a substring. Node hits carry a trust level (trusted / unverified / stale) from freshness × review — prefer a `trusted` doc over re-reading code. Bugs and findings match on their id as well as their prose, because an id is the thing a person actually holds in their head — off a PR comment or a teammate's message; open ones sort ahead of closed. Findings also match their target anchor id and their discussion thread, and CLOSED ones are returned on purpose: \"was this ever reported?\" is what search is for, and a refuted finding is often the best answer — somebody already looked and their reasoning is in the record. A hit's `state` field, and its `backlogged` deadline where it has one, say whether it is still live. Set allUniverses:true to search every universe.",
     inputSchema: obj({ query: { type: "string" }, limit: { type: "number" }, allUniverses: { type: "boolean" } }, ["query"]),
     handler: (a, c) => (a.allUniverses ? multi.searchAll(ws, a.query, a.limit) : ops.search(c.universe.path, a.query, a.limit)),
   },
@@ -609,12 +609,13 @@ const tools: Tool[] = [
   },
   {
     name: "list_bugs",
-    description: "List bugs in a universe — this machine's and the team's, in one list. Open bugs whose anchored code changed since filing are flagged `possiblyFixed`; re-validate those rather than closing them, because a symbol that vanished may have been renamed or deleted without the defect being addressed. `queue: true` is the short list: what needs a PERSON here (promoted, corroborated, contested, asked about, or drifted). `asked: true` is narrower and is the one to reach for after a fixing pass — bugs somebody is asking a person to close, or has reported fixed. Each row carries the outstanding ask as `pending` (with its rationale), plus the latest outcome as `reported`.",
+    description: "List bugs in a universe — this machine's and the team's, in one list. Open bugs whose anchored code changed since filing are flagged `possiblyFixed`; re-validate those rather than closing them, because a symbol that vanished may have been renamed or deleted without the defect being addressed. `queue: true` is the short list: what needs a PERSON here (promoted, corroborated, contested, asked about, or drifted). `asked: true` is narrower and is the one to reach for after a fixing pass — bugs somebody is asking a person to close, or has reported fixed. Each row carries the outstanding ask as `pending` (with its rationale), plus the latest outcome as `reported`.\n\nA bug somebody has DEFERRED is out of these lists and out of nothing else — it is still in `search` and still here under backlog:true, and every row carries its deadline, because a defect you cannot find is worse than one nobody has prioritised. It returns to the working lists on its own once the deadline passes or the code it was about moves. Deferring one is a person's call and there is no tool for it; ask, and say what the release condition should be.",
     inputSchema: obj({
       state: { type: "string", enum: ["issued", "created", "invalid", "refuted", "resolved", "withdrawn"] },
       open: { type: "boolean", description: "Only bugs that are not closed." },
       queue: { type: "boolean", description: "Only what is waiting on a person on this machine." },
       asked: { type: "boolean", description: "Only bugs with an outstanding ask to close, or reported fixed." },
+      backlog: { type: "boolean", description: "The deferral register instead of the working queue: bugs somebody deliberately put off, with the deadline that brings each back." },
       sort: { type: "string", enum: ["severity", "newest", "oldest", "title"], description: "Default `severity` (then newest). The list had no order at all before, so the first row you read was the store's accident." },
     }),
     handler: (a, c) => ops.listBugs(c.universe.path, a),

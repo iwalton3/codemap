@@ -26,7 +26,7 @@ import { witnessDrift, realDrift } from "./reviews.js";
 import { originSlug, headCommit, currentBranch, isAncestor, defaultBranch, revParse } from "./git.js";
 import { prIsMerged, landingOf } from "./pr.js";
 import { fetchReviewThreads, type GhRunner } from "./pr-push.js";
-import { ensureSidecar, sync as sidecarSync, receive as sidecarReceive, healMerge, readManifests, checkPeers, currentManifest } from "./sidecar.js";
+import { ensureSidecar, sync as sidecarSync, receive as sidecarReceive, healMerge, readManifests, checkPeers, currentManifest, sidecarLineage, isSameSidecar } from "./sidecar.js";
 import {
   createFinding, corroborate, comment, promote, request, setState, recordOutcome,
   markPosted, markUpstreamed, promoteToBug, needsHumanAck, ackQueue, mayRevise,
@@ -48,7 +48,7 @@ import { docsVerdict } from "./docs-lookup.js";
 import { queueContestedTriage } from "./ops/triage.js";
 import { liveAnchors, liveIndex } from "./ops/shared.js";
 export { mirrorTriage, mirrorTriageBatch, mirrorTriageClear } from "./triage-publish.js";
-import { readSharedNotes, readAnnotations, readAnchorStore, readFindings, loadNodes, loadNodeVersions, nodeIdsWithPublishableVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets, attributeLocalWalkthrough, readBlockedScopes, findingCountsByPr, readUnpublishedWalkthroughs } from "./store.js";
+import { readSharedNotes, readAnnotations, readAnchorStore, readFindings, loadNodes, loadNodeVersions, nodeIdsWithPublishableVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets, attributeLocalWalkthrough, readBlockedScopes, findingCountsByPr, readUnpublishedWalkthroughs, readStoreMeta, writeStoreMeta, foldedScopes, hasFoldedFromSidecar, SIDECAR_LINEAGE, type SidecarMark } from "./store.js";
 import {
   publishDocVersion, acceptDocHash, resolveDoc, foldDocs, docScope,
   type NewDocVersion,
@@ -216,19 +216,126 @@ async function settleArrivals(root: string, cfg: SidecarConfig) {
  * state before deciding whether your own is ready to go is an ordinary thing to want,
  * and the top bar offers this on every page — where sending would be a surprise.
  */
+/**
+ * The configured sidecar is not there, and this store has used one before.
+ *
+ * Two halves, and both are needed. A path that does not exist is ordinary on a FIRST
+ * sync — `ensureSidecar` creates it, which is how somebody sets one up — so absence
+ * alone is not an error. Absence when `shared_scope` already records folds from a
+ * sidecar is a different thing entirely: a typo in `.codemap/sidecar`, a drive that is
+ * not mounted, a sidecar this machine has not cloned. Left alone, `ensureSidecar`
+ * silently mkdirs and `git init`s a BRAND NEW empty sidecar at the wrong path, and the
+ * person is now on a team of one without being told.
+ *
+ * The reads deliberately do NOT refuse — see `logRootMissing` in `materialize.ts`, which
+ * keeps serving the rows this store holds rather than folding the absence into an empty
+ * projection. Reads degrade and say so; the transport stops.
+ */
+/**
+ * Scopes the canonical tables hold rows from that this sidecar does not have.
+ *
+ * The SYMPTOM of a repoint, computed rather than stored: a row's `source_scope` names
+ * where the fold read it, so a scope that is not on disk is a row nothing will ever
+ * revisit. Used to say how much is at stake, never to decide anything.
+ */
+async function strandedScopes(root: string, cfg: { path: string; universe: string }): Promise<string[]> {
+  const here = new Set(await scopesOnDisk(cfg.path).catch(() => [] as string[]));
+  return foldedScopes(root).filter((sc) => inUniverse(sc, cfg.universe) && !here.has(sc));
+}
+
+/**
+ * Is `.codemap/sidecar` still pointing at the sidecar this store has been using?
+ *
+ * **Repointing from one team's repo to another is refused.** Nothing migrates the rows
+ * already folded from the old one: they keep their `source_scope`, the ownership rule
+ * keeps refusing local writes to them, and no fold ever revisits them because the new
+ * sidecar has no such scope. So they answer every read for ever, describing a log this
+ * store can no longer reach — a teammate's finding that cannot be updated, resolved or
+ * even explained. Silently, which is the part that makes it worth stopping for.
+ *
+ * The identity is the sidecar's oldest ROOT COMMIT (`sidecarLineage`), so a sidecar that
+ * moved, was re-cloned, or has since merged the team's unrelated history is recognised as
+ * the same one. Only a genuinely different repository fails.
+ *
+ * **Recorded on first sight, which is what grandfathers every existing store.** No store
+ * has this yet, and refusing them all on upgrade would be the migration equivalent of the
+ * bug. A store with nothing recorded records what it finds and proceeds.
+ *
+ * A sidecar with no commits is not yet anything: it cannot be the recorded one, and it
+ * cannot be recorded either. That is refused when something IS recorded — an empty
+ * directory at the wrong path is the shape a typo makes — and allowed when nothing is,
+ * which is a first sync.
+ */
+function checkSidecarIdentity(root: string, cfg: { path: string; universe: string }): { error: string } | null {
+  const mark = readStoreMeta<SidecarMark>(root, SIDECAR_LINEAGE);
+  const here = sidecarLineage(cfg.path);
+  if (!mark?.lineage) {
+    rememberSidecar(root, cfg);
+    return null;
+  }
+  if (here && isSameSidecar(cfg.path, mark.lineage)) return null;
+  return {
+    error:
+      `${cfg.path} is a different sidecar from the one this store has been using `
+      + `(${mark.lineage.slice(0, 12)}, last seen at ${mark.path}${here ? `; this one is ${here.slice(0, 12)}` : "; this one has no history at all"}). `
+      + `Refusing: nothing migrates. A fold is total per scope, so the rows this store folded from the old `
+      + `sidecar are replaced the moment this one is folded over them, and this one is empty of them. `
+      + `Reads are serving those rows and declining to fold until this is settled. If the path is a typo `
+      + `or a drive is not mounted, fix that. If the move is deliberate, \`codemap sidecar adopt\` performs `
+      + `it and names exactly which rows go.`,
+  };
+}
+
+/**
+ * Record which sidecar this is, if it is not already known.
+ *
+ * Called after a successful transport as well as before it, and the second call is the
+ * one that matters: `ensureSidecar` inits a repository but commits NOTHING, so a brand
+ * new sidecar has no root commit to identify it until its first sync makes one. Recording
+ * only on the way in left the guard permanently one sync behind — a store's very first
+ * sidecar was never recorded, so its first repoint was never caught.
+ *
+ * Never OVERWRITES. Moving this store to another sidecar is `adoptSidecar`, which says
+ * what it costs; a silent re-record here would be the whole guard, undone by itself.
+ */
+function rememberSidecar(root: string, cfg: { path: string }): void {
+  if (readStoreMeta<SidecarMark>(root, SIDECAR_LINEAGE)?.lineage) return;
+  const lineage = sidecarLineage(cfg.path);
+  if (lineage) writeStoreMeta(root, SIDECAR_LINEAGE, { lineage, path: cfg.path } satisfies SidecarMark);
+}
+
+function sidecarVanished(root: string, cfg: { path: string }): { error: string } | null {
+  if (existsSync(cfg.path)) return null;
+  if (!hasFoldedFromSidecar(root)) return null;
+  return {
+    error:
+      `the sidecar this store has been using is not at ${cfg.path}. Refusing to sync: this would `
+      + `create a NEW, empty sidecar there and put you on a team of one, silently. Check `
+      + `.codemap/sidecar for a typo, mount the drive, or clone the sidecar to that path. Nothing `
+      + `has been lost — the rows folded from it are still here, and reads serve them as `
+      + `non-authoritative until the path resolves again.`,
+  };
+}
+
 export async function sharedPull(root: string) {
   const b = bind(root);
   if ("error" in b) return b;
+  const wrong = sidecarVanished(root, b.cfg) ?? checkSidecarIdentity(root, b.cfg);
+  if (wrong) return wrong;
   const r = await sidecarReceive(b.cfg.path, b.actor, `codemap: ${b.cfg.universe}`);
   if ("error" in r) return r;
+  rememberSidecar(root, b.cfg);
   return { ...(await settleArrivals(root, b.cfg)), ok: true, universe: b.cfg.universe, sidecar: b.cfg.path, ...r };
 }
 
 export async function sharedSync(root: string) {
   const b = bind(root);
   if ("error" in b) return b;
+  const wrong = sidecarVanished(root, b.cfg) ?? checkSidecarIdentity(root, b.cfg);
+  if (wrong) return wrong;
   const r = await sidecarSync(b.cfg.path, b.actor, `codemap: ${b.cfg.universe}`);
   if ("error" in r) return r;
+  rememberSidecar(root, b.cfg);
   return { ...(await settleArrivals(root, b.cfg)), ok: true, universe: b.cfg.universe, sidecar: b.cfg.path, ...r };
 }
 
@@ -295,7 +402,12 @@ export async function sharedHeal(root: string): Promise<HealResult | { error: st
     if (!d) { blocked.push({ scope, reason: checked.status }); continue; }
     // A newer protocol is never acknowledgeable: clearing it would be agreeing to
     // read data this build cannot interpret. It resolves by upgrading.
-    if (d.reason === "protocol") { blocked.push({ scope, reason: d.detail }); continue; }
+    //
+    // Nor is a corrupt shard, and for a sharper reason: `scopeStatus` does not consult
+    // acknowledgements for it at all, so writing one would change nothing and this would
+    // report it as healed. The repair is the line — delete it where it was written and
+    // push — and the detail names the file and the line number to do it with.
+    if (d.reason === "protocol" || d.reason === "corrupt-shard") { blocked.push({ scope, reason: d.detail }); continue; }
 
     if (!rotated && d.reason === "fork" && checked.events.some((e) => e.writer === mine)) {
       rotated = await rotateWriter(b.cfg.path);
@@ -314,7 +426,68 @@ export async function sharedHeal(root: string): Promise<HealResult | { error: st
   };
 }
 
-/** Who else is on this sidecar, and whether their codemap agrees with ours. */
+/**
+ * Move this store to a different sidecar, deliberately, and say what it costs.
+ *
+ * The escape hatch `checkSidecarIdentity` names, and it exists because a refusal nobody
+ * can get past is what makes people delete their store. It migrates nothing: the events
+ * live in a repository this store no longer points at, and inventing rows for them here
+ * would be exactly the false provenance the log exists to prevent.
+ *
+ * **The rows folded from the old sidecar GO, and this says so before it happens.** An
+ * earlier version of this claimed to keep them and could not: a fold is total per scope,
+ * so the moment the new sidecar's `bugs/<universe>` is folded it replaces them with its
+ * own, which is empty of them. Promising otherwise would have been a comment that made
+ * the code below look correct while it did the opposite — so what this returns is the
+ * list of scopes about to be replaced, and the caller shows it.
+ *
+ * **What makes that safe is that they are a PROJECTION.** The events are still in the old
+ * sidecar; pointing `.codemap/sidecar` back at it and syncing folds them again and the
+ * rows return. That is the recovery, it is stated in the result, and there is a test that
+ * runs it — because a claim about recoverability that nobody has executed is exactly the
+ * kind this project has been wrong about before.
+ *
+ * The refusal is what protects the accidental case. This is only reachable when somebody
+ * typed it, and a PERSON has to: an agent reaching it could move a store off its team in
+ * one call.
+ */
+export async function adoptSidecar(root: string) {
+  const cfg = resolveSidecar(root);
+  if (!cfg) return { error: NO_SIDECAR };
+  const actor = requireActor(root);
+  if ("error" in actor) return actor;
+  if (isAgentActor(actor)) {
+    return { error: "moving this store to a different sidecar is a person's call — it is the team it belongs to" };
+  }
+  if (!existsSync(cfg.path)) {
+    return { error: `there is no sidecar at ${cfg.path} to adopt. Fix the path in .codemap/sidecar first — adopting an absent one would record a team that does not exist.` };
+  }
+  const ready = await ensureSidecar(cfg.path, actor);
+  if ("error" in ready) return ready;
+  const lineage = sidecarLineage(cfg.path);
+  if (!lineage) return { error: `${cfg.path} has no history yet, so there is nothing to adopt — sync once to create it` };
+
+  const was = readStoreMeta<SidecarMark>(root, SIDECAR_LINEAGE);
+  const stranded = await strandedScopes(root, cfg);
+  writeStoreMeta(root, SIDECAR_LINEAGE, { lineage, path: cfg.path } satisfies SidecarMark);
+  return {
+    ok: true as const,
+    universe: cfg.universe,
+    sidecar: cfg.path,
+    ...(was ? { was: was.lineage, wasAt: was.path } : {}),
+    lineage,
+    /** Scopes whose rows the next fold replaces. The events are still in the old sidecar. */
+    replaced: stranded,
+    note: stranded.length
+      ? `${stranded.length} scope(s) of rows came from the previous sidecar and are replaced the next `
+        + `time this one is read — a fold is total, so there is no keeping them beside somebody else's. `
+        + `They are a projection, not the record: point .codemap/sidecar back at ${was?.path ?? "the old sidecar"} `
+        + `and sync, and they fold again.`
+      : "nothing was folded from another sidecar, so nothing is replaced",
+  };
+}
+
+/** Who else is on this sidecar, and whether their codemap agrees with ours. *//** Who else is on this sidecar, and whether their codemap agrees with ours. */
 export async function sharedStatus(root: string) {
   const cfg = resolveSidecar(root);
   if (!cfg) return { error: NO_SIDECAR };
@@ -324,9 +497,13 @@ export async function sharedStatus(root: string) {
   const incompat = checkPeers(peers, mine);
   const { splitState } = await import("./findings-unify.js");
   const split = await splitState(root);
+  const vanished = sidecarVanished(root, cfg) ?? checkSidecarIdentity(root, cfg);
   return {
     universe: cfg.universe,
     sidecar: cfg.path,
+    // The one thing worth saying before anything else on this page: the path is wrong,
+    // and everything below is describing a sidecar that is not there.
+    ...(vanished ? { blocked: vanished.error } : {}),
     you: "error" in actor ? null : actor.principal,
     // Activating a sidecar and leaving findings off it is the state that produced every
     // "no finding X on pr Y" — the record was real and the log had never heard of it.
@@ -435,6 +612,43 @@ export async function remediateFinding(
 }
 
 /**
+ * Fold every `findings/` scope in this universe into rows, and say which would not.
+ *
+ * **A cross-PR read of the canonical table MUST call this first.** The table is a
+ * projection, and reading it raw is how a `MATERIALIZER_VERSION` bump gets bypassed:
+ * an upgraded store whose shards have not moved serves the rows its OLD build folded,
+ * for ever, because the scope fingerprint knows the version and nothing else changed.
+ * `sharedFindings` reads one PR and has always materialized it; `findingBacklog` and
+ * `search` read all of them, which is what this is for. Cheap when nothing moved — one
+ * `stat` per shard per scope.
+ *
+ * Blocked scopes are RETURNED, never swallowed. A blocked scope still answers, so the
+ * rows are served either way; what a caller must not do is present a partial answer as
+ * the whole one. A bare `.catch(() => null)` here made a half-folded universe look
+ * like a clean one.
+ */
+export async function materializeFindingScopes(root: string): Promise<{ scope: string; reason: string }[]> {
+  const cfg = resolveSidecar(root);
+  if (!cfg) return [];
+  const blocked: { scope: string; reason: string }[] = [];
+  const identity = sidecarIdentity(cfg);
+  for (const scope of await scopesOnDisk(cfg.path).catch(() => [] as string[])) {
+    if (!inUniverse(scope, cfg.universe) || !scope.startsWith("findings/")) continue;
+    // `projectionFor` classifies every `findings/` scope, which the filter above has
+    // already required — so there is no "unclassified" case to handle here.
+    const which = projectionFor(scope)!;
+    try {
+      const { fresh, status, diagnostic } = await ensureMaterialized(root, cfg.path, scope, identity, which.fold, which.proj);
+      if (!fresh) blocked.push({ scope, reason: "rows are behind the log; the next sync will retry" });
+      else if (status !== "complete") blocked.push({ scope, reason: diagnostic?.detail ?? status });
+    } catch (e: any) {
+      blocked.push({ scope, reason: `could not fold: ${e?.message ?? e}` });
+    }
+  }
+  return blocked;
+}
+
+/**
  * The finding backlog — every open finding, sorted by what the CODE says about it.
  *
  * The queue that did not exist, and it is a projection rather than a record because
@@ -464,35 +678,10 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
   // so a date is compared against a date.
   const asOf = opts.asOf ? parseAsOf(opts.asOf).at.slice(0, 10) : new Date().toISOString().slice(0, 10);
 
-  // MATERIALIZE FIRST. The canonical table is a projection, and reading it raw is how a
-  // version bump gets bypassed: an upgraded store whose shards have not moved would have
-  // served rows its OLD build folded — with no `backlogged` on them — for ever, which is
-  // the exact skew `MATERIALIZER_VERSION` 19 exists to prevent. `sharedFindings` has
-  // always called `ensureMaterialized`; this read did not, so the bump was necessary and
-  // not sufficient. Cheap when nothing moved: one `stat` per shard per scope.
-  const cfgM = resolveSidecar(root);
-  // Scopes this answer could NOT be formed from. Reported, never swallowed: a blocked
-  // scope still answers — the rows are served — but presenting an incomplete backlog as
-  // the whole backlog is the failure `served()` exists to prevent one subsystem over, and
-  // this is a queue people act on. A bare `.catch(() => null)` here would have made a
-  // half-folded universe look like a clean one.
-  const blockedScopes: { scope: string; reason: string }[] = [];
-  if (cfgM) {
-    const identity = sidecarIdentity(cfgM);
-    for (const scope of await scopesOnDisk(cfgM.path).catch(() => [] as string[])) {
-      if (!inUniverse(scope, cfgM.universe) || !scope.startsWith("findings/")) continue;
-      // `projectionFor` classifies every `findings/` scope, which the filter above has
-      // already required — so there is no "unclassified" case to handle here.
-      const which = projectionFor(scope)!;
-      try {
-        const { fresh, status, diagnostic } = await ensureMaterialized(root, cfgM.path, scope, identity, which.fold, which.proj);
-        if (!fresh) blockedScopes.push({ scope, reason: "rows are behind the log; the next sync will retry" });
-        else if (status !== "complete") blockedScopes.push({ scope, reason: diagnostic?.detail ?? status });
-      } catch (e: any) {
-        blockedScopes.push({ scope, reason: `could not fold: ${e?.message ?? e}` });
-      }
-    }
-  }
+  // MATERIALIZE FIRST — see `materializeFindingScopes`. Reading the table raw is how a
+  // version bump gets bypassed, which is the skew `MATERIALIZER_VERSION` 19 exists to
+  // prevent; this read did not do it, so the bump was necessary and not sufficient.
+  const blockedScopes = await materializeFindingScopes(root);
 
   const all = (await readFindings(root, {})).findings.filter((f) =>
     // A finding that BECAME A BUG has taken one of the two exits, and the obligation
@@ -717,25 +906,26 @@ async function witnessNow(root: string, anchorId: string): Promise<BugWitness | 
 }
 
 /**
- * The two things backlogging cannot do without, checked once so both stores refuse alike.
+ * The two things backlogging cannot do without, checked once so every store refuses alike.
  *
- * Exported because `backlogOn` dispatches on the record and the LOCAL path has no fold
- * behind it to catch a bad input later — a second copy of these sentences is how the two
- * ends drift into refusing different things.
+ * Exported because `backlogOn` dispatches on the record and the LOCAL paths have no fold
+ * behind them to catch a bad input later — a second copy of these sentences is how the
+ * ends drift into refusing different things. `kind` only names the record in the
+ * sentence; the rule is identical for a finding and a bug, and that is the point.
  */
-export function checkBacklogInput(input: { until?: string; reason?: string }): { error: string } | null {
+export function checkBacklogInput(input: { until?: string; reason?: string }, kind: "finding" | "bug" = "finding"): { error: string } | null {
   const until = input.until?.trim();
   if (!until || !ISO_DATE.test(until)) {
     return {
       error:
-        "backlogging a finding needs `until` (an ISO date). It is the deadline that brings it "
+        `backlogging a ${kind} needs \`until\` (an ISO date). It is the deadline that brings it `
         + "back, and the only one: "
         + "a linked issue may be evidence but never the condition, because a ticket closed as "
-        + "won't-do, moved or deleted leaves the finding asleep permanently and silently. Every "
+        + `won't-do, moved or deleted leaves the ${kind} asleep permanently and silently. Every `
         + "deferral on record here is in exactly that state.",
     };
   }
-  if (!input.reason?.trim()) return { error: "backlogging a finding needs a reason — it is a record of a decision, not a mute button" };
+  if (!input.reason?.trim()) return { error: `backlogging a ${kind} needs a reason — it is a record of a decision, not a mute button` };
   return null;
 }
 

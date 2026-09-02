@@ -111,6 +111,10 @@
     .sym:first-child { border-top: none; }
     .sym:hover { background: var(--panel); }
     .sym .k { color: var(--dim); font-size: 11px; }
+    /* A deferral has to be legible on the row it sits on: a search hit that did not say
+       so would read as an open record nobody is working on, which is the appearance the
+       backlog exists to replace. */
+    .pill { display: inline-block; font-size: 10.5px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--dim); background: var(--panel); white-space: nowrap; }
     .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #3a4250; margin-right: 6px; }
     .dot.on { background: var(--accent2); }
 
@@ -565,6 +569,10 @@
     /* --- dashboard --- */
     .attn-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 16px; border: 1px solid var(--warn); border-radius: 10px; background: rgba(240,163,94,0.08); margin-bottom: 16px; }
     .attn-banner.ok { border-color: var(--border); background: var(--panel); color: var(--dim); }
+    /* A live deferral is a decision somebody made, not a thing to act on — same reason
+       `sleeping` is excluded from the dashboard's attention count. `due` and `woken` keep
+       the warning colours, because the release condition has fired. */
+    .attn-banner.quiet { border-color: var(--border); background: var(--panel); color: var(--dim); }
     .attn-n { font-weight: 700; color: var(--warn); font-size: 16px; }
     .attn-banner.ok .attn-n { color: var(--accent2); }
     .attn-pill { font-size: 12px; padding: 3px 10px; border-radius: 12px; background: var(--panel2); border: 1px solid var(--warn); color: var(--warn); cursor: pointer; }
@@ -647,6 +655,10 @@
     .blform label { font-size: 12px; color: var(--dim); display: inline-flex; align-items: center; gap: 6px; }
     .blform input { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 5px 10px; font-size: 12.5px; font-family: inherit; }
     .blform .blreason { flex: 1 1 320px; min-width: 0; }
+    .bbacklogform { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .bbacklogform label { font-size: 12px; color: var(--dim); display: inline-flex; align-items: center; gap: 6px; }
+    .bbacklogform input { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 5px 10px; font-size: 12.5px; font-family: inherit; }
+    .bbacklogform .blreason { flex: 1 1 240px; min-width: 0; }
     .blrow button { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 4px 12px; cursor: pointer; font-size: 12px; font-family: inherit; }
     .blrow button:hover:not(:disabled) { border-color: var(--accent); }
     .blrow button:disabled { opacity: 0.5; cursor: default; }

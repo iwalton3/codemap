@@ -308,6 +308,117 @@ does not pretend otherwise.
 An unsupported `sidecarProtocol` needs no repair: it resolves when the reader
 upgrades, and acknowledging it would be reading data you cannot interpret.
 
+## A shard that does not parse is a DESTROYED event, not a dropped one
+
+`readShard` skips an unparseable line by design, and that is right for the case it was
+written for: a process killed mid-append leaves a partial last line, and refusing the
+whole read over it would mean a shared store that will not load because somebody closed
+a laptop. The rule had no upper bound, so a shard that was **wholly** garbage yielded no
+events and its scope answered `status: "complete"` — every finding in it gone, and every
+surface agreeing the queue was clear.
+
+Three ends. **A genuinely broken sidecar should stop and say so rather than be made
+worse** — that is the rule, and it is not a defence against a hostile shard, which is not
+a threat this design spends anything on:
+
+- **The reader BLOCKS**, `reason: "corrupt-shard"`, ahead of every other diagnostic
+  because it is the only one about the bytes rather than about a set of events that was
+  read. It is the one diagnostic that is **not acknowledgeable**: a fork and a duplicated
+  id are ambiguities somebody has to arbitrate, and unreadable bytes are neither — the
+  repair is exact and local (delete the line; no build ever read it), and a mute button
+  here would restore exactly the silence being fixed.
+- **The commit REFUSES.** `commitLocal`, not `push`, because that is the one function
+  that commits — `sync` commits before it pulls, and a push-side check would leave the
+  damage in the local history under a clean `git status` for the next push to publish.
+- **The pull REFUSES**, before the merge, with the sidecar untouched. Merging damaged
+  bytes puts them in one more clone's history and destroys the scope on one more machine.
+  The collateral is real and accepted: the good events in that pull do not arrive either,
+  and every scope waits on a repair to one of them. Stopping is what gets it repaired.
+
+**Two things make that survivable, and both were found by running the oracle rather than
+by reading either mechanism.** The inbound check asks what the merge would ADD, from the
+`merge-base` — `diff HEAD remoteSha` includes everything WE have that they do not, so the
+moment somebody repaired a shard and tried to publish the repair, the check read the
+remote's still-damaged copy and refused the pull the push has to go through first: the
+repairer was locked out of repairing. And `linesAt` skips unparseable lines, because
+`erasedByMerge` otherwise sees the repair as a deletion, restores the damaged line on
+every teammate's pull, and pushes it back at the person who fixed it. Each mechanism is
+right on its own; together they made the only available repair impossible.
+
+The exemption is what makes the rest sound. A partial write can only be the last line of
+a file that does not end in a newline — `appendEvents` writes whole terminated lines — and
+it must LOOK like a truncated event (an opening brace). Position alone is not enough: a
+shard whose single line is binary is entirely at the end of itself, which is exactly how a
+destroyed shard read as an empty one.
+
+`appendEvents` also **repairs** a torn tail rather than sealing it in. Writing a separator
+in front of one leaves a permanent mid-file unparseable line, which is no longer
+distinguishable from corruption — so a laptop closing at the wrong moment would wedge the
+scope for ever. A tail that PARSES is kept and separated, because it is a whole event that
+merely lost its newline and truncating it would delete a real record.
+
+A line that parses and fails `wellFormed` is not damage. That is an event from a client
+this build does not understand, which the envelope check drops on purpose; counting one as
+corruption would turn every version skew into a blocked scope. `linesAt` draws the same
+line for the same reason: a newer client's event must still count as lost if it goes.
+
+## An absent sidecar is not an empty one
+
+The same failure one layer up, and it destroys rather than hides. The fold is total — it
+computes the whole projection from the whole scope — so folding zero events over a scope
+that has rows **writes the empty result**. Point `.codemap/sidecar` at a path that is not
+there (a typo, an unmounted drive, a sidecar this machine has not cloned yet), read once,
+and the team's rows are gone from the canonical table; `listBugs`, `search` and the
+dashboard all agree there is nothing. It is recoverable, because the log is authoritative
+and restoring the path restores them, but it is silently wrong meanwhile.
+
+`logRootMissing` guards every fold entry point. Nothing is folded and nothing is written:
+the rows already stored are served, marked non-authoritative.
+
+**Reads degrade; the transport stops.** `sharedSync` and `sharedPull` refuse, because
+`ensureSidecar` would otherwise `mkdir` and `git init` a brand new empty sidecar at the
+wrong path and put somebody on a team of one without telling them. The guard is two-sided
+— a missing path is ordinary on a FIRST sync, which is how a sidecar gets set up, so it is
+an error only when `shared_scope` shows this store has folded from one before.
+
+The test for the DIRECTORY existing rather than for a `.git` inside it is deliberate: a
+`.git` check is also false of a legitimate sidecar that has been configured and not yet
+initialised, which is a state the write path creates on purpose.
+
+## Repointing from one team's sidecar to another is REFUSED
+
+The same destruction with the path present. A fold is total per scope, so folding a
+different sidecar's (empty) copy of `bugs/<universe>` over the rows this store folded from
+the old one replaces them with nothing. Nothing migrates and nothing ever revisits them.
+
+**The identity is the sidecar's oldest ROOT COMMIT** (`sidecarLineage`), recorded in the
+store beside the path it was last seen at. Nothing else in reach works: the path moves, a
+remote URL is absent on a local-only sidecar, and a tip commit moves on every append. A
+root commit is created once by `ensureSidecar` and pushed on the first sync, so a
+**moved** sidecar, a **re-clone**, and one that has since taken an
+`--allow-unrelated-histories` merge all still contain it — `merge-base --is-ancestor`, not
+equality, because that merge adds a second root beside the first. Only a genuinely
+different repository fails. All three of those flows have a test, because a path check
+would break every one of them.
+
+Recorded on first sight, which grandfathers every existing store — and recorded again
+*after* a successful transport, which is the half that matters: `ensureSidecar` inits a
+repository but commits nothing, so a brand-new sidecar has no root commit to identify it
+until its first sync makes one. Recording only on the way in left the guard permanently one
+sync behind.
+
+Same two tiers as an absent sidecar: **reads decline to fold** (`wrongSidecar`, serving the
+rows already stored), **the transport refuses**.
+
+**`codemap sidecar adopt` is the way through**, and it exists because a refusal nobody can
+get past is what makes people delete their store. It migrates nothing, and the rows folded
+from the old sidecar **go** — an earlier draft of it claimed to keep them and could not,
+which would have been a comment making the code look correct while it did the opposite.
+What makes that survivable is that those rows are a **projection**: the events are still in
+the old sidecar, so pointing back at it and syncing folds them again. The result names the
+old path so the recovery is actionable, and a test performs the round trip rather than
+asserting it.
+
 ### Why not the alternatives
 
 **Rewriting history** (dropping the losing shard, rebasing the log) breaks the one

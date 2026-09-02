@@ -28,7 +28,7 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { appendFile, mkdir, open, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, readdir, stat, truncate, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { Actor } from "./schema.js";
 import { withSidecarLock } from "./lock.js";
@@ -206,13 +206,55 @@ async function endsCleanly(file: string): Promise<boolean> {
  * after `emit` has already handed back its id — and `git add -A` then ships the
  * glue to every teammate. In a batch only the first event is eaten, so it reads
  * as an intermittent lost write rather than as a damaged shard.
+ *
+ * `healTail` is that separator, and now also the repair: a partial write is removed
+ * rather than sealed into the middle of the file, where it is no longer
+ * distinguishable from corruption and blocks the scope.
  */
 export async function appendEvents(logRoot: string, scope: string, writer: string, events: LogEvent[]): Promise<void> {
   if (!events.length) return;
   const file = join(logRoot, shardFor(scope, writer));
   await mkdir(dirname(file), { recursive: true });
-  const lead = (await endsCleanly(file)) ? "" : "\n";
-  await appendFile(file, lead + events.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf8");
+  await appendFile(file, (await healTail(file)) + events.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf8");
+}
+
+/**
+ * Make a shard safe to append to, and answer with the separator still needed.
+ *
+ * A file not ending in a newline ends mid-line, and there are two of those with
+ * opposite handling:
+ *
+ * - **The line parses.** A whole event whose terminating newline was lost. It is
+ *   readable, every build has counted it, and truncating it would delete a real
+ *   event. Keep it and separate with `"\n"`.
+ * - **It does not.** A partial write, which no build has ever read. Left in place it
+ *   becomes a permanent MID-file unparseable line on the next append, which is
+ *   indistinguishable from corruption and now blocks the scope — so a laptop closing
+ *   at the wrong moment would wedge the team's log for ever. Truncating it loses
+ *   nothing that was ever a record.
+ *
+ * That asymmetry is why the check cannot be the cheap `endsCleanly` byte peek alone:
+ * it says the file ends mid-line, not whether what is there is worth keeping.
+ */
+async function healTail(file: string): Promise<string> {
+  if (await endsCleanly(file)) return "";
+  let text: string;
+  // Unreadable is not the same as torn: append with a separator, which is what this
+  // did before the repair existed, rather than truncating a file we cannot see.
+  try { text = await readFile(file, "utf8"); } catch { return "\n"; }
+  const cut = text.lastIndexOf("\n");
+  const tail = text.slice(cut + 1);
+  if (!tail.trim()) return "";
+  try { JSON.parse(tail); return "\n"; } catch { /* partial write */ }
+  // Only a truncated EVENT is dropped — the same test `splitShard` exempts by, so the
+  // repair and the reader cannot disagree about what a torn append looks like. Bytes
+  // that never began as one are damage, and destroying the evidence of whatever put
+  // them there is not this function's call to make.
+  if (!tail.trim().startsWith("{")) return "\n";
+  // `cut + 1` keeps the newline that ended the last GOOD line, and is 0 for a file
+  // whose single line is the partial one.
+  await truncate(file, Buffer.byteLength(text.slice(0, cut + 1), "utf8"));
+  return "";
 }
 
 /**
@@ -425,37 +467,106 @@ export function wellFormed(e: LogEvent): boolean {
  * Every event in one shard, skipping anything unparseable.
  *
  * A partial trailing line is EXPECTED, not exceptional: a process killed
- * mid-append leaves one, and so does a `merge=union` that stitched two sides. Each
- * line is self-contained, so the bad one is dropped and the rest stand. Failing the
- * whole read would mean a shared store that will not load because somebody closed a
- * laptop, which is strictly worse than losing the last event.
+ * mid-append leaves one. Each line is self-contained, so the bad one is dropped and
+ * the rest stand. Failing the whole read would mean a shared store that will not
+ * load because somebody closed a laptop, which is strictly worse than losing the
+ * last event.
+ *
+ * Every OTHER unparseable line is damage, and `readShardLines` counts it — see
+ * `ShardDamage`. Skipping those silently is what let a wholly-garbage shard read as
+ * an empty scope with `status: "complete"`, so a team's findings vanished and every
+ * surface said the queue was clear.
  */
 export async function readShard(file: string): Promise<LogEvent[]> {
-  return (await readShardLines(file)).map((l) => l.event);
+  return (await readShardLines(file)).events.map((l) => l.event);
 }
 
 /**
- * The same read, keeping each event's own bytes.
+ * One line of a shard that no build can read.
  *
- * Only `readScopeChecked` wants them, and only to answer one question: two lines
- * sharing an id are `merge=union` doing its job when they are the same bytes, and
- * two writers claiming one id when they are not. Comparing the PARSED objects
- * would need a canonical form nobody has agreed on; comparing the text is exact
- * for the case that matters, because an id is minted once and a writer never
- * rewrites a line it has appended.
+ * The line NUMBER rather than the bytes: a shard is append-only and never rewritten,
+ * so a line's position is stable, and it is what a repair needs. `sample` is a short
+ * prefix so a person can tell binary from a stitched line without opening the file.
  */
-async function readShardLines(file: string): Promise<{ event: LogEvent; line: string }[]> {
+export interface ShardDamage {
+  /** Path as the caller passed it — `collect` passes the scope-relative shard name. */
+  shard: string;
+  /** 1-based, counting every line including blank ones, so `sed -n 12p` finds it. */
+  line: number;
+  sample: string;
+}
+
+/** `path:line` — the evidence form a `corrupt-shard` diagnostic carries. */
+export const damageRef = (d: ShardDamage): string => `${d.shard}:${d.line}`;
+
+/**
+ * The same read, keeping each event's own bytes and what would not parse.
+ *
+ * The bytes are for `readScopeChecked`, and answer one question: two lines sharing
+ * an id are `merge=union` doing its job when they are the same bytes, and two
+ * writers claiming one id when they are not. Comparing the PARSED objects would
+ * need a canonical form nobody has agreed on; comparing the text is exact for the
+ * case that matters, because an id is minted once and a writer never rewrites a
+ * line it has appended.
+ *
+ * **The torn tail is exempt, and the exemption is narrow on purpose.** A partial
+ * write can only ever be the LAST line of a file that does not end in a newline —
+ * `appendEvents` writes whole lines terminated by one, so a file ending in `\n` has
+ * no incomplete line in it by construction, and one that does not has exactly one
+ * candidate. Anything else that fails to parse was fully written, and something
+ * other than a crash put it there.
+ *
+ * And it must LOOK like a truncated event: an opening brace, because every line this
+ * module writes is `JSON.stringify` of an object. Position alone is not enough — a
+ * shard whose single line is binary is entirely at the end of itself, which is exactly
+ * how a wholly-destroyed shard read as an empty one. The residue is a corruption that
+ * begins with `{`, lands in the last line, and has no newline after it; the cost of
+ * the other error is a scope that blocks over a crash, which is loud, honest (an
+ * event WAS lost) and healed by the next append.
+ *
+ * A line that parses but fails `wellFormed` is NOT damage: that is an event from a
+ * client this build does not understand, which the envelope check drops on purpose.
+ * Only bytes that are not JSON at all count here.
+ */
+async function readShardLines(
+  file: string, as = file,
+): Promise<{ events: { event: LogEvent; line: string }[]; damage: ShardDamage[] }> {
   let text: string;
-  try { text = await readFile(file, "utf8"); } catch { return []; }
-  const out: { event: LogEvent; line: string }[] = [];
-  for (const line of text.split("\n")) {
+  try { text = await readFile(file, "utf8"); } catch { return { events: [], damage: [] }; }
+  return splitShard(text, as);
+}
+
+/**
+ * The parse itself, on bytes rather than a path.
+ *
+ * Separate so the push and pull gates can validate a blob straight out of git — an
+ * inbound shard is checked BEFORE it reaches the working tree, so there is no file
+ * to read. One implementation, or the gate and the reader disagree about what a
+ * damaged shard is, which is the whole class of defect this fixes.
+ */
+export function splitShard(text: string, as: string): { events: { event: LogEvent; line: string }[]; damage: ShardDamage[] } {
+  const events: { event: LogEvent; line: string }[] = [];
+  const damage: ShardDamage[] = [];
+  const lines = text.split("\n");
+  // The index of the one line a torn write could have left, or -1. Two conditions in
+  // one expression: `split` puts the text after the final newline in the last element,
+  // so a file ending cleanly has "" there and nothing is exempt; and what is there must
+  // have BEGUN as an event, which is what stops a shard whose single line is binary
+  // exempting itself for being at its own end.
+  const last = lines[lines.length - 1]!.trim();
+  const torn = last.startsWith("{") ? lines.length - 1 : -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
     if (!line.trim()) continue;
     try {
       const e = JSON.parse(line) as LogEvent;
-      if (wellFormed(e)) out.push({ event: e, line: line.trim() });
-    } catch { /* torn or stitched line — see above */ }
+      if (wellFormed(e)) events.push({ event: e, line: line.trim() });
+    } catch {
+      if (i === torn) continue; // a crash mid-append — see above
+      damage.push({ shard: as, line: i + 1, sample: line.trim().slice(0, 80) });
+    }
   }
-  return out;
+  return { events, damage };
 }
 
 /**
@@ -483,8 +594,8 @@ export interface ScopeRead extends ScopeStatus { events: LogEvent[] }
  * What `blocked` forbids is presenting it as settled.
  */
 export async function readScopeChecked(logRoot: string, scope: string): Promise<ScopeRead> {
-  const { events, collisions } = await collect(logRoot, scope);
-  return { events, ...scopeStatus(events, collisions) };
+  const { events, collisions, damage } = await collect(logRoot, scope);
+  return { events, ...scopeStatus(events, collisions, damage) };
 }
 
 /**
@@ -523,15 +634,21 @@ export async function scopesOnDisk(logRoot: string): Promise<string[]> {
  * on every single write, under the lock, and only wants the causal heads — judging
  * the scope there would put a fork scan on the hot end of every append.
  */
-async function collect(logRoot: string, scope: string): Promise<{ events: LogEvent[]; collisions: string[] }> {
+async function collect(logRoot: string, scope: string): Promise<{ events: LogEvent[]; collisions: string[]; damage: ShardDamage[] }> {
   const dir = join(logRoot, scope);
   let names: string[];
-  try { names = await readdir(dir); } catch { return { events: [], collisions: [] }; }
+  try { names = await readdir(dir); } catch { return { events: [], collisions: [], damage: [] }; }
   const seen = new Map<string, string>();
   const collisions: string[] = [];
+  const damage: ShardDamage[] = [];
   const all: LogEvent[] = [];
   for (const n of names.filter((n) => n.endsWith(SHARD_EXT)).sort()) {
-    for (const { event, line } of await readShardLines(join(dir, n))) {
+    // Named `<scope>/<shard>`, not by absolute path: the evidence goes into a stored
+    // diagnostic and is compared against later readings of the same scope, and an
+    // absolute path differs between two clones of one sidecar.
+    const shard = await readShardLines(join(dir, n), `${scope}/${n}`);
+    damage.push(...shard.damage);
+    for (const { event, line } of shard.events) {
       const first = seen.get(event.id);
       if (first !== undefined) {
         // Same id, same bytes: `merge=union` stitching one line in twice. Same id,
@@ -543,12 +660,17 @@ async function collect(logRoot: string, scope: string): Promise<{ events: LogEve
       all.push(event);
     }
   }
-  return { events: sortEvents(all), collisions };
+  return { events: sortEvents(all), collisions, damage };
 }
 
 /** Why a scope may not be answered from. One diagnostic, not a taxonomy. */
 export interface ScopeDiagnostic {
-  reason: "protocol" | "duplicate-id" | "chain-cycle" | "fork";
+  /**
+   * `sidecar-missing` and `sidecar-mismatch` are the odd ones out and are raised by the
+   * MATERIALIZER, not by `scopeStatus`: they are facts about the configured path rather
+   * than about a scope's events, and there are no events to judge when they fire.
+   */
+  reason: "sidecar-missing" | "sidecar-mismatch" | "corrupt-shard" | "protocol" | "duplicate-id" | "chain-cycle" | "fork";
   /** One line a person can act on. */
   detail: string;
   /** The ids or writers the detail is about, so a repair does not have to search. */
@@ -615,11 +737,11 @@ export function detectForks(events: LogEvent[]): WriterFork[] {
 /**
  * Whether a scope may be answered from, and if not, the one thing to say.
  *
- * Precedence is fixed rather than by severity: an envelope this reader does not
- * understand makes every later judgement unreliable, a duplicated id makes the
- * event set itself ambiguous, and a fork is a claim ABOUT that set. Reporting the
- * outermost failure first is also what makes the diagnostic deterministic, which
- * a stored one has to be.
+ * Precedence is fixed rather than by severity: unreadable bytes mean the event set
+ * is not the one on disk, an envelope this reader does not understand makes every
+ * later judgement unreliable, a duplicated id makes the event set itself ambiguous,
+ * and a fork is a claim ABOUT that set. Reporting the outermost failure first is also
+ * what makes the diagnostic deterministic, which a stored one has to be.
  *
  * A ratchet or domain rejection is deliberately not here. The fold refuses
  * forbidden transitions ON PURPOSE, and counting one as a reason the scope is
@@ -683,7 +805,7 @@ function acknowledged(d: ScopeDiagnostic, events: LogEvent[]): boolean {
   });
 }
 
-export function scopeStatus(events: LogEvent[], duplicateIds: string[] = []): ScopeStatus {
+export function scopeStatus(events: LogEvent[], duplicateIds: string[] = [], damage: ShardDamage[] = []): ScopeStatus {
   /**
    * Blocked unless a person has acknowledged this exact evidence.
    *
@@ -694,6 +816,37 @@ export function scopeStatus(events: LogEvent[], duplicateIds: string[] = []): Sc
     acknowledged(diagnostic, events)
       ? { status: "complete", diagnostic, acknowledged: true }
       : { status: "blocked", diagnostic };
+  /**
+   * Before everything else, because it is the only failure about the BYTES.
+   *
+   * Every other diagnostic here is a claim about a set of events that was read; this
+   * one says the set is not the set that is on disk. A wholly-garbage shard read as an
+   * empty one and the scope answered `complete`, so a universe whose findings had been
+   * destroyed presented as a universe with no findings — the silent emptying this
+   * whole check exists to stop.
+   *
+   * **Not acknowledgeable, and it is the only one that is not.** An acknowledgement is
+   * a person saying they have seen evidence and it still stands; a fork and a duplicated
+   * id are genuine ambiguities somebody has to arbitrate and cannot repair. Bytes that
+   * are not JSON are neither — the repair is exact and local (delete the line; no build
+   * has ever read it, so nothing is lost), and a mute button here would restore exactly
+   * the silence being fixed.
+   */
+  if (damage.length) {
+    const first = damage[0]!;
+    return {
+      status: "blocked",
+      diagnostic: {
+        reason: "corrupt-shard",
+        detail: `${damage.length} line(s) in this scope's shards are not JSON and no build `
+          + `can read them — the events they held are gone, not merely unfolded. First at `
+          + `${damageRef(first)}: ${JSON.stringify(first.sample)}. A shard is append-only, so `
+          + `deleting the damaged line(s) in the sidecar and committing repairs it; nothing `
+          + `readable is lost, because nothing here was ever readable.`,
+        evidence: damage.slice(0, 5).map(damageRef),
+      },
+    };
+  }
   const ahead = events.filter((e) =>
     (e.sidecarProtocol ?? SIDECAR_PROTOCOL) > SIDECAR_PROTOCOL
     || (e.eventSchema ?? EVENT_SCHEMA) > EVENT_SCHEMA);

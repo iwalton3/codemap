@@ -28,7 +28,7 @@
  */
 
 import { createHash } from "node:crypto";
-import type { Actor, BugSeverity, BugWitness } from "./schema.js";
+import { ISO_DATE, type Actor, type BugSeverity, type BugWitness } from "./schema.js";
 import { isAgentActor, isIndependent, isErrorIndependent, reviewerKey } from "./identity.js";
 import { emitEvent, mintId, readScope, causality, type LogEvent } from "./eventlog.js";
 import { applyRevision, newContestState, type Contested } from "./contest.js";
@@ -106,6 +106,50 @@ export interface SharedBug {
 
   revisions: { at: string; by: Actor; was: Record<string, unknown> }[];
   contested?: Contested[];
+
+  /**
+   * The bug is real, it is not being fixed now, and it WILL come back.
+   *
+   * The third exit a finding got, one record kind over — and it is needed here for the
+   * same measured reason. A bug nobody will reach this quarter has two options today:
+   * stay in the open queue and dilute it, or close as won't-fix, which asserts a
+   * decision nobody made. The first is what actually happens, and it is how a bug queue
+   * stops being read.
+   *
+   * **It is never deleted and never silenced from search.** That is the one hard
+   * constraint and it is where this differs from the finding backlog, which can afford
+   * `sleeping` to be quiet: a finding is a claim about one pull request, and a bug is a
+   * standing defect record. A defect you cannot find is worse than one nobody has
+   * prioritised. So a backlogged bug leaves the WORKING queue and stays in `search`, in
+   * `bugs`, and on every surface that lists one — carrying a visible deadline so it
+   * never reads as an ordinary open bug nobody is doing.
+   *
+   * `until` is required and the FOLD enforces it, the `acknowledgements` rule verbatim:
+   * a linked ticket may be evidence but never the release condition, because one closed
+   * as won't-do, moved or deleted leaves the record asleep permanently and silently.
+   * Every deferral in the measured finding data was in exactly that state.
+   *
+   * `witnesses` is snapshotted HERE rather than read off the bug's citations, and this
+   * is the subtlety the finding side got wrong first: backlogging follows an
+   * investigation, so a condition keyed on the filing witnesses fires the moment it is
+   * set, on code that moved days ago. These are the code as it stood when somebody said
+   * "not now", so drift against THEM means somebody is editing the exact code that
+   * decision was about.
+   *
+   * Principal-granted at both ends, like `debt`. With a backlog this size, deferral is
+   * the cheapest way to empty a queue.
+   */
+  backlogged?: {
+    /** ISO date. The release condition, and a required one. */
+    until: string;
+    /** The cited code as it stood when this was granted — drift against THESE wakes it. */
+    witnesses?: BugWitness[];
+    /** Why it is not being fixed now. A record of a decision, not a mute button. */
+    reason: string;
+    by: Actor; at: string;
+    /** Evidence — a Jira issue. Never the release condition. */
+    ref?: ExternalRef;
+  };
 
   /**
    * Which sidecar scope this machine's copy came from — set by the STORE, never by the
@@ -291,6 +335,49 @@ export function foldBugs(events: LogEvent[]): Map<string, SharedBug> {
         break;
       }
 
+      case "bug.backlogged": {
+        // BOTH ENDS. `backlogBug` refuses an agent with a sentence; this drops the event,
+        // because a teammate's clone applies the log without ever seeing that check and a
+        // guard in one end binds one machine. Twelve defects of exactly this shape are on
+        // record across this subsystem.
+        if (isAgentActor(e.actor)) break;
+        const until = str(d, "until"), reason = str(d, "reason");
+        // No deadline, no backlogging. A record whose whole point is that it comes back
+        // and which has no date is the permanent silent silencing `acknowledgements`
+        // refuses for the same reason.
+        if (!until || !ISO_DATE.test(until) || !reason) break;
+        // Only the bug's OWN live citations may witness it. Without this a caller could
+        // point the release condition at unrelated code: the record would keep saying it
+        // is about these anchors while every drift answer came from others, so edits to
+        // the actual defect would never wake it and edits elsewhere would. The fold can
+        // check this where the finding fold could not, because a bug's citations are
+        // fold state rather than store state.
+        const cited = new Set(citedAnchors(b));
+        const witnesses = anchorsIn(d).filter((w) => cited.has(w.anchorId));
+        b.backlogged = {
+          until, reason, by: e.actor, at: e.at,
+          // Dropping only the WITNESSES if they do not bind: the deadline is the
+          // guaranteed release condition, and a decision somebody made should not be
+          // lost over a bad optional field. Date-only is a supported state — it is
+          // exactly what an acknowledgement has.
+          ...(witnesses.length ? { witnesses } : {}),
+          ...(str(d, "system") ? { ref: { system: str(d, "system")!, key: str(d, "key"), url: str(d, "url"), at: e.at, by: e.actor } } : {}),
+        };
+        break;
+      }
+
+      case "bug.backlogReleased":
+        // Also principal-only, and for the symmetrical reason: an agent that could end one
+        // could bring back every one, which is the same queue-clearing move from the other
+        // side. Deleting the field rather than dating it — it is back, and the events
+        // remain the history.
+        if (isAgentActor(e.actor)) break;
+        // The writer refuses an empty reason; so does the fold, or a buggy or older client
+        // could un-backlog a bug with no record of why and every clone would apply it.
+        if (!str(d, "reason")) break;
+        delete b.backlogged;
+        break;
+
       case "bug.commented": {
         const body = str(d, "body");
         if (!body) break;
@@ -432,6 +519,27 @@ export const anchorBug = (logRoot: string, universe: string, actor: Actor, id: s
 
 export const reviseBug = (logRoot: string, universe: string, actor: Actor, id: string, now: Record<string, unknown>, was: Record<string, unknown> = {}) =>
   emit(logRoot, universe, actor, id, "bug.revised", { now, was });
+
+/**
+ * Backlog a bug: real, not now, and it comes back.
+ *
+ * `until` and `reason` are both required and the FOLD checks them too — an event missing
+ * either is a deferral that never wakes, which is the failure this record exists to
+ * prevent. `witnesses` is the cited code as it stands NOW, not the hashes the bug was
+ * filed with; see `SharedBug.backlogged`.
+ */
+export const backlogBugEvent = (
+  logRoot: string, universe: string, actor: Actor, id: string,
+  input: { until: string; reason: string; witnesses?: BugWitness[]; ref?: { system: string; key?: string; url?: string } },
+) => emit(logRoot, universe, actor, id, "bug.backlogged", {
+  until: input.until, reason: input.reason,
+  ...(input.witnesses?.length ? { anchors: input.witnesses.map((w) => ({ ...w })) } : {}),
+  ...(input.ref ? { system: input.ref.system, ...(input.ref.key ? { key: input.ref.key } : {}), ...(input.ref.url ? { url: input.ref.url } : {}) } : {}),
+} as Data);
+
+/** Bring one back early — it returns to the working queue. A person's, as granting is. */
+export const releaseBugBacklogEvent = (logRoot: string, universe: string, actor: Actor, id: string, reason: string) =>
+  emit(logRoot, universe, actor, id, "bug.backlogReleased", { reason });
 
 /** Say where this is tracked outside codemap — a Jira ticket, a GitHub issue. */
 export const trackBug = (logRoot: string, universe: string, actor: Actor, id: string, ref: { system?: string; key?: string; url?: string }) =>

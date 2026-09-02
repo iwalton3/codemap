@@ -73,12 +73,22 @@ const MCP_REQUIRED = [
 /** And these must NOT be agent-reachable, for the reason in the note above. */
 const MCP_FORBIDDEN = [
   "sharedHeal", "publishLocalDocs", "publishLocalNotes", "publishLocalTriage", "publishLocalGraph",
+  // Which TEAM this store belongs to. An agent reaching this could move a store off its
+  // team in one call, and what it leaves behind — every row folded from the old sidecar,
+  // now unupdatable — is not something an agent should be able to decide for somebody.
+  // Deliberately NOT in `WEB_REQUIRED`: repointing is an edit to `.codemap/sidecar`, so
+  // whoever is doing it is already in a terminal.
+  "adoptSidecar",
   // With 97 undisposed findings on record, deferral is the cheapest way to empty a
   // queue — so it is granted the way `debt` is, and an agent that could reach these
   // could clear the whole backlog by declaring it all not-now. The FOLD drops an
   // agent's attempt too; this keeps the tool from existing to be attempted. Both the
   // shared op and the record dispatcher over it, or the gate moves with a refactor.
   "backlogFinding", "releaseFindingBacklog", "backlogOn", "releaseBacklogOn",
+  // And the bug half, which is the same act on a standing defect record. The dispatcher
+  // above already covers the reachable path; these are named so the gate survives a
+  // refactor that calls the bug ops directly.
+  "backlogBugOp", "releaseBugBacklogOp",
 ];
 
 test("the join and recover flows are reachable from the web, not just a terminal", () => {

@@ -72,7 +72,7 @@ export {
 export {
   reportBug, listBugs, bugDetail, updateBug, commentBug, trackBugExternally,
   corroborateBugOp, promoteBugOp, requestOnBugOp, resolveBugContestOp, unanchorBugOp,
-  publishBugs, acceptFinding,
+  publishBugs, acceptFinding, backlogBugOp, releaseBugBacklogOp,
 } from "./ops/bugs.js";
 
 export {
@@ -90,7 +90,7 @@ import {
   setLocalFindingPosted, relocateLocalFinding,
   backlogLocalFinding, releaseLocalFindingBacklog, rewitnessLocalFinding, assignLocalFinding,
 } from "./ops/annotations.js";
-import { commentBug, corroborateBugOp, requestOnBugOp, acceptFinding } from "./ops/bugs.js";
+import { commentBug, corroborateBugOp, requestOnBugOp, acceptFinding, backlogBugOp, releaseBugBacklogOp } from "./ops/bugs.js";
 import { readFinding, readBug, idsStartingWith, readSpec, readOperation } from "./store.js";
 import { isRemediation, type Ask, type FindingState, type Remediation, type Verdict } from "./shared-findings.js";
 export { reportDefect, type DefectContext, type DefectInput } from "./ops/defect.js";
@@ -453,20 +453,22 @@ export async function corroborateOn(root: string, input: { id: string; verdict: 
  * to the log answered `no finding … on pr <scope>` on every local row. The backlog these
  * verbs exist for is full of exactly those.
  *
- * A BUG is refused rather than backlogged. A bug is already the tracked thing — that is
- * what filing one is for — so backlogging it would be a second, quieter deferral queue
- * over the queue people actually read.
+ * A BUG backlogs too, and this used to refuse — on the argument that a bug is already
+ * the tracked record, so a second deferral queue over the queue people read would be
+ * quieter than the queue itself. The measurement is what changed it: a bug nobody will
+ * reach this quarter is not filed twice, it is left in the open queue diluting it, or
+ * closed as won't-fix, which asserts a decision nobody made. The first is what actually
+ * happens, and it is how a bug queue stops being read.
+ *
+ * What answers the old objection is that a backlogged BUG is never silenced — it leaves
+ * the working queue and stays in `search` and in `bugs`, carrying its deadline. See
+ * `SharedBug.backlogged`; a finding can afford `sleeping` to be quiet and a standing
+ * defect record cannot.
  */
 export async function backlogOn(root: string, input: { id: string; until: string; reason: string; ref?: { system: string; key?: string; url?: string } }) {
   const w = await whichRecord(root, input.id);
   if ("error" in w) return w;
-  if ("bug" in w) {
-    return {
-      error:
-        `${input.id} is a bug, not a finding. A bug is already the tracked record — the backlog is `
-        + `for findings that are real and are NOT worth one. Close it, or leave it in the queue.`,
-    };
-  }
+  if ("bug" in w) return backlogBugOp(root, input.id, { until: input.until, reason: input.reason, ref: input.ref });
   if ("proposal" in w) return { error: `${input.id} is a ${w.proposal}, which is disposed of by ratification or withdrawal, not backlogged` };
   const shared = await import("./ops-shared.js");
   const guard = shared.checkBacklogInput(input);
@@ -483,11 +485,12 @@ export async function backlogOn(root: string, input: { id: string; until: string
   return shared.backlogFinding(root, w.finding.pr, input.id, { until, reason, ref: input.ref });
 }
 
-/** Bring one back, whichever store owns it. A person's, exactly as backlogging is. */
+/** Bring one back, whichever record and whichever store owns it. A person's, as granting is. */
 export async function releaseBacklogOn(root: string, id: string, reason: string) {
   const w = await whichRecord(root, id);
   if ("error" in w) return w;
-  if (!("finding" in w)) return { error: `${id} is not a finding` };
+  if ("bug" in w) return releaseBugBacklogOp(root, id, reason);
+  if (!("finding" in w)) return { error: `${id} is not a finding or a bug` };
   if (!reason?.trim()) return { error: "say why it is coming back — it is the other half of the record" };
   if (!w.finding.shared) return releaseLocalFindingBacklog(root, id, reason.trim());
   const shared = await import("./ops-shared.js");

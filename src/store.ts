@@ -56,6 +56,67 @@ function setMeta(d: DatabaseSync, key: string, val: unknown): void {
     .run(key, JSON.stringify(val));
 }
 
+/**
+ * WHICH sidecar this store has been folding from — its oldest root commit.
+ *
+ * The key lives here, with the accessors, because both the read path (`materialize.ts`,
+ * which must not fold a stranger's log over this store's rows) and the transport
+ * (`ops-shared.ts`, which refuses the repoint) ask the same question, and two spellings
+ * of one key is how they would come to disagree.
+ */
+export const SIDECAR_LINEAGE = "sidecar_lineage";
+
+/**
+ * What is under that key: the identity, and where it was last seen.
+ *
+ * The PATH is not the identity — it moves — but it is the only thing that makes the
+ * recovery actionable, so it is carried beside it: "the rows came from the sidecar that
+ * was at X" is what somebody needs in order to point back at it.
+ */
+export interface SidecarMark { lineage: string; path: string }
+
+/**
+ * A small scalar this store remembers about ITSELF, rather than about the code.
+ *
+ * Through the seam like everything else: `ops-shared` records which sidecar this store
+ * has been folding from, and a raw `db()` query up there is how storage details start
+ * leaking into the layer that is supposed to be protected from them.
+ */
+export const readStoreMeta = <T>(root: string, key: string): T | undefined => getMeta<T>(db(root), key);
+export const writeStoreMeta = (root: string, key: string, val: unknown): void => setMeta(db(root), key, val);
+
+/**
+ * Has this store ever folded anything from a sidecar?
+ *
+ * `shared_scope` is the broadest answer — it has a row per scope this store has folded,
+ * whatever kind — which is what the question needs: "is there anything here that came
+ * from a sidecar, and would therefore be stranded". Broader than `foldedScopes`, which
+ * only looks at the two record kinds a person loses.
+ */
+export function hasFoldedFromSidecar(root: string): boolean {
+  try {
+    return ((db(root).prepare("SELECT COUNT(*) AS n FROM shared_scope").get() as { n: number }).n) > 0;
+  } catch { return false; }   // no table yet — nothing has ever been folded here
+}
+
+/**
+ * Every sidecar scope the canonical tables hold rows from.
+ *
+ * `source_scope` says where the fold read a row, so this is the set of scopes this store
+ * has ever folded — and comparing it against what is on disk is how a repoint is
+ * measured. Findings and bugs only: those are the kinds a person loses when the answer
+ * is wrong, and they are enough to say whether anything is at stake.
+ */
+export function foldedScopes(root: string): string[] {
+  try {
+    const rows = db(root).prepare(
+      "SELECT DISTINCT source_scope AS s FROM findings WHERE source_scope IS NOT NULL "
+      + "UNION SELECT DISTINCT source_scope FROM bugs WHERE source_scope IS NOT NULL",
+    ).all() as { s: string }[];
+    return rows.map((r) => r.s).sort();
+  } catch { return []; }
+}
+
 // --- anchor row <-> object mapping -------------------------------------------
 
 interface AnchorRow {
