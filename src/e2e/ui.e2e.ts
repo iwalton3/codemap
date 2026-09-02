@@ -55,8 +55,9 @@ describe("web UI", { skip: puppeteer ? false : "puppeteer not resolvable (set CO
    * The hard constraint, checked where a reader would actually meet it. Three things a
    * unit test cannot see: that the chip and the list it opens agree, that the marker
    * renders on the row rather than only existing in the payload, and that the search
-   * page draws its new finding and bug hits at all — a template binding this app gets
-   * wrong renders a blank page and logs nothing, which is the failure mode.
+   * page draws its new BUG hits at all — a template binding this app gets wrong renders
+   * a blank page and logs nothing, which is the failure mode. Findings are the other
+   * new hit kind and a separate renderer; the test below covers those.
    */
   test("a backlogged bug leaves the queue, keeps its marker, and is still searchable", async () => {
     const ops = await import("../ops.js");
@@ -105,6 +106,85 @@ describe("web UI", { skip: puppeteer ? false : "puppeteer not resolvable (set CO
     const found = await show(`/#/u/${fixture.universe}/search/?q=settlement`);
     assert.match(found, /settlement double posts/, "never silenced from search");
     assert.match(found, /backlogged until 2099-01-31/);
+    assert.deepEqual(seen.errors, [], "a blank page here logs nothing — that is the failure mode");
+    await page.close();
+  });
+
+  /**
+   * The other new hit kind, and it is a different renderer from the bug row.
+   *
+   * `findingHit` is its own method with its own trap, recorded in its own comment: `.sym`
+   * is a three-column grid, so a fourth child wraps onto an implicit row. That is a
+   * layout defect only a browser can see, and nothing was looking — findings in search
+   * had unit coverage of the ops layer and no browser coverage at all, while the test
+   * above claimed in its comment to cover them.
+   *
+   * The description/narrative inversion is checked HERE rather than only in the unit
+   * test, because it is a claim about what a reader's eye lands on: `comment` is the
+   * defect and `text` is the running triage narrative, and a hit that led with `text`
+   * would answer "what is the defect" with the audit trail of what people did about it.
+   */
+  test("a finding is found by what it says, keeps its marker, and stays on one row", async () => {
+    const { writeLocalFinding } = await import("../store.js");
+    const ops = await import("../ops.js");
+    const { readAnchorStore } = await import("../store.js");
+    const anchorId = (await readAnchorStore(fixture.root)).anchors[0]!.id;
+
+    await writeLocalFinding(fixture.root, {
+      id: "f_e2e_1", target: { kind: "anchor", id: anchorId },
+      comment: "reconciliation drops the trailing cent",
+      text: "RE-TRIAGE 2026-08-21 — verified at head b24dc21e, still reproduces",
+      author: { principal: "izzie@x.com" }, createdAt: "2026-08-01T00:00:00Z",
+      state: "created", corroboration: [], thread: [], revisions: [],
+    } as any, 41);
+    const r = await ops.backlogOn(fixture.root, {
+      id: "f_e2e_1", until: "2099-03-14", reason: "the rewrite lands next quarter",
+    });
+    assert.ok(!("error" in (r as object)), `backlogging the finding failed: ${(r as any).error}`);
+
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1400, height: 1000 });
+    const seen = watchErrors(page);
+    await page.goto(`${server.url}/#/u/${fixture.universe}/search/?q=trailing%20cent`,
+      { waitUntil: "networkidle0", timeout: 20_000 });
+    // Hash-only navigation is same-document — reload, or this asserts against the view
+    // that was already on screen. See the note on `show` above.
+    await page.reload({ waitUntil: "networkidle0", timeout: 20_000 });
+    await page.waitForSelector(".detail", { timeout: 10_000 });
+
+    const text = await page.evaluate(() => document.body.innerText);
+    assert.match(text, /findings/i, "the section renders at all — `.sec` is uppercased by CSS, and innerText returns it transformed");
+    assert.match(text, /reconciliation drops the trailing cent/, "and leads with the DESCRIPTION");
+    assert.doesNotMatch(text, /RE-TRIAGE/, "never with the triage narrative");
+    assert.match(text, /backlogged until 2099-03-14/, "the marker travels onto the hit");
+
+    /**
+     * The three-column grid, which is the whole reason the marker goes INSIDE the middle
+     * cell rather than beside it. A fourth child lands on an implicit second row.
+     *
+     * NOT an equality check on `top`: `align-items: center` centres each cell, and the
+     * middle one is taller because the description wraps above the pill — so three cells
+     * on one row legitimately differ by a few pixels. What "one row" means here is that
+     * the cells run left to right and their vertical extents all OVERLAP; a wrapped
+     * fourth child sits entirely below the others and shares no band with them.
+     */
+    const row = await page.evaluate(() => {
+      const a = [...document.querySelectorAll(".detail .rows a.sym")]
+        .find((el) => el.textContent?.includes("trailing cent"));
+      if (!a) return null;
+      const rects = [...a.children].map((k) => k.getBoundingClientRect());
+      return {
+        count: rects.length,
+        lefts: rects.map((r) => Math.round(r.left)),
+        band: { top: Math.max(...rects.map((r) => r.top)), bottom: Math.min(...rects.map((r) => r.bottom)) },
+      };
+    });
+    assert.ok(row, "the finding hit is an `a.sym` row");
+    assert.equal(row!.count, 3, "three children — a fourth would wrap onto an implicit row");
+    assert.deepEqual(row!.lefts, [...row!.lefts].sort((a, b) => a - b), "the cells run left to right");
+    assert.equal(new Set(row!.lefts).size, 3, "in three distinct columns");
+    assert.ok(row!.band.bottom > row!.band.top, "and every cell overlaps the same horizontal band");
+
     assert.deepEqual(seen.errors, [], "a blank page here logs nothing — that is the failure mode");
     await page.close();
   });
