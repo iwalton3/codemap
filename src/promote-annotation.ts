@@ -23,7 +23,7 @@
  */
 
 import { readAnnotations, writeAnnotations, readFinding, writeLocalFinding } from "./store.js";
-import { resolveSidecar, sidecarForWrite } from "./sidecar-config.js";
+import { resolveSidecar, sidecarWriteDoor } from "./sidecar-config.js";
 import { toFinding } from "./findings-migrate.js";
 
 export async function promoteAnnotation(
@@ -49,7 +49,8 @@ export async function promoteAnnotation(
   }
 
   const { finding, stamped } = toFinding(a, new Date().toISOString());
-  const cfg = sidecarForWrite(root);
+  const door = sidecarWriteDoor(root);
+  const cfg = door.cfg;
   if (cfg) {
     // Through the LOG, so the team's copy is the same record rather than a second one.
     // `filedBy`/`filedAt` carry the original attribution: this is a republication of
@@ -100,5 +101,9 @@ export async function promoteAnnotation(
     ok: true, id, pr: prKey, was: a.kind ?? "note",
     ...(stamped ? { stampedNow: true, note: "it recorded no creation time anywhere, so this promotion's is the one it has" } : {}),
     shared: !!cfg,
+    // The promotion still happened, locally. What the author asked for and did not get
+    // is the team's copy, and only this says so — `shared: false` alone reads as "no
+    // sidecar here", which is the state this is not.
+    ...(door.error ? { shareError: door.error } : {}),
   };
 }

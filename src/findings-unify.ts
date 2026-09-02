@@ -36,7 +36,7 @@
 
 import type { Actor } from "./schema.js";
 import { requireActor, reviewerKey } from "./identity.js";
-import { resolveSidecar, sidecarForWrite, scopeFor, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
+import { resolveSidecar, sidecarForWrite, sidecarWriteDoor, scopeFor, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
 import { ensureMaterialized } from "./materialize.js";
 import { findingsProjection } from "./shared-projections.js";
 import { readFindings, findingsUnifiedAt, markFindingsUnified } from "./store.js";
@@ -141,8 +141,12 @@ function unreplayable(f: SharedFinding, actor: Actor): string | null {
 }
 
 export async function unifyFindings(root: string, opts: { dryRun?: boolean } = {}): Promise<UnifyResult | { error: string }> {
-  const cfg = sidecarForWrite(root);
-  if (!cfg) return { error: "no sidecar is configured for this universe — there is nothing to unify with" };
+  const door = sidecarWriteDoor(root);
+  // Not the same sentence for the two nulls: "nothing to unify with" is false when a
+  // sidecar IS configured and merely unusable, and it sends the reader looking for a
+  // sidecar to set up instead of at the path that is wrong.
+  if (!door.cfg) return { error: door.error ?? "no sidecar is configured for this universe — there is nothing to unify with" };
+  const cfg = door.cfg;
   const actor = requireActor(root);
   if ("error" in actor) return actor;
 

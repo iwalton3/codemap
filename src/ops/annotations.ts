@@ -335,8 +335,15 @@ export async function annotate(
     id: ann.id, targetKind: input.targetKind, targetId,
     kind: kind ?? "note", text: input.text,
     severity, category, line,
-  }).catch(() => ({ shared: false }));
-  return { ok: true, id: ann.id, target: ann.target, ...(mirrored.shared ? { shared: true } : {}) };
+  }).catch(() => ({ shared: false } as { shared: boolean; error?: string }));
+  return {
+    ok: true, id: ann.id, target: ann.target,
+    ...(mirrored.shared ? { shared: true } : {}),
+    // `annotate` is the verb this whole guard was built around: it used to answer
+    // `shared: true` into a stranger's log. It no longer writes there — but the absence
+    // of `shared` reads as "this store works alone", which is the one thing it is not.
+    ...(mirrored.error ? { shareError: mirrored.error } : {}),
+  };
 }
 
 /**

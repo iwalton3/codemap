@@ -14,7 +14,7 @@
  * for the read surfaces a front end needs.
  */
 
-import { resolveSidecar, sidecarForWrite, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
+import { resolveSidecar, sidecarWriteDoor, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
 import { requireActor, isAgentActor } from "./identity.js";
 import { ensureSidecar } from "./sidecar.js";
 import { readCached } from "./materialize.js";
@@ -54,8 +54,9 @@ export async function materializeTriage(root: string, cfg: SidecarConfig): Promi
  * at `setTriage`'s call site for why a local row here fabricates causality later.
  */
 export async function mirrorTriage(root: string, a: TriageAssertion): Promise<{ shared: boolean; configured: boolean; folded?: boolean; error?: string }> {
-  const cfg = sidecarForWrite(root);
-  if (!cfg) return { shared: false, configured: false };
+  const door = sidecarWriteDoor(root);
+  if (!door.cfg) return { shared: false, configured: door.configured, ...(door.error ? { error: door.error } : {}) };
+  const cfg = door.cfg;
   const actor = requireActor(root);
   if ("error" in actor) return { shared: false, configured: true, error: actor.error };
   await ensureSidecar(cfg.path, actor);
@@ -66,8 +67,9 @@ export async function mirrorTriage(root: string, a: TriageAssertion): Promise<{ 
 /** Many assertions, one append and ONE fold. See `assertTriageBatch`. */
 export async function mirrorTriageBatch(root: string, items: TriageAssertion[]): Promise<{ shared: boolean; configured: boolean; folded?: boolean; error?: string }> {
   if (!items.length) return { shared: false, configured: !!resolveSidecar(root) };
-  const cfg = sidecarForWrite(root);
-  if (!cfg) return { shared: false, configured: false };
+  const door = sidecarWriteDoor(root);
+  if (!door.cfg) return { shared: false, configured: door.configured, ...(door.error ? { error: door.error } : {}) };
+  const cfg = door.cfg;
   const actor = requireActor(root);
   if ("error" in actor) return { shared: false, configured: true, error: actor.error };
   await ensureSidecar(cfg.path, actor);
@@ -84,8 +86,9 @@ export async function mirrorTriageBatch(root: string, items: TriageAssertion[]):
 export async function mirrorTriageClear(
   root: string, t: { targetKind: "node" | "anchor"; targetId: string },
 ): Promise<{ shared: boolean; configured: boolean; folded?: boolean; error?: string }> {
-  const cfg = sidecarForWrite(root);
-  if (!cfg) return { shared: false, configured: false };
+  const door = sidecarWriteDoor(root);
+  if (!door.cfg) return { shared: false, configured: door.configured, ...(door.error ? { error: door.error } : {}) };
+  const cfg = door.cfg;
   const actor = requireActor(root);
   if ("error" in actor) return { shared: false, configured: true, error: actor.error };
   if (isAgentActor(actor)) return { shared: false, configured: true, error: "clearing stakes is a person's call — an agent may only raise" };

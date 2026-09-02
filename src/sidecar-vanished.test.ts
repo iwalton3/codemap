@@ -259,6 +259,85 @@ test("a write refuses too — an ok with an id for a record in no table is the w
   } finally { r.cleanup(); discard(other); }
 });
 
+/**
+ * The quiet doors, and why they are the ones worth a test.
+ *
+ * `sidecarForWrite` answers null for BOTH "no sidecar" and "the wrong sidecar", and every
+ * consumer of `Shared` reports a failed publish by asking `configured && !shared`. So the
+ * collapse routed a bad binding around the branch that exists to report it: `setTriage`
+ * returned `ok: true` three lines under a comment reading "failing loudly is the honest
+ * answer", and `annotate` — the verb the guard was built around — answered a bare `ok`.
+ * Nothing was written anywhere wrong, which is exactly why it needed a test rather than
+ * a stack trace.
+ */
+test("a configured sidecar that may not be written to is REPORTED, not read as no sidecar", async () => {
+  const r = await teamed();
+  try {
+    assert.equal((await sharedSync(r.root) as { error?: string }).error, undefined);
+    const { readAnchorStore } = await import("./store.js");
+    const anchorId = (await readAnchorStore(r.root)).anchors[0]!.id;
+    r.point(r.side + "-typo");
+
+    const ann = await ops.annotate(r.root, {
+      targetKind: "anchor", targetId: anchorId, kind: "note", text: "the team should see this",
+    } as any) as any;
+    assert.equal(ann.ok, true, "the local write still stands — it always did");
+    assert.equal(ann.shared, undefined);
+    assert.match(ann.shareError ?? "", /nowhere to write/, "and the author is told the team did not get it");
+
+    const tri = await ops.setTriage(r.root, {
+      targetKind: "anchor", targetId: anchorId, importance: 3, complexity: 2, likely: true, source: "human",
+    } as any) as any;
+    assert.equal(tri.ok, false, "triage fails loudly, which is what its own comment claims it does");
+    assert.match(tri.reason ?? "", /nowhere to write/);
+
+    // The read guard over the standard fails CLOSED on the same condition — it returned
+    // `undefined` (no warning at all) while the rows were being answered as the team's.
+    const { standardScopeWarning } = await import("./standard-publish.js");
+    const scope = await standardScopeWarning(r.root) as any;
+    assert.equal(scope?.status, "blocked");
+    assert.equal(scope?.diagnostic?.reason, "sidecar-missing");
+
+    // Mutation check: pointed back, every one of them goes quiet again. Without this the
+    // three assertions above pass against a build that refuses unconditionally.
+    r.point(r.side);
+    const ok = await ops.annotate(r.root, {
+      targetKind: "anchor", targetId: anchorId, kind: "note", text: "healthy",
+    } as any) as any;
+    assert.equal(ok.shared, true);
+    assert.equal(ok.shareError, undefined);
+    assert.equal((await ops.setTriage(r.root, {
+      targetKind: "anchor", targetId: anchorId, importance: 3, complexity: 2, likely: true, source: "human",
+    } as any) as any).ok, true);
+    assert.equal(await standardScopeWarning(r.root), undefined);
+  } finally { r.cleanup(); }
+});
+
+/** The other half of the binding refusal: a REAL sidecar, belonging to somebody else. */
+test("and the same is true of a stranger's sidecar, which reports the mismatch", async () => {
+  const r = await teamed();
+  const other = mkdtempSync(join(tmpdir(), "codemap-van-quiet-"));
+  try {
+    assert.equal((await sharedSync(r.root) as { error?: string }).error, undefined);
+    const { ensureSidecar, sync: sidecarSync } = await import("./sidecar.js");
+    await ensureSidecar(other, { principal: "dana@x.com" });
+    await sidecarSync(other, { principal: "dana@x.com" }, "dana's team");
+    r.point(other);
+
+    const { readAnchorStore } = await import("./store.js");
+    const anchorId = (await readAnchorStore(r.root)).anchors[0]!.id;
+    const ann = await ops.annotate(r.root, {
+      targetKind: "anchor", targetId: anchorId, kind: "note", text: "whose team?",
+    } as any) as any;
+    assert.match(ann.shareError ?? "", /different sidecar/);
+
+    const { standardScopeWarning } = await import("./standard-publish.js");
+    const scope = await standardScopeWarning(r.root) as any;
+    assert.equal(scope?.diagnostic?.reason, "sidecar-mismatch");
+    assert.equal(existsSync(join(other, "notes")), false, "and nothing reached the stranger");
+  } finally { r.cleanup(); discard(other); }
+});
+
 test("and a write refuses when the sidecar is simply not there", async () => {
   const r = await teamed();
   try {

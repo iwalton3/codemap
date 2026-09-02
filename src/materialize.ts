@@ -366,7 +366,7 @@ export interface Cached<T> extends ScopeStatus { value: T }
  *
  * `isSameSidecar` is ancestry, so a sidecar that moved, was re-cloned, or has since merged
  * the team's unrelated history all pass. Only a genuinely different repository fails, and
- * `ops-shared`'s `checkSidecarIdentity` refuses the transport for the same reason with a
+ * `checkSidecarBinding` refuses the transport and every write for the same reason, with a
  * sentence about what to do; this half just declines to fold.
  *
  * Nothing recorded means nothing to disagree with — every store predating this is in that

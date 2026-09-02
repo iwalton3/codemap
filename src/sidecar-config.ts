@@ -182,6 +182,17 @@ export function inUniverse(scope: string, universe: string): boolean {
 }
 
 /**
+ * Why a binding was refused, in `ScopeDiagnostic`'s own vocabulary — those two reasons
+ * exist for this and are raised by the materializer for the read half of the same fact,
+ * so the write half naming them differently would give one condition two names.
+ * Spelled out rather than imported to keep this module off `eventlog.ts`.
+ */
+export interface BindingRefusal {
+  reason: "sidecar-missing" | "sidecar-mismatch";
+  error: string;
+}
+
+/**
  * May this store bind to the sidecar it is configured with — for a WRITE?
  *
  * The reads have their own halves (`logRootMissing` / `wrongSidecar` in `materialize.ts`,
@@ -195,12 +206,13 @@ export function inUniverse(scope: string, universe: string): boolean {
  * Same two conditions as the transport, in the same order and for the same reasons:
  * an absent path this store has used before, then a path whose history is not the one
  * this store's rows came from. Recorded on first sight, which grandfathers every
- * existing store — see `checkSidecarIdentity`, which this is the write-side twin of.
+ * existing store — `materialize.ts`'s `wrongSidecar` is the read-side twin, which declines
+ * to fold rather than refusing.
  */
-export function checkSidecarBinding(root: string, cfg: SidecarConfig): { error: string } | null {
+export function checkSidecarBinding(root: string, cfg: SidecarConfig): BindingRefusal | null {
   if (!existsSync(cfg.path)) {
     if (!hasFoldedFromSidecar(root)) return null;   // a first sync legitimately creates it
-    return { error:
+    return { reason: "sidecar-missing", error:
       `the sidecar this store has been using is not at ${cfg.path}, so there is nowhere to write. `
       + `Writing would create a NEW, empty sidecar there and put you on a team of one, silently. `
       + `Check .codemap/sidecar for a typo, mount the drive, or clone the sidecar to that path — `
@@ -213,7 +225,7 @@ export function checkSidecarBinding(root: string, cfg: SidecarConfig): { error: 
     return null;
   }
   if (here && isSameSidecar(cfg.path, mark.lineage)) return null;
-  return { error:
+  return { reason: "sidecar-mismatch", error:
     `${cfg.path} is a different sidecar from the one this store has been using `
     + `(${mark.lineage.slice(0, 12)}, last seen at ${mark.path}). Refusing to write: the event would `
     + `land in that sidecar's log while this store's rows still describe the old one, so it would be `
@@ -237,9 +249,46 @@ export function checkSidecarBinding(root: string, cfg: SidecarConfig): { error: 
  * sidecar configured" — they report `shared: false` and the local write stands. The
  * person is told by the next thing that speaks: a bug, a sync or a status, all of which
  * refuse with the reason.
+ *
+ * Use `sidecarWriteDoor` instead wherever the caller has somewhere to PUT the reason —
+ * this one collapses "no sidecar" and "the wrong sidecar" into the same null, and the
+ * consumers of `Shared` report a failure by asking `configured && !shared`, so the
+ * collapse routes the failure around the branch that exists to report it.
  */
 export function sidecarForWrite(root: string): SidecarConfig | null {
+  return sidecarWriteDoor(root).cfg;
+}
+
+/** What `sidecarWriteDoor` answers: the sidecar, or why there is not one to write to. */
+export interface WriteDoor {
+  /** The sidecar a write may use, or null when there is none it may use. */
+  cfg: SidecarConfig | null;
+  /** Is a sidecar configured at all — including one that may not be written to. */
+  configured: boolean;
+  /** Why the write may not proceed. Only ever set when `configured` and `cfg` is null. */
+  error?: string;
+  /** The refusal's kind, for a caller that reports a `ScopeDiagnostic` rather than a string. */
+  reason?: BindingRefusal["reason"];
+}
+
+/**
+ * The same door as `sidecarForWrite`, with the reason kept.
+ *
+ * `configured` answers "is a sidecar set up for this universe", NOT "may we write to it"
+ * — a store pointed at a stranger's sidecar is configured and unusable, and reporting
+ * `configured: false` there is a positive false statement rather than a degradation.
+ * That distinction is the whole point: `triage.ts`, `ops/docs.ts`, `standard-publish.ts`
+ * and `ops-shared.ts` each report a failed publish by asking `configured && !shared`, so
+ * a bad binding reported as unconfigured is a write whose author is never told it did
+ * not reach the team. `setTriage` returned `ok: true` three lines under a comment saying
+ * it fails loudly.
+ *
+ * Both halves go through `checkSidecarBinding`, so there is still exactly one door and
+ * `sidecarForWrite` cannot drift from it.
+ */
+export function sidecarWriteDoor(root: string): WriteDoor {
   const cfg = resolveSidecar(root);
-  if (!cfg) return null;
-  return checkSidecarBinding(root, cfg) ? null : cfg;
+  if (!cfg) return { cfg: null, configured: false };
+  const bad = checkSidecarBinding(root, cfg);
+  return bad ? { cfg: null, configured: true, error: bad.error, reason: bad.reason } : { cfg, configured: true };
 }

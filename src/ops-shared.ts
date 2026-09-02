@@ -368,7 +368,7 @@ export async function sharedHeal(root: string): Promise<HealResult | { error: st
 /**
  * Move this store to a different sidecar, deliberately, and say what it costs.
  *
- * The escape hatch `checkSidecarIdentity` names, and it exists because a refusal nobody
+ * The escape hatch `checkSidecarBinding`'s refusal names, and it exists because one nobody
  * can get past is what makes people delete their store. It migrates nothing: the events
  * live in a repository this store no longer points at, and inventing rows for them here
  * would be exactly the false provenance the log exists to prevent.

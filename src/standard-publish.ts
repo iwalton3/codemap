@@ -22,7 +22,7 @@ import type {
   ProposalWitness, ScrubPolicy, Spec, VacuityCheck,
 } from "./schema.js";
 import type { ScopeDiagnostic } from "./eventlog.js";
-import { resolveSidecar, sidecarForWrite, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
+import { resolveSidecar, sidecarWriteDoor, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
 import { requireActor } from "./identity.js";
 import { ensureSidecar } from "./sidecar.js";
 import { publishProvisionalAudit } from "./provisional.js";
@@ -96,9 +96,16 @@ export type StandardScope =
  * nothing just checked.
  *
  * No sidecar is not a warning. Local rows with no log behind them ARE the whole story.
+ * A sidecar that is configured and may not be READ FROM is the opposite, and returning
+ * `undefined` for it failed this function open on the one condition it fails closed for
+ * everywhere else — the rows would be answered as the team's from a log nothing checked.
  */
 export async function standardScopeWarning(root: string): Promise<StandardScope | undefined> {
-  const cfg = sidecarForWrite(root);
+  const door = sidecarWriteDoor(root);
+  if (door.error && door.reason) {
+    return { status: "blocked", diagnostic: { reason: door.reason, detail: door.error, evidence: [] } };
+  }
+  const cfg = door.cfg;
   if (!cfg) return undefined;
   try {
     // `cachedStandard`, NOT a single-scope `ensureMaterialized`. This read used to fold
@@ -153,8 +160,11 @@ async function share(
   root: string, emit: (logRoot: string, scope: string, actor: Actor) => Promise<unknown>,
   scope?: string,
 ): Promise<Shared> {
-  const cfg = sidecarForWrite(root);
-  if (!cfg) return localOnly;
+  const door = sidecarWriteDoor(root);
+  if (!door.cfg) {
+    return door.error ? { shared: false, configured: true, error: door.error } : localOnly;
+  }
+  const cfg = door.cfg;
   const actor = requireActor(root);
   if ("error" in actor) return { shared: false, configured: true, error: actor.error };
   try {
