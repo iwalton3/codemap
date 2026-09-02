@@ -229,7 +229,9 @@ function commitLocal(root: string, message: string): CommitOutcome {
     return { error: `refusing to commit ${damaged.length} unreadable line(s) — no build can parse these, `
       + `so the events they should hold are already lost, and committing them would lose them for the `
       + `whole team:\n${damageDetail(damaged)}\n`
-      + `A shard is append-only and never rewritten, so deleting the damaged line(s) is the repair.` };
+      + `A shard is append-only and never rewritten, so deleting the damaged line(s) is the repair. `
+      + `Until then this clone does not sync in EITHER direction — a sync commits before it pulls, so `
+      + `nothing is sent and nothing is received. Everything else here is intact and unaffected.` };
   }
   g(root, ["add", "-A"]);
   const c = g(root, ["commit", "-q", "-m", message]);
@@ -270,23 +272,21 @@ export { withSidecarLock } from "./lock.js";
  * `ensureSidecar` locally and then pointing at one remote.
  *
  * Null means the sidecar has no commits yet — a brand-new one, which is not yet anything.
+ *
+ * **Not memoised**, for the same reason `isSameSidecar` is not, and the case that proved
+ * it is the one that matters most: an orphan checkout or a `commit-tree` replaces the
+ * history at the SAME path, and a cached root then outlives it. `adoptSidecar` — the only
+ * way out of a refused binding — recorded the stale lineage and left the store blocked
+ * until the process restarted. An escape hatch that needs a restart is not one. Every
+ * caller here is a transport or a write, so this is never on a hot read path.
  */
-const lineageCache = new Map<string, string>();
-
 export function sidecarLineage(root: string): string | null {
-  const hit = lineageCache.get(root);
-  if (hit) return hit;
   const r = g(root, ["rev-list", "--max-parents=0", "HEAD"]);
   if (!r.ok || !r.out) return null;
   // Sorted so the choice among several roots is deterministic; any of them identifies the
   // history, and `isSameSidecar` asks about ancestry rather than equality.
   const roots = r.out.split("\n").map((l) => l.trim()).filter(Boolean).sort();
-  const id = roots[0];
-  if (!id) return null;
-  // Only a POSITIVE answer is cached: a sidecar with no commits gains one on its first
-  // sync, and a cached null would outlive that for the process.
-  lineageCache.set(root, id);
-  return id;
+  return roots[0] ?? null;
 }
 
 /**

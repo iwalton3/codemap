@@ -12,7 +12,7 @@
  * the note writer, and never the op surface.
  */
 
-import { resolveSidecar, sidecarIdentity } from "./sidecar-config.js";
+import { resolveSidecar, sidecarForWrite, sidecarIdentity } from "./sidecar-config.js";
 import { requireActor } from "./identity.js";
 import { ensureSidecar } from "./sidecar.js";
 import { readCached } from "./materialize.js";
@@ -48,7 +48,7 @@ async function materializeNotes(
  * shared repo was misconfigured. A no-op when there is nothing to mirror to.
  */
 export async function mirrorNote(root: string, n: NewNote): Promise<{ shared: boolean }> {
-  const cfg = resolveSidecar(root);
+  const cfg = sidecarForWrite(root);
   if (!cfg) return { shared: false };
   const actor = requireActor(root);
   if ("error" in actor) return { shared: false };
@@ -73,7 +73,7 @@ export async function mirrorNote(root: string, n: NewNote): Promise<{ shared: bo
 export async function mirrorNoteResolved(
   root: string, targetId: string, id: string, resolved: boolean, reason?: string,
 ): Promise<{ shared: boolean }> {
-  const cfg = resolveSidecar(root);
+  const cfg = sidecarForWrite(root);
   if (!cfg) return { shared: false };
   const actor = requireActor(root);
   if ("error" in actor) return { shared: false };

@@ -220,3 +220,26 @@ export function checkSidecarBinding(root: string, cfg: SidecarConfig): { error: 
     + `in no table on any machine. Fix the path, or run \`codemap sidecar adopt\` if the move is `
     + `deliberate.` };
 }
+
+/**
+ * The sidecar a WRITE may use, or null.
+ *
+ * The single door every mirror goes through, and it exists because guarding two of them
+ * was worse than guarding none: `bind` and `bugLog` refused a bad binding while
+ * `mirrorNote`, `mirrorWiring`, `mirrorTriage*`, `standard-publish`, `provisional`,
+ * `promote-annotation` and `findings-unify` each resolved the config themselves and handed
+ * it straight to `ensureSidecar`. So `report_bug` refused and `annotate` — an ordinary
+ * daily verb — answered `shared: true` while its event went into a stranger's log, or, at
+ * a typo'd path, MADE a sidecar there: `.git`, `.gitattributes`, `manifests`, `notes`, and
+ * a team of one. The comment on `bind` claimed every write came through it. It did not.
+ *
+ * Null rather than an error, because that is what these callers already do with "no
+ * sidecar configured" — they report `shared: false` and the local write stands. The
+ * person is told by the next thing that speaks: a bug, a sync or a status, all of which
+ * refuse with the reason.
+ */
+export function sidecarForWrite(root: string): SidecarConfig | null {
+  const cfg = resolveSidecar(root);
+  if (!cfg) return null;
+  return checkSidecarBinding(root, cfg) ? null : cfg;
+}

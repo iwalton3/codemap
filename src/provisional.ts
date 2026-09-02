@@ -31,7 +31,7 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Audit } from "./schema.js";
 import { auditClaimStands } from "./schema.js";
-import { resolveSidecar, type SidecarConfig } from "./sidecar-config.js";
+import { resolveSidecar, checkSidecarBinding, type SidecarConfig } from "./sidecar-config.js";
 import { ensureSidecar } from "./sidecar.js";
 import { requireActor } from "./identity.js";
 
@@ -83,6 +83,13 @@ export async function publishProvisionalAudit(
   if (!audit.provisional) return { published: false, reason: "not a provisional audit" };
   const cfg = resolveSidecar(root);
   if (!cfg) return { published: false, reason: "no sidecar is configured" };
+  // ERROR, not `reason`. The two are different and this path is the one that proves it:
+  // "no sidecar" is a store working alone and nothing is owed, while "the configured one
+  // is not this store's" is an author who believes their team can see this and is wrong.
+  // Routing the second through the quiet return turned a loud failure into a silent one —
+  // caught by the test that exists for exactly that.
+  const bad = checkSidecarBinding(root, cfg);
+  if (bad) return { published: false, error: bad.error };
   if (!audit.commit) return { published: false, reason: "no commit to file it under" };
   if (opts.dirty) {
     return {
@@ -163,6 +170,9 @@ function usable(a: unknown, universe: string, commit: string, file: string): a i
 export async function readProvisionalAudits(
   root: string, opts: { commit?: string } = {},
 ): Promise<Audit[]> {
+  // A READ: `resolveSidecar`, not the write door. Reading documents off a sidecar whose
+  // binding is wrong answers with what is on disk, which is the same degradation every
+  // other read here makes.
   const cfg = resolveSidecar(root);
   if (!cfg) return [];
   const base = universeDir(cfg);

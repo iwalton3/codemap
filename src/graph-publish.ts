@@ -7,7 +7,7 @@
  * `triage-publish.ts`.
  */
 
-import { resolveSidecar, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
+import { resolveSidecar, sidecarForWrite, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
 import { requireActor } from "./identity.js";
 import { ensureSidecar } from "./sidecar.js";
 import { readCached } from "./materialize.js";
@@ -48,7 +48,7 @@ export async function mirrorWiring(
   root: string, nodeIds: string[],
 ): Promise<{ shared: boolean; configured: boolean; error?: string }> {
   if (!nodeIds.length) return { shared: false, configured: !!resolveSidecar(root) };
-  const cfg = resolveSidecar(root);
+  const cfg = sidecarForWrite(root);
   if (!cfg) return { shared: false, configured: false };
   const actor = requireActor(root);
   if ("error" in actor) return { shared: false, configured: true, error: actor.error };

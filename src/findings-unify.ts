@@ -36,7 +36,7 @@
 
 import type { Actor } from "./schema.js";
 import { requireActor, reviewerKey } from "./identity.js";
-import { resolveSidecar, scopeFor, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
+import { resolveSidecar, sidecarForWrite, scopeFor, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
 import { ensureMaterialized } from "./materialize.js";
 import { findingsProjection } from "./shared-projections.js";
 import { readFindings, findingsUnifiedAt, markFindingsUnified } from "./store.js";
@@ -64,7 +64,7 @@ export interface UnifyResult {
  * built to end, and it came back the moment a legacy backlog was left sitting in it.
  */
 export async function splitState(root: string): Promise<{ cfg: SidecarConfig; local: SharedFinding[] } | null> {
-  const cfg = resolveSidecar(root);
+  const cfg = sidecarForWrite(root);
   if (!cfg) return null;
   const local = (await readFindings(root)).findings.filter((f) => !f.origin);
   return local.length ? { cfg, local } : null;
@@ -141,7 +141,7 @@ function unreplayable(f: SharedFinding, actor: Actor): string | null {
 }
 
 export async function unifyFindings(root: string, opts: { dryRun?: boolean } = {}): Promise<UnifyResult | { error: string }> {
-  const cfg = resolveSidecar(root);
+  const cfg = sidecarForWrite(root);
   if (!cfg) return { error: "no sidecar is configured for this universe — there is nothing to unify with" };
   const actor = requireActor(root);
   if ("error" in actor) return actor;

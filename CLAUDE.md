@@ -278,9 +278,21 @@ the old sidecar's rows GO, which is survivable only because they are a PROJECTIO
 back and sync and they fold again, which a test performs rather than asserts.
 
 **Every end guards the sidecar binding — read, write AND transport.** Reads decline to fold
-(and ask only when they are about to, or it is a `git` spawn per read); writes refuse in
-`bugLog`/`bind`, because without that a repoint made `report_bug` append to the STRANGER's
-log and answer `ok` for a bug in no table anywhere; the transport refuses.
+(and ask only when they are about to, or it is a `git` spawn per read); the transport
+refuses; and every write goes through **`sidecarForWrite`**, which is the one door. An
+earlier version guarded `bind` and `bugLog` only and said in a comment that every write came
+through them — it did not, by eight call sites: `mirrorNote`, `mirrorWiring`,
+`mirrorTriage*`, `standard-publish`, `provisional`, `promote-annotation` and
+`findings-unify` each resolved the config themselves. So `report_bug` refused while
+`annotate` — a daily verb — answered `shared: true` into a stranger's log, or MADE a
+sidecar at a typo'd path. Guarding two doors was worse than guarding none, because the
+comment then lied about the rest.
+
+One residual, accepted: the read guard is asked only when a fold is about to happen, so a
+cache HIT reports `complete` without consulting the sidecar. The fingerprint contains the
+sidecar's realpath, so only replacing the history at the SAME path with an identical tree
+escapes it; the rows served are still this store's own, and any action refuses. Closing it
+costs a `git merge-base` per read of every scope.
 
 **An absent sidecar is not an empty one.** The fold is total, so folding zero events over a
 scope that has rows WRITES the empty result: a typo in `.codemap/sidecar` silently emptied

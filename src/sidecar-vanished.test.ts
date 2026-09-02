@@ -270,3 +270,56 @@ test("and a write refuses when the sidecar is simply not there", async () => {
     assert.match(filed.error ?? "", /nowhere to write/);
   } finally { r.cleanup(); }
 });
+
+/**
+ * `adopt` must work on the history it is looking at, not one it remembers.
+ *
+ * `sidecarLineage` cached its answer per path. Replace the history at the SAME path — an
+ * orphan checkout, a `commit-tree` — and adopt recorded the STALE root, so the store
+ * stayed blocked until the process restarted. An escape hatch that needs a restart is not
+ * one, and this is the only way out of a refused binding.
+ */
+test("adopt reads the sidecar's history now, not a cached answer from before it changed", async () => {
+  const r = await teamed();
+  try {
+    assert.equal((await sharedSync(r.root) as { error?: string }).error, undefined);
+    const { sidecarLineage } = await import("./sidecar.js");
+    assert.ok(sidecarLineage(r.side), "warm the cache the way an ordinary sync does");
+
+    // The history is replaced in place, tree untouched.
+    const tree = git(r.side, "write-tree").stdout.trim();
+    const made = spawnSync("git", ["commit-tree", tree], { cwd: r.side, encoding: "utf8", input: "stranger\n" });
+    git(r.side, "update-ref", "HEAD", made.stdout.trim());
+    const actual = git(r.side, "rev-list", "--max-parents=0", "HEAD").stdout.trim();
+
+    assert.match((await sharedSync(r.root) as { error?: string }).error ?? "", /different sidecar/,
+      "it is a stranger now, and the transport says so");
+    const adopted = await adoptSidecar(r.root) as any;
+    assert.equal(adopted.lineage, actual, "adopt records what is THERE");
+    assert.equal((await sharedStatus(r.root) as any).blocked, undefined, "and the refusal is actually lifted");
+  } finally { r.cleanup(); }
+});
+
+/**
+ * A read degrades where the transport stops.
+ *
+ * The write gate went into `bind()`, which 33 of its 34 callers are writes — but
+ * `findingRecord` is a read, and it started refusing data that `sharedFindings` happily
+ * serves from the same rows.
+ */
+test("reading one finding degrades on a broken binding, exactly as reading them all does", async () => {
+  const r = await teamed();
+  try {
+    const { shareFinding, sharedFindings, findingRecord } = await import("./ops-shared.js");
+    const made = await shareFinding(r.root, 5, { targetKind: "anchor", targetId: "a_1", text: "real thing" }) as any;
+    assert.equal(made.error, undefined);
+    assert.equal((await sharedSync(r.root) as { error?: string }).error, undefined);
+
+    r.point(r.side + "-typo");
+    const all = await sharedFindings(r.root, 5) as any;
+    const one = await findingRecord(r.root, 5, made.id) as any;
+    assert.equal(all.findings.length, 1, "the list still serves what this store holds");
+    assert.equal(one.error, undefined, "and so does the single read — same rows, same answer");
+    assert.equal(one.id, made.id);
+  } finally { r.cleanup(); }
+});

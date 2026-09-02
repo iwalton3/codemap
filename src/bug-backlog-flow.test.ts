@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import * as ops from "./ops.js";
-import { readBug } from "./store.js";
+import { readBug, writeLocalBug } from "./store.js";
 import { readBugsShared } from "./shared-bugs.js";
 import { resolveSidecar } from "./sidecar-config.js";
 import { markAgentSession, clearAgentSession } from "./identity.js";
@@ -331,5 +331,50 @@ test("a deadline keeps only its DATE, so it cannot sleep a day past itself", asy
     const row = (await ops.listBugs(r.root, { backlog: true, asOf: "2027-01-01" }) as any).bugs[0]!;
     assert.equal(row.backlogged.until, "2027-01-01", "stored as a date");
     assert.equal(row.backlogged.state, "due", "and due ON the deadline, not the day after");
+  } finally { r.cleanup(); }
+});
+
+/**
+ * A deadline stored BEFORE the slice must still be judged as a date.
+ *
+ * Normalising only on write fixes records made from now on. A row already holding
+ * `2027-01-01T00:00:00Z` compares as greater than the date it names, so it slept a day
+ * past its own deadline — and the fold's slice never reaches a LOCAL row at all, which is
+ * where most of the backlog lives.
+ */
+test("a deadline stored as a full timestamp is still due on the day it names", async () => {
+  const r = await repo();
+  try {
+    const id = await file(r.root, r.anchorId, "filed before the fix");
+    const bug = (await readBug(r.root, id))!;
+    bug.backlogged = { until: "2027-01-01T00:00:00Z", reason: "r", by: { principal: "izzie@x.com" }, at: "2026-01-01T00:00:00Z" };
+    await writeLocalBug(r.root, bug);
+
+    const register = await ops.listBugs(r.root, { backlog: true, asOf: "2027-01-01" }) as any;
+    assert.equal(register.bugs[0]!.backlogged.state, "due", "due ON the deadline, not the day after");
+    assert.equal(register.bugs[0]!.backlogged.until, "2027-01-01", "and shown as the date it is");
+    assert.ok(ids(await ops.listBugs(r.root, { open: true, asOf: "2027-01-01" }) as any).includes(id),
+      "so it is back in the working queue");
+  } finally { r.cleanup(); }
+});
+
+test("the publish dry run predicts what the real run does, for an agent too", async () => {
+  const r = await repo();
+  try {
+    const deferred = await file(r.root, r.anchorId, "deferred");
+    await file(r.root, r.anchorId, "ordinary");
+    ok(await ops.backlogOn(r.root, { id: deferred, until: "2099-01-01", reason: "not now" }));
+    writeFileSync(join(r.root, ".codemap", "sidecar"), r.side, "utf8");
+
+    const { markAgentSession, clearAgentSession } = await import("./identity.js");
+    markAgentSession();
+    try {
+      const dry = await ops.publishBugs(r.root, { dryRun: true }) as any;
+      const live = await ops.publishBugs(r.root, {}) as any;
+      // It answered `wouldPublish: 2` for a run that publishes 1. A prediction that
+      // disagrees with the act is worse than no prediction.
+      assert.equal(dry.wouldPublish, live.published);
+      assert.deepEqual(dry.wouldSkip, live.skipped);
+    } finally { clearAgentSession(); }
   } finally { r.cleanup(); }
 });

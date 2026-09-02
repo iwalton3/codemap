@@ -22,7 +22,7 @@ import type {
   ProposalWitness, ScrubPolicy, Spec, VacuityCheck,
 } from "./schema.js";
 import type { ScopeDiagnostic } from "./eventlog.js";
-import { resolveSidecar, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
+import { resolveSidecar, sidecarForWrite, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
 import { requireActor } from "./identity.js";
 import { ensureSidecar } from "./sidecar.js";
 import { publishProvisionalAudit } from "./provisional.js";
@@ -98,7 +98,7 @@ export type StandardScope =
  * No sidecar is not a warning. Local rows with no log behind them ARE the whole story.
  */
 export async function standardScopeWarning(root: string): Promise<StandardScope | undefined> {
-  const cfg = resolveSidecar(root);
+  const cfg = sidecarForWrite(root);
   if (!cfg) return undefined;
   try {
     // `cachedStandard`, NOT a single-scope `ensureMaterialized`. This read used to fold
@@ -153,7 +153,7 @@ async function share(
   root: string, emit: (logRoot: string, scope: string, actor: Actor) => Promise<unknown>,
   scope?: string,
 ): Promise<Shared> {
-  const cfg = resolveSidecar(root);
+  const cfg = sidecarForWrite(root);
   if (!cfg) return localOnly;
   const actor = requireActor(root);
   if ("error" in actor) return { shared: false, configured: true, error: actor.error };

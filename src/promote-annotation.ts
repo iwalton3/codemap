@@ -23,7 +23,7 @@
  */
 
 import { readAnnotations, writeAnnotations, readFinding, writeLocalFinding } from "./store.js";
-import { resolveSidecar } from "./sidecar-config.js";
+import { resolveSidecar, sidecarForWrite } from "./sidecar-config.js";
 import { toFinding } from "./findings-migrate.js";
 
 export async function promoteAnnotation(
@@ -49,7 +49,7 @@ export async function promoteAnnotation(
   }
 
   const { finding, stamped } = toFinding(a, new Date().toISOString());
-  const cfg = resolveSidecar(root);
+  const cfg = sidecarForWrite(root);
   if (cfg) {
     // Through the LOG, so the team's copy is the same record rather than a second one.
     // `filedBy`/`filedAt` carry the original attribution: this is a republication of

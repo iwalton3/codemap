@@ -163,7 +163,16 @@ import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagn
 //
 // The table set did not change again — `backlogged` lives inside the `bugs.body` JSON —
 // so this is a refold, not a migration. Nobody's log is touched.
-export const MATERIALIZER_VERSION = 20;
+//
+// 20 -> 21: no new event and no new table — both folds changed what an EXISTING event
+// MEANS. `finding.backlogged` and `bug.backlogged` now store the DATE part of `until`,
+// because `ISO_DATE` admits a trailing `T` and a full timestamp and every reader compares
+// it lexicographically against a date, so anything past the tenth character slept a day
+// past its own deadline. That is a fold-mind change on already-folded scopes, which is
+// its own reason for a bump — see 16 and 17, where the table set did not move either.
+// Without it a store that folded at 20 keeps serving the un-sliced value for ever,
+// because only the shards move a fingerprint and they have not.
+export const MATERIALIZER_VERSION = 21;
 
 /**
  * What the events in a scope are, cheaply.
@@ -362,6 +371,16 @@ export interface Cached<T> extends ScopeStatus { value: T }
  *
  * Nothing recorded means nothing to disagree with — every store predating this is in that
  * state, and refusing them all on upgrade would be the migration equivalent of the bug.
+ *
+ * **A known residual, accepted rather than closed.** This is asked only when the caller is
+ * about to fold, so a cache HIT answers `complete` without consulting the sidecar at all.
+ * The scope fingerprint contains the sidecar's realpath, so a repoint always misses and is
+ * always checked — the escape is replacing the history at the SAME path with an identical
+ * tree (`git commit-tree`), which keeps the fingerprint. The rows served then are still
+ * this store's own, so nothing is wrong with the ANSWER; only the status is optimistic,
+ * and `sharedStatus`, every write and the transport all refuse in that state, so any
+ * action finds out immediately. Closing it means a `git merge-base` on every read of every
+ * scope, which is the work the materializer exists to avoid.
  */
 function wrongSidecar(root: string, logRoot: string): ScopeDiagnostic | null {
   let mark: SidecarMark | undefined;

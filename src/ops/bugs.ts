@@ -185,7 +185,12 @@ export function bugBacklogState(
   b: SharedBug, idx: ReturnType<typeof liveIndex>, asOf: string,
 ): "sleeping" | "due" | "woken" | undefined {
   if (!b.backlogged) return undefined;
-  if (b.backlogged.until <= asOf) return "due";
+  // Sliced HERE as well as at every write, because the writes only fix records made from
+  // now on. A row stored before that — `ISO_DATE` admits a trailing `T` and a full
+  // timestamp — keeps its own bytes, and `"2027-01-01T00:00:00Z" <= "2027-01-01"` is
+  // false, so it slept a day past a deadline nobody could see was wrong. The fold's
+  // slice does not reach a LOCAL row at all, which is where most of the backlog is.
+  if (b.backlogged.until.slice(0, 10) <= asOf) return "due";
   const w = b.backlogged.witnesses ?? [];
   return w.length && realDrift(witnessDrift(w, idx)).length ? "woken" : "sleeping";
 }
@@ -203,7 +208,8 @@ export function bugBacklogState(
  */
 const backloggedRow = (b: SharedBug, state: "sleeping" | "due" | "woken" | undefined) =>
   b.backlogged && state
-    ? { until: b.backlogged.until, reason: b.backlogged.reason, by: b.backlogged.by.principal, at: b.backlogged.at, state }
+    // The DATE is what every surface shows and compares — see `bugBacklogState`.
+    ? { until: b.backlogged.until.slice(0, 10), reason: b.backlogged.reason, by: b.backlogged.by.principal, at: b.backlogged.at, state }
     : undefined;
 
 /**
@@ -741,13 +747,22 @@ export async function publishBugs(root: string, opts: { dryRun?: boolean; ids?: 
     local = local.filter((b) => want.has(b.id));
   }
 
+  // Classified BEFORE the dry run, or the dry run promises what the real one refuses: it
+  // used to return above this and answer `wouldPublish: 1` for a bug the live call then
+  // skipped. A prediction that disagrees with the act is worse than no prediction.
+  const actor = requireActor(root);
+  const byAnAgent = !("error" in actor) && isAgentActor(actor);
+  const deferred = byAnAgent ? local.filter((b) => !!b.backlogged) : [];
+  const publishable = byAnAgent ? local.filter((b) => !b.backlogged) : local;
+
   // AFTER the filter and BEFORE any write. A count must not write.
   if (opts.dryRun) {
     return {
       universe: log.cfg.universe, total: all.length,
       alreadyShared: all.length - local.filter((b) => !b.origin).length,
-      wouldPublish: local.length,
-      bugs: local.map((b) => ({ id: b.id, title: b.title, state: b.state })),
+      wouldPublish: publishable.length,
+      ...(deferred.length ? { wouldSkip: deferred.map((b) => b.id) } : {}),
+      bugs: publishable.map((b) => ({ id: b.id, title: b.title, state: b.state })),
     };
   }
 
@@ -757,21 +772,20 @@ export async function publishBugs(root: string, opts: { dryRun?: boolean; ids?: 
   // the bug on the team stripped of a person's decision, back in everybody's working
   // queue, with `published: N` and no mention of it. Verified by folding the log after an
   // agent publish: the bug arrives and the deferral is gone.
-  const actor = requireActor(root);
-  const byAnAgent = !("error" in actor) && isAgentActor(actor);
-  const deferred = byAnAgent ? local.filter((b) => !!b.backlogged) : [];
-  const publishable = byAnAgent ? local.filter((b) => !b.backlogged) : local;
-
   const published: string[] = [];
   for (const b of publishable) { await publishBug(log, root, b); published.push(b.id); }
   return {
     universe: log.cfg.universe, published: published.length, ids: published,
     ...(deferred.length ? { skipped: deferred.map((b) => b.id) } : {}),
-    note: deferred.length
-      ? `${deferred.length} bug(s) carry a person's deferral and were NOT published: publishing them `
-        + `from an agent session would drop it, because the fold refuses an agent's. Ask a person to `
-        + `run this.`
-      : published.length ? "run `codemap sync` to send them" : "nothing local left to publish",
+    // Both facts, not one or the other: a run that published three and skipped one still
+    // needs the caller to sync those three.
+    note: [
+      deferred.length
+        ? `${deferred.length} bug(s) carry a person's deferral and were NOT published: publishing them `
+          + `from an agent session would drop it, because the fold refuses an agent's. Ask a person to run this.`
+        : "",
+      published.length ? "run `codemap sync` to send them" : "",
+    ].filter(Boolean).join(" ") || "nothing local left to publish",
   };
 }
 

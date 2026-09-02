@@ -14,7 +14,7 @@
  * for the read surfaces a front end needs.
  */
 
-import { resolveSidecar, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
+import { resolveSidecar, sidecarForWrite, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
 import { requireActor, isAgentActor } from "./identity.js";
 import { ensureSidecar } from "./sidecar.js";
 import { readCached } from "./materialize.js";
@@ -54,7 +54,7 @@ export async function materializeTriage(root: string, cfg: SidecarConfig): Promi
  * at `setTriage`'s call site for why a local row here fabricates causality later.
  */
 export async function mirrorTriage(root: string, a: TriageAssertion): Promise<{ shared: boolean; configured: boolean; folded?: boolean; error?: string }> {
-  const cfg = resolveSidecar(root);
+  const cfg = sidecarForWrite(root);
   if (!cfg) return { shared: false, configured: false };
   const actor = requireActor(root);
   if ("error" in actor) return { shared: false, configured: true, error: actor.error };
@@ -66,7 +66,7 @@ export async function mirrorTriage(root: string, a: TriageAssertion): Promise<{ 
 /** Many assertions, one append and ONE fold. See `assertTriageBatch`. */
 export async function mirrorTriageBatch(root: string, items: TriageAssertion[]): Promise<{ shared: boolean; configured: boolean; folded?: boolean; error?: string }> {
   if (!items.length) return { shared: false, configured: !!resolveSidecar(root) };
-  const cfg = resolveSidecar(root);
+  const cfg = sidecarForWrite(root);
   if (!cfg) return { shared: false, configured: false };
   const actor = requireActor(root);
   if ("error" in actor) return { shared: false, configured: true, error: actor.error };
@@ -84,7 +84,7 @@ export async function mirrorTriageBatch(root: string, items: TriageAssertion[]):
 export async function mirrorTriageClear(
   root: string, t: { targetKind: "node" | "anchor"; targetId: string },
 ): Promise<{ shared: boolean; configured: boolean; folded?: boolean; error?: string }> {
-  const cfg = resolveSidecar(root);
+  const cfg = sidecarForWrite(root);
   if (!cfg) return { shared: false, configured: false };
   const actor = requireActor(root);
   if ("error" in actor) return { shared: false, configured: true, error: actor.error };

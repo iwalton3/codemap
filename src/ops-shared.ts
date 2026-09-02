@@ -76,14 +76,23 @@ interface Bound { cfg: SidecarConfig; actor: Actor }
  * Optional, and it stays optional: an agent that was not told what it is must not
  * guess, and a guessed model id is worse than an absent one.
  */
-function bind(root: string, via: { model?: string; harness?: string } = {}): Bound | { error: string } {
+function bind(root: string, via: { model?: string; harness?: string } = {}, opts: { reading?: boolean } = {}): Bound | { error: string } {
   const cfg = resolveSidecar(root);
   if (!cfg) return { error: NO_SIDECAR };
-  // Every shared WRITE comes through here, and a write to the wrong sidecar is worse than
-  // a refused one: the event lands in a stranger's log, the read correctly declines to
-  // fold it, and the op answers `ok` for a record that is in no table anywhere.
-  const bad = checkSidecarBinding(root, cfg);
-  if (bad) return bad;
+  // A write to the wrong sidecar is worse than a refused one: the event lands in a
+  // stranger's log, the read correctly declines to fold it, and the op answers `ok` for a
+  // record that is in no table anywhere.
+  //
+  // Gated by DEFAULT rather than opted into, so a new write op is covered without anyone
+  // remembering. `reading` is the narrow exception: reads DEGRADE (serve the rows this
+  // store holds, marked non-authoritative) and only the transport stops.
+  //
+  // This is NOT the only door — an earlier comment here said it was, and it was wrong by
+  // eight call sites. `sidecarForWrite` is; see its note.
+  if (!opts.reading) {
+    const bad = checkSidecarBinding(root, cfg);
+    if (bad) return bad;
+  }
   const actor = requireActor(root, via);
   if ("error" in actor) return actor;
   return { cfg, actor };
@@ -234,49 +243,6 @@ async function strandedScopes(root: string, cfg: { path: string; universe: strin
 }
 
 /**
- * Is `.codemap/sidecar` still pointing at the sidecar this store has been using?
- *
- * **Repointing from one team's repo to another is refused.** Nothing migrates the rows
- * already folded from the old one: they keep their `source_scope`, the ownership rule
- * keeps refusing local writes to them, and no fold ever revisits them because the new
- * sidecar has no such scope. So they answer every read for ever, describing a log this
- * store can no longer reach — a teammate's finding that cannot be updated, resolved or
- * even explained. Silently, which is the part that makes it worth stopping for.
- *
- * The identity is the sidecar's oldest ROOT COMMIT (`sidecarLineage`), so a sidecar that
- * moved, was re-cloned, or has since merged the team's unrelated history is recognised as
- * the same one. Only a genuinely different repository fails.
- *
- * **Recorded on first sight, which is what grandfathers every existing store.** No store
- * has this yet, and refusing them all on upgrade would be the migration equivalent of the
- * bug. A store with nothing recorded records what it finds and proceeds.
- *
- * A sidecar with no commits is not yet anything: it cannot be the recorded one, and it
- * cannot be recorded either. That is refused when something IS recorded — an empty
- * directory at the wrong path is the shape a typo makes — and allowed when nothing is,
- * which is a first sync.
- */
-function checkSidecarIdentity(root: string, cfg: { path: string; universe: string }): { error: string } | null {
-  const mark = readStoreMeta<SidecarMark>(root, SIDECAR_LINEAGE);
-  const here = sidecarLineage(cfg.path);
-  if (!mark?.lineage) {
-    rememberSidecar(root, cfg);
-    return null;
-  }
-  if (here && isSameSidecar(cfg.path, mark.lineage)) return null;
-  return {
-    error:
-      `${cfg.path} is a different sidecar from the one this store has been using `
-      + `(${mark.lineage.slice(0, 12)}, last seen at ${mark.path}${here ? `; this one is ${here.slice(0, 12)}` : "; this one has no history at all"}). `
-      + `Refusing: nothing migrates. A fold is total per scope, so the rows this store folded from the old `
-      + `sidecar are replaced the moment this one is folded over them, and this one is empty of them. `
-      + `Reads are serving those rows and declining to fold until this is settled. If the path is a typo `
-      + `or a drive is not mounted, fix that. If the move is deliberate, \`codemap sidecar adopt\` performs `
-      + `it and names exactly which rows go.`,
-  };
-}
-
-/**
  * Record which sidecar this is, if it is not already known.
  *
  * Called after a successful transport as well as before it, and the second call is the
@@ -294,39 +260,9 @@ function rememberSidecar(root: string, cfg: { path: string }): void {
   if (lineage) writeStoreMeta(root, SIDECAR_LINEAGE, { lineage, path: cfg.path } satisfies SidecarMark);
 }
 
-/**
- * The configured sidecar is not there, and this store has used one before.
- *
- * Two halves, and both are needed. A path that does not exist is ordinary on a FIRST
- * sync — `ensureSidecar` creates it, which is how somebody sets one up — so absence
- * alone is not an error. Absence when `shared_scope` already records folds from a
- * sidecar is a different thing entirely: a typo in `.codemap/sidecar`, a drive that is
- * not mounted, a sidecar this machine has not cloned. Left alone, `ensureSidecar`
- * silently mkdirs and `git init`s a BRAND NEW empty sidecar at the wrong path, and the
- * person is now on a team of one without being told.
- *
- * The reads deliberately do NOT refuse — see `logRootMissing` in `materialize.ts`, which
- * keeps serving the rows this store holds rather than folding the absence into an empty
- * projection. Reads degrade and say so; the transport stops.
- */
-function sidecarVanished(root: string, cfg: { path: string }): { error: string } | null {
-  if (existsSync(cfg.path)) return null;
-  if (!hasFoldedFromSidecar(root)) return null;
-  return {
-    error:
-      `the sidecar this store has been using is not at ${cfg.path}. Refusing to sync: this would `
-      + `create a NEW, empty sidecar there and put you on a team of one, silently. Check `
-      + `.codemap/sidecar for a typo, mount the drive, or clone the sidecar to that path. Nothing `
-      + `has been lost — the rows folded from it are still here, and reads serve them as `
-      + `non-authoritative until the path resolves again.`,
-  };
-}
-
 export async function sharedPull(root: string) {
   const b = bind(root);
   if ("error" in b) return b;
-  const wrong = sidecarVanished(root, b.cfg) ?? checkSidecarIdentity(root, b.cfg);
-  if (wrong) return wrong;
   const r = await sidecarReceive(b.cfg.path, b.actor, `codemap: ${b.cfg.universe}`);
   if ("error" in r) return r;
   rememberSidecar(root, b.cfg);
@@ -336,8 +272,6 @@ export async function sharedPull(root: string) {
 export async function sharedSync(root: string) {
   const b = bind(root);
   if ("error" in b) return b;
-  const wrong = sidecarVanished(root, b.cfg) ?? checkSidecarIdentity(root, b.cfg);
-  if (wrong) return wrong;
   const r = await sidecarSync(b.cfg.path, b.actor, `codemap: ${b.cfg.universe}`);
   if ("error" in r) return r;
   rememberSidecar(root, b.cfg);
@@ -502,7 +436,8 @@ export async function sharedStatus(root: string) {
   const incompat = checkPeers(peers, mine);
   const { splitState } = await import("./findings-unify.js");
   const split = await splitState(root);
-  const vanished = sidecarVanished(root, cfg) ?? checkSidecarIdentity(root, cfg);
+  // The SAME guard every write goes through, so the page and the refusal cannot drift.
+  const vanished = checkSidecarBinding(root, cfg);
   return {
     universe: cfg.universe,
     sidecar: cfg.path,
@@ -794,7 +729,10 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
       // Date first, because it is the condition that is guaranteed to fire. Drift is the
       // early wake, and one with no witness simply never takes that path — which is
       // exactly what an acknowledgement has always done.
-      if (f.backlogged.until <= asOf) b.due.push(row(f));
+      // Sliced on READ too. The write-side normalisation only fixes records made from now
+      // on, and a record stored with a full timestamp compares as greater than the date it
+      // names — so it slept a day past its own deadline.
+      if (f.backlogged.until.slice(0, 10) <= asOf) b.due.push(row(f));
       else if (drifted(f.backlogged.witness) === "moved") b.woken.push(row(f));
       else b.sleeping.push(row(f));
       continue;
@@ -1195,7 +1133,9 @@ export async function upstreamFinding(root: string, pr: number | string, id: str
  * caller cannot mistake this machine's answer for something the finding carried.
  */
 export async function findingRecord(root: string, pr: number | string, id: string) {
-  const b = bind(root);
+  // A READ. `sharedFindings` degrades on a broken binding and serves what this store
+  // holds; this reads the same data one record at a time and must not answer differently.
+  const b = bind(root, {}, { reading: true });
   if ("error" in b) return b;
   const f = (await cachedFindings(root, b.cfg, pr)).value.get(id);
   if (!f) return { error: `no finding ${id} on pr ${pr}` };
