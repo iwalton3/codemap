@@ -14,7 +14,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, appendFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, appendFileSync, truncateSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -147,7 +147,7 @@ test("corruption cannot be acknowledged away — the repair is the line, not a d
 
 // --- the append repair ----------------------------------------------------------
 
-test("appending after a crash removes the partial line rather than sealing it in", async () => {
+test("a crash fragment is SEALED IN and goes loud — it is never quietly deleted", async () => {
   const root = tmp("heal");
   try {
     await ensureSidecar(root, izzie);
@@ -155,17 +155,46 @@ test("appending after a crash removes the partial line rather than sealing it in
     await emitEvent(root, scope, izzie, "note.one", "n1");
     const shard = join(root, shardOf(root, scope));
 
-    // A process killed mid-append.
-    appendFileSync(shard, `{"id":"m1-torn","ki`);
+    appendFileSync(shard, `{"id":"m1-torn","ki`);          // killed mid-append
     await emitEvent(root, scope, izzie, "note.two", "n2");
 
-    assert.deepEqual(splitShard(readFileSync(shard, "utf8"), "s").damage, [],
-      "the fragment was dropped, not left mid-file where it is indistinguishable from corruption");
-    assert.equal((await readShard(shard)).length, 2);
+    // Truncating the fragment instead was tried and reverted: disk corruption that eats
+    // an event this shard already SERVED produces identical bytes, so deleting it loses
+    // a real record silently. Sealed in, the next read says so.
+    assert.equal(splitShard(readFileSync(shard, "utf8"), "s").damage.length, 1);
+    assert.equal((await readScopeChecked(root, scope)).diagnostic?.reason, "corrupt-shard");
+    assert.equal((await readShard(shard)).length, 2, "and both readable events still are");
   } finally { discard(root); }
 });
 
-test("a whole event that merely lost its newline is KEPT, not truncated", async () => {
+/**
+ * The reason the fragment is not deleted, stated as a test.
+ *
+ * A disk that truncates an event this shard has already served leaves bytes a torn append
+ * cannot be told apart from. Truncating deletes it — silently, and leaving a `writerPrev`
+ * chain that looks consistent because the event it skipped is gone.
+ */
+test("an event the disk ate is not silently dropped by the next append", async () => {
+  const root = tmp("eaten");
+  try {
+    await ensureSidecar(root, izzie);
+    const scope = "notes/z";
+    await emitEvent(root, scope, izzie, "note.one", "n1");
+    const shard = join(root, shardOf(root, scope));
+    assert.equal((await readShard(shard)).length, 1, "it was READ once — that is the point");
+
+    const size = readFileSync(shard).length;
+    truncateSync(shard, size - 2);                          // the disk eats its tail
+
+    await emitEvent(root, scope, izzie, "note.two", "n2");
+    const after = await readScopeChecked(root, scope);
+    assert.equal(after.status, "blocked");
+    assert.equal(after.diagnostic?.reason, "corrupt-shard",
+      "the loss is announced rather than tidied away");
+  } finally { discard(root); }
+});
+
+test("a whole event that merely lost its newline is KEPT", async () => {
   const root = tmp("heal-keep");
   try {
     await ensureSidecar(root, izzie);
@@ -351,4 +380,44 @@ test("`heal` does not claim to have acknowledged bytes nobody can read", async (
     assert.deepEqual(healed.blocked.map((b: any) => b.scope), [scope], "it is reported as still blocked");
     assert.match(healed.blocked[0].reason, /deleting the damaged line/, "with the repair, not a shrug");
   } finally { [repo, side].forEach(discard); }
+});
+
+/**
+ * The gate must check the FIRST changed shard, which it did not.
+ *
+ * `git status --porcelain -z` writes a two-column status with a LEADING SPACE for the
+ * ordinary case — an unstaged modification is `" M path"`. The helper that ran it trimmed
+ * stdout, which ate that space on the first entry only: the parse fell through to taking
+ * the whole string as a path, the read threw ENOENT into a catch, and the
+ * alphabetically-first modified shard was never looked at. Every entry after it still had
+ * its space, so the gate looked like it worked.
+ */
+test("the outbound gate checks the alphabetically FIRST changed shard", async () => {
+  const root = tmp("first-shard");
+  try {
+    await ensureSidecar(root, izzie);
+    const dir = join(root, "findings/u/pr-1");
+    mkdirSync(dir, { recursive: true });
+    const good = JSON.stringify({
+      id: "m1-a", kind: "x", subject: "s", actor: { principal: "p" }, at: "", after: [],
+      writer: "w", writerPrev: "GENESIS", sidecarProtocol: 1, eventSchema: 1,
+    });
+    writeFileSync(join(dir, "aaa.ndjson"), `${good}\n`);
+    writeFileSync(join(dir, "bbb.ndjson"), `${good}\n`);
+    assert.ok(!("error" in await push(root, "baseline")));
+
+    // The FIRST one alphabetically, which is the entry that lost its status prefix.
+    appendFileSync(join(dir, "aaa.ndjson"), "garbage\n");
+    const first = await push(root, "should refuse");
+    assert.ok("error" in first, "the first changed shard must be checked like any other");
+    assert.match(first.error, /aaa\.ndjson:2/);
+
+    // Mutation check: the SECOND one was already caught before this fix, so a test that
+    // only damaged that one would have passed against the bug.
+    writeFileSync(join(dir, "aaa.ndjson"), `${good}\n`);
+    appendFileSync(join(dir, "bbb.ndjson"), "garbage\n");
+    const second = await push(root, "should also refuse");
+    assert.ok("error" in second);
+    assert.match(second.error, /bbb\.ndjson:2/);
+  } finally { discard(root); }
 });

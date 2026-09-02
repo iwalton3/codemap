@@ -28,7 +28,7 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { appendFile, mkdir, open, readFile, readdir, stat, truncate, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { Actor } from "./schema.js";
 import { withSidecarLock } from "./lock.js";
@@ -207,55 +207,53 @@ async function endsCleanly(file: string): Promise<boolean> {
  * glue to every teammate. In a batch only the first event is eaten, so it reads
  * as an intermittent lost write rather than as a damaged shard.
  *
- * `healTail` is that separator, and now also the repair: a partial write is removed
- * rather than sealed into the middle of the file, where it is no longer
- * distinguishable from corruption and blocks the scope.
+ * `separatorFor` is that separator, and deliberately NOT a repair — see its note. The
+ * glued line the paragraph above describes is what `splitShard` now counts as damage,
+ * which is the loud half; deleting the fragment instead would be the quiet half, and it
+ * cannot tell a crash from a disk that ate an event somebody had already read.
  */
 export async function appendEvents(logRoot: string, scope: string, writer: string, events: LogEvent[]): Promise<void> {
   if (!events.length) return;
   const file = join(logRoot, shardFor(scope, writer));
   await mkdir(dirname(file), { recursive: true });
-  await appendFile(file, (await healTail(file)) + events.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf8");
+  await appendFile(file, (await separatorFor(file)) + events.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf8");
 }
 
 /**
- * Make a shard safe to append to, and answer with the separator still needed.
+ * The separator an append needs, and a DECISION not to repair.
  *
- * A file not ending in a newline ends mid-line, and there are two of those with
- * opposite handling:
+ * A file not ending in a newline ends mid-line, and there are two of those:
  *
  * - **The line parses.** A whole event whose terminating newline was lost. It is
- *   readable, every build has counted it, and truncating it would delete a real
- *   event. Keep it and separate with `"\n"`.
- * - **It does not.** A partial write, which no build has ever read. Left in place it
- *   becomes a permanent MID-file unparseable line on the next append, which is
- *   indistinguishable from corruption and now blocks the scope — so a laptop closing
- *   at the wrong moment would wedge the team's log for ever. Truncating it loses
- *   nothing that was ever a record.
+ *   readable and every build has counted it, so it is kept and separated with `"\n"`.
+ * - **It does not.** A fragment — and this is where the tempting repair lives.
  *
- * That asymmetry is why the check cannot be the cheap `endsCleanly` byte peek alone:
- * it says the file ends mid-line, not whether what is there is worth keeping.
+ * **Truncating the fragment was tried and REVERTED, and it must not come back.** The
+ * argument for it was that a crash mid-append leaves a partial line which the next
+ * append seals into the middle of the file, where it is no longer distinguishable from
+ * corruption and now blocks the scope — so a laptop losing power would wedge the team's
+ * log until somebody hand-edited it.
+ *
+ * What that misses is that the two causes are ALSO indistinguishable. Disk corruption
+ * that truncates an event this shard has already served produces bytes identical to a
+ * torn append, so truncating deletes a real record that readers had accepted — silently,
+ * and leaving a `writerPrev` chain that looks consistent because the event it skipped is
+ * gone. Measured: append one event, read it back, `truncate` two bytes, append a second,
+ * and the first has vanished with the scope reporting `complete`.
+ *
+ * Between wedging a scope loudly and deleting an event quietly, this project takes the
+ * first every time — it is the whole thesis. The fragment is sealed in, `splitShard`
+ * counts it as damage the moment anything follows it, the scope blocks, and the commit
+ * gate refuses to publish it. The repair is a person deleting one line, which is exactly
+ * what the diagnostic names.
+ *
+ * A second reason not to reinstate it: the truncation offset was also wrong. `readFile`
+ * decodes invalid bytes to U+FFFD, so a byte length computed from the decoded string is
+ * not the offset of that newline in the file — on a shard with binary damage it cut
+ * mid-line and glued the next event onto a fragment, losing an event `emit` had already
+ * returned an id for.
  */
-async function healTail(file: string): Promise<string> {
-  if (await endsCleanly(file)) return "";
-  let text: string;
-  // Unreadable is not the same as torn: append with a separator, which is what this
-  // did before the repair existed, rather than truncating a file we cannot see.
-  try { text = await readFile(file, "utf8"); } catch { return "\n"; }
-  const cut = text.lastIndexOf("\n");
-  const tail = text.slice(cut + 1);
-  if (!tail.trim()) return "";
-  try { JSON.parse(tail); return "\n"; } catch { /* partial write */ }
-  // Only a truncated EVENT is dropped — the same test `splitShard` exempts by, so the
-  // repair and the reader cannot disagree about what a torn append looks like. Bytes
-  // that never began as one are damage, and destroying the evidence of whatever put
-  // them there is not this function's call to make.
-  if (!tail.trim().startsWith("{")) return "\n";
-  // `cut + 1` keeps the newline that ended the last GOOD line, and is 0 for a file
-  // whose single line is the partial one.
-  await truncate(file, Buffer.byteLength(text.slice(0, cut + 1), "utf8"));
-  return "";
-}
+const separatorFor = async (file: string): Promise<string> => ((await endsCleanly(file)) ? "" : "\n");
 
 /**
  * This clone's writer id — random, minted once, never derived from anything.

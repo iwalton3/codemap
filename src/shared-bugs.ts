@@ -346,6 +346,12 @@ export function foldBugs(events: LogEvent[]): Map<string, SharedBug> {
         // and which has no date is the permanent silent silencing `acknowledgements`
         // refuses for the same reason.
         if (!until || !ISO_DATE.test(until) || !reason) break;
+        // The DATE part only. `ISO_DATE` admits a trailing `T` and a full timestamp, and
+        // every reader compares this lexicographically against a date — so anything past
+        // the tenth character sorts after the deadline and the record sleeps a day longer
+        // than it was given. Sliced in the fold as well as at the tool, or a hand-written
+        // event keeps the extra characters on every clone.
+        const day = until.slice(0, 10);
         // Only the bug's OWN live citations may witness it. Without this a caller could
         // point the release condition at unrelated code: the record would keep saying it
         // is about these anchors while every drift answer came from others, so edits to
@@ -355,7 +361,7 @@ export function foldBugs(events: LogEvent[]): Map<string, SharedBug> {
         const cited = new Set(citedAnchors(b));
         const witnesses = anchorsIn(d).filter((w) => cited.has(w.anchorId));
         b.backlogged = {
-          until, reason, by: e.actor, at: e.at,
+          until: day, reason, by: e.actor, at: e.at,
           // Dropping only the WITNESSES if they do not bind: the deadline is the
           // guaranteed release condition, and a decision somebody made should not be
           // lost over a bad optional field. Date-only is a supported state — it is

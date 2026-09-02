@@ -11,7 +11,7 @@
  * never the op surface.
  */
 
-import { resolveSidecar, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
+import { resolveSidecar, sidecarIdentity, checkSidecarBinding, type SidecarConfig } from "./sidecar-config.js";
 import { requireActor } from "./identity.js";
 import { ensureSidecar } from "./sidecar.js";
 import { readCached } from "./materialize.js";
@@ -56,6 +56,10 @@ export interface BugLog { cfg: SidecarConfig; actor: Actor }
 export function bugLog(root: string): BugLog | null | { error: string } {
   const cfg = resolveSidecar(root);
   if (!cfg) return null;
+  // Before any write reaches `ensureSidecar`, which would happily mkdir and init a
+  // stranger at a typo'd path. See `checkSidecarBinding`.
+  const bad = checkSidecarBinding(root, cfg);
+  if (bad) return bad;
   const actor = requireActor(root);
   if ("error" in actor) return actor;
   return { cfg, actor };

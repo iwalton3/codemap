@@ -478,7 +478,7 @@ export async function backlogOn(root: string, input: { id: string; until: string
   // again, the local one wrote the raw value — and `" 2027-01-01"` sorts BELOW every
   // digit, so an identical request produced a finding due for ever locally and asleep
   // until 2027 on the team's copy.
-  const until = input.until.trim(), reason = input.reason.trim();
+  const until = shared.backlogUntil(input.until), reason = input.reason.trim();
   if (!w.finding.shared) {
     return backlogLocalFinding(root, input.id, { until, reason, ref: input.ref, witness: await shared.witnessNowFor(root, input.id) });
   }

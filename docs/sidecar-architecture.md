@@ -351,11 +351,24 @@ it must LOOK like a truncated event (an opening brace). Position alone is not en
 shard whose single line is binary is entirely at the end of itself, which is exactly how a
 destroyed shard read as an empty one.
 
-`appendEvents` also **repairs** a torn tail rather than sealing it in. Writing a separator
-in front of one leaves a permanent mid-file unparseable line, which is no longer
-distinguishable from corruption — so a laptop closing at the wrong moment would wedge the
-scope for ever. A tail that PARSES is kept and separated, because it is a whole event that
-merely lost its newline and truncating it would delete a real record.
+`appendEvents` **seals a torn tail in rather than repairing it**, and that is a decision
+that was made the other way first. Truncating the fragment looks obviously right — the
+next append otherwise leaves a permanent mid-file unparseable line, so a laptop losing
+power wedges the scope until somebody hand-edits it. What it misses is that the two causes
+are *also* indistinguishable: disk corruption that truncates an event this shard has
+already served produces bytes identical to a torn append, so truncating deletes a real
+record silently, leaving a `writerPrev` chain that looks consistent because the event it
+skipped is gone. Measured: append, read it back, truncate two bytes, append again, and the
+first event has vanished with the scope reporting `complete`.
+
+Between wedging a scope loudly and deleting an event quietly this takes the first, every
+time. A tail that PARSES is still kept and separated — that is a whole event which merely
+lost its newline.
+
+One honest limit: between the truncation and the next append, a shard whose tail was eaten
+reads as `complete` with the event simply absent. Nothing on disk distinguishes it from an
+append that never completed, and no chain records the gap. The loudness arrives with the
+next write.
 
 A line that parses and fails `wellFormed` is not damage. That is an event from a client
 this build does not understand, which the envelope check drops on purpose; counting one as

@@ -72,24 +72,37 @@ describe("web UI", { skip: puppeteer ? false : "puppeteer not resolvable (set CO
     const page = await browser.newPage();
     await page.setViewport({ width: 1400, height: 1000 });
     const seen = watchErrors(page);
-    await page.goto(`${server.url}/#/u/${fixture.universe}/bugs/`, { waitUntil: "networkidle0", timeout: 20_000 });
-    await page.waitForSelector(".brow", { timeout: 10_000 });
-    const working = await page.evaluate(() => document.body.innerText);
+    /**
+     * A HASH-only navigation is same-document: `goto` does not reload, `networkidle0`
+     * resolves at once, and `waitForSelector(".brow")` is satisfied by the rows still on
+     * screen from the previous view. This test read the OPEN list and asserted against it
+     * as if it were the register. Reload after each hop, so every assertion is against a
+     * page that actually fetched.
+     */
+    const show = async (hash: string) => {
+      await page.goto(`${server.url}${hash}`, { waitUntil: "networkidle0", timeout: 20_000 });
+      await page.reload({ waitUntil: "networkidle0", timeout: 20_000 });
+      await page.waitForSelector(".brow, .detail", { timeout: 10_000 });
+      return page.evaluate(() => document.body.innerText);
+    };
+
+    const working = await show(`/#/u/${fixture.universe}/bugs/`);
     assert.match(working, /ledger totals disagree/);
     assert.doesNotMatch(working, /settlement double posts/, "the deferred one is out of the queue people read");
 
     // Its own list, and the marker travels on the row.
-    await page.goto(`${server.url}/#/u/${fixture.universe}/bugs/?state=backlog`, { waitUntil: "networkidle0", timeout: 20_000 });
-    await page.waitForSelector(".brow", { timeout: 10_000 });
-    const register = await page.evaluate(() => document.body.innerText);
+    const register = await show(`/#/u/${fixture.universe}/bugs/?state=backlog`);
     assert.match(register, /settlement double posts/);
     assert.match(register, /backlogged until 2099-01-31/, "so it never reads as an ordinary open bug");
 
+    // `all` must mean all — this is where a first version broke the constraint, because
+    // the search page links a backlogged hit here.
+    const everything = await show(`/#/u/${fixture.universe}/bugs/?state=all`);
+    assert.match(everything, /settlement double posts/, "`all` is not a working queue");
+
     // And search — the constraint. A defect you cannot find is worse than one nobody
     // has prioritised.
-    await page.goto(`${server.url}/#/u/${fixture.universe}/search/?q=settlement`, { waitUntil: "networkidle0", timeout: 20_000 });
-    await page.waitForSelector(".detail", { timeout: 10_000 });
-    const found = await page.evaluate(() => document.body.innerText);
+    const found = await show(`/#/u/${fixture.universe}/search/?q=settlement`);
     assert.match(found, /settlement double posts/, "never silenced from search");
     assert.match(found, /backlogged until 2099-01-31/);
     assert.deepEqual(seen.errors, [], "a blank page here logs nothing — that is the failure mode");

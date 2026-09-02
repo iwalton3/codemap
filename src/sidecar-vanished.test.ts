@@ -19,7 +19,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync, renameSync, cpSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, renameSync, cpSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -226,5 +226,47 @@ test("an agent may not move a store to another team", async () => {
     } finally { clearAgentSession(); }
     // Mutation check: the same call from a person is accepted.
     assert.equal((await adoptSidecar(r.root) as any).error, undefined);
+  } finally { r.cleanup(); }
+});
+
+/**
+ * The WRITE path needs the guard too, and this is what it looked like without it.
+ *
+ * `bugLog` and `bind` resolve the config and hand it straight to `ensureSidecar`, so after
+ * a repoint `report_bug` appended to the STRANGER's log, the read then correctly declined
+ * to fold it, and the op answered `ok` with an id for a bug that was in no table on any
+ * machine. Measured before it was fixed, not reasoned about.
+ */
+test("a write refuses too — an ok with an id for a record in no table is the worst answer", async () => {
+  const r = await teamed();
+  const other = mkdtempSync(join(tmpdir(), "codemap-van-write-"));
+  try {
+    assert.equal((await sharedSync(r.root) as { error?: string }).error, undefined);
+    const { ensureSidecar, sync: sidecarSync } = await import("./sidecar.js");
+    await ensureSidecar(other, { principal: "dana@x.com" });
+    await sidecarSync(other, { principal: "dana@x.com" }, "dana's team");
+    r.point(other);
+
+    const { readAnchorStore } = await import("./store.js");
+    const anchorId = (await readAnchorStore(r.root)).anchors[0]!.id;
+    const filed = await ops.reportBug(r.root, { title: "lands where?", description: "d", anchors: [anchorId] }) as any;
+    assert.match(filed.error ?? "", /different sidecar/, "the write refuses rather than succeeding into a stranger");
+    assert.equal(existsSync(join(other, "bugs")), false, "and nothing reached the stranger's log");
+
+    // Mutation check: pointed back, the identical call works.
+    r.point(r.side);
+    assert.equal((await ops.reportBug(r.root, { title: "fine now", description: "d", anchors: [anchorId] }) as any).error, undefined);
+  } finally { r.cleanup(); discard(other); }
+});
+
+test("and a write refuses when the sidecar is simply not there", async () => {
+  const r = await teamed();
+  try {
+    assert.equal((await sharedSync(r.root) as { error?: string }).error, undefined);
+    r.point(r.side + "-typo");
+    const { readAnchorStore } = await import("./store.js");
+    const anchorId = (await readAnchorStore(r.root)).anchors[0]!.id;
+    const filed = await ops.reportBug(r.root, { title: "x", description: "d", anchors: [anchorId] }) as any;
+    assert.match(filed.error ?? "", /nowhere to write/);
   } finally { r.cleanup(); }
 });

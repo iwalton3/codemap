@@ -18,7 +18,7 @@ import type { ScopeStatus, ScopeDiagnostic, LogEvent } from "./eventlog.js";
 import { scopesOnDisk, readScopeChecked, writerFor, rotateWriter, acknowledgeScope } from "./eventlog.js";
 import { findingsProjection, docsProjection, notesProjection, walkthroughsProjection, triageProjection, docsByNode, projectionFor } from "./shared-projections.js";
 import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
-import { resolveSidecar, scopeFor, sidecarIdentity, inUniverse, type SidecarConfig } from "./sidecar-config.js";
+import { resolveSidecar, scopeFor, sidecarIdentity, inUniverse, checkSidecarBinding, type SidecarConfig } from "./sidecar-config.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { ISO_DATE, parseAsOf, type BugWitness } from "./schema.js";
@@ -79,6 +79,11 @@ interface Bound { cfg: SidecarConfig; actor: Actor }
 function bind(root: string, via: { model?: string; harness?: string } = {}): Bound | { error: string } {
   const cfg = resolveSidecar(root);
   if (!cfg) return { error: NO_SIDECAR };
+  // Every shared WRITE comes through here, and a write to the wrong sidecar is worse than
+  // a refused one: the event lands in a stranger's log, the read correctly declines to
+  // fold it, and the op answers `ok` for a record that is in no table anywhere.
+  const bad = checkSidecarBinding(root, cfg);
+  if (bad) return bad;
   const actor = requireActor(root, via);
   if ("error" in actor) return actor;
   return { cfg, actor };
@@ -217,21 +222,6 @@ async function settleArrivals(root: string, cfg: SidecarConfig) {
  * and the top bar offers this on every page — where sending would be a surprise.
  */
 /**
- * The configured sidecar is not there, and this store has used one before.
- *
- * Two halves, and both are needed. A path that does not exist is ordinary on a FIRST
- * sync — `ensureSidecar` creates it, which is how somebody sets one up — so absence
- * alone is not an error. Absence when `shared_scope` already records folds from a
- * sidecar is a different thing entirely: a typo in `.codemap/sidecar`, a drive that is
- * not mounted, a sidecar this machine has not cloned. Left alone, `ensureSidecar`
- * silently mkdirs and `git init`s a BRAND NEW empty sidecar at the wrong path, and the
- * person is now on a team of one without being told.
- *
- * The reads deliberately do NOT refuse — see `logRootMissing` in `materialize.ts`, which
- * keeps serving the rows this store holds rather than folding the absence into an empty
- * projection. Reads degrade and say so; the transport stops.
- */
-/**
  * Scopes the canonical tables hold rows from that this sidecar does not have.
  *
  * The SYMPTOM of a repoint, computed rather than stored: a row's `source_scope` names
@@ -304,6 +294,21 @@ function rememberSidecar(root: string, cfg: { path: string }): void {
   if (lineage) writeStoreMeta(root, SIDECAR_LINEAGE, { lineage, path: cfg.path } satisfies SidecarMark);
 }
 
+/**
+ * The configured sidecar is not there, and this store has used one before.
+ *
+ * Two halves, and both are needed. A path that does not exist is ordinary on a FIRST
+ * sync — `ensureSidecar` creates it, which is how somebody sets one up — so absence
+ * alone is not an error. Absence when `shared_scope` already records folds from a
+ * sidecar is a different thing entirely: a typo in `.codemap/sidecar`, a drive that is
+ * not mounted, a sidecar this machine has not cloned. Left alone, `ensureSidecar`
+ * silently mkdirs and `git init`s a BRAND NEW empty sidecar at the wrong path, and the
+ * person is now on a team of one without being told.
+ *
+ * The reads deliberately do NOT refuse — see `logRootMissing` in `materialize.ts`, which
+ * keeps serving the rows this store holds rather than folding the absence into an empty
+ * projection. Reads degrade and say so; the transport stops.
+ */
 function sidecarVanished(root: string, cfg: { path: string }): { error: string } | null {
   if (existsSync(cfg.path)) return null;
   if (!hasFoldedFromSidecar(root)) return null;
@@ -487,7 +492,7 @@ export async function adoptSidecar(root: string) {
   };
 }
 
-/** Who else is on this sidecar, and whether their codemap agrees with ours. *//** Who else is on this sidecar, and whether their codemap agrees with ours. */
+/** Who else is on this sidecar, and whether their codemap agrees with ours. */
 export async function sharedStatus(root: string) {
   const cfg = resolveSidecar(root);
   if (!cfg) return { error: NO_SIDECAR };
@@ -639,8 +644,14 @@ export async function materializeFindingScopes(root: string): Promise<{ scope: s
     const which = projectionFor(scope)!;
     try {
       const { fresh, status, diagnostic } = await ensureMaterialized(root, cfg.path, scope, identity, which.fold, which.proj);
-      if (!fresh) blocked.push({ scope, reason: "rows are behind the log; the next sync will retry" });
-      else if (status !== "complete") blocked.push({ scope, reason: diagnostic?.detail ?? status });
+      // The DIAGNOSTIC first when there is one. `fresh: false` used to have a single cause
+      // — the fold gave up racing an appender, which the sentence below correctly calls
+      // retryable — and now has two: a sidecar that is absent or is not this store's,
+      // which is not retryable at all and comes with a diagnostic that says so. Reporting
+      // the retryable sentence over that tells somebody to wait for a sync that will refuse.
+      if (diagnostic) blocked.push({ scope, reason: diagnostic.detail });
+      else if (!fresh) blocked.push({ scope, reason: "rows are behind the log; the next sync will retry" });
+      else if (status !== "complete") blocked.push({ scope, reason: status });
     } catch (e: any) {
       blocked.push({ scope, reason: `could not fold: ${e?.message ?? e}` });
     }
@@ -930,6 +941,17 @@ export function checkBacklogInput(input: { until?: string; reason?: string }, ki
 }
 
 /**
+ * The `until` a record actually stores: the DATE part, nothing else.
+ *
+ * `ISO_DATE` is `^\d{4}-\d{2}-\d{2}(T|$)`, so it admits a bare trailing `T` and a full
+ * timestamp. Both then lose a day, because every reader compares `until <= asOf`
+ * LEXICOGRAPHICALLY against a date: `"2027-01-01T"` sorts after `"2027-01-01"`, so on the
+ * deadline itself the record still reads asleep. Slicing at the source means the guard,
+ * the two stores and the fold all hold the same ten characters.
+ */
+export const backlogUntil = (until: string): string => until.trim().slice(0, 10);
+
+/**
  * An ANCHOR-target finding witnesses its own target and nothing else.
  *
  * Without this a caller could point the witness at unrelated code — the record would keep
@@ -1009,7 +1031,7 @@ export async function backlogFinding(
   }
   const guard = checkBacklogInput(input);
   if (guard) return guard;
-  const until = input.until.trim();
+  const until = backlogUntil(input.until);
 
   // The code as it stands NOW. Best-effort: a finding whose anchor has already left the
   // tree still carries fine, it just has the date as its only release condition — which

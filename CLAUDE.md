@@ -264,9 +264,10 @@ oracle: the inbound check asks what the merge would add from the `merge-base` (a
 own tip it read the remote's still-damaged copy and locked the repairer out of publishing
 the repair), and `linesAt` skips unparseable lines (`erasedByMerge` otherwise restored the
 damaged line on every teammate's pull and pushed it back at whoever fixed it). Not a defence
-against hostile shards — that is not a threat this spends anything on. `appendEvents` repairs
-a torn tail instead of sealing it mid-file, where it is no longer distinguishable from
-corruption.
+against hostile shards — that is not a threat this spends anything on. `appendEvents` SEALS a torn tail in
+rather than truncating it — truncation was tried and reverted, because disk corruption that
+eats an event the shard already served leaves bytes identical to a torn append, so the
+repair deletes a real record silently. Loud beats quiet here every time.
 
 **Repointing `.codemap/sidecar` from one team's repo to another is REFUSED**, and the
 identity is the sidecar's oldest ROOT COMMIT — so a MOVE, a RE-CLONE and a sidecar that has
@@ -275,6 +276,11 @@ equality; each has a test, because a path check breaks all three). Reads decline
 transport refuses, and `codemap sidecar adopt` is the way through: it migrates nothing and
 the old sidecar's rows GO, which is survivable only because they are a PROJECTION — point
 back and sync and they fold again, which a test performs rather than asserts.
+
+**Every end guards the sidecar binding — read, write AND transport.** Reads decline to fold
+(and ask only when they are about to, or it is a `git` spawn per read); writes refuse in
+`bugLog`/`bind`, because without that a repoint made `report_bug` append to the STRANGER's
+log and answer `ok` for a bug in no table anywhere; the transport refuses.
 
 **An absent sidecar is not an empty one.** The fold is total, so folding zero events over a
 scope that has rows WRITES the empty result: a typo in `.codemap/sidecar` silently emptied

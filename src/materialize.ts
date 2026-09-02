@@ -210,11 +210,12 @@ export async function readCachedMerged<T>(
   proj: Projection<T>,
 ): Promise<Cached<T> & { fresh: boolean; folded: boolean }> {
   const d = db(root);
-  const gone = logRootMissing(logRoot) ?? wrongSidecar(root, logRoot);
-  if (gone) {
-    try { return { value: proj.read(d, key), fresh: false, folded: false, status: "blocked", diagnostic: gone }; }
-    catch { return { value: fold([], { readable: new Set() }), fresh: false, folded: false, status: "blocked", diagnostic: gone }; }
-  }
+  let checked: ScopeDiagnostic | null | undefined;
+  const unusable = () => (checked !== undefined ? checked : (checked = logRootMissing(logRoot) ?? wrongSidecar(root, logRoot)));
+  const decline = (gone: ScopeDiagnostic) => {
+    try { return { value: proj.read(d, key), fresh: false, folded: false, status: "blocked" as const, diagnostic: gone }; }
+    catch { return { value: fold([], { readable: new Set() }), fresh: false, folded: false, status: "blocked" as const, diagnostic: gone }; }
+  };
   const fingerprint = async () =>
     (await Promise.all(scopes.map((sc) => scopeFingerprint(logRoot, sc, identity)))).join("|");
 
@@ -232,6 +233,9 @@ export async function readCachedMerged<T>(
         d.prepare("DELETE FROM shared_scope WHERE scope = ?").run(key);
       }
     }
+
+    const gone = unusable();
+    if (gone) return decline(gone);
 
     const reads = await Promise.all(scopes.map(async (sc) => ({ sc, ...await readScopeChecked(logRoot, sc) })));
     const events = sortEvents(reads.flatMap((r) => r.events));
@@ -266,6 +270,8 @@ export async function readCachedMerged<T>(
   // Given up after three attempts: somebody is appending faster than the fold. Answer from
   // the log rather than caching something already behind — and say the rows are not fresh,
   // because a caller that queried them anyway would get a complete-looking answer.
+  const lastCheck = unusable();
+  if (lastCheck) return decline(lastCheck);
   const reads = await Promise.all(scopes.map(async (sc) => ({ sc, ...await readScopeChecked(logRoot, sc) })));
   const events = sortEvents(reads.flatMap((r) => r.events));
   const readable = new Set(reads.filter((r) => r.status !== "blocked").map((r) => r.sc));
@@ -342,23 +348,6 @@ export class CorruptProjection extends Error {}
 export interface Cached<T> extends ScopeStatus { value: T }
 
 /**
- * Is the configured sidecar actually there?
- *
- * **An absent log root is NOT an empty log, and folding it as one destroys rows.** The
- * fold is total — it computes the whole projection from the whole scope — so folding
- * zero events over a scope that has rows writes the empty result and every surface then
- * agrees the team has nothing. Reproduced: point `.codemap/sidecar` at a path that is
- * not there (a typo, an unmounted drive, a sidecar this machine has not cloned yet), read
- * once, and the bugs are gone from the table. It is recoverable — the log is authoritative
- * and restoring the path restores them — but it is silently wrong meanwhile, which is the
- * same failure a corrupt shard used to produce one layer down.
- *
- * The directory EXISTING is the whole test, deliberately. A `.git` check would also be
- * true of a broken sidecar, but it is false of a legitimate one that has been configured
- * and not yet initialised — a state the write path creates on purpose — so it would refuse
- * reads that are fine today.
- */
-/**
  * Is this the sidecar this store has been folding from?
  *
  * The other half of `logRootMissing`, and it destroys in exactly the same way. A fold is
@@ -391,6 +380,23 @@ function wrongSidecar(root: string, logRoot: string): ScopeDiagnostic | null {
   };
 }
 
+/**
+ * Is the configured sidecar actually there?
+ *
+ * **An absent log root is NOT an empty log, and folding it as one destroys rows.** The
+ * fold is total — it computes the whole projection from the whole scope — so folding
+ * zero events over a scope that has rows writes the empty result and every surface then
+ * agrees the team has nothing. Reproduced: point `.codemap/sidecar` at a path that is
+ * not there (a typo, an unmounted drive, a sidecar this machine has not cloned yet), read
+ * once, and the bugs are gone from the table. It is recoverable — the log is authoritative
+ * and restoring the path restores them — but it is silently wrong meanwhile, which is the
+ * same failure a corrupt shard used to produce one layer down.
+ *
+ * The directory EXISTING is the whole test, deliberately. A `.git` check would also be
+ * true of a broken sidecar, but it is false of a legitimate one that has been configured
+ * and not yet initialised — a state the write path creates on purpose — so it would refuse
+ * reads that are fine today.
+ */
 function logRootMissing(logRoot: string): ScopeDiagnostic | null {
   if (existsSync(logRoot)) return null;
   return {
@@ -426,15 +432,19 @@ export async function readCached<T>(
   proj: Projection<T>,
 ): Promise<Cached<T>> {
   const d = db(root);
-  // Before anything reads or writes: an absent sidecar must not be folded as an empty
-  // one. See `logRootMissing`. Serve whatever rows are stored, marked non-authoritative.
-  const gone = logRootMissing(logRoot) ?? wrongSidecar(root, logRoot);
-  if (gone) {
+  // Checked lazily, and only on the path that is about to FOLD. A cache hit serves rows
+  // and touches no sidecar, so asking there cost a `git merge-base` on every read of
+  // every scope — which is precisely the work the materializer exists to avoid. Memoised
+  // per call because the retry loop below can come round again.
+  let checked: ScopeDiagnostic | null | undefined;
+  const unusable = () => (checked !== undefined ? checked : (checked = logRootMissing(logRoot) ?? wrongSidecar(root, logRoot)));
+  /** Serve what is stored, fold nothing, discard nothing. See `logRootMissing`. */
+  const decline = (gone: ScopeDiagnostic): Cached<T> => {
     try { return { value: proj.read(d, scope), status: "blocked", diagnostic: gone }; }
     // No rows to serve either. `fold([])` is the empty value, and the point is that it
     // is NOT written — nothing is discarded and nothing claims to describe the log.
     catch { return { value: fold([]), status: "blocked", diagnostic: gone }; }
-  }
+  };
   for (let attempt = 0; attempt < 3; attempt++) {
     const before = await scopeFingerprint(logRoot, scope, identity);
     const row = d.prepare("SELECT fingerprint, status, diagnostic FROM shared_scope WHERE scope = ?").get(scope) as
@@ -450,6 +460,9 @@ export async function readCached<T>(
         d.prepare("DELETE FROM shared_scope WHERE scope = ?").run(scope);
       }
     }
+
+    const gone = unusable();
+    if (gone) return decline(gone);
 
     const { events, ...status } = await readScopeChecked(logRoot, scope);
     foldsRun++;
@@ -476,6 +489,8 @@ export async function readCached<T>(
   }
   // Somebody is appending faster than we can fold. Answer from the log directly
   // rather than failing or caching something we know is already behind.
+  const lastCheck = unusable();
+  if (lastCheck) return decline(lastCheck);
   const { events, ...status } = await readScopeChecked(logRoot, scope);
   foldsRun++;
   return { value: fold(events), ...status };
@@ -514,10 +529,6 @@ export async function ensureMaterialized<T>(
   fold: (events: LogEvent[]) => T,
   proj: Projection<T>,
 ): Promise<{ fresh: boolean; folded: boolean } & ScopeStatus> {
-  const gone = logRootMissing(logRoot) ?? wrongSidecar(root, logRoot);
-  // `fresh: false` is the honest answer and callers already handle it as "the rows are
-  // behind the log". Nothing is folded, so nothing is discarded.
-  if (gone) return { fresh: false, folded: false, status: "blocked", diagnostic: gone };
   /** The stored verdict, or null if the row does not describe the shards on disk. */
   const current = async (): Promise<ScopeStatus | null> => {
     const before = await scopeFingerprint(logRoot, scope, identity);
@@ -530,6 +541,11 @@ export async function ensureMaterialized<T>(
   // `fresh` is "the rows are up to date", which is true both on a cache hit and right
   // after a fold. Only this branch did no work.
   if (hit) return { fresh: true, folded: false, ...hit };
+  // Only now, on the path that would fold. `fresh: false` is the honest answer and callers
+  // already handle it as "the rows are behind the log"; nothing is folded, so nothing is
+  // discarded. Asking before the cache hit above put a `git merge-base` on every read.
+  const gone = logRootMissing(logRoot) ?? wrongSidecar(root, logRoot);
+  if (gone) return { fresh: false, folded: false, status: "blocked", diagnostic: gone };
   // The status comes back even when the rows do not: `readCached` folds the log
   // directly on its give-up path, and that fold saw the scope. Returning
   // `fresh: false` with no verdict would make a blocked scope indistinguishable

@@ -744,13 +744,16 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         // `acknowledgements` refuses for the same reason, and every deferral in the
         // measured data was in exactly that state.
         if (!until || !ISO_DATE.test(until) || !reason) break;
+        // The DATE part only — see the same slice in `foldBugs`. `ISO_DATE` admits a
+        // trailing `T`, and `until` is compared lexicographically against a date.
+        const day = until.slice(0, 10);
         const w = obj(d, "witness");
         // Same binding rule, and it drops only the WITNESS: the deadline is the guaranteed
         // release condition and a decision somebody made should not be lost over a bad
         // optional field. Date-only is a state this already supports.
         const wOk = w && (f.target.kind !== "anchor" || str(w, "anchorId") === f.target.id);
         f.backlogged = {
-          until, reason, by: e.actor, at: e.at,
+          until: day, reason, by: e.actor, at: e.at,
           ...(wOk && str(w, "anchorId") && str(w, "bodyHash")
             ? { witness: { anchorId: str(w, "anchorId")!, bodyHash: str(w, "bodyHash")! } } : {}),
           ...(str(d, "system") ? { ref: { system: str(d, "system")!, key: str(d, "key"), url: str(d, "url"), at: e.at, by: e.actor } } : {}),

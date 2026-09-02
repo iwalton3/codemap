@@ -2433,12 +2433,17 @@ class BugsPage extends Component {
   bugSort() { return BUG_SORTS.includes(this.props.query.sort) ? this.props.query.sort : 'severity'; }
   async applySel() {
     const id = this.props.query.bug;
-    // The backlog form belongs to the bug it was opened on. Left standing, selecting
-    // another bug shows the previous one's draft over it, which is one careless click
-    // from deferring the wrong record with somebody else's reason.
-    this.state.backlogOpen = false;
-    this.state.backlogUntil = '';
-    this.state.backlogReason = '';
+    // The backlog form belongs to the bug it was opened on, so it resets when the
+    // SELECTION moves — and only then. Resetting unconditionally also fired on the
+    // reload every write does, so a refused backlog ("needs a reason") wiped the date
+    // the user had picked and closed the form, leaving an error pointing at inputs that
+    // were no longer on screen.
+    if (id !== this._selBug) {
+      this._selBug = id;
+      this.state.backlogOpen = false;
+      this.state.backlogUntil = '';
+      this.state.backlogReason = '';
+    }
     if (!id) { this.state.detail = null; return; }
     this.state.detailPending = true;
     try { this.state.detail = await api('/api/bug', { u: this.props.params.universe, id }); }

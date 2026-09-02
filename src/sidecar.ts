@@ -117,10 +117,10 @@ const branchOf = (root: string): string => g(root, ["symbolic-ref", "--short", "
  * push would leave the damage in the local history with a clean `git status` over it —
  * which the next push would then publish without ever looking.
  *
- * Neither repairs, and the asymmetry with `healTail` is deliberate. A torn tail is a
- * partial write nothing ever read, so removing it is not a decision; a fully-written
- * line that is not JSON means something unknown happened to the file, and quietly
- * dropping it would destroy the evidence of whatever did.
+ * Neither repairs, and nothing else here does either — see `separatorFor` in `eventlog.ts`
+ * for why a torn tail is sealed in rather than truncated. Quietly dropping bytes that do
+ * not parse would destroy the evidence of whatever put them there, and cannot tell a
+ * crash from a disk that ate an event somebody had already read.
  */
 
 /** Damage only — the events are `readShard`'s business, not a gate's. */
@@ -143,7 +143,13 @@ const damageDetail = (damage: ShardDamage[]): string =>
  */
 function damagedWorkingShards(root: string): ShardDamage[] {
   const out: ShardDamage[] = [];
-  for (const entry of g(root, ["status", "--porcelain", "-z", "--untracked-files=all"]).out.split("\0")) {
+  // `gRaw`, NOT `g`. `g` trims, and porcelain's status field is two columns wide with a
+  // LEADING SPACE for the ordinary case — an unstaged modification is `" M path"`. Trimming
+  // ate that space on the FIRST entry only, so the regex below failed, the fallback took
+  // the whole string as a path, the read threw ENOENT into the catch, and the
+  // alphabetically-first modified shard was silently never checked. The gate looked like
+  // it worked because every entry after the first still had its space.
+  for (const entry of gRaw(root, ["status", "--porcelain", "-z", "--untracked-files=all"]).out.split("\0")) {
     if (!entry) continue;
     // `XY <path>`; a rename also emits its source as a bare following entry, which has
     // no status prefix. Shards are never renamed, so taking the whole string when the
@@ -286,22 +292,16 @@ export function sidecarLineage(root: string): string | null {
 /**
  * Is the sidecar at `root` the one `lineage` came from — moved, re-cloned or merged?
  *
- * **Memoised on a POSITIVE answer, and that is load-bearing rather than an
- * optimisation.** `wrongSidecar` calls this on every cached read, which is the hot path
- * the whole materializer exists to keep free of work — one process spawn per read would
- * undo it. A `yes` cannot go stale the way this is used: HEAD only advances, so a commit
- * that is an ancestor stays one. A `no` is NOT cached, because a sidecar that has not yet
- * pulled the team's history becomes the right one when it does; and a wrong sidecar is an
- * error state, where paying a spawn per read costs nothing worth saving.
+ * **Not memoised, deliberately.** A positive cache was tried on the argument that HEAD
+ * only advances, so a commit that is an ancestor stays one. Nothing enforces that: an
+ * orphan checkout replaces the history at the same path, git then correctly says the
+ * recorded lineage is NOT an ancestor, and a process-lifetime cache kept answering
+ * `true` — in a long-running `serve.js`, for as long as it ran. The cache existed to keep
+ * a spawn off the hot read path; the callers now ask only when they are about to fold,
+ * which is when they are already doing real work, so there is nothing left to buy.
  */
-const sameCache = new Set<string>();
-
 export function isSameSidecar(root: string, lineage: string): boolean {
-  const key = `${root}\0${lineage}`;
-  if (sameCache.has(key)) return true;
-  const ok = g(root, ["merge-base", "--is-ancestor", lineage, "HEAD"]).ok;
-  if (ok) sameCache.add(key);
-  return ok;
+  return g(root, ["merge-base", "--is-ancestor", lineage, "HEAD"]).ok;
 }
 
 export const MANIFEST_DIR = "manifests";

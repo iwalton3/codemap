@@ -18,6 +18,8 @@
 import { readFileSync } from "node:fs";
 import { existsSync, statSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { readStoreMeta, writeStoreMeta, hasFoldedFromSidecar, SIDECAR_LINEAGE, type SidecarMark } from "./store.js";
+import { sidecarLineage, isSameSidecar } from "./sidecar.js";
 import { CODEMAP_DIR } from "./schema.js";
 import { originSlug } from "./git.js";
 
@@ -177,4 +179,44 @@ export const scopeFor = (cfg: SidecarConfig, kind: string, key: string | number)
 export function inUniverse(scope: string, universe: string): boolean {
   const rest = scope.slice(scope.indexOf("/") + 1);
   return rest === universe || rest.startsWith(universe + "/");
+}
+
+/**
+ * May this store bind to the sidecar it is configured with — for a WRITE?
+ *
+ * The reads have their own halves (`logRootMissing` / `wrongSidecar` in `materialize.ts`,
+ * which decline to fold and keep serving) and the transport has its refusals in
+ * `ops-shared.ts`. This is the third end, and leaving it out was a hole the other two
+ * disguised: `bugLog` and `bind` resolve the config and hand it straight to
+ * `ensureSidecar`, so after a repoint `report_bug` appended its event to the STRANGER's
+ * log, the read then correctly declined to fold it, and the op answered `ok` with an id
+ * for a bug that was in no table on any machine. Measured, not reasoned about.
+ *
+ * Same two conditions as the transport, in the same order and for the same reasons:
+ * an absent path this store has used before, then a path whose history is not the one
+ * this store's rows came from. Recorded on first sight, which grandfathers every
+ * existing store — see `checkSidecarIdentity`, which this is the write-side twin of.
+ */
+export function checkSidecarBinding(root: string, cfg: SidecarConfig): { error: string } | null {
+  if (!existsSync(cfg.path)) {
+    if (!hasFoldedFromSidecar(root)) return null;   // a first sync legitimately creates it
+    return { error:
+      `the sidecar this store has been using is not at ${cfg.path}, so there is nowhere to write. `
+      + `Writing would create a NEW, empty sidecar there and put you on a team of one, silently. `
+      + `Check .codemap/sidecar for a typo, mount the drive, or clone the sidecar to that path — `
+      + `nothing has been lost.` };
+  }
+  const mark = readStoreMeta<SidecarMark>(root, SIDECAR_LINEAGE);
+  const here = sidecarLineage(cfg.path);
+  if (!mark?.lineage) {
+    if (here) writeStoreMeta(root, SIDECAR_LINEAGE, { lineage: here, path: cfg.path } satisfies SidecarMark);
+    return null;
+  }
+  if (here && isSameSidecar(cfg.path, mark.lineage)) return null;
+  return { error:
+    `${cfg.path} is a different sidecar from the one this store has been using `
+    + `(${mark.lineage.slice(0, 12)}, last seen at ${mark.path}). Refusing to write: the event would `
+    + `land in that sidecar's log while this store's rows still describe the old one, so it would be `
+    + `in no table on any machine. Fix the path, or run \`codemap sidecar adopt\` if the move is `
+    + `deliberate.` };
 }

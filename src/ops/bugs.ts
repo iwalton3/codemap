@@ -254,8 +254,21 @@ export async function listBugs(
   if (opts.open) bugs = bugs.filter((b) => !isClosed(b.state));
   // The deferral register — its own list, not a bucket, because bugs already have a
   // queue people read and the point is that the main one means "what we are doing".
+  //
+  // **Only the WORKING views drop a sleeping bug, and `all` is not one of them.** The
+  // first version dropped it from every view that was not the register, which quietly
+  // broke the one hard constraint here — out of the working queue and out of NOTHING
+  // else. It was reachable from the product: a search hit for a backlogged bug links to
+  // `state=all`, so clicking it opened a list that did not contain the bug you clicked.
+  // An explicit `state=` filter is a question about state, not a queue, so it answers
+  // with everything in that state too.
+  // The WORKING views name themselves — `open` is what the default page sends, and
+  // `queue`/`asked` are the two narrower ones. Everything else (an explicit `state=`, the
+  // "all" view, and a bare `list_bugs`) is a question rather than a queue, and answers
+  // with the deferred ones in it.
+  const workingView = !!opts.open || !!opts.queue || !!opts.asked;
   if (opts.backlog) bugs = bugs.filter((b) => !!b.backlogged);
-  else bugs = bugs.filter((b) => !asleep(b));
+  else if (workingView) bugs = bugs.filter((b) => !asleep(b));
 
   let rows = bugs.map((b) => ({ ...publicView(b, changedFor(b)), backlogged: backloggedRow(b, backlogState(b)) }));
   // The queue is the whole point of sharing them: what needs a PERSON here. Drift is in
@@ -279,8 +292,8 @@ export async function listBugs(
   // identical to ignoring the thing — the reason `sleeping` is excluded from the
   // finding backlog's `attention`. `backlogged` and `sleeping` below are the other half,
   // so nothing is uncounted.
-  const working = all.filter((b) => !asleep(b));
-  const everyRow = working.map((b) => ({ ...publicView(b, changedFor(b)), backlogged: backloggedRow(b, backlogState(b)) }));
+  const awake = all.filter((b) => !asleep(b));
+  const everyRow = awake.map((b) => ({ ...publicView(b, changedFor(b)), backlogged: backloggedRow(b, backlogState(b)) }));
   const queueAll = everyRow.filter((r) => r.waitingOnYou || r.possiblyFixed);
   const askedAll = everyRow.filter(isAsk);
   if (opts.queue) rows = rows.filter((r) => r.waitingOnYou || r.possiblyFixed);
@@ -296,8 +309,10 @@ export async function listBugs(
   rows = [...rows].sort(cmp[sort]);
 
   return {
-    counts: working.reduce((m, b) => ((m[b.state] = (m[b.state] ?? 0) + 1), m), {} as Record<string, number>),
-    open: working.filter((b) => !isClosed(b.state)).length,
+    // Per-STATE counts are over everything, because the per-state lists are. Only the
+    // queue counts below narrow, and they narrow to exactly what their own list shows.
+    counts: all.reduce((m, b) => ((m[b.state] = (m[b.state] ?? 0) + 1), m), {} as Record<string, number>),
+    open: awake.filter((b) => !isClosed(b.state)).length,
     shared: all.filter((b) => b.origin).length,
     waitingOnYou: queueAll.length,
     /** How many are somebody asking you to close, or reported fixed. Of ALL of them. */
@@ -547,7 +562,7 @@ export async function backlogBugOp(
   // then wrote different things, and `" 2027-01-01"` sorts below every digit — so an
   // identical request produced a bug due for ever locally and asleep until 2027 on the
   // team's copy.
-  const until = input.until.trim(), reason = input.reason.trim();
+  const until = shared.backlogUntil(input.until), reason = input.reason.trim();
 
   const bug = "bug" in r ? r.bug : r.local;
   // Best-effort, like the finding path: a bug whose code has already left the tree still
@@ -736,11 +751,27 @@ export async function publishBugs(root: string, opts: { dryRun?: boolean; ids?: 
     };
   }
 
+  // A DEFERRAL cannot be published by an agent, and skipping it loudly is the only honest
+  // option. `publishBug` re-emits `bug.backlogged` as the PUBLISHER, and the fold drops an
+  // agent's — correctly, since an agent may not grant one — so publishing here would put
+  // the bug on the team stripped of a person's decision, back in everybody's working
+  // queue, with `published: N` and no mention of it. Verified by folding the log after an
+  // agent publish: the bug arrives and the deferral is gone.
+  const actor = requireActor(root);
+  const byAnAgent = !("error" in actor) && isAgentActor(actor);
+  const deferred = byAnAgent ? local.filter((b) => !!b.backlogged) : [];
+  const publishable = byAnAgent ? local.filter((b) => !b.backlogged) : local;
+
   const published: string[] = [];
-  for (const b of local) { await publishBug(log, root, b); published.push(b.id); }
+  for (const b of publishable) { await publishBug(log, root, b); published.push(b.id); }
   return {
     universe: log.cfg.universe, published: published.length, ids: published,
-    note: published.length ? "run `codemap sync` to send them" : "nothing local left to publish",
+    ...(deferred.length ? { skipped: deferred.map((b) => b.id) } : {}),
+    note: deferred.length
+      ? `${deferred.length} bug(s) carry a person's deferral and were NOT published: publishing them `
+        + `from an agent session would drop it, because the fold refuses an agent's. Ask a person to `
+        + `run this.`
+      : published.length ? "run `codemap sync` to send them" : "nothing local left to publish",
   };
 }
 

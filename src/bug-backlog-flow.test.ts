@@ -75,8 +75,12 @@ test("a backlogged bug leaves the WORKING queue and nothing else", async () => {
     const awake = await file(r.root, r.anchorId, "ledger totals disagree");
     ok(await ops.backlogOn(r.root, { id: asleep, until: "2027-01-31", reason: "the settlement rewrite lands next quarter" }));
 
-    const working = await ops.listBugs(r.root) as any;
+    // `open` is what the browser's default page sends, and it is the ONLY thing deferring
+    // changes. A bare listing is a question rather than a queue and still answers with it.
+    const working = await ops.listBugs(r.root, { open: true }) as any;
     assert.deepEqual(ids(working), [awake], "out of the queue people read — that is what deferring is for");
+    assert.ok(ids(await ops.listBugs(r.root) as any).includes(asleep),
+      "and out of nothing else: an unfiltered listing still has it");
     assert.equal(working.backlogged, 1, "the register's size is reported beside the queue, not hidden");
     assert.equal(working.sleeping, 1);
     // …and the queue counts are of what the queues can SHOW. Counting a live deferral as
@@ -97,7 +101,12 @@ test("a backlogged bug leaves the WORKING queue and nothing else", async () => {
     assert.equal(found.bugs[0]!.backlogged.until, "2027-01-31",
       "and marked, so it never reads as an ordinary open bug nobody is doing");
 
-    // `state=all` is the way back to everything, and a deferral is not a state.
+    // `state=all` is the way back to everything, and a deferral is not a state. This is
+    // the half a first version broke: the search page links a backlogged hit to
+    // `state=all`, so clicking it opened a list that did not contain the bug you clicked.
+    assert.ok(ids(await ops.listBugs(r.root, {}) as any).includes(asleep), "`all` means all");
+    assert.ok(ids(await ops.listBugs(r.root, { state: "created" }) as any).includes(asleep),
+      "and an explicit state is a question about state, not a queue");
     assert.ok(ids(await ops.listBugs(r.root, { backlog: true }) as any).includes(asleep));
     const detail = await ops.bugDetail(r.root, asleep) as any;
     assert.equal(detail.backlogged.state, "sleeping", "the detail agrees with the list about one bug");
@@ -118,7 +127,7 @@ test("the release condition fires on its own — a due or woken bug is back in t
     // half only codemap can offer.
     r.edit(V2);
 
-    const working = ids(await ops.listBugs(r.root, { asOf: "2026-09-01" }) as any);
+    const working = ids(await ops.listBugs(r.root, { open: true, asOf: "2026-09-01" }) as any);
     assert.ok(working.includes(due), "you said you would come back, and the date has passed");
     assert.ok(working.includes(woken), "and somebody is editing the code the deferral was about");
     assert.ok(!working.includes(sleeping), "the one still asleep stays out");
@@ -212,10 +221,10 @@ test("with a sidecar it is an EVENT, so a teammate's clone sees the same decisio
       "in the log, not only in this machine's row — a local mutation of a fold-owned row is the ownership failure");
     assert.deepEqual(fromLog.backlogged?.witnesses?.map((w) => w.anchorId), [r.anchorId]);
 
-    assert.deepEqual(ids(await ops.listBugs(r.root) as any), [], "and the working queue is empty here too");
+    assert.deepEqual(ids(await ops.listBugs(r.root, { open: true }) as any), [], "and the working queue is empty here too");
     ok(await ops.releaseBacklogOn(r.root, id, "we are doing it now"));
     assert.equal((await readBugsShared(cfg.path, cfg.universe)).get(id)!.backlogged, undefined);
-    assert.deepEqual(ids(await ops.listBugs(r.root) as any), [id]);
+    assert.deepEqual(ids(await ops.listBugs(r.root, { open: true }) as any), [id]);
   } finally { r.cleanup(); }
 });
 
@@ -241,7 +250,7 @@ test("a local deferral survives being published to the team", async () => {
     const shared = (await readBugsShared(cfg.path, cfg.universe)).get(id)!;
     assert.equal(shared.backlogged?.until, "2099-01-01", "the deferral went with it");
     assert.equal(shared.backlogged?.reason, "the rewrite lands next quarter");
-    assert.deepEqual(ids(await ops.listBugs(r.root) as any), [], "so it stays out of the working queue");
+    assert.deepEqual(ids(await ops.listBugs(r.root, { open: true }) as any), [], "so it stays out of the working queue");
   } finally { r.cleanup(); }
 });
 
@@ -272,5 +281,55 @@ test("the dashboard does not count a live deferral as work", async () => {
     assert.equal(after.bugs.sleeping, 1);
     assert.equal(after.attention, before.attention - 1,
       "counting a live deferral as debt makes deferring honestly look identical to ignoring it");
+  } finally { r.cleanup(); }
+});
+
+/**
+ * An AGENT publishing must not strip a person's deferral on the way to the team.
+ *
+ * `publishBug` re-emits `bug.backlogged` as the PUBLISHER, and the fold drops an agent's —
+ * correctly, since an agent may not grant one. So publishing from an agent session put the
+ * bug on the team with the deferral gone, back in everybody's working queue, while the
+ * result said `published: N` and nothing else.
+ */
+test("an agent publishing a deferred bug skips it and says so, rather than stripping it", async () => {
+  // NO sidecar at first: with one configured a bug goes straight to the log and there is
+  // nothing to publish. `publishBugs` is for the rows that predate the sidecar, which is
+  // exactly where a person's deferral can already be sitting.
+  const r = await repo();
+  try {
+    const deferred = await file(r.root, r.anchorId, "deferred");
+    const ordinary = await file(r.root, r.anchorId, "ordinary");
+    ok(await ops.backlogOn(r.root, { id: deferred, until: "2099-01-01", reason: "not now" }));
+    writeFileSync(join(r.root, ".codemap", "sidecar"), r.side, "utf8");
+
+    const { markAgentSession, clearAgentSession } = await import("./identity.js");
+    markAgentSession();
+    let asAgent: any;
+    try { asAgent = await ops.publishBugs(r.root, {}); } finally { clearAgentSession(); }
+    assert.deepEqual(asAgent.skipped, [deferred], "the deferred one is held back");
+    assert.deepEqual(asAgent.ids, [ordinary], "and the ordinary one still goes");
+    assert.match(asAgent.note, /Ask a person/);
+
+    // Mutation check: a person publishes it, deferral intact. Without the skip the agent
+    // run above would have published it here with `backlogged` silently absent.
+    const asPerson = await ops.publishBugs(r.root, {}) as any;
+    assert.deepEqual(asPerson.ids, [deferred]);
+    const cfg = resolveSidecar(r.root)!;
+    assert.equal((await readBugsShared(cfg.path, cfg.universe)).get(deferred)!.backlogged?.until, "2099-01-01");
+  } finally { r.cleanup(); }
+});
+
+test("a deadline keeps only its DATE, so it cannot sleep a day past itself", async () => {
+  // `ISO_DATE` admits a trailing `T` and a full timestamp, and every reader compares
+  // `until <= asOf` lexicographically against a date — so anything past the tenth
+  // character sorts after the deadline.
+  const r = await repo();
+  try {
+    const id = await file(r.root, r.anchorId, "x");
+    ok(await ops.backlogOn(r.root, { id, until: "2027-01-01T00:00:00Z", reason: "not now" }));
+    const row = (await ops.listBugs(r.root, { backlog: true, asOf: "2027-01-01" }) as any).bugs[0]!;
+    assert.equal(row.backlogged.until, "2027-01-01", "stored as a date");
+    assert.equal(row.backlogged.state, "due", "and due ON the deadline, not the day after");
   } finally { r.cleanup(); }
 });
