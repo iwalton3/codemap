@@ -1,7 +1,7 @@
 # Business knowledge capture — the measurement, and what it settled
 
 > **Kind: measurement + settled design — NOT BUILT.** Measured 2026-09-03 against
-> `b12f42e`, over one person's own transcript archive. It supersedes
+> `196ce59`, over one person's own transcript archive. It supersedes
 > `docs/PROPOSAL-drive-by-requirements.md`, which is gone from the tree and — unlike the
 > retired root proposals — was **never committed**, so there is no `<sha>^` to recover it
 > from. Its argument is carried here rather than cited: the gap, the two signals, the

@@ -843,7 +843,7 @@ Four things about the shape:
 - **Nothing here is stored as a status.** A rate is derived from the observation history
   every time it is asked for, so it clears by being looked at again and never by anybody
   marking it clear. (An earlier draft named a `suspect` bucket on `ScrubPlan` and a
-  `verdict` on a `Scrub` record; both went when `31ce28c` folded the scrub into the audit,
+  `verdict` on a `Scrub` record; both went when `cd4b897` folded the scrub into the audit,
   and neither exists.)
 
 The third pathology — *fired → was edited → now quiet* — is not a rate and neither rate
@@ -1050,7 +1050,7 @@ carries the detail and the reasoning:
   one: *consequence* is about the rule and routes adjudication authority, *priority* is
   about one instance of not-conforming and already exists on `Acknowledgement`.
 
-**The web front end now carries the whole surface** (`5b8f399`, `33d6f9c`): nine
+**The web front end now carries the whole surface** (`54fab6e`, `c2e8130`): nine
 `/api/standard/*` reads plus the POST route for the five acts only a principal may perform,
 and seven pages under `/#/u/:u/standard/`. `src/standard-reach.test.ts` fails when an op
 reaches neither front end, or when a route no page fetches.

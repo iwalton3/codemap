@@ -224,7 +224,7 @@ migrating actor, and say so.
 
 ## Steps
 
-1. ~~**`METHODOLOGY` rewrite + dangling references.**~~ **DONE** (`15c1ee4`). One
+1. ~~**`METHODOLOGY` rewrite + dangling references.**~~ **DONE** (`a9ae214`). One
    reference was not a typo: `get_anchor` takes no `ref`, so an MCP agent had no way to
    read a PR head's source while two descriptions named `pr_packet` — an op that existed
    and was never exposed. It is a tool now. Cover the PR review path, state
@@ -232,7 +232,7 @@ migrating actor, and say so.
    change, no migration. Largest behavioural lever, lowest risk — do it first, and
    before the surface changes, so the document describes the surface as it is today
    rather than as it will be.
-2. ~~**Canonical `findings` table**~~ **DONE** (`e022b98`, `34c0caa`, `629f91b`).
+2. ~~**Canonical `findings` table**~~ **DONE** (`834f7a0`, `fbfda15`, `5301d3f`).
    Keyed like `triage`, NOT like `bugs`: a universe has one bugs scope, so an id alone
    identifies a bug, but findings have one scope per pull request and a log can carry
    the same id in two of them. An id-only key silently dropped the second, and the
@@ -390,7 +390,7 @@ blocks what.
      answer `{ok:true}` for.
    - **Notes never wrote through.** `mirrorNote` appended and returned, so the row
      appeared only when something else folded — and every canonical reader queries SQLite.
-     Findings were fixed for this in `34c0caa`; notes were the last kind that skipped it.
+     Findings were fixed for this in `fbfda15`; notes were the last kind that skipped it.
    - **The note store holds 96 findings** on the primary universe (45 also rows in
      `findings`, 36 anchors that rendered the same finding twice — once as a note with no
      PR, tier or thread, once as the finding that has them). `annotate(kind:"finding")`

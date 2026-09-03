@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
  * BINDINGS, not what the CSS then does with the element — so a card that renders
  * as a collapsed inline run is invisible to both and to the test suite.
  *
- * It has shipped once. `23f4876` swept `<div on-click>` to `<a href>` across the
+ * It has shipped once. `920ea8a` swept `<div on-click>` to `<a href>` across the
  * app, which is right — a link should be a link — but an `<a>` is `display: inline`
  * and a `<div>` is not, and `.flow-card` was styled as a block card with no
  * `display` of its own. The flows listing was broken from that commit until it was

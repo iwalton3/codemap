@@ -4,7 +4,7 @@ Normative for `backlog`, `rewitness` and `findingBacklog`. Read it before changi
 any of them.
 
 **As-built.** It supersedes the two proposals this work was picked up from and carries
-everything they held; they are recoverable at `git show f22f36c^:PROPOSAL-bug-backlog.md`
+everything they held; they are recoverable at `git show 9a7b1a8^:PROPOSAL-bug-backlog.md`
 and `…:PROPOSAL-findings-in-search.md`. Where a proposal left a call open, the decision
 taken is recorded below rather than the option list.
 

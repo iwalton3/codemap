@@ -9,11 +9,11 @@ import { join } from "node:path";
  * The rule `CLAUDE.md` states as *"every end guards the sidecar binding — read, write AND
  * transport"*, made checkable. It has cost two rounds already and both are in the log:
  *
- * - `5b9fce7` found `bind` and `bugLog` guarding while eight call sites resolved the
+ * - `63fd730` found `bind` and `bugLog` guarding while eight call sites resolved the
  *   config themselves and handed it to `ensureSidecar` — so `report_bug` refused while
  *   `annotate` answered `shared: true` into a stranger's log. **Guarding two doors of ten
  *   was worse than guarding none**, because the comment on `bind` then lied about the rest.
- * - `5d9f747` found the consolidated door collapsing "no sidecar" and "the wrong sidecar"
+ * - `8863d08` found the consolidated door collapsing "no sidecar" and "the wrong sidecar"
  *   into one quiet null, and swept nine more sites.
  *
  * Between them the rule was enforced by a comment, and answering "does every write go
@@ -97,7 +97,7 @@ test("only a door composes the binding check itself", () => {
   assert.deepEqual(offenders, [],
     "these inline the door's two steps (`resolveSidecar` then `checkSidecarBinding`) "
     + "instead of calling it. That passes the write check above while making the door one "
-    + "of several, which is exactly the state `5b9fce7` found: a guard whose comment "
+    + "of several, which is exactly the state `63fd730` found: a guard whose comment "
     + "claimed a reach it did not have");
 
   for (const p of Object.keys(IS_A_DOOR)) {

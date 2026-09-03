@@ -541,7 +541,7 @@ It also retracts the "may be deliberate" hedge I put on the `sha256:absent` path
 Reported by an agent working PR #270, as opposed to bugs in a single tool call. Kept
 verbatim below; the status line under each heading is what became of it.
 
-**All of §1, §2 and §8 are FIXED as of `1c11816`.** §3, §4 and §5 are open. §6, §7 and §8's
+**All of §1, §2 and §8 are FIXED as of `489183d`.** §3, §4 and §5 are open. §6, §7 and §8's
 second half were already credit rather than complaint.
 
 ## 2026-08-25 (night) — a fixed finding still reads as a live defect
@@ -558,7 +558,7 @@ care on my side could have fixed.
 
 ### 1. `comment` is immutable once confirmed, so "fixed" is unsayable
 
-> **FIXED (`1c11816`), and not the way this proposed.** The gate was not kept-and-rendered;
+> **FIXED (`489183d`), and not the way this proposed.** The gate was not kept-and-rendered;
 > it was moved. `mayRevise` is now unconditional — an agent may replace the submitter-facing
 > `comment` at any point — and `severity` alone keeps a gate, on confirmation only. The
 > reasoning is this item's own: the conflation between *rewriting the claim* and *recording
@@ -604,7 +604,7 @@ point of the gate, and it is preserved.
 
 ### 2. `close_finding` returns `ok: true` while refusing half the call
 
-> **FIXED (`1c11816`).** `applied: [...]` and `refused: [{field, why}]`, and `ok` is false when
+> **FIXED (`489183d`).** `applied: [...]` and `refused: [{field, why}]`, and `ok` is false when
 > anything was refused. Prose in `note` is no longer a status code, exactly as asked.
 
 
@@ -692,7 +692,7 @@ model I needed and saved me asking.
 
 ### 8. The two-axis model paid off, having previously cost
 
-> **FIXED (`1c11816`).** `close_finding` with `result:"fixed"` and no `remediation` now infers
+> **FIXED (`489183d`).** `close_finding` with `result:"fixed"` and no `remediation` now infers
 > `fixed-on-branch` rather than silently leaving `outstanding`. `-on-branch` rather than
 > `-on-default` deliberately: a report on a pull request's finding is about the branch, and
 > claiming the mainline is clean would let a linked bug be closed while the defect still ships.

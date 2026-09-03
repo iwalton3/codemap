@@ -15,7 +15,7 @@ than hedged in every section.
 
 **Built:** `Pointer.universe` and `Audit.universe`; a pointer baseline is `contested`
 rather than overwritten, with the order-insensitive comparator that keeps it from firing
-when auditors agree (`221d2b3`). **The law/evidence scope split itself**, folded through
+when auditors agree (`545226f`). **The law/evidence scope split itself**, folded through
 `readCachedMerged`, with `MATERIALIZER_VERSION` at 16 and the guard that refuses a
 withdrawal whose evidence half could not be read.
 

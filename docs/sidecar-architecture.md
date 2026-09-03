@@ -466,7 +466,7 @@ the contest design is tuned against.
   grow-only citation set and a per-system tracking reference — and a `bugs` table where
   a teammate's bug is a row with an `origin`, the same rule that removed `shared_doc*`.
   `docs/plan-sharing-the-rest.md` §2 carries the design and what building it changed.
-- ~~**Findings never write through.**~~ **FIXED** (`34c0caa`). All thirteen finding write
+- ~~**Findings never write through.**~~ **FIXED** (`fbfda15`). All thirteen finding write
   ops now append and then materialize their scope. `retireSharedDoc` still has the
   gap — docs, not findings.
 - ~~**Notes never write through, and the mirror is one-directional.**~~ **FIXED.**

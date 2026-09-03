@@ -1,10 +1,10 @@
 # Plan: the open bug backlog, and the CI that should have caught half of it
 
 > **Kind: active plan** — decided, not yet built. The work queue.
-> the four open COD bugs, re-triaged against `4d80d65`, plus GitHub Actions.
+> the four open COD bugs, re-triaged against `93cbffb`, plus GitHub Actions.
 
 **Status: ready.** Written 2026-08-26 from a triage of the five open bugs in the `COD`
-Jira project against `4d80d65`, every verdict reproduced rather than read off the code.
+Jira project against `93cbffb`, every verdict reproduced rather than read off the code.
 Nothing here is started.
 
 The tickets are COD-1, COD-3, COD-7, COD-8 and COD-12; the Jira comments carry the
@@ -180,7 +180,7 @@ and `.codemapignore` covers that case.
 `.git` is already in `SKIP_DIRS` and does not help, because in a linked worktree `.git` is
 a regular file and basename directory-pruning never fires.
 
-Measured at `4d80d65` on a clone with one worktree at `.claude/worktrees/wt1`: 1882 of
+Measured at `93cbffb` on a clone with one worktree at `.claude/worktrees/wt1`: 1882 of
 3764 anchors — exactly half the store — came from the worktree, which was already
 gitignored.
 
@@ -215,7 +215,7 @@ snapshot … run `codemap init`"* — and `init` on a dirty tree is what wrote t
 following the advice loops. A test asserts the error does not contain `codemap init`,
 because that is the part that would quietly rot back.
 
-Reproduced at `4d80d65`: `init` on a tree with one newly added exported function, then
+Reproduced at `93cbffb`: `init` on a tree with one newly added exported function, then
 `diff <sha>` → `+0 added -0 removed ~0 changed`.
 
 ## Phase 3 — say what the sync did

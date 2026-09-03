@@ -1,7 +1,7 @@
 # Proposal: group the findings that must be fixed together
 
 > **Kind: proposal — not approved.** Filed 2026-09-03 from an outside session against
-> `main` at `b12f42e`, then REVISED the same day against evidence from this repository's
+> `main` at `196ce59`, then REVISED the same day against evidence from this repository's
 > own history. The revision changed the recommendation: see § *What the evidence changed*.
 > The `/breakfix-review` skill referred to below was `/review` when this was first filed.
 
@@ -44,7 +44,7 @@ rule, a site inventory and an exit predicate. Two round-pairs in **this** reposi
 then read directly, and they support the phenomenon while refuting the single-record
 conclusion.
 
-### `5b9fce7` → `5d9f747`
+### `63fd730` → `8863d08`
 
 Round two performed a **correct cross-cutting repair** for rule A — *every write to
 shared state goes through one door* — enumerating eight bypassing call sites in its own
@@ -55,15 +55,15 @@ capability.
 In doing so it introduced rule B: the consolidated door collapsed "no sidecar" and "the
 wrong sidecar" into one quiet null. Rule B was noticed at **one** site, `provisional.ts`,
 because a test caught it there, and was fixed with an inline local guard at that site.
-`5d9f747` then swept rule B across nine more files.
+`8863d08` then swept rule B across nine more files.
 
 **This refutes the exit predicate as the defence.** A predicate on rule A would have read
-MET after `5b9fce7` — correctly — and could not have seen rule B, which is a semantic
+MET after `63fd730` — correctly — and could not have seen rule B, which is a semantic
 property of the new door rather than a property of the site set. The sibling blindness
 struck the **regression introduced by the repair**, which is one level in from where this
 proposal put it.
 
-### `f7ac593` → `e47444f`
+### `ec004a9` → `5b7eb78`
 
 That round's own message names the mechanism three times without having a word for it:
 *"the first fix exempted them, leaving the hole open on half the findings"*; *"the same
@@ -90,8 +90,8 @@ The rule that cost the two rounds above had no such test. `src/sidecar-door.test
 now that test, and it is the worked example of the shape this section argues for: two
 halves that fail in opposite directions, an exemption list where every entry carries a
 reason and a stale entry fails, and a note saying how to verify it is not vacuous. It
-found exactly one live drift — `provisional.ts`, still carrying `5b9fce7`'s inline guard
-that `5d9f747` never came back to, plus `bugs-publish.ts` re-composing the door's two
+found exactly one live drift — `provisional.ts`, still carrying `63fd730`'s inline guard
+that `8863d08` never came back to, plus `bugs-publish.ts` re-composing the door's two
 steps. Both now go through the door.
 
 ---
@@ -136,7 +136,7 @@ is the part worth acting on:
 - an **acceptance criterion** with `evidenceKind: "lint-test"` carries its falsifier —
   and `CLAUDE.md` already says an invariant phrased always/never/every wants exactly
   that, *"because a green suite at merge does not prove nobody reintroduces the thing
-  next quarter"*, which is precisely what happened between `5b9fce7` and `5d9f747`;
+  next quarter"*, which is precisely what happened between `63fd730` and `8863d08`;
 - a **population predicate** pins the member set, and `broken_pins` fires when the lint
   itself is edited;
 - **pointers** say where an auditor looks.

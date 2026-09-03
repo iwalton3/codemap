@@ -1,7 +1,7 @@
 /**
  * Commenting on a PROPOSAL, end to end — the surface a reviewer argues on.
  *
- * Most of this was already built (`7c224fe`), and this file exists because "already
+ * Most of this was already built (`8153a4e`), and this file exists because "already
  * built" was not the same as "verified from both ends". Writing it found two holes, and
  * both are the same shape: a call that reported success while doing something other than
  * what its caller asked for.
