@@ -30,6 +30,11 @@ Every `type: "user"` turn with STRING content across six project directories in
 `~/.claude/projects` — two Acme repositories under `/working`, their two
 `~/source` predecessors, and codemap's own directory. 2025-11 through 2026-09.
 
+**Quotes below carry this repository's placeholder vocabulary, not the words as typed.**
+The transcripts use the client's own domain nouns, and this repository is public; the
+substitution is the same one applied everywhere else here. It changes no argument — what
+each quote is evidence for is the *shape* of the rule, never the noun.
+
 ### 36% of what looks like a person talking is not, and this is the load-bearing filter
 
 A measurement that skipped this is wrong by more than a third, and wrong in the direction

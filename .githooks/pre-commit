@@ -1,39 +1,50 @@
 #!/bin/sh
-# Refuse a commit that carries the client's name.
+# Refuse a commit that carries a name from the forbidden list.
 #
 # `src/sanitized.test.ts` is the same rule at build time; this is the same rule at the
-# only moment it is still cheap to fix. Both exist because the one-time sweep of
-# 2026-07-31 drifted back twice -- `0f813ba` re-sanitized once, and four more sites had
-# returned by `b12f42e` -- and a rule with no exit predicate is a rule enforced by
-# whoever happens to notice.
+# only moment it is still cheap to fix. Enable it -- git does not clone hooks:
 #
-# Enable it -- git does not clone hooks:  git config core.hooksPath .githooks
+#     git config core.hooksPath .githooks
 #
-# The needle is assembled at runtime on purpose: a hook spelling the name would be the
-# leak it exists to prevent, and this file is published like everything else here.
+# THE TERMS ARE NOT IN THIS REPOSITORY. A guard that spells what it forbids publishes it,
+# and splitting the word into adjacent fragments defeats a grep, not a reader -- which is
+# the mistake the first version of this hook made, in the commit that added it. The list
+# lives at $CODEMAP_FORBIDDEN_NAMES or ~/.config/codemap/forbidden-names: one term per
+# line, '#' for comments, matched case-insensitively.
+#
+# With no list this passes quietly. A stranger who clones this repository has nothing to
+# check against and should not be blocked; the maintainer has the file.
 #
 # It checks the STAGED CONTENT of each touched file rather than the diff's added lines.
-# That is deliberate twice over: after the history rewrite no file contains the name at
-# all, so "you touched a file that has it" is the right failure; and matching added
-# lines needs a `^+++` pattern, which the ugrep on this machine rejects as invalid
-# syntax where GNU grep accepts it. Do not "fix" this back into a diff scan.
-needle="$(REDACTED)|$(REDACTED)"
+# Deliberate twice: no file should contain a forbidden name at all, so "you touched a file
+# that has one" is the right failure -- and matching added lines needs a '^+++' pattern,
+# which the ugrep on this machine rejects as invalid syntax where GNU grep accepts it. An
+# earlier version did exactly that and passed a probe commit it should have refused: the
+# pipeline was erroring, not matching. Do not "fix" this back into a diff scan.
+
+list="${CODEMAP_FORBIDDEN_NAMES:-$HOME/.config/codemap/forbidden-names}"
+[ -r "$list" ] || exit 0
+
+# One alternation, built at run time from the file. Blank and '#' lines dropped.
+needle=$(grep -v '^[[:space:]]*#' "$list" | grep -v '^[[:space:]]*$' | paste -sd '|' -)
+[ -n "$needle" ] || exit 0
 
 status=0
 for f in $(git diff --cached --name-only --diff-filter=ACM); do
   # -I skips binaries (the vendored .wasm grammars); ":$f" is the staged blob, not the
   # working tree, so a fix you forgot to `git add` does not let the commit through.
-  hits=$(git show ":$f" 2>/dev/null | grep -I -n -i -E "$needle")
-  if [ -n "$hits" ]; then
-    [ "$status" -eq 0 ] && echo "pre-commit: the client name is in this commit." >&2
-    echo "$hits" | head -5 | sed "s|^|  $f:|" >&2
+  # -l, not -n: printing the matching line would put the term in the terminal and the
+  # reflog. The path is enough for whoever holds the list.
+  if git show ":$f" 2>/dev/null | grep -I -q -i -E "$needle"; then
+    [ "$status" -eq 0 ] && echo "pre-commit: a forbidden name is in this commit:" >&2
+    echo "  $f" >&2
     status=1
   fi
 done
 
 if [ "$status" -ne 0 ]; then
   echo >&2
-  echo "Use the 'Acme' placeholder. The mapping lives in memory, not in this repo," >&2
-  echo "and it must stay that way. To override once: git commit --no-verify" >&2
+  echo "Use the placeholder from your mapping. It lives with the list, outside this" >&2
+  echo "repository, and it must stay there. To override once: git commit --no-verify" >&2
 fi
 exit "$status"
