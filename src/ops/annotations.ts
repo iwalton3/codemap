@@ -382,7 +382,7 @@ export async function resolveAnnotation(
   //
   // NOT for an agent. `foldNotes` drops a `note.resolved` from an agent actor outright,
   // so mirroring one would append an event every reader ignores and report it as shared.
-  // An agent closing its own local question is deliberate (`26a61d6`); closing it for
+  // An agent closing its own local question is deliberate (`fde46ce`); closing it for
   // the team is a person's act. So the divergence is REPORTED instead — the thing this
   // codebase prefers to a quiet no-op every time it has had to choose.
   const { mirrorNoteResolved } = await import("../notes-publish.js");

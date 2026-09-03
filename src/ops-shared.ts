@@ -1741,7 +1741,7 @@ export async function answerSharedNote(root: string, targetId: string, id: strin
  *
  * The rule itself lives in the fold and stays there, because a write-time check only
  * ever protects the honest writer. `resolve_question` deliberately lets an agent close
- * its own LOCAL question (`26a61d6`) — that is this machine's record, not the team's —
+ * its own LOCAL question (`fde46ce`) — that is this machine's record, not the team's —
  * and `resolveAnnotation` says the shared copy is still open rather than leaving the
  * two to differ quietly.
  */

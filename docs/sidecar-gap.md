@@ -17,7 +17,7 @@ Worth recording, because it is the only evidence in this repo that is not a test
 
 | | result |
 |---|---|
-| open a real pre-existing store | **failed** — fixed in `febbc09`, see "What contact found" |
+| open a real pre-existing store | **failed** — fixed in `c383a45`, see "What contact found" |
 | publish 275 local docs | 53 published, 200 analyzer-generated skipped, 22 flows skipped |
 | first sync between two clones | 53 events received, one scope folded |
 | the adoption rule on colliding ids | 275 rows before, 275 after, 53 adopted, 0 duplicated |

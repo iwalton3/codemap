@@ -2,7 +2,7 @@
  * The store as it really was, one entry per schema era.
  *
  * Every fixture in this repository is born at the CURRENT schema, and that blind spot
- * has already shipped a build that could not open ANY pre-existing store (`febbc09`):
+ * has already shipped a build that could not open ANY pre-existing store (`c383a45`):
  * an index on `source_scope` sat in the `CREATE TABLE` block, which runs before the
  * ALTER ladder that adds the column. A fresh database has the column in its CREATE, so
  * the whole suite passed while `db()` threw `no such column` on every store anyone
@@ -74,7 +74,7 @@ export const SCHEMA_ERAS: SchemaEra[] = [
   },
   {
     era: "derivation-schemes",
-    commit: "1595d90",
+    commit: "ac371ec",
     subject: "fix(diff): a snapshot from another anchor-id derivation is not comparable",
     why:
       "`snapshots` has `scheme` but not `hash_scheme`, and `anchors` has no `derivation`. A store whose index cannot say how it was derived.",
@@ -94,7 +94,7 @@ export const SCHEMA_ERAS: SchemaEra[] = [
   },
   {
     era: "materialized",
-    commit: "370f261",
+    commit: "cfa4fff",
     subject: "feat(materialize): step 1 — the sidecar fold, cached in SQLite",
     why:
       "The first shared tables — `derivations`, `shared_scope`, `shared_finding`. `shared_scope` predates its `status` and `diagnostic` columns.",
@@ -119,7 +119,7 @@ export const SCHEMA_ERAS: SchemaEra[] = [
   },
   {
     era: "parallel-doc-tables",
-    commit: "54de94a",
+    commit: "229ea14",
     subject: "feat(eventlog): a chain per (scope, clone), and a scope that says when it cannot be trusted",
     why:
       "Holds data in three tables THIS BUILD NO LONGER WRITES: `shared_doc`, `shared_doc_version`, `shared_doc_citation`, from before a teammate's doc became a `node_versions` row. Opening such a store must neither fail nor quietly destroy them.",

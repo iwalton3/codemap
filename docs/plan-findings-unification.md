@@ -46,7 +46,7 @@ that can is the one almost nothing reads. Everything below follows from that.
 
 ## The measured gaps
 
-Each verified against the code at `2009fdb`, and against live data where a live
+Each verified against the code at `aeb3926`, and against live data where a live
 observation was possible.
 
 1. `shareFinding` (`ops-shared.ts`) writes only the log event — never a local
@@ -383,7 +383,7 @@ blocks what.
 
    - **The agent gate is in the FOLD.** `foldNotes` drops any `note.resolved` from an
      agent actor. Relaxing the op to match `resolve_question`'s deliberate "an agent may
-     close a question" (`26a61d6`) would have appended an event every reader ignores and
+     close a question" (`fde46ce`) would have appended an event every reader ignores and
      reported it as shared — the silent no-op this plan spent a session removing. So an
      agent closes its own LOCAL question and is TOLD the team's is still open. The
      shared refusal now also covers re-opening, which the fold drops and the op used to

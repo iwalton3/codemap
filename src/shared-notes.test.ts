@@ -386,7 +386,7 @@ test("a person closing a mirrored question closes the team's copy too", async ()
  *
  * `foldNotes` drops a `note.resolved` from an agent actor outright, so mirroring one
  * would append an event every reader ignores and report it as shared. Closing its own
- * local question is deliberate (`26a61d6`); closing it for the team is a person's act.
+ * local question is deliberate (`fde46ce`); closing it for the team is a person's act.
  */
 test("an agent closes its own question locally and is told the team's is still open", async () => {
   const u = universe();

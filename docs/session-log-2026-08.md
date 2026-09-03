@@ -136,10 +136,10 @@ re-extracts it with `git show <commit>:src/db.ts` and fails if a fixture drifts 
 shape that commit really produced (it skips when history is unavailable, so the unit
 suite stays hermetic).
 
-**And they immediately found a boundary.** A store from `370f261` cannot be read at all
+**And they immediately found a boundary.** A store from `cfa4fff` cannot be read at all
 — `no such column: status` — because the `shared_scope.status`/`diagnostic` rungs were
 deliberately removed at the protocol-1 freeze. **That decision is correct and is now
-measured twice:** `370f261` is on no branch but this one, and none of the four live
+measured twice:** `cfa4fff` is on no branch but this one, and none of the four live
 universes under `/working/` has a `shared_scope` table at all, so `CREATE TABLE IF NOT
 EXISTS` hands every real store the modern one. Pinned as an INVERTED test: restore the
 rungs and it fails, telling you to move `shared_scope` into `REQUIRED`.
@@ -382,7 +382,7 @@ Written when 699 tests passed. **All three are now closed**, and the section is 
 because the shapes are what a suite fails as, not because the gaps remain.
 
 1. **Every fixture is born at the current schema.** A build that could not open ANY
-   pre-existing store passed the entire suite (`febbc09`): an index on `source_scope`
+   pre-existing store passed the entire suite (`c383a45`): an index on `source_scope`
    sat in the CREATE block, which runs before the ALTER ladder that adds the column.
    `db-migrate.test.ts` now covers one hop; nothing covers a store from three schema
    changes ago.

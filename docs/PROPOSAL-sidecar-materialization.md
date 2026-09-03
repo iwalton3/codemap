@@ -8,8 +8,8 @@ to the `store.ts`-seam finding in `COLLABORATION-STATIC-REVIEW.md`, and to two
 goals stated more narrowly than that finding did: **consistency** and
 **performance**.
 
-Reviewed against `worktree-shared-review-hashscheme` at `0eb247a`; §7's sequencing
-re-checked against the tree at `a6945a1`, where receipts turned out to be cancelled
+Reviewed against `worktree-shared-review-hashscheme` at `78cbc87`; §7's sequencing
+re-checked against the tree at `8baf39c`, where receipts turned out to be cancelled
 and step 0 turned out to be done.
 
 ## 0. The claim in one paragraph
@@ -601,7 +601,7 @@ fine; claiming materialization as their completion is not.
    evidence is the fingerprint on the hash beside them. No step here is blocked on
    it any more — see §7, where 3a lost its receipt columns and 3b gained the
    equality-join-then-classify rule.
-9. ~~`comparableHashes` fails OPEN on an unparseable hash.~~ **Fixed in `5eb11e1`.**
+9. ~~`comparableHashes` fails OPEN on an unparseable hash.~~ **Fixed in `07aff2f`.**
    `hashSchemeOf` returns `number | null` and requires the whole form; an
    unparseable value is comparable to nothing, including another unparseable one.
 

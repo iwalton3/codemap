@@ -39,7 +39,7 @@ COD-8 offered two explanations for the empty `notes/` shards: the per-prefix laz
 not finding them, or `sync` should pre-fold them like docs/triage/findings. Both are
 wrong, and both would have been no-ops — `notes/` was already routed in `projectionFor`
 and `materializeUniverse` already pre-folded every scope on disk, and **both were present
-in `2009fdb`, the build the bug was reported from.**
+in `aeb3926`, the build the bug was reported from.**
 
 The tell was in the report the whole time: the transcript has no `rebuilt N of M scope(s)`
 line. That line (`src/cli.ts:276`) was already in that build and is gated on `scanned`,
@@ -123,7 +123,7 @@ can and cannot do.
 Two of them are the real guard: a discovered scope must be the same string the writer
 built (`docScope`/`noteScope`/`bugScope`), and every discovered scope must route through
 `projectionFor` and carry no backslash. **They only fail on win32.** An earlier draft of
-this plan claimed they would fail at `2009fdb` on Linux; that was wrong, and it matters
+this plan claimed they would fail at `aeb3926` on Linux; that was wrong, and it matters
 because a test that cannot fail on the machine you are sitting at is exactly the vacuous
 kind `CLAUDE.md` warns about. `path.join` already yields `/` on POSIX, so there is no
 arrangement of a hermetic fixture that catches a *producer*-side separator bug there.
