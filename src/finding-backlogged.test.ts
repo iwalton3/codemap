@@ -75,9 +75,9 @@ test("a later deadline supersedes an earlier one; the ref is evidence, never the
   // A Jira issue rides along as evidence. It is NOT what brings it back — a ticket
   // closed as won't-do, moved or deleted must not be able to silence this forever.
   const withRef = fold(created(), ev("finding.backlogged", PERSON, {
-    until: "2026-11-01", reason: "r", system: "jira", key: "Acme-742",
+    until: "2026-11-01", reason: "r", system: "jira", key: "ACME-742",
   }));
-  assert.equal(withRef.backlogged?.ref?.key, "Acme-742");
+  assert.equal(withRef.backlogged?.ref?.key, "ACME-742");
   assert.equal(withRef.backlogged?.until, "2026-11-01", "the date is still the condition");
 });
 

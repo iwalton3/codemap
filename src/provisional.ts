@@ -31,7 +31,7 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Audit } from "./schema.js";
 import { auditClaimStands } from "./schema.js";
-import { resolveSidecar, checkSidecarBinding, type SidecarConfig } from "./sidecar-config.js";
+import { resolveSidecar, sidecarWriteDoor, type SidecarConfig } from "./sidecar-config.js";
 import { ensureSidecar } from "./sidecar.js";
 import { requireActor } from "./identity.js";
 
@@ -81,15 +81,15 @@ export async function publishProvisionalAudit(
   root: string, audit: Audit, opts: { dirty: boolean },
 ): Promise<Published> {
   if (!audit.provisional) return { published: false, reason: "not a provisional audit" };
-  const cfg = resolveSidecar(root);
-  if (!cfg) return { published: false, reason: "no sidecar is configured" };
-  // ERROR, not `reason`. The two are different and this path is the one that proves it:
-  // "no sidecar" is a store working alone and nothing is owed, while "the configured one
-  // is not this store's" is an author who believes their team can see this and is wrong.
-  // Routing the second through the quiet return turned a loud failure into a silent one —
-  // caught by the test that exists for exactly that.
-  const bad = checkSidecarBinding(root, cfg);
-  if (bad) return { published: false, error: bad.error };
+  // ERROR, not `reason`, on a bad binding. The two are different and this path is the one
+  // that proves it: "no sidecar" is a store working alone and nothing is owed, while "the
+  // configured one is not this store's" is an author who believes their team can see this
+  // and is wrong. Routing the second through the quiet return turned a loud failure into a
+  // silent one — caught by the test that exists for exactly that.
+  const door = sidecarWriteDoor(root);
+  if (!door.configured) return { published: false, reason: "no sidecar is configured" };
+  if (!door.cfg) return { published: false, error: door.error! };
+  const cfg = door.cfg;
   if (!audit.commit) return { published: false, reason: "no commit to file it under" };
   if (opts.dirty) {
     return {

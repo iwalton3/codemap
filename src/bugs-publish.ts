@@ -11,7 +11,7 @@
  * never the op surface.
  */
 
-import { resolveSidecar, sidecarIdentity, checkSidecarBinding, type SidecarConfig } from "./sidecar-config.js";
+import { sidecarIdentity, sidecarWriteDoor, type BindingRefusal, type SidecarConfig } from "./sidecar-config.js";
 import { requireActor } from "./identity.js";
 import { ensureSidecar } from "./sidecar.js";
 import { readCached } from "./materialize.js";
@@ -53,16 +53,15 @@ export interface BugLog { cfg: SidecarConfig; actor: Actor }
  * with a local write: a claim that never entered the log cannot be retrofitted with a
  * causal position later, because `after` is captured at append time.
  */
-export function bugLog(root: string): BugLog | null | { error: string } {
-  const cfg = resolveSidecar(root);
-  if (!cfg) return null;
-  // Before any write reaches `ensureSidecar`, which would happily mkdir and init a
-  // stranger at a typo'd path. See `checkSidecarBinding`.
-  const bad = checkSidecarBinding(root, cfg);
-  if (bad) return bad;
+export function bugLog(root: string): BugLog | null | BindingRefusal | { error: string } {
+  // The door, not `resolveSidecar` + `checkSidecarBinding` inlined: a second composition
+  // of the same two steps is a second door, and `src/sidecar-door.test.ts` refuses one.
+  const door = sidecarWriteDoor(root);
+  if (!door.configured) return null;
+  if (!door.cfg) return { reason: door.reason!, error: door.error! };
   const actor = requireActor(root);
   if ("error" in actor) return actor;
-  return { cfg, actor };
+  return { cfg: door.cfg, actor };
 }
 
 /** Run `fn` against the log and fold the result back into rows. */
