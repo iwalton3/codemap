@@ -235,19 +235,18 @@ describe("bugs UI", { skip: pw ? false : "playwright not resolvable (set CODEMAP
   /**
    * A bug id is the one thing here a person holds in their head — off a PR comment, a
    * ticket, a teammate's message — and the only way to reach one was to know it was a bug,
-   * go to that page and scroll.
+   * go to that page and scroll. It is a DESTINATION now: the id resolves and the search
+   * page hands off to the bug rather than rendering one row about it. Pasting an id and
+   * getting nothing is still the failure this guards; a results page holding a single row
+   * is just a slower version of it.
    */
-  test("the global search finds a bug by id, and links straight to it", async () => {
+  test("the global search resolves a bug id and lands on the bug itself", async () => {
     const { page, errors } = await open(`/u/${universe}/search/?q=${filed}`);
-    await page.waitForSelector(".sym", { timeout: 10_000 });
-    const text = await page.textContent("main");
-    assert.match(text, /bugs/);
-    assert.match(text, /transfer accepts a negative amount/, "pasting an id and getting nothing is the failure");
-
-    // The link has to LAND on the bug, not merely exist.
-    await page.locator(`.sym[href*="${filed}"]`).first().click();
     await page.waitForSelector(".ddetail", { timeout: 10_000 });
     assert.match(await page.textContent(".ddetail"), /transfer accepts a negative amount/);
+    // `state=all` rides on the route because a bug reached by id may well be closed, and
+    // the default view would land on a list that does not contain it.
+    assert.match(await page.evaluate(() => location.hash), /\/bugs\/\?.*state=all/);
     assert.deepEqual(errors, []);
     await page.close();
   });

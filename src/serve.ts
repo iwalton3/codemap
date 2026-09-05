@@ -137,6 +137,13 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return q.get("all") === "1"
         ? multi.searchAll(ws, q.get("q") ?? "")
         : ops.search(root, q.get("q") ?? "");
+    // ACROSS EVERY UNIVERSE, always — unlike search, which has a scope toggle. An id
+    // pasted into the box arrived from somewhere else and does not say which universe it
+    // belongs to, so asking only the one being looked at answers "no such record" for a
+    // record sitting in the next one. There is deliberately no narrow variant: it would
+    // return a ref without a universe on it, which is not a place anything can navigate to.
+    case "/api/resolve":
+      return multi.resolveIdAll(ws, q.get("q") ?? "");
     case "/api/gaps":
       return ops.findGaps(root, { pathPrefix: q.get("prefix") ?? undefined, kind: q.get("kind") ?? undefined });
     case "/api/context":

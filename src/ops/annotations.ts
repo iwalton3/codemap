@@ -1336,7 +1336,7 @@ const suggestId = (root: string, id: string): string => {
   const hits = idsStartingWith(root, id);
   if (!hits.length) return "";
   return hits.length === 1
-    ? ` — did you mean \`${hits[0]}\`? (ids are not truncatable; that one starts with what you passed)`
+    ? ` — did you mean \`${hits[0]}\`? It starts with what you passed; these verbs want the whole id`
     : ` — that is the start of ${hits.length}: ${hits.map((h) => `\`${h}\``).join(", ")}`;
 };
 

@@ -42,7 +42,7 @@ export {
   nodeCatalog, eventMatrix, getNode, neighborhood, subgraph, flows, pipelineGraph, stateMap, flow,
 } from "./ops/graph.js";
 
-export { outline, search, context, getAnchor, nodeReview, fileSource } from "./ops/read.js";
+export { outline, search, resolveId, context, getAnchor, nodeReview, fileSource } from "./ops/read.js";
 
 export {
   setTriage, anchorMark, clearTriage, deriveTriage, tripwires, triageDriftList, changedSince,
@@ -370,7 +370,7 @@ export async function reviseOn(
 function didYouMean(root: string, id: string): string {
   const hits = idsStartingWith(root, id);
   if (!hits.length) return "";
-  if (hits.length === 1) return ` — did you mean \`${hits[0]}\`? (ids are not truncatable; that one starts with what you passed)`;
+  if (hits.length === 1) return ` — did you mean \`${hits[0]}\`? It starts with what you passed; these verbs want the whole id`;
   return ` — that is the start of ${hits.length}: ${hits.map((h) => `\`${h}\``).join(", ")}`;
 }
 

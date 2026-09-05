@@ -29,6 +29,7 @@ import { standardUrl, rulesUrl, branchUrl, auditUrl, conformanceUrl, servedNote 
 
 import {
   errText, hitTarget, apiPost, api, loaded, taskError, isErr, pageShell, nav, go, href, setRouter, postSeen,
+  copyIdButton, jumpTarget, worthResolving, goReplace,
 } from './core.js';
 
 /**
@@ -843,9 +844,50 @@ class CodemapHeader extends Component {
       this.state.note = r.pushed ? 'sent; nothing new to receive' : 'up to date';
     } catch (e) { this.state.note = errText(e); } finally { this.state.pulling = false; }
   }
-  search(e, v) {
+  /**
+   * An id pasted into the box is a destination, not a query.
+   *
+   * Ids are how a finding travels between people — everyone runs this UI locally, so a
+   * link carries somebody else's port and an id does not — which means the box is where
+   * a pasted one arrives. Resolving it here rather than on the results page is the
+   * difference between landing on the record and landing on a page with one row on it.
+   *
+   * The box is CLEARED on a jump, and only on a jump: the query did its work and leaving
+   * it behind makes the header look like it is still showing results for it. A search
+   * that stayed a search keeps its text, because that is what the results are of.
+   *
+   * @param {string} v
+   * @param {EventTarget|null} input
+   */
+  async jump(v, input) {
+    if (!worthResolving(v)) return false;
+    let r = null;
+    // A resolve that fails must not eat the search: the box still has a query in it.
+    try { r = await api('/api/resolve', { q: v }); } catch { return false; }
+    const route = jumpTarget(v, r);
+    if (!route) return false;
+    if (input instanceof HTMLInputElement) input.value = '';
+    go(route.path, route.query);
+    return true;
+  }
+  async search(e, v) {
     const u = this.stores.nav.current || (this.stores.nav.universes[0] && this.stores.nav.universes[0].id);
-    if (u && v) go(`/u/${u}/search/`, { q: v });
+    if (!v) return;
+    if (await this.jump(v, e && e.target)) return;
+    if (u) go(`/u/${u}/search/`, { q: v });
+  }
+  /**
+   * Pasting an id navigates on the paste, without waiting for Enter.
+   *
+   * Read from the input AFTER the paste has landed rather than from the clipboard data,
+   * so pasting into a box that already has text sees what the box actually says.
+   * `jumpTarget` inside `jump` is what keeps this from firing on ordinary pasted prose.
+   * @param {Event} e
+   */
+  onPaste(e) {
+    const input = e.target;
+    if (!(input instanceof HTMLInputElement)) return;
+    setTimeout(() => { void this.jump(input.value, input); }, 0);
   }
   template() {
     const n = this.stores.nav;
@@ -856,7 +898,7 @@ class CodemapHeader extends Component {
       ${each(VIEW_LINKS.filter(l => viewEnabled(cur, l[2])), l => html`<a class="viewlink" href="${href(l[1](headerUniverse(n)))}">${l[0]}</a>`, l => l[0])}
       ${viewMenu('graph', GRAPH_LINKS, cur, headerUniverse(n))}
       ${viewMenu('standard', STANDARD_LINKS, cur, headerUniverse(n))}
-      <div class="search"><input placeholder="search symbols & docs…" on-change="${(e, v) => this.search(e, v)}"></div>
+      <div class="search"><input placeholder="search, or paste an id…" on-change="${(e, v) => this.search(e, v)}" on-paste="${(e) => this.onPaste(e)}"></div>
       ${when(!!cur && !!cur.sidecar, () => html`${when(!!this.state.note, () => html`<span class="pullnote" title="${this.state.note}">${this.state.note}</span>`)}
         <button class="pullbtn" disabled="${this.state.pulling}"
           title="send and receive the team's shared review state — findings, docs, notes, triage. Pull happens first, always, so the guard against publishing something somebody already published has seen what they published."
@@ -1270,7 +1312,7 @@ class AnchorPage extends Component {
     if (err || !a || isErr(a)) return pageShell(null, err, html``);
     return pageShell(a, null, () => html`<div class="detail">
       <a class="back" href="${href(treeUrl(u, a.file))}">← ${a.file}</a>
-      <h2>${a.symbol}</h2>
+      <h2>${a.symbol}${copyIdButton(a.id, `copy ${a.id} — the handle that resolves in anyone's clone, unlike a link to this page`)}</h2>
       <div class="meta">${a.kind} · ${a.file}:${a.lines} · ${a.present ? 'present' : 'not found (lost)'}</div>
       <div style="margin:8px 0">${reviewRowEl(a.review, a.viewed, (att, st, actor, via) => this.mark(att, st, actor, via))}</div>
       <div style="margin:8px 0">${triageRowEl(a.triage, (imp) => this.triage(imp), (on) => this.armTripwire(on))}</div>
@@ -1352,7 +1394,7 @@ class NodePage extends Component {
     const cr = deriveCode(n.resolvedAnchors);
     return html`<div class="detail">
       <div class="meta">${n.type}${n.universe ? ' · ' + n.universe : ''} · ${n.id} ${statusChip(n.status)}${vouchChip(n.vouch, null, n.status)}${sevChip(n.triage)}${divergeChip(n.triage)}<a class="viewlink" href="${href(graphUrl(u, n.id))}">◆ graph</a></div>
-      <h2>${n.title}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions (forked across branches)">⑂${n.versionCount}</span>`)}</h2>
+      <h2>${n.title}${when(n.versionCount > 1, () => html`<span class="vfork" title="${n.versionCount} versions (forked across branches)">⑂${n.versionCount}</span>`)}${copyIdButton(n.id, `copy ${n.id} — the handle that resolves in anyone's clone, unlike a link to this page`)}</h2>
       <div style="margin:6px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="dim" style="font-size:12px">doc sign-off:</span>${reviewRowEl(n.review, n.viewed, (att, st, actor, via) => this.signNode(att, st, actor, via), 'logical')}<span class="dim" style="font-size:12px">— vouches for the doc, not its code</span></div>
       <div style="margin:6px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">${codeRollupEl(cr)}${when(cr.total, () => html`<a class="btnlike" href="${href(nodeReviewUrl(u, n.id))}">open code review →</a>`)}</div>
       <div style="margin:6px 0">${triageRowEl(n.triage, (imp) => this.triageNode(imp), (on) => this.armTripwireNode(on))}</div>
@@ -1530,6 +1572,14 @@ class SearchPage extends Component {
     nav.current = this.props.params.universe;
     const q = this.props.query.q || '';
     if (!q) { this.state.groups = null; return; }
+    // An id that identifies ONE record is a destination, not a query — a results page
+    // holding a single row is a stop on the way to somewhere the reader already named.
+    // The header resolves a pasted id before it ever gets here; this catches the other
+    // ways a query arrives with an id in it — a deep link, back/forward, a hand-edited
+    // URL. `goReplace`, not `go`: this page's whole contribution is to leave, and leaving
+    // a pushed entry behind puts a bounce-forward under the reader's Back button.
+    const jumped = await this.tryJump(q);
+    if (jumped) return;
     // `all=1` makes the server answer with one group per universe; without it the
     // reply is this universe's hits, wrapped into the same shape. Reading the shape
     // rather than re-deriving it from `scope()` keeps the two branches honest.
@@ -1537,6 +1587,19 @@ class SearchPage extends Component {
     const r = await api('/api/search', { u, q, all: this.scope() === 'all' ? 1 : null });
     this.state.groups = 'results' in r ? r.results : [{ universe: u, ...r }];
   });
+  /**
+   * @param {string} q
+   * @returns {Promise<boolean>} whether the page navigated away
+   */
+  async tryJump(q) {
+    if (!worthResolving(q)) return false;
+    let r = null;
+    try { r = await api('/api/resolve', { q }); } catch { return false; }
+    const route = jumpTarget(q, r);
+    if (!route) return false;
+    goReplace(route.path, route.query);
+    return true;
+  }
   mounted() { nav.load(); this.load.run(); }
   propsChanged() { this.load.run(); }
   setScope(s) { go(`/u/${this.props.params.universe}/search/`, { q: this.props.query.q || '', scope: s }); }
@@ -1564,7 +1627,7 @@ class SearchPage extends Component {
     // Three children, because `.sym` is a three-column grid — a fourth wraps onto an
     // implicit row, which is a layout defect only a browser can see. The marker goes
     // INSIDE the middle cell.
-    return html`<a class="sym ${f.closed ? 'shut' : ''}" href="${href(`/u/${u}/shared/${f.pr}/`)}">
+    return html`<a class="sym ${f.closed ? 'shut' : ''}" href="${href(`/u/${u}/shared/${f.pr}/`, { f: f.id })}">
       <span class="k">${f.state}</span>
       <span>${f.summary}${when(f.backlogged, () => html` <span class="pill" title="${f.backlogged.reason}">backlogged until ${f.backlogged.until}</span>`)}</span>
       <span class="muted">#${f.pr}</span>
@@ -2513,6 +2576,7 @@ class BugsPage extends Component {
           ${when(!!b.backlogged, () => html`<span class="bchip ${b.backlogged.state === 'sleeping' ? '' : 'poss'}"
             title="${b.backlogged.by} deferred this on ${String(b.backlogged.at).slice(0, 10)} — ${b.backlogged.reason}${b.backlogged.state === 'due' ? ' · the deadline has passed' : b.backlogged.state === 'woken' ? ' · somebody is editing the exact code the decision was about' : ''}">backlogged until ${b.backlogged.until}${b.backlogged.state === 'due' ? ' · due' : b.backlogged.state === 'woken' ? ' · woken' : ''}</span>`)}
           <span class="bmeta">${b.anchors.length}a${b.comments ? ' · ' + b.comments + '💬' : ''}${b.shared ? '' : ' · local'}</span>
+          ${copyIdButton(b.id, `copy ${b.id} — the handle that resolves in anyone's clone, unlike a link to this page`)}
         </div>
       </div>
     </div>`;

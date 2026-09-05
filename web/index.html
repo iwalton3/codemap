@@ -115,6 +115,18 @@
        so would read as an open record nobody is working on, which is the appearance the
        backlog exists to replace. */
     .pill { display: inline-block; font-size: 10.5px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--dim); background: var(--panel); white-space: nowrap; }
+    /* The finding somebody was SENT to, by id. Marked rather than merely scrolled to:
+       the row lands mid-list among rows that look exactly like it. */
+    .frow.ffocus { outline: 2px solid var(--accent, #6ea8fe); outline-offset: -1px; border-radius: 4px; }
+    /* Copy-id button. Low-contrast until hovered: it sits beside an id on rows that are
+       already dense, and the id is what the reader is scanning, not the button. */
+    .copyid { border: 1px solid transparent; background: none; color: var(--dim); cursor: pointer;
+      font-size: 11px; line-height: 1; padding: 2px 4px; border-radius: 4px; opacity: .45; vertical-align: baseline; }
+    .copyid:hover { opacity: 1; border-color: var(--border); background: var(--panel2); }
+    .copyid.ok { opacity: 1; color: var(--ok, #4caf50); border-color: currentColor; }
+    .copyid.bad { opacity: 1; color: var(--bad, #e05252); border-color: currentColor; }
+    .copyid.ok::after { content: ' copied'; font-size: 10px; }
+    .copyid.bad::after { content: ' failed'; font-size: 10px; }
     .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #3a4250; margin-right: 6px; }
     .dot.on { background: var(--accent2); }
 

@@ -86,6 +86,7 @@ export async function apiPost(path, body) {
  *   '/api/flows':               Awaited<ReturnType<Ops['flows']>>,
  *   '/api/flow':                Awaited<ReturnType<Ops['flow']>>,
  *   '/api/search':              Awaited<ReturnType<Multi['searchAll']> | ReturnType<Ops['search']>>,
+ *   '/api/resolve':             Awaited<ReturnType<Multi['resolveIdAll']>>,
  *   '/api/gaps':                Awaited<ReturnType<Ops['findGaps']>>,
  *   '/api/context':             Awaited<ReturnType<Ops['context']>>,
  *   '/api/lint':                Awaited<ReturnType<Ops['lintSummaries']>>,
@@ -251,6 +252,21 @@ export const href = (path, query) => {
 };
 
 /**
+ * Navigate WITHOUT leaving the current URL in the history.
+ *
+ * For a page that exists only to send the reader somewhere else. A search URL carrying an
+ * id resolves to one record and jumps; pushing that jump would put the search URL back
+ * under the reader's Back button, and pressing it would land on the page that bounces
+ * forward again — a trap you can only escape by holding Back. Replacing the entry means
+ * Back goes where they actually came from.
+ *
+ * `href()` builds the target so this cannot drift from `go` on query encoding, and
+ * `location.replace` on a `#…` fires `hashchange`, which is how the router hears about it
+ * in hash mode. There is no `replace` on vdx's `navigate`, which only ever pushes.
+ */
+export const goReplace = (path, query) => { window.location.replace(href(path, query)); };
+
+/**
  * The router, owned here because `go` and `href` are.
  *
  * Assigned by `app.js` on its last line, once `enableRouting` has run. A setter rather
@@ -310,4 +326,146 @@ export async function postSeen(path, body) {
     flashError(errText(e));
     return { error: errText(e) };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Ids as handles — copy one, paste one, land on the record
+// ---------------------------------------------------------------------------
+
+/**
+ * Where a resolved record LIVES, as a route.
+ *
+ * Here rather than beside the other `*Url` helpers in `app.js` because `shared.js` and
+ * `standard.js` render copy buttons too and may not import `app.js` — this module is the
+ * one all three sit above. See the cycle note at the top of the file.
+ *
+ * A finding is reached through its pull request, not by a route of its own: `(pr, id)` is
+ * its identity — `ix_findings_identity` is unique on the pair — so a URL naming only the
+ * id would be addressing something narrower than the record. An operation is reached
+ * through its spec for the same reason it is stored under one.
+ *
+ * @param {{ universe: string, kind: string, id: string, pr?: string, parent?: string }} r
+ * @returns {{ path: string, query: Record<string,string> } | null}
+ */
+export function entityRoute(r) {
+  const u = r.universe;
+  switch (r.kind) {
+    case 'finding': return r.pr ? { path: `/u/${u}/shared/${r.pr}/`, query: { f: r.id } } : null;
+    case 'bug': return { path: `/u/${u}/bugs/`, query: { bug: r.id, state: 'all' } };
+    case 'requirement': return { path: `/u/${u}/standard/r/${r.id}/`, query: {} };
+    case 'spec': return { path: `/u/${u}/standard/spec/${r.id}/`, query: {} };
+    case 'operation': return r.parent ? { path: `/u/${u}/standard/spec/${r.parent}/`, query: {} } : null;
+    case 'node': return { path: `/u/${u}/node/${r.id}/`, query: {} };
+    case 'anchor': return { path: `/u/${u}/anchor/${r.id}/`, query: {} };
+    default: return null;
+  }
+}
+
+/**
+ * Put text on the clipboard, from wherever this page is being served.
+ *
+ * `navigator.clipboard` needs a SECURE CONTEXT. `http://localhost` is one, so the default
+ * `127.0.0.1` bind is fine — but `CODEMAP_HOST` exists, and a UI served on a LAN address
+ * over http has no `navigator.clipboard` at all. The fallback is the old `execCommand`
+ * dance, which is deprecated and works everywhere that matters; without it the button is
+ * silently dead for exactly the person who set `CODEMAP_HOST` to share their map.
+ *
+ * @param {string} text
+ * @returns {Promise<boolean>}
+ */
+export async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); return true; }
+  } catch { /* fall through — a rejected permission is not a reason to give up */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    // Off-screen rather than hidden: `display:none` cannot be selected, so the copy
+    // silently does nothing.
+    ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  } catch { return false; }
+}
+
+/**
+ * The copy-id button, one implementation for every surface that shows an id.
+ *
+ * It copies the ID, not a URL, and that is the whole point rather than a shortcut.
+ * Everyone runs the web UI locally, so a copied link carries a port that is only true for
+ * whoever copied it — paste `http://localhost:4311/...` into a pull request and the
+ * teammate on 4310 gets a dead link. An id has no port in it: it pastes into a PR comment,
+ * a chat message or a prompt, and resolves in any clone, at any port, on any surface. It
+ * is the property a commit hash has and a link does not.
+ *
+ * Confirmation is on the BUTTON and lasts a moment, because a copy that silently did
+ * nothing (see `copyText` on secure contexts) is indistinguishable from one that worked.
+ *
+ * @param {string} id
+ * @param {string} [title]
+ */
+export const copyIdButton = (id, title) => html`<button class="copyid" title="${title || `copy ${id}`}"
+  on-click="${(/** @type {Event} */ e) => {
+    // The button sits INSIDE rows that own a click — the bug list selects, the finding
+    // row toggles open. Without this, copying an id also navigates or collapses the very
+    // record you were pointing at.
+    e.stopPropagation();
+    const btn = e.currentTarget;
+    if (!(btn instanceof HTMLElement)) return;
+    copyText(id).then((ok) => {
+      // Straight to the element rather than through component state: this button is
+      // rendered by a dozen surfaces, none of which should have to hold a field for it.
+      btn.classList.add(ok ? 'ok' : 'bad');
+      setTimeout(() => btn.classList.remove('ok', 'bad'), 1200);
+    });
+  }}">⧉</button>`;
+
+/**
+ * Does this query look like a MINTED handle, rather than a word somebody is searching for?
+ *
+ * The guard that stops the search box teleporting people. Node ids are human-readable
+ * slugs — `accept-a-price`, `admin-observability-over-the-whole-stack` — so an
+ * unrestricted prefix resolve turns a search for `accept` into a jump to a document,
+ * and the reader never sees the results they asked for.
+ *
+ * A minted handle is a short kind tag, an underscore, then an alphanumeric body:
+ * `f_`, `bug_`, `finding_`, `a_`, `sp_`, `op_`, `req_`. Slugs carry no underscore, so
+ * they fall out. An EXACT id still jumps whatever its shape — see `jumpTarget` — because
+ * a complete id is not a guess about what somebody meant.
+ *
+ * @param {string} q
+ */
+export const looksLikeId = (q) => /^[a-z]{1,8}_[0-9a-z][0-9a-z_-]*$/i.test(q.trim());
+
+/**
+ * Worth ASKING the server to resolve — a filter on wasted round trips, not on jumping.
+ *
+ * Deliberately weaker than `looksLikeId`: whitespace means prose, and prose is never an
+ * id. Everything past this goes to `jumpTarget`, which owns the actual rule. Making this
+ * the strict test instead is what made `jumpTarget`'s exact-match branch unreachable —
+ * both callers had already applied the first of its two conditions, so a pasted node id
+ * like `accept-a-price`, which is exact and carries no kind tag, could never jump.
+ *
+ * @param {string} q
+ */
+export const worthResolving = (q) => { const t = q.trim(); return !!t && !/\s/.test(t); };
+
+/**
+ * Should this resolution take the reader somewhere, and where?
+ *
+ * Two ways to earn a jump and they are different claims: the query is handle-SHAPED, so
+ * resolving its prefix is what the person meant; or the match is EXACT, so there is
+ * nothing to guess about. Everything else stays on the results page.
+ *
+ * @param {string} q
+ * @param {{ match?: { universe: string, kind: string, id: string, pr?: string, parent?: string } | null } | null | undefined} r
+ */
+export function jumpTarget(q, r) {
+  const m = r && r.match;
+  if (!m) return null;
+  if (!looksLikeId(q) && m.id !== q.trim()) return null;
+  return entityRoute(m);
 }

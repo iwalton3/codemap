@@ -113,6 +113,35 @@ export async function getNodeEnriched(ws: Workspace, universeId: string, nodeId:
   };
 }
 
+/**
+ * Resolve an id across every universe in the workspace.
+ *
+ * An id pasted into the search box does not come with a universe attached — it came from
+ * a PR comment, a teammate's message, or another agent — so asking only the universe the
+ * reader happens to be looking at answers "no such record" for a record that is right
+ * there in the next one.
+ *
+ * The ambiguity rule is `resolveRecordId`'s, one level up: a single match ACROSS the
+ * workspace is a match; two universes each holding one is ambiguous, and the caller is
+ * told both rather than sent to whichever was configured first.
+ */
+export async function resolveIdAll(ws: Workspace, query: string) {
+  const hits: { universe: string; kind: string; id: string; pr?: string; parent?: string }[] = [];
+  let ambiguous = false;
+  for (const u of ws.universes) {
+    try {
+      const r = await ops.resolveId(u.path, query);
+      if (r.match) hits.push({ universe: u.id, ...r.match });
+      for (const a of r.ambiguous) { ambiguous = true; hits.push({ universe: u.id, ...a }); }
+    } catch {
+      /* not initialized */
+    }
+  }
+  return hits.length === 1 && !ambiguous
+    ? { match: hits[0]!, ambiguous: [] }
+    : { match: null, ambiguous: hits };
+}
+
 export async function searchAll(ws: Workspace, query: string, limit?: number) {
   const results = [];
   for (const u of ws.universes) {

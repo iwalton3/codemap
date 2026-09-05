@@ -1529,30 +1529,156 @@ export async function readFindings(root: string, opts: { pr?: number | string } 
  * has only an id, and REFUSED rather than guessed when it turns out not to be unique.
  */
 /**
- * Ids that START with this prefix, across findings and bugs.
+ * What does this id MEAN? One resolver, over every record kind a person can hold.
  *
- * A finding renders as `f_00mt8zvn7m-cc017f2546` and the prefix alone is the natural
- * thing to copy — it is the distinctive half, and the suffix looks like a checksum. It
- * failed as `no finding or annotation "f_00mt8zvn7m"`, which says the record does not
- * exist. It does; the id is half of one. Cost an agent four failed calls before it
- * spotted the pattern (`docs/mcp-complaints.md` § workflow-issues §3).
+ * An id is the only handle that survives leaving this machine. Everyone runs the web UI
+ * locally, so a URL carries a port that is only true for whoever copied it, while
+ * `f_00mt93q2i0` resolves in any teammate's clone — the property a commit hash has and a
+ * link does not. That is why this is prefix-tolerant: the id renders as
+ * `f_00mt93q2i0-cc017f2546`, the timestamp half is the distinctive one and the suffix
+ * looks like a checksum, so the half a person copies is the half that used to fail with
+ * `no finding or annotation "f_00mt93q2i0"` — which says the record does not exist. It
+ * does. Cost an agent four failed calls before it spotted the pattern
+ * (`docs/mcp-complaints.md` § workflow-issues §3).
  *
- * Returns the matches rather than resolving, because a prefix that matches two records
- * must not silently pick one — the caller says "did you mean", which is the answer that
- * is useful whether it matched one or several.
+ * Measured before it was written, on the two live stores: at 14 characters neither has a
+ * collision across 424 and 157 records, and the whole timestamp half is unique in both.
+ * The ambiguity that does exist at shorter lengths is an artifact of measuring from the
+ * START of the string — `bug_` and `finding_` eat four and eight characters that `f_`
+ * does not — which is why `MIN_PREFIX` counts the BODY, after the kind tag. Measuring the
+ * whole string measures a different thing per kind: the old helper's `length < 6` guard
+ * admitted `bug_00`, two characters of body, and held `f_00mt` to the same bar as
+ * `bug_00mt93`, which has six.
  *
- * Capped: a one-character prefix matches everything, and a suggestion listing 200 ids is
- * not a suggestion.
+ * EXACT BEATS PREFIX, and that is not a tie-break — an id that happens to be a prefix of
+ * a longer one must resolve to itself, or holding a complete id becomes the ambiguous
+ * case. Only when nothing matches exactly does the prefix search run.
+ *
+ * Ambiguity is REFUSED, never picked. Two records behind one prefix is the case where
+ * guessing acts on the wrong record silently, and the candidate list is the useful answer
+ * either way — it is what "did you mean" prints and what the search box declines to
+ * navigate on. `(pr, id)` is a finding's real identity, so one id on two pull requests
+ * lands here too rather than being resolved by an unordered pick.
+ */
+export type RecordKind = "finding" | "bug" | "requirement" | "spec" | "operation" | "node" | "anchor";
+
+export interface RecordRef {
+  kind: RecordKind;
+  id: string;
+  /** Findings only — part of the identity, not a decoration. See `readFinding`. */
+  pr?: string;
+  /**
+   * The record this one is reached THROUGH: an operation's spec.
+   *
+   * Carried here rather than looked up by the caller because an operation has no page of
+   * its own — it is rendered on its spec — so a ref without it resolves to a record that
+   * nothing can navigate to. That failed silently: the resolver matched, the route came
+   * back null, and the jump quietly did not happen.
+   */
+  parent?: string;
+}
+
+export type IdResolution = { match: RecordRef } | { ambiguous: RecordRef[] } | null;
+
+/** For a refusal that has to name what it found. */
+export const KIND_LABEL: Record<RecordKind, string> = {
+  finding: "finding", bug: "bug", requirement: "requirement",
+  spec: "spec", operation: "operation", node: "doc", anchor: "anchor",
+};
+
+
+/**
+ * Characters of id BODY below which a prefix search is not attempted.
+ *
+ * Not a uniqueness claim — ambiguity is checked against the rows either way. It stops a
+ * two-character paste from scanning every table to report two hundred candidates, which
+ * is not a suggestion.
+ */
+const MIN_PREFIX = 6;
+
+/** The body is what follows the kind tag: `f_`, `bug_`, `finding_`, `a_`. */
+const idBody = (id: string): string => {
+  const i = id.indexOf("_");
+  return i > 0 && i <= 8 ? id.slice(i + 1) : id;
+};
+
+/**
+ * Anchors are keyed `(ref, id)` and every cached snapshot holds its own row per anchor,
+ * so an unrestricted scan reports one id as a hundred candidates. `@work` is the live
+ * index and the only ref a person is holding an id from.
+ */
+const ID_SOURCES: { kind: RecordKind; sql: string }[] = [
+  { kind: "finding", sql: "SELECT DISTINCT id, pr, NULL AS parent FROM findings WHERE id " },
+  { kind: "bug", sql: "SELECT DISTINCT id, NULL AS pr, NULL AS parent FROM bugs WHERE id " },
+  { kind: "requirement", sql: "SELECT DISTINCT id, NULL AS pr, NULL AS parent FROM requirements WHERE id " },
+  { kind: "spec", sql: "SELECT DISTINCT id, NULL AS pr, NULL AS parent FROM specs WHERE id " },
+  { kind: "operation", sql: "SELECT DISTINCT id, NULL AS pr, spec_id AS parent FROM operations WHERE id " },
+  // `node_versions`, NOT `nodes`. The bare `nodes` table is a legacy shape that the
+  // versioned-docs migration DRAINS (`db.ts`), so on any store written since it is empty
+  // — and a resolver pointed at it matched no document at all, silently, while every doc
+  // page kept working. Live rows are keyed by `node_id`, one per version, so a doc whose
+  // only versions are removed is a deleted doc and must not be a destination.
+  { kind: "node", sql: "SELECT DISTINCT node_id AS id, NULL AS pr, NULL AS parent FROM node_versions WHERE COALESCE(removed, 0) = 0 AND node_id " },
+  { kind: "anchor", sql: `SELECT DISTINCT id, NULL AS pr, NULL AS parent FROM anchors WHERE ref = '${WORK_REF}' AND id ` },
+];
+
+function idHits(
+  root: string, q: string, mode: "exact" | "prefix", kinds: RecordKind[], limit: number,
+): RecordRef[] {
+  const d = db(root);
+  const out: RecordRef[] = [];
+  for (const src of ID_SOURCES) {
+    if (!kinds.includes(src.kind)) continue;
+    const rows = mode === "exact"
+      ? d.prepare(src.sql + "= ? LIMIT ?").all(q, limit + 1)
+      // ESCAPE is not optional: SQLite's LIKE has no default escape character, and every
+      // id in this store contains an `_`, which is LIKE's single-character WILDCARD. So
+      // an unescaped `f_00mt` also matches `fx00mt`, and `bug_` matches any id whose
+      // fourth character is anything at all — turning the kind tag into a match-all.
+      : d.prepare(src.sql + "LIKE ? ESCAPE '\\' LIMIT ?").all(q.replace(/[%_\\]/g, "\\$&") + "%", limit + 1);
+    for (const r of rows as unknown as { id: string; pr: string | null; parent: string | null }[]) {
+      out.push({
+        kind: src.kind, id: r.id,
+        ...(r.pr === null ? {} : { pr: r.pr }),
+        ...(r.parent === null ? {} : { parent: r.parent }),
+      });
+    }
+    if (out.length > limit) break;
+  }
+  return out;
+}
+
+export function resolveRecordId(
+  root: string,
+  q: string,
+  opts: { kinds?: RecordKind[]; limit?: number } = {},
+): IdResolution {
+  const id = q.trim();
+  if (!id) return null;
+  const kinds = opts.kinds ?? (Object.keys(KIND_LABEL) as RecordKind[]);
+  const limit = opts.limit ?? 8;
+
+  const exact = idHits(root, id, "exact", kinds, limit);
+  if (exact.length === 1) return { match: exact[0]! };
+  if (exact.length > 1) return { ambiguous: exact.slice(0, limit) };
+
+  if (idBody(id).length < MIN_PREFIX) return null;
+  const hits = idHits(root, id, "prefix", kinds, limit);
+  if (!hits.length) return null;
+  if (hits.length === 1) return { match: hits[0]! };
+  return { ambiguous: hits.slice(0, limit) };
+}
+
+/**
+ * "did you mean" for an id that is the FRONT of a real one, as ids alone.
+ *
+ * Kept as the shape the refusal paths want — they print ids, not kinds — so that
+ * `resolveRecordId` stays the single place that decides what an id matches.
  */
 export function idsStartingWith(root: string, prefix: string, limit = 5): string[] {
-  if (prefix.length < 6) return [];        // shorter than this is not a truncated id
-  const like = prefix.replace(/[%_\\]/g, "\\$&") + "%";
-  const d = db(root);
-  const rows = [
-    ...d.prepare("SELECT id FROM findings WHERE id LIKE ? ESCAPE '\\' LIMIT ?").all(like, limit + 1),
-    ...d.prepare("SELECT id FROM bugs WHERE id LIKE ? ESCAPE '\\' LIMIT ?").all(like, limit + 1),
-  ] as unknown as { id: string }[];
-  return [...new Set(rows.map((r) => r.id))].slice(0, limit);
+  const r = resolveRecordId(root, prefix, { kinds: ["finding", "bug"], limit });
+  if (!r) return [];
+  return "match" in r ? [r.match.id] : [...new Set(r.ambiguous.map((h) => h.id))].slice(0, limit);
 }
 
 export async function readFinding(

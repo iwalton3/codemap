@@ -11,7 +11,7 @@
  */
 
 import { Component, defineComponent, html, when, each } from './vendor/vdx/framework.js';
-import { api, apiPost, pageShell, nav, go, href, errText, taskError } from './core.js';
+import { api, apiPost, pageShell, nav, go, href, errText, taskError, copyIdButton } from './core.js';
 
 /**
  * What a pending ask reads as on the row.
@@ -109,11 +109,44 @@ class SharedPage extends Component {
   load = this.createTask(async () => {
     const u = this.props.params.universe;
     nav.current = u;
-    this.state.d = await api('/api/shared', { u, pr: this.props.params.pr, queue: this.state.queue ? '1' : null });
+    // `?f=` means somebody was SENT here to read one finding — from search, from a copied
+    // id, from another agent. The queue filter and the settled fold both exist to hide
+    // findings nobody needs to act on, which is exactly what a named one may be: landing
+    // on a page that does not contain the record you asked for is the failure this
+    // address exists to fix. So a focused finding turns both off.
+    const focus = this.props.query.f;
+    this.state.d = await api('/api/shared', {
+      u, pr: this.props.params.pr, queue: this.state.queue && !focus ? '1' : null,
+    });
+    if (focus) {
+      // The FLAG follows the view, not the other way round. Forcing the filter off in the
+      // request while leaving `queue` true left the button reading "showing: needs a
+      // person" over a list showing everything — a label that misreports what is on
+      // screen, and a toggle whose first click appeared to do nothing.
+      this.state.queue = false;
+      this.state.showSettled = true;
+      // Opened, because the summary line is the least of what somebody following an id
+      // came for — the thread and the verdicts are the record.
+      this.state.open = new Set([...this.state.open, focus]);
+      this.scrollToFinding(focus);
+    }
   });
 
+  /**
+   * `requestAnimationFrame` because the row does not exist until the render that follows
+   * this task settling. Best-effort by design: an id that is not on this pull request
+   * simply does not scroll, and the page is still the right page to be on.
+   * @param {string} id
+   */
+  scrollToFinding(id) {
+    requestAnimationFrame(() => {
+      const el = this.querySelector(`.frow[data-f="${CSS.escape(id)}"]`);
+      if (el) el.scrollIntoView({ block: 'center' });
+    });
+  }
+
   mounted() { this.load.run(); }
-  propsChanged(name) { if (name === 'params') { this.state.d = null; this.load.run(); } }
+  propsChanged(name) { if (name === 'params' || name === 'query') { this.state.d = null; this.load.run(); } }
 
   /**
    * Promote a finding into a bug. Its own path rather than an `act`, because it writes
@@ -161,7 +194,19 @@ class SharedPage extends Component {
     }
   }
 
-  toggleQueue() { this.state.queue = !this.state.queue; this.load.run(); }
+  /**
+   * Dropping `?f=` is the point, not a side effect.
+   *
+   * A focused finding forces the queue filter off — otherwise the link lands on a page
+   * that does not contain it — so while one is focused this button would flip a flag the
+   * loader ignores, and read as broken. Reaching for the filter means the reader is done
+   * with the one finding they were sent to, so the focus goes with it.
+   */
+  toggleQueue() {
+    this.state.queue = !this.state.queue;
+    if (this.props.query.f) { go(`/u/${this.props.params.universe}/shared/${this.props.params.pr}/`); return; }
+    this.load.run();
+  }
 
   /**
    * Open or close every finding on screen.
@@ -367,8 +412,9 @@ class SharedPage extends Component {
       if (open) next.delete(f.id); else next.add(f.id);
       st.open = next;
     };
+    const focused = this.props.query.f === f.id;
     return html`
-      <div class="frow ${open ? 'fopen' : ''}">
+      <div class="frow ${open ? 'fopen' : ''} ${focused ? 'ffocus' : ''}" data-f="${f.id}">
         <div class="fmeta" on-click="${toggle}">
           <span class="fcaret">${open ? '▾' : '▸'}</span>
           <span class="prbadge">${f.state}</span>
@@ -376,6 +422,7 @@ class SharedPage extends Component {
           ${when(!!f.category, () => html`<span class="rvfcat">${f.category}</span>`)}
           ${this.marksEl(f)}
           <span class="fauthor dim">${f.author}${f.authorModel ? ` (${f.authorModel})` : ''}</span>
+          ${copyIdButton(f.id, `copy ${f.id} — the handle that resolves in anyone's clone, unlike a link to this page`)}
         </div>
         <div class="fcomment" on-click="${toggle}">${f.comment ?? f.text}</div>
         ${when(open, () => this.detailEl(f))}

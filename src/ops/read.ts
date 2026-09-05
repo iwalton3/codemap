@@ -7,7 +7,7 @@ import { headCommit, readBlobs } from "../git.js";
 import { citedAnchors, isClosed } from "../shared-bugs.js";
 import { isClosed as isFindingClosed, type SharedFinding } from "../shared-findings.js";
 import { refreshBugRows } from "./bugs.js";
-import { readAnchorStore, loadNodes, readGraph, readBugs, readAnnotations, readFindings, readReviews, findAnchorsOutsideWork, snapshotBranch, readOrphans } from "../store.js";
+import { readAnchorStore, loadNodes, readGraph, readBugs, readAnnotations, readFindings, readReviews, findAnchorsOutsideWork, snapshotBranch, readOrphans, resolveRecordId, type RecordRef } from "../store.js";
 import { teamNotesByAnchor, type PinnedNote } from "../notes-lookup.js";
 import { resolveAnchorRefs } from "../refs.js";
 import { reviewStatus, reviewStatesFor, anchorReviewMap, deriveCodeReview, type ReviewPair } from "../reviews.js";
@@ -112,6 +112,46 @@ export async function outline(root: string, prefix = "", opts: { compact?: boole
     .sort((x, y) => y.anchors - x.anchors);
   return { prefix: p, kind: "dir" as const, childrenCount: children.length, children };
 }
+/**
+ * "I was handed an id — take me to it."
+ *
+ * The counterpart to the copy button, and the reason the id is the thing worth copying.
+ * Everyone runs the web UI locally, so a link carries a port that is only true for
+ * whoever copied it; an id resolves in any teammate's clone, which is the property that
+ * makes it shareable at all. This is what turns one back into a place.
+ *
+ * Prefix-tolerant, because the half of `f_00mt93q2i0-cc017f2546` a person copies is the
+ * front — see `resolveRecordId`, which owns that rule and the refusal on ambiguity.
+ *
+ * `ambiguous` is a LIST rather than a failure: the caller shows it, and two candidates is
+ * a better answer than either silence or a coin flip.
+ */
+export async function resolveId(
+  root: string, query: string,
+): Promise<{ match: RecordRef | null; ambiguous: RecordRef[] }> {
+  // MATERIALIZED FIRST, and this is the case the whole feature is for. An id you are
+  // holding was handed to you — by a teammate, a pull request comment, another agent —
+  // so the record behind it is very often one the log has and this machine's tables do
+  // not. Resolving against unfolded rows answers "no such record" for exactly the ids
+  // most worth resolving. `search` learned this the same way, one read earlier.
+  //
+  // Three, because the resolver spans three folds: bugs, findings, and the standard
+  // (requirements, specs, operations). `standardScopeWarning` rather than a direct
+  // materializer — one entity folded from two scopes must have exactly one materializer,
+  // and that is the door which uses it (see `standard-publish.ts`).
+  //
+  // Best-effort, all three: a sidecar this machine cannot read is a reason to answer from
+  // the rows it already has, not to fail a lookup.
+  await refreshBugRows(root).catch(() => {});
+  const shared = await import("../ops-shared.js");
+  await shared.materializeFindingScopes(root).catch(() => []);
+  const { standardScopeWarning } = await import("../standard-publish.js");
+  await standardScopeWarning(root).catch(() => undefined);
+  const r = resolveRecordId(root, query);
+  if (!r) return { match: null, ambiguous: [] };
+  return "match" in r ? { match: r.match, ambiguous: [] } : { match: null, ambiguous: r.ambiguous };
+}
+
 export async function search(root: string, query: string, limit = 30) {
   const q = query.toLowerCase();
   const [store, nodes] = await Promise.all([readAnchorStore(root), loadNodesShared(root)]);

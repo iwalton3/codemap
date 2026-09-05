@@ -13,7 +13,7 @@
  */
 
 import { Component, defineComponent, html, when, each } from './vendor/vdx/framework.js';
-import { api, attestedPost, pageShell, nav, href, errText, taskError, isErr } from './core.js';
+import { api, attestedPost, pageShell, nav, href, errText, taskError, isErr, copyIdButton } from './core.js';
 
 /**
  * The API contract, so a page's state is typed from the ops functions themselves.
@@ -778,7 +778,7 @@ class SpecPage extends Component {
       return html`
       <div class="crumbs"><a class="back" href="${href(standardUrl(u))}">← standard</a> <span class="sep">·</span> ${d.spec.title}</div>
       ${servedNote(d)}
-      <div class="fs dim">${d.spec.status} · proposed by ${d.spec.author && d.spec.author.principal ? d.spec.author.principal : 'unknown'}${d.spec.author && d.spec.author.via ? ' (via ' + (d.spec.author.via.model || 'agent') + ')' : ''}</div>
+      <div class="fs dim">${d.spec.status} · proposed by ${d.spec.author && d.spec.author.principal ? d.spec.author.principal : 'unknown'}${d.spec.author && d.spec.author.via ? ' (via ' + (d.spec.author.via.model || 'agent') + ')' : ''}${copyIdButton(d.spec.id, `copy ${d.spec.id} — the handle that resolves in anyone's clone, unlike a link to this page`)}</div>
       ${when(!!d.spec.narrative, () => html`<div class="op-card"><div class="fs dim">background — NON-OPERATIVE, nothing here changes the standard</div><div class="fs prose">${d.spec.narrative}</div></div>`)}
       ${when((d.spec.revisions || []).length > 0, () => html`<div class="fs dim prose">corrected ${d.spec.revisions.length} time${d.spec.revisions.length === 1 ? '' : 's'} while a draft — last by ${d.spec.revisions[d.spec.revisions.length - 1].by.principal} on ${(d.spec.revisions[d.spec.revisions.length - 1].at || '').slice(0, 10)}${d.spec.revisions[d.spec.revisions.length - 1].reason ? ' — ' + d.spec.revisions[d.spec.revisions.length - 1].reason : ''}</div>`)}
       ${when(d.spec.status === 'draft' && this.state.editing !== 'spec', () => html`<div class="op-edit">
@@ -924,6 +924,7 @@ class RequirementPage extends Component {
       ${when(!!this.state.err, () => html`<div class="attn-banner"><span class="attn-n">✕</span><span>${this.state.err}</span></div>`)}
       <div class="op-card">
         <div class="ft"><b>${d.requirement.title}</b>
+          ${copyIdButton(d.requirement.id, `copy ${d.requirement.id} — the handle that resolves in anyone's clone, unlike a link to this page`)}
           ${when(d.requirement.recheckDue, () => html`<span class="qbadge drift" title="watched code has moved since it was last looked at — evidence about the CODE, not a downgrade of the rule">recheck due</span>`)}
           ${when(d.requirement.status === 'retired', () => html`<span class="qbadge">retired</span>`)}
         </div>
