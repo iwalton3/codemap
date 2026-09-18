@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Review, BugWitness, Anchor, State } from "./schema.js";
 import { readReviews, writeReviews, writeStore } from "./store.js";
-import { reviewStatus, markReviewed, unmarkReviewed, changedSince, reviewStatesFor, witnessDrift, realDrift, effectiveAttestation, deriveCodeReview } from "./reviews.js";
+import { reviewStatus, markReviewed, markReviewedBatch, unmarkReviewed, changedSince, reviewStatesFor, witnessDrift, realDrift, effectiveAttestation, deriveCodeReview } from "./reviews.js";
 import { anchorMark } from "./ops.js";
 import { indexBlob } from "./repo.js";
 import { fixtureHash } from "./fixture-hash.js";
@@ -559,6 +559,39 @@ test("the nothing-witnessed guard reads the ref it witnessed, not the working tr
     assert.match((atBase as { error: string }).error, /nothing was witnessed/);
     assert.match((atBase as { error: string }).error, /base_sha/,
       "and it names the snapshot it actually consulted");
+  } finally { discard(root); }
+});
+
+test("a batch mark skips and reports the ids that witnessed nothing, and marks the rest", async () => {
+  // `markReviewed`'s rule, per id: every id in a batch is its own mark. The batch is the
+  // pull-request path (MCP `review ids`, the walkthrough's step and chapter marks), and
+  // it wrote an absent witness with no acceptance for an id it could not see.
+  const root = mkdtempSync(join(tmpdir(), "codemap-batchguard-"));
+  try {
+    mkdirSync(join(root, "src"));
+    const src = "export function transfer(cents: number) {\n  return cents;\n}\n";
+    writeFileSync(join(root, "src/pay.ts"), src);
+    const anchors = await indexBlob(src, "src/pay.ts");
+    await writeStore(root, anchors, { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State);
+    const id = anchors[0]!.id;
+    const { writeSnapshot } = await import("./store.js");
+    await writeSnapshot(root, "base_sha", "main", [], "2026-08-01T00:00:00Z");
+
+    const atWork = await markReviewedBatch(root, [id, "a_nowhere"], { level: "code", actor: "agent" });
+    assert.equal(atWork.marked, 1);
+    assert.deepEqual(atWork.unwitnessed, ["a_nowhere"]);
+    assert.equal((await readReviews(root)).reviews.some((r) => r.target.id === "a_nowhere"), false, "no row for it");
+
+    const atBase = await markReviewedBatch(root, [id], { level: "code", actor: "agent", ref: "base_sha" });
+    assert.equal(atBase.marked, 0, "the symbol is absent at the ref being witnessed");
+    assert.deepEqual(atBase.unwitnessed, [id]);
+
+    // A caller that supplies the hashes read the code itself (the GitHub viewed import).
+    const supplied = await markReviewedBatch(root, ["a_elsewhere"], {
+      level: "code", actor: "human", attestation: "viewed", hashes: new Map([["a_elsewhere", "h"]]),
+    });
+    assert.equal(supplied.marked, 1);
+    assert.equal(supplied.unwitnessed, undefined);
   } finally { discard(root); }
 });
 

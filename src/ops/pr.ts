@@ -384,12 +384,13 @@ export async function prStepMark(
   const inside = c.contained.get(id) ?? [];
 
   let cleared: string[] = [];
+  let unwitnessed: string[] | undefined;
   if (opts.unmark) {
     await unmarkReviewed(root, { targetKind: "anchor", targetId: id, level: "code", attestation: opts.attestation, actor: "human" });
     cleared = (await unmarkCovered(root, id, { level: "code", attestation: opts.attestation, actor: "human" })).removed;
   } else {
     const mark = { level: "code" as const, actor: "human" as const, attestation: opts.attestation, reviewer: opts.reviewer, ref: c.head };
-    await markReviewedBatch(root, [id], mark);
+    unwitnessed = (await markReviewedBatch(root, [id], mark)).unwitnessed;
     await markReviewedBatch(root, inside, { ...mark, coveredBy: id });
   }
   // Every symbol whose state may have moved — the one clicked, what it covers, and
@@ -397,7 +398,7 @@ export async function prStepMark(
   const affected = [id, ...new Set([...inside, ...cleared])];
   const marks: Record<string, unknown> = {};
   for (const a of affected) marks[a] = await anchorMark(root, a, { ref: c.head });
-  return { ok: true, anchor: id, covered: inside.length, marks };
+  return { ok: true, anchor: id, covered: inside.length, marks, ...(unwitnessed ? { unwitnessed } : {}) };
 }
 
 /**
@@ -433,6 +434,7 @@ export async function prChapterMark(
   if ("error" in c) return { error: c.error };
 
   const cleared: string[] = [];
+  let unwitnessed: string[] | undefined;
   if (opts.unmark) {
     for (const id of ids) {
       await unmarkReviewed(root, { targetKind: "anchor", targetId: id, level: "code", attestation: opts.attestation, actor: "human" });
@@ -442,7 +444,7 @@ export async function prChapterMark(
     const mark = { level: "code" as const, actor: "human" as const, attestation: opts.attestation, reviewer: opts.reviewer, ref: t.refs.head };
     // The chapter's own symbols first: a member that is itself a step here is signed
     // in its own right, and a cover must not displace that.
-    await markReviewedBatch(root, ids, mark);
+    unwitnessed = (await markReviewedBatch(root, ids, mark)).unwitnessed;
     for (const id of ids) await markReviewedBatch(root, c.contained.get(id) ?? [], { ...mark, coveredBy: id });
   }
   // The resulting marks, so the page updates in place rather than re-deriving the
@@ -450,7 +452,7 @@ export async function prChapterMark(
   const affected = [...new Set([...ids, ...[...c.contained.values()].flat(), ...cleared])];
   const marks: Record<string, unknown> = {};
   for (const id of affected) marks[id] = await anchorMark(root, id, { ref: t.refs.head });
-  return { ok: true, chapter: chapterId, anchors: ids.length, covered: affected.length - ids.length, marks };
+  return { ok: true, chapter: chapterId, anchors: ids.length, covered: affected.length - ids.length, marks, ...(unwitnessed ? { unwitnessed } : {}) };
 }
 
 /**

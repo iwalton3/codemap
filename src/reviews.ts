@@ -7,7 +7,7 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { type Anchor, type Review, type ReviewLevel, type ReviewState, type BugWitness, type Actor } from "./schema.js";
-import { readReviews, writeReviews, readAnchorStore, loadNodes, snapshotRefusal, snapshotBranch, derivationLookup, workHas } from "./store.js";
+import { readReviews, writeReviews, readAnchorStore, loadNodes, snapshotRefusal, snapshotBranch, derivationLookup, workHas, snapshotKey } from "./store.js";
 import { readSnapshot } from "./snapshots.js";
 import { resolveAcceptance, recordAcceptance, type Ancestry } from "./acceptance.js";
 import { ACCEPTED_CAP, type AcceptedCitation, type AcceptedEntry, type AcceptanceVia } from "./schema.js";
@@ -964,7 +964,7 @@ export async function markReviewedBatch(
      */
     hashes?: Map<string, string>;
   },
-): Promise<{ marked: number }> {
+): Promise<{ marked: number; unwitnessed?: string[] }> {
   if (!anchorIds.length) return { marked: 0 };
   const live = input.hashes ?? await liveHashes(root, anchorIds, input.ref);
   const actor = input.actor ?? "agent";
@@ -982,6 +982,17 @@ export async function markReviewedBatch(
   // A repeated id would mint two rows for one (target, level, attestation, reviewer),
   // which is one slot however many reviewers there are.
   anchorIds = [...new Set(anchorIds)];
+  // `markReviewed`'s "nothing was witnessed" rule, per id, because each id is its own
+  // mark: no hash at the ref AND no record of the code at all means the mark would stand
+  // on no observation. Skipped and reported so the rest of the page still lands. A
+  // caller that supplies `hashes` read the code itself.
+  let unwitnessed: string[] = [];
+  if (!input.hashes) {
+    const known = workHas(root, anchorIds, input.ref ? snapshotKey(root, input.ref) : undefined);
+    unwitnessed = anchorIds.filter((id) => live.get(id) === undefined && !known.has(id));
+    const drop = new Set(unwitnessed);
+    anchorIds = anchorIds.filter((id) => !drop.has(id));
+  }
   const wanted = new Set(anchorIds);
   const label = input.reviewer || (by ? actorLabel(by) : "me");
   const me = identitiesOf(by, label, actor);
@@ -1032,5 +1043,5 @@ export async function markReviewedBatch(
              && isViewedRow(r) === viewed && me.has(rowIdentity(r))),
   ).concat(fresh);
   await writeReviews(root, rs.reviews);
-  return { marked: fresh.length };
+  return { marked: fresh.length, ...(unwitnessed.length ? { unwitnessed } : {}) };
 }
