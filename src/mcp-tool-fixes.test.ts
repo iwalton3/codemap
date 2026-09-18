@@ -196,13 +196,11 @@ test("a batch review at a ref witnesses that commit, not the working tree", asyn
   } finally { u.cleanup(); }
 });
 
-test("witnessing at a ref refuses a snapshot indexed from a dirty tree", async () => {
-  // `reindex` re-caches HEAD's snapshot from the WORKING TREE and labels it dirty
-  // (`dirtySnapshot: true`). Nothing on the witnessing path read that label, so a
-  // reindex on a dirty checkout silently replaced the head's bodies with the
-  // working tree's — and a later `review(ref: head)` then recorded exactly the body
-  // the `ref` was passed to avoid. `diff` already refuses this snapshot (COD-3);
-  // this is the same refusal one layer over.
+test("a reindex on a dirty tree does not touch the commit's snapshot, so witnessing at it still works", async () => {
+  // `reindex` used to re-cache HEAD's snapshot from the WORKING TREE, so a later
+  // `review(ref: head)` either recorded the working tree's body under the commit's name
+  // or, once that was refused, failed outright. A working tree's uncommitted state
+  // belongs to the worktree (`@work`), never to a commit.
   const u = await universe();
   try {
     const git = (...args: string[]) =>
@@ -217,12 +215,14 @@ test("witnessing at a ref refuses a snapshot indexed from a dirty tree", async (
 
     writeFileSync(join(u.root, "src/pay.js"), SRC.replace("return cents;", "return cents * 3;"), "utf8");
     const r = await reindex(u.root) as any;
-    assert.equal(r.dirtySnapshot, true, "reindex knows it cached a dirty tree under this sha");
+    assert.equal(r.snapshotSkipped, "dirty", "reindex says it left the commit's snapshot alone");
 
-    await assert.rejects(
-      () => markReviewedBatch(u.root, u.anchors, { level: "code", actor: "agent", ref: head }),
-      /uncommitted changes/,
-      "and witnessing against it is now refused rather than silently wrong",
-    );
+    await markReviewedBatch(u.root, u.anchors, { level: "code", actor: "agent", ref: head });
+    const committed = await indexBlob(SRC, "src/pay.js");
+    const rows = (await readReviews(u.root)).reviews.filter((x) => x.target.kind === "anchor");
+    for (const a of committed) {
+      const w = rows.find((x) => x.target.id === a.id)?.witnesses?.[0];
+      assert.equal(w?.bodyHash, a.bodyHash, `${a.id} witnessed at the commit, not the working tree`);
+    }
   } finally { u.cleanup(); }
 });

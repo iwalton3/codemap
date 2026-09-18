@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { Anchor, Audit, DerivationTag, LogicalNode, Requirement } from "./schema.js";
 import { writeSnapshot, writeNode, writeLocalRequirement, writeLocalAudit, dropSnapshot, snapshotIsDirty, writeLocalPointer } from "./store.js";
 import { computeDiff } from "./diff.js";
+import { db } from "./db.js";
 import { fixtureHash } from "./fixture-hash.js";
 import { discard } from "./test-tmp.js";
 
@@ -151,7 +152,9 @@ test("a base snapshot taken from a dirty tree is refused, not diffed", async () 
   const root = mkdtempSync(join(tmpdir(), "codemap-dirty-"));
   try {
     const same: Anchor[] = [anchor("a_keep", "keep", "h1")];
-    await writeSnapshot(root, "dirty_sha", "main", same, "2026-08-26T00:00:00Z", { dirty: true });
+    // A row an older build wrote; nothing writes one now, but stores still hold them.
+    await writeSnapshot(root, "dirty_sha", "main", same, "2026-08-26T00:00:00Z");
+    db(root).prepare("UPDATE snapshots SET dirty = 1 WHERE ref = ?").run("dirty_sha");
     assert.equal(snapshotIsDirty(root, "dirty_sha"), true, "the flag survives the round trip");
 
     const r = await computeDiff(root, "dirty_sha") as { error?: string };

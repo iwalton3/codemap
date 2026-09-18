@@ -48,11 +48,11 @@ export async function reindex(root: string) {
   // After the write, because it reads the new index: anything retained earlier that
   // this index produces again is live code, not a ghost.
   const recovered = releaseRecoveredOrphans(root);
-  // `isDirty` here, and NOT on `snapshotAt` below: this indexes the working TREE, so
-  // on a dirty checkout the row is the branch's uncommitted work wearing the commit's
-  // name. `snapshotAt` reads git objects and is truthful by construction.
+  // Only a CLEAN tree's index is that commit's. A dirty one is the worktree's state and
+  // lives in `@work` alone; caching it under the sha replaced a clean snapshot other
+  // readers were using with bodies no commit holds.
   const dirty = isDirty(root);
-  if (commit) await writeSnapshot(root, commit, branch, anchors, new Date().toISOString(), { dirty });
+  if (commit && !dirty) await writeSnapshot(root, commit, branch, anchors, new Date().toISOString());
   const files = new Set(anchors.map((a) => a.file)).size;
   // Two symbols on one id. The store is keyed `(ref, id)` and written
   // `INSERT OR REPLACE`, so the loser has just silently ceased to exist for the
@@ -62,10 +62,7 @@ export async function reindex(root: string) {
   const collisions = collidingAnchors(anchors);
   return {
     ok: true, anchors: anchors.length, files, commit, branch,
-    // Reported, not just recorded. A snapshot taken from a dirty tree is labelled
-    // with the bare sha and is not that commit, and until this was surfaced nothing
-    // above the store could say so — `isDirty` existed and had exactly one caller.
-    ...(commit && dirty ? { dirtySnapshot: true } : {}),
+    ...(commit && dirty ? { snapshotSkipped: "dirty" as const } : {}),
     ...(collisions.size ? {
       idCollisions: [...collisions].map(([id, list]) => ({
         id, file: list[0]!.file, symbols: list.map((a) => a.symbolPath.join(" › ")),
@@ -294,17 +291,15 @@ export async function checkStale(root: string) {
 
 /**
  * Cache the current commit's anchors as an immutable snapshot (the branch-diff
- * cache). Does a fresh full index so the snapshot reflects what's checked out.
- * Call this on a branch before switching away, so it can be diffed later without
- * a checkout. `init` snapshots automatically; this is the manual/agent trigger.
+ * cache), indexed from git objects — so uncommitted edits never reach it.
+ * `init` snapshots automatically on a clean tree; this is the manual/agent trigger.
  */
 export async function snapshot(root: string) {
   const commit = headCommit(root);
   if (!commit) return { error: "no git commit to snapshot (not a git repo, or no HEAD)" };
-  const anchors = await indexRepo(root);
-  const dirty = isDirty(root);
-  await writeSnapshot(root, commit, currentBranch(root), anchors, new Date().toISOString(), { dirty });
-  return { ok: true, ref: commit, branch: currentBranch(root), anchors: anchors.length, dirty };
+  const branch = currentBranch(root);
+  const r = await snapshotAt(root, commit, { label: branch ?? undefined });
+  return "error" in r ? r : { ...r, branch };
 }
 
 /**

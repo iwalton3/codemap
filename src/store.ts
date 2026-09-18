@@ -283,7 +283,8 @@ export interface SnapshotInfo {
 }
 
 /**
- * Was the cached snapshot for `ref` taken from a dirty tree?
+ * Was the cached snapshot for `ref` taken from a dirty tree? Only rows written by an
+ * older build can be: a working tree's state is never cached under a commit now.
  *
  * Separate from `readSnapshot`, which deliberately answers null for a snapshot it
  * cannot USE. A dirty one is perfectly usable and simply lies about which commit it
@@ -302,19 +303,12 @@ export function snapshotIsDirty(root: string, ref: string): boolean {
  */
 export async function writeSnapshot(
   root: string, ref: string, branch: string | null, anchors: Anchor[], at: string,
-  /**
-   * The working tree had uncommitted changes when this was indexed, so the row is
-   * NOT a faithful picture of the commit it is named after. Callers that build from
-   * git objects (`snapshotAt`) are never dirty and leave it false; the ones that
-   * index the working tree (`init`, `snapshot`) must pass `isDirty(root)`.
-   */
-  opts: { dirty?: boolean } = {},
 ): Promise<void> {
   if (ref === WORK_REF) throw new Error("cannot snapshot the reserved @work ref");
   const d = db(root);
   replaceAnchors(d, ref, anchors);
   d.prepare("INSERT INTO snapshots(ref,branch,at,count,scheme,hash_scheme,dirty) VALUES(?,?,?,?,?,?,?) ON CONFLICT(ref) DO UPDATE SET branch=excluded.branch, at=excluded.at, count=excluded.count, scheme=excluded.scheme, hash_scheme=excluded.hash_scheme, dirty=excluded.dirty")
-    .run(ref, branch, at, anchors.length, ANCHOR_SCHEME, HASH_SCHEME, opts.dirty ? 1 : 0);
+    .run(ref, branch, at, anchors.length, ANCHOR_SCHEME, HASH_SCHEME, 0);
 }
 
 /**
