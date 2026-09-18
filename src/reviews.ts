@@ -6,8 +6,8 @@
 
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { type Anchor, type Review, type ReviewLevel, type ReviewState, type BugWitness, type Actor } from "./schema.js";
-import { readReviews, writeReviews, readAnchorStore, loadNodes, snapshotRefusal, snapshotBranch, derivationLookup, workHas, snapshotKey } from "./store.js";
+import { type Anchor, type Review, type ReviewLevel, type ReviewState, type BugWitness, type Actor, type LogicalNode } from "./schema.js";
+import { readReviews, writeReviews, readAnchorStore, loadNodes, loadNodesAt, snapshotRefusal, snapshotBranch, derivationLookup, workHas, snapshotKey } from "./store.js";
 import { readSnapshot } from "./snapshots.js";
 import { resolveAcceptance, recordAcceptance, type Ancestry } from "./acceptance.js";
 import { ACCEPTED_CAP, type AcceptedCitation, type AcceptedEntry, type AcceptanceVia } from "./schema.js";
@@ -180,11 +180,30 @@ export interface ReviewPair {
 export type Target = { kind: "node" | "anchor"; id: string };
 const key = (t: Target) => `${t.kind}:${t.id}`;
 
-async function coveredAnchorIds(root: string, target: Target, nodeAnchors?: Map<string, string[]>): Promise<string[]> {
+async function coveredAnchorIds(root: string, target: Target, nodeAnchors?: Map<string, string[]>, ref?: string): Promise<string[]> {
   if (target.kind === "anchor") return [target.id];
   if (nodeAnchors) return nodeAnchors.get(target.id) ?? [];
-  const nodes = await loadNodes(root);
+  const { nodes } = await codeAt(root, ref);
   return nodes.find((n) => n.id === target.id)?.anchors ?? [];
+}
+
+/**
+ * The docs, and the anchor ids present, as they stand at `ref` — or at `@work` without one.
+ *
+ * Which version of a doc wins depends on the code in front of you (`loadNodesAt`), so a
+ * caller witnessing at a ref must take a node's anchor list from the ref too. Hashes at
+ * the ref with membership from `@work` was the split that made a sign-off at a pull
+ * request's head witness code the doc does not cite there.
+ */
+export async function codeAt(root: string, ref?: string): Promise<{ nodes: LogicalNode[]; present: Set<string> }> {
+  if (!ref) {
+    const [nodes, store] = await Promise.all([loadNodes(root), readAnchorStore(root)]);
+    return { nodes, present: new Set(store.anchors.map((a) => a.id)) };
+  }
+  const snap = await readSnapshot(root, ref);
+  if (!snap) throw new Error(snapshotRefusal(root, snapshotKey(root, ref))?.message ?? `no cached snapshot for ${ref.slice(0, 12)}`);
+  const index = anchorIndex(new Map(snap.map((a) => [a.id, a.bodyHash])), derivationsOf(snap), derivationLookup(root));
+  return { nodes: await loadNodesAt(root, index), present: new Set(snap.map((a) => a.id)) };
 }
 
 /**
@@ -281,7 +300,7 @@ export async function liveIndex(
 
 /** Witnesses (anchor id + current live hash) covering a target — the staleness snapshot. */
 export async function witnessesFor(root: string, target: Target, ref?: string): Promise<BugWitness[]> {
-  const anchorIds = await coveredAnchorIds(root, target);
+  const anchorIds = await coveredAnchorIds(root, target, undefined, ref);
   const live = await liveHashes(root, anchorIds, ref);
   return anchorIds.map((id) => ({ anchorId: id, bodyHash: live.get(id) ?? "sha256:absent" }));
 }
@@ -339,7 +358,7 @@ export async function markReviewed(
   input: { targetKind: "node" | "anchor"; targetId: string; level: ReviewLevel; reviewer?: string; actor?: "human" | "agent"; attestation?: Attestation; ref?: string },
 ) {
   const target: Target = { kind: input.targetKind, id: input.targetId };
-  const anchorIds = await coveredAnchorIds(root, target);
+  const anchorIds = await coveredAnchorIds(root, target, undefined, input.ref);
   // Witness the code that was actually read: on a PR surface that is the head
   // commit, not whatever the working tree happens to hold.
   const live = await liveHashes(root, anchorIds, input.ref);
@@ -573,7 +592,7 @@ export async function reviewStatesFor(
   opts?: { viewed?: boolean; ref?: string },
 ): Promise<Map<string, ReviewPair>> {
   const rs = await readReviews(root);
-  const nodes = await loadNodes(root);
+  const nodes = targets.some((t) => t.kind === "node") ? (await codeAt(root, opts?.ref)).nodes : [];
   const nodeAnchors = new Map(nodes.map((n) => [n.id, n.anchors]));
   const all = new Set<string>();
   const covers = new Map<string, string[]>();

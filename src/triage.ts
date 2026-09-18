@@ -8,7 +8,7 @@
 import { randomBytes } from "node:crypto";
 import { type Importance, type Complexity, type TriageSource, type Triage, type BugSeverity } from "./schema.js";
 import { readTriage, readLocalTriage, replaceLocalTriage, replaceLocalGraphTriage, upsertLocalTriage, loadNodes, readGraph, readAnchorStore } from "./store.js";
-import { reviewStatesFor, witnessesFor, liveHashes, witnessDrift, realDrift, deriveCodeReview, type Target, type ReviewPair, type AnchorChange } from "./reviews.js";
+import { reviewStatesFor, witnessesFor, liveHashes, codeAt, witnessDrift, realDrift, deriveCodeReview, type Target, type ReviewPair, type AnchorChange } from "./reviews.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { indexFile } from "./repo.js";
@@ -284,9 +284,7 @@ export async function reviewTriageFor(root: string, targets: Target[], opts: { r
   // Node targets need their cited anchors' code reviews too — batch them into the same
   // passes (reviewStatesFor re-indexes each file once, so widening the list is cheap).
   const nodeTargets = targets.filter((t) => t.kind === "node");
-  const [nodes, present] = nodeTargets.length
-    ? await Promise.all([loadNodes(root), readAnchorStore(root).then((s) => new Set(s.anchors.map((a) => a.id)))])
-    : [[], new Set<string>()];
+  const { nodes, present } = nodeTargets.length ? await codeAt(root, opts.ref) : { nodes: [], present: new Set<string>() };
   // Missing anchors are excluded from the denominator — a lost anchor is a `dangling`
   // status, not an un-completable review (matches `getNode`).
   const citedBy = new Map(nodeTargets.map((t) => [t.id, (nodes.find((n) => n.id === t.id)?.anchors ?? []).filter((a) => present.has(a))]));
