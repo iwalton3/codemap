@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Anchor, Audit, DerivationTag, LogicalNode, Requirement } from "./schema.js";
+import type { Anchor, Audit, DerivationTag, LogicalNode, Requirement, State } from "./schema.js";
 import { writeSnapshot, writeNode, writeLocalRequirement, writeLocalAudit, dropSnapshot, snapshotIsDirty, writeLocalPointer } from "./store.js";
 import { computeDiff } from "./diff.js";
 import { db } from "./db.js";
@@ -344,4 +344,33 @@ test("movement is decided by the witness hash, not by the anchor being in the di
   } finally {
     discard(root);
   }
+});
+
+test("a diff between two refs reads review state at its head, where the page signs", async () => {
+  // DiffPage signs at `head` (6e98222), and the review rollup, the coverage figure and
+  // the code drill-down read the working tree — so a mark just made read stale on the
+  // page that made it.
+  const root = mkdtempSync(join(tmpdir(), "codemap-diffref-"));
+  try {
+    const base: Anchor[] = [anchor("a_keep", "keep", "h1"), anchor("a_chg", "transfer", "h3")];
+    const head: Anchor[] = [anchor("a_keep", "keep", "h1"), anchor("a_chg", "transfer", "h3_NEW"), anchor("a_add", "audit", "h4")];
+    const { writeStore } = await import("./store.js");
+    await writeStore(root, base, { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State);
+    await writeSnapshot(root, "base_sha", "main", base, "2026-07-15T00:00:00Z");
+    await writeSnapshot(root, "head_sha", "feature", head, "2026-07-15T01:00:00Z");
+    await writeNode(root, { id: "flow1", type: "process", title: "Transfer flow", summary: "", anchors: ["a_chg"], body: "" });
+
+    const { markReviewedBatch } = await import("./reviews.js");
+    const m = await markReviewedBatch(root, ["a_chg", "a_add"], { level: "code", actor: "agent", ref: "head_sha" });
+    assert.equal(m.marked, 2);
+
+    const r = await computeDiff(root, "base_sha", "head_sha");
+    if ("error" in r) throw new Error(r.error);
+    assert.equal(r.impact.nodes[0]!.review.code, "reviewed", "the node's code, derived at head");
+    assert.equal(r.coverage.complete, 2, "both changed symbols are checked at head");
+
+    const { diffCode } = await import("./ops/diffs.js");
+    const d = await diffCode(root, "base_sha", "head_sha", "a_chg", "src/pay.ts");
+    assert.equal(d.review.code, "reviewed", "and the drill-down agrees");
+  } finally { discard(root); }
 });

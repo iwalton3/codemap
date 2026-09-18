@@ -351,8 +351,8 @@ export async function reviewTriageFor(root: string, targets: Target[], opts: { r
 }
 
 /** Triage + severity for many targets (derives from `reviewTriageFor`). */
-export async function triageFor(root: string, targets: Target[]): Promise<Map<string, TriageInfo>> {
-  const m = await reviewTriageFor(root, targets);
+export async function triageFor(root: string, targets: Target[], opts: { ref?: string } = {}): Promise<Map<string, TriageInfo>> {
+  const m = await reviewTriageFor(root, targets, opts);
   return new Map([...m].map(([k, v]) => [k, v.triage]));
 }
 
@@ -388,8 +388,8 @@ export function rollupCoverage(infos: Iterable<TriageInfo>): Coverage {
 }
 
 /** Coverage over a set of targets (their live severity), rolled up. */
-export async function coverageFor(root: string, targets: Target[]): Promise<Coverage> {
-  const m = await triageFor(root, targets);
+export async function coverageFor(root: string, targets: Target[], opts: { ref?: string } = {}): Promise<Coverage> {
+  const m = await triageFor(root, targets, opts);
   return rollupCoverage(m.values());
 }
 

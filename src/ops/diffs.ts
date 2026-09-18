@@ -1,5 +1,6 @@
 import { computeDiff, anchorCodeDiff, docDiff as computeDocDiff, type DiffResult } from "../diff.js";
 import { reviewTriageFor } from "../triage.js";
+import { snapshotKey } from "../store.js";
 import { standardScopeWarning, type StandardScope } from "../standard-publish.js";
 
 /**
@@ -48,7 +49,7 @@ export async function diffCode(root: string, base: string, head: string | undefi
   const code = await anchorCodeDiff(root, base, head, id, file);
   let e: Awaited<ReturnType<typeof reviewTriageFor>> extends Map<string, infer V> ? V | undefined : never;
   try {
-    e = (await reviewTriageFor(root, [{ kind: "anchor", id }])).get(`anchor:${id}`);
+    e = (await reviewTriageFor(root, [{ kind: "anchor", id }], head ? { ref: snapshotKey(root, head) } : {})).get(`anchor:${id}`);
   } catch { /* review state best-effort */ }
   const rp = e?.review;
   return {

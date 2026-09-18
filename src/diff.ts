@@ -170,10 +170,13 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
     .map((n) => ({ n, hit: n.anchors.filter((id) => impacted.has(id)) }))
     .filter((x) => x.hit.length > 0);
 
+  // Judged where the diff's head is, which is where DiffPage signs: with a head ref that
+  // is its commit, and without one the working tree is the head and no ref is right.
+  const atHead = headRef ? { ref: headSide.sha ?? undefined } : {};
   // Review + viewed + severity, best-effort — never let it break the diff (e.g. no @work index).
   let nodeRt: Awaited<ReturnType<typeof reviewTriageFor>> = new Map();
   try {
-    nodeRt = await reviewTriageFor(root, nodeImpact.map(({ n }) => ({ kind: "node" as const, id: n.id })));
+    nodeRt = await reviewTriageFor(root, nodeImpact.map(({ n }) => ({ kind: "node" as const, id: n.id })), atHead);
   } catch { /* leave unreviewed */ }
   const impactedNodes = nodeImpact.map(({ n, hit }) => {
     const e = nodeRt.get(`node:${n.id}`);
@@ -340,7 +343,7 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
   // stakes-relative, so it never demands a golden-window sign-off on plumbing.
   let coverage: Coverage = { total: 0, complete: 0, outstanding: 0, completePct: 100, bySeverity: {}, worst: null };
   try {
-    coverage = await coverageFor(root, [...added, ...changed].map((b) => ({ kind: "anchor" as const, id: b.id })));
+    coverage = await coverageFor(root, [...added, ...changed].map((b) => ({ kind: "anchor" as const, id: b.id })), atHead);
   } catch { /* best-effort — never break the diff */ }
 
   return {
