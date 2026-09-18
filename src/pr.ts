@@ -13,8 +13,9 @@
 import { spawnSync } from "node:child_process";
 import type { Anchor, Annotation } from "./schema.js";
 import { computeDiff, lineDiff, stripCR, type DiffResult, type DiffLine } from "./diff.js";
-import { indexBlob, indexCommit } from "./repo.js";
-import { readSnapshot, writeSnapshot, readAnnotations, readAnchorStore, retainOrphans, referencedAnchorIds, anchorsUnderRef } from "./store.js";
+import { indexBlob } from "./repo.js";
+import { readAnnotations, readAnchorStore, snapshotRefusal } from "./store.js";
+import { readSnapshot, buildSnapshot } from "./snapshots.js";
 import { loadLanes, LANE_POLICY, type Lane } from "./lanes.js";
 import { teamNotesByAnchor, findingsByAnchor, type PinnedNote } from "./notes-lookup.js";
 import { containedAnchorIds } from "./reviews.js";
@@ -525,23 +526,8 @@ export async function prTriage(
  * under new ids would otherwise strand them.
  */
 async function ensureSnapshot(root: string, sha: string, label: string): Promise<{ error?: string }> {
-  // `readSnapshot` already returns null for a snapshot minted under a different
-  // derivation, so a hit here means genuinely usable.
-  if (await readSnapshot(root, sha)) return {};
-  const anchors = await indexCommit(root, sha);
-  if (!anchors) return { error: "could not read that commit's tree" };
-  // A stale-scheme snapshot is about to be replaced by ids derived differently.
-  // Anything somebody's work points at that the new derivation does not produce is
-  // retained first: an `offTree` finding is reachable precisely BECAUSE a snapshot
-  // still holds its anchor, and rebuilding over it would strand exactly those.
-  const previous = anchorsUnderRef(root, sha);
-  if (previous.length) {
-    const fresh = new Set(anchors.map((a) => a.id));
-    const referenced = await referencedAnchorIds(root);
-    retainOrphans(root, previous.filter((a) => referenced.has(a.id) && !fresh.has(a.id)));
-  }
-  await writeSnapshot(root, sha, label, anchors, new Date().toISOString());
-  return {};
+  if (!snapshotRefusal(root, sha)) return {};
+  return (await buildSnapshot(root, sha, label)) ? {} : { error: "could not read that commit's tree" };
 }
 
 /**

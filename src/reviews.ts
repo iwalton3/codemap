@@ -7,7 +7,8 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { type Anchor, type Review, type ReviewLevel, type ReviewState, type BugWitness, type Actor } from "./schema.js";
-import { readReviews, writeReviews, readAnchorStore, loadNodes, readSnapshot, snapshotRefusal, snapshotBranch, derivationLookup, workHas } from "./store.js";
+import { readReviews, writeReviews, readAnchorStore, loadNodes, snapshotRefusal, snapshotBranch, derivationLookup, workHas } from "./store.js";
+import { readSnapshot } from "./snapshots.js";
 import { resolveAcceptance, recordAcceptance, type Ancestry } from "./acceptance.js";
 import { ACCEPTED_CAP, type AcceptedCitation, type AcceptedEntry, type AcceptanceVia } from "./schema.js";
 import { isAncestor, isGitRepo, currentBranch as gitBranch, hasObject } from "./git.js";
@@ -206,10 +207,8 @@ export async function liveHashes(root: string, anchorIds: Iterable<string>, ref?
   const knownTags = derivationLookup(root);
   if (ref) {
     const snap = await readSnapshot(root, ref);
-    // `readSnapshot` refuses a snapshot that is not usable AS this commit — absent,
-    // another derivation, or indexed from a dirty tree. `snapshotRefusal` says which,
-    // because "not cached — index that commit" sent the reader to `reindex`, which is
-    // what produces the dirty one. See COD-3 and `snapshotRefusal`.
+    // `readSnapshot` rebuilds any unusable snapshot, so null means git cannot read the
+    // commit here; `snapshotRefusal` says so. See COD-3.
     if (!snap) {
       throw new Error((snapshotRefusal(root, ref)?.message
         ?? `no cached snapshot for ${ref.slice(0, 12)}`) + " — witnessing against it would record a body that is not that commit's.");

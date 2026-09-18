@@ -129,14 +129,14 @@ test("a sign-off on an overload survives the re-index that changes its id", asyn
     // by the current code are stamped with the scheme in force, so simulating an old
     // one means clearing that stamp — which is exactly the state every snapshot
     // written before the column existed is already in.
-    const { writeSnapshot, readSnapshot, listSnapshots } = await import("./store.js");
+    const { writeSnapshot, readCachedSnapshot, listSnapshots } = await import("./store.js");
     await writeSnapshot(root, "oldsha", "main", legacy, "2026-08-19T00:00:00Z");
     const { DatabaseSync } = await import("node:sqlite");
     const raw = new DatabaseSync(join(root, ".codemap/codemap.db"));
     raw.prepare("UPDATE snapshots SET scheme = NULL WHERE ref = ?").run("oldsha");
     raw.close();
 
-    assert.equal(await readSnapshot(root, "oldsha"), null,
+    assert.equal(await readCachedSnapshot(root, "oldsha"), null,
       "a snapshot from another derivation reads as NOT CACHED — comparing it would report every affected symbol as removed-and-added");
     assert.equal((await listSnapshots(root)).length, 1, "…while still being on record, so it can be rebuilt rather than lost");
 
@@ -177,7 +177,7 @@ test("a snapshot from another derivation never reports phantom changes", async (
       : a);
     assert.notDeepEqual(older.map((a) => a.id), current.map((a) => a.id), "the fixture has to actually differ");
 
-    const { writeSnapshot, readSnapshot } = await import("./store.js");
+    const { writeSnapshot, readCachedSnapshot } = await import("./store.js");
     await writeStore(root, current, { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State);
     await writeSnapshot(root, "basesha", "main", older, "2026-08-19T00:00:00Z");
     const { DatabaseSync } = await import("node:sqlite");
@@ -187,7 +187,7 @@ test("a snapshot from another derivation never reports phantom changes", async (
 
     // The point: it refuses to be read as a comparable set, so `diff` says it is not
     // cached instead of inventing two added and two removed symbols.
-    assert.equal(await readSnapshot(root, "basesha"), null);
+    assert.equal(await readCachedSnapshot(root, "basesha"), null);
     const { computeDiff } = await import("./diff.js");
     const d = await computeDiff(root, "basesha") as any;
     assert.ok(d.error, "a wrong answer has no handler; 'not cached' has one");

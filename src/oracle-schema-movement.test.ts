@@ -295,7 +295,7 @@ test("a snapshot from another ANCHOR_SCHEME reads as NOT CACHED, never as a diff
   try {
     const ana = who(t, ANA);
     const { snapshot } = await import("./ops.js");
-    const { readSnapshot } = await import("./store.js");
+    const { readCachedSnapshot } = await import("./store.js");
 
     edit(ana, { "src/pay.ts": "export function transfer(amount: number) {\n  return amount;\n}\n" });
     const head = commit(ana, "simplify transfer");
@@ -305,18 +305,22 @@ test("a snapshot from another ANCHOR_SCHEME reads as NOT CACHED, never as a diff
     // CONTROL — under this build's own scheme the snapshot is a cache HIT with real
     // content in it. Without this the assertion below passes on a snapshot that was
     // never usable.
-    const cached = await readSnapshot(ana.repo, head);
+    const cached = await readCachedSnapshot(ana.repo, head);
     assert.ok(cached, "the snapshot this build wrote is readable");
     assert.ok(cached!.length > 0, "and it holds anchors");
 
     // Now say it was written under a different derivation, which is precisely what the
     // `scheme` column records and the only thing that changes.
     db(ana.repo).prepare("UPDATE snapshots SET scheme = ? WHERE ref = ?").run(ANCHOR_SCHEME + 1, head);
-    const foreign = await readSnapshot(ana.repo, head);
+    const foreign = await readCachedSnapshot(ana.repo, head);
     assert.equal(
       foreign, null,
       "a snapshot from another id derivation must read as NOT CACHED — callers already handle that, "
       + "and the alternative is a diff that reports every symbol as removed and re-added",
     );
+    // And the read callers use does not serve it either: it rebuilds under this build's scheme.
+    const { readSnapshot } = await import("./snapshots.js");
+    assert.ok((await readSnapshot(ana.repo, head))?.length, "rebuilt from git objects");
+    assert.ok(await readCachedSnapshot(ana.repo, head), "and now cached under this build's derivation");
   } finally { t.dispose(); }
 });

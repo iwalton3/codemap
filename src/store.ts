@@ -30,7 +30,7 @@ import { needsHumanAck, type SharedBug } from "./shared-bugs.js";
 import { needsHumanAck as findingNeedsAck, type SharedFinding } from "./shared-findings.js";
 import type { SharedNote, NoteKind } from "./shared-notes.js";
 import { IMPORTANCE_RANK, COMPLEXITY_RANK } from "./triage-rules.js";
-import { headCommit, currentBranch } from "./git.js";
+import { headCommit, currentBranch, revParse } from "./git.js";
 import { evalVersion, selectWinner, resolveNode, winningVersionAt } from "./doc-version.js";
 export { winningVersionAt } from "./doc-version.js";
 import {
@@ -286,7 +286,7 @@ export interface SnapshotInfo {
  * Was the cached snapshot for `ref` taken from a dirty tree? Only rows written by an
  * older build can be: a working tree's state is never cached under a commit now.
  *
- * Separate from `readSnapshot`, which deliberately answers null for a snapshot it
+ * Separate from `readCachedSnapshot`, which deliberately answers null for a snapshot it
  * cannot USE. A dirty one is perfectly usable and simply lies about which commit it
  * describes, so the caller needs to say something specific rather than "not cached" —
  * that message tells you to run `init`, which is what produced it.
@@ -554,16 +554,29 @@ export function workFiles(root: string, ids: string[]): Map<string, string> {
   return out;
 }
 
-export function findAnchorsOutsideWork(root: string, ids: string[]): Map<string, { ref: string; anchor: Anchor }> {
+/**
+ * The newest snapshot row holding each id. Raw by default, since resolving an id needs
+ * any row; `usableOnly` skips rows `snapshotRefusal` rejects, for a caller taking a
+ * WITNESS from the hit.
+ */
+export function findAnchorsOutsideWork(
+  root: string, ids: string[], opts: { usableOnly?: boolean } = {},
+): Map<string, { ref: string; anchor: Anchor }> {
   const out = new Map<string, { ref: string; anchor: Anchor }>();
   if (!ids.length) return out;
+  const refused = new Map<string, boolean>();
+  const skip = (ref: string) => {
+    if (!opts.usableOnly) return false;
+    if (!refused.has(ref)) refused.set(ref, snapshotRefusal(root, ref) !== null);
+    return refused.get(ref)!;
+  };
   const q = `SELECT a.*, s.at AS snap_at FROM anchors a JOIN snapshots s ON s.ref = a.ref
              WHERE a.ref <> '@work' AND a.id IN (${ids.map(() => "?").join(",")})
              ORDER BY s.at DESC`;
   const d = db(root);
   const tags = derivationsById(d);
   for (const r of d.prepare(q).all(...ids) as unknown as (AnchorRow & { ref: string })[]) {
-    if (!out.has(r.id)) out.set(r.id, { ref: r.ref, anchor: rowToAnchor(r, tags) });   // newest wins
+    if (!out.has(r.id) && !skip(r.ref)) out.set(r.id, { ref: r.ref, anchor: rowToAnchor(r, tags) });   // newest wins
   }
   return out;
 }
@@ -603,7 +616,7 @@ export function snapshotRefusal(
   const short = ref.slice(0, 12);
   const meta = d.prepare("SELECT scheme, hash_scheme FROM snapshots WHERE ref = ?").get(ref) as
     { scheme: number | null; hash_scheme: number | null } | undefined;
-  if (!meta) return { reason: "absent", message: `no cached snapshot for ${short}. Cache it with \`codemap snapshot --ref ${short}\`.` };
+  if (!meta) return { reason: "absent", message: `no cached snapshot for ${short}, and git cannot read that commit here — fetch it, then \`codemap snapshot --ref ${short}\`.` };
   // Both derivations must match. The ids decide WHICH symbols pair up; the hashes
   // decide which of those pairs count as changed — so a snapshot carrying the right
   // ids and another scheme's hashes reports the whole commit as rewritten.
@@ -627,26 +640,32 @@ export function snapshotRefusal(
  * Read a cached snapshot's anchors, or null when it is not usable as that commit —
  * never indexed, indexed under a DIFFERENT derivation, or indexed from a dirty tree.
  *
- * All three read as "not cached" on purpose, and callers already handle that:
- * `ensureSnapshot` and `snapshotAt` rebuild (which REPAIRS the cache), `diff` and
- * `liveHashes` explain with `snapshotRefusal`. A silently wrong answer has no
- * handler at all — a diff against a dirty base compares the branch's uncommitted
- * work with itself and reports nothing changed.
+ * None of the three is served. This is the CACHE read and it never builds; callers
+ * want `readSnapshot` in snapshots.ts, which builds from git objects on a miss (it
+ * lives above the store because the indexer does).
  *
  * Pass `allowDirty` only where the snapshot is wanted as a record of what some
  * build produced rather than as the commit. Nothing does today.
  *
- * Deliberately NOT applied to the raw by-ref lookups (`findAnchorsOutsideWork`,
- * `bodyHashAt`): those resolve an id somebody already holds, and an id from an old
- * snapshot is exactly what needs finding there.
+ * `findAnchorsOutsideWork` and `bodyHashAt` read raw rows on purpose: they resolve an
+ * id somebody already holds, and an id from an old snapshot is exactly what needs
+ * finding there. A WITNESS must not come from them without `snapshotRefusal` first.
  */
-export async function readSnapshot(
+export async function readCachedSnapshot(
   root: string, ref: string, opts: { allowDirty?: boolean } = {},
 ): Promise<Anchor[] | null> {
-  const refusal = snapshotRefusal(root, ref);
-  if (refusal && !(opts.allowDirty && refusal.reason === "dirty")) return null;
-  return anchorsUnder(db(root), ref);
+  const sha = snapshotKey(root, ref);
+  const refusal = snapshotRefusal(root, sha);
+  return !refusal || (opts.allowDirty && refusal.reason === "dirty") ? anchorsUnder(db(root), sha) : null;
 }
+
+const FULL_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+/** The key a ref's snapshot lives under: its commit sha, or the ref as given when git cannot resolve it. */
+export function snapshotKey(root: string, ref: string): string {
+  return FULL_SHA.test(ref) ? ref : (revParse(root, ref) ?? ref);
+}
+
 
 /**
  * Whether the live index was built by a different grammar or parser than this one.

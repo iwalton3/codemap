@@ -16,7 +16,8 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { PUBLISHABLE, type Annotation, type Disposition } from "./schema.js";
-import { readAnnotations, writeAnnotations, readAnchorStore, readPushes, writePush, readSnapshot, readOrphans } from "./store.js";
+import { readAnnotations, writeAnnotations, readAnchorStore, readPushes, writePush, readOrphans } from "./store.js";
+import { readSnapshot } from "./snapshots.js";
 import { WORK_REF } from "./db.js";
 import { diffHunks, isAncestor } from "./git.js";
 import { prTriage, anchorSpans, fetchPrMeta, type PrMeta } from "./pr.js";

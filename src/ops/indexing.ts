@@ -1,9 +1,10 @@
 import { type Anchor, type State, SCHEMA_VERSION } from "../schema.js";
-import { indexRepo, indexCommit } from "../repo.js";
+import { indexRepo } from "../repo.js";
 import { collidingAnchors } from "../indexer.js";
 import { headCommit, currentBranch, isDirty, revParse, submoduleDrift } from "../git.js";
 import { computeStaleness } from "../stale.js";
-import { readAnchorStore, readState, writeState, writeStore, loadNodes, readBugs, writeLocalBugs, readAnnotations, writeAnnotations, readReviews, writeSnapshot, readSnapshot, listSnapshots, writeReviews, remapNodeCitations, readLocalTriage as triageRead, replaceLocalTriage as triageWrite, staleSchemeSnapshots, liveDerivationDrift, retainOrphans, releaseRecoveredOrphans, referencedAnchorIds } from "../store.js";
+import { readAnchorStore, readState, writeState, writeStore, loadNodes, readBugs, writeLocalBugs, readAnnotations, writeAnnotations, readReviews, writeSnapshot, listSnapshots, writeReviews, remapNodeCitations, readLocalTriage as triageRead, replaceLocalTriage as triageWrite, staleSchemeSnapshots, liveDerivationDrift, retainOrphans, releaseRecoveredOrphans, referencedAnchorIds, snapshotRefusal, anchorsUnderRef } from "../store.js";
+import { buildSnapshot } from "../snapshots.js";
 import { GRAMMAR_VERSIONS } from "../grammar-versions.js";
 import { remapOverloadIds, applyRemap } from "../migrate-overloads.js";
 import { refreshAnalyzers } from "../analyzers/run.js";
@@ -312,11 +313,9 @@ export async function snapshot(root: string) {
 export async function snapshotAt(root: string, ref: string, opts: { force?: boolean; label?: string } = {}) {
   const sha = revParse(root, ref);
   if (!sha) return { error: `cannot resolve ref "${ref}" in this repo` };
-  const existing = opts.force ? null : await readSnapshot(root, sha);
-  if (existing) return { ok: true, ref: sha, cached: true, anchors: existing.length };
-  const anchors = await indexCommit(root, sha);
+  if (!opts.force && !snapshotRefusal(root, sha)) return { ok: true, ref: sha, cached: true, anchors: anchorsUnderRef(root, sha).length };
+  const anchors = await buildSnapshot(root, sha, opts.label ?? (ref === sha ? null : ref));
   if (!anchors) return { error: `could not read tree for ${sha.slice(0, 12)} (fetch it first?)` };
-  await writeSnapshot(root, sha, opts.label ?? (ref === sha ? null : ref), anchors, new Date().toISOString());
   return { ok: true, ref: sha, cached: false, anchors: anchors.length };
 }
 

@@ -7,9 +7,9 @@
  * the working tree's body under that sha. Nine other `readSnapshot` callers had no
  * check either.
  *
- * What matters about the fix is the last test here: a caller that never had a guard
- * now gets one without being edited. That is the difference between enumerating a
- * population and making it have one member.
+ * The guard is central, and the read now REPAIRS: a refused row is rebuilt from git
+ * objects by whichever read meets it, so no caller has to tell "not cached" from
+ * "empty". Only a commit git cannot read is still refused.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -17,11 +17,13 @@ import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { readSnapshot, snapshotRefusal, writeStore, writeSnapshot } from "./store.js";
+import { snapshotRefusal, writeStore, writeSnapshot, readOrphans } from "./store.js";
+import { readSnapshot } from "./snapshots.js";
 import { db } from "./db.js";
 import { snapshotAt, snapshot, reindex, diff } from "./ops.js";
 import { indexBlob } from "./repo.js";
-import { liveHashes } from "./reviews.js";
+import { liveHashes, markReviewedBatch } from "./reviews.js";
+import { witnessAt } from "./ops/annotations.js";
 import type { State } from "./schema.js";
 import { discard } from "./test-tmp.js";
 
@@ -72,28 +74,87 @@ test("a clean snapshot is not refused, and a dirty one is — with the reason", 
   } finally { u.cleanup(); }
 });
 
-test("readSnapshot itself refuses it — the guard is central, not per-caller", async () => {
+test("readSnapshot rebuilds a refused row from git objects on the read that meets it", async () => {
   const u = await dirtied();
   try {
-    assert.ok((await readSnapshot(u.root, u.head))?.length, "clean snapshot reads");
     await soil(u);
-    assert.equal(await readSnapshot(u.root, u.head), null, "dirty one does not");
-    // The escape hatch exists and is explicit, so a future caller that genuinely
-    // wants "whatever some build produced" does not have to bypass the rule.
-    assert.ok((await readSnapshot(u.root, u.head, { allowDirty: true }))?.length);
+    // The escape hatch reads the row as it stands, and does not repair it.
+    const dirty = await indexBlob(DIRTY, "src/pay.js");
+    const raw = new Map((await readSnapshot(u.root, u.head, { allowDirty: true }))!.map((a) => [a.id, a.bodyHash]));
+    for (const a of dirty) assert.equal(raw.get(a.id), a.bodyHash);
+
+    const committed = await indexBlob(SRC, "src/pay.js");
+    const read = new Map((await readSnapshot(u.root, u.head))!.map((a) => [a.id, a.bodyHash]));
+    for (const a of committed) assert.equal(read.get(a.id), a.bodyHash, "the commit's bodies");
+    assert.equal(snapshotRefusal(u.root, u.head), null, "and the row is clean from now on");
   } finally { u.cleanup(); }
 });
 
-test("the two callers that DID guard now say the same thing", async () => {
+test("a commit never cached is built on first read, by sha or by name", async () => {
+  const u = await dirtied();
+  try {
+    db(u.root).prepare("DELETE FROM snapshots WHERE ref = ?").run(u.head);
+    db(u.root).prepare("DELETE FROM anchors WHERE ref = ?").run(u.head);
+    assert.ok((await readSnapshot(u.root, "main"))?.length, "a branch name resolves to its commit");
+    assert.equal(snapshotRefusal(u.root, u.head), null, "cached under the sha");
+  } finally { u.cleanup(); }
+});
+
+test("a commit git cannot read is still refused, and says so", async () => {
+  const u = await dirtied();
+  try {
+    const nowhere = "0".repeat(40);
+    assert.equal(await readSnapshot(u.root, nowhere), null);
+    assert.equal(snapshotRefusal(u.root, nowhere)?.reason, "absent");
+    assert.match(snapshotRefusal(u.root, nowhere)!.message, /no cached snapshot/);
+  } finally { u.cleanup(); }
+});
+
+test("the callers that used to refuse a dirty row now answer, because the read repairs it", async () => {
   const u = await dirtied();
   try {
     await soil(u);
-    await assert.rejects(() => liveHashes(u.root, u.ids, u.head), /uncommitted changes/,
-      "witnessing refuses");
+    const committed = await indexBlob(SRC, "src/pay.js");
+    const hashes = await liveHashes(u.root, u.ids, u.head);
+    for (const a of committed) assert.equal(hashes.get(a.id), a.bodyHash, "witnessing sees the commit");
     const d = await diff(u.root, u.head) as { error?: string };
-    assert.match(String(d.error), /uncommitted changes/, "and so does diff");
-    assert.match(String(d.error), /hide the very changes you are reviewing/,
-      "with its own consequence still attached — the rule is shared, the stakes are local");
+    assert.equal(d.error, undefined, "and diff has a base");
+  } finally { u.cleanup(); }
+});
+
+test("witnessing a finding at a ref reads the commit, never a refused row", async () => {
+  const u = await dirtied();
+  try {
+    await soil(u);
+    const committed = await indexBlob(SRC, "src/pay.js");
+    for (const a of committed) {
+      const w = await witnessAt(u.root, a.id, u.head);
+      assert.equal(w.witness?.bodyHash, a.bodyHash, `${a.id}: the commit's body, not the dirty row's`);
+      assert.equal(w.sourceRef, u.head);
+    }
+  } finally { u.cleanup(); }
+});
+
+test("witnessing an id outside the tree skips a snapshot the guard refuses", async () => {
+  const u = await dirtied();
+  try {
+    const ghost = { ...(await indexBlob(SRC, "src/pay.js"))[0]!, id: "a_ghost" };
+    const legacy = "f".repeat(40);
+    await writeSnapshot(u.root, legacy, null, [ghost], new Date().toISOString());
+    db(u.root).prepare("UPDATE snapshots SET dirty = 1 WHERE ref = ?").run(legacy);
+    const w = await witnessAt(u.root, "a_ghost");
+    assert.equal(w.witness, undefined, "a dirty row is no witness");
+  } finally { u.cleanup(); }
+});
+
+test("rebuilding a snapshot keeps the referenced anchors only the old row held", async () => {
+  const u = await dirtied();
+  try {
+    const ghost = { ...(await indexBlob(SRC, "src/pay.js"))[0]!, id: "a_ghost" };
+    await writeSnapshot(u.root, u.head, "main", [...(await readSnapshot(u.root, u.head))!, ghost], new Date().toISOString());
+    await markReviewedBatch(u.root, ["a_ghost"], { level: "code", actor: "agent", hashes: new Map([["a_ghost", ghost.bodyHash]]) });
+    await snapshotAt(u.root, u.head, { force: true });
+    assert.ok(readOrphans(u.root, ["a_ghost"]).has("a_ghost"), "retained under @orphan, not stranded");
   } finally { u.cleanup(); }
 });
 

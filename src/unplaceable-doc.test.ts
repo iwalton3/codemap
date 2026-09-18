@@ -16,7 +16,8 @@ import type { DerivationTag, LogicalNode } from "./schema.js";
 import { hashTokens } from "./normalize.js";
 import { anchorIndex } from "./anchor-resolve.js";
 import { spawnSync } from "node:child_process";
-import { writeNode, writeAnnotations, readAnchorStore, readAnnotations, loadNodes, readSnapshot } from "./store.js";
+import { writeNode, writeAnnotations, readAnchorStore, readAnnotations, loadNodes } from "./store.js";
+import { readSnapshot } from "./snapshots.js";
 import { init, ackHole, reviewQueue, closeAssignment, snapshotAt, UNPLACEABLE_CATEGORY } from "./ops.js";
 import { discard } from "./test-tmp.js";
 

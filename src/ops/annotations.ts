@@ -4,7 +4,8 @@ import { type Actor, type Anchor, type LogicalNode, type BugSeverity, type BugWi
 import type { NoteTargetKind } from "../shared-notes.js";
 import { indexFile, indexBlob } from "../repo.js";
 import { headCommit, readBlobs } from "../git.js";
-import { readAnchorStore, loadNodes, readAnnotations, writeAnnotations, readFindings, readFinding, writeLocalFinding, findAnchorsOutsideWork, readPushes, bodyHashAt, readOrphans, readSharedNotes, idsStartingWith } from "../store.js";
+import { readAnchorStore, loadNodes, readAnnotations, writeAnnotations, readFindings, readFinding, writeLocalFinding, findAnchorsOutsideWork, readPushes, bodyHashAt, readOrphans, snapshotRefusal, snapshotKey, readSharedNotes, idsStartingWith } from "../store.js";
+import { readSnapshot } from "../snapshots.js";
 import { resolveSidecar } from "../sidecar-config.js";
 import {
   findingTier, isClosed, mayTransition, needsHumanAck, ASK_FOR_STATE, REOPEN_STATES,
@@ -157,7 +158,13 @@ export async function witnessAt(
   root: string, anchorId: string, ref?: string,
 ): Promise<{ witness?: { anchorId: string; bodyHash: string }; sourceRef: string }> {
   if (ref) {
-    const hash = bodyHashAt(root, ref, anchorId);
+    // The point lookup is raw, so the row must first be one `readSnapshot` would serve;
+    // reading it builds one when it is not. Same refusal as `liveHashes` otherwise.
+    const sha = snapshotKey(root, ref);
+    if (snapshotRefusal(root, sha) && !(await readSnapshot(root, sha))) {
+      throw new Error(`${snapshotRefusal(root, sha)!.message} — witnessing against it would record a body that is not that commit's.`);
+    }
+    const hash = bodyHashAt(root, sha, anchorId);
     if (hash) return { witness: { anchorId, bodyHash: hash }, sourceRef: ref };
   }
   const stored = (await readAnchorStore(root)).anchors.find((a) => a.id === anchorId);
@@ -171,7 +178,7 @@ export async function witnessAt(
   // witnessing has to as well — otherwise a finding on a symbol the branch ADDS gets
   // no witness and claims `@work`, which is both false and exactly the record the
   // cross-branch gate reads.
-  const off = findAnchorsOutsideWork(root, [anchorId]).get(anchorId);
+  const off = findAnchorsOutsideWork(root, [anchorId], { usableOnly: true }).get(anchorId);
   if (off) return { witness: { anchorId, bodyHash: off.anchor.bodyHash }, sourceRef: off.ref };
   const orphan = readOrphans(root, [anchorId]).get(anchorId);
   if (orphan) return { witness: { anchorId, bodyHash: orphan.bodyHash }, sourceRef: "@orphan" };

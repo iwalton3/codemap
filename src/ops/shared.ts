@@ -2,7 +2,8 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { type Anchor, type LogicalNode } from "../schema.js";
 import { indexFile } from "../repo.js";
-import { readAnchorStore, loadNodes, readCoverage, readSnapshot, findAnchorsOutsideWork, readOrphans, derivationLookup, readWalkthroughsFor, type StoredWalkthrough } from "../store.js";
+import { readAnchorStore, loadNodes, readCoverage, findAnchorsOutsideWork, readOrphans, derivationLookup, readWalkthroughsFor, type StoredWalkthrough } from "../store.js";
+import { readSnapshot } from "../snapshots.js";
 import type { PrWalkthrough } from "../walkthrough.js";
 import { requireActor } from "../identity.js";
 import { loadIgnore } from "../ignore.js";
@@ -264,9 +265,9 @@ export async function coverageFor(root: string): Promise<{
 /** Anchor→hash map for a cached commit — the hash source when documenting a branch. */
 export async function snapshotHashes(root: string, ref: string): Promise<AnchorIndex> {
   const snap = await readSnapshot(root, ref);
-  // No cached snapshot: nothing is on record about which build would have minted
-  // these ids, so every absence falls back to today's answer rather than to
-  // "cannot tell" — the same legacy rule the rest of this design uses.
+  // Git cannot read the commit (the read builds any other missing snapshot): nothing is
+  // on record about which build would have minted these ids, so every absence falls
+  // back to today's answer rather than to "cannot tell" — the legacy rule used elsewhere.
   if (!snap) return legacyIndex(new Map());
   // The SNAPSHOT's own rows: a cached commit was minted by whatever build cached it,
   // and that is the index an id had to come from to appear here.
