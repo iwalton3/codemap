@@ -374,3 +374,28 @@ test("a diff between two refs reads review state at its head, where the page sig
     assert.equal(d.review.code, "reviewed", "and the drill-down agrees");
   } finally { discard(root); }
 });
+
+test("a diff to the working tree judges docs against the index it diffed, not the stored one", async () => {
+  // With no head the head side is a FRESH index of the tree, and doc status came from
+  // the stored `@work` rows, which an edit since the last index has already left behind:
+  // the diff reported the symbol changed while the doc citing it read fresh.
+  const root = mkdtempSync(join(tmpdir(), "codemap-diffwork-"));
+  try {
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    const { indexBlob } = await import("./repo.js");
+    const { writeStore } = await import("./store.js");
+    const v1 = "export function transfer(cents: number) {\n  return cents;\n}\n";
+    const v2 = "export function transfer(cents: number) {\n  return cents * 2;\n}\n";
+    const indexed = await indexBlob(v1, "src/pay.ts");
+    await writeStore(root, indexed, { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State);
+    await writeSnapshot(root, "base_sha", "main", indexed, "2026-07-15T00:00:00Z");
+    await writeNode(root, { id: "n", type: "module", title: "Pay", summary: "", anchors: [indexed[0]!.id], body: "" });
+    mkdirSync(join(root, "src"), { recursive: true });
+    writeFileSync(join(root, "src/pay.ts"), v2);
+
+    const r = await computeDiff(root, "base_sha");
+    if ("error" in r) throw new Error(r.error);
+    assert.deepEqual(r.changed.map((b) => b.id), [indexed[0]!.id], "the tree changed the symbol");
+    assert.equal(r.impact.nodes[0]!.status, "stale", "so the doc citing it is stale in the same answer");
+  } finally { discard(root); }
+});

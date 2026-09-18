@@ -22,7 +22,7 @@ import { readSnapshot } from "./snapshots.js";
 import { reviewStatesFor } from "./reviews.js";
 import { reviewTriageFor, coverageFor, type Coverage } from "./triage.js";
 import { revParse, headCommit, currentBranch, showFile } from "./git.js";
-import { grammarForPath } from "./grammars.js";
+import { grammarForPath, currentDerivations } from "./grammars.js";
 import { sameBody } from "./normalize.js";
 import { anchorIndex, derivationsOf, type AnchorIndex } from "./anchor-resolve.js";
 
@@ -159,9 +159,12 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
   // Resolved against the HEAD being diffed. `loadNodes` uses the working index, and a
   // doc retired on whatever branch is checked out then vanished from a pull request's
   // impact for two entirely different refs — `computeDiff` takes explicit cached refs
-  // exactly so it does not depend on the checkout. `headHashes` is the working index
-  // when `headRef` is undefined, which is the ordinary "diff against my tree" case.
-  const headHashes = await hashesAt(root, headRef);
+  // exactly so it does not depend on the checkout. With no `headRef` the head is the
+  // fresh index of the tree built above, not the stored `@work` rows an edit has left
+  // behind — this build minted it, so its derivations are this build's.
+  const headHashes = headRef
+    ? await hashesAt(root, headRef)
+    : anchorIndex(new Map(headAnchors.map((a) => [a.id, a.bodyHash])), currentDerivations(), derivationLookup(root));
   const nodes = headHashes ? await loadNodesAt(root, headHashes) : await loadNodes(root);
   const graph = await readGraph(root);
   const reviews = (await readReviews(root)).reviews;
