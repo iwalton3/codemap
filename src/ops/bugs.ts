@@ -16,7 +16,7 @@
 
 import { parseAsOf, type BugSeverity, type BugWitness } from "../schema.js";
 import { headCommit } from "../git.js";
-import { readAnchorStore, readBugs, readBug, writeLocalBug, findAnchorsOutsideWork, readOrphans } from "../store.js";
+import { readAnchorStore, readBugs, readBug, writeLocalBug, findAnchorsOutsideWork, readOrphans, homed } from "../store.js";
 import { witnessDrift, realDrift } from "../reviews.js";
 import { requireActor, isAgentActor } from "../identity.js";
 import {
@@ -805,7 +805,7 @@ export async function publishBugs(root: string, opts: { dryRun?: boolean; ids?: 
  * that is the duplicate this log exists to prevent; derived, both write the same id and
  * the fold merges them into one bug carrying both people's citations.
  */
-export async function acceptFinding(
+export const acceptFinding = homed(async function acceptFinding(
   root: string, pr: number | string, findingId: string,
   opts: { title?: string; severity?: BugSeverity } = {},
 ) {
@@ -855,7 +855,7 @@ export async function acceptFinding(
     ...(await massConversionWarning(root, pr)),
     ...rejected(errors),
   };
-}
+});
 
 /**
  * WARNS on the run, never on the act, and never refuses — the `cover` precedent.

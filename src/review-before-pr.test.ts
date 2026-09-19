@@ -328,3 +328,36 @@ test("shared_findings on a pull request does not claim complete over a linked br
     assert.equal((await read())?.status, "blocked");
   } finally { u.cleanup(); }
 });
+
+test("every verb taking a finding id resolves the finding's own review first", async () => {
+  // A pull request's pages list its linked branches' findings, so any `(root, pr, id)` verb
+  // can be handed the page's number for a finding that lives under `branch:<name>`. Placing
+  // the lookup per verb missed one (File bug); the wrapper is the one door.
+  const shared = await import("./ops-shared.js") as Record<string, unknown>;
+  const bugs = await import("./ops/bugs.js") as Record<string, unknown>;
+  const takesFindingId = /^\s*(async\s+)?(function\s*\w*\s*)?\(\s*root\s*,\s*pr\s*,\s*(id|findingId)\b/;
+  const unhomed = Object.entries({ ...shared, acceptFinding: bugs.acceptFinding })
+    .filter(([, v]) => typeof v === "function" && takesFindingId.test(String(v)))
+    .filter(([, v]) => !(v as Record<symbol, unknown>)[Symbol.for("codemap.findingHomed")])
+    .map(([k]) => k);
+  assert.deepEqual(unhomed, []);
+  assert.ok(Object.values(shared).filter((v) => (v as Record<symbol, unknown>)?.[Symbol.for("codemap.findingHomed")]).length >= 19,
+    "and the sweep found the verbs at all");
+});
+
+test("File bug on a linked branch finding, from its pull request, files it from the branch's record", async () => {
+  const u = await worktreeRepo(true);
+  try {
+    const shared = await import("./ops-shared.js");
+    const { acceptFinding } = await import("./ops/bugs.js");
+    const filed = await file(u.root, "src/filter.ts#IdentifierFilter.matches");
+    const id = String(filed.id);
+    await shared.linkReviewOp(u.root, "12", "feature");
+    const rec = await shared.findingRecord(u.root, 12, id) as Record<string, unknown>;
+    assert.equal(rec.error, undefined, String(rec.error));
+    const acc = await acceptFinding(u.root, 12, id) as Record<string, unknown>;
+    assert.equal(acc.error, undefined, String(acc.error));
+    const own = (await readFindings(u.root, { pr: branchKey("feature") })).findings.find((f) => f.id === id)!;
+    assert.equal(own.bug, acc.id, "promoted on the branch's record");
+  } finally { u.cleanup(); }
+});

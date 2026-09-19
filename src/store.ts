@@ -1619,6 +1619,16 @@ export function linkedBranches(root: string, pr: number | string, opts: { publis
  * too (`readFindings`), and their events belong in the branch's scope. `pr` when neither
  * holds it, so the caller's own "no finding" answer stands.
  */
+/**
+ * The one door for a verb taking `(root, pr, id)`: it acts on the finding in its own review
+ * (`findingHome`), whatever page's number it was handed. Placed per verb, the lookup was
+ * missed at the seventh (File bug); `review-before-pr.test.ts` fails on an unwrapped verb.
+ */
+export function homed<A extends unknown[], R>(fn: (root: string, pr: number | string, id: string, ...rest: A) => R) {
+  const g = (root: string, pr: number | string, id: string, ...rest: A): R => fn(root, findingHome(root, pr, id), id, ...rest);
+  return Object.assign(g, { [Symbol.for("codemap.findingHomed")]: true });
+}
+
 export function findingHome(root: string, pr: number | string, id: string): string {
   const p = String(pr).trim().replace(/^#/, "");
   const row = db(root).prepare(

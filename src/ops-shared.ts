@@ -50,7 +50,7 @@ import { docsVerdict } from "./docs-lookup.js";
 import { queueContestedTriage } from "./ops/triage.js";
 import { liveAnchors, liveIndex } from "./ops/shared.js";
 export { mirrorTriage, mirrorTriageBatch, mirrorTriageClear } from "./triage-publish.js";
-import { findingHome, linkedBranches, prsLinkedTo, writeLocalLink, readSharedNotes, readAnnotations, readAnchorStore, readFindings, loadNodes, loadNodeVersions, nodeIdsWithPublishableVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets, attributeLocalWalkthrough, readBlockedScopes, findingCountsByPr, readUnpublishedWalkthroughs, readStoreMeta, writeStoreMeta, foldedScopes, hasFoldedFromSidecar, SIDECAR_LINEAGE, type SidecarMark } from "./store.js";
+import { homed, linkedBranches, prsLinkedTo, writeLocalLink, readSharedNotes, readAnnotations, readAnchorStore, readFindings, loadNodes, loadNodeVersions, nodeIdsWithPublishableVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets, attributeLocalWalkthrough, readBlockedScopes, findingCountsByPr, readUnpublishedWalkthroughs, readStoreMeta, writeStoreMeta, foldedScopes, hasFoldedFromSidecar, SIDECAR_LINEAGE, type SidecarMark } from "./store.js";
 import { holdsLock, withLock } from "./lock.js";
 import { readSnapshot } from "./snapshots.js";
 import {
@@ -487,7 +487,7 @@ function verdictGround(root: string, f: SharedFinding): { state: "ok" | "unknown
   return { state: isAncestor(root, ref, head) ? "ok" : "missing", ref, head };
 }
 
-export async function corroborateFinding(
+export const corroborateFinding = homed(async function corroborateFinding(
   root: string, pr: number | string, id: string, verdict: Verdict, rationale: string,
   via: Via & { anyway?: boolean } = {},
 ) {
@@ -515,16 +515,16 @@ export async function corroborateFinding(
       ? { grounded: false as const, note: "this finding records no ref it was witnessed at, so nothing could check that you are reading the code it is about. Your verdict is stamped with this checkout's head." }
       : {}),
   };
-}
+});
 
-export async function commentOnFinding(root: string, pr: number | string, id: string, body: string, inReplyTo?: string, via: Via = {}) {
+export const commentOnFinding = homed(async function commentOnFinding(root: string, pr: number | string, id: string, body: string, inReplyTo?: string, via: Via = {}) {
   const b = bind(root, via);
   if ("error" in b) return b;
   if (!body.trim()) return { error: "an empty comment says nothing" };
   const e = await comment(b.cfg.path, prKey(b.cfg, pr), b.actor, id, body, inReplyTo);
   const mz = await materializeFindings(root, b.cfg, pr);
   return { ...mz, ok: true, id: e.id };
-}
+});
 
 /**
  * Record what happened about a finding — fixed, deferred, not being fixed.
@@ -534,7 +534,7 @@ export async function commentOnFinding(root: string, pr: number | string, id: st
  * wording has nothing to protect here — and gating it would re-block the case the axis
  * exists for, which is a submitter fixing findings other people confirmed.
  */
-export async function remediateFinding(
+export const remediateFinding = homed(async function remediateFinding(
   root: string, pr: number | string, id: string, state: Remediation,
   opts: { detail?: string; ref?: string } = {},
 ) {
@@ -543,7 +543,7 @@ export async function remediateFinding(
   await remediate(b.cfg.path, prKey(b.cfg, pr), b.actor, id, state, opts.detail, opts.ref);
   const mz = await materializeFindings(root, b.cfg, pr);
   return { ...mz, ok: true, id, remediation: state };
-}
+});
 
 /**
  * Fold every `findings/` scope in this universe into rows, and say which would not.
@@ -966,7 +966,7 @@ export async function witnessNowFor(root: string, id: string, anchorId?: string)
  * Principal-only, and the FOLD enforces that as well (see `finding.backlogged`). The refusal
  * here exists to produce a sentence rather than a silently dropped event.
  */
-export async function backlogFinding(
+export const backlogFinding = homed(async function backlogFinding(
   root: string, pr: number | string, id: string,
   input: { until: string; reason: string; ref?: { system: string; key?: string; url?: string } },
 ) {
@@ -995,10 +995,10 @@ export async function backlogFinding(
   await backlogFindingEvent(b.cfg.path, prKey(b.cfg, pr), b.actor, id, { until, reason: input.reason.trim(), witness, ref: input.ref });
   const mz = await materializeFindings(root, b.cfg, pr);
   return { ...mz, ok: true, id, until, witnessed: !!witness };
-}
+});
 
 /** Bring one back early — it returns to the ordinary queue. Principal-only, as backlogging is. */
-export async function releaseFindingBacklog(root: string, pr: number | string, id: string, reason: string) {
+export const releaseFindingBacklog = homed(async function releaseFindingBacklog(root: string, pr: number | string, id: string, reason: string) {
   const b = bind(root, {});
   if ("error" in b) return b;
   if (isAgentActor(b.actor)) return { error: "ending a carry is a person's, exactly as granting one is" };
@@ -1006,7 +1006,7 @@ export async function releaseFindingBacklog(root: string, pr: number | string, i
   await releaseBacklog(b.cfg.path, prKey(b.cfg, pr), b.actor, id, reason.trim());
   const mz = await materializeFindings(root, b.cfg, pr);
   return { ...mz, ok: true, id };
-}
+});
 
 /**
  * Hand a finding back to an agent to look at again.
@@ -1021,7 +1021,7 @@ export async function releaseFindingBacklog(root: string, pr: number | string, i
  * nothing is asserted about the code, and the finding stays exactly where it was. A
  * person still disposes of it once the answer comes back.
  */
-export async function reassignFinding(
+export const reassignFinding = homed(async function reassignFinding(
   root: string, pr: number | string, id: string,
   opts: { kind?: "investigate" | "fix" | "answer"; note?: string } = {},
 ) {
@@ -1030,7 +1030,7 @@ export async function reassignFinding(
   await assign(b.cfg.path, prKey(b.cfg, pr), b.actor, id, opts.kind ?? "investigate", opts.note);
   const mz = await materializeFindings(root, b.cfg, pr);
   return { ...mz, ok: true, id, assigned: opts.kind ?? "investigate" };
-}
+});
 
 /**
  * Attach a witness to a finding filed without one — the one repair an AGENT may make.
@@ -1041,7 +1041,7 @@ export async function reassignFinding(
  * rather than a disposition, which is why the gate is off — and the fold records
  * `witnessAttached` so a retro witness is never mistaken for one taken at filing time.
  */
-export async function rewitnessFinding(root: string, pr: number | string, id: string, opts: { anchorId?: string } = {}) {
+export const rewitnessFinding = homed(async function rewitnessFinding(root: string, pr: number | string, id: string, opts: { anchorId?: string } = {}) {
   const b = bind(root, {});
   if ("error" in b) return b;
   const found = (await readFindings(root, { pr })).findings.find((x) => x.id === id);
@@ -1059,7 +1059,7 @@ export async function rewitnessFinding(root: string, pr: number | string, id: st
   await rewitness(b.cfg.path, prKey(b.cfg, pr), b.actor, id, w);
   const mz = await materializeFindings(root, b.cfg, pr);
   return { ...mz, ok: true, id, anchorId, note: "attached now, so it testifies from now on — not about the code when the finding was filed" };
-}
+});
 
 /**
  * Decline the ask on a finding — the answer that had no verb.
@@ -1068,8 +1068,7 @@ export async function rewitnessFinding(root: string, pr: number | string, id: st
  * saying no left both standing indefinitely. `waitingOnYou` counting an item nobody is
  * waiting on is the failure mode that teaches people to stop trusting the queue.
  */
-export async function declineFindingAsk(root: string, pr: number | string, id: string, reason: string) {
-  pr = findingHome(root, pr, id);
+export const declineFindingAsk = homed(async function declineFindingAsk(root: string, pr: number | string, id: string, reason: string) {
   const b = bind(root);
   if ("error" in b) return b;
   if (!reason.trim()) {
@@ -1084,26 +1083,26 @@ export async function declineFindingAsk(root: string, pr: number | string, id: s
   await declineAsk(b.cfg.path, prKey(b.cfg, pr), b.actor, id, reason);
   const mz = await materializeFindings(root, b.cfg, pr);
   return { ...mz, ok: true, id, declined: f.pending.ask };
-}
+});
 
-export async function promoteFinding(root: string, pr: number | string, id: string) {
+export const promoteFinding = homed(async function promoteFinding(root: string, pr: number | string, id: string) {
   const b = bind(root);
   if ("error" in b) return b;
   await promote(b.cfg.path, prKey(b.cfg, pr), b.actor, id);
   const mz = await materializeFindings(root, b.cfg, pr);
   return { ...mz, ok: true, id, note: "surfaced for team-wide attention; it does not gate anyone's triage" };
-}
+});
 
-export async function requestOnFinding(root: string, pr: number | string, id: string, ask: Ask, rationale: string) {
+export const requestOnFinding = homed(async function requestOnFinding(root: string, pr: number | string, id: string, ask: Ask, rationale: string) {
   const b = bind(root);
   if ("error" in b) return b;
   if (!rationale.trim()) return { error: `asking to ${ask} without saying why leaves the human nothing to act on` };
   await request(b.cfg.path, prKey(b.cfg, pr), b.actor, id, ask, rationale);
   const mz = await materializeFindings(root, b.cfg, pr);
   return { ...mz, ok: true, id, ask, note: "queued for a person to acknowledge" };
-}
+});
 
-export async function closeFinding(root: string, pr: number | string, id: string, state: FindingState, reason?: string) {
+export const closeFinding = homed(async function closeFinding(root: string, pr: number | string, id: string, state: FindingState, reason?: string) {
   const b = bind(root);
   if ("error" in b) return b;
   const r = await setState(b.cfg.path, prKey(b.cfg, pr), b.actor, id, state, reason);
@@ -1120,18 +1119,17 @@ export async function closeFinding(root: string, pr: number | string, id: string
     };
   }
   return { ...mz, ok: true, id, state };
-}
+});
 
-export async function reportOnFinding(root: string, pr: number | string, id: string, result: "fixed" | "answered" | "declined", detail: string, files?: string[]) {
+export const reportOnFinding = homed(async function reportOnFinding(root: string, pr: number | string, id: string, result: "fixed" | "answered" | "declined", detail: string, files?: string[]) {
   const b = bind(root);
   if ("error" in b) return b;
   await recordOutcome(b.cfg.path, prKey(b.cfg, pr), b.actor, id, result, detail, files);
   const mz = await materializeFindings(root, b.cfg, pr);
   return { ...mz, ok: true, id, result, note: "reported — a person still has to close it" };
-}
+});
 
-export async function upstreamFinding(root: string, pr: number | string, id: string, ref: { system?: string; key?: string; url?: string }) {
-  pr = findingHome(root, pr, id);
+export const upstreamFinding = homed(async function upstreamFinding(root: string, pr: number | string, id: string, ref: { system?: string; key?: string; url?: string }) {
   const b = bind(root);
   if ("error" in b) return b;
   const missing = await mustExist(root, b, pr, id);
@@ -1139,7 +1137,7 @@ export async function upstreamFinding(root: string, pr: number | string, id: str
   await markUpstreamed(b.cfg.path, prKey(b.cfg, pr), b.actor, id, ref);
   const mz = await materializeFindings(root, b.cfg, pr);
   return { ...mz, ok: true, id, note: "tracked upstream; still open here until the code says otherwise" };
-}
+});
 
 /**
  * One finding, as the data another op needs rather than as a view.
@@ -1149,7 +1147,7 @@ export async function upstreamFinding(root: string, pr: number | string, id: str
  * here because this is where the store is, and returned separately from the target so a
  * caller cannot mistake this machine's answer for something the finding carried.
  */
-export async function findingRecord(root: string, pr: number | string, id: string) {
+export const findingRecord = homed(async function findingRecord(root: string, pr: number | string, id: string) {
   // A READ. `sharedFindings` degrades on a broken binding and serves what this store
   // holds; this reads the same data one record at a time and must not answer differently.
   const b = bind(root, {}, { reading: true });
@@ -1162,10 +1160,9 @@ export async function findingRecord(root: string, pr: number | string, id: strin
     nodeAnchors = nodes.find((n) => n.id === f.target.id)?.anchors;
   }
   return { ...f, nodeAnchors };
-}
+});
 
-export async function findingToBug(root: string, pr: number | string, id: string, bug: string) {
-  pr = findingHome(root, pr, id);
+export const findingToBug = homed(async function findingToBug(root: string, pr: number | string, id: string, bug: string) {
   const b = bind(root);
   if ("error" in b) return b;
   const missing = await mustExist(root, b, pr, id);
@@ -1173,7 +1170,7 @@ export async function findingToBug(root: string, pr: number | string, id: string
   await promoteToBug(b.cfg.path, prKey(b.cfg, pr), b.actor, id, bug);
   const mz = await materializeFindings(root, b.cfg, pr);
   return { ...mz, ok: true, id, bug };
-}
+});
 
 /**
  * A finding this scope has never seen, refused rather than emitted.
@@ -1190,8 +1187,7 @@ async function mustExist(root: string, b: Bound, pr: number | string, id: string
   return f ? null : `no finding ${id} on pull request ${pr} — the log has never seen it, so an event about it would be dropped by every reader`;
 }
 
-export async function recordPublished(root: string, pr: number | string, id: string, ref: { key?: string; url?: string }) {
-  pr = findingHome(root, pr, id);
+export const recordPublished = homed(async function recordPublished(root: string, pr: number | string, id: string, ref: { key?: string; url?: string }) {
   const b = bind(root);
   if ("error" in b) return b;
   const missing = await mustExist(root, b, pr, id);
@@ -1199,7 +1195,7 @@ export async function recordPublished(root: string, pr: number | string, id: str
   await markPosted(b.cfg.path, prKey(b.cfg, pr), b.actor, id, ref);
   const mz = await materializeFindings(root, b.cfg, pr);
   return { ...mz, ok: true, id };
-}
+});
 
 /** A finding, flattened for a front-end: derived fields resolved, actors named. */
 function view(f: SharedFinding) {
@@ -1278,11 +1274,10 @@ function view(f: SharedFinding) {
  * propose. Re-pointing a finding at the wrong symbol is the false-provenance
  * failure `witness`/`sourceRef` exist to prevent, so applying one is a person's act.
  */
-export async function relocateFinding(
+export const relocateFinding = homed(async function relocateFinding(
   root: string, pr: number | string, id: string,
   kind: "moved" | "gone", rationale: string, opts: { to?: string; apply?: boolean } = {},
 ) {
-  pr = findingHome(root, pr, id);
   const b = bind(root);
   if ("error" in b) return b;
   if (!rationale.trim()) return { error: `saying a target ${kind === "moved" ? "moved" : "is gone"} without saying why leaves nothing to check` };
@@ -1321,7 +1316,7 @@ export async function relocateFinding(
   await relocate(b.cfg.path, prKey(b.cfg, pr), b.actor, id, kind, rationale, opts);
   const mz = await materializeFindings(root, b.cfg, pr);
   return { ...mz, ok: true, id, kind, ...(opts.apply ? { applied: true } : { note: "queued for a person to apply" }) };
-}
+});
 
 /**
  * Rewrite a finding's substance, keeping what it used to say.
@@ -1331,7 +1326,7 @@ export async function relocateFinding(
  * worse answer than an error. An agent revising a finding somebody stood behind used
  * to be accepted here, appended, synced — and then ignored by every reader.
  */
-export async function reviseFinding(
+export const reviseFinding = homed(async function reviseFinding(
   root: string, pr: number | string, id: string, now: Record<string, unknown>,
   opts: { allowPostEdit?: boolean } = {},
 ) {
@@ -1370,18 +1365,17 @@ export async function reviseFinding(
   await revise(b.cfg.path, prKey(b.cfg, pr), b.actor, id, now, was);
   const mz = await materializeFindings(root, b.cfg, pr);
   return { ...mz, ok: true, id, changed: Object.keys(now) };
-}
+});
 
 /** Settle a field two people set differently without seeing each other. */
-export async function settleContest(root: string, pr: number | string, id: string, field: string, value: unknown) {
-  pr = findingHome(root, pr, id);
+export const settleContest = homed(async function settleContest(root: string, pr: number | string, id: string, field: string, value: unknown) {
   const b = bind(root);
   if ("error" in b) return b;
   const r = await resolveContest(b.cfg.path, prKey(b.cfg, pr), b.actor, id, field, value);
   if ("error" in r) return r;
   const mz = await materializeFindings(root, b.cfg, pr);
   return { ...mz, ok: true, id, field };
-}
+});
 
 /**
  * A PR's findings, through the materialized cache.
