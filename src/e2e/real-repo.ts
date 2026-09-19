@@ -46,8 +46,12 @@ export const FIXTURE_PR = {
   forkPoint: "5b550517b2ca64fee0d060f537901a2bc6604a64",
   baseRef: "master",
   removedSymbol: "GetFullyPlayedFolderIdsQuery",
-  /** A commit well after the merge — a third, unrelated working-tree state. */
-  laterOnBase: "master",
+  /**
+   * A commit well after the merge (441 commits) — a third, unrelated working-tree state.
+   * A sha, not `master`: a `--local` clone of a source whose HEAD is detached has no
+   * local `master`, and `checkout --detach master` then fails instead of resolving it.
+   */
+  laterOnBase: "cf09de60e4e5844ad181d7ef9019151c54969d44",
 } as const;
 
 const git = (cwd: string, ...a: string[]) => spawnSync("git", a, { cwd, encoding: "utf8" });
@@ -55,7 +59,7 @@ const git = (cwd: string, ...a: string[]) => spawnSync("git", a, { cwd, encoding
 /** Why this suite cannot run here, or null when it can. */
 export function skipReason(): string | null {
   if (!existsSync(join(SOURCE_REPO, ".git"))) return `no git repo at ${SOURCE_REPO} (set CODEMAP_E2E_GIT_REPO)`;
-  for (const sha of [FIXTURE_PR.recordedBase, FIXTURE_PR.head, FIXTURE_PR.forkPoint]) {
+  for (const sha of [FIXTURE_PR.recordedBase, FIXTURE_PR.head, FIXTURE_PR.forkPoint, FIXTURE_PR.laterOnBase]) {
     if (git(SOURCE_REPO, "cat-file", "-e", `${sha}^{commit}`).status !== 0) {
       return `${SOURCE_REPO} does not hold ${sha.slice(0, 12)} — fetch jellyfin/jellyfin master`;
     }
