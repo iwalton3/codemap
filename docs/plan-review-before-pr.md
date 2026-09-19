@@ -121,60 +121,45 @@ Agents that commit often each pay a full index per commit. Measure on a scratch 
 real repo first. If it hurts, the fix is a per-blob-oid parse cache (an unchanged file is
 not re-parsed), not a change to the snapshot model.
 
-## Part B — reviews that exist before the PR
+## Part B — reviews that exist before the PR: BUILT (2026-09-18)
 
-**B1. Identity is derived, because there are no generations.** A branch name names one
-review for ever, so its id can be computed rather than minted:
-`r_` + hex(sha256(universeKey \0 "branch" \0 name)). Two people opening a review of the same
-branch concurrently compute the same id. That dissolves the old design's open question 1
-("the fold has to pick one and alias the other"). The id is fixed-length lowercase hex, so
-the escaping and 255-byte problems from the refutation do not arise.
+Owner rulings for this part: links are recorded on first sight, and a target that exists
+only in uncommitted edits is refused.
 
-**B2. Scopes.**
-- New: `findings/<u>/b-<hex>`.
-- Existing `findings/<u>/pr-<n>` scopes are **never moved or renamed**. They hold the deployed
-  findings, and splicing writer chains across scopes reads as a fork.
-- A PR's findings are the **union** of `pr-<n>` and the linked branch's `b-<hex>`. A PR
-  reviewed both before and after it opened has findings in both, and that is correct.
+**B1. Identity is derived, because there are no generations.** A finding's key is `"<n>"`
+for pull request n, as before, or `"branch:<name>"`. `findingKeyScope` in
+`src/review-target.ts` is the one function that turns a key into a scope: `<u>/pr-<n>`, or
+`<u>/b-<hex>` with hex = the first 40 characters of sha256(universe \0 "branch" \0 name). Two
+people filing on one branch compute one scope with nothing to agree on. The hash avoids the
+escaping and 255-byte problems from the refutation. Case is not folded, and a branch named
+`pr-17` cannot collide with PR 17.
 
-**B3. The registry: a new sidecar scope `reviews/<u>`, with one event kind.**
-`review.linked {pr, branch}` is an act: the moment someone connects PR n to branch X. It
-records one link; the id and the scope are computed, and the head comes from git. Rules:
+**B2. Scopes.** As planned. Existing `pr-<n>` scopes are untouched. A branch finding's
+`created` event carries `branch`, because the scope is a hash, and the projection keys the row
+by it.
 
-- Written when a PR is resolved through `gh` (`pr_packet`, `pr`, `shared_findings pr=`), from
-  `headRefName`. Never written from the sha-matching `prBranchFor`.
-- **Same-repo heads only.** A fork PR's `headRefName` names a branch in somebody else's
-  repository. Linking it to a local branch of the same name is the refuted "unrelated branch
-  at the same sha" row in a new form. `gh` reports `isCrossRepository`, and a cross-repo head
-  is never linked.
-- Several links for one PR (a branch renamed, then the PR reopened from another) are all
-  kept, and the union grows.
+**B3. The registry: `reviews/<universe>`, one event `review.linked {pr, branch}`.** Folded into
+`review_link` (`MATERIALIZER_VERSION` 22). It is written when a pull-request op (`pr`,
+`pr_packet`, the walkthrough and marking ops) resolves the pull request through `gh` and its
+head is in this repository (`isCrossRepository` false; unknown is never linked), or by hand
+with `link_review`. Without a sidecar a link is a local `@local` row. The pull-request reads
+(`findings pr=`, `shared_findings pr=`, `inbound_replies`) union the linked branches.
 
-This is a new fold with a new event kind, so it costs a `MATERIALIZER_VERSION` bump.
-`db-migrate.test.ts` pins the vocabulary. Review the fold by **running** it on hand-built
-events, per CLAUDE.md.
+**B4. The tool surface.** `report_defect` takes `{kind:"branch", branch}`, resolves and
+witnesses at the branch head, and refuses a target that exists only in the worktree's
+uncommitted edits, with the reason. `findings` and `shared_findings` take `branch`. There is a
+new `link_review` tool. The id-derived verbs needed no change: they pass the finding's key,
+and every scope build goes through `findingKeyScope` (including `findings-unify` and
+`promote-annotation`, which used to bypass it). Two verbs did change:
+- `verdictGround` judges a branch finding at the branch head, not the answering checkout's
+  HEAD. Otherwise every verdict on a branch finding made through the main checkout was
+  refused as "the checkout lacks the code".
+- `inbound_replies` refuses a branch key rather than calling GitHub with `NaN`.
 
-**B4. The tool surface.** It follows the finding-routing rule: the verb takes the target, and
-the op decides storage.
-
-- `report_defect` context gains `{kind:"branch", branch}`. The `pull_request` context keeps
-  working unchanged.
-- `findings` and `shared_findings` accept `branch` as well as `pr`.
-- `link_review {pr, branch}` is the explicit act for a machine without `gh` (A2).
-- The id-derived verbs (`close_finding`, `revise_finding`, `comment`, `corroborate`,
-  `defer_finding`, `record_published`, …) resolve the finding's **target** where they now
-  resolve `f.pr`. That is ~10 call sites through `whichRecord`. Do all of them or none; see
-  the `sidecarForWrite` lesson.
-- `src/standard-reach.test.ts`'s rule applies: reachable from the web too, or exempted with a
-  reason.
-
-**B5. Local store.**
-- `findings.pr TEXT NOT NULL` becomes a target key: `pr:<n>` or `branch:<name>`, typed, so a
-  branch named `pr-17` cannot collide with PR 17.
-- The PR a finding is shown under is derived through the links.
-- `readFinding`'s "one id on two PRs" refusal becomes "one id on two targets".
-- Clean up the unnormalized writes the sweep found on the way: `defect.ts:160`,
-  `promote-annotation.ts:65/89`, and the `findings-unify.ts` sites that bypass `prKey`.
+**B5. Local store: no migration.** Deviation from the draft: PR rows keep their bare-number
+key and only branch findings use the typed `branch:<name>` key, so the deployed rows and every
+reader of `f.pr` are unchanged. A typed key cannot collide with a number, which was the
+draft's only reason to type both.
 
 **B6. Out of scope, deliberately.**
 - **Walkthroughs.** `foldWalkthroughs` drops any event whose `pr` is not a number, so
