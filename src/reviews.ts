@@ -618,11 +618,14 @@ function ancestryProbe(root: string, viewRef: string | null): Ancestry {
 function citationAcceptance(
   r: Review, c: AcceptedCitation, live: AnchorIndex, ancestry: Ancestry, baseBodies?: Map<string, string>,
 ): Acceptance {
-  // A legacy mark taken on an absent symbol (`ABSENT_HASH`, no entries) was the same act,
-  // minus the body.
+  // A pre-upgrade COVER of a member the change deleted (`ABSENT_HASH`, no entries) was the
+  // same act, minus the body. Only a cover: a doc sign-off with an absent citation and a
+  // legacy absent-but-known id store the same shape and never approved a deletion (I7; on
+  // the live stores 2026-09-19, 131 rows of that shape, none of them covers).
   const bodies = c.entries.filter((e) => !e.deleted);
   const gone = c.entries.filter((e) => e.deleted);
-  const legacyGone = !c.entries.length && r.witnesses.some((w) => w.anchorId === c.anchorId && w.bodyHash === ABSENT_HASH);
+  const legacyGone = !!r.coveredBy && !c.entries.length
+    && r.witnesses.some((w) => w.anchorId === c.anchorId && w.bodyHash === ABSENT_HASH);
   if ((gone.length || legacyGone) && live.get(c.anchorId) === undefined
       && resolveAnchor(c.anchorId, c.entries.map((e) => e.bodyHash), live).at === "absent") {
     const b = baseBodies?.get(c.anchorId);

@@ -203,3 +203,23 @@ test("a deletion entry followed by a body acceptance is not reported as a revert
     assert.deepEqual((await revertedMarks(u.root)).filter((m) => m.anchorId === u.cls.id), []);
   } finally { u.cleanup(); }
 });
+
+test("only a stored COVER row on an absent symbol reads as a deletion sign-off; a direct one reads stale as it always did", async () => {
+  // The same stored shape (ABSENT witness, no entries) is also written by a doc sign-off with
+  // an absent citation and by legacy absent-but-known ids. Those read stale before the
+  // deletion work and must not become reviewed through it (triage 2026-09-19-deletion-fixes-review I7).
+  const u = await repo();
+  try {
+    await sign(u.root, [u.members[0]!.id], u.headSha);
+    const rs = await readReviews(u.root);
+    for (const r of rs.reviews) {
+      r.witnesses = r.witnesses.map((w) => ({ anchorId: w.anchorId, bodyHash: "sha256:absent" }));
+      r.accepted = r.accepted?.map((c) => ({ ...c, entries: [] }));
+      delete r.coveredBy;
+    }
+    await writeReviews(u.root, rs.reviews);
+    const s = (await reviewStatesFor(u.root, [{ kind: "anchor", id: u.members[0]!.id }], { ref: u.headSha }))
+      .get(`anchor:${u.members[0]!.id}`)!.code.state;
+    assert.equal(s, "stale");
+  } finally { u.cleanup(); }
+});
