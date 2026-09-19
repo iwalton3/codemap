@@ -283,6 +283,27 @@ export interface TreeEntry {
 }
 
 /**
+ * The first submodule in `sha`'s tree, nested ones included, whose pinned commit this clone
+ * cannot read — or null. Tree listings only, no blob, so a commit that cannot be indexed is
+ * known before anything is parsed (triage 2026-09-19-branch-review-round, R-E). `skip`
+ * takes the indexer's ignore rules: an ignored submodule is never read, so never fails.
+ */
+export function unreadableGitlink(
+  root: string, sha: string, skip?: (path: string) => boolean, prefix = "", entries?: TreeEntry[],
+): string | null {
+  for (const e of entries ?? lsTreeEntries(root, sha) ?? []) {
+    if (e.type !== "commit") continue;
+    const path = prefix + e.path;
+    if (skip?.(path)) continue;
+    const subRoot = join(root, e.path);
+    if (!lsTreeEntries(subRoot, e.oid)) return path;
+    const deeper = unreadableGitlink(subRoot, e.oid, skip, path + "/");
+    if (deeper) return deeper;
+  }
+  return null;
+}
+
+/**
  * Every entry in a commit's tree, as paths relative to `root`. Submodule
  * gitlinks are returned (as `type: "commit"`) rather than dropped: a bumped
  * submodule pointer is one line in a raw diff and can carry an arbitrary amount

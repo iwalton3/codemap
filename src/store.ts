@@ -30,7 +30,7 @@ import { needsHumanAck, type SharedBug } from "./shared-bugs.js";
 import { needsHumanAck as findingNeedsAck, type SharedFinding } from "./shared-findings.js";
 import type { SharedNote, NoteKind } from "./shared-notes.js";
 import { IMPORTANCE_RANK, COMPLEXITY_RANK } from "./triage-rules.js";
-import { headCommit, currentBranch, revParse } from "./git.js";
+import { headCommit, currentBranch, revParse, lsTreeEntries, unreadableGitlink } from "./git.js";
 import { evalVersion, selectWinner, resolveNode, winningVersionAt } from "./doc-version.js";
 export { winningVersionAt } from "./doc-version.js";
 import {
@@ -680,7 +680,15 @@ export function snapshotRefusal(
   const short = ref.slice(0, 12);
   const meta = d.prepare("SELECT scheme, hash_scheme FROM snapshots WHERE ref = ?").get(ref) as
     { scheme: number | null; hash_scheme: number | null } | undefined;
-  if (!meta) return { reason: "absent", message: `no cached snapshot for ${short}, and git cannot read that commit here — fetch it, then \`codemap snapshot --ref ${short}\`.` };
+  if (!meta) {
+    const sub = lsTreeEntries(root, ref) ? unreadableGitlink(root, ref) : null;
+    return {
+      reason: "absent",
+      message: sub
+        ? `no snapshot for ${short}: its submodule "${sub}" pins a commit this clone cannot read — \`git submodule update --init\` (fetching it if needed), then re-read.`
+        : `no cached snapshot for ${short}, and git cannot read that commit here — fetch it, then \`codemap snapshot --ref ${short}\`.`,
+    };
+  }
   // Both derivations must match. The ids decide WHICH symbols pair up; the hashes
   // decide which of those pairs count as changed — so a snapshot carrying the right
   // ids and another scheme's hashes reports the whole commit as rewritten.

@@ -9,7 +9,7 @@ import { parserForPath } from "./grammars.js";
 import { indexSource } from "./indexer.js";
 import { listSupportedFiles, toPosixRel, isIndexablePath, MAX_BYTES } from "./fs-scan.js";
 import { compileIgnore, loadIgnore, type Ignore } from "./ignore.js";
-import { lsTreeEntries, readBlobs, showFile } from "./git.js";
+import { lsTreeEntries, readBlobs, showFile, unreadableGitlink } from "./git.js";
 
 /** Index a single file. `relPath` is the repo-relative POSIX path stored on anchors. */
 export async function indexFile(absPath: string, relPath: string): Promise<Anchor[]> {
@@ -87,6 +87,10 @@ export async function indexCommit(
   // `listSupportedFiles`, which loads the ignore file once for the whole walk.
   const committed = showFile(root, sha, ".codemapignore")?.toString("utf8");
   const ignore = opts.ignore ?? (committed !== undefined ? compileIgnore(committed) : await loadIgnore(root));
+
+  // Fail fast: an unreadable submodule makes the whole index null (below), so find out from
+  // tree listings before parsing the parent. `readSnapshot` keeps no negative cache.
+  if (!opts.prefix && unreadableGitlink(root, sha, (p) => ignore.ignores(p, true), "", tree)) return null;
 
   const files = tree.filter((e) => e.type === "blob" && e.size <= MAX_BYTES && isIndexablePath(prefix + e.path, ignore));
   // `readBlobs` throws when a batch fails. A partial read here would be cached as

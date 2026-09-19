@@ -199,3 +199,30 @@ test("a universe rooted in a subdirectory indexes the same either way", async ()
       "paths are relative to the universe, and the repo's other files are not its business");
   } finally { discard(outer); }
 });
+
+test("an unreadable submodule fails the index BEFORE any file is parsed, and the refusal names it", async (t) => {
+  // Triage run 2026-09-19-branch-review-round, R-E. `readSnapshot` rebuilds on every miss
+  // and keeps no negative cache (owner: fail fast instead), so a commit pinning an
+  // unfetched submodule used to cost a full parse of the parent — ~3s on Acme.API — on
+  // every read, before failing.
+  const root = repo(), sub = repo();
+  try {
+    writeFileSync(join(sub, "money.ts"), "export function settle(cents: number) { return cents; }\n");
+    commit(sub, "sub");
+    writeFileSync(join(root, "app.ts"), "export function main() { return 1; }\n");
+    commit(root, "app");
+    const added = git(root, "submodule", "add", "-q", sub, "lib");
+    if (added.status !== 0) { t.skip(`git refused a file:// submodule: ${added.stderr.trim().slice(0, 120)}`); return; }
+    commit(root, "add sub");
+    const sha = headCommit(root)!;
+    rmSync(join(root, "lib"), { recursive: true, force: true });
+
+    let looked = 0;
+    assert.equal(await indexCommit(root, sha, { reuse: () => { looked++; return undefined; } }), null);
+    assert.equal(looked, 0, "no file of the parent was even considered");
+
+    const { snapshotRefusal } = await import("./store.js");
+    mkdirSync(join(root, ".codemap"), { recursive: true });
+    assert.match(String(snapshotRefusal(root, sha)?.message), /submodule "lib"/);
+  } finally { discard(root); discard(sub); }
+});
