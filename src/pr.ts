@@ -450,6 +450,9 @@ async function prContext(
   if (!ref) return { error: `could not read a PR reference from "${input}"` };
   const meta = useGh ? fetchPrMeta(ref) : prMetaFromGit(root, ref.number, slug, "origin", { base: opts.base });
   if ("error" in meta) return meta;
+  // The one place a pull request is resolved, so the one place its link to its branch is
+  // recorded (shared-reviews.ts). Upward and dynamic: ops-shared imports this module.
+  if (meta.source === "gh") await import("./ops-shared.js").then((m) => m.observePrBranch(root, meta)).catch(() => null);
 
   if (opts.fetch !== false) {
     const f = ensurePrObjects(root, meta);

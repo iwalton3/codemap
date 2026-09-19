@@ -16,6 +16,7 @@ import { realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
 import { join, dirname } from "node:path";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 const lockPath = (root: string) => join(root, ".codemap", ".lock");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -89,6 +90,21 @@ export function withLock<T>(root: string, fn: () => Promise<T>, opts: LockOpts =
   return hold(lockPath(root), root, fn, opts);
 }
 
+/**
+ * The lock files held by THIS call chain — async context, not the process: `heldLocks`
+ * would answer yes for a concurrent MCP call in the same process that holds nothing.
+ */
+const chainHolds = new AsyncLocalStorage<ReadonlySet<string>>();
+
+/**
+ * True when the calling async chain holds `root`'s universe lock. For code that may run
+ * either inside a locked operation or on a plain read: the lock is NOT reentrant, so
+ * re-taking it inside waits out the whole timeout.
+ */
+export function holdsLock(root: string): boolean {
+  return chainHolds.getStore()?.has(lockPath(root)) ?? false;
+}
+
 async function hold<T>(p: string, label: string, fn: () => Promise<T>, opts: LockOpts = {}): Promise<T> {
   const timeoutMs = opts.timeoutMs ?? 30_000;
   const staleMs = opts.staleMs ?? 60_000;
@@ -148,7 +164,7 @@ async function hold<T>(p: string, label: string, fn: () => Promise<T>, opts: Loc
       const beat = setInterval(touchHeldLocks, Math.max(50, Math.floor(staleMs / 3)));
       beat.unref?.();
       try {
-        return await fn();
+        return await chainHolds.run(new Set([...(chainHolds.getStore() ?? []), p]), fn);
       } finally {
         clearInterval(beat);
         heldLocks.delete(p);

@@ -51,6 +51,7 @@ import { queueContestedTriage } from "./ops/triage.js";
 import { liveAnchors, liveIndex } from "./ops/shared.js";
 export { mirrorTriage, mirrorTriageBatch, mirrorTriageClear } from "./triage-publish.js";
 import { linkedBranches, prsLinkedTo, writeLocalLink, readSharedNotes, readAnnotations, readAnchorStore, readFindings, loadNodes, loadNodeVersions, nodeIdsWithPublishableVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets, attributeLocalWalkthrough, readBlockedScopes, findingCountsByPr, readUnpublishedWalkthroughs, readStoreMeta, writeStoreMeta, foldedScopes, hasFoldedFromSidecar, SIDECAR_LINEAGE, type SidecarMark } from "./store.js";
+import { holdsLock, withLock } from "./lock.js";
 import {
   publishDocVersion, acceptDocHash, resolveDoc, foldDocs, docScope,
   type NewDocVersion,
@@ -1392,7 +1393,8 @@ export async function linkReviewOp(root: string, pr: number | string, branch: st
   const n = normalizeBranch(root, String(branch ?? ""));
   if ("error" in n) return n;
   const name = n.name;
-  if (linkedBranches(root, key).includes(name)) return { ok: true, pr: key, branch: name, already: true };
+  // With a sidecar, a link only this machine holds is not "already" there: it is published.
+  if (linkedBranches(root, key, { published: !!resolveSidecar(root) }).includes(name)) return { ok: true, pr: key, branch: name, already: true };
   if (!resolveSidecar(root)) {
     writeLocalLink(root, key, name);
     return { ok: true, pr: key, branch: name, shared: false, note: "no sidecar configured, so the link stays on this machine" };
@@ -1408,11 +1410,21 @@ export async function linkReviewOp(root: string, pr: number | string, branch: st
 /**
  * Link a pull request to its head branch when `gh` has said which branch that is. Only a
  * same-repository head: a fork's branch is somebody else's code under the same name.
- * Best-effort, because it runs on a read: a failure leaves the link for the next one.
+ * Called wherever a pull request is resolved (`prContext`), so reads reach it too.
+ *
+ * A write, so it takes the universe lock — briefly, and only if nobody else holds it
+ * (owner, triage 2026-09-19-branch-review-round Q4): a busy lock skips the link and the
+ * next read records it. Inside an operation that already holds it, it writes directly,
+ * because the lock is not reentrant.
  */
 export async function observePrBranch(root: string, meta: { number: number; headRef?: string; source?: string; crossRepo?: boolean }) {
   if (meta.source !== "gh" || meta.crossRepo !== false || !meta.headRef) return null;
-  return linkReviewOp(root, meta.number, meta.headRef).catch(() => null);
+  // The common case is a link already recorded; answering it needs no lock.
+  const n = normalizeBranch(root, meta.headRef);
+  if ("name" in n && linkedBranches(root, meta.number, { published: !!resolveSidecar(root) }).includes(n.name)) return null;
+  const link = () => linkReviewOp(root, meta.number, meta.headRef!);
+  if (holdsLock(root)) return link().catch(() => null);
+  return withLock(root, link, { timeoutMs: 0 }).catch(() => null);
 }
 
 /**

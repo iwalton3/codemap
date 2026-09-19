@@ -153,7 +153,11 @@ by it.
 `review_link` (`MATERIALIZER_VERSION` 22). It is written when a pull-request op (`pr`,
 `pr_packet`, the walkthrough and marking ops) resolves the pull request through `gh` and its
 head is in this repository (`isCrossRepository` false; unknown is never linked), or by hand
-with `link_review`. Without a sidecar a link is a local `@local` row. The pull-request reads
+with `link_review`. Without a sidecar a link is a local `@local` row, published once a
+sidecar exists. The link is recorded in ONE place — `prContext`, where every pull-request op
+resolves the pull request — under the universe lock: taken briefly on a read and skipped when
+another writer holds it, written directly inside an op that already holds it (owner, triage
+`2026-09-19-branch-review-round`). The pull-request reads
 (`findings pr=`, `shared_findings pr=`, `inbound_replies`) union the linked branches.
 
 **B4. The tool surface.** `report_defect` takes `{kind:"branch", branch}`, resolves and

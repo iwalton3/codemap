@@ -22,28 +22,13 @@ import { anchorMark } from "./triage.js";
  * checkout, and return the lane breakdown plus a ranked worklist.
  */
 export async function pr(root: string, input: string, opts: { fetch?: boolean } = {}) {
-  return linkedTriage(root, input, opts);
+  return prTriage(root, input, opts);
 }
 
-/**
- * Every pull request resolved through `gh` records which branch it came from, so findings
- * filed on that branch before it existed show under it. See shared-reviews.ts.
- */
-async function linkedTriage(root: string, input: string, opts: Parameters<typeof prTriage>[2]) {
-  return linked(root, await prTriage(root, input, opts));
-}
-
-async function linked<T extends { pr: { number: number; headRef?: string; source?: string; crossRepo?: boolean } } | { error: string }>(root: string, r: T): Promise<T> {
-  if (!("error" in r)) {
-    const { observePrBranch } = await import("../ops-shared.js");
-    await observePrBranch(root, r.pr);
-  }
-  return r;
-}
 
 /** The agent's work packet for a PR: ranked items with before/after source, plus the specs it ships. */
 export async function prPacketFor(root: string, input: string, opts: { limit?: number; offset?: number; fetch?: boolean } = {}) {
-  return linked(root, await prPacket(root, input, opts));
+  return prPacket(root, input, opts);
 }
 
 /**
@@ -52,7 +37,7 @@ export async function prPacketFor(root: string, input: string, opts: { limit?: n
  * can land on symbols that exist only on the branch.
  */
 export async function prIngest(root: string, input: string, texts: string[], opts: { author?: string; dryRun?: boolean } = {}) {
-  const t = await linkedTriage(root, input, { fetch: false });
+  const t = await prTriage(root, input, { fetch: false });
   if ("error" in t) return { error: t.error };
   const lines = [], bad = [];
   for (const text of texts) {
@@ -114,7 +99,7 @@ export async function prWalkthroughSet(
   opts: { by?: string; dryRun?: boolean } = {},
 ) {
   const features = asInput(featuresIn);
-  const t = await linkedTriage(root, input, { fetch: false });
+  const t = await prTriage(root, input, { fetch: false });
   if ("error" in t) return { error: t.error };
 
   const queue = new Set(t.worklist.filter((w) => LANE_POLICY[w.lane].review === "queue").map((w) => w.id));
@@ -217,7 +202,7 @@ export async function prWalkthroughChapter(
   chapter: { feature: string; title: string; blocks: WalkInput["chapters"][number]["blocks"]; summary?: string },
   opts: { by?: string; dryRun?: boolean } = {},
 ) {
-  const t = await linkedTriage(root, input, { fetch: false });
+  const t = await prTriage(root, input, { fetch: false });
   if ("error" in t) return { error: t.error };
   const pick = await walkthroughFor(root, t.pr.number, t.refs.head);
   if (!pick) {
@@ -257,7 +242,7 @@ export async function prWalkthroughChapter(
  * was the same question asked of the half of the data that had travelled.
  */
 export async function prWalkthroughGet(root: string, input: string, opts: { all?: boolean } = {}) {
-  const t = await linkedTriage(root, input, { fetch: false });
+  const t = await prTriage(root, input, { fetch: false });
   if ("error" in t) return { error: t.error };
   const pick = await walkthroughFor(root, t.pr.number, t.refs.head);
   if (!pick) return { pr: t.pr.number, walkthrough: null, ...(opts.all ? { readings: [] } : {}) };
@@ -333,7 +318,7 @@ export async function prStoryFor(root: string, input: string, opts: { fetch?: bo
  * request is that one's, and a resolved one is nobody's. `orphanedWork` answers them.
  */
 export async function prOffStoryFindings(root: string, input: string, opts: { fetch?: boolean } = {}) {
-  const t = await linkedTriage(root, input, { fetch: opts.fetch });
+  const t = await prTriage(root, input, { fetch: opts.fetch });
   if ("error" in t) return { error: t.error };
 
   // What the walkthrough can show — its steps are the code lane, so a finding on
@@ -431,7 +416,7 @@ export async function prChapterMark(
   chapterId: string,
   opts: { attestation: Attestation; unmark?: boolean; reviewer?: string },
 ) {
-  const t = await linkedTriage(root, input, { fetch: false });
+  const t = await prTriage(root, input, { fetch: false });
   if ("error" in t) return { error: t.error };
   // A teammate's reading is signable too: the chapter is a unit of READING, and the
   // mark it produces is the reader's own ledger, not a claim about whose guide it was.
@@ -570,7 +555,7 @@ export async function prPushPlan(
  * either is acted on.
  */
 export async function prResolvePlan(root: string, input: string) {
-  const t = await linkedTriage(root, input, { fetch: false });
+  const t = await prTriage(root, input, { fetch: false });
   if ("error" in t) return { error: t.error };
   const threads = fetchReviewThreads(`${t.pr.owner}/${t.pr.repo}`, t.pr.number);
   if ("error" in threads) return threads;

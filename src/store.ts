@@ -1594,9 +1594,13 @@ export function prsLinkedTo(root: string, branch: string): string[] {
     .map((r) => r.pr).sort((a, b) => Number(b) - Number(a));
 }
 
-/** The branches a pull request was opened from, as folded from `reviews/<universe>`. */
-export function linkedBranches(root: string, pr: number | string): string[] {
-  return (db(root).prepare("SELECT DISTINCT branch FROM review_link WHERE pr = ? ORDER BY branch").all(String(pr)) as { branch: string }[])
+/**
+ * The branches a pull request was opened from, as folded from `reviews/<universe>`, plus
+ * this machine's `@local` links unless `published` asks for the folded ones only.
+ */
+export function linkedBranches(root: string, pr: number | string, opts: { published?: boolean } = {}): string[] {
+  const local = opts.published ? " AND scope <> '@local'" : "";
+  return (db(root).prepare(`SELECT DISTINCT branch FROM review_link WHERE pr = ?${local} ORDER BY branch`).all(String(pr)) as { branch: string }[])
     .map((r) => r.branch);
 }
 
