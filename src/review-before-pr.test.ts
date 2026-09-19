@@ -222,22 +222,24 @@ function branchDeletingPay(u: { root: string }) {
   gitIn(u.root, "worktree", "add", "-q", "-b", "gone", wt2, "main");
   gitIn(wt2, "rm", "-q", "src/pay.ts");
   gitIn(wt2, "-c", "user.email=izzie@x.com", "-c", "user.name=izzie", "commit", "-q", "-m", "delete pay");
-  return { mainSha: gitIn(u.root, "rev-parse", "main") };
+  return { mainSha: gitIn(u.root, "rev-parse", "main"), goneSha: gitIn(u.root, "rev-parse", "gone") };
 }
 
 for (const withSidecar of [true, false]) {
   const where = withSidecar ? "sidecar" : "no sidecar";
 
-  test(`a finding on a symbol the branch deletes is witnessed at the branch's base, not the root checkout (${where})`, async () => {
+  test(`a finding on a symbol the branch deletes is a deletion of the base's body, not the root checkout's (${where})`, async () => {
     const u = await worktreeRepo(withSidecar);
     try {
-      const { mainSha } = branchDeletingPay(u);
+      const { mainSha, goneSha } = branchDeletingPay(u);
       const transfer = (await readSnapshot(u.root, mainSha))!.find((a) => a.symbolPath.join(".") === "transfer")!;
       const out = await file(u.root, "src/pay.ts#transfer", "gone");
       assert.equal(out.error, undefined, String(out.error));
       const [f] = (await readFindings(u.root, { pr: branchKey("gone") })).findings;
-      assert.equal(f!.sourceRef, mainSha, "the merge-base, never `@work`");
-      assert.equal(f!.witness?.bodyHash, transfer.bodyHash);
+      // At the head, where the deletion is (triage 2026-09-19-post-round-review Q2): the
+      // merge-base is already on the trunk, so ancestry would call it landed at filing.
+      assert.equal(f!.sourceRef, goneSha, "the branch head, never `@work`");
+      assert.deepEqual(f!.witness, { anchorId: transfer.id, bodyHash: transfer.bodyHash, deleted: true }, "the body the base holds");
     } finally { u.cleanup(); }
   });
 

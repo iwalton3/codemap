@@ -147,9 +147,19 @@ debt filter.
 (owner, triage `2026-09-19-branch-review-round`) — for pull-request and branch findings
 alike, and whatever its ref says. It covers a cherry-pick, which neither ancestry nor
 GitHub can see, and a finding on code the trunk already had: the defect is live, so it is
-debt at once (it still shows on its pull request or branch too). Compared by anchor id and
-body hash against the tip's snapshot, built once per listing, so a body under another
-derivation never counts; a node finding cites no body and is untouched by it.
+debt at once (it still shows on its pull request or branch too).
+Compared by anchor id and body hash against the tip's snapshot, built once per listing, so
+a body under another derivation never counts; a node finding cites no body and is
+untouched by it.
+
+**Except a DELETION** (triage `2026-09-19-post-round-review` Q2, amending Q9 for this one
+case). A finding on a symbol its change deletes is about the deletion: its witness carries
+`deleted: true`, the body the merge-base holds, and `sourceRef` is the head. It is on the
+tip when the symbol is ABSENT from the tip, so it stays open while the deletion is
+unmerged, never lands if the change is abandoned, and lands when the deletion reaches the
+trunk however it got there. It drifts (`moved`) if the symbol comes back. Findings stored
+before this carry a plain witness and keep landing at filing. None was open when it
+shipped (the Acme stores were measured, Q10-Q11).
 
 **A branch finding has no number to ask GitHub about.** Its fallback asks the pull
 requests linked to the branch, and counts only one that merged AFTER the finding was

@@ -669,8 +669,13 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
   const witnessed = all.some((f) => f.target.kind === "anchor" && f.witness);
   const tip = trunk && witnessed ? await readSnapshot(root, trunk.sha).catch(() => null) : null;
   const tipBodies = new Map((tip ?? []).map((a) => [a.id, a.bodyHash]));
+  // A DELETION is on the tip when the symbol is gone from it (Q2 of triage
+  // 2026-09-19-post-round-review amends Q9 for deletions) — and only with a tip to look at:
+  // an unreadable trunk has no symbols, which is not the deletion landing.
   const onTip = (f: SharedFinding) =>
-    f.target.kind === "anchor" && !!f.witness && tipBodies.get(f.witness.anchorId) === f.witness.bodyHash;
+    f.target.kind === "anchor" && !!f.witness && (f.witness.deleted
+      ? !!tip && !tipBodies.has(f.witness.anchorId)
+      : tipBodies.get(f.witness.anchorId) === f.witness.bodyHash);
 
   const landedAt = (f: SharedFinding) => {
     if (onTip(f)) return "landed" as const;
@@ -717,6 +722,11 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
   });
   const drifted = (w?: BugWitness) => {
     if (!w) return null;
+    // A deletion holds while the symbol is absent; its coming back is the drift.
+    if (w.deleted) {
+      const r = resolveAnchor(w.anchorId, [w.bodyHash], idx);
+      return r.at === "incomparable" ? "undecidable" as const : r.at === "found" ? "moved" as const : "same" as const;
+    }
     const changes = witnessDrift([w], idx);
     if (!changes.length) return "same" as const;
     return realDrift(changes).length ? "moved" as const : "undecidable" as const;
@@ -943,6 +953,8 @@ export async function checkWitnessTarget(root: string, id: string, anchorId?: st
 export async function witnessNowFor(root: string, id: string, anchorId?: string): Promise<BugWitness | undefined> {
   const f = (await readFindings(root, {})).findings.find((x) => x.id === id);
   if (!f) return undefined;
+  // A deletion's state is its absence, which the filing witness already states.
+  if (!anchorId && f.witness?.deleted) return { ...f.witness };
   const a = anchorId ?? f.witness?.anchorId ?? (f.target.kind === "anchor" ? f.target.id : undefined);
   return a ? witnessNow(root, a) : undefined;
 }
@@ -990,7 +1002,7 @@ export const backlogFinding = homed(async function backlogFinding(
   const found = (await readFindings(root, { pr })).findings.find((x) => x.id === id);
   if (!found) return { error: `no finding "${id}" on ${pr}` };
   const anchorId = found.witness?.anchorId ?? (found.target.kind === "anchor" ? found.target.id : undefined);
-  const witness = anchorId ? await witnessNow(root, anchorId) : undefined;
+  const witness = found.witness?.deleted ? { ...found.witness } : anchorId ? await witnessNow(root, anchorId) : undefined;
 
   await backlogFindingEvent(b.cfg.path, prKey(b.cfg, pr), b.actor, id, { until, reason: input.reason.trim(), witness, ref: input.ref });
   const mz = await materializeFindings(root, b.cfg, pr);

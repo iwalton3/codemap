@@ -76,7 +76,9 @@ test("a head that cannot be found is refused, and says to pass ref", async () =>
   } finally { t.dispose(); }
 });
 
-test("a symbol only in the reviewer's unpushed commits is still fileable", async () => {
+test("a symbol only in the reviewer's unpushed commits is refused on the PR, and filed on the branch", async () => {
+  // Owner, triage 2026-09-19-post-round-review Q12: the pull request's head is what it
+  // holds; commits not pushed yet are the local branch's.
   const { t, a } = await reviewing(44);
   try {
     branch(a, "feature/44");
@@ -84,8 +86,11 @@ test("a symbol only in the reviewer's unpushed commits is still fileable", async
     commit(a, "refund, not pushed");
     await checkStale(a.repo);   // the live index follows the checkout on its next refresh
     const out = await file(a.repo, 44, "src/ledger.ts#Ledger.refund");
-    assert.equal(out.error, undefined, String(out.error));
-    assert.equal((await readFindings(a.repo, { pr: 44 })).findings[0]!.sourceRef, "@work",
-      "not at the head, which does not have it: at the working tree that does");
+    assert.match(String(out.error), /file it on your branch/);
+    const onBranch = await reportDefect(a.repo, {
+      context: { kind: "branch", branch: "feature/44" }, targetKind: "anchor", targetId: "src/ledger.ts#Ledger.refund",
+      text: "evidence", comment: "refund is negative",
+    }) as Record<string, unknown>;
+    assert.equal(onBranch.error, undefined, String(onBranch.error));
   } finally { t.dispose(); }
 });

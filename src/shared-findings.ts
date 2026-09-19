@@ -622,6 +622,18 @@ const obj = (d: Data | undefined, k: string): Data | undefined => {
   return v && typeof v === "object" && !Array.isArray(v) ? v as Data : undefined;
 };
 
+/**
+ * A witness from an event, or none. `deleted` is exactly `true` or absent: anything else
+ * drops the whole witness, because read as a body witness a deletion lands at filing —
+ * the misreading it exists to prevent — while no witness is visibly `unjudgeable`.
+ */
+const witnessOf = (w: Data | undefined): BugWitness | undefined => {
+  const anchorId = str(w, "anchorId"), bodyHash = str(w, "bodyHash");
+  if (!anchorId || !bodyHash) return undefined;
+  if (w!.deleted === undefined) return { anchorId, bodyHash };
+  return w!.deleted === true ? { anchorId, bodyHash, deleted: true } : undefined;
+};
+
 /** Fields whose value is a single scalar somebody owns — the only contestable ones. */
 const CONTESTABLE = ["text", "comment", "severity", "category", "line"] as const;
 
@@ -662,7 +674,7 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         severity: str(d, "severity") as BugSeverity | undefined,
         category: str(d, "category"),
         line: typeof d?.line === "number" ? d.line : undefined,
-        witness: (d?.witness as BugWitness | undefined) ?? undefined,
+        witness: witnessOf(obj(d, "witness")),
         sourceRef: str(d, "sourceRef"),
         ...(str(d, "branch") ? { branch: str(d, "branch") } : {}),
         author: e.actor,
@@ -760,8 +772,7 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         const wOk = w && (f.target.kind !== "anchor" || str(w, "anchorId") === f.target.id);
         f.backlogged = {
           until: day, reason, by: e.actor, at: e.at,
-          ...(wOk && str(w, "anchorId") && str(w, "bodyHash")
-            ? { witness: { anchorId: str(w, "anchorId")!, bodyHash: str(w, "bodyHash")! } } : {}),
+          ...(wOk && witnessOf(w) ? { witness: witnessOf(w)! } : {}),
           ...(str(d, "system") ? { ref: { system: str(d, "system")!, key: str(d, "key"), url: str(d, "url"), at: e.at, by: e.actor } } : {}),
         };
         break;
@@ -786,9 +797,9 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         // and the bucket it repairs (19% of the measured backlog) is precisely the one
         // nothing else can touch. What it must never do is look like a witness captured
         // when the claim was made — `witnessAttached` is what keeps those distinguishable.
-        const w = obj(d, "witness");
-        const anchorId = w && str(w, "anchorId"), bodyHash = w && str(w, "bodyHash");
-        if (!anchorId || !bodyHash) break;
+        const w = witnessOf(obj(d, "witness"));
+        if (!w) break;
+        const { anchorId } = w;
         // Never over an existing witness. A witness is the evidence a finding was filed
         // against; replacing it would silently re-baseline every drift answer that
         // depends on it, which is the "amendment re-baselines the witnesses away" problem
@@ -806,14 +817,14 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         // out loud because "both ends" is the contract here and a comment claiming it
         // where it does not hold is worse than the gap.
         if (f.target.kind === "anchor" && anchorId !== f.target.id) break;
-        f.witness = { anchorId, bodyHash };
+        f.witness = w;
         f.witnessAttached = { by: e.actor, at: e.at };
         // Arm a backlog that had NO witness to wake early on. One is allowed — the
         // deadline is the guaranteed condition and an anchor may already have left the
         // tree — but a finding repaired after being backlogged could then never wake on
         // drift at all, which is the half of the release condition only this tool can
         // restore. Never over an existing one, for the same reason as above.
-        if (f.backlogged && !f.backlogged.witness) f.backlogged.witness = { anchorId, bodyHash };
+        if (f.backlogged && !f.backlogged.witness) f.backlogged.witness = { ...w };
         break;
       }
 

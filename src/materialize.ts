@@ -176,7 +176,11 @@ import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagn
 // 21 -> 22: a new scope kind (`reviews/`, table `review_link`) and a finding field
 // (`branch`, on `finding.created`, which decides the row's `pr` key). A store that folded
 // a branch scope at 21 holds rows keyed by the scope's hash, and only a refold fixes them.
-export const MATERIALIZER_VERSION = 22;
+//
+// 22 -> 23: `witness.deleted` (a finding on code a change deletes). An older fold kept the
+// field raw and read the witness as a body, so its rows say `landed` at filing; the same
+// shards refold only if the version moves.
+export const MATERIALIZER_VERSION = 23;
 
 /**
  * What the events in a scope are, cheaply.
