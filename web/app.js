@@ -165,13 +165,13 @@ const postAckHole = (u, id) => postSeen('/api/ack_hole', { u, id });
 // `ref` (a PR head sha) witnesses the mark against the code actually on screen —
 // without it a PR sign-off records the working tree's hash, i.e. code never read.
 /**
- * What a sign-off that skipped some symbols tells the person. The server skips a symbol that
- * is not at the commit being signed — typically one the change deletes, which has no code
- * there to vouch for — and reports it as `unwitnessed` rather than recording a mark on nothing.
+ * What a sign-off that skipped some symbols tells the person. The server skips a symbol with
+ * no code at the commit being signed NOR where the change left the trunk — a deletion is
+ * signable — and reports it as `unwitnessed` rather than recording a mark on nothing.
  * @param {string[] | undefined} ids
  */
 const notSignedNote = (ids) => (ids && ids.length
-  ? `${ids.length} symbol${ids.length === 1 ? ' was' : 's were'} not signed: not in the pull request's head, so there is no code there to vouch for (a deletion, usually).`
+  ? `${ids.length} symbol${ids.length === 1 ? ' was' : 's were'} not signed: neither the pull request's head nor its base holds the code, so there is nothing to vouch for.`
   : null);
 
 const postReview = (u, targetKind, targetId, level, unmark, attestation, ref) =>
