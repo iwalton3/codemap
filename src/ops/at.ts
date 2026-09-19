@@ -71,6 +71,18 @@ export async function viewAt(root: string, at: string, opts: { dirty?: boolean }
   return { ref: at, sha, anchors, index, nodes, ignore, worktree, uncommitted, overlaid };
 }
 
+/**
+ * Where a branch left the trunk: its merge-base with `origin/<trunk>`, else `<trunk>`.
+ * The default base for `check_stale at:`, and where a branch finding on a symbol the
+ * branch DELETES is witnessed.
+ */
+export function trunkBase(root: string, sha: string): { sha: string; label: string } | null {
+  const trunk = defaultBranch(root);
+  const tip = revParse(root, `origin/${trunk}`) ?? revParse(root, trunk);
+  const base = tip ? mergeBase(root, sha, tip) : null;
+  return base ? { sha: base, label: `merge-base with ${trunk}` } : null;
+}
+
 /** The header every `at` answer carries: which commit it read, and what it left out. */
 export function atHeader(v: AtView) {
   return {
@@ -107,10 +119,9 @@ export async function staleAt(root: string, at: string, base?: string) {
     baseSha = revParse(root, base);
     baseLabel = base;
   } else {
-    const trunk = defaultBranch(root);
-    const tip = revParse(root, `origin/${trunk}`) ?? revParse(root, trunk);
-    baseSha = tip ? mergeBase(root, view.sha, tip) : null;
-    baseLabel = `merge-base with ${trunk}`;
+    const b = trunkBase(root, view.sha);
+    baseSha = b?.sha ?? null;
+    baseLabel = b?.label ?? `merge-base with ${defaultBranch(root)}`;
   }
   if (!baseSha) return { ...atHeader(view), error: `no base for ${at}: pass \`base\` (the branch it will merge into)` };
 

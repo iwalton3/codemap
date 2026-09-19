@@ -473,7 +473,7 @@ function verdictGround(root: string, f: SharedFinding): { state: "ok" | "unknown
   // A branch finding is about the BRANCH, which the checkout answering is usually not on
   // (an agent in a worktree reads through the main checkout). Its code is at the branch head.
   const branch = f.branch ?? branchOf(String(f.pr ?? ""));
-  const head = branch ? revParse(root, `refs/heads/${branch}`) : headCommit(root);
+  const head = branch ? revParse(root, `refs/heads/${branch}`) ?? revParse(root, `refs/remotes/origin/${branch}`) : headCommit(root);
   if (!ref || ref === "@work" || !head) return { state: "unknown", ref, head: head ?? undefined };
   return { state: isAncestor(root, ref, head) ? "ok" : "missing", ref, head };
 }

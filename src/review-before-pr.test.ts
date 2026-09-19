@@ -214,3 +214,39 @@ test("link_review stores the normalized name", async () => {
     assert.match(String((await shared.linkReviewOp(u.root, "12", "HEAD") as Record<string, unknown>).error), /not a branch name/);
   } finally { u.cleanup(); }
 });
+
+/** A branch `gone`, cut from main in its own worktree, that deletes src/pay.ts. */
+function branchDeletingPay(u: { root: string }) {
+  const wt2 = join(u.root, "..", "wt-gone");
+  gitIn(u.root, "worktree", "add", "-q", "-b", "gone", wt2, "main");
+  gitIn(wt2, "rm", "-q", "src/pay.ts");
+  gitIn(wt2, "-c", "user.email=izzie@x.com", "-c", "user.name=izzie", "commit", "-q", "-m", "delete pay");
+  return { mainSha: gitIn(u.root, "rev-parse", "main") };
+}
+
+for (const withSidecar of [true, false]) {
+  const where = withSidecar ? "sidecar" : "no sidecar";
+
+  test(`a finding on a symbol the branch deletes is witnessed at the branch's base, not the root checkout (${where})`, async () => {
+    const u = await worktreeRepo(withSidecar);
+    try {
+      const { mainSha } = branchDeletingPay(u);
+      const transfer = (await readSnapshot(u.root, mainSha))!.find((a) => a.symbolPath.join(".") === "transfer")!;
+      const out = await file(u.root, "src/pay.ts#transfer", "gone");
+      assert.equal(out.error, undefined, String(out.error));
+      const [f] = (await readFindings(u.root, { pr: branchKey("gone") })).findings;
+      assert.equal(f!.sourceRef, mainSha, "the merge-base, never `@work`");
+      assert.equal(f!.witness?.bodyHash, transfer.bodyHash);
+    } finally { u.cleanup(); }
+  });
+
+  test(`a branch finding may not cite code that is only on some other commit (${where})`, async () => {
+    const u = await worktreeRepo(withSidecar);
+    try {
+      branchDeletingPay(u);
+      // IdentifierFilter exists only on `feature`, whose snapshot this store holds.
+      const out = await file(u.root, u.filter.id, "gone");
+      assert.match(String(out.error), /not in gone/, String(out.error));
+    } finally { u.cleanup(); }
+  });
+}

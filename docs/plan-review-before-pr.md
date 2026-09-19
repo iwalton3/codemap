@@ -158,7 +158,10 @@ with `link_review`. Without a sidecar a link is a local `@local` row. The pull-r
 
 **B4. The tool surface.** `report_defect` takes `{kind:"branch", branch}`, resolves and
 witnesses at the branch head, and refuses a target that exists only in the worktree's
-uncommitted edits, with the reason. `findings` and `shared_findings` take `branch`. There is a
+uncommitted edits, with the reason. A symbol the branch DELETES resolves at the branch's
+merge-base with the trunk and is witnessed there; nothing else — the root's working tree,
+another commit's snapshot, an orphan — is accepted (owner, triage
+`2026-09-19-branch-review-round`). `findings` and `shared_findings` take `branch`. There is a
 new `link_review` tool. The id-derived verbs needed no change: they pass the finding's key,
 and every scope build goes through `findingKeyScope` (including `findings-unify` and
 `promote-annotation`, which used to bypass it). Two verbs did change:

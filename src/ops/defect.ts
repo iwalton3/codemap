@@ -34,6 +34,10 @@ import { headCommit, revParse, worktreeForBranch, uncommittedPaths } from "../gi
 import { assertFindingKey, branchKey, normalizeBranch } from "../review-target.js";
 import { writeLocalFinding } from "../store.js";
 import { resolveRefs } from "./shared.js";
+import { trunkBase } from "./at.js";
+import { readSnapshot } from "../snapshots.js";
+import { snapshotRefusal } from "../store.js";
+import { resolveAnchorRefs } from "../refs.js";
 import { witnessAt } from "./annotations.js";
 import { reportBug } from "./bugs.js";
 import { COMMENT_MAX, type BugSeverity } from "../schema.js";
@@ -129,7 +133,11 @@ export async function reportDefect(root: string, input: DefectInput) {
   let targetId = input.targetId;
   let witness: SharedFinding["witness"];
   let sourceRef: string | undefined;
-  if (input.targetKind === "anchor") {
+  if (input.targetKind === "anchor" && branch) {
+    const r = await branchTarget(root, branch, ref!, targetId);
+    if ("error" in r) return r;
+    ({ targetId, witness, sourceRef } = r);
+  } else if (input.targetKind === "anchor") {
     // Orphans included, for the reason `annotate` includes them: re-filing against code
     // the tree no longer has is exactly what somebody needs when a reindex stranded a
     // finding, and refusing it leaves the work unreachable rather than safe.
@@ -187,6 +195,38 @@ export async function reportDefect(root: string, input: DefectInput) {
     ok: true, id: finding.id, filedAs: "finding", ...(branch ? { branch } : { pr: key }), shared: false,
     note: `no sidecar configured, so this stays on this machine — it is still on the ${branch ? "branch" : "pull request"} here`,
   };
+}
+
+/**
+ * A branch finding's target, resolved and witnessed ON the branch: at its head, or — for
+ * a symbol the branch deletes — at the point it left the trunk, witnessing the body it
+ * deletes. Never the root checkout's working tree, another commit's snapshot or a
+ * retained orphan: those are bodies the branch does not hold (owner, triage
+ * 2026-09-19-branch-review-round Q2).
+ */
+async function branchTarget(root: string, branch: string, sha: string, target: string) {
+  const at = async (commit: string) => {
+    const snap = await readSnapshot(root, commit);
+    if (!snap) throw new Error(snapshotRefusal(root, commit)?.message ?? `cannot index ${commit.slice(0, 12)}`);
+    const r = resolveAnchorRefs(snap, [target]);
+    const a = r.ids.length ? snap.find((x) => x.id === r.ids[0]) : undefined;
+    return a ? { targetId: a.id, witness: { anchorId: a.id, bodyHash: a.bodyHash }, sourceRef: commit } : null;
+  };
+  try {
+    const head = await at(sha);
+    if (head) return head;
+    const uncommitted = uncommittedTarget(root, branch, target);
+    if (uncommitted) return { error: uncommitted };
+    const base = trunkBase(root, sha);
+    const deleted = base && base.sha !== sha ? await at(base.sha) : null;
+    if (deleted) return deleted;
+    return {
+      error: `"${target}" is not in ${branch}'s last commit${base ? ` nor at its ${base.label}` : ""} — `
+        + "a branch finding is about code the branch holds, or code it deletes",
+    };
+  } catch (e) {
+    return { error: (e as Error).message };
+  }
 }
 
 /**
