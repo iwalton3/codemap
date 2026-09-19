@@ -664,7 +664,10 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
   // cited body is there is landed whatever its ref says — a cherry-pick, or code the trunk
   // already had: the defect is live (owner, triage 2026-09-19-branch-review-round Q9/Q11).
   // Compared by id AND hash, so a body under another derivation never counts.
-  const tip = trunk ? await readSnapshot(root, trunk.sha).catch(() => null) : null;
+  // Only when some finding has a body to compare: building the tip is a write, and a
+  // listing with nothing to ask it must not snapshot the trunk as a side effect.
+  const witnessed = all.some((f) => f.target.kind === "anchor" && f.witness);
+  const tip = trunk && witnessed ? await readSnapshot(root, trunk.sha).catch(() => null) : null;
   const tipBodies = new Map((tip ?? []).map((a) => [a.id, a.bodyHash]));
   const onTip = (f: SharedFinding) =>
     f.target.kind === "anchor" && !!f.witness && tipBodies.get(f.witness.anchorId) === f.witness.bodyHash;
