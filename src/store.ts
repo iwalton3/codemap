@@ -525,7 +525,8 @@ function workDerivations(d: DatabaseSync): { tags: DerivationTag[]; anyUntagged:
  * it had not consulted.
  */
 export function workHas(root: string, ids: string[], ref: string = WORK_REF): Set<string> {
-  const d = requireIndex(root);
+  // Only `@work` needs the live index to exist; a snapshot answers for itself.
+  const d = ref === WORK_REF ? requireIndex(root) : db(root);
   const out = new Set<string>();
   for (let i = 0; i < ids.length; i += 400) {
     const chunk = ids.slice(i, i + 400);

@@ -1003,12 +1003,15 @@ export async function markReviewedBatch(
   anchorIds = [...new Set(anchorIds)];
   // `markReviewed`'s "nothing was witnessed" rule, per id, because each id is its own
   // mark: no hash at the ref AND no record of the code at all means the mark would stand
-  // on no observation. Skipped and reported so the rest of the page still lands. A
-  // caller that supplies `hashes` read the code itself.
+  // on no observation. Skipped and reported so the rest of the page still lands. Exempt:
+  // a caller that supplies `hashes` read the code itself, and a cover (`coveredBy`) is
+  // observed through its container — which is how a member the change DELETES gets
+  // covered when the type around it is signed.
   let unwitnessed: string[] = [];
-  if (!input.hashes) {
-    const known = workHas(root, anchorIds, input.ref ? snapshotKey(root, input.ref) : undefined);
-    unwitnessed = anchorIds.filter((id) => live.get(id) === undefined && !known.has(id));
+  if (!input.hashes && !input.coveredBy) {
+    const unhashed = anchorIds.filter((id) => live.get(id) === undefined);
+    const known = unhashed.length ? workHas(root, unhashed, input.ref ? snapshotKey(root, input.ref) : undefined) : new Set<string>();
+    unwitnessed = unhashed.filter((id) => !known.has(id));
     const drop = new Set(unwitnessed);
     anchorIds = anchorIds.filter((id) => !drop.has(id));
   }

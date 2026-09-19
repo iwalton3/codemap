@@ -624,3 +624,19 @@ test("a mark that could witness nothing at all is refused, not recorded green", 
     assert.deepEqual(rows, []);
   } finally { discard(root); }
 });
+
+test("a cover marks a member the container's signing observed, even one absent at the ref", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-coverabsent-"));
+  try {
+    mkdirSync(join(root, "src"));
+    const src = "export function transfer(cents: number) {\n  return cents;\n}\n";
+    writeFileSync(join(root, "src/pay.ts"), src);
+    const anchors = await indexBlob(src, "src/pay.ts");
+    await writeStore(root, anchors, { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State);
+    const { writeSnapshot } = await import("./store.js");
+    await writeSnapshot(root, "head_sha", "feature", anchors, "2026-08-01T00:00:00Z");
+    const r = await markReviewedBatch(root, ["a_deleted_member"], { level: "code", actor: "human", attestation: "signed", ref: "head_sha", coveredBy: anchors[0]!.id });
+    assert.equal(r.marked, 1);
+    assert.equal(r.unwitnessed, undefined);
+  } finally { discard(root); }
+});
