@@ -167,7 +167,7 @@ key and only branch findings use the typed `branch:<name>` key, so the deployed 
 reader of `f.pr` are unchanged. A typed key cannot collide with a number, which was the
 draft's only reason to type both.
 
-**B6. The web page: BUILT. Walkthroughs: still open.**
+**B6. The web page: BUILT. Walkthroughs: wait for a draft PR.**
 - **Web.** The hub lists branch reviews with the pull requests they are linked to, or "no
   pull request yet". Every link to a review encodes its key: a branch name holds a `/`, which
   split the hash route. The shared page labels a branch review.
