@@ -523,17 +523,18 @@ async function prContext(
     const s = await ensureSnapshot(root, sha, label);
     if (s.error) return { error: `snapshot ${sha.slice(0, 12)}: ${s.error}` };
   }
-  seenHead.set(`${root}\0${ref.number}`, meta.headSha);
+  seenHead.set(seenKey(root, ref), meta.headSha);
   return { ref, meta, mergeBase: mb, baseTip, drift };
 }
 
 /**
- * The head this process last resolved for a pull request, by root and number.
+ * The head this process last resolved for a pull request, by root and `owner/repo#number`.
  *
  * No TTL, unlike `metaCache`: this is the head the reviewer was last SHOWN, which is the
  * code a finding filed now is about — more so than a head pushed since they read it.
  */
 const seenHead = new Map<string, string>();
+const seenKey = (root: string, ref: PrRef) => `${root}\0${ref.owner}/${ref.repo}#${ref.number}`;
 
 /**
  * The commit a pull-request finding is witnessed at when the caller names none. Without
@@ -542,7 +543,7 @@ const seenHead = new Map<string, string>();
  */
 export async function prHeadForFinding(root: string, input: string): Promise<{ sha: string } | { error: string }> {
   const ref = parsePrRef(input, originSlug(root) ?? { owner: "", repo: "" });
-  const hit = ref && seenHead.get(`${root}\0${ref.number}`);
+  const hit = ref && seenHead.get(seenKey(root, ref));
   if (hit) return { sha: hit };
   const ctx = await prContext(root, input);
   return "error" in ctx ? ctx : { sha: ctx.meta.headSha };

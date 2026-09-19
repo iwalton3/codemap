@@ -114,3 +114,18 @@ test("a link recorded before the sidecar existed is published once there is one"
     assert.deepEqual(linkedBranches(f.root, 12, { published: true }), ["feature"]);
   } finally { f.cleanup(); }
 });
+
+test("a pull request's remembered head belongs to its repository, not only its number", { skip: FAKE_GH_UNSUPPORTED }, async () => {
+  const f = await fixture(true);
+  try {
+    const { prHeadForFinding } = await import("./pr.js");
+    const own = await prHeadForFinding(f.root, "12") as { sha?: string; error?: string };
+    assert.ok(own.sha, String(own.error));
+    // Another repository's #12: gh cannot see it here, so there is no head to give.
+    const gh = join(f.root, "..", "bin", "gh");
+    writeFileSync(gh, `#!/bin/sh\ncase "$*" in *other/repo*) exit 1;; esac\nexit 1\n`);
+    chmodSync(gh, 0o755);
+    const other = await prHeadForFinding(f.root, "other/repo#12") as { sha?: string; error?: string };
+    assert.equal(other.sha, undefined, "acme/api#12's head was served for other/repo#12");
+  } finally { f.cleanup(); }
+});
