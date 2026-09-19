@@ -545,6 +545,16 @@ const seenKey = (root: string, ref: PrRef) => `${root}\0${ref.owner}/${ref.repo}
  * that is still on the trunk read as `landed` before the pull request merged.
  */
 /**
+ * A pull request's head as this clone already knows it — the head this process last
+ * resolved, else the fetched `origin/pr/N` — with NO network. Null when neither exists.
+ */
+export function knownPrHead(root: string, input: string): string | null {
+  const ref = parsePrRef(input, originSlug(root) ?? { owner: "", repo: "" });
+  if (!ref) return null;
+  return seenHead.get(seenKey(root, ref)) ?? revParse(root, `refs/remotes/origin/pr/${ref.number}`);
+}
+
+/**
  * A pull request's own base — where a symbol it deletes is measured from (owner, triage
  * 2026-09-19-deletion-fixes-review Q2). Null when the PR cannot be resolved: the caller
  * then measures from where the head left the trunk, which is right for every PR cut from

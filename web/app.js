@@ -1056,8 +1056,8 @@ class DashboardPage extends Component {
       backlogUrl(u), 'bad', 'the backlog is INCOMPLETE — these scopes could not be folded. Sync, then re-read.');
     add(bl && bl.due, 'bldue', plural(bl && bl.due, 'backlog deadline passed', 'backlog deadlines passed'),
       backlogUrl(u), 'bad', 'you said you would come back to these, and the date has passed');
-    add(bl && bl.woken, 'blwoke', plural(bl && bl.woken, 'backlogged finding woken by an edit', 'backlogged findings woken by an edit'),
-      backlogUrl(u), 'bad', 'somebody is editing the exact code the deferral was about');
+    add(bl && bl.woken, 'blwoke', plural(bl && bl.woken, 'backlogged finding woken by a code change', 'backlogged findings woken by a code change'),
+      backlogUrl(u), 'bad', 'the exact code the deferral was about changed on the default branch');
     add(bl && bl.live, 'bllive', plural(bl && bl.live, 'finding still true, undisposed', 'findings still true, undisposed'),
       backlogUrl(u), null, 'the witnessed code has not changed, and nobody has said anything about it');
     add(bl && bl.moved, 'blmoved', plural(bl && bl.moved, 'finding whose code moved', 'findings whose code moved'),
@@ -4669,19 +4669,21 @@ defineComponent('pr-inbox-page', PrInboxPage);
 
 // --- the finding backlog: debt that outlived its pull request ----------------
 /**
- * The six buckets, in the order somebody should work them.
+ * The buckets, in the order somebody should work them.
  *
  * Order is the design. `live` sits third rather than first on purpose: `due` and `woken`
  * are promises somebody already made and a date that has passed, which outranks work
- * nobody has looked at. `sleeping` is last and folded shut — it is not debt, and putting
- * it beside the debt would make an honest deferral read like a neglected finding.
+ * nobody has looked at. `inReview` and `sleeping` are last and folded shut — neither is
+ * debt, and putting them beside the debt would make ordinary review or an honest deferral
+ * read like a neglected finding.
  */
 const BACKLOG_BUCKETS = [
   ['due', 'past their deadline', 'You said you would come back to these. The deadline has passed.'],
-  ['woken', 'code moved under a backlogged finding', 'Somebody is editing the exact code the deferral was about — the case worth interrupting for.'],
-  ['live', 'still true, never disposed of', 'The witnessed code has not changed, so the claim still holds. Nobody has said anything about these.'],
+  ['woken', 'code moved under a backlogged finding', 'The exact code the deferral was about changed on the default branch — or, before it lands, on its change. The case worth interrupting for.'],
+  ['live', 'still true on the default branch, never disposed of', 'The witnessed code is on the default branch unchanged, so the claim still holds. Nobody has said anything about these.'],
   ['moved', 'code changed', 'The code moved after the finding was written. Re-read before believing it either way — it is not evidence of a fix.'],
   ['unjudgeable', 'nothing can judge these', 'No witness, or one this build cannot compare against, so no drift question can be asked at all. Re-evaluate asks an agent to attach one.'],
+  ['inReview', 'still in review', 'Not on the default branch yet, and its change still holds what it witnessed. Owed on its pull request or branch page — listed here, not counted.'],
   ['sleeping', 'backlogged, still asleep', 'A decision somebody made, with a deadline still ahead. Not debt — shown so it is visible, not so it is worked.'],
 ];
 
@@ -4893,7 +4895,7 @@ class BacklogPage extends Component {
     const out = [];
     for (const [key, label, blurb] of BACKLOG_BUCKETS) {
       const rows = this.visible(d[key] || []);
-      if (rows.length) out.push({ key, label, blurb, rows, fold: key === 'sleeping' });
+      if (rows.length) out.push({ key, label, blurb, rows, fold: key === 'sleeping' || key === 'inReview' });
     }
     return out;
   }

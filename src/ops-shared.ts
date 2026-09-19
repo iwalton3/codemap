@@ -26,7 +26,7 @@ import { join } from "node:path";
 import { ISO_DATE, parseAsOf, type BugWitness } from "./schema.js";
 import { witnessDrift, realDrift } from "./reviews.js";
 import { originSlug, headCommit, currentBranch, isAncestor, defaultBranch, revParse, trunkBase } from "./git.js";
-import { prIsMerged, prMergedAt, mergedAfter, landingOf } from "./pr.js";
+import { prIsMerged, prMergedAt, mergedAfter, landingOf, knownPrHead } from "./pr.js";
 import { fetchReviewThreads, type GhRunner } from "./pr-push.js";
 import { ensureSidecar, sync as sidecarSync, receive as sidecarReceive, healMerge, readManifests, checkPeers, currentManifest, sidecarLineage, isSameSidecar } from "./sidecar.js";
 import {
@@ -589,61 +589,21 @@ export async function materializeFindingScopes(root: string): Promise<{ scope: s
 }
 
 /**
- * The finding backlog — every open finding, sorted by what the CODE says about it.
+ * Where a finding is judged (owner, triage 2026-09-19-deletion-fixes-review Q9, verbatim:
+ * "for backlog it should reflect the state of the default branch. The general rule is if the
+ * finding is live in the default branch, it shows as debt, otherwise it shows as either in
+ * review or needing revalidation if the citations don't match").
  *
- * The queue that did not exist, and it is a projection rather than a record because
- * every bucket is derivable: nothing here is stored, so no fold can disagree with it and
- * there is nothing to keep in sync. Six buckets, and the split is the whole design —
- * "97 open findings" is one number nobody can act on, and these are six that name a
- * different next action each.
+ * - landed, or no ref to place it by → the default branch's TIP;
+ * - still in review → its change's CURRENT head (Q10): a branch's ref, a pull request's
+ *   fetched `origin/pr/N` or the head this process last resolved. No network here: a head
+ *   this clone cannot read is `undecidable`, never a guess.
  *
- * **Nothing here promotes anything to a bug.** A bug queue that everything drains into
- * is a bug queue people learn to ignore, which is the failure this was built to avoid
- * rather than cause; the backlog exists precisely so that promotion can stay a deliberate,
- * one-at-a-time act.
- *
- * Judged against the WORKING TREE, which is what `liveAnchors` reads. That is the honest
- * "now" for a local read — and it is why `woken` says somebody is editing the code
- * rather than claiming the trunk moved.
+ * The working tree is never consulted — an uncommitted local edit is not the state of the
+ * default branch. A backlog's witness is taken HERE too (`witnessAt`), or a witness from one
+ * place judged against another wakes the moment it is set.
  */
-export async function findingBacklog(root: string, opts: { asOf?: string } = {}) {
-  // Through `parseAsOf`, like every other `asOf` in the tree. The comparison below is
-  // LEXICOGRAPHIC, so a caller-supplied `"today"` — which is what an agent reaches for
-  // over MCP — makes every deadline read as passed and empties the sleeping bucket into
-  // `due`. `ISO_DATE` is shape-only and would admit `2026-02-30`; this round-trips it.
-  // THROWS on a value it cannot round-trip, exactly as every other `asOf` consumer does.
-  // A silent fallback would be the bug: the comparison below is lexicographic, so a
-  // caller-supplied `"today"` — what an agent reaches for over MCP — makes every deadline
-  // read as passed and empties the sleeping bucket into `due`. `.at` is the date part,
-  // so a date is compared against a date.
-  const asOf = opts.asOf ? parseAsOf(opts.asOf).at.slice(0, 10) : new Date().toISOString().slice(0, 10);
-
-  // MATERIALIZE FIRST — see `materializeFindingScopes`. Reading the table raw is how a
-  // version bump gets bypassed, which is the skew `MATERIALIZER_VERSION` 19 exists to
-  // prevent; this read did not do it, so the bump was necessary and not sufficient.
-  const blockedScopes = await materializeFindingScopes(root);
-
-  const all = (await readFindings(root, {})).findings.filter((f) =>
-    // A finding that BECAME A BUG has taken one of the two exits, and the obligation
-    // moved with it — `promotedToBug` leaves the state open on purpose so the pull
-    // request's history still shows it was raised there. Counting it as undisposed made
-    // "file bug" look like it did nothing: the row reloaded unchanged and `attention`
-    // did not move, and the only way to clear it was `resolve`, which asserts something
-    // nobody checked. The bug queue is where it is tracked now.
-    !isClosed(f.state) && !f.bug);
-
-  // One re-index of every witnessed file, not one per finding.
-  const store = await readAnchorStore(root).catch(() => null);
-  const fileOf = new Map((store?.anchors ?? []).map((a) => [a.id, a.file]));
-  const files = new Set<string>();
-  for (const f of all) {
-    for (const id of [f.witness?.anchorId, f.backlogged?.witness?.anchorId]) {
-      const file = id && fileOf.get(id);
-      if (file) files.add(file);
-    }
-  }
-  const idx = liveIndex(root, await liveAnchors(root, files));
-
+async function findingJudge(root: string, all: SharedFinding[]) {
   // Has this finding's code reached the trunk? LOCAL — `isAncestor` shells out once per
   // ref and memoises — because the question is about code, not about a pull request's
   // status field. That also gets the stacked case right, which the GitHub answer does
@@ -710,9 +670,127 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
     );
   };
 
-  // Once per finding: the row reports it and the buckets are judged by it.
+
+  const indexes = new Map<string, AnchorIndex | null>();
+  const indexOf = async (sha: string | null | undefined) => {
+    if (!sha) return null;
+    if (!indexes.has(sha)) {
+      const snap = await readSnapshot(root, sha).catch(() => null);
+      indexes.set(sha, snap ? liveIndex(root, new Map(snap.map((a) => [a.id, a]))) : null);
+    }
+    return indexes.get(sha)!;
+  };
+  const headOf = (f: SharedFinding): string | null => {
+    const branch = f.branch ?? branchOf(String(f.pr ?? ""));
+    if (branch) return revParse(root, `refs/heads/${branch}`) ?? revParse(root, `refs/remotes/origin/${branch}`);
+    return knownPrHead(root, String(f.pr ?? ""));
+  };
   const landedOf = new Map<string, Awaited<ReturnType<typeof landedAt>>>();
-  for (const f of all) landedOf.set(f.id, await landedAt(f));
+  const landing = async (f: SharedFinding) => {
+    if (!landedOf.has(f.id)) landedOf.set(f.id, await landedAt(f));
+    return landedOf.get(f.id)!;
+  };
+  // No default branch at all — a gitless universe, which is supported — leaves the working
+  // tree as the only state there is, so it is the judge there and nowhere else.
+  let work: AnchorIndex | undefined;
+  const workIdx = async () => {
+    if (!work) {
+      const store = await readAnchorStore(root).catch(() => null);
+      const fileOf = new Map((store?.anchors ?? []).map((a) => [a.id, a.file]));
+      const files = new Set<string>();
+      for (const f of all) {
+        for (const id of [f.witness?.anchorId, f.backlogged?.witness?.anchorId]) {
+          const file = id && fileOf.get(id);
+          if (file) files.add(file);
+        }
+      }
+      work = liveIndex(root, await liveAnchors(root, files));
+    }
+    return work;
+  };
+  const tipOrTrunk = async () => (trunk ? tipIdx ?? indexOf(trunk.sha) : workIdx());
+  const indexFor = async (f: SharedFinding, anchorId: string) => {
+    if ((await landing(f)) !== "open") return tipOrTrunk();
+    const head = headOf(f);
+    const at = await indexOf(head);
+    // Code the change never touched is trunk code, judged at the default branch whatever the
+    // change's state — the owner, asked while this was applied (2026-09-19): a finding on
+    // trunk code the branch never touched, then the default branch rewrites it → "Needs
+    // revalidation", not "In review". Untouched = the head holds the same body as where the
+    // change left the trunk.
+    const hereNow = at?.get(anchorId);
+    if (head && hereNow !== undefined) {
+      const was = (await indexOf(trunkBase(root, head)?.sha))?.get(anchorId);
+      if (was !== undefined && sameBody(was, hereNow)) return tipOrTrunk();
+    }
+    return at;
+  };
+  /** `same` / `moved` / `undecidable`, or null with no witness. A deletion's coming back is its drift. */
+  const drifted = async (f: SharedFinding, w?: BugWitness) => {
+    if (!w) return null;
+    const idx = await indexFor(f, w.anchorId);
+    if (!idx) return "undecidable" as const;
+    const changes = witnessDrift([w], idx);
+    if (!changes.length) return "same" as const;
+    return realDrift(changes).length ? "moved" as const : "undecidable" as const;
+  };
+  /** The anchor as it stands where `f` is judged — what a backlog's release condition compares against. */
+  const witnessAt = async (f: SharedFinding, anchorId: string): Promise<BugWitness | undefined> => {
+    const hash = (await indexFor(f, anchorId))?.get(anchorId);
+    return hash === undefined ? undefined : { anchorId, bodyHash: hash };
+  };
+  return { trunk, landing, drifted, witnessAt };
+}
+
+/**
+ * The finding backlog — every open finding, sorted by what the CODE says about it.
+ *
+ * The queue that did not exist, and it is a projection rather than a record because
+ * every bucket is derivable: nothing here is stored, so no fold can disagree with it and
+ * there is nothing to keep in sync. Six buckets, and the split is the whole design —
+ * "97 open findings" is one number nobody can act on, and these are six that name a
+ * different next action each.
+ *
+ * **Nothing here promotes anything to a bug.** A bug queue that everything drains into
+ * is a bug queue people learn to ignore, which is the failure this was built to avoid
+ * rather than cause; the backlog exists precisely so that promotion can stay a deliberate,
+ * one-at-a-time act.
+ *
+ * Judged against the DEFAULT BRANCH, or an unmerged finding against its change's current
+ * head — never the working tree. See `findingJudge` for the rule and whose it is.
+ */
+export async function findingBacklog(root: string, opts: { asOf?: string } = {}) {
+  // Through `parseAsOf`, like every other `asOf` in the tree. The comparison below is
+  // LEXICOGRAPHIC, so a caller-supplied `"today"` — which is what an agent reaches for
+  // over MCP — makes every deadline read as passed and empties the sleeping bucket into
+  // `due`. `ISO_DATE` is shape-only and would admit `2026-02-30`; this round-trips it.
+  // THROWS on a value it cannot round-trip, exactly as every other `asOf` consumer does.
+  // A silent fallback would be the bug: the comparison below is lexicographic, so a
+  // caller-supplied `"today"` — what an agent reaches for over MCP — makes every deadline
+  // read as passed and empties the sleeping bucket into `due`. `.at` is the date part,
+  // so a date is compared against a date.
+  const asOf = opts.asOf ? parseAsOf(opts.asOf).at.slice(0, 10) : new Date().toISOString().slice(0, 10);
+
+  // MATERIALIZE FIRST — see `materializeFindingScopes`. Reading the table raw is how a
+  // version bump gets bypassed, which is the skew `MATERIALIZER_VERSION` 19 exists to
+  // prevent; this read did not do it, so the bump was necessary and not sufficient.
+  const blockedScopes = await materializeFindingScopes(root);
+
+  const all = (await readFindings(root, {})).findings.filter((f) =>
+    // A finding that BECAME A BUG has taken one of the two exits, and the obligation
+    // moved with it — `promotedToBug` leaves the state open on purpose so the pull
+    // request's history still shows it was raised there. Counting it as undisposed made
+    // "file bug" look like it did nothing: the row reloaded unchanged and `attention`
+    // did not move, and the only way to clear it was `resolve`, which asserts something
+    // nobody checked. The bug queue is where it is tracked now.
+    !isClosed(f.state) && !f.bug);
+
+  const judge = await findingJudge(root, all);
+  const trunk = judge.trunk;
+
+  // Once per finding: the row reports it and the buckets are judged by it.
+  const landedOf = new Map<string, Awaited<ReturnType<typeof judge.landing>>>();
+  for (const f of all) landedOf.set(f.id, await judge.landing(f));
 
   const row = (f: SharedFinding) => ({
     id: f.id, pr: f.pr, target: f.target, severity: f.severity,
@@ -744,22 +822,10 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
     ...(f.assignment ? { assignment: { kind: f.assignment.kind, by: f.assignment.by.principal, at: f.assignment.at } } : {}),
     ...(f.witnessAttached ? { witnessAttached: f.witnessAttached } : {}),
   });
-  const drifted = (w?: BugWitness) => {
-    if (!w) return null;
-    // A deletion holds while the symbol is absent; its coming back is the drift.
-    if (w.deleted) {
-      const r = resolveAnchor(w.anchorId, [w.bodyHash], idx);
-      return r.at === "incomparable" ? "undecidable" as const : r.at === "found" ? "moved" as const : "same" as const;
-    }
-    const changes = witnessDrift([w], idx);
-    if (!changes.length) return "same" as const;
-    return realDrift(changes).length ? "moved" as const : "undecidable" as const;
-  };
-
   const b = {
     /** Carried, the date has passed. The release condition fired. */
     due: [] as ReturnType<typeof row>[],
-    /** Carried, and somebody is editing the exact code the decision was about. */
+    /** Carried, and the exact code the decision was about changed where it is judged (`findingJudge`). */
     woken: [] as ReturnType<typeof row>[],
     /** Carried and still asleep — not debt, and deliberately not in `attention`. */
     sleeping: [] as ReturnType<typeof row>[],
@@ -767,6 +833,11 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
     live: [] as ReturnType<typeof row>[],
     /** Not backlogged, code moved: re-validate. The existing `possiblyFixed` question. */
     moved: [] as ReturnType<typeof row>[],
+    /**
+     * Not landed, and its change's head still holds what it witnessed: ordinary review, owed
+     * on its pull request or branch page. Listed, and deliberately not in `attention` (Q11).
+     */
+    inReview: [] as ReturnType<typeof row>[],
     /** No witness, or one this build cannot compare. Nothing can judge these — `rewitness_finding` repairs them. */
     unjudgeable: [] as ReturnType<typeof row>[],
   };
@@ -780,12 +851,12 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
       // on, and a record stored with a full timestamp compares as greater than the date it
       // names — so it slept a day past its own deadline.
       if (f.backlogged.until.slice(0, 10) <= asOf) b.due.push(row(f));
-      else if (drifted(f.backlogged.witness) === "moved") b.woken.push(row(f));
+      else if (await judge.drifted(f, f.backlogged.witness) === "moved") b.woken.push(row(f));
       else b.sleeping.push(row(f));
       continue;
     }
-    const d = drifted(f.witness);
-    if (d === "same") b.live.push(row(f));
+    const d = await judge.drifted(f, f.witness);
+    if (d === "same") (landedOf.get(f.id) === "open" ? b.inReview : b.live).push(row(f));
     else if (d === "moved") b.moved.push(row(f));
     else b.unjudgeable.push(row(f));
   }
@@ -984,6 +1055,20 @@ export async function witnessNowFor(root: string, id: string, anchorId?: string)
 }
 
 /**
+ * A backlog's witness: the finding's anchor as it stands WHERE THE FINDING IS JUDGED
+ * (`findingJudge`) — the default branch once landed, its change's head before. A deletion's
+ * state is its absence, which the filing witness already states. Undefined when there is
+ * nothing to read there; the deadline is then the only release condition.
+ */
+export async function backlogWitnessFor(root: string, id: string): Promise<BugWitness | undefined> {
+  const f = (await readFindings(root, {})).findings.find((x) => x.id === id);
+  if (!f) return undefined;
+  if (f.witness?.deleted) return { ...f.witness };
+  const anchorId = f.witness?.anchorId ?? (f.target.kind === "anchor" ? f.target.id : undefined);
+  return anchorId ? (await findingJudge(root, [f])).witnessAt(f, anchorId) : undefined;
+}
+
+/**
  * Backlog a finding: real, not now, and it comes back.
  *
  * The verb that did not exist. A finding neither severe enough to hold a pull request
@@ -996,8 +1081,9 @@ export async function witnessNowFor(root: string, id: string, anchorId?: string)
  * **The witness is snapshotted HERE, at grant time, and that is the whole subtlety.**
  * `f.witness` is from filing time, and carrying normally follows an investigation — so a
  * release condition keyed on the filing witness fires the moment it is granted, on code
- * that moved days ago. This one re-reads the anchor now, so drift against it means
- * somebody is editing the exact code the decision was about.
+ * that moved days ago. This one re-reads the anchor now, where the listing will judge it
+ * (`backlogWitnessFor`), so drift against it means the exact code the decision was about
+ * changed there.
  *
  * Principal-only, and the FOLD enforces that as well (see `finding.backlogged`). The refusal
  * here exists to produce a sentence rather than a silently dropped event.
@@ -1025,8 +1111,7 @@ export const backlogFinding = homed(async function backlogFinding(
   // is strictly what an acknowledgement has, so nothing is lost by comparison.
   const found = (await readFindings(root, { pr })).findings.find((x) => x.id === id);
   if (!found) return { error: `no finding "${id}" on ${pr}` };
-  const anchorId = found.witness?.anchorId ?? (found.target.kind === "anchor" ? found.target.id : undefined);
-  const witness = found.witness?.deleted ? { ...found.witness } : anchorId ? await witnessNow(root, anchorId) : undefined;
+  const witness = await backlogWitnessFor(root, id);
 
   await backlogFindingEvent(b.cfg.path, prKey(b.cfg, pr), b.actor, id, { until, reason: input.reason.trim(), witness, ref: input.ref });
   const mz = await materializeFindings(root, b.cfg, pr);
