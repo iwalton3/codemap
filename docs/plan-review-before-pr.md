@@ -140,6 +140,11 @@ people filing on one branch compute one scope with nothing to agree on. The hash
 escaping and 255-byte problems from the refutation. Case is not folded, and a branch named
 `pr-17` cannot collide with PR 17.
 
+**One spelling per branch** (owner, triage `2026-09-19-branch-review-round`): `refs/heads/x`
+and `origin/x` both key as `x`; another remote, `HEAD`, a sha or a revision expression is
+refused with "pass the branch name". A local branch spelled as given wins over stripping.
+`normalizeBranch` in `src/review-target.ts` is the one place, used by every `branch` argument.
+
 **B2. Scopes.** As planned. Existing `pr-<n>` scopes are untouched. A branch finding's
 `created` event carries `branch`, because the scope is a hash, and the projection keys the row
 by it.

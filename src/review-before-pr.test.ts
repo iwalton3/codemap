@@ -16,7 +16,7 @@ import { reportDefect } from "./ops/defect.js";
 import { init, reviewQueue } from "./ops.js";
 import { readFindings, readAnchorStore } from "./store.js";
 import { readSnapshot } from "./snapshots.js";
-import { findingKeyScope, branchKey } from "./review-target.js";
+import { findingKeyScope, branchKey, normalizeBranch, assertFindingKey } from "./review-target.js";
 import { foldReviewLinks } from "./shared-reviews.js";
 import type { LogEvent } from "./eventlog.js";
 import { discard } from "./test-tmp.js";
@@ -158,5 +158,59 @@ test("a pull request is linked only when gh says its head is in this repository"
       "a fork, an unknown origin, and a git-derived meta are never linked");
     await observePrBranch(u.root, { number: 23, headRef: "feature", source: "gh", crossRepo: false });
     assert.deepEqual(linkedBranches(u.root, 23), ["feature"]);
+  } finally { u.cleanup(); }
+});
+
+const gitIn = (cwd: string, ...a: string[]) => {
+  const r = spawnSync("git", a, { cwd, encoding: "utf8" });
+  if (r.status !== 0) throw new Error(`git ${a.join(" ")}: ${r.stderr}`);
+  return r.stdout.trim();
+};
+
+test("a branch name has one spelling: refs/heads/ and origin/ are stripped, revisions and other remotes refused", async () => {
+  const u = await worktreeRepo(false);
+  try {
+    gitIn(u.root, "update-ref", "refs/remotes/origin/only-remote", u.featureSha);
+    gitIn(u.root, "update-ref", "refs/remotes/upstream/feature", u.featureSha);
+    const name = (raw: string) => { const n = normalizeBranch(u.root, raw); return "name" in n ? n.name : "ERR"; };
+    assert.equal(name("feature"), "feature");
+    assert.equal(name("refs/heads/feature"), "feature");
+    assert.equal(name("origin/only-remote"), "only-remote", "a reviewer who never checked the branch out");
+    assert.equal(name("refs/remotes/origin/only-remote"), "only-remote");
+    assert.equal(name("merged-and-deleted"), "merged-and-deleted", "existence is not required to READ a branch");
+    for (const bad of ["HEAD", "feature~1", "HEAD~1", u.featureSha, "upstream/feature", "main@{1}"]) {
+      assert.equal(name(bad), "ERR", bad);
+    }
+    assert.throws(() => assertFindingKey(branchKey("HEAD~1")));
+    assert.doesNotThrow(() => assertFindingKey(branchKey("feature/x")));
+  } finally { u.cleanup(); }
+});
+
+for (const withSidecar of [true, false]) {
+  test(`every spelling of one branch files into one review, and a revision is refused (${withSidecar ? "sidecar" : "no sidecar"})`, async () => {
+    const u = await worktreeRepo(withSidecar);
+    try {
+      gitIn(u.root, "update-ref", "refs/remotes/origin/feature", u.featureSha);
+      for (const spelling of ["feature", "refs/heads/feature", "origin/feature"]) {
+        const out = await file(u.root, "src/filter.ts#IdentifierFilter.matches", spelling);
+        assert.equal(out.error, undefined, `${spelling}: ${out.error}`);
+        assert.equal(out.branch, "feature", spelling);
+      }
+      assert.equal((await readFindings(u.root, { pr: branchKey("feature") })).findings.length, 3);
+      for (const bad of ["HEAD", "HEAD~1", u.featureSha]) {
+        assert.match(String((await file(u.root, "src/filter.ts#IdentifierFilter.matches", bad)).error), /not a branch name/, bad);
+      }
+    } finally { u.cleanup(); }
+  });
+}
+
+test("link_review stores the normalized name", async () => {
+  const u = await worktreeRepo(false);
+  try {
+    const shared = await import("./ops-shared.js");
+    const { linkedBranches } = await import("./store.js");
+    await shared.linkReviewOp(u.root, "12", "refs/heads/feature");
+    assert.deepEqual(linkedBranches(u.root, 12), ["feature"]);
+    assert.match(String((await shared.linkReviewOp(u.root, "12", "HEAD") as Record<string, unknown>).error), /not a branch name/);
   } finally { u.cleanup(); }
 });

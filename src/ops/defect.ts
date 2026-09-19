@@ -31,7 +31,7 @@ import { requireActor, isAgentActor } from "../identity.js";
 import { resolveSidecar } from "../sidecar-config.js";
 import { mintId } from "../eventlog.js";
 import { headCommit, revParse, worktreeForBranch, uncommittedPaths } from "../git.js";
-import { branchKey } from "../review-target.js";
+import { assertFindingKey, branchKey, normalizeBranch } from "../review-target.js";
 import { writeLocalFinding } from "../store.js";
 import { resolveRefs } from "./shared.js";
 import { witnessAt } from "./annotations.js";
@@ -100,9 +100,11 @@ export async function reportDefect(root: string, input: DefectInput) {
   let ref = input.ref;
   let branch: string | undefined;
   if (ctx.kind === "branch") {
-    branch = String(ctx.branch ?? "").trim();
-    if (!branch) return { error: "which branch? `context.branch` is what scopes the finding" };
-    const sha = revParse(root, `refs/heads/${branch}`) ?? revParse(root, branch);
+    if (!String(ctx.branch ?? "").trim()) return { error: "which branch? `context.branch` is what scopes the finding" };
+    const n = normalizeBranch(root, String(ctx.branch));
+    if ("error" in n) return n;
+    branch = n.name;
+    const sha = revParse(root, `refs/heads/${branch}`) ?? revParse(root, `refs/remotes/origin/${branch}`);
     if (!sha) return { error: `no branch "${branch}" in this repository` };
     key = branchKey(branch);
     ref = sha;
@@ -179,6 +181,7 @@ export async function reportDefect(root: string, input: DefectInput) {
     corroboration: [], thread: [], revisions: [],
   };
   void headCommit;
+  try { assertFindingKey(key); } catch (e) { return { error: (e as Error).message }; }
   await writeLocalFinding(root, finding, key);
   return {
     ok: true, id: finding.id, filedAs: "finding", ...(branch ? { branch } : { pr: key }), shared: false,

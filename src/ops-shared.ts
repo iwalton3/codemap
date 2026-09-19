@@ -18,7 +18,7 @@ import type { ScopeStatus, ScopeDiagnostic, LogEvent } from "./eventlog.js";
 import { scopesOnDisk, readScopeChecked, writerFor, rotateWriter, acknowledgeScope } from "./eventlog.js";
 import { reviewLinksProjection, findingsProjection, docsProjection, notesProjection, walkthroughsProjection, triageProjection, docsByNode, projectionFor } from "./shared-projections.js";
 import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
-import { findingKeyScope, branchKey, branchOf } from "./review-target.js";
+import { findingKeyScope, branchKey, branchOf, normalizeBranch } from "./review-target.js";
 import { reviewScope, foldReviewLinks, linkReview } from "./shared-reviews.js";
 import { resolveSidecar, scopeFor, sidecarIdentity, inUniverse, checkSidecarBinding, type SidecarConfig } from "./sidecar-config.js";
 import { existsSync } from "node:fs";
@@ -1388,9 +1388,10 @@ const cachedFindings = (root: string, cfg: { path: string; universe: string }, p
  */
 export async function linkReviewOp(root: string, pr: number | string, branch: string, via: Via = {}) {
   const key = String(pr).trim().replace(/^#/, "");
-  const name = String(branch ?? "").trim();
   if (!/^\d+$/.test(key)) return { error: `"${pr}" is not a pull request number` };
-  if (!name) return { error: "which branch?" };
+  const n = normalizeBranch(root, String(branch ?? ""));
+  if ("error" in n) return n;
+  const name = n.name;
   if (linkedBranches(root, key).includes(name)) return { ok: true, pr: key, branch: name, already: true };
   if (!resolveSidecar(root)) {
     writeLocalLink(root, key, name);

@@ -14,6 +14,7 @@
 
 import * as ops from "./ops.js";
 import * as shared from "./ops-shared.js";
+import { branchKeyFor } from "./review-target.js";
 import { markAgentSession, markObservedClient } from "./identity.js";
 import * as multi from "./multi.js";
 import { loadWorkspace, type Workspace, type Universe } from "./workspace.js";
@@ -929,7 +930,7 @@ const tools: Tool[] = [
       includeAnswered: Boolean(a.includeAnswered),
       brief: a.brief !== false,
       limit: a.limit as number | undefined, offset: a.offset as number | undefined,
-      pr: (a.branch ? `branch:${a.branch}` : a.pr) as string | undefined, tier: a.tier as string | undefined,
+      pr: (a.branch ? branchKeyFor(c.universe.path, String(a.branch)) : a.pr) as string | undefined, tier: a.tier as string | undefined,
       remediation: a.remediation as string | undefined,
       disposition: a.disposition as string | undefined, publishState: a.publishState as string | undefined,
     }),
@@ -1037,7 +1038,7 @@ const tools: Tool[] = [
       limit: { type: "number", description: "How many to return. The answer says `shown`, `more` and `nextOffset` when it is a page rather than the whole list." },
       offset: { type: "number", description: "Where to start, for the next page." },
     }),
-    handler: async (a, c) => (!a.pr && !a.branch) ? { error: "pass `pr`, or `branch` for a branch with no pull request yet" } : shared.sharedFindings(c.universe.path, a.branch ? `branch:${a.branch}` : a.pr, {
+    handler: async (a, c) => (!a.pr && !a.branch) ? { error: "pass `pr`, or `branch` for a branch with no pull request yet" } : shared.sharedFindings(c.universe.path, a.branch ? branchKeyFor(c.universe.path, String(a.branch)) : a.pr, {
       queue: !!a.queue, tier: a.tier as never, remediation: a.remediation as never, rerated: !!a.rerated,
       // TERSE BY DEFAULT for an agent. The web calls the same op and passes nothing,
       // so it keeps the full shape its expanded rows render from.
