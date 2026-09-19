@@ -69,9 +69,28 @@ interface Tool {
   description: string;
   inputSchema: Record<string, unknown>;
   /** Writes to `.codemap/` — run under the cross-process write lock. */
-  mutates?: boolean;
+  /** A function when only some calls write: `check_stale` with `at` is read-only. */
+  mutates?: boolean | ((args: any) => boolean);
   handler: (args: any, ctx: Ctx) => Promise<unknown>;
 }
+
+/**
+ * `at` on a read tool: answer at a commit instead of the working tree. The agent in a
+ * worktree names its BRANCH; the answer carries `at: {ref, sha}` and lists the uncommitted
+ * files it did not include.
+ */
+const AT = {
+  type: "string",
+  description: "Answer at this commit (a branch, tag or sha) instead of the working tree — how an agent in a git worktree reads its own branch. Built from git objects, no checkout. The answer's `at` names the commit it read and lists any uncommitted files that branch's worktree has, which it does not include.",
+};
+const DIRTY = {
+  type: "boolean",
+  description: "With `at` a branch: also read that branch's worktree's UNCOMMITTED files, laid over the commit. Review state stays the commit's — review does not cover uncommitted changes.",
+};
+/** For a derived view, which is generated from the working tree only and says so rather than answer about the wrong tree. */
+const refuseAt = (a: { at?: string }) => a.at
+  ? { error: "this view is generated from the working tree's analyzer output and cannot answer at a commit yet; `at` is supported by context, search, get_node, get_anchor and check_stale" }
+  : null;
 
 // Build an object schema; `perUniverse` appends the optional universe selector.
 const obj = (
@@ -225,8 +244,8 @@ const tools: Tool[] = [
   {
     name: "context",
     description: "ANSWER-FIRST: before exploring code, ask what codemap already knows about it. Given refs (files, dirs, `file#Symbol`, `file:line`, or anchor ids), returns a `verdict` (covered/partial/stale/gap), the covering docs with trust level, flows/open-bugs on that code, and the still-undocumented `gaps`. Read `trusted` docs instead of re-reading the code; explore only the gaps.\n\nWith a sidecar configured it also answers for the TEAM: `sharedDocs` is what colleagues have written about this code, and anything they cover is not reported as a gap. Those are not in your store — read them with `shared_docs` rather than relying on them unseen, and do not write a second doc about code somebody already documented.",
-    inputSchema: obj({ refs: { type: "array", items: { type: "string" }, description: "Files, dirs, file#Symbol, file:line, or anchor ids — the code you're about to work in." } }, ["refs"]),
-    handler: (a, c) => ops.context(c.universe.path, a.refs),
+    inputSchema: obj({ refs: { type: "array", items: { type: "string" }, description: "Files, dirs, file#Symbol, file:line, or anchor ids — the code you're about to work in." }, at: AT, dirty: DIRTY }, ["refs"]),
+    handler: (a, c) => ops.context(c.universe.path, a.refs, { at: a.at, dirty: a.dirty }),
   },
   {
     name: "lint_summaries",
@@ -270,10 +289,12 @@ const tools: Tool[] = [
   },
   {
     name: "check_stale",
-    description: "Staleness pass for a universe: which anchors changed/vanished since baseline and which docs they flag. Also auto re-inits the anchor index if the checked-out branch changed since it was baselined (a branch switch = different code) — the result then includes `rebaselined`.",
-    inputSchema: obj({}),
-    mutates: true,
-    handler: (_a, c) => ops.checkStale(c.universe.path),
+    description: "Staleness pass for a universe: which anchors changed/vanished since baseline and which docs they flag. Also auto re-inits the anchor index if the checked-out branch changed since it was baselined (a branch switch = different code) — the result then includes `rebaselined`.\n\nWith `at` (a branch, typically your worktree's) it is a READ-ONLY question about that commit instead: the symbols it changed against `base` (default: the merge-base with the default branch), the docs citing them that are not fresh there (`gate.pass` is the spec playbook's \"zero stale among the anchors this PR touched\"), and which changed symbols carry a code-review mark that still holds there (`reviews.reviewed`), one the change moved (`stale`), or none (`unreviewed`). It never rebaselines or touches the working tree's index.",
+    inputSchema: obj({ at: AT, base: { type: "string", description: "With `at`: the commit or branch it will merge into. Default: the merge-base with the default branch." }, dirty: { type: "boolean", description: "Refused: the gate is judged at a commit. Commit, then ask." } }),
+    mutates: (a) => !a.at,
+    handler: async (a, c) => a.dirty
+      ? { error: "check_stale is judged at a commit — the spec playbook's gate is the PR head — so it does not read uncommitted changes. Commit them, then ask again; `context`/`get_anchor` take `dirty` for reading them." }
+      : a.at ? ops.staleAt(c.universe.path, String(a.at), a.base) : ops.checkStale(c.universe.path),
   },
   {
     name: "reindex",
@@ -328,8 +349,10 @@ const tools: Tool[] = [
   {
     name: "search",
     description: "Search anchors, logical nodes, BUGS and FINDINGS for a substring. Node hits carry a trust level (trusted / unverified / stale) from freshness × review — prefer a `trusted` doc over re-reading code. Bugs and findings match on their id as well as their prose, because an id is the thing a person actually holds in their head — off a PR comment or a teammate's message; open ones sort ahead of closed. Findings also match their target anchor id and their discussion thread, and CLOSED ones are returned on purpose: \"was this ever reported?\" is what search is for, and a refuted finding is often the best answer — somebody already looked and their reasoning is in the record. A hit's `state` field, and its `backlogged` deadline where it has one, say whether it is still live. Set allUniverses:true to search every universe.",
-    inputSchema: obj({ query: { type: "string" }, limit: { type: "number" }, allUniverses: { type: "boolean" } }, ["query"]),
-    handler: (a, c) => (a.allUniverses ? multi.searchAll(ws, a.query, a.limit) : ops.search(c.universe.path, a.query, a.limit)),
+    inputSchema: obj({ query: { type: "string" }, limit: { type: "number" }, allUniverses: { type: "boolean" }, at: AT, dirty: DIRTY }, ["query"]),
+    handler: async (a, c) => (a.allUniverses
+      ? (a.at ? { error: "`at` names a commit in one universe; drop `allUniverses` to use it" } : multi.searchAll(ws, a.query, a.limit))
+      : ops.search(c.universe.path, a.query, a.limit, { at: a.at, dirty: a.dirty })),
   },
   {
     name: "get_node",
@@ -337,14 +360,16 @@ const tools: Tool[] = [
     inputSchema: obj({
       id: { type: "string" },
       compact: { type: "boolean", description: "Documentation view: drop per-anchor review/viewed/severity/triage and all annotations." },
+      at: AT,
+      dirty: DIRTY,
     }, ["id"]),
-    handler: (a, c) => multi.getNodeEnriched(ws, c.universe.id, a.id, { compact: !!a.compact }),
+    handler: (a, c) => multi.getNodeEnriched(ws, c.universe.id, a.id, { compact: !!a.compact, at: a.at, dirty: a.dirty }),
   },
   {
     name: "get_anchor",
-    description: "Read an anchor with its source code, citing nodes, related bugs, annotations, and review state. Use before documenting or filing a bug.\n\nThe source is the WORKING TREE's, and the response says so (`sourceRef: \"@work\"`, `sourceCommit`). During a pull-request review that is a THIRD version — not the PR's head, and not whatever branch you were last reading. An anchor id carries no ref (the same path+symbol is one anchor on every branch), so if you are reviewing a PR, get its bodies from `pr_packet`, and check `sourceCommit` before quoting this one as evidence.",
-    inputSchema: obj({ id: { type: "string" } }, ["id"]),
-    handler: (a, c) => ops.getAnchor(c.universe.path, a.id),
+    description: "Read an anchor with its source code, citing nodes, related bugs, annotations, and review state. Use before documenting or filing a bug.\n\nThe source is the WORKING TREE's, and the response says so (`sourceRef: \"@work\"`, `sourceCommit`). During a pull-request review that is a THIRD version — not the PR's head, and not whatever branch you were last reading. An anchor id carries no ref (the same path+symbol is one anchor on every branch), so if you are reviewing a PR, get its bodies from `pr_packet`, and check `sourceCommit` before quoting this one as evidence. With `at`, the source is that commit's instead.",
+    inputSchema: obj({ id: { type: "string" }, at: AT, dirty: DIRTY }, ["id"]),
+    handler: (a, c) => ops.getAnchor(c.universe.path, a.id, { at: a.at, dirty: a.dirty }),
   },
   {
     name: "flows",
@@ -361,20 +386,20 @@ const tools: Tool[] = [
   {
     name: "event_matrix",
     description: "Event wiring matrix for an event-sourced graph: events as rows, the aggregates/projections they feed as columns (cells = folds/projects), plus per-event emitter count and review state. Surfaces ORPHAN events (folded/projected by nothing) as blank rows — the audit view for checking every event is wired into an aggregate + read model.",
-    inputSchema: obj({}),
-    handler: (_a, c) => ops.eventMatrix(c.universe.path),
+    inputSchema: obj({ at: AT }),
+    handler: async (a, c) => refuseAt(a) ?? ops.eventMatrix(c.universe.path),
   },
   {
     name: "pipeline_graph",
     description: "Layered event-pipeline graph: the chain command → handler → event → aggregate → projection, one column per role, nodes ordered within columns (barycenter) to reduce edge crossings. The whole-application graph view. Optional `domain` narrows the left columns to one subsystem. Returns nodes with {layer,row} coordinates + edges.",
-    inputSchema: obj({ domain: { type: "string" } }),
-    handler: (a, c) => ops.pipelineGraph(c.universe.path, { domain: a.domain }),
+    inputSchema: obj({ domain: { type: "string" }, at: AT }),
+    handler: async (a, c) => refuseAt(a) ?? ops.pipelineGraph(c.universe.path, { domain: a.domain }),
   },
   {
     name: "state_map",
     description: "Per-aggregate state machines: states (status-enum members) and transition nodes, with BFS layers from the initial states for layout. A transition skeleton `mtr-<agg>-<event>` is analyzer-generated; its SOURCE STATES and GUARDS are enrichment you author — a versioned node whose id is EXACTLY the skeleton id minus the leading 'm' (`mtr-hold-approved` → `tr-hold-approved`; copy it, don't re-derive the slug) via `document` (type 'transition', citing the Apply/guard anchors) plus `connect` edges: `from_state` (state → transition) for each source, and `transitions_to` (transition → state) when you derive a dynamic transition's target. `unenriched` per machine is the work queue: transitions with no enrichment or whose enrichment went stale when code drifted. Machines can also be FULLY AUTHORED for lifecycles the static pass can't see (handler-mutated documents, collection-item children like card holds): `document` state/transition nodes (types 'state'/'transition', citing the enum + the mutating code) and `connect` the same edge vocabulary — `state_of`/`transition_of` tether them to any node standing for the machine's owner, and the machine appears here like a generated one. Optional `aggregate` filters to one machine (id or title).",
-    inputSchema: obj({ aggregate: { type: "string" } }),
-    handler: (a, c) => ops.stateMap(c.universe.path, { aggregate: a.aggregate }),
+    inputSchema: obj({ aggregate: { type: "string" }, at: AT }),
+    handler: async (a, c) => refuseAt(a) ?? ops.stateMap(c.universe.path, { aggregate: a.aggregate }),
   },
   {
     name: "subgraph",
@@ -1802,7 +1827,8 @@ async function handle(msg: any): Promise<void> {
       }
       try {
         const run = () => tool.handler(args, { ws, universe });
-        const out = tool.mutates ? await withLock(universe.path, run) : await run();
+        const locked = typeof tool.mutates === "function" ? tool.mutates(args) : tool.mutates;
+        const out = locked ? await withLock(universe.path, run) : await run();
         send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] } });
       } catch (e: any) {
         send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: "Error: " + (e?.message ?? String(e)) }], isError: true } });

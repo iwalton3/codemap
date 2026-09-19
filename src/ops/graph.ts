@@ -10,6 +10,7 @@ import { readAnchorStore, loadNodes, readGraph, readAnnotations } from "../store
 import { reviewStatesFor, deriveCodeReview, type ReviewPair, type DerivedCodeReview } from "../reviews.js";
 import { reviewTriageFor, coverageFor as triageCoverageFor, rollupCoverage } from "../triage.js";
 import { langFor, anchorBrief, trustOf, vouchOf, loadNodesShared} from "./shared.js";
+import { viewAt, atHeader } from "./at.js";
 
 /**
  * Derived code review per node — a node reads code-reviewed only when every code
@@ -276,9 +277,11 @@ export async function eventMatrix(root: string) {
  * it is five short fields, and dropping it would trade one fat call for N
  * `get_anchor` calls — a loss on the very axis this exists to improve.
  */
-export async function getNode(root: string, id: string, opts: { compact?: boolean } = {}) {
+export async function getNode(root: string, id: string, opts: { compact?: boolean; at?: string; dirty?: boolean } = {}) {
+  const view = opts.at ? await viewAt(root, opts.at, { dirty: opts.dirty }) : undefined;
+  if (view && "error" in view) return view;
   const [nodes, graph, store, annStore] = await Promise.all([
-    loadNodesShared(root), readGraph(root), readAnchorStore(root),
+    view ? view.nodes : loadNodesShared(root), readGraph(root), view ? { anchors: view.anchors } : readAnchorStore(root),
     opts.compact ? { annotations: [] as Annotation[] } : readAnnotations(root),
   ]);
   const node = nodes.find((n) => n.id === id);
@@ -290,7 +293,7 @@ export async function getNode(root: string, id: string, opts: { compact?: boolea
   const rt = await reviewTriageFor(root, [
     { kind: "node", id },
     ...node.anchors.map((aid) => ({ kind: "anchor" as const, id: aid })),
-  ]);
+  ], { ref: view?.sha });
   const nodeRt = rt.get(`node:${id}`)!;
   const resolvedAnchors = node.anchors.map((aid) => {
     const e = rt.get(`anchor:${aid}`);
@@ -310,6 +313,7 @@ export async function getNode(root: string, id: string, opts: { compact?: boolea
   const vouch = vouchOf(node.status, review);
   if (opts.compact) {
     return {
+      ...(view ? atHeader(view) : {}),
       ...node,
       compact: true as const,
       resolvedAnchors: resolvedAnchors.map((a) => {
@@ -324,6 +328,7 @@ export async function getNode(root: string, id: string, opts: { compact?: boolea
     };
   }
   return {
+    ...(view ? atHeader(view) : {}),
     ...node,
     resolvedAnchors,
     edges,

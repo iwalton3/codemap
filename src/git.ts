@@ -219,6 +219,38 @@ export function repoPrefix(root: string): string {
   return p;
 }
 
+/**
+ * The working tree that has `branch` checked out — a linked worktree or the main one —
+ * or null when none does. Asked of any checkout of the repository: worktrees share
+ * `refs/heads`, so the main checkout can find an agent's worktree without its path.
+ */
+export function worktreeForBranch(root: string, branch: string): string | null {
+  const r = git(root, ["worktree", "list", "--porcelain"]);
+  if (!r.ok) return null;
+  const want = `branch refs/heads/${branch.replace(/^refs\/heads\//, "")}`;
+  for (const block of r.out.split(/\n\n+/)) {
+    const lines = block.split("\n");
+    if (lines.includes(want)) return lines.find((l) => l.startsWith("worktree "))?.slice("worktree ".length) ?? null;
+  }
+  return null;
+}
+
+/** Repo-relative paths with uncommitted changes in a working tree, untracked files included. */
+export function uncommittedPaths(dir: string): string[] {
+  const r = spawnSync(gitBin(), ["status", "--porcelain", "-z", "--untracked-files=all"], { cwd: dir, encoding: "utf8" });
+  if (r.status !== 0) return [];
+  const out: string[] = [];
+  const parts = (r.stdout ?? "").split("\0");
+  for (let i = 0; i < parts.length; i++) {
+    const e = parts[i]!;
+    if (e.length < 4) continue;
+    out.push(e.slice(3));
+    // A rename or copy carries its ORIGINAL path as the next field.
+    if (e[0] === "R" || e[0] === "C") i++;
+  }
+  return out;
+}
+
 /** The merge-base of two refs — a PR's true base, which is rarely the base branch tip. */
 export function mergeBase(root: string, a: string, b: string): string | null {
   const r = git(root, ["merge-base", a, b]);

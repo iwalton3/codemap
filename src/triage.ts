@@ -356,8 +356,8 @@ export async function triageFor(root: string, targets: Target[], opts: { ref?: s
   return new Map([...m].map(([k, v]) => [k, v.triage]));
 }
 
-export async function triageStatus(root: string, target: Target): Promise<TriageInfo> {
-  return (await triageFor(root, [target])).get(`${target.kind}:${target.id}`)!;
+export async function triageStatus(root: string, target: Target, opts: { ref?: string } = {}): Promise<TriageInfo> {
+  return (await triageFor(root, [target], opts)).get(`${target.kind}:${target.id}`)!;
 }
 
 // Attention rank for "what's the worst thing outstanding." Untriaged escalates to

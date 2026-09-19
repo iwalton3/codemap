@@ -13,6 +13,7 @@ import { resolveAnchorRefs } from "../refs.js";
 import { reviewStatus, reviewStatesFor, anchorReviewMap, deriveCodeReview, type ReviewPair } from "../reviews.js";
 import { triageStatus } from "../triage.js";
 import { langFor, anchorBrief, type Trust, trustOf, vouchOf, coverageFor, loadNodesShared} from "./shared.js";
+import { viewAt, atHeader } from "./at.js";
 
 // ---------------------------------------------------------------------------
 // Reading the graph & code
@@ -152,9 +153,11 @@ export async function resolveId(
   return "match" in r ? { match: r.match, ambiguous: [] } : { match: null, ambiguous: r.ambiguous };
 }
 
-export async function search(root: string, query: string, limit = 30) {
+export async function search(root: string, query: string, limit = 30, opts: { at?: string; dirty?: boolean } = {}) {
   const q = query.toLowerCase();
-  const [store, nodes] = await Promise.all([readAnchorStore(root), loadNodesShared(root)]);
+  const view = opts.at ? await viewAt(root, opts.at, { dirty: opts.dirty }) : undefined;
+  if (view && "error" in view) return view;
+  const [store, nodes] = view ? [{ anchors: view.anchors }, view.nodes] : await Promise.all([readAnchorStore(root), loadNodesShared(root)]);
   const anchors = store.anchors
     .filter((a) => a.symbolPath.join(".").toLowerCase().includes(q) || a.file.toLowerCase().includes(q))
     .slice(0, limit)
@@ -169,7 +172,7 @@ export async function search(root: string, query: string, limit = 30) {
     .slice(0, limit);
   // Surface the trust ladder inline so a searching agent can tell a trusted answer
   // from a stale guess without a second round-trip.
-  const reviews = await reviewStatesFor(root, matched.map((n) => ({ kind: "node" as const, id: n.id })));
+  const reviews = await reviewStatesFor(root, matched.map((n) => ({ kind: "node" as const, id: n.id })), { ref: view?.sha });
   const nodeHits = matched.map((n) => {
     const rp = reviews.get(`node:${n.id}`);
     const review = { logical: rp?.logical.state ?? "unreviewed", code: rp?.code.state ?? "unreviewed" };
@@ -208,7 +211,7 @@ export async function search(root: string, query: string, limit = 30) {
        */
       ...(b.backlogged ? { backlogged: { until: b.backlogged.until, reason: b.backlogged.reason } } : {}),
     }));
-  return { anchors, nodes: nodeHits, bugs, findings: await searchFindings(root, q, limit) };
+  return { ...(view ? atHeader(view) : {}), anchors, nodes: nodeHits, bugs, findings: await searchFindings(root, q, limit) };
 }
 
 /**
@@ -284,8 +287,10 @@ async function searchFindings(root: string, q: string, limit: number) {
  * anchors (the gaps to fill). Lets the agent skip re-exploration when a trusted
  * doc already answers, and focus its reading on the gaps when it doesn't.
  */
-export async function context(root: string, refs: string[]) {
-  const { store, nodes, deciding: decidingNodes, result, verdict } = await coverageFor(root);
+export async function context(root: string, refs: string[], opts: { at?: string; dirty?: boolean } = {}) {
+  const atView = opts.at ? await viewAt(root, opts.at, { dirty: opts.dirty }) : undefined;
+  if (atView && "error" in atView) return atView;
+  const { store, nodes, deciding: decidingNodes, result, verdict } = await coverageFor(root, atView);
   const [graph, bugStore] = await Promise.all([readGraph(root), readBugs(root)]);
   const anchorsById = new Map(store.anchors.map((a) => [a.id, a]));
 
@@ -329,7 +334,7 @@ export async function context(root: string, refs: string[]) {
     (n.anchors.some((id) => scope.has(id)) || (stepsOf.get(n.id) ?? []).some((sid) => (nodeById.get(sid)?.anchors ?? []).some((id) => scope.has(id)))));
 
   const rank: Record<Trust, number> = { verified: 0, checked: 1, unverified: 2, stale: 3, generated: 4 };
-  const reviewed = await reviewStatesFor(root, [...covering, ...flowNodes].map((n) => ({ kind: "node" as const, id: n.id })));
+  const reviewed = await reviewStatesFor(root, [...covering, ...flowNodes].map((n) => ({ kind: "node" as const, id: n.id })), { ref: atView?.sha });
   const view = (n: LogicalNode) => {
     const rp = reviewed.get(`node:${n.id}`);
     return { id: n.id, title: n.title, type: n.type, summary: n.summary, status: n.status ?? "fresh",
@@ -372,6 +377,7 @@ export async function context(root: string, refs: string[]) {
     .map((b) => ({ id: b.id, title: b.title, severity: b.severity }));
 
   return {
+    ...(atView ? atHeader(atView) : {}),
     scopeAnchors: scopeIds.length,
     withDoc,           // scope anchors a doc directly cites
     gaps,              // scope anchors with no readable doc (the explore-then-document list)
@@ -420,16 +426,19 @@ async function sharedNotesOn(
   return notes.length ? { sharedNotes: notes } : {};
 }
 
-export async function getAnchor(root: string, id: string) {
+export async function getAnchor(root: string, id: string, opts: { at?: string; dirty?: boolean } = {}) {
+  const view = opts.at ? await viewAt(root, opts.at, { dirty: opts.dirty }) : undefined;
+  if (view && "error" in view) return view;
   // One fold, not two. `loadNodesShared` already calls `docsVerdict`, so asking for
   // the verdict separately folded the scope twice on the hottest drill-down path.
   // Sequenced before the rest deliberately: it is what materializes the rows the
   // load is about to read.
   const anchorVerdict = await import("../docs-lookup.js").then((m) => m.docsVerdict(root)).catch(() => null);
   const [store, nodes, bugStore, annStore] = await Promise.all([
-    readAnchorStore(root), loadNodes(root), readBugs(root), readAnnotations(root),
+    view ? { anchors: view.anchors } : readAnchorStore(root), view ? view.nodes : loadNodes(root), readBugs(root), readAnnotations(root),
   ]);
   let anchor = store.anchors.find((a) => a.id === id);
+  if (view && !anchor) return { ...atHeader(view), error: `no anchor "${id}" at ${view.ref}` };
   // Three places to look, and WHICH one answered is part of the answer.
   //
   // The working tree first. Then any cached commit snapshot — during a pull-request
@@ -449,8 +458,11 @@ export async function getAnchor(root: string, id: string) {
   let code: string | null = null;
   let present = false;
   try {
-    if (off) {
-      const src = readBlobs(root, off.ref, [anchor.file]).get(anchor.file);
+    if (off || view) {
+      // An overlaid file is read from its worktree, like the anchors it produced.
+      const src = view?.overlaid && view.uncommitted.includes(anchor.file)
+        ? await readFile(join(view.worktree!, anchor.file), "utf8")
+        : readBlobs(root, view ? view.sha : off!.ref, [anchor.file]).get(anchor.file);
       const live = src ? (await indexBlob(src, anchor.file)).find((a) => a.id === id) : undefined;
       if (src && live?.loc) { code = src.slice(live.loc.startByte, live.loc.endByte); present = true; }
     } else {
@@ -466,7 +478,7 @@ export async function getAnchor(root: string, id: string) {
     /* file gone */
   }
   const citing = nodes.filter((n) => n.anchors.includes(id));
-  const citeReviews = await reviewStatesFor(root, citing.map((n) => ({ kind: "node" as const, id: n.id })));
+  const citeReviews = await reviewStatesFor(root, citing.map((n) => ({ kind: "node" as const, id: n.id })), { ref: view?.sha });
   // Dynamic, like `mirrorNote`: the agnostic core does not depend on the sidecar,
   // and a shared store that is missing or unreadable must not fail a local read
   // that worked before shared docs existed.
@@ -477,14 +489,15 @@ export async function getAnchor(root: string, id: string) {
     nodeId: n.id, title: n.title, ...(n.author ? { by: n.author } : {}), status: n.status,
   }));
   return {
+    ...(view ? atHeader(view) : {}),
     ...anchorBrief(anchor),
     present,
     code,
     // WHICH version this is. The working tree is a third thing during a PR review —
     // neither the PR under review nor whatever branch the reader last had in mind —
     // and a response that just says "current" invites all three to be conflated.
-    sourceRef: orphaned ? "@orphan" : off ? off.ref : "@work",
-    sourceCommit: off ? off.ref : headCommit(root),
+    sourceRef: view ? view.ref : orphaned ? "@orphan" : off ? off.ref : "@work",
+    sourceCommit: view ? view.sha : off ? off.ref : headCommit(root),
     ...(off ? {
       offTree: true,
       offTreeNote: `${anchor.file} is not in the working tree — this is the body at ${off.ref.slice(0, 12)}${snapshotBranch(root, off.ref) ? ` (${snapshotBranch(root, off.ref)})` : ""}, which is where the code actually lives. The tree is on another branch.`,
@@ -529,12 +542,12 @@ export async function getAnchor(root: string, id: string) {
         text: f.comment || f.text, author: f.author.principal, shared: !!f.origin,
       })),
     lang: langFor(anchor.file),
-    review: await reviewStatus(root, { kind: "anchor", id }),
+    review: await reviewStatus(root, { kind: "anchor", id }, { ref: view?.sha }),
     // The `viewed` exposure marks, separate from the vouch above, so the UI can show
     // "looked at" distinctly from "signed off" (and each with its own staleness).
-    viewed: await reviewStatus(root, { kind: "anchor", id }, { viewed: true }),
+    viewed: await reviewStatus(root, { kind: "anchor", id }, { viewed: true, ref: view?.sha }),
     // Stakes + resulting severity (stakes × attestation gap). See docs/triage.md.
-    triage: await triageStatus(root, { kind: "anchor", id }),
+    triage: await triageStatus(root, { kind: "anchor", id }, { ref: view?.sha }),
   };
 }
 

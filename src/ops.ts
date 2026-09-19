@@ -43,6 +43,7 @@ export {
 } from "./ops/graph.js";
 
 export { outline, search, resolveId, context, getAnchor, nodeReview, fileSource } from "./ops/read.js";
+export { staleAt } from "./ops/at.js";
 
 export {
   setTriage, anchorMark, clearTriage, deriveTriage, tripwires, triageDriftList, changedSince,

@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { type Anchor, type LogicalNode } from "../schema.js";
+import { type Anchor, type LogicalNode, SCHEMA_VERSION } from "../schema.js";
 import { indexFile } from "../repo.js";
+import type { AtView } from "./at.js";
 import { readAnchorStore, loadNodes, readCoverage, findAnchorsOutsideWork, readOrphans, derivationLookup, readWalkthroughsFor, type StoredWalkthrough } from "../store.js";
 import { readSnapshot } from "../snapshots.js";
 import type { PrWalkthrough } from "../walkthrough.js";
@@ -241,7 +242,7 @@ export async function loadNodesShared(root: string): Promise<LogicalNode[]> {
  * Doing it here means every coverage consumer gets the team's half without each one
  * remembering to.
  */
-export async function coverageFor(root: string): Promise<{
+export async function coverageFor(root: string, at?: AtView): Promise<{
   store: Awaited<ReturnType<typeof readAnchorStore>>;
   nodes: LogicalNode[];
   deciding: LogicalNode[];
@@ -252,9 +253,10 @@ export async function coverageFor(root: string): Promise<{
   // `.codemapignore` as well as the stored rules: the `[tests]` bin is a repo-wide,
   // COMMITTED declaration and a `cover` rule is one machine's uncommitted state, so this
   // is the only half that reaches a teammate's fresh clone.
-  const [store, nodes, cov, ignore] = await Promise.all([
-    readAnchorStore(root), loadNodes(root), readCoverage(root), loadIgnore(root),
-  ]);
+  // At a commit: its snapshot, its docs and its own `.codemapignore` (see `viewAt`).
+  const [store, nodes, cov, ignore] = at
+    ? [{ schemaVersion: SCHEMA_VERSION, anchors: at.anchors }, at.nodes, await readCoverage(root), at.ignore] as const
+    : await Promise.all([readAnchorStore(root), loadNodes(root), readCoverage(root), loadIgnore(root)]);
   const blocked = verdict?.excludeFromDecisions;
   const deciding = blocked?.size ? nodes.filter((n) => !n.origin || !blocked.has(n.origin)) : nodes;
   const cited = new Set(deciding.flatMap((n) => n.anchors));

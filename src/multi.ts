@@ -83,7 +83,7 @@ export async function inboundLinks(ws: Workspace, universeId: string, nodeId: st
 }
 
 /** get_node, plus resolution of qualified edge endpoints and inbound cross-links. */
-export async function getNodeEnriched(ws: Workspace, universeId: string, nodeId: string, opts: { compact?: boolean } = {}) {
+export async function getNodeEnriched(ws: Workspace, universeId: string, nodeId: string, opts: { compact?: boolean; at?: string; dirty?: boolean } = {}) {
   const u = ws.byId.get(universeId);
   if (!u) return { error: `unknown universe "${universeId}"` };
   const base: any = await ops.getNode(u.path, nodeId, opts);

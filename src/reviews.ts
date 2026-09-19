@@ -687,7 +687,7 @@ export async function reviewStatesFor(
   return out;
 }
 
-export async function reviewStatus(root: string, target: Target, opts?: { viewed?: boolean }): Promise<ReviewPair> {
+export async function reviewStatus(root: string, target: Target, opts?: { viewed?: boolean; ref?: string }): Promise<ReviewPair> {
   return (await reviewStatesFor(root, [target], opts)).get(key(target))!;
 }
 
