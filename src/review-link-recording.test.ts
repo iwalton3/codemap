@@ -24,6 +24,13 @@ const git = (cwd: string, ...a: string[]) => {
   return r.stdout.trim();
 };
 
+/**
+ * Node's `spawn` finds only `gh.exe`/`gh.com` on Windows, so no script can stand in for
+ * `gh` there — and a production seam just for these tests was ruled out (owner,
+ * 2026-09-19). Nothing they check is platform-specific; Linux runs them.
+ */
+const FAKE_GH_UNSUPPORTED = process.platform === "win32" && "a fake `gh` cannot be a script on Windows";
+
 /** A repo whose origin is on GitHub, a `feature` branch, and a fake `gh` that says PR 12 is feature → main. */
 async function fixture(withSidecar: boolean) {
   const base = mkdtempSync(join(tmpdir(), "codemap-link-"));
@@ -63,7 +70,7 @@ async function fixture(withSidecar: boolean) {
   };
 }
 
-test("pr_packet records the link — it holds the write lock, and does not wait on itself", async () => {
+test("pr_packet records the link — it holds the write lock, and does not wait on itself", { skip: FAKE_GH_UNSUPPORTED }, async () => {
   const f = await fixture(true);
   try {
     const t0 = Date.now();
@@ -74,7 +81,7 @@ test("pr_packet records the link — it holds the write lock, and does not wait 
   } finally { f.cleanup(); }
 });
 
-test("a read links the pull request when the lock is free", async () => {
+test("a read links the pull request when the lock is free", { skip: FAKE_GH_UNSUPPORTED }, async () => {
   const f = await fixture(true);
   try {
     const r = await pr(f.root, "12", { fetch: false }) as Record<string, unknown>;
@@ -83,7 +90,7 @@ test("a read links the pull request when the lock is free", async () => {
   } finally { f.cleanup(); }
 });
 
-test("a read skips the link, promptly, while another process holds the lock", async () => {
+test("a read skips the link, promptly, while another process holds the lock", { skip: FAKE_GH_UNSUPPORTED }, async () => {
   const f = await fixture(true);
   try {
     // A live pid that is not ours: the lock is genuinely held, not stale.
