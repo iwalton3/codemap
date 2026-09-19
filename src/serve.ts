@@ -464,7 +464,7 @@ const server = createServer(async (req, res) => {
         const r = body.unmark
           ? await unmarkReviewed(root, { targetKind: body.targetKind, targetId: body.targetId, level: body.level, attestation, actor: "human" })
           // `ref` (the PR head) makes the witness cover the code actually read.
-          : await markReviewed(root, { targetKind: body.targetKind, targetId: body.targetId, level: body.level, reviewer: body.reviewer, actor: "human", attestation, ref: body.ref });
+          : await markReviewed(root, { targetKind: body.targetKind, targetId: body.targetId, level: body.level, reviewer: body.reviewer, actor: "human", attestation, ref: body.ref, base: body.base });
         // Hand back the resulting mark so a caller can update that one symbol in
         // place. The walkthrough re-fetched the WHOLE story to learn this, which on
         // a large pull request is seconds of work to answer a question about one

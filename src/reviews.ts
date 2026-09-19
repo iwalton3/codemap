@@ -356,8 +356,26 @@ export function containedAnchorIds(anchors: Anchor[], containerId: string): stri
 
 export async function markReviewed(
   root: string,
-  input: { targetKind: "node" | "anchor"; targetId: string; level: ReviewLevel; reviewer?: string; actor?: "human" | "agent"; attestation?: Attestation; ref?: string },
+  input: { targetKind: "node" | "anchor"; targetId: string; level: ReviewLevel; reviewer?: string; actor?: "human" | "agent"; attestation?: Attestation; ref?: string; base?: string },
 ) {
+  // One anchor is a batch of one: the batch writer is the one that knows a symbol the
+  // change DELETES (triage 2026-09-19-deletion-fixes-review I1), and two writers for the
+  // same row is how that was missed here.
+  if (input.targetKind === "anchor") {
+    const { level, reviewer, actor, attestation, ref, base } = input;
+    const r = await markReviewedBatch(root, [input.targetId], { level, reviewer, actor, attestation, ref, base });
+    if (r.unwitnessed?.length) {
+      return {
+        error:
+          `nothing was witnessed: ${input.targetId} exists neither in `
+          + `${ref ? `the cached snapshot for ${ref.slice(0, 12)}` : "this working tree"} nor at the change's base. `
+          + `A mark recorded here would stand on no observation. If you are reviewing code at a `
+          + `commit this checkout does not have, witness it at that ref.`,
+      };
+    }
+    const att: Attestation | undefined = attestation ?? ((actor ?? "agent") === "human" ? "signed" : undefined);
+    return { ok: true, level, attestation: att ?? "checked", anchors: 1 };
+  }
   const target: Target = { kind: input.targetKind, id: input.targetId };
   const anchorIds = await coveredAnchorIds(root, target, undefined, input.ref);
   // Witness the code that was actually read: on a PR surface that is the head

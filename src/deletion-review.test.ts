@@ -13,7 +13,7 @@ import { spawnSync } from "node:child_process";
 import { init } from "./ops.js";
 import { readSnapshot } from "./snapshots.js";
 import { computeDiff } from "./diff.js";
-import { markReviewedBatch, reviewStatesFor } from "./reviews.js";
+import { markReviewed, markReviewedBatch, reviewStatesFor } from "./reviews.js";
 import { readReviews, writeReviews } from "./store.js";
 import { discard } from "./test-tmp.js";
 
@@ -141,5 +141,18 @@ test("a deletion sign-off goes stale when the base it deleted from now holds ano
     const at = async (ref: string) => (await reviewStatesFor(u.root, [{ kind: "anchor", id: post.id }], { ref })).get(`anchor:${post.id}`)!.code.state;
     assert.equal(await at(u.headSha), "reviewed");
     assert.equal(await at(head2), "stale");
+  } finally { u.cleanup(); }
+});
+
+test("the single-target writer signs a deletion exactly as the batch writer does (the diff page's button)", async () => {
+  const u = await repo();
+  try {
+    const single = await markReviewed(u.root, { targetKind: "anchor", targetId: u.cls.id, level: "code", actor: "human", attestation: "signed", ref: u.headSha });
+    assert.equal((single as { error?: string }).error, undefined, "signable through /api/review");
+    const row = (await readReviews(u.root)).reviews.find((r) => r.target.id === u.cls.id)!;
+    assert.deepEqual(row.witnesses, [{ anchorId: u.cls.id, bodyHash: u.cls.bodyHash, deleted: true }]);
+    assert.equal(row.accepted?.[0]?.entries.at(-1)?.deleted, true);
+    const st = (await reviewStatesFor(u.root, [{ kind: "anchor", id: u.cls.id }], { ref: u.headSha })).get(`anchor:${u.cls.id}`)!;
+    assert.equal(st.code.state, "reviewed");
   } finally { u.cleanup(); }
 });
