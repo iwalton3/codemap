@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { reportDefect } from "./ops/defect.js";
 import { init } from "./ops.js";
-import { readFindings } from "./store.js";
+import { readFindings, writeLocalFinding } from "./store.js";
 import { readSnapshot } from "./snapshots.js";
 import { findingBacklog } from "./ops-shared.js";
 import { foldFindings } from "./shared-findings.js";
@@ -209,5 +209,45 @@ test("a symbol only in a worktree's uncommitted edits is still refused as uncomm
     writeFileSync(join(wt, "src/pay.ts"), PAY.split("export function refund")[0]! + "export function brandNew() {\n  return 1;\n}\n");
     const r = await onBranch(u.root, "src/pay.ts#brandNew");
     assert.match(String(r.error), /uncommitted changes/);
+  } finally { u.cleanup(); }
+});
+
+test("an older build's backlog on a deletion finding folds as a deletion backlog; a body finding's is left alone", () => {
+  // triage 2026-09-19-deletion-fixes-review I5: an older `backlogFinding` re-read the body and
+  // emitted a plain witness, which woke the backlog the moment the deletion landed, and no
+  // refold could recover it. Now the FOLD derives it — upgrading repairs it. Whatever body it
+  // names: this build always copies the deletion witness, so a plain one on the same anchor
+  // of a deletion finding can only be an older writer's.
+  const actor = { principal: "izzie", kind: "human" };
+  const ev = (id: string, subject: string, kind: string, data: unknown, at: string) =>
+    ({ id, kind, subject, at, actor, data } as unknown as LogEvent);
+  const created = (subject: string, witness: unknown) =>
+    ev(subject + "-c", subject, "finding.created", { text: "t", targetKind: "anchor", targetId: "a_1", witness }, "2026-09-19T00:00:00Z");
+  const backlogged = (subject: string, witness: unknown) =>
+    ev(subject + "-b", subject, "finding.backlogged", { until: "2099-01-01", reason: "later", witness }, "2026-09-19T00:01:00Z");
+  const out = foldFindings([
+    created("f_old", { anchorId: "a_1", bodyHash: "sha256:body", deleted: true }),
+    backlogged("f_old", { anchorId: "a_1", bodyHash: "sha256:body" }),
+    created("f_body", { anchorId: "a_1", bodyHash: "sha256:body" }),
+    backlogged("f_body", { anchorId: "a_1", bodyHash: "sha256:body" }),
+  ]);
+  assert.deepEqual(out.get("f_old")!.backlogged!.witness, { anchorId: "a_1", bodyHash: "sha256:body", deleted: true });
+  assert.equal(out.get("f_body")!.backlogged!.witness!.deleted, undefined, "a body finding's backlog stays a body");
+});
+
+test("an older build's LOCAL backlog on a deletion finding is read as a deletion backlog too", async () => {
+  // No sidecar, so no fold: the same repair is made where the local row is read.
+  const u = await repo();
+  try {
+    const r = await onBranch(u.root, "src/pay.ts#refund");
+    const key = branchKey("feature");
+    const f = (await readFindings(u.root, { pr: key })).findings.find((x) => x.id === r.id)!;
+    f.backlogged = {
+      until: "2099-01-01", reason: "later", by: { principal: "izzie@x.com" }, at: "2026-09-19T00:00:00Z",
+      witness: { anchorId: u.refund.id, bodyHash: u.refund.bodyHash },
+    };
+    await writeLocalFinding(u.root, f, key);
+    const b = await findingBacklog(u.root, { asOf: "2026-09-19" });
+    assert.deepEqual(b.sleeping.map((x) => x.id), [r.id], "asleep while the deletion is unmerged, not woken");
   } finally { u.cleanup(); }
 });

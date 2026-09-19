@@ -180,7 +180,12 @@ import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagn
 // 22 -> 23: `witness.deleted` (a finding on code a change deletes). An older fold kept the
 // field raw and read the witness as a body, so its rows say `landed` at filing; the same
 // shards refold only if the version moves.
-export const MATERIALIZER_VERSION = 23;
+//
+// 23 -> 24: a backlog on a deletion finding folds as a deletion backlog when an older
+// build wrote it with a plain body witness (`finding.backlogged`). A fold-mind change on
+// shards that do not move — and 24 rather than reusing 23, because stores have already
+// folded under 23 with the build that introduced deletions.
+export const MATERIALIZER_VERSION = 24;
 
 /**
  * What the events in a scope are, cheaply.

@@ -770,9 +770,15 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         // release condition and a decision somebody made should not be lost over a bad
         // optional field. Date-only is a state this already supports.
         const wOk = w && (f.target.kind !== "anchor" || str(w, "anchorId") === f.target.id);
+        // A plain witness on a DELETION finding's own anchor is an older build's: this one
+        // copies the deletion witness, and the older `backlogFinding` re-read the body, which
+        // wakes the backlog the moment the deletion lands. Derived here, so a refold repairs
+        // it (triage 2026-09-19-deletion-fixes-review I5, Q3).
+        const bw = wOk ? witnessOf(w) : undefined;
+        const asDeletion = bw && !bw.deleted && f.witness?.deleted && bw.anchorId === f.witness.anchorId;
         f.backlogged = {
           until: day, reason, by: e.actor, at: e.at,
-          ...(wOk && witnessOf(w) ? { witness: witnessOf(w)! } : {}),
+          ...(bw ? { witness: asDeletion ? { ...f.witness! } : bw } : {}),
           ...(str(d, "system") ? { ref: { system: str(d, "system")!, key: str(d, "key"), url: str(d, "url"), at: e.at, by: e.actor } } : {}),
         };
         break;

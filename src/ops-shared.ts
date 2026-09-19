@@ -851,7 +851,7 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
       // on, and a record stored with a full timestamp compares as greater than the date it
       // names — so it slept a day past its own deadline.
       if (f.backlogged.until.slice(0, 10) <= asOf) b.due.push(row(f));
-      else if (await judge.drifted(f, f.backlogged.witness) === "moved") b.woken.push(row(f));
+      else if (await judge.drifted(f, backlogWitnessOf(f)) === "moved") b.woken.push(row(f));
       else b.sleeping.push(row(f));
       continue;
     }
@@ -1052,6 +1052,17 @@ export async function witnessNowFor(root: string, id: string, anchorId?: string)
   if (!anchorId && f.witness?.deleted) return { ...f.witness };
   const a = anchorId ?? f.witness?.anchorId ?? (f.target.kind === "anchor" ? f.target.id : undefined);
   return a ? witnessNow(root, a) : undefined;
+}
+
+/**
+ * A backlog's witness as it should be READ: an older build's plain witness on a deletion
+ * finding's own anchor is a deletion witness. The fold derives this for shared rows
+ * (`shared-findings.ts`, `finding.backlogged`); a local row is never folded, so it is
+ * derived here (triage 2026-09-19-deletion-fixes-review I5).
+ */
+function backlogWitnessOf(f: SharedFinding): BugWitness | undefined {
+  const bw = f.backlogged?.witness;
+  return bw && !bw.deleted && f.witness?.deleted && bw.anchorId === f.witness.anchorId ? { ...f.witness } : bw;
 }
 
 /**
