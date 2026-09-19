@@ -392,7 +392,9 @@ export async function prStepMark(
   } else {
     const mark = { level: "code" as const, actor: "human" as const, attestation: opts.attestation, reviewer: opts.reviewer, ref: c.head };
     unwitnessed = (await markReviewedBatch(root, [id], mark)).unwitnessed;
-    await markReviewedBatch(root, inside, { ...mark, coveredBy: id });
+    // A container the head does not hold was not signed, so nothing is signed through it
+    // (deleted code is not signable); a live one still covers a member the change deleted.
+    if (!unwitnessed?.includes(id)) await markReviewedBatch(root, inside, { ...mark, coveredBy: id });
   }
   // Every symbol whose state may have moved — the one clicked, what it covers, and
   // (on a withdrawal) whatever the cover had written, in case the two disagree.
@@ -446,7 +448,8 @@ export async function prChapterMark(
     // The chapter's own symbols first: a member that is itself a step here is signed
     // in its own right, and a cover must not displace that.
     unwitnessed = (await markReviewedBatch(root, ids, mark)).unwitnessed;
-    for (const id of ids) await markReviewedBatch(root, c.contained.get(id) ?? [], { ...mark, coveredBy: id });
+    // No cover under a container whose own mark was skipped — see `prStepMark`.
+    for (const id of ids) if (!unwitnessed?.includes(id)) await markReviewedBatch(root, c.contained.get(id) ?? [], { ...mark, coveredBy: id });
   }
   // The resulting marks, so the page updates in place rather than re-deriving the
   // whole pull request to learn what its own click did.
