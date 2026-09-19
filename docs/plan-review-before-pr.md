@@ -39,16 +39,17 @@ None of the three works today, for two independent reasons:
 - **One card can span Acme.API and Acme.React.** That gives two reviews, one per universe,
   because a PR belongs to one repo.
 
-## Assumed, not yet confirmed — each is a case that can be marked wrong
+## Confirmed by the owner (2026-09-18)
 
-- **A1. A purged and rerun spec branch inherits the abandoned run's findings.** This follows
+- **A purged and rerun spec branch inherits the abandoned run's findings.** This follows
   from "no generations". The findings are witness-hashed, so those about code that is gone
   read as moved.
-- **A2. Without `gh` there is no automatic link** between a PR and its branch.
+- **Without `gh` there is no automatic link** between a PR and its branch.
   `refs/pull/N/head` carries a sha and no branch name, and guessing one from branch tips is
   the refuted mechanism. An explicit link verb covers it (B4).
-- **A3. Branch reads see the last commit, not uncommitted edits.** Every playbook gate is at a
-  commit, and snapshots of a dirty tree are already refused (COD-3).
+- **Branch reads answer from the last commit by default, and never silently.** The owner's
+  caveat, verbatim: *"the tools should have an option for reading the current dirty tree too,
+  or inform when dirty files are skipped in a read."* See "Uncommitted edits" under Part A.
 
 ---
 
@@ -61,6 +62,21 @@ the main checkout can resolve a worktree's branch without knowing its path.
 sha never write `@work`, never take the lock, never rebaseline and never refresh analyzers,
 so concurrent agents cannot disturb each other or the root. Every `at` response carries
 `at: {ref, sha}`.
+
+**Uncommitted edits.** A dirty tree belongs to a worktree, never to a commit (owner, A1
+round), and the root can find the worktree without being told its path: `git worktree list
+--porcelain` in the universe root maps each checked-out branch to its worktree, the root's own
+included.
+- **By default** an `at: <branch>` read answers from the commit and, when that branch's
+  worktree has uncommitted changes to indexable files, lists them as `uncommitted: [paths]`,
+  so a stale answer is never a silent one.
+- **`dirty: true`** overlays those files, indexed from the worktree's disk, on the commit's
+  snapshot. The overlay is never written under a sha. It is keyed by worktree, and recomputed
+  or invalidated by the files' mtimes.
+- A bare sha, or a branch no worktree has out, has no working tree, so there is nothing to
+  report or overlay.
+- Marks and witnesses still record committed bodies only: a sign-off on an overlay would
+  witness a body no commit holds, which is the defect the A1 round removed.
 
 **A1. The partly-honoured `ref` sites: DONE (2026-09-18, `4ced38b..9bc78a0`).** Triaged in
 run `2026-09-18-partial-ref-sites` (two of the nine claims were invalid), then fixed on the
@@ -75,8 +91,8 @@ owner's rulings:
 - **Batch marks skip and report ids that witnessed nothing**; covers and caller-supplied
   hashes are exempt.
 
-Left open: `docDiff` with no head still resolves against the stored `@work` rows (the same
-shape the no-head `computeDiff` fix closed).
+`docDiff` with no head resolved against the stored `@work` rows, the same shape the no-head
+`computeDiff` fix closed. The owner approved closing it too.
 
 **A2. `at` on the read tools**, in the order the command uses them:
 
