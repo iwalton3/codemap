@@ -10,7 +10,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { init } from "./ops.js";
+import { checkStale, diffCode, init } from "./ops.js";
 import { readSnapshot } from "./snapshots.js";
 import { computeDiff } from "./diff.js";
 import { anchorReviewMap, changedSince, markReviewed, markReviewedBatch, revertedMarks, reviewStatesFor } from "./reviews.js";
@@ -51,7 +51,8 @@ async function repo() {
   return { root, git, baseSha, headSha, cls, members, cleanup: () => discard(base) };
 }
 
-const coverage = async (root: string, base: string, head: string) => {
+/** No `head` is the working-tree diff — the PR-review path, where you have checked the change out. */
+const coverage = async (root: string, base: string, head?: string) => {
   const d = await computeDiff(root, base, head);
   if ("error" in d) throw new Error(d.error);
   return d.coverage;
@@ -221,5 +222,76 @@ test("only a stored COVER row on an absent symbol reads as a deletion sign-off; 
     const s = (await reviewStatesFor(u.root, [{ kind: "anchor", id: u.members[0]!.id }], { ref: u.headSha }))
       .get(`anchor:${u.members[0]!.id}`)!.code.state;
     assert.equal(s, "stale");
+  } finally { u.cleanup(); }
+});
+
+/**
+ * THE PAIRED READ. A diff with no head is the PR-review path — you have checked the change
+ * out — so it must answer a deletion exactly as the same diff with a head does. It did not:
+ * the base was passed only alongside the ref, and with no base a deletion sign-off holds on
+ * ABSENCE ALONE, which survives any rewrite of the body it approved. So a sign-off for
+ * deleting one body read green over the deletion of a body nobody had seen.
+ *
+ * Paired rather than a fixed expectation, because the failure was one path learning a rule
+ * its sibling did not (triage 2026-09-19-review-and-findings-systems).
+ */
+test("a deletion reads the same with a head and without one, and an old sign-off does not cover a rewritten body", async () => {
+  const u = await repo();
+  try {
+    // A first change deletes the ledger, and a reviewer signs that deletion.
+    await sign(u.root, [u.cls.id], u.headSha);
+    await sign(u.root, u.members.map((m) => m.id), u.headSha, u.cls.id);
+    assert.equal((await coverage(u.root, u.baseSha, u.headSha)).outstanding, 0);
+
+    // The trunk then rewrites the bodies that sign-off covered, and a second change deletes
+    // the NEW code. Nobody has reviewed deleting that.
+    u.git("checkout", "-q", "main");
+    writeFileSync(join(u.root, "src/ledger.ts"), LEDGER.replace(/return x;/, "return x + 1;").replace(/return -x;/, "return -x - 1;"));
+    u.git("add", "-A"); u.git("commit", "-q", "-m", "rewrite the ledger");
+    const base2 = u.git("rev-parse", "HEAD");
+    u.git("checkout", "-q", "-b", "feature2");
+    u.git("rm", "-q", "src/ledger.ts");
+    u.git("commit", "-q", "-m", "delete the rewritten ledger");
+    const head2 = u.git("rev-parse", "HEAD");
+    await readSnapshot(u.root, base2);
+    await readSnapshot(u.root, head2);
+    // The working tree IS the second change — what a reviewer who checked the PR out has.
+    await checkStale(u.root);
+
+    const withHead = await coverage(u.root, base2, head2);
+    const noHead = await coverage(u.root, base2);
+    assert.ok(withHead.outstanding > 0, `signing one body's deletion must not cover another's: ${JSON.stringify(withHead)}`);
+    assert.deepEqual(noHead, withHead, "the no-head diff must read the deletion as the diff with a head does");
+
+    // The per-symbol tick as well as the bar: they are separate reads of the same question,
+    // and the tick is the one a reviewer clicks past. It was the site the coverage bar's own
+    // fix missed.
+    const d = await computeDiff(u.root, base2, head2);
+    if ("error" in d) throw new Error(d.error);
+    for (const r of d.removed) {
+      const a = await diffCode(u.root, base2, head2, r.id, r.file);
+      const b = await diffCode(u.root, base2, undefined, r.id, r.file);
+      assert.equal(b.review.code, a.review.code, `${r.id}: the drill-down must agree with and without a head`);
+    }
+  } finally { u.cleanup(); }
+});
+
+/** The other half of the same omission: what the diff counts, the diff must let you sign. */
+test("a removed symbol on a no-head diff can be signed, witnessed at the diff's base", async () => {
+  const u = await repo();
+  try {
+    u.git("checkout", "-q", "feature");
+    await checkStale(u.root);
+    const before = await coverage(u.root, u.baseSha);
+    assert.equal(before.outstanding, 3, `the working-tree diff counts the deletion: ${JSON.stringify(before)}`);
+
+    const r = await markReviewedBatch(u.root, [u.cls.id], {
+      level: "code", actor: "human", attestation: "signed", base: u.baseSha,
+    });
+    assert.equal(r.unwitnessed, undefined, "the base holds the deleted body, so there IS a witness");
+    await markReviewedBatch(u.root, u.members.map((m) => m.id), {
+      level: "code", actor: "human", attestation: "signed", base: u.baseSha, coveredBy: u.cls.id,
+    });
+    assert.equal((await coverage(u.root, u.baseSha)).outstanding, 0, "and signing it clears the count");
   } finally { u.cleanup(); }
 });

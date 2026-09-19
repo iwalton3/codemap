@@ -745,13 +745,18 @@ export async function reviewStatus(root: string, target: Target, opts?: { viewed
  * The bodies `ids` had at the change's base — what a change deletes, when they are absent
  * at `ref`. The base is the CHANGE's own (a PR's base, a diff's `<a>`) when the caller
  * knows it, else where `ref` left the trunk, which is a branch's base (owner, triage
- * 2026-09-19-deletion-fixes-review Q2). Empty with no ref, no base, or a ref that IS it.
+ * 2026-09-19-deletion-fixes-review Q2). Empty with no base and no ref to derive one from.
+ *
+ * `ref` says where LIVE was read; `base` says what the change deletes FROM. Independent:
+ * a diff with no head reads live from the working tree and still has its `<a>` side. They
+ * were bundled once, and a no-head diff — the PR-review path — then approved a deletion on
+ * absence alone, which is green over a body nobody reviewed.
  */
 async function deletedBodies(root: string, ref: string | undefined, ids: string[], base?: string): Promise<Map<string, string>> {
-  if (!ref || !ids.length) return new Map();
+  if (!ids.length) return new Map();
   try {
-    const sha = revParse(root, ref) ?? ref;
-    const b = base ? revParse(root, base) ?? base : trunkBase(root, sha)?.sha;
+    const sha = ref ? revParse(root, ref) ?? ref : null;
+    const b = base ? revParse(root, base) ?? base : (sha ? trunkBase(root, sha)?.sha : undefined);
     if (!b || b === sha) return new Map();
     const want = new Set(ids);
     return new Map(((await readSnapshot(root, b)) ?? []).filter((a) => want.has(a.id)).map((a) => [a.id, a.bodyHash]));

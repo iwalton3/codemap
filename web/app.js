@@ -3113,13 +3113,17 @@ class DiffPage extends Component {
    * sign-off recorded against it would attest a body this page never displayed. When no
    * `head` is given the diff runs to the working tree, and the working tree is then the
    * right witness — so the ref is passed only when there is one.
+   *
+   * The BASE goes either way. It is what a deletion is measured from, and this page has it
+   * whether or not there is a head; gating it on the ref left the no-head diff unable to
+   * witness a deletion at all — every removed symbol counted and none of them signable.
    */
   revBtn(kind, id, level, state, after, actor, via) {
     const cls = revCls(state, actor, via);
     const tip = `${level}: ${state}${state === 'reviewed' && actor === 'agent' ? ' (agent-checked)' : ''}${via && VIA_TIP[via] ? VIA_TIP[via] : ''}`;
     const ref = this.props.query.head || undefined;
     // A deletion is measured from THIS diff's base (triage 2026-09-19-deletion-fixes-review Q2).
-    const base = ref ? this.props.query.base || undefined : undefined;
+    const base = this.props.query.base || undefined;
     return html`<button class="${cls}" title="${tip}" on-click="${async (e) => { if (e.stopPropagation) e.stopPropagation(); await postReview(this.props.params.universe, kind, id, level, state === 'reviewed' && via !== 'unverifiable', undefined, ref, base); await after(); }}">${level}${revMark(state, actor, via)}</button>`;
   }
 
