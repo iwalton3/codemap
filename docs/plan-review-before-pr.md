@@ -62,21 +62,23 @@ sha never write `@work`, never take the lock, never rebaseline and never refresh
 so concurrent agents cannot disturb each other or the root. Every `at` response carries
 `at: {ref, sha}`.
 
-**A1. Fix the partly-honoured `ref` sites first.** These are latent defects in PR review
-today, independent of worktrees, and everything else in Part A stands on them. Each fix gets
-a test that fails before it.
+**A1. The partly-honoured `ref` sites: DONE (2026-09-18, `4ced38b..9bc78a0`).** Triaged in
+run `2026-09-18-partial-ref-sites` (two of the nine claims were invalid), then fixed on the
+owner's rulings:
+- **A working tree's index belongs to the worktree, never a commit.** `init`/`reindex` on a
+  dirty tree no longer write HEAD's snapshot, and `snapshot` indexes from git objects.
+- **A snapshot is built on the read that needs it.** `readSnapshot` (in `snapshots.ts`)
+  rebuilds anything absent, dirty or from another derivation, so null means "git cannot read
+  it". That is what Part A's `at:` stands on.
+- **At a ref, everything comes from the ref**: node resolution in the review functions, and
+  diff's review, coverage and drill-down at its head.
+- **Batch marks skip and report ids that witnessed nothing**; covers and caller-supplied
+  hashes are exempt.
 
-| Site | Defect |
-|---|---|
-| `reviewStatesFor({ref})` (reviews.ts:577) | Node targets expand via `loadNodes` at `@work`, not at the ref. |
-| `reviewTriageFor({ref})` (triage.ts:283) | Node segments and the `present` set come from `@work`. `get_node` and `diff` don't pass `ref` at all. |
-| `markReviewed(ref)` on a node | Expands the node at `@work`. |
-| `markReviewedBatch(ref)` | No "nothing was witnessed" guard, and no `file#Symbol` resolution. |
-| `resolveRefs(…, ref)` (ops/shared.ts:290) | Silently skips an unusable snapshot. It must refuse. |
-| `witnessAt(ref)` (ops/annotations.ts:156) | Reads raw `bodyHashAt`, which bypasses the dirty and derivation guards. |
-| `computeDiff(head)` | Review, coverage and `diffCode` are judged at the working tree. With no head, doc status reads stored `@work` while the head side is a fresh index. |
-| `writeSnapshot` via `reindex` on a dirty tree | Upserts `dirty=1` over a clean `snapshotAt` row for the same sha, so every ref read after it is refused. A dirty write must never replace a clean row. |
-| `snapshotAt(force)` | No `retainOrphans`, unlike `ensureSnapshot`. |
+Left open: `docDiff` with no head still resolves against the stored `@work` rows (the same
+shape the no-head `computeDiff` fix closed). And the PR e2e test "the reading does not depend
+on what the working tree is checked out to" fails with a git error in its checkout helper;
+that failure is identical on `6fffe8e`.
 
 **A2. `at` on the read tools**, in the order the command uses them:
 
