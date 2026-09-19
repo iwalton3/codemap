@@ -189,13 +189,15 @@ function gitlinkFor(root: string, sha: string, path: string): { dir: string; oid
 }
 
 /**
- * Repo-relative paths that differ from `commit` (committed, staged, unstaged)
+ * Universe-relative paths that differ from `commit` (committed, staged, unstaged)
  * plus untracked files. Returns null when it can't be determined — the caller
  * should then treat every file as changed (full scan).
  */
 export function changedFilesSince(root: string, commit: string | null): string[] | null {
   if (!commit || !isGitRepo(root)) return null;
-  const diff = git(root, ["diff", "--name-only", commit, "--"]);
+  // `--relative`: diff prints repo-root paths for the whole repository by default, while
+  // `ls-files` below is already cwd-relative — a subdirectory universe mixed the two.
+  const diff = git(root, ["diff", "--name-only", "--relative", commit, "--"]);
   if (!diff.ok) return null;
   const untracked = git(root, ["ls-files", "--others", "--exclude-standard"]).out;
   const files = new Set<string>();
@@ -220,9 +222,11 @@ export function repoPrefix(root: string): string {
 }
 
 /**
- * The working tree that has `branch` checked out — a linked worktree or the main one —
- * or null when none does. Asked of any checkout of the repository: worktrees share
- * `refs/heads`, so the main checkout can find an agent's worktree without its path.
+ * This universe's directory inside the working tree that has `branch` checked out — a
+ * linked worktree or the main one — or null when none does. Asked of any checkout of the
+ * repository: worktrees share `refs/heads`, so the main checkout can find an agent's
+ * worktree without its path. The universe's own subdirectory is joined on, so
+ * `join(result, anchor.file)` is the file in a subdirectory universe too.
  */
 export function worktreeForBranch(root: string, branch: string): string | null {
   const r = git(root, ["worktree", "list", "--porcelain"]);
@@ -230,25 +234,36 @@ export function worktreeForBranch(root: string, branch: string): string | null {
   const want = `branch refs/heads/${branch.replace(/^refs\/heads\//, "")}`;
   for (const block of r.out.split(/\n\n+/)) {
     const lines = block.split("\n");
-    if (lines.includes(want)) return lines.find((l) => l.startsWith("worktree "))?.slice("worktree ".length) ?? null;
+    const top = lines.includes(want) ? lines.find((l) => l.startsWith("worktree "))?.slice("worktree ".length) : undefined;
+    if (top) return join(top, repoPrefix(root));
   }
   return null;
 }
 
-/** Repo-relative paths with uncommitted changes in a working tree, untracked files included. */
+/**
+ * Paths under `dir` with uncommitted changes, relative to `dir`, untracked files included.
+ * `git status` prints repo-root paths for the WHOLE repository whatever the cwd, so a
+ * subdirectory universe filters to its prefix and strips it, as `changedFilesBetween` does.
+ */
 export function uncommittedPaths(dir: string): string[] {
   const r = spawnSync(gitBin(), ["status", "--porcelain", "-z", "--untracked-files=all"], { cwd: dir, encoding: "utf8" });
   if (r.status !== 0) return [];
-  const out: string[] = [];
+  const full: string[] = [];
   const parts = (r.stdout ?? "").split("\0");
   for (let i = 0; i < parts.length; i++) {
     const e = parts[i]!;
     if (e.length < 4) continue;
-    out.push(e.slice(3));
-    // A rename or copy carries its ORIGINAL path as the next field.
-    if (e[0] === "R" || e[0] === "C") i++;
+    full.push(e.slice(3));
+    // A rename or copy carries its ORIGINAL path as the next field, in either column. A
+    // rename's original is gone from the tree, so it is uncommitted too; a copy's is not.
+    const x = e[0], y = e[1];
+    if (x === "R" || x === "C" || y === "R" || y === "C") {
+      const orig = parts[++i];
+      if (orig && (x === "R" || y === "R")) full.push(orig);
+    }
   }
-  return out;
+  const prefix = repoPrefix(dir);
+  return [...new Set(full)].filter((p) => !prefix || p.startsWith(prefix)).map((p) => (prefix ? p.slice(prefix.length) : p));
 }
 
 /** The merge-base of two refs — a PR's true base, which is rarely the base branch tip. */
