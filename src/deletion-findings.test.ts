@@ -185,3 +185,29 @@ test("the fold keeps a deletion marker, and drops a witness whose marker is malf
   assert.equal(out.get("f_bad")!.witness, undefined, "read as a body it would land at filing");
   assert.deepEqual(out.get("f_body")!.witness, { anchorId: "a_1", bodyHash: "h" });
 });
+
+test("a committed deletion is not refused as uncommitted because the same file has an unrelated edit", async () => {
+  // triage 2026-09-19-deletion-fixes-review I9: the file-level uncommitted check ran before
+  // the base was asked, so any dirty edit in the file masked the deletion committed in it.
+  const u = await repo();
+  try {
+    const wt = join(u.root, "..", "feature-wt");
+    u.git("worktree", "add", "-q", wt, "feature");
+    writeFileSync(join(wt, "src/pay.ts"), "export function transfer(cents: number) {\n  return cents + 1;\n}\n");
+    const r = await onBranch(u.root, "src/pay.ts#refund");
+    assert.equal(r.error, undefined, String(r.error));
+    const f = (await readFindings(u.root, { pr: branchKey("feature") })).findings.find((x) => x.id === r.id)!;
+    assert.equal(f.witness?.deleted, true);
+  } finally { u.cleanup(); }
+});
+
+test("a symbol only in a worktree's uncommitted edits is still refused as uncommitted", async () => {
+  const u = await repo();
+  try {
+    const wt = join(u.root, "..", "feature-wt");
+    u.git("worktree", "add", "-q", wt, "feature");
+    writeFileSync(join(wt, "src/pay.ts"), PAY.split("export function refund")[0]! + "export function brandNew() {\n  return 1;\n}\n");
+    const r = await onBranch(u.root, "src/pay.ts#brandNew");
+    assert.match(String(r.error), /uncommitted changes/);
+  } finally { u.cleanup(); }
+});

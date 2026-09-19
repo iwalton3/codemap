@@ -227,8 +227,6 @@ async function changeTarget(root: string, label: string, branch: string | undefi
     const a = r.ids.length ? head.find((x) => x.id === r.ids[0]) : undefined;
     if (a) return { targetId: a.id, witness: { anchorId: a.id, bodyHash: a.bodyHash } as BugWitness, sourceRef: sha };
     if (r.errors.some(ambiguous)) return { error: r.errors.join("; ") };
-    const uncommitted = uncommittedTarget(root, branch, target);
-    if (uncommitted) return { error: uncommitted };
     const base = changeBase
       ? { sha: revParse(root, changeBase) ?? changeBase, label: `base ${changeBase.slice(0, 12)}` }
       : trunkBase(root, sha);
@@ -236,16 +234,20 @@ async function changeTarget(root: string, label: string, branch: string | undefi
     const line = /:\d+$/.test(target) && !/^a_[0-9a-f]+$/.test(target);
     const rb = baseSnap ? resolveAnchorRefs(baseSnap, [target]) : null;
     const d = rb?.ids.length ? baseSnap!.find((x) => x.id === rb.ids[0]) : undefined;
-    if (d && line) {
+    // Witnessed at the HEAD, where the deletion is: `landed` asks whether that commit
+    // reached the trunk, and the base is on the trunk already.
+    if (d && !line) return { targetId: d.id, witness: { anchorId: d.id, bodyHash: d.bodyHash, deleted: true } as BugWitness, sourceRef: sha };
+    // Asked only once the committed history has no answer: the check is per FILE, so asked
+    // first it refused a committed deletion over any unrelated edit in that file (I9).
+    const uncommitted = uncommittedTarget(root, branch, target);
+    if (uncommitted) return { error: uncommitted };
+    if (d) {
       return {
         error: `"${target}" is no line of ${label}'s last commit. At its ${base!.label} that line is in `
           + `${d.file}#${d.symbolPath.join(".")} — if that is the code this change deletes, file on `
           + `\`${d.file}#${d.symbolPath.join(".")}\` (line numbers differ between the two sides).`,
       };
     }
-    // Witnessed at the HEAD, where the deletion is: `landed` asks whether that commit
-    // reached the trunk, and the base is on the trunk already.
-    if (d) return { targetId: d.id, witness: { anchorId: d.id, bodyHash: d.bodyHash, deleted: true } as BugWitness, sourceRef: sha };
     if (rb && rb.errors.some(ambiguous)) return { error: rb.errors.join("; ") };
     return {
       error: `"${target}" is not in ${label}'s last commit${base ? ` nor at its ${base.label}` : ""} — `
