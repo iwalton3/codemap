@@ -25,7 +25,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { ISO_DATE, parseAsOf, type BugWitness } from "./schema.js";
 import { witnessDrift, realDrift } from "./reviews.js";
-import { originSlug, headCommit, currentBranch, isAncestor, defaultBranch, revParse } from "./git.js";
+import { originSlug, headCommit, currentBranch, isAncestor, defaultBranch, revParse, trunkBase } from "./git.js";
 import { prIsMerged, prMergedAt, mergedAfter, landingOf } from "./pr.js";
 import { fetchReviewThreads, type GhRunner } from "./pr-push.js";
 import { ensureSidecar, sync as sidecarSync, receive as sidecarReceive, healMerge, readManifests, checkPeers, currentManifest, sidecarLineage, isSameSidecar } from "./sidecar.js";
@@ -669,16 +669,36 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
   const witnessed = all.some((f) => f.target.kind === "anchor" && f.witness);
   const tip = trunk && witnessed ? await readSnapshot(root, trunk.sha).catch(() => null) : null;
   const tipBodies = new Map((tip ?? []).map((a) => [a.id, a.bodyHash]));
+  const tipIdx = tip ? liveIndex(root, new Map(tip.map((a) => [a.id, a]))) : null;
+  // Did the trunk hold this symbol where the change left it? Snapshots are cached per sha,
+  // so a listing pays one per distinct change base, and only for deletions gone from the tip.
+  const heldAt = new Map<string, Set<string> | null>();
+  const trunkHeld = async (f: SharedFinding) => {
+    const ref = f.sourceRef;
+    if (!ref || ref === "@work") return false;
+    const base = trunkBase(root, ref)?.sha;
+    if (!base) return false;
+    if (!heldAt.has(base)) heldAt.set(base, await readSnapshot(root, base).then((s) => (s ? new Set(s.map((a) => a.id)) : null)).catch(() => null));
+    return !!heldAt.get(base)?.has(f.witness!.anchorId);
+  };
   // A DELETION is on the tip when the symbol is gone from it (Q2 of triage
-  // 2026-09-19-post-round-review amends Q9 for deletions) — and only with a tip to look at:
-  // an unreadable trunk has no symbols, which is not the deletion landing.
-  const onTip = (f: SharedFinding) =>
-    f.target.kind === "anchor" && !!f.witness && (f.witness.deleted
-      ? !!tip && !tipBodies.has(f.witness.anchorId)
-      : tipBodies.get(f.witness.anchorId) === f.witness.bodyHash);
+  // 2026-09-19-post-round-review amends Q9 for deletions), with three guards:
+  // - only with a tip to look at: an unreadable trunk has no symbols, which is not the
+  //   deletion landing;
+  // - ABSENT, not merely missing — an id another build derived is incomparable, and falls
+  //   through to ancestry (I10, docs/anchor-id-provenance.md §6);
+  // - only for a symbol the trunk HELD where the change left it. A stacked change deleting
+  //   what its parent added was never on the trunk, so its absence there proves nothing:
+  //   it lands when the change does (owner, triage 2026-09-19-deletion-fixes-review Q8).
+  const onTip = async (f: SharedFinding) => {
+    if (f.target.kind !== "anchor" || !f.witness) return false;
+    if (!f.witness.deleted) return tipBodies.get(f.witness.anchorId) === f.witness.bodyHash;
+    if (!tipIdx || resolveAnchor(f.witness.anchorId, [f.witness.bodyHash], tipIdx).at !== "absent") return false;
+    return trunkHeld(f);
+  };
 
-  const landedAt = (f: SharedFinding) => {
-    if (onTip(f)) return "landed" as const;
+  const landedAt = async (f: SharedFinding) => {
+    if (await onTip(f)) return "landed" as const;
     const ref = f.sourceRef;
     const branch = f.branch ?? branchOf(String(f.pr ?? ""));
     return landingOf(
@@ -689,6 +709,10 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
       () => (branch ? mergedAfter(prsLinkedTo(root, branch), f.createdAt, mergedAt) : null),
     );
   };
+
+  // Once per finding: the row reports it and the buckets are judged by it.
+  const landedOf = new Map<string, Awaited<ReturnType<typeof landedAt>>>();
+  for (const f of all) landedOf.set(f.id, await landedAt(f));
 
   const row = (f: SharedFinding) => ({
     id: f.id, pr: f.pr, target: f.target, severity: f.severity,
@@ -713,7 +737,7 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
      * head is never an ancestor — falls back to asking GitHub whether the pull request
      * merged. See `landingOf` for the order and why each step is where it is.
      */
-    landed: landedAt(f),
+    landed: landedOf.get(f.id)!,
     ...(f.backlogged ? { backlogged: f.backlogged } : {}),
     // So a re-evaluate is VISIBLE on the row it was pressed on. Without it the act
     // changed nothing a reader could see, and the natural response is to press again.

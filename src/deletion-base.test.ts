@@ -15,6 +15,8 @@ import { init } from "./ops.js";
 import { readSnapshot } from "./snapshots.js";
 import { computeDiff } from "./diff.js";
 import { markReviewedBatch, reviewStatesFor } from "./reviews.js";
+import { findingBacklog } from "./ops-shared.js";
+import { readFindings, writeLocalFinding } from "./store.js";
 import { discard } from "./test-tmp.js";
 
 const PAY = "export function transfer(cents: number) {\n  return cents;\n}\n";
@@ -124,5 +126,43 @@ test("a PR merged with a merge commit still takes findings and sign-offs on what
     assert.equal(r.error, undefined, String(r.error));
     const m = await markReviewedBatch(u.root, [u.foo.id], { level: "code", actor: "human", attestation: "signed", ref: u.headSha, base: u.baseSha });
     assert.equal(m.unwitnessed, undefined);
+  } finally { u.cleanup(); }
+});
+
+const landedOf = async (root: string, id: string) => {
+  const b = await findingBacklog(root, { asOf: "2026-09-19" });
+  const rows = [b.due, b.woken, b.sleeping, b.live, b.moved, b.unjudgeable].flat() as { id: string; landed: string }[];
+  return rows.find((r) => r.id === id);
+};
+
+test("a stacked PR's deletion of code the trunk never held reads open until the change itself lands (Q8)", async () => {
+  // Gone from the trunk tip is true at filing — the trunk never had `foo` — so the shortcut
+  // that lands a deletion of trunk code would call this landed before anything merged.
+  const u = await stacked();
+  try {
+    const r = await onPr(u.root, "src/foo.ts#foo", u.childSha, u.parentSha);
+    assert.equal(r.error, undefined, String(r.error));
+    assert.equal((await landedOf(u.root, String(r.id)))?.landed, "open");
+  } finally { u.cleanup(); }
+});
+
+test("a deletion witnessed under another build's id derivation does not read landed on absence (I10)", async () => {
+  const u = await mergedWithMergeCommit();
+  try {
+    // Filed on a branch that is NOT merged, so only the tip shortcut could call it landed.
+    const git = gitIn(u.root);
+    git("checkout", "-q", "-b", "other", u.baseSha);
+    git("rm", "-q", "src/pay.ts"); git("commit", "-q", "-m", "delete pay");
+    const other = git("rev-parse", "HEAD");
+    git("checkout", "-q", "main");
+    const r = await onPr(u.root, "src/pay.ts#transfer", other, u.baseSha);
+    assert.equal(r.error, undefined, String(r.error));
+    const key = "7";
+    const f = (await readFindings(u.root, { pr: key })).findings.find((x) => x.id === r.id)!;
+    // The same deletion as another build would spell it: an id this build never minted, and
+    // a hash marked with a derivation it does not have.
+    f.witness = { anchorId: "a_" + "e".repeat(64), bodyHash: "h2:ffffffffffffffff:sha256:" + "d".repeat(64), deleted: true };
+    await writeLocalFinding(u.root, f, key);
+    assert.notEqual((await landedOf(u.root, String(r.id)))?.landed, "landed");
   } finally { u.cleanup(); }
 });
