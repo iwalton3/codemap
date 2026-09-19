@@ -164,6 +164,16 @@ const postAckHole = (u, id) => postSeen('/api/ack_hole', { u, id });
 // attestation: 'viewed' (exposure) | 'signed' (sign-off) | undefined (server → signed).
 // `ref` (a PR head sha) witnesses the mark against the code actually on screen —
 // without it a PR sign-off records the working tree's hash, i.e. code never read.
+/**
+ * What a sign-off that skipped some symbols tells the person. The server skips a symbol that
+ * is not at the commit being signed — typically one the change deletes, which has no code
+ * there to vouch for — and reports it as `unwitnessed` rather than recording a mark on nothing.
+ * @param {string[] | undefined} ids
+ */
+const notSignedNote = (ids) => (ids && ids.length
+  ? `${ids.length} symbol${ids.length === 1 ? ' was' : 's were'} not signed: not in the pull request's head, so there is no code there to vouch for (a deletion, usually).`
+  : null);
+
 const postReview = (u, targetKind, targetId, level, unmark, attestation, ref) =>
   postSeen('/api/review', { u, targetKind, targetId, level, unmark, attestation, ref });
 // Stakes triage (human source → confirmed tier). `body` = { importance } or { clear:true }.
@@ -3478,6 +3488,7 @@ class PrStoryPage extends Component {
    *   pulled: any,
    *   push: PushState | null,
    *   markError: string | null,
+   *   markNote: string | null,
    *   showFindings: boolean,
    *   chapterBusy: Record<string, boolean>,
    *   offStory: ApiMap['/api/pr/findings'] | null,
@@ -3499,7 +3510,7 @@ class PrStoryPage extends Component {
     return {
       story: null, storyErr: null, open: {}, code: {}, pending: {}, finding: null, prRef: null, showDiff: {},
       promote: null, promoted: {}, showCovered: false, deriving: false, derived: null,
-      pulling: false, pulled: null, push: null, markError: null, showFindings: false, chapterBusy: {},
+      pulling: false, pulled: null, push: null, markError: null, markNote: null, showFindings: false, chapterBusy: {},
       offStory: null,
       shared: null,
       teamOpen: null,
@@ -3726,6 +3737,7 @@ class PrStoryPage extends Component {
     this.state.chapterBusy = { ...this.state.chapterBusy, [chapterId]: false };
     if (!res || res.error) { this.state.markError = (res && res.error) || 'the chapter mark did not reach the server'; return; }
     this.state.markError = null;
+    this.state.markNote = notSignedNote(res.unwitnessed);
     // Patch each symbol from the server's own marks, for the same reason a single
     // sign-off does: the state has nuance (replayed, sitting on a revert) a client
     // must not invent.
@@ -3857,7 +3869,10 @@ class PrStoryPage extends Component {
     }).then(r => r.json()).catch(() => null);
     if (!res || res.error) { this.state.markError = (res && res.error) || 'the sign-off did not reach the server'; return; }
     this.state.markError = null;
+    this.state.markNote = notSignedNote(res.unwitnessed);
     for (const [mid, mark] of Object.entries(res.marks || {})) this.patchStep(mid, mark);
+    // Nothing was signed, so this is not "done with this one": stay on it.
+    if ((res.unwitnessed || []).includes(id)) return;
     // Taking a sign-off back is a correction, not progress — stay put. (The code
     // pane is not re-fetched either way: signing changes review state, not the
     // source or its annotations.)
@@ -4571,6 +4586,7 @@ class PrStoryPage extends Component {
           ${when(this.state.derived && !this.state.derived.error, () => html`<span class="dim">${this.state.derived.applied} newly proposed${this.state.derived.refused ? `, ${this.state.derived.refused} already at or above this tier` : ''} — of ${this.state.derived.considered} with a signal. Every one is <b>likely</b>: confirm or lower it yourself.</span>`)}
         </div>
         ${when(this.state.markError, () => html`<div class="warn">sign-off failed: ${this.state.markError}</div>`)}
+        ${when(this.state.markNote, () => html`<div class="warn marknote">${this.state.markNote}</div>`)}
         <div class="prderive prpush">
           <button class="${this.state.showFindings ? 'on' : ''}" on-click="${() => this.toggleFindings()}" title="every finding on this PR in one list — raise or resolve without opening each symbol">${this.state.showFindings ? 'hide findings' : `findings (${this.allFindings().filter(e => !e.f.resolved).length + this.sharedOpenCount()})`}</button>
           <button on-click="${() => this.openPush('comments')}" title="${this.hasSidecar() ? 'post your verdict and summary to the pull request. Findings are NOT posted as comments — they live on the team\'s sidecar. Shows you exactly what would be sent first.' : 'post your findings to the pull request as review comments. Yours go out; an agent\'s only if you raised it. Shows you exactly what would be sent first.'}">${this.hasSidecar() ? 'push review verdict to GitHub' : 'push comments to GitHub'}</button>
