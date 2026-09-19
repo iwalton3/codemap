@@ -50,7 +50,7 @@ import { docsVerdict } from "./docs-lookup.js";
 import { queueContestedTriage } from "./ops/triage.js";
 import { liveAnchors, liveIndex } from "./ops/shared.js";
 export { mirrorTriage, mirrorTriageBatch, mirrorTriageClear } from "./triage-publish.js";
-import { linkedBranches, writeLocalLink, readSharedNotes, readAnnotations, readAnchorStore, readFindings, loadNodes, loadNodeVersions, nodeIdsWithPublishableVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets, attributeLocalWalkthrough, readBlockedScopes, findingCountsByPr, readUnpublishedWalkthroughs, readStoreMeta, writeStoreMeta, foldedScopes, hasFoldedFromSidecar, SIDECAR_LINEAGE, type SidecarMark } from "./store.js";
+import { linkedBranches, prsLinkedTo, writeLocalLink, readSharedNotes, readAnnotations, readAnchorStore, readFindings, loadNodes, loadNodeVersions, nodeIdsWithPublishableVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets, attributeLocalWalkthrough, readBlockedScopes, findingCountsByPr, readUnpublishedWalkthroughs, readStoreMeta, writeStoreMeta, foldedScopes, hasFoldedFromSidecar, SIDECAR_LINEAGE, type SidecarMark } from "./store.js";
 import {
   publishDocVersion, acceptDocHash, resolveDoc, foldDocs, docScope,
   type NewDocVersion,
@@ -2580,7 +2580,13 @@ export async function sharedHub(root: string) {
   const prs = (await findingCountsByPr(root))
     // Newest first where the key is a number, which is what a pull request key is;
     // anything else sorts after rather than being dropped.
-    .sort((a, b) => (Number(b.pr) || -1) - (Number(a.pr) || -1) || a.pr.localeCompare(b.pr));
+    .sort((a, b) => (Number(b.pr) || -1) - (Number(a.pr) || -1) || a.pr.localeCompare(b.pr))
+    // A branch key is a review whose pull request may not exist yet; say which branch, and
+    // which pull requests it has been linked to, so the hub can tell the two apart.
+    .map((p) => {
+      const branch = branchOf(p.pr);
+      return branch === null ? p : { ...p, branch, linkedPrs: prsLinkedTo(root, branch) };
+    });
 
   return {
     configured: true as const,

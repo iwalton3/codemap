@@ -11,7 +11,7 @@
  */
 
 import { Component, defineComponent, html, when, each } from './vendor/vdx/framework.js';
-import { api, apiPost, pageShell, nav, go, href, errText, taskError, copyIdButton } from './core.js';
+import { api, apiPost, pageShell, nav, go, href, errText, taskError, copyIdButton, sharedUrl, reviewLabel } from './core.js';
 
 /**
  * What a pending ask reads as on the row.
@@ -204,7 +204,7 @@ class SharedPage extends Component {
    */
   toggleQueue() {
     this.state.queue = !this.state.queue;
-    if (this.props.query.f) { go(`/u/${this.props.params.universe}/shared/${this.props.params.pr}/`); return; }
+    if (this.props.query.f) { go(sharedUrl(this.props.params.universe, this.props.params.pr)); return; }
     this.load.run();
   }
 
@@ -458,7 +458,9 @@ class SharedPage extends Component {
     return pageShell(d, null, html`
       <div class="crumbs">
         <b>${u}</b> <span class="sep">·</span>
-        <a href="#/u/${u}/pr/${pr}/">PR ${pr}</a> <span class="sep">·</span> shared
+        ${String(pr).startsWith('branch:')
+          ? html`<b>${reviewLabel(pr)}</b>`
+          : html`<a href="#/u/${u}/pr/${pr}/">PR ${pr}</a>`} <span class="sep">·</span> shared
         <span class="dim">· ${d.total} finding(s) · ${d.waitingOnYou} waiting on a person${d.contested ? ` · ${d.contested} contested` : ''}</span>
       </div>
       <div class="sharedbar">
@@ -466,7 +468,7 @@ class SharedPage extends Component {
         <button on-click="${() => this.toggleQueue()}">${st.queue ? 'showing: needs a person' : 'showing: everything'}</button>
         ${when(!!d.findings.length, () => html`<button on-click="${() => this.toggleAll()}"
           >${st.open.size >= d.findings.length ? 'collapse all' : 'expand all'}</button>`)}
-        <a href="#/u/${u}/shared/${pr}/peers/">peers</a>
+        <a href="${href(`${sharedUrl(u, pr)}peers/`)}">peers</a>
       </div>
       ${blockedBanner(d.scope)}
       ${when(!!st.note, () => html`<div class="empty">${st.note}</div>`)}

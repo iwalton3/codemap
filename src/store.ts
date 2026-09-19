@@ -1588,6 +1588,12 @@ export function writeLocalLink(root: string, pr: string, branch: string): void {
   db(root).prepare("INSERT OR IGNORE INTO review_link(scope,pr,branch) VALUES('@local',?,?)").run(pr, branch);
 }
 
+/** The pull requests a branch has been linked to, newest number first. */
+export function prsLinkedTo(root: string, branch: string): string[] {
+  return (db(root).prepare("SELECT DISTINCT pr FROM review_link WHERE branch = ?").all(branch) as { pr: string }[])
+    .map((r) => r.pr).sort((a, b) => Number(b) - Number(a));
+}
+
 /** The branches a pull request was opened from, as folded from `reviews/<universe>`. */
 export function linkedBranches(root: string, pr: number | string): string[] {
   return (db(root).prepare("SELECT DISTINCT branch FROM review_link WHERE pr = ? ORDER BY branch").all(String(pr)) as { branch: string }[])

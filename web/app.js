@@ -29,7 +29,7 @@ import { standardUrl, rulesUrl, branchUrl, auditUrl, conformanceUrl, servedNote 
 
 import {
   errText, hitTarget, apiPost, api, loaded, taskError, isErr, pageShell, nav, go, href, setRouter, postSeen,
-  copyIdButton, jumpTarget, worthResolving, goReplace,
+  copyIdButton, jumpTarget, worthResolving, goReplace, sharedUrl, reviewLabel,
 } from './core.js';
 
 /**
@@ -1322,7 +1322,7 @@ class AnchorPage extends Component {
         <div class="sec">findings on this symbol</div>
         ${each(a.findings, f => html`<div class="afind sev-${f.severity || 'low'}">
           <div class="tfmeta">
-            <a href="#/u/${u}/shared/${f.pr}/">PR ${f.pr}</a>
+            <a href="${href(sharedUrl(u, f.pr))}">${reviewLabel(f.pr)}</a>
             <span>${f.severity ?? '—'}</span>
             <span>${f.state}</span>
             ${when(!!f.category, () => html`<span>${f.category}</span>`)}
@@ -1627,7 +1627,7 @@ class SearchPage extends Component {
     // Three children, because `.sym` is a three-column grid — a fourth wraps onto an
     // implicit row, which is a layout defect only a browser can see. The marker goes
     // INSIDE the middle cell.
-    return html`<a class="sym ${f.closed ? 'shut' : ''}" href="${href(`/u/${u}/shared/${f.pr}/`, { f: f.id })}">
+    return html`<a class="sym ${f.closed ? 'shut' : ''}" href="${href(sharedUrl(u, f.pr), { f: f.id })}">
       <span class="k">${f.state}</span>
       <span>${f.summary}${when(f.backlogged, () => html` <span class="pill" title="${f.backlogged.reason}">backlogged until ${f.backlogged.until}</span>`)}</span>
       <span class="muted">#${f.pr}</span>
@@ -2933,9 +2933,11 @@ class SharedHubPage extends Component {
         </div>
 
         ${when(!!(ok.prs && ok.prs.length), () => html`
-          <div class="hubsec">pull requests with findings</div>
-          ${each(ok.prs, p => html`<a class="hubpr" href="${href(`/u/${u}/shared/${p.pr}/`)}">
-            <b>PR ${p.pr}</b>
+          <div class="hubsec">reviews with findings</div>
+          ${each(ok.prs, p => html`<a class="hubpr" href="${href(sharedUrl(u, p.pr))}">
+            <b>${reviewLabel(p.pr)}</b>
+            ${when('branch' in p, () => html`<span class="dim">${'linkedPrs' in p && p.linkedPrs.length
+              ? `→ ${p.linkedPrs.map(n => `PR ${n}`).join(', ')}` : 'no pull request yet'}</span>`)}
             <span class="dim">${p.total} finding${p.total === 1 ? '' : 's'}</span>
             ${when(!!p.waiting, () => html`<span class="warn">${p.waiting} waiting on a person</span>`)}
             ${when(!!p.unshared, () => html`<span class="dim" title="filed here and not sent to the team">${p.unshared} not shared</span>`)}
@@ -4792,7 +4794,7 @@ class BacklogPage extends Component {
       ${each(f.thread || [], c => html`<div class="blthread"><b>${c.by}</b>${c.model ? ` (${c.model})` : ''}: ${c.body}</div>`, c => c.id)}
       ${when(!!f.assignment, () => html`<div class="blassigned">handed back for a fresh look by ${f.assignment.by} — ${f.assignment.note || f.assignment.kind}</div>`)}
       <div class="blacts">
-        <a class="btnlike" href="${href(`/u/${this.props.params.universe}/shared/${r.pr}/`)}">open on the pull request ›</a>
+        <a class="btnlike" href="${href(sharedUrl(this.props.params.universe, r.pr))}">open the review ›</a>
         <span class="dim blhint">these two end it, which is why they are here and not on the row:</span>
         <button disabled="${st.busy === r.id}" title="It is done — the code no longer has this problem. Asserts something about the code, so read it first." on-click="${() => this.act('close', r.id, { state: 'resolved', reason: 'resolved from the backlog' })}">resolve</button>
         <button disabled="${st.busy === r.id}" title="It was not a real defect. Asserts the finding was wrong, which is the claim its author's record carries." on-click="${() => this.act('close', r.id, { state: 'refuted', reason: 'refuted from the backlog' })}">refute</button>
@@ -4826,7 +4828,7 @@ class BacklogPage extends Component {
       <div class="blhead" on-click="${(e) => { if (e.target && e.target.closest && e.target.closest('a,button,input')) return; this.select(r); }}">
         <span class="blcaret">${sel ? '▾' : '▸'}</span>
         ${when(r.severity, () => html`<span class="rvfsev" style="background:${SEV_COLOR[r.severity] || '#3a4250'}" title="severity: ${r.severity}"></span>`)}
-        <a class="blpr" href="${href(`/u/${u}/shared/${r.pr}/`)}" title="the pull request this was filed on">#${r.pr}</a>
+        <a class="blpr" href="${href(sharedUrl(u, r.pr))}" title="the pull request or branch this was filed on">${reviewLabel(r.pr)}</a>
         <span class="bltarget"><a href="${href(r.target.kind === 'node' ? nodeUrl(u, r.target.id) : anchorUrl(u, r.target.id))}">${r.target.id}</a></span>
         <span class="bland l-${r.landed}" title="${land[1]}">${land[0]}</span>
         ${when(r.needsAck, () => html`<span class="prbadge">awaits you</span>`)}

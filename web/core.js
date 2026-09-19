@@ -347,10 +347,26 @@ export async function postSeen(path, body) {
  * @param {{ universe: string, kind: string, id: string, pr?: string, parent?: string }} r
  * @returns {{ path: string, query: Record<string,string> } | null}
  */
+/**
+ * A shared review's page. The key is a pull request number or `branch:<name>`, and a branch
+ * name may hold a `/`, which would split the hash route, so it is encoded (the router
+ * decodes route params).
+ * @param {string} u
+ * @param {string | number} key
+ */
+export const sharedUrl = (u, key) => `/u/${u}/shared/${encodeURIComponent(String(key))}/`;
+
+/**
+ * How a review key reads: `PR 41`, or `branch feature/x` for one filed before its pull
+ * request existed.
+ * @param {string | number} key
+ */
+export const reviewLabel = (key) => (String(key).startsWith('branch:') ? `branch ${String(key).slice(7)}` : `PR ${key}`);
+
 export function entityRoute(r) {
   const u = r.universe;
   switch (r.kind) {
-    case 'finding': return r.pr ? { path: `/u/${u}/shared/${r.pr}/`, query: { f: r.id } } : null;
+    case 'finding': return r.pr ? { path: sharedUrl(u, r.pr), query: { f: r.id } } : null;
     case 'bug': return { path: `/u/${u}/bugs/`, query: { bug: r.id, state: 'all' } };
     case 'requirement': return { path: `/u/${u}/standard/r/${r.id}/`, query: {} };
     case 'spec': return { path: `/u/${u}/standard/spec/${r.id}/`, query: {} };

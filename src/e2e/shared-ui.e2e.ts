@@ -303,6 +303,42 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
 
   // --- contested: the loudest thing on the page, so it had better be right -------
 
+  test("a branch review is on the hub, opens by its encoded key, and follows its pull request", async () => {
+    // A branch name holds a `/`, which would split the hash route if the key were not encoded.
+    const f = await shareFinding(root, "branch:feature/limits", {
+      targetKind: "anchor", targetId: "a_9", severity: "medium", branch: "feature/limits",
+      text: "a negative amount passes the cap", comment: "reject amounts < 0 before capping",
+    }) as { id: string; error?: string };
+    assert.equal(f.error, undefined, String(f.error));
+
+    const hub = await open(`/u/${universe}/shared/`);
+    const row = hub.page.locator(".hubpr", { hasText: "branch feature/limits" });
+    await row.waitFor();
+    assert.match(await row.textContent(), /no pull request yet/);
+    await row.click();
+    // The queue is the default view and an untriaged finding is not in it, so the header's
+    // count is what says the finding is here.
+    await hub.page.locator(".crumbs", { hasText: "branch feature/limits" }).waitFor();
+    const crumbs = await hub.page.textContent(".crumbs");
+    assert.match(crumbs, /branch feature\/limits/);
+    assert.match(crumbs, /1 finding/);
+    assert.deepEqual(hub.errors, []);
+    await hub.page.close();
+
+    const { linkReviewOp } = await import("../ops-shared.js");
+    await linkReviewOp(root, "77", "feature/limits");
+    const again = await open(`/u/${universe}/shared/`);
+    await again.page.locator(".hubpr", { hasText: "branch feature/limits" }).waitFor();
+    assert.match(await again.page.locator(".hubpr", { hasText: "branch feature/limits" }).textContent(), /PR 77/);
+    await again.page.close();
+
+    const pr = await open(`/u/${universe}/shared/77/`);
+    await pr.page.waitForSelector(".crumbs");
+    assert.match(await pr.page.textContent(".crumbs"), /1 finding/, "and the pull request carries it");
+    assert.deepEqual(pr.errors, []);
+    await pr.page.close();
+  });
+
   test("a contested field shows both values and refuses to pick", async () => {
     // Built by hand rather than through `revise`, because "concurrent" has a precise
     // meaning here — neither writer's `after` names the other's event — and the
