@@ -460,8 +460,8 @@ export interface BugWitness {
    * The claim is that the symbol is ABSENT: a change deletes it, and `bodyHash` is the body
    * it deletes, as the change's merge-base holds it. Holds while the anchor is absent, so
    * it lands when the deletion reaches the trunk and drifts if the symbol comes back
-   * (owner, triage 2026-09-19-post-round-review Q2). Only a finding on code a change
-   * deletes carries it, minted at filing; never chosen by the filer (Q3).
+   * (owner, triage 2026-09-19-post-round-review Q2). A finding or sign-off on code a
+   * change deletes carries it, minted when made; never chosen by the filer (Q3).
    */
   deleted?: true;
 }
@@ -834,6 +834,12 @@ export interface Review {
 
 export interface AcceptedEntry {
   bodyHash: string;
+  /**
+   * An approval of the DELETION of `bodyHash`: the symbol was absent at `commit` and its
+   * trunk merge-base held this body. It holds while the symbol stays absent, never as an
+   * approval of the body itself (triage 2026-09-19-post-round-review, Item D).
+   */
+  deleted?: true;
   /** Commit the acceptance was made against — the ancestry probe for revert detection. */
   commit: string | null;
   branch: string | null;

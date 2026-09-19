@@ -11,7 +11,7 @@ import { readReviews, writeReviews, readAnchorStore, loadNodes, loadNodesAt, sna
 import { readSnapshot } from "./snapshots.js";
 import { resolveAcceptance, recordAcceptance, type Ancestry } from "./acceptance.js";
 import { ACCEPTED_CAP, type AcceptedCitation, type AcceptedEntry, type AcceptanceVia } from "./schema.js";
-import { isAncestor, isGitRepo, currentBranch as gitBranch, hasObject } from "./git.js";
+import { isAncestor, isGitRepo, currentBranch as gitBranch, hasObject, revParse, trunkBase } from "./git.js";
 import { ABSENT_HASH, comparableHashes, sameBody } from "./normalize.js";
 import { resolveActor, actorLabel, reviewerKey, errorProfiles } from "./identity.js";
 import { indexFile } from "./repo.js";
@@ -606,6 +606,9 @@ export async function reviewStatesFor(
   // PR reads fresh there and stale on the base branch until the change lands —
   // which is right: the vouch covers the branch's code, and it activates on merge.
   const live = await liveHashes(root, all, opts?.ref);
+  const deletions = [...all].filter((id) => live.get(id) === undefined
+    && rs.reviews.some((r) => r.target.id === id && acceptedOf(r).some((c) => c.entries.some((e) => e.deleted))));
+  const baseBodies = await deletedBodies(root, opts?.ref, deletions);
   const out = new Map<string, ReviewPair>();
   const wantViewed = opts?.viewed ?? false;
 
@@ -618,6 +621,19 @@ export async function reviewStatesFor(
 
     const cites = acceptedOf(r);
     const resolved = cites.map((c) => {
+      // A deletion approval holds while the symbol is absent, and stops holding if the base
+      // now holds another body: a different deletion is being made. A legacy mark taken on
+      // an absent symbol (`ABSENT_HASH`, no entries) was the same act, minus the body.
+      const bodies = c.entries.filter((e) => !e.deleted);
+      const gone = c.entries.filter((e) => e.deleted);
+      const legacyGone = !c.entries.length && r.witnesses.some((w) => w.anchorId === c.anchorId && w.bodyHash === ABSENT_HASH);
+      if ((gone.length || legacyGone) && live.get(c.anchorId) === undefined
+          && resolveAnchor(c.anchorId, c.entries.map((e) => e.bodyHash), live).at === "absent") {
+        const b = baseBodies.get(c.anchorId);
+        if (gone.length && b !== undefined && !gone.some((e) => sameBody(e.bodyHash, b))) return { via: "none" as const };
+        return { via: "direct" as const, entry: gone.at(-1) };
+      }
+      c = { ...c, entries: bodies };
       // The same rule as everywhere else, on the surface this product leads with:
       // a green check must go stale when the code it covered changes, and must NOT
       // go stale because a teammate's build spells the id differently. `live.get`
@@ -690,6 +706,21 @@ export async function reviewStatesFor(
 
 export async function reviewStatus(root: string, target: Target, opts?: { viewed?: boolean; ref?: string }): Promise<ReviewPair> {
   return (await reviewStatesFor(root, [target], opts)).get(key(target))!;
+}
+
+/**
+ * The bodies `ids` had where `ref` left the trunk — what a change deletes, when they are
+ * absent at `ref`. Empty with no ref, no trunk, or a ref that IS its merge-base.
+ */
+async function deletedBodies(root: string, ref: string | undefined, ids: string[]): Promise<Map<string, string>> {
+  if (!ref || !ids.length) return new Map();
+  try {
+    const sha = revParse(root, ref) ?? ref;
+    const base = trunkBase(root, sha);
+    if (!base || base.sha === sha) return new Map();
+    const want = new Set(ids);
+    return new Map(((await readSnapshot(root, base.sha)) ?? []).filter((a) => want.has(a.id)).map((a) => [a.id, a.bodyHash]));
+  } catch { return new Map(); }
 }
 
 /**
@@ -1008,9 +1039,14 @@ export async function markReviewedBatch(
   // a caller that supplies `hashes` read the code itself, and a cover (`coveredBy`) is
   // observed through its container — which is how a member the change DELETES gets
   // covered when the type around it is signed.
+  // A symbol absent at the ref that its merge-base holds is being DELETED, and signing it
+  // signs the deletion (owner, triage 2026-09-19-post-round-review: "Should probably land
+  // both"; Q5 counts it).
+  const deletedAt = input.hashes ? new Map<string, string>()
+    : await deletedBodies(root, input.ref, anchorIds.filter((id) => live.get(id) === undefined));
   let unwitnessed: string[] = [];
   if (!input.hashes && !input.coveredBy) {
-    const unhashed = anchorIds.filter((id) => live.get(id) === undefined);
+    const unhashed = anchorIds.filter((id) => live.get(id) === undefined && !deletedAt.has(id));
     const known = unhashed.length ? workHas(root, unhashed, input.ref ? snapshotKey(root, input.ref) : undefined) : new Set<string>();
     unwitnessed = unhashed.filter((id) => !known.has(id));
     const drop = new Set(unwitnessed);
@@ -1037,6 +1073,7 @@ export async function markReviewedBatch(
     const prior = priorFor.get(id);
     const entries = prior ? (acceptedOf(prior).find((c) => c.anchorId === id)?.entries ?? []) : [];
     const hash = live.get(id);
+    const gone = hash === undefined ? deletedAt.get(id) : undefined;
     return {
       id: "rev_" + randomBytes(6).toString("hex"),
       target: { kind: "anchor" as const, id },
@@ -1048,10 +1085,12 @@ export async function markReviewedBatch(
       coveredBy: input.coveredBy,
       at: stamp,
       reviewedCommit: commit,
-      witnesses: [{ anchorId: id, bodyHash: hash ?? "sha256:absent" }],
+      witnesses: [gone ? { anchorId: id, bodyHash: gone, deleted: true as const } : { anchorId: id, bodyHash: hash ?? "sha256:absent" }],
       accepted: [{
         anchorId: id,
-        entries: hash ? recordAcceptance(entries, { bodyHash: hash, commit, branch, at: stamp }, ACCEPTED_CAP) : entries,
+        entries: hash ? recordAcceptance(entries, { bodyHash: hash, commit, branch, at: stamp }, ACCEPTED_CAP)
+          : gone ? recordAcceptance(entries, { bodyHash: gone, deleted: true, commit, branch, at: stamp }, ACCEPTED_CAP)
+          : entries,
       }],
     };
   });

@@ -1,11 +1,9 @@
 /**
- * Signing a class the pull request DELETES (triage run 2026-09-19-branch-review-round, P-3).
- *
- * The class's own sign-off is skipped — it is not at the head, so it witnesses nothing —
- * and a cover written under it would read its members as reviewed through a container
- * that has no mark. Deleted code is not signable (owner, 2026-09-18), so neither is what
- * it contained. A LIVE class still covers a member the change deleted: that is the case
- * `9bc78a0`'s cover exemption was written for.
+ * Signing a class the pull request DELETES signs the deletion, and covers the members it
+ * deletes with it (triage run 2026-09-19-post-round-review, Item D: "Should probably land
+ * both"; Q5 counts them). This reverses branch-review-round P-3, which followed the
+ * earlier "deleted code is not signable". A LIVE class still covers a member the change
+ * deleted: that is the case `9bc78a0`'s cover exemption was written for.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -34,18 +32,18 @@ async function deletingPr(n: number, after: string | null) {
 const covered = async (repo: string) =>
   (await readReviews(repo)).reviews.filter((r) => r.coveredBy).map((r) => r.target.id);
 
-test("signing a deleted class, one symbol at a time, covers none of its members", async () => {
+test("signing a deleted class, one symbol at a time, signs it and covers its members", async () => {
   const f = await deletingPr(31, null);
   try {
     assert.ok(f.cls && f.post, "the removed class and its members are on the worklist");
     const r = await prStepMark(f.repo, "31", f.cls.id, { attestation: "signed" }) as any;
     assert.equal(r.error, undefined, String(r.error));
-    assert.deepEqual(r.unwitnessed, [f.cls.id], "the class itself is not signable");
-    assert.deepEqual(await covered(f.repo), [], "and nothing was signed through it");
+    assert.equal(r.unwitnessed, undefined, "the deletion is signable");
+    assert.deepEqual((await covered(f.repo)).sort(), [f.post.id, f.void_.id].sort(), "and its members with it");
   } finally { f.t.dispose(); }
 });
 
-test("signing a chapter that walks a deleted class covers none of its members", async () => {
+test("signing a chapter that walks a deleted class covers its members", async () => {
   const f = await deletingPr(32, null);
   try {
     const w = await prWalkthroughSet(f.repo, "32", [{
@@ -56,7 +54,7 @@ test("signing a chapter that walks a deleted class covers none of its members", 
     const chapter = ((await prWalkthroughGet(f.repo, "32")) as any).walkthrough.features[0].chapters[0].id;
     const r = await prChapterMark(f.repo, "32", chapter, { attestation: "signed" }) as any;
     assert.equal(r.error, undefined, String(r.error));
-    assert.deepEqual(await covered(f.repo), []);
+    assert.deepEqual((await covered(f.repo)).sort(), [f.post.id, f.void_.id].sort());
   } finally { f.t.dispose(); }
 });
 

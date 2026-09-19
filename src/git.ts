@@ -637,3 +637,15 @@ export function submoduleDrift(root: string): SubmoduleReport {
   }
   return { drift: parseSubmoduleStatus(r.stdout ?? "") };
 }
+
+/**
+ * Where a branch left the trunk: its merge-base with `origin/<trunk>`, else `<trunk>`.
+ * The default base for `check_stale at:`, and where a branch finding on a symbol the
+ * branch DELETES is witnessed, and what a sign-off on a deleted symbol approves the deletion of.
+ */
+export function trunkBase(root: string, sha: string): { sha: string; label: string } | null {
+  const trunk = defaultBranch(root);
+  const tip = revParse(root, `origin/${trunk}`) ?? revParse(root, trunk);
+  const base = tip ? mergeBase(root, sha, tip) : null;
+  return base ? { sha: base, label: `merge-base with ${trunk}` } : null;
+}

@@ -397,8 +397,8 @@ export async function prStepMark(
   } else {
     const mark = { level: "code" as const, actor: "human" as const, attestation: opts.attestation, reviewer: opts.reviewer, ref: c.head };
     unwitnessed = (await markReviewedBatch(root, [id], mark)).unwitnessed;
-    // A container the head does not hold was not signed, so nothing is signed through it
-    // (deleted code is not signable); a live one still covers a member the change deleted.
+    // A container nothing witnessed was not signed, so nothing is signed through it. One
+    // the change DELETES is witnessed as a deletion and covers the members it deletes.
     if (!unwitnessed?.includes(id)) await markReviewedBatch(root, inside, { ...mark, coveredBy: id });
   }
   // Every symbol whose state may have moved — the one clicked, what it covers, and
