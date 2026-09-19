@@ -116,8 +116,11 @@ export async function staleAt(root: string, at: string, base?: string) {
   let baseSha: string | null;
   let baseLabel: string;
   if (base) {
-    baseSha = revParse(root, base);
-    baseLabel = base;
+    // Where the branch LEFT `base`, as the default does — its tip has moved on since, and
+    // diffing against it reports everything `base` changed as the branch's own.
+    const tip = revParse(root, base);
+    baseSha = tip ? mergeBase(root, view.sha, tip) : null;
+    baseLabel = `merge-base with ${base}`;
   } else {
     const b = trunkBase(root, view.sha);
     baseSha = b?.sha ?? null;

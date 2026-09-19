@@ -193,3 +193,36 @@ test("a mark made at a branch NAME records the commit, not the moving name", asy
     assert.equal(row.accepted?.[0]?.entries.at(-1)?.commit, u.featureSha);
   } finally { u.cleanup(); }
 });
+
+test("check_stale at a branch with an explicit base diffs against where the branch left it, not its tip", async () => {
+  // Triage run 2026-09-19-branch-review-round, J16. `develop` moves on after `feature`
+  // forks; diffing against develop's TIP reported develop's own changes as the branch's.
+  const base = mkdtempSync(join(tmpdir(), "codemap-readat-base-"));
+  const root = join(base, "repo");
+  const git = (...a: string[]) => {
+    const r = spawnSync("git", ["-c", "user.email=izzie@x.com", "-c", "user.name=izzie", ...a], { cwd: root, encoding: "utf8" });
+    if (r.status !== 0) throw new Error(`git ${a.join(" ")}: ${r.stderr}`);
+    return r.stdout.trim();
+  };
+  try {
+    mkdirSync(join(root, "src"), { recursive: true });
+    mkdirSync(join(root, ".codemap"), { recursive: true });
+    git("init", "-q", "-b", "develop");
+    writeFileSync(join(root, ".gitignore"), ".codemap/\n");
+    writeFileSync(join(root, "src/a.ts"), "export function a() {\n  return 1;\n}\n");
+    writeFileSync(join(root, "src/b.ts"), "export function b() {\n  return 1;\n}\n");
+    git("add", "-A"); git("commit", "-q", "-m", "fork point");
+    git("checkout", "-q", "-b", "feature");
+    writeFileSync(join(root, "src/a.ts"), "export function a() {\n  return 2;\n}\n");
+    git("commit", "-q", "-am", "feature changes a");
+    git("checkout", "-q", "develop");
+    writeFileSync(join(root, "src/b.ts"), "export function b() {\n  return 3;\n}\n");
+    git("commit", "-q", "-am", "develop changes b");
+    await init(root);
+    const r = await staleAt(root, "feature", "develop") as any;
+    assert.equal(r.error, undefined, String(r.error));
+    const touched = [...r.touched.added, ...r.touched.changed, ...r.touched.removed].map((x: any) => x.symbol);
+    assert.deepEqual(touched.sort(), ["a"], `only the branch's own change: ${JSON.stringify(r.touched)}`);
+    assert.equal(r.base.sha, git("merge-base", "feature", "develop"));
+  } finally { discard(base); }
+});
