@@ -66,7 +66,13 @@ export async function indexRepo(root: string): Promise<Anchor[]> {
 export async function indexCommit(
   root: string,
   sha: string,
-  opts: { prefix?: string; ignore?: Ignore } = {},
+  opts: {
+    prefix?: string; ignore?: Ignore;
+    /** This build's anchors for a (path, blob) it has already indexed, or undefined. */
+    reuse?: (path: string, oid: string) => Anchor[] | undefined;
+    /** Filled with every indexed file's blob id, so the caller can record the reuse cache. */
+    blobs?: Map<string, string>;
+  } = {},
 ): Promise<Anchor[] | null> {
   const tree = lsTreeEntries(root, sha);
   if (!tree) return null;
@@ -86,19 +92,30 @@ export async function indexCommit(
   // `readBlobs` throws when a batch fails. A partial read here would be cached as
   // this commit's snapshot and read as a mass symbol deletion by the next diff, so
   // it becomes the documented `null` — no snapshot at all beats a truncated one.
+  const reused = new Map<string, Anchor[]>();
+  for (const f of files) {
+    const hit = opts.reuse?.(prefix + f.path, f.oid);
+    if (hit) reused.set(f.path, hit);
+  }
   let blobs: Map<string, string>;
-  try { blobs = readBlobs(root, sha, files.map((f) => f.path)); }
+  try { blobs = readBlobs(root, sha, files.filter((f) => !reused.has(f.path)).map((f) => f.path)); }
   catch { return null; }
 
   const anchors: Anchor[] = [];
+  // In TREE order whether reused or parsed, so the output does not depend on the cache.
   // relPath must carry the prefix: it is hashed into the anchor id, so indexing a
   // submodule under its own root would mint ids that never match the parent's.
-  for (const [path, source] of blobs) anchors.push(...(await indexBlob(source, prefix + path)));
+  for (const f of files) {
+    const source = blobs.get(f.path);
+    if (!reused.has(f.path) && source === undefined) continue;
+    anchors.push(...(reused.get(f.path) ?? await indexBlob(source!, prefix + f.path)));
+    opts.blobs?.set(prefix + f.path, f.oid);
+  }
 
   for (const link of tree) {
     if (link.type !== "commit") continue;
     if (ignore.ignores(prefix + link.path, true)) continue;
-    const sub = await indexCommit(join(root, link.path), link.oid, { prefix: `${prefix}${link.path}/`, ignore });
+    const sub = await indexCommit(join(root, link.path), link.oid, { prefix: `${prefix}${link.path}/`, ignore, reuse: opts.reuse, blobs: opts.blobs });
     // Same rule as the blob read above, and it used to be a bare `if (sub)`. A
     // submodule that cannot be read — never initialized, or pinned to a commit
     // nobody fetched — would otherwise contribute nothing to a snapshot that still

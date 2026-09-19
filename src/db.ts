@@ -10,6 +10,7 @@
  */
 
 import { DatabaseSync } from "node:sqlite";
+import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, existsSync, writeFileSync } from "node:fs";
 import { mkdirSync } from "node:fs";
 import { join, sep } from "node:path";
@@ -45,6 +46,7 @@ export function db(root: string): DatabaseSync {
   migrateTriageBlob(d);
   migrateBugsBlob(d);
   migrateWalkthroughBlob(d);
+  compactLegacySnapshots(d);
   cache.set(root, d);
   return d;
 }
@@ -106,6 +108,87 @@ export function closeAll(): void {
  * stale (something has written since) and is dropped without being read: the table has
  * already won, and re-importing would resurrect marks a later write removed.
  */
+/** One stored anchor row, as both layouts hold it. */
+export interface AnchorSetRow {
+  id: string; file: string; symbol_path: string; kind: string; disambiguator: string | null;
+  body_hash: string; last_commit: string | null; derivation: number | null;
+  start_byte: number | null; end_byte: number | null; start_line: number | null; end_line: number | null;
+}
+
+/**
+ * The key a file's anchor set is stored under: a hash of its PATH and every stored value.
+ *
+ * The path is in it because an anchor id is — the same bytes at two paths are two sets.
+ * Computed from the row values, never from the source, so a legacy snapshot migrated in
+ * place and a fresh index of the same file land on one key and share one copy. The
+ * derivation is an interned id, which is local to this store; so is the table.
+ */
+export function anchorSetKey(file: string, rows: AnchorSetRow[]): string {
+  const h = createHash("sha256").update(file);
+  for (const r of [...rows].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+    h.update("\0" + JSON.stringify([r.id, r.symbol_path, r.kind, r.disambiguator, r.body_hash, r.last_commit,
+      r.derivation, r.start_byte, r.end_byte, r.start_line, r.end_line]));
+  }
+  return h.digest("hex").slice(0, 32);
+}
+
+/** Store a snapshot's rows as shared anchor sets, replacing whatever `ref` had. One transaction. */
+export function putSnapshotSets(d: DatabaseSync, ref: string, rows: AnchorSetRow[]): Map<string, string> {
+  const byFile = new Map<string, AnchorSetRow[]>();
+  for (const r of rows) (byFile.get(r.file) ?? byFile.set(r.file, []).get(r.file)!).push(r);
+  const keyOf = new Map<string, string>();
+  const ins = d.prepare("INSERT OR IGNORE INTO anchor_sets(fkey,id,file,symbol_path,kind,disambiguator,body_hash,last_commit,derivation,start_byte,end_byte,start_line,end_line) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)");
+  const link = d.prepare("INSERT OR IGNORE INTO snapshot_sets(ref,fkey) VALUES(?,?)");
+  const previous = (d.prepare("SELECT fkey FROM snapshot_sets WHERE ref = ?").all(ref) as { fkey: string }[]).map((r) => r.fkey);
+  d.exec("BEGIN");
+  try {
+    d.prepare("DELETE FROM snapshot_sets WHERE ref = ?").run(ref);
+    d.prepare("DELETE FROM anchors WHERE ref = ?").run(ref);   // a legacy copy of this ref, if any
+    for (const [file, fileRows] of byFile) {
+      const k = anchorSetKey(file, fileRows);
+      keyOf.set(file, k);
+      for (const r of fileRows) {
+        ins.run(k, r.id, r.file, r.symbol_path, r.kind, r.disambiguator, r.body_hash, r.last_commit,
+          r.derivation, r.start_byte, r.end_byte, r.start_line, r.end_line);
+      }
+      link.run(ref, k);
+    }
+    collectAnchorSets(d, previous);
+    d.exec("COMMIT");
+  } catch (e) { d.exec("ROLLBACK"); throw e; }
+  return keyOf;
+}
+
+/**
+ * Drop the anchor sets among `fkeys` that no snapshot references any more, and the blob
+ * cache entries pointing at them — a cache entry naming a deleted set would read as "this
+ * blob has no anchors". Runs inside the caller's transaction.
+ */
+export function collectAnchorSets(d: DatabaseSync, fkeys: string[]): void {
+  const inUse = d.prepare("SELECT 1 FROM snapshot_sets WHERE fkey = ? LIMIT 1");
+  for (const k of new Set(fkeys)) {
+    if (inUse.get(k)) continue;
+    d.prepare("DELETE FROM anchor_sets WHERE fkey = ?").run(k);
+    d.prepare("DELETE FROM blob_index WHERE fkey = ?").run(k);
+  }
+}
+
+/**
+ * Convert snapshots stored the old way (one `anchors` row per anchor per commit) into
+ * shared anchor sets, once per store. Only the storage moves: every row reads back the same.
+ * The freed pages are reused by SQLite; the FILE shrinks only after a `VACUUM`, which is
+ * not run here because it rewrites the whole database on the open path.
+ */
+function compactLegacySnapshots(d: DatabaseSync): void {
+  const refs = (d.prepare("SELECT DISTINCT ref FROM anchors WHERE ref NOT IN (?, ?)").all(WORK_REF, ORPHAN_REF) as { ref: string }[])
+    .map((r) => r.ref);
+  for (const ref of refs) {
+    const rows = d.prepare("SELECT id,file,symbol_path,kind,disambiguator,body_hash,last_commit,derivation,start_byte,end_byte,start_line,end_line FROM anchors WHERE ref = ?")
+      .all(ref) as unknown as AnchorSetRow[];
+    putSnapshotSets(d, ref, rows);
+  }
+}
+
 function migrateTriageBlob(d: DatabaseSync): void {
   const row = d.prepare("SELECT v FROM meta WHERE k = 'triage'").get() as { v: string } | undefined;
   if (!row) return;
@@ -345,6 +428,31 @@ function migrate(d: DatabaseSync): void {
       PRIMARY KEY (ref, id)
     );
     CREATE INDEX IF NOT EXISTS ix_anchors_reffile ON anchors(ref, file);
+    -- Commit snapshots, stored ONCE per file content. A snapshot is the set of its files'
+    -- anchor sets, and consecutive commits share almost every file, so a commit costs
+    -- roughly what it changed rather than ~8 MB (measured on a 1,840-file repo).
+    -- The anchors table holds only @work and @orphan now. See anchorSetKey.
+    CREATE TABLE IF NOT EXISTS anchor_sets (
+      fkey TEXT NOT NULL, id TEXT NOT NULL, file TEXT NOT NULL, symbol_path TEXT NOT NULL,
+      kind TEXT NOT NULL, disambiguator TEXT, body_hash TEXT NOT NULL, last_commit TEXT,
+      derivation INTEGER, start_byte INTEGER, end_byte INTEGER, start_line INTEGER, end_line INTEGER,
+      PRIMARY KEY (fkey, id)
+    );
+    CREATE INDEX IF NOT EXISTS ix_anchor_sets_id ON anchor_sets(id);
+    CREATE TABLE IF NOT EXISTS snapshot_sets (ref TEXT NOT NULL, fkey TEXT NOT NULL, PRIMARY KEY (ref, fkey));
+    CREATE INDEX IF NOT EXISTS ix_snapshot_sets_fkey ON snapshot_sets(fkey);
+    -- Which anchor set a (path, blob, indexer build) produced, so a rebuild parses only
+    -- the files that changed. A cache: '' means the blob indexed to no anchors.
+    CREATE TABLE IF NOT EXISTS blob_index (
+      path TEXT NOT NULL, oid TEXT NOT NULL, deriv TEXT NOT NULL, fkey TEXT NOT NULL,
+      PRIMARY KEY (path, oid, deriv)
+    );
+    CREATE VIEW IF NOT EXISTS snapshot_anchor_rows AS
+      SELECT s.ref AS ref, a.id AS id, a.file AS file, a.symbol_path AS symbol_path, a.kind AS kind,
+        a.disambiguator AS disambiguator, a.body_hash AS body_hash, a.last_commit AS last_commit,
+        a.derivation AS derivation, a.start_byte AS start_byte, a.end_byte AS end_byte,
+        a.start_line AS start_line, a.end_line AS end_line
+      FROM snapshot_sets s JOIN anchor_sets a ON a.fkey = s.fkey;
     -- Derivation tags, interned. There are as many distinct tags as there are
     -- grammars in use (one to five), against up to hundreds of thousands of
     -- anchors, so storing the JSON per row would add tens of megabytes to say

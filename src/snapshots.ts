@@ -7,7 +7,7 @@ import type { Anchor } from "./schema.js";
 import { indexCommit } from "./repo.js";
 import { revParse } from "./git.js";
 import {
-  anchorsUnderRef, readCachedSnapshot, referencedAnchorIds, retainOrphans, snapshotKey, writeSnapshot,
+  anchorsUnderRef, blobReuser, readCachedSnapshot, referencedAnchorIds, retainOrphans, snapshotKey, writeSnapshot,
 } from "./store.js";
 import { db } from "./db.js";
 
@@ -33,7 +33,9 @@ export async function readSnapshot(
  */
 export async function buildSnapshot(root: string, sha: string, label?: string | null): Promise<Anchor[] | null> {
   if (revParse(root, sha) !== sha) return null;
-  const anchors = await indexCommit(root, sha);
+  // Parses only the blobs this build has not indexed at that path before (`blobReuser`).
+  const blobs = new Map<string, string>();
+  const anchors = await indexCommit(root, sha, { reuse: blobReuser(root), blobs });
   if (!anchors) return null;
   const previous = anchorsUnderRef(root, sha);
   if (previous.length) {
@@ -42,6 +44,6 @@ export async function buildSnapshot(root: string, sha: string, label?: string | 
     retainOrphans(root, previous.filter((a) => referenced.has(a.id) && !fresh.has(a.id)));
   }
   const kept = (db(root).prepare("SELECT branch FROM snapshots WHERE ref = ?").get(sha) as { branch: string | null } | undefined)?.branch;
-  await writeSnapshot(root, sha, label ?? kept ?? null, anchors, new Date().toISOString());
+  await writeSnapshot(root, sha, label ?? kept ?? null, anchors, new Date().toISOString(), { blobs });
   return anchors;
 }

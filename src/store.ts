@@ -20,8 +20,8 @@ import type { DerivationTag } from "./schema.js";
 import { derivationTag, GRAMMAR_NAMES } from "./grammars.js";
 import { derivationFingerprint, derivationMark } from "./normalize.js";
 import { anchorIndex, derivationsOf, legacyIndex, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
-import { randomBytes } from "node:crypto";
-import { db, WORK_REF, ORPHAN_REF } from "./db.js";
+import { randomBytes, createHash } from "node:crypto";
+import { db, WORK_REF, ORPHAN_REF, putSnapshotSets, collectAnchorSets, type AnchorSetRow } from "./db.js";
 import { resolveActor } from "./identity.js";
 import { ABSENT_FIELD } from "./shared-triage.js";
 import { needsHumanAck, type SharedBug } from "./shared-bugs.js";
@@ -237,9 +237,15 @@ function replaceAnchors(d: DatabaseSync, ref: string, anchors: Anchor[]): void {
   }
 }
 
+/**
+ * Where a ref's rows live: `@work` and `@orphan` in `anchors`, a commit snapshot in the
+ * shared anchor sets (read through a view with the same columns). See db.ts.
+ */
+const rowsOf = (ref: string): string => (ref === WORK_REF || ref === ORPHAN_REF ? "anchors" : "snapshot_anchor_rows");
+
 function anchorsUnder(d: DatabaseSync, ref: string): Anchor[] {
   const tags = derivationsById(d);
-  const rows = d.prepare("SELECT * FROM anchors WHERE ref = ?").all(ref) as unknown as AnchorRow[];
+  const rows = d.prepare(`SELECT * FROM ${rowsOf(ref)} WHERE ref = ?`).all(ref) as unknown as AnchorRow[];
   return rows.map((r) => rowToAnchor(r, tags));
 }
 
@@ -303,10 +309,32 @@ export function snapshotIsDirty(root: string, ref: string): boolean {
  */
 export async function writeSnapshot(
   root: string, ref: string, branch: string | null, anchors: Anchor[], at: string,
+  /**
+   * Every indexed file's blob id, zero-anchor files included, when the caller read them
+   * from git. Recorded so the next snapshot of a commit sharing these blobs skips parsing
+   * them (`blobReuser`).
+   */
+  opts: { blobs?: Map<string, string> } = {},
 ): Promise<void> {
-  if (ref === WORK_REF) throw new Error("cannot snapshot the reserved @work ref");
+  if (ref === WORK_REF || ref === ORPHAN_REF) throw new Error(`cannot snapshot the reserved ${ref} ref`);
   const d = db(root);
-  replaceAnchors(d, ref, anchors);
+  const tagId = new Map<string, number | null>();
+  const rows: AnchorSetRow[] = anchors.map((a) => {
+    const k = a.derivation ? tagKey(a.derivation) : "";
+    if (!tagId.has(k)) tagId.set(k, internDerivation(d, a.derivation));
+    return {
+      id: a.id, file: a.file, symbol_path: JSON.stringify(a.symbolPath), kind: a.kind,
+      disambiguator: a.disambiguator ?? null, body_hash: a.bodyHash, last_commit: a.lastVerifiedCommit ?? null,
+      derivation: tagId.get(k) ?? null, start_byte: a.loc?.startByte ?? null, end_byte: a.loc?.endByte ?? null,
+      start_line: a.loc?.startLine ?? null, end_line: a.loc?.endLine ?? null,
+    };
+  });
+  const keyOf = putSnapshotSets(d, ref, rows);
+  if (opts.blobs?.size) {
+    const deriv = derivKey();
+    const put = d.prepare("INSERT OR REPLACE INTO blob_index(path,oid,deriv,fkey) VALUES(?,?,?,?)");
+    for (const [path, oid] of opts.blobs) put.run(path, oid, deriv, keyOf.get(path) ?? "");
+  }
   d.prepare("INSERT INTO snapshots(ref,branch,at,count,scheme,hash_scheme,dirty) VALUES(?,?,?,?,?,?,?) ON CONFLICT(ref) DO UPDATE SET branch=excluded.branch, at=excluded.at, count=excluded.count, scheme=excluded.scheme, hash_scheme=excluded.hash_scheme, dirty=excluded.dirty")
     .run(ref, branch, at, anchors.length, ANCHOR_SCHEME, HASH_SCHEME, 0);
 }
@@ -319,6 +347,38 @@ export async function writeSnapshot(
  * means "written before this was recorded", which cannot be distinguished from an
  * older derivation and so counts as stale.
  */
+/**
+ * Which build produced a blob's anchors, for `blob_index`: the anchor and hash schemes and
+ * every grammar's derivation tag. A cached set is reused only by the build that made it,
+ * so any change to the indexer re-parses everything once.
+ */
+function derivKey(): string {
+  return createHash("sha256")
+    .update(JSON.stringify([ANCHOR_SCHEME, HASH_SCHEME, GRAMMAR_NAMES.map((g) => tagKey(derivationTag(g)))]))
+    .digest("hex").slice(0, 16);
+}
+
+/**
+ * The anchors this build already produced for a (path, blob), or undefined when it has not
+ * indexed that blob at that path. `indexCommit` calls it per file, so a snapshot of a commit
+ * near one already cached parses only what changed.
+ */
+export function blobReuser(root: string): (path: string, oid: string) => Anchor[] | undefined {
+  const d = db(root);
+  const deriv = derivKey();
+  const tags = derivationsById(d);
+  const hit = d.prepare("SELECT fkey FROM blob_index WHERE path = ? AND oid = ? AND deriv = ?");
+  const rows = d.prepare("SELECT * FROM anchor_sets WHERE fkey = ?");
+  return (path, oid) => {
+    const r = hit.get(path, oid, deriv) as { fkey: string } | undefined;
+    if (!r) return undefined;
+    if (r.fkey === "") return [];
+    const found = rows.all(r.fkey) as unknown as AnchorRow[];
+    // A cache entry whose set is gone would read as "no anchors"; treat it as a miss.
+    return found.length ? found.map((x) => rowToAnchor(x, tags)) : undefined;
+  };
+}
+
 /** Every anchor stored under a ref, scheme-check bypassed — the raw rows. */
 export function anchorsUnderRef(root: string, ref: string): Anchor[] {
   return anchorsUnder(db(root), ref);
@@ -347,6 +407,9 @@ export function dropSnapshot(root: string, ref: string): void {
   const d = db(root);
   d.exec("BEGIN");
   try {
+    const fkeys = (d.prepare("SELECT fkey FROM snapshot_sets WHERE ref = ?").all(ref) as { fkey: string }[]).map((r) => r.fkey);
+    d.prepare("DELETE FROM snapshot_sets WHERE ref = ?").run(ref);
+    collectAnchorSets(d, fkeys);
     d.prepare("DELETE FROM anchors WHERE ref = ?").run(ref);
     d.prepare("DELETE FROM snapshots WHERE ref = ?").run(ref);
     d.exec("COMMIT");
@@ -530,7 +593,7 @@ export function workHas(root: string, ids: string[], ref: string = WORK_REF): Se
   const out = new Set<string>();
   for (let i = 0; i < ids.length; i += 400) {
     const chunk = ids.slice(i, i + 400);
-    const q = `SELECT id FROM anchors WHERE ref = ? AND id IN (${chunk.map(() => "?").join(",")})`;
+    const q = `SELECT id FROM ${rowsOf(ref)} WHERE ref = ? AND id IN (${chunk.map(() => "?").join(",")})`;
     for (const r of d.prepare(q).all(ref, ...chunk) as unknown as { id: string }[]) out.add(r.id);
   }
   return out;
@@ -571,8 +634,8 @@ export function findAnchorsOutsideWork(
     if (!refused.has(ref)) refused.set(ref, snapshotRefusal(root, ref) !== null);
     return refused.get(ref)!;
   };
-  const q = `SELECT a.*, s.at AS snap_at FROM anchors a JOIN snapshots s ON s.ref = a.ref
-             WHERE a.ref <> '@work' AND a.id IN (${ids.map(() => "?").join(",")})
+  const q = `SELECT a.*, s.at AS snap_at FROM snapshot_anchor_rows a JOIN snapshots s ON s.ref = a.ref
+             WHERE a.id IN (${ids.map(() => "?").join(",")})
              ORDER BY s.at DESC`;
   const d = db(root);
   const tags = derivationsById(d);
@@ -590,7 +653,7 @@ export function findAnchorsOutsideWork(
  * a hundred findings would load the whole snapshot a hundred times.
  */
 export function bodyHashAt(root: string, ref: string, anchorId: string): string | null {
-  const row = db(root).prepare("SELECT body_hash FROM anchors WHERE ref = ? AND id = ?").get(ref, anchorId) as
+  const row = db(root).prepare(`SELECT body_hash FROM ${rowsOf(ref)} WHERE ref = ? AND id = ?`).get(ref, anchorId) as
     { body_hash?: string } | undefined;
   return row?.body_hash ?? null;
 }
@@ -711,7 +774,7 @@ export function liveDerivationDrift(root: string): { stale: boolean; tagged: num
  * grammar stays usable, exactly as it is today, until something re-snapshots it.
  */
 function staleDerivation(d: DatabaseSync, ref: string): boolean {
-  const rows = d.prepare("SELECT DISTINCT derivation FROM anchors WHERE ref = ? AND derivation IS NOT NULL")
+  const rows = d.prepare(`SELECT DISTINCT derivation FROM ${rowsOf(ref)} WHERE ref = ? AND derivation IS NOT NULL`)
     .all(ref) as unknown as { derivation: number }[];
   if (!rows.length) return false;
   const tags = derivationsById(d);
