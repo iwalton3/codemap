@@ -26,7 +26,7 @@ import { join } from "node:path";
 import { ISO_DATE, parseAsOf, type BugWitness } from "./schema.js";
 import { witnessDrift, realDrift } from "./reviews.js";
 import { originSlug, headCommit, currentBranch, isAncestor, defaultBranch, revParse } from "./git.js";
-import { prIsMerged, landingOf } from "./pr.js";
+import { prIsMerged, prMergedAt, mergedAfter, landingOf } from "./pr.js";
 import { fetchReviewThreads, type GhRunner } from "./pr-push.js";
 import { ensureSidecar, sync as sidecarSync, receive as sidecarReceive, healMerge, readManifests, checkPeers, currentManifest, sidecarLineage, isSameSidecar } from "./sidecar.js";
 import {
@@ -52,6 +52,7 @@ import { liveAnchors, liveIndex } from "./ops/shared.js";
 export { mirrorTriage, mirrorTriageBatch, mirrorTriageClear } from "./triage-publish.js";
 import { findingHome, linkedBranches, prsLinkedTo, writeLocalLink, readSharedNotes, readAnnotations, readAnchorStore, readFindings, loadNodes, loadNodeVersions, nodeIdsWithPublishableVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets, attributeLocalWalkthrough, readBlockedScopes, findingCountsByPr, readUnpublishedWalkthroughs, readStoreMeta, writeStoreMeta, foldedScopes, hasFoldedFromSidecar, SIDECAR_LINEAGE, type SidecarMark } from "./store.js";
 import { holdsLock, withLock } from "./lock.js";
+import { readSnapshot } from "./snapshots.js";
 import {
   publishDocVersion, acceptDocHash, resolveDoc, foldDocs, docScope,
   type NewDocVersion,
@@ -657,13 +658,29 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
   const isMerged = (n: number): boolean | null =>
     slug ? prIsMerged(`${slug.owner}/${slug.repo}`, n) : null;
 
-  const landedAt = (ref?: string, pr?: string) =>
-    landingOf(
+  const mergedAt = (n: number) => (slug ? prMergedAt(`${slug.owner}/${slug.repo}`, n) : null);
+
+  // The trunk tip's bodies, once per listing (a snapshot is cached per sha). A finding whose
+  // cited body is there is landed whatever its ref says — a cherry-pick, or code the trunk
+  // already had: the defect is live (owner, triage 2026-09-19-branch-review-round Q9/Q11).
+  // Compared by id AND hash, so a body under another derivation never counts.
+  const tip = trunk ? await readSnapshot(root, trunk.sha).catch(() => null) : null;
+  const tipBodies = new Map((tip ?? []).map((a) => [a.id, a.bodyHash]));
+  const onTip = (f: SharedFinding) =>
+    f.target.kind === "anchor" && !!f.witness && tipBodies.get(f.witness.anchorId) === f.witness.bodyHash;
+
+  const landedAt = (f: SharedFinding) => {
+    if (onTip(f)) return "landed" as const;
+    const ref = f.sourceRef;
+    const branch = f.branch ?? branchOf(String(f.pr ?? ""));
+    return landingOf(
       !ref || ref === "@work" || !trunk ? null : landedIn(root, ref, trunk.sha),
-      pr,
-      // A thunk, so the network read happens only for a finding ancestry could not place.
+      branch ? branchKey(branch) : f.pr,
+      // Thunks, so the network read happens only for a finding ancestry could not place.
       isMerged,
+      () => (branch ? mergedAfter(prsLinkedTo(root, branch), f.createdAt, mergedAt) : null),
     );
+  };
 
   const row = (f: SharedFinding) => ({
     id: f.id, pr: f.pr, target: f.target, severity: f.severity,
@@ -688,7 +705,7 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
      * head is never an ancestor — falls back to asking GitHub whether the pull request
      * merged. See `landingOf` for the order and why each step is where it is.
      */
-    landed: landedAt(f.sourceRef, f.pr),
+    landed: landedAt(f),
     ...(f.backlogged ? { backlogged: f.backlogged } : {}),
     // So a re-evaluate is VISIBLE on the row it was pressed on. Without it the act
     // changed nothing a reader could see, and the natural response is to press again.

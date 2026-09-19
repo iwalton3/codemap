@@ -45,6 +45,10 @@ const finding = (id: string, over: Partial<SharedFinding> = {}): SharedFinding =
   state: "created", corroboration: [], thread: [], revisions: [], ...over,
 } as SharedFinding);
 
+/** Every row's `landed`, whichever bucket its witness put it in. */
+const landingOfAll = (b: Awaited<ReturnType<typeof findingBacklog>>) => Object.fromEntries(
+  [...b.due, ...b.woken, ...b.sleeping, ...b.live, ...b.moved, ...b.unjudgeable].map((r) => [r.id, r.landed]));
+
 const backlogged = (until: string, witness?: BugWitness) =>
   ({ until, reason: "slated for replacement", by: PERSON, at: "2026-09-01T00:00:00Z", ...(witness ? { witness } : {}) });
 
@@ -222,14 +226,16 @@ test("`landed` is decided by the CODE reaching the trunk, not by a pull request'
     const offTrunk = git("rev-parse", "HEAD").stdout.trim();
     git("checkout", "-q", "main");
 
-    const w = { anchorId: id, bodyHash: hash };
+    // A body the trunk does NOT hold: a witness the trunk's tip holds is landed whatever
+    // the ref says (the next test), which is not what this one is about.
+    const w = { anchorId: id, bodyHash: otherBody(hash) };
     await writeLocalFinding(root, finding("f_debt", { target: { kind: "anchor", id }, witness: w, sourceRef: onTrunk }), 1);
     await writeLocalFinding(root, finding("f_review", { target: { kind: "anchor", id }, witness: w, sourceRef: offTrunk }), 2);
     await writeLocalFinding(root, finding("f_work", { target: { kind: "anchor", id }, witness: w, sourceRef: "@work" }), 3);
     await writeLocalFinding(root, finding("f_none", { target: { kind: "anchor", id }, witness: w }), 4);
 
     const b = await findingBacklog(root, { asOf: "2026-09-01" });
-    const landing = Object.fromEntries(b.live.map((r) => [r.id, r.landed]));
+    const landing = landingOfAll(b);
     assert.equal(landing.f_debt, "landed", "its code is on the trunk — this is debt now");
     assert.equal(landing.f_review, "open", "a stacked branch's code has not landed, whatever GitHub says");
     // `@work` names no commit, and it was a third of the measured findings. Guessing
@@ -238,6 +244,55 @@ test("`landed` is decided by the CODE reaching the trunk, not by a pull request'
     assert.equal(landing.f_none, "unknown");
     assert.deepEqual(b.byLanding, { landed: 1, open: 1, unknown: 2 });
   } finally { discard(root); }
+});
+
+test("a finding whose cited code is on the trunk's tip is landed at once — the defect is live", async () => {
+  // Owner, triage 2026-09-19-branch-review-round Q9/Q11: this covers a cherry-pick, and a
+  // finding on code the trunk already had, for pull-request and branch findings alike.
+  // It CHANGES an answer: before, both of these read by their ref alone.
+  const { root, id, hash } = await universe();
+  const git = (...a: string[]) => spawnSync("git", ["-c", "user.email=izzie@x.com", "-c", "user.name=t", ...a], { cwd: root, encoding: "utf8" });
+  try {
+    git("init", "-q", "-b", "main");
+    git("add", "-A");
+    git("commit", "-qm", "on the trunk");
+    git("checkout", "-qb", "feat/elsewhere");
+    writeFileSync(join(root, "src/other.js"), "export const x = 1;\n", "utf8");
+    git("add", "-A");
+    git("commit", "-qm", "off the trunk");
+    const offTrunk = git("rev-parse", "HEAD").stdout.trim();
+    git("checkout", "-q", "main");
+
+    const onTip = { anchorId: id, bodyHash: hash };
+    await writeLocalFinding(root, finding("f_pr_live", { target: { kind: "anchor", id }, witness: onTip, sourceRef: offTrunk }), 5);
+    await writeLocalFinding(root, finding("f_work_live", { target: { kind: "anchor", id }, witness: onTip, sourceRef: "@work" }), 6);
+    await writeLocalFinding(root, finding("f_branch_live", { target: { kind: "anchor", id }, witness: onTip, sourceRef: offTrunk, branch: "feat/elsewhere" }), "branch:feat/elsewhere");
+    await writeLocalFinding(root, finding("f_moved", { target: { kind: "anchor", id }, witness: { anchorId: id, bodyHash: otherBody(hash) }, sourceRef: offTrunk }), 7);
+    await writeLocalFinding(root, finding("f_node", { target: { kind: "node", id: "n_x" }, sourceRef: offTrunk }), 8);
+
+    const landing = landingOfAll(await findingBacklog(root, { asOf: "2026-09-01" }));
+    assert.equal(landing.f_pr_live, "landed", "a pull-request finding: its body is on the tip");
+    assert.equal(landing.f_work_live, "landed", "even with no ref to ask about");
+    assert.equal(landing.f_branch_live, "landed", "a branch finding too");
+    assert.equal(landing.f_moved, "open", "a body the tip does not hold falls through to ancestry");
+    assert.equal(landing.f_node, "open", "a node finding cites no body, so the rule does not apply");
+  } finally { discard(root); }
+});
+
+test("a branch finding lands through a linked pull request that merged AFTER it was filed", async () => {
+  // Owner, triage 2026-09-19-branch-review-round Q10. A branch name is one review for
+  // ever, so PR 77 merging before this finding existed says nothing about its code.
+  const { mergedAfter } = await import("./pr.js");
+  const at = (m: Record<number, string | false | null>) => (n: number) => (n in m ? m[n]! : false);
+  const filed = "2026-09-10T00:00:00Z";
+  assert.equal(mergedAfter(["77"], filed, at({ 77: "2026-09-12T00:00:00Z" })), true, "squash-merged after filing");
+  assert.equal(mergedAfter(["77", "90"], filed, at({ 77: "2026-09-01T00:00:00Z" })), false, "77 merged BEFORE; 90 is open");
+  assert.equal(mergedAfter(["77", "90"], filed, at({ 77: "2026-09-01T00:00:00Z", 90: null })), null, "a failed lookup is not a no");
+  assert.equal(mergedAfter([], filed, at({})), false, "no linked pull request");
+  const { landingOf } = await import("./pr.js");
+  assert.equal(landingOf(false, "branch:feat/x", () => true, () => true), "landed");
+  assert.equal(landingOf(false, "branch:feat/x", () => true, () => false), "open", "the branch's own answer, not a number's");
+  assert.equal(landingOf(false, "branch:feat/x", () => true, () => null), "open", "could not ask: ancestry stands");
 });
 
 test("a shallow clone never caches `not landed` — deepening can make it true", async () => {

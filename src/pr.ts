@@ -72,22 +72,23 @@ function gh(args: string[], cwd?: string, timeout = 120_000): { ok: boolean; out
  * YES can never go stale — but new merges happen while a server runs, and a permanent
  * memo would keep answering "not merged" for them all day.
  */
-const mergedCache = new Map<string, { at: number; nums: Set<number>; capped: boolean }>();
+const mergedCache = new Map<string, { at: number; nums: Map<number, string>; capped: boolean }>();
 const MERGED_TTL_MS = 10 * 60_000;
 const MERGED_LIMIT = 200;
 
-function mergedList(repoSlug: string): { nums: Set<number>; capped: boolean } | null {
+/** Merged pull requests in the window, number → merge time. */
+function mergedList(repoSlug: string): { nums: Map<number, string>; capped: boolean } | null {
   const hit = mergedCache.get(repoSlug);
   if (hit && Date.now() - hit.at < MERGED_TTL_MS) return hit;
-  const r = gh(["pr", "list", "--repo", repoSlug, "--state", "merged", "--limit", String(MERGED_LIMIT), "--json", "number"], undefined, 8_000);
+  const r = gh(["pr", "list", "--repo", repoSlug, "--state", "merged", "--limit", String(MERGED_LIMIT), "--json", "number,mergedAt"], undefined, 8_000);
   if (!r.ok) return null;
   try {
-    const parsed = JSON.parse(r.out) as { number: number }[];
+    const parsed = JSON.parse(r.out) as { number: number; mergedAt?: string }[];
     // CAPPED matters, and measuring it is what caught this: `Acme.React` returned exactly
     // 200, which is the limit — so the window is the 200 most recent merges and an older
     // squashed pull request is absent for a reason that has nothing to do with whether it
     // merged. Absence is only authoritative when the list came back short.
-    const entry = { at: Date.now(), nums: new Set(parsed.map((j) => j.number)), capped: parsed.length >= MERGED_LIMIT };
+    const entry = { at: Date.now(), nums: new Map(parsed.map((j) => [j.number, j.mergedAt ?? ""])), capped: parsed.length >= MERGED_LIMIT };
     mergedCache.set(repoSlug, entry);
     return entry;
   } catch { return null; }
@@ -103,15 +104,16 @@ function mergedList(repoSlug: string): { nums: Set<number>; capped: boolean } | 
  * never appears in the list and falls through to here each time. The TTL is the same one
  * the list uses, which bounds how stale a "not merged yet" can be.
  */
-const oneCache = new Map<string, { at: number; merged: boolean }>();
-function mergedOne(repoSlug: string, n: number): boolean | null {
+const oneCache = new Map<string, { at: number; merged: string | false }>();
+function mergedOne(repoSlug: string, n: number): string | false | null {
   const key = `${repoSlug}#${n}`;
   const hit = oneCache.get(key);
-  if (hit && (hit.merged || Date.now() - hit.at < MERGED_TTL_MS)) return hit.merged;
-  const r = gh(["pr", "view", String(n), "--repo", repoSlug, "--json", "state"], undefined, 8_000);
+  if (hit && (hit.merged !== false || Date.now() - hit.at < MERGED_TTL_MS)) return hit.merged;
+  const r = gh(["pr", "view", String(n), "--repo", repoSlug, "--json", "state,mergedAt"], undefined, 8_000);
   if (!r.ok) return null;
   try {
-    const merged = (JSON.parse(r.out) as { state: string }).state === "MERGED";
+    const j = JSON.parse(r.out) as { state: string; mergedAt?: string };
+    const merged = j.state === "MERGED" ? j.mergedAt ?? "" : false;
     oneCache.set(key, { at: Date.now(), merged });
     return merged;
   } catch { return null; }
@@ -125,13 +127,43 @@ function mergedOne(repoSlug: string, n: number): boolean | null {
  * pull request older than the window costs a second.
  */
 export function prIsMerged(repoSlug: string, n: number): boolean | null {
+  const at = prMergedAt(repoSlug, n);
+  return at === null ? null : at !== false;
+}
+
+/**
+ * When this pull request merged: its time (`""` when GitHub gave none), `false` when it
+ * has not, null when nothing here can say. A branch finding needs the TIME, because a
+ * branch name is one review for ever and a merge before the finding was filed says
+ * nothing about its code (`mergedAfter`).
+ */
+export function prMergedAt(repoSlug: string, n: number): string | false | null {
   const list = mergedList(repoSlug);
-  if (list?.nums.has(n)) return true;
+  const hit = list?.nums.get(n);
+  if (hit !== undefined) return hit;
   // Absence is an answer only when the window was not full. Otherwise the pull request
   // may simply be older than the 200 most recent merges, and treating that as "not
   // merged" is the silent-truncation bug this exists to avoid.
   if (list && !list.capped) return false;
   return mergedOne(repoSlug, n);
+}
+
+/**
+ * Did any of a branch's linked pull requests merge after `createdAt`? Null when one that
+ * could have said yes could not be asked — "I could not ask" is never a no.
+ */
+export function mergedAfter(prs: string[], createdAt: string, mergedAt: (n: number) => string | false | null): boolean | null {
+  let unknown = false;
+  for (const p of prs) {
+    const n = Number(p);
+    if (!Number.isInteger(n) || n <= 0) continue;
+    const at = mergedAt(n);
+    if (at === null) unknown = true;
+    // A merge with no recorded time cannot be ordered against the filing: unknown.
+    else if (at === "") unknown = true;
+    else if (at !== false && Date.parse(at) > Date.parse(createdAt)) return true;
+  }
+  return unknown ? null : false;
 }
 
 export function ghAvailable(): boolean {
@@ -1112,9 +1144,12 @@ export function landingOf(
   ancestry: boolean | null,
   pr: string | undefined,
   isMerged: (n: number) => boolean | null,
+  /** For a `branch:` key, which has no number to ask about: its linked pull requests (`mergedAfter`). */
+  branchMerged?: () => boolean | null,
 ): "landed" | "open" | "unknown" {
   if (ancestry === null) return "unknown";
   if (ancestry) return "landed";
+  if (pr?.startsWith("branch:")) return branchMerged?.() === true ? "landed" : "open";
   const n = Number(pr);
   if (Number.isInteger(n) && n > 0 && isMerged(n) === true) return "landed";
   return "open";

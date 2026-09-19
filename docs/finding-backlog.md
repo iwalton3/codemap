@@ -143,6 +143,20 @@ ancestor of the trunk however completely its code landed — left there, a team 
 squashes has every such finding reading "still in review" for ever and an empty
 debt filter.
 
+**Before any of that: a finding whose cited body is on the trunk's tip is landed**
+(owner, triage `2026-09-19-branch-review-round`) — for pull-request and branch findings
+alike, and whatever its ref says. It covers a cherry-pick, which neither ancestry nor
+GitHub can see, and a finding on code the trunk already had: the defect is live, so it is
+debt at once (it still shows on its pull request or branch too). Compared by anchor id and
+body hash against the tip's snapshot, built once per listing, so a body under another
+derivation never counts; a node finding cites no body and is untouched by it.
+
+**A branch finding has no number to ask GitHub about.** Its fallback asks the pull
+requests linked to the branch, and counts only one that merged AFTER the finding was
+filed (`mergedAfter`): a branch name is one review for ever, so a merge before the finding
+existed says nothing about its code. That needs the merge TIME, which the lookups below
+now return.
+
 The order is the design, and `landingOf` is a pure function of it so it can be
 tested without a GitHub repo:
 

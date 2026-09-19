@@ -356,7 +356,9 @@ backlog made urgent: a finding can now be live on the trunk for months, and sear
 you find out something was already known — so closed findings match too, and the hit
 carries `state` and any deadline.
 
-**`landed` is decided by ANCESTRY first, not by a pull request's status field** — local,
+**`landed` is decided by the CODE first, not by a pull request's status field**: a finding
+whose cited body is on the trunk's tip is landed outright (a cherry-pick, or a defect already
+live), then ANCESTRY — local,
 and more correct: a stacked PR reads MERGED while its code is nowhere near the trunk. A
 squash or rebase rewrites the commit so ancestry cannot see it, and ONLY that negative
 falls back to asking GitHub; a failed lookup keeps ancestry's answer, because "I could not
