@@ -17,9 +17,9 @@ import { join } from "node:path";
 import { comparableHashDerivation, type Anchor, type Audit, type BugWitness, type Review } from "./schema.js";
 import { indexRepo, indexFile, indexBlob } from "./repo.js";
 import { citedAnchors, isClosed } from "./shared-bugs.js";
-import { snapshotRefusal, readAnchorStore, loadNodes, loadNodeVersions, winningVersionAt, readGraph, readReviews, readBugs, readRequirements, readAudits, readCriteria, readPointers, derivationLookup, loadNodesAt, resolvable } from "./store.js";
+import { snapshotRefusal, loadNodes, loadNodeVersions, winningVersionAt, readGraph, readReviews, readBugs, readRequirements, readAudits, readCriteria, readPointers, derivationLookup, loadNodesAt, resolvable } from "./store.js";
 import { readSnapshot } from "./snapshots.js";
-import { reviewStatesFor } from "./reviews.js";
+import { reviewStatesFor, liveHashes } from "./reviews.js";
 import { reviewTriageFor, coverageFor, type Coverage } from "./triage.js";
 import { revParse, headCommit, currentBranch, showFile } from "./git.js";
 import { grammarForPath, currentDerivations } from "./grammars.js";
@@ -433,15 +433,14 @@ export interface AnchorCodeDiff {
   lines: DiffLine[];
 }
 
-/** Anchor-hash map for a ref: a cached snapshot's hashes, or @work for the working tree. */
-async function hashesAt(root: string, ref: string | undefined): Promise<AnchorIndex | null> {
-  const index = (anchors: Anchor[]) =>
-    anchorIndex(new Map(anchors.map((a) => [a.id, a.bodyHash])), derivationsOf(anchors), derivationLookup(root));
-  // Stored rows on both paths — `@work` and a cached snapshot alike — so the
-  // derivations are the rows' own, whichever build wrote them.
-  if (!ref) return index((await readAnchorStore(root).catch(() => ({ anchors: [] as Anchor[] }))).anchors);
-  const anchors = await readSnapshot(root, revParse(root, ref) ?? ref);
-  return anchors ? index(anchors) : null;
+/**
+ * Anchor-hash map for a commit's snapshot, with the rows' own derivations. There is no
+ * working-tree case on purpose: the stored `@work` rows lag the tree, so callers with no
+ * head index the tree itself.
+ */
+async function hashesAt(root: string, ref: string): Promise<AnchorIndex | null> {
+  const anchors = await readSnapshot(root, ref);
+  return anchors ? anchorIndex(new Map(anchors.map((a) => [a.id, a.bodyHash])), derivationsOf(anchors), derivationLookup(root)) : null;
 }
 
 export interface DocSide {
@@ -477,7 +476,11 @@ export async function docDiff(root: string, baseRef: string, headRef: string | u
   if (!versions.length) return { forked: false, error: `no node "${nodeId}"` };
   const baseHashes = await hashesAt(root, baseRef);
   if (!baseHashes) return { forked: false, error: `no cached snapshot for base "${baseRef}"` };
-  const headHashes = await hashesAt(root, headRef);
+  // No head means the working tree, re-read from disk like `computeDiff`'s head side —
+  // not the stored `@work` rows. Only the cited files: a version wins on its citations.
+  const headHashes = headRef
+    ? await hashesAt(root, headRef)
+    : await liveHashes(root, new Set(versions.flatMap((v) => v.citations.map((c) => c.anchorId))));
   if (!headHashes) return { forked: false, error: `no cached snapshot for head "${headRef}"` };
   const bv = winningVersionAt(versions, baseHashes);
   const hv = winningVersionAt(versions, headHashes);

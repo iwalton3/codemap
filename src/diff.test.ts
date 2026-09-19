@@ -399,3 +399,31 @@ test("a diff to the working tree judges docs against the index it diffed, not th
     assert.equal(r.impact.nodes[0]!.status, "stale", "so the doc citing it is stale in the same answer");
   } finally { discard(root); }
 });
+
+test("a doc diff to the working tree picks the head's version by the tree, not the stored index", async () => {
+  // Same shape as the no-head `computeDiff` case: the drill-down beside it resolved the
+  // head's winning version against stored `@work` rows an edit had already left behind.
+  const root = mkdtempSync(join(tmpdir(), "codemap-docdiffwork-"));
+  try {
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    const { indexBlob } = await import("./repo.js");
+    const { writeStore } = await import("./store.js");
+    const { legacyIndex } = await import("./anchor-resolve.js");
+    const { docDiff } = await import("./diff.js");
+    const v1 = "export function transfer(cents: number) {\n  return cents;\n}\n";
+    const v2 = "export function transfer(cents: number) {\n  return cents * 2;\n}\n";
+    const [a1] = await indexBlob(v1, "src/pay.ts");
+    const [a2] = await indexBlob(v2, "src/pay.ts");
+    await writeStore(root, [a1!], { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State);
+    await writeSnapshot(root, "base_sha", "main", [a1!], "2026-07-15T00:00:00Z");
+    const node = (body: string): LogicalNode => ({ id: "n", type: "module", title: "Pay", summary: "", anchors: [a1!.id], body });
+    await writeNode(root, node("doubles nothing"), { hashes: legacyIndex(new Map([[a1!.id, a1!.bodyHash]])), commit: null, branch: null });
+    await writeNode(root, node("doubles the amount"), { hashes: legacyIndex(new Map([[a2!.id, a2!.bodyHash]])), commit: null, branch: null });
+    mkdirSync(join(root, "src"), { recursive: true });
+    writeFileSync(join(root, "src/pay.ts"), v2);
+
+    const d = await docDiff(root, "base_sha", undefined, "n");
+    assert.equal(d.forked, true, "the tree's edit makes the other version win at head");
+    assert.equal((d as { head?: { body: string } }).head?.body, "doubles the amount");
+  } finally { discard(root); }
+});
