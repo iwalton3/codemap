@@ -1054,6 +1054,11 @@ export async function witnessNowFor(root: string, id: string, anchorId?: string)
   return a ? witnessNow(root, a) : undefined;
 }
 
+/** One finding's landing, decided exactly as the backlog decides it. */
+export async function findingLanding(root: string, f: SharedFinding) {
+  return (await findingJudge(root, [f])).landing(f);
+}
+
 /**
  * A backlog's witness as it should be READ: an older build's plain witness on a deletion
  * finding's own anchor is a deletion witness. The fold derives this for shared rows

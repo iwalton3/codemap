@@ -185,7 +185,11 @@ import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagn
 // build wrote it with a plain body witness (`finding.backlogged`). A fold-mind change on
 // shards that do not move — and 24 rather than reusing 23, because stores have already
 // folded under 23 with the build that introduced deletions.
-export const MATERIALIZER_VERSION = 24;
+//
+// 24 -> 25: a bug citation carries `deleted` (a bug filed from a deletion finding once it
+// landed). An older bugs fold dropped the field and read the citation as a body, so its
+// rows call the deletion's own absence a fix.
+export const MATERIALIZER_VERSION = 25;
 
 /**
  * What the events in a scope are, cheaply.

@@ -132,7 +132,7 @@ test("the standard projection's table set is pinned to a materializer version", 
   // 21: no new event and no new table — both backlog folds changed what an EXISTING event
   // means (`until` is stored as its DATE part). A fold-mind change on already-folded
   // scopes, which the vocabulary pins below cannot see, which is why it is recorded here.
-  assert.equal(MATERIALIZER_VERSION, 24, "and record the new number here");
+  assert.equal(MATERIALIZER_VERSION, 25, "and record the new number here");
 });
 
 /**
@@ -172,7 +172,7 @@ test("the findings fold's event vocabulary is pinned to a materializer version",
   const wo = src.slice(src.indexOf("const witnessOf"), src.indexOf("};", src.indexOf("const witnessOf")));
   assert.deepEqual([...new Set([...wo.matchAll(/str\(w, "(\w+)"\)|w!\.(\w+)/g)].map((m) => m[1] ?? m[2]!))].sort(),
     ["anchorId", "bodyHash", "deleted"], "the fold reads a new witness field — bump MATERIALIZER_VERSION with it");
-  assert.equal(MATERIALIZER_VERSION, 24, "and record the new number here");
+  assert.equal(MATERIALIZER_VERSION, 25, "and record the new number here");
 });
 
 /**
@@ -199,7 +199,7 @@ test("the bugs fold's event vocabulary is pinned to a materializer version", asy
     "bug.corroborated", "bug.filed", "bug.outcome", "bug.promoted", "bug.requested", "bug.revised",
     "bug.stateChanged", "bug.tracked", "bug.unanchored",
   ], "the bugs fold learned or forgot an event — bump MATERIALIZER_VERSION with it");
-  assert.equal(MATERIALIZER_VERSION, 24, "and record the new number here");
+  assert.equal(MATERIALIZER_VERSION, 25, "and record the new number here");
 });
 
 /**

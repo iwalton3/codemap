@@ -51,6 +51,12 @@ export type { Ask, Verdict, FindingState as BugState };
 export interface BugAnchor {
   anchorId: string;
   bodyHash: string;
+  /**
+   * A bug about a DELETION (filed from a deletion finding once it landed): `bodyHash` is the
+   * body that was deleted, absence is the defect, and the symbol coming back is the change.
+   * See `BugWitness.deleted`.
+   */
+  deleted?: true;
   by: Actor;
   at: string;
   /** Removed by a person. The row stays so a concurrent re-add cannot resurrect it silently. */
@@ -180,7 +186,7 @@ export const citedAnchors = (b: SharedBug): string[] =>
 
 /** The witness list, in the shape `witnessDrift` already takes. */
 export const witnessesOf = (b: SharedBug): BugWitness[] =>
-  b.anchors.filter((a) => !a.removed).map((a) => ({ anchorId: a.anchorId, bodyHash: a.bodyHash }));
+  b.anchors.filter((a) => !a.removed).map((a) => ({ anchorId: a.anchorId, bodyHash: a.bodyHash, ...(a.deleted ? { deleted: true as const } : {}) }));
 
 /** Has somebody put this in a tracker outside codemap? */
 export const isTracked = (b: SharedBug): boolean => b.tracking.length > 0;
@@ -202,10 +208,10 @@ const severity = (d: Data | undefined, k = "severity"): BugSeverity | undefined 
 };
 
 /** Anchor citations off an event, ignoring anything that is not a witnessed id. */
-function anchorsIn(d: Data | undefined): { anchorId: string; bodyHash: string }[] {
+function anchorsIn(d: Data | undefined): { anchorId: string; bodyHash: string; deleted?: true }[] {
   const raw = d?.anchors;
   if (!Array.isArray(raw)) return [];
-  const out: { anchorId: string; bodyHash: string }[] = [];
+  const out: { anchorId: string; bodyHash: string; deleted?: true }[] = [];
   for (const a of raw) {
     const anchorId = str(a as Data, "anchorId");
     // A citation with no witness is the thing that makes staleness undetectable, so
@@ -213,7 +219,11 @@ function anchorsIn(d: Data | undefined): { anchorId: string; bodyHash: string }[
     // symbol is not in its index, and it IS a witness — it says "I looked and it was
     // not there", which a later reader can act on.
     const bodyHash = str(a as Data, "bodyHash");
-    if (anchorId && bodyHash) out.push({ anchorId, bodyHash });
+    // A deletion marker that is not exactly `true` is malformed, and read as a body it
+    // would call the deletion's own absence a fix — dropped, as the findings fold drops it.
+    const deleted = (a as Data).deleted;
+    if (deleted !== undefined && deleted !== true) continue;
+    if (anchorId && bodyHash) out.push({ anchorId, bodyHash, ...(deleted ? { deleted: true as const } : {}) });
   }
   return out;
 }
@@ -459,12 +469,13 @@ export function foldBugs(events: LogEvent[]): Map<string, SharedBug> {
  * code" is said — the local `refreshWitnesses` act, in the log. It does not resurrect
  * a removed one: that would let an agent undo a person's removal by re-filing.
  */
-function addAnchor(b: SharedBug, a: { anchorId: string; bodyHash: string }, by: Actor, at: string): void {
+function addAnchor(b: SharedBug, a: { anchorId: string; bodyHash: string; deleted?: true }, by: Actor, at: string): void {
   const hit = b.anchors.find((x) => x.anchorId === a.anchorId);
   if (!hit) { b.anchors.push({ ...a, by, at }); return; }
   if (hit.removed) return;
-  if (hit.bodyHash === a.bodyHash) return;
+  if (hit.bodyHash === a.bodyHash && hit.deleted === a.deleted) return;
   hit.bodyHash = a.bodyHash;
+  if (a.deleted) hit.deleted = true; else delete hit.deleted;
   hit.by = by;
   hit.at = at;
 }

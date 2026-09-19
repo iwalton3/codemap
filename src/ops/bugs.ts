@@ -353,7 +353,7 @@ export async function bugDetail(root: string, id: string) {
     const a = byId.get(cite.anchorId);
     const liveA = live.get(cite.anchorId);
     const loc = liveA?.loc ?? a?.loc;
-    const w = [{ anchorId: cite.anchorId, bodyHash: cite.bodyHash }];
+    const w = [{ anchorId: cite.anchorId, bodyHash: cite.bodyHash, ...(cite.deleted ? { deleted: true as const } : {}) }];
     return {
       id: cite.anchorId,
       symbol: a ? a.symbolPath.join(" › ") : cite.anchorId.slice(0, 12),
@@ -574,7 +574,12 @@ export async function backlogBugOp(
   // Best-effort, like the finding path: a bug whose code has already left the tree still
   // backlogs, with the date as its only release condition — which is exactly what an
   // acknowledgement has, so nothing is lost by comparison.
-  const witnesses = (await witnessRefs(root, citedAnchors(bug))).witnesses;
+  // A deletion citation's state is its absence, which the citation already states.
+  const gone = "anchors" in bug ? witnessesOf(bug as SharedBug).filter((w) => w.deleted) : [];
+  const witnesses = [
+    ...(await witnessRefs(root, citedAnchors(bug).filter((id) => !gone.some((g) => g.anchorId === id)))).witnesses,
+    ...gone,
+  ];
 
   if ("local" in r) {
     const at = new Date().toISOString();
@@ -823,10 +828,22 @@ export const acceptFinding = homed(async function acceptFinding(
   // defect covers, made here, and the witnesses are taken here. That is an authored act
   // and belongs in the log; guessing it silently would not.
   const refs = f.target.kind === "anchor" ? [f.target.id] : (f.nodeAnchors ?? []);
+  // A finding about a DELETION is review on its change until the deletion lands, and a bug
+  // is a trunk defect; once it lands, the bug carries the deletion, so "possibly fixed"
+  // means the symbol is back (owner, triage 2026-09-19-deletion-fixes-review Q3, Q7).
+  if (f.witness?.deleted && (await shared.findingLanding(root, f)) !== "landed") {
+    return {
+      error: `${findingId} is about code ${f.branch ?? `pull request ${pr}`} deletes, and the deletion has not `
+        + "reached the default branch — it is still under review there. A bug is a defect on the default "
+        + "branch: file it once the deletion lands, or backlog the finding.",
+    };
+  }
   // The ref the finding was WITNESSED at — usually the pull request's head, which is
   // where code the branch introduces lives. Without it this refused the ordinary case on
   // a feature branch and told the caller to index a branch the store had already indexed.
-  const { witnesses, errors } = await witnessRefs(root, refs, f.sourceRef, { includeOrphans: true });
+  const { witnesses, errors } = f.witness?.deleted
+    ? { witnesses: [{ ...f.witness }], errors: [] as string[] }
+    : await witnessRefs(root, refs, f.sourceRef, { includeOrphans: true });
   if (!witnesses.length) {
     return {
       error: `${findingId} points at ${f.target.kind} ${f.target.id.slice(0, 12)}, which resolves to no anchor here`
