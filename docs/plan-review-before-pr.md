@@ -171,9 +171,9 @@ draft's only reason to type both.
 - **Web.** The hub lists branch reviews with the pull requests they are linked to, or "no
   pull request yet". Every link to a review encodes its key: a branch name holds a `/`, which
   split the hash route. The shared page labels a branch review.
-- **Walkthroughs before a PR.** Still open. `foldWalkthroughs` drops any event whose `pr` is
-  not a number, and a walkthrough is built from a pull request's triage, so it needs its own
-  design pass.
+- **Walkthroughs before a PR: not needed (owner, 2026-09-18).** A walkthrough is the human
+  review gate, so it waits for a PR. A draft PR has a number, and the existing walkthrough
+  flow works on it unchanged; findings before that are covered by branch findings.
 
 ## Publishing is not in scope
 
