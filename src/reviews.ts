@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { type Anchor, type Review, type ReviewLevel, type ReviewState, type BugWitness, type Actor, type LogicalNode } from "./schema.js";
 import { readReviews, writeReviews, readAnchorStore, loadNodes, loadNodesAt, snapshotRefusal, snapshotBranch, derivationLookup, workHas, snapshotKey } from "./store.js";
 import { readSnapshot } from "./snapshots.js";
-import { resolveAcceptance, recordAcceptance, type Ancestry } from "./acceptance.js";
+import { resolveAcceptance, recordAcceptance, type Acceptance, type Ancestry } from "./acceptance.js";
 import { ACCEPTED_CAP, type AcceptedCitation, type AcceptedEntry, type AcceptanceVia } from "./schema.js";
 import { isAncestor, isGitRepo, currentBranch as gitBranch, hasObject, revParse, trunkBase } from "./git.js";
 import { ABSENT_HASH, comparableHashes, sameBody } from "./normalize.js";
@@ -605,6 +605,40 @@ function ancestryProbe(root: string, viewRef: string | null): Ancestry {
  * files. By default reflects the *vouch* (`signed`/`checked`); pass `{ viewed: true }`
  * to read the `viewed` exposure marks instead (same shape, so callers render either).
  */
+/**
+ * One citation of a mark, judged against `live`. THE reading of a deletion entry, shared by
+ * every review reader: it approves the deletion — it holds while the symbol is absent, and
+ * stops holding if the base now holds another body — and is never an approval of the body
+ * it deleted (`AcceptedEntry.deleted`). Three readers passing entries straight to
+ * `resolveAcceptance` read it as one (triage 2026-09-19-deletion-fixes-review I2).
+ *
+ * `baseBodies` is what the change's base holds now, where the caller knows it; without it a
+ * deletion approval holds on absence alone.
+ */
+function citationAcceptance(
+  r: Review, c: AcceptedCitation, live: AnchorIndex, ancestry: Ancestry, baseBodies?: Map<string, string>,
+): Acceptance {
+  // A legacy mark taken on an absent symbol (`ABSENT_HASH`, no entries) was the same act,
+  // minus the body.
+  const bodies = c.entries.filter((e) => !e.deleted);
+  const gone = c.entries.filter((e) => e.deleted);
+  const legacyGone = !c.entries.length && r.witnesses.some((w) => w.anchorId === c.anchorId && w.bodyHash === ABSENT_HASH);
+  if ((gone.length || legacyGone) && live.get(c.anchorId) === undefined
+      && resolveAnchor(c.anchorId, c.entries.map((e) => e.bodyHash), live).at === "absent") {
+    const b = baseBodies?.get(c.anchorId);
+    if (gone.length && b !== undefined && !gone.some((e) => sameBody(e.bodyHash, b))) return { via: "none" };
+    return { via: "direct", entry: gone.at(-1) };
+  }
+  // The same rule as everywhere else, on the surface this product leads with:
+  // a green check must go stale when the code it covered changes, and must NOT
+  // go stale because a teammate's build spells the id differently. `live.get`
+  // alone returns undefined for both, and `resolveAcceptance` reads undefined as
+  // `none`, which is the red tick. See docs/anchor-id-provenance.md §6.
+  const at = resolveAnchor(c.anchorId, bodies.map((e) => e.bodyHash), live);
+  if (at.at === "incomparable") return { via: "unverifiable" };
+  return resolveAcceptance(bodies, at.at === "found" ? at.hash : undefined, ancestry);
+}
+
 export async function reviewStatesFor(
   root: string,
   targets: Target[],
@@ -638,29 +672,7 @@ export async function reviewStatesFor(
     const base = { by: r.reviewer, actor: r.actor ?? "agent", at: r.at, coveredBy: r.coveredBy } as const;
 
     const cites = acceptedOf(r);
-    const resolved = cites.map((c) => {
-      // A deletion approval holds while the symbol is absent, and stops holding if the base
-      // now holds another body: a different deletion is being made. A legacy mark taken on
-      // an absent symbol (`ABSENT_HASH`, no entries) was the same act, minus the body.
-      const bodies = c.entries.filter((e) => !e.deleted);
-      const gone = c.entries.filter((e) => e.deleted);
-      const legacyGone = !c.entries.length && r.witnesses.some((w) => w.anchorId === c.anchorId && w.bodyHash === ABSENT_HASH);
-      if ((gone.length || legacyGone) && live.get(c.anchorId) === undefined
-          && resolveAnchor(c.anchorId, c.entries.map((e) => e.bodyHash), live).at === "absent") {
-        const b = baseBodies.get(c.anchorId);
-        if (gone.length && b !== undefined && !gone.some((e) => sameBody(e.bodyHash, b))) return { via: "none" as const };
-        return { via: "direct" as const, entry: gone.at(-1) };
-      }
-      c = { ...c, entries: bodies };
-      // The same rule as everywhere else, on the surface this product leads with:
-      // a green check must go stale when the code it covered changes, and must NOT
-      // go stale because a teammate's build spells the id differently. `live.get`
-      // alone returns undefined for both, and `resolveAcceptance` reads undefined as
-      // `none`, which is the red tick. See docs/anchor-id-provenance.md §6.
-      const at = resolveAnchor(c.anchorId, c.entries.map((e) => e.bodyHash), live);
-      if (at.at === "incomparable") return { via: "unverifiable" as const };
-      return resolveAcceptance(c.entries, at.at === "found" ? at.hash : undefined, ancestry);
-    });
+    const resolved = cites.map((c) => citationAcceptance(r, c, live, ancestry, baseBodies));
     if (!resolved.length) return { state: "reviewed", ...base, via: "direct" };
     // A mark covers several anchors; the weakest one decides, so a single drifted
     // segment cannot hide behind the others.
@@ -819,6 +831,13 @@ export function witnessDrift(witnesses: BugWitness[], live: AnchorIndex): Anchor
   const out: AnchorChange[] = [];
   for (const w of witnesses) {
     const r = resolveAnchor(w.anchorId, [w.bodyHash], live);
+    // A DELETION witness holds while the symbol is absent; its coming back is the change.
+    // Never compared as a body: absent always differs from the body it deleted.
+    if (w.deleted) {
+      if (r.at === "incomparable") out.push({ anchorId: w.anchorId, was: w.bodyHash, now: ABSENT_HASH, unverifiable: true });
+      else if (r.at === "found") out.push({ anchorId: w.anchorId, was: ABSENT_HASH, now: r.hash });
+      continue;
+    }
     // An id this index could not have minted is not a symbol that went away. Before
     // this, the missing id became ABSENT_HASH — which is comparable to everything on
     // purpose — so a witness from another build read as confident drift to "no code
@@ -909,7 +928,7 @@ export async function anchorReviewMap(
   const verdict = (r: Review): { state: ReviewState; via: AcceptanceVia } => {
     const cites = acceptedOf(r);
     if (!cites.length) return { state: "reviewed", via: "direct" };
-    const each = cites.map((c) => resolveAcceptance(c.entries, live.get(c.anchorId), ancestry));
+    const each = cites.map((c) => citationAcceptance(r, c, live, ancestry));
     if (each.some((x) => x.via === "none")) return { state: "stale", via: "none" };
     if (each.some((x) => x.via === "reverted")) return { state: "reviewed", via: "reverted" };
     if (each.some((x) => x.via === "replayed")) return { state: "reviewed", via: "replayed" };
@@ -996,7 +1015,7 @@ export async function revertedMarks(root: string, opts: { ref?: string; includeV
     const attestation = effectiveAttestation(r);
     if (!opts.includeViewed && attestation === "viewed") continue;
     for (const c of acceptedOf(r)) {
-      const a = resolveAcceptance(c.entries, live.get(c.anchorId), ancestry);
+      const a = citationAcceptance(r, c, live, ancestry);
       if (a.via !== "reverted" || !a.entry || !a.supersededBy) continue;
       out.push({
         target: r.target, level: r.level, anchorId: c.anchorId, reviewer: r.reviewer, attestation,

@@ -13,8 +13,8 @@ import { spawnSync } from "node:child_process";
 import { init } from "./ops.js";
 import { readSnapshot } from "./snapshots.js";
 import { computeDiff } from "./diff.js";
-import { markReviewed, markReviewedBatch, reviewStatesFor } from "./reviews.js";
-import { readReviews, writeReviews } from "./store.js";
+import { anchorReviewMap, changedSince, markReviewed, markReviewedBatch, revertedMarks, reviewStatesFor } from "./reviews.js";
+import { loadNodes, readAnchorStore, readReviews, writeReviews } from "./store.js";
 import { discard } from "./test-tmp.js";
 
 const LEDGER = "export class Ledger {\n  post(x: number) {\n    return x;\n  }\n  void(x: number) {\n    return -x;\n  }\n}\n";
@@ -154,5 +154,52 @@ test("the single-target writer signs a deletion exactly as the batch writer does
     assert.equal(row.accepted?.[0]?.entries.at(-1)?.deleted, true);
     const st = (await reviewStatesFor(u.root, [{ kind: "anchor", id: u.cls.id }], { ref: u.headSha })).get(`anchor:${u.cls.id}`)!;
     assert.equal(st.code.state, "reviewed");
+  } finally { u.cleanup(); }
+});
+
+/**
+ * Every review reader reads a DELETION entry as a deletion approval, never as an approval of
+ * the body it deleted (triage 2026-09-19-deletion-fixes-review I2: three readers did not).
+ */
+test("a fresh deletion sign-off reports nothing changed at the head it was signed at", async () => {
+  const u = await repo();
+  try {
+    await sign(u.root, [u.cls.id], u.headSha);
+    const c = await changedSince(u.root, { kind: "anchor", id: u.cls.id }, { level: "code", attestation: "signed", ref: u.headSha });
+    assert.equal(c.changed.length, 0, JSON.stringify(c.changed));
+  } finally { u.cleanup(); }
+});
+
+test("the outline agrees with the canonical state: a deletion sign-off is not a review of the body it deleted", async () => {
+  const u = await repo();
+  try {
+    await sign(u.root, [u.cls.id], u.headSha);
+    // The working tree is main, which still holds the exact body the sign-off deleted.
+    const outline = (await anchorReviewMap(u.root, (await readAnchorStore(u.root)).anchors, await loadNodes(u.root), (await readReviews(u.root)).reviews)).get(u.cls.id)?.code;
+    const canonical = (await reviewStatesFor(u.root, [{ kind: "anchor", id: u.cls.id }])).get(`anchor:${u.cls.id}`)!.code.state;
+    assert.equal(canonical, "stale");
+    assert.equal(outline, "stale");
+  } finally { u.cleanup(); }
+});
+
+test("a deletion entry followed by a body acceptance is not reported as a revert", async () => {
+  const u = await repo();
+  try {
+    await sign(u.root, [u.cls.id], u.headSha);
+    // Two commits on main's own history, the deletion entry on the earlier one: the shape a
+    // real revert has, so a reader taking the deletion entry as a body approval reports one.
+    writeFileSync(join(u.root, "src/pay.ts"), PAY + "// later\n");
+    u.git("commit", "-q", "-am", "later on main");
+    const later = u.git("rev-parse", "HEAD");
+    const rs = await readReviews(u.root);
+    const row = rs.reviews.find((r) => r.target.id === u.cls.id)!;
+    const gone = row.accepted![0]!.entries.at(-1)!;
+    row.accepted![0]!.entries = [
+      { ...gone, commit: u.baseSha, branch: "main" },
+      { bodyHash: "sha256:" + "b".repeat(64), commit: later, branch: "main", at: new Date(Date.now() + 1000).toISOString() },
+    ];
+    await writeReviews(u.root, rs.reviews);
+    // main holds the deleted body: a body approval would read as "went back to what you signed".
+    assert.deepEqual((await revertedMarks(u.root)).filter((m) => m.anchorId === u.cls.id), []);
   } finally { u.cleanup(); }
 });
