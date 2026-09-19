@@ -470,6 +470,46 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
     assert.deepEqual(errors, []);
   });
 
+  test("a linked branch's finding is acted on from its pull request's page, in the branch's own review", async () => {
+    // The pull request page lists its linked branches' findings, but every button used
+    // to send the PAGE's number, so the act landed in a scope that has no such finding.
+    const { appendEvents, mintId } = await import("../eventlog.js");
+    const { findingScope } = await import("../shared-findings.js");
+    const { universeKey } = await import("../sidecar-config.js");
+    const { findingKeyScope, branchKey } = await import("../review-target.js");
+    const { linkReviewOp } = await import("../ops-shared.js");
+    const izzie = { principal: "izzie@x.com" };
+    const opus = { principal: "izzie@x.com", via: { kind: "agent" as const, model: "claude-opus-5" } };
+    const scope = findingScope(findingKeyScope({ path: side, universe: universeKey(root) }, branchKey("feature/linked")));
+
+    const created = testEvent({ id: mintId(), kind: "finding.created", subject: "f_onbranch", actor: izzie,
+      writer: "w_izzie_clone_a",
+      data: { targetKind: "anchor", targetId: "a_vanished2", text: "evidence", comment: "on the branch", branch: "feature/linked" } });
+    await appendEvents(side, scope, "w_izzie_clone_a", [created]);
+    await appendEvents(side, scope, "w_izzie_clone_a", [testEvent({
+      id: mintId(), kind: "finding.relocation", subject: "f_onbranch", actor: opus,
+      writer: "w_izzie_clone_a", writerPrev: created.id, after: [created.id],
+      data: { kind: "moved", to: anchorId, rationale: "renamed in def456" },
+    })]);
+    await linkReviewOp(root, "903", "feature/linked");
+    // A pull request's read does not fold its linked branches' scopes (sync does), so fold
+    // the branch's own here, as a sync would have.
+    const { sharedFindings } = await import("../ops-shared.js");
+    await sharedFindings(root, branchKey("feature/linked"));
+
+    const { page, errors } = await open(`/u/${universe}/shared/903/`);
+    await page.waitForSelector(".prbadge.ask");
+    await page.locator(".frow .fmeta").first().click();
+    await page.waitForSelector(".askbox");
+    await page.getByRole("button", { name: /^apply$/ }).click();
+    await page.waitForFunction(() => !document.querySelector(".prbadge.ask"), null, { timeout: 10_000 });
+    await page.close();
+
+    const after = await (await fetch(`${server.url}/api/shared?u=${universe}&pr=${encodeURIComponent("branch:feature/linked")}`)).json() as any;
+    assert.equal(after.findings[0].target.id, anchorId, "applied on the branch's record");
+    assert.deepEqual(errors, []);
+  });
+
   // --- a scope that may not be answered from --------------------------------------
 
   test("a forked scope says so above the rows, and still shows them", async () => {

@@ -1604,6 +1604,20 @@ export function linkedBranches(root: string, pr: number | string, opts: { publis
     .map((r) => r.branch);
 }
 
+/**
+ * The key finding `id` lives under, asked through pull request `pr`: `pr` itself, or the
+ * `branch:<name>` of a branch linked to it — a pull request's pages list those findings
+ * too (`readFindings`), and their events belong in the branch's scope. `pr` when neither
+ * holds it, so the caller's own "no finding" answer stands.
+ */
+export function findingHome(root: string, pr: number | string, id: string): string {
+  const p = String(pr).trim().replace(/^#/, "");
+  const row = db(root).prepare(
+    "SELECT pr FROM findings WHERE id = ? AND (pr = ? OR pr IN (SELECT 'branch:' || branch FROM review_link WHERE pr = ?)) ORDER BY pr = ? DESC LIMIT 1",
+  ).get(id, p, p, p) as { pr: string } | undefined;
+  return row?.pr ?? p;
+}
+
 export async function readFindings(root: string, opts: { pr?: number | string } = {}): Promise<FindingStore> {
   // A pull request's findings include those filed against the branch it was opened from,
   // before it existed (`review_link`, shared-reviews.ts). Each keeps its own `pr` key —

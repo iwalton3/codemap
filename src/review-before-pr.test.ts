@@ -250,3 +250,40 @@ for (const withSidecar of [true, false]) {
     } finally { u.cleanup(); }
   });
 }
+
+test("acting on a linked branch finding through its pull request acts in the finding's own review", async () => {
+  const u = await worktreeRepo(true);
+  try {
+    const shared = await import("./ops-shared.js");
+    const filed = await file(u.root, "src/filter.ts#IdentifierFilter.matches");
+    const id = String(filed.id);
+    await shared.linkReviewOp(u.root, "12", "feature");
+    const own = async () => (await readFindings(u.root, { pr: branchKey("feature") })).findings.find((f) => f.id === id)!;
+
+    const up = await shared.upstreamFinding(u.root, 12, id, { system: "jira", key: "ACME-1" }) as Record<string, unknown>;
+    assert.equal(up.error, undefined, String(up.error));
+    assert.equal((await own()).upstream?.key, "ACME-1", "upstream landed on the branch's record");
+
+    const pub = await shared.recordPublished(u.root, 12, id, { key: "c1", url: "https://x/1" }) as Record<string, unknown>;
+    assert.equal(pub.error, undefined, String(pub.error));
+    assert.equal((await own()).posted?.key, "c1");
+
+    const rel = await shared.relocateFinding(u.root, 12, id, "gone", "the method went") as Record<string, unknown>;
+    assert.equal(rel.error, undefined, String(rel.error));
+    assert.equal((await own()).relocation?.kind, "gone");
+
+    const dec = await shared.declineFindingAsk(u.root, 12, id, "no") as Record<string, unknown>;
+    assert.doesNotMatch(String(dec.error), /no finding/, "found it — it simply has no ask");
+    const set = await shared.settleContest(u.root, 12, id, "severity", "high") as Record<string, unknown>;
+    assert.doesNotMatch(String(set.error), /no finding/);
+
+    const bug = await shared.findingToBug(u.root, 12, id, "b_1") as Record<string, unknown>;
+    assert.equal(bug.error, undefined, String(bug.error));
+    assert.ok(JSON.stringify(await own()).includes("b_1"), "promoted on the branch's record");
+
+    for (const r of [
+      await shared.upstreamFinding(u.root, 12, "f_nope", { system: "jira", key: "X" }),
+      await shared.findingToBug(u.root, 12, "f_nope", "b_2"),
+    ] as Record<string, unknown>[]) assert.match(String(r.error), /no finding/, "an unknown id is refused, not emitted");
+  } finally { u.cleanup(); }
+});

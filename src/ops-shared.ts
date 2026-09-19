@@ -50,7 +50,7 @@ import { docsVerdict } from "./docs-lookup.js";
 import { queueContestedTriage } from "./ops/triage.js";
 import { liveAnchors, liveIndex } from "./ops/shared.js";
 export { mirrorTriage, mirrorTriageBatch, mirrorTriageClear } from "./triage-publish.js";
-import { linkedBranches, prsLinkedTo, writeLocalLink, readSharedNotes, readAnnotations, readAnchorStore, readFindings, loadNodes, loadNodeVersions, nodeIdsWithPublishableVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets, attributeLocalWalkthrough, readBlockedScopes, findingCountsByPr, readUnpublishedWalkthroughs, readStoreMeta, writeStoreMeta, foldedScopes, hasFoldedFromSidecar, SIDECAR_LINEAGE, type SidecarMark } from "./store.js";
+import { findingHome, linkedBranches, prsLinkedTo, writeLocalLink, readSharedNotes, readAnnotations, readAnchorStore, readFindings, loadNodes, loadNodeVersions, nodeIdsWithPublishableVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets, attributeLocalWalkthrough, readBlockedScopes, findingCountsByPr, readUnpublishedWalkthroughs, readStoreMeta, writeStoreMeta, foldedScopes, hasFoldedFromSidecar, SIDECAR_LINEAGE, type SidecarMark } from "./store.js";
 import { holdsLock, withLock } from "./lock.js";
 import {
   publishDocVersion, acceptDocHash, resolveDoc, foldDocs, docScope,
@@ -1042,6 +1042,7 @@ export async function rewitnessFinding(root: string, pr: number | string, id: st
  * waiting on is the failure mode that teaches people to stop trusting the queue.
  */
 export async function declineFindingAsk(root: string, pr: number | string, id: string, reason: string) {
+  pr = findingHome(root, pr, id);
   const b = bind(root);
   if ("error" in b) return b;
   if (!reason.trim()) {
@@ -1103,8 +1104,11 @@ export async function reportOnFinding(root: string, pr: number | string, id: str
 }
 
 export async function upstreamFinding(root: string, pr: number | string, id: string, ref: { system?: string; key?: string; url?: string }) {
+  pr = findingHome(root, pr, id);
   const b = bind(root);
   if ("error" in b) return b;
+  const missing = await mustExist(root, b, pr, id);
+  if (missing) return { error: missing };
   await markUpstreamed(b.cfg.path, prKey(b.cfg, pr), b.actor, id, ref);
   const mz = await materializeFindings(root, b.cfg, pr);
   return { ...mz, ok: true, id, note: "tracked upstream; still open here until the code says otherwise" };
@@ -1134,8 +1138,11 @@ export async function findingRecord(root: string, pr: number | string, id: strin
 }
 
 export async function findingToBug(root: string, pr: number | string, id: string, bug: string) {
+  pr = findingHome(root, pr, id);
   const b = bind(root);
   if ("error" in b) return b;
+  const missing = await mustExist(root, b, pr, id);
+  if (missing) return { error: missing };
   await promoteToBug(b.cfg.path, prKey(b.cfg, pr), b.actor, id, bug);
   const mz = await materializeFindings(root, b.cfg, pr);
   return { ...mz, ok: true, id, bug };
@@ -1157,6 +1164,7 @@ async function mustExist(root: string, b: Bound, pr: number | string, id: string
 }
 
 export async function recordPublished(root: string, pr: number | string, id: string, ref: { key?: string; url?: string }) {
+  pr = findingHome(root, pr, id);
   const b = bind(root);
   if ("error" in b) return b;
   const missing = await mustExist(root, b, pr, id);
@@ -1247,6 +1255,7 @@ export async function relocateFinding(
   root: string, pr: number | string, id: string,
   kind: "moved" | "gone", rationale: string, opts: { to?: string; apply?: boolean } = {},
 ) {
+  pr = findingHome(root, pr, id);
   const b = bind(root);
   if ("error" in b) return b;
   if (!rationale.trim()) return { error: `saying a target ${kind === "moved" ? "moved" : "is gone"} without saying why leaves nothing to check` };
@@ -1338,6 +1347,7 @@ export async function reviseFinding(
 
 /** Settle a field two people set differently without seeing each other. */
 export async function settleContest(root: string, pr: number | string, id: string, field: string, value: unknown) {
+  pr = findingHome(root, pr, id);
   const b = bind(root);
   if ("error" in b) return b;
   const r = await resolveContest(b.cfg.path, prKey(b.cfg, pr), b.actor, id, field, value);
