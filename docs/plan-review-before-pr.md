@@ -71,12 +71,14 @@ included.
   worktree has uncommitted changes to indexable files, lists them as `uncommitted: [paths]`,
   so a stale answer is never a silent one.
 - **`dirty: true`** overlays those files, indexed from the worktree's disk, on the commit's
-  snapshot. The overlay is never written under a sha. It is keyed by worktree, and recomputed
-  or invalidated by the files' mtimes.
+  snapshot. The overlay is never cached: it is recomputed per read, which indexes only the
+  uncommitted files, so there is nothing to invalidate. `check_stale` refuses `dirty`,
+  because its gate is judged at a commit.
 - A bare sha, or a branch no worktree has out, has no working tree, so there is nothing to
   report or overlay.
-- Marks and witnesses still record committed bodies only: a sign-off on an overlay would
-  witness a body no commit holds, which is the defect the A1 round removed.
+- Marks and witnesses still record committed bodies only (confirmed by the owner: "review
+  shouldn't cover untracked changes"). A sign-off on an overlay would witness a body no commit
+  holds, which is the defect the A1 round removed.
 
 **A1. The partly-honoured `ref` sites: DONE (2026-09-18, `4ced38b..9bc78a0`).** Triaged in
 run `2026-09-18-partial-ref-sites` (two of the nine claims were invalid), then fixed on the
@@ -94,22 +96,20 @@ owner's rulings:
 `docDiff` with no head resolved against the stored `@work` rows, the same shape the no-head
 `computeDiff` fix closed. The owner approved closing it too.
 
-**A2. `at` on the read tools**, in the order the command uses them:
+**A2. `at` on the read tools: BUILT (2026-09-18).** `src/ops/at.ts` resolves `at` into one view
+(the commit's snapshot, its docs via `loadNodesAt`, its `.codemapignore`, and the branch's
+worktree's uncommitted files), and `context`, `search`, `get_anchor` and `get_node` read it in
+place of the live index. `check_stale` with `at` calls a separate read-only op, `staleAt`, which
+is not locked: `mutates` can now be a function of the arguments. It returns:
+- `touched`: the symbols the branch changed against `base` (default: the merge-base with the
+  default branch);
+- `staleDocs` and `gate`: the docs citing them that are not fresh at the head. `gate.pass` is
+  §14.8's "zero stale among the anchors this PR touched";
+- `reviews`: which touched symbols carry a code mark that still holds at the head
+  (`reviewed`), one the change moved (`stale`), or none (`unreviewed`). This is the command's
+  round state.
 
-- **`check_stale at:`** is a read-only mode, not a variant of today's pass. It takes a base
-  (the review's recorded base, or the merge-base with the default branch) and returns:
-  - the anchors changed from base to head (the set operation `computeDiff` already does);
-  - the docs citing them, judged with `loadNodesAt(snapshotHashes(head))`. This is §14.8's
-    "stale among the anchors this PR touched", exactly;
-  - review marks gone stale at head (`reviewStatesFor({ref: head})`). This is the command's
-    round-to-round state.
-- **`context at:`** — `coverageFor`, ref resolution and `reviewStatesFor`, all at the sha.
-  `.codemapignore` is read from the commit, as `indexCommit` already does.
-- **`get_anchor at:`** — source from the blob at the sha. `sourceCommit` is that sha.
-- **`search at:` / `get_node at:`** — anchor hits from the snapshot, and node status from
-  `loadNodesAt`.
-
-**A3. Derived views stay root-only, and say so.** `pipeline_graph`, `event_matrix` and
+**A3. Derived views stay root-only, and say so: BUILT.** `pipeline_graph`, `event_matrix` and
 `state_map` are analyzer output generated from `@work`. Running analyzers per snapshot is
 out of scope. Until then those tools refuse `at:` with a sentence rather than silently
 answering about the root. The command uses `event_matrix` and `state_map`, so this is a
