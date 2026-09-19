@@ -178,6 +178,7 @@ test("a branch name has one spelling: refs/heads/ and origin/ are stripped, revi
     assert.equal(name("origin/only-remote"), "only-remote", "a reviewer who never checked the branch out");
     assert.equal(name("refs/remotes/origin/only-remote"), "only-remote");
     assert.equal(name("merged-and-deleted"), "merged-and-deleted", "existence is not required to READ a branch");
+    assert.equal(name("origin/merged-and-deleted"), "merged-and-deleted", "nor to strip origin/");
     for (const bad of ["HEAD", "feature~1", "HEAD~1", u.featureSha, "upstream/feature", "main@{1}"]) {
       assert.equal(name(bad), "ERR", bad);
     }

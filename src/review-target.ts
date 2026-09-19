@@ -40,7 +40,10 @@ export function normalizeBranch(root: string, raw: string): { name: string } | {
   if (!name) return { error: "which branch?" };
   if (!revParse(root, `refs/heads/${name}`)) {
     const remote = /^(?:refs\/remotes\/)?([^/]+)\/(.+)$/.exec(name);
-    if (remote && revParse(root, `refs/remotes/${remote[1]}/${remote[2]}`)) {
+    // `origin/` is stripped whether or not this clone still has the ref — a merged branch
+    // is deleted and its findings are still read. Another remote is recognised only by an
+    // existing ref, since `feature/x` has the same shape as remote "feature", branch "x".
+    if (remote && (remote[1] === "origin" || revParse(root, `refs/remotes/${remote[1]}/${remote[2]}`))) {
       if (remote[1] !== "origin") return { error: `"${raw}" is a branch of the remote "${remote[1]}" — only origin's branches are reviewed here, by their name without the remote` };
       name = remote[2]!;
     }
