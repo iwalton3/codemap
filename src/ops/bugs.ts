@@ -810,7 +810,7 @@ export async function publishBugs(root: string, opts: { dryRun?: boolean; ids?: 
  * that is the duplicate this log exists to prevent; derived, both write the same id and
  * the fold merges them into one bug carrying both people's citations.
  */
-export const acceptFinding = homed(async function acceptFinding(
+const acceptInHome = homed(async function acceptFinding(
   root: string, pr: number | string, findingId: string,
   opts: { title?: string; severity?: BugSeverity } = {},
 ) {
@@ -869,10 +869,24 @@ export const acceptFinding = homed(async function acceptFinding(
   return {
     ok: true, id, finding: findingId, pr,
     note: "accepted — the finding stays on the pull request and the bug now carries the obligation",
-    ...(await massConversionWarning(root, pr)),
     ...rejected(errors),
   };
 });
+
+/**
+ * `acceptInHome`, counted on the PAGE it was pressed on. `homed` hands the verb the finding's
+ * own key, so a run from one pull request page — some findings its own, some its linked
+ * branch's — was counted per key and never reached the threshold (triage
+ * 2026-09-19-deletion-fixes-review I8). Marked homed because it is: the act is `acceptInHome`.
+ */
+export const acceptFinding = Object.assign(
+  async (root: string, pr: number | string, findingId: string, opts: { title?: string; severity?: BugSeverity } = {}) => {
+    const r = await acceptInHome(root, pr, findingId, opts);
+    if ("error" in r) return r;
+    return { ...r, pr, ...(await massConversionWarning(root, pr)) };
+  },
+  { [Symbol.for("codemap.findingHomed")]: true },
+);
 
 /**
  * WARNS on the run, never on the act, and never refuses — the `cover` precedent.

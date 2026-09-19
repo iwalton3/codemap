@@ -363,3 +363,33 @@ test("File bug on a linked branch finding, from its pull request, files it from 
     assert.equal(own.bug, acc.id, "promoted on the branch's record");
   } finally { u.cleanup(); }
 });
+
+test("converting findings from a PR page counts the run over the page, linked branch included (I8)", async () => {
+  // `homed` hands each conversion the finding's OWN key, so a run of six from one PR page —
+  // three on the PR, three on its linked branch — counted three per key and never warned
+  // (threshold 5). The run is the page's (triage 2026-09-19-deletion-fixes-review I8).
+  const u = await worktreeRepo(true);
+  try {
+    const shared = await import("./ops-shared.js");
+    const { acceptFinding } = await import("./ops/bugs.js");
+    await shared.linkReviewOp(u.root, "12", "feature");
+    // The PR's own first, the branch's last: a PR finding's home already counts its linked
+    // branches, so only a run ENDING on branch findings shows the per-key undercount.
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const r = await reportDefect(u.root, {
+        context: { kind: "pull_request", pr: "12" }, targetKind: "anchor", targetId: "src/filter.ts#IdentifierFilter.matches",
+        ref: u.featureSha, text: `evidence ${i}`, comment: "empty ids match nothing", severity: "medium",
+      }) as Record<string, unknown>;
+      assert.equal(r.error, undefined, String(r.error));
+      ids.push(String(r.id));
+    }
+    for (let i = 0; i < 3; i++) ids.push(String((await file(u.root, "src/filter.ts#IdentifierFilter.matches")).id));
+    const replies: Record<string, unknown>[] = [];
+    for (const id of ids) replies.push(await acceptFinding(u.root, 12, id) as Record<string, unknown>);
+    for (const r of replies) assert.equal(r.error, undefined, String(r.error));
+    assert.equal(replies[3]!.warning, undefined, "the fourth is still ordinary triage");
+    assert.match(String(replies[5]!.warning), /on 12 are now bugs/, "the sixth, counted over the page, warns");
+    assert.equal(replies[5]!.pr, 12, "and the reply names the page it was pressed on");
+  } finally { u.cleanup(); }
+});
