@@ -182,3 +182,14 @@ test("through MCP: check_stale refuses `dirty` — its gate is judged at a commi
     assert.match(r!, /judged at a commit/);
   } finally { u.cleanup(); }
 });
+
+test("a mark made at a branch NAME records the commit, not the moving name", async () => {
+  const u = await worktreeRepo();
+  try {
+    await markReviewedBatch(u.root, [u.transfer.id], { level: "code", actor: "agent", ref: "feature" });
+    const { readReviews } = await import("./store.js");
+    const row = (await readReviews(u.root)).reviews.find((r) => r.target.id === u.transfer.id)!;
+    assert.equal(row.reviewedCommit, u.featureSha);
+    assert.equal(row.accepted?.[0]?.entries.at(-1)?.commit, u.featureSha);
+  } finally { u.cleanup(); }
+});

@@ -319,7 +319,8 @@ export async function witnessesFor(root: string, target: Target, ref?: string): 
  * a PR must pass one, or it is answered against the working tree.
  */
 function markedAt(root: string, ref: string | undefined): { commit: string | null; branch: string | null } {
-  if (ref) return { commit: ref, branch: snapshotBranch(root, ref) };
+  // Resolved: a branch NAME moves, and a mark must say which commit it was made at.
+  if (ref) { const sha = snapshotKey(root, ref); return { commit: sha, branch: snapshotBranch(root, sha) ?? (sha === ref ? null : ref) }; }
   return { commit: headCommit(root), branch: isGitRepo(root) ? gitBranch(root) : null };
 }
 
