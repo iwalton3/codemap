@@ -218,6 +218,11 @@ export interface SharedFinding {
   line?: number;
   witness?: BugWitness;
   sourceRef?: string;
+  /**
+   * The branch this finding was filed against before its pull request existed. Carried on
+   * the `created` event because a branch scope is a hash of the name (see review-target.ts).
+   */
+  branch?: string;
   author: Actor;
   createdAt: string;
   /**
@@ -659,6 +664,7 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         line: typeof d?.line === "number" ? d.line : undefined,
         witness: (d?.witness as BugWitness | undefined) ?? undefined,
         sourceRef: str(d, "sourceRef"),
+        ...(str(d, "branch") ? { branch: str(d, "branch") } : {}),
         author: e.actor,
         createdAt: e.at,
         ...(str(d, "filedBy") || str(d, "filedAt")
@@ -987,6 +993,7 @@ export interface NewFinding {
   line?: number;
   witness?: BugWitness;
   sourceRef?: string;
+  branch?: string;
 }
 
 export async function createFinding(logRoot: string, pr: number | string, actor: Actor, f: NewFinding): Promise<string> {

@@ -1517,9 +1517,27 @@ const hydrate = (body: string, pr: string, sourceScope: string | null): SharedFi
  * bridge to see both. `pr` narrows without deserializing the rest, because it is a
  * column rather than something inferred from a worklist.
  */
+/**
+ * A link recorded on a machine with no sidecar. Its own scope, so the fold — which replaces
+ * only `reviews/<universe>` rows — never takes it.
+ */
+export function writeLocalLink(root: string, pr: string, branch: string): void {
+  db(root).prepare("INSERT OR IGNORE INTO review_link(scope,pr,branch) VALUES('@local',?,?)").run(pr, branch);
+}
+
+/** The branches a pull request was opened from, as folded from `reviews/<universe>`. */
+export function linkedBranches(root: string, pr: number | string): string[] {
+  return (db(root).prepare("SELECT DISTINCT branch FROM review_link WHERE pr = ? ORDER BY branch").all(String(pr)) as { branch: string }[])
+    .map((r) => r.branch);
+}
+
 export async function readFindings(root: string, opts: { pr?: number | string } = {}): Promise<FindingStore> {
-  const where = opts.pr === undefined ? "" : " WHERE pr = ?";
-  const args = opts.pr === undefined ? [] : [String(opts.pr)];
+  // A pull request's findings include those filed against the branch it was opened from,
+  // before it existed (`review_link`, shared-reviews.ts). Each keeps its own `pr` key —
+  // `branch:<name>` — because that key is where its events live.
+  const where = opts.pr === undefined ? ""
+    : " WHERE pr = ? OR pr IN (SELECT 'branch:' || branch FROM review_link WHERE pr = ?)";
+  const args = opts.pr === undefined ? [] : [String(opts.pr), String(opts.pr)];
   const rows = db(root).prepare(
     `SELECT pr, body, source_scope FROM findings${where} ORDER BY created_at, id`,
   ).all(...args as []) as unknown as { pr: string; body: string; source_scope: string | null }[];

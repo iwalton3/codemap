@@ -30,7 +30,8 @@
 import { requireActor, isAgentActor } from "../identity.js";
 import { resolveSidecar } from "../sidecar-config.js";
 import { mintId } from "../eventlog.js";
-import { headCommit } from "../git.js";
+import { headCommit, revParse, worktreeForBranch, uncommittedPaths } from "../git.js";
+import { branchKey } from "../review-target.js";
 import { writeLocalFinding } from "../store.js";
 import { resolveRefs } from "./shared.js";
 import { witnessAt } from "./annotations.js";
@@ -40,6 +41,8 @@ import type { SharedFinding } from "../shared-findings.js";
 
 export type DefectContext =
   | { kind: "pull_request"; pr: string | number }
+  /** Reviewing a branch whose pull request does not exist yet. */
+  | { kind: "branch"; branch: string }
   | { kind: "drive_by"; rationale: string };
 
 export interface DefectInput {
@@ -66,14 +69,15 @@ export interface DefectInput {
 
 const NEEDS_CONTEXT =
   'say what you were doing: `context: {kind:"pull_request", pr:"270"}` for something '
-  + 'found while reviewing that pull request, or `context: {kind:"drive_by", rationale:"..."}` '
+  + 'found while reviewing that pull request, `context: {kind:"branch", branch:"feature/x"}` for a '
+  + 'branch whose pull request is not open yet, or `context: {kind:"drive_by", rationale:"..."}` '
   + "for a defect noticed during unrelated work. A pull-request finding belongs on the pull "
   + "request, where the person who wrote the code will see it; a drive-by outlives the branch "
   + "and becomes a bug.";
 
 export async function reportDefect(root: string, input: DefectInput) {
   const ctx = input.context;
-  if (!ctx || (ctx.kind !== "pull_request" && ctx.kind !== "drive_by")) return { error: NEEDS_CONTEXT };
+  if (!ctx || (ctx.kind !== "pull_request" && ctx.kind !== "branch" && ctx.kind !== "drive_by")) return { error: NEEDS_CONTEXT };
   if (!input.text?.trim()) return { error: "a defect needs `text`: what you checked and what it proves" };
 
   if (ctx.kind === "drive_by") {
@@ -89,8 +93,23 @@ export async function reportDefect(root: string, input: DefectInput) {
     return r.error ? r : { ...r, filedAs: "bug", why: ctx.rationale };
   }
 
-  // --- a pull request finding ------------------------------------------------
-  if (!String(ctx.pr ?? "").trim()) return { error: "which pull request? `context.pr` is what scopes the finding" };
+  // --- a pull request or branch finding --------------------------------------
+  // A branch finding is witnessed at the branch's last commit, never at a worktree's
+  // uncommitted edits: review does not cover uncommitted changes (owner, 2026-09-18).
+  let key: string;
+  let ref = input.ref;
+  let branch: string | undefined;
+  if (ctx.kind === "branch") {
+    branch = String(ctx.branch ?? "").trim();
+    if (!branch) return { error: "which branch? `context.branch` is what scopes the finding" };
+    const sha = revParse(root, `refs/heads/${branch}`) ?? revParse(root, branch);
+    if (!sha) return { error: `no branch "${branch}" in this repository` };
+    key = branchKey(branch);
+    ref = sha;
+  } else {
+    if (!String(ctx.pr ?? "").trim()) return { error: "which pull request? `context.pr` is what scopes the finding" };
+    key = String(ctx.pr);
+  }
   if (!input.targetKind || !input.targetId) {
     return { error: "a finding is about one symbol or node — pass `targetKind` and `targetId`" };
   }
@@ -112,10 +131,10 @@ export async function reportDefect(root: string, input: DefectInput) {
     // Orphans included, for the reason `annotate` includes them: re-filing against code
     // the tree no longer has is exactly what somebody needs when a reindex stranded a
     // finding, and refusing it leaves the work unreachable rather than safe.
-    const r = await resolveRefs(root, [targetId], input.ref, { includeOrphans: true });
-    if (!r.ids.length) return { error: r.errors.join("; ") };
+    const r = await resolveRefs(root, [targetId], ref, { includeOrphans: true });
+    if (!r.ids.length) return { error: uncommittedTarget(root, branch, targetId) ?? r.errors.join("; ") };
     targetId = r.ids[0]!;
-    const w = await witnessAt(root, targetId, input.ref);
+    const w = await witnessAt(root, targetId, ref);
     witness = w.witness;
     sourceRef = w.sourceRef;
   }
@@ -128,6 +147,7 @@ export async function reportDefect(root: string, input: DefectInput) {
     ...(line !== undefined ? { line } : {}),
     ...(witness ? { witness } : {}),
     ...(sourceRef ? { sourceRef } : {}),
+    ...(branch ? { branch } : {}),
   };
 
   // With a sidecar the finding enters the LOG and is materialized by the write; without
@@ -135,8 +155,8 @@ export async function reportDefect(root: string, input: DefectInput) {
   // synced — never degraded semantics: every local reader sees it either way.
   if (resolveSidecar(root)) {
     const shared = await import("../ops-shared.js");
-    const r = await shared.shareFinding(root, ctx.pr, shape as never, { model: input.model, harness: input.harness }) as Record<string, unknown>;
-    return r.error ? r : { ...r, filedAs: "finding", pr: String(ctx.pr) };
+    const r = await shared.shareFinding(root, key, shape as never, { model: input.model, harness: input.harness }) as Record<string, unknown>;
+    return r.error ? r : { ...r, filedAs: "finding", ...(branch ? { branch } : { pr: key }) };
   }
 
   const actor = requireActor(root, { model: input.model, harness: input.harness });
@@ -151,6 +171,7 @@ export async function reportDefect(root: string, input: DefectInput) {
     ...(line !== undefined ? { line } : {}),
     ...(witness ? { witness } : {}),
     ...(sourceRef ? { sourceRef } : {}),
+    ...(branch ? { branch } : {}),
     author: actor,
     createdAt: at,
     // The same rule the fold applies: an agent PROPOSES, a person stands behind one.
@@ -158,9 +179,22 @@ export async function reportDefect(root: string, input: DefectInput) {
     corroboration: [], thread: [], revisions: [],
   };
   void headCommit;
-  await writeLocalFinding(root, finding, String(ctx.pr));
+  await writeLocalFinding(root, finding, key);
   return {
-    ok: true, id: finding.id, filedAs: "finding", pr: String(ctx.pr), shared: false,
-    note: "no sidecar configured, so this stays on this machine — it is still on the pull request here",
+    ok: true, id: finding.id, filedAs: "finding", ...(branch ? { branch } : { pr: key }), shared: false,
+    note: `no sidecar configured, so this stays on this machine — it is still on the ${branch ? "branch" : "pull request"} here`,
   };
+}
+
+/**
+ * Why a branch finding's target did not resolve, when the reason is that it exists only
+ * in the branch's worktree's uncommitted edits. Null for every other failure.
+ */
+function uncommittedTarget(root: string, branch: string | undefined, target: string): string | null {
+  if (!branch) return null;
+  const wt = worktreeForBranch(root, branch);
+  const file = target.split(/#|:\d+$/)[0]!;
+  if (!wt || !uncommittedPaths(wt).includes(file)) return null;
+  return `"${target}" is not in ${branch}'s last commit — ${file} has uncommitted changes in ${wt}. `
+    + "A finding records committed code, because review does not cover uncommitted changes. Commit it, then file.";
 }

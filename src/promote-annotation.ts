@@ -56,13 +56,13 @@ export async function promoteAnnotation(
     // `filedBy`/`filedAt` carry the original attribution: this is a republication of
     // something already said, not a new claim by whoever ran the promotion.
     const { createFinding } = await import("./shared-findings.js");
-    const { scopeFor } = await import("./sidecar-config.js");
+    const { findingKeyScope, branchOf } = await import("./review-target.js");
     const { requireActor } = await import("./identity.js");
     const { ensureSidecar } = await import("./sidecar.js");
     const actor = requireActor(root);
     if ("error" in actor) return actor;
     await ensureSidecar(cfg.path, actor);
-    await createFinding(cfg.path, scopeFor(cfg, "pr", prKey), actor, {
+    await createFinding(cfg.path, findingKeyScope(cfg, prKey), actor, {
       id: finding.id,
       targetKind: finding.target.kind, targetId: finding.target.id,
       text: finding.text,
@@ -72,6 +72,7 @@ export async function promoteAnnotation(
       ...(finding.line !== undefined ? { line: finding.line } : {}),
       ...(finding.witness ? { witness: finding.witness } : {}),
       ...(finding.sourceRef ? { sourceRef: finding.sourceRef } : {}),
+      ...(branchOf(prKey) ? { branch: branchOf(prKey)! } : {}),
       filedBy: finding.author.principal || "(unrecorded)",
       filedAt: finding.createdAt,
     });
@@ -83,7 +84,7 @@ export async function promoteAnnotation(
     const { sidecarIdentity } = await import("./sidecar-config.js");
     const { findingScope, foldFindings } = await import("./shared-findings.js");
     const { findingsProjection } = await import("./shared-projections.js");
-    await ensureMaterialized(root, cfg.path, findingScope(scopeFor(cfg, "pr", prKey)),
+    await ensureMaterialized(root, cfg.path, findingScope(findingKeyScope(cfg, prKey)),
       sidecarIdentity(cfg), foldFindings, findingsProjection);
   } else {
     await writeLocalFinding(root, finding, prKey);

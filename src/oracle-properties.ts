@@ -22,6 +22,7 @@
  * reverted and the property must fail. A property that cannot fail is decoration.
  */
 
+import { branchKey } from "./review-target.js";
 import assert from "node:assert/strict";
 import { readScope, scopesOnDisk, sortEvents, type LogEvent } from "./eventlog.js";
 import { projectionFor } from "./shared-projections.js";
@@ -571,6 +572,13 @@ export async function readsDoNotFold(t: Team): Promise<void> {
       const findings = `findings/${universe}/pr-`;
       const walk = `walkthrough/${universe}/pr-`;
       if (scope.startsWith(findings)) await sharedFindings(m.repo, scope.slice(findings.length));
+      else if (scope.startsWith(`findings/${universe}/b-`)) {
+        // A branch scope is a hash of the name; the name rides on the created event.
+        const name = (await readScope(m.sidecar, scope))
+          .map((e) => (e.data as { branch?: unknown } | undefined)?.branch)
+          .find((b): b is string => typeof b === "string");
+        if (name) await sharedFindings(m.repo, branchKey(name));
+      }
       else if (scope.startsWith(walk)) await sharedWalkthroughs(m.repo, scope.slice(walk.length));
       else if (scope.startsWith(`notes/${universe}/`)) {
         // A note scope is a hash BUCKET, so it cannot be turned back into a target id.

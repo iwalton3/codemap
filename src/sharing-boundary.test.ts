@@ -31,8 +31,15 @@ import { readFileSync } from "node:fs";
  * why a requirement's id is a function of the operation that creates it. The rule this
  * file guards is that a function of the CODE must not travel, and no part of `standard/`
  * is one. See `docs/requirements-architecture.md`.
+ *
+ * `reviews/` (which branch a pull request came from) is the one kind that is OBSERVED rather
+ * than decided: `link_review` is an act, but most links are read off GitHub by whoever's
+ * codemap first resolved the pull request. It travels on the owner's ruling (2026-09-18),
+ * because a teammate without `gh` cannot observe it and would not see a branch's findings
+ * under its pull request. It is derived from GitHub, not from the code, which is what this
+ * file forbids. See `src/shared-reviews.ts`.
  */
-const SHARED_KINDS = ["findings/", "bugs/", "docs/", "notes/", "walkthrough/", "triage/", "graph/"];
+const SHARED_KINDS = ["findings/", "bugs/", "docs/", "notes/", "walkthrough/", "triage/", "graph/", "reviews/"];
 
 /**
  * `standard/` and `law/` travel and are deliberately NOT here.

@@ -172,7 +172,11 @@ import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagn
 // its own reason for a bump — see 16 and 17, where the table set did not move either.
 // Without it a store that folded at 20 keeps serving the un-sliced value for ever,
 // because only the shards move a fingerprint and they have not.
-export const MATERIALIZER_VERSION = 21;
+//
+// 21 -> 22: a new scope kind (`reviews/`, table `review_link`) and a finding field
+// (`branch`, on `finding.created`, which decides the row's `pr` key). A store that folded
+// a branch scope at 21 holds rows keyed by the scope's hash, and only a refold fixes them.
+export const MATERIALIZER_VERSION = 22;
 
 /**
  * What the events in a scope are, cheaply.

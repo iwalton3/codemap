@@ -634,6 +634,12 @@ function migrate(d: DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS ix_sn_target ON shared_note(target_id);
 
+    -- Pull request <- branch links, folded from reviews/<universe>. See shared-reviews.ts.
+    CREATE TABLE IF NOT EXISTS review_link (
+      scope TEXT NOT NULL, pr TEXT NOT NULL, branch TEXT NOT NULL,
+      PRIMARY KEY (scope, pr, branch)
+    );
+
     -- Requirements (COD-29). A separate table from nodes/node_versions on purpose,
     -- not a new LogicalNodeType: the two kinds have inverted truthmakers, and sharing
     -- storage is what would let a requirement reach the staleness path. See schema.ts.

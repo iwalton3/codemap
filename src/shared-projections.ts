@@ -18,6 +18,7 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import { db } from "./db.js";
+import { branchKey } from "./review-target.js";
 import { SCRUB_POLICY_ID } from "./store.js";
 import type { ScrubPolicy } from "./schema.js";
 import { CorruptProjection, type Projection } from "./materialize.js";
@@ -27,6 +28,7 @@ import { foldWalkthroughs, type SharedWalkthrough } from "./shared-walkthrough.j
 import { needsHumanAck, foldFindings, prOfScope, type SharedFinding } from "./shared-findings.js";
 import { foldDocs, type SharedDoc, type UnmatchedAcceptance } from "./shared-docs.js";
 import { foldNotes, type SharedNote } from "./shared-notes.js";
+import { foldReviewLinks, type ReviewLink } from "./shared-reviews.js";
 import { foldTriage, triageSubject, isTombstone, ABSENT_FIELD, type TriageEntry, type Axis, type TriageField } from "./shared-triage.js";
 import { foldGraph, type SharedWiring } from "./shared-graph.js";
 import { foldBugs, needsHumanAck as bugNeedsAck, type SharedBug } from "./shared-bugs.js";
@@ -74,7 +76,7 @@ import type { Actor, NodeVersion } from "./schema.js";
  */
 export const findingsProjection: Projection<Map<string, SharedFinding>> = {
   write(d: DatabaseSync, scope: string, value: Map<string, SharedFinding>): void {
-    const pr = prOfScope(scope);
+    const scopePr = prOfScope(scope);
     d.prepare("DELETE FROM findings WHERE source_scope = ?").run(scope);
     const ins = d.prepare(
       "INSERT INTO findings(id,pr,target_kind,target_id,state,severity,category,line,"
@@ -93,6 +95,8 @@ export const findingsProjection: Projection<Map<string, SharedFinding>> = {
     let ord = 0;
     for (const f of value.values()) {
       const i = ord++;
+      // A branch finding's key is on the finding, not in its scope, which is a hash.
+      const pr = f.branch ? branchKey(f.branch) : scopePr;
       // `origin` and `pr` are STORE facts, not fold output — they must not ride in the
       // JSON, or the round trip returns a value the fold never produced.
       const body = JSON.stringify({ ...f, origin: undefined, pr: undefined });
@@ -369,6 +373,18 @@ export function docsByNode(root: string, scope: string, nodeIds: string[]): Map<
   return readDocRows(db(root), scope, [...new Set(nodeIds)]);
 }
 
+
+/** Which branch each pull request came from (`reviews/<universe>`). See shared-reviews.ts. */
+export const reviewLinksProjection: Projection<ReviewLink[]> = {
+  write(d: DatabaseSync, scope: string, value: ReviewLink[]): void {
+    d.prepare("DELETE FROM review_link WHERE scope = ?").run(scope);
+    const ins = d.prepare("INSERT OR IGNORE INTO review_link(scope,pr,branch) VALUES(?,?,?)");
+    for (const l of value) ins.run(scope, l.pr, l.branch);
+  },
+  read(d: DatabaseSync, scope: string): ReviewLink[] {
+    return d.prepare("SELECT pr, branch FROM review_link WHERE scope = ? ORDER BY rowid").all(scope) as unknown as ReviewLink[];
+  },
+};
 
 /** Shared notes, keyed by scope (`notes/<universe>/<bucket>`). */
 export const notesProjection: Projection<Map<string, SharedNote>> = {
@@ -753,6 +769,7 @@ export function projectionFor(scope: string): { fold: (e: LogEvent[]) => any; pr
   if (scope.startsWith("walkthrough/")) return { fold: foldWalkthroughs, proj: walkthroughsProjection };
   if (scope.startsWith("triage/")) return { fold: foldTriage, proj: triageProjection };
   if (scope.startsWith("graph/")) return { fold: foldGraph, proj: graphProjection };
+  if (scope.startsWith("reviews/")) return { fold: foldReviewLinks, proj: reviewLinksProjection };
   // NOT `standard/`, and not `law/`. The standard is the one entity folded from TWO
   // scopes — law (workspace) and evidence (universe) — because `spec.withdrawn` consults
   // evidence to decide a law act. Folding either half ALONE here would write a partial

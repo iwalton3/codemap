@@ -906,7 +906,8 @@ const tools: Tool[] = [
     name: "findings",
     description: "Every finding and question on the map — whoever raised them, whether or not anyone was asked to act, and whichever store they live in. Both halves: a finding filed with `report_defect` and a finding the team folded from the sidecar are one row here. `shared_findings` is the other view of the same pull request, from the sidecar's side, and carries the corroboration and thread this list only summarises.\n\n`review_queue` answers \"what have I been asked to do\" and only lists items with an assignment — so a finding raised by `annotate` and published to a pull request was invisible to every query afterwards. This one answers \"what is on this map, and where has it got to\".\n\nFilters: `pr` (one pull request — findings store theirs, so this is exact and not a guess from the diff), `tier` (how settled: `unconfirmed` is the untriaged pile), `disposition` (what triage concluded) and `publishState` (local / approved / withdrawn / posted). `tier` and `disposition` name the same axis in two vocabularies, and where they differ PREFER `tier`: `disposition` is flattened from state and corroboration and cannot tell `invalid` from unreviewed, so a finding closed as invalid reads `disposition:\"open\"` while its tier is `settled`. Ask \"what has nobody looked at\" with `tier:\"unconfirmed\"` — `disposition:\"open\"` puts closed-out findings in the pile. `tier` is also the word `shared_findings` uses, so it reads both lists.\n\n`posted` items carry `postedRef` with the review and comment they landed in. Brief by default, same as `review_queue`.",
     inputSchema: obj({
-      pr: { type: "string", description: "Only findings on this pull request." },
+      pr: { type: "string", description: "Only findings on this pull request — including those filed on its branch before it was opened." },
+      branch: { type: "string", description: "Only findings filed on this branch (`report_defect` with `{kind:\"branch\"}`) — for a branch with no pull request yet." },
       tier: { type: "string", enum: ["unconfirmed", "confirmed", "doubted", "settled"], description: "How settled it is — `unconfirmed` means nobody has weighed in yet. The vocabulary `shared_findings` uses." },
       remediation: { type: "string", enum: ["outstanding", "fixed-on-branch", "fixed-on-default", "deferred", "wont-fix"], description: "What HAPPENED about it — the other axis. `tier:\"confirmed\"` alone cannot tell an outstanding defect from one fixed last night." },
       disposition: { type: "string", enum: ["open", "confirmed", "partial", "rerated", "refuted", "accepted"] },
@@ -928,7 +929,7 @@ const tools: Tool[] = [
       includeAnswered: Boolean(a.includeAnswered),
       brief: a.brief !== false,
       limit: a.limit as number | undefined, offset: a.offset as number | undefined,
-      pr: a.pr as string | undefined, tier: a.tier as string | undefined,
+      pr: (a.branch ? `branch:${a.branch}` : a.pr) as string | undefined, tier: a.tier as string | undefined,
       remediation: a.remediation as string | undefined,
       disposition: a.disposition as string | undefined, publishState: a.publishState as string | undefined,
     }),
@@ -1013,10 +1014,21 @@ const tools: Tool[] = [
     handler: (_a, c) => shared.sharedPull(c.universe.path),
   },
   {
+    name: "link_review",
+    description: "Record that pull request `pr` was opened from `branch`, so the findings filed on that branch before the pull request existed (`report_defect` with `{kind:\"branch\"}`) show under it. Normally automatic: resolving a pull request through `gh` (`pr_packet`, and the other pull-request tools) records its head branch. Use this where `gh` is not available, since a pull request's git ref carries no branch name. Idempotent. Never link a fork's pull request to a local branch that merely shares its name.",
+    inputSchema: obj({
+      pr: { type: "string", description: "Pull request number." },
+      branch: { type: "string", description: "The branch it was opened from." },
+    }, ["pr", "branch"]),
+    mutates: true,
+    handler: (a, c) => shared.linkReviewOp(c.universe.path, a.pr, a.branch),
+  },
+  {
     name: "shared_findings",
     description: "Findings on the sidecar for a pull request — everyone's, not just yours. Read this before filing: a finding somebody has already raised and refuted does not need raising again.\n\nTwo different questions, and they are NOT the same list:\n  • `tier` — how settled each finding is. `unconfirmed` is the untriaged pile: filed, and nobody has weighed in. That is what \"what still needs triage\" means, and it is what you want when somebody asks for the ones not confirmed yet. Also `confirmed` (somebody stood behind it), `doubted` (refuted, withdrawn, or carrying a refuting verdict) and `settled` (closed).\n  • `queue:true` — what is waiting on a PERSON: promoted, confirmed by somebody, contested, or with an outstanding request. An UNTRIAGED finding is waiting on nobody by that definition, so the queue deliberately does not contain it — triaging one is what PUTS it there.\n\n`tiers` on the answer counts all four whatever you filtered by, so the shape of the pull request is visible from any call.",
     inputSchema: obj({
-      pr: { type: "string", description: "Pull request number." },
+      pr: { type: "string", description: "Pull request number. Includes findings filed on its branch before it was opened." },
+      branch: { type: "string", description: "Instead of `pr`: a branch whose pull request is not open yet." },
       tier: { type: "string", enum: ["unconfirmed", "confirmed", "doubted", "settled"], description: "Only findings at this tier. `unconfirmed` = nobody has weighed in yet." },
       remediation: { type: "string", enum: ["outstanding", "fixed-on-branch", "fixed-on-default", "deferred", "wont-fix"], description: "Only findings whose remediation is this — what HAPPENED about them, as opposed to whether they are true." },
       queue: { type: "boolean", description: "Only what needs a human decision. Excludes the untriaged — use `tier` for those." },
@@ -1024,8 +1036,8 @@ const tools: Tool[] = [
       terse: { type: "boolean", description: "DEFAULT TRUE, and what you want for triage: `id`, `tier`, `state`, `severity`, `remediation`, any pending ask, and the first line of the comment. `false` returns everything — the investigation text, the thread, every verdict, outcome and ask — which on 25 findings is ~195k characters and spills to a file. Read one in full with `findings` + `ids: [\"f_…\"]`, `brief: false`." },
       limit: { type: "number", description: "How many to return. The answer says `shown`, `more` and `nextOffset` when it is a page rather than the whole list." },
       offset: { type: "number", description: "Where to start, for the next page." },
-    }, ["pr"]),
-    handler: (a, c) => shared.sharedFindings(c.universe.path, a.pr, {
+    }),
+    handler: async (a, c) => (!a.pr && !a.branch) ? { error: "pass `pr`, or `branch` for a branch with no pull request yet" } : shared.sharedFindings(c.universe.path, a.branch ? `branch:${a.branch}` : a.pr, {
       queue: !!a.queue, tier: a.tier as never, remediation: a.remediation as never, rerated: !!a.rerated,
       // TERSE BY DEFAULT for an agent. The web calls the same op and passes nothing,
       // so it keeps the full shape its expanded rows render from.
@@ -1038,6 +1050,7 @@ const tools: Tool[] = [
     name: "report_defect",
     description: "Report a defect. ONE verb — you say what you were DOING, and that decides what the record becomes.\n\n"
       + "  • `context: {kind:\"pull_request\", pr:\"270\"}` — found while reviewing that pull request. Becomes a FINDING on it, resolved at or before merge, visible to the team and to their agents. Needs `targetKind`/`targetId` (the one symbol or node) and `comment`.\n"
+      + "  • `context: {kind:\"branch\", branch:\"feature/x\"}` — reviewing a branch whose pull request is not open yet (typically your worktree's). Becomes a FINDING on that branch, witnessed at its last commit, and it appears under the pull request once one is opened from the branch. A symbol that exists only in uncommitted edits is refused: commit first.\n"
       + "  • `context: {kind:\"drive_by\", rationale:\"noticed while changing X\"}` — spotted during unrelated work. Becomes a BUG, which outlives the branch. Needs `title` and `anchors`.\n\n"
       + "There is no storage parameter and there is no way to pick one. A pull-request finding belongs on the pull request, where the person who wrote the code will see it; whether it also reaches the sidecar depends on whether this machine has one, which is not your decision.\n\n"
       + "To defer a pull-request finding into a bug later, use `defer_finding` — that cross-links the two instead of filing a second, unattributed copy."
@@ -1045,10 +1058,11 @@ const tools: Tool[] = [
     inputSchema: obj({
       context: {
         type: "object",
-        description: "What you were doing. `{kind:\"pull_request\", pr}` or `{kind:\"drive_by\", rationale}`.",
+        description: "What you were doing. `{kind:\"pull_request\", pr}`, `{kind:\"branch\", branch}` or `{kind:\"drive_by\", rationale}`.",
         properties: {
-          kind: { type: "string", enum: ["pull_request", "drive_by"] },
+          kind: { type: "string", enum: ["pull_request", "branch", "drive_by"] },
           pr: { type: "string", description: "Pull request NUMBER, for `pull_request`." },
+          branch: { type: "string", description: "Branch name, for `branch`." },
           rationale: { type: "string", description: "What you were doing when you noticed it, for `drive_by`." },
         },
         required: ["kind"],

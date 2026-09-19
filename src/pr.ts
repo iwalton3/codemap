@@ -162,9 +162,14 @@ export interface PrMeta {
    * pass an explicit base when it is not the default.
    */
   baseInferred?: boolean;
+  /**
+   * The head branch is in another repository (a fork). Only `gh` knows, so a git-derived
+   * meta leaves it unset — and an unset one is never linked to a local branch of the same name.
+   */
+  crossRepo?: boolean;
 }
 
-const PR_FIELDS = "number,url,title,author,baseRefName,headRefName,baseRefOid,headRefOid,isDraft,state,createdAt,updatedAt,additions,deletions,changedFiles,commits";
+const PR_FIELDS = "number,url,title,author,baseRefName,headRefName,baseRefOid,headRefOid,isDraft,state,createdAt,updatedAt,additions,deletions,changedFiles,commits,isCrossRepository";
 /**
  * Same minus `commits`. That field is a GraphQL *connection*, and asking for it
  * across a page of PRs multiplies out past GitHub's 500k-node ceiling — a repo
@@ -220,6 +225,7 @@ export function fetchPrMeta(ref: PrRef, opts: { fresh?: boolean } = {}): PrMeta 
       additions: j.additions, deletions: j.deletions, changedFiles: j.changedFiles,
       commits: Array.isArray(j.commits) ? j.commits.length : 0,
       source: "gh",
+      ...(typeof j.isCrossRepository === "boolean" ? { crossRepo: j.isCrossRepository } : {}),
     };
     metaCache.set(key, { at: Date.now(), value: meta });
     return meta;

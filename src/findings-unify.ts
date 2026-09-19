@@ -36,6 +36,7 @@
 
 import type { Actor } from "./schema.js";
 import { requireActor, reviewerKey } from "./identity.js";
+import { findingKeyScope, branchOf } from "./review-target.js";
 import { resolveSidecar, sidecarForWrite, sidecarWriteDoor, scopeFor, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
 import { ensureMaterialized } from "./materialize.js";
 import { findingsProjection } from "./shared-projections.js";
@@ -108,6 +109,7 @@ async function replay(logRoot: string, scope: string, actor: Actor, f: SharedFin
     ...(f.line !== undefined ? { line: f.line } : {}),
     ...(f.witness ? { witness: f.witness } : {}),
     ...(f.sourceRef ? { sourceRef: f.sourceRef } : {}),
+    ...(branchOf(String(f.pr ?? "")) ? { branch: branchOf(String(f.pr))! } : {}),
     filedBy: f.author.principal || "(unrecorded)",
     filedAt: f.createdAt,
   });
@@ -173,7 +175,7 @@ export async function unifyFindings(root: string, opts: { dryRun?: boolean } = {
   await ensureSidecar(cfg.path, actor);
   const published: string[] = [];
   for (const f of ready) {
-    await replay(cfg.path, scopeFor(cfg, "pr", String(f.pr)), actor, f);
+    await replay(cfg.path, findingKeyScope(cfg, String(f.pr)), actor, f);
     published.push(f.id);
   }
   // Materialize every touched scope so the fold ADOPTS the local rows now, rather than
@@ -184,7 +186,7 @@ export async function unifyFindings(root: string, opts: { dryRun?: boolean } = {
   // `import-cycles.test.ts` catches it, dynamic imports included.
   for (const pr of [...new Set(ready.map((f) => f.pr))]) {
     await ensureMaterialized(
-      root, cfg.path, findingScope(scopeFor(cfg, "pr", String(pr))),
+      root, cfg.path, findingScope(findingKeyScope(cfg, String(pr))),
       sidecarIdentity(cfg), foldFindings, findingsProjection,
     );
   }

@@ -4,7 +4,8 @@ import { type Actor, type Anchor, type LogicalNode, type BugSeverity, type BugWi
 import type { NoteTargetKind } from "../shared-notes.js";
 import { indexFile, indexBlob } from "../repo.js";
 import { headCommit, readBlobs } from "../git.js";
-import { readAnchorStore, loadNodes, readAnnotations, writeAnnotations, readFindings, readFinding, writeLocalFinding, findAnchorsOutsideWork, readPushes, bodyHashAt, readOrphans, snapshotRefusal, snapshotKey, readSharedNotes, idsStartingWith } from "../store.js";
+import { branchKey } from "../review-target.js";
+import { linkedBranches, readAnchorStore, loadNodes, readAnnotations, writeAnnotations, readFindings, readFinding, writeLocalFinding, findAnchorsOutsideWork, readPushes, bodyHashAt, readOrphans, snapshotRefusal, snapshotKey, readSharedNotes, idsStartingWith } from "../store.js";
 import { readSnapshot } from "../snapshots.js";
 import { resolveSidecar } from "../sidecar-config.js";
 import {
@@ -807,8 +808,9 @@ export async function reviewQueue(
     : (a.kind === "finding" || a.kind === "question") && (opts.includeResolved || !a.resolved));
   if (opts.ids) { const want = new Set(opts.ids); pending = pending.filter((a) => want.has(a.id)); }
   if (opts.pr !== undefined) {
-    const want = String(opts.pr);
-    pending = pending.filter((a) => (prOf.get(a.id) ?? (a.postedRef ? String(a.postedRef.pr) : undefined)) === want);
+    // A pull request's findings include its linked branches' (`branch:<name>` keys).
+    const want = new Set([String(opts.pr), ...linkedBranches(root, String(opts.pr)).map(branchKey)]);
+    pending = pending.filter((a) => want.has(prOf.get(a.id) ?? (a.postedRef ? String(a.postedRef.pr) : "")));
   }
   if (opts.disposition) pending = pending.filter((a) => (a.disposition ?? "open") === opts.disposition);
   if (opts.tier) pending = pending.filter((a) => (tierOf.get(a.id) ?? tierOfAnnotation(a)) === opts.tier);

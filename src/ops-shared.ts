@@ -16,8 +16,10 @@ import { evalVersion } from "./doc-version.js";
 import { readCached, ensureMaterialized, type Projection } from "./materialize.js";
 import type { ScopeStatus, ScopeDiagnostic, LogEvent } from "./eventlog.js";
 import { scopesOnDisk, readScopeChecked, writerFor, rotateWriter, acknowledgeScope } from "./eventlog.js";
-import { findingsProjection, docsProjection, notesProjection, walkthroughsProjection, triageProjection, docsByNode, projectionFor } from "./shared-projections.js";
+import { reviewLinksProjection, findingsProjection, docsProjection, notesProjection, walkthroughsProjection, triageProjection, docsByNode, projectionFor } from "./shared-projections.js";
 import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
+import { findingKeyScope, branchKey, branchOf } from "./review-target.js";
+import { reviewScope, foldReviewLinks, linkReview } from "./shared-reviews.js";
 import { resolveSidecar, scopeFor, sidecarIdentity, inUniverse, checkSidecarBinding, type SidecarConfig } from "./sidecar-config.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -48,7 +50,7 @@ import { docsVerdict } from "./docs-lookup.js";
 import { queueContestedTriage } from "./ops/triage.js";
 import { liveAnchors, liveIndex } from "./ops/shared.js";
 export { mirrorTriage, mirrorTriageBatch, mirrorTriageClear } from "./triage-publish.js";
-import { readSharedNotes, readAnnotations, readAnchorStore, readFindings, loadNodes, loadNodeVersions, nodeIdsWithPublishableVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets, attributeLocalWalkthrough, readBlockedScopes, findingCountsByPr, readUnpublishedWalkthroughs, readStoreMeta, writeStoreMeta, foldedScopes, hasFoldedFromSidecar, SIDECAR_LINEAGE, type SidecarMark } from "./store.js";
+import { linkedBranches, writeLocalLink, readSharedNotes, readAnnotations, readAnchorStore, readFindings, loadNodes, loadNodeVersions, nodeIdsWithPublishableVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets, attributeLocalWalkthrough, readBlockedScopes, findingCountsByPr, readUnpublishedWalkthroughs, readStoreMeta, writeStoreMeta, foldedScopes, hasFoldedFromSidecar, SIDECAR_LINEAGE, type SidecarMark } from "./store.js";
 import {
   publishDocVersion, acceptDocHash, resolveDoc, foldDocs, docScope,
   type NewDocVersion,
@@ -101,28 +103,8 @@ function bind(root: string, via: { model?: string; harness?: string } = {}, opts
 /** What a caller says about itself: its model id and the tool running it. Never guessed. */
 export interface Via { model?: string; harness?: string }
 
-/**
- * `acme/api/pr-264` — the universe-qualified key every scope is built from.
- *
- * VALIDATED, because the scope IS the pull-request association: an unnormalized key
- * makes two scopes for one pull request, and every reader then sees half the findings.
- * `pr_walkthrough` advertises "number, url, or owner/repo#N", so a caller passing
- * `https://github.com/o/r/pull/5` here is not far-fetched — and it would scope to
- * `pr-https://github.com/o/r/pull/5` while the same person's `5` scoped to `pr-5`.
- * A slash in the key also lets `prOfScope` pick the wrong tail back out.
- *
- * Throws rather than returning an error: both front ends already catch and surface the
- * message, and this is a malformed input rather than a state a workflow can be in.
- */
-const prKey = (cfg: SidecarConfig, pr: number | string) => {
-  const key = String(pr).trim().replace(/^#/, "");
-  if (!/^\d+$/.test(key)) {
-    throw new Error(
-      `"${pr}" is not a pull request number — shared findings scope by number, so pass 5 rather than a url or owner/repo#5`,
-    );
-  }
-  return scopeFor(cfg, "pr", key);
-};
+/** A finding key (`264`, or `branch:<name>`) to its universe-qualified scope. See `findingKeyScope`. */
+const prKey = (cfg: SidecarConfig, pr: number | string) => findingKeyScope(cfg, pr);
 
 
 export interface Materialized {
@@ -488,7 +470,10 @@ export async function shareFinding(root: string, pr: number | string, f: NewFind
  */
 function verdictGround(root: string, f: SharedFinding): { state: "ok" | "unknown" | "missing"; ref?: string; head?: string } {
   const ref = f.sourceRef;
-  const head = headCommit(root);
+  // A branch finding is about the BRANCH, which the checkout answering is usually not on
+  // (an agent in a worktree reads through the main checkout). Its code is at the branch head.
+  const branch = f.branch ?? branchOf(String(f.pr ?? ""));
+  const head = branch ? revParse(root, `refs/heads/${branch}`) : headCommit(root);
   if (!ref || ref === "@work" || !head) return { state: "unknown", ref, head: head ?? undefined };
   return { state: isAncestor(root, ref, head) ? "ok" : "missing", ref, head };
 }
@@ -1398,6 +1383,47 @@ const cachedFindings = (root: string, cfg: { path: string; universe: string }, p
   readCached(root, cfg.path, findingScope(prKey(cfg, pr)), sidecarIdentity(cfg), foldFindings, findingsProjection);
 
 /**
+ * Record that pull request `pr` was opened from `branch`, so the branch's findings show
+ * under it. Idempotent. Without a sidecar the link stays on this machine.
+ */
+export async function linkReviewOp(root: string, pr: number | string, branch: string, via: Via = {}) {
+  const key = String(pr).trim().replace(/^#/, "");
+  const name = String(branch ?? "").trim();
+  if (!/^\d+$/.test(key)) return { error: `"${pr}" is not a pull request number` };
+  if (!name) return { error: "which branch?" };
+  if (linkedBranches(root, key).includes(name)) return { ok: true, pr: key, branch: name, already: true };
+  if (!resolveSidecar(root)) {
+    writeLocalLink(root, key, name);
+    return { ok: true, pr: key, branch: name, shared: false, note: "no sidecar configured, so the link stays on this machine" };
+  }
+  const b = bind(root, via);
+  if ("error" in b) return b;
+  await ensureSidecar(b.cfg.path, b.actor);
+  await linkReview(b.cfg.path, b.cfg.universe, b.actor, key, name);
+  await ensureMaterialized(root, b.cfg.path, reviewScope(b.cfg.universe), sidecarIdentity(b.cfg), foldReviewLinks, reviewLinksProjection);
+  return { ok: true, pr: key, branch: name };
+}
+
+/**
+ * Link a pull request to its head branch when `gh` has said which branch that is. Only a
+ * same-repository head: a fork's branch is somebody else's code under the same name.
+ * Best-effort, because it runs on a read: a failure leaves the link for the next one.
+ */
+export async function observePrBranch(root: string, meta: { number: number; headRef?: string; source?: string; crossRepo?: boolean }) {
+  if (meta.source !== "gh" || meta.crossRepo !== false || !meta.headRef) return null;
+  return linkReviewOp(root, meta.number, meta.headRef).catch(() => null);
+}
+
+/**
+ * Fold a pull request's own findings scope. Its linked branches' findings join the read
+ * through `review_link` (see `readFindings`), and their scopes are folded by sync and by
+ * the write that filed them — never here: a read that folds a scope sync has not seen is
+ * the COMPLETENESS violation, and a linked branch with no findings has no scope at all.
+ */
+const ensurePrFindings = (root: string, cfg: SidecarConfig, pr: number | string) =>
+  ensureMaterialized(root, cfg.path, findingScope(prKey(cfg, pr)), sidecarIdentity(cfg), foldFindings, findingsProjection);
+
+/**
  * Fold this pull request's findings scope into rows, now.
  *
  * WRITE-THROUGH — the rule `docs/sidecar-architecture.md` lists among the consequences
@@ -1490,9 +1516,7 @@ export async function sharedFindings(
   const cfg = resolveSidecar(root);
   let scope: { status?: string; diagnostic?: ScopeDiagnostic } = { status: "complete" };
   if (cfg) {
-    const { fresh, folded, ...st } = await ensureMaterialized(
-      root, cfg.path, findingScope(prKey(cfg, pr)), sidecarIdentity(cfg), foldFindings, findingsProjection,
-    );
+    const { fresh, folded, ...st } = await ensurePrFindings(root, cfg, pr);
     void fresh; void folded;
     scope = st;
   }
@@ -1588,11 +1612,7 @@ export async function inboundReplies(root: string, pr: number | string, opts: { 
   // they were filed locally and pushed by the web UI. That answer is worse than an
   // empty one: it asserts a PREMISE, and an agent that believes it stops looking and
   // reports the submitter never replied.
-  if (cfg) {
-    await ensureMaterialized(
-      root, cfg.path, findingScope(prKey(cfg, pr)), sidecarIdentity(cfg), foldFindings, findingsProjection,
-    );
-  }
+  if (cfg) await ensurePrFindings(root, cfg, pr);
   const all = (await readFindings(root, { pr })).findings;
   const published = all.filter((f) => f.posted?.key);
   if (!published.length) {
@@ -1612,6 +1632,7 @@ export async function inboundReplies(root: string, pr: number | string, opts: { 
     };
   }
 
+  if (!/^\d+$/.test(String(pr))) return { error: `"${pr}" is not a pull request — a branch has no replies until its pull request is opened, and then they are read by its number` };
   const threads = fetchReviewThreads(`${slug.owner}/${slug.repo}`, Number(pr), opts.gh);
   if ("error" in threads) return threads;
 
