@@ -159,13 +159,14 @@ describe("reviewing a branch, in the browser", { skip: pw ? false : "playwright 
     await page.close();
   });
 
-  test("signing a symbol the pull request deletes says it was not signed, and stays on it", async () => {
+  test("signing a symbol the pull request deletes signs the deletion", async () => {
+    // Triage run 2026-09-19-post-round-review, Item D: deleted code is signable now.
     const { page, errors } = await open(`/u/${universe}/pr/5/`);
     const step = page.locator(`#step-${refundId}`);
     await step.waitFor({ timeout: 20_000 });
     await step.locator('button[title^="signed:"]').first().click();
-    await page.locator(".marknote", { hasText: "not signed" }).waitFor();
-    assert.equal(await step.evaluate((el: Element) => el.classList.contains("done")), false);
+    await page.waitForFunction((id: string) => document.querySelector(`#step-${id}`)?.classList.contains("done"), refundId, { timeout: 10_000 });
+    assert.equal(await page.locator(".marknote", { hasText: "not signed" }).count(), 0);
     assert.deepEqual(errors, []);
     await page.close();
   });
