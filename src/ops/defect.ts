@@ -32,6 +32,7 @@ import { resolveSidecar } from "../sidecar-config.js";
 import { mintId } from "../eventlog.js";
 import { headCommit, revParse, worktreeForBranch, uncommittedPaths } from "../git.js";
 import { assertFindingKey, branchKey, normalizeBranch } from "../review-target.js";
+import { prHeadForFinding } from "../pr.js";
 import { writeLocalFinding } from "../store.js";
 import { resolveRefs } from "./shared.js";
 import { trunkBase } from "./at.js";
@@ -138,6 +139,13 @@ export async function reportDefect(root: string, input: DefectInput) {
     if ("error" in r) return r;
     ({ targetId, witness, sourceRef } = r);
   } else if (input.targetKind === "anchor") {
+    if (!ref) {
+      const h = await prHeadForFinding(root, key);
+      if ("error" in h) {
+        return { error: `could not find pull request ${key}'s head to witness the finding at (${h.error}) — pass \`ref\`: \`pr_packet\`'s \`refs.head\`` };
+      }
+      ref = h.sha;
+    }
     // Orphans included, for the reason `annotate` includes them: re-filing against code
     // the tree no longer has is exactly what somebody needs when a reindex stranded a
     // finding, and refusing it leaves the work unreachable rather than safe.

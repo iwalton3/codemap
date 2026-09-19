@@ -37,7 +37,7 @@ test("a pull-request context files a finding on that pull request", async () => 
   const r = await repo();
   try {
     const out = await reportDefect(r.root, {
-      context: { kind: "pull_request", pr: "270" },
+      context: { kind: "pull_request", pr: "270" }, ref: "HEAD",
       targetKind: "anchor", targetId: r.anchor,
       text: "the evidence", comment: "the ask", severity: "high", category: "Logic",
     }) as Record<string, unknown>;
@@ -93,7 +93,7 @@ test("a pull-request finding needs the submitter-facing version", async () => {
   const r = await repo();
   try {
     const out = await reportDefect(r.root, {
-      context: { kind: "pull_request", pr: "270" }, targetKind: "anchor", targetId: r.anchor, text: "evidence only",
+      context: { kind: "pull_request", pr: "270" }, ref: "HEAD", targetKind: "anchor", targetId: r.anchor, text: "evidence only",
     }) as { error: string };
     assert.match(out.error, /needs `comment`/);
     assert.equal((await readFindings(r.root)).findings.length, 0);
@@ -109,7 +109,7 @@ test("with no sidecar a pull-request finding is still a finding on that pull req
   const r = await repo(false);
   try {
     const out = await reportDefect(r.root, {
-      context: { kind: "pull_request", pr: "270" },
+      context: { kind: "pull_request", pr: "270" }, ref: "HEAD",
       targetKind: "anchor", targetId: r.anchor, text: "e", comment: "c",
     }) as Record<string, unknown>;
     assert.equal(out.shared, false, "degraded delivery, said out loud");
@@ -123,7 +123,7 @@ test("with a sidecar the same call reaches the team", async () => {
   const r = await repo(true);
   try {
     const out = await reportDefect(r.root, {
-      context: { kind: "pull_request", pr: "270" },
+      context: { kind: "pull_request", pr: "270" }, ref: "HEAD",
       targetKind: "anchor", targetId: r.anchor, text: "e", comment: "c", model: "claude-opus-5",
     }) as Record<string, unknown>;
     assert.equal(out.error, undefined);
@@ -146,7 +146,7 @@ test("one comment verb reaches a finding or a bug, by id alone", async () => {
   try {
     const { reportDefect: file, commentOn } = await import("./ops.js");
     const f = await file(r.root, {
-      context: { kind: "pull_request", pr: "270" },
+      context: { kind: "pull_request", pr: "270" }, ref: "HEAD",
       targetKind: "anchor", targetId: r.anchor, text: "e", comment: "c",
     }) as Record<string, string>;
     const b = await file(r.root, {
@@ -185,7 +185,7 @@ test("a finding carries its own pull request, so the caller cannot pass the wron
   try {
     const { reportDefect: file, corroborateOn } = await import("./ops.js");
     const f = await file(r.root, {
-      context: { kind: "pull_request", pr: "901" },
+      context: { kind: "pull_request", pr: "901" }, ref: "HEAD",
       targetKind: "anchor", targetId: r.anchor, text: "e", comment: "c",
     }) as Record<string, string>;
     // Nothing here names a pull request. It is read off the record.

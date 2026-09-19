@@ -1075,7 +1075,7 @@ const tools: Tool[] = [
       targetKind: { type: "string", enum: ["anchor", "node"], description: "Pull-request findings: what the target is." },
       targetId: { type: "string", description: "Pull-request findings: the symbol or node it is about." },
       line: { type: "number", description: "1-based line the finding is about." },
-      ref: { type: "string", description: "Resolve and witness the target at this commit too — a PR head, for a symbol that exists only on the branch." },
+      ref: { type: "string", description: "Resolve and witness the target at this commit too. On a pull-request finding it DEFAULTS to the PR's head — the one `pr_packet` last showed you, so no lookup per finding — and the call is refused if that head cannot be found; pass `pr_packet`'s `refs.head` then. Pass `HEAD` to witness your own local, unpushed commits." },
       title: { type: "string", description: "Drive-by bugs: the one line a triage list is read by." },
       anchors: { type: "array", items: { type: "string" }, description: "Drive-by bugs: the code it is anchored to (`file#Symbol`, `file:line`, or an id)." },
       model: { type: "string", description: "YOUR model id, e.g. \"claude-opus-5\". Recorded so the record says which model raised it. Never guess it." },

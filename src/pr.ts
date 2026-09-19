@@ -166,8 +166,13 @@ export function mergedAfter(prs: string[], createdAt: string, mergedAt: (n: numb
   return unknown ? null : false;
 }
 
+/** Asked once per PATH: it was a process spawn on every PR resolution, cache hit or not. */
+const ghOnPath = new Map<string, boolean>();
 export function ghAvailable(): boolean {
-  return spawnSync("gh", ["--version"], { encoding: "utf8" }).status === 0;
+  const path = process.env.PATH ?? "";
+  let ok = ghOnPath.get(path);
+  if (ok === undefined) ghOnPath.set(path, ok = spawnSync("gh", ["--version"], { encoding: "utf8" }).status === 0);
+  return ok;
 }
 
 export interface PrMeta {
@@ -518,7 +523,29 @@ async function prContext(
     const s = await ensureSnapshot(root, sha, label);
     if (s.error) return { error: `snapshot ${sha.slice(0, 12)}: ${s.error}` };
   }
+  seenHead.set(`${root}\0${ref.number}`, meta.headSha);
   return { ref, meta, mergeBase: mb, baseTip, drift };
+}
+
+/**
+ * The head this process last resolved for a pull request, by root and number.
+ *
+ * No TTL, unlike `metaCache`: this is the head the reviewer was last SHOWN, which is the
+ * code a finding filed now is about — more so than a head pushed since they read it.
+ */
+const seenHead = new Map<string, string>();
+
+/**
+ * The commit a pull-request finding is witnessed at when the caller names none. Without
+ * it the witness was the working tree — usually the BASE during a review — and a base body
+ * that is still on the trunk read as `landed` before the pull request merged.
+ */
+export async function prHeadForFinding(root: string, input: string): Promise<{ sha: string } | { error: string }> {
+  const ref = parsePrRef(input, originSlug(root) ?? { owner: "", repo: "" });
+  const hit = ref && seenHead.get(`${root}\0${ref.number}`);
+  if (hit) return { sha: hit };
+  const ctx = await prContext(root, input);
+  return "error" in ctx ? ctx : { sha: ctx.meta.headSha };
 }
 
 export async function prTriage(
