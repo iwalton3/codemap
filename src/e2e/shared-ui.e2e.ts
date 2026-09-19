@@ -491,13 +491,13 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
       writer: "w_izzie_clone_a", writerPrev: created.id, after: [created.id],
       data: { kind: "moved", to: anchorId, rationale: "renamed in def456" },
     })]);
-    await linkReviewOp(root, "903", "feature/linked");
+    await linkReviewOp(root, "904", "feature/linked");
     // A pull request's read does not fold its linked branches' scopes (sync does), so fold
     // the branch's own here, as a sync would have.
     const { sharedFindings } = await import("../ops-shared.js");
     await sharedFindings(root, branchKey("feature/linked"));
 
-    const { page, errors } = await open(`/u/${universe}/shared/903/`);
+    const { page, errors } = await open(`/u/${universe}/shared/904/`);
     await page.waitForSelector(".prbadge.ask");
     await page.locator(".frow .fmeta").first().click();
     await page.waitForSelector(".askbox");
