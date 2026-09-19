@@ -197,7 +197,9 @@ export function changedFilesSince(root: string, commit: string | null): string[]
   if (!commit || !isGitRepo(root)) return null;
   // `--relative`: diff prints repo-root paths for the whole repository by default, while
   // `ls-files` below is already cwd-relative — a subdirectory universe mixed the two.
-  const diff = git(root, ["diff", "--name-only", "--relative", commit, "--"]);
+  // `--no-renames`: rename detection is on by default and lists only the NEW path, so a
+  // `git mv` hid the old file from staleness and its docs read fresh for ever.
+  const diff = git(root, ["diff", "--name-only", "--relative", "--no-renames", commit, "--"]);
   if (!diff.ok) return null;
   const untracked = git(root, ["ls-files", "--others", "--exclude-standard"]).out;
   const files = new Set<string>();
