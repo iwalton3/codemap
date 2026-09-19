@@ -287,3 +287,20 @@ test("acting on a linked branch finding through its pull request acts in the fin
     ] as Record<string, unknown>[]) assert.match(String(r.error), /no finding/, "an unknown id is refused, not emitted");
   } finally { u.cleanup(); }
 });
+
+test("a finding shared under a branch key carries the branch without being told twice", async () => {
+  const u = await worktreeRepo(true);
+  try {
+    const shared = await import("./ops-shared.js");
+    const r = await shared.shareFinding(u.root, branchKey("feature"), {
+      targetKind: "anchor", targetId: u.filter.id, text: "evidence", comment: "only the key names the branch",
+    }) as Record<string, unknown>;
+    assert.equal(r.error, undefined, String(r.error));
+    const [f] = (await readFindings(u.root, { pr: branchKey("feature") })).findings;
+    assert.equal(f?.id, r.id, "visible under its branch");
+    const clash = await shared.shareFinding(u.root, branchKey("feature"), {
+      targetKind: "anchor", targetId: u.filter.id, text: "e", comment: "c", branch: "other",
+    }) as Record<string, unknown>;
+    assert.match(String(clash.error), /branch/, "a key and a field that disagree are refused");
+  } finally { u.cleanup(); }
+});

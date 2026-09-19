@@ -437,6 +437,13 @@ export async function sharedStatus(root: string) {
 }
 
 export async function shareFinding(root: string, pr: number | string, f: NewFinding, via: Via = {}) {
+  // The projection keys a branch finding's row by `branch` on its `created` event, since
+  // the scope is a hash; a `branch:` key without the field filed a row nothing could list.
+  const keyed = branchOf(String(pr));
+  if (keyed !== null) {
+    if (f.branch !== undefined && f.branch !== keyed) return { error: `the key names branch "${keyed}" but \`branch\` says "${f.branch}"` };
+    f = { ...f, branch: keyed };
+  }
   const b = bind(root, via);
   if ("error" in b) return b;
   await ensureSidecar(b.cfg.path, b.actor);
