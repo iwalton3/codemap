@@ -115,11 +115,17 @@ out of scope. Until then those tools refuse `at:` with a sentence rather than si
 answering about the root. The command uses `event_matrix` and `state_map`, so this is a
 visible gap and is written down as one.
 
-**A4. Measure before optimising.** `snapshotAt` re-indexes the whole tree for every new sha
-(about 2s per 1,200 files, so more on Acme.API's ~1,700), and nothing evicts snapshots.
-Agents that commit often each pay a full index per commit. Measure on a scratch copy of the
-real repo first. If it hurts, the fix is a per-blob-oid parse cache (an unchanged file is
-not re-parsed), not a change to the snapshot model.
+**A4. Measured, then built: snapshots stored once per file content (2026-09-18).** On
+Acme.API (1,840 files, 14,600 anchors) a snapshot took ~3 s to index and ~8 MB to store, and
+nothing removed one. The owner chose sharing over eviction:
+- **Storage.** A file's anchors are stored once, keyed by content (`anchor_sets`); a snapshot
+  lists its files' keys (`snapshot_sets`).
+- **Rebuilds.** `blob_index` lets a rebuild parse only the files that changed.
+- **Migration.** Existing stores convert on open. The freed space is reused, and the file
+  shrinks only after a `VACUUM`.
+
+Measured on 20 real commits: 16.9 MB instead of ~160 MB, and 60–220 ms per commit after the
+first instead of ~3 s.
 
 ## Part B — reviews that exist before the PR: BUILT (2026-09-18)
 
@@ -161,11 +167,13 @@ key and only branch findings use the typed `branch:<name>` key, so the deployed 
 reader of `f.pr` are unchanged. A typed key cannot collide with a number, which was the
 draft's only reason to type both.
 
-**B6. Out of scope, deliberately.**
-- **Walkthroughs.** `foldWalkthroughs` drops any event whose `pr` is not a number, so
-  pre-PR walkthroughs are a follow-up with the same shape.
-- **Web routes** (`/shared/:pr/`). The hub needs a branch-review page eventually. MCP comes
-  first, because that is what the command drives.
+**B6. The web page: BUILT. Walkthroughs: still open.**
+- **Web.** The hub lists branch reviews with the pull requests they are linked to, or "no
+  pull request yet". Every link to a review encodes its key: a branch name holds a `/`, which
+  split the hash route. The shared page labels a branch review.
+- **Walkthroughs before a PR.** Still open. `foldWalkthroughs` drops any event whose `pr` is
+  not a number, and a walkthrough is built from a pull request's triage, so it needs its own
+  design pass.
 
 ## Publishing is not in scope
 
