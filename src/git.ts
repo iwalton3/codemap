@@ -306,6 +306,19 @@ export function unreadableGitlink(
 }
 
 /**
+ * The submodule that stopped the last index of `sha`, recorded by `indexCommit` — the one
+ * caller holding the ignore rules, which are async to load. The refusal reports this rather
+ * than re-walking without them, which blamed submodules the index skips (triage
+ * 2026-09-19-post-round-review, I7). Per process, and overwritten by every attempt.
+ */
+const blockedBy = new Map<string, string>();
+export function recordUnreadableGitlink(root: string, sha: string, path: string | null): void {
+  if (path) blockedBy.set(`${root}\0${sha}`, path); else blockedBy.delete(`${root}\0${sha}`);
+}
+export const recordedUnreadableGitlink = (root: string, sha: string): string | null =>
+  blockedBy.get(`${root}\0${sha}`) ?? null;
+
+/**
  * Every entry in a commit's tree, as paths relative to `root`. Submodule
  * gitlinks are returned (as `type: "commit"`) rather than dropped: a bumped
  * submodule pointer is one line in a raw diff and can carry an arbitrary amount

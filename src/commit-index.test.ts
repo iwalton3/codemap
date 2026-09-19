@@ -226,3 +226,26 @@ test("an unreadable submodule fails the index BEFORE any file is parsed, and the
     assert.match(String(snapshotRefusal(root, sha)?.message), /submodule "lib"/);
   } finally { discard(root); discard(sub); }
 });
+
+test("an IGNORED unreadable submodule is never named as the reason a commit cannot be read", async (t) => {
+  // Triage run 2026-09-19-post-round-review, I7: the refusal re-walked the gitlinks
+  // without the ignore rules the index honours, so it blamed a submodule the index skips.
+  const root = repo(), sub = repo();
+  try {
+    writeFileSync(join(sub, "money.ts"), "export function settle(cents: number) { return cents; }\n");
+    commit(sub, "sub");
+    writeFileSync(join(root, "app.ts"), "export function main() { return 1; }\n");
+    writeFileSync(join(root, ".codemapignore"), "lib/\n");
+    commit(root, "app");
+    const added = git(root, "submodule", "add", "-q", sub, "lib");
+    if (added.status !== 0) { t.skip(`git refused a file:// submodule: ${added.stderr.trim().slice(0, 120)}`); return; }
+    commit(root, "add sub");
+    const sha = headCommit(root)!;
+    rmSync(join(root, "lib"), { recursive: true, force: true });
+
+    assert.notEqual(await indexCommit(root, sha), null, "the index skips the ignored submodule");
+    const { snapshotRefusal } = await import("./store.js");
+    mkdirSync(join(root, ".codemap"), { recursive: true });
+    assert.doesNotMatch(String(snapshotRefusal(root, sha)?.message), /submodule/);
+  } finally { discard(root); discard(sub); }
+});

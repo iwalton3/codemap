@@ -30,7 +30,7 @@ import { needsHumanAck, type SharedBug } from "./shared-bugs.js";
 import { needsHumanAck as findingNeedsAck, type SharedFinding } from "./shared-findings.js";
 import type { SharedNote, NoteKind } from "./shared-notes.js";
 import { IMPORTANCE_RANK, COMPLEXITY_RANK } from "./triage-rules.js";
-import { headCommit, currentBranch, revParse, lsTreeEntries, unreadableGitlink } from "./git.js";
+import { headCommit, currentBranch, revParse, recordedUnreadableGitlink } from "./git.js";
 import { evalVersion, selectWinner, resolveNode, winningVersionAt } from "./doc-version.js";
 export { winningVersionAt } from "./doc-version.js";
 import {
@@ -682,7 +682,7 @@ export function snapshotRefusal(
   const meta = d.prepare("SELECT scheme, hash_scheme FROM snapshots WHERE ref = ?").get(ref) as
     { scheme: number | null; hash_scheme: number | null } | undefined;
   if (!meta) {
-    const sub = lsTreeEntries(root, ref) ? unreadableGitlink(root, ref) : null;
+    const sub = recordedUnreadableGitlink(root, ref);
     return {
       reason: "absent",
       message: sub
