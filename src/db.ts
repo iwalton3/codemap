@@ -132,8 +132,14 @@ export function anchorSetKey(file: string, rows: AnchorSetRow[]): string {
   return h.digest("hex").slice(0, 32);
 }
 
-/** Store a snapshot's rows as shared anchor sets, replacing whatever `ref` had. One transaction. */
-export function putSnapshotSets(d: DatabaseSync, ref: string, rows: AnchorSetRow[]): Map<string, string> {
+/**
+ * Store a snapshot's rows as shared anchor sets, replacing whatever `ref` had. One
+ * transaction, which `within` joins: a caller's per-file writes are otherwise one
+ * autocommit each.
+ */
+export function putSnapshotSets(
+  d: DatabaseSync, ref: string, rows: AnchorSetRow[], within?: (keyOf: Map<string, string>) => void,
+): Map<string, string> {
   const byFile = new Map<string, AnchorSetRow[]>();
   for (const r of rows) (byFile.get(r.file) ?? byFile.set(r.file, []).get(r.file)!).push(r);
   const keyOf = new Map<string, string>();
@@ -154,6 +160,7 @@ export function putSnapshotSets(d: DatabaseSync, ref: string, rows: AnchorSetRow
       link.run(ref, k);
     }
     collectAnchorSets(d, previous);
+    within?.(keyOf);
     d.exec("COMMIT");
   } catch (e) { d.exec("ROLLBACK"); throw e; }
   return keyOf;

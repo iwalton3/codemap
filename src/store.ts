@@ -329,14 +329,15 @@ export async function writeSnapshot(
       start_line: a.loc?.startLine ?? null, end_line: a.loc?.endLine ?? null,
     };
   });
-  const keyOf = putSnapshotSets(d, ref, rows);
-  if (opts.blobs?.size) {
-    const deriv = derivKey();
-    const put = d.prepare("INSERT OR REPLACE INTO blob_index(path,oid,deriv,fkey) VALUES(?,?,?,?)");
-    for (const [path, oid] of opts.blobs) put.run(path, oid, deriv, keyOf.get(path) ?? "");
-  }
-  d.prepare("INSERT INTO snapshots(ref,branch,at,count,scheme,hash_scheme,dirty) VALUES(?,?,?,?,?,?,?) ON CONFLICT(ref) DO UPDATE SET branch=excluded.branch, at=excluded.at, count=excluded.count, scheme=excluded.scheme, hash_scheme=excluded.hash_scheme, dirty=excluded.dirty")
-    .run(ref, branch, at, anchors.length, ANCHOR_SCHEME, HASH_SCHEME, 0);
+  putSnapshotSets(d, ref, rows, (keyOf) => {
+    if (opts.blobs?.size) {
+      const deriv = derivKey();
+      const put = d.prepare("INSERT OR REPLACE INTO blob_index(path,oid,deriv,fkey) VALUES(?,?,?,?)");
+      for (const [path, oid] of opts.blobs) put.run(path, oid, deriv, keyOf.get(path) ?? "");
+    }
+    d.prepare("INSERT INTO snapshots(ref,branch,at,count,scheme,hash_scheme,dirty) VALUES(?,?,?,?,?,?,?) ON CONFLICT(ref) DO UPDATE SET branch=excluded.branch, at=excluded.at, count=excluded.count, scheme=excluded.scheme, hash_scheme=excluded.hash_scheme, dirty=excluded.dirty")
+      .run(ref, branch, at, anchors.length, ANCHOR_SCHEME, HASH_SCHEME, 0);
+  });
 }
 
 /**

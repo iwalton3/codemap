@@ -139,3 +139,23 @@ test("a rebuilt snapshot reuses the sets its previous build left", async () => {
     assert.equal(count(r.root, "anchor_sets"), before, "nothing duplicated by a rebuild");
   } finally { r.cleanup(); }
 });
+
+test("a snapshot's blob index is written in the snapshot's own transaction", async () => {
+  // Triage run 2026-09-19-branch-review-round, J15: one autocommit per indexed file
+  // (~1,840 WAL commits on Acme.API) on the path every `at:` read and PR open takes.
+  const r = repo();
+  const d = db(r.root);
+  const prepare = d.prepare.bind(d);
+  const outside: string[] = [];
+  d.prepare = ((sql: string) => {
+    const st = prepare(sql);
+    if (!/blob_index|INTO snapshots/.test(sql)) return st;
+    const run = st.run.bind(st);
+    st.run = ((...a: unknown[]) => { if (!d.isTransaction) outside.push(sql.slice(0, 40)); return run(...(a as [])); }) as typeof st.run;
+    return st;
+  }) as typeof d.prepare;
+  try {
+    assert.ok(await buildSnapshot(r.root, r.c1));
+    assert.deepEqual(outside, [], "every blob_index and snapshots write inside one transaction");
+  } finally { d.prepare = prepare; r.cleanup(); }
+});
