@@ -1,7 +1,12 @@
 import { type Annotation } from "../schema.js";
 import { originSlug } from "../git.js";
 import { readAnchorStore, loadNodes, readAnnotations, readFindings, findAnchorsOutsideWork, writeLocalWalkthrough, foldOwnsWalkthrough, readOrphans } from "../store.js";
-import { prTriage, listOpenPrs, prPacket, prStory, prAnchorCode, prPromotionPlan, derivePrTriage, prContainment, offStoryReason, type OffStoryReason } from "../pr.js";
+import { prTriage, listOpenPrs, prPacket, prStory, prAnchorCode, prPromotionPlan, derivePrTriage, prContainment, offStoryReason, onPrResolved, type OffStoryReason } from "../pr.js";
+
+// Every pull request resolved through `gh` records which branch it came from, so findings
+// filed on that branch before it existed show under it (shared-reviews.ts). Registered at
+// load: every PR op reaches `prContext` through this module.
+onPrResolved((root, meta) => import("../ops-shared.js").then((m) => m.observePrBranch(root, meta)));
 import { promotionOwns } from "../pr-promote.js";
 import { resolveSidecar } from "../sidecar-config.js";
 import { resolveActor } from "../identity.js";

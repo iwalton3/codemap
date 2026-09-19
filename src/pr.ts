@@ -455,6 +455,14 @@ const SEV_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low:
 const CX_RANK: Record<Complexity, number> = { deep: 0, standard: 1, rote: 2, wiring: 3 };
 
 /**
+ * Called with every pull request `prContext` resolves through `gh`. A hook because what it
+ * does — record the PR→branch link in the sidecar — lives above this module, and an import
+ * of it from here is a cycle. Registered once by `ops/pr.ts`, which every PR op goes through.
+ */
+let resolvedHook: ((root: string, meta: PrMeta) => Promise<unknown>) | null = null;
+export function onPrResolved(fn: (root: string, meta: PrMeta) => Promise<unknown>): void { resolvedHook = fn; }
+
+/**
  * Resolve a PR to its two commits and cache their snapshots — everything the whole
  * PR analysis needs BEFORE any diffing, and on its own everything a question about
  * a single symbol needs. Split out because `prAnchorCode` used to reach it through
@@ -483,8 +491,8 @@ async function prContext(
   const meta = useGh ? fetchPrMeta(ref) : prMetaFromGit(root, ref.number, slug, "origin", { base: opts.base });
   if ("error" in meta) return meta;
   // The one place a pull request is resolved, so the one place its link to its branch is
-  // recorded (shared-reviews.ts). Upward and dynamic: ops-shared imports this module.
-  if (meta.source === "gh") await import("./ops-shared.js").then((m) => m.observePrBranch(root, meta)).catch(() => null);
+  // recorded (shared-reviews.ts) — by the ops layer, through `onPrResolved`.
+  if (meta.source === "gh" && resolvedHook) await resolvedHook(root, meta).catch(() => null);
 
   if (opts.fetch !== false) {
     const f = ensurePrObjects(root, meta);
