@@ -32,7 +32,9 @@ const notABranchName = (name: string): boolean =>
  * the same string or the review splits (owner, triage 2026-09-19-branch-review-round Q3):
  * `refs/heads/x` and `origin/x` both mean `x`; any other remote is refused, because a
  * fork's same-named branch is somebody else's code. A local branch spelled exactly as
- * given wins over stripping, so a branch literally named `origin/…` is never misread.
+ * given wins over stripping, but only while it exists here: once deleted, or on a clone
+ * that never had it, a branch literally named `origin/x` is read as `x` — the cost the
+ * owner accepted at Q3.
  * Existence is NOT required: a merged branch is deleted, and its findings are still read.
  */
 export function normalizeBranch(root: string, raw: string): { name: string } | { error: string } {
