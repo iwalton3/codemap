@@ -76,9 +76,7 @@ owner's rulings:
   hashes are exempt.
 
 Left open: `docDiff` with no head still resolves against the stored `@work` rows (the same
-shape the no-head `computeDiff` fix closed). And the PR e2e test "the reading does not depend
-on what the working tree is checked out to" fails with a git error in its checkout helper;
-that failure is identical on `6fffe8e`.
+shape the no-head `computeDiff` fix closed).
 
 **A2. `at` on the read tools**, in the order the command uses them:
 
