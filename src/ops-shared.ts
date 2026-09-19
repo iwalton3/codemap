@@ -13,12 +13,12 @@ import { comparableHashes, sameBody } from "./normalize.js";
 import { realpathSync } from "node:fs";
 import { classifyCitations } from "./citation-state.js";
 import { evalVersion } from "./doc-version.js";
-import { readCached, ensureMaterialized, type Projection } from "./materialize.js";
+import { readCached, ensureMaterialized, scopeCurrency, type Projection } from "./materialize.js";
 import type { ScopeStatus, ScopeDiagnostic, LogEvent } from "./eventlog.js";
 import { scopesOnDisk, readScopeChecked, writerFor, rotateWriter, acknowledgeScope } from "./eventlog.js";
 import { reviewLinksProjection, findingsProjection, docsProjection, notesProjection, walkthroughsProjection, triageProjection, docsByNode, projectionFor } from "./shared-projections.js";
 import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
-import { findingKeyScope, branchKey, branchOf, normalizeBranch } from "./review-target.js";
+import { findingKeyScope, branchKey, branchOf, isBranchKey, normalizeBranch } from "./review-target.js";
 import { reviewScope, foldReviewLinks, linkReview } from "./shared-reviews.js";
 import { resolveSidecar, scopeFor, sidecarIdentity, inUniverse, checkSidecarBinding, type SidecarConfig } from "./sidecar-config.js";
 import { existsSync } from "node:fs";
@@ -1545,10 +1545,21 @@ export async function sharedFindings(
 ) {
   const cfg = resolveSidecar(root);
   let scope: { status?: string; diagnostic?: ScopeDiagnostic } = { status: "complete" };
+  let behind: string[] = [];
   if (cfg) {
     const { fresh, folded, ...st } = await ensurePrFindings(root, cfg, pr);
     void fresh; void folded;
     scope = st;
+    // The rows include the linked branches' findings, which this read does not fold
+    // (`ensurePrFindings`) — so it must not report `complete` over a branch scope that is
+    // blocked or behind its log. Worst status wins; blocked outranks behind.
+    if (!isBranchKey(String(pr))) {
+      for (const branch of linkedBranches(root, pr)) {
+        const s = await scopeCurrency(root, cfg.path, findingScope(prKey(cfg, branchKey(branch))), sidecarIdentity(cfg));
+        if (s.status === "blocked" && scope.status !== "blocked") scope = s;
+        if (s.status === "behind") behind.push(branch);
+      }
+    }
   }
   const all = (await readFindings(root, { pr })).findings;
   const places = await classifyCitations(root, [...new Set(all.filter((f) => f.target.kind === "anchor").map((f) => f.target.id))]);
@@ -1580,7 +1591,16 @@ export async function sharedFindings(
   // the surface that reports the problem.
   const unmigrated = cfg ? all.filter((f) => !f.origin) : [];
   return {
-    scope: nonAuthoritative(scope as ScopeStatus),
+    scope: nonAuthoritative(scope as ScopeStatus) ?? (behind.length
+      ? {
+        status: "behind" as const,
+        diagnostic: {
+          reason: "behind" as const,
+          detail: `linked branch ${behind.join(", ")} has changes this map has not folded — sync, then re-read`,
+          evidence: behind,
+        },
+      }
+      : undefined),
     universe: cfg?.universe ?? null,
     pr,
     ...(unmigrated.length

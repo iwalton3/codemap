@@ -526,6 +526,26 @@ export async function readCached<T>(
  * than as complete: the column is only ever written when the status is blocked, so
  * the damage is to the explanation, not to the judgement.
  */
+/**
+ * Whether a scope's stored rows still describe its log, answered WITHOUT folding it — for a
+ * read that serves a scope it must not fold (a pull request's linked branches). `behind`
+ * when the shards moved since the fold, or a scope with shards was never folded here; the
+ * fingerprint is a `stat` per shard, so no event is read.
+ */
+export async function scopeCurrency(
+  root: string, logRoot: string, scope: string, identity: string,
+): Promise<ScopeStatus | { status: "behind" }> {
+  const row = db(root).prepare("SELECT fingerprint, status, diagnostic FROM shared_scope WHERE scope = ?").get(scope) as
+    { fingerprint: string; status: string; diagnostic: string | null } | undefined;
+  if (row) {
+    const stored = storedStatus(row);
+    if (stored.status === "blocked") return stored;
+    return row.fingerprint === await scopeFingerprint(logRoot, scope, identity) ? stored : { status: "behind" };
+  }
+  const shards = await readdir(join(logRoot, scope)).then((ns) => ns.some((n) => n.endsWith(SHARD_EXT))).catch(() => false);
+  return shards ? { status: "behind" } : { status: "complete" };
+}
+
 function storedStatus(row: { status: string; diagnostic: string | null }): ScopeStatus {
   // Only the exact string is complete. A value this build does not recognise is a
   // row some other version wrote, and §7 is a fail-CLOSED rule: reading an unknown

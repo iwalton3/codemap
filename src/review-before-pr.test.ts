@@ -304,3 +304,26 @@ test("a finding shared under a branch key carries the branch without being told 
     assert.match(String(clash.error), /branch/, "a key and a field that disagree are refused");
   } finally { u.cleanup(); }
 });
+
+test("shared_findings on a pull request does not claim complete over a linked branch that is not", async () => {
+  const u = await worktreeRepo(true);
+  try {
+    const shared = await import("./ops-shared.js");
+    const { db } = await import("./db.js");
+    const { readdirSync, utimesSync } = await import("node:fs");
+    await file(u.root, "src/filter.ts#IdentifierFilter.matches");
+    await shared.linkReviewOp(u.root, "12", "feature");
+    const read = async () => (await shared.sharedFindings(u.root, 12) as { scope?: { status: string } }).scope;
+    assert.equal(await read(), undefined, "both scopes folded and current: authoritative");
+
+    const row = db(u.root).prepare("SELECT scope FROM shared_scope WHERE scope LIKE '%/b-%'").get() as { scope: string };
+    const dir = join(u.root, "..", "side", row.scope);
+    const shard = readdirSync(dir).find((n) => n.endsWith(".ndjson"))!;
+    utimesSync(join(dir, shard), new Date(), new Date(Date.now() + 5_000));
+    assert.equal((await read())?.status, "behind", "the branch's log moved since it was folded");
+
+    db(u.root).prepare("UPDATE shared_scope SET status = 'blocked', diagnostic = ? WHERE scope = ?")
+      .run(JSON.stringify({ reason: "fork", detail: "a fork", evidence: [] }), row.scope);
+    assert.equal((await read())?.status, "blocked");
+  } finally { u.cleanup(); }
+});
