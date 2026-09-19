@@ -159,6 +159,11 @@ src/analyzers/*      OPT-IN framework plugins (Marten) — see the caveat below
   auto-writes `.codemap/.gitignore`). Out of git so it never pollutes a branch/PR
   diff and a checkout never drags a stale map in. On first open of a legacy JSON
   `.codemap/`, it **auto-imports** it (guarded so it never double-imports).
+- **An upgrade that changes the store copies it first** to `.codemap/backups/`, pruned
+  after 2 days (`db.ts` `upgrade`). Some migrations are one-way: after the snapshot
+  compaction an older build reads every snapshot as EMPTY and its diffs report nothing.
+  "Changes" is detected by running the migrations in a savepoint, so every migration's
+  transaction must be `tx` (a savepoint) — a raw `BEGIN` there throws.
 - Anchors live under `ref = @work` (live index). `init` and the `snapshot` op
   cache the current commit's anchors under `ref = <sha>` (immutable) — a commit
   maps to a cached index, other-branch data is never lost.

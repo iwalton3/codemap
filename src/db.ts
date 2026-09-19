@@ -11,7 +11,7 @@
 
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, existsSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync, writeFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { mkdirSync } from "node:fs";
 import { join, sep } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -40,6 +40,13 @@ export function db(root: string): DatabaseSync {
   if (!existsSync(gi)) writeFileSync(gi, "# codemap store — never commit; regenerate with `codemap init`\n*\n");
   d = new DatabaseSync(join(dir, "codemap.db"));
   d.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;");
+  try { upgrade(root, d); } catch (e) { d.close(); throw e; }
+  pruneBackups(dir);
+  cache.set(root, d);
+  return d;
+}
+
+function runMigrations(root: string, d: DatabaseSync): void {
   migrate(d);
   importLegacy(root, d);
   migrateNodesToVersions(d);
@@ -47,8 +54,92 @@ export function db(root: string): DatabaseSync {
   migrateBugsBlob(d);
   migrateWalkthroughBlob(d);
   compactLegacySnapshots(d);
-  cache.set(root, d);
-  return d;
+}
+
+/** How long a pre-upgrade copy of the store is kept. */
+export const BACKUP_RETENTION_MS = 2 * 24 * 60 * 60 * 1000;
+export const BACKUP_DIR = "backups";
+
+/**
+ * Run the migrations, copying the store first whenever they would change it.
+ *
+ * An upgrade can be one-way: the snapshot compaction leaves a store an older build reads
+ * as holding EMPTY snapshots, so its diffs silently report nothing. The copy is the way
+ * back (owner, 2026-09-19: a backup on every migration that is not a no-op, kept 2 days).
+ *
+ * Whether they would change it is found by running them inside a savepoint and comparing
+ * the schema and `total_changes()` — so a future migration is covered without anyone
+ * having to remember a version number. That is why every migration's transaction is
+ * `tx`, a savepoint: a raw BEGIN inside the probe throws.
+ */
+function upgrade(root: string, d: DatabaseSync): void {
+  // A new store has nothing to lose, and a legacy JSON import leaves its JSON in place.
+  if (!d.prepare("SELECT 1 FROM sqlite_master LIMIT 1").get()) { runMigrations(root, d); return; }
+  const shape = () => {
+    const schema = (d.prepare("SELECT type, name, sql FROM sqlite_master ORDER BY type, name").all() as { sql: string | null }[])
+      .map((r) => JSON.stringify(r)).join("\n");
+    const changes = (d.prepare("SELECT total_changes() n").get() as { n: number }).n;
+    return `${changes}\0${schema}`;
+  };
+  const before = shape();
+  d.exec("SAVEPOINT codemap_upgrade_probe");
+  let changed: boolean;
+  try {
+    runMigrations(root, d);
+    changed = shape() !== before;
+  } catch (e) {
+    d.exec("ROLLBACK TO codemap_upgrade_probe; RELEASE codemap_upgrade_probe");
+    throw e;
+  }
+  if (!changed) { d.exec("RELEASE codemap_upgrade_probe"); return; }
+  d.exec("ROLLBACK TO codemap_upgrade_probe; RELEASE codemap_upgrade_probe");
+  backupStore(join(root, ".codemap"), d);
+  runMigrations(root, d);
+}
+
+/**
+ * `VACUUM INTO` a temp name, then rename: a crash mid-copy must not leave a file that
+ * looks like a good backup. No backup, no upgrade — migrating without the way back is
+ * the thing this exists to prevent.
+ */
+function backupStore(dir: string, d: DatabaseSync): void {
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+  const target = join(dir, BACKUP_DIR, `codemap-${stamp}-${process.pid}.db`);
+  const tmp = `${target}.tmp`;
+  try {
+    mkdirSync(join(dir, BACKUP_DIR), { recursive: true });
+    d.prepare("VACUUM INTO ?").run(tmp);
+    renameSync(tmp, target);
+  } catch (e) {
+    try { rmSync(tmp, { force: true }); } catch { /* best effort */ }
+    throw new Error(`codemap could not back up ${join(dir, "codemap.db")} before upgrading it, so it has not been upgraded: ${(e as Error).message}`);
+  }
+}
+
+function pruneBackups(dir: string): void {
+  const backups = join(dir, BACKUP_DIR);
+  let names: string[];
+  try { names = readdirSync(backups); } catch { return; }
+  const cutoff = Date.now() - BACKUP_RETENTION_MS;
+  for (const name of names) {
+    if (!/^codemap-.*\.db(\.tmp)?$/.test(name)) continue;
+    const p = join(backups, name);
+    try { if (statSync(p).mtimeMs < cutoff) rmSync(p, { force: true }); } catch { /* raced another process */ }
+  }
+}
+
+/**
+ * A transaction that nests: a savepoint, which is also a transaction at top level.
+ * `fn` returning `false` rolls back without throwing.
+ */
+let savepoints = 0;
+export function tx(d: DatabaseSync, fn: () => void | false): void {
+  const name = `codemap_tx_${++savepoints}`;
+  d.exec("SAVEPOINT " + name);
+  let keep: void | false;
+  try { keep = fn(); } catch (e) { d.exec("ROLLBACK TO " + name + "; RELEASE " + name); throw e; }
+  if (keep === false) d.exec("ROLLBACK TO " + name);
+  d.exec("RELEASE " + name);
 }
 
 /**
@@ -146,8 +237,7 @@ export function putSnapshotSets(
   const ins = d.prepare("INSERT OR IGNORE INTO anchor_sets(fkey,id,file,symbol_path,kind,disambiguator,body_hash,last_commit,derivation,start_byte,end_byte,start_line,end_line) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)");
   const link = d.prepare("INSERT OR IGNORE INTO snapshot_sets(ref,fkey) VALUES(?,?)");
   const previous = (d.prepare("SELECT fkey FROM snapshot_sets WHERE ref = ?").all(ref) as { fkey: string }[]).map((r) => r.fkey);
-  d.exec("BEGIN");
-  try {
+  tx(d, () => {
     d.prepare("DELETE FROM snapshot_sets WHERE ref = ?").run(ref);
     d.prepare("DELETE FROM anchors WHERE ref = ?").run(ref);   // a legacy copy of this ref, if any
     for (const [file, fileRows] of byFile) {
@@ -161,8 +251,7 @@ export function putSnapshotSets(
     }
     collectAnchorSets(d, previous);
     within?.(keyOf);
-    d.exec("COMMIT");
-  } catch (e) { d.exec("ROLLBACK"); throw e; }
+  });
   return keyOf;
 }
 
@@ -201,14 +290,13 @@ function migrateTriageBlob(d: DatabaseSync): void {
   if (!row) return;
   const existing = (d.prepare("SELECT COUNT(*) c FROM triage").get() as { c: number }).c;
 
-  d.exec("BEGIN");
-  try {
+  tx(d, () => {
     if (!existing) {
       let parsed: { triage?: unknown[] } | undefined;
       // A blob this build cannot parse is not a reason to refuse to open the store. It
       // is left in `meta` rather than dropped, so nothing is destroyed and a later build
       // can still look at it.
-      try { parsed = JSON.parse(row.v) as { triage?: unknown[] }; } catch { d.exec("ROLLBACK"); return; }
+      try { parsed = JSON.parse(row.v) as { triage?: unknown[] }; } catch { return false; }
       const ins = d.prepare(
         "INSERT OR IGNORE INTO triage(target_kind,target_id,field,value,source,likely,generated_by,"
         + "reason,at,witnesses) VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -232,11 +320,7 @@ function migrateTriageBlob(d: DatabaseSync): void {
       }
     }
     d.prepare("DELETE FROM meta WHERE k = 'triage'").run();
-    d.exec("COMMIT");
-  } catch (e) {
-    d.exec("ROLLBACK");
-    throw e;
-  }
+  });
 }
 
 /**
@@ -266,14 +350,13 @@ function migrateWalkthroughBlob(d: DatabaseSync): void {
   if (!row) return;
   const existing = (d.prepare("SELECT COUNT(*) c FROM walkthroughs").get() as { c: number }).c;
 
-  d.exec("BEGIN");
-  try {
+  tx(d, () => {
     if (!existing) {
       let parsed: { walkthroughs?: Record<string, unknown> } | undefined;
       // Left in `meta` rather than dropped when it will not parse: nothing is
       // destroyed, and a later build can still look at it.
       try { parsed = JSON.parse(row.v) as { walkthroughs?: Record<string, unknown> }; }
-      catch { d.exec("ROLLBACK"); return; }
+      catch { return false; }
       const ins = d.prepare("INSERT OR IGNORE INTO walkthroughs(pr,author,body) VALUES(?,?,?)");
       for (const [pr, w] of Object.entries(parsed?.walkthroughs ?? {})) {
         const walk = w as { head?: unknown; at?: unknown } | null;
@@ -291,11 +374,7 @@ function migrateWalkthroughBlob(d: DatabaseSync): void {
       }
     }
     d.prepare("DELETE FROM meta WHERE k = 'pr_walkthrough'").run();
-    d.exec("COMMIT");
-  } catch (e) {
-    d.exec("ROLLBACK");
-    throw e;
-  }
+  });
 }
 
 /**
@@ -341,13 +420,12 @@ function migrateBugsBlob(d: DatabaseSync): void {
 
   const STATE: Record<string, string> = { open: "created", fixed: "resolved", wontfix: "withdrawn", invalid: "invalid" };
 
-  d.exec("BEGIN");
-  try {
+  tx(d, () => {
     if (!existing) {
       let parsed: { bugs?: unknown[] } | undefined;
       // A blob this build cannot parse is left in `meta` rather than dropped: nothing
       // is destroyed, and a later build can still look at it.
-      try { parsed = JSON.parse(row.v) as { bugs?: unknown[] }; } catch { d.exec("ROLLBACK"); return; }
+      try { parsed = JSON.parse(row.v) as { bugs?: unknown[] }; } catch { return false; }
       const ins = d.prepare(
         "INSERT OR IGNORE INTO bugs(id,title,state,severity,author,created_at,needs_ack,contested,tracked,body) "
         + "VALUES(?,?,?,?,?,?,0,0,0,?)",
@@ -392,11 +470,7 @@ function migrateBugsBlob(d: DatabaseSync): void {
       }
     }
     d.prepare("DELETE FROM meta WHERE k = 'bugs'").run();
-    d.exec("COMMIT");
-  } catch (e) {
-    d.exec("ROLLBACK");
-    throw e;
-  }
+  });
 }
 
 /**
@@ -412,18 +486,13 @@ function migrateNodesToVersions(d: DatabaseSync): void {
   for (const r of d.prepare("SELECT id, body_hash FROM anchors WHERE ref = '@work'").all() as any[]) work.set(r.id, r.body_hash);
   const ins = d.prepare("INSERT INTO node_versions(version_id,node_id,type,title,summary,body,generated_by,created_commit,created_branch,created_at,citations) VALUES(?,?,?,?,?,?,?,?,?,?,?)");
   const at = new Date().toISOString();
-  d.exec("BEGIN");
-  try {
+  tx(d, () => {
     for (const n of d.prepare("SELECT * FROM nodes").all() as any[]) {
       const anchors: string[] = JSON.parse(n.anchors ?? "[]");
       const citations = anchors.map((id) => ({ anchorId: id, acceptedHashes: work.has(id) ? [work.get(id)!] : [] }));
       ins.run("nv_" + randomBytes(6).toString("hex"), n.id, n.type, n.title, n.summary, n.body, n.generated_by, null, null, at, JSON.stringify(citations));
     }
-    d.exec("COMMIT");
-  } catch (e) {
-    d.exec("ROLLBACK");
-    throw e;
-  }
+  });
 }
 
 function migrate(d: DatabaseSync): void {
