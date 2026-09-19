@@ -32,7 +32,7 @@ import { resolveSidecar } from "../sidecar-config.js";
 import { mintId } from "../eventlog.js";
 import { headCommit, revParse, worktreeForBranch, uncommittedPaths } from "../git.js";
 import { assertFindingKey, branchKey, normalizeBranch } from "../review-target.js";
-import { prHeadForFinding } from "../pr.js";
+import { prBaseForFinding, prHeadForFinding } from "../pr.js";
 import { writeLocalFinding } from "../store.js";
 import { trunkBase } from "./at.js";
 import { readSnapshot } from "../snapshots.js";
@@ -62,6 +62,11 @@ export interface DefectInput {
   line?: number;
   /** Resolve and witness the target at this commit as well as the live index. */
   ref?: string;
+  /**
+   * The change's base, where a symbol it deletes is measured from — `pr_packet`'s
+   * `refs.mergeBase`. A pull request's own base is looked up when this is omitted.
+   */
+  base?: string;
   /** Drive-by bugs: a title, and the code it is anchored to. */
   title?: string;
   anchors?: string[];
@@ -140,7 +145,10 @@ export async function reportDefect(root: string, input: DefectInput) {
       }
       ref = h.sha;
     }
-    const r = await changeTarget(root, branch ?? `pull request ${key}`, branch, ref, targetId);
+    // A PR is measured from its OWN base, a branch from where it left the trunk (owner,
+    // triage 2026-09-19-deletion-fixes-review Q2; a branch declares no parent).
+    const base = input.base ?? (branch ? undefined : await prBaseForFinding(root, key) ?? undefined);
+    const r = await changeTarget(root, branch ?? `pull request ${key}`, branch, ref, targetId, base);
     if ("error" in r) return r;
     ({ targetId, witness, sourceRef } = r);
   }
@@ -207,7 +215,7 @@ const ambiguous = (e: string) => e.startsWith("ambiguous ");
  * pick (I1), and a `file:line` is refused rather than re-read by the same number in the
  * base, where it can name a different symbol (I2, Q6).
  */
-async function changeTarget(root: string, label: string, branch: string | undefined, sha: string, target: string) {
+async function changeTarget(root: string, label: string, branch: string | undefined, sha: string, target: string, changeBase?: string) {
   const snapAt = async (commit: string) => {
     const snap = await readSnapshot(root, commit);
     if (!snap) throw new Error(snapshotRefusal(root, commit)?.message ?? `cannot index ${commit.slice(0, 12)}`);
@@ -221,7 +229,9 @@ async function changeTarget(root: string, label: string, branch: string | undefi
     if (r.errors.some(ambiguous)) return { error: r.errors.join("; ") };
     const uncommitted = uncommittedTarget(root, branch, target);
     if (uncommitted) return { error: uncommitted };
-    const base = trunkBase(root, sha);
+    const base = changeBase
+      ? { sha: revParse(root, changeBase) ?? changeBase, label: `base ${changeBase.slice(0, 12)}` }
+      : trunkBase(root, sha);
     const baseSnap = base && base.sha !== sha ? await snapAt(base.sha) : null;
     const line = /:\d+$/.test(target) && !/^a_[0-9a-f]+$/.test(target);
     const rb = baseSnap ? resolveAnchorRefs(baseSnap, [target]) : null;

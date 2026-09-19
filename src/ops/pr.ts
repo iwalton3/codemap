@@ -395,7 +395,7 @@ export async function prStepMark(
     await unmarkReviewed(root, { targetKind: "anchor", targetId: id, level: "code", attestation: opts.attestation, actor: "human" });
     cleared = (await unmarkCovered(root, id, { level: "code", attestation: opts.attestation, actor: "human" })).removed;
   } else {
-    const mark = { level: "code" as const, actor: "human" as const, attestation: opts.attestation, reviewer: opts.reviewer, ref: c.head };
+    const mark = { level: "code" as const, actor: "human" as const, attestation: opts.attestation, reviewer: opts.reviewer, ref: c.head, base: c.base };
     unwitnessed = (await markReviewedBatch(root, [id], mark)).unwitnessed;
     // A container nothing witnessed was not signed, so nothing is signed through it. One
     // the change DELETES is witnessed as a deletion and covers the members it deletes.
@@ -405,7 +405,7 @@ export async function prStepMark(
   // (on a withdrawal) whatever the cover had written, in case the two disagree.
   const affected = [id, ...new Set([...inside, ...cleared])];
   const marks: Record<string, unknown> = {};
-  for (const a of affected) marks[a] = await anchorMark(root, a, { ref: c.head });
+  for (const a of affected) marks[a] = await anchorMark(root, a, { ref: c.head, base: c.base });
   return { ok: true, anchor: id, covered: inside.length, marks, ...(unwitnessed ? { unwitnessed } : {}) };
 }
 
@@ -449,7 +449,7 @@ export async function prChapterMark(
       cleared.push(...(await unmarkCovered(root, id, { level: "code", attestation: opts.attestation, actor: "human" })).removed);
     }
   } else {
-    const mark = { level: "code" as const, actor: "human" as const, attestation: opts.attestation, reviewer: opts.reviewer, ref: t.refs.head };
+    const mark = { level: "code" as const, actor: "human" as const, attestation: opts.attestation, reviewer: opts.reviewer, ref: t.refs.head, base: t.refs.mergeBase };
     // The chapter's own symbols first: a member that is itself a step here is signed
     // in its own right, and a cover must not displace that.
     unwitnessed = (await markReviewedBatch(root, ids, mark)).unwitnessed;
@@ -460,7 +460,7 @@ export async function prChapterMark(
   // whole pull request to learn what its own click did.
   const affected = [...new Set([...ids, ...[...c.contained.values()].flat(), ...cleared])];
   const marks: Record<string, unknown> = {};
-  for (const id of affected) marks[id] = await anchorMark(root, id, { ref: t.refs.head });
+  for (const id of affected) marks[id] = await anchorMark(root, id, { ref: t.refs.head, base: t.refs.mergeBase });
   return { ok: true, chapter: chapterId, anchors: ids.length, covered: affected.length - ids.length, marks, ...(unwitnessed ? { unwitnessed } : {}) };
 }
 

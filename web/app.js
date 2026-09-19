@@ -174,8 +174,8 @@ const notSignedNote = (ids) => (ids && ids.length
   ? `${ids.length} symbol${ids.length === 1 ? ' was' : 's were'} not signed: neither the pull request's head nor its base holds the code, so there is nothing to vouch for.`
   : null);
 
-const postReview = (u, targetKind, targetId, level, unmark, attestation, ref) =>
-  postSeen('/api/review', { u, targetKind, targetId, level, unmark, attestation, ref });
+const postReview = (u, targetKind, targetId, level, unmark, attestation, ref, base) =>
+  postSeen('/api/review', { u, targetKind, targetId, level, unmark, attestation, ref, base });
 // Stakes triage (human source → confirmed tier). `body` = { importance } or { clear:true }.
 const postTriage = (u, targetKind, targetId, body) =>
   postSeen('/api/triage', { u, targetKind, targetId, ...body });
@@ -3118,7 +3118,9 @@ class DiffPage extends Component {
     const cls = revCls(state, actor, via);
     const tip = `${level}: ${state}${state === 'reviewed' && actor === 'agent' ? ' (agent-checked)' : ''}${via && VIA_TIP[via] ? VIA_TIP[via] : ''}`;
     const ref = this.props.query.head || undefined;
-    return html`<button class="${cls}" title="${tip}" on-click="${async (e) => { if (e.stopPropagation) e.stopPropagation(); await postReview(this.props.params.universe, kind, id, level, state === 'reviewed' && via !== 'unverifiable', undefined, ref); await after(); }}">${level}${revMark(state, actor, via)}</button>`;
+    // A deletion is measured from THIS diff's base (triage 2026-09-19-deletion-fixes-review Q2).
+    const base = ref ? this.props.query.base || undefined : undefined;
+    return html`<button class="${cls}" title="${tip}" on-click="${async (e) => { if (e.stopPropagation) e.stopPropagation(); await postReview(this.props.params.universe, kind, id, level, state === 'reviewed' && via !== 'unverifiable', undefined, ref, base); await after(); }}">${level}${revMark(state, actor, via)}</button>`;
   }
 
   // Group the raw symbol changes by file for the structural view.

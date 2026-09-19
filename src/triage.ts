@@ -280,7 +280,7 @@ const emptyPair = (): ReviewPair => ({ logical: { state: "unreviewed" }, code: {
  * doc, never for code you never opened. Reading the raw row here would pin every node at
  * `signed:false` forever, so the whole map could never leave 0% review-complete.
  */
-export async function reviewTriageFor(root: string, targets: Target[], opts: { ref?: string } = {}): Promise<Map<string, ReviewTriage>> {
+export async function reviewTriageFor(root: string, targets: Target[], opts: { ref?: string; base?: string } = {}): Promise<Map<string, ReviewTriage>> {
   // Node targets need their cited anchors' code reviews too — batch them into the same
   // passes (reviewStatesFor re-indexes each file once, so widening the list is cheap).
   const nodeTargets = targets.filter((t) => t.kind === "node");
@@ -296,8 +296,8 @@ export async function reviewTriageFor(root: string, targets: Target[], opts: { r
   const all = extra.length ? [...targets, ...extra] : targets;
   const [ts, vouch, viewed] = await Promise.all([
     readTriage(root),
-    reviewStatesFor(root, all, { ref: opts.ref }),
-    reviewStatesFor(root, all, { viewed: true, ref: opts.ref }),
+    reviewStatesFor(root, all, { ref: opts.ref, base: opts.base }),
+    reviewStatesFor(root, all, { viewed: true, ref: opts.ref, base: opts.base }),
   ]);
   const byTarget = new Map(ts.triage.map((t) => [`${t.target.kind}:${t.target.id}`, t]));
   const out = new Map<string, ReviewTriage>();
@@ -351,7 +351,7 @@ export async function reviewTriageFor(root: string, targets: Target[], opts: { r
 }
 
 /** Triage + severity for many targets (derives from `reviewTriageFor`). */
-export async function triageFor(root: string, targets: Target[], opts: { ref?: string } = {}): Promise<Map<string, TriageInfo>> {
+export async function triageFor(root: string, targets: Target[], opts: { ref?: string; base?: string } = {}): Promise<Map<string, TriageInfo>> {
   const m = await reviewTriageFor(root, targets, opts);
   return new Map([...m].map(([k, v]) => [k, v.triage]));
 }
@@ -388,7 +388,7 @@ export function rollupCoverage(infos: Iterable<TriageInfo>): Coverage {
 }
 
 /** Coverage over a set of targets (their live severity), rolled up. */
-export async function coverageFor(root: string, targets: Target[], opts: { ref?: string } = {}): Promise<Coverage> {
+export async function coverageFor(root: string, targets: Target[], opts: { ref?: string; base?: string } = {}): Promise<Coverage> {
   const m = await triageFor(root, targets, opts);
   return rollupCoverage(m.values());
 }

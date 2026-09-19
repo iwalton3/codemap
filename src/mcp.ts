@@ -426,6 +426,7 @@ const tools: Tool[] = [
       ids: { type: "array", items: { type: "string" }, description: "Mark MANY anchors at once — the form for a pull request, where a page of `pr_packet` is one call rather than forty. Anchors only (a node's code review is derived from its segments). Mutually exclusive with `targetKind`/`targetId`." },
       level: { type: "string", enum: ["logical", "code"] },
       ref: { type: "string", description: "Witness the code AT THIS COMMIT rather than in the working tree. On a pull request pass `pr_packet`'s `refs.head`: an anchor id carries no ref, so without this a sign-off made while reviewing a PR records whatever branch happens to be checked out — usually the base — and reads as a review of code nobody looked at." },
+      base: { type: "string", description: "The change's base — `pr_packet`'s `refs.mergeBase`. A symbol absent at `ref` that the base holds is signed as a DELETION; omitted, the base is where `ref` left the trunk, which is wrong for a stacked PR." },
       unmark: { type: "boolean" },
       reviewer: { type: "string" },
     }, ["level"]),
@@ -436,7 +437,7 @@ const tools: Tool[] = [
         // `unmark` has no batch behind it, and silently marking when the caller asked
         // to unmark is the worse failure of the two.
         if (a.unmark) return { error: "`unmark` takes one target — pass `targetKind`/`targetId`." };
-        return markReviewedBatch(c.universe.path, ids, { level: a.level, reviewer: a.reviewer, actor: "agent", ref: a.ref });
+        return markReviewedBatch(c.universe.path, ids, { level: a.level, reviewer: a.reviewer, actor: "agent", ref: a.ref, base: a.base });
       }
       if (!a.targetKind || !a.targetId) return { error: "review needs `ids` (anchors) or `targetKind` + `targetId`." };
       if (a.unmark) return unmarkReviewed(c.universe.path, { ...a, actor: "agent" });
@@ -1076,6 +1077,7 @@ const tools: Tool[] = [
       targetId: { type: "string", description: "Pull-request findings: the symbol or node it is about. A `file:line` must be a line of the head; for deleted code name the symbol (`file#Symbol`)." },
       line: { type: "number", description: "1-based line the finding is about." },
       ref: { type: "string", description: "The pull request's head, where the target is resolved and witnessed. It DEFAULTS to the head `pr_packet` last showed you, so no lookup per finding, and the call is refused if that head cannot be found; pass `pr_packet`'s `refs.head` then. A symbol the PR DELETES is filed as a deletion (absent at the head, with the body the base holds), and lands when the deletion reaches the trunk. Code only in your unpushed commits is not the PR's yet: file it with `context: {kind:\"branch\"}`." },
+      base: { type: "string", description: "The change's base — `pr_packet`'s `refs.mergeBase` — which a symbol the change deletes is measured from. A pull request's own base is looked up when omitted; a branch is measured from where it left the trunk." },
       title: { type: "string", description: "Drive-by bugs: the one line a triage list is read by." },
       anchors: { type: "array", items: { type: "string" }, description: "Drive-by bugs: the code it is anchored to (`file#Symbol`, `file:line`, or an id)." },
       model: { type: "string", description: "YOUR model id, e.g. \"claude-opus-5\". Recorded so the record says which model raised it. Never guess it." },

@@ -478,7 +478,7 @@ const server = createServer(async (req, res) => {
         // looks like it worked.
         if (r && typeof r === "object" && "error" in r) return r;
         if (body.targetKind === "anchor" && typeof body.targetId === "string") {
-          return { ...(r as object), mark: await ops.anchorMark(root, body.targetId, { ref: body.ref }) };
+          return { ...(r as object), mark: await ops.anchorMark(root, body.targetId, { ref: body.ref, base: body.base }) };
         }
         return r;
       });

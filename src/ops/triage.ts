@@ -22,8 +22,8 @@ export async function setTriage(
  * in place — re-deriving the whole PR story to learn one symbol's new state was
  * what made signing feel slow on a large pull request.
  */
-export async function anchorMark(root: string, id: string, opts: { ref?: string } = {}) {
-  const rt = await reviewTriageFor(root, [{ kind: "anchor", id }], { ref: opts.ref });
+export async function anchorMark(root: string, id: string, opts: { ref?: string; base?: string } = {}) {
+  const rt = await reviewTriageFor(root, [{ kind: "anchor", id }], { ref: opts.ref, base: opts.base });
   const e = rt.get(`anchor:${id}`);
   return {
     id,

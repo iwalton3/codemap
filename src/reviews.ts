@@ -590,7 +590,7 @@ function ancestryProbe(root: string, viewRef: string | null): Ancestry {
 export async function reviewStatesFor(
   root: string,
   targets: Target[],
-  opts?: { viewed?: boolean; ref?: string },
+  opts?: { viewed?: boolean; ref?: string; base?: string },
 ): Promise<Map<string, ReviewPair>> {
   const rs = await readReviews(root);
   const nodes = targets.some((t) => t.kind === "node") ? (await codeAt(root, opts?.ref)).nodes : [];
@@ -608,7 +608,7 @@ export async function reviewStatesFor(
   const live = await liveHashes(root, all, opts?.ref);
   const deletions = [...all].filter((id) => live.get(id) === undefined
     && rs.reviews.some((r) => r.target.id === id && acceptedOf(r).some((c) => c.entries.some((e) => e.deleted))));
-  const baseBodies = await deletedBodies(root, opts?.ref, deletions);
+  const baseBodies = await deletedBodies(root, opts?.ref, deletions, opts?.base);
   const out = new Map<string, ReviewPair>();
   const wantViewed = opts?.viewed ?? false;
 
@@ -709,17 +709,19 @@ export async function reviewStatus(root: string, target: Target, opts?: { viewed
 }
 
 /**
- * The bodies `ids` had where `ref` left the trunk — what a change deletes, when they are
- * absent at `ref`. Empty with no ref, no trunk, or a ref that IS its merge-base.
+ * The bodies `ids` had at the change's base — what a change deletes, when they are absent
+ * at `ref`. The base is the CHANGE's own (a PR's base, a diff's `<a>`) when the caller
+ * knows it, else where `ref` left the trunk, which is a branch's base (owner, triage
+ * 2026-09-19-deletion-fixes-review Q2). Empty with no ref, no base, or a ref that IS it.
  */
-async function deletedBodies(root: string, ref: string | undefined, ids: string[]): Promise<Map<string, string>> {
+async function deletedBodies(root: string, ref: string | undefined, ids: string[], base?: string): Promise<Map<string, string>> {
   if (!ref || !ids.length) return new Map();
   try {
     const sha = revParse(root, ref) ?? ref;
-    const base = trunkBase(root, sha);
-    if (!base || base.sha === sha) return new Map();
+    const b = base ? revParse(root, base) ?? base : trunkBase(root, sha)?.sha;
+    if (!b || b === sha) return new Map();
     const want = new Set(ids);
-    return new Map(((await readSnapshot(root, base.sha)) ?? []).filter((a) => want.has(a.id)).map((a) => [a.id, a.bodyHash]));
+    return new Map(((await readSnapshot(root, b)) ?? []).filter((a) => want.has(a.id)).map((a) => [a.id, a.bodyHash]));
   } catch { return new Map(); }
 }
 
@@ -1000,6 +1002,8 @@ export async function markReviewedBatch(
   anchorIds: string[],
   input: {
     level: ReviewLevel; reviewer?: string; actor?: "human" | "agent"; attestation?: Attestation; ref?: string;
+    /** The change's base, where a deletion is measured from — see `deletedBodies`. */
+    base?: string;
     /**
      * Stamp these as cover rows for the container named here (see `Review.coveredBy`).
      * An id that already carries a mark made about IT — rather than one written by
@@ -1043,7 +1047,7 @@ export async function markReviewedBatch(
   // signs the deletion (owner, triage 2026-09-19-post-round-review: "Should probably land
   // both"; Q5 counts it).
   const deletedAt = input.hashes ? new Map<string, string>()
-    : await deletedBodies(root, input.ref, anchorIds.filter((id) => live.get(id) === undefined));
+    : await deletedBodies(root, input.ref, anchorIds.filter((id) => live.get(id) === undefined), input.base);
   let unwitnessed: string[] = [];
   if (!input.hashes && !input.coveredBy) {
     const unhashed = anchorIds.filter((id) => live.get(id) === undefined && !deletedAt.has(id));

@@ -175,7 +175,8 @@ export async function computeDiff(root: string, baseRef: string, headRef?: strin
 
   // Judged where the diff's head is, which is where DiffPage signs: with a head ref that
   // is its commit, and without one the working tree is the head and no ref is right.
-  const atHead = headRef ? { ref: headSide.sha ?? undefined } : {};
+  // A deletion is measured from THIS diff's base (triage 2026-09-19-deletion-fixes-review Q2).
+  const atHead = headRef ? { ref: headSide.sha ?? undefined, base: base.sha ?? undefined } : {};
   // Review + viewed + severity, best-effort — never let it break the diff (e.g. no @work index).
   let nodeRt: Awaited<ReturnType<typeof reviewTriageFor>> = new Map();
   try {

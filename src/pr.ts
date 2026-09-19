@@ -524,6 +524,7 @@ async function prContext(
     if (s.error) return { error: `snapshot ${sha.slice(0, 12)}: ${s.error}` };
   }
   seenHead.set(seenKey(root, ref), meta.headSha);
+  seenBase.set(seenKey(root, ref), mb);
   return { ref, meta, mergeBase: mb, baseTip, drift };
 }
 
@@ -534,6 +535,8 @@ async function prContext(
  * code a finding filed now is about — more so than a head pushed since they read it.
  */
 const seenHead = new Map<string, string>();
+/** The base beside each `seenHead` — the PR's own, which is where its deletions are measured from. */
+const seenBase = new Map<string, string>();
 const seenKey = (root: string, ref: PrRef) => `${root}\0${ref.owner}/${ref.repo}#${ref.number}`;
 
 /**
@@ -541,6 +544,20 @@ const seenKey = (root: string, ref: PrRef) => `${root}\0${ref.owner}/${ref.repo}
  * it the witness was the working tree — usually the BASE during a review — and a base body
  * that is still on the trunk read as `landed` before the pull request merged.
  */
+/**
+ * A pull request's own base — where a symbol it deletes is measured from (owner, triage
+ * 2026-09-19-deletion-fixes-review Q2). Null when the PR cannot be resolved: the caller
+ * then measures from where the head left the trunk, which is right for every PR cut from
+ * the trunk and is what this answered before PRs had a base of their own.
+ */
+export async function prBaseForFinding(root: string, input: string): Promise<string | null> {
+  const ref = parsePrRef(input, originSlug(root) ?? { owner: "", repo: "" });
+  const hit = ref && seenBase.get(seenKey(root, ref));
+  if (hit) return hit;
+  const ctx = await prContext(root, input).catch(() => null);
+  return ctx && !("error" in ctx) ? ctx.mergeBase : null;
+}
+
 export async function prHeadForFinding(root: string, input: string): Promise<{ sha: string } | { error: string }> {
   const ref = parsePrRef(input, originSlug(root) ?? { owner: "", repo: "" });
   const hit = ref && seenHead.get(seenKey(root, ref));
@@ -686,7 +703,7 @@ async function buildWorklist(
 
   let rt: Awaited<ReturnType<typeof reviewTriageFor>> = new Map();
   try {
-    rt = await reviewTriageFor(root, entries.map((e) => ({ kind: "anchor" as const, id: e.b.id })), { ref: headSha });
+    rt = await reviewTriageFor(root, entries.map((e) => ({ kind: "anchor" as const, id: e.b.id })), { ref: headSha, base: mergeBase });
   } catch { /* no live index — fall back to untriaged/unreviewed */ }
 
   const items: WorkItem[] = entries.map(({ b, change }) => {
@@ -825,7 +842,7 @@ export async function prPacket(
  */
 export async function prContainment(
   root: string, input: string, ids: string[],
-): Promise<{ head: string; contained: Map<string, string[]> } | { error: string }> {
+): Promise<{ head: string; base: string; contained: Map<string, string[]> } | { error: string }> {
   const ctx = await prContext(root, input, { fetch: false });
   if ("error" in ctx) return ctx;
   const [head, base] = await Promise.all([readSnapshot(root, ctx.meta.headSha), readSnapshot(root, ctx.mergeBase)]);
@@ -849,7 +866,7 @@ export async function prContainment(
     const inside = new Set([...containedAnchorIds(head, id), ...containedAnchorIds(base, id)]);
     contained.set(id, [...inside].filter(touched));
   }
-  return { head: ctx.meta.headSha, contained };
+  return { head: ctx.meta.headSha, base: ctx.mergeBase, contained };
 }
 
 /**
