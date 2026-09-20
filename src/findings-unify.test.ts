@@ -182,3 +182,81 @@ test("the shared view reports the split rather than hiding it", async () => {
     assert.equal(after.splitStore, undefined);
   } finally { u.cleanup(); }
 });
+
+/**
+ * A key no scope can be formed from — a url, `owner/repo#5` — is refused with the batch,
+ * not thrown out of the middle of it.
+ *
+ * `findingKeyScope` used to be reached inside the PUBLISH loop, so such a key threw out of
+ * a function typed to return `{error}` after part of the batch was in the sidecar log and
+ * before anything marked it published. Removing the offending row and re-running then
+ * emitted a DUPLICATE `finding.created` for the same subject into the same shard.
+ *
+ * Written DIRECTLY rather than filed: `report_defect` refuses these now. That is also the
+ * real population — such rows are pre-existing, from builds that had no guard at all.
+ */
+const JUNK = "https://github.com/o/r/pull/5";
+
+test("an unscopeable key is refused with the batch, and the rest still publishes", async () => {
+  const u = universe();
+  try {
+    await writeLocalFinding(u.root, local("finding_ok"), 264);
+    await writeLocalFinding(u.root, local("finding_junk", { pr: JUNK }), JUNK);
+
+    const r = await unifyFindings(u.root) as { published: string[]; refused: { id: string; reason: string }[] };
+    assert.deepEqual(r.published, ["finding_ok"], "the good one goes");
+    assert.deepEqual(r.refused.map((x) => x.id), ["finding_junk"]);
+    assert.match(r.refused[0]!.reason, /not a pull request number or a branch/);
+    assert.ok(await splitState(u.root), "and the gate stays on — the split is not gone");
+  } finally { u.cleanup(); }
+});
+
+test("and the DRY RUN shows it, which is the whole point of validating before the write", async () => {
+  const u = universe();
+  try {
+    await writeLocalFinding(u.root, local("finding_ok"), 264);
+    await writeLocalFinding(u.root, local("finding_junk", { pr: JUNK }), JUNK);
+    // It used to report "would publish 2" and then fail on the real run, because the key
+    // was never computed until publish time. A count must not write, and it must not lie.
+    const r = await unifyFindings(u.root, { dryRun: true }) as
+      { published: string[]; refused: { id: string }[]; dryRun: boolean };
+    assert.equal(r.dryRun, true);
+    assert.deepEqual(r.published, ["finding_ok"]);
+    assert.deepEqual(r.refused.map((x) => x.id), ["finding_junk"]);
+  } finally { u.cleanup(); }
+});
+
+test("a throw in the publish loop says what already reached the log", async () => {
+  const u = universe();
+  try {
+    await writeLocalFinding(u.root, local("finding_ok"), 264);
+    await writeLocalFinding(u.root, local("finding_boom"), 265);
+
+    // A real mid-batch failure, and one the split loop could not have anticipated: 265's
+    // scope directory cannot be created because a FILE is sitting at its path. 264
+    // publishes, 265 does not, which is exactly the partial state the report is for.
+    const { resolveSidecar } = await import("./sidecar-config.js");
+    const { findingKeyScope } = await import("./review-target.js");
+    const { findingScope } = await import("./shared-findings.js");
+    const cfg = resolveSidecar(u.root)!;
+    // Which one goes LAST — asked rather than assumed: the publish order is the order
+    // `readFindings` returns, and a test that guesses it reports a count of zero and looks
+    // like the report is missing when it is merely early.
+    const order = (await unifyFindings(u.root, { dryRun: true }) as { published: string[] }).published;
+    assert.equal(order.length, 2);
+    const lastPr = order.at(-1) === "finding_ok" ? "264" : "265";
+    const blocked = join(u.side, findingScope(findingKeyScope(cfg, lastPr)));
+    mkdirSync(join(blocked, ".."), { recursive: true });
+    writeFileSync(blocked, "not a directory", "utf8");
+
+    await assert.rejects(
+      () => unifyFindings(u.root),
+      (e: Error) => {
+        assert.match(e.message, /PUBLISHED BEFORE THIS FAILED \(1\)/);
+        assert.match(e.message, new RegExp(order[0]!), "by id, so a re-run knows what is already there");
+        assert.match(e.message, /second time/i, "and says what re-running would do");
+        return true;
+      },
+    );
+  } finally { u.cleanup(); }
+});

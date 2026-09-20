@@ -482,7 +482,16 @@ async function cmdPublishDocs(root: string, dryRun: boolean): Promise<void> {
  */
 async function cmdUnifyFindings(root: string, dryRun: boolean): Promise<void> {
   const { unifyFindings } = await import("./findings-unify.js");
-  const r = await unifyFindings(root, { dryRun }) as Record<string, any>;
+  let r: Record<string, any>;
+  try {
+    r = await unifyFindings(root, { dryRun }) as Record<string, any>;
+  } catch (e) {
+    // A throw part-way through the publish loop. The message carries what already reached
+    // the log (see `unifyFindings`), and that list is the whole value of catching here: a
+    // stack trace says where it broke and nothing about what the team can now see.
+    console.error((e as Error).message);
+    process.exit(1);
+  }
   if (r.error) { console.error(r.error); process.exit(1); }
   console.log(JSON.stringify(r, null, 2));
   // A partial run is not a success: the gate stays on, and the operator has to see why.

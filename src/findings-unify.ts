@@ -142,6 +142,15 @@ function unreplayable(f: SharedFinding, actor: Actor): string | null {
   return null;
 }
 
+/**
+ * Why this finding's key cannot be scoped, or null. Asked with the other refusal so an
+ * unscopeable row joins `refused[]` — which `dryRun` already reports, so the operator sees
+ * it before the run rather than as a stack trace part-way through one.
+ */
+function keyRefusal(cfg: SidecarConfig, f: SharedFinding): string | null {
+  try { findingKeyScope(cfg, String(f.pr)); return null; } catch (e) { return (e as Error).message; }
+}
+
 export async function unifyFindings(root: string, opts: { dryRun?: boolean } = {}): Promise<UnifyResult | { error: string }> {
   const door = sidecarWriteDoor(root);
   // Not the same sentence for the two nulls: "nothing to unify with" is false when a
@@ -157,7 +166,13 @@ export async function unifyFindings(root: string, opts: { dryRun?: boolean } = {
   const refused: UnifyResult["refused"] = [];
   const ready: SharedFinding[] = [];
   for (const f of local) {
-    const why = unreplayable(f, actor);
+    // The KEY too, and here rather than in the publish loop below, because this module
+    // states the rule three lines down: after the split and before any write. A key no
+    // scope can be formed from used to reach `findingKeyScope` mid-publish and throw out
+    // of a function typed to return `{error}` — after part of the batch was in the log and
+    // before anything marked it published. Such keys are pre-existing in real stores,
+    // written by builds that had no guard at all.
+    const why = keyRefusal(cfg, f) ?? unreplayable(f, actor);
     if (why) refused.push({ id: f.id, pr: f.pr!, reason: why });
     else ready.push(f);
   }
@@ -174,9 +189,20 @@ export async function unifyFindings(root: string, opts: { dryRun?: boolean } = {
 
   await ensureSidecar(cfg.path, actor);
   const published: string[] = [];
-  for (const f of ready) {
-    await replay(cfg.path, findingKeyScope(cfg, String(f.pr)), actor, f);
-    published.push(f.id);
+  try {
+    for (const f of ready) {
+      await replay(cfg.path, findingKeyScope(cfg, String(f.pr)), actor, f);
+      published.push(f.id);
+    }
+  } catch (e) {
+    // What is already in the log, on the way out. Re-running after removing the offending
+    // row would otherwise publish a DUPLICATE `finding.created` for the same subject into
+    // the same shard, because nothing marked the first batch `origin` — and the operator
+    // had only a stack trace to work out which rows those were.
+    (e as Error).message = `${(e as Error).message}\n\nPUBLISHED BEFORE THIS FAILED (${published.length}): `
+      + `${published.join(", ") || "none"}. These are in the sidecar log already; re-running `
+      + `publishes them a SECOND time unless this store has materialized them (\`codemap sync\`).`;
+    throw e;
   }
   // Materialize every touched scope so the fold ADOPTS the local rows now, rather than
   // leaving a store that has published and still reads as split until the next sync.
