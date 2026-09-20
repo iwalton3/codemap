@@ -223,6 +223,15 @@ export interface SharedFinding {
    * the `created` event because a branch scope is a hash of the name (see review-target.ts).
    */
   branch?: string;
+  /**
+   * The ref the filer actually NAMED, when it was an explicit `origin/` spelling.
+   *
+   * `normalizeBranch` strips `origin/`, so `origin/feature` and `feature` produce the same
+   * key and land in the same scope. Since Ruling 11 they can be witnessed at different
+   * commits, and without this the row cannot say which spelling produced which — the only
+   * trace would be `sourceRef`, which no surface presents as "you asked for origin".
+   */
+  namedRef?: string;
   author: Actor;
   createdAt: string;
   /**
@@ -677,6 +686,7 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         witness: witnessOf(obj(d, "witness")),
         sourceRef: str(d, "sourceRef"),
         ...(str(d, "branch") ? { branch: str(d, "branch") } : {}),
+        ...(str(d, "namedRef") ? { namedRef: str(d, "namedRef") } : {}),
         author: e.actor,
         createdAt: e.at,
         ...(str(d, "filedBy") || str(d, "filedAt")
@@ -1011,6 +1021,8 @@ export interface NewFinding {
   witness?: BugWitness;
   sourceRef?: string;
   branch?: string;
+  /** The ref the filer named, when explicitly origin's. See `SharedFinding.namedRef`. */
+  namedRef?: string;
 }
 
 export async function createFinding(logRoot: string, pr: number | string, actor: Actor, f: NewFinding): Promise<string> {

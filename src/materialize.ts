@@ -189,7 +189,13 @@ import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagn
 // 24 -> 25: a bug citation carries `deleted` (a bug filed from a deletion finding once it
 // landed). An older bugs fold dropped the field and read the citation as a body, so its
 // rows call the deletion's own absence a fix.
-export const MATERIALIZER_VERSION = 25;
+//
+// 25 -> 26: a finding field (`namedRef`, on `finding.created`) — the ref the filer named
+// when it was explicitly origin's, which decides WHICH COMMIT the finding is witnessed and
+// judged at (owner, Ruling 11). Exactly the reason `branch` bumped 21 -> 22: an older fold
+// drops the field, so its rows resolve the branch local-first for ever, and only a refold
+// fixes them because the shards have not moved.
+export const MATERIALIZER_VERSION = 26;
 
 /**
  * What the events in a scope are, cheaply.

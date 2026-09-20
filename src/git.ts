@@ -398,13 +398,32 @@ export function readBlobs(root: string, sha: string, paths: string[]): Map<strin
 
 /** True when the object is already present locally (so a fetch can be skipped). */
 /**
- * A branch's current head. ONE expression, because it was three: `verdictGround`,
- * `headOf` and `report_defect` each spelled it out, so a change to what a branch name
- * resolves to had to be made in three places or be made in one and be wrong in two.
+ * A branch's current head, FOLLOWING THE REF THE CALLER NAMED (owner, Ruling 11).
+ *
+ * A bare name stays local-first, so unpushed work is still the local branch's. An
+ * explicit `origin/` spelling is a REQUEST and resolves there and nowhere else: the
+ * undocumented assumption behind local-first is that `refs/heads/<name>` is at least as
+ * new as `origin/<name>`, and when it is not, a finding filed on `origin/x` was witnessed
+ * at the stale local body — so it read as drifted from the moment it was filed, while one
+ * on a symbol only origin had was refused outright.
+ *
+ * ONE expression, because it was three: `verdictGround`, `headOf` and `report_defect`
+ * each spelled it out, so this rule could be changed in one and be wrong in two.
+ *
+ * The consequence, accepted with the ruling: two spellings of one branch can then witness
+ * at DIFFERENT commits, which is the honest answer where they genuinely differ.
  */
-export function branchHead(root: string, branch: string): string | null {
+export function branchHead(root: string, branch: string, named?: string): string | null {
+  if (named && ORIGIN_SPELLING.test(named)) return revParse(root, `refs/remotes/origin/${branch}`);
   return revParse(root, `refs/heads/${branch}`) ?? revParse(root, `refs/remotes/origin/${branch}`);
 }
+
+/**
+ * An explicit request for origin's copy. Callers record the spelling because the SCOPE
+ * strips it — `origin/x` and `x` key to the same `branch:x` — so nothing else on the row
+ * can say which was asked for.
+ */
+export const ORIGIN_SPELLING = /^(?:refs\/remotes\/)?origin\//;
 
 export function hasObject(root: string, sha: string): boolean {
   return spawnSync(gitBin(), ["cat-file", "-e", `${sha}^{commit}`], { cwd: root }).status === 0;

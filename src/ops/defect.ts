@@ -30,7 +30,7 @@
 import { requireActor, isAgentActor } from "../identity.js";
 import { resolveSidecar } from "../sidecar-config.js";
 import { mintId } from "../eventlog.js";
-import { headCommit, revParse, worktreeForBranch, uncommittedPaths } from "../git.js";
+import { headCommit, revParse, worktreeForBranch, uncommittedPaths, branchHead, ORIGIN_SPELLING } from "../git.js";
 import { assertFindingKey, branchKey, normalizeBranch } from "../review-target.js";
 import { prBaseForFinding, prHeadForFinding } from "../pr.js";
 import { writeLocalFinding } from "../store.js";
@@ -107,12 +107,18 @@ export async function reportDefect(root: string, input: DefectInput) {
   let key: string;
   let ref = input.ref;
   let branch: string | undefined;
+  let named: string | undefined;
   if (ctx.kind === "branch") {
     if (!String(ctx.branch ?? "").trim()) return { error: "which branch? `context.branch` is what scopes the finding" };
     const n = normalizeBranch(root, String(ctx.branch));
     if ("error" in n) return n;
     branch = n.name;
-    const sha = revParse(root, `refs/heads/${branch}`) ?? revParse(root, `refs/remotes/origin/${branch}`);
+    // Only when the stripping actually HAPPENED. A local branch literally named
+    // `origin/x` normalizes to itself, and following `refs/remotes/origin/origin/x` for
+    // it would resolve nowhere.
+    const raw = String(ctx.branch).trim().replace(/^refs\/heads\//, "");
+    named = raw !== branch && ORIGIN_SPELLING.test(raw) ? raw : undefined;
+    const sha = branchHead(root, branch, named);
     if (!sha) return { error: `no branch "${branch}" in this repository` };
     key = branchKey(branch);
     ref = sha;
@@ -186,6 +192,7 @@ export async function reportDefect(root: string, input: DefectInput) {
     ...(witness ? { witness } : {}),
     ...(sourceRef ? { sourceRef } : {}),
     ...(branch ? { branch } : {}),
+    ...(named ? { namedRef: named } : {}),
     author: actor,
     createdAt: at,
     // The same rule the fold applies: an agent PROPOSES, a person stands behind one.
