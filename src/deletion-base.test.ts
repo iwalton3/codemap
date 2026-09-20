@@ -131,7 +131,7 @@ test("a PR merged with a merge commit still takes findings and sign-offs on what
 
 const landedOf = async (root: string, id: string) => {
   const b = await findingBacklog(root, { asOf: "2026-09-19" });
-  const rows = [b.due, b.woken, b.sleeping, b.live, b.moved, b.unjudgeable, b.inReview].flat() as { id: string; landed: string }[];
+  const rows = [b.due, b.woken, b.sleeping, b.live, b.moved, b.unjudgeable, b.unfetched, b.inReview].flat() as { id: string; landed: string }[];
   return rows.find((r) => r.id === id);
 };
 

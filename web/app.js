@@ -1064,6 +1064,8 @@ class DashboardPage extends Component {
       backlogUrl(u), null, 're-read before believing it either way — a moved body is not evidence of a fix');
     add(bl && bl.unjudgeable, 'blblind', plural(bl && bl.unjudgeable, 'finding nothing can judge', 'findings nothing can judge'),
       backlogUrl(u), null, 'no witness, so no drift question can be asked — an agent repairs these');
+    add(bl && bl.unfetched, 'blunfetched', plural(bl && bl.unfetched, 'finding whose change is not here', 'findings whose change is not here'),
+      backlogUrl(u), null, 'never fetched in this clone, so nothing local can judge them — fetch, do not re-evaluate');
     add(r && r.findings.waiting, 'fwait', plural(r.findings.waiting, 'finding awaits you', 'findings await you'),
       sharedHubUrl(u), 'q', 'promoted, or somebody stands behind it — a person has to look');
     add(s && s.overdue.scrubs, 'scrubs', plural(s && s.overdue.scrubs, 'overdue scrub', 'overdue scrubs'),
@@ -4687,6 +4689,7 @@ const BACKLOG_BUCKETS = [
   ['live', 'still true on the default branch, never disposed of', 'The witnessed code is on the default branch unchanged, so the claim still holds. Nobody has said anything about these.'],
   ['moved', 'code changed', 'The code moved after the finding was written. Re-read before believing it either way — it is not evidence of a fix.'],
   ['unjudgeable', 'nothing can judge these', 'No witness, or one this build cannot compare against, so no drift question can be asked at all. Re-evaluate asks an agent to attach one.'],
+  ['unfetched', 'their change is not in this clone', 'The commit this finding is about was never fetched here, so nothing local can judge it — this is an absence of evidence, not drift. Fetch the change\u2019s head; re-evaluate cannot help, and would refuse. Listed, not counted.'],
   ['inReview', 'still in review', 'Not on the default branch yet, and its change still holds what it witnessed. Owed on its pull request or branch page — listed here, not counted.'],
   ['sleeping', 'backlogged, still asleep', 'A decision somebody made, with a deadline still ahead. Not debt — shown so it is visible, not so it is worked.'],
 ];
@@ -4872,6 +4875,7 @@ class BacklogPage extends Component {
         <button title="It is a real defect somebody intends to fix, so track it as one. Creates a bug and cross-links; the finding survives. One at a time, on the merits — sweeping a queue in here is what turns a bug list into noise." disabled="${st.busy === r.id}" on-click="${() => this.fileBug(r)}">file bug</button>
         <button title="Hand it back for a fresh look: is it still true of the code as it stands? Lands in the agent's review queue, asks for a re-witness if it has none, and closes nothing." disabled="${st.busy === r.id}" on-click="${() => this.act('reevaluate', r.id, {})}">re-evaluate</button>
         ${when(bucket === 'unjudgeable', () => html`<span class="dim blhint">no witness — <b>re-evaluate</b> asks an agent to attach one, and then it can be judged</span>`)}
+        ${when(bucket === 'unfetched', () => html`<span class="dim blhint">its change is not in this clone — <b>fetch</b> the branch this was filed on; re-evaluate would refuse, it already has a witness</span>`)}
       </div>`)}
       ${when(open, () => html`<div class="blform">
         <div class="dim blhint">Backlogging records a decision: real, not now, and it comes back. Both fields are required — one with no deadline is the one that sleeps for ever.</div>

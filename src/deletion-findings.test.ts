@@ -66,7 +66,7 @@ const onPr = (root: string, targetId: string, ref: string) => reportDefect(root,
 
 async function landing(root: string) {
   const b = await findingBacklog(root, { asOf: "2026-09-19" });
-  const rows = [...b.due, ...b.woken, ...b.sleeping, ...b.live, ...b.moved, ...b.unjudgeable, ...b.inReview];
+  const rows = [...b.due, ...b.woken, ...b.sleeping, ...b.live, ...b.moved, ...b.unjudgeable, ...b.unfetched, ...b.inReview];
   return { landed: Object.fromEntries(rows.map((r) => [r.id, r.landed])), moved: b.moved.map((r) => r.id) };
 }
 

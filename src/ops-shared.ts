@@ -25,7 +25,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { ISO_DATE, parseAsOf, type BugWitness } from "./schema.js";
 import { witnessDrift, realDrift } from "./reviews.js";
-import { originSlug, headCommit, currentBranch, isAncestor, defaultBranch, revParse, trunkBase } from "./git.js";
+import { originSlug, headCommit, currentBranch, isAncestor, defaultBranch, revParse, trunkBase, hasObject, branchHead } from "./git.js";
 import { prIsMerged, prMergedAt, mergedAfter, landingOf, knownPrHead } from "./pr.js";
 import { fetchReviewThreads, type GhRunner } from "./pr-push.js";
 import { ensureSidecar, sync as sidecarSync, receive as sidecarReceive, healMerge, readManifests, checkPeers, currentManifest, sidecarLineage, isSameSidecar } from "./sidecar.js";
@@ -482,7 +482,7 @@ function verdictGround(root: string, f: SharedFinding): { state: "ok" | "unknown
   // A branch finding is about the BRANCH, which the checkout answering is usually not on
   // (an agent in a worktree reads through the main checkout). Its code is at the branch head.
   const branch = f.branch ?? branchOf(String(f.pr ?? ""));
-  const head = branch ? revParse(root, `refs/heads/${branch}`) ?? revParse(root, `refs/remotes/origin/${branch}`) : headCommit(root);
+  const head = branch ? branchHead(root, branch) : headCommit(root);
   if (!ref || ref === "@work" || !head) return { state: "unknown", ref, head: head ?? undefined };
   return { state: isAncestor(root, ref, head) ? "ok" : "missing", ref, head };
 }
@@ -680,9 +680,32 @@ async function findingJudge(root: string, all: SharedFinding[]) {
     }
     return indexes.get(sha)!;
   };
+  /**
+   * The commit a finding's change is at NOW, or null when this clone cannot say.
+   *
+   * For a pull request that is the LINKED BRANCH's remote head. GitHub puts a same-repo
+   * PR's head on an ordinary branch, and codemap already records which one — `review_link`,
+   * written by `observePrBranch` and folded from the sidecar, so a teammate who never
+   * resolved the PR still has it after a sync. What `knownPrHead` consults instead is
+   * `refs/remotes/origin/pr/N`, which exists only where an operator configured
+   * the `refs/pull/<n>/head` fetch refspec by hand (`pr-bulk.ts` documents it as exactly
+   * that), so it missed on every ordinary clone and the answer depended on whether
+   * THIS process had already resolved the PR through `gh`. Kept behind the link for the
+   * operators who do have it.
+   *
+   * A miss now means something real — a fork PR (never linked), a deleted branch, or a
+   * clone that has not fetched — and lands in `unfetched` rather than being read as drift.
+   * `origin/<branch>` moves under a force-push, which is correct: it is the PR's current
+   * head. It would be the wrong change entirely if a branch name were reused for a
+   * different pull request, which is bounded by the link being keyed per (repo, number).
+   */
   const headOf = (f: SharedFinding): string | null => {
     const branch = f.branch ?? branchOf(String(f.pr ?? ""));
-    if (branch) return revParse(root, `refs/heads/${branch}`) ?? revParse(root, `refs/remotes/origin/${branch}`);
+    if (branch) return branchHead(root, branch);
+    for (const linked of linkedBranches(root, String(f.pr ?? ""))) {
+      const sha = revParse(root, `refs/remotes/origin/${linked}`);
+      if (sha) return sha;
+    }
     return knownPrHead(root, String(f.pr ?? ""));
   };
   const landedOf = new Map<string, Awaited<ReturnType<typeof landedAt>>>();
@@ -709,9 +732,32 @@ async function findingJudge(root: string, all: SharedFinding[]) {
     return work;
   };
   const tipOrTrunk = async () => (trunk ? tipIdx ?? indexOf(trunk.sha) : workIdx());
-  const indexFor = async (f: SharedFinding, anchorId: string) => {
-    if ((await landing(f)) !== "open") return tipOrTrunk();
+  /**
+   * Where a finding is judged — or `"unfetched"`, meaning nothing here can judge it.
+   *
+   * Three states, not two (owner, Ruling 7): *never seen* is not *stale*. A finding whose
+   * change this clone does not have was judged AT THE TRUNK TIP, which for a deletion
+   * witness is a positive claim that the deletion was reverted. The repair for it is to
+   * fetch, not to re-review, so it must not read as drift.
+   *
+   * `unknown` covers three different absences and only one of them is "never seen": no
+   * `sourceRef` at all, no trunk to compare against, or a commit this clone cannot
+   * resolve. Only the last is discriminated — `hasObject` asks it locally, with no
+   * network, which is the constraint this design already holds itself to.
+   */
+  const indexFor = async (f: SharedFinding, anchorId: string): Promise<AnchorIndex | null | "unfetched"> => {
+    const state = await landing(f);
+    if (state === "unknown") {
+      const ref = f.sourceRef;
+      const neverSeen = !!ref && ref !== "@work" && !hasObject(root, ref);
+      return neverSeen ? "unfetched" : tipOrTrunk();
+    }
+    if (state !== "open") return tipOrTrunk();
     const head = headOf(f);
+    // Not "cannot compare": there is nothing here to compare AGAINST. Saying so is what
+    // keeps `unjudgeable` meaning what its name says, and sends the reader to `fetch`
+    // rather than to a re-evaluate that refuses.
+    if (!head) return "unfetched";
     const at = await indexOf(head);
     // Code the change never touched is trunk code, judged at the default branch whatever the
     // change's state — the owner, asked while this was applied (2026-09-19): a finding on
@@ -725,21 +771,38 @@ async function findingJudge(root: string, all: SharedFinding[]) {
     }
     return at;
   };
-  /** `same` / `moved` / `undecidable`, or null with no witness. A deletion's coming back is its drift. */
+  /**
+   * `same` / `moved` / `undecidable` / `unfetched`, or null with no witness. A deletion's
+   * coming back is its drift.
+   *
+   * `unfetched` is passed through rather than collapsed into `undecidable`: they are the
+   * two answers a reader acts on differently — fetch the change's head, against re-witness
+   * this finding — and one bucket for both is what made the hub advise a repair that
+   * refuses.
+   */
   const drifted = async (f: SharedFinding, w?: BugWitness) => {
     if (!w) return null;
     const idx = await indexFor(f, w.anchorId);
+    if (idx === "unfetched") return "unfetched" as const;
     if (!idx) return "undecidable" as const;
     const changes = witnessDrift([w], idx);
     if (!changes.length) return "same" as const;
     return realDrift(changes).length ? "moved" as const : "undecidable" as const;
   };
-  /** The anchor as it stands where `f` is judged — what a backlog's release condition compares against. */
+  /**
+   * The anchor as it stands where `f` is judged — what a backlog's release condition
+   * compares against. Undefined when there is nowhere to read it, `"unfetched"` included:
+   * that is the signal `defer_finding` refuses on, rather than recording a deferral whose
+   * wake condition could never fire.
+   */
   const witnessAt = async (f: SharedFinding, anchorId: string): Promise<BugWitness | undefined> => {
-    const hash = (await indexFor(f, anchorId))?.get(anchorId);
+    const idx = await indexFor(f, anchorId);
+    const hash = idx === "unfetched" ? undefined : idx?.get(anchorId);
     return hash === undefined ? undefined : { anchorId, bodyHash: hash };
   };
-  return { trunk, landing, drifted, witnessAt };
+  /** Is this finding's change simply absent from this clone? See `indexFor`. */
+  const unfetched = async (f: SharedFinding, anchorId: string) => (await indexFor(f, anchorId)) === "unfetched";
+  return { trunk, landing, drifted, witnessAt, unfetched };
 }
 
 /**
@@ -838,7 +901,19 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
      * on its pull request or branch page. Listed, and deliberately not in `attention` (Q11).
      */
     inReview: [] as ReturnType<typeof row>[],
-    /** No witness, or one this build cannot compare. Nothing can judge these — `rewitness_finding` repairs them. */
+    /**
+     * The change this finding is about is not in this clone, so nothing here can judge
+     * it. Listed, and deliberately NOT in `attention` — the same reason `inReview` is
+     * excluded: it is not work anyone can do without fetching first (owner, Ruling 12).
+     * The repair is to fetch the change's head, never to re-evaluate.
+     */
+    unfetched: [] as ReturnType<typeof row>[],
+    /**
+     * No witness, or a witness this build cannot compare — an id another derivation
+     * minted. Exactly those two: a change this clone never fetched is `unfetched`, and
+     * used to land here carrying advice (`rewitness_finding`) that refuses a finding
+     * which already has a witness.
+     */
     unjudgeable: [] as ReturnType<typeof row>[],
   };
 
@@ -858,6 +933,8 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
     const d = await judge.drifted(f, f.witness);
     if (d === "same") (landedOf.get(f.id) === "open" ? b.inReview : b.live).push(row(f));
     else if (d === "moved") b.moved.push(row(f));
+    // BEFORE the fall-through, or "never seen" lands in the bucket whose advice refuses.
+    else if (d === "unfetched") b.unfetched.push(row(f));
     else b.unjudgeable.push(row(f));
   }
 
@@ -1075,14 +1152,35 @@ function backlogWitnessOf(f: SharedFinding): BugWitness | undefined {
  * (`findingJudge`) — the default branch once landed, its change's head before. A deletion's
  * state is its absence, which the filing witness already states. Undefined when there is
  * nothing to read there; the deadline is then the only release condition.
+ *
+ * `unfetched` is reported SEPARATELY from an absent witness because the two look identical
+ * here and are not: an anchor that has left the tree carries fine on its deadline alone,
+ * while a change this clone does not have cannot be judged at all, so no release condition
+ * could ever fire. Asked even for a deletion, whose witness short-circuits this — its wake
+ * is "the deletion came back", read at the same unreachable head.
  */
-export async function backlogWitnessFor(root: string, id: string): Promise<BugWitness | undefined> {
+export async function backlogWitnessFor(root: string, id: string): Promise<{ witness?: BugWitness; unfetched: boolean }> {
   const f = (await readFindings(root, {})).findings.find((x) => x.id === id);
-  if (!f) return undefined;
-  if (f.witness?.deleted) return { ...f.witness };
+  if (!f) return { unfetched: false };
   const anchorId = f.witness?.anchorId ?? (f.target.kind === "anchor" ? f.target.id : undefined);
-  return anchorId ? (await findingJudge(root, [f])).witnessAt(f, anchorId) : undefined;
+  if (!anchorId) return { unfetched: false };
+  const judge = await findingJudge(root, [f]);
+  const unfetched = await judge.unfetched(f, anchorId);
+  if (f.witness?.deleted) return { witness: { ...f.witness }, unfetched };
+  return { witness: await judge.witnessAt(f, anchorId), unfetched };
 }
+
+/**
+ * Why a carry is refused when its change is not here. The deadline would still fire, but
+ * `until` is required precisely BECAUSE a deferral that can only ever be woken by a date
+ * is the failure the backlog was built to prevent (`docs/finding-backlog.md`): every
+ * deferral on record was asleep permanently and silently. Recording one whose drift
+ * condition is structurally dead reproduces it.
+ */
+export const unfetchedCarryError = (id: string) =>
+  `"${id}"'s change is not in this clone, so nothing here can read the code the carry would be about — `
+  + `its drift condition could never fire and the deadline would be its only release. Fetch the change's head `
+  + `(its pull request's branch, or the branch itself) and carry it then.`;
 
 /**
  * Backlog a finding: real, not now, and it comes back.
@@ -1127,7 +1225,9 @@ export const backlogFinding = homed(async function backlogFinding(
   // is strictly what an acknowledgement has, so nothing is lost by comparison.
   const found = (await readFindings(root, { pr })).findings.find((x) => x.id === id);
   if (!found) return { error: `no finding "${id}" on ${pr}` };
-  const witness = await backlogWitnessFor(root, id);
+  const w = await backlogWitnessFor(root, id);
+  if (w.unfetched) return { error: unfetchedCarryError(id) };
+  const witness = w.witness;
 
   await backlogFindingEvent(b.cfg.path, prKey(b.cfg, pr), b.actor, id, { until, reason: input.reason.trim(), witness, ref: input.ref });
   const mz = await materializeFindings(root, b.cfg, pr);

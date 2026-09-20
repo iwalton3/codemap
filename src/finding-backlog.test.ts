@@ -47,7 +47,7 @@ const finding = (id: string, over: Partial<SharedFinding> = {}): SharedFinding =
 
 /** Every row's `landed`, whichever bucket its witness put it in. */
 const landingOfAll = (b: Awaited<ReturnType<typeof findingBacklog>>) => Object.fromEntries(
-  [...b.due, ...b.woken, ...b.sleeping, ...b.live, ...b.moved, ...b.unjudgeable, ...b.inReview].map((r) => [r.id, r.landed]));
+  [...b.due, ...b.woken, ...b.sleeping, ...b.live, ...b.moved, ...b.unjudgeable, ...b.unfetched, ...b.inReview].map((r) => [r.id, r.landed]));
 
 const backlogged = (until: string, witness?: BugWitness) =>
   ({ until, reason: "slated for replacement", by: PERSON, at: "2026-09-01T00:00:00Z", ...(witness ? { witness } : {}) });
@@ -148,7 +148,7 @@ test("a closed finding is in no bucket at all", async () => {
     }
     const b = await findingBacklog(root, { asOf: "2026-09-01" });
     assert.equal(b.attention, 0);
-    assert.deepEqual(b.counts, { due: 0, woken: 0, sleeping: 0, live: 0, moved: 0, unjudgeable: 0, inReview: 0 });
+    assert.deepEqual(b.counts, { due: 0, woken: 0, sleeping: 0, live: 0, moved: 0, unfetched: 0, unjudgeable: 0, inReview: 0 });
   } finally { discard(root); }
 });
 

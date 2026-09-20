@@ -481,7 +481,9 @@ export async function backlogOn(root: string, input: { id: string; until: string
   // until 2027 on the team's copy.
   const until = shared.backlogUntil(input.until), reason = input.reason.trim();
   if (!w.finding.shared) {
-    return backlogLocalFinding(root, input.id, { until, reason, ref: input.ref, witness: await shared.backlogWitnessFor(root, input.id) });
+    const wit = await shared.backlogWitnessFor(root, input.id);
+    if (wit.unfetched) return { error: shared.unfetchedCarryError(input.id) };
+    return backlogLocalFinding(root, input.id, { until, reason, ref: input.ref, witness: wit.witness });
   }
   return shared.backlogFinding(root, w.finding.pr, input.id, { until, reason, ref: input.ref });
 }

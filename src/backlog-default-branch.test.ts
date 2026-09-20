@@ -56,7 +56,7 @@ const file = async (root: string, branch: string, target: string) => {
 type Listing = Awaited<ReturnType<typeof findingBacklog>>;
 const listing = () => ({ asOf: "2026-09-19" });
 const bucketOf = (b: Listing, id: string) =>
-  (["due", "woken", "sleeping", "live", "moved", "unjudgeable", "inReview"] as const).find((k) => (b[k] as { id: string }[]).some((r) => r.id === id));
+  (["due", "woken", "sleeping", "live", "moved", "unjudgeable", "unfetched", "inReview"] as const).find((k) => (b[k] as { id: string }[]).some((r) => r.id === id));
 
 test("an unmerged finding whose head still holds the witnessed body is in review, not moved, on a trunk checkout", async () => {
   const u = await repo();

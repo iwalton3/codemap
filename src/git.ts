@@ -397,6 +397,15 @@ export function readBlobs(root: string, sha: string, paths: string[]): Map<strin
 }
 
 /** True when the object is already present locally (so a fetch can be skipped). */
+/**
+ * A branch's current head. ONE expression, because it was three: `verdictGround`,
+ * `headOf` and `report_defect` each spelled it out, so a change to what a branch name
+ * resolves to had to be made in three places or be made in one and be wrong in two.
+ */
+export function branchHead(root: string, branch: string): string | null {
+  return revParse(root, `refs/heads/${branch}`) ?? revParse(root, `refs/remotes/origin/${branch}`);
+}
+
 export function hasObject(root: string, sha: string): boolean {
   return spawnSync(gitBin(), ["cat-file", "-e", `${sha}^{commit}`], { cwd: root }).status === 0;
 }
