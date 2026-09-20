@@ -21,7 +21,7 @@ import { derivationTag, GRAMMAR_NAMES } from "./grammars.js";
 import { derivationFingerprint, derivationMark } from "./normalize.js";
 import { anchorIndex, derivationsOf, legacyIndex, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
 import { randomBytes, createHash } from "node:crypto";
-import { db, WORK_REF, ORPHAN_REF, putSnapshotSets, collectAnchorSets, type AnchorSetRow } from "./db.js";
+import { db, tx, WORK_REF, ORPHAN_REF, putSnapshotSets, collectAnchorSets, type AnchorSetRow } from "./db.js";
 import { resolveActor } from "./identity.js";
 import { ABSENT_FIELD } from "./shared-triage.js";
 import { needsHumanAck, type SharedBug } from "./shared-bugs.js";
@@ -406,15 +406,18 @@ export function dropSnapshot(root: string, ref: string): void {
     throw new Error(`${ref} is not a snapshot — dropping it would delete the live index, not a cache`);
   }
   const d = db(root);
-  d.exec("BEGIN");
-  try {
+  // `tx`, not a raw `BEGIN`: this READS the ref's sets and then deletes them, and a
+  // deferred transaction doing that fails with `SQLITE_BUSY_SNAPSHOT` — the error
+  // `busy_timeout` cannot wait out — if another process wrote in between. Same shape as
+  // the compaction defect in `db.ts`, which is why it uses the same helper rather than
+  // spelling out `BEGIN IMMEDIATE` a second time.
+  tx(d, () => {
     const fkeys = (d.prepare("SELECT fkey FROM snapshot_sets WHERE ref = ?").all(ref) as { fkey: string }[]).map((r) => r.fkey);
     d.prepare("DELETE FROM snapshot_sets WHERE ref = ?").run(ref);
     collectAnchorSets(d, fkeys);
     d.prepare("DELETE FROM anchors WHERE ref = ?").run(ref);
     d.prepare("DELETE FROM snapshots WHERE ref = ?").run(ref);
-    d.exec("COMMIT");
-  } catch (e) { d.exec("ROLLBACK"); throw e; }
+  });
 }
 
 /** Read a cached snapshot's anchors, or null when that commit was never indexed. */
