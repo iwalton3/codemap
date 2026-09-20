@@ -8,7 +8,7 @@ import { writeSnapshot, writeNode, writeLocalRequirement, writeLocalAudit, dropS
 import { computeDiff } from "./diff.js";
 import { db } from "./db.js";
 import { fixtureHash } from "./fixture-hash.js";
-import { discard } from "./test-tmp.js";
+import { discard, withoutGit } from "./test-tmp.js";
 
 function anchor(id: string, symbol: string, bodyHash: string): Anchor {
   // Through `fixtureHash`, because `sameBody` refuses a value that is not a hash —
@@ -60,7 +60,8 @@ test("diff against an uncached base ref returns a helpful error", async () => {
   // cannot help them here (owner, Ruling 9.5 / Ruling 1).
   const root = mkdtempSync(join(tmpdir(), "codemap-diff-"));
   try {
-    const r = await computeDiff(root, "never_indexed");
+    // `withoutGit`, because a temp directory is only gitless if no ancestor is a work tree.
+    const r = await withoutGit(() => computeDiff(root, "never_indexed"));
     assert.ok("error" in r && /not a git repository/.test(r.error), "error" in r ? r.error : "no error");
     assert.ok("error" in r && !/codemap snapshot/.test(r.error), "and does not advise a command that cannot help");
   } finally {

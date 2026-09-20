@@ -39,3 +39,30 @@ export function discard(root: string): void {
 export function discardAll(roots: Iterable<string>): void {
   for (const r of roots) discard(r);
 }
+
+/**
+ * Run `fn` with git's upward search stopped at the temp directory.
+ *
+ * A handful of tests assert what codemap says when there is NO git repository, and they
+ * build their fixture under `os.tmpdir()` like everything else. That is only gitless if no
+ * ANCESTOR of the temp directory is a work tree — and `git rev-parse --is-inside-work-tree`
+ * walks all the way up. On a machine whose home directory is a repository (dotfiles, or a
+ * stray `git init`) the whole of `%TEMP%` is inside one, so those tests see a git repo and
+ * fail with nothing to point at. Found on the Windows VM, whose `C:\Users\<user>` is a repo;
+ * it is not a Windows property and would do the same on Linux.
+ *
+ * `GIT_CEILING_DIRECTORIES` is git's own answer to this. Restored in a `finally` because the
+ * suite runs in ONE process — a module-level latch left set is how one file's state becomes
+ * another file's failure.
+ */
+export async function withoutGit<T>(fn: () => T | Promise<T>): Promise<T> {
+  const { tmpdir } = await import("node:os");
+  const had = Object.prototype.hasOwnProperty.call(process.env, "GIT_CEILING_DIRECTORIES");
+  const old = process.env.GIT_CEILING_DIRECTORIES;
+  process.env.GIT_CEILING_DIRECTORIES = tmpdir();
+  try { return await fn(); }
+  finally {
+    if (had) process.env.GIT_CEILING_DIRECTORIES = old;
+    else delete process.env.GIT_CEILING_DIRECTORIES;
+  }
+}

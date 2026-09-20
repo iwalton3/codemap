@@ -10,7 +10,7 @@ import type { Anchor, Triage } from "./schema.js";
 import { setTriage, setTriageBatch, clearTriage, triageStatus, triageSeverity, deriveTriage, rollupCoverage, triageDrift, tripwires, reviewTriageFor } from "./triage.js";
 import type { TriageInfo } from "./triage.js";
 import { fixtureHash } from "./fixture-hash.js";
-import { discard } from "./test-tmp.js";
+import { discard, withoutGit } from "./test-tmp.js";
 
 const initRoot = () => {
   const root = mkdtempSync(join(tmpdir(), "codemap-triage-"));
@@ -388,7 +388,7 @@ test("witnessing against a commit that was never indexed is an error, not an abs
   try {
     await init(root);
     await assert.rejects(
-      () => setTriageBatch(root, [{ anchorId: "a_x", importance: "important", complexity: "rote" }], { source: "agent", ref: "nosuchcommit" }),
+      () => withoutGit(() => setTriageBatch(root, [{ anchorId: "a_x", importance: "important", complexity: "rote" }], { source: "agent", ref: "nosuchcommit" })),
       // Also a bare directory, so the refusal is "git is required" rather than the
       // fetch-and-snapshot advice, which cannot help without git.
       /not a git repository/i,

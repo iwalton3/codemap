@@ -25,7 +25,7 @@ import { indexBlob } from "./repo.js";
 import { liveHashes, markReviewedBatch } from "./reviews.js";
 import { witnessAt } from "./ops/annotations.js";
 import type { State } from "./schema.js";
-import { discard } from "./test-tmp.js";
+import { discard, withoutGit } from "./test-tmp.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 const SRC = "export function charge(cents) {\n  return cents;\n}\n";
@@ -272,17 +272,17 @@ test("a gitless universe is told git is required, not to run a command that cann
     writeFileSync(join(root, "src/pay.js"), SRC, "utf8");
     await writeStore(root, await indexBlob(SRC, "src/pay.js"), state);
 
-    const why = snapshotRefusal(root, "@work")!;
+    const why = (await withoutGit(() => snapshotRefusal(root, "@work")))!;
     assert.equal(why.reason, "absent");
     assert.match(why.message, /not a git repository/);
     assert.doesNotMatch(why.message, /codemap snapshot/, "it cannot help, so it is not offered");
     assert.doesNotMatch(why.message, /fetch it/);
 
     const { reportDefect } = await import("./ops/defect.js");
-    const r = await reportDefect(root, {
+    const r = await withoutGit(() => reportDefect(root, {
       context: { kind: "pull_request", pr: "12" }, targetKind: "anchor", targetId: "src/pay.js#charge",
       text: "the evidence", comment: "the ask",
-    }) as { error?: string };
+    })) as { error?: string };
     assert.match(String(r.error), /not a git repository/);
     assert.doesNotMatch(String(r.error), /pass `ref`/, "there is no ref that would work");
   } finally { discard(root); }
