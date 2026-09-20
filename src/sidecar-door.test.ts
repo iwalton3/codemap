@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
 
 /**
  * Every write reaches the sidecar through a DOOR, and nothing re-composes one.
@@ -34,9 +33,14 @@ import { join } from "node:path";
  */
 
 const modules = (): { path: string; src: string }[] => {
+  // POSIX-separated, NOT `join`: every key in `EXEMPT` below is written with forward
+  // slashes, and `join` gives backslashes on Windows — so the lookup missed for all of
+  // them and the two genuinely exempt modules reported as violations. Green here, red on
+  // the Windows leg, which is `required`. Same contract as `rewriteHistory`'s scope paths
+  // in `oracle.ts`, and the same defect this repository keeps producing.
   const files = [
-    ...readdirSync("src").filter((f) => f.endsWith(".ts")).map((f) => join("src", f)),
-    ...readdirSync("src/ops").filter((f) => f.endsWith(".ts")).map((f) => join("src/ops", f)),
+    ...readdirSync("src").filter((f) => f.endsWith(".ts")).map((f) => `src/${f}`),
+    ...readdirSync("src/ops").filter((f) => f.endsWith(".ts")).map((f) => `src/ops/${f}`),
   ].filter((f) => !f.endsWith(".test.ts"));
   return files.map((path) => ({ path, src: readFileSync(path, "utf8") }));
 };
