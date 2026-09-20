@@ -226,3 +226,71 @@ test("check_stale at a branch with an explicit base diffs against where the bran
     assert.equal(r.base.sha, git("merge-base", "feature", "develop"));
   } finally { discard(base); }
 });
+
+/**
+ * `check_stale at:` used to publish removed symbols in `touched` and then compute its
+ * review list from a set that excluded them (`[...added, ...changed]`), contradicting its
+ * own docstring. In an event-sourced codebase a deletion is exactly the change people file
+ * findings about, so a third of what the gate reports on carried no review state at all.
+ */
+async function deletingBranch() {
+  const base = mkdtempSync(join(tmpdir(), "codemap-at-del-"));
+  const root = join(base, "repo");
+  mkdirSync(join(root, "src"), { recursive: true });
+  const git = (...a: string[]) => {
+    const r = spawnSync("git", ["-c", "user.email=t@x.com", "-c", "user.name=t", ...a], { cwd: root, encoding: "utf8" });
+    if (r.status !== 0) throw new Error(`git ${a.join(" ")}: ${r.stderr}`);
+    return r.stdout.trim();
+  };
+  git("init", "-q", "-b", "main");
+  writeFileSync(join(root, ".gitignore"), ".codemap/\n", "utf8");
+  writeFileSync(join(root, "src/pay.ts"), PAY_V1, "utf8");
+  writeFileSync(join(root, "src/gone.ts"), PAY_V1.replace("transfer", "doomed"), "utf8");
+  git("add", "-A"); git("commit", "-q", "-m", "main");
+
+  // A STACKED shape, so the base the caller passes and the base `deletedBodies` would
+  // derive on its own are different commits holding DIFFERENT bodies. Without that they
+  // coincide and a no-base call passes for the wrong reason — which is the whole risk
+  // this test exists to cover.
+  git("checkout", "-q", "-b", "release");
+  writeFileSync(join(root, "src/gone.ts"), PAY_V1.replace("transfer", "doomed").replace("return cents;", "return cents * 7;"), "utf8");
+  git("commit", "-q", "-am", "release rewrites the body that is about to be deleted");
+  const releaseSha = git("rev-parse", "HEAD");
+
+  git("checkout", "-q", "-b", "feature");
+  git("rm", "-q", "src/gone.ts"); git("commit", "-q", "-m", "delete the doomed symbol");
+  const headSha = git("rev-parse", "HEAD");
+  git("checkout", "-q", "main");
+  await init(root);
+  return { root, releaseSha, headSha, cleanup: () => discard(base) };
+}
+
+test("`check_stale at:` lists the symbols a change REMOVES, with the marks made at ITS base", async () => {
+  const u = await deletingBranch();
+  try {
+    const { diff } = await import("./ops.js");
+    const d = await diff(u.root, u.releaseSha, u.headSha) as { removed: { id: string }[] };
+    assert.ok(d.removed.length > 0, "the fixture must actually delete something");
+
+    // Signed as deletions against `release`: a deletion has no body at the head, so the
+    // mark is witnessed against the body its own base held.
+    await markReviewedBatch(u.root, d.removed.map((r) => r.id),
+      { level: "code", actor: "human", attestation: "signed", ref: u.headSha, base: u.releaseSha });
+
+    const at = await staleAt(u.root, u.headSha, "release") as {
+      touched: { removed: { id: string }[] };
+      reviews: { reviewed: string[]; stale: string[]; unreviewed: string[] };
+    };
+    const removed = at.touched.removed.map((b) => b.id);
+    assert.deepEqual(removed.slice().sort(), d.removed.map((r) => r.id).sort(),
+      "a removed symbol is a touched symbol");
+    // NOT merely "listed somewhere". With the ids but no base, `deletedBodies` derives a
+    // base of its own from the TRUNK merge-base — `main` here, which holds a different
+    // body — and every signed deletion reads unreviewed: the same wrong answer by a
+    // longer route, which an is-it-listed assertion passes straight over.
+    assert.deepEqual(at.reviews.reviewed.slice().sort(), removed.slice().sort(),
+      "a signed deletion reads `reviewed` at the base it was signed against");
+    assert.deepEqual(at.reviews.unreviewed, []);
+    assert.deepEqual(at.reviews.stale, []);
+  } finally { u.cleanup(); }
+});

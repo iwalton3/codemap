@@ -121,8 +121,18 @@ export async function staleAt(root: string, at: string, base?: string) {
 
   const d = await computeDiff(root, baseSha, view.sha);
   if ("error" in d) return { ...atHeader(view), error: d.error };
-  const touched = [...d.added, ...d.changed];
-  const marks = await reviewStatesFor(root, touched.map((b) => ({ kind: "anchor" as const, id: b.id })), { ref: view.sha });
+  // REMOVED too. This function returns `touched: { added, changed, removed }` and its
+  // docstring promises which touched symbols carry a review mark, then computed the review
+  // list from a set that excluded a third of them — so every deletion in a change read as
+  // carrying no mark at all, signed or not.
+  //
+  // And `base`, not only the ids: a deletion has no body at the head, so its mark is judged
+  // against the body the BASE held. Without one, `deletedBodies` derives a base of its own
+  // from the trunk merge-base, which is not necessarily the `base` this caller was given —
+  // every signed deletion would then read `unreviewed`, which is the same wrong answer
+  // arriving by a longer route.
+  const touched = [...d.added, ...d.changed, ...d.removed];
+  const marks = await reviewStatesFor(root, touched.map((b) => ({ kind: "anchor" as const, id: b.id })), { ref: view.sha, base: baseSha });
   const byState = (s: string) => touched.filter((b) => marks.get(`anchor:${b.id}`)?.code.state === s).map((b) => b.id);
   const notFresh = d.impact.nodes.filter((n) => n.status !== "fresh");
 
