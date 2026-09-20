@@ -55,10 +55,14 @@ test("diff of two cached snapshots reports added/removed/changed + impact", asyn
 });
 
 test("diff against an uncached base ref returns a helpful error", async () => {
+  // A bare directory: no git, so the honest answer is that git is required. Telling the
+  // reader to "fetch it, then `codemap snapshot --ref never_indexed`" names a command that
+  // cannot help them here (owner, Ruling 9.5 / Ruling 1).
   const root = mkdtempSync(join(tmpdir(), "codemap-diff-"));
   try {
     const r = await computeDiff(root, "never_indexed");
-    assert.ok("error" in r && /no cached snapshot/.test(r.error));
+    assert.ok("error" in r && /not a git repository/.test(r.error), "error" in r ? r.error : "no error");
+    assert.ok("error" in r && !/codemap snapshot/.test(r.error), "and does not advise a command that cannot help");
   } finally {
     discard(root);
   }

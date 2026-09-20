@@ -389,7 +389,9 @@ test("witnessing against a commit that was never indexed is an error, not an abs
     await init(root);
     await assert.rejects(
       () => setTriageBatch(root, [{ anchorId: "a_x", importance: "important", complexity: "rote" }], { source: "agent", ref: "nosuchcommit" }),
-      /no cached snapshot/i,
+      // Also a bare directory, so the refusal is "git is required" rather than the
+      // fetch-and-snapshot advice, which cannot help without git.
+      /not a git repository/i,
     );
   } finally { discard(root); }
 });

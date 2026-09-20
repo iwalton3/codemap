@@ -29,7 +29,7 @@ import {
   setBugState, trackBug, unanchorBug, witnessesOf,
   type Ask, type BugState, type SharedBug, type Verdict,
 } from "../shared-bugs.js";
-import { genId, liveIndex, liveAnchors, resolveRefs, rejected } from "./shared.js";
+import { genId, liveIndex, liveAnchors, anchorFiles, resolveRefs, rejected } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Filing
@@ -56,12 +56,7 @@ async function witnessRefs(
   const r = await resolveRefs(root, refs, scopeRef, opts);
   if (!r.ids.length) return { ids: [], witnesses: [], errors: r.errors };
   const store = await readAnchorStore(root);
-  const byId = new Map(store.anchors.map((a) => [a.id, a]));
-  const elsewhere = findAnchorsOutsideWork(root, r.ids.filter((id) => !byId.has(id)));
-  const orphans = readOrphans(root, r.ids.filter((id) => !byId.has(id)));
-  const fileOf = (id: string) => byId.get(id)?.file ?? elsewhere.get(id)?.anchor.file ?? orphans.get(id)?.file;
-  const files = r.ids.map(fileOf).filter((f): f is string => !!f);
-  const live = await liveAnchors(root, files);
+  const live = await liveAnchors(root, anchorFiles(root, r.ids, new Map(store.anchors.map((a) => [a.id, a]))));
   // `sha256:absent` is a witness, not a missing one: it records that the filer looked
   // and the symbol was not in their index, which a later reader can act on.
   return {
@@ -123,11 +118,8 @@ export async function reportBug(
 /** Everything a read wants to know about one bug's code, computed HERE and never stored. */
 async function drift(root: string, bugs: SharedBug[]) {
   const store = await readAnchorStore(root);
-  const files = new Set<string>();
-  for (const b of bugs) for (const a of b.anchors) {
-    const anchor = store.anchors.find((x) => x.id === a.anchorId);
-    if (anchor) files.add(anchor.file);
-  }
+  const byId = new Map(store.anchors.map((a) => [a.id, a]));
+  const files = anchorFiles(root, bugs.flatMap((b) => b.anchors.map((a) => a.anchorId)), byId);
   const live = await liveAnchors(root, files);
   return { store, live, idx: liveIndex(root, live) };
 }

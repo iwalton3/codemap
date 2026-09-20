@@ -13,7 +13,7 @@ import { loadIgnore } from "../ignore.js";
 import { tripwires as triageTripwires } from "../triage.js";
 import { resolveSidecar, inUniverse } from "../sidecar-config.js";
 import { standardStatus } from "./standard.js";
-import { genId, liveIndex, liveAnchors, anchorBrief, coverageFor, loadNodesShared} from "./shared.js";
+import { genId, liveIndex, liveAnchors, anchorFiles, anchorBrief, coverageFor, loadNodesShared} from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Discovery
@@ -226,8 +226,8 @@ export async function dashboard(root: string) {
   const staleDocs = [...staleIds].filter((id) => !danglingIds.has(id)).length;
 
   // Bug re-validation: live re-index of bug-cited files vs each bug's witness.
-  const bugFiles = new Set<string>();
-  for (const b of bugStore.bugs) for (const id of citedAnchors(b)) { const a = store.anchors.find((x) => x.id === id); if (a) bugFiles.add(a.file); }
+  const bugFiles = anchorFiles(root, bugStore.bugs.flatMap((b) => citedAnchors(b)),
+    new Map(store.anchors.map((a) => [a.id, a])));
   const live = await liveAnchors(root, bugFiles);
   const bugIndex = liveIndex(root, live);
   const bugCounts: Record<string, number> = {};

@@ -30,7 +30,7 @@ import { needsHumanAck, type SharedBug } from "./shared-bugs.js";
 import { needsHumanAck as findingNeedsAck, type SharedFinding } from "./shared-findings.js";
 import type { SharedNote, NoteKind } from "./shared-notes.js";
 import { IMPORTANCE_RANK, COMPLEXITY_RANK } from "./triage-rules.js";
-import { headCommit, currentBranch, revParse, recordedUnreadableGitlink } from "./git.js";
+import { headCommit, currentBranch, revParse, recordedUnreadableGitlink, isGitRepo } from "./git.js";
 import { evalVersion, selectWinner, resolveNode, winningVersionAt } from "./doc-version.js";
 export { winningVersionAt } from "./doc-version.js";
 import {
@@ -683,11 +683,18 @@ export function snapshotRefusal(
     { scheme: number | null; hash_scheme: number | null; count: number | null } | undefined;
   if (!meta) {
     const sub = recordedUnreadableGitlink(root, ref);
+    // "fetch it, then `codemap snapshot --ref`" is the right exit for a commit this clone
+    // has not got. It is nonsense where there is no git at all — the reader is told to run
+    // a command that cannot help them, about a ref (`@work`) that names no commit. codemap
+    // without git is not a supported case (owner, Ruling 1); saying so is the whole fix.
     return {
       reason: "absent",
-      message: sub
-        ? `no snapshot for ${short}: its submodule "${sub}" pins a commit this clone cannot read — \`git submodule update --init\` (fetching it if needed), then re-read.`
-        : `no cached snapshot for ${short}, and git cannot read that commit here — fetch it, then \`codemap snapshot --ref ${short}\`.`,
+      message: !isGitRepo(root)
+        ? `${root} is not a git repository, and codemap needs one to say what a commit held — `
+          + `nothing here can be witnessed or compared against a ref.`
+        : sub
+          ? `no snapshot for ${short}: its submodule "${sub}" pins a commit this clone cannot read — \`git submodule update --init\` (fetching it if needed), then re-read.`
+          : `no cached snapshot for ${short}, and git cannot read that commit here — fetch it, then \`codemap snapshot --ref ${short}\`.`,
     };
   }
   // The row says it holds anchors and none are there. Whatever ate them — a concurrent

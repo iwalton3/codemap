@@ -54,6 +54,36 @@ export async function liveAnchors(root: string, files: Iterable<string>): Promis
   return map;
 }
 
+/**
+ * The file each of these anchor ids lives in — `@work` first, then the newest snapshot
+ * holding it, then a retained orphan.
+ *
+ * THE LADDER, in one place. A read that judges code must resolve an anchor's file the same
+ * way the write that witnessed it did, and the write side has walked all three rungs since
+ * deletions existed (`witnessRefs`, `witnessAt`). Three READ sites looked in `@work` alone
+ * — and a deletion citation's anchor is BY CONSTRUCTION absent from `@work`, since it was
+ * retained as an orphan. So its file was never handed to `liveAnchors`, the working-tree
+ * re-read every other citation kind gets never happened, and the bug or finding could not
+ * be seen to come back until something else re-indexed.
+ *
+ * The defect was MASKED whenever another record cited the same file: that one dragged the
+ * file into the set and the deletion citation was found by accident. A test pinning this
+ * behaviour therefore has to have exactly one record in its fixture.
+ */
+export function anchorFiles(root: string, ids: Iterable<string>, byId?: Map<string, Anchor>): Set<string> {
+  const want = [...new Set(ids)];
+  const known = byId ?? new Map<string, Anchor>();
+  const missing = want.filter((id) => !known.has(id));
+  const elsewhere = missing.length ? findAnchorsOutsideWork(root, missing) : new Map();
+  const orphans = missing.length ? readOrphans(root, missing) : new Map();
+  const files = new Set<string>();
+  for (const id of want) {
+    const file = known.get(id)?.file ?? elsewhere.get(id)?.anchor.file ?? orphans.get(id)?.file;
+    if (file) files.add(file);
+  }
+  return files;
+}
+
 export function anchorBrief(a: Anchor) {
   return {
     id: a.id,

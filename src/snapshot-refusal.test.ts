@@ -256,3 +256,44 @@ test("a snapshot short by id dedup is healthy and still serves", async () => {
     assert.equal((await readCachedSnapshot(u.root, u.head))?.length, anchors.length, "it serves the deduped rows");
   } finally { u.cleanup(); }
 });
+
+/**
+ * A universe with no git at all. codemap needs one (owner, Ruling 1) — so what is under
+ * test is not the capability but the SENTENCE: both refusals used to advise a command
+ * that cannot help. "fetch it, then `codemap snapshot --ref @work`" is the right exit for
+ * a commit this clone has not got, and nonsense where there is no git and `@work` names
+ * no commit; and `report_defect`'s "pass `ref`" is what walked the reader into it, there
+ * being no ref they could pass since every one resolves through git.
+ */
+test("a gitless universe is told git is required, not to run a command that cannot help", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-nogit-"));
+  try {
+    mkdirSync(join(root, "src"), { recursive: true });
+    writeFileSync(join(root, "src/pay.js"), SRC, "utf8");
+    await writeStore(root, await indexBlob(SRC, "src/pay.js"), state);
+
+    const why = snapshotRefusal(root, "@work")!;
+    assert.equal(why.reason, "absent");
+    assert.match(why.message, /not a git repository/);
+    assert.doesNotMatch(why.message, /codemap snapshot/, "it cannot help, so it is not offered");
+    assert.doesNotMatch(why.message, /fetch it/);
+
+    const { reportDefect } = await import("./ops/defect.js");
+    const r = await reportDefect(root, {
+      context: { kind: "pull_request", pr: "12" }, targetKind: "anchor", targetId: "src/pay.js#charge",
+      text: "the evidence", comment: "the ask",
+    }) as { error?: string };
+    assert.match(String(r.error), /not a git repository/);
+    assert.doesNotMatch(String(r.error), /pass `ref`/, "there is no ref that would work");
+  } finally { discard(root); }
+});
+
+test("and a repo that HAS git still gets the fetch advice, which is right there", async () => {
+  const u = await dirtied();
+  try {
+    const nowhere = "c".repeat(40);
+    const why = snapshotRefusal(u.root, nowhere)!;
+    assert.match(why.message, /fetch it/, "a commit this clone has not got is exactly that case");
+    assert.match(why.message, /codemap snapshot --ref/);
+  } finally { u.cleanup(); }
+});

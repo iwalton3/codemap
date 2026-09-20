@@ -48,7 +48,7 @@ export { mirrorNote } from "./notes-publish.js";
 export { sharedKnowsNode, docsVerdict, type DocsVerdict } from "./docs-lookup.js";
 import { docsVerdict } from "./docs-lookup.js";
 import { queueContestedTriage } from "./ops/triage.js";
-import { liveAnchors, liveIndex } from "./ops/shared.js";
+import { liveAnchors, liveIndex, anchorFiles } from "./ops/shared.js";
 export { mirrorTriage, mirrorTriageBatch, mirrorTriageClear } from "./triage-publish.js";
 import { homed, linkedBranches, prsLinkedTo, writeLocalLink, readSharedNotes, readAnnotations, readAnchorStore, readFindings, loadNodes, loadNodeVersions, nodeIdsWithPublishableVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets, attributeLocalWalkthrough, readBlockedScopes, findingCountsByPr, readUnpublishedWalkthroughs, readStoreMeta, writeStoreMeta, foldedScopes, hasFoldedFromSidecar, SIDECAR_LINEAGE, type SidecarMark } from "./store.js";
 import { holdsLock, withLock } from "./lock.js";
@@ -719,14 +719,9 @@ async function findingJudge(root: string, all: SharedFinding[]) {
   const workIdx = async () => {
     if (!work) {
       const store = await readAnchorStore(root).catch(() => null);
-      const fileOf = new Map((store?.anchors ?? []).map((a) => [a.id, a.file]));
-      const files = new Set<string>();
-      for (const f of all) {
-        for (const id of [f.witness?.anchorId, f.backlogged?.witness?.anchorId]) {
-          const file = id && fileOf.get(id);
-          if (file) files.add(file);
-        }
-      }
+      const ids = all.flatMap((f) => [f.witness?.anchorId, f.backlogged?.witness?.anchorId])
+        .filter((id): id is string => !!id);
+      const files = anchorFiles(root, ids, new Map((store?.anchors ?? []).map((a) => [a.id, a])));
       work = liveIndex(root, await liveAnchors(root, files));
     }
     return work;

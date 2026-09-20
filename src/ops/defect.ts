@@ -30,7 +30,7 @@
 import { requireActor, isAgentActor } from "../identity.js";
 import { resolveSidecar } from "../sidecar-config.js";
 import { mintId } from "../eventlog.js";
-import { headCommit, revParse, worktreeForBranch, uncommittedPaths, branchHead, ORIGIN_SPELLING } from "../git.js";
+import { headCommit, revParse, worktreeForBranch, uncommittedPaths, branchHead, ORIGIN_SPELLING, isGitRepo } from "../git.js";
 import { assertFindingKey, branchKey, normalizeBranch, normalizeFindingKey } from "../review-target.js";
 import { prBaseForFinding, prHeadForFinding } from "../pr.js";
 import { writeLocalFinding } from "../store.js";
@@ -149,7 +149,10 @@ export async function reportDefect(root: string, input: DefectInput) {
     if (!ref) {
       const h = await prHeadForFinding(root, key);
       if ("error" in h) {
-        return { error: `could not find pull request ${key}'s head to witness the finding at (${h.error}) — pass \`ref\`: \`pr_packet\`'s \`refs.head\`` };
+        // `pass \`ref\`` is what walks a gitless user into `snapshotRefusal`'s second wrong
+        // sentence, and there is no ref they could pass: every one resolves through git.
+        const advice = isGitRepo(root) ? " — pass `ref`: `pr_packet`'s `refs.head`" : "";
+        return { error: `could not find pull request ${key}'s head to witness the finding at (${h.error})${advice}` };
       }
       ref = h.sha;
     }

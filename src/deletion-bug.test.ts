@@ -10,7 +10,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { init } from "./ops.js";
+import { init, reindex } from "./ops.js";
 import { reportDefect } from "./ops/defect.js";
 import { acceptFinding, listBugs } from "./ops/bugs.js";
 import { branchKey } from "./review-target.js";
@@ -78,6 +78,11 @@ test("once the deletion lands the bug carries it, and reads possibly fixed only 
     assert.equal(bug.anchors[0]!.bodyHash, u.refund.bodyHash);
     assert.equal(bug.anchors[0]!.deleted, true);
 
+    // RE-INDEX, or this asserts through a stale `@work` that still holds the deleted id
+    // and never exercises the deletion witness at all. Without it this passed with the
+    // read-side file ladder wholly removed (triage 2026-09-19-review-and-findings-systems,
+    // I12); `deletion-read-ladder.test.ts` is what covers that ladder directly.
+    await reindex(u.root);
     const row = async () => (await listBugs(u.root, {})).bugs.find((b) => b.id === bug.id)!;
     assert.equal((await row()).possiblyFixed, false, "absent is the defect, not a fix");
     writeFileSync(join(u.root, "src/pay.ts"), PAY);
