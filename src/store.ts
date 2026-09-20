@@ -676,11 +676,11 @@ export function bodyHashAt(root: string, ref: string, anchorId: string): string 
  */
 export function snapshotRefusal(
   root: string, ref: string,
-): { reason: "absent" | "derivation" | "dirty"; message: string } | null {
+): { reason: "absent" | "lost" | "derivation" | "dirty"; message: string } | null {
   const d = db(root);
   const short = ref.slice(0, 12);
-  const meta = d.prepare("SELECT scheme, hash_scheme FROM snapshots WHERE ref = ?").get(ref) as
-    { scheme: number | null; hash_scheme: number | null } | undefined;
+  const meta = d.prepare("SELECT scheme, hash_scheme, count FROM snapshots WHERE ref = ?").get(ref) as
+    { scheme: number | null; hash_scheme: number | null; count: number | null } | undefined;
   if (!meta) {
     const sub = recordedUnreadableGitlink(root, ref);
     return {
@@ -689,6 +689,18 @@ export function snapshotRefusal(
         ? `no snapshot for ${short}: its submodule "${sub}" pins a commit this clone cannot read — \`git submodule update --init\` (fetching it if needed), then re-read.`
         : `no cached snapshot for ${short}, and git cannot read that commit here — fetch it, then \`codemap snapshot --ref ${short}\`.`,
     };
+  }
+  // The row says it holds anchors and none are there. Whatever ate them — a concurrent
+  // upgrade losing the compaction race, a crash mid-migration — serving `[]` would report
+  // every symbol in that commit as REMOVED with nothing anywhere saying the cache is gone.
+  // Refusing sends `readSnapshot` and `snapshot --ref` to rebuild it from git objects.
+  //
+  // ZERO rows, not "fewer than `count`": `count` is the pre-dedup `anchors.length` while
+  // the rows are `(ref, id)`-keyed, so two partial classes sharing an id make a HEALTHY
+  // snapshot short by one — measured, 10451 vs 10449 on a jellyfin store. Dedup always
+  // leaves at least one row, so zero cannot be it.
+  if ((meta.count ?? 0) > 0 && !d.prepare(`SELECT 1 FROM ${rowsOf(ref)} WHERE ref = ? LIMIT 1`).get(ref)) {
+    return { reason: "lost", message: `the cached snapshot for ${short} records ${meta.count} anchors and holds none — its rows are gone. Rebuild it from git objects with \`codemap snapshot --ref ${short}\`.` };
   }
   // Both derivations must match. The ids decide WHICH symbols pair up; the hashes
   // decide which of those pairs count as changed — so a snapshot carrying the right

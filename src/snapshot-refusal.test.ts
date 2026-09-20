@@ -17,7 +17,7 @@ import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { snapshotRefusal, writeStore, writeSnapshot, readOrphans } from "./store.js";
+import { snapshotRefusal, writeStore, writeSnapshot, readOrphans, readCachedSnapshot } from "./store.js";
 import { readSnapshot } from "./snapshots.js";
 import { db } from "./db.js";
 import { snapshotAt, snapshot, reindex, diff } from "./ops.js";
@@ -202,5 +202,57 @@ test("`snapshot` on a dirty tree caches the commit, not the working tree", async
     const committed = await indexBlob(SRC, "src/pay.js");
     const cached = new Map((await readSnapshot(u.root, u.head))!.map((a) => [a.id, a.bodyHash]));
     for (const a of committed) assert.equal(cached.get(a.id), a.bodyHash);
+  } finally { u.cleanup(); }
+});
+
+/**
+ * A snapshot row that says it holds anchors while its rows are gone. The concurrent
+ * upgrade produced it (a second process reading a ref's rows outside the transaction
+ * that rewrites them), but the guard is cause-agnostic on purpose: what it forbids is
+ * SERVING the emptiness, which reports every symbol in that commit as removed.
+ */
+const wipe = (u: Awaited<ReturnType<typeof dirtied>>) =>
+  db(u.root).prepare("DELETE FROM snapshot_sets WHERE ref = ?").run(u.head);
+
+test("a snapshot whose rows are gone is refused, not served empty", async () => {
+  const u = await dirtied();
+  try {
+    assert.equal(snapshotRefusal(u.root, u.head), null, "healthy first");
+    wipe(u);
+    const why = snapshotRefusal(u.root, u.head)!;
+    assert.equal(why.reason, "lost", "the loss is visible");
+    assert.match(why.message, /holds none/);
+    assert.match(why.message, /codemap snapshot/, "and names the rebuild");
+    assert.equal(await readCachedSnapshot(u.root, u.head), null, "the CACHE read never serves []");
+  } finally { u.cleanup(); }
+});
+
+test("and the read that meets it rebuilds it from git objects", async () => {
+  const u = await dirtied();
+  try {
+    wipe(u);
+    const committed = await indexBlob(SRC, "src/pay.js");
+    const read = new Map((await readSnapshot(u.root, u.head))!.map((a) => [a.id, a.bodyHash]));
+    for (const a of committed) assert.equal(read.get(a.id), a.bodyHash, "the commit's bodies are back");
+    assert.equal(snapshotRefusal(u.root, u.head), null, "and the row is whole again");
+  } finally { u.cleanup(); }
+});
+
+/**
+ * The control, and the reason the guard tests ZERO rows rather than "fewer than
+ * `count`". `count` is the pre-dedup `anchors.length`; the rows are `(ref, id)`-keyed,
+ * so two partial classes sharing an id leave a healthy snapshot one row short — 10451
+ * against 10449, measured on a jellyfin store. A strict count-vs-rows guard refuses
+ * that on every read, for ever, over nothing.
+ */
+test("a snapshot short by id dedup is healthy and still serves", async () => {
+  const u = await dirtied();
+  try {
+    const anchors = (await readSnapshot(u.root, u.head))!;
+    await writeSnapshot(u.root, u.head, "main", [...anchors, anchors[0]!], new Date().toISOString());
+    const stored = db(u.root).prepare("SELECT count FROM snapshots WHERE ref = ?").get(u.head) as { count: number };
+    assert.equal(stored.count, anchors.length + 1, "the row counts what was handed in");
+    assert.equal(snapshotRefusal(u.root, u.head), null, "and it is NOT refused");
+    assert.equal((await readCachedSnapshot(u.root, u.head))?.length, anchors.length, "it serves the deduped rows");
   } finally { u.cleanup(); }
 });
