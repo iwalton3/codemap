@@ -196,3 +196,43 @@ test("a finding carries its own pull request, so the caller cannot pass the wron
     assert.equal(finding.corroboration[0]!.actor.via?.model, "gpt-5.2");
   } finally { r.cleanup(); }
 });
+
+/**
+ * The key the local store writes is the key the sidecar would accept — SAME spelling.
+ *
+ * The guard beside this write promised exactly that ("so a key the sidecar would refuse is
+ * never stored") and implemented only its `branch:` half, so `#12` and ` 12` were stored
+ * verbatim. The scope IS the association: an unnormalized key makes two scopes for one
+ * pull request and every reader then sees half the findings.
+ */
+const fileOn = (root: string, anchor: string, pr: string) => reportDefect(root, {
+  context: { kind: "pull_request", pr }, ref: "HEAD",
+  targetKind: "anchor", targetId: anchor, text: "the evidence", comment: "the ask",
+}) as Promise<Record<string, unknown>>;
+
+test("every spelling of one pull request's number is stored as the same key", async () => {
+  const r = await repo();
+  try {
+    for (const spelling of ["#12", " 12", "12"]) {
+      const out = await fileOn(r.root, r.anchor, spelling);
+      assert.equal(out.error, undefined, `${spelling}: ${String(out.error)}`);
+    }
+    const { findings } = await readFindings(r.root, { pr: 12 });
+    assert.equal(findings.length, 3, "all three spellings are findings on pull request 12");
+    assert.deepEqual([...new Set(findings.map((f) => f.pr))], ["12"], "one canonical key, not three");
+  } finally { r.cleanup(); }
+});
+
+test("and a key no scope could be formed from is REFUSED rather than stored", async () => {
+  const r = await repo();
+  try {
+    // `pr_walkthrough` advertises "number, url, or owner/repo#N", so a url arriving here is
+    // not far-fetched — it would have scoped to `pr-https://…` while the same person's `5`
+    // scoped to `pr-5`.
+    for (const junk of ["https://github.com/o/r/pull/5", "o/r#5", "main"]) {
+      const out = await fileOn(r.root, r.anchor, junk);
+      assert.match(String(out.error), /not a pull request number or a branch/, junk);
+    }
+    assert.deepEqual((await readFindings(r.root, {})).findings, [], "and nothing was written");
+  } finally { r.cleanup(); }
+});

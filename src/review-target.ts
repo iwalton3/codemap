@@ -61,22 +61,42 @@ export function branchKeyFor(root: string, raw: string): string {
   return branchKey(n.name);
 }
 
-/** The local store's half of `findingKeyScope`'s check, so a key the sidecar would refuse is never stored. */
-export function assertFindingKey(key: string): void {
-  const b = branchOf(key);
-  if (b !== null && notABranchName(b)) throw new Error(`"${b}" is not a branch name`);
+/**
+ * A finding key in its ONE canonical spelling, or a throw.
+ *
+ * The local store's half of `findingKeyScope`'s check — and it used to be half of that
+ * half: it validated the `branch:` arm and nothing else, while its own docstring said a
+ * key the sidecar would refuse is never stored. So `report_defect` stored `"#12"` and
+ * `" 12"` verbatim, and `findings pr=12` then matched neither, because the scope IS the
+ * association and an unnormalized key makes two of them for one pull request.
+ *
+ * Returns the key rather than asserting, because validating a spelling and then storing
+ * the other one is the same defect with an extra step.
+ */
+export function normalizeFindingKey(key: number | string): string {
+  const k = String(key).trim().replace(/^#/, "");
+  const branch = branchOf(k);
+  if (branch !== null) {
+    if (notABranchName(branch)) throw new Error(`"${branch}" is not a branch name`);
+    return k;
+  }
+  if (!/^\d+$/.test(k)) throw new Error(NOT_A_KEY(key));
+  return k;
 }
+
+/** Back-compat name for the check alone. Prefer `normalizeFindingKey`, which also fixes it. */
+export const assertFindingKey = (key: string): void => void normalizeFindingKey(key);
+
+const NOT_A_KEY = (key: number | string) =>
+  `"${key}" is not a pull request number or a branch — findings scope by number (pass 5, not a url or owner/repo#5), or by \`branch:<name>\``;
 export const isBranchKey = (key: string): boolean => key.startsWith(BRANCH);
 export const branchOf = (key: string): string | null => (isBranchKey(key) ? key.slice(BRANCH.length) : null);
 
 /** The scope a finding key lives in: `<universe>/pr-<n>` or `<universe>/b-<hex>`. */
 export function findingKeyScope(cfg: SidecarConfig, key: number | string): string {
-  const k = String(key).trim().replace(/^#/, "");
+  const k = normalizeFindingKey(key);
   const branch = branchOf(k);
   if (branch !== null) {
-    if (notABranchName(branch)) {
-      throw new Error(`"${branch}" is not a branch name`);
-    }
     const hex = createHash("sha256").update(`${cfg.universe}\0branch\0${branch}`).digest("hex").slice(0, 40);
     return scopeFor(cfg, "b", hex);
   }

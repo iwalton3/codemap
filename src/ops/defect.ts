@@ -31,7 +31,7 @@ import { requireActor, isAgentActor } from "../identity.js";
 import { resolveSidecar } from "../sidecar-config.js";
 import { mintId } from "../eventlog.js";
 import { headCommit, revParse, worktreeForBranch, uncommittedPaths, branchHead, ORIGIN_SPELLING } from "../git.js";
-import { assertFindingKey, branchKey, normalizeBranch } from "../review-target.js";
+import { assertFindingKey, branchKey, normalizeBranch, normalizeFindingKey } from "../review-target.js";
 import { prBaseForFinding, prHeadForFinding } from "../pr.js";
 import { writeLocalFinding } from "../store.js";
 import { trunkBase } from "./at.js";
@@ -124,7 +124,9 @@ export async function reportDefect(root: string, input: DefectInput) {
     ref = sha;
   } else {
     if (!String(ctx.pr ?? "").trim()) return { error: "which pull request? `context.pr` is what scopes the finding" };
-    key = String(ctx.pr);
+    // NORMALIZED HERE, before anything stores or returns it — the same call
+    // `findingKeyScope` makes, so the local row and the sidecar scope cannot disagree.
+    try { key = normalizeFindingKey(String(ctx.pr)); } catch (e) { return { error: (e as Error).message }; }
   }
   if (!input.targetKind || !input.targetId) {
     return { error: "a finding is about one symbol or node — pass `targetKind` and `targetId`" };
