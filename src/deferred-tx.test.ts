@@ -45,7 +45,10 @@ const FIRST_STATEMENT = /\b(SELECT|INSERT|UPDATE|DELETE|REPLACE)\b/;
 /** Every source file below `src/`, tests excluded. */
 function sources(dir = "src"): string[] {
   return readdirSync(dir).flatMap((f) => {
-    const p = join(dir, f);
+    // `join` gives backslashes on Windows, and every key below is written with forward
+    // slashes — so without this the whole ledger reads as "every site moved". A path
+    // separator leaking into a comparison is this repo's most-repeated Windows defect.
+    const p = `${dir}/${f}`;
     if (statSync(p).isDirectory()) return sources(p);
     return p.endsWith(".ts") && !p.endsWith(".test.ts") ? [p] : [];
   });

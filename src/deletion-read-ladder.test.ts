@@ -101,10 +101,19 @@ test("and the hub's own counts see it, which are a SECOND copy of the same read"
 
 /**
  * The third site: `workIdx`, which judges findings when there is no trunk to judge them
- * against. Reachable in an ordinary GIT clone, not only a gitless one — a clone whose
- * remote has a single `feature` branch makes `defaultBranch` fall through to the literal
- * "main", which resolves nowhere. That is `clone --single-branch`, or any repository whose
- * trunk is named outside the known set.
+ * against. Reachable in an ordinary GIT repository, not only a gitless one: nothing named
+ * `main`/`master`/`develop`/`trunk` exists here, so `defaultBranch` falls through to the
+ * literal "main", which resolves nowhere, and `trunkRef` is null.
+ *
+ * The fixture has to hold BOTH ends, and each was got wrong once:
+ *
+ * - A remote must EXIST. With none, `defaultBranch` answers "whatever is checked out",
+ *   because a repo with no remote has one line of development — so `feature` becomes the
+ *   trunk and the precondition is gone.
+ * - `refs/remotes/origin/HEAD` must NOT exist, and deleting it is the only version-stable
+ *   way to say so: git 2.47 leaves it unset after a fetch, 2.55 sets it. The first version
+ *   of this test relied on the older behaviour and stopped meaning anything under the
+ *   newer one — caught on the Windows leg, which runs 2.55, and not a Windows issue at all.
  */
 async function singleBranchClone() {
   const base = mkdtempSync(join(tmpdir(), "codemap-singlebranch-"));
@@ -124,6 +133,11 @@ async function singleBranchClone() {
   git("remote", "add", "origin", origin);
   git("push", "-q", "origin", "feature");
   git("fetch", "-q", "origin");
+  // Newer git sets this on fetch; older git does not. Removing it makes the state the same
+  // on both, which is what the assertion below depends on. `set-head --delete`, NOT
+  // `update-ref -d`: that dereferences a symbolic ref, so it deletes the branch the symref
+  // POINTS AT and leaves the symref itself — it reported success and changed nothing here.
+  git("remote", "set-head", "origin", "--delete");
   await init(root);
   const doomed = (await readAnchorStore(root)).anchors.find((a) => a.symbolPath.at(-1) === "doomed")!;
   git("rm", "-q", "src/gone.ts"); git("commit", "-qm", "delete it");
