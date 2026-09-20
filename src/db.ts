@@ -82,17 +82,23 @@ function upgrade(root: string, d: DatabaseSync): void {
     return `${changes}\0${schema}`;
   };
   const before = shape();
-  d.exec("SAVEPOINT codemap_upgrade_probe");
+  // BEGIN IMMEDIATE, not SAVEPOINT: this probe RUNS the migrations, so it reads and then
+  // writes, and a deferred transaction doing that fails with `SQLITE_BUSY_SNAPSHOT` —
+  // which `busy_timeout` cannot wait out. A second process opening the same store at the
+  // same moment now waits for this one instead of throwing `database is locked`.
+  d.exec("BEGIN IMMEDIATE");
   let changed: boolean;
   try {
     runMigrations(root, d);
     changed = shape() !== before;
   } catch (e) {
-    d.exec("ROLLBACK TO codemap_upgrade_probe; RELEASE codemap_upgrade_probe");
+    d.exec("ROLLBACK");
     throw e;
   }
-  if (!changed) { d.exec("RELEASE codemap_upgrade_probe"); return; }
-  d.exec("ROLLBACK TO codemap_upgrade_probe; RELEASE codemap_upgrade_probe");
+  // Rolled back either way: when nothing changed there is nothing to keep, and the lock
+  // has to go before `backupStore`, whose `VACUUM INTO` cannot run inside a transaction.
+  d.exec("ROLLBACK");
+  if (!changed) return;
   backupStore(join(root, ".codemap"), d);
   runMigrations(root, d);
 }
@@ -131,15 +137,26 @@ function pruneBackups(dir: string): void {
 /**
  * A transaction that nests: a savepoint, which is also a transaction at top level.
  * `fn` returning `false` rolls back without throwing.
+ *
+ * At TOP LEVEL it takes the write lock up front (`BEGIN IMMEDIATE`), and that is what
+ * makes concurrency here survivable rather than merely unlikely. A bare `SAVEPOINT`
+ * starts a DEFERRED transaction: the first read takes a read snapshot, and the first
+ * write then tries to upgrade it — which fails with `SQLITE_BUSY_SNAPSHOT` if anyone
+ * else wrote in between, and `busy_timeout` does NOT apply to that error. Every
+ * transaction in this codebase reads before it writes, so the deferred form turned two
+ * processes opening one store into `database is locked` on whichever lost. Taking the
+ * lock first makes the loser WAIT instead (owner, Ruling 8: transactional + wait).
  */
 let savepoints = 0;
 export function tx(d: DatabaseSync, fn: () => void | false): void {
+  const outermost = !d.isTransaction;
   const name = `codemap_tx_${++savepoints}`;
-  d.exec("SAVEPOINT " + name);
+  d.exec(outermost ? "BEGIN IMMEDIATE" : "SAVEPOINT " + name);
+  const undo = outermost ? "ROLLBACK" : `ROLLBACK TO ${name}; RELEASE ${name}`;
   let keep: void | false;
-  try { keep = fn(); } catch (e) { d.exec("ROLLBACK TO " + name + "; RELEASE " + name); throw e; }
-  if (keep === false) d.exec("ROLLBACK TO " + name);
-  d.exec("RELEASE " + name);
+  try { keep = fn(); } catch (e) { d.exec(undo); throw e; }
+  if (keep === false) { d.exec(undo); return; }
+  d.exec(outermost ? "COMMIT" : "RELEASE " + name);
 }
 
 /**
@@ -279,18 +296,31 @@ function compactLegacySnapshots(d: DatabaseSync): void {
   const refs = (d.prepare("SELECT DISTINCT ref FROM anchors WHERE ref NOT IN (?, ?)").all(WORK_REF, ORPHAN_REF) as { ref: string }[])
     .map((r) => r.ref);
   for (const ref of refs) {
-    const rows = d.prepare("SELECT id,file,symbol_path,kind,disambiguator,body_hash,last_commit,derivation,start_byte,end_byte,start_line,end_line FROM anchors WHERE ref = ?")
-      .all(ref) as unknown as AnchorSetRow[];
-    putSnapshotSets(d, ref, rows);
+    tx(d, () => {
+      // READ INSIDE THE TRANSACTION THAT REWRITES THIS REF. It used to be read in
+      // autocommit, and `putSnapshotSets` opens by DELETING the ref's sets — so a second
+      // process reading a ref the first had already converted got zero rows and wrote that
+      // empty result over a complete snapshot. The `snapshots` row survived with its
+      // original count and correct scheme columns, so nothing refused and nothing rebuilt:
+      // a diff against that commit reported every symbol as removed, silently.
+      const rows = d.prepare("SELECT id,file,symbol_path,kind,disambiguator,body_hash,last_commit,derivation,start_byte,end_byte,start_line,end_line FROM anchors WHERE ref = ?")
+        .all(ref) as unknown as AnchorSetRow[];
+      // Nothing legacy left under this ref: somebody else converted it. Not "convert it to
+      // nothing" — that is the wipe.
+      if (!rows.length) return false;
+      putSnapshotSets(d, ref, rows);
+    });
   }
 }
 
 function migrateTriageBlob(d: DatabaseSync): void {
   const row = d.prepare("SELECT v FROM meta WHERE k = 'triage'").get() as { v: string } | undefined;
   if (!row) return;
-  const existing = (d.prepare("SELECT COUNT(*) c FROM triage").get() as { c: number }).c;
-
   tx(d, () => {
+    // The guard, inside the transaction it guards (owner, Ruling 14). Absorbed by
+    // `INSERT OR IGNORE` here rather than fatal, but the rule is the same one at all five
+    // migrations, and a reader should not have to work out which ones it is load-bearing for.
+    const existing = (d.prepare("SELECT COUNT(*) c FROM triage").get() as { c: number }).c;
     if (!existing) {
       let parsed: { triage?: unknown[] } | undefined;
       // A blob this build cannot parse is not a reason to refuse to open the store. It
@@ -348,9 +378,11 @@ function migrateTriageBlob(d: DatabaseSync): void {
 function migrateWalkthroughBlob(d: DatabaseSync): void {
   const row = d.prepare("SELECT v FROM meta WHERE k = 'pr_walkthrough'").get() as { v: string } | undefined;
   if (!row) return;
-  const existing = (d.prepare("SELECT COUNT(*) c FROM walkthroughs").get() as { c: number }).c;
-
   tx(d, () => {
+    // The guard, inside the transaction it guards (owner, Ruling 14). Absorbed by
+    // `INSERT OR IGNORE` here rather than fatal, but the rule is the same one at all five
+    // migrations, and a reader should not have to work out which ones it is load-bearing for.
+    const existing = (d.prepare("SELECT COUNT(*) c FROM walkthroughs").get() as { c: number }).c;
     if (!existing) {
       let parsed: { walkthroughs?: Record<string, unknown> } | undefined;
       // Left in `meta` rather than dropped when it will not parse: nothing is
@@ -416,11 +448,13 @@ export function migrateWalkthroughBlobForTest(root: string): void {
 function migrateBugsBlob(d: DatabaseSync): void {
   const row = d.prepare("SELECT v FROM meta WHERE k = 'bugs'").get() as { v: string } | undefined;
   if (!row) return;
-  const existing = (d.prepare("SELECT COUNT(*) c FROM bugs").get() as { c: number }).c;
-
   const STATE: Record<string, string> = { open: "created", fixed: "resolved", wontfix: "withdrawn", invalid: "invalid" };
 
   tx(d, () => {
+    // The guard, inside the transaction it guards (owner, Ruling 14). Absorbed by
+    // `INSERT OR IGNORE` here rather than fatal, but the rule is the same one at all five
+    // migrations, and a reader should not have to work out which ones it is load-bearing for.
+    const existing = (d.prepare("SELECT COUNT(*) c FROM bugs").get() as { c: number }).c;
     if (!existing) {
       let parsed: { bugs?: unknown[] } | undefined;
       // A blob this build cannot parse is left in `meta` rather than dropped: nothing
@@ -479,14 +513,18 @@ function migrateBugsBlob(d: DatabaseSync): void {
  * hash. The old `nodes` table is kept as a backup but is no longer authoritative.
  */
 function migrateNodesToVersions(d: DatabaseSync): void {
-  const nvCount = (d.prepare("SELECT COUNT(*) c FROM node_versions").get() as any).c;
-  const nCount = (d.prepare("SELECT COUNT(*) c FROM nodes").get() as any).c;
-  if (nvCount || !nCount) return;
-  const work = new Map<string, string>();
-  for (const r of d.prepare("SELECT id, body_hash FROM anchors WHERE ref = '@work'").all() as any[]) work.set(r.id, r.body_hash);
   const ins = d.prepare("INSERT INTO node_versions(version_id,node_id,type,title,summary,body,generated_by,created_commit,created_branch,created_at,citations) VALUES(?,?,?,?,?,?,?,?,?,?,?)");
   const at = new Date().toISOString();
   tx(d, () => {
+    // The GUARD, inside the transaction it guards. Read outside, two processes both saw
+    // `nvCount = 0` and both inserted — and the insert is a plain INSERT with a fresh
+    // random `version_id`, so there is no `OR IGNORE` to absorb it: every node ends up
+    // with two versions. A wipe is loud once you look; this is silent by construction.
+    const nvCount = (d.prepare("SELECT COUNT(*) c FROM node_versions").get() as any).c;
+    const nCount = (d.prepare("SELECT COUNT(*) c FROM nodes").get() as any).c;
+    if (nvCount || !nCount) return false;
+    const work = new Map<string, string>();
+    for (const r of d.prepare("SELECT id, body_hash FROM anchors WHERE ref = '@work'").all() as any[]) work.set(r.id, r.body_hash);
     for (const n of d.prepare("SELECT * FROM nodes").all() as any[]) {
       const anchors: string[] = JSON.parse(n.anchors ?? "[]");
       const citations = anchors.map((id) => ({ anchorId: id, acceptedHashes: work.has(id) ? [work.get(id)!] : [] }));
