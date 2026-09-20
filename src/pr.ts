@@ -41,6 +41,10 @@ export function parsePrRef(input: string, fallback?: { owner: string; repo: stri
   return null;
 }
 
+/** Case-insensitively, because GitHub's owner and repo names are. */
+const sameRepo = (a: { owner: string; repo: string }, b: { owner: string; repo: string }): boolean =>
+  a.owner.toLowerCase() === b.owner.toLowerCase() && a.repo.toLowerCase() === b.repo.toLowerCase();
+
 function gh(args: string[], cwd?: string, timeout = 120_000): { ok: boolean; out: string; err: string } {
   const r = spawnSync("gh", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout });
   return { ok: r.status === 0, out: r.stdout ?? "", err: (r.stderr ?? "").trim() };
@@ -495,15 +499,23 @@ async function prContext(
   if (!ref) return { error: `could not read a PR reference from "${input}"` };
   const meta = useGh ? fetchPrMeta(ref) : prMetaFromGit(root, ref.number, slug, "origin", { base: opts.base });
   if ("error" in meta) return meta;
-  // The one place a pull request is resolved, so the one place its link to its branch is
-  // recorded (shared-reviews.ts) — by the ops layer, through `onPrResolved`.
-  if (meta.source === "gh" && resolvedHook) await resolvedHook(root, meta).catch(() => null);
 
   if (opts.fetch !== false) {
     const f = ensurePrObjects(root, meta);
     if (!f.ok) return { error: f.error ?? "could not fetch PR refs" };
   }
   if (!hasObject(root, meta.headSha)) return { error: `PR head ${meta.headSha.slice(0, 12)} is not in this repo — is ${ref.owner}/${ref.repo} the right universe?` };
+
+  // The one place a pull request is resolved, so the one place its link to its branch is
+  // recorded (shared-reviews.ts) — by the ops layer, through `onPrResolved`.
+  //
+  // Only THIS universe's pull request, and only once its head is here. `review_link` is
+  // keyed by NUMBER alone and nothing unlinks it, so resolving
+  // `https://github.com/other/lib/pull/12` used to bind other/lib's branch to our #12 —
+  // permanently, and shared to the team on the next sync. `meta.crossRepo` cannot catch it:
+  // `gh` measures that against the PR's OWN base repo, so a foreign same-repo PR reads
+  // `false` exactly like ours.
+  if (meta.source === "gh" && resolvedHook && slug && sameRepo(ref, slug)) await resolvedHook(root, meta).catch(() => null);
 
   // The PR's true base: the merge-base of head and the base branch, NOT the branch
   // tip. For a long-lived branch these differ by hundreds of commits, and using

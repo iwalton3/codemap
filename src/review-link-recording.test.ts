@@ -129,3 +129,32 @@ test("a pull request's remembered head belongs to its repository, not only its n
     assert.equal(other.sha, undefined, "acme/api#12's head was served for other/repo#12");
   } finally { f.cleanup(); }
 });
+
+/**
+ * `review_link` is keyed by NUMBER and nothing unlinks it, so linking somebody else's
+ * pull request binds their branch to ours permanently — and shares it to the team on
+ * the next sync. `gh`'s `isCrossRepository` cannot catch this: it is measured against
+ * the PR's OWN base repo, so a foreign same-repo PR reads `false` exactly like ours.
+ *
+ * The head is a REAL commit of this repo in this fixture, so the resolve succeeds and
+ * the repository comparison is the only thing that can decline the link.
+ */
+test("another repository's pull request is not linked to this universe's number", { skip: FAKE_GH_UNSUPPORTED }, async () => {
+  const f = await fixture(true);
+  try {
+    const r = await pr(f.root, "https://github.com/other/lib/pull/12", { fetch: false }) as Record<string, unknown>;
+    assert.equal(r.error, undefined, "the head is here, so this resolves — the link is what must not happen");
+    assert.deepEqual(linkedBranches(f.root, 12), [], "other/lib's branch was bound to acme/api#12");
+  } finally { f.cleanup(); }
+});
+
+test("and this universe's own pull request still links, whatever the case of its name", { skip: FAKE_GH_UNSUPPORTED }, async () => {
+  const f = await fixture(true);
+  try {
+    // GitHub's owner and repo names are case-insensitive; the remote and the URL a
+    // person pastes need not agree on case, and a refused link is a lost one.
+    const r = await pr(f.root, "https://github.com/ACME/API/pull/12", { fetch: false }) as Record<string, unknown>;
+    assert.equal(r.error, undefined, String(r.error));
+    assert.deepEqual(linkedBranches(f.root, 12), ["feature"]);
+  } finally { f.cleanup(); }
+});
