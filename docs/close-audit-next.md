@@ -23,6 +23,81 @@ edges. Every one that failed asked an open one.
 So: **auto-close is earned by the closer's evidence, not granted by a checker.** Build the
 evidence slot (§5), not the auditor-as-gate.
 
+## What we are actually dealing with
+
+> Added 2026-09-22, after the arc, from re-reading the three runs together. It reads the table
+> above at a finer grain, and it changes which shape below is most decisive.
+
+**Every discriminating result in the arc detected the same single class: no change present.**
+
+- §8.6 — the two controls both agents caught were *the fix was never written* and *audited at its
+  pre-fix commit*.
+- §8.7 — the Prover's refusal, the one clean discriminator, fired on exactly those two and on
+  nothing else.
+- §8.8 — 3/8, the same three items, for the third time.
+
+Nothing in five auditor passes ever detected the **inadequacy** of a change. It detected the
+**absence** of one. So bounded-versus-unbounded is the right shape at the wrong grain: the bounded
+question that worked is bounded because it asks about existence, and existence is one bit about an
+artifact already in hand.
+
+Which means **a falsifier proves non-vacuity, not sufficiency.** Re-running the 52 recorded
+falsifiers (shape 1) establishes that a real change was made and that it does something. It does
+not establish that the finding is fixed. Still the cheapest thing here and still worth doing first
+— but it is tier 0, and it should be sold as *"a change exists and is not vacuous"* rather than as
+a close.
+
+### A close is a conjunction of up to four independent claims
+
+Different bounds, different admissible evidence, different answers to *may an agent do this*:
+
+| the claim | bounded by | what settles it | the fix-failure it catches |
+|---|---|---|---|
+| a change exists and does something | the change | a falsifier — mutate it, the check reds | — |
+| the finding's own defect no longer fires | the finding | its reproducer, re-run | insufficient, invalid |
+| every instance is covered | the pattern | a predicate, zero hits | not-enumerated |
+| the change did nothing else | the diff | every hunk attributed to the ask | new-defect |
+| somebody with standing decided | nothing in code | a ruling | assumption |
+
+§8.1's *"the audit and the evidence slot produce one thing, not two"* is the load-bearing error.
+Reproduce-at-witness and mutate-the-change are two artifacts answering two questions with two
+different bounds. §8.8 half-caught it — *"execution establishes that an artifact is SOUND, not that
+it is RELEVANT"* — and kept them fused anyway.
+
+### Why one model asked one question cannot work
+
+**The truth condition varies by finding type, and the store does not record the type.**
+`Annotation` carries `kind` (note/question/finding/pointer), `severity`, a freeform `category` and
+`disposition` — nothing that says which of the sort's five groups an item is, and so nothing that
+says what would close it. An auditor therefore reconstructs the closing condition from code under
+batch pressure, and defaults to the modal type (isolated defect) and the cheapest condition (the
+site is patched). On an isolated defect that is nearly right, which is why it reads as calibrated.
+On a pattern it is 1/N of the truth. On a design defect or an assumption the truth condition is a
+**ruling**, which is not in the code at all — so there an auditor cannot fail honestly; it can only
+read the site and say fixed.
+
+**And the agreement is bias, not luck.** Two models sharing a prior and confirming it locally will
+agree. Replication and role asymmetry both attack variance; this failure is bias, and no amount of
+independent sampling reduces bias. That is what 16/16, and then *3/8, same three items, three
+times*, looks like from outside.
+
+**The five never-found defects all sit in the one row with no bound** — *the change did nothing
+else*. "What else broke?" is an open search over the whole program, and §8.8 showed that in this
+codebase such a search always succeeds. But **"what else changed?" is finite**: the authorization
+widening was a hunk outside the ask. That class is reachable by attribution and never by search,
+which is a stronger argument for shape 2 than the one given for it below.
+
+### How the list below reads now
+
+1 settles vacuity — do it first because it is free, but on its own it closes nothing. 2 is the only
+shape that touches the row with no bound. 3 is answered rather than open: narrowing to the
+finding's own defect **is** the second row, and it needs that finding's reproducer recorded when the
+finding was sorted, which nothing collects today. 4 is the *ruling* row and is not a detector
+problem at all. 5 belongs with 2.
+
+The follow-through — storing the closing condition instead of re-deriving it — is
+`docs/PROPOSAL-close-pipeline.md`.
+
 ## Shapes to try, most decisive first
 
 Each names the data that already exists, so none starts from zero.
