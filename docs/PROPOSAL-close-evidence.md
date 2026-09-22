@@ -352,6 +352,57 @@ re-derived mechanism across several files, far more effort than a batch pass spe
 defects that matter cost more to find than a batch audit spends, and the pipeline's own
 agreement signal cannot tell you that happened.
 
+### 8.7 Asymmetric roles, 2026-09-21: routing improved, detection did not
+
+§8.6 measured correlated consensus, so the roles were made asymmetric — **in the artifact each
+must produce, not in the conclusion each wants.** Opposed conclusions manufacture disagreement
+just as symmetric briefs manufacture agreement; an agent told to refute will refute. So:
+
+- **Prover** — produce a FALSIFIER: the precise mutation that would undo the fix, plus the check
+  that fails under it. "No falsifier" is an allowed answer.
+- **Refuter** — produce a FAILING CASE: inputs, state or a call path at the audit commit that
+  still exhibits the defect, or a second door. "Nothing found" is an allowed answer.
+
+Neither states a verdict. The verdict falls out of which artifacts exist, which is also how
+§8.2's two axes stop being a vote: a fix that works AND leaves a door open produces both
+artifacts, and both are simply true.
+
+Same 16 items. Prover was a different vendor's model, Refuter was the same model §8.6 used, so
+Refuter-versus-itself is a within-model comparison that isolates the role.
+
+| | symmetric (§8.6) | asymmetric |
+|---|---:|---:|
+| known-bad that would **auto-close** | 5/8 | **1/8** |
+| known-bad routed to a bucket needing a look | 3/8 | **7/8** |
+| known-bad where the artifact **is the known defect** | 3/8 | **3/8** |
+
+**The manufacture hazard did not fire on the prove side.** The Prover returned "no falsifier" on
+exactly the two items where no fix exists at the audited commit, and on nothing else — *"no check
+can distinguish the claimed behaviour from its undo at this commit."*
+
+**But detection did not improve, and the routing may not mean anything.** The defect-identity
+score is flat: the same three items as the symmetric run. On four of the seven correctly-routed
+controls the Refuter found a DIFFERENT real problem — a sibling endpoint missing a guard its twin
+has, a permanent silent drop of terms — not the defect under audit. Verified one of the four
+against the code rather than trusting it; the asymmetry it named is real.
+
+**So the disposition was right while the reason was wrong, four times out of seven.** And the
+Refuter produced a failing case on 88% of known-bad items against 50% of unknown-status ones —
+**one-sided Fisher exact p = 0.14, discrimination NOT established at n=8 per arm.** With 9 of 16
+landing in `both-true`, that bucket is a queue rather than a gate, which is the opposite of the
+point.
+
+**§8.1 remains untested.** A submodule pointing outside the clone meant nothing built, so ten of
+eleven artifacts are static traces rather than executed failing cases. Reproduce-at-witness was
+approximated by reading, which is the method this whole document argues against.
+
+**One operational leak worth recording:** `git worktree add <path> <sha>` prints the commit
+subject line. An agent forbidden from reading commit messages saw one that way and reported it.
+Instruction cannot close that; only serving the tree some other way can.
+
+Per-item scores: `docs/close-audit-2026-09-21.jsonl` carries the symmetric run; the asymmetric
+run's are in `docs/close-audit-2026-09-21-asym.jsonl`.
+
 ## 9. Open
 
 - Whether `fixed-on-default` should stop being stored (§5).
@@ -373,7 +424,12 @@ From §8, each of which is measurable rather than arguable:
   versus not — over half of all disagreement being 1-vs-2, the authority line itself. Two blind
   AUDITORS of closed findings (§8.6) agreed 16/16. Sorting disagrees; auditing agrees and misses
   together. The open question is no longer the rate but whether the arbitrator has anything to do
-  on this task at all.
+  on this task at all. §8.7 sharpens it again: asymmetric roles route 7/8 of known-bad away from
+  auto-close, but the flag rate on ordinary closes is 50% and the difference is not significant.
+  **The open question is now discrimination, not agreement** — and the design that answers it is
+  paired: audit the same finding at the commit where its fix was defective AND at the commit
+  where the repair landed. A discriminating refuter fires on the first and not the second. Item
+  difficulty is then controlled by construction, which an unpaired known-good arm cannot do.
 - **Whether inline comments actually move verdicts.** Audit a sample twice — code as-is, and
   with comments stripped from the touched files — and see whether the verdicts differ. If they
   do not, §8.5's worst source stops being a worry. Cheaper than designing around it blind.

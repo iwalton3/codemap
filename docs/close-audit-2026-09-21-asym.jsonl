@@ -1,0 +1,16 @@
+{"id": "A01", "audit_at": "eda9e2eb", "ground_truth": "unknown", "prover_falsifier": true, "refuter_failing_case": false, "derived": "fixed", "artifact_is_the_known_defect": null}
+{"id": "A02", "audit_at": "82d86ddb", "ground_truth": "unknown", "prover_falsifier": true, "refuter_failing_case": true, "derived": "both-true", "artifact_is_the_known_defect": null}
+{"id": "A03", "audit_at": "eda9e2eb", "ground_truth": "not-fixed", "prover_falsifier": false, "refuter_failing_case": true, "derived": "confirmed", "artifact_is_the_known_defect": true}
+{"id": "A04", "audit_at": "ae513d8f", "ground_truth": "fix-defective", "prover_falsifier": true, "refuter_failing_case": true, "derived": "both-true", "artifact_is_the_known_defect": false}
+{"id": "A05", "audit_at": "f4d5cacf", "ground_truth": "fix-defective", "prover_falsifier": true, "refuter_failing_case": true, "derived": "both-true", "artifact_is_the_known_defect": false}
+{"id": "A06", "audit_at": "eda9e2eb", "ground_truth": "fix-defective", "prover_falsifier": true, "refuter_failing_case": true, "derived": "both-true", "artifact_is_the_known_defect": true}
+{"id": "A07", "audit_at": "82d86ddb", "ground_truth": "unknown", "prover_falsifier": true, "refuter_failing_case": true, "derived": "both-true", "artifact_is_the_known_defect": null}
+{"id": "A08", "audit_at": "44e955c2", "ground_truth": "fix-defective", "prover_falsifier": true, "refuter_failing_case": false, "derived": "fixed", "artifact_is_the_known_defect": false}
+{"id": "A09", "audit_at": "eda9e2eb", "ground_truth": "unknown", "prover_falsifier": true, "refuter_failing_case": false, "derived": "fixed", "artifact_is_the_known_defect": null}
+{"id": "A10", "audit_at": "2efd651c", "ground_truth": "unknown", "prover_falsifier": true, "refuter_failing_case": true, "derived": "both-true", "artifact_is_the_known_defect": null}
+{"id": "A11", "audit_at": "ae513d8f", "ground_truth": "fix-defective", "prover_falsifier": true, "refuter_failing_case": true, "derived": "both-true", "artifact_is_the_known_defect": false}
+{"id": "A12", "audit_at": "0bd3ff6d", "ground_truth": "unknown", "prover_falsifier": true, "refuter_failing_case": true, "derived": "both-true", "artifact_is_the_known_defect": null}
+{"id": "A13", "audit_at": "b24abc7e", "ground_truth": "not-fixed", "prover_falsifier": false, "refuter_failing_case": true, "derived": "confirmed", "artifact_is_the_known_defect": true}
+{"id": "A14", "audit_at": "b85adb09", "ground_truth": "unknown", "prover_falsifier": true, "refuter_failing_case": false, "derived": "fixed", "artifact_is_the_known_defect": null}
+{"id": "A15", "audit_at": "8cab801f", "ground_truth": "unknown", "prover_falsifier": true, "refuter_failing_case": false, "derived": "fixed", "artifact_is_the_known_defect": null}
+{"id": "A16", "audit_at": "44e955c2", "ground_truth": "fix-defective", "prover_falsifier": true, "refuter_failing_case": true, "derived": "both-true", "artifact_is_the_known_defect": false}
