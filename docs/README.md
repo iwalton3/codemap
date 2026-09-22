@@ -50,9 +50,10 @@ Decided, not yet built. This is the work queue.
 | [`docs/plan-bug-backlog-and-ci.md`](plan-bug-backlog-and-ci.md) | 238 | the five open COD bugs re-triaged against `93cbffb`, plus the GitHub Actions that should have caught two of them. |
 | [`docs/plan-sharing-the-rest.md`](plan-sharing-the-rest.md) | 356 | PARTLY BUILT — see the status line below; §4 is cut, not pending. |
 | [`docs/plan-finding-parity.md`](plan-finding-parity.md) | 144 | the field-by-field prerequisite to the retirement. |
-| [`docs/PROPOSAL-close-evidence.md`](PROPOSAL-close-evidence.md) | 441 | **PROPOSED, not approved.** An `evidence` slot on `close_finding`, from a measurement of 183 agent fix-vouches. §8 is the audit loop's shape — discussed, NOT ratified; §7 the constraints it must satisfy; §8.6 the run where two auditors agreed 16/16 and missed together. |
+| [`docs/PROPOSAL-close-evidence.md`](PROPOSAL-close-evidence.md) | 500 | **PROPOSED, not approved.** An `evidence` slot on `close_finding`, from a measurement of 183 agent fix-vouches. §8 is the audit loop's shape — discussed, NOT ratified; §7 the constraints it must satisfy; §8.6 the run where two auditors agreed 16/16 and missed together. |
 | [`docs/close-audit-2026-09-21.jsonl`](close-audit-2026-09-21.jsonl) | 16 | the per-item scores behind §8.6. Data, not prose. |
 | [`docs/close-audit-2026-09-21-asym.jsonl`](close-audit-2026-09-21-asym.jsonl) | 16 | the same items under §8.7's asymmetric roles. Data, not prose. |
+| [`docs/close-audit-2026-09-22-paired.jsonl`](close-audit-2026-09-22-paired.jsonl) | 24 | §8.8's paired pre/post-repair run. Data, not prose. |
 
 ## Decision Record
 

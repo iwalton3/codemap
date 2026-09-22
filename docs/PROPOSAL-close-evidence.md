@@ -403,6 +403,65 @@ Instruction cannot close that; only serving the tree some other way can.
 Per-item scores: `docs/close-audit-2026-09-21.jsonl` carries the symmetric run; the asymmetric
 run's are in `docs/close-audit-2026-09-21-asym.jsonl`.
 
+### 8.8 Paired, 2026-09-22: the refuter does not discriminate, and that decides the gate
+
+§8.7 left one question: does a failing case mean the fix was bad, or does the Refuter fire on
+everything? The design that answers it is paired — **the same finding audited at the commit where
+its fix was defective AND at the commit where the verified repair landed.** Item difficulty is
+then controlled by construction, which an unpaired known-good arm cannot do. Counterbalanced
+across two runs so neither agent saw a duplicate finding; **both agents the same model**, so role
+and model are not confounded; and the submodule mirrored locally so the tree actually builds.
+
+| arm | produced a failing case |
+|---|---:|
+| pre-repair (fix known defective) | 7/8 |
+| post-repair (same finding, after the verified repair) | 6/8 |
+| filler (ordinary closes, no known status) | 8/8 |
+| **overall** | **21/24** |
+
+Six pairs produced at both commits, one at neither, one discordant — and the discordant one is the
+item whose "pre" arm had no fix in the tree at all. **Exact McNemar, one-sided: p = 0.50.**
+
+**But the negative control is not negative, and that was checked rather than assumed.** The
+post-repair artifacts are real: at one repair commit the update endpoint has no state gate and the
+resolver's own comment says contract-level values *overlay* the frozen snapshot, demonstrated by
+execution — an issued rate changing after an edit the repair was supposed to have frozen out. So
+the result cannot separate *"the Refuter fires indiscriminately"* from *"a second door is a
+near-universal property of this codebase."* **18 of the 21 artifacts were executed** — hermetic
+tests, schema validation runs, measured timings — so this is not noise.
+
+**And the detection score is unchanged for the third time: 3/8, the same three items.** Across
+three configurations and five independent auditor passes, **five known defects have never been
+found by anybody**: an authorization widening, a permanently-empty snapshot, a wrong unset
+sentinel, collapsed diagnostics, a sweepable live marker. What gets found instead is a different
+real defect in the same file.
+
+#### What it decides
+
+**"Did the auditor find something" cannot be the close gate.** It fires on 88% of everything,
+including code that was just repaired and code nobody complained about. A gate that does not
+separate is a queue.
+
+**The gate is the narrow question — does the FINDING'S OWN defect still fire?** Anything else the
+auditor turns up is a new finding (§8.2 already says defective fixes are filed, not voted), and it
+is genuinely valuable: two agent-runs produced ~21 mostly-executed defects. But that is **bug
+discovery, and it is a different product from close verification.** Conflating them is what made
+`both-true` a 56% queue in §8.7.
+
+**§8.1 narrows.** This run finally exercised reproduce-at-witness, and execution did not rescue
+discrimination — because **execution establishes that an artifact is SOUND, not that it is
+RELEVANT.** Reproduce-at-witness remains exactly right for the *prove* direction, where the
+question is bounded to one named change. It does nothing for the *refute* direction unless the
+reproduction is tied to the filed defect.
+
+**The one clean discriminator in the whole arc was the Prover's refusal** (§8.7): "no falsifier"
+on exactly the two items where no fix existed, and on nothing else. The pattern worth carrying is
+not prove-versus-refute but **bounded-versus-unbounded**: "can I falsify this specific change?"
+discriminates perfectly; "can I find a failing case?" is an open search over an unbounded space
+and, in this codebase, always succeeds.
+
+Per-item scores: `docs/close-audit-2026-09-22-paired.jsonl`.
+
 ## 9. Open
 
 - Whether `fixed-on-default` should stop being stored (§5).
