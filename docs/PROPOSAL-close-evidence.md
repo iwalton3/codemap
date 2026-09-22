@@ -231,6 +231,12 @@ So conflict is `(verdict, evidence cited)`. Two `fixed`es from different falsifi
 match. `unknown` against `fixed` is always a conflict, and the arbitrator's first question there
 is whether the one who concluded reproduced at the witness or merely failed to find a problem.
 
+**But agreement is not confirmation, and §8.6 measures how badly.** The arbitrator fires on
+disagreement only, so it is blind by construction to the case where both passes are wrong the
+same way — which is what systematic blindness looks like from outside. On a task whose answers
+are mostly `fixed`, agreement is also cheap: it carries little information and must not be read
+as confidence. The failure mode of this design is consensus, not conflict.
+
 The arbitrator's effort asymmetry — routinely more than each finding got in the first pass — is
 the design and not a side effect: the two cheap passes are a triage over *where to spend*, and
 disagreement is a free signal for "this one needs thought." Widening the predicate to include
@@ -255,7 +261,18 @@ an auditor becoming a fixer, which is the smaller hazard.
 `sidecarForWrite` failure verbatim — *"Guarding two doors was worse than guarding none, because
 the comment then lied about the rest."*
 
-Three contamination sources the latch cannot reach, in order of how controllable they are:
+**A fourth source, and the only one wholly inside codemap: the finding's own text.**
+`revise_finding` lets a closer rewrite the submitter-facing `comment`, and **23 of the 180
+findings carrying a fix-vouch (13%) now read as a fix report rather than a defect claim** —
+*"Fixed in <sha>, as the finding asked"*, *"Built as specified"*, *"Deleted in <sha>"*. An
+auditor must read the finding, so for 13% of them reading the finding IS reading the fixer's
+account. **All 23 retain a prior wording under `revisions[].was.comment`**, so the repair is to
+serve the auditor the finding AS FILED rather than the current comment. Do it at the server: the
+2026-09-21 experiment (§8.6) tried to reconstruct it caller-side, looked for the prior wording
+under the wrong key, silently fell through to the fix report on 3 of 16 items, and found out only
+because an auditor remarked that some items were written as accounts of a fix.
+
+Three further sources the latch cannot reach, in order of how controllable they are:
 
 - **Commit messages — solvable.** `git show --format= --patch` is message-free, and if codemap
   serves the diff the auditor has no reason to shell out. Not enforcement, but it held for all
@@ -273,6 +290,68 @@ Three contamination sources the latch cannot reach, in order of how controllable
 Which is why the weight sits on §8.1 rather than on blindness for this source. **A comment can
 bias a reading; it cannot make a mutant pass.**
 
+### 8.6 Measured, 2026-09-21: they agree, and they miss
+
+**Setup.** 16 claimed-fixed findings from the Acme.API ledger. Two agents of different model
+families, each in its own `--local` clone (never the live tree), given the finding and the commit
+to judge at, and NOT the fixer's account. Forbidden: later commits (they repair the very fixes
+under test), commit messages, and any report on these findings. 10 drawn at random from the 149
+vouches nobody ever re-checked; 6 controls whose outcome is known from a later verification
+round. Two errors in my own sampling turned into two more controls, for 8 with ground truth.
+Per-item scores: `docs/close-audit-2026-09-21.jsonl`.
+
+**Agreement, and it is total.**
+
+| | |
+|---|---|
+| verdict agreement | **16/16** — same 13 `fixed`, same 3 `confirmed`, same items |
+| `fix_quality` agreement | 15/16 |
+| evidence-grade agreement | 15/16 |
+
+**Sensitivity, and it is not.**
+
+| | A | B |
+|---|---:|---:|
+| known-outcome items called correctly | **3/8** | **2/8** |
+| of the 6 whose FIX introduced a new defect, flagged `defective` | **1** | **0** |
+
+Both caught the vouch whose fix was never written, and both caught an item audited at its
+pre-fix commit. **Neither caught the authorization widening. Neither caught the fix that wrote a
+permanently empty snapshot on every award.** All four defective-fix controls were marked
+`fixed / sound` by both.
+
+**So the arbitrator would never have fired.** Where both were wrong they were wrong identically,
+and identical wrongness is indistinguishable from agreement. This is the result to carry: **a
+close-side pipeline cannot use its own agreement as evidence that a close is safe.**
+
+**Three things that did work.**
+
+- **The two axes earned themselves on first use.** One agent recorded `fixed` AND `defective` on
+  a round-one commit where the change satisfied the finding's literal claim while leaving the
+  defect live on two sibling paths, noting that *"a reader who only sees the verdict would be
+  misled."* A single-vote vocabulary loses that item.
+- **The evidence predicate fired exactly once, and correctly.** One item is a verdict match with
+  an evidence mismatch: one agent stood up a throwaway Postgres and ran the migration's
+  statements with a control that reproduced the original error; the other read the SQL. §8.4's
+  wider predicate catches that and nothing else here — a thin signal, but a real one.
+- **Both agents independently contradicted a vouched close** on an item with no ground truth,
+  finding the fix gated one entry point while three others walked the same bad state through.
+  Two models, separately, against the record.
+
+**And the reason to keep §8.1.** Evidence was `read` on 31 of the 32 item-passes; neither agent
+built the solution. The partial fixes that were caught share one shape, in an auditor's own
+words: *"the finding named a mechanism and a second door, the fix landed on the mechanism, and
+the door stayed open. Both would have been caught by re-running the finding's own reproduction
+sequence rather than by re-reading the cited line."* That is §8.1 arrived at independently, by an
+agent that had never seen this document.
+
+**Limits, stated so the number is not over-read.** n=16, one run, reading only. The six planned
+controls are hard by construction — each was originally found by a verification round that
+re-derived mechanism across several files, far more effort than a batch pass spends per item. So
+3/8 is a floor on what an auditor can do, not a verdict on it. The direction is the finding: the
+defects that matter cost more to find than a batch audit spends, and the pipeline's own
+agreement signal cannot tell you that happened.
+
 ## 9. Open
 
 - Whether `fixed-on-default` should stop being stored (§5).
@@ -288,9 +367,13 @@ bias a reading; it cannot make a mutant pass.**
 
 From §8, each of which is measurable rather than arguable:
 
-- **The disagreement rate between two auditors is unmeasured**, and the arbitrator's budget is a
-  function of it. Nobody has run two passes over the same findings; the only comparable number
-  here is that a single sorter corrected four of its own calls mid-pass.
+- ~~The disagreement rate between two auditors is unmeasured.~~ **Measured twice, 2026-09-21,
+  and the two numbers disagree in an informative way.** Over 15 recorded `triage-review` rounds,
+  two blind SORTERS of open findings agreed on 106/154 (69%) exactly and 114/154 (74%) on group 1
+  versus not — over half of all disagreement being 1-vs-2, the authority line itself. Two blind
+  AUDITORS of closed findings (§8.6) agreed 16/16. Sorting disagrees; auditing agrees and misses
+  together. The open question is no longer the rate but whether the arbitrator has anything to do
+  on this task at all.
 - **Whether inline comments actually move verdicts.** Audit a sample twice — code as-is, and
   with comments stripped from the touched files — and see whether the verdicts differ. If they
   do not, §8.5's worst source stops being a worry. Cheaper than designing around it blind.
