@@ -52,6 +52,8 @@ Decided, not yet built. This is the work queue.
 | [`docs/plan-sharing-the-rest.md`](plan-sharing-the-rest.md) | 356 | PARTLY BUILT — see the status line below; §4 is cut, not pending. |
 | [`docs/plan-finding-parity.md`](plan-finding-parity.md) | 144 | the field-by-field prerequisite to the retirement. |
 | [`docs/PROPOSAL-close-evidence.md`](PROPOSAL-close-evidence.md) | 500 | **PROPOSED, not approved.** An `evidence` slot on `close_finding`, from a measurement of 183 agent fix-vouches. §8 is the audit loop's shape — discussed, NOT ratified; §7 the constraints it must satisfy; §8.6 the run where two auditors agreed 16/16 and missed together. |
+| [`docs/PROPOSAL-decision-rounds.md`](PROPOSAL-decision-rounds.md) | 264 | **PROPOSED, not approved.** People answer decision rounds; agents sort, fix and verify-close findings. Supersedes `plan-decision-log.md`; §8 maps the downstream team's IZ-1…IZ-10 onto it. |
+| [`docs/PROPOSAL-close-pipeline.md`](PROPOSAL-close-pipeline.md) | 212 | **PROPOSED.** Store the sort's closing condition instead of re-deriving it. §3(a) and §4–§6 are components of the decision-rounds proposal. |
 | [`docs/close-audit-2026-09-21.jsonl`](close-audit-2026-09-21.jsonl) | 16 | the per-item scores behind §8.6. Data, not prose. |
 | [`docs/close-audit-2026-09-21-asym.jsonl`](close-audit-2026-09-21-asym.jsonl) | 16 | the same items under §8.7's asymmetric roles. Data, not prose. |
 | [`docs/close-audit-2026-09-22-paired.jsonl`](close-audit-2026-09-22-paired.jsonl) | 24 | §8.8's paired pre/post-repair run. Data, not prose. |
@@ -78,6 +80,7 @@ Superseded or finished. **Do not plan from these.** They are kept, rather than d
 
 | doc | lines | |
 |---|---:|---|
+| [`docs/plan-decision-log.md`](plan-decision-log.md) | 188 | **SUPERSEDED by `docs/PROPOSAL-decision-rounds.md`** the same day it was written. Kept for the ruling-vs-requirement test and its falsifiers. |
 | [`PROPOSAL-sidecar-materialization.md`](../PROPOSAL-sidecar-materialization.md) | 1084 | **SUPERSEDED by `docs/sidecar-architecture.md`.** Nine source files cite sections of it for the reasoning behind a decision; read those sections, not the plan. |
 | [`docs/session-log-2026-08.md`](session-log-2026-08.md) | 782 | three stacked session logs. `CLAUDE.md`, `src/oracle.ts` and `src/oracle-properties.ts` cite SECTIONS of it, so extract those before retiring it. |
 | [`docs/mcp-complaints.md`](mcp-complaints.md) | 723 | a use log, newest first, partly resolved in code. Verify any entry against HEAD before acting on it. |

@@ -1,6 +1,11 @@
 # Plan: the decision log, prototyped in markdown
 
-> **Kind: prototype plan** — the shape is decided, the schema deliberately is not.
+> **Kind: archive — superseded 2026-09-22 by `docs/PROPOSAL-decision-rounds.md`.** Decisions
+> became records in codemap posted as rounds, not markdown files, and the success measure
+> moved from "a person works the queue" to "no agent fills a void". Kept for the ruling-vs-
+> requirement test and the falsifiers, which the proposal cites.
+>
+> *Was:* **prototype plan** — the shape is decided, the schema deliberately is not.
 > Written 2026-09-22 from the diagnosis in `close-audit-next.md` § *What we are actually
 > dealing with* and the design discussion after `PROPOSAL-close-pipeline.md`. It supersedes
 > that proposal's §3(b) and §8's first two open questions; the rest of it still stands.
