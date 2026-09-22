@@ -3,8 +3,9 @@
 > **Kind: proposal — not approved.** Filed 2026-09-21 against `main` at `161d754`. The
 > measurement in §1 is over the Acme.API and Acme.React finding ledgers as they stood that
 > day and is reproducible with the commands given. §4's principle is already law here;
-> §5 is the only thing being proposed. The pipeline in §7 is **not** proposed — it is
-> named so the first step is not mistaken for a commitment to it.
+> §5 is the only thing whose implementation is proposed. §8 records the shape of the audit
+> loop as worked out with the owner on 2026-09-21 — **design discussed, not ratified, and not
+> the next step** — so that §7's constraints have something concrete to bind.
 
 ## 1. The measurement
 
@@ -138,9 +139,9 @@ nine are rulings, not verifications, and rulings are the thing only a person can
 
 ## 7. What is NOT proposed here, and the caution
 
-A sort-and-verify pipeline over claimed-fixed findings is the obvious next thing and is
-**deliberately out of scope for this document.** Two reasons to name it rather than drift into
-it:
+A sort-and-verify pipeline over claimed-fixed findings is the obvious next thing. Its SHAPE is
+in §8; what is not proposed is **building it before the slot lands**, for two reasons that
+should bind whatever gets built:
 
 **It automates the close side, and automating the open side is what produced
 `review-fix-loop`** — measured in `/working/skills/ideas/automated-integration/`: 142 findings
@@ -160,7 +161,119 @@ that has to survive is blindness to the fixer's own account — which means blin
 the field a person reads. Building the reader before the evidence slot exists would force it
 to read `detail`, which is the one input it must not have.
 
-## 8. Open
+## 8. The audit loop, as discussed
+
+> Design worked out with the owner, 2026-09-21. **Not ratified and not the next step** — §5 is.
+> Recorded because a shape nobody wrote down gets re-derived differently each round.
+
+**Polarity.** Adversarial. The default is *not fixed*; the fix has to survive. Two independent
+passes by different models, an arbitrator on conflict — the `triage-review` shape, reused
+because the same problem produced it: a second reader settles whether a claim is true and
+settles nothing about who had standing to act on it.
+
+### 8.1 Failure to refute is not evidence of a fix
+
+An auditor that cannot construct a failing case has not shown there is none, and closing on two
+such passes treats absence of evidence as a verdict. Codemap refuses that shape twice already:
+the `unfetched` bucket exists so a change this clone cannot see reads as an absence of evidence
+rather than drift (*"never seen is not stale"*), and `pr.ts`'s GitHub fallback keeps ancestry's
+answer because *"I could not ask" is never a verdict.*
+
+**The control is free, because the finding already carries it — reproduce at the witness first:**
+
+1. Reproduce the defect at the witness commit. Cannot → `unknown`. The finding does **not**
+   close. This is *"check that a passing property COULD have failed"* turned on the auditor.
+2. Run that same reproduction at the current commit. Still fires → `confirmed`. Does not fire →
+   `fixed`, **and the reproduction is the falsifier** — the same artifact §5's `falsified` field
+   wants. The audit and the evidence slot produce one thing, not two.
+
+An auditor therefore cannot reach `fixed` without having first demonstrated it understood the
+defect.
+
+### 8.2 Two axes, because a fix can do both
+
+Four exclusive verdicts about the FINDING — `unknown`, `confirmed`, `fixed`, `refuted` — and a
+separate question about the FIX. A defective fix is not a fifth verdict: a fix can remove the
+defect it was asked to remove *and* introduce another, and forcing one vote loses half of it.
+
+Measured: **5 of the 183 closes were exactly that, and every one came from the 10 findings whose
+fix got a second pass.** The sharpest is a close that added the branch the finding asked for —
+so `fixed` is true — and appended its event unconditionally, letting an operator admin rewrite
+an Active contract's governing law and liability cap through a path the direct endpoint denies
+them.
+
+So a defective fix is **FILED AS A FINDING**, not voted on. That is what it is — a new defect in
+code somebody just wrote — and the better closes in the ledger already do it unprompted.
+
+### 8.3 What each verdict may DO
+
+§4's split decides this, and only one verdict can act alone:
+
+| verdict | may |
+|---|---|
+| `fixed`, with a falsifier that fired at the witness and passes now | close — it is evidence |
+| `confirmed` / `unknown` | nothing; the finding stays open, the audit is recorded |
+| `refuted` | **ask, never act** |
+| a defective fix | file a finding |
+
+`refuted` is gated because `close_finding`'s own contract warns that reaching for it to mean
+fixed *"marks a real defect a false positive and poisons the one question this data answers"* —
+and an adversarial auditor has a standing incentive toward that exact error.
+
+### 8.4 Conflict is detected on the evidence, not on the vote
+
+Two agents reaching `fixed` look like agreement and may not be: one ran a falsifier, the other
+read a comment asserting the fix. A verdict-level predicate never sees that, and it is precisely
+the contamination path §8.5 cannot close.
+
+So conflict is `(verdict, evidence cited)`. Two `fixed`es from different falsifiers agree. A
+`fixed` backed by a re-run and a `fixed` backed by a reading is a conflict although the votes
+match. `unknown` against `fixed` is always a conflict, and the arbitrator's first question there
+is whether the one who concluded reproduced at the witness or merely failed to find a problem.
+
+The arbitrator's effort asymmetry — routinely more than each finding got in the first pass — is
+the design and not a side effect: the two cheap passes are a triage over *where to spend*, and
+disagreement is a free signal for "this one needs thought." Widening the predicate to include
+evidence will raise the arbitration rate, possibly sharply on early runs. That is the right
+trade, and it should be expected rather than read as the pipeline misbehaving.
+
+### 8.5 The role latch, and the three things it cannot reach
+
+A skill claims the `fix-auditor` role as the **literal first call on the connection** — first
+call or forfeit, rather than "no other *meaningful* calls," because "meaningful" is a judgement
+the server would have to encode and the contamination risk lives in the reads that look
+harmless.
+
+**What the role is FOR is withholding reads, not restricting writes.** The fixer's account lives
+in `detail`, and a server that does not serve it to this connection has made blindness a
+property of the data flow rather than an instruction. Write restrictions matter less: they stop
+an auditor becoming a fixer, which is the smaller hazard.
+
+**Redact at the serialization boundary, not per tool.** `findings`, `review_queue`,
+`shared_findings` and `get_node` all return finding bodies, and the body carries
+`outcomes[].detail`. Guarding one verb and leaving the others serving the same field is the
+`sidecarForWrite` failure verbatim — *"Guarding two doors was worse than guarding none, because
+the comment then lied about the rest."*
+
+Three contamination sources the latch cannot reach, in order of how controllable they are:
+
+- **Commit messages — solvable.** `git show --format= --patch` is message-free, and if codemap
+  serves the diff the auditor has no reason to shell out. Not enforcement, but it held for all
+  142 findings of the blind re-sort run on 2026-09-21.
+- **Round records — instruction only.** An agent with a shell can find them. Low risk under
+  §8.1, where the verdict turns on whether a reproduction fires.
+- **Inline comments asserting the fix — unreachable, and the worst.** You cannot audit a fix
+  without reading the fixed code, and stripping comments hands the auditor a different program.
+  Worse, `CLAUDE.md`'s comment rules forbid *"anything addressing a code reviewer to refute a
+  finding"* while permitting *"decisions that look like mistakes to avoid them being 'fixed'"* —
+  and the ledger is full of the permitted form, which contaminates identically. Enforcing the
+  rule would not buy the blindness, and tightening it would cost the guards that are the point
+  of writing them.
+
+Which is why the weight sits on §8.1 rather than on blindness for this source. **A comment can
+bias a reading; it cannot make a mutant pass.**
+
+## 9. Open
 
 - Whether `fixed-on-default` should stop being stored (§5).
 - The grain of any later close-side reader's output: a list of authority-taking closes, or a
@@ -172,3 +285,18 @@ to read `detail`, which is the one input it must not have.
   are different acts. If that is to have an exception, it should be stated as one.
 - `files` taking one path maximum. Not proposed as part of this, but the ledger shows fixes
   routinely spanning more, with the remainder in prose where nothing can read it.
+
+From §8, each of which is measurable rather than arguable:
+
+- **The disagreement rate between two auditors is unmeasured**, and the arbitrator's budget is a
+  function of it. Nobody has run two passes over the same findings; the only comparable number
+  here is that a single sorter corrected four of its own calls mid-pass.
+- **Whether inline comments actually move verdicts.** Audit a sample twice — code as-is, and
+  with comments stripped from the touched files — and see whether the verdicts differ. If they
+  do not, §8.5's worst source stops being a worry. Cheaper than designing around it blind.
+- **One connection per finding, or per batch.** Per-finding is the pure form; a batch is far
+  cheaper but shares context BETWEEN findings, so the second is judged by a session that already
+  formed a view on the first. Different contamination, not less of it.
+- **Whether the auditor sees the diff.** It probably must — a diff is the change, not the
+  narrative — but the line should be drawn deliberately rather than by what is convenient to
+  serve.
