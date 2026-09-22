@@ -96,7 +96,9 @@ finding was sorted, which nothing collects today. 4 is the *ruling* row and is n
 problem at all. 5 belongs with 2.
 
 The follow-through — storing the closing condition instead of re-deriving it — is
-`docs/PROPOSAL-close-pipeline.md`.
+`docs/PROPOSAL-close-pipeline.md`, and the first thing actually to build is
+`docs/plan-decision-log.md`, which prototypes the human-facing half in markdown before any of
+it reaches the schema.
 
 ## Shapes to try, most decisive first
 

@@ -5,6 +5,12 @@
 > repeat it. `PROPOSAL-close-evidence.md` §5 — the evidence slot on `close_finding` — is a
 > **component** of this, not an alternative to it. Nothing here is ratified, and §8 is a list of
 > things nobody has settled rather than a list of things left to implement.
+>
+> **Partly superseded, 2026-09-22.** `docs/plan-decision-log.md` settles §3(b) — a ruling is a
+> LIGHT record, not a standard operation — and the first two open questions in §8: the item is
+> round-scoped bookkeeping and is not reified, and the durable object is the **decision**. It is
+> also the decision to prototype in markdown before any of this reaches the schema. Everything
+> else here stands.
 
 ## 1. The claim
 
