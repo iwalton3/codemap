@@ -25,6 +25,7 @@ How codemap works today. If one of these is wrong, that is a bug — fix the doc
 | [`docs/doc-versioning.md`](doc-versioning.md) | 149 | hash-versioned docs, BUILT. The schema section is aspirational — see the note there. |
 | [`docs/state-map.md`](state-map.md) | 119 | implemented in the Marten analyzer. |
 | [`docs/SESSION-STATE.md`](SESSION-STATE.md) | 106 | the live handoff. Replace it, do not append to it. |
+| [`docs/close-audit-next.md`](close-audit-next.md) | 146 | handoff for the close-audit arc: five concrete shapes to try, what not to repeat, and the traps. Read with `PROPOSAL-close-evidence.md` §8.6–§8.8. |
 
 ## Current Design — NORMATIVE
 
