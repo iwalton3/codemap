@@ -281,3 +281,25 @@ verbatim.
 The in-session rulings also add a logged-question record: the call and the excerpt-named span.
 The plan says a C-item marked wrong sends I8 back to a redraft, so **I8 is redrafted before
 anything is built.**
+
+## Ruled after the plan review — 2026-09-23
+
+- **A typed reply can be verified (supersedes C15).** The owner: "Relay answer could verify words
+  match too actually, the transcript covers that verification too." Asked whether it settles:
+  "Settles if unambiguous, should probably grab entire user message so \"do not run the tests\"
+  can't be forged as \"run the tests\"". Codemap copies the **whole** message by its entry id.
+  *The session's reading of "unambiguous":* the whole message parses as a reply naming one
+  decision and option. Anything more is free text, and goes to arbitration.
+- **What counts as the person's words.** The owner: "queued operations are user words, subagents
+  and goal messages are not"; and an accepted prompt suggestion counts ("Yes, you chose it").
+  Measured: a mid-turn message and a goal message both arrive as a `queue-operation` with no
+  `origin`. Only the paired `queued_command` attachment separates them: `origin.kind` is `human`
+  for the person, `auto-continuation` for a goal, and `peer` for a subagent. So the person's
+  words are a `type: "user"` or `queued_command` entry with `origin.kind: "human"`. A bare
+  `queue-operation` never counts, and a missing origin fails closed.
+- **Answers are read from `toolUseResult`, not the result's text.** The text form
+  (`"question"="answer"`) breaks on a question that contains a quote mark.
+- **`codemap answer` is dropped.** The owner: "answering happens either via MCP verified channels
+  or the web app via the human attestation guardrail" ("Drop it (Recommended)").
+- **Verification happens before the fold.** The owner: "Correct, verification needs to happen
+  before it ends up in the fold."
