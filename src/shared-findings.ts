@@ -29,7 +29,7 @@
  * only to produce a good error instead of a silently dropped event.
  */
 
-import { ISO_DATE, type Actor, type BugSeverity, type BugWitness } from "./schema.js";
+import { ISO_DATE, closeStampFor, type Actor, type BugSeverity, type BugWitness, type CloseStamp, type DecisionStamp } from "./schema.js";
 import { isAgentActor, isIndependent, isErrorIndependent, reviewerKey } from "./identity.js";
 import { emitEvent, mintId, readScope, causality, type LogEvent } from "./eventlog.js";
 import { applyRevision, newContestState, type Contested } from "./contest.js";
@@ -359,6 +359,9 @@ export interface SharedFinding {
   closed?: {
     at: string; by: Actor; reason: string;
     grantedAsk?: { ask: Ask; by: Actor; at: string; rationale: string };
+    /** Carrying out a person's answer to a decision: `by` is whoever's agent closed it, the
+     *  stamp's `ruler` whose ruling it was. */
+    decision?: DecisionStamp;
   };
 
   revisions: { at: string; by: Actor; was: Record<string, unknown> }[];
@@ -933,8 +936,12 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         const next = str(d, "state") as FindingState | undefined;
         if (!next || !["issued", "created", "invalid", "refuted", "resolved", "withdrawn"].includes(next)) break;
         // THE gate. An agent that tries to close a finding somebody stood behind is
-        // ignored by every reader, not just by its own client.
-        if (!mayTransition(f, e.actor, next)) break;
+        // ignored by every reader, not just by its own client — unless it is carrying out a
+        // person's verified answer to a decision that settles THIS finding as THIS state. A
+        // finding already closed stays as its closer left it (owner: "Closing an already
+        // closed finding should just leave it closed").
+        const decided = isClosed(f.state) ? undefined : closeStampFor(obj(d, "decision"), f.id, next);
+        if (!mayTransition(f, e.actor, next) && !decided) break;
         f.state = next;
         // An ask is answered by the act it asked for — and SETTLED, not erased. Clearing
         // `pending` alone took the rationale with it, so a finding closed on an agent's
@@ -949,6 +956,7 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
             // carried, which is what they were agreeing to. `next` alone says nothing.
             reason: str(d, "reason") ?? open?.rationale ?? next,
             ...(open ? { grantedAsk: { ask: open.ask, by: open.by, at: open.at, rationale: open.rationale } } : {}),
+            ...(decided ? { decision: decided } : {}),
           };
         } else f.closed = undefined;
         f.pending = undefined;
@@ -1030,6 +1038,11 @@ export async function createFinding(logRoot: string, pr: number | string, actor:
   await emit(logRoot, pr, actor, id, "finding.created", { ...f, id: undefined } as Data);
   return id;
 }
+
+/** An agent's close that carries out a person's answer to a decision; the fold checks the
+ *  stamp describes this very close (`closeStampFor`). Only the decision ops write one. */
+export const closeOnDecision = (logRoot: string, pr: number | string, actor: Actor, stamp: CloseStamp, reason: string) =>
+  emit(logRoot, pr, actor, stamp.finding, "finding.stateChanged", { state: stamp.as, reason, decision: stamp as unknown as Data });
 
 export const corroborate = (
   logRoot: string, pr: number | string, actor: Actor, id: string, verdict: Verdict, rationale: string, ref?: string,

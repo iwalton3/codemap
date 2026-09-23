@@ -862,6 +862,26 @@ function migrate(d: DatabaseSync): void {
       PRIMARY KEY (scope, pr, branch)
     );
 
+    -- Decision rounds, folded from decisions/<universe>. See shared-decisions.ts.
+    CREATE TABLE IF NOT EXISTS decision_rounds (
+      scope TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL,
+      PRIMARY KEY (scope, id)
+    );
+    -- No state column: a decision's condition is read off its standing answer (see the
+    -- fold). Named decision_records because an unreleased build made a decisions table
+    -- with a NOT NULL state column, which every insert from this one would fail; it held no rows
+    -- anywhere (nothing ever wrote the scope), so it is dropped.
+    DROP TABLE IF EXISTS decisions;
+    CREATE TABLE IF NOT EXISTS decision_records (
+      scope TEXT NOT NULL, id TEXT NOT NULL, round TEXT NOT NULL, body TEXT NOT NULL,
+      PRIMARY KEY (scope, id)
+    );
+    CREATE INDEX IF NOT EXISTS ix_decision_records_round ON decision_records(round);
+    CREATE TABLE IF NOT EXISTS logged_questions (
+      scope TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL,
+      PRIMARY KEY (scope, id)
+    );
+
     -- Requirements (COD-29). A separate table from nodes/node_versions on purpose,
     -- not a new LogicalNodeType: the two kinds have inverted truthmakers, and sharing
     -- storage is what would let a requirement reach the staleness path. See schema.ts.

@@ -7,7 +7,8 @@
  * failing. A sidecar is additive.
  */
 
-import type { Actor, Triage } from "./schema.js";
+import type { Actor, CloseStamp, Triage } from "./schema.js";
+import { db as openDb } from "./db.js";
 import { requireActor, isAgentActor, actorVia } from "./identity.js";
 import { comparableHashes, sameBody } from "./normalize.js";
 import { realpathSync } from "node:fs";
@@ -42,7 +43,7 @@ import {
   type NewNote, type NoteKind,
 } from "./shared-notes.js";
 import { assertTriageBatch, triageScope, triageOf, isTombstone, type SharedTriage } from "./shared-triage.js";
-import { backlogFindingEvent, releaseBacklog, rewitness, assign, isClosed } from "./shared-findings.js";
+import { backlogFindingEvent, releaseBacklog, rewitness, assign, isClosed, closeOnDecision } from "./shared-findings.js";
 import { cachedTriage, materializeTriage } from "./triage-publish.js";
 export { mirrorNote } from "./notes-publish.js";
 export { sharedKnowsNode, docsVerdict, type DocsVerdict } from "./docs-lookup.js";
@@ -64,7 +65,7 @@ const NO_SIDECAR =
   + "CODEMAP_SIDECAR=/path/to/sidecar, or write that path into .codemap/sidecar. "
   + "Everything else works without one.";
 
-interface Bound { cfg: SidecarConfig; actor: Actor }
+export interface Bound { cfg: SidecarConfig; actor: Actor }
 
 /** Resolve the sidecar and the actor together — both are needed for every write. */
 /**
@@ -1336,6 +1337,30 @@ export const closeFinding = homed(async function closeFinding(root: string, pr: 
   }
   return { ...mz, ok: true, id, state };
 });
+
+/**
+ * The sidecar and actor a decision op writes with — the same door every shared write uses.
+ * Unlike a finding write it never creates the sidecar: decision records require one that
+ * already exists (R24), because making `.codemap/sidecar/` here would turn comment-push off
+ * (docs/plan-retire-local-findings.md).
+ */
+export function bindDecisions(root: string, via: Via = {}): Bound | { error: string } {
+  const b = bind(root, via);
+  if ("error" in b) return b;
+  if (!existsSync(join(b.cfg.path, ".git"))) return { error: `decision records need a sidecar that exists; ${b.cfg.path} has not been set up (run \`codemap sync\` once), and a decision tool will not create one` };
+  return b;
+}
+
+/** A finding this store holds, wherever it lives: its key (pr or branch) and state. */
+export function findingKeyAndState(root: string, id: string): { pr: string; state: string } | undefined {
+  return openDb(root).prepare("SELECT pr, state FROM findings WHERE id = ? ORDER BY created_at LIMIT 1").get(id) as { pr: string; state: string } | undefined;
+}
+
+/** Carry out a ruling's close on one finding, as `actor`, stamped with the ruling. */
+export async function closeFindingOnDecision(root: string, b: Bound, pr: string, stamp: CloseStamp, reason: string) {
+  await closeOnDecision(b.cfg.path, prKey(b.cfg, pr), b.actor, stamp, reason);
+  return materializeFindings(root, b.cfg, pr);
+}
 
 export const reportOnFinding = homed(async function reportOnFinding(root: string, pr: number | string, id: string, result: "fixed" | "answered" | "declined", detail: string, files?: string[]) {
   const b = bind(root);

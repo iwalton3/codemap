@@ -195,7 +195,13 @@ import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagn
 // judged at (owner, Ruling 11). Exactly the reason `branch` bumped 21 -> 22: an older fold
 // drops the field, so its rows resolve the branch local-first for ever, and only a refold
 // fixes them because the shards have not moved.
-export const MATERIALIZER_VERSION = 26;
+//
+// 26 -> 27: a new scope kind (`decisions/`, tables `decision_rounds`, `decision_records`,
+// `logged_questions`) with four events — see shared-decisions.ts. The scope is new, so no
+// store has folded it; the bump is for the EXISTING findings fold, which this change teaches
+// to accept an agent's close that carries a person's answer to a decision — a fold-mind change
+// on already-folded scopes whose shards have not moved.
+export const MATERIALIZER_VERSION = 27;
 
 /**
  * What the events in a scope are, cheaply.

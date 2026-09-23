@@ -38,8 +38,13 @@ import { readFileSync } from "node:fs";
  * because a teammate without `gh` cannot observe it and would not see a branch's findings
  * under its pull request. It is derived from GitHub, not from the code, which is what this
  * file forbids. See `src/shared-reviews.ts`.
+ *
+ * `decisions/` is authored: a round is posted, a person answers, and an agent logs the
+ * question they were asked and reads free text. A logged question is a copy of what
+ * the person was shown and said, not anything derived from code. See
+ * `src/shared-decisions.ts`.
  */
-const SHARED_KINDS = ["findings/", "bugs/", "docs/", "notes/", "walkthrough/", "triage/", "graph/", "reviews/"];
+const SHARED_KINDS = ["findings/", "bugs/", "docs/", "notes/", "walkthrough/", "triage/", "graph/", "reviews/", "decisions/"];
 
 /**
  * `standard/` and `law/` travel and are deliberately NOT here.

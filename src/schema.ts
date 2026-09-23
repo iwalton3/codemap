@@ -2251,3 +2251,98 @@ export interface AskedQuestion {
   options: { label: string; description?: string }[];
   multiSelect?: boolean;
 }
+
+export interface DecisionEffect {
+  findings: string[];
+  /** `settle` closes the findings when carried out; `unblock` releases them as fix work. */
+  on: "settle" | "unblock";
+  /** How a settle closes them — required on a settle and refused on an unblock. Only
+   *  `refuted` until finding states gain a place for "accepted" (owner, 2026-09-23). */
+  as?: "refuted";
+}
+
+export interface DecisionOption {
+  /** Equal to the payload option's label at the same position. */
+  label: string;
+  effects: DecisionEffect[];
+  /** Picking it parks the decision until this date, which must appear in `label`. Never on a
+   *  multi-select question (owner, 2026-09-23). */
+  park?: string;
+  recommended?: boolean;
+  /** Its settles are carried out by the answer itself. Only on a round a skill posted before
+   *  asking, from a sort of two sorters and an arbitrator (`DecisionRound.prevalidated`). */
+  closesOnAnswer?: boolean;
+  /** A bulk decision's "None — approve all": an empty multi-select cannot be submitted, so
+   *  every bulk group carries one (measured 2026-09-23). No effects of its own. */
+  approveAll?: boolean;
+}
+
+export interface Decision {
+  id: string;
+  round: string;
+  /** Round-local label a reply names ("D2"). */
+  ref: string;
+  /**
+   * `options`: a picked option is the ruling. `words`: the answer IS the words — recorded,
+   * never read onto options, no effects. `bulk`: a multi-select whose options are items; a
+   * CHECKED item is to be ruled on separately, and every unchecked item is approved.
+   */
+  kind: "options" | "words" | "bulk";
+  payload: AskedQuestion;
+  options: DecisionOption[];
+  /** Replaces this decision; a changed question is a new decision, never an edit. */
+  supersedes?: string;
+  /** Posted because an answer asked for something no option held: the reader's `asks`
+   *  (C1), or a bulk item checked to be ruled on separately. */
+  origin?: { answer: string };
+  notes?: string[];
+}
+
+export interface DecisionRound {
+  id: string;
+  /** A review round's or plan's slug, or "ad hoc". */
+  source: string;
+  universe: string;
+  pr?: string;
+  branch?: string;
+  /** "Decided rather than asked" lines: notes with no effects. */
+  notes?: string[];
+  /** Set only by the import of a skill round whose record says two sorters and an arbitrator
+   *  sorted it — the one thing that lets an option close on answer. */
+  prevalidated?: { record: string; sortedBy: string };
+  postedBy: Actor;
+  at: string;
+}
+
+/**
+ * The decision answer an agent's act carries out, and WHAT it carries out. The findings fold
+ * cannot see `decisions/`, so it checks the stamp describes this very act — the finding and
+ * state it closes — and trusts that the decision ops verified the answer before writing it
+ * (owner, 2026-09-23, option B). `ruler` is whose answer it was: carrying a ruling out stays
+ * the answerer's act, whoever's agent runs it (owner, 2026-09-23).
+ */
+export interface DecisionStamp { round: string; decision: string; answer: string; ruler: string }
+/** A settle: this finding, closed as this. */
+export interface CloseStamp extends DecisionStamp { finding: string; as: "refuted" }
+
+export const isDecisionStamp = (v: unknown): v is DecisionStamp =>
+  !!v && typeof v === "object" && ["round", "decision", "answer", "ruler"].every((k) => typeof (v as any)[k] === "string" && (v as any)[k]);
+
+/** The stamp, if it carries out closing THIS finding to THIS state. */
+export const closeStampFor = (v: unknown, finding: string, next: string): CloseStamp | undefined =>
+  isDecisionStamp(v) && (v as any).finding === finding && (v as any).as === "refuted" && next === "refuted"
+    ? v as CloseStamp : undefined;
+
+/** An `AskUserQuestion` call copied from the asking machine's transcript. */
+export interface LoggedQuestion {
+  id: string;
+  session: string;
+  toolUseId: string;
+  questions: AskedQuestion[];
+  /** As the transcript records them: keyed by question text; a multi-select is a list. */
+  answers: Record<string, string | string[]>;
+  /** Transcript id of the session that logged it. */
+  transcript?: string;
+  loggedBy: Actor;
+  at: string;
+}

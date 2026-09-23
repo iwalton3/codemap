@@ -29,6 +29,7 @@ import { needsHumanAck, foldFindings, prOfScope, type SharedFinding } from "./sh
 import { foldDocs, type SharedDoc, type UnmatchedAcceptance } from "./shared-docs.js";
 import { foldNotes, type SharedNote } from "./shared-notes.js";
 import { foldReviewLinks, type ReviewLink } from "./shared-reviews.js";
+import { foldDecisions, type SharedDecisions } from "./shared-decisions.js";
 import { foldTriage, triageSubject, isTombstone, ABSENT_FIELD, type TriageEntry, type Axis, type TriageField } from "./shared-triage.js";
 import { foldGraph, type SharedWiring } from "./shared-graph.js";
 import { foldBugs, needsHumanAck as bugNeedsAck, type SharedBug } from "./shared-bugs.js";
@@ -383,6 +384,27 @@ export const reviewLinksProjection: Projection<ReviewLink[]> = {
   },
   read(d: DatabaseSync, scope: string): ReviewLink[] {
     return d.prepare("SELECT pr, branch FROM review_link WHERE scope = ? ORDER BY rowid").all(scope) as unknown as ReviewLink[];
+  },
+};
+
+/** Decision rounds (`decisions/<universe>`). See shared-decisions.ts. */
+export const decisionsProjection: Projection<SharedDecisions> = {
+  write(d: DatabaseSync, scope: string, value: SharedDecisions): void {
+    for (const t of ["decision_rounds", "decision_records", "logged_questions"]) d.prepare(`DELETE FROM ${t} WHERE scope = ?`).run(scope);
+    const round = d.prepare("INSERT INTO decision_rounds(scope,id,body) VALUES(?,?,?)");
+    for (const r of value.rounds) round.run(scope, r.id, JSON.stringify(r));
+    const dec = d.prepare("INSERT INTO decision_records(scope,id,round,body) VALUES(?,?,?,?)");
+    for (const x of value.decisions) dec.run(scope, x.id, x.round, JSON.stringify(x));
+    const q = d.prepare("INSERT INTO logged_questions(scope,id,body) VALUES(?,?,?)");
+    for (const x of value.questions) q.run(scope, x.id, JSON.stringify(x));
+  },
+  read(d: DatabaseSync, scope: string): SharedDecisions {
+    const all = <T>(table: string): T[] =>
+      (d.prepare(`SELECT body FROM ${table} WHERE scope = ? ORDER BY rowid`).all(scope) as unknown as { body: string }[])
+        .map((r) => {
+          try { return JSON.parse(r.body) as T; } catch { throw new CorruptProjection(`${table} ${scope} holds an unreadable row`); }
+        });
+    return { rounds: all("decision_rounds"), decisions: all("decision_records"), questions: all("logged_questions") };
   },
 };
 
@@ -770,6 +792,7 @@ export function projectionFor(scope: string): { fold: (e: LogEvent[]) => any; pr
   if (scope.startsWith("triage/")) return { fold: foldTriage, proj: triageProjection };
   if (scope.startsWith("graph/")) return { fold: foldGraph, proj: graphProjection };
   if (scope.startsWith("reviews/")) return { fold: foldReviewLinks, proj: reviewLinksProjection };
+  if (scope.startsWith("decisions/")) return { fold: foldDecisions, proj: decisionsProjection };
   // NOT `standard/`, and not `law/`. The standard is the one entity folded from TWO
   // scopes — law (workspace) and evidence (universe) — because `spec.withdrawn` consults
   // evidence to decide a law act. Folding either half ALONE here would write a partial
