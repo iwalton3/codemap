@@ -6,7 +6,7 @@
 
 ## Read this first if you read nothing else
 
-**Do not fix anything, and do not push `main`.** The owner chose **"Rule first"**. The ten commits
+**Do not fix anything, and do not push or merge the `decision-rounds` branch.** The owner chose **"Rule first"**. The ten commits
 `747f7fd..c745e30` stay untouched until a ruling on what a decision *is* decides whether they are
 kept, rewritten or reverted.
 
@@ -36,7 +36,7 @@ rulings they implement, because those rulings lived only there. That is report Â
 
 ## The state of the branch
 
-`main` is local, well ahead of `origin/main`, and nothing is pushed. In order:
+All of it is on the local branch **`decision-rounds`**, 29 commits ahead of `origin/main`, and nothing is pushed. Local `main` was reset to `origin/main` (`161d754`) when the branch was cut. In order:
 
 - **Before the decision-round code (keep; the unit suite passes, but I2 was never separately reviewed):**
   - `749fb2e` (I2): `at:` on `close_finding` and `record_audit`.
