@@ -172,12 +172,22 @@ the assistant's message text between the person's last message and the question,
 
 > Yes that would be really good for bulk approvals
 
-What that means, as the session reads it (the boundaries are the session's, for the owner to
-mark wrong):
+And on how the span is found:
 
-- **The copied span** is the assistant `text` blocks in the main transcript after the person's
-  most recent entry (a typed message, `origin.kind: "human"`, or an earlier `AskUserQuestion`
-  result) and before the call. Thinking blocks are excluded, because they are not shown. A peer
+> For message before it, probably what makes sense would be send the approval start and finish
+> hunks and the codemap MCP grabs the full text out of the transcript.
+
+What that means, as the session reads it (the details are the session's, for the owner to mark
+wrong):
+
+- **The agent sends two verbatim excerpts**, the list's first and last lines. Codemap finds them
+  in the main transcript's assistant `text` blocks before the call and copies everything from the
+  start of the first to the end of the last. The agent never sends the list itself, so it cannot
+  paraphrase it.
+- **Fails closed:** if either excerpt is not found, or the end comes before the start, the span is
+  unverified. Where an excerpt occurs more than once, the occurrence nearest before the call is
+  used.
+- **Only what was shown:** thinking blocks are excluded, because they are not shown. A peer
   hand-back is excluded, because it is not the assistant's text and the person does not see it.
 - **A bulk approval can then settle when its items are inside that span.** This relaxes C22,
   which allowed settling only for items inside the question. Case 2's Q1 qualifies: its nine
