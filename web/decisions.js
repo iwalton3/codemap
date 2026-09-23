@@ -88,9 +88,12 @@ class DecisionsPage extends Component {
 
   views(v) {
     const u = this.props.params.universe;
+    // A blocked log serves what was stored: never let it read as "nothing waits on you".
+    const blocked = v.status === 'blocked';
     return html`
+      ${when(blocked, () => html`<div class="attn-banner"><span class="attn-n">!</span><span>The decisions log cannot be read, so these lists may be wrong and answering is refused: ${v.diagnostic?.detail ?? 'unreadable'}</span></div>`)}
       <div class="sec">waiting on you (${v.waitingOnYou.length})</div>
-      ${when(!v.waitingOnYou.length, () => html`<div class="empty">nothing — every question is answered</div>`)}
+      ${when(!v.waitingOnYou.length && !blocked, () => html`<div class="empty">nothing — every question is answered</div>`)}
       ${each(v.waitingOnYou, (w) => html`<div class="fs"><a href="${href(decisionsUrl(u, w.round))}">${w.round} ${w.ref}</a> — ${w.why}</div>`, (w, i) => w.decision + i)}
 
       <div class="sec">ruled, not carried out (${v.ruledNotCarriedOut.length})</div>

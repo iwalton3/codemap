@@ -24,7 +24,7 @@ const call = (id: string, questions: unknown, over: Record<string, unknown> = {}
 const result = (id: string, questions: unknown, answers: unknown, over: Record<string, unknown> = {}) => ({
   type: "user", uuid: `r-${id}`, isSidechain: false, sourceToolAssistantUUID: `a-${id}`,
   message: { content: [{ type: "tool_result", tool_use_id: id, content: "The user answered: …" }] },
-  toolUseResult: { questions, answers }, ...over,
+  timestamp: "2026-09-23T10:00:00.000Z", toolUseResult: { questions, answers }, ...over,
 });
 
 function transcript(lines: unknown[], session = S): string {
@@ -39,6 +39,7 @@ test("a call is read from its structured result, and a false multiSelect the res
   const r = readCall(S, "t1", dir);
   assert.ok(!isUnverified(r), JSON.stringify(r));
   assert.equal(r.entryId, "r-t1");
+  assert.equal(r.at, "2026-09-23T10:00:00.000Z", "when the person answered, which binds it to questions posted before");
   assert.deepEqual(r.answers, { [Q1.question]: "Not a defect" });
   assert.equal(r.questions[0]!.multiSelect, false);
 });
@@ -74,6 +75,7 @@ test("what could not be checked reads unverified, each for its own reason", () =
     ["a result from a sidechain", [call("t3", [Q1]), result("t3", [Q1], { [Q1.question]: "Not a defect" }, { isSidechain: true })]],
     ["a result naming another call", [call("t3", [Q1]), result("t3", [Q1], { [Q1.question]: "Not a defect" }, { sourceToolAssistantUUID: "a-other" })]],
     ["a result carrying an origin", [call("t3", [Q1]), result("t3", [Q1], { [Q1.question]: "Not a defect" }, { origin: { kind: "peer" } })]],
+    ["a result with no timestamp", [call("t3", [Q1]), result("t3", [Q1], { [Q1.question]: "Not a defect" }, { timestamp: undefined })]],
     ["another tool's call", [{ ...call("t3", [Q1]), message: { content: [{ type: "tool_use", id: "t3", name: "Bash", input: {} }] } }]],
   ];
   for (const [name, lines] of cases) {
@@ -86,9 +88,9 @@ test("what could not be checked reads unverified, each for its own reason", () =
 });
 
 const typed = (uuid: string, text: unknown, origin: unknown, over: Record<string, unknown> = {}) =>
-  ({ type: "user", uuid, isSidechain: false, origin, promptSource: "typed", message: { role: "user", content: text }, ...over });
+  ({ type: "user", uuid, isSidechain: false, origin, promptSource: "typed", timestamp: "2026-09-23T10:00:00.000Z", message: { role: "user", content: text }, ...over });
 const queued = (uuid: string, prompt: unknown, origin: unknown) =>
-  ({ type: "attachment", uuid, isSidechain: false, attachment: { type: "queued_command", prompt, commandMode: "prompt", origin } });
+  ({ type: "attachment", uuid, isSidechain: false, timestamp: "2026-09-23T10:00:00.000Z", attachment: { type: "queued_command", prompt, commandMode: "prompt", origin } });
 
 test("the person's words: typed, queued and an accepted suggestion count; goals, peers and bare queue operations do not", () => {
   const dir = transcript([
@@ -111,6 +113,8 @@ test("a message is returned whole, so a relay can never carry part of it", () =>
   const r = readMessage(S, "w1", dir);
   assert.ok(!isUnverified(r));
   assert.equal(r.text, "do not run the tests");
+  assert.equal(r.at, "2026-09-23T10:00:00.000Z");
+  assert.ok(isUnverified(readMessage(S, "w2", transcript([typed("w2", "D1 A", { kind: "human" }, { timestamp: undefined })]))), "no timestamp, no binding");
 });
 
 test("the transcript directory is the cwd with every non-alphanumeric turned into a dash", () => {

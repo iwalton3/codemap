@@ -167,10 +167,11 @@ async function record(root: string, b: Bound, d: FoldedDecision, via: AnswerVia,
   const now = s.decisions.find((x) => x.id === d.id);
   const a = now?.answers.find((x) => x.id === e.id);
   // The fold dropped it: say so rather than report an answer nobody will see.
-  if (!a) return { decision: d.id, ref: d.ref, recorded: false as const, why: "the fold did not accept this answer (a paraphrased question, an unverified park, or a decision since replaced)" };
+  if (!a) return { decision: d.id, ref: d.ref, recorded: false as const, why: "the fold did not accept this answer (a paraphrased question, a question posted after it was answered, an unverified park, or a decision since replaced)" };
   const closed = await carryOut(root, b, d.id, e.id);
   return {
-    decision: d.id, ref: d.ref, recorded: true as const, answer: e.id, verified: a.verified,
+    decision: d.id, ref: d.ref, recorded: true as const, answer: e.id, verified: a.verified, own: a.own,
+    ...(a.outranked ? { outranked: true, note: a.conflicts ? "not your own answer, after one that is: it disagrees with your ruling and waits for you" : "not your own answer, after one that is: once read, it waits for you only if it disagrees" } : {}),
     ...(a.free ? { awaitsReading: true } : {}),
     ruled: a.ruled, ...(a.unruled.length ? { waitingOnYou: a.unruled } : {}),
     ...(a.separately?.length ? { askSeparately: a.separately } : {}),
@@ -185,9 +186,12 @@ async function record(root: string, b: Bound, d: FoldedDecision, via: AnswerVia,
  * every open decision whose exact payload it carries. The default path for relaying the person's
  * answers (owner, R13). An unverifiable call writes nothing and says why.
  */
-export async function logQuestion(root: string, input: { session?: string; toolUseId: string }, via: Via = {}, dir: string = transcriptDir()) {
+export async function logQuestion(root: string, input: { session?: string; toolUseId: string; round: string }, via: Via = {}, dir: string = transcriptDir()) {
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
+  // From the caller, and required: the transcript cannot say which round a call was for, and
+  // an identical question in another round must not take the answer (owner, B1.4).
+  if (typeof input.round !== "string" || !input.round.trim()) return { error: "log_question needs the round the call was asked for" };
   const session = input.session ?? sessionHolding(input.toolUseId, dir);
   if (isUnverified(session)) return { ok: false, unverified: session.unverified, note: "nothing was written" };
   input = { ...input, session };
@@ -196,14 +200,31 @@ export async function logQuestion(root: string, input: { session?: string; toolU
   const w = await writable(root, b);
   if ("error" in w) return w;
   const before = w.s;
-  if (before.questions.some((q) => q.toolUseId === input.toolUseId && q.session === session)) return { error: `call ${input.toolUseId} is already logged` };
-  const e = await logQuestionEvent(b.cfg.path, b.cfg.universe, b.actor, { session: call.session, toolUseId: call.toolUseId, questions: call.questions, answers: call.answers, transcript: session });
+  const round = before.rounds.find((r) => r.id === input.round);
+  if (!round) return { error: `no round ${input.round}` };
+  if (!(Date.parse(call.at) > Date.parse(round.at))) {
+    return { error: `the call was answered at ${call.at}, and round ${round.id} was posted at ${round.at}: an answer binds only to a question posted before it (nothing was written)` };
+  }
+  // A retry of a call already logged records whichever of its answers are missing — a crash
+  // between logging and recording must not strand them (H6.1).
+  const prior = before.questions.find((q) => q.toolUseId === input.toolUseId && q.session === session);
+  if (prior && prior.round !== round.id) return { error: `call ${input.toolUseId} is already logged for round ${prior.round}` };
+  const logged = prior?.id ?? (await logQuestionEvent(b.cfg.path, b.cfg.universe, b.actor, {
+    session: call.session, toolUseId: call.toolUseId, questions: call.questions, answers: call.answers, transcript: session, round: round.id, answeredAt: call.at,
+  })).id;
+  const once = `q:${call.session}\0${call.toolUseId}`;
   const answered = [];
   for (const d of before.decisions) {
-    if (d.replacedBy || !call.questions.some((q) => sameQuestion(q, d.payload)) || call.answers[d.payload.question] === undefined) continue;
-    answered.push(await record(root, b, d, { kind: "question", question: e.id }));
+    if (d.round !== round.id || d.replacedBy || !call.questions.some((q) => sameQuestion(q, d.payload)) || call.answers[d.payload.question] === undefined) continue;
+    const had = d.answers.find((a) => a.once === once);
+    // Answered once: the retry records nothing new (B1.4), and carries out what it may (B2.3).
+    if (had) answered.push({ decision: d.id, ref: d.ref, recorded: false as const, already: had.id, closed: await carryOut(root, b, d.id, had.id) });
+    else answered.push(await record(root, b, d, { kind: "question", question: logged }));
   }
-  return { ok: true, logged: e.id, answered, ...(answered.length ? {} : { note: "logged; no posted decision carries these questions, so nothing was answered" }) };
+  return {
+    ok: true, logged, ...(prior ? { retried: true } : {}), answered,
+    ...(answered.length ? {} : { note: `logged; no decision in round ${round.id} carries these questions, so nothing was answered` }),
+  };
 }
 
 /**
@@ -211,25 +232,33 @@ export async function logQuestion(root: string, input: { session?: string; toolU
  * a relay can never carry part of it. A message the transcript cannot confirm is recorded only
  * from `words`, as unverified: it unblocks and settles nothing (C8).
  */
-export async function relayAnswer(root: string, input: { decision: string; session?: string; entryId: string; words?: string; relayedBy?: string }, via: Via = {}, dir: string = transcriptDir()) {
+export async function relayAnswer(root: string, input: { round: string; decision: string; session?: string; entryId: string; words?: string; relayedBy?: string }, via: Via = {}, dir: string = transcriptDir()) {
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
   const w = await writable(root, b);
   if ("error" in w) return w;
   const d = w.s.decisions.find((x) => x.id === input.decision);
   if (!d) return { error: `no decision ${input.decision}` };
+  // The context the agent says it was answering, which the reader checks against the transcript (H5).
+  if (input.round !== d.round) return { error: `decision ${d.id} is in round ${d.round}, not ${String(input.round)}: say which round and question you asked` };
   const session = input.session ?? sessionHolding(input.entryId, dir);
   const m = isUnverified(session) ? session : readMessage(session, input.entryId, dir);
   if (isUnverified(m)) {
     if (!input.words?.trim()) return { ok: false, unverified: m.unverified, note: "nothing was written; pass the words to record them as an unverified answer, which only unblocks" };
     return { ok: true, ...(await record(root, b, d, { kind: "unverified", words: input.words }, input.relayedBy)), unverifiedBecause: m.unverified };
   }
-  return { ok: true, ...(await record(root, b, d, { kind: "message", session: m.session, entryId: m.entryId, text: m.text }, input.relayedBy ?? m.session)) };
+  const round = w.s.rounds.find((r) => r.id === d.round)!;
+  if (!(Date.parse(m.at) > Date.parse(round.at))) {
+    return { error: `the message was typed at ${m.at}, and round ${round.id} was posted at ${round.at}: words bind only to a question posted before them (nothing was written)` };
+  }
+  const had = d.answers.find((a) => a.once === `m:${m.session}\0${m.entryId}`);
+  if (had) return { ok: true, decision: d.id, ref: d.ref, recorded: false as const, already: had.id, note: "this message already answers this decision" };
+  return { ok: true, ...(await record(root, b, d, { kind: "message", session: m.session, entryId: m.entryId, text: m.text, at: m.at, round: d.round }, input.relayedBy ?? m.session)) };
 }
 
 /** The reader's mapping of free text onto options, beside the session's own (C17, C19). */
 export async function recordReading(root: string, input: {
-  answer: string; reader: { transcript: string; reading: string; maps: Mapping[] }; session: { reading: string; maps: Mapping[] }; asks?: string;
+  answer: string; reader: { transcript: string; reading: string; maps: Mapping[] }; session: { reading: string; maps: Mapping[] }; asks?: string; unclear?: string;
 }, via: Via = {}) {
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
@@ -240,10 +269,14 @@ export async function recordReading(root: string, input: {
   await recordReadingEvent(b.cfg.path, b.cfg.universe, b.actor, input);
   const s = await cached(root, b.cfg);
   const a = s.decisions.find((x) => x.id === d.id)?.answers.find((x) => x.id === input.answer);
-  if (!a?.reading) return { ok: false, recorded: false, why: "the fold did not accept this reading (the reader is the relayer, a decision it names is answered, replaced or in another round, or the answer was not free text)" };
+  if (!a?.reading) return { ok: false, recorded: false, why: "the fold did not accept this reading (the reader is the relayer, a decision it names is answered, replaced, in another round or posted after the words, or the answer was not free text)" };
   const closed: string[] = [];
   if (a.reading.agree) for (const x of s.decisions) closed.push(...await carryOut(root, b, x.id, standing(x)?.id ?? ""));
-  return { ok: true, agree: a.reading.agree, ...(a.reading.agree ? {} : { note: "the readings disagree, so nothing applies and it waits for the person" }), closed };
+  return {
+    ok: true, agree: a.reading.agree,
+    ...(a.reading.agree ? {} : { note: a.reading.unclear ? "unclear, so nothing binds and it waits for the person" : "the readings disagree, so nothing applies and it waits for the person" }),
+    ...(a.outranked ? { conflicts: !!a.conflicts } : {}), closed,
+  };
 }
 
 /** The person answering on the page. Never an agent (R18). */

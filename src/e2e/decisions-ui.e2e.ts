@@ -48,7 +48,7 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
       const f = await shareFinding(root, 3, { targetKind: "anchor", targetId: anchor, text: "transfer ignores the currency" }) as any;
       assert.ok(f.id, JSON.stringify(f));
       finding = f.id;
-      const payload = { question: "Is the currency finding real?", header: "Currency", options: [{ label: "Not a defect", description: "close as refuted" }, { label: "Real, fix it", description: "fix work" }] };
+      const payload = { question: `D1: is the currency finding (${finding}) real?`, header: "Currency", options: [{ label: "Not a defect", description: "close as refuted" }, { label: "Real, fix it", description: "fix work" }] };
       const r = await ops.postRound(root, { round: { id: "R1", source: "e2e" }, decisions: [{
         id: "d1", round: "R1", ref: "D1", kind: "options", payload,
         options: [{ label: "Not a defect", effects: [{ findings: [finding], on: "settle", as: "refuted" }] }, { label: "Real, fix it", effects: [{ findings: [finding], on: "unblock" }] }],

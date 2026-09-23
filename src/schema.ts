@@ -2343,6 +2343,11 @@ export interface LoggedQuestion {
   answers: Record<string, string | string[]>;
   /** Transcript id of the session that logged it. */
   transcript?: string;
+  /** The round the call was asked for, from the caller: the transcript cannot say which
+   *  round a call belonged to, and an identical question in another round must not bind. */
+  round: string;
+  /** The result entry's timestamp: the call binds only to decisions posted before it. */
+  answeredAt: string;
   loggedBy: Actor;
   at: string;
 }

@@ -16,7 +16,7 @@ import type { State } from "./schema.js";
 import { shareFinding, corroborateFinding, closeFinding, bindDecisions } from "./ops-shared.js";
 import { postRound, postPrevalidated, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, recordReading } from "./ops/decisions.js";
 import { discard } from "./test-tmp.js";
-import { decisionScope } from "./shared-decisions.js";
+import { decisionScope, logQuestionEvent } from "./shared-decisions.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 const SRC = "export function creditLine(cents) {\n  return cents * 2;\n}\n";
@@ -48,18 +48,23 @@ async function universe() {
 }
 
 const SESSION = "5e55a0a0-0000-0000-0000-000000000001";
-const payload = { question: "Is F a real defect?", header: "F", options: [{ label: "Not a defect", description: "close as refuted" }, { label: "Real, fix it", description: "fix work" }] };
-const decision = (id: string, f: string, extra: Record<string, unknown> = {}) => ({
-  id, round: "R1", ref: "D1", kind: "options" as const, payload,
+/** What the person is shown names its ref and the finding it acts on (H5). */
+const payloadFor = (f: string, ref = "D1") => ({ question: `${ref}: is ${f} a real defect?`, header: "F", options: [{ label: "Not a defect", description: "close as refuted" }, { label: "Real, fix it", description: "fix work" }] });
+const decision = (id: string, f: string, extra: Record<string, unknown> = {}, ref = "D1") => ({
+  id, round: "R1", ref, kind: "options" as const, payload: payloadFor(f, ref),
   options: [{ label: "Not a defect", effects: [{ findings: [f], on: "settle" as const, as: "refuted" as const }], ...extra }, { label: "Real, fix it", effects: [{ findings: [f], on: "unblock" as const }] }],
 });
-/** The transcript of a session that asked `payload` and got `answer`. */
-function asked(dir: string, answer: string, toolUseId = "toolu_1") {
+/** A second after now: the person answers after the round was posted. */
+const soon = () => new Date(Date.now() + 1000).toISOString();
+/** The transcript of a session that asked `questions` and got `answer` to the first, and
+ *  where the person then typed "D1 B" (m1) and "D2 A" (m2). */
+function asked(dir: string, answer: string, toolUseId = "toolu_1", questions: object[] = [], when = soon()) {
+  const first = questions[0] as { question: string };
   const lines = [
-    { type: "assistant", uuid: "a1", isSidechain: false, message: { content: [{ type: "tool_use", id: toolUseId, name: "AskUserQuestion", input: { questions: [payload] } }] } },
-    { type: "user", uuid: "r1", isSidechain: false, sourceToolAssistantUUID: "a1", message: { content: [{ type: "tool_result", tool_use_id: toolUseId, content: "…" }] }, toolUseResult: { questions: [payload], answers: { [payload.question]: answer } } },
-    { type: "user", uuid: "m1", isSidechain: false, origin: { kind: "human" }, message: { role: "user", content: "D1 B" } },
-    { type: "user", uuid: "m2", isSidechain: false, origin: { kind: "human" }, message: { role: "user", content: "D2 A" } },
+    { type: "assistant", uuid: "a1", isSidechain: false, timestamp: when, message: { content: [{ type: "tool_use", id: toolUseId, name: "AskUserQuestion", input: { questions } }] } },
+    { type: "user", uuid: "r1", isSidechain: false, timestamp: when, sourceToolAssistantUUID: "a1", message: { content: [{ type: "tool_result", tool_use_id: toolUseId, content: "…" }] }, toolUseResult: { questions, answers: { [first.question]: answer } } },
+    { type: "user", uuid: "m1", isSidechain: false, timestamp: when, origin: { kind: "human" }, message: { role: "user", content: "D1 B" } },
+    { type: "user", uuid: "m2", isSidechain: false, timestamp: when, origin: { kind: "human" }, message: { role: "user", content: "D2 A" } },
   ];
   writeFileSync(join(dir, `${SESSION}.jsonl`), lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
 }
@@ -95,7 +100,7 @@ test("posting refuses a finding this store does not hold, and accepts one it doe
       assert.match(String(err(await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f, { closesOnAnswer: true })] }))), /only a pre-validated round/);
       const ok = await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] }) as any;
       assert.equal(ok.ok, true, JSON.stringify(ok));
-      assert.deepEqual(ok.ask[0].payload.question, payload.question);
+      assert.deepEqual(ok.ask[0].payload.question, payloadFor(f).question);
       assert.match(String(err(await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d2", f)] }))), /already posted/);
     });
   } finally { u.cleanup(); }
@@ -110,9 +115,10 @@ test("a logged answer is a ruling: the finding is held for the verifier and list
       let view = await decisionRounds(u.root) as any;
       assert.ok(view.waitingOnYou.some((w: any) => w.decision === "d1"), "unanswered, it waits on you");
 
-      asked(u.transcripts, "Not a defect");
+      asked(u.transcripts, "Not a defect", "toolu_1", [payloadFor(f)]);
+      assert.match(String(err(await logQuestion(u.root, { toolUseId: "toolu_1" } as any, {}, u.transcripts))), /needs the round/);
       // No session given: the agent knows what it asked, and codemap finds whose transcript holds it.
-      const r = await logQuestion(u.root, { toolUseId: "toolu_1" }, {}, u.transcripts) as any;
+      const r = await logQuestion(u.root, { toolUseId: "toolu_1", round: "R1" }, {}, u.transcripts) as any;
       assert.equal(r.ok, true, JSON.stringify(r));
       assert.equal(r.answered[0].verified, true);
       assert.deepEqual(r.answered[0].closed, [], "an ordinary round's ruling closes nothing itself");
@@ -124,7 +130,11 @@ test("a logged answer is a ruling: the finding is held for the verifier and list
       const round = await decisionRound(u.root, "R1") as any;
       assert.ok(round.held.some((h: any) => h.finding === f && h.holds.some((x: any) => x.why === "ruled")));
 
-      assert.match(String(err(await logQuestion(u.root, { session: SESSION, toolUseId: "toolu_1" }, {}, u.transcripts))), /already logged/);
+      // A retry is safe: it records nothing new (H6.1).
+      const again = await logQuestion(u.root, { session: SESSION, toolUseId: "toolu_1", round: "R1" }, {}, u.transcripts) as any;
+      assert.equal(again.retried, true, JSON.stringify(again));
+      assert.equal(again.answered[0].recorded, false);
+      assert.equal((await decisionRound(u.root, "R1") as any).decisions[0].answers.length, 1);
     });
     // Once the finding closes — by whoever — it is no longer "not carried out".
     await asPerson(async () => { await closeFinding(u.root, 7, f, "refuted", "done by hand"); });
@@ -135,14 +145,49 @@ test("a logged answer is a ruling: the finding is held for the verifier and list
   } finally { u.cleanup(); }
 });
 
+test("P1.e (H6.1): a call that crashed after it was logged records its answers on the retry", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    await asAgent(async () => {
+      await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
+      const when = soon();
+      asked(u.transcripts, "Not a defect", "toolu_1", [payloadFor(f)], when);
+      const b = bindDecisions(u.root) as any;
+      // The crash: the call is in the log, and no answer followed it.
+      await logQuestionEvent(b.cfg.path, b.cfg.universe, b.actor, { session: SESSION, toolUseId: "toolu_1", questions: [payloadFor(f)], answers: { [payloadFor(f).question]: "Not a defect" }, transcript: SESSION, round: "R1", answeredAt: when });
+      assert.equal((await decisionRound(u.root, "R1") as any).decisions[0].answers.length, 0, "the check could fail: nothing is answered yet");
+      const r = await logQuestion(u.root, { session: SESSION, toolUseId: "toolu_1", round: "R1" }, {}, u.transcripts) as any;
+      assert.equal(r.retried, true, JSON.stringify(r));
+      assert.equal(r.answered[0].recorded, true);
+      assert.ok((await decisionRounds(u.root) as any).ruledNotCarriedOut.some((x: any) => x.finding === f));
+    });
+  } finally { u.cleanup(); }
+});
+
+test("B1.4: a call binds to the round it was asked for, posted before it was answered", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    await asAgent(async () => {
+      asked(u.transcripts, "Not a defect", "toolu_1", [payloadFor(f)], new Date(Date.now() - 60_000).toISOString());
+      await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
+      const early = await logQuestion(u.root, { session: SESSION, toolUseId: "toolu_1", round: "R1" }, {}, u.transcripts) as any;
+      assert.match(String(err(early)), /answered at .* posted at .*: an answer binds only to a question posted before it/);
+      assert.equal((await decisionRound(u.root, "R1") as any).decisions[0].answers.length, 0);
+      assert.match(String(err(await logQuestion(u.root, { session: SESSION, toolUseId: "toolu_1", round: "R9" }, {}, u.transcripts))), /no round R9/);
+    });
+  } finally { u.cleanup(); }
+});
+
 test("an unverifiable call writes nothing", async () => {
   const u = await universe();
   try {
     const f = await withFinding(u);
     await asAgent(async () => {
       await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
-      asked(u.transcripts, "Not a defect");
-      const r = await logQuestion(u.root, { session: SESSION, toolUseId: "toolu_other" }, {}, u.transcripts) as any;
+      asked(u.transcripts, "Not a defect", "toolu_1", [payloadFor(f)]);
+      const r = await logQuestion(u.root, { session: SESSION, toolUseId: "toolu_other", round: "R1" }, {}, u.transcripts) as any;
       assert.equal(r.ok, false);
       assert.ok(r.unverified);
       const round = await decisionRound(u.root, "R1") as any;
@@ -151,22 +196,42 @@ test("an unverifiable call writes nothing", async () => {
   } finally { u.cleanup(); }
 });
 
-test("a relayed reply is the whole message; an unconfirmed one only unblocks", async () => {
+test("H5: a relayed reply is the whole message, bound by the reader, never parsed; an unconfirmed one only unblocks", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    const g = await withFinding(u);
+    await asAgent(async () => {
+      await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f), decision("d2", g, {}, "D2")] });
+      asked(u.transcripts, "Not a defect", "toolu_1", [payloadFor(f)]);
+      assert.match(String(err(await relayAnswer(u.root, { round: "R9", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts))), /not R9/);
+      const r = await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any;
+      assert.equal(r.verified, true, JSON.stringify(r));
+      assert.equal(r.awaitsReading, true, "\"D1 B\" is words for the reader, not a pick");
+      assert.deepEqual(r.ruled, []);
+      const read = await recordReading(u.root, { answer: r.answer, reader: { transcript: "agent-B", reading: "fix it", maps: [{ decision: "d1", option: "Real, fix it" }] }, session: { reading: "fix it", maps: [{ decision: "d1", option: "Real, fix it" }] } }) as any;
+      assert.equal(read.agree, true, JSON.stringify(read));
+      const round = await decisionRound(u.root, "R1") as any;
+      assert.ok(round.decisions[0].standing.ruled.some((x: any) => x.finding === f && x.on === "unblock"));
+      const twice = await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any;
+      assert.equal(twice.recorded, false, "a message answers a decision once");
+
+      const un = await relayAnswer(u.root, { round: "R1", decision: "d2", session: SESSION, entryId: "nope", words: "D2 A", relayedBy: "sess-x" }, {}, u.transcripts) as any;
+      assert.equal(un.verified, false);
+      const none = await relayAnswer(u.root, { round: "R1", decision: "d2", session: SESSION, entryId: "nope" }, {}, u.transcripts) as any;
+      assert.equal(none.ok, false, "no words, nothing written");
+    });
+  } finally { u.cleanup(); }
+});
+
+test("P1.b: a message typed before its round was posted is refused, with both times", async () => {
   const u = await universe();
   try {
     const f = await withFinding(u);
     await asAgent(async () => {
+      asked(u.transcripts, "Not a defect", "toolu_1", [payloadFor(f)], new Date(Date.now() - 60_000).toISOString());
       await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
-      asked(u.transcripts, "Not a defect");
-      const r = await relayAnswer(u.root, { decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any;
-      assert.equal(r.verified, true, JSON.stringify(r));
-      assert.ok(r.ruled.some((x: any) => x.finding === f && x.on === "unblock"), "D1 B is the fix-it option");
-
-      const un = await relayAnswer(u.root, { decision: "d1", session: SESSION, entryId: "nope", words: "D1 A", relayedBy: "sess-x" }, {}, u.transcripts) as any;
-      assert.equal(un.verified, false);
-      assert.deepEqual(un.waitingOnYou, [f], "its settle waits for the person");
-      const none = await relayAnswer(u.root, { decision: "d1", session: SESSION, entryId: "nope" }, {}, u.transcripts) as any;
-      assert.equal(none.ok, false, "no words, nothing written");
+      assert.match(String(err(await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts))), /typed at .* posted at .*: words bind only to a question posted before them/);
     });
   } finally { u.cleanup(); }
 });
@@ -186,6 +251,22 @@ test("the page is a person's door, never an agent's", async () => {
   } finally { u.cleanup(); }
 });
 
+test("P1.c (B2.1): a verified page answer is not displaced by an agent's unconfirmed relay, which waits on you", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    await asAgent(async () => { await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] }); });
+    await asPerson(async () => { await answerDirect(u.root, { decision: "d1", option: "Not a defect" }); });
+    await asAgent(async () => {
+      const un = await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "nope", words: "D1 B, fix it", relayedBy: "sess-x" }, {}, u.transcripts) as any;
+      assert.equal(un.outranked, true, JSON.stringify(un));
+      const view = await decisionRounds(u.root) as any;
+      assert.ok(view.ruledNotCarriedOut.some((x: any) => x.finding === f && x.on === "settle"), "your ruling stands");
+      assert.ok(view.waitingOnYou.some((w: any) => w.decision === "d1" && /disagrees with your ruling/.test(w.why)));
+    });
+  } finally { u.cleanup(); }
+});
+
 test("a pre-validated option closes a sorter-confirmed finding on a verified answer, stamped with whose ruling it was", async () => {
   const u = await universe();
   try {
@@ -201,22 +282,22 @@ test("a pre-validated option closes a sorter-confirmed finding on a verified ans
       const b = bindDecisions(u.root);
       assert.ok(!("error" in b));
       const r = await postPrevalidated(u.root, b as any, { round: { id: "R1", source: "triage" }, decisions: [
-        decision("d1", f, { closesOnAnswer: true }),
-        { ...decision("d2", g, { closesOnAnswer: true }), ref: "D2", payload: { ...payload, question: "Is G a real defect?" } },
+        decision("d1", f, { closesOnAnswer: true }), decision("d2", g, { closesOnAnswer: true }, "D2"),
       ] }, { record: "rec", sortedBy: "two sorters and an arbitrator" });
       assert.equal((r as any).ok, true, JSON.stringify(r));
 
-      asked(u.transcripts, "Not a defect");
-      const lq = await logQuestion(u.root, { session: SESSION, toolUseId: "toolu_1" }, {}, u.transcripts) as any;
+      asked(u.transcripts, "Not a defect", "toolu_1", [payloadFor(f)]);
+      const lq = await logQuestion(u.root, { session: SESSION, toolUseId: "toolu_1", round: "R1" }, {}, u.transcripts) as any;
       assert.deepEqual(lq.answered[0].closed, [f]);
       const closed = await readFinding(u.root, f);
       assert.equal(closed?.state, "refuted");
       assert.equal(closed?.closed?.decision?.ruler, "alice@x.com");
       assert.equal(closed?.closed?.by.via?.kind, "agent", "the closer is the agent that carried it out");
-
-      // A verified answer on a finding already closed: it stays as its closer left it, and the
-      // answer does not report a close it did not make.
-      const again = await relayAnswer(u.root, { decision: "d2", session: SESSION, entryId: "m2" }, {}, u.transcripts) as any;
+    });
+    // A verified answer on a finding already closed: it stays as its closer left it, and the
+    // answer does not report a close it did not make.
+    await asPerson(async () => {
+      const again = await answerDirect(u.root, { decision: "d2", option: "Not a defect" }) as any;
       assert.equal(again.verified, true, JSON.stringify(again));
       assert.deepEqual(again.closed, []);
       assert.equal((await readFinding(u.root, g))?.closed?.reason, "closed first");
@@ -230,8 +311,8 @@ test("a reading of free text rules only when it agrees, and is refused from the 
     const f = await withFinding(u);
     await asAgent(async () => {
       await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
-      asked(u.transcripts, "not a defect, but log why");
-      const lq = await logQuestion(u.root, { session: SESSION, toolUseId: "toolu_1" }, {}, u.transcripts) as any;
+      asked(u.transcripts, "not a defect, but log why", "toolu_1", [payloadFor(f)]);
+      const lq = await logQuestion(u.root, { session: SESSION, toolUseId: "toolu_1", round: "R1" }, {}, u.transcripts) as any;
       assert.equal(lq.answered[0].awaitsReading, true);
       const answer = lq.answered[0].answer;
       const maps = [{ decision: "d1", option: "Not a defect" }];
@@ -259,8 +340,8 @@ test("Q14: a decisions log that cannot be read is blocked, not 'nothing waits on
       const view = await decisionRounds(u.root) as any;
       assert.equal(view.status, "blocked", JSON.stringify(view).slice(0, 300));
       assert.match(String(err(await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [{ ...decision("d2", f), round: "R2" }] }))), /blocked/);
-      asked(u.transcripts, "Not a defect");
-      assert.match(String(err(await logQuestion(u.root, { session: SESSION, toolUseId: "toolu_1" }, {}, u.transcripts))), /blocked/);
+      asked(u.transcripts, "Not a defect", "toolu_1", [payloadFor(f)]);
+      assert.match(String(err(await logQuestion(u.root, { session: SESSION, toolUseId: "toolu_1", round: "R1" }, {}, u.transcripts))), /blocked/);
     });
   } finally { u.cleanup(); }
 });

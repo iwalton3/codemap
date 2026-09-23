@@ -34,8 +34,9 @@ export const decisionScope = (universe: string): string => `decisions/${universe
 export type AnswerVia =
   /** An `AskUserQuestion` call, logged by `log_question`. */
   | { kind: "question"; question: string }
-  /** The person's whole typed message, copied from the transcript by its entry id. */
-  | { kind: "message"; session: string; entryId: string; text: string }
+  /** The person's whole typed message, copied from the transcript by its entry id, with
+   *  when they typed it and the round the relaying agent says it answered (H5). */
+  | { kind: "message"; session: string; entryId: string; text: string; at: string; round: string }
   /** An agent's words the transcript could not confirm. Unblocks only (C8). */
   | { kind: "unverified"; words: string }
   /** The person on the page. `checked` is a bulk decision's items to rule on separately. */
@@ -51,7 +52,24 @@ export interface FoldedAnswer {
   by: Actor;
   at: string;
   via: AnswerVia["kind"];
+  /** The words are the person's (C8): an unverified answer's settles wait for them. */
   verified: boolean;
+  /**
+   * The person's own verified answer to THIS decision: a page answer or a logged call. It
+   * outranks one that is not (owner, B2.1 "Verified outranks"). A typed reply is bound to its
+   * question by the reader, so it is not own until the reader's identity can be checked
+   * (owner, H8); a reading's copy onto another decision never is (B2.2).
+   */
+  own: boolean;
+  /** When the person gave it — the transcript entry's time, or the page's — never when it
+   *  was recorded: between two own answers, the later GIVEN stands (H7.9). */
+  givenAt: string;
+  /** What it was given through, so one call or message answers a decision once (B1.4). */
+  once?: string;
+  /** Not own, after an own answer: kept, never standing (B2.1). */
+  outranked?: true;
+  /** ...and it disagrees with that answer, so it waits for you. */
+  conflicts?: true;
   /** The person's words as recorded — never an agent's summary of them. */
   words: string;
   /** The options (or bulk items) this answer ruled, directly or through an agreeing reading. */
@@ -77,6 +95,8 @@ export interface FoldedAnswer {
     reader: { transcript: string; reading: string; maps: Mapping[] };
     session: { reading: string; maps: Mapping[] };
     asks?: string;
+    /** The reader could not tell which question the words answer, and why: nothing binds (H5). */
+    unclear?: string;
   };
   /** A later answer on the same decision replaced this one as its answer (C3). */
   superseded?: boolean;
@@ -155,28 +175,13 @@ export function checkDecision(d: Decision, prevalidated = false): string | null 
     }
   }
   if (d.options.filter((o) => o.recommended).length > 1) return "at most one option is recommended";
+  // What the person is shown carries what it acts on, so words typed back can be bound to it
+  // by what was said (owner, H2/H5: "the question should just say 'Close D13 (f_09deadcafef3)?'").
+  if (!new RegExp(`\\b${d.ref}\\b`).test(d.payload.question)) return `the question text must name its ref ${d.ref}`;
+  for (const o of d.options) for (const e of o.effects) for (const f of e.findings) {
+    if (!d.payload.question.includes(f)) return `the question text must name ${f}, which option "${o.label}" acts on`;
+  }
   return null;
-}
-
-/**
- * A reply in the page's and relay's form: `D2 yes`, `D2 B`, `D3 park 2026-10-15`. The WHOLE
- * text must be the reply — any other words make it free text, so "do not run the tests" can
- * never be read as a reply that happens to contain one (owner, 2026-09-23). Not for a bulk
- * decision, whose answer is a set.
- */
-export function parseReply(text: string, d: Decision): { option?: DecisionOption; park?: string } | null {
-  if (d.kind === "bulk") return null;
-  const m = /^\s*(D\d+)\s+(?:(yes)|([a-z])|park\s+(\d{4}-\d{2}-\d{2}))\s*[.!]?\s*$/i.exec(text);
-  if (!m || m[1]!.toUpperCase() !== d.ref.toUpperCase()) return null;
-  if (m[2]) {
-    const rec = d.options.find((o) => o.recommended);
-    return rec ? { option: rec } : null;   // "yes" has no referent without a recommendation
-  }
-  if (m[3]) {
-    const o = d.options[m[3].toUpperCase().charCodeAt(0) - 65];
-    return o ? { option: o } : null;
-  }
-  return { park: m[4]! };
 }
 
 // --- the fold -------------------------------------------------------------------------
@@ -190,10 +195,34 @@ interface Resolved {
   park?: string;
   free: boolean;
   relayers?: string[];
+  own: boolean;
+  /** When given, if not when recorded. */
+  givenAt?: string;
+  once?: string;
 }
 
-/** Rule `picked` onto answer `a` — the one place an answer's facts are set. */
-function rule(d: FoldedDecision, a: FoldedAnswer, r: Resolved, verified: boolean): void {
+/**
+ * Add `a` to `d`, deciding which answer stands (owner, B2.1 + H7.9): an own answer outranks
+ * one that is not; between two of a kind, the later GIVEN stands, so an answer given earlier
+ * and recorded later corrects nothing. An answer that is not own, after one that is, is kept
+ * and never stands; the agent's unconfirmed words disagree with it by definition, and the
+ * person's typed words wait for their reading to say (H6.8).
+ */
+function admit(d: FoldedDecision, a: FoldedAnswer): void {
+  const cur = standing(d);
+  d.answers.push(a);
+  if (!cur) return;
+  const wins = a.own !== cur.own ? a.own : Date.parse(a.givenAt) >= Date.parse(cur.givenAt);
+  if (wins) { cur.superseded = true; return; }
+  if (cur.own && !a.own) {
+    a.outranked = true;
+    if (a.via !== "message") a.conflicts = true;
+  } else a.superseded = true;
+}
+
+/** Rule `picked` onto answer `a` — the one place an answer's facts are set. `closes`: the
+ *  person picked it themselves, so a close-on-answer option may close (B2.2). */
+function rule(d: FoldedDecision, a: FoldedAnswer, r: Resolved, verified: boolean, closes: boolean): void {
   const park = r.park ?? (r.picked.length === 1 ? r.picked[0]!.park : undefined);
   if (park !== undefined) {
     // Principal-only and dated (C23): unverified, it applies nothing and waits for you.
@@ -222,7 +251,7 @@ function rule(d: FoldedDecision, a: FoldedAnswer, r: Resolved, verified: boolean
       for (const f of eff.findings) {
         // An unverified answer only unblocks (C8): its settles wait for you.
         if (eff.on === "settle" && !verified) { if (!a.unruled.includes(f)) a.unruled.push(f); continue; }
-        a.ruled.push({ finding: f, on: eff.on, ...(eff.as ? { as: eff.as } : {}), ...(o.closesOnAnswer && eff.on === "settle" ? { closesOnAnswer: true as const } : {}) });
+        a.ruled.push({ finding: f, on: eff.on, ...(eff.as ? { as: eff.as } : {}), ...(closes && o.closesOnAnswer && eff.on === "settle" ? { closesOnAnswer: true as const } : {}) });
       }
     }
     a.options.push(o.label);
@@ -242,13 +271,14 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
   for (const e of events) {
     if (e.kind !== "decision.question.logged") continue;
     const q = e.data as any;
-    if (!str(q?.session) || !str(q?.toolUseId) || !Array.isArray(q?.questions) || !q?.answers || typeof q.answers !== "object" || Array.isArray(q.answers)) continue;
+    // No round or no answer time: written by a build before either bound anything (H7.12).
+    if (!str(q?.session) || !str(q?.toolUseId) || !str(q?.round) || !str(q?.answeredAt) || !Array.isArray(q?.questions) || !q?.answers || typeof q.answers !== "object" || Array.isArray(q.answers)) continue;
     if (!q.questions.every((x: any) => x && typeof x === "object" && typeof x.question === "string" && Array.isArray(x.options)
       && x.options.every((o: any) => o && typeof o === "object" && typeof o.label === "string"))) continue;
     if (questions.has(e.id)) continue;
     questions.set(e.id, {
       id: e.id, session: q.session, toolUseId: q.toolUseId,
-      questions: q.questions.map(normalizeQuestion), answers: q.answers,
+      questions: q.questions.map(normalizeQuestion), answers: q.answers, round: q.round, answeredAt: q.answeredAt,
       ...(str(q.transcript) ? { transcript: q.transcript } : {}),
       loggedBy: e.actor, at: e.at,
     });
@@ -300,25 +330,33 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
         // Principal-only and dated: a park that is not a date is no answer at all. Dropped
         // HERE, before it can supersede anything — a dropped event changes nothing.
         if (r.park !== undefined && !ISO_DATE.test(r.park)) break;
-        // A later answer supersedes the earlier as the decision's answer (C3).
-        for (const prev of d.answers) prev.superseded = true;
+        // Bound only to a question posted before it was given, by the person's clock and the
+        // poster's, with no allowance for skew (B1.4, H7.10).
+        const givenAt = r.givenAt ?? e.at;
+        if (r.givenAt !== undefined && !(Date.parse(r.givenAt) > Date.parse(rounds.get(d.round)!.at))) break;
+        // One call or message answers a decision once; a duplicate records nothing (H6.1).
+        if (r.once && d.answers.some((x) => x.once === r.once)) break;
         const a: FoldedAnswer = {
-          id: e.id, by: e.actor, at: e.at, via: (data.via as AnswerVia).kind, verified: r.verified,
+          id: e.id, by: e.actor, at: e.at, via: (data.via as AnswerVia).kind, verified: r.verified, own: r.own, givenAt,
+          ...(r.once ? { once: r.once } : {}),
           words: r.words, options: [], ruled: [], unruled: [], free: r.free,
           ...(str(data.relayedBy) ? { relayedBy: data.relayedBy } : {}),
           relayers: r.relayers ?? (str(data.relayedBy) ? [data.relayedBy] : []),
         };
-        d.answers.push(a);
+        admit(d, a);
         answersById.set(e.id, { a, d });
         // A words decision's answer is recorded and never read onto options (C17).
         if (d.kind === "words" || r.free) break;
-        rule(d, a, r, r.verified);
+        rule(d, a, r, r.verified, r.own);
         break;
       }
 
       case "decision.reading.recorded": {
         const src = answersById.get(str(data?.answer) ?? "");
         if (!src || !src.a.free || src.d.kind === "words" || src.a.reading || src.a.superseded) break;
+        // Outranked, only the person's confirmed words are worth reading, and only to learn
+        // whether they disagree; an agent's unconfirmed words are a conflict unread (H6.8).
+        if (src.a.outranked && src.a.via !== "message") break;
         // Words that answered a question since replaced map onto nothing (R23).
         if (src.d.replacedBy) break;
         const rd = data.reader, ses = data.session;
@@ -332,20 +370,27 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
           ? (m as Mapping[]) : null;
         const rm = maps(rd?.maps), sm = maps(ses?.maps);
         if (!rm || !sm) break;
-        // Every mapped decision is in the same round, takes options, is not replaced, and —
-        // apart from the one answered — has no standing answer yet (C2).
+        const unclear = str(data.unclear);
+        // Every mapped decision is in the same round — so posted when the answered one was, before
+        // the words — takes options, is not replaced, and, apart from the one answered, has no
+        // standing answer yet (C2). An outranked answer is read against its own decision only.
         const targets = rm.map((m) => decisions.get(m.decision));
         if (targets.some((t) => !t || t.round !== src.d.round || t.kind === "words" || t.replacedBy
-          || (t !== src.d && t.answers.some((x) => !x.superseded)))) break;
+          || (t !== src.d && (standing(t) || src.a.outranked)))) break;
         const key = (ms: Mapping[]) => ms.map((m) => `${m.decision}\0${m.option ?? ""}`).sort().join("\n");
-        const agree = key(rm) === key(sm);
+        const agree = !unclear && key(rm) === key(sm);
         src.a.reading = {
           id: e.id, agree,
           reader: { transcript, reading: str(rd.reading) ?? "", maps: rm },
           session: { reading: str(ses.reading) ?? "", maps: sm },
           ...(str(data.asks) ? { asks: data.asks } : {}),
+          ...(unclear ? { unclear } : {}),
         };
-        if (!agree) break;   // neither applies (C19)
+        if (!agree) {
+          // Unread, an outranked message was a conflict pending; read two ways it still is.
+          if (src.a.outranked) src.a.conflicts = true;
+          break;   // neither applies (C19)
+        }
         // Group the agreed mappings by decision: a bulk decision's are the items checked.
         const byDecision = new Map<string, DecisionOption[]>();
         for (const m of rm) {
@@ -359,13 +404,21 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
           // A reading maps one pick onto a single-select decision; more is not a reading of it.
           if (t.kind === "options" && picked.length > 1 && t.payload.multiSelect !== true) continue;
           const target = t === src.d ? src.a : (() => {
-            const copy: FoldedAnswer = { ...src.a, options: [], ruled: [], unruled: [], free: false, superseded: false };
+            // A copy is never the person's own answer to a question they may not have seen (B2.2).
+            const copy: FoldedAnswer = { ...src.a, options: [], ruled: [], unruled: [], free: false, superseded: false, own: false };
             delete copy.park; delete copy.parkWaits; delete copy.separately; delete copy.flags;
             t.answers.push(copy);
             return copy;
           })();
           target.free = false;
-          rule(t, target, { verified: src.a.verified, words: src.a.words, picked, free: false }, src.a.verified);
+          rule(t, target, { verified: src.a.verified, words: src.a.words, picked, free: false, own: false }, src.a.verified, false);
+        }
+        // Read, an outranked message disagrees unless it picked what the standing answer did.
+        if (src.a.outranked) {
+          const now = standing(src.d);
+          const same = now && !src.a.park && !src.a.parkWaits && now.park === undefined
+            && [...src.a.options].sort().join("\n") === [...now.options].sort().join("\n");
+          if (!same) src.a.conflicts = true;
         }
         break;
       }
@@ -379,17 +432,11 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
  *  nothing this fold can check. */
 function resolve(d: FoldedDecision, via: AnswerVia, actor: Actor, questions: Map<string, LoggedQuestion>): Resolved | null {
   if (!via || typeof via !== "object") return null;
-  const fromReply = (text: string, verified: boolean): Resolved => {
-    const p = parseReply(text, d);
-    return p
-      ? { verified, words: text, picked: p.option ? [p.option] : [], ...(p.park ? { park: p.park } : {}), free: false }
-      : { verified, words: text, picked: [], free: true };
-  };
   switch (via.kind) {
     case "question": {
       const q = questions.get(via.question);
-      // The logged call must carry this decision's payload exactly, and an answer to it.
-      if (!q || !q.questions.some((x) => sameQuestion(x, d.payload))) return null;
+      // The logged call must be for this decision's round and carry its payload exactly (B1.4).
+      if (!q || q.round !== d.round || !q.questions.some((x) => sameQuestion(x, d.payload))) return null;
       const v = q.answers[d.payload.question];
       // What a transcript records: a string, or a list of them for a multi-select.
       if (typeof v !== "string" && !(Array.isArray(v) && v.every((x) => typeof x === "string"))) return null;
@@ -397,31 +444,34 @@ function resolve(d: FoldedDecision, via: AnswerVia, actor: Actor, questions: Map
       const list = Array.isArray(v) ? v : [v];
       const picked = list.map((l) => d.options.find((o) => o.label === l));
       const words = list.join(", ");
+      const call = { verified: true, own: true, givenAt: q.answeredAt, once: `q:${q.session}\0${q.toolUseId}`, words, relayers };
       if (d.kind !== "words" && picked.every(Boolean) && (list.length === 1 || d.payload.multiSelect)) {
-        return { verified: true, words, picked: picked as DecisionOption[], free: false, relayers };
+        return { ...call, picked: picked as DecisionOption[], free: false };
       }
       // Other text, a label with words appended, or a multi-select element that is words: the
       // person's own, and read by the reader (C14).
-      return { verified: true, words, picked: [], free: true, relayers };
+      return { ...call, picked: [], free: true };
     }
     case "message":
-      if (!str(via.session) || !str(via.entryId) || !str(via.text)) return null;
-      return { ...fromReply(via.text, true), relayers: [via.session] };
+      // Always the reader's to bind, never a parser's — "D13 A" included (owner, H5).
+      if (!str(via.session) || !str(via.entryId) || !str(via.text) || !str(via.at) || Number.isNaN(Date.parse(via.at)) || via.round !== d.round) return null;
+      return { verified: true, own: false, givenAt: via.at, once: `m:${via.session}\0${via.entryId}`, words: via.text, picked: [], free: true, relayers: [via.session] };
     case "unverified":
       if (!str(via.words)) return null;
-      return fromReply(via.words, false);
+      return { verified: false, own: false, words: via.words, picked: [], free: true };
     case "direct": {
       if (isAgentActor(actor)) return null;   // the page is a person's door, never an agent's
-      if (via.park !== undefined) return typeof via.park === "string" ? { verified: true, words: `park ${via.park}`, picked: [], park: via.park, free: false } : null;
+      const page = { verified: true, own: true };
+      if (via.park !== undefined) return typeof via.park === "string" ? { ...page, words: `park ${via.park}`, picked: [], park: via.park, free: false } : null;
       if (d.kind === "bulk" && via.checked !== undefined) {
         if (!Array.isArray(via.checked) || !via.checked.every((c) => typeof c === "string")) return null;
         const picked = via.checked.map((c) => d.options.find((o) => o.label === c));
         if (!picked.length || !picked.every(Boolean)) return null;
-        return { verified: true, words: via.checked.join(", "), picked: picked as DecisionOption[], free: false };
+        return { ...page, words: via.checked.join(", "), picked: picked as DecisionOption[], free: false };
       }
       const o = typeof via.option === "string" ? d.options.find((x) => x.label === via.option) : undefined;
-      if (o) return { verified: true, words: o.label, picked: [o], free: false };
-      if (str(via.words)) return fromReply(via.words!, true);
+      if (o) return { ...page, words: o.label, picked: [o], free: false };
+      if (str(via.words)) return { ...page, words: via.words!, picked: [], free: true };
       return null;
     }
   }
@@ -434,8 +484,8 @@ function resolve(d: FoldedDecision, via: AnswerVia, actor: Actor, questions: Map
 // of the folded record — plus, for the second, the finding record, which alone says whether a
 // ruling has been carried out.
 
-/** A decision's standing answer: the latest one not superseded. */
-export const standing = (d: FoldedDecision): FoldedAnswer | undefined => d.answers.filter((a) => !a.superseded).at(-1);
+/** A decision's standing answer: the one neither superseded nor outranked (see `admit`). */
+export const standing = (d: FoldedDecision): FoldedAnswer | undefined => d.answers.filter((a) => !a.superseded && !a.outranked).at(-1);
 
 export interface WaitingItem { decision: string; round: string; ref: string; why: string }
 
@@ -446,10 +496,14 @@ export function waitingOnMe(s: SharedDecisions): WaitingItem[] {
     if (d.replacedBy) continue;
     const a = standing(d);
     const item = (why: string) => out.push({ decision: d.id, round: d.round, ref: d.ref, why });
+    // Since the ruling stands: an answer that is not yours disagreeing with it (B2.1).
+    const at = a ? d.answers.indexOf(a) : -1;
+    for (const x of d.answers.slice(at + 1)) if (x.conflicts) item(`an unconfirmed answer disagrees with your ruling: "${x.words}"`);
     if (!a) { item("not answered"); continue; }
+    if (a.reading?.unclear) item(`the reader could not tell which question your words answer: ${a.reading.unclear}`);
     if (a.parkWaits) item(`a park until ${a.parkWaits} that could not be verified as yours`);
     if (a.unruled.length) item(`settles that could not be verified as yours: ${a.unruled.join(", ")}`);
-    if (a.reading && !a.reading.agree) item("your words were read two different ways");
+    if (a.reading && !a.reading.agree && !a.reading.unclear) item("your words were read two different ways");
     if (a.free && d.kind !== "words" && a.via !== "direct" && !a.relayers.length) item("your words could not be read: nobody independent can read an answer with no known relayer");
     for (const label of a.separately ?? []) {
       if (!(d.followUps ?? []).some((f) => s.decisions.find((x) => x.id === f)?.origin?.answer === a.id)) item(`you asked to rule on "${label}" separately, and it has not been asked yet`);
@@ -464,9 +518,13 @@ export interface Unread { decision: string; round: string; ref: string; answer: 
 export function awaitingReading(s: SharedDecisions): Unread[] {
   const out: Unread[] = [];
   for (const d of s.decisions) {
+    if (d.replacedBy || d.kind === "words") continue;
     const a = standing(d);
-    if (!d.replacedBy && a?.free && d.kind !== "words" && !a.reading && (a.via === "direct" || a.relayers.length)) {
-      out.push({ decision: d.id, round: d.round, ref: d.ref, answer: a.id, words: a.words });
+    // Your typed words after your own answer: read only to learn whether they disagree with it.
+    for (const x of d.answers) {
+      if (x.free && !x.reading && (x === a ? (x.via === "direct" || x.relayers.length) : x.outranked && x.via === "message" && !x.conflicts)) {
+        out.push({ decision: d.id, round: d.round, ref: d.ref, answer: x.id, words: x.words });
+      }
     }
   }
   return out;
@@ -479,7 +537,7 @@ export function readingsInDispute(s: SharedDecisions): Disputed[] {
   const out: Disputed[] = [];
   for (const d of s.decisions) {
     const a = standing(d);
-    if (!d.replacedBy && a?.reading && !a.reading.agree) {
+    if (!d.replacedBy && a?.reading && !a.reading.agree && !a.reading.unclear) {
       out.push({ decision: d.id, round: d.round, ref: d.ref, answer: a.id, words: a.words, reader: a.reading.reader.reading, session: a.reading.session.reading });
     }
   }
@@ -555,5 +613,5 @@ export const recordAnswerEvent = (logRoot: string, universe: string, actor: Acto
 
 export const recordReadingEvent = (
   logRoot: string, universe: string, actor: Actor,
-  a: { answer: string; reader: { transcript: string; reading: string; maps: Mapping[] }; session: { reading: string; maps: Mapping[] }; asks?: string },
+  a: { answer: string; reader: { transcript: string; reading: string; maps: Mapping[] }; session: { reading: string; maps: Mapping[] }; asks?: string; unclear?: string },
 ) => emitEvent(logRoot, decisionScope(universe), actor, "decision.reading.recorded", a.answer, a as unknown as Record<string, unknown>);

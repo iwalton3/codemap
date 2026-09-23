@@ -24,6 +24,8 @@ export interface TranscriptCall {
   toolUseId: string;
   /** The tool result's entry id. */
   entryId: string;
+  /** The tool result entry's timestamp: when the person answered. */
+  at: string;
   /** As sent — and checked equal to what the result says was asked. */
   questions: AskedQuestion[];
   /** Keyed by question text; a multi-select answer is a list, and typed "Other" text is one
@@ -31,7 +33,7 @@ export interface TranscriptCall {
   answers: Record<string, string | string[]>;
 }
 
-export interface PersonMessage { session: string; entryId: string; text: string }
+export interface PersonMessage { session: string; entryId: string; text: string; /** The entry's timestamp: when they typed it. */ at: string }
 
 /** Where Claude Code keeps a project's transcripts: every non-alphanumeric in the cwd
  *  becomes `-`. `CODEMAP_TRANSCRIPT_DIR` overrides the directory, for tests. */
@@ -76,6 +78,11 @@ export function sessionHolding(id: string, dir: string = transcriptDir()): strin
   }
   return { unverified: `no session in ${dir} holds ${id}` };
 }
+
+/** An entry's own timestamp. An answer is bound only to a question posted before it, so an
+ *  entry without one cannot be bound at all. */
+const stampOf = (e: Record<string, any>): string | Unverified =>
+  typeof e.timestamp === "string" && !Number.isNaN(Date.parse(e.timestamp)) ? e.timestamp : { unverified: "the entry carries no timestamp" };
 
 // --- questions --------------------------------------------------------------------------
 
@@ -150,7 +157,9 @@ export function readCall(session: string, toolUseId: string, dir: string = trans
     else if (Array.isArray(v) && v.every((x) => typeof x === "string")) answers[k] = v as string[];
     else return { unverified: "an answer is neither text nor a list of text" };
   }
-  return { session, toolUseId, entryId: String(result.uuid ?? ""), questions: asked.map(normalizeQuestion), answers };
+  const at = stampOf(result);
+  if (isUnverified(at)) return at;
+  return { session, toolUseId, entryId: String(result.uuid ?? ""), at, questions: asked.map(normalizeQuestion), answers };
 }
 
 // --- one answer, classified ----------------------------------------------------------------
@@ -206,14 +215,18 @@ export function readMessage(session: string, entryId: string, dir: string = tran
     if (e.origin?.kind !== "human") return { unverified: `the entry's origin is ${JSON.stringify(e.origin?.kind ?? null)}, not the person` };
     if (e.toolUseResult !== undefined) return { unverified: "the entry is a tool result" };
     const text = textOf(e.message?.content);
-    return text === undefined ? { unverified: "the message is not plain text" } : { session, entryId, text };
+    if (text === undefined) return { unverified: "the message is not plain text" };
+    const at = stampOf(e);
+    return isUnverified(at) ? at : { session, entryId, text, at };
   }
   if (e.type === "attachment" && e.attachment?.type === "queued_command") {
     // Measured: a queued command carries its origin on the attachment, not the entry.
     const kind = e.attachment.origin?.kind;
     if (kind !== "human") return { unverified: `the queued message's origin is ${JSON.stringify(kind ?? null)}, not the person` };
     const text = textOf(e.attachment.prompt);
-    return text === undefined ? { unverified: "the queued message is not plain text" } : { session, entryId, text };
+    if (text === undefined) return { unverified: "the queued message is not plain text" };
+    const at = stampOf(e);
+    return isUnverified(at) ? at : { session, entryId, text, at };
   }
   return { unverified: `entry ${entryId} is a ${String(e.type)}, not a message the person typed` };
 }
