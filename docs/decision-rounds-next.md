@@ -3,6 +3,10 @@
 > **Kind: handoff.** Written 2026-09-23 at the end of a session that built the first slice of
 > plan `2026-09-22-decision-rounds`, took it through two review rounds, and stopped in a
 > diagnosis. Nothing here is ratified, except where the owner's words are quoted.
+>
+> **Superseded as the next step (2026-09-23):** the cases were put to the owner and the work
+> continues under plan `2026-09-23-decision-rounds-recovery` on branch `decision-rounds-2`. The
+> rulings it rests on are in `docs/decision-rounds-worked-cases.md`.
 
 ## Read this first if you read nothing else
 
@@ -27,7 +31,7 @@ guards at more sites is the failure mode, and the report's kill conditions say s
 | Worked cases and C-list marks; later rulings through R19 | `docs/decision-rounds-worked-cases.md` | yes |
 | Round 1 (review of I8a): sort, arbitration, owner's rulings R20–R25 | `.git/triage/2026-09-23-i8a-decision-fold/` | no |
 | Round 2 (review of the fixes): sort, lens readings, deposition, owner | `.git/triage/2026-09-23-i8a-fix-round/` | no |
-| **The diagnosis report**, forwardable, with the owner's answers in §11 | `docs/postmortems/2026-09-23-i8a-fix-round.md` | not yet: untracked |
+| **The diagnosis report**, forwardable, with the owner's answers in §11 | `docs/postmortems/2026-09-23-i8a-fix-round.md` | yes, `fdeda1f` |
 | Checkpoint before the diagnosis | tag `diagnose/20260923-042851-2026-09-23-i8a-fix-round` → `c745e30` | local tag |
 | Raw findings of each review, word for word | `.git/plan/2026-09-22-decision-rounds/review-i8a.md`, `review-fixes.md` | no |
 
