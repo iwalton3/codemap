@@ -555,6 +555,12 @@ ruling keeps its hold, and its place under *ruled, not carried out*, until the r
 an answer that is not the person's own never displaces one that is; and every typed reply is the
 reader's to bind — nothing is parsed.
 
+> **Note (2026-09-23, the implementation review round below):** close-on-answer and the "own"
+> answer class were cut, so B1.1's close path, B2.2's close half, B2.3, H1 and B5.3 lapse, and H8
+> reduces to "a reader-bound typed reply is a verified answer". "Not the person's own" above now
+> reads "unverified": the standing answer is ranked from the set, verified first, then the later
+> given. See § "The decision-rounds-2 implementation review round".
+
 Questions put to the owner and their answers, verbatim. A picked option is quoted as its label; its
 description is the session's, not the owner's.
 
@@ -798,3 +804,317 @@ machine, session `0ff94697…`), asked to reply with one line and use no tools:
 - **(unprompted, owner, while step 2 was being built):** "If an agent is writing fake transcripts,
   it has gone off the rails and ideally auto mode would stop it." — forgery is outside what this
   check defends against; it guards honest mistakes, like every transcript check.
+
+## The decision-rounds-2 implementation review round — ruled 2026-09-23
+
+The rulings the review round `2026-09-23-decision-rounds-2-impl-review` was planned and built on,
+verbatim from its `owner.md`; the code cites them as P1.1–P4.1 and S0.1–S0.8. Where they and the
+sections above disagree, these win: close-on-answer and the "own" class are gone; which answer
+stands is derived from the set (verified first, then the later given, then log order); words
+that may overturn a ruling flag it until bound or outranked; the reader's verdict is parsed by
+codemap from the reader's own hand-back; and a person's assignment keeps a held finding on the
+work queue only when made after the latest hold on it began. The plan is
+`.git/triage/2026-09-23-decision-rounds-2-impl-review/plan.md`; the hidden-assumption readers'
+reports are `step0-claude.md` and `step0-codex.md` beside it.
+
+Questions put to the owner and their answers, verbatim. A picked option is quoted as its label; its
+description is the session's, not the owner's.
+
+### Session 21f9988f, 2026-09-23 — the discussion (Discuss First)
+
+What the discussion settled, the owner's words verbatim; the session's readings between them are
+marked as the session's.
+
+- **(unprompted, owner):** "This will now be round 3 of fixes. What I am curious about is if we need
+  to break the frame here. I'm starting to wonder if we should cut the whole pre-approved decision
+  action thing and send everything through a reader agent."
+- *(session's reading: the "pre-approved" path is `closesOnAnswer`; unreachable today — `post_round`
+  refuses it and no skill posts rounds; H8's "own" class exists only for it; cutting it dissolves
+  Q1–Q3 and lowers Q6–Q8's stakes, leaves ~13 items untouched; the session pushed back on routing
+  clicks through a reader — the uniformity comes from dropping "own", typed words stay the
+  reader's per H5.)*
+- **(owner):** "Okay so it sounds like closesOnAnswer isn't the source of most of the issues. It
+  sounds like most of our issues are with conflict resolution and marking items on hold for a
+  decision."
+- *(session's reading: mostly; close-on-answer is the source of the deepest conflict items (Q1–Q3)
+  though not most by count; the reader check is its own cluster; holds are the largest cluster —
+  B1.3's stopgap computed at three read doors — and a higher-order fix is one function answering
+  "held / not held / unknown (blocked)" that every surface asks. Proposed four parts: answers (drop
+  close-on-answer and "own"; verified over unverified, later-given between verified; Q4, Q5 on
+  their own), the reader check at lower stakes, holds through one door with Q15 ruled on its own,
+  the rest mechanical.)*
+- **(owner):** "This framing makes sense, in my mind close-on-answer is probably not going to be
+  used a lot because most closing happens in-session where annotations can't be assured without
+  another reader agent anyways."
+  **Settled:** close-on-answer is cut, and the "own" answer class with it. Ranking: verified
+  outranks unverified; between verified, the later given (H7.9). Every settle waits for the
+  verifier (I9) or an in-session close. Supersedes B1.1's "whole round" for the close path; B2.3,
+  H1, B5.3 and B2.2's "only your own verified answer to D2 itself closes on answer" half lapse with
+  it; H8 reduces to "a reader-bound typed reply is a verified answer" (its "closes a pre-staged
+  option" part lapses; the rest stands, re-keyed on verified).
+- **(owner):** "I think we're good to plan now" — the discussion ends in planning here.
+
+### Session 21f9988f, 2026-09-23 — planning batch 1
+
+- **P1.1 (goal and critical).** "Goal (my wording, correct it if wrong): \"Cut close-on-answer and
+  the own answer class; settle what the reader check must contain and who keeps a held finding on
+  the queue; answer every hold through one function that all surfaces ask; fix the rest — so
+  decision-rounds-2 is stable enough to resume the skill work (/triage-review writing through MCP,
+  the import) and I9.\" The gates from last round stay critical: a ruling overwritten, a finding
+  closed unseen, a held finding offered as work, a decision silently vanishing. Keep this goal and
+  these four gates?" Options: Keep both (Rec.) / Change the goal / Change the gates.
+  **A (picked):** "Keep both (Rec.)"
+- **P1.2 (what the reader must have said — Q6).** "What must a reader have said for its binding to
+  count? Today codemap checks only that the reading text the session passes appears somewhere in
+  the reader's messages — an empty reading passes — and the mapping that actually binds (\"D1 → Real,
+  fix it\") comes from the session and is never compared with the reader. Reproduced: the reader
+  said \"D1 -> Real, fix it\", the session passed \"Not a defect\" and it bound." Options: Codemap
+  takes it (Rec.) — the session's description: the reader ends with its mapping in a fixed form,
+  codemap reads it from the reader's own last message, the session no longer supplies it / Session
+  passes, checked — the session's description: the session passes the mapping, codemap refuses
+  unless each pair appears verbatim in what the reader said.
+  **A (typed):** "Am a little confused by this. The reader's job is to make sure an agent requested
+  action matches with what a user said to do. For a pre-proposed action, one additional reader is
+  fine. For agent-only actions like auto-closure we probably need something like two sorts +
+  arbitrator."
+  *(Not yet settled: the form in which codemap sees the reader's verdict is re-asked in batch 2.
+  "Agent-only actions like auto-closure … two sorts + arbitrator" is outside this round —
+  close-on-answer is cut — and is carried to I9, the verifier.)*
+- **P1.3 (which reader counts — Q7, Q8).** "Which reader counts, beyond being a real subagent on
+  this machine? The honest mistake today: a session reuses an earlier reader (from another answer,
+  or before the words were typed), or the agent that relayed the words also reads them — the guard
+  meant to stop that now compares an agent id with session ids and can never fail." Options: Fresh,
+  after the words (Rec.) — the session's description: launched from the session the words were
+  typed in, after the relay was recorded, not itself the relayer / Any real subagent — today's rule,
+  dead guard removed.
+  **A (typed):** "Any subagent after the text was submitted."
+- **P1.4 (held and assigned — Q15).** "A decision holds finding F (you ruled it, or it's still
+  undecided), so the agent work queue should not hand F out. But if a person assigned F, it stays
+  on the queue, marked held. Today any person's assignment counts, made at any time — and
+  assignments only come from the page, so nearly every queued finding was person-assigned and the
+  hold almost never removes anything. Reproduced: you assign F as \"fix\", then rule \"Not a
+  defect\"; agents still get F as fix work. Which assignment should keep a held finding queued?"
+  Options: Assigned while held (Rec.) / Never, while held / Any person, any time.
+  **A (picked):** "Assigned while held (Rec.)" — the session's description: only a person's
+  assignment made after the hold began (the decision posted, or the ruling) keeps it queued,
+  marked held; an earlier one is withheld and the queue says so.
+
+### Session 21f9988f, 2026-09-23 — planning batch 2
+
+- **P2.1 (the reader's verdict — Q6, re-asked).** "Rephrasing the reader question, since I muddled
+  it. It's working the way you describe: the agent requests an action (\"your words mean D1 → Real,
+  fix it\"), a reader checks it against what you typed, and it binds only if they match. Under your
+  earlier rule C17 the reader is blind: it gets your words and the question, not the agent's
+  request, states its own mapping, and codemap compares the two. The hole is only the last step:
+  codemap never looks at what the reader said. The session reports the reader's mapping itself, so
+  a mis-copy binds. How should codemap get the reader's verdict?" Options: Blind, read by codemap
+  (Rec.) / Confirms request, by codemap.
+  **A (picked):** "Blind, read by codemap (Rec.)" — the session's description: C17 kept; the reader
+  ends with its mapping in a fixed line ("D1 → <label>" or "unclear: <why>"); codemap reads that
+  line from the reader's own transcript and compares it with the agent's request.
+- **P2.2 (a blocked log and the work queue — Q14).** "When the decisions log can't be read (for
+  example a corrupt shard, which can't be acknowledged away), codemap can't tell which findings
+  are held. Your ruling H7.14 made the agent work queue refuse outright, so a universe's queue stays
+  empty until someone repairs the sidecar. It could instead fall back to the last decisions it
+  successfully read: hand out findings no stored decision names, withhold the named ones as
+  \"held: unknown\", and say the log is blocked." Options: Keep refusing / Serve the rest.
+  **A (picked):** "Keep refusing" — H7.14 stands.
+- **P2.3 (given before a replacement, recorded after — Q4).** "You answer D1 at 10:02. At 10:03
+  another agent posts D1b, which replaces D1. At 10:04 your 10:02 answer is logged. Today it is
+  dropped: D1 shows no answer, F1 only shows as undecided under D1b, and nothing tells you. (Had it
+  been logged at 10:02, your ruling would hold F1 until D1b was answered.) How should an answer be
+  judged when it was given before the replacement but recorded after?" Options: By when given
+  (Rec.) / Dropped, but shown.
+  **A (picked):** "By when given (Rec.)" — it counts on D1 as though logged when given; B2.4 applies.
+- **P2.4 (one call, two rounds — Q18).** "One AskUserQuestion call can carry up to four questions,
+  and an agent could ask D1 from round R1 and D3 from round R2 in the same call. Your ruling
+  requires log_question to name one round, so the second round's answer can't be recorded and is
+  lost. Whether agents actually mix rounds is not known." Options: Name each round (Rec.) / One
+  round per call.
+  **A (picked):** "Name each round (Rec.)" — the session's description: log_question takes every
+  round the call asked; each question binds in the named round whose posted text it matches
+  exactly; a question matching two named rounds is refused. Amends the "required `round`" ruling
+  (after the plan was shown, session d5793383) to "required, one or more".
+
+### Session 21f9988f, 2026-09-23 — planning batch 3
+
+- **P3.1 (bulk A).** "Smaller rulings, approve or pick some out. (1) The dead reader-is-not-relayer
+  guard is removed, not repaired; the reader must instead be launched after your words were typed
+  (your \"any subagent after the text was submitted\"). (2) An unconfirmed agent answer arriving
+  after your verified ruling can't be read, so it can't be told apart from agreement: \"waiting on
+  me\" shows it as \"an unconfirmed answer arrived after your ruling: <words>\" instead of
+  \"disagrees\". (3) A finding id that exists under two review keys: a hold on it applies to both
+  rows, on every surface. (4) When the decisions log is blocked, the decisions page shows every
+  empty list as \"unknown — the log can't be read\" and hides the answer controls (answering
+  refuses on a blocked log anyway)." Options: Approve all as written / Rule on some separately.
+  **A (picked):** "Approve all as written"
+- **P3.2 (bulk B).** "Mechanical fixes, approve or pick some out. (5) All three web findings pages
+  show a held finding's mark and \"held: unknown\" (today none do, so held work looks free on the
+  web). (6) Inside the one hold function: a missing sidecar or decisions folder reads as
+  \"unknown\" when this store has read decisions from a sidecar before, and as \"no holds\" only
+  when it never has (today it always says \"no holds\", so held findings go back on the queue).
+  (7) The decisions page's two reads show stored rows marked blocked when the sidecar binding is
+  broken, instead of refusing, like every other read. (8) Today's date is computed once per
+  response, so a park can't drop out of both views at midnight UTC." Options: Approve all as
+  written / Rule on some separately.
+  **A (picked):** "Approve all as written"
+- **P3.3 (done means).** "This is the third round where most findings sat in the previous round's
+  own fixes. What must be true before you'd call this round's implementation done?" Options:
+  Reproducers + run the fold / Also a plan-assumption pass — the session's description: the
+  above, plus an independent hidden-assumption review of this plan before anyone builds it.
+  **A (picked):** "Also a plan-assumption pass"
+
+### Session 21f9988f, 2026-09-23 — planning batch 4
+
+- **P4.1 (unread words after a ruling).** "With the own class gone, a typed reply counts as a
+  verified answer, and the later-given verified answer wins. But a typed reply only means something
+  once a reader has bound it to an option. Case: you click \"Not a defect\" on D1 at 10:00. At 10:05
+  you type \"D1 — hmm, not sure anymore\". The reader either hasn't read it yet, or reads it as
+  unclear. Which stands on D1? (Either way F1 stays held; the difference is whether your 10:00
+  ruling still shows as the ruling. I'll also compute the standing answer from all answers when
+  it's read, so recording order stops mattering.)" Options: Click stands (Rec.) — the session's
+  description: typed words compete only once a reader binds them, then by when typed; unread or
+  unclear words never displace a ruling and show under "waiting on me" beside it / Words reopen it.
+  **A (typed):** "Possibly superseeded items stay as described, but are flagged when read in the
+  web interface and by an agent as being possibly superseded. An agent can ask the user to confirm
+  a read via AskUserQuestion and post it back to codemap to get the read approved, avoiding a stale
+  response misdirecting a session."
+  *(The session's reading, for the owner to mark wrong: the ruling stands; while verified typed
+  words given after it are unread, unclear or in dispute, the decision — and every hold it
+  places — carries a "possibly superseded" flag on every web and agent read; the flag clears when
+  a later verified answer to that decision is recorded. How the agent's confirmation is posted
+  back is not settled: see the plan's open detail.)*
+
+### Session 21f9988f, 2026-09-23 — after the plan was shown (the four Step 0 points)
+
+The session listed four points for Step 0; the owner answered them directly, numbered as listed:
+
+1. **(confirming a reading)** "Confirming a reading: how an agent posts back your confirmation.
+   Either it re-asks the question and logs it, or a new \"confirm this reading\" question is built.
+   The choice decides which time the answer stands at."
+   **A (typed):** "a new \"confirm this reading\" question is built"
+2. **(the flag's reach)** "you said \"flagged when read in the web interface and by an agent\".
+   Extending that to every hold the decision places, and the rule for when it clears, are my
+   reading of your words."
+   **A (typed):** "Sounds good"
+3. **(`prevalidated`)** "whether this round data stays for the import, now that it can no longer
+   close anything."
+   **A (typed):** "probably, because it would likely control the level of reader agent time is
+   needed for subsequent processing"
+4. **(relay guards)** "two smaller relayer guards go with the dead one. That follows from \"any
+   subagent\" but wasn't asked."
+   **A (typed):** "seems reasonable"
+
+### Session 21f9988f, 2026-09-23 — the confirm-this-reading question's shape
+
+The session listed three open points; the owner answered each, quoted with the point:
+
+- **"What it offers you, and what \"no\" does."**
+  **A (typed):** "Probably a yes/no/other question. Yes takes the agent's read. No drops the read
+  from the record. Other allows the user to type their own read of the question. An action proposed
+  would need to be formatted in a particular way in the question for it to be directly authorized
+  by the question."
+  *(The session's reading, for the owner to mark wrong: after "No" the words rule nothing and the
+  flag clears — the words are not put back as unread, which would re-flag them; "Other" text is the
+  person's words in a logged call and goes to the reader like any typed reply (H5, H7.7).)*
+- **"An unclear reading has no mapping to confirm. My proposal is that the agent re-asks the
+  original question instead."**
+  **A (typed):** "Agreed"
+- **"A disputed reading could offer the two readings as the options, the way C19's re-ask does."**
+  **A (typed):** "Also agree with this"
+
+### Session 21f9988f, 2026-09-23 — what "No" does on a confirm-this-reading question
+
+- **(the session asked whether, after "No", the words rule nothing and the flag clears, or go back
+  to unread.)**
+  **A (typed):** "Unread would be a little odd, but then again so is dropping the reading. Need to
+  think through the consequences of that. A practical instance is the user might realize what they
+  originally said makes no sense, that would make them want to drop the answer as a ruling. But
+  without entering a new one, it would revert precedent to whatever the old ruling was, which may
+  not be correct either. I'm leaning towards the user has to provide a replacement ruling."
+- *(Session: until a replacement, the old ruling stands, flagged, the rejected reading recorded so
+  it is not re-offered; the replacement is an ordinary later verified answer and clears the flag;
+  proposed collecting it by re-asking the original decision (two steps) or listing its options in
+  the confirm question (one step, at most four options).)*
+  **A (typed):** "I'm thinking the user can enter different text under other, if the agent wants
+  it to immediately authorize something, it would need to ask a specially formatted question as a
+  second turn."
+- *(Session: the confirm question states the formatted action; **Yes** authorizes exactly it;
+  **Other** is the person's own words, read by a reader like any typed reply, a verified answer at
+  its typed time that authorizes nothing directly — a direct authorization needs a second,
+  formatted confirm question; until replaced the old ruling stands, flagged, with the rejected
+  reading attached. `AskUserQuestion` needs at least two options, so the second is **"No — ask me
+  again"**: no text, the agent re-asks the original decision as a second turn.)*
+  **A (typed):** "Yes that seems reasonable."
+  **Settled** as the session stated it. Supersedes, in the confirm-question ruling above, "No drops
+  the read from the record"; the rest of that answer (yes/no/other, Yes takes the read, Other types
+  their own, a formatted action) stands.
+
+### Session ad2a3664, 2026-09-23 — Step 0 (hidden-assumption pass)
+
+Two independent readers ran on the plan at `49957dc`: a fresh Claude subagent (`step0-claude.md`,
+S1–S15) and Codex gpt-6-astra (`step0-codex.md`, HA-01–HA-09). Their false code facts and the
+corrections that follow from standing rulings were applied to the plan without a question (listed
+there under *Step 0 corrections*). The owner ruled the rest, each question quoted with its answer.
+
+### Batch 1
+
+- **S0.1 (S1 — whose reading a confirm asks about).** "You click \"Not a defect\" on D1 at 10:00. At
+  10:05 you type \"D1 actually it's real\". Nothing has read those words yet, so D1 is flagged
+  possibly superseded. The confirm question asks \"is this reading what you meant?\", but no reader
+  has produced a reading to confirm. Whose reading goes in the question?" Options: Agent's own (Rec.)
+  — the session's description: the agent puts its own reading in the formatted question; your Yes
+  binds it at 10:05, and no reader runs; a second way for typed words to bind without the reader /
+  Reader first.
+  **A (picked):** "Agent's own (Rec.)"
+- **S0.2 (S2, HA-07 — how a confirm is kept).** "How is a confirm question kept in the log? Case: two
+  flagged messages on D13, \"hmm\" at 10:05 and \"no, it's real\" at 10:07. The example text \"D13 →
+  Not a defect (settles f_…)\" doesn't say which of the two messages it confirms." Options: Derived,
+  names words (Rec.) — the session's description: codemap computes the text and posts nothing:
+  \"D13, your words at 10:07 → Real, fix it (unblocks f_…)\"; your logged answer is the only record,
+  and Yes binds at 10:07; the confirm holds no findings and never lists as unanswered; if the same
+  words are confirmed twice with different readings, the later confirmation wins / Posted as a decision.
+  **A (picked):** "Derived, names words (Rec.)"
+- **S0.3 (S4, HA-03 — a reading onto an answered decision).** "D2 was ruled \"Real, fix it\" by a
+  click at 10:00. At 10:05 you type \"actually D2 is not a defect\", but the agent relays it against
+  D1. The reader correctly maps it to D2. Today the fold refuses this because D2 already has an answer
+  (C2's rule), and whether it refuses also depends on the order the events were recorded in. What
+  should happen?" Options: Admit, ranked (Rec.) — the session's description: a verified answer on D2,
+  given at 10:05, becomes D2's ruling; recording order stops mattering / Refuse, flag D2.
+  **A (picked):** "Admit, ranked (Rec.)"
+- **S0.4 (S5, HA-02, HA-05 — when a hold began).** "Which assignment keeps a held finding on the work
+  queue? D1 is posted at 10:00. At 10:02 you answer \"Real, fix it\", which releases F1 as fix work,
+  and at 10:05 you assign F1 as fix. At 10:10 your typed correction binds \"Not a defect\", so F1 is
+  held again. Measured from D1's posting, your 10:05 assignment counts as \"after the hold began\", and
+  F1 stays on the queue as fix work under a \"Not a defect\" ruling." Options: Latest current hold
+  (Rec.) — the session's description: each hold on F1 starts when it last became a hold for F1 (its
+  posting, or the answer that re-held it); with several holds, the latest start counts; a person's
+  assignment must come after it / Earliest posting.
+  **A (picked):** "Latest current hold (Rec.)"
+
+### Batch 2
+
+- **S0.5 (S3 — what ranks).** "Which verified answers enter the \"later given wins\" ranking? Case:
+  you click \"Not a defect\" on D1 at 10:00, then pick \"Park until 2026-10-01\" on the page at 10:05.
+  A second case: at 10:05 you type \"forget D1\", and the reader reads it as ruling no option."
+  Options: Any verified act (Rec.) — the session's description: picks, parks, bulk answers, and words
+  read as ruling nothing all rank by when given; only unread, unclear or disputed words stay outside
+  the ranking and flag the decision; two answers given at the same moment are ordered by the log /
+  Picks only.
+  **A (picked):** "Any verified act (Rec.)"
+- **S0.6 (S10 — the findings fold's stamped close).** "The findings fold lets an agent close a finding
+  a person stood behind, as long as the close carries a decision stamp. The fold never checks the
+  stamp against the decisions record. Once close-on-answer is cut, nothing writes a stamp, but the
+  bypass was also meant for the verifier (I9), and its once-per-answer guard (settledBy) goes in this
+  plan." Options: Remove it now (Rec.) — remove the bypass and closeStampFor; I9 adds its own close
+  path under its own ruling / Keep for I9.
+  **A (picked):** "Remove it now (Rec.)"
+- **S0.7 (S11 — stored readings).** "Readings already stored on this branch hold the mapping the
+  SESSION passed in, not one read from the reader … Once codemap reads the verdict itself, what
+  happens to those stored readings?" Options: Drop them (Rec.) — the session's description: readings
+  without the new verdict are ignored (H7.12's rule); typed replies they bound go back to unread and
+  show flagged; old closesOnAnswer fields on posted decisions are ignored, not dropped / Keep them.
+  **A (picked):** "Drop them (Rec.)"
+- **S0.8 (bulk — S6, S8, S9/HA-04, S12, S13).** The question listed (a)–(e) verbatim as they now stand
+  in the plan's *Step 0 rulings* section. Options: Approve all as written / Rule on some separately.
+  **A (picked):** "Approve all as written"
