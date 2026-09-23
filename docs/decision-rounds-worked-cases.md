@@ -167,6 +167,25 @@ What that changes, as the session reads it (I8e and collision 3 are to be redraf
 - **A teammate trusts the machine that logged it,** as they already trust the machine that
   took a witness hash. Hand-forging a log entry remains the residual R5 accepts.
 
+**And the message around it (ruled 2026-09-23).** Asked whether the same call should also copy
+the assistant's message text between the person's last message and the question, the owner:
+
+> Yes that would be really good for bulk approvals
+
+What that means, as the session reads it (the boundaries are the session's, for the owner to
+mark wrong):
+
+- **The copied span** is the assistant `text` blocks in the main transcript after the person's
+  most recent entry (a typed message, `origin.kind: "human"`, or an earlier `AskUserQuestion`
+  result) and before the call. Thinking blocks are excluded, because they are not shown. A peer
+  hand-back is excluded, because it is not the assistant's text and the person does not see it.
+- **A bulk approval can then settle when its items are inside that span.** This relaxes C22,
+  which allowed settling only for items inside the question. Case 2's Q1 qualifies: its nine
+  items are the assistant text right before the call. Case 3's six-item and three-item
+  approvals still do not: the span before each holds one status line. So the rule would have
+  caught exactly the reconstruction found above, and let through the one list that really was
+  shown.
+
 ## Marking the C-list — proposed marks, with the evidence
 
 Only the owner's marks count, and each proposal below is the session's. **Not exercised**
@@ -195,7 +214,7 @@ means no case contains the situation, so the case cannot mark it.
 | C19 | not exercised | no arbitrator was run. Nothing here shows a disagreement |
 | C20 | holds | case 2 Q5 did exactly this (Q9–Q11 were posted from the words), and case 3 twice |
 | C21 | not exercised | |
-| C22 | holds, and it is the strongest | case 2 Q1 (items in the body only) and case 3's six-item and three-item approvals (items in neither the question nor the body). Only the nine-call approval put its items inside the question, and it fit (1045 characters) |
+| C22 | **amended by ruling** | "inside the question" becomes "inside the question or the logged span before it" (above). Case 2 Q1 then verifies. Case 3's six-item and three-item approvals still do not: their items are in neither. The nine-call approval put its items inside the question, and it fit (1045 characters) |
 | C23 | not exercised | no case parks |
 
 **What changes I8 if the marks stand:** C1's words-as-requirement path, C5's group 2/3 limit,
