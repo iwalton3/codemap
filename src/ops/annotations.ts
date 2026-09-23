@@ -15,6 +15,8 @@ import {
 import { requireActor, isAgentActor, actorLabel, reviewerKey, isIndependent, isErrorIndependent } from "../identity.js";
 import { isAgentAuthored, publishStateOf, type PublishState } from "../pr-push.js";
 import { genId, liveAnchors, resolveRefs, loadNodesShared} from "./shared.js";
+import { decisionHolds, holdMark } from "./decision-holds.js";
+import type { Hold } from "../shared-decisions.js";
 
 // ---------------------------------------------------------------------------
 // Annotations
@@ -658,6 +660,9 @@ export interface QueueItem {
   author: string;
   /** Absent when listing beyond the assignment queue (`assignedOnly: false`). */
   assignment?: Annotation["assignment"];
+  /** A decision holds it from open work, and why — or `unknown` when the decisions log
+   *  cannot be read. The assigned list drops held rows unless a PERSON assigned them. */
+  held?: Hold[] | "unknown";
   target: Annotation["target"];
   /** Where to look: the anchor's file and symbol, plus its current source. */
   file?: string;
@@ -817,6 +822,23 @@ export async function reviewQueue(
   if (opts.remediation) pending = pending.filter((a) => (remediationOf.get(a.id) ?? "outstanding") === opts.remediation);
   if (opts.publishState) pending = pending.filter((a) => publishStateOf(a, pushedIds) === opts.publishState);
 
+  // A finding a decision holds is not offered as work (owner, B1.3): the assigned list drops
+  // it and says so, unless a person assigned it themselves, which wins, marked (H7.15). The
+  // catalogue (`assignedOnly: false`) marks it instead (B5.2).
+  const byId = new Map(rows.map((f) => [f.id, f]));
+  const holds = await decisionHolds(root, (f) => { const r = byId.get(f); return !!r && !isClosed(r.state); });
+  let withheld = 0;
+  if (assignedOnly) {
+    // Refused in the queue's own shape, so a caller reading `queue` sees it empty, not absent.
+    if ("unknown" in holds) return { total: 0, offset: 0, more: false, queue: [] as QueueItem[], error: `the decisions log cannot be read, so which findings a person's ruling holds is unknown and nothing is offered as work: ${holds.unknown}` };
+    pending = pending.filter((a) => {
+      const by = byId.get(a.id)?.assignment?.by;
+      const keep = !holds.held.get(a.id)?.length || (!!by && !isAgentActor(by));
+      if (!keep) withheld++;
+      return keep;
+    });
+  }
+
   const rank = { critical: 0, high: 1, medium: 2, low: 3 } as Record<string, number>;
   pending.sort((x, y) => (rank[x.severity ?? "low"] ?? 3) - (rank[y.severity ?? "low"] ?? 3));
   const total = pending.length;
@@ -850,6 +872,7 @@ export async function reviewQueue(
     return { targetResolved: false, ...(at ? { targetAt: at } : {}) };
   };
 
+  const heldNote = withheld ? { withheld: { count: withheld, why: "a person's ruling holds these for the verifier, or they are still undecided — see `decision_rounds`" } } : {};
   if (opts.brief !== false) {
     const brief: QueueItem[] = page.map((a) => ({
       id: a.id, kind: a.kind, severity: a.severity, category: a.category,
@@ -863,14 +886,15 @@ export async function reviewQueue(
       ...triageState(a),
       ...(a.postedRef ? { postedRef: a.postedRef } : {}),
       ...(prOf.has(a.id) ? { pr: prOf.get(a.id), shared: sharedIds.has(a.id) } : {}),
+      ...holdMark(holds, a.id),
     }));
     return {
-      total, offset, more, queue: brief,
+      total, offset, more, queue: brief, ...heldNote,
       hint: "brief — pass brief:false for each symbol's full source, or read one with `get_anchor`.",
     };
   }
   pending = page;
-  if (!pending.length) return { total, offset, more, queue: [] as QueueItem[] };
+  if (!pending.length) return { total, offset, more, queue: [] as QueueItem[], ...heldNote };
 
   const anchorIds = [...new Set(pending.filter((a) => a.target.kind === "anchor").map((a) => a.target.id))];
   const anchors = new Map((await readAnchorStore(root)).anchors.filter((a) => anchorIds.includes(a.id)).map((a) => [a.id, a]));
@@ -919,9 +943,10 @@ export async function reviewQueue(
       ...targetState(a),
       ...triageState(a),
       ...(a.postedRef ? { postedRef: a.postedRef } : {}),
+      ...holdMark(holds, a.id),
     });
   }
-  return { total, offset, more, queue };
+  return { total, offset, more, queue, ...heldNote };
 }
 
 /**

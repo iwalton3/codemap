@@ -438,7 +438,7 @@ test("the queue is brief by default, because the full form could not be read at 
     assert.match(brief.queue[0]!.textPreview!, /negative amounts/);
     assert.equal(brief.queue[0]!.disposition, "confirmed", "a human writing it IS the assertion");
     assert.equal(brief.queue[0]!.publishState, "approved", "a human wrote it, so it is theirs to publish");
-    assert.match(brief.hint!, /brief:false/);
+    assert.match((brief as { hint?: string }).hint!, /brief:false/);
 
     assert.match((await reviewQueue(root, { brief: false })).queue[0]!.code!, /throw new Error/);
 

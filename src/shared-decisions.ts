@@ -109,6 +109,9 @@ export interface FoldedDecision extends Decision {
   answers: FoldedAnswer[];
   /** A decision posted later that replaces this one. */
   replacedBy?: string;
+  /** It was posted to replace a decision another had already replaced — two clones replacing
+   *  at once. The first in log order replaces; this one stays a live question (H6.4). */
+  replaceLost?: string;
   /** Decisions posted since, citing an answer here as their origin (C1, bulk items). */
   followUps?: string[];
 }
@@ -315,6 +318,7 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
           postedAt.set(d.id, pos);
           const old = d.supersedes ? decisions.get(d.supersedes) : undefined;
           if (old && !old.replacedBy) old.replacedBy = d.id;
+          else if (old) d.replaceLost = old.replacedBy;
           const src = d.origin ? answersById.get(d.origin.answer) : undefined;
           if (src) (src.d.followUps ??= []).push(d.id);
         }
@@ -487,15 +491,60 @@ function resolve(d: FoldedDecision, via: AnswerVia, actor: Actor, questions: Map
 /** A decision's standing answer: the one neither superseded nor outranked (see `admit`). */
 export const standing = (d: FoldedDecision): FoldedAnswer | undefined => d.answers.filter((a) => !a.superseded && !a.outranked).at(-1);
 
+/** Whether the answer ruled — picked something — rather than parked or awaited a reading. */
+const decides = (a: FoldedAnswer | undefined): boolean => !!a && !a.free && a.park === undefined && a.parkWaits === undefined;
+
+/**
+ * Where a replaced decision's ruling on `finding` went (owner, B2.4 + H4 + H6.2/6.3): to the
+ * first decision down its replacement chain that names the finding and has a standing answer
+ * that rules — and, when the ruling was the person's own, only an own answer takes it over.
+ * Undefined while the ruling still holds. `blocker` is a later answer that would have taken it
+ * over but is not the person's own: it disagrees with their ruling and waits for them.
+ */
+function successorOf(s: SharedDecisions, d: FoldedDecision, a: FoldedAnswer, finding: string): { taken?: FoldedDecision; blocker?: FoldedDecision } {
+  const byId = new Map(s.decisions.map((x) => [x.id, x]));
+  let blocker: FoldedDecision | undefined;
+  const seen = new Set<string>([d.id]);
+  for (let c = d.replacedBy ? byId.get(d.replacedBy) : undefined; c && !seen.has(c.id); c = c.replacedBy ? byId.get(c.replacedBy) : undefined) {
+    seen.add(c.id);
+    if (!c.options.some((o) => o.effects.some((e) => e.findings.includes(finding)))) continue;
+    const b = standing(c);
+    if (!b || !decides(b)) continue;
+    if (a.own && !b.own) { blocker ??= c; continue; }
+    return { taken: c };
+  }
+  return blocker ? { blocker } : {};
+}
+
+/** The rulings a replaced decision still holds, per finding: those nothing down its chain took over. */
+const stillHeld = (s: SharedDecisions, d: FoldedDecision): Ruled[] => {
+  const a = standing(d);
+  return a ? a.ruled.filter((r) => !successorOf(s, d, a, r.finding).taken) : [];
+};
+
 export interface WaitingItem { decision: string; round: string; ref: string; why: string }
 
 /** What waits on the person: unanswered questions, and answers that need them again. */
 export function waitingOnMe(s: SharedDecisions): WaitingItem[] {
   const out: WaitingItem[] = [];
   for (const d of s.decisions) {
-    if (d.replacedBy) continue;
+    if (d.replacedBy) {
+      // A replacement's answer that is not yours, where your ruling on the replaced question
+      // still holds (H6.2) — listed on the replacement, the question still open to you.
+      const a = standing(d);
+      const listed = new Set<string>();
+      for (const r of a?.ruled ?? []) {
+        const b = successorOf(s, d, a!, r.finding).blocker;
+        if (b && !listed.has(b.id)) { listed.add(b.id); out.push({ decision: b.id, round: b.round, ref: b.ref, why: `an unconfirmed answer disagrees with your ruling on ${d.ref} (${d.round})` }); }
+      }
+      continue;
+    }
     const a = standing(d);
     const item = (why: string) => out.push({ decision: d.id, round: d.round, ref: d.ref, why });
+    if (d.replaceLost) {
+      const was = s.decisions.find((x) => x.id === d.supersedes);
+      item(`posted to replace ${was?.ref ?? d.supersedes}, which ${d.replaceLost} had already replaced: a conflicting replacement`);
+    }
     // Since the ruling stands: an answer that is not yours disagreeing with it (B2.1).
     const at = a ? d.answers.indexOf(a) : -1;
     for (const x of d.answers.slice(at + 1)) if (x.conflicts) item(`an unconfirmed answer disagrees with your ruling: "${x.words}"`);
@@ -544,7 +593,11 @@ export function readingsInDispute(s: SharedDecisions): Disputed[] {
   return out;
 }
 
-export interface Uncarried extends Ruled { decision: string; round: string; ref: string; answer: string; ruler: string }
+export interface Uncarried extends Ruled {
+  decision: string; round: string; ref: string; answer: string; ruler: string;
+  /** The ruling is on a question since replaced, and holds until the replacement rules (B2.4). */
+  replacedBy?: string;
+}
 
 /**
  * Rulings not yet carried out: every effect a standing answer ruled whose finding is still
@@ -554,10 +607,10 @@ export interface Uncarried extends Ruled { decision: string; round: string; ref:
 export function ruledNotCarriedOut(s: SharedDecisions, isOpen: (finding: string) => boolean): Uncarried[] {
   const out: Uncarried[] = [];
   for (const d of s.decisions) {
-    if (d.replacedBy) continue;
     const a = standing(d);
-    for (const r of a?.ruled ?? []) {
-      if (isOpen(r.finding)) out.push({ ...r, decision: d.id, round: d.round, ref: d.ref, answer: a!.id, ruler: a!.by.principal });
+    // A replaced question is listed here, marked replaced, and nowhere else (B5.1).
+    for (const r of d.replacedBy ? stillHeld(s, d) : a?.ruled ?? []) {
+      if (isOpen(r.finding)) out.push({ ...r, decision: d.id, round: d.round, ref: d.ref, answer: a!.id, ruler: a!.by.principal, ...(d.replacedBy ? { replacedBy: d.replacedBy } : {}) });
     }
   }
   return out;
@@ -571,21 +624,25 @@ export interface Hold { decision: string; why: "undecided" | "ruled" }
  * unblock ruling releases them. Derived, never stored — and the finding record decides whether
  * a ruled one has since closed.
  */
-export function heldFindings(s: SharedDecisions): Map<string, Hold[]> {
+export function heldFindings(s: SharedDecisions, isOpen: (finding: string) => boolean): Map<string, Hold[]> {
   const out = new Map<string, Hold[]>();
   const add = (f: string, h: Hold) => {
+    // A closed finding is held by nothing (bulk item 1): the hold was on offering it as work.
+    if (!isOpen(f)) return;
     const list = out.get(f) ?? [];
     if (!list.some((x) => x.decision === h.decision)) list.push(h);
     out.set(f, list);
   };
   for (const d of s.decisions) {
-    if (d.replacedBy) continue;
+    if (d.replacedBy) {
+      for (const r of stillHeld(s, d)) if (r.on === "settle") add(r.finding, { decision: d.id, why: "ruled" });
+      continue;
+    }
     const a = standing(d);
     for (const r of a?.ruled ?? []) if (r.on === "settle") add(r.finding, { decision: d.id, why: "ruled" });
     // Undecided while nothing rules it: no answer, a park, or words not yet read (or read two
     // ways). A decided answer that picked an option with no effect on a finding releases it.
-    const decided = !!a && !a.free && a.park === undefined && a.parkWaits === undefined;
-    if (!decided) {
+    if (!decides(a)) {
       const ruled = new Set((a?.ruled ?? []).map((r) => r.finding));
       for (const o of d.options) for (const e of o.effects) for (const f of e.findings) {
         if (!ruled.has(f)) add(f, { decision: d.id, why: "undecided" });
@@ -594,8 +651,8 @@ export function heldFindings(s: SharedDecisions): Map<string, Hold[]> {
     }
     // Decided — but settles it could not rule wait for the person, and bulk items checked to be
     // ruled on separately wait for their own question.
-    for (const f of a.unruled) add(f, { decision: d.id, why: "undecided" });
-    for (const o of d.options) if (a.separately?.includes(o.label)) for (const e of o.effects) for (const f of e.findings) add(f, { decision: d.id, why: "undecided" });
+    for (const f of a!.unruled) add(f, { decision: d.id, why: "undecided" });
+    for (const o of d.options) if (a!.separately?.includes(o.label)) for (const e of o.effects) for (const f of e.findings) add(f, { decision: d.id, why: "undecided" });
   }
   return out;
 }

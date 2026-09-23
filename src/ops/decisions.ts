@@ -121,7 +121,7 @@ export async function decisionRound(root: string, id: string, via: Via = {}) {
   const round = s.rounds.find((r) => r.id === id);
   if (!round) return { error: `no round ${id}`, ...status };
   const mine = (x: { round: string }) => x.round === id;
-  const held = heldFindings(s);
+  const held = heldFindings(s, isOpen(root));
   return {
     ...status,
     round,

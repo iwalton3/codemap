@@ -69,7 +69,7 @@ const reading = (a: any, maps: any[], session = maps, extra: any = {}) =>
 const ruled = (d: FoldedDecision) => standing(d)?.ruled ?? [];
 const rules = (d: FoldedDecision, f: string, on: string) => ruled(d).some((r) => r.finding === f && r.on === on);
 const waits = (out: SharedDecisions, id: string, re?: RegExp) => waitingOnMe(out).some((w) => w.decision === id && (!re || re.test(w.why)));
-const held = (out: SharedDecisions, f: string, why?: string) => (heldFindings(out).get(f) ?? []).some((x) => !why || x.why === why);
+const held = (out: SharedDecisions, f: string, why?: string, isOpen = (_: string) => true) => (heldFindings(out, isOpen).get(f) ?? []).some((x) => !why || x.why === why);
 
 // --- what an answer rules
 
@@ -355,3 +355,36 @@ test("garbage events are dropped, never thrown on", () => {
   assert.equal(out.questions.length, 0);
   assert.ok(out.decisions.every((d) => !d.answers.length));
 });
+
+// --- P3: the hold outlives its question until the question is answered again
+
+const d1b = reask(d1, "d1b", "D7", "R1b", { supersedes: "d1", options: [{ label: "Settle", effects: [settle("F3"), unblock("F7")] }, { label: "No", effects: [unblock("F3")] }] });
+const replaced = (out: SharedDecisions, f: string) => ruledNotCarriedOut(out, () => true).some((u) => u.decision === "d1" && u.finding === f && u.replacedBy === "d1b");
+run("P3.a (B2.4): a ruling on a question since replaced holds, and is listed replaced, until the replacement is answered", () =>
+  [page(d1, { option: "Settle" }), post("R1b", [d1b])],
+  (b, out) => held(out, "F3", "ruled") && replaced(out, "F3") && !waits(out, "d1") && waits(out, "d1b", /not answered/));
+run("P3.a: ...and the replacement's answer decides: 'No' releases F3 as fix work", () =>
+  [page(d1, { option: "Settle" }), post("R1b", [d1b]), page(d1b, { option: "No" })],
+  (b, out) => !held(out, "F3", "ruled") && !replaced(out, "F3") && rules(b.d1b!, "F3", "unblock"));
+run("P3.b (bulk 1): a settled finding that has since closed is held by nothing", () => [page(d1, { option: "Settle" })],
+  (b, out) => held(out, "F3", "ruled") && !held(out, "F3", undefined, (f) => f !== "F3"));
+const dS = D("dS", "D8", q("D8: are F1 and F2 real?", ["Not defects", "Real"]), [{ label: "Not defects", effects: [settle("F1", "F2")] }, { label: "Real", effects: [unblock("F1", "F2")] }]);
+const dSb = { ...D("dSb", "D1", q("D1: is F1 real?", ["Not a defect", "Real, fix F1"]), [{ label: "Not a defect", effects: [settle("F1")] }, { label: "Real, fix F1", effects: [unblock("F1")] }]), round: "R2", supersedes: "dS" };
+run("P3.d (H4): a replacement takes over only the findings it names", () =>
+  [post("RS", [{ ...dS, round: "RS" }]), page({ ...dS, round: "RS" }, { option: "Not defects" }), post("R2", [dSb]), page(dSb, { option: "Real, fix F1" })],
+  (b, out) => !held(out, "F1", "ruled") && held(out, "F2", "ruled") && ruledNotCarriedOut(out, () => true).some((u) => u.decision === "dS" && u.finding === "F2" && u.replacedBy === "dSb"));
+run("P3.e + P3.f (H6.2): an unconfirmed answer on the replacement leaves your ruling standing, and waits for you", () => {
+  const A = answer(d1b, { kind: "unverified", words: "no, fix it" }, agent, { relayedBy: "sess-A" });
+  return [page(d1, { option: "Settle" }), post("R1b", [d1b]), A, reading(A, [{ decision: "d1b", option: "No" }])];
+}, (b, out) => rules(b.d1b!, "F3", "unblock") && held(out, "F3", "ruled") && replaced(out, "F3") && waits(out, "d1b", /disagrees with your ruling on D1/));
+run("P3.g (H6.3): the ruling passes down a chain until a later question is answered", () => {
+  const d1c = reask(d1b, "d1c", "D9", "R1c", { supersedes: "d1b" });
+  return [page(d1, { option: "Settle" }), post("R1b", [d1b]), post("R1c", [d1c])];
+}, (b, out) => held(out, "F3", "ruled") && replaced(out, "F3"));
+run("P3.g: ...and the later answer takes it over", () => {
+  const d1c = reask(d1b, "d1c", "D9", "R1c", { supersedes: "d1b" });
+  return [page(d1, { option: "Settle" }), post("R1b", [d1b]), post("R1c", [d1c]), page(d1c, { option: "No" })];
+}, (b, out) => !held(out, "F3", "ruled") && !replaced(out, "F3"));
+run("P3.h (H6.4): of two replacements from two clones the first in log order replaces; the second is live and flagged", () =>
+  [post("R1b", [d1b]), post("R1x", [reask(d1b, "d1x", "D8", "R1x")])],
+  (b, out) => b.d1!.replacedBy === "d1b" && b.d1x!.replaceLost === "d1b" && waits(out, "d1x", /conflicting replacement/) && waits(out, "d1x", /not answered/));

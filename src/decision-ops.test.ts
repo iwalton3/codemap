@@ -13,7 +13,8 @@ import { spawnSync } from "node:child_process";
 import { indexBlob } from "./repo.js";
 import { writeStore, readFinding } from "./store.js";
 import type { State } from "./schema.js";
-import { shareFinding, corroborateFinding, closeFinding, bindDecisions } from "./ops-shared.js";
+import { shareFinding, corroborateFinding, closeFinding, bindDecisions, reassignFinding, sharedFindings } from "./ops-shared.js";
+import { reviewQueue } from "./ops/annotations.js";
 import { postRound, postPrevalidated, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, recordReading } from "./ops/decisions.js";
 import { discard } from "./test-tmp.js";
 import { decisionScope, logQuestionEvent } from "./shared-decisions.js";
@@ -342,6 +343,46 @@ test("Q14: a decisions log that cannot be read is blocked, not 'nothing waits on
       assert.match(String(err(await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [{ ...decision("d2", f), round: "R2" }] }))), /blocked/);
       asked(u.transcripts, "Not a defect", "toolu_1", [payloadFor(f)]);
       assert.match(String(err(await logQuestion(u.root, { session: SESSION, toolUseId: "toolu_1", round: "R1" }, {}, u.transcripts))), /blocked/);
+    });
+  } finally { u.cleanup(); }
+});
+
+test("P3.c + P3.i (B1.3, H7.13–15): a held finding is not offered as work; the catalogues mark it; a blocked log refuses the queue", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    const g = await withFinding(u);
+    await asAgent(async () => {
+      await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f), decision("d2", g, {}, "D2")] });
+      await reassignFinding(u.root, 7, f, { kind: "fix" });
+    });
+    await asPerson(async () => {
+      await answerDirect(u.root, { decision: "d1", option: "Not a defect" });
+      await reassignFinding(u.root, 7, g, { kind: "fix" });
+    });
+    await asAgent(async () => {
+      const q = await reviewQueue(u.root) as any;
+      assert.ok(!q.queue.some((x: any) => x.id === f), "ruled not a defect: an agent is not handed it as work");
+      assert.equal(q.withheld?.count, 1, JSON.stringify(q).slice(0, 400));
+      const mine = q.queue.find((x: any) => x.id === g);
+      assert.ok(mine, "a person assigned it, which wins (H7.15)");
+      assert.deepEqual(mine.held, [{ decision: "d2", why: "undecided" }]);
+
+      const all = await reviewQueue(u.root, { assignedOnly: false }) as any;
+      assert.deepEqual(all.queue.find((x: any) => x.id === f)?.held, [{ decision: "d1", why: "ruled" }]);
+      const shared = await sharedFindings(u.root, 7) as any;
+      assert.deepEqual(shared.findings.find((x: any) => x.id === f)?.held, [{ decision: "d1", why: "ruled" }]);
+      const waiting = await sharedFindings(u.root, 7, { queue: true }) as any;
+      for (const row of waiting.findings) if (row.id === f) assert.ok(row.held, "the person's queue marks it, never drops it");
+
+      const b = bindDecisions(u.root) as any;
+      const dir = join(b.cfg.path, decisionScope(b.cfg.universe));
+      const shard = join(dir, readdirSync(dir).find((n) => n.endsWith(".ndjson"))!);
+      writeFileSync(shard, `\x00\x01 garbage\n${readFileSync(shard, "utf8")}`);
+      const refused = await reviewQueue(u.root) as any;
+      assert.match(String(refused.error), /decisions log cannot be read/);
+      assert.deepEqual(refused.queue, []);
+      assert.equal((await reviewQueue(u.root, { assignedOnly: false }) as any).queue.find((x: any) => x.id === f)?.held, "unknown");
     });
   } finally { u.cleanup(); }
 });

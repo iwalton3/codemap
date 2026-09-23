@@ -98,7 +98,7 @@ class DecisionsPage extends Component {
 
       <div class="sec">ruled, not carried out (${v.ruledNotCarriedOut.length})</div>
       <div class="empty">You ruled; the finding is still open. A close waits for the verifier; a fix is somebody's work.</div>
-      ${each(v.ruledNotCarriedOut, (x) => html`<div class="fs"><a href="${href(decisionsUrl(u, x.round))}">${x.round} ${x.ref}</a> — ${x.finding}: ${x.on === 'settle' ? 'close as ' + x.as : 'fix'} <span class="dim">(ruled by ${x.ruler})</span></div>`, (x) => x.decision + x.finding)}
+      ${each(v.ruledNotCarriedOut, (x) => html`<div class="fs"><a href="${href(decisionsUrl(u, x.round))}">${x.round} ${x.ref}</a> — ${x.finding}: ${x.on === 'settle' ? 'close as ' + x.as : 'fix'} <span class="dim">(ruled by ${x.ruler}${x.replacedBy ? '; the question was replaced, and this holds until the replacement is answered' : ''})</span></div>`, (x) => x.decision + x.finding)}
 
       <div class="sec">your words, read two ways (${v.readingsInDispute.length})</div>
       ${when(!v.readingsInDispute.length, () => html`<div class="empty">none</div>`)}
