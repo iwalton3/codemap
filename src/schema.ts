@@ -2236,3 +2236,18 @@ export interface VacuityCheck {
   at: string;
   origin?: string;
 }
+
+// --- decision rounds ------------------------------------------------------------------
+//
+// A person answers questions; agents sort, fix and close. A round is the unit a person
+// sees, and a decision is one question in it, posted with the exact `AskUserQuestion`
+// payload it will be asked with. docs/decision-rounds-worked-cases.md holds the rulings.
+
+/** One question as `AskUserQuestion` sends it. Compared with `multiSelect` defaulting to
+ *  false, because the recorded result sometimes drops the key when it is false. */
+export interface AskedQuestion {
+  question: string;
+  header?: string;
+  options: { label: string; description?: string }[];
+  multiSelect?: boolean;
+}
