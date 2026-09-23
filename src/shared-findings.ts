@@ -363,6 +363,12 @@ export interface SharedFinding {
      *  stamp's `ruler` whose ruling it was. */
     decision?: DecisionStamp;
   };
+  /**
+   * Answers whose decision-stamped close reached this finding — applied, or finding it already
+   * closed. Kept apart from `closed`, which a reopen clears, so a close that happened (or was
+   * made moot) is never carried out again after a reopen (owner, B2.3 + H1 "Reopen wins"; H7.11).
+   */
+  settledBy?: string[];
 
   revisions: { at: string; by: Actor; was: Record<string, unknown> }[];
   /**
@@ -940,8 +946,16 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         // person's verified answer to a decision that settles THIS finding as THIS state. A
         // finding already closed stays as its closer left it (owner: "Closing an already
         // closed finding should just leave it closed").
-        const decided = isClosed(f.state) ? undefined : closeStampFor(obj(d, "decision"), f.id, next);
-        if (!mayTransition(f, e.actor, next) && !decided) break;
+        const decided = closeStampFor(obj(d, "decision"), f.id, next);
+        if (decided) {
+          // Carried out once per answer, even after a reopen, and by duplicates from two clones.
+          if (f.settledBy?.includes(decided.answer)) break;
+          (f.settledBy ??= []).push(decided.answer);
+          // Already closed: it stays as its first closer left it, whoever carries a ruling out
+          // over it (owner: "Closing an already closed finding should just leave it closed";
+          // B5.3 — a person's own unstamped close is still theirs to make).
+          if (isClosed(f.state)) break;
+        } else if (!mayTransition(f, e.actor, next)) break;
         f.state = next;
         // An ask is answered by the act it asked for — and SETTLED, not erased. Clearing
         // `pending` alone took the rationale with it, so a finding closed on an agent's

@@ -157,3 +157,41 @@ test("an agent's sign-off signs nothing, stamp or no stamp", async () => {
     assert.equal(foldStandard(asAgent((e) => ({ ...e.data!, decision: { ...base, operationId: (e.data as any).witness.operationId, content: "x" } }))).witnesses.length, 0);
   } finally { discard(root); discard(side); }
 });
+
+// --- carried out once (P2 + P6.Q18) ---------------------------------------------------------
+
+const byPerson = (id: string, state: string, prev: string, data: Record<string, unknown> = {}) => testEvent({
+  id, kind: "finding.stateChanged", subject: "f_1", actor: person, writerPrev: prev, after: [prev], data: { state, ...data },
+});
+
+test("Q18 (B5.3): a PERSON's stamped close of a finding another clone already closed leaves the first closer's state and reason", () => {
+  const first = byPerson("0000000002-b", "invalid", created.id, { reason: "not reproducible" });
+  const f = foldFindings([created, first, byPerson("0000000003-c", "refuted", first.id, { decision: stamp })]).get("f_1")!;
+  assert.equal(f.state, "invalid");
+  assert.equal(f.closed?.reason, "not reproducible");
+  assert.deepEqual(f.settledBy, ["e9"], "it still counts as done (H1)");
+  // The same person's own unstamped close is theirs to make: only ruling closes are no-ops.
+  const own = foldFindings([created, first, byPerson("0000000003-c", "refuted", first.id, { reason: "changed my mind" })]).get("f_1")!;
+  assert.equal(own.state, "refuted");
+});
+
+test("P2.e (H1): a close made moot by another clone is never carried out after a reopen", () => {
+  const invalid = byPerson("0000000002-b", "invalid", created.id);
+  const moot = change("0000000003-c", "refuted", { decision: stamp }, invalid.id);
+  const reopen = byPerson("0000000004-d", "issued", moot.id);
+  const retry = change("0000000005-e", "refuted", { decision: stamp }, reopen.id);
+  const f = foldFindings([created, invalid, moot, reopen, retry]).get("f_1")!;
+  assert.equal(f.state, "issued", "reopen wins");
+  assert.deepEqual(f.settledBy, ["e9"]);
+});
+
+test("P2.f: the same answer's close from two clones, merged close → reopen → duplicate, leaves it open", () => {
+  const close = change("0000000002-b", "refuted", { decision: stamp });
+  const reopen = byPerson("0000000003-c", "issued", close.id);
+  const dup = testEvent({ id: "0000000004-z", kind: "finding.stateChanged", subject: "f_1", actor: { principal: "bob@x.com", via: { kind: "agent", model: "m" } }, writerPrev: created.id, after: [reopen.id], data: { state: "refuted", decision: stamp } });
+  const f = foldFindings([created, close, reopen, dup]).get("f_1")!;
+  assert.equal(f.state, "issued");
+  // A different answer is a different close, and it does apply.
+  const other = foldFindings([created, close, reopen, change("0000000004-d", "refuted", { decision: { ...stamp, answer: "e10" } }, reopen.id)]).get("f_1")!;
+  assert.equal(other.state, "refuted");
+});
